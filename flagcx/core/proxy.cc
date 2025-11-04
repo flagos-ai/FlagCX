@@ -1057,7 +1057,6 @@ void *flagcxProxyKernelService(void *args) {
   // Create a dedicated stream
   flagcxStream_t stream;
   FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&stream), res, out);
-  INFO(FLAGCX_P2P, "rank %d p2p stream %lu", comm->rank, (uintptr_t)stream);
 
   // Allocate trigger structure
   FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxDeviceTrigger)), res, out);
@@ -1137,7 +1136,8 @@ void *flagcxProxyKernelService(void *args) {
 
 out:
   // destroy fifo
-  res = comm->proxyState->kernelState.fifo->flagcxFifoDestroy();
+  FLAGCXCHECKGOTO(comm->proxyState->kernelState.fifo->flagcxFifoDestroy(), res,
+                  out);
   delete comm->proxyState->kernelState.fifo;
   comm->fifoBuffer = NULL;
   return NULL;
