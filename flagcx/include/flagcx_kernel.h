@@ -38,14 +38,18 @@ struct flagcxDeviceTrigger {
   uint64_t fst;
   uint64_t snd;
 
+  flagcxDeviceTrigger(uint64_t addr, uint64_t count, uint64_t peerRank,
+                      uint64_t datatype, uint64_t type) {
+    set_value(addr, count, peerRank, datatype, type);
+  }
   FLAGCX_HOST_DECORATOR uint64_t getAddr();
   FLAGCX_HOST_DECORATOR uint64_t getCount();
   FLAGCX_HOST_DECORATOR uint64_t getPeerRank();
   FLAGCX_HOST_DECORATOR uint64_t getDatatype();
   FLAGCX_HOST_DECORATOR uint64_t getType();
   FLAGCX_DEVICE_DECORATOR void setValue(uint64_t addr, uint64_t count,
-                                        uint64_t peerRank, uint64_t datatype,
-                                        uint64_t type);
+                                         uint64_t peerRank, uint64_t datatype,
+                                         uint64_t type);
 };
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
 

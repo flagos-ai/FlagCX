@@ -55,15 +55,33 @@ flagcxTriggerMask(size_t w) {
   return (w == 64) ? ~0ull : ((1ull << w) - 1);
 }
 
-FLAGCX_HOST_DECORATOR void
-flagcxDeviceTrigger::get_value(flagcxDeviceTrigger *t) {
-  t->fst = fst;
-  t->snd = snd;
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() {
+  return fst;
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
+  return snd >> flagcxDeviceTriggerOffCount |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsCount);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPeerRank() {
+  return snd >> flagcxDeviceTriggerOffPeerRank |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDatatype() {
+  return snd >> flagcxDeviceTriggerOffDatatype |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
+  return snd >> flagcxDeviceTriggerOffPrim |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsPrim);
 }
 
 FLAGCX_DEVICE_DECORATOR void
-flagcxDeviceTrigger::set_value(uint64_t addr, uint64_t count, uint64_t peerRank,
-                               uint64_t datatype, uint64_t type) {
+flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
+                              uint64_t datatype, uint64_t type) {
   fst = addr;
   snd = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
             << flagcxDeviceTriggerOffCount |
