@@ -60,28 +60,37 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() {
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
+  printf("getCount %llu\n", snd >> flagcxDeviceTriggerOffCount |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsCount));
   return snd >> flagcxDeviceTriggerOffCount |
          flagcxTriggerMask(flagcxDeviceTriggerBitsCount);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPeerRank() {
+  printf("getPeer %llu\n", snd >> flagcxDeviceTriggerOffPeerRank |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank));
   return snd >> flagcxDeviceTriggerOffPeerRank |
          flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDatatype() {
+  printf("getDatatype %llu\n", snd >> flagcxDeviceTriggerOffDatatype |
+         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype));
   return snd >> flagcxDeviceTriggerOffDatatype |
          flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
+  // printf("getType %llu, snd=0x%016llx\n", snd >> flagcxDeviceTriggerOffPrim |
+  //        flagcxTriggerMask(flagcxDeviceTriggerBitsPrim), snd);
   return snd >> flagcxDeviceTriggerOffPrim |
          flagcxTriggerMask(flagcxDeviceTriggerBitsPrim);
 }
 
-FLAGCX_DEVICE_DECORATOR void
+FLAGCX_DEVICE_DECORATOR FLAGCX_HOST_DECORATOR void
 flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
                               uint64_t datatype, uint64_t type) {
+  printf("setValue\n");
   fst = addr;
   snd = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
             << flagcxDeviceTriggerOffCount |
@@ -91,6 +100,7 @@ flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
             << flagcxDeviceTriggerOffDatatype |
         (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
             << flagcxDeviceTriggerOffPrim;
+  printf("addr 0x%016llx, count %llu, peer %llu, datatype %llu, type %llu, snd 0x%016llx\n", addr, count, peerRank, datatype, type, snd);
 }
 
 flagcxResult_t flagcxFifo::flagcxFifoInit() {
@@ -172,7 +182,7 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
   // trigger->peerRank = peerRank;
   // trigger->datatype = datatype;
   // trigger->type = type;
-  trigger->set_value(addr, count, peerRank, datatype, type);
+  trigger->setValue(addr, count, peerRank, datatype, type);
   FLAGCX_DEVICE_THREAD_FENCE();
   buffer[2] = buffer[2] + 1;
   return flagcxSuccess;
