@@ -1121,6 +1121,7 @@ void *flagcxProxyKernelService(void *args) {
               "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
               comm->rank);
         deviceAdaptor->streamSynchronize(stream);
+        comm->proxyState->kernelState.stop = 1;
         break;
       default:
         break;

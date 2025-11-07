@@ -55,39 +55,55 @@ flagcxTriggerMask(size_t w) {
   return (w == 64) ? ~0ull : ((1ull << w) - 1);
 }
 
+FLAGCX_HOST_DECORATOR FLAGCX_DEVICE_DECORATOR
+flagcxDeviceTrigger::flagcxDeviceTrigger(uint64_t addr, uint64_t count, uint64_t peerRank,
+                                         uint64_t datatype, uint64_t type) {
+  printf("init trigger\n");
+  fst = addr;
+  snd = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
+            << flagcxDeviceTriggerOffCount |
+        (peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
+            << flagcxDeviceTriggerOffPeerRank |
+        (datatype & flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype))
+            << flagcxDeviceTriggerOffDatatype |
+        (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
+            << flagcxDeviceTriggerOffPrim;
+  printf("addr 0x%016lx, count %lu, peer %lu, datatype %lu, type %lu, snd 0x%016lx\n", addr, count, peerRank, datatype, type, snd);
+}
+
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() {
   return fst;
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
-  printf("getCount %llu\n", snd >> flagcxDeviceTriggerOffCount |
-         flagcxTriggerMask(flagcxDeviceTriggerBitsCount));
-  return snd >> flagcxDeviceTriggerOffCount |
+  printf("getCount %lu, snd=%016lx\n", snd >> flagcxDeviceTriggerOffCount &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsCount), snd);
+  return snd >> flagcxDeviceTriggerOffCount &
          flagcxTriggerMask(flagcxDeviceTriggerBitsCount);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPeerRank() {
-  printf("getPeer %llu\n", snd >> flagcxDeviceTriggerOffPeerRank |
-         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank));
-  return snd >> flagcxDeviceTriggerOffPeerRank |
+  printf("getPeer %lu, snd=0x%016lx\n", snd >> flagcxDeviceTriggerOffPeerRank &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank), snd);
+  return snd >> flagcxDeviceTriggerOffPeerRank &
          flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDatatype() {
-  printf("getDatatype %llu\n", snd >> flagcxDeviceTriggerOffDatatype |
-         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype));
-  return snd >> flagcxDeviceTriggerOffDatatype |
+  printf("getDatatype %lu, snd=0x%016lx\n", snd >> flagcxDeviceTriggerOffDatatype &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype), snd);
+  return snd >> flagcxDeviceTriggerOffDatatype &
          flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
-  // printf("getType %llu, snd=0x%016llx\n", snd >> flagcxDeviceTriggerOffPrim |
+  // printf("getType %lu, snd=0x%016lx\n", snd >> flagcxDeviceTriggerOffPrim &
   //        flagcxTriggerMask(flagcxDeviceTriggerBitsPrim), snd);
-  return snd >> flagcxDeviceTriggerOffPrim |
+  return snd >> flagcxDeviceTriggerOffPrim &
          flagcxTriggerMask(flagcxDeviceTriggerBitsPrim);
 }
 
-FLAGCX_DEVICE_DECORATOR FLAGCX_HOST_DECORATOR void
+FLAGCX_DEVICE_DECORATOR void
 flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
                               uint64_t datatype, uint64_t type) {
   printf("setValue\n");
@@ -100,7 +116,7 @@ flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
             << flagcxDeviceTriggerOffDatatype |
         (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
             << flagcxDeviceTriggerOffPrim;
-  printf("addr 0x%016llx, count %llu, peer %llu, datatype %llu, type %llu, snd 0x%016llx\n", addr, count, peerRank, datatype, type, snd);
+  printf("addr 0x%016lx, count %lu, peer %lu, datatype %lu, type %lu, snd 0x%016lx\n", addr, count, peerRank, datatype, type, snd);
 }
 
 flagcxResult_t flagcxFifo::flagcxFifoInit() {
@@ -119,6 +135,7 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
 }
 
 flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
+  INFO(FLAGCX_INIT, "fifo destroy called");
   FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));
   return flagcxSuccess;
 }
@@ -175,14 +192,15 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
     distance = buffer[2] - buffer[1];
   }
   idx = buffer[2] % capacity;
-  buffer[2] = buffer[2] + 1;
   flagcxDeviceTrigger *trigger = ((flagcxDeviceTrigger *)(buffer + 3)) + idx;
   // trigger->addr = addr;
   // trigger->count = count;
   // trigger->peerRank = peerRank;
   // trigger->datatype = datatype;
   // trigger->type = type;
+  printf("device enqueue buffer=0x%016lx, trigger=0x%016lx, idx=%d\n", (uintptr_t)buffer, (uintptr_t)trigger, idx);
   trigger->setValue(addr, count, peerRank, datatype, type);
+  printf("enqueued addr=0x%016lx, snd=0x%016lx\n", trigger->fst, trigger->snd);
   FLAGCX_DEVICE_THREAD_FENCE();
   buffer[2] = buffer[2] + 1;
   return flagcxSuccess;
