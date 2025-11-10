@@ -1057,6 +1057,7 @@ void *flagcxProxyKernelService(void *args) {
   // Create a dedicated stream
   flagcxStream_t stream;
   FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&stream), res, out);
+  INFO(FLAGCX_P2P, "rank %d p2p stream %lu", comm->rank, (uintptr_t)stream);
 
   // Allocate trigger structure
   FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxDeviceTrigger)), res, out);
@@ -1113,6 +1114,7 @@ void *flagcxProxyKernelService(void *args) {
           TRACE(FLAGCX_P2P,
                 "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
                 comm->rank);
+
           groupCount--;
         }
         break;
@@ -1121,7 +1123,7 @@ void *flagcxProxyKernelService(void *args) {
               "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
               comm->rank);
         deviceAdaptor->streamSynchronize(stream);
-        comm->proxyState->kernelState.stop = 1;
+        // comm->proxyState->kernelState.stop = 1;
         break;
       default:
         break;
@@ -1130,7 +1132,7 @@ void *flagcxProxyKernelService(void *args) {
       break;
   }
   // destroy stream
-  res = deviceAdaptor->streamSynchronize(stream);
+  deviceAdaptor->streamSynchronize(stream);
   res = deviceAdaptor->streamDestroy(stream);
   // deallocate trigger structure
   free(ptr);
