@@ -6,7 +6,7 @@
 #define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
 #endif
 
-FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
+FLAGCX_DEVICE_INLINE_DECORATOR void spin_backoff(int iter) {
   int delay = 1 << (iter < 15 ? iter : 15);
 #if __CUDA_ARCH__ >= 700
   __nanosleep(delay);
@@ -50,49 +50,6 @@ getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype) {
   }
 }
 
-FLAGCX_DEVICE_DECORATOR FLAGCX_HOST_DECORATOR uint64_t
-flagcxTriggerMask(size_t w) {
-  return (w == 64) ? ~0ull : ((1ull << w) - 1);
-}
-
-FLAGCX_HOST_DECORATOR FLAGCX_DEVICE_DECORATOR
-flagcxDeviceTrigger::flagcxDeviceTrigger(uint64_t addr, uint64_t count, uint64_t peerRank,
-                                         uint64_t datatype, uint64_t type) {
-  fst = addr;
-  snd = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
-            << flagcxDeviceTriggerOffCount |
-        (peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
-            << flagcxDeviceTriggerOffPeerRank |
-        (datatype & flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype))
-            << flagcxDeviceTriggerOffDatatype |
-        (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
-            << flagcxDeviceTriggerOffPrim;
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() {
-  return fst;
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
-  return snd >> flagcxDeviceTriggerOffCount &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsCount);
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getPeerRank() {
-  return snd >> flagcxDeviceTriggerOffPeerRank &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank);
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDatatype() {
-  return snd >> flagcxDeviceTriggerOffDatatype &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsDatatype);
-}
-
-FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
-  return snd >> flagcxDeviceTriggerOffPrim &
-         flagcxTriggerMask(flagcxDeviceTriggerBitsPrim);
-}
-
 FLAGCX_DEVICE_DECORATOR void
 flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
                               uint64_t datatype, uint64_t type) {
@@ -105,27 +62,6 @@ flagcxDeviceTrigger::setValue(uint64_t addr, uint64_t count, uint64_t peerRank,
             << flagcxDeviceTriggerOffDatatype |
         (type & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
             << flagcxDeviceTriggerOffPrim;
-}
-
-flagcxResult_t flagcxFifo::flagcxFifoInit() {
-  // TODO: use a better way to initialize FIFO
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,
-                                          3 * sizeof(uint64_t) +
-                                              FLAGCX_KERNEL_FIFO_CAPACITY *
-                                                  sizeof(flagcxDeviceTrigger),
-                                          flagcxMemHost, NULL));
-  buffer[0] = FLAGCX_KERNEL_FIFO_CAPACITY;
-  buffer[1] = 0;
-  buffer[2] = 0;
-  memset((void *)(buffer + 3), 0,
-         FLAGCX_KERNEL_FIFO_CAPACITY * sizeof(flagcxDeviceTrigger));
-  return flagcxSuccess;
-}
-
-flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
-  INFO(FLAGCX_INIT, "fifo destroy called");
-  FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));
-  return flagcxSuccess;
 }
 
 FLAGCX_DEVICE_DECORATOR flagcxResult_t
