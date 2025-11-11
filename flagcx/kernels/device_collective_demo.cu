@@ -22,7 +22,6 @@ FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(const void *sendbuff,
     flagcxDeviceTerm(fifoBuffer);
     flagcxDeviceWait(fifoBuffer);
   }
-  FLAGCX_DEVICE_THREAD_FENCE();
 }
 
 void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
