@@ -120,12 +120,5 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
   trigger->setValue(addr, count, peerRank, datatype, type);
   FLAGCX_DEVICE_THREAD_FENCE();
   buffer[2] = buffer[2] + 1;
-  // FLAGCX_DEVICE_THREAD_FENCE();
   return flagcxSuccess;
 }
-
-// __device__ flagcxResult_t flagcxFifo::dequeue(flagcxReduceTrigger_t trigger)
-// {
-//   // to be implemented
-//   return flagcxNotSupported;
-// }

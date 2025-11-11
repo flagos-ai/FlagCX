@@ -1114,7 +1114,6 @@ void *flagcxProxyKernelService(void *args) {
           TRACE(FLAGCX_P2P,
                 "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
                 comm->rank);
-
           groupCount--;
         }
         break;
@@ -1123,7 +1122,6 @@ void *flagcxProxyKernelService(void *args) {
               "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
               comm->rank);
         deviceAdaptor->streamSynchronize(stream);
-        // comm->proxyState->kernelState.stop = 1;
         break;
       default:
         break;
@@ -1132,15 +1130,14 @@ void *flagcxProxyKernelService(void *args) {
       break;
   }
   // destroy stream
-  deviceAdaptor->streamSynchronize(stream);
+  res = deviceAdaptor->streamSynchronize(stream);
   res = deviceAdaptor->streamDestroy(stream);
   // deallocate trigger structure
   free(ptr);
 
 out:
   // destroy fifo
-  FLAGCXCHECKGOTO(comm->proxyState->kernelState.fifo->flagcxFifoDestroy(), res,
-                  out);
+  res = comm->proxyState->kernelState.fifo->flagcxFifoDestroy();
   delete comm->proxyState->kernelState.fifo;
   comm->fifoBuffer = NULL;
   return NULL;

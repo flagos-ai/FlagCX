@@ -13,14 +13,10 @@ FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(const void *sendbuff,
     for (int i = 0; i < 1; i++) {
       const void *sendaddr = static_cast<const void *>(
           static_cast<char *>(const_cast<void *>(sendbuff)));
-      // static_cast<char *>(const_cast<void *>(sendbuff)) +
-      // count / 2 * i * getFlagcxDataTypeSizeDevice(datatype));
       flagcxDeviceSend(sendaddr, count, datatype, sendPeer, fifoBuffer);
     }
     for (int i = 0; i < 1; i++) {
       void *recvaddr = static_cast<void *>(static_cast<char *>(recvbuff));
-      // static_cast<char *>(recvbuff) +
-      // count / 2 * i * getFlagcxDataTypeSizeDevice(datatype));
       flagcxDeviceRecv(recvaddr, count, datatype, recvPeer, fifoBuffer);
     }
     flagcxDeviceTerm(fifoBuffer);

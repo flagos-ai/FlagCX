@@ -38,9 +38,6 @@ struct flagcxDeviceTrigger {
   uint64_t fst;
   uint64_t snd;
 
-  // FLAGCX_HOST_DECORATOR FLAGCX_DEVICE_DECORATOR
-  // flagcxDeviceTrigger(uint64_t addr, uint64_t count, uint64_t peerRank,
-  //                     uint64_t datatype, uint64_t type);
   FLAGCX_HOST_DECORATOR uint64_t getAddr();
   FLAGCX_HOST_DECORATOR uint64_t getCount();
   FLAGCX_HOST_DECORATOR uint64_t getPeerRank();
