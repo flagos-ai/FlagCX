@@ -3,34 +3,60 @@
 
 #define WARP_SIZE 32
 
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
+  return value[0];
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getInput2() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput2() {
+  return value[1];
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getOutput() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getOutput() {
+  return value[2];
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getCount() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getCount() {
+  return value[3] >> flagcxReduceTriggerOffCount &
+         flagcxTriggerMask(flagcxReduceTriggerBitsCount);
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getNThreads() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getNThreads() {
+  return value[3] >> flagcxReduceTriggerOffNThreads &
+         flagcxTriggerMask(flagcxReduceTriggerBitsNThreads);
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getDatatype() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getDatatype() {
+  return value[3] >> flagcxReduceTriggerOffDatatype &
+         flagcxTriggerMask(flagcxReduceTriggerBitsDatatype);
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getRedop() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getRedop() {
+  return value[3] >> flagcxReduceTriggerOffRedop &
+         flagcxTriggerMask(flagcxReduceTriggerBitsRedop);
 }
-FLAGCX_DEVICE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
+  return value[3] >> flagcxReduceTriggerOffState &
+         flagcxTriggerMask(flagcxReduceTriggerBitsState);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void setComplete() {
+  value[3] |= (((uint64_t)flagcxReduceTriggerComplete &
+                flagcxTriggerMask(flagcxReduceTriggerBitsState))
+               << flagcxReduceTriggerOffState);
 }
 
-FLAGCX_DEVICE_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
-                                               flagcxReduceTrigger_t trigger) {
-  // wip
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
+                                                      int *idx) {
+  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  while (true) {
+    int old_c = *((uint64_t *)fifoBuffer + 1);
+    int cur_p = *((uint64_t *)fifoBuffer + 2);
+    if (old_c >= cur_p) {
+      // no-op, task dequeued by other consumers
+      *idx = -1;
+      break;
+    }
+    // set consumed from `old_c` to `old_c+1`
+    int prev = atomicCAS((uint64_t *)fifoBuffer + 1, old_c, old_c + 1);
+    if (prev == old_c) {
+      *idx = old_c;
+      break;
+    }
+  }
+  return flagcxSuccess;
 }
 
 FLAGCX_DEVICE_DECORATOR void flagcxReduceKernel(void *fst, void *snd, void *out,
@@ -74,23 +100,10 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     int myIdx = -1;
     int tid = threadIdx.x;
     if (tid == 0) {
-      while (true) {
-        int old_c = *((uint64_t *)fifoBuffer + 1);
-        int cur_p = *((uint64_t *)fifoBuffer + 2);
-        if (old_c >= cur_p) {
-          myIdx = -1; // no-op, task dequeued by other consumers
-          break;
-        }
-        // set consumed from `old_c` to `old_c+1`
-        int prev = atomicCAS((uint64_t *)fifoBuffer + 1, old_c, old_c + 1);
-        if (prev == old_c) {
-          myIdx = old_c;
-          break;
-        }
-      }
+      dequeue(fifoBuffer, &myIdx);
     }
     // sync myIdx to warp
-    myIdx = __shfl_sync(FULL_MASK, myIdx, 0);
+    myIdx = __shfl_sync(FULL_MASK, t, 0);
     if (myIdx < 0) {
       // backoff if no task is performed
       empty_iter++;
@@ -100,7 +113,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
 
     // (5) perform reduce task
     empty_iter = 0;
-    int slot = myIdx & (*(uint64_t *)fifoBuffer - 1); // myIdx % capacity
+    int slot = myIdx & (*(uint64_t *)fifoBuffer - 1);
     flagcxReduceTrigger *t =
         (flagcxReduceTrigger *)((uint64_t *)fifoBuffer + 4) + myIdx;
     flagcxReduceKernel(t->getInput1(), t->getInput2(), t->getOutput(),
@@ -109,7 +122,6 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
 
     // (6) set completion flag
     FLAGCX_DEVICE_THREAD_FENCE();
-    *((uint64_t *)fifoBuffer + 4 +
-      myIdx * sizeof(flagcxReduceTrigger) / sizeof(uint64_t)) |= 1;
+    t->setComplete();
   }
 }

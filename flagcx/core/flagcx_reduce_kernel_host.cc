@@ -1,6 +1,38 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
+FLAGCX_HOST_DECORATOR void
+flagcxReduceTrigger::setValue(uint64_t *fst, uint64_t *snd, uint64_t *out,
+                              size_t count, size_t nthreads,
+                              flagcxDataType_t datatype, flagcxRedOp_t redOp,
+                              flagcxReduceTriggerState state) {
+  uint64_t tmp[4];
+  tmp[0] = fst;
+  tmp[1] = snd;
+  tmp[2] = out;
+  tmp[3] = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
+               << flagcxReduceTriggerOffCount |
+           (nthreads & flagcxTriggerMask(flagcxReduceTriggerBitsNThreads))
+               << flagcxReduceTriggerOffNThreads |
+           (datatype & flagcxTriggerMask(flagcxReduceTriggerBitsDatatype))
+               << flagcxReduceTriggerOffDatatype |
+           (redOp & flagcxTriggerMask(flagcxReduceTriggerBitsRedop))
+               << flagcxReduceTriggerOffRedop |
+           (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+               << flagcxReduceTriggerOffState;
+  memcpy(value, tmp, 4 * sizeof(uint64_t));
+}
+FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {
+  return value[3] >> flagcxReduceTriggerOffState &
+         flagcxTriggerMask(flagcxReduceTriggerBitsState);
+}
+FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setState(int state) {
+  value[3] &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
+               << flagcxReduceTriggerOffState);
+  value[3] |= ((state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+               << flagcxReduceTriggerOffState);
+}
+
 FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              uint64_t addr2, uint64_t addr3,
                                              int count, int nthreads,
@@ -20,7 +52,8 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
   while (trigger->getState() != flagcxReduceTriggerAvailable) {
     sched_yield();
   }
-  trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop);
+  trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,
+                    flagcxReduceTriggerEnqueued);
   __sync_synchronize();
   __atomic_fetch_add(buffer + 2, 1ul, __ATOMIC_RELAXED);
   return flagcxSuccess;
