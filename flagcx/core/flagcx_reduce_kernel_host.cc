@@ -37,7 +37,8 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              uint64_t addr2, uint64_t addr3,
                                              int count, int nthreads,
                                              flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop) {
+                                             flagcxRedOp_t redop,
+                                             flagcxReduceTrigger **ret) {
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[0];
@@ -56,6 +57,7 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                     flagcxReduceTriggerEnqueued);
   __sync_synchronize();
   __atomic_fetch_add(buffer + 2, 1ul, __ATOMIC_RELAXED);
+  *ret = trigger;
   return flagcxSuccess;
 }
 
