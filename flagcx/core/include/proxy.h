@@ -344,6 +344,7 @@ struct flagcxProxyState {
   // Kernel thread
   bool enableProxyKernel = false;
   struct flagcxProxyKernelState kernelState;
+  struct flagcxDagProxyKernelState dagKernelState;
 
   // Queue of expected responses from the proxy
   struct flagcxExpectedProxyResponse *expectedResponses;

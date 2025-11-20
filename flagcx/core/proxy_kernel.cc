@@ -159,40 +159,6 @@ static flagcxResult_t initDagScheduler(struct flagcxDagProxyKernelState *kernelS
   return flagcxSuccess;
 }
 
-// Build DAG from collective operation (DISABLED - using fixed DAG instead)
-// TBD
-static flagcxResult_t buildDagFromCollective(struct flagcxProxyKernelState *kernelState,
-                                             int numOps,
-                                             void **input1Array,
-                                             void **input2Array, 
-                                             void **outputArray,
-                                             size_t *countArray,
-                                             size_t *nthreadsArray,
-                                             flagcxDataType_t *datatypeArray,
-                                             flagcxRedOp_t *redOpArray,
-                                             int *parentCountArray,
-                                             int **childrenIndexArray,
-                                             int *numChildrenArray) {
-  // TODO
-  // Currently disabled - using fixed DAG from initDagScheduler()
-  // This will be implemented later for dynamic DAG construction
-  
-//   (void)kernelState;
-//   (void)numOps;
-//   (void)input1Array;
-//   (void)input2Array;
-//   (void)outputArray;
-//   (void)countArray;
-//   (void)nthreadsArray;
-//   (void)datatypeArray;
-//   (void)redOpArray;
-//   (void)parentCountArray;
-//   (void)childrenIndexArray;
-//   (void)numChildrenArray;
-  
-  return flagcxSuccess;
-}
-
 // Clean up DAG nodes and queues
 static void cleanupDagScheduler(struct flagcxProxyKernelState *kernelState) {
   if (kernelState->dagNodes != NULL) {
