@@ -14,6 +14,7 @@ USE_MUSA ?= 0
 USE_KUNLUNXIN ?=0
 USE_AMD ?= 0
 USE_DU ?= 0
+USE_TSM ?= 0
 USE_MPI ?= 0
 USE_UCX ?= 0
 USE_IBUC ?= 0
@@ -45,6 +46,8 @@ ifeq ($(strip $(DEVICE_HOME)),)
 		DEVICE_HOME = ${CUDA_PATH}
 	else ifeq ($(USE_AMD), 1)
 		DEVICE_HOME = /opt/rocm
+	else ifeq ($(USE_TSM), 1)
+		DEVICE_HOME = /usr/local/kuiper
 	else
 		DEVICE_HOME = /usr/local/cuda
 	endif
@@ -69,6 +72,8 @@ ifeq ($(strip $(CCL_HOME)),)
 		CCL_HOME = ${CUDA_PATH}
 	else ifeq ($(USE_AMD), 1)
 		CCL_HOME = /opt/rocm
+	else ifeq ($(USE_TSM), 1)
+		CCL_HOME = /usr/local/kuiper
 	else
 		CCL_HOME = /usr/local/nccl/build
 	endif
@@ -194,6 +199,14 @@ else ifeq ($(USE_AMD), 1)
 	CCL_INCLUDE = $(CCL_HOME)/include/rccl
 	CCL_LINK = -lrccl
 	ADAPTOR_FLAG = -DUSE_AMD_ADAPTOR -D__HIP_PLATFORM_AMD__
+else ifeq ($(USE_TSM), 1)
+	DEVICE_LIB = $(DEVICE_HOME)/lib
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_LINK = -lhpgr
+	CCL_LIB = $(CCL_HOME)/lib
+	CCL_INCLUDE = $(CCL_HOME)/include
+	CCL_LINK = -ltccl
+	ADAPTOR_FLAG = -DUSE_TSM_ADAPTOR
 else
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
@@ -295,6 +308,7 @@ print_var:
 	@echo "USE_MUSA: $(USE_MUSA)"
 	@echo "USE_DU: $(USE_DU)"
 	@echo "USE_AMD: $(USE_AMD)"
+	@echo "USE_TSM: $(USE_TSM)"
 	@echo "COMPILE_KERNEL: $(COMPILE_KERNEL)"
 	@echo "DEVICE_LIB: $(DEVICE_LIB)"
 	@echo "DEVICE_INCLUDE: $(DEVICE_INCLUDE)"
