@@ -228,7 +228,7 @@ flagcxResult_t tsmicroAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
 
 flagcxResult_t tsmicroAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
                                            void **devPtr) {
-  if (handle == NULL || devPtr == NULL || *devPtr != NULL) {
+  if (handle == NULL || devPtr == NULL) {
     return flagcxInvalidArgument;
   }
   DEVCHECK(txIpcOpenMemHandle(devPtr, handle->base));
