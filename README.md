@@ -66,7 +66,7 @@ Note that `Homo` and `Hetero` modes refer to communications among homogeneous an
 - [HCCL](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/82RC1alpha003/hccl/hcclug/hcclug_000001.html), Ascend Communications Library.
 - [MUSACCL](https://docs.mthreads.com/musa-sdk/musa-sdk-doc-online/programming_guide/Chapter08/), Musa Collective Communications Library.
 - [RCCL](https://github.com/ROCm/rccl), ROCm Communication Collectives Library.
-- [TCCL] TsingMicro Communication Collectives Library.
+- [TCCL](http://www.tsingmicro.com), TsingMicro Communication Collectives Library.
 
 Additionally, FlagCX supports three collective communication libraries for host-side communication: `BOOTSTRAP`, `GLOO`, and `MPI`. Besides `BOOTSTRAP`, which is built using the FlagCX `bootstrap` component, the other two libraries are described as follows:
 
