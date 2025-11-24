@@ -85,7 +85,7 @@ flagcxResult_t tcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
-  tcclResult_t result = tcclGetUniqueId((tcclUniqueId_t *) uniqueId);
+  tcclResult_t result = tcclGetUniqueId((tcclUniqueId *)(*uniqueId));
   return fromTcclResult(result);
 }
 
@@ -108,7 +108,7 @@ flagcxResult_t tcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
     flagcxCalloc(comm, 1);
   }
   tcclResult_t result = tcclCommInitRank(&(*comm)->base, nranks,
-                                          (tcclUniqueId_t )commId, rank);
+                                          *(tcclUniqueId *)commId, rank);
   return fromTcclResult(result);
 }
 
@@ -234,7 +234,7 @@ flagcxResult_t tcclAdaptorGather(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
                                  int root, flagcxInnerComm_t comm,
                                  flagcxStream_t stream) {
-  if (!comm || !stream) {
+    if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
   tcclResult_t result = tcclGather(sendbuff, recvbuff, count, toTcclDataType(datatype),
