@@ -5,7 +5,7 @@
 #include <cstring>
 #include <map>
 
-static const std::map<tcclResult_t, flagcxResult_t> tccl_to_flagcx_result_map = {
+static const std::map<tcclResult_t, flagcxResult_t> tcclToFlagcxResultMap = {
   {tcclSuccess, flagcxSuccess},
   {tcclUnhandledDeviceError, flagcxUnhandledDeviceError},
   {tcclSystemError, flagcxSystemError},
@@ -20,7 +20,7 @@ static const std::map<tcclResult_t, flagcxResult_t> tccl_to_flagcx_result_map = 
 };
 
 // Data type mapping
-static const std::map<flagcxDataType_t, tcclDataType_t> flagcx_to_tccl_datatype_map = {
+static const std::map<flagcxDataType_t, tcclDataType_t> flagcxToTcclDatatypeMap = {
   {flagcxInt8, tcclInt8},
   {flagcxChar, tcclChar},
   {flagcxUint8, tcclUint8},
@@ -40,7 +40,7 @@ static const std::map<flagcxDataType_t, tcclDataType_t> flagcx_to_tccl_datatype_
 };
 
 // Reduction operation mapping
-static const std::map<flagcxRedOp_t, tcclRedOp_t> flagcx_to_tccl_redop_map = {
+static const std::map<flagcxRedOp_t, tcclRedOp_t> flagcxToTcclRedopMap = {
   {flagcxSum, tcclSum},
   {flagcxProd, tcclProd},
   {flagcxMax, tcclMax},
@@ -53,24 +53,24 @@ static const std::map<flagcxRedOp_t, tcclRedOp_t> flagcx_to_tccl_redop_map = {
 
 // Type conversion functions using maps
 static inline flagcxResult_t fromTcclResult(tcclResult_t result) {
-  auto it = tccl_to_flagcx_result_map.find(result);
-  if (it != tccl_to_flagcx_result_map.end()) {
+  auto it = tcclToFlagcxResultMap.find(result);
+  if (it != tcclToFlagcxResultMap.end()) {
     return it->second;
   }
   return flagcxInternalError; // Default error if not found
 }
 
 static inline tcclDataType_t toTcclDataType(flagcxDataType_t dtype) {
-  auto it = flagcx_to_tccl_datatype_map.find(dtype);
-  if (it != flagcx_to_tccl_datatype_map.end()) {
+  auto it = flagcxToTcclDatatypeMap.find(dtype);
+  if (it != flagcxToTcclDatatypeMap.end()) {
     return it->second;
   }
   return tcclNumTypes; // Default enum value if not found
 }
 
 static inline tcclRedOp_t toTcclRedOp(flagcxRedOp_t op) {
-  auto it = flagcx_to_tccl_redop_map.find(op);
-  if (it != flagcx_to_tccl_redop_map.end()) {
+  auto it = flagcxToTcclRedopMap.find(op);
+  if (it != flagcxToTcclRedopMap.end()) {
     return it->second;
   }
   return tcclRedNoOp; // Default enum value if not found
