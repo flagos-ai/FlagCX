@@ -27,6 +27,7 @@ import argparse
 
 FLAGCX_GROUP1 = None
 FLAGCX_GROUP2 = None
+FLAGCX_GROUP3 = None
 MY_RANK = None
 WORLD_SIZE = None
 PREV_RANK = None
@@ -77,6 +78,14 @@ def init_pg():
 
 def destroy_pg():
     dist.destroy_process_group()
+
+def test_backend_options():
+    global WORLD_SIZE, FLAGCX_GROUP3
+    # create a new group with options
+    flagcx_options = flagcx._C.ProcessGroupFlagCX.Options(enable_tuner=True)
+    ranks = list(range(WORLD_SIZE))
+    FLAGCX_GROUP3 = dist.new_group(ranks=ranks, backend=f"{dev_name}:flagcx", pg_options=flagcx_options)
+    
 
 def test_broadcast():
     if torch.cuda.is_available():
@@ -320,6 +329,7 @@ def test_alltoall():
         print(f"rank {MY_RANK} after all_to_all_single with FLAGCX_GROUP1 (with splits): x = {x}, y = {y}")
 
 def test_all():
+    test_backend_options()
     test_broadcast()
     test_reduce()
     test_allreduce()
@@ -331,6 +341,7 @@ def test_all():
     test_alltoall()
 
 dict_op_to_test = {
+    "backend_options": test_backend_options,
     "broadcast": test_broadcast,
     "reduce": test_reduce,
     "allreduce": test_allreduce,
@@ -351,3 +362,4 @@ if __name__ == "__main__":
     dict_op_to_test.get(args.op, test_all)()
 
     destroy_pg()
+    

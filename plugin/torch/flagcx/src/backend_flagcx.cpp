@@ -161,8 +161,9 @@ c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
 // If necessary, pass store/rank/size to the ctor and exchange connection
 // information here
 flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
-                             int rank, int size)
-    : Backend(rank, size), store_(store) {
+                             int rank, int size,
+                             c10::intrusive_ptr<Options> options)
+    : Backend(rank, size), store_(store), options_(std::move(options)) {
   deviceId_ = 0;
   status_ = 0;
   activeGroupCounter_ = 0;
@@ -1030,13 +1031,33 @@ flagcxBackend::recvAnysource(std::vector<at::Tensor> &tensors, int tag) {
 }
 
 c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
-    const c10::intrusive_ptr<::c10d::Store> &store, int rank, int size,
-    const std::chrono::duration<float> & /* unused */) {
-  return c10::make_intrusive<flagcxBackend>(store, rank, size);
+    c10d::DistributedBackendOptions backendOptions,
+    c10::intrusive_ptr<Options> extraOptions) {
+  const c10::intrusive_ptr<::c10d::Store> &store = backendOptions.store;
+  int rank = backendOptions.group_rank;
+  int size = backendOptions.group_size;
+  return c10::make_intrusive<flagcxBackend>(store, rank, size, extraOptions);
 }
+
+flagcxBackend::Options::Options(bool enableTuner)
+    : Backend::Options(FLAGCX_BACKEND_NAME), enableTuner(enableTuner) {}
+
+template <typename T>
+using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>>;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createFlagcxBackend", &flagcxBackend::createFlagcxBackend);
+
+  py::object dist = py::module::import("torch._C._distributed_c10d");
+  auto pg_flagcx = intrusive_ptr_class_<flagcxBackend>(
+      m, "ProcessGroupFlagCX",
+      dist.attr("Backend") // base Python class
+  );
+  intrusive_ptr_class_<flagcxBackend::Options>(
+      pg_flagcx, "Options",
+      dist.attr("Backend").attr("Options")) // base Python class
+      .def(py::init<bool>(), py::arg("enable_tuner") = false)
+      .def_readwrite("enable_tuner", &flagcxBackend::Options::enableTuner);
 }
 
 } // namespace c10d

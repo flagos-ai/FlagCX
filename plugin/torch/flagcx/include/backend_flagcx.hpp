@@ -74,8 +74,19 @@ private:
 
 class flagcxBackend : public Backend {
 public:
-  explicit flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
-                         int rank = -1, int size = -1);
+  struct Options : Backend::Options {
+    explicit Options(bool enableTuner = false);
+
+    static c10::intrusive_ptr<Options> create(bool enableTuner = false) {
+      return c10::make_intrusive<Options>(enableTuner);
+    }
+
+    bool enableTuner{false};
+  };
+
+  explicit flagcxBackend(
+      const c10::intrusive_ptr<::c10d::Store> &store, int rank = -1,
+      int size = -1, c10::intrusive_ptr<Options> options = Options::create());
 
   ~flagcxBackend() override;
 
@@ -167,9 +178,9 @@ public:
   c10::intrusive_ptr<Work> recvAnysource(std::vector<at::Tensor> &tensors,
                                          int tag) override;
 
-  static c10::intrusive_ptr<Backend>
-  createFlagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store, int rank,
-                      int size, const std::chrono::duration<float> &timeout);
+  static c10::intrusive_ptr<Backend> createFlagcxBackend(
+      c10d::DistributedBackendOptions backendOptions,
+      c10::intrusive_ptr<Options> extraOptions = Options::create());
 
   static void flagcxBackendConstructor() __attribute__((constructor)) {
     std::string devName = "cuda";
@@ -194,6 +205,7 @@ public:
     py::object registerBackend =
         module.attr("Backend").attr("register_backend");
     registerBackend("flagcx", py::cpp_function(createFlagcxBackend),
+                    py::arg("extended_api") = true,
                     py::arg("devices") = py::make_tuple(devName));
   }
 
@@ -214,6 +226,7 @@ protected:
   std::unordered_map<int, flagcxStream_t> flagcxStreams_;
   std::unordered_map<int, std::unique_ptr<flagcxEvent>> flagcxEvents_;
   flagcxHandlerGroup_t handler_ = nullptr;
+  const c10::intrusive_ptr<Options> options_;
 #ifdef USE_ASCEND_ADAPTOR
   aclrtStream acl_stream;
 #endif
