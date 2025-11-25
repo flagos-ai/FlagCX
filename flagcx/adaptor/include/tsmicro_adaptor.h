@@ -7,8 +7,8 @@
 #include "alloc.h"
 #include "comm.h"
 #include "flagcx.h"
-#include "tx_runtime.h"
 #include "tccl.h"
+#include "tx_runtime.h"
 
 #include <map>
 struct flagcxInnerComm {
@@ -30,7 +30,7 @@ struct flagcxIpcMemHandle {
 #define DEVCHECK(func)                                                         \
   {                                                                            \
     int ret = func;                                                            \
-    if (ret != TX_SUCCESS)                                                    \
+    if (ret != TX_SUCCESS)                                                     \
       return flagcxUnhandledDeviceError;                                       \
   }
 #endif // end include guard

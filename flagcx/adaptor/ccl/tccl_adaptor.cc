@@ -6,50 +6,36 @@
 #include <map>
 
 static const std::map<tcclResult_t, flagcxResult_t> tcclToFlagcxResultMap = {
-  {tcclSuccess, flagcxSuccess},
-  {tcclUnhandledDeviceError, flagcxUnhandledDeviceError},
-  {tcclSystemError, flagcxSystemError},
-  {tcclInvalidArgument, flagcxInvalidArgument},
-  {tcclInvalidUsage, flagcxInvalidUsage},
-  {tcclRemoteError, flagcxRemoteError},
-  {tcclInProgress, flagcxInProgress},
-  {tcclUnhandledCCLError, flagcxUnhandledCCLError},
-  {tcclNotSupported, flagcxNotSupported},
-  {tcclNumResults, flagcxNumResults},
-  {tcclInternalError, flagcxInternalError}
-};
+    {tcclSuccess, flagcxSuccess},
+    {tcclUnhandledDeviceError, flagcxUnhandledDeviceError},
+    {tcclSystemError, flagcxSystemError},
+    {tcclInvalidArgument, flagcxInvalidArgument},
+    {tcclInvalidUsage, flagcxInvalidUsage},
+    {tcclRemoteError, flagcxRemoteError},
+    {tcclInProgress, flagcxInProgress},
+    {tcclUnhandledCCLError, flagcxUnhandledCCLError},
+    {tcclNotSupported, flagcxNotSupported},
+    {tcclNumResults, flagcxNumResults},
+    {tcclInternalError, flagcxInternalError}};
 
 // Data type mapping
-static const std::map<flagcxDataType_t, tcclDataType_t> flagcxToTcclDatatypeMap = {
-  {flagcxInt8, tcclInt8},
-  {flagcxChar, tcclChar},
-  {flagcxUint8, tcclUint8},
-  {flagcxInt32, tcclInt32},
-  {flagcxInt, tcclInt},
-  {flagcxUint32, tcclUint32},
-  {flagcxInt64, tcclInt64},
-  {flagcxUint64, tcclUint64},
-  {flagcxFloat16, tcclFloat16},
-  {flagcxHalf, tcclHalf},
-  {flagcxFloat32, tcclFloat32},
-  {flagcxFloat, tcclFloat},
-  {flagcxFloat64, tcclFloat64},
-  {flagcxDouble, tcclDouble},
-  {flagcxBfloat16, tcclBfloat16},
-  {flagcxNumTypes, tcclNumTypes}
-};
+static const std::map<flagcxDataType_t, tcclDataType_t>
+    flagcxToTcclDatatypeMap = {
+        {flagcxInt8, tcclInt8},         {flagcxChar, tcclChar},
+        {flagcxUint8, tcclUint8},       {flagcxInt32, tcclInt32},
+        {flagcxInt, tcclInt},           {flagcxUint32, tcclUint32},
+        {flagcxInt64, tcclInt64},       {flagcxUint64, tcclUint64},
+        {flagcxFloat16, tcclFloat16},   {flagcxHalf, tcclHalf},
+        {flagcxFloat32, tcclFloat32},   {flagcxFloat, tcclFloat},
+        {flagcxFloat64, tcclFloat64},   {flagcxDouble, tcclDouble},
+        {flagcxBfloat16, tcclBfloat16}, {flagcxNumTypes, tcclNumTypes}};
 
 // Reduction operation mapping
 static const std::map<flagcxRedOp_t, tcclRedOp_t> flagcxToTcclRedopMap = {
-  {flagcxSum, tcclSum},
-  {flagcxProd, tcclProd},
-  {flagcxMax, tcclMax},
-  {flagcxMin, tcclMin},
-  {flagcxAvg, tcclAvg},
-  {flagcxNumRedOps, tcclNumRedOps},
-  {flagcxMaxRedOp, tcclMaxRedOp},
-  {flagcxRedNoOp, tcclRedNoOp}
-};
+    {flagcxSum, tcclSum},           {flagcxProd, tcclProd},
+    {flagcxMax, tcclMax},           {flagcxMin, tcclMin},
+    {flagcxAvg, tcclAvg},           {flagcxNumRedOps, tcclNumRedOps},
+    {flagcxMaxRedOp, tcclMaxRedOp}, {flagcxRedNoOp, tcclRedNoOp}};
 
 // Type conversion functions using maps
 static inline flagcxResult_t fromTcclResult(tcclResult_t result) {
@@ -113,8 +99,8 @@ flagcxResult_t tcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }
-  tcclResult_t result = tcclCommInitRank(&(*comm)->base, nranks,
-                                          *(tcclUniqueId *)commId, rank);
+  tcclResult_t result =
+      tcclCommInitRank(&(*comm)->base, nranks, *(tcclUniqueId *)commId, rank);
   return fromTcclResult(result);
 }
 
@@ -201,9 +187,7 @@ flagcxResult_t tcclAdaptorMemAlloc(void **ptr, size_t size) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t tcclAdaptorMemFree(void *ptr) {
-  return flagcxNotSupported;
-}
+flagcxResult_t tcclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
 
 flagcxResult_t tcclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
                                        size_t size, void **handle) {
@@ -242,8 +226,9 @@ flagcxResult_t tcclAdaptorReduce(const void *sendbuff, void *recvbuff,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclReduce(sendbuff, recvbuff, count, toTcclDataType(datatype),
-                                    toTcclRedOp(op), root, comm->base, stream->base);
+  tcclResult_t result =
+      tcclReduce(sendbuff, recvbuff, count, toTcclDataType(datatype),
+                 toTcclRedOp(op), root, comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -251,11 +236,12 @@ flagcxResult_t tcclAdaptorGather(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
                                  int root, flagcxInnerComm_t comm,
                                  flagcxStream_t stream) {
-    if (!comm || !stream) {
+  if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclGather(sendbuff, recvbuff, count, toTcclDataType(datatype),
-                                    root, comm->base, stream->base);
+  tcclResult_t result =
+      tcclGather(sendbuff, recvbuff, count, toTcclDataType(datatype), root,
+                 comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -266,8 +252,9 @@ flagcxResult_t tcclAdaptorScatter(const void *sendbuff, void *recvbuff,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclScatter(sendbuff, recvbuff, count, toTcclDataType(datatype),
-                                     root, comm->base, stream->base);
+  tcclResult_t result =
+      tcclScatter(sendbuff, recvbuff, count, toTcclDataType(datatype), root,
+                  comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -278,8 +265,9 @@ flagcxResult_t tcclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclBroadcast(sendbuff, recvbuff, count, toTcclDataType(datatype),
-                                       root, comm->base, stream->base);
+  tcclResult_t result =
+      tcclBroadcast(sendbuff, recvbuff, count, toTcclDataType(datatype), root,
+                    comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -290,8 +278,9 @@ flagcxResult_t tcclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclAllReduce(sendbuff, recvbuff, count, toTcclDataType(datatype),
-                                       toTcclRedOp(op), comm->base, stream->base);
+  tcclResult_t result =
+      tcclAllReduce(sendbuff, recvbuff, count, toTcclDataType(datatype),
+                    toTcclRedOp(op), comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -302,9 +291,9 @@ tcclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t recvcount,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclReduceScatter(sendbuff, recvbuff, recvcount,
-                                           toTcclDataType(datatype), toTcclRedOp(op),
-                                           comm->base, stream->base);
+  tcclResult_t result =
+      tcclReduceScatter(sendbuff, recvbuff, recvcount, toTcclDataType(datatype),
+                        toTcclRedOp(op), comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -315,8 +304,9 @@ flagcxResult_t tcclAdaptorAllGather(const void *sendbuff, void *recvbuff,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclAllGather(sendbuff, recvbuff, sendcount,
-                                       toTcclDataType(datatype), comm->base, stream->base);
+  tcclResult_t result =
+      tcclAllGather(sendbuff, recvbuff, sendcount, toTcclDataType(datatype),
+                    comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -327,8 +317,9 @@ flagcxResult_t tcclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclAlltoAll(sendbuff, recvbuff, count, toTcclDataType(datatype),
-                                      comm->base, stream->base);
+  tcclResult_t result =
+      tcclAlltoAll(sendbuff, recvbuff, count, toTcclDataType(datatype),
+                   comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -341,9 +332,9 @@ flagcxResult_t tcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclAlltoAllv(sendbuff, sendcounts, sdispls, recvbuff,
-                                       recvcounts, rdispls, toTcclDataType(datatype),
-                                       comm->base, stream->base);
+  tcclResult_t result = tcclAlltoAllv(
+      sendbuff, sendcounts, sdispls, recvbuff, recvcounts, rdispls,
+      toTcclDataType(datatype), comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -353,8 +344,8 @@ flagcxResult_t tcclAdaptorSend(const void *sendbuff, size_t count,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclSend(sendbuff, count, toTcclDataType(datatype), peer,
-                                  comm->base, stream->base);
+  tcclResult_t result = tcclSend(sendbuff, count, toTcclDataType(datatype),
+                                 peer, comm->base, stream->base);
   return fromTcclResult(result);
 }
 
@@ -364,8 +355,8 @@ flagcxResult_t tcclAdaptorRecv(void *recvbuff, size_t count,
   if (!comm || !stream) {
     return flagcxInvalidArgument;
   }
-  tcclResult_t result = tcclRecv(recvbuff, count, toTcclDataType(datatype), peer,
-                                  comm->base, stream->base);
+  tcclResult_t result = tcclRecv(recvbuff, count, toTcclDataType(datatype),
+                                 peer, comm->base, stream->base);
   return fromTcclResult(result);
 }
 
