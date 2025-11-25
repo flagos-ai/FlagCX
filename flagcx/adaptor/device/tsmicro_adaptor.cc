@@ -14,8 +14,8 @@ flagcxResult_t tsmicroAdaptorDeviceSynchronize() {
 }
 
 flagcxResult_t tsmicroAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
-                                       flagcxMemcpyType_t type,
-                                       flagcxStream_t stream, void *args) {
+                                          flagcxMemcpyType_t type,
+                                          flagcxStream_t stream, void *args) {
   if (stream == NULL) {
     DEVCHECK(txMemcpy(dst, src, size, memcpyTypeMap[type]));
   } else {
@@ -25,8 +25,8 @@ flagcxResult_t tsmicroAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
 }
 
 flagcxResult_t tsmicroAdaptorDeviceMemset(void *ptr, int value, size_t size,
-                                       flagcxMemType_t type,
-                                       flagcxStream_t stream) {
+                                          flagcxMemType_t type,
+                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     memset(ptr, value, size);
   } else {
@@ -41,8 +41,8 @@ flagcxResult_t tsmicroAdaptorDeviceMemset(void *ptr, int value, size_t size,
 }
 
 flagcxResult_t tsmicroAdaptorDeviceMalloc(void **ptr, size_t size,
-                                       flagcxMemType_t type,
-                                       flagcxStream_t stream) {
+                                          flagcxMemType_t type,
+                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     DEVCHECK(txMallocHost(ptr, size));
   } else if (type == flagcxMemDevice) {
@@ -52,7 +52,7 @@ flagcxResult_t tsmicroAdaptorDeviceMalloc(void **ptr, size_t size,
 }
 
 flagcxResult_t tsmicroAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
-                                     flagcxStream_t stream) {
+                                        flagcxStream_t stream) {
   if (type == flagcxMemHost) {
     DEVCHECK(txFreeHost(ptr));
   } else if (type == flagcxMemManaged) {
@@ -73,7 +73,7 @@ flagcxResult_t tsmicroAdaptorSetDevice(int dev) {
 }
 
 flagcxResult_t tsmicroAdaptorGetDevice(int *dev) {
-  DEVCHECK(txGetDevice((uint32_t*)dev));
+  DEVCHECK(txGetDevice((uint32_t *)dev));
   return flagcxSuccess;
 }
 
@@ -83,7 +83,7 @@ flagcxResult_t tsmicroAdaptorGetDeviceCount(int *count) {
 }
 
 flagcxResult_t tsmicroAdaptorGetVendor(char *vendor) {
-  if (vendor != NULL){
+  if (vendor != NULL) {
     strncpy(vendor, "TSMICRO", MAX_VENDOR_LEN - 1);
   }
   return flagcxSuccess;
@@ -94,7 +94,7 @@ flagcxResult_t tsmicroAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
 }
 
 flagcxResult_t tsmicroAdaptorGdrMemAlloc(void **ptr, size_t size,
-                                      void *memHandle) {
+                                         void *memHandle) {
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
@@ -126,7 +126,7 @@ flagcxResult_t tsmicroAdaptorStreamDestroy(flagcxStream_t stream) {
 }
 
 flagcxResult_t tsmicroAdaptorStreamCopy(flagcxStream_t *newStream,
-                                     void *oldStream) {
+                                        void *oldStream) {
   (*newStream) = NULL;
   flagcxCalloc(newStream, 1);
   memcpy((void *)*newStream, oldStream, sizeof(txStream_t));
@@ -164,7 +164,7 @@ flagcxResult_t tsmicroAdaptorStreamQuery(flagcxStream_t stream) {
 }
 
 flagcxResult_t tsmicroAdaptorStreamWaitEvent(flagcxStream_t stream,
-                                          flagcxEvent_t event) {
+                                             flagcxEvent_t event) {
   if (stream != NULL && event != NULL) {
     DEVCHECK(txStreamWaitEvent(stream->base, event->base));
   }
@@ -172,7 +172,7 @@ flagcxResult_t tsmicroAdaptorStreamWaitEvent(flagcxStream_t stream,
 }
 
 flagcxResult_t tsmicroAdaptorEventCreate(flagcxEvent_t *event,
-                                      flagcxEventType_t eventType) {
+                                         flagcxEventType_t eventType) {
   (*event) = NULL;
   flagcxCalloc(event, 1);
   DEVCHECK(txEventCreate(&(*event)->base));
@@ -188,9 +188,9 @@ flagcxResult_t tsmicroAdaptorEventDestroy(flagcxEvent_t event) {
 }
 
 flagcxResult_t tsmicroAdaptorEventRecord(flagcxEvent_t event,
-                                      flagcxStream_t stream) {
+                                         flagcxStream_t stream) {
   if (event != NULL) {
-      DEVCHECK(txEventRecord(event->base, stream->base));
+    DEVCHECK(txEventRecord(event->base, stream->base));
   }
   return flagcxSuccess;
 }
@@ -208,7 +208,7 @@ flagcxResult_t tsmicroAdaptorEventQuery(flagcxEvent_t event) {
 }
 
 flagcxResult_t tsmicroAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
-                                             size_t *size) {
+                                                size_t *size) {
   flagcxCalloc(handle, 1);
   if (size != NULL) {
     *size = sizeof(txIpcMemHandle_t);
@@ -217,7 +217,7 @@ flagcxResult_t tsmicroAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
 }
 
 flagcxResult_t tsmicroAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
-                                          void *devPtr) {
+                                             void *devPtr) {
   if (handle == NULL || devPtr == NULL) {
     return flagcxInvalidArgument;
   }
@@ -226,7 +226,7 @@ flagcxResult_t tsmicroAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
 }
 
 flagcxResult_t tsmicroAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
-                                           void **devPtr) {
+                                              void **devPtr) {
   if (handle == NULL || devPtr == NULL) {
     return flagcxInvalidArgument;
   }
@@ -250,7 +250,7 @@ flagcxResult_t tsmicroAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
 }
 
 flagcxResult_t tsmicroAdaptorLaunchHostFunc(flagcxStream_t stream,
-                                         void (*fn)(void *), void *args) {
+                                            void (*fn)(void *), void *args) {
   if (stream != NULL) {
     DEVCHECK(txLaunchHostFunc(stream->base, fn, args));
   }
@@ -258,7 +258,8 @@ flagcxResult_t tsmicroAdaptorLaunchHostFunc(flagcxStream_t stream,
 }
 
 flagcxResult_t tsmicroAdaptorLaunchDeviceFunc(flagcxStream_t stream,
-                                           flagcxLaunchFunc_t fn, void *args) {
+                                              flagcxLaunchFunc_t fn,
+                                              void *args) {
   if (stream != NULL) {
     fn(stream, args);
   }
@@ -266,7 +267,7 @@ flagcxResult_t tsmicroAdaptorLaunchDeviceFunc(flagcxStream_t stream,
 }
 
 flagcxResult_t tsmicroAdaptorGetDeviceProperties(struct flagcxDevProps *props,
-                                              int dev) {
+                                                 int dev) {
   if (props == NULL) {
     return flagcxInvalidArgument;
   }
@@ -281,7 +282,8 @@ flagcxResult_t tsmicroAdaptorGetDeviceProperties(struct flagcxDevProps *props,
   return flagcxSuccess;
 }
 
-flagcxResult_t tsmicroAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev) {
+flagcxResult_t tsmicroAdaptorGetDevicePciBusId(char *pciBusId, int len,
+                                               int dev) {
   if (pciBusId == NULL) {
     return flagcxInvalidArgument;
   }
@@ -289,7 +291,8 @@ flagcxResult_t tsmicroAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev)
   return flagcxNotSupported;
 }
 
-flagcxResult_t tsmicroAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
+flagcxResult_t tsmicroAdaptorGetDeviceByPciBusId(int *dev,
+                                                 const char *pciBusId) {
   if (dev == NULL || pciBusId == NULL) {
     return flagcxInvalidArgument;
   }
@@ -297,24 +300,20 @@ flagcxResult_t tsmicroAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId)
   return flagcxSuccess;
 }
 
-
 flagcxResult_t tsmicroAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
-
   return flagcxNotSupported;
-
 }
 
-flagcxResult_t
-tsmicroAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
-                                       size_t size, unsigned long long flags) {
+flagcxResult_t tsmicroAdaptorMemGetHandleForAddressRange(
+    void *handleOut, void *buffer, size_t size, unsigned long long flags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t tsmicroAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
-                                           flagcxEvent_t end) {
+                                              flagcxEvent_t end) {
   if (ms == NULL || start == NULL || end == NULL) {
     return flagcxInvalidArgument;
   }
@@ -333,8 +332,9 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
   "TSM",
       // Basic functions
       tsmicroAdaptorDeviceSynchronize, tsmicroAdaptorDeviceMemcpy,
-      tsmicroAdaptorDeviceMemset, tsmicroAdaptorDeviceMalloc, tsmicroAdaptorDeviceFree,
-      tsmicroAdaptorSetDevice, tsmicroAdaptorGetDevice, tsmicroAdaptorGetDeviceCount,
+      tsmicroAdaptorDeviceMemset, tsmicroAdaptorDeviceMalloc,
+      tsmicroAdaptorDeviceFree, tsmicroAdaptorSetDevice,
+      tsmicroAdaptorGetDevice, tsmicroAdaptorGetDeviceCount,
       tsmicroAdaptorGetVendor, tsmicroAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
@@ -347,12 +347,14 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
             // sz);
       NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
       // Stream functions
-      tsmicroAdaptorStreamCreate, tsmicroAdaptorStreamDestroy, tsmicroAdaptorStreamCopy,
-      tsmicroAdaptorStreamFree, tsmicroAdaptorStreamSynchronize,
-      tsmicroAdaptorStreamQuery, tsmicroAdaptorStreamWaitEvent,
+      tsmicroAdaptorStreamCreate, tsmicroAdaptorStreamDestroy,
+      tsmicroAdaptorStreamCopy, tsmicroAdaptorStreamFree,
+      tsmicroAdaptorStreamSynchronize, tsmicroAdaptorStreamQuery,
+      tsmicroAdaptorStreamWaitEvent,
       // Event functions
-      tsmicroAdaptorEventCreate, tsmicroAdaptorEventDestroy, tsmicroAdaptorEventRecord,
-      tsmicroAdaptorEventSynchronize, tsmicroAdaptorEventQuery,
+      tsmicroAdaptorEventCreate, tsmicroAdaptorEventDestroy,
+      tsmicroAdaptorEventRecord, tsmicroAdaptorEventSynchronize,
+      tsmicroAdaptorEventQuery,
       // IpcMemHandle functions
       tsmicroAdaptorIpcMemHandleCreate, tsmicroAdaptorIpcMemHandleGet,
       tsmicroAdaptorIpcMemHandleOpen, tsmicroAdaptorIpcMemHandleClose,
@@ -365,26 +367,27 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       NULL, // flagcxResult_t (*copyArgsInit)(void **args);
       NULL, // flagcxResult_t (*copyArgsFree)(void *args);
       tsmicroAdaptorLaunchDeviceFunc, // flagcxResult_t
-                                   // (*launchDeviceFunc)(flagcxStream_t stream,
-                                   // void *args);
+                                      // (*launchDeviceFunc)(flagcxStream_t
+                                      // stream, void *args);
       // Others
       tsmicroAdaptorGetDeviceProperties, // flagcxResult_t
-                                      // (*getDeviceProperties)(struct
-                                      // flagcxDevProps *props, int dev);
-      tsmicroAdaptorGetDevicePciBusId, // flagcxResult_t (*getDevicePciBusId)(char
-                                    // *pciBusId, int len, int dev);
+                                         // (*getDeviceProperties)(struct
+                                         // flagcxDevProps *props, int dev);
+      tsmicroAdaptorGetDevicePciBusId,   // flagcxResult_t
+                                         // (*getDevicePciBusId)(char *pciBusId,
+                                         // int len, int dev);
       tsmicroAdaptorGetDeviceByPciBusId, // flagcxResult_t
-                                      // (*getDeviceByPciBusId)(int
-                                      // *dev, const char *pciBusId);
+                                         // (*getDeviceByPciBusId)(int
+                                         // *dev, const char *pciBusId);
       tsmicroAdaptorLaunchHostFunc,
       // DMA buffer
       tsmicroAdaptorDmaSupport, // flagcxResult_t (*dmaSupport)(bool
-                             // *dmaBufferSupport);
+                                // *dmaBufferSupport);
       tsmicroAdaptorMemGetHandleForAddressRange, // flagcxResult_t
-                                              // (*memGetHandleForAddressRange)(void
-                                              // *handleOut, void *buffer,
-                                              // size_t size, unsigned long long
-                                              // flags);
+                                                 // (*memGetHandleForAddressRange)(void
+                                                 // *handleOut, void *buffer,
+                                                 // size_t size, unsigned long
+                                                 // long flags);
       tsmicroAdaptorEventElapsedTime, // flagcxResult_t
 };
 
