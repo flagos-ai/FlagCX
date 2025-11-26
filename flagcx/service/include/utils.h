@@ -9,7 +9,7 @@
 
 #include "check.h"
 #include "global_comm.h"
-#include "json.h"
+#include <nlohmann/json.hpp>
 #include "pthread.h"
 #include "type.h"
 #include <algorithm>
