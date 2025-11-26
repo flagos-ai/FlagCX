@@ -266,20 +266,20 @@ OBJDIR := $(BUILDDIR)/obj
 
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
-	$(abspath flagcx/core) \
-	$(abspath flagcx/adaptor) \
 	$(abspath flagcx/adaptor/include) \
-	$(abspath flagcx/adaptor/tuner) \
-	$(abspath flagcx/service)
+	$(abspath flagcx/runner/include) \
+	$(abspath flagcx/core/include) \
+	$(abspath flagcx/service/include)
 
 LIBSRCFILES:= \
 	$(wildcard flagcx/*.cc) \
-	$(wildcard flagcx/core/*.cc) \
 	$(wildcard flagcx/adaptor/*.cc) \
 	$(wildcard flagcx/adaptor/device/*.cc) \
 	$(wildcard flagcx/adaptor/ccl/*.cc) \
 	$(wildcard flagcx/adaptor/net/*.cc) \
 	$(wildcard flagcx/adaptor/tuner/*.cc) \
+	$(wildcard flagcx/runner/*.cc) \
+	$(wildcard flagcx/core/*.cc) \
 	$(wildcard flagcx/service/*.cc)
 
 ifeq ($(COMPILE_KERNEL), 1)

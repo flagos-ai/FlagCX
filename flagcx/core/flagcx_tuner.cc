@@ -3,7 +3,7 @@
 #include "check.h"
 #include "param.h"
 #include "timer.h"
-#include "tuner/tuner_util.h"
+#include "tuner_util.h"
 #include "utils.h"
 #include <cfloat>
 #include <iostream>

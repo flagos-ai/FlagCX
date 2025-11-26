@@ -11,8 +11,8 @@
 #include "cpuset.h"
 #include "graph.h"
 #include "net.h"
+#include "rapidxml.h"
 #include "transport.h"
-#include "utils/rapidxml.hpp"
 #include "xml.h"
 #include <fcntl.h>
 #include <fstream>

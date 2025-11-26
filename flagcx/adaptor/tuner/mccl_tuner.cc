@@ -1,4 +1,4 @@
-#include "tuner/tuner_util.h"
+#include "tuner_util.h"
 
 #ifdef USE_METAX_ADAPTOR
 static EnvVar algo("MCCL_ALGO", {"ring", "tree"}, "ring");

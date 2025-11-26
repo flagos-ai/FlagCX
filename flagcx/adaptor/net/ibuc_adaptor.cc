@@ -993,13 +993,13 @@ ibuc_connect:
   }
 
   if (comm->retrans.enabled) {
-    INFO(FLAGCX_INIT | FLAGCX_NET,
+    INFO(FLAGCX_NET,
          "NET/IBUC Sender: Retransmission ENABLED (RTO=%uus, MaxRetry=%d, "
          "AckInterval=%d)",
          comm->retrans.minRtoUs, comm->retrans.maxRetry,
          comm->retrans.ackInterval);
   } else {
-    INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IBUC Sender: Retransmission DISABLED");
+    INFO(FLAGCX_NET, "NET/IBUC Sender: Retransmission DISABLED");
   }
 
   if (comm->retrans.enabled && remMeta.retransEnabled) {
@@ -1452,13 +1452,12 @@ ib_recv_ready:
       FLAGCXCHECK(flagcxIbSrqPostRecv(&rComm->srqMgr, FLAGCX_IB_ACK_BUF_COUNT));
     }
 
-    INFO(FLAGCX_INIT | FLAGCX_NET,
+    INFO(FLAGCX_NET,
          "NET/IBUC Receiver: Retransmission ENABLED (Posted %d recv WRs to SRQ "
          "for retransmission)",
          FLAGCX_IB_SRQ_SIZE);
   } else {
-    INFO(FLAGCX_INIT | FLAGCX_NET,
-         "NET/IBUC Receiver: Retransmission DISABLED");
+    INFO(FLAGCX_NET, "NET/IBUC Receiver: Retransmission DISABLED");
   }
 
   free(stage->buffer);

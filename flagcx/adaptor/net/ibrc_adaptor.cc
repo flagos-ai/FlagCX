@@ -1019,13 +1019,13 @@ ib_connect:
   comm->max_outstanding = flagcxParamIbMaxOutstanding();
 
   if (comm->retrans.enabled) {
-    INFO(FLAGCX_INIT | FLAGCX_NET,
+    INFO(FLAGCX_NET,
          "NET/IBRC Sender: Retransmission ENABLED (RTO=%uus, MaxRetry=%d, "
          "AckInterval=%d)",
          comm->retrans.minRtoUs, comm->retrans.maxRetry,
          comm->retrans.ackInterval);
   } else {
-    INFO(FLAGCX_INIT | FLAGCX_NET, "NET/IBRC Sender: Retransmission DISABLED");
+    INFO(FLAGCX_NET, "NET/IBRC Sender: Retransmission DISABLED");
   }
 
   for (int q = 0; q < comm->base.nqps; q++) {
@@ -1489,14 +1489,13 @@ ib_recv_ready:
   FLAGCXCHECK(flagcxIbRetransInit(&rComm->retrans));
 
   if (rComm->retrans.enabled) {
-    INFO(FLAGCX_INIT | FLAGCX_NET,
+    INFO(FLAGCX_NET,
          "NET/IBRC Receiver: Retransmission ENABLED (RTO=%uus, MaxRetry=%d, "
          "AckInterval=%d)",
          rComm->retrans.minRtoUs, rComm->retrans.maxRetry,
          rComm->retrans.ackInterval);
   } else {
-    INFO(FLAGCX_INIT | FLAGCX_NET,
-         "NET/IBRC Receiver: Retransmission DISABLED");
+    INFO(FLAGCX_NET, "NET/IBRC Receiver: Retransmission DISABLED");
   }
 
   // Initialize SRQ with recv buffers if enabled
