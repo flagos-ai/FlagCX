@@ -203,8 +203,18 @@ flagcxResult_t tsmicroAdaptorEventSynchronize(flagcxEvent_t event) {
 }
 
 flagcxResult_t tsmicroAdaptorEventQuery(flagcxEvent_t event) {
-  // TODO: supported later
-  return flagcxNotSupported;
+  flagcxResult_t res = flagcxSuccess;
+  if (event != NULL) {
+    txError_t error = txEventQuery(event->base);
+    if (error == TX_SUCCESS) {
+      res = flagcxSuccess;
+    } else {
+      res = flagcxUnhandledDeviceError;
+    }
+  } else {
+    return flagcxInvalidArgument;
+  }
+  return res;
 }
 
 flagcxResult_t tsmicroAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
@@ -272,7 +282,7 @@ flagcxResult_t tsmicroAdaptorGetDeviceProperties(struct flagcxDevProps *props,
     return flagcxInvalidArgument;
   }
   txDeviceProperty devProp;
-  txGetDeviceProperty(dev, &devProp);
+  DEVCHECK(txGetDeviceProperty(dev, &devProp));
 
   strncpy(props->name, devProp.devProp.devName, sizeof(props->name) - 1);
   props->name[sizeof(props->name) - 1] = '\0';
@@ -284,11 +294,17 @@ flagcxResult_t tsmicroAdaptorGetDeviceProperties(struct flagcxDevProps *props,
 
 flagcxResult_t tsmicroAdaptorGetDevicePciBusId(char *pciBusId, int len,
                                                int dev) {
-  if (pciBusId == NULL) {
+  if (pciBusId == NULL || len < 12) {
     return flagcxInvalidArgument;
   }
-  // TODO: supported later
-  return flagcxNotSupported;
+
+  txDeviceProperty devProp;
+  DEVCHECK(txGetDeviceProperty(dev, &devProp));
+
+  // Format PCI Bus ID as "domain:bus:device.function"
+  snprintf(pciBusId, len, "%04x:%02x:%02x.0", devProp.devProp.domainId,
+           devProp.devProp.busId, devProp.devProp.deviceId);
+  return flagcxSuccess;
 }
 
 flagcxResult_t tsmicroAdaptorGetDeviceByPciBusId(int *dev,
