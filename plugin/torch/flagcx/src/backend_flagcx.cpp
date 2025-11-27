@@ -160,16 +160,35 @@ c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
 
 // If necessary, pass store/rank/size to the ctor and exchange connection
 // information here
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
 flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
                              int rank, int size,
                              c10::intrusive_ptr<Options> options)
-    : Backend(rank, size), store_(store), options_(std::move(options)) {
+    : Backend(rank, size), store_(store),
+      options_(options == nullptr ? Options::create() : std::move(options)) {
+  deviceId_ = 0;
+  status_ = 0;
+  activeGroupCounter_ = 0;
+  C10D_FLAGCX_CHECK(flagcxHandleInit(&handler_), std::nullopt);
+  C10D_FLAGCX_CHECK(handler_->devHandle->getDeviceCount(&nDevs_), std::nullopt);
+  if (options_ == nullptr) {
+    std::cout << "options_ is nullptr" << std::endl;
+  }
+  std::cout << "FlagCX Backend created with options: "
+            << "enableTuner=" << options_->enableTuner << std::endl;
+  std::cout << "rank: " << rank_ << ", size: " << size_ << std::endl;
+}
+#else
+flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
+                             int rank, int size)
+    : Backend(rank, size), store_(store) {
   deviceId_ = 0;
   status_ = 0;
   activeGroupCounter_ = 0;
   C10D_FLAGCX_CHECK(flagcxHandleInit(&handler_), std::nullopt);
   C10D_FLAGCX_CHECK(handler_->devHandle->getDeviceCount(&nDevs_), std::nullopt);
 }
+#endif
 
 flagcxBackend::~flagcxBackend() {
   if (status_ == 1) {
@@ -1030,6 +1049,7 @@ flagcxBackend::recvAnysource(std::vector<at::Tensor> &tensors, int tag) {
   throw std::runtime_error("flagcxBackend does not support recvAnysource");
 }
 
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
 c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
     c10d::DistributedBackendOptions backendOptions,
     c10::intrusive_ptr<Options> extraOptions) {
@@ -1044,10 +1064,18 @@ flagcxBackend::Options::Options(bool enableTuner)
 
 template <typename T>
 using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>>;
+#else
+c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
+    const c10::intrusive_ptr<::c10d::Store> &store, int rank, int size,
+    const std::chrono::duration<float> & /* unused */) {
+  return c10::make_intrusive<flagcxBackend>(store, rank, size);
+}
+#endif
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createFlagcxBackend", &flagcxBackend::createFlagcxBackend);
 
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   py::object dist = py::module::import("torch._C._distributed_c10d");
   auto pg_flagcx = intrusive_ptr_class_<flagcxBackend>(
       m, "ProcessGroupFlagCX",
@@ -1058,6 +1086,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       dist.attr("Backend").attr("Options")) // base Python class
       .def(py::init<bool>(), py::arg("enable_tuner") = false)
       .def_readwrite("enable_tuner", &flagcxBackend::Options::enableTuner);
+#endif
 }
 
 } // namespace c10d

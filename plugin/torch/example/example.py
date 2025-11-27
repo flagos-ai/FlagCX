@@ -67,6 +67,13 @@ def init_pg():
     FLAGCX_GROUP2 = dist.new_group(ranks=ranks, backend=f"cpu:gloo,{dev_name}:flagcx")
     print(f"ranks_flagcx: {dist.get_process_group_ranks(FLAGCX_GROUP1)}")
 
+    # Create a group with options; this only works when flagcxBackend has Options defined
+    # TODO: confirm with all vendors to see if their torch implementation support backend options
+    if flagcx._C is not None and hasattr(flagcx._C, 'ProcessGroupFlagCX') and hasattr(flagcx._C.ProcessGroupFlagCX, 'Options'):
+        flagcx_options = flagcx._C.ProcessGroupFlagCX.Options(enable_tuner=True)
+        FLAGCX_GROUP3 = dist.new_group(ranks=ranks, backend=f"{dev_name}:flagcx", pg_options=flagcx_options)
+        print(f"ranks_flagcx with options: {dist.get_process_group_ranks(FLAGCX_GROUP3)}")
+
     # Get prev_rank and next_rank
     PREV_RANK = (MY_RANK - 1 + WORLD_SIZE) % WORLD_SIZE
     NEXT_RANK = (MY_RANK + 1) % WORLD_SIZE
@@ -78,13 +85,6 @@ def init_pg():
 
 def destroy_pg():
     dist.destroy_process_group()
-
-def test_backend_options():
-    global WORLD_SIZE, FLAGCX_GROUP3
-    # create a new group with options
-    flagcx_options = flagcx._C.ProcessGroupFlagCX.Options(enable_tuner=True)
-    ranks = list(range(WORLD_SIZE))
-    FLAGCX_GROUP3 = dist.new_group(ranks=ranks, backend=f"{dev_name}:flagcx", pg_options=flagcx_options)
     
 
 def test_broadcast():
@@ -329,7 +329,6 @@ def test_alltoall():
         print(f"rank {MY_RANK} after all_to_all_single with FLAGCX_GROUP1 (with splits): x = {x}, y = {y}")
 
 def test_all():
-    test_backend_options()
     test_broadcast()
     test_reduce()
     test_allreduce()
@@ -341,7 +340,6 @@ def test_all():
     test_alltoall()
 
 dict_op_to_test = {
-    "backend_options": test_backend_options,
     "broadcast": test_broadcast,
     "reduce": test_reduce,
     "allreduce": test_allreduce,

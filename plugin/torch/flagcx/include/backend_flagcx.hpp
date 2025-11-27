@@ -74,6 +74,9 @@ private:
 
 class flagcxBackend : public Backend {
 public:
+// TODO: check with all vendors to make sure their torch implementation support
+// backend options
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   struct Options : Backend::Options {
     explicit Options(bool enableTuner = false);
 
@@ -87,6 +90,10 @@ public:
   explicit flagcxBackend(
       const c10::intrusive_ptr<::c10d::Store> &store, int rank = -1,
       int size = -1, c10::intrusive_ptr<Options> options = Options::create());
+#else
+  explicit flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
+                         int rank = -1, int size = -1);
+#endif
 
   ~flagcxBackend() override;
 
@@ -178,9 +185,15 @@ public:
   c10::intrusive_ptr<Work> recvAnysource(std::vector<at::Tensor> &tensors,
                                          int tag) override;
 
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   static c10::intrusive_ptr<Backend> createFlagcxBackend(
       c10d::DistributedBackendOptions backendOptions,
       c10::intrusive_ptr<Options> extraOptions = Options::create());
+#else
+  static c10::intrusive_ptr<Backend>
+  createFlagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store, int rank,
+                      int size, const std::chrono::duration<float> &timeout);
+#endif
 
   static void flagcxBackendConstructor() __attribute__((constructor)) {
     std::string devName = "cuda";
@@ -204,9 +217,14 @@ public:
     py::object module = py::module::import("torch.distributed");
     py::object registerBackend =
         module.attr("Backend").attr("register_backend");
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
     registerBackend("flagcx", py::cpp_function(createFlagcxBackend),
                     py::arg("extended_api") = true,
                     py::arg("devices") = py::make_tuple(devName));
+#else
+    registerBackend("flagcx", py::cpp_function(createFlagcxBackend),
+                    py::arg("devices") = py::make_tuple(devName));
+#endif
   }
 
 protected:
@@ -226,7 +244,9 @@ protected:
   std::unordered_map<int, flagcxStream_t> flagcxStreams_;
   std::unordered_map<int, std::unique_ptr<flagcxEvent>> flagcxEvents_;
   flagcxHandlerGroup_t handler_ = nullptr;
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   const c10::intrusive_ptr<Options> options_;
+#endif
 #ifdef USE_ASCEND_ADAPTOR
   aclrtStream acl_stream;
 #endif
