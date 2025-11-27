@@ -9,7 +9,6 @@
 
 #include "check.h"
 #include "global_comm.h"
-#include <nlohmann/json.hpp>
 #include "pthread.h"
 #include "type.h"
 #include <algorithm>
@@ -17,6 +16,7 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <new>
+#include <nlohmann/json.hpp>
 #include <sched.h>
 #include <stdint.h>
 #include <string>
