@@ -171,12 +171,6 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   activeGroupCounter_ = 0;
   C10D_FLAGCX_CHECK(flagcxHandleInit(&handler_), std::nullopt);
   C10D_FLAGCX_CHECK(handler_->devHandle->getDeviceCount(&nDevs_), std::nullopt);
-  if (options_ == nullptr) {
-    std::cout << "options_ is nullptr" << std::endl;
-  }
-  std::cout << "FlagCX Backend created with options: "
-            << "enableTuner=" << options_->enableTuner << std::endl;
-  std::cout << "rank: " << rank_ << ", size: " << size_ << std::endl;
 }
 #else
 flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
