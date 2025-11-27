@@ -4,6 +4,7 @@
 
 #include "flagcx_hetero.h"
 #include "runner.h"
+#include "uni_runner_impl.h"
 
 flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
@@ -75,7 +76,12 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxRedOp_t op, flagcxComm_t comm,
                                   flagcxStream_t stream) {
-  return flagcxNotSupported;
+  if (comm->nranks == 2) {
+    runUniRunner(comm->hetero_comm);
+    return flagcxSuccess;
+  } else {
+    return flagcxNotSupported;
+  }
 }
 
 flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
