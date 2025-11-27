@@ -72,7 +72,7 @@ struct flagcxDagQueue {
   int size;
 };
 
-struct flagcxDagProxyKernelState {
+struct flagcxUniRunnerState {
   pthread_t thread;
   flagcxFifo_t fifo;
   flagcxStream_t stream;

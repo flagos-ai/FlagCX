@@ -66,24 +66,24 @@ static bool dagQueueIsEmpty(struct flagcxDagQueue *queue) {
 //    \     /
 //     Node3
 static flagcxResult_t
-initDagScheduler(struct flagcxDagProxyKernelState *kernelState) {
+initDagScheduler(struct flagcxUniRunnerState *runnerState) {
   // Initialize queues
-  dagQueueInit(&kernelState->readyQueue);
-  dagQueueInit(&kernelState->inflightQueue);
-  dagQueueInit(&kernelState->pendingQueue);
+  dagQueueInit(&runnerState->readyQueue);
+  dagQueueInit(&runnerState->inflightQueue);
+  dagQueueInit(&runnerState->pendingQueue);
 
   // Create a fixed 4-node DAG for testing
   const int numNodes = 4;
-  kernelState->numDagNodes = numNodes;
-  kernelState->dagNodes =
+  runnerState->numDagNodes = numNodes;
+  runnerState->dagNodes =
       (struct flagcxDagNode *)malloc(numNodes * sizeof(struct flagcxDagNode));
-  if (kernelState->dagNodes == NULL) {
+  if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
 
   // Initialize all nodes (using Red type for testing)
   for (int i = 0; i < numNodes; i++) {
-    struct flagcxDagNode *node = &kernelState->dagNodes[i];
+    struct flagcxDagNode *node = &runnerState->dagNodes[i];
     memset(node, 0, sizeof(struct flagcxDagNode));
 
     // Set node type to Red for this test
@@ -108,56 +108,56 @@ initDagScheduler(struct flagcxDagProxyKernelState *kernelState) {
   }
 
   // Node 0: Root node (no parents, 2 children)
-  kernelState->dagNodes[0].numParents = 0;
-  kernelState->dagNodes[0].numChildren = 2;
-  kernelState->dagNodes[0].children =
+  runnerState->dagNodes[0].numParents = 0;
+  runnerState->dagNodes[0].numChildren = 2;
+  runnerState->dagNodes[0].children =
       (struct flagcxDagNode **)malloc(2 * sizeof(struct flagcxDagNode *));
-  if (kernelState->dagNodes[0].children == NULL) {
-    free(kernelState->dagNodes);
+  if (runnerState->dagNodes[0].children == NULL) {
+    free(runnerState->dagNodes);
     return flagcxSystemError;
   }
-  kernelState->dagNodes[0].children[0] = &kernelState->dagNodes[1];
-  kernelState->dagNodes[0].children[1] = &kernelState->dagNodes[2];
+  runnerState->dagNodes[0].children[0] = &runnerState->dagNodes[1];
+  runnerState->dagNodes[0].children[1] = &runnerState->dagNodes[2];
 
   // Node 1: Left child (1 parent, 1 child)
-  kernelState->dagNodes[1].numParents = 1;
-  kernelState->dagNodes[1].numChildren = 1;
-  kernelState->dagNodes[1].children =
+  runnerState->dagNodes[1].numParents = 1;
+  runnerState->dagNodes[1].numChildren = 1;
+  runnerState->dagNodes[1].children =
       (struct flagcxDagNode **)malloc(1 * sizeof(struct flagcxDagNode *));
-  if (kernelState->dagNodes[1].children == NULL) {
-    free(kernelState->dagNodes[0].children);
-    free(kernelState->dagNodes);
+  if (runnerState->dagNodes[1].children == NULL) {
+    free(runnerState->dagNodes[0].children);
+    free(runnerState->dagNodes);
     return flagcxSystemError;
   }
-  kernelState->dagNodes[1].children[0] = &kernelState->dagNodes[3];
+  runnerState->dagNodes[1].children[0] = &runnerState->dagNodes[3];
 
   // Node 2: Right child (1 parent, 1 child)
-  kernelState->dagNodes[2].numParents = 1;
-  kernelState->dagNodes[2].numChildren = 1;
-  kernelState->dagNodes[2].children =
+  runnerState->dagNodes[2].numParents = 1;
+  runnerState->dagNodes[2].numChildren = 1;
+  runnerState->dagNodes[2].children =
       (struct flagcxDagNode **)malloc(1 * sizeof(struct flagcxDagNode *));
-  if (kernelState->dagNodes[2].children == NULL) {
-    free(kernelState->dagNodes[1].children);
-    free(kernelState->dagNodes[0].children);
-    free(kernelState->dagNodes);
+  if (runnerState->dagNodes[2].children == NULL) {
+    free(runnerState->dagNodes[1].children);
+    free(runnerState->dagNodes[0].children);
+    free(runnerState->dagNodes);
     return flagcxSystemError;
   }
-  kernelState->dagNodes[2].children[0] = &kernelState->dagNodes[3];
+  runnerState->dagNodes[2].children[0] = &runnerState->dagNodes[3];
 
   // Node 3: Leaf node (2 parents, no children)
-  kernelState->dagNodes[3].numParents = 2;
-  kernelState->dagNodes[3].numChildren = 0;
-  kernelState->dagNodes[3].children = NULL;
+  runnerState->dagNodes[3].numParents = 2;
+  runnerState->dagNodes[3].numChildren = 0;
+  runnerState->dagNodes[3].children = NULL;
 
   // Add root node (Node 0) to ready queue since it has no parents
-  dagQueueEnqueue(&kernelState->readyQueue, &kernelState->dagNodes[0]);
+  dagQueueEnqueue(&runnerState->readyQueue, &runnerState->dagNodes[0]);
 
   // Add Node 1 and Node 2 to pending queue (they wait for Node 0)
-  dagQueueEnqueue(&kernelState->pendingQueue, &kernelState->dagNodes[1]);
-  dagQueueEnqueue(&kernelState->pendingQueue, &kernelState->dagNodes[2]);
+  dagQueueEnqueue(&runnerState->pendingQueue, &runnerState->dagNodes[1]);
+  dagQueueEnqueue(&runnerState->pendingQueue, &runnerState->dagNodes[2]);
 
   // Add Node 3 to pending queue (it waits for Node 1 and Node 2)
-  dagQueueEnqueue(&kernelState->pendingQueue, &kernelState->dagNodes[3]);
+  dagQueueEnqueue(&runnerState->pendingQueue, &runnerState->dagNodes[3]);
 
   INFO(
       FLAGCX_INIT,
@@ -167,17 +167,17 @@ initDagScheduler(struct flagcxDagProxyKernelState *kernelState) {
 }
 
 // Clean up DAG nodes and queues
-static void cleanupDagScheduler(struct flagcxProxyKernelState *kernelState) {
-  if (kernelState->dagNodes != NULL) {
-    for (int i = 0; i < kernelState->numDagNodes; i++) {
-      if (kernelState->dagNodes[i].children != NULL) {
-        free(kernelState->dagNodes[i].children);
+static void cleanupDagScheduler(struct flagcxUniRunnerState *runnerState) {
+  if (runnerState->dagNodes != NULL) {
+    for (int i = 0; i < runnerState->numDagNodes; i++) {
+      if (runnerState->dagNodes[i].children != NULL) {
+        free(runnerState->dagNodes[i].children);
       }
     }
-    free(kernelState->dagNodes);
-    kernelState->dagNodes = NULL;
+    free(runnerState->dagNodes);
+    runnerState->dagNodes = NULL;
   }
-  kernelState->numDagNodes = 0;
+  runnerState->numDagNodes = 0;
 }
 
 // Check trigger state and return true if complete (state == 3)
@@ -213,9 +213,9 @@ static void markTriggerAvailable(struct flagcxDagNode *node) {
 
 // Process ready queue: write triggers to FIFO and move to inflight
 static flagcxResult_t
-processReadyQueue(struct flagcxProxyKernelState *kernelState) {
-  while (!dagQueueIsEmpty(&kernelState->readyQueue)) {
-    struct flagcxDagNode *node = dagQueueDequeue(&kernelState->readyQueue);
+processReadyQueue(struct flagcxUniRunnerState *runnerState) {
+  while (!dagQueueIsEmpty(&runnerState->readyQueue)) {
+    struct flagcxDagNode *node = dagQueueDequeue(&runnerState->readyQueue);
     flagcxResult_t res = flagcxSuccess;
 
     if (node->nodeType == flagcxDagNodeTypeP2p) {
@@ -225,7 +225,7 @@ processReadyQueue(struct flagcxProxyKernelState *kernelState) {
       // Handle Red node
       // Use enqueue function from flagcx_reduce_kernel_host.cc
       res =
-          enqueue((void *)kernelState->fifo->buffer, (uint64_t)node->red.input1,
+          enqueue((void *)runnerState->fifo->buffer, (uint64_t)node->red.input1,
                   (uint64_t)node->red.input2, (uint64_t)node->red.output,
                   node->red.count, node->red.nthreads, node->red.datatype,
                   node->red.redOp, &node->red.trigger);
@@ -235,7 +235,7 @@ processReadyQueue(struct flagcxProxyKernelState *kernelState) {
     }
 
     // Move to inflight queue
-    dagQueueEnqueue(&kernelState->inflightQueue, node);
+    dagQueueEnqueue(&runnerState->inflightQueue, node);
   }
 
   return flagcxSuccess;
@@ -243,9 +243,9 @@ processReadyQueue(struct flagcxProxyKernelState *kernelState) {
 
 // Process inflight queue: check completion and update pending nodes
 static flagcxResult_t
-processInflightQueue(struct flagcxProxyKernelState *kernelState) {
+processInflightQueue(struct flagcxUniRunnerState *runnerState) {
   struct flagcxDagNode *prev = NULL;
-  struct flagcxDagNode *current = kernelState->inflightQueue.head;
+  struct flagcxDagNode *current = runnerState->inflightQueue.head;
 
   while (current != NULL) {
     struct flagcxDagNode *next = current->next;
@@ -256,14 +256,14 @@ processInflightQueue(struct flagcxProxyKernelState *kernelState) {
 
       // Remove from inflight queue
       if (prev == NULL) {
-        kernelState->inflightQueue.head = next;
+        runnerState->inflightQueue.head = next;
       } else {
         prev->next = next;
       }
       if (next == NULL) {
-        kernelState->inflightQueue.tail = prev;
+        runnerState->inflightQueue.tail = prev;
       }
-      kernelState->inflightQueue.size--;
+      runnerState->inflightQueue.size--;
 
       // Update children: decrement parent count
       for (int i = 0; i < current->numChildren; i++) {
@@ -274,20 +274,20 @@ processInflightQueue(struct flagcxProxyKernelState *kernelState) {
         if (child->numParents == 0) {
           // Remove from pending queue
           struct flagcxDagNode *pendingPrev = NULL;
-          struct flagcxDagNode *pendingCur = kernelState->pendingQueue.head;
+          struct flagcxDagNode *pendingCur = runnerState->pendingQueue.head;
           while (pendingCur != NULL) {
             struct flagcxDagNode *pendingNext = pendingCur->next;
 
             if (pendingCur == child) {
               if (pendingPrev == NULL) { // child is head
-                kernelState->pendingQueue.head = pendingNext;
+                runnerState->pendingQueue.head = pendingNext;
               } else {
                 pendingPrev->next = pendingNext;
               }
               if (pendingNext == NULL) {
-                kernelState->pendingQueue.tail = pendingPrev;
+                runnerState->pendingQueue.tail = pendingPrev;
               }
-              kernelState->pendingQueue.size--;
+              runnerState->pendingQueue.size--;
               break;
             }
             pendingPrev = pendingCur;
@@ -295,7 +295,7 @@ processInflightQueue(struct flagcxProxyKernelState *kernelState) {
           }
 
           // Add to ready queue
-          dagQueueEnqueue(&kernelState->readyQueue, child);
+          dagQueueEnqueue(&runnerState->readyQueue, child);
         }
       }
 
@@ -311,7 +311,7 @@ processInflightQueue(struct flagcxProxyKernelState *kernelState) {
 
 flagcxResult_t runUniRunner(flagcxHeteroComm_t comm) {
   int groupCount = 0;
-  flagcxDeviceTrigger_t ptr = NULL;
+  flagcxReduceTrigger_t ptr = NULL;
   flagcxFifo_t fifo = NULL;
   flagcxResult_t res = flagcxSuccess;
 
@@ -319,48 +319,45 @@ flagcxResult_t runUniRunner(flagcxHeteroComm_t comm) {
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
 
   // Create FIFO
-  comm->proxyState->kernelState.fifo = new flagcxFifo();
-  FLAGCXCHECKGOTO(comm->proxyState->kernelState.fifo->flagcxRedFifoInit(), res,
-                  out);
-  fifo = comm->proxyState->kernelState.fifo;
+  comm->proxyState->uniRunnerState.fifo = new flagcxFifo();
+  FLAGCXCHECKGOTO(comm->proxyState->uniRunnerState.fifo->flagcxRedFifoInit(),
+                  res, out);
+  fifo = comm->proxyState->uniRunnerState.fifo;
   // comm->fifoBuffer = (void *)comm->proxyState->kernelState.fifo->buffer;
   FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(
-                      &comm->fifoBuffer,
-                      (void *)comm->proxyState->kernelState.fifo->buffer),
+                      &comm->uniRunnerFifoBuffer,
+                      (void *)comm->proxyState->uniRunnerState.fifo->buffer),
                   res, out);
 
   // Create a dedicated stream
   flagcxStream_t stream;
   FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&stream), res, out);
-  INFO(FLAGCX_P2P, "rank %d p2p stream %lu", comm->rank, (uintptr_t)stream);
 
   // Allocate trigger structure
-  FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxDeviceTrigger)), res, out);
+  FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxReduceTrigger)), res, out);
 
   // Initialize DAG scheduler
-  FLAGCXCHECKGOTO(initDagScheduler(&comm->proxyState->kernelState), res, out);
-
-  INFO(FLAGCX_PROXY, "rank %d DAG scheduler initialized", comm->rank);
+  FLAGCXCHECKGOTO(initDagScheduler(&comm->proxyState->uniRunnerState), res,
+                  out);
 
   // Main scheduling loop using DAG-based three-queue scheduling
   while (true) {
     // Check stop flag and all queues empty condition
-    if (comm->proxyState->kernelState.stop == 1 &&
-        dagQueueIsEmpty(&comm->proxyState->kernelState.readyQueue) &&
-        dagQueueIsEmpty(&comm->proxyState->kernelState.inflightQueue) &&
-        dagQueueIsEmpty(&comm->proxyState->kernelState.pendingQueue)) {
+    if (dagQueueIsEmpty(&comm->proxyState->uniRunnerState.readyQueue) &&
+        dagQueueIsEmpty(&comm->proxyState->uniRunnerState.inflightQueue) &&
+        dagQueueIsEmpty(&comm->proxyState->uniRunnerState.pendingQueue)) {
       break;
     }
 
     // Step 1: Process ready queue - write triggers to FIFO
-    FLAGCXCHECK(processReadyQueue(&comm->proxyState->kernelState));
+    FLAGCXCHECK(processReadyQueue(&comm->proxyState->uniRunnerState));
 
     // Step 2: Process inflight queue - check completion and update dependencies
-    FLAGCXCHECK(processInflightQueue(&comm->proxyState->kernelState));
+    FLAGCXCHECK(processInflightQueue(&comm->proxyState->uniRunnerState));
   }
 
   // Clean up DAG scheduler
-  cleanupDagScheduler(&comm->proxyState->kernelState);
+  cleanupDagScheduler(&comm->proxyState->uniRunnerState);
 
   // destroy stream
   FLAGCXCHECKGOTO(deviceAdaptor->streamSynchronize(stream), res, out);
@@ -370,8 +367,8 @@ flagcxResult_t runUniRunner(flagcxHeteroComm_t comm) {
 
 out:
   // destroy fifo
-  FLAGCXCHECK(comm->proxyState->kernelState.fifo->flagcxRedFifoDestroy());
-  delete comm->proxyState->kernelState.fifo;
-  comm->fifoBuffer = NULL;
+  FLAGCXCHECK(comm->proxyState->uniRunnerState.fifo->flagcxRedFifoDestroy());
+  delete comm->proxyState->uniRunnerState.fifo;
+  comm->uniRunnerFifoBuffer = NULL;
   return res;
 }
