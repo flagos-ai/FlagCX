@@ -964,7 +964,7 @@ flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
 
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupStart());
+    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupEnd());
   } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupEnd());
   } else if (useHostComm()) {

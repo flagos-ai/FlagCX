@@ -24,55 +24,118 @@ wait_for_gpu
 
 mpirun -np 8 ./test_alltoall -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_alltoall execution failed!"
+    echo "test_alltoall in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_alltoall -b 128M -e 1G -f 2 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_alltoall in uniRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_alltoallv -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_alltoallv execution failed!"
+    echo "test_alltoallv in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_alltoallv -b 128M -e 1G -f 2 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_alltoallv in uniRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_sendrecv -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_sendrecv execution failed!"
+    echo "test_sendrecv in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_sendrecv -b 128M -e 1G -f 2 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_sendrecv in uniRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_allreduce -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_allreduce execution failed!"
+    echo "test_allreduce in homoRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_allgather -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_allgather execution failed!"
+    echo "test_allgather in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_allgather -b 128M -e 1G -f 2 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_allgather in uniRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_reducescatter -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_reducescatter execution failed!"
+    echo "test_reducescatter in homoRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_broadcast execution failed!"
+    echo "test_broadcast in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_broadcast in uniRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_gather -b 128M -e 1G -f 2 -r 0 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_gather execution failed!"
+    echo "test_gather in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_gather -b 128M -e 1G -f 2 -r 0 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_gather in uniRunner mode failed!"
     exit 1
 fi
 
 mpirun -np 8 ./test_scatter -b 128M -e 1G -f 2 -r 0 -p 1
 if [ $? -ne 0 ]; then
-    echo "test_scatter execution failed!"
+    echo "test_scatter in homoRunner mode failed!"
+    exit 1
+fi
+
+mpirun -np 8 \
+  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_USE_HETERO_COMM=1 \
+  ./test_scatter -b 128M -e 1G -f 2 -r 0 -p 1
+if [ $? -ne 0 ]; then
+    echo "test_scatter in uniRunner mode failed!"
     exit 1
 fi
 
