@@ -208,6 +208,8 @@ flagcxResult_t tsmicroAdaptorEventQuery(flagcxEvent_t event) {
     txError_t error = txEventQuery(event->base);
     if (error == TX_SUCCESS) {
       res = flagcxSuccess;
+    } else if (error == TX_ERROR_NOT_READY) {
+      res = flagcxInProgress;
     } else {
       res = flagcxUnhandledDeviceError;
     }
