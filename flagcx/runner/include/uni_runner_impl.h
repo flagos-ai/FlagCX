@@ -20,17 +20,23 @@ typedef enum {
   flagcxDagNodeTypeRed = 1
 } flagcxDagNodeType;
 
-// P2P node data (operation-specific fields only)
-struct flagcxP2pNodeData {
-  // Operation information for P2P trigger
+// Single P2P operation data
+struct flagcxP2pOpData {
   void *addr;                // Buffer address
   size_t count;              // Element count
   int peerRank;              // Peer rank
   flagcxDataType_t datatype; // Data type
   flagcxDevicePrim type;     // Primitive type (send/recv/term/wait)
+};
 
-  // Trigger and state tracking
-  flagcxDeviceTrigger *trigger; // Pointer to trigger in FIFO
+// P2P node data (supports multiple operations in a group)
+struct flagcxP2pNodeData {
+  // Operation information for P2P trigger
+  struct flagcxP2pOpData *ops; // Array of P2P operations
+  int numOps;                  // Number of operations
+
+  flagcxEvent_t event;           // Event for completion tracking
+  int eventIdx;                  // Index of the event in the pool
 };
 
 // Reduce node data (operation-specific fields only)
@@ -84,6 +90,12 @@ struct flagcxUniRunnerState {
   struct flagcxDagQueue readyQueue;
   struct flagcxDagQueue inflightQueue;
   struct flagcxDagQueue pendingQueue;
+
+  // P2P event pool
+  flagcxEvent_t *p2pEvents;
+  int *p2pFreeStack;     // Stack to store indices of available events
+  int p2pFreeTop;        // Current top of the free stack
+  int p2pEventPoolSize;
 };
 
 flagcxResult_t runUniRunner(flagcxHeteroComm_t comm);

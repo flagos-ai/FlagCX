@@ -19,16 +19,11 @@
 using namespace std;
 
 // DAG queue operations
-static void dagQueueInit(struct flagcxDagQueue *queue) {
-  queue->head = NULL;
-  queue->tail = NULL;
-  queue->size = 0;
-}
 
-static void dagQueueEnqueue(struct flagcxDagQueue *queue,
+static void dagQueueEnqueue(struct flagcxDagQueue *queue, 
                             struct flagcxDagNode *node) {
   node->next = NULL;
-
+  
   if (queue->tail == NULL) { // empty queue
     queue->head = node;
     queue->tail = node;
@@ -39,139 +34,174 @@ static void dagQueueEnqueue(struct flagcxDagQueue *queue,
   queue->size++;
 }
 
-static struct flagcxDagNode *dagQueueDequeue(struct flagcxDagQueue *queue) {
-  if (queue->head == NULL) {
-    return NULL;
-  }
-  struct flagcxDagNode *node = queue->head;
-  queue->head = node->next;
-  node->next = NULL;
 
-  if (queue->head == NULL) {
-    queue->tail = NULL;
-  }
-  queue->size--;
-  return node;
-}
-
-static bool dagQueueIsEmpty(struct flagcxDagQueue *queue) {
-  return queue->head == NULL;
-}
-
-// Initialize DAG scheduler with fixed topology for testing
-// Creates a simple 4-node DAG:
-//     Node0
-//    /     \
-//  Node1   Node2
-//    \     /
-//     Node3
+// Initialize DAG scheduler with 2-rank Ring AllReduce topology
+// 2 P2P (Group) -> 2 Reduce -> 2 P2P (Group)
 static flagcxResult_t
-initDagScheduler(struct flagcxUniRunnerState *runnerState) {
+initDagScheduler(struct flagcxUniRunnerState *runnerState, flagcxHeteroComm_t comm) {
   // Initialize queues
-  dagQueueInit(&runnerState->readyQueue);
-  dagQueueInit(&runnerState->inflightQueue);
-  dagQueueInit(&runnerState->pendingQueue);
+  runnerState->readyQueue = {0};
+  runnerState->inflightQueue = {0};
+  runnerState->pendingQueue = {0};
 
-  // Create a fixed 4-node DAG for testing
+  int rank = comm->rank;
+  int peer = (rank == 0) ? 1 : 0;
+
+  // Create 4-node DAG
   const int numNodes = 4;
   runnerState->numDagNodes = numNodes;
   runnerState->dagNodes =
-      (struct flagcxDagNode *)malloc(numNodes * sizeof(struct flagcxDagNode));
+      (struct flagcxDagNode *)calloc(numNodes, sizeof(struct flagcxDagNode));
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
 
-  // Initialize all nodes (using Red type for testing)
-  for (int i = 0; i < numNodes; i++) {
-    struct flagcxDagNode *node = &runnerState->dagNodes[i];
-    memset(node, 0, sizeof(struct flagcxDagNode));
+  // Node 0: P2P Group (Scatter-Reduce phase)
+  runnerState->dagNodes[0].nodeType = flagcxDagNodeTypeP2p;
+  runnerState->dagNodes[0].p2p.numOps = 2;
+  runnerState->dagNodes[0].p2p.ops = (struct flagcxP2pOpData *)calloc(2, sizeof(struct flagcxP2pOpData));
+  
+  // Op 0
+  runnerState->dagNodes[0].p2p.ops[0].type = (rank == 0) ? flagcxDevicePrimSend : flagcxDevicePrimRecv;
+  runnerState->dagNodes[0].p2p.ops[0].peerRank = peer;
+  runnerState->dagNodes[0].p2p.ops[0].count = 1024; 
+  runnerState->dagNodes[0].p2p.ops[0].datatype = flagcxFloat;
+  runnerState->dagNodes[0].p2p.ops[0].addr = NULL; 
+  
+  // Op 1
+  runnerState->dagNodes[0].p2p.ops[1].type = (rank == 0) ? flagcxDevicePrimRecv : flagcxDevicePrimSend;
+  runnerState->dagNodes[0].p2p.ops[1].peerRank = peer;
+  runnerState->dagNodes[0].p2p.ops[1].count = 1024;
+  runnerState->dagNodes[0].p2p.ops[1].datatype = flagcxFloat;
+  runnerState->dagNodes[0].p2p.ops[1].addr = NULL;
 
-    // Set node type to Red for this test
-    node->nodeType = flagcxDagNodeTypeRed;
+  // Node 1: Reduce
+  runnerState->dagNodes[1].nodeType = flagcxDagNodeTypeRed;
+  runnerState->dagNodes[1].red.count = 1024;
+  runnerState->dagNodes[1].red.nthreads = 256;
+  runnerState->dagNodes[1].red.datatype = flagcxFloat;
+  runnerState->dagNodes[1].red.redOp = flagcxSum;
+  
+  // Node 2: Reduce
+  runnerState->dagNodes[2].nodeType = flagcxDagNodeTypeRed;
+  runnerState->dagNodes[2].red.count = 1024;
+  runnerState->dagNodes[2].red.nthreads = 256;
+  runnerState->dagNodes[2].red.datatype = flagcxFloat;
+  runnerState->dagNodes[2].red.redOp = flagcxSum;
+  
+  // Node 3: P2P Group (All-Gather phase)
+  runnerState->dagNodes[3].nodeType = flagcxDagNodeTypeP2p;
+  runnerState->dagNodes[3].p2p.numOps = 2;
+  runnerState->dagNodes[3].p2p.ops = (struct flagcxP2pOpData *)calloc(2, sizeof(struct flagcxP2pOpData));
+  
+  // Op 0
+  runnerState->dagNodes[3].p2p.ops[0].type = (rank == 0) ? flagcxDevicePrimSend : flagcxDevicePrimRecv;
+  runnerState->dagNodes[3].p2p.ops[0].peerRank = peer;
+  runnerState->dagNodes[3].p2p.ops[0].count = 1024;
+  runnerState->dagNodes[3].p2p.ops[0].datatype = flagcxFloat;
+  runnerState->dagNodes[3].p2p.ops[0].addr = NULL;
+  
+  // Op 1
+  runnerState->dagNodes[3].p2p.ops[1].type = (rank == 0) ? flagcxDevicePrimRecv : flagcxDevicePrimSend;
+  runnerState->dagNodes[3].p2p.ops[1].peerRank = peer;
+  runnerState->dagNodes[3].p2p.ops[1].count = 1024;
+  runnerState->dagNodes[3].p2p.ops[1].datatype = flagcxFloat;
+  runnerState->dagNodes[3].p2p.ops[1].addr = NULL;
 
-    // Initialize common DAG structure fields
-    node->numParents = 0;
-    node->numChildren = 0;
-    node->children = NULL;
-    node->next = NULL;
-
-    // Set dummy operation parameters (can be customized later)
-    node->red.input1 = NULL;
-    node->red.input2 = NULL;
-    node->red.output = NULL;
-    node->red.count = 1024;
-    node->red.nthreads = 256;
-    node->red.datatype = flagcxFloat;
-    node->red.redOp = flagcxSum;
-
-    node->red.trigger = NULL;
-  }
-
-  // Node 0: Root node (no parents, 2 children)
+  // Dependencies: 
+  //      0
+  //     / \
+  //    1   2
+  //     \ /
+  //      3
+  
+  // Node 0: No parents, 2 children (Node 1, Node 2)
   runnerState->dagNodes[0].numParents = 0;
   runnerState->dagNodes[0].numChildren = 2;
-  runnerState->dagNodes[0].children =
-      (struct flagcxDagNode **)malloc(2 * sizeof(struct flagcxDagNode *));
-  if (runnerState->dagNodes[0].children == NULL) {
-    free(runnerState->dagNodes);
-    return flagcxSystemError;
-  }
+  runnerState->dagNodes[0].children = (struct flagcxDagNode **)malloc(2 * sizeof(void*));
   runnerState->dagNodes[0].children[0] = &runnerState->dagNodes[1];
   runnerState->dagNodes[0].children[1] = &runnerState->dagNodes[2];
-
-  // Node 1: Left child (1 parent, 1 child)
+  
+  // Node 1: 1 parent (Node 0), 1 child (Node 3)
   runnerState->dagNodes[1].numParents = 1;
   runnerState->dagNodes[1].numChildren = 1;
-  runnerState->dagNodes[1].children =
-      (struct flagcxDagNode **)malloc(1 * sizeof(struct flagcxDagNode *));
-  if (runnerState->dagNodes[1].children == NULL) {
-    free(runnerState->dagNodes[0].children);
-    free(runnerState->dagNodes);
-    return flagcxSystemError;
-  }
+  runnerState->dagNodes[1].children = (struct flagcxDagNode **)malloc(sizeof(void*));
   runnerState->dagNodes[1].children[0] = &runnerState->dagNodes[3];
-
-  // Node 2: Right child (1 parent, 1 child)
+  
+  // Node 2: 1 parent (Node 0), 1 child (Node 3)
   runnerState->dagNodes[2].numParents = 1;
   runnerState->dagNodes[2].numChildren = 1;
-  runnerState->dagNodes[2].children =
-      (struct flagcxDagNode **)malloc(1 * sizeof(struct flagcxDagNode *));
-  if (runnerState->dagNodes[2].children == NULL) {
-    free(runnerState->dagNodes[1].children);
-    free(runnerState->dagNodes[0].children);
-    free(runnerState->dagNodes);
-    return flagcxSystemError;
-  }
+  runnerState->dagNodes[2].children = (struct flagcxDagNode **)malloc(sizeof(void*));
   runnerState->dagNodes[2].children[0] = &runnerState->dagNodes[3];
-
-  // Node 3: Leaf node (2 parents, no children)
+  
+  // Node 3: 2 parents (Node 1, Node 2), 0 children
   runnerState->dagNodes[3].numParents = 2;
   runnerState->dagNodes[3].numChildren = 0;
   runnerState->dagNodes[3].children = NULL;
-
-  // Add root node (Node 0) to ready queue since it has no parents
+  
+  // Enqueue
   dagQueueEnqueue(&runnerState->readyQueue, &runnerState->dagNodes[0]);
-
-  // Add Node 1 and Node 2 to pending queue (they wait for Node 0)
   dagQueueEnqueue(&runnerState->pendingQueue, &runnerState->dagNodes[1]);
   dagQueueEnqueue(&runnerState->pendingQueue, &runnerState->dagNodes[2]);
-
-  // Add Node 3 to pending queue (it waits for Node 1 and Node 2)
   dagQueueEnqueue(&runnerState->pendingQueue, &runnerState->dagNodes[3]);
 
+  // Initialize P2P event pool
+  runnerState->p2pEventPoolSize = 32;
+  
+  // Allocate event array
+  runnerState->p2pEvents = (flagcxEvent_t *)malloc(runnerState->p2pEventPoolSize * sizeof(flagcxEvent_t));
+  if (runnerState->p2pEvents == NULL) {
+    return flagcxSystemError;
+  }
+  
+  // Allocate free stack
+  runnerState->p2pFreeStack = (int *)malloc(runnerState->p2pEventPoolSize * sizeof(int));
+  if (runnerState->p2pFreeStack == NULL) {
+    free(runnerState->p2pEvents);
+    return flagcxSystemError;
+  }
+  runnerState->p2pFreeTop = 0;
+
+  for (int i = 0; i < runnerState->p2pEventPoolSize; i++) {
+    flagcxResult_t res = deviceAdaptor->eventCreate(&runnerState->p2pEvents[i], flagcxEventDisableTiming);
+    if (res != flagcxSuccess) {
+      return res;
+    }
+    // Push all indices to free stack
+    runnerState->p2pFreeStack[runnerState->p2pFreeTop++] = i;
+  }
+  
   INFO(
       FLAGCX_INIT,
-      "DAG scheduler initialized with fixed 4-node topology (0->1,2 | 1,2->3)");
+      "DAG scheduler initialized with 2-rank Ring AllReduce topology");
 
   return flagcxSuccess;
 }
 
 // Clean up DAG nodes and queues
 static void cleanupDagScheduler(struct flagcxUniRunnerState *runnerState) {
+  // Cleanup P2P events
+  if (runnerState->p2pEvents != NULL) {
+    for (int i = 0; i < runnerState->p2pEventPoolSize; i++) {
+      deviceAdaptor->eventDestroy(runnerState->p2pEvents[i]);
+    }
+    free(runnerState->p2pEvents);
+    runnerState->p2pEvents = NULL;
+  }
+  
+  if (runnerState->p2pFreeStack != NULL) {
+    free(runnerState->p2pFreeStack);
+    runnerState->p2pFreeStack = NULL;
+  }
+
   if (runnerState->dagNodes != NULL) {
     for (int i = 0; i < runnerState->numDagNodes; i++) {
       if (runnerState->dagNodes[i].children != NULL) {
         free(runnerState->dagNodes[i].children);
+      }
+      if (runnerState->dagNodes[i].nodeType == flagcxDagNodeTypeP2p && 
+          runnerState->dagNodes[i].p2p.ops != NULL) {
+        free(runnerState->dagNodes[i].p2p.ops);
       }
     }
     free(runnerState->dagNodes);
@@ -180,46 +210,69 @@ static void cleanupDagScheduler(struct flagcxUniRunnerState *runnerState) {
   runnerState->numDagNodes = 0;
 }
 
-// Check trigger state and return true if complete (state == 3)
-static bool checkTriggerComplete(struct flagcxDagNode *node) {
-  // Get trigger pointer based on node type
-  if (node->nodeType == flagcxDagNodeTypeP2p) {
-    return false;
-  }
-
-  if (node->red.trigger == NULL) {
-    return false;
-  }
-
-  // Use trigger's pollState method
-  uint64_t state = node->red.trigger->pollState();
-  return (state == flagcxReduceTriggerComplete);
-}
-
-// Mark trigger as available (state = 0)
-static void markTriggerAvailable(struct flagcxDagNode *node) {
-  // Get trigger pointer based on node type
-  if (node->nodeType == flagcxDagNodeTypeP2p) {
-    return;
-  }
-
-  if (node->red.trigger == NULL) {
-    return;
-  }
-
-  // Use trigger's setState method to mark as available
-  node->red.trigger->setState(flagcxReduceTriggerAvailable);
-}
-
 // Process ready queue: write triggers to FIFO and move to inflight
 static flagcxResult_t
-processReadyQueue(struct flagcxUniRunnerState *runnerState) {
-  while (!dagQueueIsEmpty(&runnerState->readyQueue)) {
-    struct flagcxDagNode *node = dagQueueDequeue(&runnerState->readyQueue);
+processReadyQueue(struct flagcxUniRunnerState *runnerState, flagcxHeteroComm_t comm) {
+  while (runnerState->readyQueue.head != NULL) {
+    // Dequeue
+    struct flagcxDagNode *node = runnerState->readyQueue.head;
+    runnerState->readyQueue.head = node->next;
+    node->next = NULL;
+    if (runnerState->readyQueue.head == NULL) {
+      runnerState->readyQueue.tail = NULL;
+    }
+    runnerState->readyQueue.size--;
+
     flagcxResult_t res = flagcxSuccess;
 
     if (node->nodeType == flagcxDagNodeTypeP2p) {
-      // TODO: Handle P2P node enqueue
+      // Check P2P inflight limit (check if free stack is empty)
+      if (runnerState->p2pFreeTop == 0) {
+        // Put back to head and stop processing
+        node->next = runnerState->readyQueue.head;
+        runnerState->readyQueue.head = node;
+        if (runnerState->readyQueue.tail == NULL) {
+          runnerState->readyQueue.tail = node;
+        }
+        runnerState->readyQueue.size++;
+        break;
+      }
+
+      // Get event from pool (pop from stack)
+      int eventIdx = runnerState->p2pFreeStack[--runnerState->p2pFreeTop];
+      flagcxEvent_t event = runnerState->p2pEvents[eventIdx];
+      
+      // Prepare ops list
+      struct flagcxP2pOpData *ops = node->p2p.ops;
+
+      // Start Group
+      flagcxHeteroGroupStart();
+
+      for (int i = 0; i < p2p.numOps; i++) {
+        struct flagcxP2pOpData *op = &ops[i];
+        if (op->type == flagcxDevicePrimSend) {
+           res = flagcxHeteroSend(op->addr, op->count, op->datatype, 
+                                  op->peerRank, comm, runnerState->stream);
+        } else if (op->type == flagcxDevicePrimRecv) {
+           res = flagcxHeteroRecv(op->addr, op->count, op->datatype, 
+                                  op->peerRank, comm, runnerState->stream);
+        }
+        if (res != flagcxSuccess) break;
+      }
+      
+      if (res == flagcxSuccess) {
+        flagcxHeteroGroupEnd();
+        
+        // Record event
+        FLAGCXCHECK(deviceAdaptor->eventRecord(event, runnerState->stream));
+        
+        node->p2p.event = event;
+        node->p2p.eventIdx = eventIdx;
+      } else {
+        // Handle error: Push back event
+        runnerState->p2pFreeStack[runnerState->p2pFreeTop++] = eventIdx;
+        return res;
+      }
 
     } else {
       // Handle Red node
@@ -250,10 +303,32 @@ processInflightQueue(struct flagcxUniRunnerState *runnerState) {
   while (current != NULL) {
     struct flagcxDagNode *next = current->next;
 
-    if (checkTriggerComplete(current)) {
-      // Mark trigger as available
-      markTriggerAvailable(current);
+    bool isComplete = false;
+    if (current->nodeType == flagcxDagNodeTypeP2p) {
+      if (current->p2p.event != NULL) {
+        flagcxResult_t status = deviceAdaptor->eventQuery(current->p2p.event);
+        isComplete = (status == flagcxSuccess);
+      }
+    } else if (current->red.trigger != NULL) {
+      uint64_t state = current->red.trigger->pollState();
+      isComplete = (state == flagcxReduceTriggerComplete);
+    }
 
+    if (isComplete) {
+      // Mark trigger as available
+      if (current->nodeType == flagcxDagNodeTypeP2p) {
+        current->p2p.event = NULL;
+      } else if (current->red.trigger != NULL) {
+        current->red.trigger->setState(flagcxReduceTriggerAvailable);
+      }
+
+      // Return event to pool if P2P node
+      if (current->nodeType == flagcxDagNodeTypeP2p) {
+        // Push back to free stack
+        runnerState->p2pFreeStack[runnerState->p2pFreeTop++] = current->p2p.eventIdx;
+        current->p2p.event = NULL;
+      }
+      
       // Remove from inflight queue
       if (prev == NULL) {
         runnerState->inflightQueue.head = next;
@@ -323,7 +398,7 @@ flagcxResult_t runUniRunner(flagcxHeteroComm_t comm) {
   FLAGCXCHECKGOTO(comm->proxyState->uniRunnerState.fifo->flagcxRedFifoInit(),
                   res, out);
   fifo = comm->proxyState->uniRunnerState.fifo;
-  // comm->fifoBuffer = (void *)comm->proxyState->kernelState.fifo->buffer;
+  // comm->fifoBuffer = (void *)comm->proxyState->runnerState.fifo->buffer;
   FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(
                       &comm->uniRunnerFifoBuffer,
                       (void *)comm->proxyState->uniRunnerState.fifo->buffer),
@@ -332,25 +407,25 @@ flagcxResult_t runUniRunner(flagcxHeteroComm_t comm) {
   // Create a dedicated stream
   flagcxStream_t stream;
   FLAGCXCHECKGOTO(deviceAdaptor->streamCreate(&stream), res, out);
-
+  comm->proxyState->uniRunnerState.stream = stream;
   // Allocate trigger structure
   FLAGCXCHECKGOTO(flagcxCalloc(&ptr, sizeof(flagcxReduceTrigger)), res, out);
 
   // Initialize DAG scheduler
-  FLAGCXCHECKGOTO(initDagScheduler(&comm->proxyState->uniRunnerState), res,
+  FLAGCXCHECKGOTO(initDagScheduler(&comm->proxyState->uniRunnerState, comm), res,
                   out);
 
   // Main scheduling loop using DAG-based three-queue scheduling
   while (true) {
     // Check stop flag and all queues empty condition
-    if (dagQueueIsEmpty(&comm->proxyState->uniRunnerState.readyQueue) &&
-        dagQueueIsEmpty(&comm->proxyState->uniRunnerState.inflightQueue) &&
-        dagQueueIsEmpty(&comm->proxyState->uniRunnerState.pendingQueue)) {
+    if (comm->proxyState->uniRunnerState.readyQueue.head == NULL &&
+        comm->proxyState->uniRunnerState.inflightQueue.head == NULL &&
+        comm->proxyState->uniRunnerState.pendingQueue.head == NULL) {
       break;
     }
 
     // Step 1: Process ready queue - write triggers to FIFO
-    FLAGCXCHECK(processReadyQueue(&comm->proxyState->uniRunnerState));
+    FLAGCXCHECK(processReadyQueue(&comm->proxyState->uniRunnerState, comm));
 
     // Step 2: Process inflight queue - check completion and update dependencies
     FLAGCXCHECK(processInflightQueue(&comm->proxyState->uniRunnerState));
