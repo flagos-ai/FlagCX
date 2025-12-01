@@ -3,36 +3,36 @@
 
 
 ## Latest News
-- **[2025/11]** Released [v0.7](https://github.com/FlagOpen/FlagCX/tree/release/v0.7):
+- **[2025/11]** Released [v0.7](https://github.com/flagos-ai/FlagCX/releases/tag/v0.7.0):
   - Added support for TsingMicro, including tsmicroAdaptor and tcclAdaptor integrations.
   - Implemented naïve kernel-free non-reduce collective communication (SendRecv, AlltoAll, AlltoAllv, Broadcast, Gather, Scatter, AllGather) using device-buffer IPC/RDMA techniques.
   - Enabled automatic tuning on NVIDIA, Metax, and Hygon platforms, achieving 1.02×–1.26× speedups for AllReduce, AllGather, ReduceScatter, and AlltoAll.
   - Enhanced flagcxNetAdaptor with one-sided primitives (put, putSignal, waitValue) and added retransmission support for improved reliability.
-- **[2025/10]** Released [v0.6](https://github.com/FlagOpen/FlagCX/tree/release/v0.6):
+- **[2025/10]** Released [v0.6](https://github.com/flagos-ai/FlagCX/releases/tag/v0.6.0):
   - Supported device-buffer IPC communication to achieve intra-node SendRecv operations.
   - Introduced Device-initiated, Host-launched device-side primitives, enabling kernel-based communication directly from the device.
   - Enhanced automatic tuning functionality, achieving up to 50% performance improvement on Metax platforms for the AllReduce operation.
-- **[2025/09]** Released [v0.5](https://github.com/FlagOpen/FlagCX/tree/release/v0.5):
+- **[2025/09]** Released [v0.5](https://github.com/flagos-ai/FlagCX/releases/tag/v0.5.0):
   - Added AMD support (hipAdaptor and rcclAdaptor).
   - Introduced flagcxNetAdaptor to unify network backends, currently supporting SOCKET, IBRC, UCX and IBUC (experimently).
   - Enabled zero-copy device-buffer RDMA (user-buffer RDMA) to boost small-message performance.
   - Supported automatic tuning in homogeneous scenarios via flagcxTuner.
   - Integrated automated PyTorch API tests into CI/CD.
-- **[2025/08]** Released [v0.4](https://github.com/FlagOpen/FlagCX/tree/release/v0.4):
+- **[2025/08]** Released [v0.4](https://github.com/flagos-ai/FlagCX/releases/tag/v0.4.0):
   - Supported heterogeneous training of ERNIE4.5 on Nvidia and Iluvatar GPUs with Paddle + FlagCX.
   - Enabled more robust and flexible deployments with full support of heterogeneous communication across arbitrary NIC configurations (bug fixes). 
   - Introduced an early experimental net plugin interface extending its support for both IBRC and SOCKET, along with the ability to register device buffers via DMA-BUF.
   - Added an InterOp-level DSL to allow users designing customized C2C algorithms.
   - Provided usage documentation under docs/.
-- **[2025/07]** Released [v0.3](https://github.com/FlagOpen/FlagCX/tree/release/v0.3):
+- **[2025/07]** Released [v0.3](https://github.com/flagos-ai/FlagCX/releases/tag/v0.3.0):
   - Integrated three additional native communication libraries: HCCL, MUSACCL and MPI.
   - Enhanced heterogeneous collective communication operations with pipeline optimizations. 
   - Introduced a device-side function mechanism to enable device-buffer RDMA, complementing the original host-side function mechanism.
   - Delivered a full-stack open-source solution, FlagScale + FlagCX, for efficient heterogeneous prefilling-decoding disaggregation.
-- **[2025/05]** Released [v0.2](https://github.com/FlagOpen/FlagCX/tree/release/v0.2):
+- **[2025/05]** Released [v0.2](https://github.com/flagos-ai/FlagCX/releases/tag/v0.2.0):
   - Integrated three additional native communications libraries, including MCCL, XCCL and DUCCL.
   - Improved 11 heterogeneous collective communication operations with automatic topology detection, fully supporting both single-NIC and multi-NIC environments.
-- **[2025/04]** Released [v0.1](https://github.com/FlagOpen/FlagCX/tree/release/v0.1):
+- **[2025/04]** Released [v0.1](https://github.com/flagos-ai/FlagCX/releases/tag/v0.1.0):
   - Integrated five native communications libraries including NCCL, IXCCL, CNCL, BOOTSTRAP and GLOO.
   - Supported 11 heterogeneous collective communication operations using the originally proposed C2C (Cluster-to-Cluster) algorithm.
   - Provided a full-stack open-source solution, FlagScale + FlagCX, for efficient heterogeneous training.
