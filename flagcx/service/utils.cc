@@ -271,8 +271,8 @@ void *flagcxMemoryStack::allocateSpilled(struct flagcxMemoryStack *me,
     }
   }
 
-unhunked : { // We need to allocate the object out-of-band and put an Unhunk
-             // proxy in-band
+unhunked: { // We need to allocate the object out-of-band and put an Unhunk
+            // proxy in-band
   // to keep track of it.
   uintptr_t uproxy =
       (me->topFrame.bumper + alignof(Unhunk) - 1) & -uintptr_t(alignof(Unhunk));
@@ -440,9 +440,24 @@ TuneObject::TuneObject(const nlohmann::json &j) {
 }
 
 FlagScaleConfig readFlagScaleJson(const std::string &filename) {
-  std::ifstream file(filename);
+  std::string actual_filename = filename;
+
+  // If filename is empty, try to get from environment variable
+  if (actual_filename.empty()) {
+    const char *env_file = getenv("FLAGCX_TUNE_FILE");
+    if (env_file != nullptr && env_file[0] != '\0') {
+      actual_filename = env_file;
+    } else {
+      throw std::runtime_error(
+          "FLAGCX_TUNE_FILE environment variable is not set. "
+          "Please set FLAGCX_TUNE_FILE to specify the flagscale.json file "
+          "path.");
+    }
+  }
+
+  std::ifstream file(actual_filename);
   if (!file.is_open()) {
-    throw std::runtime_error("Cannot open file: " + filename);
+    throw std::runtime_error("Cannot open file: " + actual_filename);
   }
 
   nlohmann::json j;

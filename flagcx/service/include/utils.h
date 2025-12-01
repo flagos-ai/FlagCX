@@ -732,9 +732,7 @@ struct FlagScaleConfig {
 };
 
 // Read flagscale.json file and return all values （for tuning）
-FlagScaleConfig
-readFlagScaleJson(const std::string &filename =
-                      "/mnt/nfs/chenqing/FlagCX/flagcx/flagscale.json");
+FlagScaleConfig readFlagScaleJson(const std::string &filename = "");
 
 // Convert commOp string to flagcxCommOp_t enum
 flagcxCommOp_t commOpStringToEnum(const std::string &commOpStr);
