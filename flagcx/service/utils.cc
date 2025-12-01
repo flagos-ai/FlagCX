@@ -271,8 +271,8 @@ void *flagcxMemoryStack::allocateSpilled(struct flagcxMemoryStack *me,
     }
   }
 
-unhunked: { // We need to allocate the object out-of-band and put an Unhunk
-            // proxy in-band
+unhunked : { // We need to allocate the object out-of-band and put an Unhunk
+             // proxy in-band
   // to keep track of it.
   uintptr_t uproxy =
       (me->topFrame.bumper + alignof(Unhunk) - 1) & -uintptr_t(alignof(Unhunk));
