@@ -25,7 +25,7 @@
 
 #define LOADAPI(struct, api, ptr)                                              \
   api:                                                                         \
-  (typeof(struct ::api)) ptr
+  (typeof(struct ::api))ptr
 
 // PCI Bus ID <-> int64 conversion functions
 flagcxResult_t int64ToBusId(int64_t id, char *busId);
