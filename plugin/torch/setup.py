@@ -36,6 +36,7 @@ sources = ["flagcx/src/backend_flagcx.cpp", "flagcx/src/utils_flagcx.cpp"]
 include_dirs = [
     f"{os.path.dirname(os.path.abspath(__file__))}/flagcx/include",
     f"{os.path.dirname(os.path.abspath(__file__))}/../../flagcx/include",
+    f"{os.path.dirname(os.path.abspath(__file__))}/../../third-party/json/single_include",
 ]
 
 library_dirs = [

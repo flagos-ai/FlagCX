@@ -19,6 +19,7 @@
 
 #include "event_flagcx.hpp"
 #include "stream_guard_flagcx.hpp"
+#include "utils_flagcx.hpp"
 
 namespace c10d {
 
@@ -77,6 +78,18 @@ public:
 // TODO: check with all vendors to make sure their torch implementation support
 // backend options
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
+  struct TuneObjectKey {
+    std::string commOp;
+    size_t nBytes;
+
+    bool operator<(const TuneObjectKey &other) const noexcept {
+      if (other.commOp == commOp) {
+        return nBytes < other.nBytes;
+      }
+      return commOp < other.commOp;
+    }
+  };
+
   struct Options : Backend::Options {
     explicit Options(bool enableTuner = false);
 
@@ -186,6 +199,7 @@ public:
                                          int tag) override;
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
+  void checkRecordingEnded();
   static c10::intrusive_ptr<Backend> createFlagcxBackend(
       c10d::DistributedBackendOptions backendOptions,
       c10::intrusive_ptr<Options> extraOptions = Options::create());
@@ -246,6 +260,12 @@ protected:
   flagcxHandlerGroup_t handler_ = nullptr;
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   const c10::intrusive_ptr<Options> options_;
+  std::set<TuneObjectKey> tuneObjectSet_;
+  // whether we finished recording tuning objects
+  // a tuning object is a (commOp, nBytes) pair
+  // we record the tuning objects that will occur in this communicator so that
+  // flagcxTuner knows which communicator it is tuning
+  bool recordingEnded = false;
 #endif
 #ifdef USE_ASCEND_ADAPTOR
   aclrtStream acl_stream;
