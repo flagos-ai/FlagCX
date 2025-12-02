@@ -17,6 +17,7 @@
 #include "net.h"
 #include "reg_pool.h"
 #include "socket.h"
+#include "uni_runner_impl.h"
 #include <memory>
 #include <pthread.h>
 
@@ -344,7 +345,7 @@ struct flagcxProxyState {
   // Kernel thread
   bool enableProxyKernel = false;
   struct flagcxProxyKernelState kernelState;
-  struct flagcxUniRunnerState uniRunnerState;
+  flagcxUniRunnerState uniRunnerState;
 
   // Queue of expected responses from the proxy
   struct flagcxExpectedProxyResponse *expectedResponses;

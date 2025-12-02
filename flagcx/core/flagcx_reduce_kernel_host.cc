@@ -2,7 +2,7 @@
 #include "flagcx_kernel.h"
 
 FLAGCX_HOST_DECORATOR void
-flagcxReduceTrigger::setValue(uint64_t *fst, uint64_t *snd, uint64_t *out,
+flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
                               size_t count, size_t nthreads,
                               flagcxDataType_t datatype, flagcxRedOp_t redOp,
                               flagcxReduceTriggerState state) {
@@ -22,20 +22,22 @@ flagcxReduceTrigger::setValue(uint64_t *fst, uint64_t *snd, uint64_t *out,
                << flagcxReduceTriggerOffState;
   memcpy(value, tmp, 4 * sizeof(uint64_t));
 }
+
 FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {
   return value[3] >> flagcxReduceTriggerOffState &
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
+
 FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setState(int state) {
   value[3] &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
-               << flagcxReduceTriggerOffState);
+                << flagcxReduceTriggerOffState);
   value[3] |= ((state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
                << flagcxReduceTriggerOffState);
 }
 
 FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              uint64_t addr2, uint64_t addr3,
-                                             int count, int nthreads,
+                                             size_t count, size_t nthreads,
                                              flagcxDataType_t datatype,
                                              flagcxRedOp_t redop,
                                              flagcxReduceTrigger **ret) {
@@ -50,7 +52,7 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
   idx = buffer[2] % capacity;
   flagcxReduceTrigger *trigger = ((flagcxReduceTrigger *)(buffer + 4)) + idx;
   // check the state of reduction workload
-  while (trigger->getState() != flagcxReduceTriggerAvailable) {
+  while (trigger->pollState() != flagcxReduceTriggerAvailable) {
     sched_yield();
   }
   trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,

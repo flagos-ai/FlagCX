@@ -86,7 +86,7 @@ typedef struct {
   uint64_t bits[(P2P_EVENT_POOL_SIZE + 63) / 64];
 
   // Check if event at index is available
-  static inline bool isAvailable(int index) {
+  bool isAvailable(int index) {
     int wordIdx = index / 64;
     int bitIdx = index % 64;
     return (bits[wordIdx] & (1ULL << bitIdx)) == 0;
