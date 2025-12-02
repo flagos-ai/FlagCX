@@ -51,7 +51,7 @@ def get_args():
     return parser.parse_args()
 
 def init_pg():
-    global FLAGCX_GROUP1, FLAGCX_GROUP2, MY_RANK, WORLD_SIZE, PREV_RANK, NEXT_RANK
+    global FLAGCX_GROUP1, FLAGCX_GROUP2, FLAGCX_GROUP3, MY_RANK, WORLD_SIZE, PREV_RANK, NEXT_RANK
 
     # Get rank and world_size from environment
     MY_RANK = int(os.environ["RANK"])
@@ -355,9 +355,10 @@ dict_op_to_test = {
 if __name__ == "__main__":
     init_pg()
 
-    args = get_args()
+    # args = get_args()
 
-    dict_op_to_test.get(args.op, test_all)()
+    # dict_op_to_test.get(args.op, test_all)()
+    test_allreduce()
 
     destroy_pg()
     
