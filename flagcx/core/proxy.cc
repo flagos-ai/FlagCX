@@ -191,22 +191,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               struct sendNetResources *resources =
                   (sendNetResources *)op->connection->transportResources;
               flagcxProxySend(resources, op->recvbuff, op->nbytes, &op->args);
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  // The P2P object should not be destroyed until the associated
-                  // event has completed
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             } else if (op->connection->transport == TRANSPORT_P2P) {
               struct flagcxP2pResources *resources =
@@ -218,20 +206,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 flagcxP2pProxySelfCopy(resources, op->sendbuff, op->recvbuff,
                                        op->nbytes, &op->args);
               }
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             }
           }
@@ -243,46 +221,22 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               struct recvNetResources *resources =
                   (recvNetResources *)op->connection->transportResources;
               flagcxProxyRecv(resources, op->recvbuff, op->nbytes, &op->args);
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  // The P2P object should not be destroyed until the associated
-                  // event has completed
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  // update refcount and delete semaphore when refcount = 0
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                // update refcount and delete semaphore when refcount = 0
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             } else if (op->connection->transport == TRANSPORT_P2P) {
               struct flagcxP2pResources *resources =
                   (flagcxP2pResources *)op->connection->transportResources;
               flagcxP2pProxyRecv(resources, op->recvbuff, op->nbytes,
                                  &op->args);
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  // The P2P object should not be destroyed until the associated
-                  // event has completed
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  // update refcount and delete semaphore when refcount = 0
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                // update refcount and delete semaphore when refcount = 0
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             }
           }

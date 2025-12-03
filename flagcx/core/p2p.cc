@@ -118,14 +118,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
         if (slotPtr->peerDone == 1) {
           __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
           __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-          args->semaphore->signalCounter(1);
-          if (deviceAsyncLoad && deviceAsyncStore) {
-            if (args->deviceFuncRelaxedOrdering == 1) {
-              FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-                  args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-                  flagcxMemcpyHostToDevice, resources->proxyInfo.stream, NULL));
-            }
-          }
+          args->semaphore->subCounter(1);
           args->done = 1;
         }
       }
@@ -215,14 +208,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
         if (slotPtr->peerDone == 1) {
           __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
           __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-          args->semaphore->signalCounter(1);
-          if (deviceAsyncLoad && deviceAsyncStore) {
-            if (args->deviceFuncRelaxedOrdering == 1) {
-              FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-                  args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-                  flagcxMemcpyHostToDevice, resources->proxyInfo.stream, NULL));
-            }
-          }
+          args->semaphore->subCounter(1);
           args->done = 1;
         }
       }
@@ -261,15 +247,7 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
     }
   } else {
     if (args->done != 1) {
-      args->semaphore->signalCounter(1);
-      // Deprecated device func handling
-      if (deviceAsyncLoad && deviceAsyncStore) {
-        if (args->deviceFuncRelaxedOrdering == 1) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              args->dlArgs, (void *)&args->hlArgs, sizeof(bool),
-              flagcxMemcpyHostToDevice, resources->proxyInfo.stream, NULL));
-        }
-      }
+      args->semaphore->subCounter(1);
       args->done = 1;
     }
   }

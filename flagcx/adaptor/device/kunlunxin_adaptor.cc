@@ -46,7 +46,7 @@ flagcxResult_t kunlunAdaptorDeviceMalloc(void **ptr, size_t size,
                                          flagcxMemType_t type,
                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
-    DEVCHECK(cudaMallocHost(ptr, size));
+    DEVCHECK(cudaHostAlloc(ptr, size, cudaHostAllocMapped));
   } else if (type == flagcxMemManaged) {
     DEVCHECK(cudaMallocManaged(ptr, size, cudaMemAttachGlobal));
   } else {
@@ -96,6 +96,11 @@ flagcxResult_t kunlunAdaptorGetDeviceCount(int *count) {
 
 flagcxResult_t kunlunAdaptorGetVendor(char *vendor) {
   strcpy(vendor, "KUNLUNXIN");
+  return flagcxSuccess;
+}
+
+flagcxResult_t kunlunAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
   return flagcxSuccess;
 }
 
@@ -346,7 +351,8 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunAdaptorDeviceSynchronize, kunlunAdaptorDeviceMemcpy,
       kunlunAdaptorDeviceMemset, kunlunAdaptorDeviceMalloc,
       kunlunAdaptorDeviceFree, kunlunAdaptorSetDevice, kunlunAdaptorGetDevice,
-      kunlunAdaptorGetDeviceCount, kunlunAdaptorGetVendor, NULL,
+      kunlunAdaptorGetDeviceCount, kunlunAdaptorGetVendor,
+      kunlunAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
