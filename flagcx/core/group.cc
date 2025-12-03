@@ -176,8 +176,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  .peers[peer]
                                  ->send[0]
                                  .proxyConn.connection;
-            op->args.chunkSize = CHUNKSIZE;
-            op->args.chunkSteps = (p2p->bytes + CHUNKSIZE - 1) / (CHUNKSIZE);
+            op->args.chunkSize = flagcxParamNetChunkSize();
+            op->args.chunkSteps = (p2p->bytes + flagcxParamNetChunkSize() - 1) / (flagcxParamNetChunkSize());
             op->args.sendStepMask = MAXSTEPS - 1;
             op->args.deviceFuncRelaxedOrdering = deviceFuncRelaxedOrdering;
             op->stream = p2p->stream;
@@ -255,8 +255,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  .peers[peer]
                                  ->recv[0]
                                  .proxyConn.connection;
-            op->args.chunkSize = CHUNKSIZE;
-            op->args.chunkSteps = (p2p->bytes + CHUNKSIZE - 1) / (CHUNKSIZE);
+            op->args.chunkSize = flagcxParamNetChunkSize();
+            op->args.chunkSteps = (p2p->bytes + flagcxParamNetChunkSize() - 1) / (flagcxParamNetChunkSize());
             op->args.sendStepMask = MAXSTEPS - 1;
             op->args.deviceFuncRelaxedOrdering = deviceFuncRelaxedOrdering;
             op->stream = p2p->stream;

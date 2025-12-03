@@ -70,7 +70,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
-          resources->buffSizes[0] = REGMRBUFFERSIZE;
+          resources->buffSizes[0] = flagcxParamNetBufferSize();
           if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {
@@ -136,7 +136,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
-          resources->buffSizes[0] = REGMRBUFFERSIZE;
+          resources->buffSizes[0] = flagcxParamNetBufferSize();
           if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {

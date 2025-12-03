@@ -8,8 +8,8 @@
 #include <string.h>
 #include <string>
 
-uint64_t REGMRBUFFERSIZE = 64ULL * 1024 * 1024; // default value to 64MB
-uint64_t CHUNKSIZE = 4ULL * 1024 * 1024;       // default value to 4MB
+FLAGCX_PARAM(NetBufferSize, "NET_BUFFER_SIZE", 64L * 1024 * 1024); // default value to 64MB
+FLAGCX_PARAM(NetChunkSize, "NET_CHUNK_SIZE", 4L * 1024 * 1024); // default value to 4MB
 
 static pthread_mutex_t netLock = PTHREAD_MUTEX_INITIALIZER;
 // Use adaptor system for all network types
@@ -82,31 +82,7 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
   const char *forceSocketEnv = getenv("FLAGCX_FORCE_NET_SOCKET");
   bool forceSocket = (forceSocketEnv && atoi(forceSocketEnv) == 1);
 
-  try {
-    const char *netBufSize = getenv("FLAGCX_NET_BUFFER_SIZE");
-    if (netBufSize) {
-      REGMRBUFFERSIZE = std::stoull(netBufSize, NULL, 10);
-      INFO(FLAGCX_INIT|FLAGCX_ENV, "Network buffer size set to %llu bytes",
-           (unsigned long long)REGMRBUFFERSIZE);
-    }
-  } catch (...) {
-    WARN("Invalid FLAGCX_NET_BUFFER_SIZE value '%s'", netBufSize);
-  }
-
-  try {
-    const char *chunkSize = getenv("FLAGCX_NET_CHUNK_SIZE");
-    if (chunkSize) {
-      CHUNKSIZE = std::stoull(chunkSize, NULL, 10);
-      INFO(FLAGCX_INIT|FLAGCX_ENV, "Network chunk size set to %llu bytes",
-           (unsigned long long)CHUNKSIZE);
-    }
-  } catch (...) {
-    WARN("Invalid FLAGCX_NET_CHUNK_SIZE value '%s'", chunkSize);
-  }
-
-  assert(REGMRBUFFERSIZE % CHUNKSIZE == 0 && REGMRBUFFERSIZE / CHUNKSIZE <= MAXSTEPS &&
-         "REGMRBUFFERSIZE must be multiple of CHUNKSIZE and no more than "
-         "MAXSTEPS");
+  assert(flagcxParamNetBufferSize() % flagcxParamNetChunkSize() == 0 && flagcxParamNetBufferSize() / flagcxParamNetChunkSize() <= MAXSTEPS);
 
   netName = comm->config.netName;
 
@@ -178,7 +154,7 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       args->subs[step].stepSize =
           std::min(args->chunkSize, size - args->totalCopySize);
       if (!args->regBufFlag) {
-        args->subs[step].stepBuff = resources->buffers[0] + (CHUNKSIZE * step);
+        args->subs[step].stepBuff = resources->buffers[0] + (flagcxParamNetChunkSize() * step);
         if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
           FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
               args->subs[step].stepBuff, (char *)data + args->totalCopySize,
@@ -194,7 +170,7 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
                                                resources->cpStream));
       } else {
         args->subs[step].stepBuff =
-            (void *)((char *)data + (CHUNKSIZE * args->waitCopy));
+            (void *)((char *)data + (flagcxParamNetChunkSize() * args->waitCopy));
       }
       args->totalCopySize += args->subs[step].stepSize;
       args->waitCopy++;
@@ -263,10 +239,10 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
           std::min(args->chunkSize, size - args->totalPostSize);
       if (!args->regBufFlag) {
         args->subs[args->posted & stepMask].stepBuff =
-            resources->buffers[0] + CHUNKSIZE * (args->posted & stepMask);
+            resources->buffers[0] + flagcxParamNetChunkSize() * (args->posted & stepMask);
       } else {
         args->subs[args->posted & stepMask].stepBuff =
-            (void *)((char *)data + CHUNKSIZE * args->posted);
+            (void *)((char *)data + flagcxParamNetChunkSize() * args->posted);
       }
       resources->netAdaptor->irecv(
           resources->netRecvComm, 1,
