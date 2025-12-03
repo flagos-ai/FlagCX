@@ -16,11 +16,12 @@
 
 typedef char flagcxNetHandle_t[FLAGCX_NET_HANDLE_MAXSIZE];
 
-#define REGMRBUFFERSIZE (64ULL * 1024 * 1024)
-#define CHUNKSIZE (4ULL * 1024 * 1024)
+extern uint64_t REGMRBUFFERSIZE;
+extern uint64_t CHUNKSIZE;
 #define FLAGCX_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
-#define MAXSTEPS (REGMRBUFFERSIZE / CHUNKSIZE)
+#define MAXSTEPS ((REGMRBUFFERSIZE) / CHUNKSIZE)
 static_assert((MAXSTEPS & (MAXSTEPS - 1)) == 0, "send step must a power of 2");
+
 
 flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm);
 int flagcxNetVersion(struct flagcxHeteroComm *comm);

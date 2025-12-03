@@ -6,6 +6,10 @@
 
 #include <errno.h>
 #include <string.h>
+#include <string>
+
+uint64_t REGMRBUFFERSIZE = 64ULL * 1024 * 1024; // default value to 64MB
+uint64_t CHUNKSIZE = 4ULL * 1024 * 1024;       // default value to 4MB
 
 static pthread_mutex_t netLock = PTHREAD_MUTEX_INITIALIZER;
 // Use adaptor system for all network types
@@ -77,6 +81,32 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
 
   const char *forceSocketEnv = getenv("FLAGCX_FORCE_NET_SOCKET");
   bool forceSocket = (forceSocketEnv && atoi(forceSocketEnv) == 1);
+
+  try {
+    const char *netBufSize = getenv("FLAGCX_NET_BUFFER_SIZE");
+    if (netBufSize) {
+      REGMRBUFFERSIZE = std::stoull(netBufSize, NULL, 10);
+      INFO(FLAGCX_INIT|FLAGCX_ENV, "Network buffer size set to %llu bytes",
+           (unsigned long long)REGMRBUFFERSIZE);
+    }
+  } catch (...) {
+    WARN("Invalid FLAGCX_NET_BUFFER_SIZE value '%s'", netBufSize);
+  }
+
+  try {
+    const char *chunkSize = getenv("FLAGCX_NET_CHUNK_SIZE");
+    if (chunkSize) {
+      CHUNKSIZE = std::stoull(chunkSize, NULL, 10);
+      INFO(FLAGCX_INIT|FLAGCX_ENV, "Network chunk size set to %llu bytes",
+           (unsigned long long)CHUNKSIZE);
+    }
+  } catch (...) {
+    WARN("Invalid FLAGCX_NET_CHUNK_SIZE value '%s'", chunkSize);
+  }
+
+  assert(REGMRBUFFERSIZE % CHUNKSIZE == 0 && REGMRBUFFERSIZE / CHUNKSIZE <= MAXSTEPS &&
+         "REGMRBUFFERSIZE must be multiple of CHUNKSIZE and no more than "
+         "MAXSTEPS");
 
   netName = comm->config.netName;
 
