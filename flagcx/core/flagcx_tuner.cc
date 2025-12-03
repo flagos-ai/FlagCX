@@ -521,8 +521,10 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
                                            flagcxCommOp_t commOp,
                                            size_t nBytes) {
   // Execute matching only once when tune_objects has values
+  const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
+  const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
   static bool matchingDone = false;
-  if (!matchingDone) {
+  if (!matchingDone && config_id >= 0) {
     // Determine if this comm needs tuning
     FlagScaleConfig config = readFlagScaleJson();
     if (!config.tune_objects.empty()) {
@@ -550,8 +552,6 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
   // Need tuning this comm
   // Handle config_id logic
   static int lastFlagscaleConfigId = -1;
-  const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
-  const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
   const char *bestConfigIdEnv = getenv("FLAGCX_TUNER_BEST_CONFIG_ID");
   const int bestConfigId =
       (bestConfigIdEnv != NULL) ? atoi(bestConfigIdEnv) : -1;

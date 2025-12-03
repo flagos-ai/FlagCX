@@ -444,9 +444,11 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
 
   // If filename is empty, try to get from environment variable
   if (actual_filename.empty()) {
-    const char *env_file = getenv("FLAGCX_TUNE_FILE");
-    if (env_file != nullptr && env_file[0] != '\0') {
-      actual_filename = env_file;
+    const char *base = getenv("FLAGCX_TUNE_FILE");
+    if (base != nullptr && base[0] != '\0') {
+      std::string path(base);
+      path += ".pid" + std::to_string(::getpid());
+      actual_filename = path;
     } else {
       throw std::runtime_error(
           "FLAGCX_TUNE_FILE environment variable is not set. "
