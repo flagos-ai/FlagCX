@@ -355,10 +355,9 @@ dict_op_to_test = {
 if __name__ == "__main__":
     init_pg()
 
-    # args = get_args()
+    args = get_args()
 
-    # dict_op_to_test.get(args.op, test_all)()
-    test_allreduce()
+    dict_op_to_test.get(args.op, test_all)()
 
     destroy_pg()
     
