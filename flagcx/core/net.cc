@@ -82,7 +82,7 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
   const char *forceSocketEnv = getenv("FLAGCX_FORCE_NET_SOCKET");
   bool forceSocket = (forceSocketEnv && atoi(forceSocketEnv) == 1);
 
-  assert(flagcxParamNetBufferSize() % flagcxParamNetChunkSize() == 0 && flagcxParamNetBufferSize() / flagcxParamNetChunkSize() <= MAXSTEPS);
+  assert((flagcxParamNetBufferSize() + flagcxParamNetChunkSize() - 1) / flagcxParamNetChunkSize() <= MAXSTEPS);
 
   netName = comm->config.netName;
 
