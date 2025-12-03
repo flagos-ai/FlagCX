@@ -5,8 +5,8 @@
 #include <map>
 #include <string.h> // for memcpy
 
-+FLAGCX_PARAM(P2PBufferSize, "P2P_BUFFER_SIZE", 64L * 1024 * 1024); // default value to 64MB
-+FLAGCX_PARAM(P2PChunkSize, "P2P_CHUNK_SIZE", 4L * 1024 * 1024); // default value to 4MB
+FLAGCX_PARAM(P2PBufferSize, "P2P_BUFFER_SIZE", 64L * 1024 * 1024); // default value to 64MB
+FLAGCX_PARAM(P2PChunkSize, "P2P_CHUNK_SIZE", 4L * 1024 * 1024); // default value to 4MB
 static std::map<int, std::pair<int, int>>
     p2pOpHashMap; // <opHash, sendCounter, recvCounter>
 
