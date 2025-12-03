@@ -39,7 +39,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           conn->proxyConn.connection->send = 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
-            struct flagcxP2pRequest req = {(size_t(FLAGCX_P2P_BUFFERSIZE)), 0};
+            struct flagcxP2pRequest req = {(size_t(flagcxParamP2PBufferSize())), 0};
             struct flagcxP2pConnectInfo connectInfo = {0};
             connectInfo.rank = comm->rank;
             connectInfo.read = 0;

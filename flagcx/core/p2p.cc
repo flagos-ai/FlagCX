@@ -5,6 +5,8 @@
 #include <map>
 #include <string.h> // for memcpy
 
++FLAGCX_PARAM(P2PBufferSize, "P2P_BUFFER_SIZE", 64L * 1024 * 1024); // default value to 64MB
++FLAGCX_PARAM(P2PChunkSize, "P2P_CHUNK_SIZE", 4L * 1024 * 1024); // default value to 4MB
 static std::map<int, std::pair<int, int>>
     p2pOpHashMap; // <opHash, sendCounter, recvCounter>
 
@@ -81,7 +83,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
         args->subs[step].stepSize =
             std::min(args->chunkSize, size - args->totalCopySize);
         args->subs[step].stepBuff =
-            resources->proxyInfo.recvFifo + (FLAGCX_P2P_CHUNKSIZE * step);
+            resources->proxyInfo.recvFifo + (flagcxParamP2PChunkSize() * step);
 
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             args->subs[step].stepBuff, (char *)data + args->totalCopySize,
@@ -177,7 +179,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
         args->subs[step].stepSize =
             std::min(args->chunkSize, size - args->totalCopySize);
         args->subs[step].stepBuff =
-            resources->proxyInfo.recvFifo + (FLAGCX_P2P_CHUNKSIZE * step);
+            resources->proxyInfo.recvFifo + (flagcxParamP2PChunkSize() * step);
 
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             (char *)data + args->totalCopySize, args->subs[step].stepBuff,
