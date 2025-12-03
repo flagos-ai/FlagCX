@@ -200,6 +200,8 @@ public:
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   void checkRecordingEnded();
+  void recordTuneObject(flagcxCommOp_t commOp, flagcxDataType_t dataType,
+                        size_t count);
   static c10::intrusive_ptr<Backend> createFlagcxBackend(
       c10d::DistributedBackendOptions backendOptions,
       c10::intrusive_ptr<Options> extraOptions = Options::create());

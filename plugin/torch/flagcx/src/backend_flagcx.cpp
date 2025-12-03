@@ -537,15 +537,8 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
     if (options_->enableTuner && !recordingEnded) {
-      checkRecordingEnded();
-      struct TuneObjectKey tuneObjectKey = {
-          commOpToString(flagcxCommOpAllGather),
-          getDataSize(flagcxDataType, inputTensor.numel())};
-      if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-        // write this to file
-        recordFlagcxTuneObject(tuneObjectKey);
-        tuneObjectSet_.insert(tuneObjectKey);
-      }
+      recordTuneObject(flagcxCommOpAllGather, flagcxDataType,
+                       inputTensor.numel());
     }
 
 #endif
@@ -589,15 +582,8 @@ flagcxBackend::_allgather_base(at::Tensor &outputTensor,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpAllGather),
-        getDataSize(flagcxDataType, inputTensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpAllGather, flagcxDataType,
+                     inputTensor.numel());
   }
 
 #endif
@@ -633,15 +619,8 @@ flagcxBackend::allgather_into_tensor_coalesced(std::vector<at::Tensor> &outputs,
         auto flagcxDataType = getFlagcxDataType(input.scalar_type());
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
         if (options_->enableTuner && !recordingEnded) {
-          checkRecordingEnded();
-          struct TuneObjectKey tuneObjectKey = {
-              commOpToString(flagcxCommOpAllGather),
-              getDataSize(flagcxDataType, input.numel())};
-          if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-            // write this to file
-            recordFlagcxTuneObject(tuneObjectKey);
-            tuneObjectSet_.insert(tuneObjectKey);
-          }
+          recordTuneObject(flagcxCommOpAllGather, flagcxDataType,
+                           input.numel());
         }
 
 #endif
@@ -666,15 +645,7 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpAllReduce),
-        getDataSize(flagcxDataType, tensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpAllReduce, flagcxDataType, tensor.numel());
   }
 
 #endif
@@ -713,17 +684,8 @@ flagcxBackend::allreduce_coalesced(std::vector<at::Tensor> &tensors,
             getFlagcxReduceOp(opts.reduceOp, input, flagcxDataType);
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
         if (options_->enableTuner && !recordingEnded) {
-          checkRecordingEnded();
-          struct TuneObjectKey tuneObjectKey = {
-              commOpToString(flagcxCommOpAllReduce),
-              getDataSize(flagcxDataType, input.numel())};
-          if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-            // write this to file
-            std::cout << "rank: " << rank_ << " recording allreduce tune object"
-                      << std::endl;
-            recordFlagcxTuneObject(tuneObjectKey);
-            tuneObjectSet_.insert(tuneObjectKey);
-          }
+          recordTuneObject(flagcxCommOpAllReduce, flagcxDataType,
+                           input.numel());
         }
 
 #endif
@@ -779,14 +741,7 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {commOpToString(flagcxCommOpAlltoAll),
-                                          getDataSize(flagcxDataType, count)};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpAlltoAll, flagcxDataType, count);
   }
 
 #endif
@@ -854,15 +809,7 @@ flagcxBackend::alltoall_base(at::Tensor &outputTensor, at::Tensor &inputTensor,
   if (isEqualSize) {
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
     if (options_->enableTuner && !recordingEnded) {
-      checkRecordingEnded();
-      struct TuneObjectKey tuneObjectKey = {
-          commOpToString(flagcxCommOpAlltoAll),
-          getDataSize(flagcxDataType, count)};
-      if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-        // write this to file
-        recordFlagcxTuneObject(tuneObjectKey);
-        tuneObjectSet_.insert(tuneObjectKey);
-      }
+      recordTuneObject(flagcxCommOpAlltoAll, flagcxDataType, count);
     }
 
 #endif
@@ -922,15 +869,7 @@ flagcxBackend::broadcast(std::vector<at::Tensor> &tensors,
   const auto root = opts.rootRank + opts.rootTensor;
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpBroadcast),
-        getDataSize(flagcxDataType, tensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpBroadcast, flagcxDataType, tensor.numel());
   }
 
 #endif
@@ -977,15 +916,7 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpGather),
-        getDataSize(flagcxDataType, inputTensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpGather, flagcxDataType, inputTensor.numel());
   }
 
 #endif
@@ -1030,15 +961,7 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce(std::vector<at::Tensor> &tensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpReduce),
-        getDataSize(flagcxDataType, tensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpReduce, flagcxDataType, tensor.numel());
   }
 
 #endif
@@ -1092,15 +1015,8 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
     if (options_->enableTuner && !recordingEnded) {
-      checkRecordingEnded();
-      struct TuneObjectKey tuneObjectKey = {
-          commOpToString(flagcxCommOpReduceScatter),
-          getDataSize(flagcxDataType, outputTensor.numel())};
-      if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-        // write this to file
-        recordFlagcxTuneObject(tuneObjectKey);
-        tuneObjectSet_.insert(tuneObjectKey);
-      }
+      recordTuneObject(flagcxCommOpReduceScatter, flagcxDataType,
+                       outputTensor.numel());
     }
 
 #endif
@@ -1143,15 +1059,8 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
   } else {
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
     if (options_->enableTuner && !recordingEnded) {
-      checkRecordingEnded();
-      struct TuneObjectKey tuneObjectKey = {
-          commOpToString(flagcxCommOpReduceScatter),
-          getDataSize(flagcxDataType, outputTensor.numel())};
-      if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-        // write this to file
-        recordFlagcxTuneObject(tuneObjectKey);
-        tuneObjectSet_.insert(tuneObjectKey);
-      }
+      recordTuneObject(flagcxCommOpReduceScatter, flagcxDataType,
+                       outputTensor.numel());
     }
 
 #endif
@@ -1191,15 +1100,8 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter_tensor_coalesced(
             getFlagcxReduceOp(opts.reduceOp, input, flagcxDataType);
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
         if (options_->enableTuner && !recordingEnded) {
-          checkRecordingEnded();
-          struct TuneObjectKey tuneObjectKey = {
-              commOpToString(flagcxCommOpReduceScatter),
-              getDataSize(flagcxDataType, output.numel())};
-          if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-            // write this to file
-            recordFlagcxTuneObject(tuneObjectKey);
-            tuneObjectSet_.insert(tuneObjectKey);
-          }
+          recordTuneObject(flagcxCommOpReduceScatter, flagcxDataType,
+                           output.numel());
         }
 
 #endif
@@ -1246,15 +1148,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpScatter),
-        getDataSize(flagcxDataType, outputTensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpScatter, flagcxDataType, outputTensor.numel());
   }
 
 #endif
@@ -1287,15 +1181,7 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpSend),
-        getDataSize(flagcxDataType, tensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpSend, flagcxDataType, tensor.numel());
   }
 
 #endif
@@ -1330,15 +1216,7 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
   if (options_->enableTuner && !recordingEnded) {
-    checkRecordingEnded();
-    struct TuneObjectKey tuneObjectKey = {
-        commOpToString(flagcxCommOpRecv),
-        getDataSize(flagcxDataType, tensor.numel())};
-    if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
-      // write this to file
-      recordFlagcxTuneObject(tuneObjectKey);
-      tuneObjectSet_.insert(tuneObjectKey);
-    }
+    recordTuneObject(flagcxCommOpRecv, flagcxDataType, tensor.numel());
   }
 
 #endif
@@ -1375,6 +1253,19 @@ void flagcxBackend::checkRecordingEnded() {
   if (configId >= 0)
     recordingEnded = true;
 }
+
+void flagcxBackend::recordTuneObject(flagcxCommOp_t commOp,
+                                     flagcxDataType_t dataType, size_t count) {
+  checkRecordingEnded();
+  struct TuneObjectKey tuneObjectKey = {commOpToString(commOp),
+                                        getDataSize(dataType, count)};
+  if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
+    // write this to file
+    recordFlagcxTuneObject(tuneObjectKey);
+    tuneObjectSet_.insert(tuneObjectKey);
+  }
+}
+
 c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
     c10d::DistributedBackendOptions backendOptions,
     c10::intrusive_ptr<Options> extraOptions) {
