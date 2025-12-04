@@ -521,16 +521,17 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
 // environment
 // 3. Switches communicator config if config_id increments by 1
 // Returns flagcxSuccess on success, flagcxInternalError if config_id is invalid
-flagcxResult_t flagcxHandleFlagscaleTuning(struct flagcxTunerContext *ctx,
-                                           flagcxComm_t comm,
+flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
                                            flagcxCommOp_t commOp,
                                            size_t nBytes) {
+  struct flagcxTunerContext *ctx =
+      static_cast<struct flagcxTunerContext *>(context);
   // Execute matching only once when tune_objects has values
   const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
   const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
   INFO(FLAGCX_TUNING, "inside flagcx, FLAGCX_TUNER_CONFIG_ID=%d", config_id);
   // static bool matchingDone = false;
-  if (!ctx->tunerCommMatchingDone && config_id >= 0) {
+  if (!ctx->tunerCommMatchingDone && config_id == 0) {
     // Determine if this comm needs tuning
     FlagScaleConfig config = readFlagScaleJson();
     if (!config.tune_objects.empty()) {
