@@ -456,6 +456,8 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
           "path.");
     }
   }
+  INFO(FLAGCX_TUNING, "flagcxTuner reading from file %s",
+       actual_filename.c_str());
 
   std::ifstream file(actual_filename);
   if (!file.is_open()) {
@@ -473,6 +475,10 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
     for (const auto &obj : j["tune_objects"]) {
       config.tune_objects.emplace_back(obj);
     }
+  }
+  for (int i = 0; i < config.tune_objects.size(); i++) {
+    INFO(FLAGCX_TUNING, "  tune_object %d: commOp=%s, nBytes=%ld", i,
+         config.tune_objects[i].commOp.c_str(), config.tune_objects[i].nBytes);
   }
 
   // Read config_id

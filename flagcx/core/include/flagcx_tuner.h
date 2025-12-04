@@ -112,7 +112,8 @@ struct flagcxTuner {
                                      int bestConfigId);
 
   // Handle flagscale tuning logic
-  flagcxResult_t (*handleFlagscaleTuning)(flagcxComm_t comm,
+  flagcxResult_t (*handleFlagscaleTuning)(struct flagcxTunerContext *ctx,
+                                          flagcxComm_t comm,
                                           flagcxCommOp_t commOp, size_t nBytes);
 };
 
@@ -137,7 +138,8 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
 // Returns flagcxSuccess if should call the original function and return
 // immediately, flagcxInProgress if should continue with profiling logic, or
 // other error codes on failure
-flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
+flagcxResult_t flagcxHandleFlagscaleTuning(struct flagcxTunerContext *ctx,
+                                           flagcxComm_t comm,
                                            flagcxCommOp_t commOp,
                                            size_t nBytes);
 
@@ -145,7 +147,8 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
   do {                                                                         \
     size_t nBytes = count * getFlagcxDataTypeSize(datatype);                   \
     if (comm->isTuningWithFlagscale) {                                         \
-      FLAGCXCHECK(comm->tuner->handleFlagscaleTuning(comm, commOp, nBytes));   \
+      FLAGCXCHECK(comm->tuner->handleFlagscaleTuning(comm->tunerContext, comm, \
+                                                     commOp, nBytes));         \
       FLAGCXCHECK(call);                                                       \
       return flagcxSuccess;                                                    \
     }                                                                          \
