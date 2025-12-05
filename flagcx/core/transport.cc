@@ -39,7 +39,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           conn->proxyConn.connection->send = 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
-            struct flagcxP2pRequest req = {(size_t(flagcxParamP2PBufferSize())), 0};
+            struct flagcxP2pRequest req = {(size_t(flagcxP2PBufferSize)), 0};
             struct flagcxP2pConnectInfo connectInfo = {0};
             connectInfo.rank = comm->rank;
             connectInfo.read = 0;
@@ -66,11 +66,11 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           deviceAdaptor->streamCreate(&resources->cpStream);
-          for (int s = 0; s < MAXSTEPS; s++) {
+          for (int s = 0; s < FLAGCX_NET_MAX_STEPS; s++) {
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
-          resources->buffSizes[0] = flagcxParamNetBufferSize();
+          resources->buffSizes[0] = flagcxNetBufferSize;
           if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {
@@ -132,11 +132,11 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           deviceAdaptor->streamCreate(&resources->cpStream);
-          for (int s = 0; s < MAXSTEPS; s++) {
+          for (int s = 0; s < FLAGCX_NET_MAX_STEPS; s++) {
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
-          resources->buffSizes[0] = flagcxParamNetBufferSize();
+          resources->buffSizes[0] = flagcxNetBufferSize;
           if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {

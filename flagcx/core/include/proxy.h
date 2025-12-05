@@ -86,7 +86,7 @@ struct flagcxProxySubArgs {
 };
 
 struct flagcxProxyArgs {
-  struct flagcxProxySubArgs subs[MAXSTEPS];
+  struct flagcxProxySubArgs subs[FLAGCX_NET_MAX_STEPS];
   proxyProgressFunc_t progress;
   int nsubs;
   int done;
