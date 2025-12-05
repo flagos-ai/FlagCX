@@ -1,0 +1,108 @@
+#include "flagcx.h"
+#include "flagcx_kernel.h"
+
+FLAGCX_HOST_DECORATOR void
+flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
+                              size_t count, size_t nthreads,
+                              flagcxDataType_t datatype, flagcxRedOp_t redOp,
+                              flagcxReduceTriggerState state) {
+  uint64_t tmp[4];
+  tmp[0] = fst;
+  tmp[1] = snd;
+  tmp[2] = out;
+  tmp[3] = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
+               << flagcxReduceTriggerOffCount |
+           (nthreads & flagcxTriggerMask(flagcxReduceTriggerBitsNThreads))
+               << flagcxReduceTriggerOffNThreads |
+           (datatype & flagcxTriggerMask(flagcxReduceTriggerBitsDatatype))
+               << flagcxReduceTriggerOffDatatype |
+           (redOp & flagcxTriggerMask(flagcxReduceTriggerBitsRedop))
+               << flagcxReduceTriggerOffRedop |
+           (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+               << flagcxReduceTriggerOffState;
+  memcpy(value, tmp, 4 * sizeof(uint64_t));
+  TRACE(FLAGCX_KERNEL,
+        "setValue called: fst=%lu, snd=%lu, out=%lu, count=%lu, nthreads=%lu, "
+        "datatype=%d, redop=%d, state=%d, value[0]=%lu, value[1]=%lu, "
+        "value[2]=%lu, value[3]=%lu",
+        fst, snd, out, count, nthreads, datatype, redOp, state, value[0],
+        value[1], value[2], value[3]);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {
+  // __sync_synchronize();
+  uint64_t curr_val = __atomic_load_n(&this->value[3], __ATOMIC_ACQUIRE);
+  TRACE(FLAGCX_KERNEL, "pollState called, state=%u",
+        (unsigned int)(curr_val >> flagcxReduceTriggerOffState &
+                       flagcxTriggerMask(flagcxReduceTriggerBitsState)));
+  return curr_val >> flagcxReduceTriggerOffState &
+         flagcxTriggerMask(flagcxReduceTriggerBitsState);
+}
+
+FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setState(int state) {
+  uint64_t curr_val = __atomic_load_n(&this->value[3], __ATOMIC_ACQUIRE);
+  curr_val &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
+                << flagcxReduceTriggerOffState);
+  curr_val |= (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+              << flagcxReduceTriggerOffState;
+  __atomic_store_n(&this->value[3], curr_val, __ATOMIC_RELEASE);
+  TRACE(FLAGCX_KERNEL, "setState called, new state=%llu",
+        curr_val >> flagcxReduceTriggerOffState &
+            flagcxTriggerMask(flagcxReduceTriggerBitsState));
+}
+
+FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
+                                             uint64_t addr2, uint64_t addr3,
+                                             size_t count, size_t nthreads,
+                                             flagcxDataType_t datatype,
+                                             flagcxRedOp_t redop, int *ret) {
+  // flagcxReduceTrigger **ret) {
+  TRACE(FLAGCX_KERNEL,
+        "enq red called: addr1=%lu, addr2=%lu, addr3=%lu, "
+        "count=%lu, nthreads=%lu, datatype=%d, redop=%d",
+        addr1, addr2, addr3, count, nthreads, datatype, redop);
+  int idx = -1;
+  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  int capacity = buffer[0];
+  int distance = buffer[2] - buffer[1];
+  while (distance >= capacity) {
+    sched_yield();
+    distance = buffer[2] - buffer[1];
+  }
+  idx = buffer[2] % capacity;
+  flagcxReduceTrigger *trigger = ((flagcxReduceTrigger *)(buffer + 4)) + idx;
+  // check the state of reduction workload
+
+  while (trigger->pollState() != flagcxReduceTriggerAvailable) {
+    sched_yield();
+  }
+  trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,
+                    flagcxReduceTriggerEnqueued);
+  __sync_synchronize();
+  __atomic_fetch_add(buffer + 2, 1ul, __ATOMIC_RELAXED);
+  *ret = idx;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxFifo::flagcxRedFifoInit() {
+  // TODO: use a better way to initialize FIFO
+  TRACE(FLAGCX_INIT, "flagcxRedFifoInit called");
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,
+                                          4 * sizeof(uint64_t) +
+                                              FLAGCX_KERNEL_FIFO_CAPACITY *
+                                                  sizeof(flagcxReduceTrigger),
+                                          flagcxMemHost, NULL));
+  buffer[0] = FLAGCX_KERNEL_FIFO_CAPACITY;
+  buffer[1] = 0;
+  buffer[2] = 0;
+  buffer[3] = 0;
+  memset((void *)(buffer + 4), 0,
+         FLAGCX_KERNEL_FIFO_CAPACITY * sizeof(flagcxReduceTrigger));
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxFifo::flagcxRedFifoDestroy() {
+  INFO(FLAGCX_KERNEL, "flagcxRedFifoDestroy called");
+  FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));
+  return flagcxSuccess;
+}

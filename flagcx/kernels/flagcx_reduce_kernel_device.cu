@@ -1,0 +1,181 @@
+#include "device_utils.h"
+#include "flagcx.h"
+#include "flagcx_kernel.h"
+
+#define WARP_SIZE 32
+
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
+  if (threadIdx.x == 0)
+    printf("getInput1 called, value[0]=%lu\n", value[0]);
+  return value[0];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput2() {
+  if (threadIdx.x == 0)
+    printf("getInput2 called, value[1]=%lu\n", value[1]);
+  return value[1];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getOutput() {
+  if (threadIdx.x == 0)
+    printf("getOutput called, value[2]=%lu\n", value[2]);
+  return value[2];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getCount() {
+  if (threadIdx.x == 0) {
+    printf("getCount called, count=%lu\n",
+           value[3] >> flagcxReduceTriggerOffCount &
+               flagcxTriggerMask(flagcxReduceTriggerBitsCount));
+  }
+  return value[3] >> flagcxReduceTriggerOffCount &
+         flagcxTriggerMask(flagcxReduceTriggerBitsCount);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getNThreads() {
+  if (threadIdx.x == 0) {
+    printf("getNThreads called, nthreads=%lu\n",
+           value[3] >> flagcxReduceTriggerOffNThreads &
+               flagcxTriggerMask(flagcxReduceTriggerBitsNThreads));
+  }
+  return value[3] >> flagcxReduceTriggerOffNThreads &
+         flagcxTriggerMask(flagcxReduceTriggerBitsNThreads);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getDatatype() {
+  if (threadIdx.x == 0) {
+    printf("getDatatype called, datatype=%lu\n",
+           value[3] >> flagcxReduceTriggerOffDatatype &
+               flagcxTriggerMask(flagcxReduceTriggerBitsDatatype));
+  }
+  return value[3] >> flagcxReduceTriggerOffDatatype &
+         flagcxTriggerMask(flagcxReduceTriggerBitsDatatype);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getRedop() {
+  if (threadIdx.x == 0) {
+    printf("getRedop called, redop=%lu\n",
+           value[3] >> flagcxReduceTriggerOffRedop &
+               flagcxTriggerMask(flagcxReduceTriggerBitsRedop));
+  }
+  return value[3] >> flagcxReduceTriggerOffRedop &
+         flagcxTriggerMask(flagcxReduceTriggerBitsRedop);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
+  if (threadIdx.x == 0) {
+    printf("getState called, state=%lu\n",
+           value[3] >> flagcxReduceTriggerOffState &
+               flagcxTriggerMask(flagcxReduceTriggerBitsState));
+  }
+  return value[3] >> flagcxReduceTriggerOffState &
+         flagcxTriggerMask(flagcxReduceTriggerBitsState);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
+  value[3] |= (flagcxReduceTriggerComplete &
+               flagcxTriggerMask(flagcxReduceTriggerBitsState))
+              << flagcxReduceTriggerOffState;
+  FLAGCX_DEVICE_THREAD_FENCE();
+  printf("setComplete called, state=%lu\n",
+         (value[3] >> flagcxReduceTriggerOffState &
+          flagcxTriggerMask(flagcxReduceTriggerBitsState)));
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
+                                                      int *idx) {
+  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  while (true) {
+    unsigned int old_c = *(buffer + 1);
+    unsigned int cur_p = *(buffer + 2);
+    if (old_c >= cur_p) {
+      // no-op, task dequeued by other consumers
+      *idx = -1;
+      break;
+    }
+    // set consumed from `old_c` to `old_c+1`
+    unsigned int prev = atomicCAS(reinterpret_cast<unsigned int *>(buffer + 1),
+                                  old_c, old_c + 1);
+    if (prev == old_c) {
+      *idx = old_c;
+      break;
+    }
+  }
+  return flagcxSuccess;
+}
+
+FLAGCX_DEVICE_DECORATOR void
+flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
+                   uint64_t nthreads, uint64_t datatype, uint64_t redOp) {
+  // to be implemented by vendors
+  int tid = threadIdx.x;
+  float *fst_ptr = (float *)fst;
+  float *snd_ptr = (float *)snd;
+  float *out_ptr = (float *)out;
+  for (int i = tid; i < count; i += nthreads) {
+    out_ptr[i] = fst_ptr[i] + snd_ptr[i];
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
+  const unsigned FULL_MASK = 0xffffffff;
+  int empty_iter = 0; // backoff counter
+
+  while (true) {
+    // debug: timeout
+    if (empty_iter > 1000) {
+      printf("reduce kernel timeout\n");
+      break;
+    }
+
+    // (1) terminate condition
+    if (__ldg(static_cast<const uint64_t *>(fifoBuffer) + 3) == 1)
+      break;
+
+    // (2) dequeue
+    int p = __ldg(static_cast<const uint64_t *>(fifoBuffer) + 2); // produced
+    int c = __ldg(static_cast<const uint64_t *>(fifoBuffer) + 1); // consumed
+
+    // (3) backoff if queue empty
+    if (c >= p) {
+      empty_iter++;
+      spinBackoff(empty_iter);
+      // check terminate again
+      if (__ldg(static_cast<const uint64_t *>(fifoBuffer) + 3) == 1)
+        break;
+      continue;
+    }
+
+    // (4) dequeue task (thread 0 in a block)
+    int myIdx = -1;
+    int tid = threadIdx.x;
+    if (tid == 0) {
+      dequeue(fifoBuffer, &myIdx);
+      printf("kernel dequeue myIdx=%d\n", myIdx);
+    }
+    // sync myIdx to warp
+    myIdx = __shfl_sync(FULL_MASK, myIdx, 0);
+    if (myIdx < 0) {
+      // backoff if no task is performed
+      empty_iter++;
+      spinBackoff(empty_iter);
+      continue;
+    }
+
+    // (5) perform reduce task
+    empty_iter = 0;
+    int slot = myIdx & (*(uint64_t *)fifoBuffer - 1);
+    flagcxReduceTrigger *t =
+        (flagcxReduceTrigger *)((uint64_t *)fifoBuffer + 4) + slot;
+    flagcxReduceKernel(t->getInput1(), t->getInput2(), t->getOutput(),
+                       t->getCount(), t->getNThreads(), t->getDatatype(),
+                       t->getRedop());
+
+    // (6) set completion flag
+    __syncthreads();
+    FLAGCX_DEVICE_THREAD_FENCE();
+    if (tid == 0) {
+      printf("prev state %lu\n", t->getState());
+      t->setComplete();
+      printf("new state %lu\n", t->getState());
+    }
+  }
+}
+
+void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
+                                  size_t nblocks, flagcxStream_t stream) {
+  flagcxCollectiveKernel<<<nblocks, nthreads, 0,
+                           *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(fifoBuffer);
+}
