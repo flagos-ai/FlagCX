@@ -396,9 +396,6 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   INFO(FLAGCX_INIT, "Flagcx USE_TUNER flag set to %d", useTuner);
   if (useTuner) {
     (*comm)->tuner = &internalTuner;
-    (*comm)->tuner->bootstrap = state;
-    (*comm)->tuner->rank = rank;
-    (*comm)->tuner->nranks = nranks;
     (*comm)->commId = commId;
     (*comm)->uniqueIdData = uniqueIdData;
     (*comm)->tunerInnerComm = NULL;
@@ -413,8 +410,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
     (*comm)->isTuningWithFlagscale = isTuningWithFlagscale;
 
-    FLAGCXCHECK((*comm)->tuner->init((*comm)->nranks, 0, flagcxDebugLog,
-                                     &((*comm)->tunerContext)));
+    FLAGCXCHECK((*comm)->tuner->init((*comm)->nranks, (*comm)->rank,
+                                     flagcxDebugLog, &((*comm)->tunerContext),
+                                     state));
     uint32_t nConfigs = 0;
     FLAGCXCHECK(
         (*comm)->tuner->getCandidateNumber((*comm)->tunerContext, &nConfigs));

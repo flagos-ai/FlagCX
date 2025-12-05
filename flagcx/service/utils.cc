@@ -412,7 +412,9 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
                                   flagcxInnerComm_t *homoComm /*out*/) {
   int rank = comm->rank;
   int nranks = comm->nranks;
+  INFO(FLAGCX_INIT, "flagcxHomoCommInit resetting commId");
   memset((void *)commId, 0, sizeof(*commId));
+  INFO(FLAGCX_INIT, "flagcxHomoCommInit resetting uniqueIdData");
   memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
   if (comm->homo_rank == 0) {
     cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
@@ -420,6 +422,8 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
   if (comm->homo_rank == 0) {
     memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
   }
+  INFO(FLAGCX_INIT, "flagcxHomoCommInit gathering uniqueId, ranks=%d",
+       state->nranks);
   FLAGCXCHECK(
       bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
   FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));

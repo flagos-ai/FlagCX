@@ -16,12 +16,6 @@ struct flagcxTuner {
   // Name of the tuner
   const char *name;
 
-  void *bootstrap;
-
-  int rank;
-  int nranks;
-
-  float *profilingResults;
   // Initializes tuner states.
   // Inputs:
   //   - nRanks: number of ranks in current communicator. Each communicator
@@ -31,8 +25,9 @@ struct flagcxTuner {
   //   with FLAGCX core.
   // Outputs:
   //   - context: tuner context object
-  flagcxResult_t (*init)(size_t nRanks, size_t nNodes,
-                         flagcxDebugLogger_t logFunction, void **context);
+  flagcxResult_t (*init)(size_t nRanks, size_t rank,
+                         flagcxDebugLogger_t logFunction, void **context,
+                         void *commState);
 
   // Gets number of candidate communicator env settings available from this
   // tuner. Inputs:
