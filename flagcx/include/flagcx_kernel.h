@@ -128,8 +128,8 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              uint64_t addr2, uint64_t addr3,
                                              size_t count, size_t nthreads,
                                              flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop,
-                                             flagcxReduceTrigger **ret);
+                                             flagcxRedOp_t redop, int *idx);
+// flagcxReduceTrigger **ret);
 #ifdef COMPILE_KERNEL
 FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t count,
@@ -150,9 +150,12 @@ flagcxDeviceRecv(void *sendbuff, size_t count, flagcxDataType_t datatype,
                  int peer, void *fifoBuffer);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceTerm(void *fifoBuffer);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer);
-FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer); // TBD
+FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
+#endif // COMPILE_KERNEL
+
 void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
                    flagcxDataType_t datatype, int sendPeer, int recvPeer,
                    flagcxComm_t comm, flagcxStream_t stream);
-#endif // COMPILE_KERNEL
+void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
+                                  size_t nblocks, flagcxStream_t stream);
 #endif

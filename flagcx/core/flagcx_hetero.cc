@@ -30,6 +30,8 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
 
   flagcxGroupCommJoin(comm);
   flagcxHeteroGroupEnd();
+  TRACE(FLAGCX_P2P, "flagcxHeteroSend exit: rank %d, peer %d", comm->rank,
+        peer);
   return flagcxSuccess;
 }
 
@@ -59,5 +61,7 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
 
   flagcxGroupCommJoin(comm);
   flagcxHeteroGroupEnd();
+  TRACE(FLAGCX_P2P, "flagcxHeteroRecv exit: rank %d, peer %d", comm->rank,
+        peer);
   return flagcxSuccess;
 }

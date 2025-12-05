@@ -120,7 +120,8 @@ typedef struct {
 typedef struct {
   pthread_t thread;
   flagcxFifo_t fifo;
-  flagcxStream_t stream;
+  flagcxStream_t comm_stream;
+  flagcxStream_t red_stream;
   int stop = 0;
 
   // new: DAG and scheduling queues

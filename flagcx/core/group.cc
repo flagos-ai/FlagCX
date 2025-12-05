@@ -33,6 +33,7 @@ __thread struct flagcxIntruQueue<struct flagcxAsyncJob, &flagcxAsyncJob::next>
 flagcxResult_t flagcxHeteroGroupStart() {
   flagcxResult_t ret = flagcxSuccess;
   FLAGCXCHECK(flagcxGroupStartInternal());
+  TRACE(FLAGCX_INIT, "flagcxHeteroGroupStart called");
   return ret;
 }
 
@@ -40,6 +41,7 @@ flagcxResult_t flagcxHeteroGroupEnd() {
   flagcxResult_t ret = flagcxSuccess;
   FLAGCXCHECKGOTO(flagcxGroupEndInternal(), ret, exit);
 exit:
+  TRACE(FLAGCX_INIT, "flagcxHeteroGroupEnd called");
   return ret;
 }
 
