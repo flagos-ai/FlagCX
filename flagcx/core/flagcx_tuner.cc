@@ -531,7 +531,6 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
   // Execute matching only once when tune_objects has values
   const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
   const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
-  INFO(FLAGCX_TUNING, "inside flagcx, FLAGCX_TUNER_CONFIG_ID=%d", config_id);
   // static bool matchingDone = false;
   if (!ctx->tunerCommMatchingDone && config_id == 0) {
     // Determine if this comm needs tuning
@@ -554,8 +553,6 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
       ctx->tunerCommMatchingDone = true;
     }
   }
-  INFO(FLAGCX_TUNING, "reading FLAGCX_TUNER_DONE=%s",
-       getenv("FLAGCX_TUNER_DONE") ? getenv("FLAGCX_TUNER_DONE") : "NULL");
   // If not tuning this comm, directly return
   if (!comm->isTunningComm) {
     return flagcxSuccess;
@@ -616,19 +613,15 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
       return flagcxInternalError;
     }
 
-    INFO(FLAGCX_TUNING, "flagcxTuner distroying old communicator");
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
     flagcxInnerComm_t newInner = NULL;
-    INFO(FLAGCX_TUNING, "flagcxTuner creating new communicator");
     FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
                                    (struct bootstrapState *)(ctx->bootstrap),
                                    *comm, &newInner));
     (*comm)->tunerInnerComm = newInner;
     (*comm)->homo_comm = newInner;
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
-    INFO(FLAGCX_TUNING, "switch to the new communicator config, config_id=%d",
-         ctx->commConfigId);
     ctx->commConfigId += 1;
     // if all communicator configurations have been tested, set the environment
     // variable FLAGCX_TUNER_DONE to 1

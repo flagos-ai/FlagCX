@@ -412,9 +412,7 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
                                   flagcxInnerComm_t *homoComm /*out*/) {
   int rank = comm->rank;
   int nranks = comm->nranks;
-  INFO(FLAGCX_INIT, "flagcxHomoCommInit resetting commId");
   memset((void *)commId, 0, sizeof(*commId));
-  INFO(FLAGCX_INIT, "flagcxHomoCommInit resetting uniqueIdData");
   memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
   if (comm->homo_rank == 0) {
     cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
@@ -422,8 +420,6 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
   if (comm->homo_rank == 0) {
     memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
   }
-  INFO(FLAGCX_INIT, "flagcxHomoCommInit gathering uniqueId, ranks=%d",
-       state->nranks);
   FLAGCXCHECK(
       bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
   FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
@@ -460,8 +456,6 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
           "path.");
     }
   }
-  INFO(FLAGCX_TUNING, "flagcxTuner reading from file %s",
-       actual_filename.c_str());
 
   std::ifstream file(actual_filename);
   if (!file.is_open()) {
@@ -479,10 +473,6 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
     for (const auto &obj : j["tune_objects"]) {
       config.tune_objects.emplace_back(obj);
     }
-  }
-  for (int i = 0; i < config.tune_objects.size(); i++) {
-    INFO(FLAGCX_TUNING, "  tune_object %d: commOp=%s, nBytes=%ld", i,
-         config.tune_objects[i].commOp.c_str(), config.tune_objects[i].nBytes);
   }
 
   // Read config_id

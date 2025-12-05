@@ -644,10 +644,6 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
   syncStream(tensor.device());
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  std::cout << "inside flagcxBackend allreduce: "
-            << commOpToString(flagcxCommOpAllReduce)
-            << ", nBytes: " << getDataSize(flagcxDataType, tensor.numel())
-            << std::endl;
   if (options_->enableTuner && !recordingEnded) {
     recordTuneObject(flagcxCommOpAllReduce, flagcxDataType, tensor.numel());
   }
@@ -848,11 +844,6 @@ c10::intrusive_ptr<Work> flagcxBackend::barrier(const BarrierOptions &opts) {
   auto work = c10::make_intrusive<flagcxWork>(OpType::BARRIER, stream,
                                               handler_->devHandle);
 
-  if (options_->enableTuner) {
-    std::cout << "tuner comm encountered barrier op" << std::endl;
-  } else {
-    std::cout << "non-tuner comm encountered barrier op" << std::endl;
-  }
   C10D_FLAGCX_CHECK(flagcxBarrier(handler_->comm, stream), std::nullopt);
 
   work->event_->record(stream, deviceId_);
