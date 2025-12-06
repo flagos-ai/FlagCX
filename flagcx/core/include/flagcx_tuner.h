@@ -16,12 +16,6 @@ struct flagcxTuner {
   // Name of the tuner
   const char *name;
 
-  void *bootstrap;
-
-  int rank;
-  int nranks;
-
-  float *profilingResults;
   // Initializes tuner states.
   // Inputs:
   //   - nRanks: number of ranks in current communicator. Each communicator
@@ -31,8 +25,9 @@ struct flagcxTuner {
   //   with FLAGCX core.
   // Outputs:
   //   - context: tuner context object
-  flagcxResult_t (*init)(size_t nRanks, size_t nNodes,
-                         flagcxDebugLogger_t logFunction, void **context);
+  flagcxResult_t (*init)(size_t nRanks, size_t rank,
+                         flagcxDebugLogger_t logFunction, void **context,
+                         void *commState);
 
   // Gets number of candidate communicator env settings available from this
   // tuner. Inputs:
@@ -112,7 +107,7 @@ struct flagcxTuner {
                                      int bestConfigId);
 
   // Handle flagscale tuning logic
-  flagcxResult_t (*handleFlagscaleTuning)(flagcxComm_t comm,
+  flagcxResult_t (*handleFlagscaleTuning)(void *context, flagcxComm_t comm,
                                           flagcxCommOp_t commOp, size_t nBytes);
 };
 
@@ -137,7 +132,7 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
 // Returns flagcxSuccess if should call the original function and return
 // immediately, flagcxInProgress if should continue with profiling logic, or
 // other error codes on failure
-flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
+flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
                                            flagcxCommOp_t commOp,
                                            size_t nBytes);
 
@@ -145,7 +140,8 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
   do {                                                                         \
     size_t nBytes = count * getFlagcxDataTypeSize(datatype);                   \
     if (comm->isTuningWithFlagscale) {                                         \
-      FLAGCXCHECK(comm->tuner->handleFlagscaleTuning(comm, commOp, nBytes));   \
+      FLAGCXCHECK(comm->tuner->handleFlagscaleTuning(comm->tunerContext, comm, \
+                                                     commOp, nBytes));         \
       FLAGCXCHECK(call);                                                       \
       return flagcxSuccess;                                                    \
     }                                                                          \

@@ -843,6 +843,7 @@ c10::intrusive_ptr<Work> flagcxBackend::barrier(const BarrierOptions &opts) {
   auto stream = getStreamByIndex(0);
   auto work = c10::make_intrusive<flagcxWork>(OpType::BARRIER, stream,
                                               handler_->devHandle);
+
   C10D_FLAGCX_CHECK(flagcxBarrier(handler_->comm, stream), std::nullopt);
 
   work->event_->record(stream, deviceId_);

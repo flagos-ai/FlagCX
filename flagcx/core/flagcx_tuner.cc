@@ -111,6 +111,13 @@ static bool operator<(const struct TunerCommTagCounterKey &lhs,
 
 // customized context structure for internal use
 struct flagcxTunerContext {
+  void *bootstrap;
+
+  int rank;
+  int nranks;
+
+  float *profilingResults;
+
   // configure related struct
   std::vector<struct flagcxEnvConfig> configList;
   flagcxDebugLogger_t logger = NULL;
@@ -135,6 +142,10 @@ struct flagcxTunerContext {
 
   int bestConfigId = -1; // record the best communicator config id, used when
                          // tuning with FlagScale
+
+  // for flagscale tuning
+  bool tunerCommMatchingDone = false;
+  int lastFlagscaleConfigId = -1;
 
   // timer
   flagcxTimer<TunerProfileKey> timer;
@@ -164,10 +175,13 @@ static flagcxResult_t setEnvConfig(const struct flagcxEnvConfig &cfg,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxTunerInit(size_t nRanks, size_t nNodes,
-                               flagcxDebugLogger_t logFunction,
-                               void **context) {
+flagcxResult_t flagcxTunerInit(size_t nRanks, size_t rank,
+                               flagcxDebugLogger_t logFunction, void **context,
+                               void *commState) {
   struct flagcxTunerContext *ctx = new struct flagcxTunerContext;
+  ctx->bootstrap = commState;
+  ctx->rank = rank;
+  ctx->nranks = nRanks;
   FLAGCXCHECK(generateCandidate(ctx->configList));
   INFO(FLAGCX_TUNING, "Candidate number: %ld.", ctx->configList.size());
   ctx->logger = logFunction;
@@ -214,12 +228,7 @@ flagcxResult_t flagcxTunerInit(size_t nRanks, size_t nNodes,
   }
 
   // initialize profilingResults pointer
-  FLAGCXCHECK(
-      flagcxCalloc(&internalTuner.profilingResults, internalTuner.nranks));
-  if (flagcxGetEnv("TUNING_WITH_FLAGSCALE")) {
-    setenv("FLAGCX_TUNER_DONE", "0", 1);
-    return flagcxSuccess;
-  }
+  FLAGCXCHECK(flagcxCalloc(&ctx->profilingResults, nRanks));
   // start timer
   ctx->timer.start();
   return flagcxSuccess;
@@ -309,19 +318,16 @@ static flagcxResult_t findBestComm(struct flagcxTunerContext *ctx,
       continue;
     }
 
-    memcpy(internalTuner.profilingResults + internalTuner.rank, &duration,
-           sizeof(float));
+    memcpy(ctx->profilingResults + ctx->rank, &duration, sizeof(float));
     // get average duration across all ranks
-    FLAGCXCHECK(bootstrapAllGather(internalTuner.bootstrap,
-                                   (void *)internalTuner.profilingResults,
-                                   sizeof(float)));
-    FLAGCXCHECK(bootstrapBarrier(internalTuner.bootstrap, internalTuner.rank,
-                                 internalTuner.nranks, 0));
+    FLAGCXCHECK(bootstrapAllGather(
+        ctx->bootstrap, (void *)ctx->profilingResults, sizeof(float)));
+    FLAGCXCHECK(bootstrapBarrier(ctx->bootstrap, ctx->rank, ctx->nranks, 0));
     duration = 0.0f;
-    for (int i = 0; i < internalTuner.nranks; ++i) {
-      duration += internalTuner.profilingResults[i];
+    for (int i = 0; i < ctx->nranks; ++i) {
+      duration += ctx->profilingResults[i];
     }
-    duration /= internalTuner.nranks;
+    duration /= ctx->nranks;
 
     INFO(FLAGCX_TUNING,
          "Profiling data for (commId=%d,coll=%d,size=%zu,seq=%u) is %.3fms.",
@@ -386,9 +392,9 @@ flagcxResult_t flagcxCreateOrReplaceHomoComm(
   }
 
   flagcxInnerComm_t innerComm = NULL;
-  FLAGCXCHECK(flagcxHomoCommInit(
-      (*comm)->commId, (*comm)->uniqueIdData,
-      (struct bootstrapState *)((*comm)->tuner->bootstrap), *comm, &innerComm));
+  FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
+                                 (struct bootstrapState *)(ctx->bootstrap),
+                                 *comm, &innerComm));
   // Store new communicator of collCat into homoCommMap
   (*comm)->homoCommMap[collCat] = innerComm;
   // For backward compatible, also assign homo_comm field.
@@ -517,17 +523,23 @@ flagcxResult_t flagcxTunerGetCollInfo(void *context, flagcxCommOp_t collType,
 // environment
 // 3. Switches communicator config if config_id increments by 1
 // Returns flagcxSuccess on success, flagcxInternalError if config_id is invalid
-flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
+flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
                                            flagcxCommOp_t commOp,
                                            size_t nBytes) {
+  struct flagcxTunerContext *ctx =
+      static_cast<struct flagcxTunerContext *>(context);
   // Execute matching only once when tune_objects has values
-  static bool matchingDone = false;
-  if (!matchingDone) {
+  const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
+  const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
+  // static bool matchingDone = false;
+  if (!ctx->tunerCommMatchingDone && config_id == 0) {
     // Determine if this comm needs tuning
     FlagScaleConfig config = readFlagScaleJson();
     if (!config.tune_objects.empty()) {
       bool isTuningComm = false;
       flagcxCommOp_t currentCommOp = commOp;
+      INFO(FLAGCX_TUNING, "flagcxTuner finding match for commOp=%d, nBytes=%zu",
+           currentCommOp, nBytes);
       for (size_t idx = 0; idx < config.tune_objects.size(); ++idx) {
         const TuneObject &item = config.tune_objects[idx];
         std::string opStr = getTuneObjectCommOp(item);
@@ -538,20 +550,19 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
         }
       }
       comm->isTunningComm = isTuningComm;
-      matchingDone = true;
+      ctx->tunerCommMatchingDone = true;
     }
   }
-
   // If not tuning this comm, directly return
   if (!comm->isTunningComm) {
     return flagcxSuccess;
   }
 
+  INFO(FLAGCX_TUNING, "comm->isTunningComm=%d", comm->isTunningComm);
+
   // Need tuning this comm
   // Handle config_id logic
-  static int lastFlagscaleConfigId = -1;
-  const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
-  const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
+  // static int lastFlagscaleConfigId = -1;
   const char *bestConfigIdEnv = getenv("FLAGCX_TUNER_BEST_CONFIG_ID");
   const int bestConfigId =
       (bestConfigIdEnv != NULL) ? atoi(bestConfigIdEnv) : -1;
@@ -563,8 +574,9 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
 
   // if config_id is greater than lastFlagscaleConfigId by 1,
   // switch to the new communicator config
-  if (config_id - lastFlagscaleConfigId == 1) {
-    lastFlagscaleConfigId = config_id;
+  if (config_id - ctx->lastFlagscaleConfigId == 1) {
+    ctx->lastFlagscaleConfigId = config_id;
+    INFO(FLAGCX_TUNING, "call switchCommConfig with config_id=%d", config_id);
     FLAGCXCHECK(
         comm->tuner->switchCommConfig(comm->tunerContext, &comm, bestConfigId));
     return flagcxSuccess;
@@ -572,7 +584,7 @@ flagcxResult_t flagcxHandleFlagscaleTuning(flagcxComm_t comm,
 
   // if config_id is equal to lastFlagscaleConfigId, don't switch communicator
   // config
-  if (config_id - lastFlagscaleConfigId == 0) {
+  if (config_id - ctx->lastFlagscaleConfigId == 0) {
     return flagcxSuccess; // Should call call() and return
   }
 
@@ -604,15 +616,12 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
     flagcxInnerComm_t newInner = NULL;
-    FLAGCXCHECK(
-        flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
-                           (struct bootstrapState *)((*comm)->tuner->bootstrap),
-                           *comm, &newInner));
+    FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
+                                   (struct bootstrapState *)(ctx->bootstrap),
+                                   *comm, &newInner));
     (*comm)->tunerInnerComm = newInner;
     (*comm)->homo_comm = newInner;
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
-    INFO(FLAGCX_TUNING, "switch to the new communicator config, config_id=%d",
-         ctx->commConfigId);
     ctx->commConfigId += 1;
     // if all communicator configurations have been tested, set the environment
     // variable FLAGCX_TUNER_DONE to 1
@@ -638,10 +647,9 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
     flagcxInnerComm_t newInner = NULL;
-    FLAGCXCHECK(
-        flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
-                           (struct bootstrapState *)((*comm)->tuner->bootstrap),
-                           *comm, &newInner));
+    FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
+                                   (struct bootstrapState *)(ctx->bootstrap),
+                                   *comm, &newInner));
     (*comm)->tunerInnerComm = newInner;
     (*comm)->homo_comm = newInner;
     FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_COLL));
@@ -740,16 +748,12 @@ flagcxResult_t flagcxTunerDestroy(void *context) {
 
   // stop timer
   ctx->timer.stop();
-  free(internalTuner.profilingResults);
+  free(ctx->profilingResults);
   delete ctx;
   return flagcxSuccess;
 }
 
 flagcxTuner_t internalTuner = {"internal tuner",
-                               NULL, // assigned during flagcxCommInit
-                               0,    // assigned during flagcxCommInit
-                               0,    // assigned during flagcxCommInit
-                               NULL, // initialized during tunerInit
                                flagcxTunerInit,
                                flagcxTunerGetCandidateNumber,
                                flagcxTunerSetCandidate,
