@@ -144,6 +144,7 @@ struct flagcxProxyArgs {
   int p2pPeerOpHash = -1;
   size_t p2pSlotIdx = 0;
   size_t p2pPeerSlotIdx = 0;
+  void *p2pRmtAddr = nullptr; // Remote address for P2P zero-copy
 
   union flagcxProxyOpSpecifics specifics;
 };

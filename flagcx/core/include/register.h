@@ -10,7 +10,8 @@ enum {
   NVLS_REG_COMPLETE = 0x02,
   NVLS_REG_POSSIBLE = 0x04,
   NVLS_REG_NO_SUPPORT = 0x08,
-  COLLNET_REG_COMPLETE = 0x10
+  COLLNET_REG_COMPLETE = 0x10,
+  IPC_REG_COMPLETE = 0x20
 };
 
 struct netRegInfo {
@@ -23,11 +24,35 @@ struct flagcxRegNetHandle {
   struct flagcxProxyConnector *proxyConn = NULL;
 };
 
+struct flagcxRegP2pHandle {
+  void *handle = NULL;
+  struct flagcxProxyConnector *proxyConn = NULL;
+};
+
+struct flagcxIpcImpInfo {
+  void *rmtRegAddr;
+  bool legacyIpcCap;
+  uintptr_t offset;
+};
+
+struct flagcxPeerRegIpcAddr {
+  uintptr_t *devPeerRmtAddrs;
+  uintptr_t *hostPeerRmtAddrs;
+};
+
+struct flagcxIpcRegInfo {
+  int peerRank;
+  void *baseAddr;
+  struct flagcxProxyConnector *ipcProxyconn;
+  struct flagcxIpcImpInfo impInfo;
+  bool handleReady;
+};
+
 struct flagcxRegItem {
   uintptr_t beginAddr = 0;
   uintptr_t endAddr = 0;
   int refCount = 1;
-  std::list<flagcxRegNetHandle> netHandles;
+  std::list<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
 };
 
 struct flagcxReg {

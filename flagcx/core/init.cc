@@ -15,6 +15,8 @@
 #include "topo.h"
 #include "transport.h"
 #include "type.h"
+#include "utils.h"
+#include <algorithm>
 #include <string.h>
 
 static bool initialized = false;
@@ -122,6 +124,115 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     }
   }
 
+  {
+    FLAGCXCHECKGOTO(flagcxCalloc(&comm->rankToNode, nranks), ret, fail);
+    int *nodesFirstRank = NULL;
+    FLAGCXCHECKGOTO(flagcxCalloc(&nodesFirstRank, nranks), ret, fail);
+    comm->nNodes = 0;
+    for (int r = 0; r < nranks; r++) {
+      int node;
+      for (node = 0; node < comm->nNodes; node++) {
+        if (comm->peerInfo[nodesFirstRank[node]].hostHash ==
+            comm->peerInfo[r].hostHash)
+          break;
+      }
+      if (node == comm->nNodes) {
+        nodesFirstRank[comm->nNodes] = r;
+        comm->nNodes++;
+      }
+      comm->rankToNode[r] = node;
+    }
+
+    // Allocate nodeRanks and count localRanks per node
+    FLAGCXCHECKGOTO(flagcxCalloc(&comm->nodeRanks, comm->nNodes), ret, fail);
+    FLAGCXCHECKGOTO(flagcxCalloc(&comm->rankToLocalRank, nranks), ret, fail);
+    for (int r = 0; r < nranks; r++) {
+      int node = comm->rankToNode[r];
+      comm->rankToLocalRank[r] = comm->nodeRanks[node].localRanks;
+      comm->nodeRanks[node].localRanks++;
+    }
+
+    // Allocate localRankToRank arrays and find maxLocalRanks
+    comm->maxLocalRanks = 0;
+    for (int n = 0; n < comm->nNodes; n++) {
+      FLAGCXCHECKGOTO(flagcxCalloc(&comm->nodeRanks[n].localRankToRank,
+                                   comm->nodeRanks[n].localRanks),
+                      ret, fail);
+      comm->maxLocalRanks =
+          std::max(comm->maxLocalRanks, comm->nodeRanks[n].localRanks);
+      comm->nodeRanks[n].localRanks = 0; // Reset for filling
+    }
+
+    // Fill localRankToRank arrays
+    for (int r = 0; r < nranks; r++) {
+      int node = comm->rankToNode[r];
+      comm->nodeRanks[node]
+          .localRankToRank[comm->nodeRanks[node].localRanks++] = r;
+    }
+
+    // Set local info for this rank
+    comm->node = comm->rankToNode[rank];
+    comm->localRank = comm->rankToLocalRank[rank];
+    comm->localRanks = comm->nodeRanks[comm->node].localRanks;
+    comm->localRankToRank = comm->nodeRanks[comm->node].localRankToRank;
+
+    // Build p2pSchedule with two-level scheduling (like NCCL)
+    int node = comm->node;
+    int local = comm->localRank;
+    int nLocals = comm->maxLocalRanks;
+    struct flagcxNodeRanks *nodeRanks = comm->nodeRanks;
+    bool flat = false;
+    for (int n = 0; n < comm->nNodes; n++) {
+      if (comm->nodeRanks[n].localRanks != nLocals) {
+        flat = true;
+        comm->nNodes = 1;
+        node = 0;
+        nLocals = nranks;
+        local = rank;
+        break;
+      }
+    }
+    int nNodesPow2 = pow2Up(comm->nNodes);
+    int nLocalsPow2 = pow2Up(nLocals);
+    uint32_t nodeRound = 0;
+    uint32_t nodeDelta = 0;
+    int round = 0;
+    do {
+      if ((int)nodeDelta < comm->nNodes) { // Filter nonsensical node deltas
+        int sendNode = (node + nodeDelta) % comm->nNodes;
+        int recvNode = (node - nodeDelta + comm->nNodes) % comm->nNodes;
+        uint32_t localRound = 0;
+        uint32_t localDelta = 0;
+        do {
+          if ((int)localDelta < nLocals) { // Filter nonsensical local deltas
+            int sendLocal = (local + localDelta) % nLocals;
+            int recvLocal = (local - localDelta + nLocals) % nLocals;
+            comm->p2pSchedule[round].sendRank =
+                flat ? sendLocal
+                     : nodeRanks[sendNode].localRankToRank[sendLocal];
+            comm->p2pSchedule[round].recvRank =
+                flat ? recvLocal
+                     : nodeRanks[recvNode].localRankToRank[recvLocal];
+            round += 1;
+          }
+          localRound += 1;
+          localDelta =
+              (localDelta + localRound) & (nLocalsPow2 - 1); // Quadratic update
+        } while (localRound != (uint32_t)nLocalsPow2);
+      }
+      nodeRound += 1;
+      nodeDelta = (nodeDelta + nodeRound) & (nNodesPow2 - 1);
+    } while (nodeRound != (uint32_t)nNodesPow2);
+
+    if (round != nranks) {
+      WARN("P2p schedule creation has bugs: round=%d nranks=%d", round, nranks);
+      ret = flagcxInternalError;
+      free(nodesFirstRank);
+      goto fail;
+    }
+    free(nodesFirstRank);
+  }
+
   INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
   FLAGCXCHECKGOTO(flagcxTopoGetServerTopo(comm, &comm->topoServer), ret, fail);
   FLAGCXCHECKGOTO(flagcxTopoComputePaths(comm->topoServer, comm), ret, fail);
@@ -182,6 +293,7 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     FLAGCXCHECK(flagcxCalloc(&comm->proxyState, 1));
     FLAGCXCHECK(flagcxCalloc(&comm->tasks.peers, nranks));
     FLAGCXCHECK(flagcxCalloc(&comm->tasks.p2pOrder, 2 * nranks));
+    FLAGCXCHECK(flagcxCalloc(&comm->p2pSchedule, nranks));
     // Setup mutex/cond to work inter-process
     pthread_mutexattr_t mutexAttr;
     pthread_mutexattr_init(&mutexAttr);

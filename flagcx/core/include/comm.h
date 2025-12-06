@@ -228,6 +228,12 @@ struct flagcxHeteroComm {
   int p2pnChannelsPerPeer;
   int p2pChannels[MAXCHANNELS];
 
+  // P2P schedule for pairing send/recv operations
+  struct P2pSchedulePair {
+    int sendRank;
+    int recvRank;
+  } * p2pSchedule;
+
   // Should this comm allocate LL buffers for network P2P connections?
   bool allocP2pNetLLBuffers;
 

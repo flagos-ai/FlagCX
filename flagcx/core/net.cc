@@ -390,17 +390,17 @@ static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
       if (peerConn == NULL)
         continue;
       peerProxyConn = &peerConn->proxyConn;
-      for (auto it = regRecord->netHandles.begin();
-           it != regRecord->netHandles.end(); it++) {
-        if (it->proxyConn == peerProxyConn) {
+      for (auto it = regRecord->handles.begin(); it != regRecord->handles.end();
+           it++) {
+        if (it->first.proxyConn == peerProxyConn && it->first.handle) {
           found = true;
-          outHandle[p] = it->handle;
+          outHandle[p] = it->first.handle;
           *outRegBufFlag = 1;
           INFO(FLAGCX_REG,
                "rank %d - NET reuse buffer %p size %ld (baseAddr %p size %ld) "
                "handle %p",
                comm->rank, userbuff, buffSize, (void *)regRecord->beginAddr,
-               regRecord->endAddr - regRecord->beginAddr, it->handle);
+               regRecord->endAddr - regRecord->beginAddr, it->first.handle);
           break;
         }
       }
@@ -412,11 +412,8 @@ static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
             (flagcxHeteroComm *)comm, peerProxyConn, flagcxProxyMsgRegister,
             &info, sizeof(struct netRegInfo), &handle, sizeof(void *)));
         if (handle) {
-          struct flagcxRegNetHandle *netHandle;
-          FLAGCXCHECK(flagcxCalloc(&netHandle, 1));
-          netHandle->handle = handle;
-          netHandle->proxyConn = peerProxyConn;
-          regRecord->netHandles.push_front(std::move(*netHandle));
+          FLAGCXCHECK(globalRegPool.addNetHandle(comm, regRecord, handle,
+                                                 peerProxyConn));
           outHandle[p] = handle;
           *outRegBufFlag = 1;
           INFO(FLAGCX_REG,

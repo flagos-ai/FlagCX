@@ -679,69 +679,77 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
           "proxyProgressAsync::flagcxProxyMsgRegister opId=%p op.reqBuff=%p, "
           "op->reqSize=%d, op->respSize=%d",
           op->opId, op->reqBuff, op->reqSize, op->respSize);
-    void *handle;
-    struct netRegInfo *info = (struct netRegInfo *)op->reqBuff;
-    assert(op->reqSize == sizeof(struct netRegInfo));
-    assert(op->respSize == sizeof(void *));
-    if (op->connection->send) {
-      // send side
-      struct sendNetResources *resources =
-          (struct sendNetResources *)(op->connection->transportResources);
-      if (dmaBufferSupport) {
-        int dmabuf_fd;
-        FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-            (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
-        FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-            resources->netSendComm, (void *)info->buffer, info->size, 2, 0ULL,
-            dmabuf_fd, &handle));
-        (void)close(dmabuf_fd);
+    if (op->connection->transport == TRANSPORT_P2P) {
+      ;
+    } else if (op->connection->transport == TRANSPORT_NET) {
+      void *handle;
+      struct netRegInfo *info = (struct netRegInfo *)op->reqBuff;
+      assert(op->reqSize == sizeof(struct netRegInfo));
+      assert(op->respSize == sizeof(void *));
+      if (op->connection->send) {
+        // send side
+        struct sendNetResources *resources =
+            (struct sendNetResources *)(op->connection->transportResources);
+        if (dmaBufferSupport) {
+          int dmabuf_fd;
+          FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+              (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
+          FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
+              resources->netSendComm, (void *)info->buffer, info->size, 2, 0ULL,
+              dmabuf_fd, &handle));
+          (void)close(dmabuf_fd);
+        } else {
+          FLAGCXCHECK(resources->netAdaptor->regMr(resources->netSendComm,
+                                                   (void *)info->buffer,
+                                                   info->size, 2, &handle));
+        }
       } else {
-        FLAGCXCHECK(resources->netAdaptor->regMr(resources->netSendComm,
-                                                 (void *)info->buffer,
-                                                 info->size, 2, &handle));
+        // recv side
+        struct recvNetResources *resources =
+            (struct recvNetResources *)(op->connection->transportResources);
+        if (dmaBufferSupport) {
+          int dmabuf_fd;
+          FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+              (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
+          FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
+              resources->netRecvComm, (void *)info->buffer, info->size, 2, 0ULL,
+              dmabuf_fd, &handle));
+          (void)close(dmabuf_fd);
+        } else {
+          FLAGCXCHECK(resources->netAdaptor->regMr(resources->netRecvComm,
+                                                   (void *)info->buffer,
+                                                   info->size, 2, &handle));
+        }
       }
-    } else {
-      // recv side
-      struct recvNetResources *resources =
-          (struct recvNetResources *)(op->connection->transportResources);
-      if (dmaBufferSupport) {
-        int dmabuf_fd;
-        FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-            (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
-        FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-            resources->netRecvComm, (void *)info->buffer, info->size, 2, 0ULL,
-            dmabuf_fd, &handle));
-        (void)close(dmabuf_fd);
-      } else {
-        FLAGCXCHECK(resources->netAdaptor->regMr(resources->netRecvComm,
-                                                 (void *)info->buffer,
-                                                 info->size, 2, &handle));
-      }
+      memcpy(op->respBuff, (void *)&handle, sizeof(void *));
+      done = 1;
     }
-    memcpy(op->respBuff, (void *)&handle, sizeof(void *));
-    done = 1;
   } else if (op->type == flagcxProxyMsgDeregister) {
     TRACE(FLAGCX_PROXY,
           "proxyProgressAsync::flagcxProxyMsgDeregister opId=%p op.reqBuff=%p, "
           "op->reqSize=%d, op->respSize=%d",
           op->opId, op->reqBuff, op->reqSize, op->respSize);
-    void *handle;
-    assert(op->reqSize == sizeof(void *));
-    memcpy(&handle, op->reqBuff, sizeof(void *));
-    if (op->connection->send) {
-      // send side
-      struct sendNetResources *resources =
-          (struct sendNetResources *)(op->connection->transportResources);
-      FLAGCXCHECK(
-          resources->netAdaptor->deregMr(resources->netSendComm, handle));
-    } else {
-      // recv side
-      struct recvNetResources *resources =
-          (struct recvNetResources *)(op->connection->transportResources);
-      FLAGCXCHECK(
-          resources->netAdaptor->deregMr(resources->netRecvComm, handle));
+    if (op->connection->transport == TRANSPORT_P2P) {
+      ;
+    } else if (op->connection->transport == TRANSPORT_NET) {
+      void *handle;
+      assert(op->reqSize == sizeof(void *));
+      memcpy(&handle, op->reqBuff, sizeof(void *));
+      if (op->connection->send) {
+        // send side
+        struct sendNetResources *resources =
+            (struct sendNetResources *)(op->connection->transportResources);
+        FLAGCXCHECK(
+            resources->netAdaptor->deregMr(resources->netSendComm, handle));
+      } else {
+        // recv side
+        struct recvNetResources *resources =
+            (struct recvNetResources *)(op->connection->transportResources);
+        FLAGCXCHECK(
+            resources->netAdaptor->deregMr(resources->netRecvComm, handle));
+      }
+      done = 1;
     }
-    done = 1;
   } else if (op->type == flagcxProxyMsgSetup &&
              op->connection->transport == TRANSPORT_P2P) {
     if (op->connection->send) {

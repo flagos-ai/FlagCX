@@ -158,92 +158,83 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     // post all send/recv tasks
     do {
       flagcxTasks *tasks = &comm->tasks;
-      for (int i = 0; i < tasks->p2pOrderSteps; i++) {
-        int peer = tasks->p2pOrder[i];
-        if (peer != comm->rank) {
-          // Handle cross-process send/recv: use proxy
-          while (!flagcxIntruQueueEmpty(&tasks->peers[peer].sendQueue)) {
-            flagcxTaskP2p *p2p =
-                flagcxIntruQueueDequeue(&tasks->peers[peer].sendQueue);
-            flagcxProxyOp *op;
-            FLAGCXCHECK(flagcxCalloc(&op, 1));
-            op->pattern = flagcxPatternSend;
-            op->nbytes = p2p->bytes;
-            op->recvbuff = (uint8_t *)p2p->buff;
-            op->channelId = 0;
-            op->root = peer;
-            op->connection = comm->channels[op->channelId]
-                                 .peers[peer]
-                                 ->send[0]
-                                 .proxyConn.connection;
-            op->args.chunkSize = flagcxNetChunkSize;
-            op->args.chunkSteps = (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
-            op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
-            op->args.deviceFuncRelaxedOrdering = deviceFuncRelaxedOrdering;
-            op->stream = p2p->stream;
-            if (op->connection->transport == TRANSPORT_P2P) {
-              setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 0,
-                             &op->args.p2pOpHash, &op->args.p2pSlotIdx);
-              setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 1,
-                             &op->args.p2pPeerOpHash, &op->args.p2pPeerSlotIdx);
-              TRACE_CALL("Sender: [rank(%d), peerRank(%d)] -> [slotIdx(%ld), "
-                         "opHash(%d)]",
-                         comm->rank, peer, op->args.p2pSlotIdx,
-                         op->args.p2pOpHash);
-              TRACE_CALL(
-                  "Sender: [peerRank(%d), rank(%d)] -> [peerSlotIdx(%ld), "
-                  "peerOpHash(%d)]",
-                  peer, comm->rank, op->args.p2pPeerSlotIdx,
-                  op->args.p2pPeerOpHash);
-            }
-            // launch proxyRegister op if not yet registered
-            if (op->connection->transport == TRANSPORT_NET) {
-              flagcxConnector *peerConns[] = {
-                  comm->channels[op->channelId].peers[peer]->send};
-              FLAGCXCHECK(flagcxNetRegisterBuffer(
-                  comm, p2p->buff, p2p->bytes, peerConns, 1,
-                  &op->args.regBufFlag, &op->args.regHandle));
-            }
-            // we don't use semaphore tracking for device func for the moment
-            if (deviceAsyncLoad && deviceAsyncStore) {
-              FLAGCXCHECK(deviceAdaptor->eventCreate(&op->event,
-                                                     flagcxEventDisableTiming));
-              FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
-              std::vector<void *> argList;
-              FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-                  (void **)&op->args.dlArgs, sizeof(bool), flagcxMemDevice,
-                  op->stream));
-              FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-                  (void **)&op->args.dEventReady, sizeof(bool), flagcxMemDevice,
-                  op->stream));
-              FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
-                  op->stream, deviceAsyncStore, op->args.dEventReady));
-              FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-                  (void *)&op->args.hEventReady, (void *)op->args.dEventReady,
-                  sizeof(bool), flagcxMemcpyDeviceToHost, op->stream, NULL));
-              argList = {(void *)&op->args.eventRecorded,
-                         (void *)&op->args.hlArgs, (void *)op->args.dlArgs};
-              funcQueue.push({op->stream, op->event, argList.data()});
-              argsQueue.push(std::move(argList));
-            } else {
-              op->args.semaphore = semaphore;
-              op->event = semaphore->getEvent();
-              semaphore->counter++;
-              FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
-              if (launchStream == nullptr) {
-                launchStream = op->stream;
-              } else {
-                FLAGCXCHECK(
-                    deviceAdaptor->streamWaitEvent(launchStream, op->event));
-              }
-            }
-            FLAGCXCHECK(flagcxProxySaveOp(comm, op));
-            free(p2p);
-          }
+      int nRanks = comm->nRanks;
 
-          while (!flagcxIntruQueueEmpty(&tasks->peers[peer].recvQueue)) {
+      // Round 0: handle self send/recv (local copy)
+      {
+        int peer = comm->rank;
+        std::vector<flagcxTaskP2p *> sendTasks;
+        std::vector<flagcxTaskP2p *> recvTasks;
+        while (!flagcxIntruQueueEmpty(&tasks->peers[peer].sendQueue))
+          sendTasks.push_back(
+              flagcxIntruQueueDequeue(&tasks->peers[peer].sendQueue));
+        while (!flagcxIntruQueueEmpty(&tasks->peers[peer].recvQueue))
+          recvTasks.push_back(
+              flagcxIntruQueueDequeue(&tasks->peers[peer].recvQueue));
+
+        for (size_t i = 0; i < sendTasks.size();) {
+          bool matched = false;
+          for (size_t j = 0; j < recvTasks.size(); j++) {
+            if (sendTasks[i]->bytes == recvTasks[j]->bytes &&
+                sendTasks[i]->dtype == recvTasks[j]->dtype) {
+              if (sendTasks[i]->buff != recvTasks[j]->buff) {
+                flagcxProxyOp *op;
+                FLAGCXCHECK(flagcxCalloc(&op, 1));
+                op->pattern = flagcxPatternSend;
+                op->nbytes = sendTasks[i]->bytes;
+                op->sendbuff = (uint8_t *)sendTasks[i]->buff;
+                op->recvbuff = (uint8_t *)recvTasks[j]->buff;
+                op->channelId = 0;
+                op->root = peer;
+                op->connection = comm->channels[op->channelId]
+                                     .peers[peer]
+                                     ->send[0]
+                                     .proxyConn.connection;
+                op->stream = sendTasks[i]->stream;
+                op->event = semaphore->getEvent();
+                op->args.chunkSteps = 1; // single step
+                op->args.semaphore = semaphore;
+                semaphore->counter++;
+                FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
+                if (launchStream == nullptr) {
+                  launchStream = op->stream;
+                } else {
+                  FLAGCXCHECK(
+                      deviceAdaptor->streamWaitEvent(launchStream, op->event));
+                }
+                FLAGCXCHECK(flagcxProxySaveOp(comm, op));
+              }
+              free(sendTasks[i]);
+              free(recvTasks[j]);
+              sendTasks.erase(sendTasks.begin() + i);
+              recvTasks.erase(recvTasks.begin() + j);
+              matched = true;
+              break;
+            }
+          }
+          if (!matched)
+            i++;
+        }
+        for (auto *task : sendTasks)
+          flagcxIntruQueueEnqueue(&tasks->peers[peer].sendQueue, task);
+        for (auto *task : recvTasks)
+          flagcxIntruQueueEnqueue(&tasks->peers[peer].recvQueue, task);
+      }
+
+      // Round 1..nRanks-1: use p2pSchedule to pair recv/send with different
+      // peers
+      for (int round = 1; round < nRanks; round++) {
+        int recvPeer = comm->p2pSchedule[round].recvRank;
+        int sendPeer = comm->p2pSchedule[round].sendRank;
+
+        while (!flagcxIntruQueueEmpty(&tasks->peers[recvPeer].recvQueue) ||
+               !flagcxIntruQueueEmpty(&tasks->peers[sendPeer].sendQueue)) {
+
+          // Process one recv task (for IPC register)
+          if (!flagcxIntruQueueEmpty(&tasks->peers[recvPeer].recvQueue)) {
             flagcxTaskP2p *p2p =
-                flagcxIntruQueueDequeue(&tasks->peers[peer].recvQueue);
+                flagcxIntruQueueDequeue(&tasks->peers[recvPeer].recvQueue);
+            int peer = recvPeer;
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));
             op->pattern = flagcxPatternRecv;
@@ -273,6 +264,25 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                          "[peerSlotIdx(%ld), peerOpHash(%d)]",
                          peer, comm->rank, op->args.p2pPeerSlotIdx,
                          op->args.p2pPeerOpHash);
+
+              flagcxConnector *recvConn =
+                  &comm->channels[op->channelId].peers[peer]->recv[0];
+              flagcxConnector *peerConns[] = {recvConn};
+              int peerRanks[] = {peer};
+              uintptr_t regOffset = 0;
+              uintptr_t *peerRmtAddr = NULL;
+              op->args.regBufFlag = 0;
+              FLAGCXCHECK(flagcxP2pRegisterBuffer(
+                  comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
+                  flagcxP2pRegisterModeRegister, &op->args.regBufFlag,
+                  &regOffset, &peerRmtAddr));
+              if (op->args.regBufFlag) {
+                INFO(FLAGCX_REG,
+                     "flagcxGroup P2P recv reg rank %d <- %d buff %p size %zu "
+                     "offset %zu remote %p",
+                     comm->rank, peer, p2p->buff, p2p->bytes, (size_t)regOffset,
+                     peerRmtAddr ? (void *)(*peerRmtAddr) : NULL);
+              }
             }
             // launch proxyRegister op if not yet registered
             if (op->connection->transport == TRANSPORT_NET) {
@@ -318,78 +328,104 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             FLAGCXCHECK(flagcxProxySaveOp(comm, op));
             free(p2p);
           }
-        } else {
-          std::vector<flagcxTaskP2p *> sendTasks;
-          std::vector<flagcxTaskP2p *> recvTasks;
-          while (!flagcxIntruQueueEmpty(&tasks->peers[peer].sendQueue))
-            sendTasks.push_back(
-                flagcxIntruQueueDequeue(&tasks->peers[peer].sendQueue));
-          while (!flagcxIntruQueueEmpty(&tasks->peers[peer].recvQueue))
-            recvTasks.push_back(
-                flagcxIntruQueueDequeue(&tasks->peers[peer].recvQueue));
 
-          for (size_t i = 0; i < sendTasks.size();) {
-            bool matched = false;
-            for (size_t j = 0; j < recvTasks.size(); j++) {
-              if (sendTasks[i]->bytes == recvTasks[j]->bytes &&
-                  sendTasks[i]->dtype == recvTasks[j]->dtype) {
-                if (sendTasks[i]->buff != recvTasks[j]->buff) {
-                  flagcxProxyOp *op;
-                  FLAGCXCHECK(flagcxCalloc(&op, 1));
-                  op->pattern = flagcxPatternSend;
-                  op->nbytes = sendTasks[i]->bytes;
-                  op->sendbuff = (uint8_t *)sendTasks[i]->buff;
-                  op->recvbuff = (uint8_t *)recvTasks[j]->buff;
-                  op->channelId = 0;
-                  op->root = peer;
-                  op->connection = comm->channels[op->channelId]
-                                       .peers[peer]
-                                       ->send[0]
-                                       .proxyConn.connection;
-                  op->stream = sendTasks[i]->stream;
-                  op->event = semaphore->getEvent();
-                  op->args.chunkSteps = 1; // single step
-                  op->args.semaphore = semaphore;
-                  semaphore->counter++;
-                  FLAGCXCHECK(
-                      deviceAdaptor->eventRecord(op->event, op->stream));
-                  if (launchStream == nullptr) {
-                    launchStream = op->stream;
-                  } else {
-                    FLAGCXCHECK(deviceAdaptor->streamWaitEvent(launchStream,
-                                                               op->event));
-                  }
-                  FLAGCXCHECK(flagcxProxySaveOp(comm, op));
-                }
-                free(sendTasks[i]);
-                free(recvTasks[j]);
-                sendTasks.erase(sendTasks.begin() + i);
-                recvTasks.erase(recvTasks.begin() + j);
-                matched = true;
-                break;
+          // Process one send task (for IPC lookup - after recv's register)
+          if (!flagcxIntruQueueEmpty(&tasks->peers[sendPeer].sendQueue)) {
+            flagcxTaskP2p *p2p =
+                flagcxIntruQueueDequeue(&tasks->peers[sendPeer].sendQueue);
+            int peer = sendPeer;
+            flagcxProxyOp *op;
+            FLAGCXCHECK(flagcxCalloc(&op, 1));
+            op->pattern = flagcxPatternSend;
+            op->nbytes = p2p->bytes;
+            op->recvbuff = (uint8_t *)p2p->buff;
+            op->channelId = 0;
+            op->root = peer;
+            op->connection = comm->channels[op->channelId]
+                                 .peers[peer]
+                                 ->send[0]
+                                 .proxyConn.connection;
+            op->args.chunkSize = flagcxNetChunkSize;
+            op->args.chunkSteps = (p2p->bytes + flagcxNetChunkSize - 1) / (flagcxNetChunkSize);
+            op->args.sendStepMask = FLAGCX_NET_MAX_STEPS - 1;
+            op->args.deviceFuncRelaxedOrdering = deviceFuncRelaxedOrdering;
+            op->stream = p2p->stream;
+            if (op->connection->transport == TRANSPORT_P2P) {
+              setP2pSlotInfo(comm->rank, peer, p2p->bytes, p2p->dtype, 0,
+                             &op->args.p2pOpHash, &op->args.p2pSlotIdx);
+              setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 1,
+                             &op->args.p2pPeerOpHash, &op->args.p2pPeerSlotIdx);
+              TRACE_CALL("Sender: [rank(%d), peerRank(%d)] -> [slotIdx(%ld), "
+                         "opHash(%d)]",
+                         comm->rank, peer, op->args.p2pSlotIdx,
+                         op->args.p2pOpHash);
+              TRACE_CALL(
+                  "Sender: [peerRank(%d), rank(%d)] -> [peerSlotIdx(%ld), "
+                  "peerOpHash(%d)]",
+                  peer, comm->rank, op->args.p2pPeerSlotIdx,
+                  op->args.p2pPeerOpHash);
+              flagcxConnector *peerConns[] = {
+                  comm->channels[op->channelId].peers[peer]->send};
+              int peerRanks[] = {peer};
+              uintptr_t regOffset = 0;
+              uintptr_t *peerRmtAddr = NULL;
+              FLAGCXCHECK(flagcxP2pRegisterBuffer(
+                  comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
+                  flagcxP2pRegisterModeLookup, &op->args.regBufFlag, &regOffset,
+                  &peerRmtAddr));
+              // Pass the remote address to sender for zero-copy
+              // peerRmtAddr is the remote address itself (cast as uintptr_t*)
+              if (op->args.regBufFlag && peerRmtAddr) {
+                op->args.p2pRmtAddr = (void *)peerRmtAddr;
               }
             }
-            if (!matched)
-              i++;
+            // launch proxyRegister op if not yet registered
+            if (op->connection->transport == TRANSPORT_NET) {
+              flagcxConnector *peerConns[] = {
+                  comm->channels[op->channelId].peers[peer]->send};
+              FLAGCXCHECK(flagcxNetRegisterBuffer(
+                  comm, p2p->buff, p2p->bytes, peerConns, 1,
+                  &op->args.regBufFlag, &op->args.regHandle));
+            }
+            // we don't use semaphore tracking for device func for the moment
+            if (deviceAsyncLoad && deviceAsyncStore) {
+              FLAGCXCHECK(deviceAdaptor->eventCreate(&op->event,
+                                                     flagcxEventDisableTiming));
+              FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
+              std::vector<void *> argList;
+              FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+                  (void **)&op->args.dlArgs, sizeof(bool), flagcxMemDevice,
+                  op->stream));
+              FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+                  (void **)&op->args.dEventReady, sizeof(bool), flagcxMemDevice,
+                  op->stream));
+              FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
+                  op->stream, deviceAsyncStore, op->args.dEventReady));
+              FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+                  (void *)&op->args.hEventReady, (void *)op->args.dEventReady,
+                  sizeof(bool), flagcxMemcpyDeviceToHost, op->stream, NULL));
+              argList = {(void *)&op->args.eventRecorded,
+                         (void *)&op->args.hlArgs, (void *)op->args.dlArgs};
+              funcQueue.push({op->stream, op->event, argList.data()});
+              argsQueue.push(std::move(argList));
+            } else {
+              op->args.semaphore = semaphore;
+              op->event = semaphore->getEvent();
+              semaphore->counter++;
+              FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
+              if (launchStream == nullptr) {
+                launchStream = op->stream;
+              } else {
+                FLAGCXCHECK(
+                    deviceAdaptor->streamWaitEvent(launchStream, op->event));
+              }
+            }
+            FLAGCXCHECK(flagcxProxySaveOp(comm, op));
+            free(p2p);
           }
-          for (auto *task : sendTasks)
-            flagcxIntruQueueEnqueue(&tasks->peers[peer].sendQueue, task);
-          for (auto *task : recvTasks)
-            flagcxIntruQueueEnqueue(&tasks->peers[peer].recvQueue, task);
         }
       }
-      // Clean up p2pOrder: remove peers with empty queues, keep peers with
-      // pending operations
-      int newOrderSteps = 0;
-      for (int i = 0; i < tasks->p2pOrderSteps; i++) {
-        int peer = tasks->p2pOrder[i];
-        // Keep peer in order if it still has pending send or recv operations
-        if (!flagcxIntruQueueEmpty(&tasks->peers[peer].sendQueue) ||
-            !flagcxIntruQueueEmpty(&tasks->peers[peer].recvQueue)) {
-          tasks->p2pOrder[newOrderSteps++] = peer;
-        }
-      }
-      tasks->p2pOrderSteps = newOrderSteps;
+      tasks->p2pOrderSteps = 0;
       comm = comm->groupNext;
     } while (comm != nullptr);
   }

@@ -19,6 +19,7 @@
 
 #include "event_flagcx.hpp"
 #include "stream_guard_flagcx.hpp"
+#include "utils_flagcx.hpp"
 
 namespace c10d {
 
@@ -74,8 +75,38 @@ private:
 
 class flagcxBackend : public Backend {
 public:
+// TODO: check with all vendors to make sure their torch implementation support
+// backend options
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
+  struct TuneObjectKey {
+    std::string commOp;
+    size_t nBytes;
+
+    bool operator<(const TuneObjectKey &other) const noexcept {
+      if (other.commOp == commOp) {
+        return nBytes < other.nBytes;
+      }
+      return commOp < other.commOp;
+    }
+  };
+
+  struct Options : Backend::Options {
+    explicit Options(bool enableTuner = false);
+
+    static c10::intrusive_ptr<Options> create(bool enableTuner = false) {
+      return c10::make_intrusive<Options>(enableTuner);
+    }
+
+    bool enableTuner{false};
+  };
+
+  explicit flagcxBackend(
+      const c10::intrusive_ptr<::c10d::Store> &store, int rank = -1,
+      int size = -1, c10::intrusive_ptr<Options> options = Options::create());
+#else
   explicit flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
                          int rank = -1, int size = -1);
+#endif
 
   ~flagcxBackend() override;
 
@@ -167,9 +198,18 @@ public:
   c10::intrusive_ptr<Work> recvAnysource(std::vector<at::Tensor> &tensors,
                                          int tag) override;
 
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
+  void checkRecordingEnded();
+  void recordTuneObject(flagcxCommOp_t commOp, flagcxDataType_t dataType,
+                        size_t count);
+  static c10::intrusive_ptr<Backend> createFlagcxBackend(
+      c10d::DistributedBackendOptions backendOptions,
+      c10::intrusive_ptr<Options> extraOptions = Options::create());
+#else
   static c10::intrusive_ptr<Backend>
   createFlagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store, int rank,
                       int size, const std::chrono::duration<float> &timeout);
+#endif
 
   static void flagcxBackendConstructor() __attribute__((constructor)) {
     std::string devName = "cuda";
@@ -193,8 +233,14 @@ public:
     py::object module = py::module::import("torch.distributed");
     py::object registerBackend =
         module.attr("Backend").attr("register_backend");
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
+    registerBackend("flagcx", py::cpp_function(createFlagcxBackend),
+                    py::arg("extended_api") = true,
+                    py::arg("devices") = py::make_tuple(devName));
+#else
     registerBackend("flagcx", py::cpp_function(createFlagcxBackend),
                     py::arg("devices") = py::make_tuple(devName));
+#endif
   }
 
 protected:
@@ -214,6 +260,15 @@ protected:
   std::unordered_map<int, flagcxStream_t> flagcxStreams_;
   std::unordered_map<int, std::unique_ptr<flagcxEvent>> flagcxEvents_;
   flagcxHandlerGroup_t handler_ = nullptr;
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
+  const c10::intrusive_ptr<Options> options_;
+  std::set<TuneObjectKey> tuneObjectSet_;
+  // whether we finished recording tuning objects
+  // a tuning object is a (commOp, nBytes) pair
+  // we record the tuning objects that will occur in this communicator so that
+  // flagcxTuner knows which communicator it is tuning
+  bool recordingEnded = false;
+#endif
 #ifdef USE_ASCEND_ADAPTOR
   aclrtStream acl_stream;
 #endif

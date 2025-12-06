@@ -27,6 +27,7 @@ import argparse
 
 FLAGCX_GROUP1 = None
 FLAGCX_GROUP2 = None
+FLAGCX_GROUP3 = None
 MY_RANK = None
 WORLD_SIZE = None
 PREV_RANK = None
@@ -50,7 +51,7 @@ def get_args():
     return parser.parse_args()
 
 def init_pg():
-    global FLAGCX_GROUP1, FLAGCX_GROUP2, MY_RANK, WORLD_SIZE, PREV_RANK, NEXT_RANK
+    global FLAGCX_GROUP1, FLAGCX_GROUP2, FLAGCX_GROUP3, MY_RANK, WORLD_SIZE, PREV_RANK, NEXT_RANK
 
     # Get rank and world_size from environment
     MY_RANK = int(os.environ["RANK"])
@@ -66,6 +67,13 @@ def init_pg():
     FLAGCX_GROUP2 = dist.new_group(ranks=ranks, backend=f"cpu:gloo,{dev_name}:flagcx")
     print(f"ranks_flagcx: {dist.get_process_group_ranks(FLAGCX_GROUP1)}")
 
+    # Create a group with options; this only works when flagcxBackend has Options defined
+    # TODO: confirm with all vendors to see if their torch implementation support backend options
+    if flagcx._C is not None and hasattr(flagcx._C, 'ProcessGroupFlagCX') and hasattr(flagcx._C.ProcessGroupFlagCX, 'Options'):
+        flagcx_options = flagcx._C.ProcessGroupFlagCX.Options(enable_tuner=True)
+        FLAGCX_GROUP3 = dist.new_group(ranks=ranks, backend=f"{dev_name}:flagcx", pg_options=flagcx_options)
+        print(f"ranks_flagcx with options: {dist.get_process_group_ranks(FLAGCX_GROUP3)}")
+
     # Get prev_rank and next_rank
     PREV_RANK = (MY_RANK - 1 + WORLD_SIZE) % WORLD_SIZE
     NEXT_RANK = (MY_RANK + 1) % WORLD_SIZE
@@ -77,6 +85,7 @@ def init_pg():
 
 def destroy_pg():
     dist.destroy_process_group()
+    
 
 def test_broadcast():
     if torch.cuda.is_available():
@@ -351,3 +360,4 @@ if __name__ == "__main__":
     dict_op_to_test.get(args.op, test_all)()
 
     destroy_pg()
+    

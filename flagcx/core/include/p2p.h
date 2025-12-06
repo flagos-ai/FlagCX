@@ -58,9 +58,16 @@ struct flagcxP2pSyncSlot {
   int peerDone; // 1 = slot is free, 0 = slot is in use
 };
 
+struct p2pRegInfo {
+  int copyDone;    // Indicates if the copy operation is complete
+  int copyStarted; // Indicates if the copy operation has started
+};
+
 struct flagcxP2pShm {
   // Array of synchronization slots for multiple concurrent operations
   struct flagcxP2pSyncSlot slots[FLAGCX_P2P_MAX_OPS];
+  // Array of registration info for multiple concurrent operations
+  struct p2pRegInfo regInfos[FLAGCX_P2P_MAX_OPS];
 };
 
 // need to make sure this matches flagcxP2pShmProxyInfo in p2p.cc
@@ -83,6 +90,11 @@ struct flagcxP2pResources {
   // Proxy info for async operations
   struct flagcxP2pShmProxyInfo proxyInfo;
 };
+
+typedef enum {
+  flagcxP2pRegisterModeLookup = 0,
+  flagcxP2pRegisterModeRegister = 1,
+} flagcxP2pRegisterMode;
 
 flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
                                   void *data, size_t size,
@@ -117,6 +129,16 @@ flagcxP2pRecvProxyConnect(struct flagcxProxyConnection *connection,
                           struct flagcxProxyState *proxyState, void *reqBuff,
                           int reqSize, void *respBuff, int respSize, int *done);
 
+flagcxResult_t flagcxP2pProxyRegister(struct flagcxProxyConnection *connection,
+                                      struct flagcxProxyState *proxyState,
+                                      void *reqBuff, int reqSize,
+                                      void *respBuff, int respSize, int *done);
+
+flagcxResult_t
+flagcxP2pProxyDeregister(struct flagcxProxyConnection *connection,
+                         struct flagcxProxyState *proxyState, void *reqBuff,
+                         int reqSize, int *done);
+
 flagcxResult_t
 flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
                                  struct flagcxP2pIpcDesc *ipcDesc, void **ptr);
@@ -125,6 +147,17 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               int peer, size_t size,
                                               struct flagcxP2pIpcDesc *ipcDesc,
                                               void **devMemPtr);
+
+flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
+                                       const void *userbuff, size_t buffSize,
+                                       struct flagcxConnector **peerConns,
+                                       int *peerRanks, int nPeers,
+                                       flagcxP2pRegisterMode mode,
+                                       int *regBufFlag, uintptr_t *offsetOut,
+                                       uintptr_t **peerRmtAddrsOut);
+
+flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
+                                         struct flagcxIpcRegInfo *info);
 
 flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources);
 
