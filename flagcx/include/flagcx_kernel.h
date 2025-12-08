@@ -129,7 +129,6 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              size_t count, size_t nthreads,
                                              flagcxDataType_t datatype,
                                              flagcxRedOp_t redop, int *idx);
-// flagcxReduceTrigger **ret);
 #ifdef COMPILE_KERNEL
 FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t count,
