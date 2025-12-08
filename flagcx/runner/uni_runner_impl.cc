@@ -56,7 +56,7 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   runnerState->readyQueue = {0};
   runnerState->inflightQueue = {0};
   runnerState->pendingQueue = {0};
-  TRACE(FLAGCX_KERNEL, "initUniRunnerState bp1 (queues initialized)");
+  // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp1 (queues initialized)");
 
   int rank = comm->rank;
   int nranks = comm->nranks;
@@ -85,7 +85,7 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
-  TRACE(FLAGCX_KERNEL, "initUniRunnerState bp2 (DAG nodes allocated)");
+  // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp2 (DAG nodes allocated)");
 
   int globalNodeIdx = 0;
 
@@ -234,10 +234,10 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
     FLAGCXCHECK(deviceAdaptor->eventCreate(&runnerState->p2pEvents[i],
                                            flagcxEventDisableTiming));
   }
-  TRACE(FLAGCX_KERNEL, "initUniRunnerState bp14 (P2P events created)");
+  // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp14 (P2P events created)");
   memset(runnerState->p2pEventMap.bits, 0,
          (P2P_EVENT_POOL_SIZE + 63) / 64 * sizeof(uint64_t));
-  TRACE(FLAGCX_KERNEL, "initUniRunnerState bp15 (P2P event map initialized)");
+  // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp15 (P2P event map initialized)");
 
   TRACE(FLAGCX_INIT,
         "DAG scheduler initialized with %d-rank Ring AllReduce topology (%d "
