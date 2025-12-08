@@ -346,15 +346,15 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
       uint64_t curr_state = current->nodeData.red.trigger->pollState();
       isComplete = (curr_state == flagcxReduceTriggerComplete);
       // debug
-      uint64_t curr_c = *(runnerState->fifo->buffer + 1);
-      uint64_t curr_p = *(runnerState->fifo->buffer + 2);
-      if (counter > 1e5) {
-        TRACE(FLAGCX_KERNEL, "processInflightQueue: timeout c=%lu, p=%lu",
-              curr_c, curr_p);
-        TRACE(FLAGCX_KERNEL, "value[3]: 0x%016lx",
-              current->nodeData.red.trigger->value[3]);
-        isComplete = 1;
-      }
+      // uint64_t curr_c = *(runnerState->fifo->buffer + 1);
+      // uint64_t curr_p = *(runnerState->fifo->buffer + 2);
+      // if (counter > 1e5) {
+      //   TRACE(FLAGCX_KERNEL, "processInflightQueue: timeout c=%lu, p=%lu",
+      //         curr_c, curr_p);
+      //   TRACE(FLAGCX_KERNEL, "value[3]: 0x%016lx",
+      //         current->nodeData.red.trigger->value[3]);
+      //   isComplete = 1;
+      // }
     }
 
     if (isComplete) {
@@ -492,11 +492,11 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
 
   // Main scheduling loop using DAG-based three-queue scheduling
   while (true) {
-    if (loop_counter > 1e5) {
-      res = flagcxSystemError;
-      TRACE(FLAGCX_KERNEL, "runUniRunner error: loop counter exceeded limit");
-      break;
-    }
+    // if (loop_counter > 1e5) {
+    //   res = flagcxSystemError;
+    //   TRACE(FLAGCX_KERNEL, "runUniRunner error: loop counter exceeded
+    //   limit"); break;
+    // }
 
     // Check stop flag and all queues empty condition
     if (hcomm->proxyState->uniRunnerState.readyQueue.head == NULL &&
@@ -504,8 +504,8 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
         hcomm->proxyState->uniRunnerState.pendingQueue.head == NULL) {
       TRACE(FLAGCX_KERNEL,
             "runUniRunner: all queues empty, terminating runner loop");
-      fifo->buffer[3] = 1; // set terminate flag
-      __atomic_store_n(fifo->buffer + 1, 1, __ATOMIC_RELEASE);
+      // set terminate flag
+      __atomic_store_n(fifo->buffer + 3, 1, __ATOMIC_RELEASE);
       __sync_synchronize();
       break;
     }
