@@ -8,8 +8,6 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm,
                                 flagcxStream_t stream) {
-  TRACE(FLAGCX_P2P, "flagcxHeteroSend enter: rank %d, peer %d", comm->rank,
-        peer);
   flagcxHeteroGroupStart();
   int channelId = 0;
   if (comm->channels[channelId].peers[peer]->send[0].connected == 0) {
@@ -30,8 +28,6 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
 
   flagcxGroupCommJoin(comm);
   flagcxHeteroGroupEnd();
-  TRACE(FLAGCX_P2P, "flagcxHeteroSend exit: rank %d, peer %d", comm->rank,
-        peer);
   return flagcxSuccess;
 }
 
@@ -39,8 +35,6 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm,
                                 flagcxStream_t stream) {
-  TRACE(FLAGCX_P2P, "flagcxHeteroRecv enter: rank %d, peer %d", comm->rank,
-        peer);
   flagcxHeteroGroupStart();
   int channelId = 0;
 
@@ -62,7 +56,5 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
 
   flagcxGroupCommJoin(comm);
   flagcxHeteroGroupEnd();
-  TRACE(FLAGCX_P2P, "flagcxHeteroRecv exit: rank %d, peer %d", comm->rank,
-        peer);
   return flagcxSuccess;
 }

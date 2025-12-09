@@ -129,6 +129,15 @@ int main(int argc, char *argv[]) {
         printf("%f ", ((float *)hello)[i]);
       }
       printf("\n");
+      int correct = 1;
+      for (size_t i = 0; i < count; i++) {
+        if (((float *)hello)[i] != (float)(i % 10 * 8)) {
+          printf("wrong output at offset %lu, expected %f, got %f\n", i,
+                 (float)(i % 10 * 8), ((float *)hello)[i]);
+          correct = 0;
+        }
+      }
+      printf("correctness = %d\n", correct);
     }
   }
 
