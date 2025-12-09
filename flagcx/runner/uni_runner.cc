@@ -76,12 +76,9 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxRedOp_t op, flagcxComm_t comm,
                                   flagcxStream_t stream) {
-  if (comm->nranks == 2) {
-    runUniRunner(sendbuff, recvbuff, count, datatype, op, comm, stream);
-    return flagcxSuccess;
-  } else {
-    return flagcxNotSupported;
-  }
+  runUniRunner(sendbuff, recvbuff, count, datatype, op, comm, stream,
+               flagcxCommOpAllReduce);
+  return flagcxSuccess;
 }
 
 flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
