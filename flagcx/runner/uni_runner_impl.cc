@@ -538,7 +538,7 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
   if (commOp == flagcxCommOpAllReduce) {
     FLAGCXCHECKGOTO(initUniRunnerStateRingAR(&hcomm->proxyState->uniRunnerState,
                                              sendbuff, recvbuff, count,
-                                             datatype, op, comm),
+                                             datatype, op, comm, 8),
                     res, out);
   } else {
     FLAGCXCHECKGOTO(initUniRunnerStateDummy(&hcomm->proxyState->uniRunnerState),

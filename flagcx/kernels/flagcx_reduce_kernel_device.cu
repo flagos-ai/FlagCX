@@ -141,9 +141,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
 
     // (5) perform reduce task
     empty_iter = 0;
-    int slot = myIdx & (*(uint64_t *)fifoBuffer - 1);
+    int slot = myIdx & (*vBuf - 1);
     flagcxReduceTrigger *t =
-        ((flagcxReduceTrigger *)((uint64_t *)fifoBuffer + 4)) + slot;
+        ((flagcxReduceTrigger *)(vBuf + 4)) + slot;
     flagcxReduceKernel(t->getInput1(), t->getInput2(), t->getOutput(),
                        t->getCount(), t->getNThreads(), t->getDatatype(),
                        t->getRedop());
@@ -155,7 +155,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       t->setComplete();
     }
   }
-  //FLAGCX_DEVICE_THREAD_FENCE();
+  // FLAGCX_DEVICE_THREAD_FENCE();
 }
 
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
