@@ -237,7 +237,8 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp14 (P2P events created)");
   memset(runnerState->p2pEventMap.bits, 0,
          (P2P_EVENT_POOL_SIZE + 63) / 64 * sizeof(uint64_t));
-  // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp15 (P2P event map initialized)");
+  // TRACE(FLAGCX_KERNEL, "initUniRunnerState bp15 (P2P event map
+  // initialized)");
 
   TRACE(FLAGCX_INIT,
         "DAG scheduler initialized with %d-rank Ring AllReduce topology (%d "
