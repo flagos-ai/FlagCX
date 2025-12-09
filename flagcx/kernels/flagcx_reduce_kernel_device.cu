@@ -34,18 +34,18 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
 FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
-  // atomicOr(reinterpret_cast<unsigned long long *>(value) + 3,
-  //          (flagcxReduceTriggerComplete &
-  //           flagcxTriggerMask(flagcxReduceTriggerBitsState))
-  //              << flagcxReduceTriggerOffState);
-  uint64_t* ptr =
-    reinterpret_cast<uint64_t*>(value) + 3;
-  uint64_t mask =
-    (flagcxReduceTriggerComplete &
-     flagcxTriggerMask(flagcxReduceTriggerBitsState))
-        << flagcxReduceTriggerOffState;
-  *ptr |= mask;
-  //FLAGCX_DEVICE_THREAD_FENCE(); 
+  atomicOr(reinterpret_cast<unsigned long long *>(value) + 3,
+           (flagcxReduceTriggerComplete &
+            flagcxTriggerMask(flagcxReduceTriggerBitsState))
+               << flagcxReduceTriggerOffState);
+  // uint64_t* ptr =
+  //   reinterpret_cast<uint64_t*>(value) + 3;
+  // uint64_t mask =
+  //   (flagcxReduceTriggerComplete &
+  //    flagcxTriggerMask(flagcxReduceTriggerBitsState))
+  //       << flagcxReduceTriggerOffState;
+  // *ptr |= mask;
+  // FLAGCX_DEVICE_THREAD_FENCE();
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
@@ -147,11 +147,11 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     flagcxReduceKernel(t->getInput1(), t->getInput2(), t->getOutput(),
                        t->getCount(), t->getNThreads(), t->getDatatype(),
                        t->getRedop());
+    __syncthreads();
     FLAGCX_DEVICE_THREAD_FENCE();
 
     // (6) set completion flag
     if (tid == 0) {
-      reinterpret_cast<flagcxReduceTrigger *>((uint64_t *)fifoBuffer + 4)->setComplete();
       t->setComplete();
     }
   }

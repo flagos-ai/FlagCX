@@ -137,7 +137,7 @@ typedef struct {
 
   // get an available event
   int getEvent();
-  void setAvail(int idx);
+  void resetEvent(int idx);
 } flagcxUniRunnerState;
 
 flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
