@@ -45,7 +45,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
      flagcxTriggerMask(flagcxReduceTriggerBitsState))
         << flagcxReduceTriggerOffState;
   *ptr |= mask;
-  FLAGCX_DEVICE_THREAD_FENCE(); 
+  //FLAGCX_DEVICE_THREAD_FENCE(); 
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
@@ -93,8 +93,6 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     //   printf("reduce kernel timeout\n");
     //   break;
     // }
-    // (0) memory fence
-    FLAGCX_DEVICE_THREAD_FENCE();
 
     // (1) terminate condition
     // if (__ldg(static_cast<const uint64_t *>(fifoBuffer) + 3) == 1)
@@ -106,10 +104,11 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     int c = -1;
     int p = -1;
     int term = -1;
+    volatile uint64_t *vBuf =  (volatile uint64_t*)fifoBuffer;
     if (tid == 0) {
-      c = static_cast<uint64_t *>(fifoBuffer)[1]; // consumed
-      p = static_cast<uint64_t *>(fifoBuffer)[2]; // produced
-      term = static_cast<uint64_t *>(fifoBuffer)[3];
+      c = vBuf[1]; // consumed
+      p = vBuf[2]; // produced
+      term = vBuf[3];
     }
     c = __shfl_sync(FULL_MASK, c, 0);
     p = __shfl_sync(FULL_MASK, p, 0);
@@ -156,7 +155,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       t->setComplete();
     }
   }
-  FLAGCX_DEVICE_THREAD_FENCE();
+  //FLAGCX_DEVICE_THREAD_FENCE();
 }
 
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
