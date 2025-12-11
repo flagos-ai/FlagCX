@@ -4,7 +4,7 @@
 #include "adaptor.h"
 #include "flagcx.h"
 
-#define FLAGCX_KERNEL_FIFO_CAPACITY 16
+#define FLAGCX_KERNEL_FIFO_CAPACITY 128
 #define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
 
 #ifdef COMPILE_KERNEL
@@ -81,7 +81,7 @@ struct flagcxDeviceTrigger {
 };
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
 
-struct flagcxReduceTrigger {
+struct alignas(16) flagcxReduceTrigger {
   uint64_t value[4];
 
 #ifdef COMPILE_KERNEL
@@ -135,7 +135,7 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t peerRank,
                                                uint64_t datatype,
                                                uint64_t type);
-FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
 
 FLAGCX_DEVICE_DECORATOR size_t

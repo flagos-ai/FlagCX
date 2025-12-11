@@ -15,7 +15,10 @@
 #include <memory>
 #include <pthread.h>
 
-#define P2P_EVENT_POOL_SIZE 64
+#define P2P_EVENT_POOL_SIZE 1024
+#define UNIRUNNER_NSLICES 64
+#define UNIRUNNER_NTHREADS 32
+#define UNIRUNNER_NBLOCKS 4
 
 // DAG node types
 typedef enum {
