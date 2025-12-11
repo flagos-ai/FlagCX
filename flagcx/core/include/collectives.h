@@ -6,10 +6,12 @@
 
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
-                                flagcxHeteroComm_t comm, flagcxStream_t stream);
+                                flagcxHeteroComm_t comm, flagcxStream_t stream,
+                                int groupIdx = 0);
 
 flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
-                                flagcxHeteroComm_t comm, flagcxStream_t stream);
+                                flagcxHeteroComm_t comm, flagcxStream_t stream,
+                                int groupIdx = 0);
 
 #endif

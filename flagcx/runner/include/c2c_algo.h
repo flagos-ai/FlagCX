@@ -118,7 +118,7 @@ public:
   ~flagcxC2cP2pOp();
 
   flagcxResult_t run(void *buff, flagcxDataType_t datatype, flagcxComm_t comm,
-                     flagcxStream_t stream);
+                     flagcxStream_t stream, int groupIdx);
 
   int rank_;
   int peerRank_;
@@ -168,7 +168,7 @@ public:
   void addP2pOp(int rank, int peerRank, size_t offset, size_t count,
                 int isRecv);
   flagcxResult_t run(void *sendbuff, void *recvbuff, flagcxDataType_t datatype,
-                     flagcxComm_t comm, flagcxStream_t stream);
+                     flagcxComm_t comm, flagcxStream_t stream, int groupIdx);
   flagcxC2cHeteroFunc(FILE *file, size_t chunksize);
 
 private:
