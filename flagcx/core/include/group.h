@@ -10,6 +10,17 @@
 #include "assert.h"
 #include "comm.h"
 
+/**
+ * Maximum number of subgroups allowed in a group operation.
+ * The value 4 was chosen as a reasonable upper bound based on expected usage
+ * patterns and to limit resource consumption (e.g., semaphores). If more than 4
+ * subgroups are needed, the operation will need to be refactored to support a
+ * higher limit, or FLAGCX_MAX_SUBGROUPS should be increased accordingly.
+ * Exceeding this limit may result in errors or undefined behavior.
+ * Consider making this value configurable if requirements change.
+ */
+#define FLAGCX_MAX_SUBGROUPS 4
+
 typedef flagcxResult_t (*flagcxInitFunc_t)(flagcxHeteroComm_t *newcomm,
                                            int ndev, flagcxUniqueId commId,
                                            int myrank, int cudaDev);

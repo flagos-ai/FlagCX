@@ -8,11 +8,13 @@ typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
 flagcxResult_t flagcxHeteroGetVersion(int *version);
 
+/* C++ style */
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int groupIdx = 0);
 
+/* C++ style */
 flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,

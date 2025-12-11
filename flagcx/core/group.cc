@@ -75,7 +75,26 @@ void *flagcxAsyncJobMain(void *arg) {
   return arg;
 }
 
-#define FLAGCX_MAX_SUBGROUPS 16
+flagcxResult_t createAndLookupSemaphore(
+    std::map<int, std::shared_ptr<flagcxSemaphore>> &semaphoreMap,
+    std::shared_ptr<flagcxSemaphore> &semaphore, int &subGroupCount,
+    int roundIdx) {
+  if (semaphoreMap.find(roundIdx) != semaphoreMap.end()) {
+    semaphore = semaphoreMap[roundIdx];
+  } else {
+    if (deviceAsyncKernel) {
+      semaphore = std::make_shared<flagcxDeviceSemaphore>();
+    } else {
+      semaphore = std::make_shared<flagcxHostSemaphore>();
+    }
+    if (semaphoreMap.empty()) {
+      subGroupCount++;
+    }
+    semaphoreMap[roundIdx] = semaphore;
+  }
+  return flagcxSuccess;
+}
+
 static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   flagcxResult_t ret = flagcxSuccess;
   // bool errorJobAbortFlag = false;
@@ -162,20 +181,9 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 sendTasks[i]->dtype == recvTasks[j]->dtype) {
               if (sendTasks[i]->buff != recvTasks[j]->buff) {
                 std::shared_ptr<flagcxSemaphore> semaphore;
-                if (semaphoreMapList[sendTasks[i]->groupIdx].find(0) !=
-                    semaphoreMapList[sendTasks[i]->groupIdx].end()) {
-                  semaphore = semaphoreMapList[sendTasks[i]->groupIdx][0];
-                } else {
-                  if (deviceAsyncKernel) {
-                    semaphore = std::make_shared<flagcxDeviceSemaphore>();
-                  } else {
-                    semaphore = std::make_shared<flagcxHostSemaphore>();
-                  }
-                  if (semaphoreMapList[sendTasks[i]->groupIdx].empty()) {
-                    subGroupCount++;
-                  }
-                  semaphoreMapList[sendTasks[i]->groupIdx][0] = semaphore;
-                }
+                createAndLookupSemaphore(
+                    semaphoreMapList[sendTasks[i]->groupIdx], semaphore,
+                    subGroupCount, 0);
                 flagcxProxyOp *op;
                 FLAGCXCHECK(flagcxCalloc(&op, 1));
                 op->pattern = flagcxPatternSend;
@@ -223,7 +231,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       // Round 1..nRanks-1: use p2pSchedule to pair recv/send with different
       // peers
       for (int round = 1; round < nRanks; round++) {
-        int roundId = round % localRanks;
+        int roundIdx = round % localRanks;
         int recvPeer = comm->p2pSchedule[round].recvRank;
         int sendPeer = comm->p2pSchedule[round].sendRank;
 
@@ -236,20 +244,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 flagcxIntruQueueDequeue(&tasks->peers[recvPeer].recvQueue);
             int peer = recvPeer;
             std::shared_ptr<flagcxSemaphore> semaphore;
-            if (semaphoreMapList[p2p->groupIdx].find(roundId) !=
-                semaphoreMapList[p2p->groupIdx].end()) {
-              semaphore = semaphoreMapList[p2p->groupIdx][roundId];
-            } else {
-              if (deviceAsyncKernel) {
-                semaphore = std::make_shared<flagcxDeviceSemaphore>();
-              } else {
-                semaphore = std::make_shared<flagcxHostSemaphore>();
-              }
-              if (semaphoreMapList[p2p->groupIdx].empty()) {
-                subGroupCount++;
-              }
-              semaphoreMapList[p2p->groupIdx][roundId] = semaphore;
-            }
+            createAndLookupSemaphore(semaphoreMapList[p2p->groupIdx], semaphore,
+                                     subGroupCount, roundIdx);
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));
             op->pattern = flagcxPatternRecv;
@@ -330,20 +326,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 flagcxIntruQueueDequeue(&tasks->peers[sendPeer].sendQueue);
             int peer = sendPeer;
             std::shared_ptr<flagcxSemaphore> semaphore;
-            if (semaphoreMapList[p2p->groupIdx].find(roundId) !=
-                semaphoreMapList[p2p->groupIdx].end()) {
-              semaphore = semaphoreMapList[p2p->groupIdx][roundId];
-            } else {
-              if (deviceAsyncKernel) {
-                semaphore = std::make_shared<flagcxDeviceSemaphore>();
-              } else {
-                semaphore = std::make_shared<flagcxHostSemaphore>();
-              }
-              if (semaphoreMapList[p2p->groupIdx].empty()) {
-                subGroupCount++;
-              }
-              semaphoreMapList[p2p->groupIdx][roundId] = semaphore;
-            }
+            createAndLookupSemaphore(semaphoreMapList[p2p->groupIdx], semaphore,
+                                     subGroupCount, roundIdx);
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));
             op->pattern = flagcxPatternSend;
@@ -429,13 +413,15 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
           FLAGCXCHECK(
               deviceAdaptor->launchDeviceFunc(launchStream, deviceAsyncKernel,
                                               (void *)semaphore->getSignals()));
-          // device semaphore need this event to signal completion
-          FLAGCXCHECK(deviceAdaptor->eventRecord(launchEvent, launchStream));
         } else {
           FLAGCXCHECK(deviceAdaptor->launchHostFunc(
               launchStream, cpuAsyncKernel, (void *)semaphore.get()));
         }
       }
+    }
+    if (deviceAsyncKernel) {
+      // device semaphore need this event to signal completion
+      FLAGCXCHECK(deviceAdaptor->eventRecord(launchEvent, launchStream));
     }
   }
 

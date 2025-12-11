@@ -8,6 +8,7 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int groupIdx) {
+  assert(groupIdx >= 0 && groupIdx < FLAGCX_MAX_SUBGROUPS);
   flagcxHeteroGroupStart();
   int channelId = 0;
   if (comm->channels[channelId].peers[peer]->send[0].connected == 0) {
@@ -36,6 +37,7 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
                                 int groupIdx) {
+  assert(groupIdx >= 0 && groupIdx < FLAGCX_MAX_SUBGROUPS);
   flagcxHeteroGroupStart();
   int channelId = 0;
   if (comm->channels[channelId].peers[peer]->recv[0].connected == 0) {
