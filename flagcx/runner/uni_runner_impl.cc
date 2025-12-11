@@ -17,11 +17,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#define UNIRUNNER_NTHREADS 32
-#define UNIRUNNER_NBLOCKS 1
-
 // DAG queue operations
-
 static void dagQueueEnqueue(struct uniRunnerDagQueue *queue,
                             struct uniRunnerDagNode *node) {
   node->next = NULL;
@@ -50,7 +46,9 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
                          const void *sendbuff, void *recvbuff, size_t count,
                          flagcxDataType_t datatype, flagcxRedOp_t op,
                          flagcxComm_t comm, int numSlices = 1) {
-  TRACE(FLAGCX_INIT, "rank %d initUniRunnerState called", comm->rank);
+  TRACE(FLAGCX_INIT,
+        "rank %d initUniRunnerState called, count=%lu, numSlices=%d",
+        comm->rank, count, numSlices);
 
   // Initialize queues
   runnerState->readyQueue = {0};
@@ -127,10 +125,9 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops[0].count = sliceCount;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops[0].datatype = datatype;
       // First step sends from sendbuff, others from recvbuff
-      const void *srcBase = (i == 0) ? sendbuff : recvbuff;
+      void *srcBase = (i == 0) ? const_cast<void *>(sendbuff) : recvbuff;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops[0].addr =
-          static_cast<void *>(static_cast<char *>(const_cast<void *>(srcBase)) +
-                              tx_offset);
+          static_cast<void *>(static_cast<char *>(srcBase) + tx_offset);
 
       // Op 1: Recv
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops[1].type =
@@ -261,12 +258,6 @@ static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
       if (runnerState->dagNodes[i].nodeType == uniRunnerDagNodeTypeP2p &&
           runnerState->dagNodes[i].nodeData.p2p.ops != NULL) {
         free(runnerState->dagNodes[i].nodeData.p2p.ops);
-      } else {
-        if (runnerState->dagNodes[i].nodeData.red.trigger != NULL) {
-          // log value[3] for debug
-          TRACE(FLAGCX_KERNEL, "value[3] at cleanup: 0x%016lx",
-                runnerState->dagNodes[i].nodeData.red.trigger->value[3]);
-        }
       }
     }
     free(runnerState->dagNodes);
@@ -280,14 +271,15 @@ static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
 static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
                                         flagcxHeteroComm_t comm) {
   TRACE(FLAGCX_KERNEL, "rank %d processReadyQueue called", comm->rank);
+  struct uniRunnerDagNode *prev = NULL;
+  struct uniRunnerDagNode *current = runnerState->readyQueue.head;
 
-  while (runnerState->readyQueue.head != NULL) {
-    // Dequeue
-    struct uniRunnerDagNode *node = runnerState->readyQueue.head;
+  while (current != NULL) {
     // TRACE(FLAGCX_KERNEL, "rank %d processReadyQueue bp1 (dequeue head)",
     //       comm->rank);
+    struct uniRunnerDagNode *next = current->next;
 
-    if (node->nodeType == uniRunnerDagNodeTypeP2p) {
+    if (current->nodeType == uniRunnerDagNodeTypeP2p) {
       // Check P2P inflight limit (check if free stack is empty)
       int eventIdx = runnerState->getEvent();
       // TRACE(FLAGCX_KERNEL, "rank %d processReadyQueue bp2 (get event)",
@@ -298,12 +290,16 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
         continue; // No available event, skip for now
       }
       // Dequeue
-      runnerState->readyQueue.head = node->next;
-      node->next = NULL;
-      if (runnerState->readyQueue.head == NULL) {
-        runnerState->readyQueue.tail = NULL;
+      if (prev == NULL) {
+        runnerState->readyQueue.head = next;
+      } else {
+        prev->next = next;
+      }
+      if (next == NULL) {
+        runnerState->readyQueue.tail = prev;
       }
       runnerState->readyQueue.size--;
+      current->next = NULL;
 
       // Get event from pool (pop from stack)
       flagcxEvent_t event = runnerState->p2pEvents[eventIdx];
@@ -312,12 +308,12 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
       //       comm->rank);
 
       // Prepare ops list
-      struct uniRunnerP2pOpData *ops = node->nodeData.p2p.ops;
+      struct uniRunnerP2pOpData *ops = current->nodeData.p2p.ops;
 
       // Start Group
       FLAGCXCHECK(flagcxHeteroGroupStart());
 
-      for (int i = 0; i < node->nodeData.p2p.numOps; i++) {
+      for (int i = 0; i < current->nodeData.p2p.numOps; i++) {
         struct uniRunnerP2pOpData *op = &ops[i];
         if (op->type == flagcxDevicePrimSend) {
           FLAGCXCHECK(flagcxHeteroSend(op->addr, op->count, op->datatype,
@@ -338,41 +334,54 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
       // recorded)",
       //       comm->rank);
 
-      node->nodeData.p2p.event = event;
-      node->nodeData.p2p.eventIdx = eventIdx;
-
+      current->nodeData.p2p.event = event;
+      current->nodeData.p2p.eventIdx = eventIdx;
+      dagQueueEnqueue(&runnerState->inflightQueue, current);
     } else {
       // Handle Red node
       // Use enqueue function from flagcx_reduce_kernel_host.cc
       // Dequeue node
-      runnerState->readyQueue.head = node->next;
-      node->next = NULL;
-      if (runnerState->readyQueue.head == NULL) {
-        runnerState->readyQueue.tail = NULL;
-      }
-      runnerState->readyQueue.size--;
+      // runnerState->readyQueue.head = node->next;
+      // node->next = NULL;
+      // if (runnerState->readyQueue.head == NULL) {
+      //   runnerState->readyQueue.tail = NULL;
+      // }
+      // runnerState->readyQueue.size--;
       // TRACE(FLAGCX_KERNEL, "rank %d processReadyQueue bp5 (enqueue reduce)",
       //       comm->rank);
       int idx = -1;
-      FLAGCXCHECK(enqueue((void *)comm->proxyState->uniRunnerState.fifo->buffer,
-                          (uintptr_t)node->nodeData.red.input1,
-                          (uintptr_t)node->nodeData.red.input2,
-                          (uintptr_t)node->nodeData.red.output,
-                          node->nodeData.red.count, node->nodeData.red.nthreads,
-                          node->nodeData.red.datatype, node->nodeData.red.redOp,
-                          &idx));
-      // &node->nodeData.red.trigger));
-      node->nodeData.red.trigger =
+      FLAGCXCHECK(enqueue(
+          (void *)comm->proxyState->uniRunnerState.fifo->buffer,
+          (uintptr_t)current->nodeData.red.input1,
+          (uintptr_t)current->nodeData.red.input2,
+          (uintptr_t)current->nodeData.red.output, current->nodeData.red.count,
+          current->nodeData.red.nthreads, current->nodeData.red.datatype,
+          current->nodeData.red.redOp, &idx));
+      if (idx == -1) {
+        sched_yield();
+        continue;
+      }
+      // Dequeue
+      if (prev == NULL) {
+        runnerState->readyQueue.head = next;
+      } else {
+        prev->next = next;
+      }
+      if (next == NULL) {
+        runnerState->readyQueue.tail = prev;
+      }
+      runnerState->readyQueue.size--;
+      current->next = NULL;
+      current->nodeData.red.trigger =
           (flagcxReduceTrigger
                *)(comm->proxyState->uniRunnerState.fifo->buffer + 4) +
           idx;
+      dagQueueEnqueue(&runnerState->inflightQueue, current);
       // TRACE(FLAGCX_KERNEL, "rank %d processReadyQueue bp6 (enq red
       // confirmed)",
       //       comm->rank);
     }
-
-    // Move to inflight queue
-    dagQueueEnqueue(&runnerState->inflightQueue, node);
+    current = next;
   }
 
   return flagcxSuccess;
@@ -486,9 +495,6 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
       if (current == NULL && flag == 0) {
         prev = NULL;
         current = runnerState->inflightQueue.head;
-        if (current == NULL) {
-          break;
-        }
       }
       sched_yield();
     }
@@ -536,9 +542,9 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
 
   // Initialize DAG scheduler
   if (commOp == flagcxCommOpAllReduce) {
-    FLAGCXCHECKGOTO(initUniRunnerStateRingAR(&hcomm->proxyState->uniRunnerState,
-                                             sendbuff, recvbuff, count,
-                                             datatype, op, comm, 8),
+    FLAGCXCHECKGOTO(initUniRunnerStateRingAR(
+                        &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
+                        count, datatype, op, comm, UNIRUNNER_NSLICES),
                     res, out);
   } else {
     FLAGCXCHECKGOTO(initUniRunnerStateDummy(&hcomm->proxyState->uniRunnerState),
@@ -580,6 +586,7 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
     FLAGCXCHECK(processInflightQueue(&hcomm->proxyState->uniRunnerState));
   }
   deviceAdaptor->streamSynchronize(red_stream);
+  deviceAdaptor->streamSynchronize(stream);
 
   // Clean up DAG scheduler
   cleanupDagScheduler(&hcomm->proxyState->uniRunnerState);

@@ -21,14 +21,13 @@ flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
            (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
                << flagcxReduceTriggerOffState;
   memcpy(this->value, tmp, 4 * sizeof(uint64_t));
-  TRACE(
-      FLAGCX_KERNEL,
-      "setValue called: fst=0x%016lx, snd=0x%016lx, out=0x%016lx, count=%lu, "
-      "nthreads=%lu, "
-      "datatype=%d, redop=%d, state=%d, value[0]=0x%016lx, value[1]=0x%016lx, "
-      "value[2]=0x%016lx, value[3]=0x%016lx",
-      fst, snd, out, count, nthreads, datatype, redOp, state, value[0],
-      value[1], value[2], value[3]);
+  // TRACE(
+  //     FLAGCX_KERNEL,
+  //     "setValue called: fst=0x%016lx, snd=0x%016lx, out=0x%016lx, count=%lu,
+  //     " "nthreads=%lu, " "datatype=%d, redop=%d, state=%d, value[0]=0x%016lx,
+  //     value[1]=0x%016lx, " "value[2]=0x%016lx, value[3]=0x%016lx", fst, snd,
+  //     out, count, nthreads, datatype, redOp, state, value[0], value[1],
+  //     value[2], value[3]);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {
@@ -58,24 +57,29 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[0];
   int distance = buffer[2] - buffer[1];
-  while (distance >= capacity) {
+  // red buffer full, wait for kernel to consume
+  if (distance >= capacity) {
+    *ret = -1;
     sched_yield();
-    distance = buffer[2] - buffer[1];
+    return flagcxSuccess;
   }
   idx = buffer[2] % capacity;
   flagcxReduceTrigger *trigger = ((flagcxReduceTrigger *)(buffer + 4)) + idx;
 
-  while (trigger->pollState() != flagcxReduceTriggerAvailable) {
+  // kernel reduce work in progress
+  if (trigger->pollState() != flagcxReduceTriggerAvailable) {
+    *ret = -1;
     sched_yield();
+    return flagcxSuccess;
   }
   trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,
                     flagcxReduceTriggerEnqueued);
   __atomic_fetch_add(buffer + 2, 1ul, __ATOMIC_RELEASE);
   *ret = idx;
   TRACE(FLAGCX_KERNEL,
-        "enq red called: addr1=0x%016lx, addr2=0x%016lx, addr3=0x%016lx, "
-        "count=%lu, nthreads=%lu, datatype=%d, redop=%d, idx=%d",
-        addr1, addr2, addr3, count, nthreads, datatype, redop, idx);
+        "enqueue red: count=%lu, nthreads=%lu, datatype=%d, redop=%d, idx=%d",
+        count, nthreads, datatype, redop, idx);
+
   return flagcxSuccess;
 }
 
