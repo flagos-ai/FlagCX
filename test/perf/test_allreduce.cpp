@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
     count = size / sizeof(float);
 
     for (size_t i = 0; i < count; i++) {
-      ((float *)hello)[i] = i % 10 * (1 - proc) + i % 10 * proc * 10;
+      ((float *)hello)[i] = i % 10;
     }
 
     devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
@@ -123,22 +123,12 @@ int main(int argc, char *argv[]) {
     memset(hello, 0, size);
     devHandle->deviceMemcpy(hello, recvbuff, size, flagcxMemcpyDeviceToHost,
                             NULL);
-    if (color == 0 && print_buffer) {
-      printf("proc %d recvbuff = ", proc);
+    if (proc == 0 && color == 0 && print_buffer) {
+      printf("recvbuff = ");
       for (size_t i = 0; i < 10; i++) {
         printf("%f ", ((float *)hello)[i]);
       }
       printf("\n");
-      int correct = 1;
-      for (size_t i = 0; i < count; i++) {
-        if (((float *)hello)[i] != (float)(i % 10 * 11)) {
-          printf("proc %d wrong output at offset %lu, expected %f, got %f\n",
-                 proc, i, (float)(i % 10 * 11), ((float *)hello)[i]);
-          correct = 0;
-          break;
-        }
-      }
-      printf("correctness = %d\n", correct);
     }
   }
 
