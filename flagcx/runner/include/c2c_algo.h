@@ -2,8 +2,8 @@
 #define FLAGCX_C2C_ALGO_H_
 
 #include "adaptor.h"
-#include "collectives.h"
 #include "flagcx.h"
+#include "flagcx_hetero.h"
 #include "group.h"
 #include "param.h"
 #include <iostream>
@@ -118,7 +118,7 @@ public:
   ~flagcxC2cP2pOp();
 
   flagcxResult_t run(void *buff, flagcxDataType_t datatype, flagcxComm_t comm,
-                     flagcxStream_t stream, int groupIdx);
+                     flagcxStream_t stream);
 
   int rank_;
   int peerRank_;
@@ -168,7 +168,7 @@ public:
   void addP2pOp(int rank, int peerRank, size_t offset, size_t count,
                 int isRecv);
   flagcxResult_t run(void *sendbuff, void *recvbuff, flagcxDataType_t datatype,
-                     flagcxComm_t comm, flagcxStream_t stream, int groupIdx);
+                     flagcxComm_t comm, flagcxStream_t stream);
   flagcxC2cHeteroFunc(FILE *file, size_t chunksize);
 
 private:

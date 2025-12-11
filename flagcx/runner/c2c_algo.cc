@@ -223,8 +223,7 @@ flagcxC2cP2pOp::flagcxC2cP2pOp(int rank, int peerRank, size_t offset,
 flagcxC2cP2pOp::~flagcxC2cP2pOp() {}
 
 flagcxResult_t flagcxC2cP2pOp::run(void *buff, flagcxDataType_t datatype,
-                                   flagcxComm_t comm, flagcxStream_t stream,
-                                   int groupIdx) {
+                                   flagcxComm_t comm, flagcxStream_t stream) {
   TRACE_CALL("flagcxC2cP2pOp run: rank = %d, peerRank = %d, offset = %lu, "
              "count = %lu, "
              "isRecv = %d, datatype = %d",
@@ -233,10 +232,10 @@ flagcxResult_t flagcxC2cP2pOp::run(void *buff, flagcxDataType_t datatype,
       static_cast<char *>(buff) + offset_ * getFlagcxDataTypeSize(datatype);
   if (isRecv_) {
     return flagcxHeteroRecv(static_cast<void *>(ptr), count_, datatype,
-                            peerRank_, comm->hetero_comm, stream, groupIdx);
+                            peerRank_, comm->hetero_comm, stream);
   } else {
     return flagcxHeteroSend(static_cast<void *>(ptr), count_, datatype,
-                            peerRank_, comm->hetero_comm, stream, groupIdx);
+                            peerRank_, comm->hetero_comm, stream);
   }
 }
 
@@ -555,13 +554,13 @@ void flagcxC2cHeteroFunc::addP2pOp(int rank, int peerRank, size_t offset,
 flagcxResult_t flagcxC2cHeteroFunc::run(void *sendbuff, void *recvbuff,
                                         flagcxDataType_t datatype,
                                         flagcxComm_t comm,
-                                        flagcxStream_t stream, int groupIdx) {
+                                        flagcxStream_t stream) {
   flagcxHeteroGroupStart();
   for (auto op : p2pOps_) {
     if (op.isRecv_) {
-      FLAGCXCHECK(op.run(recvbuff, datatype, comm, stream, groupIdx));
+      FLAGCXCHECK(op.run(recvbuff, datatype, comm, stream));
     } else {
-      FLAGCXCHECK(op.run(sendbuff, datatype, comm, stream, groupIdx));
+      FLAGCXCHECK(op.run(sendbuff, datatype, comm, stream));
     }
   }
   flagcxHeteroGroupEnd();
@@ -2181,7 +2180,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
 
       // execute heteroFuncs
       heteroFuncSteps_[s][i].run(sendTmpBuff, recvTmpBuff, datatype, comm_,
-                                 het_stream, 0);
+                                 het_stream);
 
       if (homoInterFuncSteps_[s].size() > i) {
         // TODO: use stream wait rather than stream sync to avoid cpu blocking
@@ -2214,7 +2213,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
 
       // execute heteroFuncs
       heteroFuncSteps_[nPipePreSteps_ + s][i].run(sendTmpBuff, recvTmpBuff,
-                                                  datatype, comm_, stream, 1);
+                                                  datatype, comm_, stream);
 
       if (homoInterFuncSteps_[nPipePreSteps_ + s].size() > i) {
         // TODO: use stream wait rather than stream sync to avoid cpu blocking
@@ -2253,7 +2252,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
 
       // execute heteroFuncs
       heteroFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s][i].run(
-          sendTmpBuff, recvTmpBuff, datatype, comm_, het_stream, 2);
+          sendTmpBuff, recvTmpBuff, datatype, comm_, het_stream);
 
       if (homoInterFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s].size() >
           i) {

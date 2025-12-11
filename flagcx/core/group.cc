@@ -7,8 +7,8 @@
 #include "group.h"
 #include "adaptor.h"
 #include "assert.h"
-#include "collectives.h"
 #include "debug.h"
+#include "flagcx_hetero.h"
 #include "launch_kernel.h"
 #include "net.h"
 #include "p2p.h"
@@ -162,13 +162,20 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 sendTasks[i]->dtype == recvTasks[j]->dtype) {
               if (sendTasks[i]->buff != recvTasks[j]->buff) {
                 std::shared_ptr<flagcxSemaphore> semaphore;
-                if (deviceAsyncKernel) {
-                  semaphore = std::make_shared<flagcxDeviceSemaphore>();
+                if (semaphoreMapList[sendTasks[i]->groupIdx].find(0) !=
+                    semaphoreMapList[sendTasks[i]->groupIdx].end()) {
+                  semaphore = semaphoreMapList[sendTasks[i]->groupIdx][0];
                 } else {
-                  semaphore = std::make_shared<flagcxHostSemaphore>();
+                  if (deviceAsyncKernel) {
+                    semaphore = std::make_shared<flagcxDeviceSemaphore>();
+                  } else {
+                    semaphore = std::make_shared<flagcxHostSemaphore>();
+                  }
+                  if (semaphoreMapList[sendTasks[i]->groupIdx].empty()) {
+                    subGroupCount++;
+                  }
+                  semaphoreMapList[sendTasks[i]->groupIdx][0] = semaphore;
                 }
-                semaphoreMapList[sendTasks[i]->groupIdx][0] = semaphore;
-                subGroupCount++;
                 flagcxProxyOp *op;
                 FLAGCXCHECK(flagcxCalloc(&op, 1));
                 op->pattern = flagcxPatternSend;
@@ -238,8 +245,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               } else {
                 semaphore = std::make_shared<flagcxHostSemaphore>();
               }
+              if (semaphoreMapList[p2p->groupIdx].empty()) {
+                subGroupCount++;
+              }
               semaphoreMapList[p2p->groupIdx][roundId] = semaphore;
-              subGroupCount++;
             }
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));
@@ -330,8 +339,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               } else {
                 semaphore = std::make_shared<flagcxHostSemaphore>();
               }
+              if (semaphoreMapList[p2p->groupIdx].empty()) {
+                subGroupCount++;
+              }
               semaphoreMapList[p2p->groupIdx][roundId] = semaphore;
-              subGroupCount++;
             }
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));

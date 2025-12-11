@@ -6,8 +6,8 @@
 
 #include "proxy.h"
 #include "adaptor.h"
-#include "collectives.h"
 #include "comm.h"
+#include "flagcx_hetero.h"
 #include "info.h"
 #include "net.h"
 #include "p2p.h"
