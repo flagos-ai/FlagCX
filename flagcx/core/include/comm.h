@@ -351,6 +351,8 @@ struct flagcxHeteroComm {
   uint64_t endMagic;
   // Kernel FIFO buffer for device side communication
   void *fifoBuffer;
+  // uniRunner FIFO buffer
+  void *uniRunnerFifoBuffer;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;

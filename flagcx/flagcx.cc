@@ -818,7 +818,10 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                flagcxRedOp_t op, flagcxComm_t comm,
                                flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHomoComm(comm)) {
+  if (useHeteroComm()) {
+    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream));
+  } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->allReduce(
         sendbuff, recvbuff, count, datatype, op, comm, stream));
   } else if (useHostComm() || comm->has_single_rank_homo_comm) {
