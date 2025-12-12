@@ -91,13 +91,15 @@ public:
   };
 
   struct Options : Backend::Options {
-    explicit Options(bool enableTuner = false);
+    explicit Options(bool enableTuner = false, int tuneGroupIdx = 0);
 
-    static c10::intrusive_ptr<Options> create(bool enableTuner = false) {
-      return c10::make_intrusive<Options>(enableTuner);
+    static c10::intrusive_ptr<Options> create(bool enableTuner = false,
+                                              int tuneGroupIdx = 0) {
+      return c10::make_intrusive<Options>(enableTuner, tuneGroupIdx);
     }
 
     bool enableTuner{false};
+    int tuneGroupIdx{0};
   };
 
   explicit flagcxBackend(
@@ -202,6 +204,7 @@ public:
   void checkRecordingEnded();
   void recordTuneObject(flagcxCommOp_t commOp, flagcxDataType_t dataType,
                         size_t count);
+  bool needRecording();
   static c10::intrusive_ptr<Backend> createFlagcxBackend(
       c10d::DistributedBackendOptions backendOptions,
       c10::intrusive_ptr<Options> extraOptions = Options::create());
