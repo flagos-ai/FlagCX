@@ -175,6 +175,13 @@ static flagcxResult_t setEnvConfig(const struct flagcxEnvConfig &cfg,
   return flagcxSuccess;
 }
 
+static bool needPatternMatching(struct flagcxTunerContext *ctx, int configId) {
+  if (ctx->bestConfigId != -1 || configId != 0) {
+    return false;
+  }
+  return ctx->tunerCommMatchingDone;
+}
+
 flagcxResult_t flagcxTunerInit(size_t nRanks, size_t rank,
                                flagcxDebugLogger_t logFunction, void **context,
                                void *commState) {
@@ -531,8 +538,14 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
   // Execute matching only once when tune_objects has values
   const char *configIdEnv = getenv("FLAGCX_TUNER_CONFIG_ID");
   const int config_id = (configIdEnv != NULL) ? atoi(configIdEnv) : -1;
+  if (config_id == -1) {
+    // reset isTunningComm flag in case we are sequentially tuning multiple
+    // communicators
+    comm->isTunningComm = false;
+    ctx->tunerCommMatchingDone = false;
+  }
   // static bool matchingDone = false;
-  if (!ctx->tunerCommMatchingDone && config_id == 0) {
+  if (needPatternMatching(ctx, config_id)) {
     // Determine if this comm needs tuning
     FlagScaleConfig config = readFlagScaleJson();
     if (!config.tune_objects.empty()) {

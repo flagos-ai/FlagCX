@@ -178,7 +178,8 @@ size_t getDataSize(flagcxDataType_t dtype, size_t count) {
   return getFlagcxDataTypeSize(dtype) * count;
 }
 
-void recordFlagcxTuneObject(const flagcxBackend::TuneObjectKey &key) {
+void recordFlagcxTuneObject(const flagcxBackend::TuneObjectKey &key,
+                            int tuneGroupIdx) {
   using nlohmann::json;
 
   // Read env var ONCE — throw if missing or empty.
@@ -211,13 +212,20 @@ void recordFlagcxTuneObject(const flagcxBackend::TuneObjectKey &key) {
     }
   }
 
+  const std::string groupKey = std::to_string(tuneGroupIdx);
+  // Ensure group object exists.
+  if (!root.contains(groupKey) || !root[groupKey].is_object()) {
+    root[groupKey] = json::object();
+  }
+
   // Ensure "tune_objects" is an array.
-  if (!root.contains("tune_objects") || !root["tune_objects"].is_array()) {
-    root["tune_objects"] = json::array();
+  if (!root[groupKey].contains("tune_objects") ||
+      !root[groupKey]["tune_objects"].is_array()) {
+    root[groupKey]["tune_objects"] = json::array();
   }
 
   // add new record
-  root["tune_objects"].push_back({
+  root[groupKey]["tune_objects"].push_back({
       {"commOp", key.commOp},
       {"nBytes", key.nBytes},
   });
@@ -536,7 +544,7 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
     at::Tensor outputFlattened = newLikeFlat(outputTensorsTmp);
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-    if (options_->enableTuner && !recordingEnded) {
+    if (needRecording()) {
       recordTuneObject(flagcxCommOpAllGather, flagcxDataType,
                        inputTensor.numel());
     }
@@ -581,7 +589,7 @@ flagcxBackend::_allgather_base(at::Tensor &outputTensor,
   syncStream(inputTensor.device());
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpAllGather, flagcxDataType,
                      inputTensor.numel());
   }
@@ -644,7 +652,7 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
   syncStream(tensor.device());
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpAllReduce, flagcxDataType, tensor.numel());
   }
 
@@ -683,7 +691,7 @@ flagcxBackend::allreduce_coalesced(std::vector<at::Tensor> &tensors,
         auto flagcxReduceOp =
             getFlagcxReduceOp(opts.reduceOp, input, flagcxDataType);
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-        if (options_->enableTuner && !recordingEnded) {
+        if (needRecording()) {
           recordTuneObject(flagcxCommOpAllReduce, flagcxDataType,
                            input.numel());
         }
@@ -740,7 +748,7 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpAlltoAll, flagcxDataType, count);
   }
 
@@ -808,7 +816,7 @@ flagcxBackend::alltoall_base(at::Tensor &outputTensor, at::Tensor &inputTensor,
 
   if (isEqualSize) {
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-    if (options_->enableTuner && !recordingEnded) {
+    if (needRecording()) {
       recordTuneObject(flagcxCommOpAlltoAll, flagcxDataType, count);
     }
 
@@ -869,7 +877,7 @@ flagcxBackend::broadcast(std::vector<at::Tensor> &tensors,
 
   const auto root = opts.rootRank + opts.rootTensor;
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpBroadcast, flagcxDataType, tensor.numel());
   }
 
@@ -916,7 +924,7 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
   at::Tensor outputFlattened = newLikeFlat(outputTensorsTmp);
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpGather, flagcxDataType, inputTensor.numel());
   }
 
@@ -961,7 +969,7 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce(std::vector<at::Tensor> &tensors,
   const auto root = opts.rootRank + opts.rootTensor;
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpReduce, flagcxDataType, tensor.numel());
   }
 
@@ -1015,7 +1023,7 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
     }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-    if (options_->enableTuner && !recordingEnded) {
+    if (needRecording()) {
       recordTuneObject(flagcxCommOpReduceScatter, flagcxDataType,
                        outputTensor.numel());
     }
@@ -1059,7 +1067,7 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
         "Input tensor must be the same szie as output size times world size");
   } else {
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-    if (options_->enableTuner && !recordingEnded) {
+    if (needRecording()) {
       recordTuneObject(flagcxCommOpReduceScatter, flagcxDataType,
                        outputTensor.numel());
     }
@@ -1100,7 +1108,7 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter_tensor_coalesced(
         auto flagcxReduceOp =
             getFlagcxReduceOp(opts.reduceOp, input, flagcxDataType);
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-        if (options_->enableTuner && !recordingEnded) {
+        if (needRecording()) {
           recordTuneObject(flagcxCommOpReduceScatter, flagcxDataType,
                            output.numel());
         }
@@ -1148,7 +1156,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
   }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpScatter, flagcxDataType, outputTensor.numel());
   }
 
@@ -1181,7 +1189,7 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
   syncStream(tensor.device());
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpSend, flagcxDataType, tensor.numel());
   }
 
@@ -1216,7 +1224,7 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
   syncStream(tensor.device());
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)
-  if (options_->enableTuner && !recordingEnded) {
+  if (needRecording()) {
     recordTuneObject(flagcxCommOpRecv, flagcxDataType, tensor.numel());
   }
 
@@ -1262,9 +1270,19 @@ void flagcxBackend::recordTuneObject(flagcxCommOp_t commOp,
                                         getDataSize(dataType, count)};
   if (tuneObjectSet_.find(tuneObjectKey) == tuneObjectSet_.end()) {
     // write this to file
-    recordFlagcxTuneObject(tuneObjectKey);
+    recordFlagcxTuneObject(tuneObjectKey, options_->tuneGroupIdx);
     tuneObjectSet_.insert(tuneObjectKey);
   }
+}
+
+bool flagcxBackend::needRecording() {
+  if (recordingEnded || !options_->enableTuner) {
+    return false;
+  }
+  const char *curTuneGroupIdxEnv = std::getenv("FLAGCX_TUNE_GROUP_IDX");
+  const int curTuneGroupIdx =
+      (curTuneGroupIdxEnv != NULL) ? std::atoi(curTuneGroupIdxEnv) : -1;
+  return curTuneGroupIdx == options_->tuneGroupIdx;
 }
 
 c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
@@ -1276,8 +1294,9 @@ c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
   return c10::make_intrusive<flagcxBackend>(store, rank, size, extraOptions);
 }
 
-flagcxBackend::Options::Options(bool enableTuner)
-    : Backend::Options(FLAGCX_BACKEND_NAME), enableTuner(enableTuner) {}
+flagcxBackend::Options::Options(bool enableTuner, int tuneGroupIdx)
+    : Backend::Options(FLAGCX_BACKEND_NAME), enableTuner(enableTuner),
+      tuneGroupIdx(tuneGroupIdx) {}
 
 template <typename T>
 using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>>;
@@ -1302,7 +1321,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       pg_flagcx, "Options",
       dist.attr("Backend").attr("Options")) // base Python class
       .def(py::init<bool>(), py::arg("enable_tuner") = false)
-      .def_readwrite("enable_tuner", &flagcxBackend::Options::enableTuner);
+      .def_readwrite("enable_tuner", &flagcxBackend::Options::enableTuner)
+      .def_readwrite("tune_group_idx", &flagcxBackend::Options::tuneGroupIdx);
 #endif
 }
 

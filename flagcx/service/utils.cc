@@ -462,27 +462,33 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
     throw std::runtime_error("Cannot open file: " + actual_filename);
   }
 
+  const char *curTuneGroupIdxEnv = std::getenv("FLAGCX_TUNE_GROUP_IDX");
+  const int curTuneGroupIdx =
+      (curTuneGroupIdxEnv != NULL) ? std::atoi(curTuneGroupIdxEnv) : -1;
+  if (curTuneGroupIdx == -1) {
+    throw std::runtime_error(
+        "FLAGCX_TUNE_GROUP_IDX environment variable is not set or invalid. "
+        "Please set FLAGCX_TUNE_GROUP_IDX to specify the tune group index.");
+  }
+
   nlohmann::json j;
   file >> j;
   file.close();
 
   FlagScaleConfig config;
 
+  const std::string groupKey = std::to_string(curTuneGroupIdx);
+  if (!j.contains(groupKey) || !j[groupKey].is_object()) {
+    throw std::runtime_error("Tune group " + groupKey + " not found in " +
+                             actual_filename);
+  }
+
   // Read tune_objects array
-  if (j.contains("tune_objects") && j["tune_objects"].is_array()) {
-    for (const auto &obj : j["tune_objects"]) {
+  if (j[groupKey].contains("tune_objects") &&
+      j[groupKey]["tune_objects"].is_array()) {
+    for (const auto &obj : j[groupKey]["tune_objects"]) {
       config.tune_objects.emplace_back(obj);
     }
-  }
-
-  // Read config_id
-  if (j.contains("config_id")) {
-    config.config_id = j["config_id"];
-  }
-
-  // Read best_config_id
-  if (j.contains("best_config_id")) {
-    config.best_config_id = j["best_config_id"];
   }
 
   return config;
