@@ -1320,7 +1320,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   intrusive_ptr_class_<flagcxBackend::Options>(
       pg_flagcx, "Options",
       dist.attr("Backend").attr("Options")) // base Python class
-      .def(py::init<bool>(), py::arg("enable_tuner") = false)
+      .def(py::init<bool, int>(), py::arg("enable_tuner") = false,
+           py::arg("tune_group_idx") = 0)
       .def_readwrite("enable_tuner", &flagcxBackend::Options::enableTuner)
       .def_readwrite("tune_group_idx", &flagcxBackend::Options::tuneGroupIdx);
 #endif

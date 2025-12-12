@@ -179,7 +179,7 @@ static bool needPatternMatching(struct flagcxTunerContext *ctx, int configId) {
   if (ctx->bestConfigId != -1 || configId != 0) {
     return false;
   }
-  return ctx->tunerCommMatchingDone;
+  return !ctx->tunerCommMatchingDone;
 }
 
 flagcxResult_t flagcxTunerInit(size_t nRanks, size_t rank,
@@ -570,8 +570,6 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
   if (!comm->isTunningComm) {
     return flagcxSuccess;
   }
-
-  INFO(FLAGCX_TUNING, "comm->isTunningComm=%d", comm->isTunningComm);
 
   // Need tuning this comm
   // Handle config_id logic
