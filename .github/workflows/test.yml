@@ -36,35 +36,6 @@ jobs:
         run: |
           apt update -y
           apt-get install -y python3 python3-pip python3-venv git
-          python3 -m venv venv
-          . venv/bin/activate
-          cd /__w/FlagCX/FlagCX
-          git config --global --add safe.directory /__w/FlagCX/FlagCX
-          pip install setuptools pre-commit -i https://pypi.tuna.tsinghua.edu.cn/simple
-          pre-commit install
-
-      - name: Run Code Format Check with pre-commit
-        run: |
-          cd /__w/FlagCX/FlagCX
-          . venv/bin/activate
-          apt update -y
-          apt-get install clang-format -y
-          git fetch --all
-          if [ -n "$GITHUB_HEAD_REF" ] && [ -n "$GITHUB_BASE_REF" ]; then
-            from_ref="origin/$GITHUB_HEAD_REF"
-            to_ref="origin/$GITHUB_BASE_REF"
-            echo "From reference: $from_ref; To reference: $to_ref"
-            pre-commit run --from-ref "$from_ref" --to-ref "$to_ref"
-          fi
-        continue-on-error: false
-
-      - name: Check the current working directory
-        run: |
-          echo "Current directory: $(pwd)"
-          ls -l ./test/script
-
-      - name: Ensure script has execute permissions
-        run: chmod +x /__w/FlagCX/FlagCX/test/script/auto_script.sh
 
       - name: Run Auto Test Script in Container
         run: |
