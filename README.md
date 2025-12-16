@@ -120,7 +120,11 @@ To enable heterogeneous cross-chip communication using the PyTorch DDP FlagCX ba
     git clone https://github.com/FlagOpen/FlagCX.git
     ```
 
-2. Build the library with different flags targeting to different platforms:
+2. Initialize third party dependencies
+  ```sh
+  git submodule update --init --recursive
+  ```
+3. Build the library with different flags targeting to different platforms:
     ```sh
     cd FlagCX
     make [USE_NVIDIA/USE_ILUVATAR_COREX/USE_CAMBRICON/USE_GLOO/USE_MPI/USE_METAX/USE_MUSA/USE_KUNLUNXIN/USE_DU/USE_ASCEND/USE_AMD]=1
