@@ -2,10 +2,6 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
-#ifndef flagcxTriggerMask
-#define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
-#endif
-
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() { return fst; }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getCount() {
