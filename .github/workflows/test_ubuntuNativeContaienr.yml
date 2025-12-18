@@ -17,12 +17,12 @@ jobs:
     steps:
       - name: Set up Python and Install Dependencies
         run: |
-          apt update -y
+          apt-get update -y
           apt-get install -y python3 python3-pip python3-venv git wget
           
           wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          apt update -y
+          dpkg -i cuda-keyring_1.1-1_all.deb
+          apt-get update -y
           apt-get install -y cuda-drivers nvidia-open
 
       - name: Checkout Code
