@@ -24,6 +24,7 @@ jobs:
           dpkg -i cuda-keyring_1.1-1_all.deb
           DEBIAN_FRONTEND=noninteractive apt-get update -y
           DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-drivers cuda-toolkit
+          DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev
 
       - name: Checkout Code
         uses: actions/checkout@v4
