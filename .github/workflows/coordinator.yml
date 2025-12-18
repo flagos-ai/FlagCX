@@ -9,6 +9,8 @@ on:
       - main
 
 jobs:
+  ubuntu-native-metax:
+    uses: ./.github/workflows/test_ubuntuNativeContainerMETAX.yml
   ubuntu-native-test:
     uses: ./.github/workflows/test_ubuntuNativeContainer.yml
   
