@@ -12,7 +12,7 @@ jobs:
   test-in-ubuntu-container:
     runs-on: ubuntu-latest
     container:
-      image:  ubuntu:latest
+      image:  ubuntu:22.04
 
     steps:
       - name: Set up Python and Install Dependencies
@@ -25,6 +25,7 @@ jobs:
           wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           dpkg -i cuda-keyring_1.1-1_all.deb
           apt-get update -y
+          apt-get install -y cuda-drivers nvidia-open
 
       - name: Checkout Code
         uses: actions/checkout@v4
