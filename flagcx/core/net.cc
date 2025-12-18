@@ -179,27 +179,29 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       args->waitCopy++;
     }
 
-    if (args->copied < args->waitCopy) {
-      int step = args->copied & stepMask;
+    if (args->posted < args->waitCopy) {
+      int step = args->posted & stepMask;
+      int done = 0;
       if (!args->regBufFlag) {
         if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
             flagcxSuccess) {
           args->copied++;
+          done = 1;
         }
       } else {
-        args->copied++;
+        done = 1;
       }
-    }
-
-    if (args->posted < args->copied) {
-      void *req = NULL;
-      resources->netAdaptor->isend(
-          resources->netSendComm, args->subs[args->posted & stepMask].stepBuff,
-          args->subs[args->posted & stepMask].stepSize, 0,
-          args->regBufFlag ? args->regHandle : resources->mhandles[0], NULL,
-          &req);
-      if (req) {
-        args->subs[args->posted++ & stepMask].requests[0] = req;
+      if (done) {
+        void *req = NULL;
+        resources->netAdaptor->isend(
+            resources->netSendComm,
+            args->subs[args->posted & stepMask].stepBuff,
+            args->subs[args->posted & stepMask].stepSize, 0,
+            args->regBufFlag ? args->regHandle : resources->mhandles[0], NULL,
+            &req);
+        if (req) {
+          args->subs[args->posted++ & stepMask].requests[0] = req;
+        }
       }
     }
 
@@ -253,37 +255,35 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
       if (req) {
         args->subs[args->posted & stepMask].requests[0] = req;
         args->totalPostSize += args->subs[args->posted++ & stepMask].stepSize;
+        return flagcxSuccess;
       }
     }
 
-    if (args->transmitted < args->posted) {
-      void *req = args->subs[args->transmitted & stepMask].requests[0];
+    if (args->postFlush < args->posted) {
+      void *req = args->subs[args->postFlush & stepMask].requests[0];
       int done = 0, sizes;
       resources->netAdaptor->test(req, &done, &sizes);
       if (done) {
-        args->transmitted++;
-      }
-    }
-
-    if (args->postFlush < args->transmitted) {
-      if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
-        void *req = NULL;
-        resources->netAdaptor->iflush(
-            resources->netRecvComm, 1,
-            &args->subs[args->postFlush & stepMask].stepBuff,
-            &args->subs[args->postFlush & stepMask].stepSize,
-            args->regBufFlag ? &args->regHandle : resources->mhandles, &req);
-        if (req) {
-          args->subs[args->postFlush++ & stepMask].requests[0] = req;
+        if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+          void *req = NULL;
+          resources->netAdaptor->iflush(
+              resources->netRecvComm, 1,
+              &args->subs[args->postFlush & stepMask].stepBuff,
+              &args->subs[args->postFlush & stepMask].stepSize,
+              args->regBufFlag ? &args->regHandle : resources->mhandles, &req);
+          if (req) {
+            args->subs[args->postFlush++ & stepMask].requests[0] = req;
+          }
+        } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+          args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
         }
-      } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
-        args->subs[args->postFlush & stepMask].requests[0] = (void *)0x1;
-        args->postFlush++;
+        return flagcxSuccess;
       }
     }
 
-    if (args->flushed < args->postFlush) {
-      void *req = args->subs[args->flushed & stepMask].requests[0];
+    if (args->waitCopy < args->postFlush) {
+      int step = args->waitCopy & stepMask;
+      void *req = args->subs[step].requests[0];
       int done = 0, sizes;
       if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET) &&
           req == (void *)0x1) {
@@ -293,29 +293,25 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         resources->netAdaptor->test(req, &done, &sizes);
       }
       if (done) {
-        args->flushed++;
-      }
-    }
-
-    if (args->waitCopy < args->flushed) {
-      int step = args->waitCopy & stepMask;
-      if (!args->regBufFlag) {
-        if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              (char *)data + args->totalCopySize, args->subs[step].stepBuff,
-              args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
-              resources->cpStream, args->subs[step].copyArgs));
-        } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
-          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-              (char *)data + args->totalCopySize, args->subs[step].stepBuff,
-              args->subs[step].stepSize, flagcxMemcpyHostToDevice,
-              resources->cpStream, args->subs[step].copyArgs));
+        if (!args->regBufFlag) {
+          if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+            FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+                (char *)data + args->totalCopySize, args->subs[step].stepBuff,
+                args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
+                resources->cpStream, args->subs[step].copyArgs));
+          } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+            FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+                (char *)data + args->totalCopySize, args->subs[step].stepBuff,
+                args->subs[step].stepSize, flagcxMemcpyHostToDevice,
+                resources->cpStream, args->subs[step].copyArgs));
+          }
+          FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[step],
+                                                 resources->cpStream));
         }
-        FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[step],
-                                               resources->cpStream));
+        args->totalCopySize += args->subs[step].stepSize;
+        args->waitCopy++;
+        return flagcxSuccess;
       }
-      args->totalCopySize += args->subs[step].stepSize;
-      args->waitCopy++;
     }
 
     if (args->copied < args->waitCopy) {
