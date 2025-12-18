@@ -1,13 +1,13 @@
 name: Run Container and Execute Tests ubuntu-native
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-
+  #push:
+  #  branches:
+  #    - main
+  #pull_request:
+  #  branches:
+  #    - main
+  workflow_call:
 jobs:
   test-in-ubuntu-container:
     runs-on: ubuntu-latest
@@ -17,13 +17,13 @@ jobs:
     steps:
       - name: Set up Python and Install Dependencies
         run: |
-          apt-get update -y
-          apt-get install -y python3 python3-pip python3-venv git wget
+          DEBIAN_FRONTEND=noninteractive apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv git wget
           
           wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           dpkg -i cuda-keyring_1.1-1_all.deb
-          apt-get update -y
-          apt-get install -y cuda-drivers
+          DEBIAN_FRONTEND=noninteractive apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-drivers
 
       - name: Checkout Code
         uses: actions/checkout@v4

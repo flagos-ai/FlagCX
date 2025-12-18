@@ -1,0 +1,25 @@
+name: Test Coordinator
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ubuntu-native-test:
+    uses: ./.github/workflows/test_ubuntuNativeContainer.yml
+  
+  unit-test:
+    needs: ubuntu-native-test
+    uses: ./.github/workflows/unit-test.yml
+    
+  torch-api-test:
+    needs: ubuntu-native-test
+    uses: ./.github/workflows/torch-api-test.yml
+    
+  container-test:
+    needs: ubuntu-native-test
+    uses: ./.github/workflows/test.yml
