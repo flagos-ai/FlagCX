@@ -25,7 +25,6 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get update -y
           DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-drivers cuda-toolkit
           DEBIAN_FRONTEND=noninteractive apt-get install -y libnccl2 libnccl-dev
-          DEBIAN_FRONTEND=noninteractive apt-get install -y libopenmpi-dev openmpi-bin
 
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -43,16 +42,7 @@ jobs:
           submodules: true
           set-safe-directory: true
 
-      - name: Check the current working directory
-        run: |
-          echo "Current directory: $(pwd)"
-          ls -l ./test/script
-
-      - name: Ensure script has execute permissions
-        run: chmod +x /__w/FlagCX/FlagCX/test/script/auto_script.sh
-
       - name: Run Auto Test Script in Container
         run: |
           cd /__w/FlagCX/FlagCX
-          ./test/script/auto_script.sh
-
+          make USE_NVIDIA=1
