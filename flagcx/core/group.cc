@@ -110,6 +110,9 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   }
   flagcxStream_t launchStream = nullptr;
   flagcxEvent_t launchEvent = nullptr;
+  // temporary stored proxy ops in step order
+  std::map<int, std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>>
+      proxyOps;
 
   if (groupCommPreconnectHeadMain != nullptr) {
     struct flagcxHeteroComm *comm = groupCommPreconnectHeadMain;
@@ -211,7 +214,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   FLAGCXCHECK(
                       deviceAdaptor->streamWaitEvent(launchStream, op->event));
                 }
-                FLAGCXCHECK(flagcxProxySaveOp(comm, op));
+                if (proxyOps.find(op->args.step) == proxyOps.end()) {
+                  proxyOps[op->args.step] = std::vector<
+                      std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
+                }
+                proxyOps[op->args.step].push_back({comm, op});
+                // FLAGCXCHECK(flagcxProxySaveOp(comm, op));
               }
               free(sendTasks[i]);
               free(recvTasks[j]);
@@ -234,7 +242,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       // peers
       for (int round = 1; round < nRanks; round++) {
         int roundOpId = round / localRanks + 1;
-        int roundStep = round % localRanks - 1;
+        int roundStep = round % localRanks;
+        if (roundOpId == 1) {
+          roundStep--;
+        }
         int recvPeer = comm->p2pSchedule[round].recvRank;
         int sendPeer = comm->p2pSchedule[round].sendRank;
         while (!flagcxIntruQueueEmpty(&tasks->peers[recvPeer].recvQueue) ||
@@ -323,7 +334,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               FLAGCXCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
             }
-            FLAGCXCHECK(flagcxProxySaveOp(comm, op));
+            if (proxyOps.find(op->args.step) == proxyOps.end()) {
+              proxyOps[op->args.step] =
+                  std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
+            }
+            proxyOps[op->args.step].push_back({comm, op});
+            // FLAGCXCHECK(flagcxProxySaveOp(comm, op));
             free(p2p);
           }
           // Process one send task (for IPC lookup - after recv's register)
@@ -406,7 +422,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               FLAGCXCHECK(
                   deviceAdaptor->streamWaitEvent(launchStream, op->event));
             }
-            FLAGCXCHECK(flagcxProxySaveOp(comm, op));
+            if (proxyOps.find(op->args.step) == proxyOps.end()) {
+              proxyOps[op->args.step] =
+                  std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
+            }
+            proxyOps[op->args.step].push_back({comm, op});
+            // FLAGCXCHECK(flagcxProxySaveOp(comm, op));
             free(p2p);
           }
         }
@@ -414,6 +435,13 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       tasks->p2pOrderSteps = 0;
       comm = comm->groupNext;
     } while (comm != nullptr);
+  }
+
+  // Save all proxy ops in step order
+  for (auto it = proxyOps.begin(); it != proxyOps.end(); ++it) {
+    for (auto pair : it->second) {
+      FLAGCXCHECK(flagcxProxySaveOp(pair.first, pair.second));
+    }
   }
 
   if (launchStream != nullptr && launchEvent != nullptr) {
