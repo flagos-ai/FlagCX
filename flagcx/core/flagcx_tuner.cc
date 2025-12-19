@@ -215,7 +215,7 @@ flagcxResult_t flagcxTunerInit(size_t nRanks, size_t rank,
   if (nLoopsEnv != nullptr) {
     try {
       int val = std::stoi(nLoopsEnv);
-      if (val >= 1) {
+      if (val >= 5) {
         ctx->searchNLoops = val;
         INFO(FLAGCX_ENV | FLAGCX_TUNING,
              "Tuner search nloops set by environment to %d.",
