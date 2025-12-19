@@ -4,6 +4,7 @@
 #include "net.h"
 #include "transport.h"
 #include "type.h"
+#include "ib_common.h"
 
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,

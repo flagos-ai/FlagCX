@@ -18,12 +18,14 @@
 #include "timer.h"
 #include "transport.h"
 #include "utils.h"
+#include "flagcx_net.h"
 #include <cassert>
 #include <stdio.h>
 #include <string.h>
 #include <unordered_map>
 
 flagcxRegPool globalRegPool;
+struct flagcxIbGlobalHandleInfo *globalOneSideHandles = NULL;
 struct flagcxIbGlobalHandleInfo *globalOneSideHandles = NULL;
 
 size_t getFlagcxDataTypeSize(flagcxDataType_t dtype) {
