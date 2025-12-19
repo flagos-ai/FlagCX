@@ -97,5 +97,4 @@ void cpuAsyncKernel(void *args) {
   flagcxHostSemaphore *semaphore = (flagcxHostSemaphore *)args;
   semaphore->signalStart();
   semaphore->wait();
-  semaphore->signalEnd();
 }

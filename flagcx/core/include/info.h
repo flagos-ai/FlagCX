@@ -120,7 +120,8 @@ struct flagcxTaskP2p {
   // Stateful chunk index. If a p2p gets "cut" over two plans this keeps track
   // of where it left off.
   int chunk;
-  int groupIdx;
+  int opId;
+  int step;
   flagcxDataType_t dtype;
   flagcxStream_t stream;
 };

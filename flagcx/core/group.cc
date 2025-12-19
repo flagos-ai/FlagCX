@@ -30,6 +30,8 @@ __thread int flagcxGroupBlocking = 1; /* default mode */
 __thread struct flagcxIntruQueue<struct flagcxAsyncJob, &flagcxAsyncJob::next>
     flagcxAsyncJobs;
 
+FLAGCX_PARAM(P2pScheduleDisable, "P2P_SCHEDULE_DISABLE", 0);
+
 flagcxResult_t flagcxHeteroGroupStart() {
   flagcxResult_t ret = flagcxSuccess;
   FLAGCXCHECK(flagcxGroupStartInternal());
@@ -75,25 +77,7 @@ void *flagcxAsyncJobMain(void *arg) {
   return arg;
 }
 
-flagcxResult_t createAndLookupSemaphore(
-    std::map<int, std::shared_ptr<flagcxSemaphore>> &semaphoreMap,
-    std::shared_ptr<flagcxSemaphore> &semaphore, int &subGroupCount,
-    int roundIdx) {
-  if (semaphoreMap.find(roundIdx) != semaphoreMap.end()) {
-    semaphore = semaphoreMap[roundIdx];
-  } else {
-    if (deviceAsyncKernel) {
-      semaphore = std::make_shared<flagcxDeviceSemaphore>();
-    } else {
-      semaphore = std::make_shared<flagcxHostSemaphore>();
-    }
-    if (semaphoreMap.empty()) {
-      subGroupCount++;
-    }
-    semaphoreMap[roundIdx] = semaphore;
-  }
-  return flagcxSuccess;
-}
+static int64_t p2pScheduleDisable = flagcxParamP2pScheduleDisable();
 
 static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   flagcxResult_t ret = flagcxSuccess;
@@ -108,11 +92,22 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       *asyncJobsMain = gjob->asyncJobsPtr;
   // volatile bool *groupAbortFlag = gjob->abortFlagPtr;
 
-  // Each groupLaunch we create a set of sub-groups of semaphores to track the
+  // P2PSchedule has the highest priority, followed by CustomizedSchedule,
+  // with DefaultSchedule as the fallback.
+  // P2PSchedule:        | recvOps {s0, s1, ..., sN} | selfCopyOps {s0} |
+  // sendOps {s0, s1, ..., sN} | CustomizedSchedule: | op0{s0, s1, ..., sN} |
+  // ... | opN{s0, s1, ..., sN} | DefaultSchedule:    | op0{s0} | op1{s0} | ...
+  // | opN{s0} |
+  int defaultOpId = 0;
+  int defaultStep = 0;
+  // Each groupLaunch we create a semaphore to track the
   // p2p ops and a stream to launch host or device func
-  int subGroupCount = 0;
-  std::map<int, std::shared_ptr<flagcxSemaphore>>
-      semaphoreMapList[FLAGCX_MAX_SUBGROUPS];
+  std::shared_ptr<flagcxSemaphore> semaphore;
+  if (deviceAsyncKernel) {
+    semaphore = std::make_shared<flagcxDeviceSemaphore>();
+  } else {
+    semaphore = std::make_shared<flagcxHostSemaphore>();
+  }
   flagcxStream_t launchStream = nullptr;
   flagcxEvent_t launchEvent = nullptr;
 
@@ -180,10 +175,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             if (sendTasks[i]->bytes == recvTasks[j]->bytes &&
                 sendTasks[i]->dtype == recvTasks[j]->dtype) {
               if (sendTasks[i]->buff != recvTasks[j]->buff) {
-                std::shared_ptr<flagcxSemaphore> semaphore;
-                createAndLookupSemaphore(
-                    semaphoreMapList[sendTasks[i]->groupIdx], semaphore,
-                    subGroupCount, 0);
                 flagcxProxyOp *op;
                 FLAGCXCHECK(flagcxCalloc(&op, 1));
                 op->pattern = flagcxPatternSend;
@@ -200,7 +191,18 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 op->event = semaphore->getEvent();
                 op->args.chunkSteps = 1; // single step
                 op->args.semaphore = semaphore;
-                semaphore->addCounter(1);
+                op->args.opId =
+                    p2pScheduleDisable
+                        ? (sendTasks[i]->opId == INT_MAX ? defaultOpId
+                                                         : sendTasks[i]->opId)
+                        : 0;
+                op->args.step =
+                    p2pScheduleDisable
+                        ? (sendTasks[i]->step == INT_MAX ? defaultStep
+                                                         : sendTasks[i]->step)
+                        : 0;
+                semaphore->addCounter(op->args.opId);
+                defaultOpId++;
                 FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
                 if (launchStream == nullptr) {
                   launchStream = op->stream;
@@ -231,21 +233,17 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       // Round 1..nRanks-1: use p2pSchedule to pair recv/send with different
       // peers
       for (int round = 1; round < nRanks; round++) {
-        int roundIdx = round % localRanks;
+        int roundOpId = round / localRanks + 1;
+        int roundStep = round % localRanks - 1;
         int recvPeer = comm->p2pSchedule[round].recvRank;
         int sendPeer = comm->p2pSchedule[round].sendRank;
-
         while (!flagcxIntruQueueEmpty(&tasks->peers[recvPeer].recvQueue) ||
                !flagcxIntruQueueEmpty(&tasks->peers[sendPeer].sendQueue)) {
-
           // Process one recv task (for IPC register)
           if (!flagcxIntruQueueEmpty(&tasks->peers[recvPeer].recvQueue)) {
             flagcxTaskP2p *p2p =
                 flagcxIntruQueueDequeue(&tasks->peers[recvPeer].recvQueue);
             int peer = recvPeer;
-            std::shared_ptr<flagcxSemaphore> semaphore;
-            createAndLookupSemaphore(semaphoreMapList[p2p->groupIdx], semaphore,
-                                     subGroupCount, roundIdx);
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));
             op->pattern = flagcxPatternRecv;
@@ -306,8 +304,17 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   &op->args.regBufFlag, &op->args.regHandle));
             }
             op->args.semaphore = semaphore;
+            op->args.opId =
+                p2pScheduleDisable
+                    ? (p2p->opId == INT_MAX ? defaultOpId : p2p->opId)
+                    : -roundOpId;
+            op->args.step =
+                p2pScheduleDisable
+                    ? (p2p->step == INT_MAX ? defaultStep : p2p->step)
+                    : roundStep;
             op->event = semaphore->getEvent();
-            semaphore->addCounter(1);
+            semaphore->addCounter(op->args.opId);
+            defaultOpId++;
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
@@ -319,15 +326,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             FLAGCXCHECK(flagcxProxySaveOp(comm, op));
             free(p2p);
           }
-
           // Process one send task (for IPC lookup - after recv's register)
           if (!flagcxIntruQueueEmpty(&tasks->peers[sendPeer].sendQueue)) {
             flagcxTaskP2p *p2p =
                 flagcxIntruQueueDequeue(&tasks->peers[sendPeer].sendQueue);
             int peer = sendPeer;
-            std::shared_ptr<flagcxSemaphore> semaphore;
-            createAndLookupSemaphore(semaphoreMapList[p2p->groupIdx], semaphore,
-                                     subGroupCount, roundIdx);
             flagcxProxyOp *op;
             FLAGCXCHECK(flagcxCalloc(&op, 1));
             op->pattern = flagcxPatternSend;
@@ -384,8 +387,17 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   &op->args.regBufFlag, &op->args.regHandle));
             }
             op->args.semaphore = semaphore;
+            op->args.opId =
+                p2pScheduleDisable
+                    ? (p2p->opId == INT_MAX ? defaultOpId : p2p->opId)
+                    : roundOpId;
+            op->args.step =
+                p2pScheduleDisable
+                    ? (p2p->step == INT_MAX ? defaultStep : p2p->step)
+                    : roundStep;
             op->event = semaphore->getEvent();
-            semaphore->addCounter(1);
+            semaphore->addCounter(op->args.opId);
+            defaultOpId++;
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
@@ -405,23 +417,14 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   }
 
   if (launchStream != nullptr && launchEvent != nullptr) {
-    for (int i = 0; i < subGroupCount; i++) {
-      auto &semaphoreMap = semaphoreMapList[i];
-      for (auto it = semaphoreMap.begin(); it != semaphoreMap.end(); ++it) {
-        auto &semaphore = it->second;
-        if (deviceAsyncKernel) {
-          FLAGCXCHECK(
-              deviceAdaptor->launchDeviceFunc(launchStream, deviceAsyncKernel,
-                                              (void *)semaphore->getSignals()));
-        } else {
-          FLAGCXCHECK(deviceAdaptor->launchHostFunc(
-              launchStream, cpuAsyncKernel, (void *)semaphore.get()));
-        }
-      }
-    }
     if (deviceAsyncKernel) {
+      FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
+          launchStream, deviceAsyncKernel, (void *)semaphore->getSignals()));
       // device semaphore need this event to signal completion
       FLAGCXCHECK(deviceAdaptor->eventRecord(launchEvent, launchStream));
+    } else {
+      FLAGCXCHECK(deviceAdaptor->launchHostFunc(launchStream, cpuAsyncKernel,
+                                                (void *)semaphore.get()));
     }
   }
 

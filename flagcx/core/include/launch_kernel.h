@@ -35,24 +35,23 @@ struct flagcxSemaphore {
 
   virtual flagcxEvent_t getEvent() = 0;
   virtual void signalStart() = 0;
-  virtual void signalEnd() = 0;
   virtual void *getSignals() = 0;
-  virtual void subCounter(int value) = 0;
-  virtual void addCounter(int value) = 0;
+  virtual void subCounter(int opId = 0) = 0;
+  virtual void addCounter(int opId = 0) = 0;
   virtual int getCounter() = 0;
-  virtual int pollStart() = 0;
+  virtual int pollStart(int opId = 0, int step = 0) = 0;
   virtual int pollEnd() = 0;
   virtual void wait() = 0;
 };
 
 // Host semaphore derived class
 struct flagcxHostSemaphore : public flagcxSemaphore {
-  int start;   // started or not
-  int end;     // ended or not
-  int counter; // total operations to wait for inside the group;
+  int counter;                // total ops
+  std::map<int, int> curStep; // current step of each op
+  std::map<int, int> nSteps;  // total steps of each op
   std::vector<flagcxEvent_t> events;
 
-  flagcxHostSemaphore() : start(0), end(0), counter(0) {}
+  flagcxHostSemaphore() : counter(0) {}
   ~flagcxHostSemaphore() override {
     for (auto event : events) {
       deviceAdaptor->eventDestroy(event);
@@ -64,20 +63,61 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
     return event;
   }
-  void signalStart() override { __atomic_store_n(&start, 1, __ATOMIC_RELEASE); }
-  void signalEnd() override { __atomic_store_n(&end, 1, __ATOMIC_RELEASE); }
-  void *getSignals() override { return nullptr; }
-  void subCounter(int value) override {
-    __atomic_fetch_sub(&counter, value, __ATOMIC_RELEASE);
+  void signalStart() override {
+    for (auto it = curStep.begin(); it != curStep.end(); ++it) {
+      __atomic_store_n(&it->second, 0, __ATOMIC_RELEASE);
+    }
+    // printf("counter = %d\n", counter);
+    // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
+    //   printf("curStep[%d] = %d, nSteps[%d] = %d\n", it->first, it->second,
+    //   it->first, nSteps[it->first]);
+    // }
   }
-  void addCounter(int value) override {
-    __atomic_fetch_add(&counter, value, __ATOMIC_RELEASE);
+  void *getSignals() override { return nullptr; }
+  void subCounter(int opId = 0) override {
+    // printf("Enter SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+    // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+    assert(curStep.find(opId) != curStep.end());
+    assert(nSteps.find(opId) != nSteps.end());
+    if (curStep[opId] + 1 == nSteps[opId]) {
+      __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
+      // printf("Next SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+      // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+    } else {
+      // printf("Before SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+      // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+      __atomic_fetch_add(&curStep[opId], 1, __ATOMIC_RELEASE);
+      // printf("After SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+      // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+    }
+    // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
+    //   printf("SubCounter curStep[%d] = %d, nSteps[%d] = %d\n", it->first,
+    //   it->second, it->first, nSteps[it->first]);
+    // }
+  }
+  void addCounter(int opId = 0) override {
+    if (nSteps.find(opId) != nSteps.end()) {
+      __atomic_fetch_add(&nSteps[opId], 1, __ATOMIC_RELEASE);
+    } else {
+      curStep[opId] = 0;
+      nSteps[opId] = 0;
+      __atomic_store_n(&curStep[opId], -1, __ATOMIC_RELEASE);
+      __atomic_store_n(&nSteps[opId], 1, __ATOMIC_RELEASE);
+      __atomic_fetch_add(&counter, 1, __ATOMIC_RELEASE);
+    }
   }
   int getCounter() override { return counter; }
-  int pollStart() override { return __atomic_load_n(&start, __ATOMIC_ACQUIRE); }
-  int pollEnd() override { return __atomic_load_n(&end, __ATOMIC_ACQUIRE); }
+  int pollStart(int opId = 0, int step = 0) override {
+    // printf("PollStart curStep[%d] = %d, nSteps[%d] = %d, counter = %d, step =
+    // %d\n", opId, curStep[opId], opId, nSteps[opId], counter, step);
+    return (__atomic_load_n(&curStep[opId], __ATOMIC_ACQUIRE) == step);
+  }
+  int pollEnd() override {
+    return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
+  }
   void wait() override {
     while (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) > 0) {
+      // printf("Waiting, counter = %d\n", counter);
       sched_yield();
     }
   }
@@ -144,21 +184,23 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   // Since the device kernel handles the signaling,
   // host-side signalStart/End are intentionally no-op and not needed
   void signalStart() override {}
-  void signalEnd() override {}
   void *getSignals() override { return dSignals; }
-  void subCounter(int value) override {
-    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, value,
+  void subCounter(int opId = 0) override {
+    // opId is unused for device semaphore currently
+    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
                        __ATOMIC_RELEASE);
   }
-  void addCounter(int value) override {
-    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, value,
+  void addCounter(int opId = 0) override {
+    // opId is unused for device semaphore currently
+    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
                        __ATOMIC_RELEASE);
   }
   int getCounter() override {
     return __atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
                            __ATOMIC_ACQUIRE);
   }
-  int pollStart() override {
+  int pollStart(int opId = 0, int step = 0) override {
+    // opId and step are unused for device semaphore currently
     return __atomic_load_n(signals + FLAGCX_SIGNAL_START_OFFSET,
                            __ATOMIC_ACQUIRE);
   }

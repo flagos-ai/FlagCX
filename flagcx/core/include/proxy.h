@@ -126,6 +126,8 @@ struct flagcxProxyArgs {
 
   /*for launch*/
   std::shared_ptr<flagcxSemaphore> semaphore;
+  int opId;
+  int step;
 
   // user buffer registration
   void *regHandle = nullptr;

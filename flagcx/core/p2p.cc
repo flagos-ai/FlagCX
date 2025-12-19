@@ -83,7 +83,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
   if (args->done == 1)
     return flagcxSuccess;
   // Make sure data is valid
-  if (!args->semaphore->pollStart())
+  if (!args->semaphore->pollStart(args->opId, args->step))
     return flagcxSuccess;
 
   struct flagcxP2pSyncSlot *slotPtr =
@@ -148,7 +148,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
           if (slotPtr->peerDone == 1) {
             __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
             __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-            args->semaphore->subCounter(1);
+            args->semaphore->subCounter(args->opId);
             args->done = 1;
           }
         }
@@ -206,7 +206,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
         if (slotPtr->peerDone == 1) {
           __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
           __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-          args->semaphore->subCounter(1);
+          args->semaphore->subCounter(args->opId);
           args->done = 1;
         }
       }
@@ -222,7 +222,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
   if (args->done == 1)
     return flagcxSuccess;
   // Make sure data is valid
-  if (!args->semaphore->pollStart())
+  if (!args->semaphore->pollStart(args->opId, args->step))
     return flagcxSuccess;
 
   struct flagcxP2pSyncSlot *slotPtr =
@@ -270,7 +270,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
           if (slotPtr->peerDone == 1) {
             __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
             __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-            args->semaphore->subCounter(1);
+            args->semaphore->subCounter(args->opId);
             args->done = 1;
           }
         }
@@ -328,7 +328,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
         if (slotPtr->peerDone == 1) {
           __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
           __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-          args->semaphore->subCounter(1);
+          args->semaphore->subCounter(args->opId);
           args->done = 1;
         }
       }
@@ -342,7 +342,7 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
                                       size_t size,
                                       struct flagcxProxyArgs *args) {
   // Make sure data is valid
-  if (!args->semaphore->pollStart())
+  if (!args->semaphore->pollStart(args->opId, args->step))
     return flagcxSuccess;
 
   if (args->transmitted < args->chunkSteps) {
@@ -367,7 +367,7 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
     }
   } else {
     if (args->done != 1) {
-      args->semaphore->subCounter(1);
+      args->semaphore->subCounter(args->opId);
       args->done = 1;
     }
   }
