@@ -67,7 +67,7 @@ struct flagcxTuner {
                                 size_t nBytes, int numPipeOps,
                                 float **collCostTable, int regBuff,
                                 struct flagcxCommTag *commTag,
-                                flagcxComm_t *comm);
+                                flagcxComm_t *comm, flagcxStream_t stream);
 
   // Start profiling for a specific collective with given parameters.
   // Inputs:
@@ -100,7 +100,8 @@ struct flagcxTuner {
   // Create/destroy communicator
   flagcxResult_t (*createOrReplaceHomoComm)(
       flagcxComm_t *comm, struct flagcxTunerContext *ctx, uint32_t seqId,
-      const struct TunerCollCategory &collCat, bool createBest);
+      const struct TunerCollCategory &collCat, flagcxStream_t stream,
+      bool createBest);
 
   // Switch communicator config
   flagcxResult_t (*switchCommConfig)(void *context, flagcxComm_t *comm,
@@ -148,7 +149,7 @@ flagcxResult_t flagcxHandleFlagscaleTuning(void *context, flagcxComm_t comm,
     comm->tunerInnerComm = nullptr;                                            \
     struct flagcxCommTag tag = {""};                                           \
     FLAGCXCHECK(comm->tuner->getCollInfo(comm->tunerContext, commOp, nBytes,   \
-                                         0, NULL, 0, &tag, &comm));            \
+                                         0, NULL, 0, &tag, &comm, stream));    \
     flagcxProfileKey pkey;                                                     \
     FLAGCXCHECK(comm->tuner->startProfiling(comm->tunerContext, commOp,        \
                                             nBytes, stream, &tag, &pkey));     \

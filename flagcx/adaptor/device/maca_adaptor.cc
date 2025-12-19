@@ -324,6 +324,21 @@ flagcxResult_t macaAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                           flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  mcError_t error = mcEventElapsedTime(ms, start->base, end->base);
+  if (error == mcSuccess) {
+    return flagcxSuccess;
+  } else if (error == mcErrorNotReady) {
+    return flagcxInProgress;
+  } else {
+    return flagcxUnhandledDeviceError;
+  }
+}
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -375,8 +390,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
+      macaAdaptorEventElapsedTime,
 };
 
 #endif // USE_METAX_ADAPTOR
