@@ -70,25 +70,29 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     // printf("counter = %d\n", counter);
     // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
     //   printf("curStep[%d] = %d, nSteps[%d] = %d\n", it->first, it->second,
-    //   it->first, nSteps[it->first]);
+    //          it->first, nSteps[it->first]);
     // }
   }
   void *getSignals() override { return nullptr; }
   void subCounter(int opId = 0) override {
     // printf("Enter SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-    // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+    // %d\n",
+    //        opId, curStep[opId], opId, nSteps[opId], counter);
     assert(curStep.find(opId) != curStep.end());
     assert(nSteps.find(opId) != nSteps.end());
     if (curStep[opId] + 1 == nSteps[opId]) {
       __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
-      // printf("Next SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-      // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+      // printf(
+      //     "Next SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+      //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
     } else {
-      // printf("Before SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-      // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+      // printf(
+      //     "Before SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+      //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
       __atomic_fetch_add(&curStep[opId], 1, __ATOMIC_RELEASE);
-      // printf("After SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-      // %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+      // printf(
+      //     "After SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
+      //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
     }
     // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
     //   printf("SubCounter curStep[%d] = %d, nSteps[%d] = %d\n", it->first,

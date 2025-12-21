@@ -240,11 +240,15 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 
       // Round 1..nRanks-1: use p2pSchedule to pair recv/send with different
       // peers
+      int roundSendStep = 0;
+      int roundRecvStep = 0;
+      int roundOpId = 1;
       for (int round = 1; round < nRanks; round++) {
-        int roundOpId = round / localRanks + 1;
-        int roundStep = round % localRanks;
-        if (roundOpId == 1) {
-          roundStep--;
+        int tmpRoundOpId = round / localRanks + 1;
+        if (roundOpId != tmpRoundOpId) {
+          roundSendStep = 0;
+          roundRecvStep = 0;
+          roundOpId = tmpRoundOpId;
         }
         int recvPeer = comm->p2pSchedule[round].recvRank;
         int sendPeer = comm->p2pSchedule[round].sendRank;
@@ -322,10 +326,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             op->args.step =
                 p2pScheduleDisable
                     ? (p2p->step == INT_MAX ? defaultStep : p2p->step)
-                    : roundStep;
+                    : roundRecvStep;
             op->event = semaphore->getEvent();
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
+            roundRecvStep++;
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
@@ -410,10 +415,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             op->args.step =
                 p2pScheduleDisable
                     ? (p2p->step == INT_MAX ? defaultStep : p2p->step)
-                    : roundStep;
+                    : roundSendStep;
             op->event = semaphore->getEvent();
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
+            roundSendStep++;
             FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
             if (launchStream == nullptr) {
               launchStream = op->stream;
