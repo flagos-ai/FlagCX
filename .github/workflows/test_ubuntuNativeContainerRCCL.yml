@@ -35,7 +35,7 @@ jobs:
           EOF
 
           apt-get update -y
-          apt-get install rocm-hip-libraries rocm-hip-runtime rocm-language-runtime rocm-opencl-runtime rocm-developer-tools rocm-opencl-sdk -y
+          apt-get install rocm-hip-libraries rocm-hip-runtime rocm-language-runtime rocm-hip-runtime-devel rocm-opencl-runtime rocm-developer-tools rocm-opencl-sdk -y
 
       - name: Checkout Code
         uses: actions/checkout@v4
