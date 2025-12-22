@@ -9,6 +9,8 @@ on:
       - main
 
 jobs:
+  ubuntu-native-Ascend:
+    uses: ./.github/workflows/test_ubuntuNativeContainerAscend.yml
   ubuntu-native-CNCL:
     uses: ./.github/workflows/test_ubuntuNativeContainerCNCL.yml
   ubuntu-native-metax:

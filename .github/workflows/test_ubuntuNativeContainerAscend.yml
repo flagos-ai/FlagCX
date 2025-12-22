@@ -1,0 +1,48 @@
+name: Run Container ubuntu-native
+
+on:
+  #push:
+  #  branches:
+  #    - main
+  #pull_request:
+  #  branches:
+  #    - main
+  workflow_call:
+jobs:
+  test-in-ubuntu-container:
+    runs-on: ubuntu-latest
+    container:
+      image:  ubuntu:22.04
+
+    steps:
+      - name: Set up Python and Install Dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv git autotools-dev curl gcc g++ build-essential cmake
+          DEBIAN_FRONTEND=noninteractive apt-get install -y wget
+          wget "https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Ascend HDK/Ascend HDK 24.1.RC2/Ascend-hdk-910b-npu-driver_24.1.rc2_linux-x86-64.run"
+          sh Ascend-hdk-910b-npu-driver_24.1.rc2_linux-x86-64.run --full --install-for-all
+          npu-smi info
+          wget "https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/Ascend HDK/Ascend HDK 24.1.RC2/Ascend-hdk-910b-npu-firmware_7.3.0.1.231.run"
+          sh Ascend-hdk-910b-npu-firmware_7.3.0.1.231.run --full --install-for-all
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: true
+          set-safe-directory: true
+
+      - name: Run Auto Test Script in Container
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make USE_CNCL=1
