@@ -92,12 +92,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       *asyncJobsMain = gjob->asyncJobsPtr;
   // volatile bool *groupAbortFlag = gjob->abortFlagPtr;
 
-  // P2PSchedule has the highest priority, followed by CustomizedSchedule,
+  // CustomizedSchedule has the highest priority, followed by P2PSchedule,
   // with DefaultSchedule as the fallback.
-  // P2PSchedule:        | recvOps {s0, s1, ..., sN} | selfCopyOps {s0} |
-  // sendOps {s0, s1, ..., sN} | CustomizedSchedule: | op0{s0, s1, ..., sN} |
-  // ... | opN{s0, s1, ..., sN} | DefaultSchedule:    | op0{s0} | op1{s0} | ...
-  // | opN{s0} |
+  // CustomizedSchedule: |op0{s0,s1,...,sN}|...|opN{s0,s1,...,sN}|
+  // P2PSchedule: |recvOps{s0,s1,...,sN}|selfCopyOps{s0}|sendOps{s0,s1,...,sN}|
+  // DefaultSchedule: |op0{s0}|op1{s0}|...|opN{s0}|
   int defaultOpId = 0;
   int defaultStep = 0;
   // Each groupLaunch we create a semaphore to track the
@@ -194,16 +193,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 op->event = semaphore->getEvent();
                 op->args.chunkSteps = 1; // single step
                 op->args.semaphore = semaphore;
-                op->args.opId =
-                    p2pScheduleDisable
-                        ? (sendTasks[i]->opId == INT_MAX ? defaultOpId
-                                                         : sendTasks[i]->opId)
-                        : 0;
-                op->args.step =
-                    p2pScheduleDisable
-                        ? (sendTasks[i]->step == INT_MAX ? defaultStep
-                                                         : sendTasks[i]->step)
-                        : 0;
+                op->args.opId = sendTasks[i]->opId == INT_MAX
+                                    ? (p2pScheduleDisable ? defaultOpId : 0)
+                                    : sendTasks[i]->opId;
+                op->args.step = sendTasks[i]->step == -1
+                                    ? (p2pScheduleDisable ? defaultStep : 0)
+                                    : sendTasks[i]->step;
                 semaphore->addCounter(op->args.opId);
                 defaultOpId++;
                 FLAGCXCHECK(deviceAdaptor->eventRecord(op->event, op->stream));
@@ -320,13 +315,13 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
             }
             op->args.semaphore = semaphore;
             op->args.opId =
-                p2pScheduleDisable
-                    ? (p2p->opId == INT_MAX ? defaultOpId : p2p->opId)
-                    : -roundOpId;
+                p2p->opId == INT_MAX
+                    ? (p2pScheduleDisable ? defaultOpId : -roundOpId)
+                    : p2p->opId;
             op->args.step =
-                p2pScheduleDisable
-                    ? (p2p->step == INT_MAX ? defaultStep : p2p->step)
-                    : roundRecvStep;
+                p2p->step == -1
+                    ? (p2pScheduleDisable ? defaultStep : roundRecvStep)
+                    : p2p->step;
             op->event = semaphore->getEvent();
             semaphore->addCounter(op->args.opId);
             defaultOpId++;
@@ -408,14 +403,13 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   &op->args.regBufFlag, &op->args.regHandle));
             }
             op->args.semaphore = semaphore;
-            op->args.opId =
-                p2pScheduleDisable
-                    ? (p2p->opId == INT_MAX ? defaultOpId : p2p->opId)
-                    : roundOpId;
+            op->args.opId = p2p->opId == INT_MAX
+                                ? (p2pScheduleDisable ? defaultOpId : roundOpId)
+                                : p2p->opId;
             op->args.step =
-                p2pScheduleDisable
-                    ? (p2p->step == INT_MAX ? defaultStep : p2p->step)
-                    : roundSendStep;
+                p2p->step == -1
+                    ? (p2pScheduleDisable ? defaultStep : roundSendStep)
+                    : p2p->step;
             op->event = semaphore->getEvent();
             semaphore->addCounter(op->args.opId);
             defaultOpId++;

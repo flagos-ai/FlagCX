@@ -14,6 +14,7 @@
 #include <iostream>
 #include <math.h>
 #include <memory.h>
+#include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -50,6 +51,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   std::map<int, int> curStep; // current step of each op
   std::map<int, int> nSteps;  // total steps of each op
   std::vector<flagcxEvent_t> events;
+  std::mutex mapMutex;
 
   flagcxHostSemaphore() : counter(0) {}
   ~flagcxHostSemaphore() override {
@@ -64,6 +66,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     return event;
   }
   void signalStart() override {
+    std::lock_guard<std::mutex> lock(mapMutex);
     for (auto it = curStep.begin(); it != curStep.end(); ++it) {
       __atomic_store_n(&it->second, 0, __ATOMIC_RELEASE);
     }
@@ -75,6 +78,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   }
   void *getSignals() override { return nullptr; }
   void subCounter(int opId = 0) override {
+    std::lock_guard<std::mutex> lock(mapMutex);
     // printf("Enter SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
     // %d\n",
     //        opId, curStep[opId], opId, nSteps[opId], counter);
@@ -100,6 +104,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     // }
   }
   void addCounter(int opId = 0) override {
+    std::lock_guard<std::mutex> lock(mapMutex);
     if (nSteps.find(opId) != nSteps.end()) {
       __atomic_fetch_add(&nSteps[opId], 1, __ATOMIC_RELEASE);
     } else {
