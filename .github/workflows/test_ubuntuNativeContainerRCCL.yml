@@ -34,8 +34,8 @@ jobs:
           Pin-Priority: 600
           EOF
 
-          apt update -y
-          apt install rocm -y
+          apt-get update -y
+          apt-get install rocm -y
 
       - name: Checkout Code
         uses: actions/checkout@v4
