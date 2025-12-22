@@ -34,6 +34,7 @@ jobs:
           Pin-Priority: 600
           EOF
 
+          apt-get update -y
           apt-get install rocm-hip-libraries rocm-hip-runtime rocm-language-runtime rocm-hip-sdk rocm-opencl-runtime rocm-developer-tools rocm-opencl-sdk -y
 
       - name: Checkout Code
