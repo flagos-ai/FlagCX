@@ -21,8 +21,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv git autotools-dev wget gcc g++ build-essential cmake
           
           mkdir --parents --mode=0755 /etc/apt/keyrings
-          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
-            gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
 
           tee /etc/apt/sources.list.d/rocm.list << EOF
           deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1.1 jammy main
