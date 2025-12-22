@@ -56,4 +56,4 @@ jobs:
       - name: Run Auto Test Script in Container
         run: |
           cd /__w/FlagCX/FlagCX
-          make USE_RCCL=1
+          make USE_AMD=1
