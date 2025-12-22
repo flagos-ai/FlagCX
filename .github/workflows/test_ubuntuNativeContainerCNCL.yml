@@ -1,0 +1,44 @@
+name: Run Container ubuntu-native
+
+on:
+  #push:
+  #  branches:
+  #    - main
+  #pull_request:
+  #  branches:
+  #    - main
+  workflow_call:
+jobs:
+  test-in-ubuntu-container:
+    runs-on: ubuntu-latest
+    container:
+      image:  ubuntu:20.04
+
+    steps:
+      - name: Set up Python and Install Dependencies
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get update -y
+          DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv git autotools-dev curl gcc g++ build-essential cmake
+          DEBIAN_FRONTEND=noninteractive apt install cncl_1.2.1-1.ubuntu20.04_amd64.deb -y
+
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: true
+          set-safe-directory: true
+
+      - name: Run Auto Test Script in Container
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make USE_CNCL=1
