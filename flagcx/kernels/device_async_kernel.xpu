@@ -1,14 +1,17 @@
 // include XPU-related headers
 #include "flagcx.h"
+#include "launch_kernel.h"
 
 __global__ void asyncKernel(int *__restrict__ values) {
   volatile int *signals = values;
-  signals[0] = 1; // set start to 1
+  // set all ops curStep to 0
+  for (int i = 0; i < FLAGCX_OPS_PER_SEMAPHORE; ++i) {
+    signals[i] = 0;
+  }
   mfence(); // Ensure that the write is visible to the CPU.
-  while (signals[2] > 0) {
+  while (signals[FLAGCX_SIGNAL_COUNTER_OFFSET] > 0) {
     // busy-wait
   }
-  signals[1] = 1; // set end to 1
   mfence(); // Ensure that the write is visible to the CPU.
 }
 

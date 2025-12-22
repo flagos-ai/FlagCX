@@ -50,8 +50,8 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   int counter;                // total ops
   std::map<int, int> curStep; // current step of each op
   std::map<int, int> nSteps;  // total steps of each op
-  std::vector<flagcxEvent_t> events;
   std::mutex mapMutex;
+  std::vector<flagcxEvent_t> events;
 
   flagcxHostSemaphore() : counter(0) {}
   ~flagcxHostSemaphore() override {
@@ -136,8 +136,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
 struct flagcxDeviceSemaphoreBufferPool {
   int capacity;          // total slots
   int slotId;            // slot index in the pool
-  int *signalsPool;      // Host-mapped memory region, [start, end, counter] *
-                         // capacity
+  int *signalsPool;      // Host-mapped memory region
   void *dSignalsPool;    // Device alias
   flagcxEvent_t *events; // store first event of each semaphore
 
@@ -151,22 +150,28 @@ struct flagcxDeviceSemaphoreBufferPool {
 };
 static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
-#define FLAGCX_SIGNALS_PER_SEMAPHORE 3
-#define FLAGCX_SIGNAL_START_OFFSET 0
-#define FLAGCX_SIGNAL_END_OFFSET 1
-#define FLAGCX_SIGNAL_COUNTER_OFFSET 2
+#define FLAGCX_OPS_PER_SEMAPHORE 16
+#define FLAGCX_SIGNALS_PER_SEMAPHORE (2 * FLAGCX_OPS_PER_SEMAPHORE + 1)
+#define FLAGCX_SIGNAL_CURSTEP_OFFSET 0
+#define FLAGCX_SIGNAL_NSTRPS_OFFSET FLAGCX_OPS_PER_SEMAPHORE
+#define FLAGCX_SIGNAL_COUNTER_OFFSET (2 * FLAGCX_OPS_PER_SEMAPHORE)
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int slotId;
-  int *signals; // [start, end, counter]
+  int opOffset;
+  int *signals; // [curStep,...,nSteps,..., counter]
   void *dSignals;
   flagcxEvent_t headEvent;
+  std::map<int, int> curStep; // current step of each op
+  std::map<int, int> nSteps;  // total steps of each op
+  std::mutex mapMutex;
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
     if (deviceSemaphoreBufferPool.capacity == -1) {
       deviceSemaphoreBufferPool.initialize();
     }
+    opOffset = 0;
     slotId = deviceSemaphoreBufferPool.getSlotId();
     signals = deviceSemaphoreBufferPool.getHostPtr(slotId);
     dSignals = deviceSemaphoreBufferPool.getDevicePtr(slotId);
@@ -195,27 +200,41 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   void signalStart() override {}
   void *getSignals() override { return dSignals; }
   void subCounter(int opId = 0) override {
-    // opId is unused for device semaphore currently
-    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
-                       __ATOMIC_RELEASE);
+    std::lock_guard<std::mutex> lock(mapMutex);
+    assert(curStep.find(opId) != curStep.end());
+    assert(nSteps.find(opId) != nSteps.end());
+    if (signals[curStep[opId]] + 1 == signals[nSteps[opId]]) {
+      __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
+                         __ATOMIC_RELEASE);
+    } else {
+      __atomic_fetch_add(signals + curStep[opId], 1, __ATOMIC_RELEASE);
+    }
   }
   void addCounter(int opId = 0) override {
-    // opId is unused for device semaphore currently
-    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
-                       __ATOMIC_RELEASE);
+    std::lock_guard<std::mutex> lock(mapMutex);
+    if (nSteps.find(opId) != nSteps.end()) {
+      __atomic_fetch_add(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
+    } else {
+      assert(opOffset < FLAGCX_OPS_PER_SEMAPHORE);
+      curStep[opId] = FLAGCX_SIGNAL_CURSTEP_OFFSET + opOffset;
+      nSteps[opId] = FLAGCX_SIGNAL_NSTRPS_OFFSET + opOffset;
+      opOffset++;
+      __atomic_store_n(signals + curStep[opId], -1, __ATOMIC_RELEASE);
+      __atomic_store_n(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
+      __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
+                         __ATOMIC_RELEASE);
+    }
   }
   int getCounter() override {
     return __atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
                            __ATOMIC_ACQUIRE);
   }
   int pollStart(int opId = 0, int step = 0) override {
-    // opId and step are unused for device semaphore currently
-    return __atomic_load_n(signals + FLAGCX_SIGNAL_START_OFFSET,
-                           __ATOMIC_ACQUIRE);
+    return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) == step);
   }
   int pollEnd() override {
-    return __atomic_load_n(signals + FLAGCX_SIGNAL_END_OFFSET,
-                           __ATOMIC_ACQUIRE);
+    return (__atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
+                            __ATOMIC_ACQUIRE) == 0);
   }
   // Since the device kernel handles the signaling,
   // host-side wait is intentionally no-op and not needed

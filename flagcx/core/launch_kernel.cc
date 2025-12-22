@@ -49,9 +49,7 @@ int flagcxDeviceSemaphoreBufferPool::getSlotId() {
   }
   // set this slot signals to zero
   int offset = FLAGCX_SIGNALS_PER_SEMAPHORE * slotId;
-  signalsPool[offset + FLAGCX_SIGNAL_START_OFFSET] = 0;   // started or not
-  signalsPool[offset + FLAGCX_SIGNAL_END_OFFSET] = 0;     // ended or not
-  signalsPool[offset + FLAGCX_SIGNAL_COUNTER_OFFSET] = 0; // total operations
+  memset(signalsPool + offset, 0, FLAGCX_SIGNALS_PER_SEMAPHORE * sizeof(int));
   int ret = slotId;
   // Move to next slot
   slotId = (slotId + 1) % capacity;
