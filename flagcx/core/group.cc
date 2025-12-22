@@ -214,7 +214,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                       std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
                 }
                 proxyOps[op->args.step].push_back({comm, op});
-                // FLAGCXCHECK(flagcxProxySaveOp(comm, op));
               }
               free(sendTasks[i]);
               free(recvTasks[j]);
@@ -339,7 +338,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
             }
             proxyOps[op->args.step].push_back({comm, op});
-            // FLAGCXCHECK(flagcxProxySaveOp(comm, op));
             free(p2p);
           }
           // Process one send task (for IPC lookup - after recv's register)
@@ -427,7 +425,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                   std::vector<std::pair<flagcxHeteroComm *, flagcxProxyOp *>>();
             }
             proxyOps[op->args.step].push_back({comm, op});
-            // FLAGCXCHECK(flagcxProxySaveOp(comm, op));
             free(p2p);
           }
         }

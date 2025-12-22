@@ -68,7 +68,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   void signalStart() override {
     std::lock_guard<std::mutex> lock(mapMutex);
     for (auto it = curStep.begin(); it != curStep.end(); ++it) {
-      __atomic_store_n(&it->second, 0, __ATOMIC_RELEASE);
+      it->second = 0;
     }
     // printf("counter = %d\n", counter);
     // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
@@ -93,7 +93,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
       // printf(
       //     "Before SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
       //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
-      __atomic_fetch_add(&curStep[opId], 1, __ATOMIC_RELEASE);
+      curStep[opId] += 1;
       // printf(
       //     "After SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
       //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
@@ -106,20 +106,20 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   void addCounter(int opId = 0) override {
     std::lock_guard<std::mutex> lock(mapMutex);
     if (nSteps.find(opId) != nSteps.end()) {
-      __atomic_fetch_add(&nSteps[opId], 1, __ATOMIC_RELEASE);
+      nSteps[opId] += 1;
     } else {
-      curStep[opId] = 0;
-      nSteps[opId] = 0;
-      __atomic_store_n(&curStep[opId], -1, __ATOMIC_RELEASE);
-      __atomic_store_n(&nSteps[opId], 1, __ATOMIC_RELEASE);
+      curStep[opId] = -1;
+      nSteps[opId] = 1;
       __atomic_fetch_add(&counter, 1, __ATOMIC_RELEASE);
     }
   }
   int getCounter() override { return counter; }
   int pollStart(int opId = 0, int step = 0) override {
+    std::lock_guard<std::mutex> lock(mapMutex);
     // printf("PollStart curStep[%d] = %d, nSteps[%d] = %d, counter = %d, step =
     // %d\n", opId, curStep[opId], opId, nSteps[opId], counter, step);
-    return (__atomic_load_n(&curStep[opId], __ATOMIC_ACQUIRE) == step);
+    assert(curStep.find(opId) != curStep.end());
+    return (curStep[opId] == step);
   }
   int pollEnd() override {
     return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
@@ -153,7 +153,7 @@ static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 #define FLAGCX_OPS_PER_SEMAPHORE 16
 #define FLAGCX_SIGNALS_PER_SEMAPHORE (2 * FLAGCX_OPS_PER_SEMAPHORE + 1)
 #define FLAGCX_SIGNAL_CURSTEP_OFFSET 0
-#define FLAGCX_SIGNAL_NSTRPS_OFFSET FLAGCX_OPS_PER_SEMAPHORE
+#define FLAGCX_SIGNAL_NSTEPS_OFFSET FLAGCX_OPS_PER_SEMAPHORE
 #define FLAGCX_SIGNAL_COUNTER_OFFSET (2 * FLAGCX_OPS_PER_SEMAPHORE)
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
@@ -215,9 +215,10 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     if (nSteps.find(opId) != nSteps.end()) {
       __atomic_fetch_add(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
     } else {
+      // Make sure that opOffset is not used up
       assert(opOffset < FLAGCX_OPS_PER_SEMAPHORE);
       curStep[opId] = FLAGCX_SIGNAL_CURSTEP_OFFSET + opOffset;
-      nSteps[opId] = FLAGCX_SIGNAL_NSTRPS_OFFSET + opOffset;
+      nSteps[opId] = FLAGCX_SIGNAL_NSTEPS_OFFSET + opOffset;
       opOffset++;
       __atomic_store_n(signals + curStep[opId], -1, __ATOMIC_RELEASE);
       __atomic_store_n(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
@@ -230,6 +231,8 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
                            __ATOMIC_ACQUIRE);
   }
   int pollStart(int opId = 0, int step = 0) override {
+    std::lock_guard<std::mutex> lock(mapMutex);
+    assert(curStep.find(opId) != curStep.end());
     return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) == step);
   }
   int pollEnd() override {
