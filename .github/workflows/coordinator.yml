@@ -9,6 +9,8 @@ on:
       - main
 
 jobs:
+  ubuntu-native-Rocm:
+    uses: ./.github/workflows/test_ubuntuNativeContainerRCCL.yml
   ubuntu-native-Ascend:
     uses: ./.github/workflows/test_ubuntuNativeContainerAscend.yml
   ubuntu-native-CNCL:

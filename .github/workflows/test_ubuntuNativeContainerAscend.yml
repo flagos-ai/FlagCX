@@ -45,4 +45,4 @@ jobs:
       - name: Run Auto Test Script in Container
         run: |
           cd /__w/FlagCX/FlagCX
-          make USE_CNCL=1
+          make USE_HCCL=1
