@@ -9,6 +9,8 @@ on:
       - main
 
 jobs:
+  ubuntu-native-CNCL:
+    uses: ./.github/workflows/test_ubuntuNativeContainerCNCL.yml
   ubuntu-native-metax:
     uses: ./.github/workflows/test_ubuntuNativeContainerMETAX.yml
   ubuntu-native-test:
