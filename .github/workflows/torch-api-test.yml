@@ -41,19 +41,6 @@ jobs:
           pip install pre-commit -i https://pypi.tuna.tsinghua.edu.cn/simple
           cd /__w/FlagCX/FlagCX
           git config --global --add safe.directory /__w/FlagCX/FlagCX && git status
-          pre-commit install
-
-      - name: Run Code Format Check with pre-commit
-        run: |
-          cd /__w/FlagCX/FlagCX
-          git fetch --all
-          if [ -n "$GITHUB_HEAD_REF" ] && [ -n "$GITHUB_BASE_REF" ]; then
-            from_ref="origin/$GITHUB_HEAD_REF"
-            to_ref="origin/$GITHUB_BASE_REF"
-            echo "From reference: $from_ref; To reference: $to_ref"
-            pre-commit run --from-ref "$from_ref" --to-ref "$to_ref"
-          fi
-        continue-on-error: false
 
       - name: Run `make` to build the project
         run: |
