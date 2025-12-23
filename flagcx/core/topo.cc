@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
  *
- * See LICENSE.txt for license information
+ * See LICENSE-NCCL.txt for license information
  ************************************************************************/
 
 #include "topo.h"
