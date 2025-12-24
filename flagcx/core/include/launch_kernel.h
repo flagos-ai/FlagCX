@@ -47,10 +47,9 @@ struct flagcxSemaphore {
 
 // Host semaphore derived class
 struct flagcxHostSemaphore : public flagcxSemaphore {
-  int counter;                // total ops
-  std::map<int, int> curStep; // current step of each op
-  std::map<int, int> nSteps;  // total steps of each op
-  std::mutex mapMutex;
+  int counter;                              // total ops
+  std::map<int, int> stepInfo;              // opId -> singalId
+  std::vector<std::pair<int, int>> signals; // [curStep, nSteps]
   std::vector<flagcxEvent_t> events;
 
   flagcxHostSemaphore() : counter(0) {}
@@ -66,67 +65,42 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     return event;
   }
   void signalStart() override {
-    std::lock_guard<std::mutex> lock(mapMutex);
-    for (auto it = curStep.begin(); it != curStep.end(); ++it) {
-      it->second = 0;
+    for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
+      __atomic_store_n(&signals[it->second].first, 0, __ATOMIC_RELEASE);
     }
-    // printf("counter = %d\n", counter);
-    // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
-    //   printf("curStep[%d] = %d, nSteps[%d] = %d\n", it->first, it->second,
-    //          it->first, nSteps[it->first]);
-    // }
   }
   void *getSignals() override { return nullptr; }
   void subCounter(int opId = 0) override {
-    std::lock_guard<std::mutex> lock(mapMutex);
-    // printf("Enter SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-    // %d\n",
-    //        opId, curStep[opId], opId, nSteps[opId], counter);
-    assert(curStep.find(opId) != curStep.end());
-    assert(nSteps.find(opId) != nSteps.end());
-    if (curStep[opId] + 1 == nSteps[opId]) {
+    assert(stepInfo.find(opId) != stepInfo.end());
+    if (signals[stepInfo[opId]].first + 1 == signals[stepInfo[opId]].second) {
       __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
-      // printf(
-      //     "Next SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-      //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
     } else {
-      // printf(
-      //     "Before SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-      //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
-      curStep[opId] += 1;
-      // printf(
-      //     "After SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter =
-      //     %d\n", opId, curStep[opId], opId, nSteps[opId], counter);
+      __atomic_fetch_add(&signals[stepInfo[opId]].first, 1, __ATOMIC_RELEASE);
     }
-    // for (auto it = curStep.begin(); it != curStep.end(); ++it) {
-    //   printf("SubCounter curStep[%d] = %d, nSteps[%d] = %d\n", it->first,
-    //   it->second, it->first, nSteps[it->first]);
-    // }
+    TRACE(FLAGCX_PROXY,
+          "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
+          signals[stepInfo[opId]].first, opId, signals[stepInfo[opId]].second,
+          counter);
   }
   void addCounter(int opId = 0) override {
-    std::lock_guard<std::mutex> lock(mapMutex);
-    if (nSteps.find(opId) != nSteps.end()) {
-      nSteps[opId] += 1;
+    if (stepInfo.find(opId) != stepInfo.end()) {
+      __atomic_fetch_add(&signals[stepInfo[opId]].second, 1, __ATOMIC_RELEASE);
     } else {
-      curStep[opId] = -1;
-      nSteps[opId] = 1;
+      signals.emplace_back(-1, 1);
+      stepInfo[opId] = (int)signals.size() - 1;
       __atomic_fetch_add(&counter, 1, __ATOMIC_RELEASE);
     }
   }
   int getCounter() override { return counter; }
   int pollStart(int opId = 0, int step = 0) override {
-    std::lock_guard<std::mutex> lock(mapMutex);
-    // printf("PollStart curStep[%d] = %d, nSteps[%d] = %d, counter = %d, step =
-    // %d\n", opId, curStep[opId], opId, nSteps[opId], counter, step);
-    assert(curStep.find(opId) != curStep.end());
-    return (curStep[opId] == step);
+    assert(stepInfo.find(opId) != stepInfo.end());
+    return (signals[stepInfo[opId]].first >= step);
   }
   int pollEnd() override {
     return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
   }
   void wait() override {
     while (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) > 0) {
-      // printf("Waiting, counter = %d\n", counter);
       sched_yield();
     }
   }
@@ -164,7 +138,6 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   flagcxEvent_t headEvent;
   std::map<int, int> curStep; // current step of each op
   std::map<int, int> nSteps;  // total steps of each op
-  std::mutex mapMutex;
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
@@ -200,7 +173,6 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   void signalStart() override {}
   void *getSignals() override { return dSignals; }
   void subCounter(int opId = 0) override {
-    std::lock_guard<std::mutex> lock(mapMutex);
     assert(curStep.find(opId) != curStep.end());
     assert(nSteps.find(opId) != nSteps.end());
     if (signals[curStep[opId]] + 1 == signals[nSteps[opId]]) {
@@ -211,7 +183,6 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
     }
   }
   void addCounter(int opId = 0) override {
-    std::lock_guard<std::mutex> lock(mapMutex);
     if (nSteps.find(opId) != nSteps.end()) {
       __atomic_fetch_add(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
     } else {
@@ -231,9 +202,8 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
                            __ATOMIC_ACQUIRE);
   }
   int pollStart(int opId = 0, int step = 0) override {
-    std::lock_guard<std::mutex> lock(mapMutex);
     assert(curStep.find(opId) != curStep.end());
-    return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) == step);
+    return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) >= step);
   }
   int pollEnd() override {
     return (__atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,

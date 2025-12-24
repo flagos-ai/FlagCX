@@ -341,6 +341,9 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
                                       void *sendData, void *recvData,
                                       size_t size,
                                       struct flagcxProxyArgs *args) {
+  // Return if done
+  if (args->done == 1)
+    return flagcxSuccess;
   // Make sure data is valid
   if (!args->semaphore->pollStart(args->opId, args->step))
     return flagcxSuccess;

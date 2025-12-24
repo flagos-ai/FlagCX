@@ -141,10 +141,10 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
 
 flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args) {
-  if (!args->semaphore->pollStart(args->opId, args->step)) {
+  if (args->done) {
     return flagcxSuccess;
   }
-  if (args->done) {
+  if (!args->semaphore->pollStart(args->opId, args->step)) {
     return flagcxSuccess;
   }
   if (args->transmitted < args->chunkSteps) {
@@ -224,10 +224,10 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
 
 flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args) {
-  if (!args->semaphore->pollStart(args->opId, args->step)) {
+  if (args->done) {
     return flagcxSuccess;
   }
-  if (args->done) {
+  if (!args->semaphore->pollStart(args->opId, args->step)) {
     return flagcxSuccess;
   }
   if (args->copied < args->chunkSteps) {

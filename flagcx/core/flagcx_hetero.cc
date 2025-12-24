@@ -11,9 +11,10 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
   flagcxHeteroGroupStart();
   int channelId = 0;
   if (comm->channels[channelId].peers[peer]->send[0].connected == 0 &&
-      step <= 0) {
+      comm->channels[channelId].peers[peer]->send[0].registered == 0) {
     comm->connectSend[peer] |= (1UL << channelId);
     flagcxGroupCommPreconnect(comm);
+    comm->channels[channelId].peers[peer]->send[0].registered = 1;
   }
   struct flagcxTaskP2p *p2p;
   struct flagcxTasks *tasks = &comm->tasks;
@@ -41,9 +42,10 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
   flagcxHeteroGroupStart();
   int channelId = 0;
   if (comm->channels[channelId].peers[peer]->recv[0].connected == 0 &&
-      step <= 0) {
+      comm->channels[channelId].peers[peer]->recv[0].registered == 0) {
     comm->connectRecv[peer] |= (1UL << channelId);
     flagcxGroupCommPreconnect(comm);
+    comm->channels[channelId].peers[peer]->recv[0].registered = 1;
   }
   struct flagcxTaskP2p *p2p;
   struct flagcxTasks *tasks = &comm->tasks;
