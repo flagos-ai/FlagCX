@@ -72,15 +72,11 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   void *getSignals() override { return nullptr; }
   void subCounter(int opId = 0) override {
     assert(stepInfo.find(opId) != stepInfo.end());
-    if (signals[stepInfo[opId]].first + 1 == signals[stepInfo[opId]].second) {
-      __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
-    } else {
-      __atomic_fetch_add(&signals[stepInfo[opId]].first, 1, __ATOMIC_RELEASE);
-    }
-    TRACE(FLAGCX_PROXY,
-          "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
-          signals[stepInfo[opId]].first, opId, signals[stepInfo[opId]].second,
-          counter);
+    __atomic_fetch_add(&signals[stepInfo[opId]].first, 1, __ATOMIC_RELEASE);
+    INFO(FLAGCX_PROXY,
+         "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
+         signals[stepInfo[opId]].first, opId, signals[stepInfo[opId]].second,
+         counter);
   }
   void addCounter(int opId = 0) override {
     if (stepInfo.find(opId) != stepInfo.end()) {
@@ -101,6 +97,12 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   }
   void wait() override {
     while (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) > 0) {
+      for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
+        if (signals[it->second].first == signals[it->second].second) {
+          __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
+          __atomic_fetch_add(&signals[it->second].first, 1, __ATOMIC_RELEASE);
+        }
+      }
       sched_yield();
     }
   }
