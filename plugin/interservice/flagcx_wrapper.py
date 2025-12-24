@@ -213,6 +213,13 @@ class FLAGCXLibrary:
 
         # Note that flagcxStream_t is a pointer type, so the last argument
         # is a pointer
+        Function("flagcxReduce", flagcxResult_t, [
+            buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
+            flagcxRedOp_t, ctypes.c_int, flagcxComm_t, flagcxStream_t
+        ]),
+
+        # Note that flagcxStream_t is a pointer type, so the last argument
+        # is a pointer
         Function("flagcxAllGather", flagcxResult_t, [
             buffer_type, buffer_type, ctypes.c_size_t, flagcxDataType_t,
             flagcxComm_t, flagcxStream_t
@@ -353,6 +360,18 @@ class FLAGCXLibrary:
         # by ctypes automatically
         self.FLAGCX_CHECK(self._funcs["flagcxAllReduce"](sendbuff, recvbuff, count,
                                                      datatype, op, comm,
+                                                     stream))
+
+    def flagcxReduce(self, sendbuff: buffer_type, recvbuff: buffer_type,
+                      count: int, datatype: int, op: int, root: int, comm: flagcxComm_t,
+                      stream: flagcxStream_t) -> None:
+        # `datatype` actually should be `flagcxDataType_t`
+        # and `op` should be `flagcxRedOp_t`
+        # both are aliases of `ctypes.c_int`
+        # when we pass int to a function, it will be converted to `ctypes.c_int`
+        # by ctypes automatically
+        self.FLAGCX_CHECK(self._funcs["flagcxReduce"](sendbuff, recvbuff, count,
+                                                     datatype, op, root, comm,
                                                      stream))
 
     def flagcxReduceScatter(self, sendbuff: buffer_type, recvbuff: buffer_type,
