@@ -45,6 +45,12 @@ struct flagcxSemaphore {
   virtual void wait() = 0;
 };
 
+#define FLAGCX_OPS_PER_SEMAPHORE 64
+#define FLAGCX_SIGNALS_PER_SEMAPHORE (2 * FLAGCX_OPS_PER_SEMAPHORE + 1)
+#define FLAGCX_SIGNAL_CURSTEP_OFFSET 0
+#define FLAGCX_SIGNAL_NSTEPS_OFFSET FLAGCX_OPS_PER_SEMAPHORE
+#define FLAGCX_SIGNAL_COUNTER_OFFSET (2 * FLAGCX_OPS_PER_SEMAPHORE)
+
 // Host semaphore derived class
 struct flagcxHostSemaphore : public flagcxSemaphore {
   int counter;                              // total ops
@@ -52,7 +58,10 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
   std::vector<std::pair<int, int>> signals; // [curStep, nSteps]
   std::vector<flagcxEvent_t> events;
 
-  flagcxHostSemaphore() : counter(0) {}
+  flagcxHostSemaphore() {
+    counter = 0;
+    signals.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
+  }
   ~flagcxHostSemaphore() override {
     for (auto event : events) {
       deviceAdaptor->eventDestroy(event);
@@ -126,11 +135,6 @@ struct flagcxDeviceSemaphoreBufferPool {
 };
 static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
-#define FLAGCX_OPS_PER_SEMAPHORE 16
-#define FLAGCX_SIGNALS_PER_SEMAPHORE (2 * FLAGCX_OPS_PER_SEMAPHORE + 1)
-#define FLAGCX_SIGNAL_CURSTEP_OFFSET 0
-#define FLAGCX_SIGNAL_NSTEPS_OFFSET FLAGCX_OPS_PER_SEMAPHORE
-#define FLAGCX_SIGNAL_COUNTER_OFFSET (2 * FLAGCX_OPS_PER_SEMAPHORE)
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int slotId;
