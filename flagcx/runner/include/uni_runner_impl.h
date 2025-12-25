@@ -15,11 +15,6 @@
 #include <memory>
 #include <pthread.h>
 
-#define P2P_EVENT_POOL_SIZE 1024
-#define UNIRUNNER_NSLICES 64
-#define UNIRUNNER_NTHREADS 32
-#define UNIRUNNER_NBLOCKS 4
-
 // DAG node types
 typedef enum {
   uniRunnerDagNodeTypeP2p = 0,
@@ -87,38 +82,17 @@ struct uniRunnerDagQueue {
 // Bitmap for p2pEvent availability
 // 1 means in use, 0 means available
 typedef struct {
-  uint64_t bits[(P2P_EVENT_POOL_SIZE + 63) / 64];
+  uint64_t *bits;
+  size_t nextIdx;
 
   // Check if event at index is available
-  bool isAvailable(int index) {
-    int wordIdx = index / 64;
-    int bitIdx = index % 64;
-    return (bits[wordIdx] & (1ULL << bitIdx)) == 0;
-  }
-
+  bool isAvailable(int index);
   // Get first available event index, or -1 if none
-  int getAvailable() {
-    for (int i = 0; i < P2P_EVENT_POOL_SIZE; i++) {
-      if (isAvailable(i)) {
-        return i;
-      }
-    }
-    return -1;
-  }
-
+  int getAvailable();
   // Mark event at index as in use
-  void markInUse(int index) {
-    int wordIdx = index / 64;
-    int bitIdx = index % 64;
-    bits[wordIdx] |= (1ULL << bitIdx);
-  }
-
+  void markInUse(int index);
   // Mark event at index as available
-  void markAvailable(int index) {
-    int wordIdx = index / 64;
-    int bitIdx = index % 64;
-    bits[wordIdx] &= ~(1ULL << bitIdx);
-  }
+  void markAvailable(int index);
 } uniRunnerP2pEventBitmap;
 
 typedef struct {
@@ -136,7 +110,7 @@ typedef struct {
   struct uniRunnerDagQueue pendingQueue;
 
   // P2P event pool
-  flagcxEvent_t p2pEvents[P2P_EVENT_POOL_SIZE];
+  flagcxEvent_t *p2pEvents;
   uniRunnerP2pEventBitmap p2pEventMap;
 
   // get an available event

@@ -1,6 +1,9 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
+FLAGCX_PARAM(ReduceFifoCapacity, "REDUCE_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
+static uint64_t flagcxReduceFifoCapacity = flagcxParamReduceFifoCapacity();
+
 FLAGCX_HOST_DECORATOR void
 flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
                               size_t count, size_t nthreads,
@@ -88,15 +91,15 @@ flagcxResult_t flagcxFifo::flagcxRedFifoInit() {
   TRACE(FLAGCX_INIT, "flagcxRedFifoInit called");
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,
                                           4 * sizeof(uint64_t) +
-                                              FLAGCX_KERNEL_FIFO_CAPACITY *
+                                              flagcxReduceFifoCapacity *
                                                   sizeof(flagcxReduceTrigger),
                                           flagcxMemHost, NULL));
-  buffer[0] = FLAGCX_KERNEL_FIFO_CAPACITY;
+  buffer[0] = flagcxReduceFifoCapacity;
   buffer[1] = 0;
   buffer[2] = 0;
   buffer[3] = 0;
   memset((void *)(buffer + 4), 0,
-         FLAGCX_KERNEL_FIFO_CAPACITY * sizeof(flagcxReduceTrigger));
+         flagcxReduceFifoCapacity * sizeof(flagcxReduceTrigger));
   __sync_synchronize();
   return flagcxSuccess;
 }
