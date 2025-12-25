@@ -26,7 +26,6 @@
 
 flagcxRegPool globalRegPool;
 struct flagcxIbGlobalHandleInfo *globalOneSideHandles = NULL;
-struct flagcxIbGlobalHandleInfo *globalOneSideHandles = NULL;
 
 size_t getFlagcxDataTypeSize(flagcxDataType_t dtype) {
   switch (dtype) {
