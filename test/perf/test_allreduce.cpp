@@ -135,10 +135,10 @@ int main(int argc, char *argv[]) {
 /* all-reduce correctness check
       for (size_t i = 0; i < count; i++) {
         if ((i % 10 == 0 && ((float *)hello)[i] != 0) ||
-            ((float *)hello)[i] / (float)(i % 10 * (1 << (totalProcs + 1) - 1)) > 1 + 1e-5 ||
-            ((float *)hello)[i] / (float)(i % 10 * (1 << (totalProcs + 1) - 1)) < 1 - 1e-5) {
+            ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) > 1 + 1e-5 ||
+            ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) < 1 - 1e-5) {
           printf("rank %d wrong output at offset %lu, expected %f, got %f\n",
-                 proc, i, (float)(i % 10 * (1 << (totalProcs + 1) - 1)), ((float *)hello)[i]);
+                 proc, i, (float)(i % 10 * ((1 << totalProcs) - 1)), ((float *)hello)[i]);
           correct = 0;
           break;
         }
