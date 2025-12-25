@@ -128,6 +128,7 @@ struct flagcxProxyConnector {
 
 struct flagcxConnector {
   int connected;
+  int registered;
   struct flagcxProxyConnector proxyConn;
   struct flagcxTransportComm *transportComm;
   void *transportResources;

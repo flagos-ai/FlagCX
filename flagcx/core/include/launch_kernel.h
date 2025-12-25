@@ -14,6 +14,7 @@
 #include <iostream>
 #include <math.h>
 #include <memory.h>
+#include <mutex>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -35,24 +36,32 @@ struct flagcxSemaphore {
 
   virtual flagcxEvent_t getEvent() = 0;
   virtual void signalStart() = 0;
-  virtual void signalEnd() = 0;
   virtual void *getSignals() = 0;
-  virtual void subCounter(int value) = 0;
-  virtual void addCounter(int value) = 0;
+  virtual void subCounter(int opId = 0) = 0;
+  virtual void addCounter(int opId = 0) = 0;
   virtual int getCounter() = 0;
-  virtual int pollStart() = 0;
+  virtual int pollStart(int opId = 0, int step = 0) = 0;
   virtual int pollEnd() = 0;
   virtual void wait() = 0;
 };
 
+#define FLAGCX_OPS_PER_SEMAPHORE 64
+#define FLAGCX_SIGNALS_PER_SEMAPHORE (2 * FLAGCX_OPS_PER_SEMAPHORE + 1)
+#define FLAGCX_SIGNAL_CURSTEP_OFFSET 0
+#define FLAGCX_SIGNAL_NSTEPS_OFFSET FLAGCX_OPS_PER_SEMAPHORE
+#define FLAGCX_SIGNAL_COUNTER_OFFSET (2 * FLAGCX_OPS_PER_SEMAPHORE)
+
 // Host semaphore derived class
 struct flagcxHostSemaphore : public flagcxSemaphore {
-  int start;   // started or not
-  int end;     // ended or not
-  int counter; // total operations to wait for inside the group;
+  int counter;                              // total ops
+  std::map<int, int> stepInfo;              // opId -> singalId
+  std::vector<std::pair<int, int>> signals; // [curStep, nSteps]
   std::vector<flagcxEvent_t> events;
 
-  flagcxHostSemaphore() : start(0), end(0), counter(0) {}
+  flagcxHostSemaphore() {
+    counter = 0;
+    signals.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
+  }
   ~flagcxHostSemaphore() override {
     for (auto event : events) {
       deviceAdaptor->eventDestroy(event);
@@ -64,20 +73,45 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
     return event;
   }
-  void signalStart() override { __atomic_store_n(&start, 1, __ATOMIC_RELEASE); }
-  void signalEnd() override { __atomic_store_n(&end, 1, __ATOMIC_RELEASE); }
-  void *getSignals() override { return nullptr; }
-  void subCounter(int value) override {
-    __atomic_fetch_sub(&counter, value, __ATOMIC_RELEASE);
+  void signalStart() override {
+    for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
+      __atomic_store_n(&signals[it->second].first, 0, __ATOMIC_RELEASE);
+    }
   }
-  void addCounter(int value) override {
-    __atomic_fetch_add(&counter, value, __ATOMIC_RELEASE);
+  void *getSignals() override { return nullptr; }
+  void subCounter(int opId = 0) override {
+    assert(stepInfo.find(opId) != stepInfo.end());
+    __atomic_fetch_add(&signals[stepInfo[opId]].first, 1, __ATOMIC_RELEASE);
+    INFO(FLAGCX_PROXY,
+         "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
+         signals[stepInfo[opId]].first, opId, signals[stepInfo[opId]].second,
+         counter);
+  }
+  void addCounter(int opId = 0) override {
+    if (stepInfo.find(opId) != stepInfo.end()) {
+      __atomic_fetch_add(&signals[stepInfo[opId]].second, 1, __ATOMIC_RELEASE);
+    } else {
+      signals.emplace_back(-1, 1);
+      stepInfo[opId] = (int)signals.size() - 1;
+      __atomic_fetch_add(&counter, 1, __ATOMIC_RELEASE);
+    }
   }
   int getCounter() override { return counter; }
-  int pollStart() override { return __atomic_load_n(&start, __ATOMIC_ACQUIRE); }
-  int pollEnd() override { return __atomic_load_n(&end, __ATOMIC_ACQUIRE); }
+  int pollStart(int opId = 0, int step = 0) override {
+    assert(stepInfo.find(opId) != stepInfo.end());
+    return (signals[stepInfo[opId]].first >= step);
+  }
+  int pollEnd() override {
+    return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
+  }
   void wait() override {
     while (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) > 0) {
+      for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
+        if (signals[it->second].first == signals[it->second].second) {
+          __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
+          __atomic_fetch_add(&signals[it->second].first, 1, __ATOMIC_RELEASE);
+        }
+      }
       sched_yield();
     }
   }
@@ -87,8 +121,7 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
 struct flagcxDeviceSemaphoreBufferPool {
   int capacity;          // total slots
   int slotId;            // slot index in the pool
-  int *signalsPool;      // Host-mapped memory region, [start, end, counter] *
-                         // capacity
+  int *signalsPool;      // Host-mapped memory region
   void *dSignalsPool;    // Device alias
   flagcxEvent_t *events; // store first event of each semaphore
 
@@ -102,22 +135,22 @@ struct flagcxDeviceSemaphoreBufferPool {
 };
 static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
-#define FLAGCX_SIGNALS_PER_SEMAPHORE 3
-#define FLAGCX_SIGNAL_START_OFFSET 0
-#define FLAGCX_SIGNAL_END_OFFSET 1
-#define FLAGCX_SIGNAL_COUNTER_OFFSET 2
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int slotId;
-  int *signals; // [start, end, counter]
+  int opOffset;
+  int *signals; // [curStep,...,nSteps,..., counter]
   void *dSignals;
   flagcxEvent_t headEvent;
+  std::map<int, int> curStep; // current step of each op
+  std::map<int, int> nSteps;  // total steps of each op
   std::vector<flagcxEvent_t> events;
 
   flagcxDeviceSemaphore() {
     if (deviceSemaphoreBufferPool.capacity == -1) {
       deviceSemaphoreBufferPool.initialize();
     }
+    opOffset = 0;
     slotId = deviceSemaphoreBufferPool.getSlotId();
     signals = deviceSemaphoreBufferPool.getHostPtr(slotId);
     dSignals = deviceSemaphoreBufferPool.getDevicePtr(slotId);
@@ -144,27 +177,43 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   // Since the device kernel handles the signaling,
   // host-side signalStart/End are intentionally no-op and not needed
   void signalStart() override {}
-  void signalEnd() override {}
   void *getSignals() override { return dSignals; }
-  void subCounter(int value) override {
-    __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, value,
-                       __ATOMIC_RELEASE);
+  void subCounter(int opId = 0) override {
+    assert(curStep.find(opId) != curStep.end());
+    assert(nSteps.find(opId) != nSteps.end());
+    if (signals[curStep[opId]] + 1 == signals[nSteps[opId]]) {
+      __atomic_fetch_sub(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
+                         __ATOMIC_RELEASE);
+    } else {
+      __atomic_fetch_add(signals + curStep[opId], 1, __ATOMIC_RELEASE);
+    }
   }
-  void addCounter(int value) override {
-    __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, value,
-                       __ATOMIC_RELEASE);
+  void addCounter(int opId = 0) override {
+    if (nSteps.find(opId) != nSteps.end()) {
+      __atomic_fetch_add(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
+    } else {
+      // Make sure that opOffset is not used up
+      assert(opOffset < FLAGCX_OPS_PER_SEMAPHORE);
+      curStep[opId] = FLAGCX_SIGNAL_CURSTEP_OFFSET + opOffset;
+      nSteps[opId] = FLAGCX_SIGNAL_NSTEPS_OFFSET + opOffset;
+      opOffset++;
+      __atomic_store_n(signals + curStep[opId], -1, __ATOMIC_RELEASE);
+      __atomic_store_n(signals + nSteps[opId], 1, __ATOMIC_RELEASE);
+      __atomic_fetch_add(signals + FLAGCX_SIGNAL_COUNTER_OFFSET, 1,
+                         __ATOMIC_RELEASE);
+    }
   }
   int getCounter() override {
     return __atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
                            __ATOMIC_ACQUIRE);
   }
-  int pollStart() override {
-    return __atomic_load_n(signals + FLAGCX_SIGNAL_START_OFFSET,
-                           __ATOMIC_ACQUIRE);
+  int pollStart(int opId = 0, int step = 0) override {
+    assert(curStep.find(opId) != curStep.end());
+    return (__atomic_load_n(signals + curStep[opId], __ATOMIC_ACQUIRE) >= step);
   }
   int pollEnd() override {
-    return __atomic_load_n(signals + FLAGCX_SIGNAL_END_OFFSET,
-                           __ATOMIC_ACQUIRE);
+    return (__atomic_load_n(signals + FLAGCX_SIGNAL_COUNTER_OFFSET,
+                            __ATOMIC_ACQUIRE) == 0);
   }
   // Since the device kernel handles the signaling,
   // host-side wait is intentionally no-op and not needed

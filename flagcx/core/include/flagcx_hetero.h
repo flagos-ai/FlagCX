@@ -3,6 +3,7 @@
 
 #include "flagcx.h"
 #include "type.h"
+#include <climits>
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
@@ -12,13 +13,13 @@ flagcxResult_t flagcxHeteroGetVersion(int *version);
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
-                                int groupIdx = 0);
+                                int opId = INT_MAX, int step = -1);
 
 /* C++ style */
 flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxHeteroComm_t comm, flagcxStream_t stream,
-                                int groupIdx = 0);
+                                int opId = INT_MAX, int step = -1);
 
 flagcxResult_t flagcxHeteroGroupStart();
 
