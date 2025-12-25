@@ -3,6 +3,7 @@
 #include "net.h"
 #include "transport.h"
 #include "type.h"
+#include "ib_common.h"
 
 flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
@@ -60,4 +61,56 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
   flagcxGroupCommJoin(comm);
   flagcxHeteroGroupEnd();
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset,
+                               size_t size) {
+  // Check if netAdaptor->put is available
+  if (comm->netAdaptor != NULL && comm->netAdaptor->put != NULL) {
+    int channelId = 0;
+    int connIndex = 0;
+    // Get sendNetResources from connector
+    struct flagcxConnector *conn =
+        &comm->channels[channelId].peers[peer]->send[connIndex];
+    struct sendNetResources *resources =
+        (struct sendNetResources *)conn->proxyConn.connection->transportResources;
+    void *sendComm = resources->netSendComm;
+    int srcRank = comm->rank;
+    int dstRank = peer;
+
+    uint64_t srcOff = srcOffset;
+    uint64_t dstOff = dstOffset;
+    void **gHandles = (void **)&globalOneSideHandles;
+    void *request = NULL;
+    return comm->netAdaptor->put(sendComm, srcOff, dstOff, size, srcRank, dstRank,
+                                 gHandles, &request);
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
+}
+
+flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
+                                     size_t dstOffset) {
+  // Check if netAdaptor->putSignal is available
+  if (comm->netAdaptor != NULL && comm->netAdaptor->putSignal != NULL) {
+    int channelId = 0;
+    int connIndex = 0;
+    // Get sendNetResources from connector
+    struct flagcxConnector *conn =
+        &comm->channels[channelId].peers[peer]->send[connIndex];
+    struct sendNetResources *resources =
+        (struct sendNetResources *)conn->proxyConn.connection->transportResources;
+    void *sendComm = resources->netSendComm;
+    int srcRank = comm->rank;
+    int dstRank = peer;
+
+    uint64_t dstOff = dstOffset;
+    void **gHandles = (void **)&globalOneSideHandles;
+    void *request = NULL;
+    return comm->netAdaptor->putSignal(sendComm, dstOff, srcRank, dstRank,
+                                       gHandles, &request);
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
 }

@@ -244,8 +244,7 @@ int main(int argc, char *argv[]) {
 
         void *sigReq = nullptr;
         res = netAdaptor->putSignal(sendComm, signalOffset, senderRank,
-                                    senderRank, receiverRank,
-                                    (void **)globalHandles, &sigReq);
+                                    receiverRank, (void **)globalHandles, &sigReq);
         fatal(res, "netAdaptor->putSignal warmup failed", proc);
       } else if (isReceiver) {
         res = netAdaptor->waitValue((void **)globalHandles, receiverRank,
@@ -277,8 +276,7 @@ int main(int argc, char *argv[]) {
 
         void *sigReq = nullptr;
         res = netAdaptor->putSignal(sendComm, signalOffset, senderRank,
-                                    senderRank, receiverRank,
-                                    (void **)globalHandles, &sigReq);
+                                    receiverRank, (void **)globalHandles, &sigReq);
         fatal(res, "netAdaptor->putSignal failed", proc);
       } else if (isReceiver) {
         res = netAdaptor->waitValue((void **)globalHandles, receiverRank,
