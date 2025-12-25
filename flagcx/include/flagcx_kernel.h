@@ -4,7 +4,7 @@
 #include "adaptor.h"
 #include "flagcx.h"
 
-#define FLAGCX_KERNEL_FIFO_CAPACITY 128
+#define FLAGCX_FIFO_CAPACITY 128
 #define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
 
 #ifdef COMPILE_KERNEL
