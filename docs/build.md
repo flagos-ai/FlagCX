@@ -16,7 +16,7 @@
 
    ```shell
    cd FlagCX
-   make [backedn]
+   make [backend]
    ```
 
    where `backend` is used to enable different platforms. The valid options are
