@@ -12,6 +12,7 @@
 #include "net.h"
 #include "reg_pool.h"
 #include "socket.h"
+#include "utils.h"
 #include <memory>
 #include <pthread.h>
 
@@ -36,8 +37,8 @@ struct uniRunnerP2pNodeData {
   struct uniRunnerP2pOpData *ops; // Array of P2P operations
   int numOps;                     // Number of operations
 
-  flagcxEvent_t event; // Event for completion tracking
-  int eventIdx;        // Index of the event in the pool
+  // flagcxEvent_t event; // Event for completion tracking
+  int eventIdx; // Index of the event in the pool
 };
 
 // Reduce node data (operation-specific fields only)
@@ -52,7 +53,7 @@ struct uniRunnerRedNodeData {
   flagcxRedOp_t redOp;
 
   // Trigger and state tracking
-  flagcxReduceTrigger *trigger; // Pointer to trigger in FIFO
+  int triggerIdx; // Trigger index in FIFO
 };
 
 // Unified DAG node with common DAG structure fields
@@ -60,10 +61,10 @@ struct uniRunnerDagNode {
   uniRunnerDagNodeType nodeType; // Discriminator for union
 
   // Common DAG structure fields (shared by all node types)
-  int numParents;                     // Number of parent dependencies
-  int numChildren;                    // Number of children
-  struct uniRunnerDagNode **children; // Array of child node pointers
-  struct uniRunnerDagNode *next;      // Queue linkage
+  int numParents;                // Number of parent dependencies
+  int numChildren;               // Number of children
+  int *children;                 // Array of child node indices
+  struct uniRunnerDagNode *next; // Queue linkage
 
   // Union for type-specific operation data
   union {
@@ -73,11 +74,11 @@ struct uniRunnerDagNode {
 };
 
 // Simple queue for DAG nodes
-struct uniRunnerDagQueue {
-  struct uniRunnerDagNode *head;
-  struct uniRunnerDagNode *tail;
-  int size;
-};
+// struct uniRunnerDagQueue {
+//   struct uniRunnerDagNode *head;
+//   struct uniRunnerDagNode *tail;
+//   int size;
+// };
 
 // Bitmap for p2pEvent availability
 // 1 means in use, 0 means available
@@ -100,14 +101,22 @@ typedef struct {
   flagcxFifo_t fifo;
   flagcxStream_t comm_stream;
   flagcxStream_t red_stream;
-  int stop = 0;
 
   // new: DAG and scheduling queues
   struct uniRunnerDagNode *dagNodes; // Array of all DAG nodes
   int numDagNodes;
-  struct uniRunnerDagQueue readyQueue;
-  struct uniRunnerDagQueue inflightQueue;
-  struct uniRunnerDagQueue pendingQueue;
+  int numPendingNodes;
+  // struct uniRunnerDagQueue readyQueue;
+  // struct uniRunnerDagQueue inflightQueue;
+  // struct uniRunnerDagQueue pendingQueue;
+  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
+      p2pReadyQueue;
+  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
+      redReadyQueue;
+  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
+      p2pInflightQueue;
+  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
+      redInflightQueue;
 
   // P2P event pool
   flagcxEvent_t *p2pEvents;
