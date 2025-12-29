@@ -52,7 +52,8 @@ int main(int argc, char *argv[]) {
   const int receiverRank = 1;
   if (totalProcs != 2) {
     if (proc == 0)
-      printf("test_kernel_put requires exactly 2 ranks (sender=0, receiver=1).\n");
+      printf(
+          "test_kernel_put requires exactly 2 ranks (sender=0, receiver=1).\n");
     MPI_Finalize();
     return 0;
   }
@@ -60,13 +61,8 @@ int main(int argc, char *argv[]) {
   bool isSender = (proc == senderRank);
   bool isReceiver = (proc == receiverRank);
 
-  int peer = isSender ? receiverRank : senderRank;
-
   // Enable one-sided register
   setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
-
-  flagcxStream_t stream;
-  devHandle->streamCreate(&stream);
 
   // Allocate and register window buffer for one-sided operations
   size_t signalBytes = sizeof(uint64_t);
@@ -112,13 +108,21 @@ int main(int argc, char *argv[]) {
       devHandle->deviceMemcpy(srcbuff, (char *)window + current_send_offset,
                               max_bytes, flagcxMemcpyHostToDevice, NULL);
 
-      flagcxOnesidedSendDemo(srcbuff, 0, current_recv_offset, signalOffset,
-                             max_bytes / sizeof(float), DATATYPE, receiverRank,
-                             comm, stream);
+      // Preconnect communication channels
+      flagcxGroupStart(comm);
+      flagcxSend(srcbuff, max_bytes, flagcxChar, receiverRank, comm, stream);
+      flagcxGroupEnd(comm);
+      // flagcxOnesidedSendDemo(srcbuff, 0, current_recv_offset, signalOffset,
+      //                        max_bytes / sizeof(float), DATATYPE,
+      //                        receiverRank, comm, stream);
     } else if (isReceiver) {
-      volatile uint64_t *signalAddr =
-          (volatile uint64_t *)((char *)window + signalOffset);
-      flagcxOnesidedRecvDemo(signalAddr, 1, comm, stream);
+      // Preconnect communication channels
+      flagcxGroupStart(comm);
+      flagcxRecv(srcbuff, max_bytes, flagcxChar, senderRank, comm, stream);
+      flagcxGroupEnd(comm);
+      // volatile uint64_t *signalAddr =
+      //     (volatile uint64_t *)((char *)window + signalOffset);
+      // flagcxOnesidedRecvDemo(signalAddr, 1, comm, stream);
     }
   }
   devHandle->streamSynchronize(stream);
@@ -177,8 +181,8 @@ int main(int argc, char *argv[]) {
 
     double bandwidth = (double)size / 1.0e9 / elapsed_time;
     if (proc == 0 && color == 0) {
-      printf("Size: %zu bytes; Avg time: %lf sec; Bandwidth: %lf GB/s\n",
-             size, elapsed_time, bandwidth);
+      printf("Size: %zu bytes; Avg time: %lf sec; Bandwidth: %lf GB/s\n", size,
+             elapsed_time, bandwidth);
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -214,4 +218,3 @@ int main(int argc, char *argv[]) {
   MPI_Finalize();
   return 0;
 }
-

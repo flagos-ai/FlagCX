@@ -24,7 +24,7 @@ endif
 COMMON_INCLUDES = -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE)
 COMMON_LIBS = -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK)
 
-all: test-internode-kernel test-intranode-kernel
+all: test-internode-kernel test-intranode-kernel test-kernel-demo test-kernel-put
 
 test-internode-kernel: test_internode_kernel.cpp
 	@echo "Compiling $@"
@@ -34,8 +34,12 @@ test-intranode-kernel: test_intranode_kernel.cpp
 	@echo "Compiling $@"
 	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_intranode_kernel test_intranode_kernel.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
 
+test-kernel-put: test_kernel_put.cpp
+       @echo "Compiling $@"
+       @$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_kernel_put test_kernel_put.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE) -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK) -DCOMPILE_KERNEL
+
 clean:
-	@rm -f test_internode_kernel test_intranode_kernel
+	@rm -f test_internode_kernel test_intranode_kernel test_kernel_demo test_kernel_put
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"
