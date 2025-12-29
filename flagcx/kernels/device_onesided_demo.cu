@@ -3,6 +3,17 @@
 #include "flagcx_kernel.h"
 #include "global_comm.h"
 
+FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
+  int delay = 1 << (iter < 15 ? iter : 15);
+#if __CUDA_ARCH__ >= 700
+  __nanosleep(delay);
+#else
+  uint64_t start = clock64();
+  while (clock64() - start < (uint64_t)delay) { /* spin */
+  }
+#endif
+}
+
 FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(const void *srcbuff,
                                                       size_t srcOffset,
                                                       size_t dstOffset,
@@ -26,12 +37,8 @@ FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(volatile uint64_t *waitAdd
   int tid = threadIdx.x;
   if (tid == 0) {
     int iter = 0;
-    while (__atomic_load_n(waitAddr, __ATOMIC_ACQUIRE) != expectedValue) {
-      if (iter < 10) {
-        __nanosleep(1 << iter);
-      } else {
-        __nanosleep(1024);
-      }
+    while (*waitAddr != expectedValue) {
+      spinBackoff(iter);
       iter++;
     }
     flagcxDeviceTerm(fifoBuffer);
