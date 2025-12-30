@@ -1,7 +1,7 @@
 #include "uni_runner_impl.h"
 #include "adaptor.h"
-#include "collectives.h"
 #include "comm.h"
+#include "flagcx_hetero.h"
 #include "info.h"
 #include "net.h"
 #include "p2p.h"
@@ -76,21 +76,6 @@ void flagcxUniRunnerState::resetEvent(int idx) {
         "resetEvent: event %d marked available, event map = 0x%016lx", idx,
         p2pEventMap.bits[0]);
 }
-
-// DAG queue operations
-// static void dagQueueEnqueue(struct uniRunnerDagQueue *queue,
-//                             struct uniRunnerDagNode *node) {
-//   node->next = NULL;
-
-//   if (queue->tail == NULL) { // empty queue
-//     queue->head = node;
-//     queue->tail = node;
-//   } else {
-//     queue->tail->next = node;
-//     queue->tail = node;
-//   }
-//   queue->size++;
-// }
 
 static flagcxResult_t
 initUniRunnerStateDummy(flagcxUniRunnerState *runnerState) {

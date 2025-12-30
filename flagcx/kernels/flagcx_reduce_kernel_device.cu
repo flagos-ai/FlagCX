@@ -39,14 +39,6 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
            (flagcxReduceTriggerComplete &
             flagcxTriggerMask(flagcxReduceTriggerBitsState))
                << flagcxReduceTriggerOffState);
-  // uint64_t* ptr =
-  //   reinterpret_cast<uint64_t*>(value) + 3;
-  // uint64_t mask =
-  //   (flagcxReduceTriggerComplete &
-  //    flagcxTriggerMask(flagcxReduceTriggerBitsState))
-  //       << flagcxReduceTriggerOffState;
-  // *ptr |= mask;
-  // FLAGCX_DEVICE_THREAD_FENCE();
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
@@ -88,12 +80,6 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
   int empty_iter = 0; // backoff counter
 
   while (true) {
-    // debug: timeout
-    // if (empty_iter > 1000) {
-    //   printf("reduce kernel timeout\n");
-    //   break;
-    // }
-
     // (1) terminate condition
     // if (__ldg(static_cast<const uint64_t *>(fifoBuffer) + 3) == 1)
     //   break;

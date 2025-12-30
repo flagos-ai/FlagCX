@@ -23,13 +23,6 @@ flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
            (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
                << flagcxReduceTriggerOffState;
   memcpy(this->value, tmp, 4 * sizeof(uint64_t));
-  // TRACE(
-  //     FLAGCX_KERNEL,
-  //     "setValue called: fst=0x%016lx, snd=0x%016lx, out=0x%016lx, count=%lu,
-  //     " "nthreads=%lu, " "datatype=%d, redop=%d, state=%d, value[0]=0x%016lx,
-  //     value[1]=0x%016lx, " "value[2]=0x%016lx, value[3]=0x%016lx", fst, snd,
-  //     out, count, nthreads, datatype, redOp, state, value[0], value[1],
-  //     value[2], value[3]);
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {

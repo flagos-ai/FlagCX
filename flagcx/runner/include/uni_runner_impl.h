@@ -73,13 +73,6 @@ struct uniRunnerDagNode {
   } nodeData;
 };
 
-// Simple queue for DAG nodes
-// struct uniRunnerDagQueue {
-//   struct uniRunnerDagNode *head;
-//   struct uniRunnerDagNode *tail;
-//   int size;
-// };
-
 // Bitmap for p2pEvent availability
 // 1 means in use, 0 means available
 typedef struct {
@@ -106,9 +99,6 @@ typedef struct {
   struct uniRunnerDagNode *dagNodes; // Array of all DAG nodes
   int numDagNodes;
   int numPendingNodes;
-  // struct uniRunnerDagQueue readyQueue;
-  // struct uniRunnerDagQueue inflightQueue;
-  // struct uniRunnerDagQueue pendingQueue;
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       p2pReadyQueue;
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
