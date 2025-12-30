@@ -10,7 +10,9 @@ typedef enum {
   flagcxDevicePrimSend = 0,
   flagcxDevicePrimRecv = 1,
   flagcxDevicePrimTerm = 2,
-  flagcxDevicePrimWait = 3
+  flagcxDevicePrimWait = 3,
+  flagcxDevicePrimPut = 4,
+  flagcxDevicePrimSignal = 5
 } flagcxDevicePrim;
 
 constexpr unsigned int flagcxDeviceTriggerBitsAddr = 64;
@@ -26,6 +28,12 @@ constexpr unsigned int flagcxDeviceTriggerOffPrim =
     flagcxDeviceTriggerOffDatatype + flagcxDeviceTriggerBitsDatatype;
 constexpr unsigned int flagcxDeviceTriggerBitsPrim = 4;
 constexpr unsigned int flagcxDeviceTriggerBitsFifoReserved = 1;
+
+// Offset fields in fst (when used for PUT operations)
+constexpr unsigned int flagcxDeviceTriggerOffSrcOffset = 32;
+constexpr unsigned int flagcxDeviceTriggerBitsSrcOffset = 32;
+constexpr unsigned int flagcxDeviceTriggerOffDstOffset = 0;
+constexpr unsigned int flagcxDeviceTriggerBitsDstOffset = 32;
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerBitsCount = 32;
@@ -43,6 +51,8 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getPeerRank();
   FLAGCX_HOST_DECORATOR uint64_t getDatatype();
   FLAGCX_HOST_DECORATOR uint64_t getType();
+  FLAGCX_HOST_DECORATOR uint64_t getSrcOffset();
+  FLAGCX_HOST_DECORATOR uint64_t getDstOffset();
   FLAGCX_DEVICE_DECORATOR void setValue(uint64_t addr, uint64_t count,
                                         uint64_t peerRank, uint64_t datatype,
                                         uint64_t type);
@@ -108,9 +118,21 @@ flagcxDeviceRecv(void *sendbuff, size_t count, flagcxDataType_t datatype,
                  int peer, void *fifoBuffer);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceTerm(void *fifoBuffer);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDevicePut(const void *srcbuff, size_t srcOffset, size_t dstOffset,
+                size_t count, flagcxDataType_t datatype, int peer,
+                void *fifoBuffer);
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceSignal(size_t dstOffset, int peer, void *fifoBuffer);
 // FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(flagcxFifo_t q); // TBD
 void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
                    flagcxDataType_t datatype, int sendPeer, int recvPeer,
                    flagcxComm_t comm, flagcxStream_t stream);
+void flagcxOnesidedSendDemo(const void *srcbuff, size_t srcOffset,
+                            size_t dstOffset, size_t signalOffset, size_t count,
+                            flagcxDataType_t datatype, int peer,
+                            flagcxComm_t comm, flagcxStream_t stream);
+void flagcxOnesidedRecvDemo(volatile uint64_t *waitAddr, uint64_t expectedValue,
+                            flagcxComm_t comm, flagcxStream_t stream);
 #endif // COMPILE_KERNEL
 #endif

@@ -128,6 +128,9 @@ struct flagcxIbGlobalHandleInfo {
   uint32_t *lkeys;
 };
 
+// Global variable for one-sided operation handles
+extern struct flagcxIbGlobalHandleInfo *globalOneSideHandles;
+
 #define FLAGCX_NET_IB_REQ_UNUSED 0
 #define FLAGCX_NET_IB_REQ_SEND 1
 #define FLAGCX_NET_IB_REQ_RECV 2
