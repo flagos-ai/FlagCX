@@ -149,7 +149,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     uint64_t redop;
     int slot = myIdx & (*vBuf - 1);
     if (tid == 0) {
-      printf("block %d get work idx %d, slot %d\n", blockIdx.x, myIdx, slot);
+      // printf("block %d get work idx %d, slot %d\n", blockIdx.x, myIdx, slot);
       flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
       fst = t->getInput1();
       snd = t->getInput2();

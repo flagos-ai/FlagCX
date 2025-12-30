@@ -604,11 +604,11 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
     int eventIdx = runnerState->getEvent();
     if (eventIdx == -1) {
       sched_yield();
-      continue;
-      // break; // No available event, skip for now
+      break; // No available event, skip for now
     }
     FLAGCXCHECK(launchP2pOps(runnerState, comm, eventIdx));
   }
+  deviceAdaptor->streamSynchronize(runnerState->comm_stream);
 
   // process redReadyQueue
   while (!flagcxIntruQueueEmpty(&runnerState->redReadyQueue)) {
@@ -624,8 +624,7 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
         current->nodeData.red.redOp, &idx));
     if (idx == -1) {
       sched_yield();
-      continue;
-      // break; // FIFO full, skip for now
+      break; // FIFO full, skip for now
     }
     // Dequeue
     flagcxIntruQueueDequeue(&runnerState->redReadyQueue);
@@ -717,23 +716,24 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
 
   // Initialize DAG scheduler
   if (commOp == flagcxCommOpAllReduce) {
-    /* initialize uniRunnerState for ring AllReduce
+/* initialize uniRunnerState for ring AllReduce
     FLAGCXCHECKGOTO(initUniRunnerStateRingAR(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
-                    res, out); */
-
-    /* initialize uniRunnerState for reduce test
+                    res, out);
+*/
+/* initialize uniRunnerState for reduce test
     FLAGCXCHECKGOTO(initUniRunnerStateLocRed(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
-                    res, out); */
-
-    /* initialize uniRunnerState for p2p test */
+                    res, out);
+*/
+/* initialize uniRunnerState for p2p test */
     FLAGCXCHECKGOTO(initUniRunnerStateRingAG(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
                     res, out);
+
   } else {
     FLAGCXCHECKGOTO(initUniRunnerStateDummy(&hcomm->proxyState->uniRunnerState),
                     res, out);
