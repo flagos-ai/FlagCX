@@ -146,6 +146,7 @@ int main(int argc, char *argv[]) {
           break;
         }
       } */
+
       /* p2p correctness check */
       for (size_t i = 0; i < count; i++) {
         if (((float *)hello)[i] !=

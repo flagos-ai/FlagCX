@@ -639,7 +639,7 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
           FLAGCXCHECK(enqueueReadyQueue(runnerState, curr->children[i]));
         }
       }
-      curr = flagcxIntruQueueRemove(&runnerState->p2pInflightQueue, curr, prev);
+      curr = flagcxIntruQueueRemove(&runnerState->p2pInflightQueue, prev);
     } else {
       prev = curr;
       curr = curr->next;
@@ -661,7 +661,7 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
           FLAGCXCHECK(enqueueReadyQueue(runnerState, curr->children[i]));
         }
       }
-      curr = flagcxIntruQueueRemove(&runnerState->redInflightQueue, curr, prev);
+      curr = flagcxIntruQueueRemove(&runnerState->redInflightQueue, prev);
     } else {
       prev = curr;
       curr = curr->next;
@@ -705,20 +705,19 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
     FLAGCXCHECKGOTO(initUniRunnerStateRingAR(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
-                    res, out);
-    */
+                    res, out); */
+
     /* initialize uniRunnerState for reduce test
     FLAGCXCHECKGOTO(initUniRunnerStateLocRed(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
-                    res, out);
-    */
+                    res, out); */
+
     /* initialize uniRunnerState for p2p test */
     FLAGCXCHECKGOTO(initUniRunnerStateRingAG(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
                     res, out);
-
   } else {
     FLAGCXCHECKGOTO(initUniRunnerStateDummy(&hcomm->proxyState->uniRunnerState),
                     res, out);
