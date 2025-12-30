@@ -79,7 +79,6 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
 }
 
 flagcxResult_t flagcxFifo::flagcxRedFifoInit() {
-  // TODO: use a better way to initialize FIFO
   TRACE(FLAGCX_INIT, "flagcxRedFifoInit called");
   uint64_t flagcxReduceFifoCapacity = flagcxParamReduceFifoCapacity();
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,

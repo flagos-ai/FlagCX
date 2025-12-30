@@ -132,47 +132,53 @@ int main(int argc, char *argv[]) {
       }
       printf("\n");
       int correct = 1;
-/* all-reduce correctness check
+      /* all-reduce correctness check
       for (size_t i = 0; i < count; i++) {
         if ((i % 10 == 0 && ((float *)hello)[i] != 0) ||
-            ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) > 1 + 1e-5 ||
-            ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) < 1 - 1e-5) {
+            ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) >
+                1 + 1e-5 ||
+            ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) <
+                1 - 1e-5) {
           printf("rank %d wrong output at offset %lu, expected %f, got %f\n",
-                 proc, i, (float)(i % 10 * ((1 << totalProcs) - 1)), ((float *)hello)[i]);
+                 proc, i, (float)(i % 10 * ((1 << totalProcs) - 1)),
+                 ((float *)hello)[i]);
           correct = 0;
           break;
         }
-      }
-*/
-/* p2p correctness check */
+      } */
+      /* p2p correctness check */
       for (size_t i = 0; i < count; i++) {
-        if (((float *)hello)[i] != (float)(i % 10 * (1 << (i * totalProcs / count)))) {
+        if (((float *)hello)[i] !=
+            (float)(i % 10 * (1 << (i * totalProcs / count)))) {
           printf("rank %d wrong output at offset %lu, expected %f, got %f\n",
-                 proc, i, (float)(i % 10 * (1 << (i * totalProcs / count))), ((float *)hello)[i]);
+                 proc, i, (float)(i % 10 * (1 << (i * totalProcs / count))),
+                 ((float *)hello)[i]);
           correct = 0;
           break;
         }
       }
 
-/* red correctness check
+      /* red correctness check
       for (size_t i = 0; i < count; i++) {
-        if (i * totalProcs / count == (size_t)proc) continue;
+        if (i * totalProcs / count == (size_t)proc)
+          continue;
         if (((float *)hello)[i] != (float)(i % 10 * (1 << proc))) {
-          printf("rank %d wrong output at offset %lu, expected %f, got %f\n",
-                 proc, i, (float)(i % 10 * (1 << proc)), ((float *)hello)[i]);
-          correct = 0;
-          break;
+                printf("rank %d wrong output at offset %lu, expected %f, got
+         %f\n", proc, i, (float)(i % 10 * (1 << proc)), ((float *)hello)[i]);
+                correct = 0;
+                break;
         }
       }
-      for (size_t i = proc * count / totalProcs; i < (proc + 1) * count / totalProcs; i++) {
+      for (size_t i = proc * count / totalProcs;
+           i < (proc + 1) * count / totalProcs; i++) {
         if (((float *)hello)[i] != (float)(i % 10 * (1 << (proc + 1)))) {
           printf("rank %d wrong output at offset %lu, expected %f, got %f\n",
-                 proc, i, (float)(i % 10 * (1 << (proc + 1))), ((float *)hello)[i]);
+                 proc, i, (float)(i % 10 * (1 << (proc + 1))),
+                 ((float *)hello)[i]);
           correct = 0;
           break;
         }
-      }
-*/
+      } */
       printf("rank %d correctness = %d\n", proc, correct);
     }
   }

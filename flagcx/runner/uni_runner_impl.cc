@@ -701,19 +701,19 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
 
   // Initialize DAG scheduler
   if (commOp == flagcxCommOpAllReduce) {
-/* initialize uniRunnerState for ring AllReduce
+    /* initialize uniRunnerState for ring AllReduce
     FLAGCXCHECKGOTO(initUniRunnerStateRingAR(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
                     res, out);
-*/
-/* initialize uniRunnerState for reduce test
+    */
+    /* initialize uniRunnerState for reduce test
     FLAGCXCHECKGOTO(initUniRunnerStateLocRed(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
                     res, out);
-*/
-/* initialize uniRunnerState for p2p test */
+    */
+    /* initialize uniRunnerState for p2p test */
     FLAGCXCHECKGOTO(initUniRunnerStateRingAG(
                         &hcomm->proxyState->uniRunnerState, sendbuff, recvbuff,
                         count, datatype, op, comm, uniRunnerNSlices),
@@ -732,9 +732,11 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
   hcomm->proxyState->uniRunnerState.red_stream = red_stream;
   TRACE(FLAGCX_INIT, "comm stream: 0x%016lx, red stream: 0x%016lx",
         (uintptr_t)stream, (uintptr_t)red_stream);
+#ifdef COMPILE_KERNEL
   // Launch collective kernel
   flagcxLaunchCollectiveKernel(hcomm->uniRunnerFifoBuffer, uniRunnerNThreads,
                                uniRunnerNBlocks, red_stream);
+#endif
 
   // Main scheduling loop using DAG-based three-queue scheduling
   while (true) {
@@ -742,7 +744,7 @@ flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
     if (flagcxIntruQueueEmpty(
             &hcomm->proxyState->uniRunnerState.p2pReadyQueue) &&
         flagcxIntruQueueEmpty(
-            &hcomm->proxyState->uniRunnerState.redReadyQueue)  &&
+            &hcomm->proxyState->uniRunnerState.redReadyQueue) &&
         flagcxIntruQueueEmpty(
             &hcomm->proxyState->uniRunnerState.p2pInflightQueue) &&
         flagcxIntruQueueEmpty(
