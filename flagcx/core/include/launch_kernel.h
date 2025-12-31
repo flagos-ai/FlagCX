@@ -54,13 +54,15 @@ struct flagcxSemaphore {
 // Host semaphore derived class
 struct flagcxHostSemaphore : public flagcxSemaphore {
   int counter;                              // total ops
-  std::map<int, int> stepInfo;              // opId -> singalId
+  std::unordered_map<int, int> stepInfo;    // opId -> sigalId
   std::vector<std::pair<int, int>> signals; // [curStep, nSteps]
   std::vector<flagcxEvent_t> events;
 
   flagcxHostSemaphore() {
     counter = 0;
+    stepInfo.reserve(FLAGCX_OPS_PER_SEMAPHORE);
     signals.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
+    events.reserve(FLAGCX_SIGNALS_PER_SEMAPHORE);
   }
   ~flagcxHostSemaphore() override {
     for (auto event : events) {
@@ -105,15 +107,19 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     return (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) == 0);
   }
   void wait() override {
-    while (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) > 0) {
+    int nDone = 0;
+    int nOps = __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
+    while (nDone < nOps) {
       for (auto it = stepInfo.begin(); it != stepInfo.end(); ++it) {
-        if (signals[it->second].first == signals[it->second].second) {
-          __atomic_fetch_sub(&counter, 1, __ATOMIC_RELEASE);
+        if (__atomic_load_n(&signals[it->second].first, __ATOMIC_ACQUIRE) ==
+            __atomic_load_n(&signals[it->second].second, __ATOMIC_ACQUIRE)) {
           __atomic_fetch_add(&signals[it->second].first, 1, __ATOMIC_RELEASE);
+          nDone++;
         }
       }
       sched_yield();
     }
+    __atomic_store_n(&counter, 0, __ATOMIC_RELEASE);
   }
 };
 
