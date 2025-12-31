@@ -157,6 +157,8 @@ void flagcxIntruQueueEnqueue(flagcxIntruQueue<T, next> *me, T *x);
 template <typename T, T *T::*next>
 T *flagcxIntruQueueDequeue(flagcxIntruQueue<T, next> *me);
 template <typename T, T *T::*next>
+inline T *flagcxIntruQueueRemove(flagcxIntruQueue<T, next> *me, T *prev);
+template <typename T, T *T::*next>
 T *flagcxIntruQueueTryDequeue(flagcxIntruQueue<T, next> *me);
 template <typename T, T *T::*next>
 void flagcxIntruQueueFreeAll(flagcxIntruQueue<T, next> *me,
@@ -384,6 +386,23 @@ inline T *flagcxIntruQueueDequeue(flagcxIntruQueue<T, next> *me) {
   if (me->head == nullptr)
     me->tail = nullptr;
   return ans;
+}
+
+template <typename T, T *T::*next>
+inline T *flagcxIntruQueueRemove(flagcxIntruQueue<T, next> *me, T *prev) {
+  if (prev) {
+    T *x = prev->*next;
+    prev->*next = x->*next;
+    if (me->tail == x)
+      me->tail = prev;
+    return x->*next;
+  } else {
+    T *x = me->head;
+    me->head = x->*next;
+    if (me->tail == x)
+      me->tail = nullptr;
+    return x->*next;
+  }
 }
 
 template <typename T, T *T::*next>

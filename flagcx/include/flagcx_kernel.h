@@ -4,7 +4,21 @@
 #include "adaptor.h"
 #include "flagcx.h"
 
-#define FLAGCX_KERNEL_FIFO_CAPACITY 16
+#define FLAGCX_FIFO_CAPACITY 128
+#define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
+
+#ifdef COMPILE_KERNEL
+FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
+  int delay = 1 << (iter < 15 ? iter : 15);
+#if __CUDA_ARCH__ >= 700
+  __nanosleep(delay);
+#else
+  uint64_t start = clock64();
+  while (clock64() - start < (uint64_t)delay) { /* spin */
+  }
+#endif
+}
+#endif
 
 typedef enum {
   flagcxDevicePrimSend = 0,
@@ -12,6 +26,13 @@ typedef enum {
   flagcxDevicePrimTerm = 2,
   flagcxDevicePrimWait = 3
 } flagcxDevicePrim;
+
+typedef enum {
+  flagcxReduceTriggerAvailable = 0,
+  flagcxReduceTriggerEnqueued = 1,
+  flagcxReduceTriggerInprogress = 2,
+  flagcxReduceTriggerComplete = 3
+} flagcxReduceTriggerState;
 
 constexpr unsigned int flagcxDeviceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxDeviceTriggerOffCount = 0;
@@ -28,10 +49,21 @@ constexpr unsigned int flagcxDeviceTriggerBitsPrim = 4;
 constexpr unsigned int flagcxDeviceTriggerBitsFifoReserved = 1;
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
+constexpr unsigned int flagcxReduceTriggerOffCount = 0;
 constexpr unsigned int flagcxReduceTriggerBitsCount = 32;
+constexpr unsigned int flagcxReduceTriggerOffNThreads =
+    flagcxReduceTriggerOffCount + flagcxReduceTriggerBitsCount;
 constexpr unsigned int flagcxReduceTriggerBitsNThreads = 16;
+constexpr unsigned int flagcxReduceTriggerOffDatatype =
+    flagcxReduceTriggerOffNThreads + flagcxReduceTriggerBitsNThreads;
 constexpr unsigned int flagcxReduceTriggerBitsDatatype = 4;
+constexpr unsigned int flagcxReduceTriggerOffRedop =
+    flagcxReduceTriggerOffDatatype + flagcxReduceTriggerBitsDatatype;
 constexpr unsigned int flagcxReduceTriggerBitsRedop = 4;
+constexpr unsigned int flagcxReduceTriggerOffState =
+    flagcxReduceTriggerOffRedop + flagcxReduceTriggerBitsRedop;
+/* op state: 0 for available, 1 for enqueued, 2 for in-progress, 3 for done */
+constexpr unsigned int flagcxReduceTriggerBitsState = 2;
 constexpr unsigned int flagcxReduceTriggerBitsFifoReserved = 1;
 
 struct flagcxDeviceTrigger {
@@ -49,53 +81,62 @@ struct flagcxDeviceTrigger {
 };
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
 
-typedef union alignas(16) {
+struct alignas(16) flagcxReduceTrigger {
   uint64_t value[4];
-  struct {
-    // First 64 bits: value[0]
-    uint64_t addr1 : flagcxReduceTriggerBitsAddr;
-    // Second 64 bits: value[1]
-    uint64_t addr2 : flagcxReduceTriggerBitsAddr;
-    // Third 64 bits: value[2]
-    uint64_t addr3 : flagcxReduceTriggerBitsAddr;
-    // Last 64 bits: value[3]
-    uint64_t count : flagcxReduceTriggerBitsCount;
-    uint64_t nthreads : flagcxReduceTriggerBitsNThreads;
-    uint64_t datatype : flagcxReduceTriggerBitsDatatype;
-    uint64_t redop : flagcxReduceTriggerBitsRedop;
-    uint64_t
-        : (64 - flagcxReduceTriggerBitsCount - flagcxReduceTriggerBitsNThreads -
-           flagcxReduceTriggerBitsDatatype - flagcxReduceTriggerBitsRedop -
-           flagcxReduceTriggerBitsFifoReserved);
-    uint64_t reserved : flagcxReduceTriggerBitsFifoReserved;
-  } fields;
-} flagcxReduceTrigger;
+
+#ifdef COMPILE_KERNEL
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInput1();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInput2();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getOutput();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getCount();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getNThreads();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getDatatype();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getRedop();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getState();
+  FLAGCX_DEVICE_INLINE_DECORATOR void setComplete();
+#endif
+  FLAGCX_HOST_DECORATOR void setValue(uint64_t fst, uint64_t snd, uint64_t out,
+                                      size_t count, size_t nthreads,
+                                      flagcxDataType_t datatype,
+                                      flagcxRedOp_t redOp,
+                                      flagcxReduceTriggerState state);
+  FLAGCX_HOST_DECORATOR uint64_t pollState();
+  FLAGCX_HOST_DECORATOR void setState(int state);
+};
 typedef flagcxReduceTrigger *flagcxReduceTrigger_t;
 
 struct flagcxFifo {
-  // [capacity, consumed, produced, trigger buffer]
+  // flagcxDeviceTrigger fifo:
+  // 0: capacity, 1: consumed, 2: produced, 3+: buffer
+  // flagcxReduceTrigger fifo:
+  // 0: capacity, 1: consumed, 2: produced, 3: terminate, 4+:buffer
   uint64_t *buffer;
 
 public:
   flagcxFifo() {}
   ~flagcxFifo() {}
   flagcxResult_t flagcxFifoInit();
+  flagcxResult_t flagcxRedFifoInit();
   flagcxResult_t flagcxFifoDestroy();
+  flagcxResult_t flagcxRedFifoDestroy();
 };
 typedef struct flagcxFifo *flagcxFifo_t;
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger);
+FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
+                                             uint64_t addr2, uint64_t addr3,
+                                             size_t count, size_t nthreads,
+                                             flagcxDataType_t datatype,
+                                             flagcxRedOp_t redop, int *idx);
 #ifdef COMPILE_KERNEL
-// device-producer + host-consumer APIs
 FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t count,
                                                uint64_t peerRank,
                                                uint64_t datatype,
                                                uint64_t type);
-// host-producer + device-consumer APIs
-// FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(flagcxReduceTrigger trigger);
-// FLAGCX_HOST_DECORATOR  flagcxResult_t dequeue(flagcxReduceTrigger_t trigger);
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
+                                                      int *idx);
 
 FLAGCX_DEVICE_DECORATOR size_t
 getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype);
@@ -108,9 +149,12 @@ flagcxDeviceRecv(void *sendbuff, size_t count, flagcxDataType_t datatype,
                  int peer, void *fifoBuffer);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceTerm(void *fifoBuffer);
 FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer);
-// FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(flagcxFifo_t q); // TBD
+FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
+#endif // COMPILE_KERNEL
+
 void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
                    flagcxDataType_t datatype, int sendPeer, int recvPeer,
                    flagcxComm_t comm, flagcxStream_t stream);
-#endif // COMPILE_KERNEL
+void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
+                                  size_t nblocks, flagcxStream_t stream);
 #endif
