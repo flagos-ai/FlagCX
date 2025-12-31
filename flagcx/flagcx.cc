@@ -7,12 +7,16 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "flagcx_hetero.h"
+#include "flagcx_net.h"
+#include "ib_common.h"
 #include "launch_kernel.h"
+#include "net.h"
 #include "param.h"
 #include "proxy.h"
 #include "reg_pool.h"
 #include "runner.h"
 #include "timer.h"
+#include "transport.h"
 #include "utils.h"
 #include <cassert>
 #include <stdio.h>
@@ -20,6 +24,7 @@
 #include <unordered_map>
 
 flagcxRegPool globalRegPool;
+struct flagcxIbGlobalHandleInfo *globalOneSideHandles = NULL;
 
 size_t getFlagcxDataTypeSize(flagcxDataType_t dtype) {
   switch (dtype) {
@@ -171,9 +176,134 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
+                                     size_t size) {
+  // Check if one-sided operations are enabled
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxSuccess;
+  }
+
+  struct flagcxHeteroComm *heteroComm = comm->hetero_comm;
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+      heteroComm->netAdaptor->put == NULL ||
+      heteroComm->netAdaptor->regMr == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: heteroComm is NULL");
+    return flagcxSuccess;
+  }
+
+  struct bootstrapState *state = heteroComm->bootstrap;
+  if (state == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: state is NULL");
+    return flagcxNotSupported;
+  }
+
+  void *mrHandle = NULL;
+  struct ibv_mr *mr = NULL;
+
+  int sendPeer = (heteroComm->rank + 1) % heteroComm->nRanks;
+  int recvPeer =
+      (heteroComm->rank - 1 + heteroComm->nRanks) % heteroComm->nRanks;
+
+  flagcxNetHandle_t listenHandle = {};
+  void *listenComm = NULL;
+  FLAGCXCHECK(heteroComm->netAdaptor->listen(
+      heteroComm->netDev, (void *)listenHandle, &listenComm));
+
+  flagcxNetHandle_t peerHandle = {};
+  FLAGCXCHECK(bootstrapSend(state, recvPeer, 1001, (void *)listenHandle,
+                            sizeof(flagcxNetHandle_t)));
+  FLAGCXCHECK(bootstrapRecv(state, sendPeer, 1001, (void *)peerHandle,
+                            sizeof(flagcxNetHandle_t)));
+
+  // Establish connections
+  void *sendComm = NULL;
+  void *recvComm = NULL;
+  while (sendComm == NULL || recvComm == NULL) {
+    if (sendComm == NULL) {
+      flagcxResult_t res = heteroComm->netAdaptor->connect(
+          heteroComm->netDev, (void *)peerHandle, &sendComm);
+      if (res != flagcxSuccess && res != flagcxInProgress) {
+        INFO(FLAGCX_REG,
+             "flagcxOneSideRegister: connect to sendPeer failed, res=%d", res);
+        return res;
+      }
+    }
+
+    if (recvComm == NULL) {
+      flagcxResult_t res =
+          heteroComm->netAdaptor->accept(listenComm, &recvComm);
+      if (res != flagcxSuccess && res != flagcxInProgress) {
+        INFO(FLAGCX_REG,
+             "flagcxOneSideRegister: accept from recvPeer failed, res=%d", res);
+        return res;
+      }
+    }
+
+    if (sendComm == NULL || recvComm == NULL) {
+      sched_yield();
+    }
+  }
+  // Close listen comm
+  heteroComm->netAdaptor->closeListen(listenComm);
+
+  void *regComm = recvComm;
+  INFO(FLAGCX_REG, "flagcxOneSideRegister: sendComm and recvComm created, "
+                   "using sendComm for registration");
+
+  if (heteroComm->netAdaptor->name &&
+      strcmp(heteroComm->netAdaptor->name, "IB") == 0) {
+    struct flagcxIbSendComm *ibSendComm = (struct flagcxIbSendComm *)regComm;
+    regComm = (void *)&ibSendComm->base;
+  }
+
+  int type = FLAGCX_PTR_HOST;
+  flagcxResult_t res =
+      heteroComm->netAdaptor->regMr(regComm, buff, size, type, &mrHandle);
+  if (res != flagcxSuccess || mrHandle == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
+    return flagcxNotSupported;
+  }
+
+  struct flagcxIbMrHandle *localMrHandle = (struct flagcxIbMrHandle *)mrHandle;
+  mr = localMrHandle->mrs[0];
+
+  int nranks = state->nranks;
+  struct flagcxIbGlobalHandleInfo *info = NULL;
+  FLAGCXCHECK(flagcxCalloc(&info, 1));
+  FLAGCXCHECK(flagcxCalloc(&info->base_vas, nranks));
+  FLAGCXCHECK(flagcxCalloc(&info->rkeys, nranks));
+  FLAGCXCHECK(flagcxCalloc(&info->lkeys, nranks));
+
+  info->base_vas[state->rank] = (uintptr_t)buff;
+  info->rkeys[state->rank] = mr->rkey;
+  info->lkeys[state->rank] = mr->lkey;
+
+  FLAGCXCHECK(
+      bootstrapAllGather(state, (void *)info->base_vas, sizeof(uintptr_t)));
+  FLAGCXCHECK(bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)));
+  FLAGCXCHECK(bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)));
+  // Store globalHandles in global variable
+  globalOneSideHandles = info;
+  INFO(FLAGCX_REG, "One-sided register allgather results (rank %d, nranks %d):",
+       state->rank, nranks);
+  for (int i = 0; i < nranks; i++) {
+    INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
+         info->base_vas[i], info->rkeys[i], info->lkeys[i]);
+  }
+  INFO(FLAGCX_REG, "flagcxOneSideRegister: allgather results printed");
+
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  const char *enableOneSideReg =
+      flagcxGetEnv("FLAGCX_ENABLE_ONE_SIDE_REGISTER");
+  if (enableOneSideReg && strcmp(enableOneSideReg, "1") == 0) {
+    flagcxOneSideRegister(comm, buff, size);
+  }
+
   if (buff == NULL || size == 0) {
     WARN("Invalid buffer or size for buffer registration.");
     return flagcxInvalidArgument;

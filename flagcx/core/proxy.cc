@@ -8,6 +8,7 @@
 #include "adaptor.h"
 #include "comm.h"
 #include "flagcx_hetero.h"
+#include "ib_common.h"
 #include "info.h"
 #include "net.h"
 #include "p2p.h"
