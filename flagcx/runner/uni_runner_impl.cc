@@ -256,29 +256,53 @@ initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
     for (int i = 0; i < nodesPerSlice; i++) {
       int currIdx = sliceNodeBaseIdx + i;
 
-      if (i == 0) {
+      if (currIdx == 0) {
         runnerState->dagNodes[currIdx].numParents = 0;
       } else {
         runnerState->dagNodes[currIdx].numParents = 1;
       }
-
-      if (i == nodesPerSlice - 1) {
+      if (currIdx == numNodes - 1) {
         runnerState->dagNodes[currIdx].numChildren = 0;
       } else {
         runnerState->dagNodes[currIdx].numChildren = 1;
-        FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes[currIdx].children,
-                                 sizeof(int)));
-        runnerState->dagNodes[currIdx].children[0] = currIdx + 1;
       }
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes[currIdx].children,
+                               runnerState->dagNodes[currIdx].numChildren *
+                                   sizeof(int)));
+      if (s == numSlices - 1) {
+        if (currIdx != numNodes - 1) {
+          runnerState->dagNodes[currIdx].children[0] = i + 1;
+        }
+      } else {
+        runnerState->dagNodes[currIdx].children[0] = currIdx + nodesPerSlice;
+      }
+
+      // if (i == 0) {
+      //   runnerState->dagNodes[currIdx].numParents = 0;
+      // } else {
+      //   runnerState->dagNodes[currIdx].numParents = 1;
+      // }
+
+      // if (i == nodesPerSlice - 1) {
+      //   runnerState->dagNodes[currIdx].numChildren = 0;
+      // } else {
+      //   runnerState->dagNodes[currIdx].numChildren = 1;
+      //   FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes[currIdx].children,
+      //                            sizeof(int)));
+      //   runnerState->dagNodes[currIdx].children[0] = currIdx + 1;
+      // }
     }
 
     // Enqueue the head of this slice chain to Ready Queue
-    flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
-                            &runnerState->dagNodes[sliceNodeBaseIdx]);
+    // flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+    //                         &runnerState->dagNodes[sliceNodeBaseIdx]);
 
     // Increment pending node count
-    runnerState->numPendingNodes += nodesPerSlice - 1;
+    // runnerState->numPendingNodes += nodesPerSlice - 1;
   }
+  flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                          &runnerState->dagNodes[0]);
+  runnerState->numPendingNodes = numNodes - 1;
 
   return flagcxSuccess;
 }
@@ -593,7 +617,7 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
     }
     FLAGCXCHECK(launchP2pOps(runnerState, comm, eventIdx));
   }
-  deviceAdaptor->streamSynchronize(runnerState->comm_stream);
+  // deviceAdaptor->streamSynchronize(runnerState->comm_stream);
 
   // process redReadyQueue
   while (!flagcxIntruQueueEmpty(&runnerState->redReadyQueue)) {
