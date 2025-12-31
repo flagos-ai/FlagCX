@@ -426,13 +426,17 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
                                    sizeof(int)));
       if (s == numSlices - 1) {
         runnerState->dagNodes[p2pNodeIdx].children[0] = 2 * (i + 1);
-        TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 0: %d", rank, p2pNodeIdx, 2 * (i + 1));
+        TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 0: %d", rank, p2pNodeIdx,
+              2 * (i + 1));
       } else {
-        runnerState->dagNodes[p2pNodeIdx].children[0] = p2pNodeIdx + nodesPerSlice;
-        TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 0: %d", rank, p2pNodeIdx, p2pNodeIdx + nodesPerSlice);
+        runnerState->dagNodes[p2pNodeIdx].children[0] =
+            p2pNodeIdx + nodesPerSlice;
+        TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 0: %d", rank, p2pNodeIdx,
+              p2pNodeIdx + nodesPerSlice);
       }
       runnerState->dagNodes[p2pNodeIdx].children[1] = p2pNodeIdx + 1;
-      TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 1: %d", rank, p2pNodeIdx, p2pNodeIdx + 1);
+      TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 1: %d", rank, p2pNodeIdx,
+            p2pNodeIdx + 1);
 
       // Reduce Node
       int redNodeIdx = globalNodeIdx++;
@@ -458,7 +462,8 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
                                runnerState->dagNodes[redNodeIdx].numChildren *
                                    sizeof(int)));
       runnerState->dagNodes[redNodeIdx].children[0] = redNodeIdx + 1;
-      TRACE(FLAGCX_INIT, "rank %d redNode %d child 0: %d", rank, redNodeIdx, redNodeIdx + 1);
+      TRACE(FLAGCX_INIT, "rank %d redNode %d child 0: %d", rank, redNodeIdx,
+            redNodeIdx + 1);
     }
 
     // Phase 2: All-Gather
@@ -516,11 +521,14 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
       if (s == numSlices - 1) {
         if (p2pNodeIdx != numNodes - 1) {
           runnerState->dagNodes[p2pNodeIdx].children[0] = 2 * nranks + i - 1;
-	  TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 1: %d", rank, p2pNodeIdx, 2 * nranks + i - 1);
+          TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 1: %d", rank, p2pNodeIdx,
+                2 * nranks + i - 1);
         }
       } else {
-        runnerState->dagNodes[p2pNodeIdx].children[0] = p2pNodeIdx + nodesPerSlice;
-        TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 1: %d", rank, p2pNodeIdx, p2pNodeIdx + nodesPerSlice);
+        runnerState->dagNodes[p2pNodeIdx].children[0] =
+            p2pNodeIdx + nodesPerSlice;
+        TRACE(FLAGCX_INIT, "rank %d p2pNode %d child 1: %d", rank, p2pNodeIdx,
+              p2pNodeIdx + nodesPerSlice);
       }
     }
 
@@ -551,12 +559,12 @@ initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
         nranks, numSlices);
   // print dependency graph
   for (int i = 0; i < runnerState->numDagNodes; i++) {
-    TRACE(FLAGCX_INIT,
-          "Node %d: type=%s, numParents=%d, numChildren=%d", i,
+    TRACE(FLAGCX_INIT, "Node %d: type=%s, numParents=%d, numChildren=%d", i,
           (runnerState->dagNodes[i].nodeType == uniRunnerDagNodeTypeP2p)
               ? "P2P"
               : "RED",
-          runnerState->dagNodes[i].numParents, runnerState->dagNodes[i].numChildren);
+          runnerState->dagNodes[i].numParents,
+          runnerState->dagNodes[i].numChildren);
     if (runnerState->dagNodes[i].numChildren > 0) {
       std::string childStr = "  Children: ";
       for (int c = 0; c < runnerState->dagNodes[i].numChildren; c++) {

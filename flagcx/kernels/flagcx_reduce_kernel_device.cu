@@ -52,8 +52,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
       break;
     }
     // set consumed from `old_c` to `old_c+1`
-    unsigned long long int prev = atomicCAS((unsigned long long int *)(buffer + 1),
-                                            old_c, old_c + 1);
+    unsigned long long int prev =
+        atomicCAS((unsigned long long int *)(buffer + 1), old_c, old_c + 1);
     if (prev == old_c) {
       *idx = old_c;
       break;
@@ -76,7 +76,7 @@ flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
 }
 
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
-  volatile uint64_t *vBuf =  (volatile uint64_t*)fifoBuffer;
+  volatile uint64_t *vBuf = (volatile uint64_t *)fifoBuffer;
   int empty_iter = 0; // backoff counter
 
   while (true) {
