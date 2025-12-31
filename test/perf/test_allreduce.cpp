@@ -85,8 +85,8 @@ int main(int argc, char *argv[]) {
     devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
                             NULL);
     // debug
-    devHandle->deviceMemcpy(recvbuff, hello, size, flagcxMemcpyHostToDevice,
-                            NULL);
+    // devHandle->deviceMemcpy(recvbuff, hello, size, flagcxMemcpyHostToDevice,
+    //                         NULL);
 
     if (color == 0 && print_buffer) {
       printf("rank %d sendbuff = ", proc);
@@ -132,7 +132,7 @@ int main(int argc, char *argv[]) {
       }
       printf("\n");
       int correct = 1;
-      /* all-reduce correctness check
+      /* all-reduce correctness check */
       for (size_t i = 0; i < count; i++) {
         if ((i % 10 == 0 && ((float *)hello)[i] != 0) ||
             ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) >
@@ -145,9 +145,9 @@ int main(int argc, char *argv[]) {
           correct = 0;
           break;
         }
-      } */
+      }
 
-      /* p2p correctness check */
+      /* p2p correctness check
       for (size_t i = 0; i < count; i++) {
         if (((float *)hello)[i] !=
             (float)(i % 10 * (1 << (i * totalProcs / count)))) {
@@ -157,7 +157,7 @@ int main(int argc, char *argv[]) {
           correct = 0;
           break;
         }
-      }
+      } */
 
       /* red correctness check
       for (size_t i = 0; i < count; i++) {
