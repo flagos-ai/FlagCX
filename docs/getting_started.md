@@ -45,6 +45,7 @@ sudo docker run -itd \
    ```
    git clone https://github.com/flagos-ai/FlagCX.git
    cd FlagCX 
+   git submodule update --init --recursive
    cat Makefile
    make USE_NVIDIA=1 -j$(nproc) # NVIDIA GPU Platform
    make USE_CAMBRICON=1 -j$(nproc)  # Cambricon Platform

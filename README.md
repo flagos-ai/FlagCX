@@ -106,7 +106,7 @@ Please check the guides on building, testing the software:
 <!--TODO(Qiming): Rework the page structure and then the list below.-->
 - [Getting started](./docs/getting_started.md)
 - [Build](./docs/build.md)
-- [Testing](./docs/test.md)
+- [Testing](./docs/testing.md)
 
 
 ### Training Models
