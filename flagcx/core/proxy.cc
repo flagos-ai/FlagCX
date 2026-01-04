@@ -14,7 +14,6 @@
 #include "p2p.h"
 #include "socket.h"
 #include "transport.h"
-#include "ib_common.h"
 #define ENABLE_TIMER 0
 #include "timer.h"
 
@@ -1139,8 +1138,9 @@ void *flagcxProxyKernelService(void *args) {
         int peerRank = (int)ptr->getPeerRank();
         size_t srcOffset = (size_t)ptr->getSrcOffset();
         size_t dstOffset = (size_t)ptr->getDstOffset();
-        size_t size = ptr->getCount() *
-                      getFlagcxDataTypeSize((flagcxDataType_t)ptr->getDatatype());
+        size_t size =
+            ptr->getCount() *
+            getFlagcxDataTypeSize((flagcxDataType_t)ptr->getDatatype());
         res = flagcxHeteroPut(comm, peerRank, srcOffset, dstOffset, size);
         break;
       }

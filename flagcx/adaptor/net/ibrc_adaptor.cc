@@ -2467,9 +2467,8 @@ flagcxResult_t flagcxIbPut(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxIbPutSignal(void *sendComm, uint64_t dstOff,
-                                 int dstRank, void **gHandles,
-                                 void **request) {
+flagcxResult_t flagcxIbPutSignal(void *sendComm, uint64_t dstOff, int dstRank,
+                                 void **gHandles, void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxIbGlobalHandleInfo *info =
       (struct flagcxIbGlobalHandleInfo *)gHandles;

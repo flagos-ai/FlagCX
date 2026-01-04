@@ -18,7 +18,6 @@
 #include "timer.h"
 #include "transport.h"
 #include "utils.h"
-#include "flagcx_net.h"
 #include <cassert>
 #include <stdio.h>
 #include <string.h>
