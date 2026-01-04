@@ -387,7 +387,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               // Pass the remote address to sender for zero-copy
               // peerRmtAddr is the remote address itself (cast as uintptr_t*)
               if (op->args.regBufFlag && peerRmtAddr) {
-                op->args.p2pRmtAddr = (void *)peerRmtAddr;
+                op->args.p2pRmtAddr = (void *)((uintptr_t)peerRmtAddr + regOffset);
               }
             } else if (op->connection->transport == TRANSPORT_NET) {
               op->args.chunkSize = flagcxNetChunkSize;
