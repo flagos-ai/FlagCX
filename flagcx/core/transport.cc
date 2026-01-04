@@ -10,12 +10,11 @@
 #define ENABLE_TIMER 0
 #include "timer.h"
 
-FLAGCX_PARAM(RunUniRunnerAllReduce, "RUN_UNIRUNNER_ALLREDUCE", 0);
+FLAGCX_PARAM(P2pDisable, "P2P_DISABLE", 0);
 
 static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
   // force use network transport for unirunner allreduce
-  int runUniRunnerAllReduce = flagcxParamRunUniRunnerAllReduce();
-  if (runUniRunnerAllReduce) {
+  if (flagcxParamP2pDisable()) {
     return false;
   }
   if (comm->peerInfo == NULL) {
