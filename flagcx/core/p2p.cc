@@ -217,18 +217,16 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
     }
   } else {
     if (args->done != 1) {
-      if (slotPtr->done != 1) {
-        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
-          __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-        }
-        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) == 1) {
-          __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
-        }
-        if (slotIsComplete(slotPtr)) {
-          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
-          args->semaphore->subCounter(args->opId);
-          args->done = 1;
-        }
+      if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+        __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
+      }
+      if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) == 1) {
+        __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+      }
+      if (slotIsComplete(slotPtr)) {
+        __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+        args->semaphore->subCounter(args->opId);
+        args->done = 1;
       }
     }
   }
