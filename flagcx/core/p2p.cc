@@ -44,13 +44,42 @@ struct p2pIpcExpInfo {
   uintptr_t offset;
 };
 
-static std::map<int, std::pair<int, int>>
-    p2pOpHashMap; // <opHash, sendCounter, recvCounter>
+static std::map<uint64_t, std::pair<int, int>>
+    p2pOpHashMap;                         // <opHash, sendCounter, recvCounter>
+constexpr unsigned int rankBits = 14;     // 16384 ranks
+constexpr unsigned int peerDeltaBits = 5; // [-16, +15]
+constexpr unsigned int sizeBits = 37;     // 128GB
+constexpr unsigned int dtypeBits = 4;     // 16
+constexpr unsigned int reservedBits = 4;
+constexpr int deltaMin = -(1 << (peerDeltaBits - 1));    // -16
+constexpr int deltaMax = (1 << (peerDeltaBits - 1)) - 1; // +15
+
+static inline uint64_t makeKey(uint32_t rank, uint32_t peerRank, uint64_t size,
+                               flagcxDataType_t dtype) {
+  assert(rank < (1ULL << rankBits));
+  assert(peerRank < (1ULL << rankBits));
+  assert(size < (1ULL << sizeBits));
+  assert(dtype < (1ULL << dtypeBits));
+
+  // Encode peerRank as signed delta from rank
+  int delta = (int)peerRank - (int)rank; // [-16, +15]
+  assert(delta >= deltaMin && delta <= deltaMax);
+  uint32_t deltaEnc = (uint32_t)(delta - deltaMin); // map [-16,+15] -> [0,31]
+
+  uint64_t key = 0;
+  key |= (uint64_t(rank) & ((1ULL << rankBits) - 1))
+         << (peerDeltaBits + sizeBits + dtypeBits + reservedBits);
+  key |= (uint64_t(deltaEnc) & ((1ULL << peerDeltaBits) - 1))
+         << (sizeBits + dtypeBits + reservedBits);
+  key |= (uint64_t(size) & ((1ULL << sizeBits) - 1))
+         << (dtypeBits + reservedBits);
+  key |= (uint64_t(dtype) & ((1ULL << dtypeBits) - 1)) << reservedBits;
+  return key;
+}
 
 void setP2pSlotInfo(int rank, int peerRank, size_t size, flagcxDataType_t dtype,
-                    int isRecv, int *opHash, size_t *slotIdx) {
-  // TODO: try a better hash function to reduce collisions
-  int key = rank * 1e5 + int(size >> 12) + dtype * 1e2 + peerRank * 1e3;
+                    int isRecv, uint64_t *opHash, size_t *slotIdx) {
+  uint64_t key = makeKey(rank, peerRank, size, dtype);
   int opHashCounter;
   auto it = p2pOpHashMap.find(key);
   if (it != p2pOpHashMap.end()) {

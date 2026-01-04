@@ -134,8 +134,8 @@ struct flagcxProxyArgs {
   int regBufFlag = 0;
 
   // P2P operation slot management
-  int p2pOpHash = -1;
-  int p2pPeerOpHash = -1;
+  uint64_t p2pOpHash = -1;
+  uint64_t p2pPeerOpHash = -1;
   size_t p2pSlotIdx = 0;
   size_t p2pPeerSlotIdx = 0;
   void *p2pRmtAddr = nullptr; // Remote address for P2P zero-copy

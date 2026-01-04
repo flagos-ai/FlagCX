@@ -54,9 +54,9 @@ struct flagcxP2pConnectInfo {
 struct flagcxP2pSyncSlot {
   uint64_t sendHead;
   uint64_t recvTail;
-  int opHash;   // Hash identifying which operation owns this slot
-  int done;     // 1 = slot is free, 0 = slot is in use
-  int peerDone; // 1 = slot is free, 0 = slot is in use
+  uint64_t opHash; // Hash identifying which operation owns this slot
+  int done;        // 1 = slot is free, 0 = slot is in use
+  int peerDone;    // 1 = slot is free, 0 = slot is in use
 };
 
 struct p2pRegInfo {
@@ -165,7 +165,7 @@ flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources);
 flagcxResult_t flagcxP2pRecvProxyFree(struct flagcxP2pResources *resources);
 
 void setP2pSlotInfo(int rank, int peerRank, size_t size, flagcxDataType_t dtype,
-                    int isRecv, int *opHash, size_t *slotIdx);
+                    int isRecv, uint64_t *opHash, size_t *slotIdx);
 
 #ifdef __cplusplus
 }

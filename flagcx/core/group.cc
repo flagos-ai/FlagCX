@@ -275,11 +275,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 0,
                              &op->args.p2pPeerOpHash, &op->args.p2pPeerSlotIdx);
               TRACE_CALL("Receiver: [rank(%d), peerRank(%d)] -> [slotIdx(%ld), "
-                         "opHash(%d)]",
+                         "opHash(%ld)]",
                          comm->rank, peer, op->args.p2pSlotIdx,
                          op->args.p2pOpHash);
               TRACE_CALL("Receiver: [peerRank(%d), rank(%d)] -> "
-                         "[peerSlotIdx(%ld), peerOpHash(%d)]",
+                         "[peerSlotIdx(%ld), peerOpHash(%ld)]",
                          peer, comm->rank, op->args.p2pPeerSlotIdx,
                          op->args.p2pPeerOpHash);
 
@@ -367,12 +367,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               setP2pSlotInfo(peer, comm->rank, p2p->bytes, p2p->dtype, 1,
                              &op->args.p2pPeerOpHash, &op->args.p2pPeerSlotIdx);
               TRACE_CALL("Sender: [rank(%d), peerRank(%d)] -> [slotIdx(%ld), "
-                         "opHash(%d)]",
+                         "opHash(%ld)]",
                          comm->rank, peer, op->args.p2pSlotIdx,
                          op->args.p2pOpHash);
               TRACE_CALL(
                   "Sender: [peerRank(%d), rank(%d)] -> [peerSlotIdx(%ld), "
-                  "peerOpHash(%d)]",
+                  "peerOpHash(%ld)]",
                   peer, comm->rank, op->args.p2pPeerSlotIdx,
                   op->args.p2pPeerOpHash);
               flagcxConnector *peerConns[] = {
