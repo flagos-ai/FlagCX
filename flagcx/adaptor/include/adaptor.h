@@ -293,7 +293,7 @@ struct flagcxNetAdaptor {
                         size_t size, int srcRank, int dstRank, void **gHandles,
                         void **request);
   flagcxResult_t (*putSignal)(void *sendComm, uint64_t dstOff,
-                              int srcRank, int dstRank, void **gHandles,
+                              int dstRank, void **gHandles,
                               void **request);
   flagcxResult_t (*waitValue)(void **gHandles, int rank, uint64_t offset,
                               uint64_t expected);
