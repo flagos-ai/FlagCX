@@ -50,7 +50,7 @@ static std::map<int, std::pair<int, int>>
 void setP2pSlotInfo(int rank, int peerRank, size_t size, flagcxDataType_t dtype,
                     int isRecv, int *opHash, size_t *slotIdx) {
   // TODO: try a better hash function to reduce collisions
-  int key = rank * 1000 + int(size >> 12) + dtype * 10 + peerRank * 100;
+  int key = rank * 1e5 + int(size >> 12) + dtype * 1e2 + peerRank * 1e3;
   int opHashCounter;
   auto it = p2pOpHashMap.find(key);
   if (it != p2pOpHashMap.end()) {
@@ -76,6 +76,31 @@ void setP2pSlotInfo(int rank, int peerRank, size_t size, flagcxDataType_t dtype,
   }
 }
 
+static inline bool slotIsReusable(flagcxP2pSyncSlot *s) {
+  return (__atomic_load_n(&s->opHash, __ATOMIC_ACQUIRE) == -1);
+}
+
+static inline bool slotIsComplete(flagcxP2pSyncSlot *s) {
+  return (__atomic_load_n(&s->done, __ATOMIC_ACQUIRE) == 1 &&
+          __atomic_load_n(&s->peerDone, __ATOMIC_ACQUIRE) == 1);
+}
+
+static inline void resetSlot(flagcxP2pSyncSlot *slotPtr,
+                             struct p2pRegInfo *regPtr, int64_t newHash) {
+  if (slotPtr != NULL) {
+    __atomic_store_n(&slotPtr->sendHead, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&slotPtr->recvTail, flagcxP2pChunks, __ATOMIC_RELAXED);
+    __atomic_store_n(&slotPtr->done, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&slotPtr->peerDone, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&slotPtr->opHash, newHash, __ATOMIC_RELEASE);
+  }
+  // Reset reg info for new operation
+  if (regPtr != NULL) {
+    __atomic_store_n(&regPtr->copyStarted, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->copyDone, 0, __ATOMIC_RELEASE);
+  }
+}
+
 flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
                                   void *data, size_t size,
                                   struct flagcxProxyArgs *args) {
@@ -95,23 +120,18 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
 
   // Reset slot for new operation, only if previous operation
   // is done for both sides
-  if (slotPtr->opHash == -1 && slotPtr->done == 1 && slotPtr->peerDone == 1) {
-    slotPtr->opHash = args->p2pOpHash;
-    slotPtr->done = 0;
-    slotPtr->peerDone = 0;
-    slotPtr->sendHead = 0;
-    slotPtr->recvTail = flagcxP2pChunks;
-    // Reset reg info for new operation
-    regInfoPtr->copyStarted = 0;
-    regInfoPtr->copyDone = 0;
+  if (slotIsReusable(slotPtr)) {
+    resetSlot(slotPtr, regInfoPtr, args->p2pOpHash);
   }
 
   // Retry later since the slot is still in use
-  if (slotPtr->opHash != args->p2pOpHash)
+  if (__atomic_load_n(&slotPtr->opHash, __ATOMIC_ACQUIRE) != args->p2pOpHash)
     return flagcxSuccess;
 
   // Retry later since the peer slot is still in use
-  if (peerSlotPtr->opHash != args->p2pPeerOpHash && slotPtr->peerDone == 0)
+  if (__atomic_load_n(&peerSlotPtr->opHash, __ATOMIC_ACQUIRE) !=
+          args->p2pPeerOpHash &&
+      __atomic_load_n(&slotPtr->peerDone, __ATOMIC_ACQUIRE) == 0)
     return flagcxSuccess;
 
   // Zero-copy mode: sender directly copies to receiver's buffer
@@ -119,7 +139,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
     if (args->transmitted < args->chunkSteps) {
       // Single-step copy directly to receiver's buffer
       if (args->copied == 0) {
-        regInfoPtr->copyStarted = 1;
+        __atomic_store_n(&regInfoPtr->copyStarted, 1, __ATOMIC_RELEASE);
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             (void *)args->p2pRmtAddr, data, size, flagcxMemcpyDeviceToDevice,
             resources->proxyInfo.stream, NULL));
@@ -135,22 +155,22 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
             deviceAdaptor->eventQuery(resources->proxyInfo.events[0]);
         if (res == flagcxSuccess) {
           args->transmitted = args->chunkSteps;
-          regInfoPtr->copyDone = 1; // Signal to receiver that copy is done
+          __atomic_store_n(&regInfoPtr->copyDone, 1, __ATOMIC_RELEASE);
         }
       }
     } else {
       // Cleanup phase
       if (args->done != 1) {
-        if (slotPtr->done != 1) {
-          if (peerSlotPtr->peerDone != 1) {
-            peerSlotPtr->peerDone = 1;
-          }
-          if (slotPtr->peerDone == 1) {
-            __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
-            __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-            args->semaphore->subCounter(args->opId);
-            args->done = 1;
-          }
+        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+          __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
+        }
+        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) == 1) {
+          __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+        }
+        if (slotIsComplete(slotPtr)) {
+          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+          args->semaphore->subCounter(args->opId);
+          args->done = 1;
         }
       }
     }
@@ -165,7 +185,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
 
       volatile uint64_t *recvTail = &peerSlotPtr->recvTail;
 
-      if (*recvTail > args->copied) {
+      if (__atomic_load_n(recvTail, __ATOMIC_ACQUIRE) > args->copied) {
         args->subs[step].stepSize =
             std::min(args->chunkSize, size - args->totalCopySize);
         args->subs[step].stepBuff =
@@ -192,20 +212,20 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
         args->transmitted++;
         // Update sendHead in the shared slot
         volatile uint64_t *sendHead = &slotPtr->sendHead;
-        *sendHead = args->transmitted;
+        __atomic_store_n(sendHead, args->transmitted, __ATOMIC_RELEASE);
       }
     }
   } else {
     if (args->done != 1) {
       if (slotPtr->done != 1) {
-        // Inform peer that this side is done
-        if (peerSlotPtr->peerDone != 1) {
-          peerSlotPtr->peerDone = 1;
-        }
-        // Signal done only when the peer side is also done
-        if (slotPtr->peerDone == 1) {
-          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
+        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
           __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
+        }
+        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) == 1) {
+          __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+        }
+        if (slotIsComplete(slotPtr)) {
+          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
           args->semaphore->subCounter(args->opId);
           args->done = 1;
         }
@@ -235,27 +255,25 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
 
   // Reset slot for new operation, only if previous operation
   // is done for both sides
-  if (slotPtr->opHash == -1 && slotPtr->done == 1 && slotPtr->peerDone == 1) {
-    slotPtr->opHash = args->p2pOpHash;
-    slotPtr->done = 0;
-    slotPtr->peerDone = 0;
-    slotPtr->sendHead = 0;
-    slotPtr->recvTail = flagcxP2pChunks;
+  if (slotIsReusable(slotPtr)) {
+    resetSlot(slotPtr, NULL, args->p2pOpHash);
   }
 
   // Return and retry later since the slot is still in use
-  if (slotPtr->opHash != args->p2pOpHash)
+  if (__atomic_load_n(&slotPtr->opHash, __ATOMIC_ACQUIRE) != args->p2pOpHash)
     return flagcxSuccess;
 
   // Retry later since the peer slot is still in use
-  if (peerSlotPtr->opHash != args->p2pPeerOpHash && slotPtr->peerDone == 0)
+  if (__atomic_load_n(&peerSlotPtr->opHash, __ATOMIC_ACQUIRE) !=
+          args->p2pPeerOpHash &&
+      __atomic_load_n(&slotPtr->peerDone, __ATOMIC_ACQUIRE) == 0)
     return flagcxSuccess;
 
   // Zero-copy mode: receiver just waits for sender to complete the copy
   if (args->regBufFlag) {
     if (args->transmitted < args->chunkSteps) {
       // Wait for sender to signal copyDone
-      if (peerRegInfoPtr->copyDone == 1) {
+      if (__atomic_load_n(&peerRegInfoPtr->copyDone, __ATOMIC_ACQUIRE) == 1) {
         args->copied = args->chunkSteps;
         args->transmitted = args->chunkSteps;
         args->totalCopySize = size;
@@ -263,16 +281,16 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
     } else {
       // Cleanup phase
       if (args->done != 1) {
-        if (slotPtr->done != 1) {
-          if (peerSlotPtr->peerDone != 1) {
-            peerSlotPtr->peerDone = 1;
-          }
-          if (slotPtr->peerDone == 1) {
-            __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
-            __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-            args->semaphore->subCounter(args->opId);
-            args->done = 1;
-          }
+        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+          __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
+        }
+        if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) == 1) {
+          __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+        }
+        if (slotIsComplete(slotPtr)) {
+          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+          args->semaphore->subCounter(args->opId);
+          args->done = 1;
         }
       }
     }
@@ -286,7 +304,7 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
       int step = args->copied & args->sendStepMask;
       volatile uint64_t *sendHead = &peerSlotPtr->sendHead;
 
-      if (*sendHead > args->copied) {
+      if (__atomic_load_n(sendHead, __ATOMIC_ACQUIRE) > args->copied) {
         args->subs[step].stepSize =
             std::min(args->chunkSize, size - args->totalCopySize);
         args->subs[step].stepBuff =
@@ -313,24 +331,22 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
         args->transmitted++;
         // Update recvTail in the shared slot
         volatile uint64_t *recvTail = &slotPtr->recvTail;
-        *recvTail = args->transmitted + flagcxP2pChunks;
+        __atomic_store_n(recvTail, args->transmitted + flagcxP2pChunks,
+                         __ATOMIC_RELEASE);
       }
     }
   } else {
     if (args->done != 1) {
-      if (slotPtr->done != 1) {
-        // Inform peer that this side is done
-        if (peerSlotPtr->peerDone != 1) {
-          peerSlotPtr->peerDone = 1;
-        }
-
-        // Signal done only when the peer side is also done
-        if (slotPtr->peerDone == 1) {
-          __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELAXED);
-          __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
-          args->semaphore->subCounter(args->opId);
-          args->done = 1;
-        }
+      if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) != 1) {
+        __atomic_store_n(&slotPtr->done, 1, __ATOMIC_RELEASE);
+      }
+      if (__atomic_load_n(&slotPtr->done, __ATOMIC_ACQUIRE) == 1) {
+        __atomic_store_n(&peerSlotPtr->peerDone, 1, __ATOMIC_RELEASE);
+      }
+      if (slotIsComplete(slotPtr)) {
+        __atomic_store_n(&slotPtr->opHash, -1, __ATOMIC_RELEASE);
+        args->semaphore->subCounter(args->opId);
+        args->done = 1;
       }
     }
   }
