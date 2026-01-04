@@ -44,18 +44,18 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx) {
   while (true) {
-    unsigned long long int old_c = *(buffer + 1);
-    unsigned long long int cur_p = *(buffer + 2);
-    if (old_c >= cur_p) {
+    unsigned long long int oldConsumed = *(buffer + 1);
+    unsigned long long int curProduced = *(buffer + 2);
+    if (oldConsumed >= curProduced) {
       // no-op, task dequeued by other consumers
       *idx = -1;
       break;
     }
-    // set consumed from `old_c` to `old_c+1`
-    unsigned long long int prev =
-        atomicCAS((unsigned long long int *)(buffer + 1), old_c, old_c + 1);
-    if (prev == old_c) {
-      *idx = old_c;
+    // set consumed from `oldConsumed` to `oldConsumed+1`
+    unsigned long long int prev = atomicCAS(
+        (unsigned long long int *)(buffer + 1), oldConsumed, oldConsumed + 1);
+    if (prev == oldConsumed) {
+      *idx = oldConsumed;
       break;
     }
   }
@@ -67,24 +67,20 @@ flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
                    uint64_t nthreads, uint64_t datatype, uint64_t redOp) {
   // to be implemented by vendors
   int tid = threadIdx.x;
-  float *fst_ptr = (float *)fst;
-  float *snd_ptr = (float *)snd;
-  float *out_ptr = (float *)out;
+  float *fstPtr = (float *)fst;
+  float *sndPtr = (float *)snd;
+  float *outPtr = (float *)out;
   for (int i = tid; i < count; i += nthreads) {
-    out_ptr[i] = fst_ptr[i] + snd_ptr[i];
+    outPtr[i] = fstPtr[i] + sndPtr[i];
   }
 }
 
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
   volatile uint64_t *vBuf = (volatile uint64_t *)fifoBuffer;
-  int empty_iter = 0; // backoff counter
+  int emptyIter = 0; // backoff counter
 
   while (true) {
-    // (1) terminate condition
-    // if (__ldg(static_cast<const uint64_t *>(fifoBuffer) + 3) == 1)
-    //   break;
-
-    // (2) dequeue
+    // (1) dequeue
     int tid = threadIdx.x;
     int myIdx = -1;
     int c = -1;
@@ -99,17 +95,17 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     p = __shfl_sync(FULL_MASK, p, 0);
     term = __shfl_sync(FULL_MASK, term, 0);
 
-    // (3) backoff if queue empty
+    // (2) backoff if queue empty
     if (c >= p) {
       // check terminate
       if (term == 1)
         break;
-      empty_iter++;
-      spinBackoff(empty_iter);
+      emptyIter++;
+      spinBackoff(emptyIter);
       continue;
     }
 
-    // (4) dequeue task (lane 0 in a warp)
+    // (3) dequeue task (lane 0 in a warp)
     if (tid == 0) {
       dequeue(vBuf, &myIdx);
     }
@@ -119,13 +115,13 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       if (term == 1)
         break;
       // backoff if no task is performed
-      empty_iter++;
-      spinBackoff(empty_iter);
+      emptyIter++;
+      spinBackoff(emptyIter);
       continue;
     }
 
-    // (5) perform reduce task
-    empty_iter = 0;
+    // (4) perform reduce task
+    emptyIter = 0;
     uint64_t fst;
     uint64_t snd;
     uint64_t out;
@@ -135,7 +131,6 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     uint64_t redop;
     int slot = myIdx & (*vBuf - 1);
     if (tid == 0) {
-      // printf("block %d get work idx %d, slot %d\n", blockIdx.x, myIdx, slot);
       flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
       fst = t->getInput1();
       snd = t->getInput2();
@@ -156,13 +151,12 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     __syncthreads();
     FLAGCX_DEVICE_THREAD_FENCE();
 
-    // (6) set completion flag
+    // (5) set completion flag
     if (tid == 0) {
       flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
       t->setComplete();
     }
   }
-  // FLAGCX_DEVICE_THREAD_FENCE();
 }
 
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,

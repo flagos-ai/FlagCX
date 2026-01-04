@@ -26,20 +26,20 @@ flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {
-  uint64_t curr_val = __atomic_load_n(&this->value[3], __ATOMIC_ACQUIRE);
-  return curr_val >> flagcxReduceTriggerOffState &
+  uint64_t currVal = __atomic_load_n(&this->value[3], __ATOMIC_ACQUIRE);
+  return currVal >> flagcxReduceTriggerOffState &
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
 
 FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setState(int state) {
-  uint64_t curr_val = __atomic_load_n(&this->value[3], __ATOMIC_ACQUIRE);
-  curr_val &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
-                << flagcxReduceTriggerOffState);
-  curr_val |= (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
-              << flagcxReduceTriggerOffState;
-  __atomic_store_n(&this->value[3], curr_val, __ATOMIC_RELEASE);
+  uint64_t currVal = __atomic_load_n(&this->value[3], __ATOMIC_ACQUIRE);
+  currVal &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
+               << flagcxReduceTriggerOffState);
+  currVal |= (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+             << flagcxReduceTriggerOffState;
+  __atomic_store_n(&this->value[3], currVal, __ATOMIC_RELEASE);
   TRACE(FLAGCX_KERNEL, "setState called, new state=%llu",
-        curr_val >> flagcxReduceTriggerOffState &
+        currVal >> flagcxReduceTriggerOffState &
             flagcxTriggerMask(flagcxReduceTriggerBitsState));
 }
 

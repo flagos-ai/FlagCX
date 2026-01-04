@@ -13,7 +13,7 @@
 FLAGCX_PARAM(P2pDisable, "P2P_DISABLE", 0);
 
 static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
-  // force use network transport for unirunner allreduce
+  // force use net transport for unirunner allreduce
   if (flagcxParamP2pDisable()) {
     return false;
   }
