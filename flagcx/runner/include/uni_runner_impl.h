@@ -19,7 +19,8 @@
 // DAG node types
 typedef enum {
   uniRunnerDagNodeTypeP2p = 0,
-  uniRunnerDagNodeTypeRed = 1
+  uniRunnerDagNodeTypeRed = 1,
+  uniRunnerDagNodeTypeCpy = 2
 } uniRunnerDagNodeType;
 
 // Single P2P operation data
@@ -37,7 +38,7 @@ struct uniRunnerP2pNodeData {
   struct uniRunnerP2pOpData *ops; // Array of P2P operations
   int numOps;                     // Number of operations
 
-  // flagcxEvent_t event; // Event for completion tracking
+  // Event for completion tracking
   int eventIdx; // Index of the event in the pool
 };
 
@@ -56,6 +57,17 @@ struct uniRunnerRedNodeData {
   int triggerIdx; // Trigger index in FIFO
 };
 
+// Copy node data (operation-specific fields only)
+struct uniRunnerCpyNodeData {
+  // Operation information for local memcpy
+  void *src;
+  void *dst;
+  size_t count;
+  flagcxDataType_t datatype;
+
+  int eventIdx;
+};
+
 // Unified DAG node with common DAG structure fields
 struct uniRunnerDagNode {
   uniRunnerDagNodeType nodeType; // Discriminator for union
@@ -70,6 +82,7 @@ struct uniRunnerDagNode {
   union {
     struct uniRunnerP2pNodeData p2p;
     struct uniRunnerRedNodeData red;
+    struct uniRunnerCpyNodeData cpy;
   } nodeData;
 };
 
@@ -94,6 +107,7 @@ typedef struct {
   flagcxFifo_t fifo;
   flagcxStream_t comm_stream;
   flagcxStream_t red_stream;
+  flagcxStream_t cpy_stream;
 
   // new: DAG and scheduling queues
   struct uniRunnerDagNode *dagNodes; // Array of all DAG nodes
