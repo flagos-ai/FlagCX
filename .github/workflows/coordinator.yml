@@ -1,0 +1,33 @@
+name: Test Coordinator
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ubuntu-native-Rocm:
+    uses: ./.github/workflows/test_ubuntuNativeContainerRCCL.yml
+  ubuntu-native-Ascend:
+    uses: ./.github/workflows/test_ubuntuNativeContainerAscend.yml
+  ubuntu-native-CNCL:
+    uses: ./.github/workflows/test_ubuntuNativeContainerCNCL.yml
+  ubuntu-native-metax:
+    uses: ./.github/workflows/test_ubuntuNativeContainerMETAX.yml
+  ubuntu-native-test:
+    uses: ./.github/workflows/test_ubuntuNativeContainer.yml
+  
+#  unit-test:
+#    needs: ubuntu-native-test
+#    uses: ./.github/workflows/unit-test.yml
+    
+#  torch-api-test:
+#    needs: ubuntu-native-test
+#    uses: ./.github/workflows/torch-api-test.yml
+    
+#  container-test:
+#    needs: ubuntu-native-test
+#    uses: ./.github/workflows/test.yml
