@@ -1068,7 +1068,9 @@ void *flagcxProxyKernelService(void *args) {
       break;
     dequeue(fifo->buffer, ptr);
     if ((ptr->getType() == flagcxDevicePrimSend ||
-         ptr->getType() == flagcxDevicePrimRecv) &&
+         ptr->getType() == flagcxDevicePrimRecv ||
+         ptr->getType() == flagcxDevicePrimPut ||
+         ptr->getType() == flagcxDevicePrimSignal) &&
         ptr->getAddr() == 0) {
       sched_yield();
       continue;
@@ -1118,6 +1120,36 @@ void *flagcxProxyKernelService(void *args) {
           groupCount--;
         }
         break;
+      case flagcxDevicePrimPut: {
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimPut called by proxyKernelService.",
+              comm->rank);
+        if (globalOneSideHandles == NULL) {
+          res = flagcxNotSupported;
+          break;
+        }
+        int peerRank = (int)ptr->getPeerRank();
+        size_t srcOffset = (size_t)ptr->getSrcOffset();
+        size_t dstOffset = (size_t)ptr->getDstOffset();
+        size_t size =
+            ptr->getCount() *
+            getFlagcxDataTypeSize((flagcxDataType_t)ptr->getDatatype());
+        res = flagcxHeteroPut(comm, peerRank, srcOffset, dstOffset, size);
+        break;
+      }
+      case flagcxDevicePrimSignal: {
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimSignal called by proxyKernelService.",
+              comm->rank);
+        if (globalOneSideHandles == NULL) {
+          res = flagcxNotSupported;
+          break;
+        }
+        int peerRank = (int)ptr->getPeerRank();
+        size_t dstOffset = (size_t)ptr->getDstOffset();
+        res = flagcxHeteroPutSignal(comm, peerRank, dstOffset);
+        break;
+      }
       case flagcxDevicePrimWait:
         TRACE(FLAGCX_P2P,
               "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
