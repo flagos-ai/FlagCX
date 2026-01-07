@@ -19,6 +19,7 @@ on:
 jobs:
   build-matrix:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - job_name: build-nvidia-image
