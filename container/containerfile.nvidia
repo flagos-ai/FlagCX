@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # 安装系统依赖
 RUN apt-get update -y && \
-    apt-get install -y \
+    apt-get install -y --allow-change-held-packages \
     python3 \
     python3-pip \
     python3-venv \
