@@ -35,7 +35,7 @@ jobs:
             containerfile: 'containerfile.metax'
             tag: 'flagcx-metax'
             label: 'latest'
-            runson: 'self-hosted, h20'
+            runson: '[self-hosted, h20]'
     
     name: ${{ matrix.job_name }}
     uses: ./.github/workflows/imagebuild.yml
