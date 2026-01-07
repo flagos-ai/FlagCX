@@ -37,7 +37,7 @@ jobs:
           #  runson: 'self-hosted'
     
     name: ${{ matrix.job_name }}
-    uses: ./.github/workflows/imagebuilds.yml
+    uses: ./.github/workflows/imagebuild.yml
     with:
       push: ${{ matrix.push }}
       containerfile: ${{ matrix.containerfile }}
