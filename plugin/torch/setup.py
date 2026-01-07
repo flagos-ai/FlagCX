@@ -125,7 +125,7 @@ module = CppExtension(
 
 setup(
     name="flagcx",
-    version="0.7.0",
+    version="0.8.0",
     ext_modules=[module],
     cmdclass={'build_ext': BuildExtension},
     packages=find_packages(),
