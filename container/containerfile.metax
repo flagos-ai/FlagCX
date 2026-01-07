@@ -1,10 +1,10 @@
-FROM nvcr.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
+From cr.metax-tech.com/public-library/maca-c500:2.23.0.5-ubuntu22.04-x86_64
 # 设置非交互式环境变量，避免 apt-get 安装时出现交互提示
 ENV DEBIAN_FRONTEND=noninteractive
 
 # 安装系统依赖
 RUN apt-get update -y && \
-    apt-get install -y --allow-change-held-packages \
+    apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
@@ -16,9 +16,9 @@ RUN apt-get update -y && \
     build-essential \
     cmake
 
-RUN apt-get install -y --allow-change-held-packages \
-    libnccl2 \
-    libnccl-dev
+#RUN apt-get install -y --allow-change-held-packages \
+#    libnccl2 \
+#    libnccl-dev
 
 # 设置工作目录
 WORKDIR /workspace
@@ -31,4 +31,4 @@ COPY . /workspace/FlagCX
 WORKDIR /workspace/FlagCX
 
 # 设置默认命令
-RUN export CCL_HOME=/path/to/lib && make USE_NVIDIA=1
+RUN export CCL_HOME=/path/to/lib && make USE_METAX=1
