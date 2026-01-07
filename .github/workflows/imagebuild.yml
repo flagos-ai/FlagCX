@@ -1,0 +1,62 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: 'push image or not'
+        type: boolean
+        default: false
+      containerfile:
+        description: 'Dockerfile path'
+        type: string
+        default: 'Dockerfile'
+      tag:
+        description: 'image name'
+        type: string
+        required: true
+      label:
+        description: 'image label'
+        type: string
+        default: ''
+      runson:
+        description: 'runner'
+        type: string
+        default: 'ubuntu-latest'
+    secrets:
+      DOCKER_TOKEN:
+        description: 'Docker Registry Token'
+        required: true
+      REGISTRY_USERNAME:
+        description: 'Docker Registry 用户名'
+        required: true
+
+env:
+  REGISTRY: your-registry.com  # tbd
+  IMAGE_PREFIX: your-project   # tbd
+
+jobs:
+  build-image:
+    runs-on: ${{ inputs.runson }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        if: ${{ inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ inputs.push }}
+          file: container/${{ inputs.containerfile }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ inputs.tag }}:latest
+          labels: ${{ inputs.label }}

@@ -1,0 +1,32 @@
+FROM nvcr.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
+# 设置非交互式环境变量，避免 apt-get 安装时出现交互提示
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 安装系统依赖
+RUN apt-get update -y && \
+    apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-venv \
+    git \
+    autotools-dev \
+    wget \
+    gcc \
+    g++ \
+    build-essential \
+    cmake \
+    libnccl2 \
+    libnccl-dev
+
+# 设置工作目录
+WORKDIR /workspace
+
+# 将项目代码复制到容器中（假设 Dockerfile 在项目根目录）
+# 注意：如果项目较大，建议使用 .dockerignore 忽略不必要的文件
+COPY . /workspace/FlagCX
+
+# 设置工作目录到项目目录
+WORKDIR /workspace/FlagCX
+
+# 设置默认命令
+RUN export CCL_HOME=/path/to/lib && make USE_NVIDIA=1

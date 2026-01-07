@@ -1,0 +1,49 @@
+name: Docker Image Build Orchestrator
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      push_images:
+        description: 'push image or not'
+        type: boolean
+        default: false
+
+jobs:
+  build-matrix:
+    strategy:
+      matrix:
+        include:
+          - job_name: build-nvidia-image
+            push: false
+            #${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
+            containerfile: 'containerfile.nvidia'
+            tag: 'flagcx-nvidia'
+            label: 'latest'
+            runson: 'ubuntu-latest'
+          
+          #- job_name: build-metax-image
+          #  push: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
+          #  containerfile: 'containerfile.metax'
+          #  tag: 'flagcx-metax'
+          #  label: 'latest'
+          #  runson: 'self-hosted'
+    
+    name: ${{ matrix.job_name }}
+    uses: ./.github/workflows/imagebuilds.yml
+    with:
+      push: ${{ matrix.push }}
+      containerfile: ${{ matrix.containerfile }}
+      tag: ${{ matrix.tag }}
+      label: ${{ matrix.label }}
+      runson: ${{ matrix.runson }}
+    secrets:
+      DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN }}
+      REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
