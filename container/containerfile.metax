@@ -14,8 +14,8 @@ RUN apt-get update -y && \
     gcc \
     g++ \
     build-essential \
-    cmake
-
+    cmake \
+    curl
 
 RUN curl -fsSL https://repos.metax-tech.com/public.gpg.key | apt-key add -
 RUN echo "deb [arch=$(dpkg --print-architecture)] https://repos.metax-tech.com/r/maca-sdk-deb/ stable main" | tee /etc/apt/sources.list.d/maca-sdk-deb.list
