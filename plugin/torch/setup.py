@@ -75,7 +75,9 @@ elif adaptor_flag == "-DUSE_METAX_ADAPTOR":
     library_dirs += ["/opt/maca/lib64"]
     libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
     torch_version = vparse(torch.__version__.split("+")[0])
+    import torch
     if torch_version >= Version("2.5.0"):
+        print("torch version >= 2.5.0, set TORCH_VER_GE_250 flag")
         torch_flag = "-DTORCH_VER_GE_250"
 elif adaptor_flag == "-DUSE_MUSA_ADAPTOR":
     import torch_musa
