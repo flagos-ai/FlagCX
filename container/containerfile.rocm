@@ -1,0 +1,44 @@
+FROM ubuntu:22.04
+
+# noninteractive to make apt-get work
+ENV DEBIAN_FRONTEND=noninteractive
+
+# base dependencies
+# todo as python3 3.x specific version as build args later
+RUN apt-get update -y
+RUN apt-get update -y && \
+    apt-get install -y --allow-change-held-packages \
+    python3 \
+    python3-pip \
+    python3-venv \
+    git \
+    autotools-dev \
+    wget \
+    gcc \
+    g++ \
+    build-essential \
+    cmake
+
+# device specific
+RUN wget https://repo.radeon.com/amdgpu-install/7.1.1/ubuntu/jammy/amdgpu-install_7.1.1.70101-1_all.deb
+RUN apt install ./amdgpu-install_7.1.1.70101-1_all.deb -y
+RUN apt update -y
+RUN apt install python3-setuptools python3-wheel -y
+RUN apt install rocm -y
+
+RUN wget https://repo.radeon.com/amdgpu-install/7.1.1/ubuntu/jammy/amdgpu-install_7.1.1.70101-1_all.deb
+RUN apt install ./amdgpu-install_7.1.1.70101-1_all.deb -y
+RUN apt update -y
+#RUN apt install "linux-headers-$(uname -r)" "linux-modules-extra-$(uname -r)" -y
+RUN apt install amdgpu-dkms -y
+# clean up
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# workdir
+WORKDIR /workspace
+COPY . /workspace/FlagCX
+WORKDIR /workspace/FlagCX
+
+# build
+RUN make USE_AMD=1

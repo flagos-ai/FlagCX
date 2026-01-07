@@ -1,10 +1,12 @@
 FROM nvcr.io/nvidia/cuda:12.4.1-devel-ubuntu22.04
-# 设置非交互式环境变量，避免 apt-get 安装时出现交互提示
+
+# noninteractive to make apt-get work
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 安装系统依赖
+# base dependencies
+# todo as python3 3.x specific version as build args later
 RUN apt-get update -y && \
-    apt-get install -y \
+    apt-get install -y --allow-change-held-packages \
     python3 \
     python3-pip \
     python3-venv \
@@ -14,19 +16,21 @@ RUN apt-get update -y && \
     gcc \
     g++ \
     build-essential \
-    cmake \
+    cmake
+
+# device specific
+RUN apt-get install -y --allow-change-held-packages \
     libnccl2 \
     libnccl-dev
 
-# 设置工作目录
+# clean up
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# workdir
 WORKDIR /workspace
-
-# 将项目代码复制到容器中（假设 Dockerfile 在项目根目录）
-# 注意：如果项目较大，建议使用 .dockerignore 忽略不必要的文件
 COPY . /workspace/FlagCX
-
-# 设置工作目录到项目目录
 WORKDIR /workspace/FlagCX
 
-# 设置默认命令
+# build
 RUN export CCL_HOME=/path/to/lib && make USE_NVIDIA=1
