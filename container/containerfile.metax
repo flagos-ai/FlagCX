@@ -16,6 +16,10 @@ RUN apt-get update -y && \
     build-essential \
     cmake
 
+
+RUN curl -fsSL https://repos.metax-tech.com/public.gpg.key | apt-key add -
+RUN echo "deb [arch=$(dpkg --print-architecture)] https://repos.metax-tech.com/r/maca-sdk-deb/ stable main" | tee /etc/apt/sources.list.d/maca-sdk-deb.list
+RUN apt-get update -y
 RUN apt-get install -y maca_sdk    
 #RUN apt-get install -y --allow-change-held-packages \
 #    libnccl2 \
