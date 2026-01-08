@@ -105,9 +105,9 @@ typedef struct {
 typedef struct {
   pthread_t thread;
   flagcxFifo_t fifo;
-  flagcxStream_t comm_stream;
-  flagcxStream_t red_stream;
-  flagcxStream_t cpy_stream;
+  flagcxStream_t commStream;
+  flagcxStream_t redStream;
+  flagcxStream_t cpyStream;
 
   // new: DAG and scheduling queues
   struct uniRunnerDagNode *dagNodes; // Array of all DAG nodes
