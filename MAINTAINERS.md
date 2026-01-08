@@ -6,5 +6,3 @@
 | Caozhou1995      | caozhou@radi.ac.cn    |
 | aoyulong         | aoyulong@outlook.com  |
 | mikethegoblin    | mikegu0508@gmail.com  |
-| yanminjia        | jiayanmin@gmail.com  |
-| yzhang35         | yzhang35@gmail.com  |
