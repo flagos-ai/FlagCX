@@ -42,7 +42,6 @@ struct flagcxComm {
   flagcxInnerComm_t homo_comm;
   flagcxHeteroComm_t hetero_comm;
   flagcxInnerComm_t homoInterComm;
-  // experimental for multi-nic support
   int homoInterRootRank;
   int homoInterMyRank;
   int homoInterRanks;
@@ -59,6 +58,10 @@ struct flagcxComm {
   flagcxUniqueId *uniqueIdData;
   bool isTuningWithFlagscale; // whether tuning with flagscale
   bool isTunningComm;         // whether tuning the communicator
+  struct C2cSchedulePair {
+    int sendCluster;
+    int recvCluster;
+  } * c2cSchedule; // C2C schedule for pairing send/recv operations
 };
 
 #endif // end include guard

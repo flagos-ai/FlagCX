@@ -410,6 +410,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->homoInterMyRank = -1;
   (*comm)->homoInterRanks = -1;
   (*comm)->homoInterComm = NULL;
+  (*comm)->c2cSchedule = NULL;
 
   struct bootstrapState *state = NULL;
   FLAGCXCHECK(flagcxCalloc(&state, 1));
@@ -499,6 +500,34 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
   }
   (*comm)->homo_inter_rank = clusterInterRanks[clusterIdData[rank]] - start;
+
+  // Build c2cSchedule
+  FLAGCXCHECK(flagcxCalloc(&(*comm)->c2cSchedule, (*comm)->nclusters));
+  int nLocals = (*comm)->nclusters;
+  int local = (*comm)->cluster_ids[rank];
+
+  int nLocalsPow2 = pow2Up(nLocals);
+  uint32_t localRound = 0;
+  uint32_t localDelta = 0;
+  int round = 0;
+  do {
+    if ((int)localDelta < nLocals) { // Filter nonsensical local deltas
+      int sendLocal = (local + localDelta) % nLocals;
+      int recvLocal = (local - localDelta + nLocals) % nLocals;
+      (*comm)->c2cSchedule[round].sendCluster = sendLocal;
+      (*comm)->c2cSchedule[round].recvCluster = recvLocal;
+      round += 1;
+    }
+    localRound += 1;
+    // Quadratic update
+    localDelta = (localDelta + localRound) & (nLocalsPow2 - 1);
+  } while (localRound != (uint32_t)nLocalsPow2);
+  for (int i = 0; i < round; ++i) {
+    INFO(FLAGCX_INIT,
+         "cluster %d c2cSchedule[%d] sendCluster %d recvCluster %d", local, i,
+         (*comm)->c2cSchedule[i].sendCluster,
+         (*comm)->c2cSchedule[i].recvCluster);
+  }
 
   // Update comm has_single_rank_homo_comm
   for (int i = 0; i < (*comm)->nclusters; ++i) {
@@ -723,6 +752,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->cluster_ids);
   free(comm->cluster_sizes);
   free(comm->globalrank2homorank);
+  free(comm->c2cSchedule);
 
   // Destroy bootstrap state and net
   bootstrapClose(comm->bootstrap);

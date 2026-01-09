@@ -729,6 +729,14 @@ flagcxC2cPlanner::flagcxC2cPlanner(size_t sendCount, size_t recvCount,
         nPipePostSteps_ = 1;
         nSeqPostSteps_ = 0;
       }
+    } else if (commOp_ == flagcxCommOpAlltoAll ||
+               commOp_ == flagcxCommOpAlltoAllv) {
+      algorithm_ = flagcxAlgoPipeline;
+      nSeqPreSteps_ = 0;
+      nPipePreSteps_ = 1;
+      nSeqInterSteps_ = 0;
+      nPipePostSteps_ = 0;
+      nSeqPostSteps_ = 0;
     }
   }
   // initialize an empty func queue for each step
@@ -1613,12 +1621,12 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpAlltoAll) {
         preHomoFuncSteps_[0].emplace_back(
-            -1, 0, recvType, clusterOffset_ * sendCount_,
+            -1, sendType, recvType, clusterOffset_ * sendCount_,
             clusterOffset_ * recvCount_, totalCount_,
             0, // sendCount_ = recvCount_ = totalCount_
             preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpAlltoAllv) {
-        preHomoFuncSteps_[0].emplace_back(-1, 0, recvType, 0, 0, 0, 0,
+        preHomoFuncSteps_[0].emplace_back(-1, sendType, recvType, 0, 0, 0, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommNoOp) {
         preHomoFuncSteps_[0].emplace_back(-1, 0, recvType, 0, 0, totalCount_, 0,
