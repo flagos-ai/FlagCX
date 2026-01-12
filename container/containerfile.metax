@@ -17,7 +17,9 @@ RUN apt-get update -y && \
     g++ \
     build-essential \
     cmake \
-    curl
+    curl && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # device specific
 RUN curl -fsSL https://repos.metax-tech.com/public.gpg.key | apt-key add -

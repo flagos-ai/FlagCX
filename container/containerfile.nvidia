@@ -16,7 +16,9 @@ RUN apt-get update -y && \
     gcc \
     g++ \
     build-essential \
-    cmake
+    cmake && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # device specific with clean up
 RUN apt-get install -y --allow-change-held-packages \
