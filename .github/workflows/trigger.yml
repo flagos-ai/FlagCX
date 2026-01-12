@@ -29,21 +29,12 @@ jobs:
             label: 'latest'
             runson: 'ubuntu-latest'
           
-          # todo, for now metax base image can't official access without a token.
+          # for now metax base image can't official access without a token.
           # use h20 instance just for build image.
           - job_name: build-metax-image
             push: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
             containerfile: 'containerfile.metax'
             tag: 'flagcx-metax'
-            label: 'latest'
-            runson: 'h20'
-
-          # todo, for now, rocm image took size over GHA default image disk space.
-          # use h20 instance just for build image.
-          - job_name: build-rocm-image
-            push: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
-            containerfile: 'containerfile.rocm'
-            tag: 'flagcx-rocm'
             label: 'latest'
             runson: 'h20'
     
