@@ -31,4 +31,4 @@ COPY . /workspace/FlagCX
 WORKDIR /workspace/FlagCX
 
 # build
-RUN export CCL_HOME=/path/to/lib && make USE_NVIDIA=1
+RUN make USE_NVIDIA=1

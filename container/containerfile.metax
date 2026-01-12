@@ -33,5 +33,4 @@ COPY . /workspace/FlagCX
 WORKDIR /workspace/FlagCX
 
 # build
-# TODO here CCL_HOME is required from build document
-RUN export CCL_HOME=/path/to/lib && make USE_METAX=1
+RUN make USE_METAX=1
