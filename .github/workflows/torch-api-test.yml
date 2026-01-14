@@ -10,7 +10,7 @@ on:
 
 jobs:
   torch-api-test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, cx-build]
     container:
       image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
       #localhost:5000/flagscale:cuda12.4.1-cudnn9.5.0-python3.12-torch2.6.0-time2505241715

@@ -10,7 +10,7 @@ on:
 
 jobs:
   test-in-container:
-    runs-on: self-hosted
+    runs-on: [self-hosted, cx-build]
     container:
       image:  localhost:5000/flagscale:cuda12.4.1-cudnn9.5.0-python3.12-torch2.6.0-time2505241715
       options: --gpus all --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
