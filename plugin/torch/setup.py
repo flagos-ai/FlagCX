@@ -6,33 +6,45 @@ os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 from setuptools import setup, find_packages
 from packaging.version import Version, parse as vparse
 
+# Support both --adaptor argument and FLAGCX_ADAPTOR environment variable
 adaptor_flag = "-DUSE_NVIDIA_ADAPTOR"
 torch_flag = "-DTORCH_VER_LT_250"
+
+# Get adaptor from environment variable first
+adaptor_name = os.environ.get("FLAGCX_ADAPTOR", None)
+
+# Then check command line arguments (overrides env var)
 if '--adaptor' in sys.argv:
     arg_index = sys.argv.index('--adaptor')
     sys.argv.remove("--adaptor")
     if arg_index < len(sys.argv):
-        assert sys.argv[arg_index] in ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd"], f"Invalid adaptor: {adaptor_flag}"
-        print(f"Using {sys.argv[arg_index]} adaptor")
-        if sys.argv[arg_index] == "iluvatar_corex":
-            adaptor_flag = "-DUSE_ILUVATAR_COREX_ADAPTOR"
-        elif sys.argv[arg_index] == "cambricon":
-            adaptor_flag = "-DUSE_CAMBRICON_ADAPTOR"
-        elif sys.argv[arg_index] == "metax":
-            adaptor_flag = "-DUSE_METAX_ADAPTOR"
-        elif sys.argv[arg_index] == "musa":
-            adaptor_flag = "-DUSE_MUSA_ADAPTOR"
-        elif sys.argv[arg_index] == "du":
-            adaptor_flag = "-DUSE_DU_ADAPTOR"
-        elif sys.argv[arg_index] == "klx":
-            adaptor_flag = "-DUSE_KUNLUNXIN_ADAPTOR"
-        elif sys.argv[arg_index] == "ascend":
-            adaptor_flag = "-DUSE_ASCEND_ADAPTOR"
-        elif sys.argv[arg_index] == "amd":
-            adaptor_flag = "-DUSE_AMD_ADAPTOR"
+        adaptor_name = sys.argv[arg_index]
+        sys.argv.remove(adaptor_name)
+        # Set environment variable so subprocess can inherit it
+        os.environ["FLAGCX_ADAPTOR"] = adaptor_name
     else:
-        print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
-    sys.argv.remove(sys.argv[arg_index])
+        print("No adaptor provided after '--adaptor'.")
+
+# Set adaptor flag based on adaptor_name
+valid_adaptors = ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd", "tops"]
+if adaptor_name:
+    assert adaptor_name in valid_adaptors, f"Invalid adaptor: {adaptor_name}. Valid options: {valid_adaptors}"
+    print(f"Using {adaptor_name} adaptor")
+    adaptor_map = {
+        "iluvatar_corex": "-DUSE_ILUVATAR_COREX_ADAPTOR",
+        "cambricon": "-DUSE_CAMBRICON_ADAPTOR",
+        "metax": "-DUSE_METAX_ADAPTOR",
+        "musa": "-DUSE_MUSA_ADAPTOR",
+        "du": "-DUSE_DU_ADAPTOR",
+        "klx": "-DUSE_KUNLUNXIN_ADAPTOR",
+        "ascend": "-DUSE_ASCEND_ADAPTOR",
+        "amd": "-DUSE_AMD_ADAPTOR",
+        "tops": "-DUSE_TOPS_ADAPTOR",
+        "nvidia": "-DUSE_NVIDIA_ADAPTOR",
+    }
+    adaptor_flag = adaptor_map.get(adaptor_name, "-DUSE_NVIDIA_ADAPTOR")
+else:
+    print("Using default nvidia adaptor")
 
 sources = ["flagcx/src/backend_flagcx.cpp", "flagcx/src/utils_flagcx.cpp"]
 include_dirs = [
@@ -104,10 +116,20 @@ elif adaptor_flag == "-DUSE_AMD_ADAPTOR":
     include_dirs += ["/opt/rocm/include"]
     library_dirs += ["/opt/rocm/lib"]
     libs += ["hiprtc", "c10_hip", "torch_hip"]
+elif adaptor_flag == "-DUSE_TOPS_ADAPTOR":
+    import torch_gcu
+    pytorch_gcu_install_path = os.path.dirname(os.path.abspath(torch_gcu.__file__))
+    pytorch_library_path = os.path.join(pytorch_gcu_install_path, "lib")
+    include_dirs += ["/opt/tops/include", os.path.join(pytorch_gcu_install_path, "include")]
+    library_dirs += ["/opt/tops/lib", pytorch_library_path]
+    libs += ["topsrt", "torch_gcu"]
 
 if adaptor_flag == "-DUSE_MUSA_ADAPTOR":
     from torch_musa.utils.musa_extension import MUSAExtension as CppExtension
     from torch_musa.utils.musa_extension import BuildExtension
+elif adaptor_flag == "-DUSE_TOPS_ADAPTOR":
+    from tops_extension import TopsBuildExtension as BuildExtension
+    from tops_extension.torch import TopsTorchExtension as CppExtension
 else:
     from torch.utils.cpp_extension import CppExtension, BuildExtension
 

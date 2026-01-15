@@ -1,5 +1,9 @@
 #pragma once
 
+// Disable MPI C++ bindings (we only use C API)
+#define OMPI_SKIP_MPICXX 1
+#define MPICH_SKIP_MPICXX 1
+
 #include "mpi.h"
 #include <gtest/gtest.h>
 #include <memory>
