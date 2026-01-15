@@ -37,7 +37,7 @@ all: $(BINDIR)/$(TARGET)
 $(BINDIR)/$(TARGET): $(BINOBJ)
 	@mkdir -p `dirname $@`
 	@echo "Linking   $@"
-	@g++ $(BINOBJ) -o $@ -L../../build/lib -L$(MPI_LIB) -L/usr/local/lib -L$(GTEST_LIB) -Wl,--no-as-needed -Wl,-rpath,../../build/lib -lflagcx -lmpi -lgtest -lgtest_main -g
+	@g++ $(BINOBJ) -o $@ -L../../build/lib -L$(MPI_LIB) -L/usr/local/lib -L$(GTEST_LIB) -Wl,--no-as-needed -Wl,-rpath,../../build/lib -lflagcx -lmpi -lmpi_cxx -lgtest -lgtest_main -g
 
 $(OBJDIR)/%.o: %.cpp
 	@mkdir -p `dirname $@`
