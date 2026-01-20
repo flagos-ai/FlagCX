@@ -28,7 +28,7 @@ jobs:
             tag: 'flagcx-nvidia'
             label: 'latest'
             runson: 'h20'
-            build-args: 
+            build-args: |
               BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-nvidia
               BASE_IMAGE_VERSION=latest
               VENDOR=USE_NVIDIA
@@ -41,7 +41,7 @@ jobs:
             tag: 'flagcx-metax'
             label: 'latest'
             runson: 'h20'
-            build-args: 
+            build-args: |
               BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-metax
               BASE_IMAGE_VERSION=latest
               VENDOR=USE_METAX
