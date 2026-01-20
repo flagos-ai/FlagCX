@@ -1,0 +1,68 @@
+FROM ubuntu:22.04 as builder
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install basic build tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Add MetaX APT repository (public, no authentication needed)
+RUN curl -fsSL https://repos.metax-tech.com/public.gpg.key | apt-key add - && \
+    echo "deb [arch=$(dpkg --print-architecture)] https://repos.metax-tech.com/r/maca-sdk-deb/ stable main" | \
+    tee /etc/apt/sources.list.d/maca-sdk-deb.list
+
+# Install MetaX SDK
+RUN apt-get update && apt-get install -y \
+    maca_sdk \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy FlagCX source
+COPY . /workspace/FlagCX
+
+WORKDIR /workspace/FlagCX
+
+# Set backend to build
+ENV FLAGCX_BUILD_BACKEND=metax
+
+# Install Debian packaging tools
+RUN apt-get update && apt-get install -y \
+    debhelper \
+    devscripts \
+    dpkg-dev \
+    fakeroot \
+    lsb-release \
+    chrpath \
+    patchelf \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Initialize git submodules (needed for nlohmann/json and googletest)
+RUN git submodule update --init --recursive --depth 1 || true
+
+# Copy packaging/debian to debian/ for dpkg-buildpackage
+RUN if [ -d "packaging/debian" ]; then \
+        cp -r packaging/debian debian; \
+    fi
+
+# Build the Debian packages
+RUN DEB_BUILD_PROFILES="pkg.flagcx.metax-only" dpkg-buildpackage -us -uc -b -Pnocheck,pkg.flagcx.metax-only || \
+    { echo "Build failed, checking logs..."; find /workspace -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true; exit 1; }
+
+# Collect the built .deb files
+RUN mkdir -p /output && \
+    (cp /workspace/*metax*.deb /output/ 2>/dev/null || true) && \
+    ls -la /output/
+
+# Output stage - collect the .deb files
+FROM alpine:latest as output
+COPY --from=builder /output/*.deb /output/

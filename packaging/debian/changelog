@@ -1,0 +1,9 @@
+flagcx (0.8.0-1) unstable; urgency=medium
+
+  * New upstream release 0.8.0
+  * Support for MetaX and NVIDIA hardware backends
+  * Split packages for runtime and development files
+  * Improved build process with APT-based MetaX SDK
+
+ -- Cheng Li <shiptux@gmail.com>  Sat, 17 Jan 2026 17:00:00 +0800
+

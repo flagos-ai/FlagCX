@@ -1,0 +1,128 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+
+# Allow building only specific backend via environment variable
+# Usage: FLAGCX_BUILD_BACKEND=metax dpkg-buildpackage ...
+# Valid values: metax, nvidia, all (default)
+FLAGCX_BUILD_BACKEND ?= all
+
+# Build directories for different backends
+BUILD_DIR_METAX = $(CURDIR)/build-metax
+BUILD_DIR_NVIDIA = $(CURDIR)/build-nvidia
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf $(BUILD_DIR_METAX) $(BUILD_DIR_NVIDIA)
+	$(MAKE) clean || true
+
+override_dh_auto_build:
+ifeq ($(FLAGCX_BUILD_BACKEND),nvidia)
+	@echo "Building NVIDIA variant only"
+	# Build NVIDIA variant
+	mkdir -p $(BUILD_DIR_NVIDIA)
+	$(MAKE) USE_NVIDIA=1 PREFIX=/usr
+	# Copy built files to nvidia build dir
+	mkdir -p $(BUILD_DIR_NVIDIA)/lib $(BUILD_DIR_NVIDIA)/include
+	cp -a build/lib/libflagcx.so* $(BUILD_DIR_NVIDIA)/lib/ || cp -a build/libflagcx.so* $(BUILD_DIR_NVIDIA)/lib/
+	cp -r flagcx/include $(BUILD_DIR_NVIDIA)/include/flagcx
+else ifeq ($(FLAGCX_BUILD_BACKEND),metax)
+	@echo "Building MetaX variant only"
+	# Build MetaX variant
+	mkdir -p $(BUILD_DIR_METAX)
+	$(MAKE) USE_METAX=1 PREFIX=/usr
+	# Copy built files to metax build dir
+	mkdir -p $(BUILD_DIR_METAX)/lib $(BUILD_DIR_METAX)/include
+	cp -a build/lib/libflagcx.so* $(BUILD_DIR_METAX)/lib/ || cp -a build/libflagcx.so* $(BUILD_DIR_METAX)/lib/
+	cp -r flagcx/include $(BUILD_DIR_METAX)/include/flagcx
+else
+	@echo "Building both variants"
+	# Build MetaX variant
+	mkdir -p $(BUILD_DIR_METAX)
+	$(MAKE) USE_METAX=1 PREFIX=/usr
+	# Copy built files to metax build dir
+	mkdir -p $(BUILD_DIR_METAX)/lib $(BUILD_DIR_METAX)/include
+	cp -a build/lib/libflagcx.so* $(BUILD_DIR_METAX)/lib/ || cp -a build/libflagcx.so* $(BUILD_DIR_METAX)/lib/
+	cp -r flagcx/include $(BUILD_DIR_METAX)/include/flagcx
+
+	# Clean for next build
+	$(MAKE) clean
+
+	# Build NVIDIA variant
+	mkdir -p $(BUILD_DIR_NVIDIA)
+	$(MAKE) USE_NVIDIA=1 PREFIX=/usr
+	# Copy built files to nvidia build dir
+	mkdir -p $(BUILD_DIR_NVIDIA)/lib $(BUILD_DIR_NVIDIA)/include
+	cp -a build/lib/libflagcx.so* $(BUILD_DIR_NVIDIA)/lib/ || cp -a build/libflagcx.so* $(BUILD_DIR_NVIDIA)/lib/
+	cp -r flagcx/include $(BUILD_DIR_NVIDIA)/include/flagcx
+endif
+
+override_dh_auto_install:
+ifeq ($(FLAGCX_BUILD_BACKEND),nvidia)
+	@echo "Installing NVIDIA variant only"
+	# Install NVIDIA variant
+	mkdir -p debian/libflagcx-nvidia/usr/lib
+	mkdir -p debian/libflagcx-nvidia-dev/usr/include/flagcx
+	cp -a $(BUILD_DIR_NVIDIA)/lib/libflagcx.so* debian/libflagcx-nvidia/usr/lib/
+	# Fix SONAME and RPATH
+	cd debian/libflagcx-nvidia/usr/lib && \
+		patchelf --set-soname libflagcx.so.0 libflagcx.so && \
+		patchelf --remove-rpath libflagcx.so && \
+		ln -sf libflagcx.so libflagcx.so.0 && \
+		ln -sf libflagcx.so libflagcx.so.0.1.0
+	cp -r $(BUILD_DIR_NVIDIA)/include/* debian/libflagcx-nvidia-dev/usr/include/flagcx/
+else ifeq ($(FLAGCX_BUILD_BACKEND),metax)
+	@echo "Installing MetaX variant only"
+	# Install MetaX variant
+	mkdir -p debian/libflagcx-metax/usr/lib
+	mkdir -p debian/libflagcx-metax-dev/usr/include/flagcx
+	cp -a $(BUILD_DIR_METAX)/lib/libflagcx.so* debian/libflagcx-metax/usr/lib/
+	# Fix SONAME and RPATH
+	cd debian/libflagcx-metax/usr/lib && \
+		patchelf --set-soname libflagcx.so.0 libflagcx.so && \
+		patchelf --remove-rpath libflagcx.so && \
+		ln -sf libflagcx.so libflagcx.so.0 && \
+		ln -sf libflagcx.so libflagcx.so.0.1.0
+	cp -r $(BUILD_DIR_METAX)/include/* debian/libflagcx-metax-dev/usr/include/flagcx/
+else
+	@echo "Installing both variants"
+	# Install MetaX variant
+	mkdir -p debian/libflagcx-metax/usr/lib
+	mkdir -p debian/libflagcx-metax-dev/usr/include/flagcx
+	cp -a $(BUILD_DIR_METAX)/lib/libflagcx.so* debian/libflagcx-metax/usr/lib/
+	# Fix SONAME and RPATH for MetaX
+	cd debian/libflagcx-metax/usr/lib && \
+		patchelf --set-soname libflagcx.so.0 libflagcx.so && \
+		patchelf --remove-rpath libflagcx.so && \
+		ln -sf libflagcx.so libflagcx.so.0 && \
+		ln -sf libflagcx.so libflagcx.so.0.1.0
+	cp -r $(BUILD_DIR_METAX)/include/* debian/libflagcx-metax-dev/usr/include/flagcx/
+
+	# Install NVIDIA variant
+	mkdir -p debian/libflagcx-nvidia/usr/lib
+	mkdir -p debian/libflagcx-nvidia-dev/usr/include/flagcx
+	cp -a $(BUILD_DIR_NVIDIA)/lib/libflagcx.so* debian/libflagcx-nvidia/usr/lib/
+	# Fix SONAME and RPATH for NVIDIA
+	cd debian/libflagcx-nvidia/usr/lib && \
+		patchelf --set-soname libflagcx.so.0 libflagcx.so && \
+		patchelf --remove-rpath libflagcx.so && \
+		ln -sf libflagcx.so libflagcx.so.0 && \
+		ln -sf libflagcx.so libflagcx.so.0.1.0
+	cp -r $(BUILD_DIR_NVIDIA)/include/* debian/libflagcx-nvidia-dev/usr/include/flagcx/
+endif
+
+override_dh_auto_test:
+	# Skip tests for now
+	@echo "Skipping tests"
+
+override_dh_dwz:
+	# Skip dwz optimization - it fails after patchelf modifications
+	@echo "Skipping dwz debug info optimization"
+
+override_dh_shlibdeps:
+	# Ignore missing CUDA/vendor library dependencies
+	# These are provided by vendor-specific runtime packages (e.g., CUDA runtime, MACA runtime)
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true

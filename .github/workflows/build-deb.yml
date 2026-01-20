@@ -1,0 +1,120 @@
+name: Build Debian Packages
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'packaging/debian/**'
+      - '.github/workflows/build-deb.yml'
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-nvidia:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build NVIDIA packages
+        run: |
+          chmod +x packaging/debian/build-helpers/build-in-container.sh
+          ./packaging/debian/build-helpers/build-in-container.sh nvidia
+
+      - name: Upload NVIDIA packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: flagcx-nvidia-packages
+          path: debian-packages/nvidia/*.deb
+          retention-days: 30
+
+      - name: Run lintian
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lintian
+          lintian debian-packages/nvidia/*.deb || true
+
+  build-metax:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build MetaX packages using public APT repo
+        run: |
+          chmod +x packaging/debian/build-helpers/build-metax-apt.sh
+          ./packaging/debian/build-helpers/build-metax-apt.sh
+
+      - name: Upload MetaX packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: flagcx-metax-packages
+          path: debian-packages/metax/*.deb
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-nvidia, build-metax]
+    runs-on: ubuntu-22.04
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: packages/
+
+      - name: Extract version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          name: FlagCX Debian Packages ${{ steps.get_version.outputs.VERSION }}
+          body: |
+            # FlagCX Debian Packages
+
+            Release version: `${{ steps.get_version.outputs.VERSION }}`
+
+            ## Packages
+
+            ### NVIDIA Backend
+            - `libflagcx-nvidia_*_amd64.deb` - Runtime library
+            - `libflagcx-nvidia-dev_*_amd64.deb` - Development headers
+
+            ### MetaX Backend
+            - `libflagcx-metax_*_amd64.deb` - Runtime library
+            - `libflagcx-metax-dev_*_amd64.deb` - Development headers
+
+            ## Installation
+
+            ```bash
+            # For NVIDIA
+            sudo dpkg -i libflagcx-nvidia_*_amd64.deb libflagcx-nvidia-dev_*_amd64.deb
+
+            # For MetaX
+            sudo dpkg -i libflagcx-metax_*_amd64.deb libflagcx-metax-dev_*_amd64.deb
+            ```
+          files: |
+            packages/**/*.deb
+          draft: false
+          prerelease: false
