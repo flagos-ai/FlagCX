@@ -24,28 +24,37 @@ jobs:
         include:
           - job_name: build-nvidia-image
             push: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
-            containerfile: 'containerfile.nvidia'
+            containerfile: 'containerfile'
             tag: 'flagcx-nvidia'
             label: 'latest'
-            runson: 'ubuntu-latest'
+            runson: 'h20'
+            build-args: 
+              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-nvidia
+              BASE_IMAGE_VERSION=latest
+              VENDOR=USE_NVIDIA
           
           # for now metax base image can't official access without a token.
           # use h20 instance just for build image.
           - job_name: build-metax-image
             push: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
-            containerfile: 'containerfile.metax'
+            containerfile: 'containerfile'
             tag: 'flagcx-metax'
             label: 'latest'
             runson: 'h20'
+            build-args: 
+              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-metax
+              BASE_IMAGE_VERSION=latest
+              VENDOR=USE_METAX
     
-    name: ${{ matrix.job_name }}
-    uses: ./.github/workflows/imagebuild.yml
+    uses: flagos-ai/build-infra/.github/workflows/imagebuild.yml@main
     with:
       push: ${{ matrix.push }}
       containerfile: ${{ matrix.containerfile }}
       tag: ${{ matrix.tag }}
       label: ${{ matrix.label }}
       runson: ${{ matrix.runson }}
+      build-args: ${{ matrix.build-args }}
+      image_prefix: 'flagcx'
     secrets:
       REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
       CONTAINER_REGISTRY: ${{ secrets.CONTAINER_REGISTRY }}
