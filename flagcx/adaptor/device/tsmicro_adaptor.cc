@@ -322,12 +322,15 @@ flagcxResult_t tsmicroAdaptorDmaSupport(bool *dmaBufferSupport) {
   if (dmaBufferSupport == NULL)
     return flagcxInvalidArgument;
 
-  return flagcxNotSupported;
+  *dmaBufferSupport = true;
+  return flagcxSuccess;
 }
 
 flagcxResult_t tsmicroAdaptorMemGetHandleForAddressRange(
     void *handleOut, void *buffer, size_t size, unsigned long long flags) {
-  return flagcxNotSupported;
+  DEVCHECK(txMemGetHandleForAddressRange(
+      handleOut, buffer, size, TX_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags));
+  return flagcxSuccess;
 }
 
 flagcxResult_t tsmicroAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
