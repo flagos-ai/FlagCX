@@ -34,6 +34,10 @@
 #elif USE_AMD_ADAPTOR
 #include <ATen/hip/HIPEvent.h>
 #include <hip/hip_runtime.h>
+#elif USE_TOPS_ADAPTOR
+#include <gcu/gcu_guard.h>
+#include <gcu/gcu_event.h>
+#include <tops/tops_runtime_api.h>
 #endif
 
 namespace c10d {
@@ -288,6 +292,32 @@ public:
 
 private:
   at::cuda::CUDAEvent hipEvent_;
+};
+#elif USE_TOPS_ADAPTOR
+class flagcxTopsEvent : public flagcxEvent {
+public:
+  flagcxTopsEvent() { topsEvent_ = torch_gcu::GCUEvent(); }
+
+  void record(const int deviceId) override {
+    topsEvent_.record(torch_gcu::getCurrentGCUStream(deviceId));
+  }
+
+  void record(const flagcxStream_t &stream, const int deviceId) override {
+    topsEvent_.record(
+        torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId));
+  }
+
+  void block(const int deviceId) override {
+    topsEvent_.block(torch_gcu::getCurrentGCUStream(deviceId));
+  }
+
+  void block(const flagcxStream_t &stream, const int deviceId) override {
+    topsEvent_.block(
+        torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId));
+  }
+
+private:
+  torch_gcu::GCUEvent topsEvent_;
 };
 #endif
 

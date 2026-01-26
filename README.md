@@ -23,27 +23,28 @@ for cross-chip collective communications.
 
 The following table summarizes the currently supported communication backends and their corresponding capabilities.
 
-| Backend       | NCCL        | IXCCL       | CNCL        | MCCL        | XCCL        | DUCCL       | HCCL        | MUSACCL     | RCCL        | TCCL        |
-|:--------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|
-| Mode          | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero |
-| send          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| recv          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| broadcast     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| gather        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ☓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| scatter       | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| reduce        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| allreduce     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| allgather     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| reducescatter | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| alltoall      | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| alltoallv     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
-| group ops     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| Backend       | NCCL        | IXCCL       | CNCL        | ECCL        | MCCL        | XCCL        | DUCCL       | HCCL        | MUSACCL     | RCCL        | TCCL        |
+|:--------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|:------------|
+| Mode          | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero | Homo/Hetero |
+| send          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| recv          | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| broadcast     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| gather        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ☓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| scatter       | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| reduce        | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| allreduce     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| allgather     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| reducescatter | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| alltoall      | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| alltoallv     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
+| group ops     | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         | ✓/☓         | ✓/✓         | ✓/✓         | ✓/✓         |
 
 Note that *Homo* and *Hetero* modes refer to communications among homogeneous and heterogeneous clusters.
 All native collective communications libraries can be referenced through the links below (in alphabetic order):
 
 - [CNCL](https://www.cambricon.com/docs/sdk_1.7.0/cncl_1.2.1/user_guide/index.html#), Cambricon Communications Library.
 - [DUCCL](https://developer.sourcefind.cn), DU Collective Communications Library.
+- [ECCL](https://www.enflame-tech.com), Enflame Collective Communications Library.
 - [HCCL](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/82RC1alpha003/hccl/hcclug/hcclug_000001.html), Ascend Communications Library.
 - [IXCCL](https://www.iluvatar.com/software?fullCode=cpjs-rj-rjz), Iluvatar Corex Collective Communications Library.
 - [MCCL](https://developer.metax-tech.com/softnova/metax), Metax Collective Communications Library.
@@ -89,9 +90,9 @@ Note that PyTorch support is enabled via the FlagCX Torch plugin, which provides
 This plugin has undergone comprehensive validation across diverse communication backends and hardware platforms,
 ensuring robust functionality, consistent performance, and compatibility in multi-chip heterogeneous environments.
 
-| FlagCX Backend  | NCCL | IXCCL | CNCL | MCCL | XCCL | DUCCL | HCCL | MUSACCL | RCCL |
-| :-------------- | :--- | :---- | :--- | :--- | :--- | :---- | :--- | :------ | :--- |
-| PyTorch Support | ✓    | ✓     | ✓    | ✓    | ✓    | ✓     | ✓    | ✓       | ✓    |
+| FlagCX Backend  | NCCL | IXCCL | CNCL | ECCL | MCCL | XCCL | DUCCL | HCCL | MUSACCL | RCCL |
+| :-------------- | :--- | :---- | :--- | :--- | :--- | :--- | :---- | :--- | :------ | :--- |
+| PyTorch Support | ✓    | ✓     | ✓    | ✓    | ✓    | ✓    | ✓     | ✓    | ✓       | ✓    |
 
 > [!TIP]
 > To enable heterogeneous cross-chip communication using the PyTorch DDP FlagCX backend,

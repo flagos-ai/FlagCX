@@ -13,3 +13,5 @@ plugin/*/*.egg-info
 
 # Ignore vscode workspace folder
 .vscode
+# Ignore gtest recorder output file
+Recorder.out
