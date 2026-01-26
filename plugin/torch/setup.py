@@ -67,7 +67,8 @@ elif adaptor_flag == "-DUSE_CAMBRICON_ADAPTOR":
     torch_mlu_path = torch_mlu.__file__.split("__init__")[0]
     torch_mlu_lib_dir = os.path.join(torch_mlu_path, "csrc/lib/")
     torch_mlu_include_dir = os.path.join(torch_mlu_path, "csrc/")
-    include_dirs += [f"{neuware_home_path}/include", torch_mlu_include_dir]
+    torch_mlu_include_dir2 = os.path.join(torch_mlu_path, "csrc", "include")
+    include_dirs += [f"{neuware_home_path}/include", torch_mlu_include_dir, torch_mlu_include_dir2]
     library_dirs += [f"{neuware_home_path}/lib64", torch_mlu_lib_dir]
     libs += ["cnrt", "cncl", "torch_mlu"]
 elif adaptor_flag == "-DUSE_METAX_ADAPTOR":
