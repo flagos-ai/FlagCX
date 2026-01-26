@@ -4,10 +4,15 @@ on:
   push:
     branches: [ main ]
     paths:
+      - 'flagcx/**'
       - 'packaging/debian/**'
       - '.github/workflows/build-deb.yml'
   pull_request:
     branches: [ main ]
+    paths:
+      - 'flagcx/**'
+      - 'packaging/debian/**'
+      - '.github/workflows/build-deb.yml'
   workflow_dispatch:
 
 jobs:
