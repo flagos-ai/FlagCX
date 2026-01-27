@@ -23,7 +23,7 @@ if '--adaptor' in sys.argv:
     else:
         print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
 
-valid_adaptors = ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd"]
+valid_adaptors = ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd", "tsm"]
 assert adaptor in valid_adaptors, f"Invalid adaptor: {adaptor}"
 print(f"Using {adaptor} adaptor")
 
@@ -36,7 +36,8 @@ adaptor_map = {
     "du": "-DUSE_DU_ADAPTOR",
     "klx": "-DUSE_KUNLUNXIN_ADAPTOR",
     "ascend": "-DUSE_ASCEND_ADAPTOR",
-    "amd": "-DUSE_AMD_ADAPTOR"
+    "amd": "-DUSE_AMD_ADAPTOR",
+    "tsm": "-DUSE_TSM_ADAPTOR"
 }
 adaptor_flag = adaptor_map[adaptor]
 torch_flag = "-DTORCH_VER_LT_250"
@@ -53,6 +54,7 @@ library_dirs = [
 ]
 
 libs = ["flagcx"]
+extra_link_args = ["-Wl,-rpath,"+f"{os.path.dirname(os.path.abspath(__file__))}/../../build/lib"]
 
 try:
     import torch
@@ -112,6 +114,15 @@ elif adaptor_flag == "-DUSE_AMD_ADAPTOR":
     include_dirs += ["/opt/rocm/include"]
     library_dirs += ["/opt/rocm/lib"]
     libs += ["hiprtc", "c10_hip", "torch_hip"]
+elif adaptor_flag == "-DUSE_TSM_ADAPTOR":
+    import torch_txda
+    txda_install_path = torch_txda.__path__[0]
+    txda_library_path = txda_install_path
+    include_dirs += [os.path.join(txda_install_path, "include")]
+    include_dirs += ["/usr/local/kuiper/include"]
+    library_dirs += ["/usr/local/kuiper/lib",txda_install_path]
+    libs += ["torch_txda", "hpgr"]
+    extra_link_args += [f'-Wl,-rpath,{txda_install_path}']
 
 try:
     if adaptor_flag == "-DUSE_MUSA_ADAPTOR":
@@ -133,7 +144,7 @@ if CppExtension is not None:
         extra_compile_args={
             'cxx': [adaptor_flag, torch_flag]
         },
-        extra_link_args=["-Wl,-rpath,"+f"{os.path.dirname(os.path.abspath(__file__))}/../../build/lib"],
+        extra_link_args=extra_link_args,
         library_dirs=library_dirs,
         libraries=libs,
     )
