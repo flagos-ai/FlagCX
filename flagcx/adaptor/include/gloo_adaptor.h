@@ -8,14 +8,6 @@
 #include "utils.h"
 
 #include "gloo/algorithm.h"
-#include "gloo/context.h"
-#include "gloo/rendezvous/context.h"
-#include "gloo/rendezvous/prefix_store.h"
-#include "gloo/rendezvous/store.h"
-#include "gloo/transport/context.h"
-#include "gloo/transport/device.h"
-#include "gloo/transport/tcp/device.h"
-// #include "gloo/transport/ibverbs/device.h"
 #include "gloo/allgather.h"
 #include "gloo/allgatherv.h"
 #include "gloo/allreduce.h"
@@ -23,9 +15,17 @@
 #include "gloo/alltoallv.h"
 #include "gloo/barrier.h"
 #include "gloo/broadcast.h"
+#include "gloo/context.h"
 #include "gloo/gather.h"
 #include "gloo/reduce.h"
+#include "gloo/rendezvous/context.h"
+#include "gloo/rendezvous/prefix_store.h"
+#include "gloo/rendezvous/store.h"
 #include "gloo/scatter.h"
+#include "gloo/transport/context.h"
+#include "gloo/transport/device.h"
+#include "gloo/transport/ibverbs/device.h"
+#include "gloo/transport/tcp/device.h"
 
 #include <chrono>
 #include <cstring>
@@ -35,8 +35,9 @@
 #include <string>
 #include <vector>
 
-using buffer_ptr = std::unique_ptr<::gloo::transport::UnboundBuffer>;
-static std::queue<buffer_ptr> inputBuffers;
+using bufferPtr = std::unique_ptr<::gloo::transport::UnboundBuffer>;
+static std::list<bufferPtr> inputBuffers;
+static std::list<bufferPtr> outputBuffers;
 static constexpr std::chrono::milliseconds flagcxGlooDefaultTimeout =
     std::chrono::seconds(10000);
 static bool groupStarted = false;

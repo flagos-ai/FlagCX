@@ -221,7 +221,7 @@ endif
 ifeq ($(USE_GLOO), 1)
 	HOST_CCL_LIB = $(HOST_CCL_HOME)/lib
 	HOST_CCL_INCLUDE = $(HOST_CCL_HOME)/include
-	HOST_CCL_LINK = -lgloo
+	HOST_CCL_LINK = -lgloo -libverbs
 	HOST_CCL_ADAPTOR_FLAG = -DUSE_GLOO_ADAPTOR
 else ifeq ($(USE_MPI), 1)
 	HOST_CCL_LIB = $(MPI_HOME)/lib
