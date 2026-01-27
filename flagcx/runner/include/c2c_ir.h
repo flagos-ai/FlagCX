@@ -3,8 +3,8 @@
 
 #include "adaptor.h"
 #include "c2c_algo.h"
-#include "collectives.h"
 #include "flagcx.h"
+#include "flagcx_hetero.h"
 #include "group.h"
 #include "param.h"
 #include <iostream>

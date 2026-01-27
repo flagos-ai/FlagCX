@@ -2,9 +2,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
-#ifndef flagcxTriggerMask
-#define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
-#endif
+FLAGCX_PARAM(KernelFifoCapacity, "KERNEL_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getAddr() { return fst; }
 
@@ -29,18 +27,18 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
 }
 
 flagcxResult_t flagcxFifo::flagcxFifoInit() {
-  // TODO: use a better way to initialize FIFO
   INFO(FLAGCX_KERNEL, "flagcxFifoInit called");
+  uint64_t flagcxKernelFifoCapacity = flagcxParamKernelFifoCapacity();
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,
                                           3 * sizeof(uint64_t) +
-                                              FLAGCX_KERNEL_FIFO_CAPACITY *
+                                              flagcxKernelFifoCapacity *
                                                   sizeof(flagcxDeviceTrigger),
                                           flagcxMemHost, NULL));
-  buffer[0] = FLAGCX_KERNEL_FIFO_CAPACITY;
+  buffer[0] = flagcxKernelFifoCapacity;
   buffer[1] = 0;
   buffer[2] = 0;
   memset((void *)(buffer + 3), 0,
-         FLAGCX_KERNEL_FIFO_CAPACITY * sizeof(flagcxDeviceTrigger));
+         flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
   return flagcxSuccess;
 }
 

@@ -1,24 +1,22 @@
 // include XPU-related headers
 #include "flagcx.h"
+#include "launch_kernel.h"
 
-__global__ void asyncStore(bool *__restrict__ value) {
-  *value = true; // set value to true
-  // mfence(); // Ensure that the write is visible to the CPU.
+__global__ void asyncKernel(int *__restrict__ values) {
+  volatile int *signals = values;
+  // set all ops curStep to 0
+  for (int i = 0; i < FLAGCX_OPS_PER_SEMAPHORE; ++i) {
+    signals[i] = 0;
+  }
+  mfence(); // Ensure that the write is visible to the CPU.
+  while (signals[FLAGCX_SIGNAL_COUNTER_OFFSET] > 0) {
+    // busy-wait
+  }
+  mfence(); // Ensure that the write is visible to the CPU.
 }
 
-__global__ void asyncLoad(const volatile bool *__restrict__ value) {
-  while (!(*value)) {
-  } // no-op
-}
-
-extern "C" void deviceAsyncStore(flagcxStream_t stream, void *args) {
-  bool *value = static_cast<bool *>(args);
-  asyncStore<<<1, 1, *(XPUStream *)stream>>>(value);
-  return;
-}
-
-extern "C" void deviceAsyncLoad(flagcxStream_t stream, void *args) {
-  bool *value = static_cast<bool *>(args);
-  asyncLoad<<<1, 1, *(XPUStream *)stream>>>(value);
+extern "C" void deviceAsyncKernel(flagcxStream_t stream, void *args) {
+  int *signals = static_cast<int *>(args);
+  asyncKernel<<<1, 1, *(XPUStream *)stream>>>(signals);
   return;
 }

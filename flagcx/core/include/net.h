@@ -16,11 +16,11 @@
 
 typedef char flagcxNetHandle_t[FLAGCX_NET_HANDLE_MAXSIZE];
 
-#define REGMRBUFFERSIZE (64ULL * 1024 * 1024)
-#define CHUNKSIZE (4ULL * 1024 * 1024)
+extern int64_t flagcxNetBufferSize;
+extern int64_t flagcxNetChunkSize;
+extern int64_t flagcxNetChunks;
+#define FLAGCX_NET_MAX_STEPS 16
 #define FLAGCX_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
-#define MAXSTEPS (REGMRBUFFERSIZE / CHUNKSIZE)
-static_assert((MAXSTEPS & (MAXSTEPS - 1)) == 0, "send step must a power of 2");
 
 flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm);
 int flagcxNetVersion(struct flagcxHeteroComm *comm);
@@ -61,7 +61,7 @@ struct sendNetResources {
   flagcxNetDeviceType netDeviceType;
   flagcxNetDeviceHandle_t *netDeviceHandle;
   flagcxStream_t cpStream;
-  flagcxEvent_t cpEvents[MAXSTEPS];
+  flagcxEvent_t cpEvents[FLAGCX_NET_MAX_STEPS];
 };
 
 struct recvNetResources {
@@ -96,7 +96,7 @@ struct recvNetResources {
   flagcxNetDeviceType netDeviceType;
   flagcxNetDeviceHandle_t *netDeviceHandle;
   flagcxStream_t cpStream;
-  flagcxEvent_t cpEvents[MAXSTEPS];
+  flagcxEvent_t cpEvents[FLAGCX_NET_MAX_STEPS];
 };
 
 enum flagcxIbCommState {

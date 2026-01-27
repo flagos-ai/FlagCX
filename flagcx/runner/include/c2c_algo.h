@@ -2,8 +2,8 @@
 #define FLAGCX_C2C_ALGO_H_
 
 #include "adaptor.h"
-#include "collectives.h"
 #include "flagcx.h"
+#include "flagcx_hetero.h"
 #include "group.h"
 #include "param.h"
 #include <iostream>

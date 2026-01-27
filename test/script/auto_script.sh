@@ -3,7 +3,8 @@ BUILD_DIR="build"
 
 mkdir -p $BUILD_DIR
 
-MPI_HOME=/usr/local/mpi 
+export MPI_HOME=/usr/local/mpi
+export PATH=$MPI_HOME/bin:$PATH
 make USE_NVIDIA=1
 
 if [ $? -ne 0 ]; then

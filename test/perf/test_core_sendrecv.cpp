@@ -43,9 +43,13 @@ int main(int argc, char *argv[]) {
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
 
-  void *sendbuff, *recvbuff, *hello;
-  void *selfsendbuff1, *selfsendbuff2;
-  void *selfrecvbuff1, *selfrecvbuff2;
+  void *sendbuff = nullptr;
+  void *recvbuff = nullptr;
+  void *hello = nullptr;
+  void *selfsendbuff1 = nullptr;
+  void *selfsendbuff2 = nullptr;
+  void *selfrecvbuff1 = nullptr;
+  void *selfrecvbuff2 = nullptr;
   timer tim;
   int peerSend = (proc + 1) % totalProcs;
   int peerRecv = (proc - 1 + totalProcs) % totalProcs;

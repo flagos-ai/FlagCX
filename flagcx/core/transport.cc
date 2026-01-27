@@ -10,7 +10,13 @@
 #define ENABLE_TIMER 0
 #include "timer.h"
 
+FLAGCX_PARAM(P2pDisable, "P2P_DISABLE", 0);
+
 static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
+  // force use net transport for unirunner allreduce
+  if (flagcxParamP2pDisable()) {
+    return false;
+  }
   if (comm->peerInfo == NULL) {
     // peerInfo not initialized - assume different nodes (use network transport)
     return false;
@@ -39,7 +45,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           conn->proxyConn.connection->send = 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
-            struct flagcxP2pRequest req = {(size_t(FLAGCX_P2P_BUFFERSIZE)), 0};
+            struct flagcxP2pRequest req = {(size_t(flagcxP2pBufferSize)), 0};
             struct flagcxP2pConnectInfo connectInfo = {0};
             connectInfo.rank = comm->rank;
             connectInfo.read = 0;
@@ -66,11 +72,11 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           deviceAdaptor->streamCreate(&resources->cpStream);
-          for (int s = 0; s < MAXSTEPS; s++) {
+          for (int s = 0; s < flagcxNetChunks; s++) {
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
-          resources->buffSizes[0] = REGMRBUFFERSIZE;
+          resources->buffSizes[0] = flagcxNetBufferSize;
           if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {
@@ -132,11 +138,11 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           deviceAdaptor->streamCreate(&resources->cpStream);
-          for (int s = 0; s < MAXSTEPS; s++) {
+          for (int s = 0; s < flagcxNetChunks; s++) {
             deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                        flagcxEventDisableTiming);
           }
-          resources->buffSizes[0] = REGMRBUFFERSIZE;
+          resources->buffSizes[0] = flagcxNetBufferSize;
           if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {

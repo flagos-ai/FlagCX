@@ -1,5 +1,8 @@
 #include "reg_pool.h"
+#include "p2p.h"
+#include "proxy.h"
 #include <cstdio>
+#include <cstdlib>
 
 #define DEFAULT_REGPOOL_SIZE 16
 
@@ -18,17 +21,97 @@ inline void flagcxRegPool::getPagedAddr(void *data, size_t length,
       (reinterpret_cast<uintptr_t>(data) + length + pageSize - 1) & -pageSize;
 }
 
+flagcxResult_t
+flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
+                            struct flagcxProxyConnector *proxyConn) {
+  if (comm == nullptr || reg == nullptr) {
+    return flagcxSuccess;
+  }
+  for (auto &handlePair : reg->handles) {
+    if (handlePair.first.proxyConn == proxyConn) {
+      handlePair.first.handle = handle;
+      return flagcxSuccess;
+    }
+  }
+  flagcxRegNetHandle netHandle{handle, proxyConn};
+  flagcxRegP2pHandle p2pHandle{nullptr, nullptr};
+  reg->handles.push_back(std::make_pair(netHandle, p2pHandle));
+
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxRegPool::addP2pHandle(void *comm, flagcxRegItem *reg, void *handle,
+                            struct flagcxProxyConnector *proxyConn) {
+  if (comm == nullptr || reg == nullptr) {
+    return flagcxSuccess;
+  }
+  for (auto &handlePair : reg->handles) {
+    if (handlePair.second.proxyConn == proxyConn) {
+      handlePair.second.handle = handle;
+      return flagcxSuccess;
+    }
+  }
+  flagcxRegNetHandle netHandle{nullptr, nullptr};
+  flagcxRegP2pHandle p2pHandle{handle, proxyConn};
+  reg->handles.push_back(std::make_pair(netHandle, p2pHandle));
+
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxRegPool::removeRegItemNetHandles(void *comm,
                                                       flagcxRegItem *reg) {
   if (comm == nullptr || reg == nullptr) {
     return flagcxSuccess;
   }
 
-  for (auto it = reg->netHandles.begin(); it != reg->netHandles.end();) {
-    FLAGCXCHECK(flagcxNetDeregisterBuffer(comm, it->proxyConn, it->handle));
-    it = reg->netHandles.erase(it);
+  for (auto it = reg->handles.begin(); it != reg->handles.end();) {
+    if (it->first.handle) {
+      FLAGCXCHECK(flagcxNetDeregisterBuffer(comm, it->first.proxyConn,
+                                            it->first.handle));
+      it->first.handle = nullptr;
+      it->first.proxyConn = nullptr;
+    }
+    if (it->first.handle == nullptr && it->second.handle == nullptr) {
+      it = reg->handles.erase(it);
+    } else {
+      ++it;
+    }
   }
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxRegPool::removeRegItemP2pHandles(void *comm,
+                                                      flagcxRegItem *reg) {
+  if (comm == nullptr || reg == nullptr) {
+    return flagcxSuccess;
+  }
+
+  for (auto it = reg->handles.begin(); it != reg->handles.end();) {
+    if (it->second.handle) {
+      flagcxIpcRegInfo *ipcInfo = (flagcxIpcRegInfo *)it->second.handle;
+      FLAGCXCHECK(flagcxP2pDeregisterBuffer(
+          reinterpret_cast<flagcxHeteroComm *>(comm), ipcInfo));
+      it->second.handle = nullptr;
+      it->second.proxyConn = nullptr;
+    }
+    if (it->first.handle == nullptr && it->second.handle == nullptr) {
+      it = reg->handles.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return flagcxSuccess;
+}
+
+void flagcxRegPool::mapRegItemPages(uintptr_t commKey, flagcxRegItem *reg) {
+  if (reg == nullptr) {
+    return;
+  }
+  auto &regCommMap = regMap[commKey];
+  for (uintptr_t addr = reg->beginAddr; addr < reg->endAddr; addr += pageSize) {
+    regCommMap[addr] = reg;
+  }
 }
 
 flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
@@ -46,7 +129,7 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
     if (beginAddr < it->beginAddr) {
       flagcxRegItem reg{beginAddr, endAddr, 1, {}};
       auto &insertedReg = *regCommPool.insert(it, std::move(reg));
-      regMap[commKey][reinterpret_cast<uintptr_t>(data)] = &insertedReg;
+      mapRegItemPages(commKey, &insertedReg);
       return flagcxSuccess;
       // already inserted, just increase ref count
     } else if (it->beginAddr <= beginAddr && it->endAddr >= endAddr) {
@@ -58,7 +141,7 @@ flagcxResult_t flagcxRegPool::registerBuffer(void *comm, void *data,
   // not found, insert to the end
   flagcxRegItem reg{beginAddr, endAddr, 1, {}};
   regCommPool.push_back(std::move(reg));
-  regMap[commKey][reinterpret_cast<uintptr_t>(data)] = &regCommPool.back();
+  mapRegItemPages(commKey, &regCommPool.back());
   return flagcxSuccess;
 }
 
@@ -78,6 +161,7 @@ flagcxResult_t flagcxRegPool::deregisterBuffer(void *comm, void *handle) {
         return flagcxSuccess;
       }
       FLAGCXCHECK(removeRegItemNetHandles(comm, reg));
+      FLAGCXCHECK(removeRegItemP2pHandles(comm, reg));
       auto &regCommMap = regMap[commKey];
       for (auto mapIter = regCommMap.begin(); mapIter != regCommMap.end();) {
         if (mapIter->second == reg) {
@@ -119,10 +203,11 @@ void flagcxRegPool::dump() {
     for (auto &p : c.second) {
       printf("beginAddr(%lu) -> regItem[%lu,%lu,%d]\n", p.first,
              p.second->beginAddr, p.second->endAddr, p.second->refCount);
-      auto it = p.second->netHandles.begin();
-      for (; it != p.second->netHandles.end(); it++) {
-        printf("handlePtr(%p) -> netHandle[%p,%p]\n", &(*it), it->handle,
-               it->proxyConn);
+      auto it = p.second->handles.begin();
+      for (; it != p.second->handles.end(); it++) {
+        printf("handlePtr(%p) -> netHandle[%p,%p] p2pHandle[%p,%p]\n", &(*it),
+               it->first.handle, it->first.proxyConn, it->second.handle,
+               it->second.proxyConn);
       }
     }
     printf("==comm(%lu)==\n", c.first);

@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2016-2020, NVIDIA CORPORATION. All rights reserved.
  *
- * See LICENSE.txt for license information
+ * See LICENSE-NCCL.txt for license information
  ************************************************************************/
 
 #include "utils.h"
@@ -9,6 +9,8 @@
 #include "bootstrap.h"
 #include "core.h"
 #include "flagcx_common.h"
+#include <fstream>
+#include <stdexcept>
 #include <stdlib.h>
 
 flagcxResult_t int64ToBusId(int64_t id, char *busId) {
@@ -427,4 +429,95 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
       homoComm, comm->homo_ranks, commId, comm->homo_rank, NULL));
   return flagcxSuccess;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// FlagScale configuration functions
+
+TuneObject::TuneObject(const nlohmann::json &j) {
+  commOp = j["commOp"];
+  nBytes = j["nBytes"];
+}
+
+FlagScaleConfig readFlagScaleJson(const std::string &filename) {
+  std::string actual_filename = filename;
+
+  // If filename is empty, try to get from environment variable
+  if (actual_filename.empty()) {
+    const char *base = getenv("FLAGCX_TUNE_FILE");
+    if (base != nullptr && base[0] != '\0') {
+      std::string path(base);
+      path += ".pid" + std::to_string(::getpid());
+      actual_filename = path;
+    } else {
+      throw std::runtime_error(
+          "FLAGCX_TUNE_FILE environment variable is not set. "
+          "Please set FLAGCX_TUNE_FILE to specify the flagscale.json file "
+          "path.");
+    }
+  }
+
+  std::ifstream file(actual_filename);
+  if (!file.is_open()) {
+    throw std::runtime_error("Cannot open file: " + actual_filename);
+  }
+
+  const char *curTuneGroupIdxEnv = std::getenv("FLAGCX_TUNE_GROUP_IDX");
+  const int curTuneGroupIdx =
+      (curTuneGroupIdxEnv != NULL) ? std::atoi(curTuneGroupIdxEnv) : -1;
+  if (curTuneGroupIdx == -1) {
+    throw std::runtime_error(
+        "FLAGCX_TUNE_GROUP_IDX environment variable is not set or invalid. "
+        "Please set FLAGCX_TUNE_GROUP_IDX to specify the tune group index.");
+  }
+
+  nlohmann::json j;
+  file >> j;
+  file.close();
+
+  FlagScaleConfig config;
+
+  const std::string groupKey = std::to_string(curTuneGroupIdx);
+  if (!j.contains(groupKey) || !j[groupKey].is_object()) {
+    throw std::runtime_error("Tune group " + groupKey + " not found in " +
+                             actual_filename);
+  }
+
+  // Read tune_objects array
+  if (j[groupKey].contains("tune_objects") &&
+      j[groupKey]["tune_objects"].is_array()) {
+    for (const auto &obj : j[groupKey]["tune_objects"]) {
+      config.tune_objects.emplace_back(obj);
+    }
+  }
+
+  return config;
+}
+
+// Convert commOp string to flagcxCommOp_t enum
+flagcxCommOp_t commOpStringToEnum(const std::string &commOpStr) {
+  if (commOpStr == "allreduce") {
+    return flagcxCommOpAllReduce;
+  } else if (commOpStr == "allgather") {
+    return flagcxCommOpAllGather;
+  } else if (commOpStr == "reduce") {
+    return flagcxCommOpReduce;
+  } else if (commOpStr == "gather") {
+    return flagcxCommOpGather;
+  } else if (commOpStr == "scatter") {
+    return flagcxCommOpScatter;
+  } else if (commOpStr == "broadcast") {
+    return flagcxCommOpBroadcast;
+  } else if (commOpStr == "reducescatter") {
+    return flagcxCommOpReduceScatter;
+  } else if (commOpStr == "alltoall") {
+    return flagcxCommOpAlltoAll;
+  } else if (commOpStr == "alltoallv") {
+    return flagcxCommOpAlltoAllv;
+  } else if (commOpStr == "send") {
+    return flagcxCommOpSend;
+  } else if (commOpStr == "recv") {
+    return flagcxCommOpRecv;
+  }
+  return flagcxCommNoOp; // default
 }

@@ -1,0 +1,8 @@
+{
+    "tune_objects": [
+        {"commOp": "allreduce", "nBytes": 536870912},
+        {"commOp": "allreduce", "nBytes": 8388608}, 
+        {"commOp": "allgather", "nBytes": 67108864},
+        {"commOp": "allgather", "nBytes": 134217728}
+    ]
+}

@@ -1,13 +1,14 @@
 /*************************************************************************
  * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
  *
- * See LICENSE.txt for license information
+ * See LICENSE-NCCL.txt for license information
  ************************************************************************/
 
 #include "proxy.h"
 #include "adaptor.h"
-#include "collectives.h"
 #include "comm.h"
+#include "flagcx_hetero.h"
+#include "ib_common.h"
 #include "info.h"
 #include "net.h"
 #include "p2p.h"
@@ -191,22 +192,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               struct sendNetResources *resources =
                   (sendNetResources *)op->connection->transportResources;
               flagcxProxySend(resources, op->recvbuff, op->nbytes, &op->args);
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  // The P2P object should not be destroyed until the associated
-                  // event has completed
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             } else if (op->connection->transport == TRANSPORT_P2P) {
               struct flagcxP2pResources *resources =
@@ -218,20 +207,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 flagcxP2pProxySelfCopy(resources, op->sendbuff, op->recvbuff,
                                        op->nbytes, &op->args);
               }
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             }
           }
@@ -243,46 +222,22 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               struct recvNetResources *resources =
                   (recvNetResources *)op->connection->transportResources;
               flagcxProxyRecv(resources, op->recvbuff, op->nbytes, &op->args);
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  // The P2P object should not be destroyed until the associated
-                  // event has completed
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  // update refcount and delete semaphore when refcount = 0
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                // update refcount and delete semaphore when refcount = 0
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             } else if (op->connection->transport == TRANSPORT_P2P) {
               struct flagcxP2pResources *resources =
                   (flagcxP2pResources *)op->connection->transportResources;
               flagcxP2pProxyRecv(resources, op->recvbuff, op->nbytes,
                                  &op->args);
-              if (deviceAsyncLoad && deviceAsyncStore) {
-                if (op->args.done == 1 && op->args.eventRecorded) {
-                  // The P2P object should not be destroyed until the associated
-                  // event has completed
-                  if (deviceAdaptor->eventQuery(op->event) == flagcxSuccess) {
-                    flagcxIntruQueueDelete(queue, op);
-                    FLAGCXCHECK(deviceAdaptor->eventDestroy(op->event));
-                    free(op);
-                  }
-                }
-              } else {
-                if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
-                  // update refcount and delete semaphore when refcount = 0
-                  op->args.semaphore.reset();
-                  flagcxIntruQueueDelete(queue, op);
-                  free(op);
-                }
+              if (op->args.done == 1 && op->args.semaphore->pollEnd()) {
+                // update refcount and delete semaphore when refcount = 0
+                op->args.semaphore.reset();
+                flagcxIntruQueueDelete(queue, op);
+                free(op);
               }
             }
           }
@@ -679,69 +634,77 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
           "proxyProgressAsync::flagcxProxyMsgRegister opId=%p op.reqBuff=%p, "
           "op->reqSize=%d, op->respSize=%d",
           op->opId, op->reqBuff, op->reqSize, op->respSize);
-    void *handle;
-    struct netRegInfo *info = (struct netRegInfo *)op->reqBuff;
-    assert(op->reqSize == sizeof(struct netRegInfo));
-    assert(op->respSize == sizeof(void *));
-    if (op->connection->send) {
-      // send side
-      struct sendNetResources *resources =
-          (struct sendNetResources *)(op->connection->transportResources);
-      if (dmaBufferSupport) {
-        int dmabuf_fd;
-        FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-            (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
-        FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-            resources->netSendComm, (void *)info->buffer, info->size, 2, 0ULL,
-            dmabuf_fd, &handle));
-        (void)close(dmabuf_fd);
+    if (op->connection->transport == TRANSPORT_P2P) {
+      ;
+    } else if (op->connection->transport == TRANSPORT_NET) {
+      void *handle;
+      struct netRegInfo *info = (struct netRegInfo *)op->reqBuff;
+      assert(op->reqSize == sizeof(struct netRegInfo));
+      assert(op->respSize == sizeof(void *));
+      if (op->connection->send) {
+        // send side
+        struct sendNetResources *resources =
+            (struct sendNetResources *)(op->connection->transportResources);
+        if (dmaBufferSupport) {
+          int dmabuf_fd;
+          FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+              (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
+          FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
+              resources->netSendComm, (void *)info->buffer, info->size, 2, 0ULL,
+              dmabuf_fd, &handle));
+          (void)close(dmabuf_fd);
+        } else {
+          FLAGCXCHECK(resources->netAdaptor->regMr(resources->netSendComm,
+                                                   (void *)info->buffer,
+                                                   info->size, 2, &handle));
+        }
       } else {
-        FLAGCXCHECK(resources->netAdaptor->regMr(resources->netSendComm,
-                                                 (void *)info->buffer,
-                                                 info->size, 2, &handle));
+        // recv side
+        struct recvNetResources *resources =
+            (struct recvNetResources *)(op->connection->transportResources);
+        if (dmaBufferSupport) {
+          int dmabuf_fd;
+          FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+              (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
+          FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
+              resources->netRecvComm, (void *)info->buffer, info->size, 2, 0ULL,
+              dmabuf_fd, &handle));
+          (void)close(dmabuf_fd);
+        } else {
+          FLAGCXCHECK(resources->netAdaptor->regMr(resources->netRecvComm,
+                                                   (void *)info->buffer,
+                                                   info->size, 2, &handle));
+        }
       }
-    } else {
-      // recv side
-      struct recvNetResources *resources =
-          (struct recvNetResources *)(op->connection->transportResources);
-      if (dmaBufferSupport) {
-        int dmabuf_fd;
-        FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-            (void *)&dmabuf_fd, (void *)info->buffer, info->size, 0));
-        FLAGCXCHECK(resources->netAdaptor->regMrDmaBuf(
-            resources->netRecvComm, (void *)info->buffer, info->size, 2, 0ULL,
-            dmabuf_fd, &handle));
-        (void)close(dmabuf_fd);
-      } else {
-        FLAGCXCHECK(resources->netAdaptor->regMr(resources->netRecvComm,
-                                                 (void *)info->buffer,
-                                                 info->size, 2, &handle));
-      }
+      memcpy(op->respBuff, (void *)&handle, sizeof(void *));
+      done = 1;
     }
-    memcpy(op->respBuff, (void *)&handle, sizeof(void *));
-    done = 1;
   } else if (op->type == flagcxProxyMsgDeregister) {
     TRACE(FLAGCX_PROXY,
           "proxyProgressAsync::flagcxProxyMsgDeregister opId=%p op.reqBuff=%p, "
           "op->reqSize=%d, op->respSize=%d",
           op->opId, op->reqBuff, op->reqSize, op->respSize);
-    void *handle;
-    assert(op->reqSize == sizeof(void *));
-    memcpy(&handle, op->reqBuff, sizeof(void *));
-    if (op->connection->send) {
-      // send side
-      struct sendNetResources *resources =
-          (struct sendNetResources *)(op->connection->transportResources);
-      FLAGCXCHECK(
-          resources->netAdaptor->deregMr(resources->netSendComm, handle));
-    } else {
-      // recv side
-      struct recvNetResources *resources =
-          (struct recvNetResources *)(op->connection->transportResources);
-      FLAGCXCHECK(
-          resources->netAdaptor->deregMr(resources->netRecvComm, handle));
+    if (op->connection->transport == TRANSPORT_P2P) {
+      ;
+    } else if (op->connection->transport == TRANSPORT_NET) {
+      void *handle;
+      assert(op->reqSize == sizeof(void *));
+      memcpy(&handle, op->reqBuff, sizeof(void *));
+      if (op->connection->send) {
+        // send side
+        struct sendNetResources *resources =
+            (struct sendNetResources *)(op->connection->transportResources);
+        FLAGCXCHECK(
+            resources->netAdaptor->deregMr(resources->netSendComm, handle));
+      } else {
+        // recv side
+        struct recvNetResources *resources =
+            (struct recvNetResources *)(op->connection->transportResources);
+        FLAGCXCHECK(
+            resources->netAdaptor->deregMr(resources->netRecvComm, handle));
+      }
+      done = 1;
     }
-    done = 1;
   } else if (op->type == flagcxProxyMsgSetup &&
              op->connection->transport == TRANSPORT_P2P) {
     if (op->connection->send) {

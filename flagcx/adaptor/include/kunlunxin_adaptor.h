@@ -29,7 +29,7 @@ struct flagcxEvent {
 };
 
 struct flagcxIpcMemHandle {
-  char *base; // to be implemented
+  cudaIpcMemHandle_t base;
 };
 
 namespace baidu {

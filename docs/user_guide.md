@@ -1,53 +1,59 @@
 ## Environment Configuration
 
-Refer to the environment setup section in [getting_started.md](getting_started.md).
+Refer to the environment setup section in the [getting started](getting_started.md) page.
 
 ## Installation and Compilation
 
-Refer to [getting_started.md](getting_started.md) for FlagCX compilation and installation.
+Refer to [getting started](getting_started.md) for FlagCX compilation and installation.
 
 ## Homogeneous Tests Using FlagCX
 
-## Communication API Test
+### Communication API Test
 
 1. Build and Installation
 
    Refer to the Communication API test build and installation section in [getting_started.md](getting_started.md).
 
-2. Communication API Test
+1. Communication API Test
 
-   ```Plain
+   ```shell
    mpirun --allow-run-as-root -np 2 ./test_allreduce -b 128K -e 4G -f 2 -p 1
    ```
 
    **Description**
 
-   -  `test_allreduce` is a performance benchmark for AllReduce operations built on MPI and FlagCX. Each MPI process is bound to a single GPU. The program runs warm-up iterations followed by timed measurements across a user-defined range of message sizes (minimum, maximum, and step).
+   -  `test_allreduce` is a performance benchmark for AllReduce operations built on MPI and FlagCX.
+      Each MPI process is bound to a single GPU.
+      The program runs warm-up iterations followed by timed measurements across a user-defined range of
+      message sizes (minimum, maximum, and step).
+
    -  For every message size, the benchmark reports:
      - Average latency
      - Estimated bandwidth
      - Buffer fragments for correctness verification
 
-   **Example**
+   For example, running `test_allreduce` with 2 MPI processes on 2 GPUs starts from 128 KiB and
+   doubles the message size each step (128 KiB, 256 KiB, 512 KiB, 1 MiB …) up to 4 GiB.
+   For each size, the benchmark records bandwidth, latency, and correctness results.
 
-   - Running `test_allreduce` with 2 MPI processes on 2 GPUs starts from 128 KiB and doubles the message size each step (128 KiB, 256 KiB, 512 KiB, 1 MiB …) up to 4 GiB. For each size, the benchmark records bandwidth, latency, and correctness results.
-
-3. Correct Performance Test Output
+1. Correct Performance Test Output
 
    ![correct_performance_test_output.png](images/correct_performance_test_output.png)
 
+1. Issues Encountered During Execution
 
-4. Issues Encountered During Execution
-
-   - During execution, you may see an assertion warning when OpenMPI attempts to establish a connection via InfiniBand (openib BTL) but cannot find an available CPC (Connection Protocol). In this case, the IB port is disabled automatically.This warning does not affect the performance test results.
+   - During execution, you may see an assertion warning when OpenMPI attempts to establish a connection
+     via InfiniBand (openib BTL) but cannot find an available CPC (Connection Protocol).
+     In this case, the IB port is disabled automatically.This warning does not affect the performance test results.
 
      ![issues_encountered_during_execution.png](images/issues_encountered_during_execution.png)
 
      **Solution**
 
-     To suppress this warning, disable `openib` and fall back to TCP by adding the following option to your `mpirun` command.
+     To suppress this warning, disable `openib` and fall back to TCP by adding the following option
+     to your `mpirun` command.
 
-     ```Plain
+     ```shell
      --mca btl ^openib
      ```
 
@@ -73,138 +79,147 @@ Refer to [getting_started.md](getting_started.md) for FlagCX compilation and ins
        ./configure --prefix=/usr/local/mpi make -j$(nproc) sudo make install
        ```
 
-## Torch API Test
+### Torch API Test
 
-1. Build and Installation
+1. Build and installation
 
-   Refer to [getting_started.md](getting_started.md) for instructions on building and installing the Torch API test.
+   Refer to [getting started](getting_started.md) for instructions on building and installing the Torch API test.
 
-2. Torch API Test Execution
+1. Torch API test execution
 
-   - The test case is located in the build/installation directory.
+   The test case is located in the build/installation directory.
 
-     ```Plain
-     cd ./example/example.py
-     ```
+   ```shell
+   cd ./example/example.py
+   ```
 
-   - The test script `run.sh` sets environment variables and device IDs according to the current platform. You may need to modify these variables to match your hardware setup.
+   The test script `run.sh` sets environment variables and device IDs according to the current platform.
+   You may need to modify these variables to match your hardware setup.
 
-     ```Plain
-     ##run.sh
-     #!/bin/bash
-     # Check if the debug flag is provided as an argument
-     if [ "$1" == "debug" ]; then
-         export NCCL_DEBUG=INFO
-         export NCCL_DEBUG_SUBSYS=all
-         echo "NCCL debug information enabled."
-     else
-         unset NCCL_DEBUG
-         unset NCCL_DEBUG_SUBSYS
-         echo "NCCL debug information disabled."
-     fi
-     
-     export FLAGCX_IB_HCA=mlx5
-     export FLAGCX_ENABLE_TOPO_DETECT=TRUE
-     export FLAGCX_DEBUG=TRUE
-     export FLAGCX_DEBUG_SUBSYS=ALL
-     export CUDA_VISIBLE_DEVICES=0,1
-     # Need to preload customized gloo library specified for FlagCX linkage
-     # export LD_PRELOAD=/usr/local/lib/libgloo.so
-     # export LD_PRELOAD=/usr/local/nccl/build/lib/libnccl.so
-     export TORCH_DISTRIBUTED_DETAIL=DEBUG
-     CMD='torchrun --nproc_per_node 2 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=8281 example.py'
-     
-     echo $CMD
-     eval $CMD
-     ```
+   ```bash
+   #!/bin/bash
 
-      **Explanation**
+   # Check if the debug flag is set
+   if [ "$1" == "debug" ]; then
+       export NCCL_DEBUG=INFO
+       export NCCL_DEBUG_SUBSYS=all
+       echo "NCCL debug information enabled."
+   else
+       unset NCCL_DEBUG
+       unset NCCL_DEBUG_SUBSYS
+       echo "NCCL debug information disabled."
+   fi
+   
+   export FLAGCX_IB_HCA=mlx5
+   export FLAGCX_ENABLE_TOPO_DETECT=TRUE
+   export FLAGCX_DEBUG=TRUE
+   export FLAGCX_DEBUG_SUBSYS=ALL
+   export CUDA_VISIBLE_DEVICES=0,1
+   # Need to preload customized gloo library specified for FlagCX linkage
+   # export LD_PRELOAD=/usr/local/lib/libgloo.so
+   # export LD_PRELOAD=/usr/local/nccl/build/lib/libnccl.so
+   export TORCH_DISTRIBUTED_DETAIL=DEBUG
+   CMD='torchrun --nproc_per_node 2 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=8281 example.py'
+   
+   echo $CMD
+   eval $CMD
+   ```
 
-       `CMD='torchrun --nproc_per_node=2 --nnodes=1 --node_rank=0 --master_addr="localhost" --master_port=8281 example.py'`
+   The arguments for `torchrun` are as follows:
 
-     - `--nproc_per_node=2`: Launch 2 processes on the current machine.
-     - `--nnodes=1`: Total number of nodes participating in the training. For homogeneous testing, set to 1.
-     - `--node_rank=0`: Rank of the current node among all nodes, starting from 0. For homogeneous testing, fixed at 0.
-     - `--master_addr="localhost"`: Address of the master node. For homogeneous testing, `localhost` is sufficient; for heterogeneous testing, specify the reachable IP or hostname of the master node, accessible by all nodes.
-     - `--master_port=8281`: Port used by the master node to establish the process group. All nodes must use the same port, which must be free.
-     - `example.py`: Torch API test script.
-     - Refer to [enviroment_variables.md](enviroment_variables.md) for the meaning and usage of `FLAGCX_XXX` environment variables.
+   - `nproc_per_node`: Number of processes to launch on the current machine.
+   - `nnodes`: Total number of nodes participating in the training.
+     For homogeneous mode testing, set this to 1.
+   - `node_rank`: The rank of the current node among all nodes, starting from 0.
+     For homogeneous mode testing, set this to 0.
+   - `master_addr`: Address (hostname or IP) of the master node.
+     For homogeneous mode testing, set this to `"localhost"` is okay.
+     For heterogeneous mode testing, specify the reachable IP or hostname of the master node.
+     It is assumed that the address is reachable from all nodes.
+   - `master_port`: Port used by the master node to establish the process group.
+     All nodes must use the same port, and the port has to be available on all nodes.
+   - `example.py`: Torch API test script.
+   - Refer to [enviroment variables](enviroment_variables.md) for the usage of the various `FLAGCX_XXX` environment variables.
 
-3. Sample Screenshot of Correct Performance Test
+3. Sample screenshot from a correct performance test
 
    ![sample_screenshot_of_correct_performance_test.png](images/sample_screenshot_of_correct_performance_test.png)
 
+
 ## Homogeneous Training with FlagCX + FlagScale
 
-We conduct our experiments by running the LLaMA3-8B model on Nvidia A800 GPUs.
+The following steps shows an example in which we run the LLaMA3-8B model on Nvidia A800 GPUs.
 
-1. Build and Installation
+1. Build and installation
 
-   Refer to the Environment Setup and Build & Installation sections in [getting_started.md](getting_started.md).
+   Refer to the Environment Setup and Build & Installation section in the [getting started](./getting_started.md) page.
 
-2. Data Preparation and Model Configuration
+1. Data preparation
 
-   - **Data Preparation**
+   ```
+   cd FlagScale
+   mkdir data
+   ```
 
-     ```
-     cd FlagScale
-     mkdir data
-     ```
+   A small portion of processed data from the Pile dataset (bin and idx files) is provided: `pile_wikipedia_demo`.
+   Copy it to the `FlagScale/data` directory.
 
-     **Description** A small portion of processed data from the Pile dataset (bin and idx files) is provided: pile_wikipedia_demo. Copy it to the FlagScale/data directory.
+1. Model configuration 1
 
-   - **Model Configuration 1**
+   ```
+   cd FlagScale/examples/llama3/conf/ 
+   vi train.yaml
+   ```
 
-     ```
-     cd FlagScale/examples/llama3/conf/ 
-     vi train.yaml
-     ```
+   The directory contains the following files:
 
-     **Description** The directory contains the following files:
+   - `train/` — Training scripts and related files.
 
-     - `train/` — Training scripts and related files
+   - `train.yaml` — Configuration file for **homogeneous training**
 
-     - `train.yaml` — Configuration file for **homogeneous training**
+     The `train.yaml` file contains four main sections: `defaults`, `experiment`, `action`, and `hydra`.
+     For most cases, you only need to modify the `defaults` and `experiment` sections.
 
-       The `train.yaml` file contains four main sections: defaults, experiment, action, and hydra. For most cases, you only need to modify defaults and experiment.
+     - Modify `defaults`
 
-       - Modify `defaults`
+       ```yaml
+       train: XXXX
+       ```
 
-         ```
-         train: XXXX
-         ```
+        Replace `XXXX` with `8b`.
 
-          Replace `XXXX` with `8b`.
+     - Modify `experiment`
 
-       - Modify `experiment`
+       ```yaml
+       exp_dir: ./outputs_llama3_8b
+       ```
 
-         ```
-         exp_dir: ./outputs_llama3_8b
-         ```
+       This specifies the output directory for distributed training results.
 
-         This specifies the output directory for distributed training results.
+     - Modify `runner` settings under `experiment`
 
-       - Modify `runner` settings under `experiment`
+       * **hostfile**: For a homogeneous (single-node) mode test, comment out the `hostfile` line.
+         Only configure it for heterogeneous (multi-node) mode setups.
 
-         ​    **hostfile**: Since this is a homogeneous (single-node) test, comment out the `hostfile` line. Only configure it for heterogeneous (multi-node) setups.
+       * **envs**: Set GPU device IDs using `CUDA_VISIBLE_DEVICES`, for example:
 
-         ​    **envs**: Set GPU device IDs using `CUDA_VISIBLE_DEVICES`, for example:
-
-         ```
+         ```yaml
          CUDA_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
          ```
 
-     - `train_hetero.yaml` — Configuration file for **heterogeneous training**
+   - `train_hetero.yaml` — Configuration file for **heterogeneous training**
 
-   - **Model Configuration 2**
+1. Model Configuration 2
 
-     ```Plain
-     # Multiple model configuration files (xxx.yaml) corresponding to different dataset sizes in this directory
-     cd FlagScale/examples/llama3/conf/train 
-     vi 8b.yaml 
-     ```
+   The model configuration files (`xxx.yaml`) corresponding to different dataset sizes
+   are located in the `examples` directory.
 
-     - **`8b.yaml`** **Configuration File**
+   ```shell
+   cd FlagScale/examples/llama3/conf/train 
+   vi 8b.yaml 
+   ```
+
+   - **`8b.yaml`** **Configuration File**
 
        The `8b.yaml` file contains three main sections: system, model, and data.
 
@@ -234,59 +249,56 @@ We conduct our experiments by running the LLaMA3-8B model on Nvidia A800 GPUs.
 
        - **tokenizer_path**: Download the tokenizer from the official website corresponding to your model and set the path here.
 
-   - **Tokenizer Download**
+1. Download tokenizer
 
-     **Description:**
 
-     Download the tokenizer corresponding to the model. The files are available at: [Meta-LLaMA-3-8B-Instruct Tokenizer](https://www.modelscope.cn/models/LLM-Research/Meta-Llama-3-8B-Instruct/files?utm_source=chatgpt.com).
+   Download the tokenizer corresponding to the model.
+   The files are available at: [Meta-LLaMA-3-8B-Instruct Tokenizer](https://www.modelscope.cn/models/LLM-Research/Meta-Llama-3-8B-Instruct/files?utm_source=chatgpt.com).
 
-     **Instructions:**
 
-     - It is recommended to download the tokenizer via the command line.
+   It is recommended to download the tokenizer via the command line.
+   Place the downloaded tokenizer files in the path specified by `tokenizer_path` in your configuration (`8b.yaml`).
 
-     - Place the downloaded tokenizer files in the path specified by `tokenizer_path` in your configuration (`8b.yaml`).
+   For example:
 
-     **Example:**
+   ```shell
+   cd FlagScale/examples/llama3
+   modelscope download --model LLM-Research/Meta-Llama-3-8B-Instruct [XXXX] --local_dir ./
+   ```
 
-     ```Plain
-     ## Download the tokenizer to the current directory
-     cd FlagScale/examples/llama3
-     modelscope download --model LLM-Research/Meta-Llama-3-8B-Instruct [XXXX] --local_dir ./
-     ```
+   The `[XXXX]` in the above command refers to the tokenizer files corresponding to Meta-LLaMA-3-8B-Instruct.
+   The content could be, for example:
 
-     **Description**
+   - `tokenizer.json`
+   - `tokenizer_config.json`
+   - `config.json`
+   - `configuration.json`
+   - `generation_config.json`
 
-     `[XXXX]` refers to the tokenizer files corresponding to Meta-LLaMA-3-8B-Instruct, for example:
+   These files should be placed in the directory specified by `tokenizer_path` in your configuration (`8b.yaml`).
 
-     - `tokenizer.json`
-     - `tokenizer_config.json`
-     - `config.json`
-     - `configuration.json`
-     - `generation_config.json`
+1. Distributed training
 
-     These files should be placed in the directory specified by `tokenizer_path` in your configuration (`8b.yaml`).
+   To start a distributed training:
 
-4. Distributed Training
-
-   ```Plain
+   ```shell
    cd FlagScale
-   ##Start Distributed Training
    python run.py --config-path ./examples/llama3/conf --config-name train action=run 
-   ## Stop Distributed Training
+   ```
+
+   To stop the training:
+   ```shell
    python run.py --config-path ./examples/llama3/conf --config-name train action=stop 
    ```
 
-   After starting distributed training, the configuration information will be printed, and a run script will be generated at:
+   After starting distributed training, the configuration information will be printed,
+   and a run script will be generated at:
 
    ```Plain
    flagscale/outputs_llama3_8b/logs/scripts/host_0_localhost_run.sh
    ```
 
-   The training output files can be found in:
-
-   ```Plain
-   flagscale/outputs_llama3_8b
-   ```
+   The training output files can be found under `flagscale/outputs_llama3_8b`.
 
    **Notes:**
 
@@ -298,20 +310,22 @@ We conduct our experiments by running the LLaMA3-8B model on Nvidia A800 GPUs.
 
 ## Heterogeneous Tests Using FlagCX
 
-## Communication API Test
+### Communication API Test
 
 1. Build and Installation
 
-   Refer to the Environment Setup, Creating Symbolic Links, and Build & Installation sections in [getting_started.md](getting_started.md).
+   Refer to the [getting started](./getting_started.md) documentation for instructions on
+   environment setup, creating symbolic links, and how to build and install the software.
 
-2. Verify MPICH Installation
+1. Verify MPICH Installation
 
-   ```Plain
-   # Check if MPICH is installed
+   To check if MPICH has been installed:
+
+   ```shell
    cd /workspace/mpich-4.2.3
    ```
 
-3. Makefile and Environment Variable Configuration
+1. Makefile and environment variable configuration
 
    ```
    # Navigate to the Communication API test directory
@@ -327,17 +341,17 @@ We conduct our experiments by running the LLaMA3-8B model on Nvidia A800 GPUs.
    export LD_LIBRARY_PATH=/workspace/mpich-4.2.3/build/lib:$LD_LIBRARY_PATH
    ```
 
-4. Heterogeneous Communication API Test
+1. Heterogeneous Communication API Test
 
-   - Ensure that Host 1, Host 2, … are all configured as described above and can correctly run the homogeneous Communication API test on their respective platforms.
-
+   - Ensure that Host 1, Host 2, … are all configured as described above and
+     can correctly run the homogeneous Communication API test on their respective platforms.
 
    - Verify that the ports on Host 1, Host 2, … are `<xxx>` and keep them consistent across all hosts.
 
+   - Before running the heterogeneous Communication API test script on Host 1,
+     configure the port number environment variable:
 
-   - Before running the heterogeneous Communication API test script on Host 1, configure the port number environment variable:
-
-     ```Plain
+     ```shell
      export HYDRA_LAUNCHER_EXTRA_ARGS="-p 8010"
      ```
      
@@ -345,11 +359,11 @@ We conduct our experiments by running the LLaMA3-8B model on Nvidia A800 GPUs.
 
    - Run the heterogeneous Communication API test script on Host 1:
 
-     ```Plain
+     ```shell
      ./run.sh
      ```
 
-     ```Plain
+     ```shell
      /workspace/mpich-4.2.3/build/bin/mpirun \
        -np 2 -hosts 10.1.15.233:1,10.1.15.67:1 \
        -env PATH=/workspace/mpich-4.2.3/build/bin \

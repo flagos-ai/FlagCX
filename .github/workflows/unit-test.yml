@@ -10,13 +10,13 @@ on:
 
 jobs:
   unit-test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, cx-build]
     container:
-      image: localhost:5000/flagscale:cuda12.4.1-cudnn9.5.0-python3.12-torch2.6.0-time2505241715
+      image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
       options:  --gpus all  --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.ref }}
@@ -81,12 +81,16 @@ jobs:
       - name: Run unit tests with mpirun
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest
+          export MPI_HOME=/usr/local/mpi
+          export PATH=$MPI_HOME/bin:$PATH
           mpirun -np 8 --allow-run-as-root ./build/bin/main
 
       - name: Run clusters tests with mpirun
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest
-          mpirun -np 8 --allow-run-as-root  -x FLAGCX_CLUSTER_SPLIT_LIST=2  -x FLAGCX_IB_HCA=mlx5  ./build/bin/main
+          export MPI_HOME=/usr/local/mpi
+          export PATH=$MPI_HOME/bin:$PATH
+          mpirun -np 8 --allow-run-as-root  -x FLAGCX_CLUSTER_SPLIT_LIST=2  -x FLAGCX_IB_HCA=mlx5 -x FLAGCX_ENABLE_TOPO_DETECT=TRUE ./build/bin/main
 
 
 

@@ -2467,9 +2467,8 @@ flagcxResult_t flagcxIbPut(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxIbPutSignal(void *sendComm, uint64_t dstOff, int tag,
-                                 int srcRank, int dstRank, void **gHandles,
-                                 void **request) {
+flagcxResult_t flagcxIbPutSignal(void *sendComm, uint64_t dstOff, int dstRank,
+                                 void **gHandles, void **request) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxIbGlobalHandleInfo *info =
       (struct flagcxIbGlobalHandleInfo *)gHandles;
@@ -2497,7 +2496,6 @@ flagcxResult_t flagcxIbPutSignal(void *sendComm, uint64_t dstOff, int tag,
   wr.wr.atomic.remote_addr = (uint64_t)dstPtr;
   wr.wr.atomic.compare_add = 1;
   wr.wr.atomic.rkey = rkey;
-  wr.imm_data = (uint32_t)tag;
 
   wr.sg_list = &sge;
   wr.num_sge = 1;

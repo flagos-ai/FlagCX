@@ -122,6 +122,7 @@ UCX_LIB =
 UCX_INCLUDE =
 UCX_LINK =
 NET_ADAPTOR_FLAG =
+COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 ifeq ($(USE_NVIDIA), 1)
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
@@ -259,17 +260,21 @@ endif
 
 ifeq ($(COMPILE_KERNEL), 1)
 	COMPILE_KERNEL_FLAG = -DCOMPILE_KERNEL
+	COMPILE_KERNEL_HOST_FLAG = -DCOMPILE_KERNEL_HOST
 endif
 
 LIBDIR := $(BUILDDIR)/lib
 OBJDIR := $(BUILDDIR)/obj
+PREFIX ?= /usr/local
+DESTDIR  ?= $(PREFIX)/lib
 
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
 	$(abspath flagcx/adaptor/include) \
 	$(abspath flagcx/runner/include) \
 	$(abspath flagcx/core/include) \
-	$(abspath flagcx/service/include)
+	$(abspath flagcx/service/include) \
+	$(abspath third-party/json/single_include)
 
 LIBSRCFILES:= \
 	$(wildcard flagcx/*.cc) \
@@ -339,7 +344,7 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) -I$(DEVICE_INCLUDE) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) -I$(DEVICE_INCLUDE) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
@@ -357,5 +362,10 @@ else
 -include $(LIBOBJ:.o=.d)
 endif
 
+INSTALLDIR := /usr/local/lib
+install:
+	@mkdir -p $(DESTDIR)
+	@cp $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET)
+
 clean:
-	@rm -rf $(LIBDIR)/$(TARGET) $(OBJDIR)
+	@rm -rf $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET) $(OBJDIR)

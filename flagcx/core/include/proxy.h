@@ -17,6 +17,7 @@
 #include "net.h"
 #include "reg_pool.h"
 #include "socket.h"
+#include "uni_runner_impl.h"
 #include <memory>
 #include <pthread.h>
 
@@ -86,7 +87,7 @@ struct flagcxProxySubArgs {
 };
 
 struct flagcxProxyArgs {
-  struct flagcxProxySubArgs subs[MAXSTEPS];
+  struct flagcxProxySubArgs subs[FLAGCX_NET_MAX_STEPS];
   proxyProgressFunc_t progress;
   int nsubs;
   int done;
@@ -100,7 +101,6 @@ struct flagcxProxyArgs {
   int posted = 0;
   int copied = 0;
   int postFlush = 0;
-  int flushed = 0;
   int transmitted = 0;
   int sendStepMask;
   size_t totalCopySize;
@@ -126,24 +126,20 @@ struct flagcxProxyArgs {
   struct flagcxProxyArgs **proxyAppendPtr;
 
   /*for launch*/
-  int deviceFuncRelaxedOrdering = 0;
-  std::shared_ptr<flagcxHostSemaphore> semaphore;
-  // only for device func, to be deprecated
-  volatile bool eventRecorded = false;
-  volatile bool hlArgs = false;
-  volatile bool hEventReady = false;
-  bool *volatile dlArgs;
-  bool *volatile dEventReady;
+  std::shared_ptr<flagcxSemaphore> semaphore;
+  int opId;
+  int step;
 
   // user buffer registration
   void *regHandle = nullptr;
   int regBufFlag = 0;
 
   // P2P operation slot management
-  int p2pOpHash = -1;
-  int p2pPeerOpHash = -1;
+  uint64_t p2pOpHash = -1;
+  uint64_t p2pPeerOpHash = -1;
   size_t p2pSlotIdx = 0;
   size_t p2pPeerSlotIdx = 0;
+  void *p2pRmtAddr = nullptr; // Remote address for P2P zero-copy
 
   union flagcxProxyOpSpecifics specifics;
 };
@@ -351,6 +347,7 @@ struct flagcxProxyState {
   // Kernel thread
   bool enableProxyKernel = false;
   struct flagcxProxyKernelState kernelState;
+  flagcxUniRunnerState uniRunnerState;
 
   // Queue of expected responses from the proxy
   struct flagcxExpectedProxyResponse *expectedResponses;

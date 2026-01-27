@@ -43,8 +43,9 @@ sudo docker run -itd \
    Review and Choose Build Options Suitable for the Current Platform
 
    ```
-   git clone https://github.com/FlagOpen/FlagCX.git
+   git clone https://github.com/flagos-ai/FlagCX.git
    cd FlagCX 
+   git submodule update --init --recursive
    cat Makefile
    make USE_NVIDIA=1 -j$(nproc) # NVIDIA GPU Platform
    make USE_CAMBRICON=1 -j$(nproc)  # Cambricon Platform
@@ -192,8 +193,8 @@ sudo docker run -itd \
    - Pull the FlagScale and FlagCX source code.
 
      ```Plain
-     git clone https://github.com/FlagOpen/FlagScale.git 
-     git clone https://github.com/FlagOpen/FlagCX.git
+     git clone https://github.com/flagos-ai/FlagScale.git 
+     git clone https://github.com/flagos-ai/FlagCX.git
      ```
    
    

@@ -11,7 +11,7 @@
     ```
 4. clone FlagCX
     ```bash
-    git clone https://github.com/FlagOpen/FlagCX.git
+    git clone https://github.com/flagos-ai/FlagCX.git
     ```
 ## Compile Paddle With FlagCX
 1. cd into iluvatar_gpu directory

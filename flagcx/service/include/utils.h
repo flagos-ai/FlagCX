@@ -16,13 +16,16 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <new>
+#include <nlohmann/json.hpp>
 #include <sched.h>
 #include <stdint.h>
+#include <string>
 #include <time.h>
+#include <vector>
 
 #define LOADAPI(struct, api, ptr)                                              \
   api:                                                                         \
-  (typeof(struct ::api)) ptr
+  (typeof(struct ::api))ptr
 
 // PCI Bus ID <-> int64 conversion functions
 flagcxResult_t int64ToBusId(int64_t id, char *busId);
@@ -153,6 +156,8 @@ template <typename T, T *T::*next>
 void flagcxIntruQueueEnqueue(flagcxIntruQueue<T, next> *me, T *x);
 template <typename T, T *T::*next>
 T *flagcxIntruQueueDequeue(flagcxIntruQueue<T, next> *me);
+template <typename T, T *T::*next>
+inline T *flagcxIntruQueueRemove(flagcxIntruQueue<T, next> *me, T *prev);
 template <typename T, T *T::*next>
 T *flagcxIntruQueueTryDequeue(flagcxIntruQueue<T, next> *me);
 template <typename T, T *T::*next>
@@ -381,6 +386,23 @@ inline T *flagcxIntruQueueDequeue(flagcxIntruQueue<T, next> *me) {
   if (me->head == nullptr)
     me->tail = nullptr;
   return ans;
+}
+
+template <typename T, T *T::*next>
+inline T *flagcxIntruQueueRemove(flagcxIntruQueue<T, next> *me, T *prev) {
+  if (prev) {
+    T *x = prev->*next;
+    prev->*next = x->*next;
+    if (me->tail == x)
+      me->tail = prev;
+    return x->*next;
+  } else {
+    T *x = me->head;
+    me->head = x->*next;
+    if (me->tail == x)
+      me->tail = nullptr;
+    return x->*next;
+  }
 }
 
 template <typename T, T *T::*next>
@@ -708,6 +730,64 @@ void max(void *res, const void *op1, const void *op2, size_t n) {
   }
 }
 
+template <typename Int>
+inline int log2Up(Int x) {
+  int w, n;
+  if (x != 0)
+    x -= 1;
+  if (x == 0) {
+    return 0;
+  } else if (sizeof(Int) <= sizeof(unsigned int)) {
+    w = 8 * sizeof(unsigned int);
+    n = __builtin_clz((unsigned int)x);
+  } else if (sizeof(Int) <= sizeof(unsigned long)) {
+    w = 8 * sizeof(unsigned long);
+    n = __builtin_clzl((unsigned long)x);
+  } else if (sizeof(Int) <= sizeof(unsigned long long)) {
+    w = 8 * sizeof(unsigned long long);
+    n = __builtin_clzll((unsigned long long)x);
+  } else {
+    static_assert(sizeof(Int) <= sizeof(unsigned long long),
+                  "Unsupported integer size.");
+  }
+  return w - n;
+}
+
+template <typename Int>
+inline Int pow2Up(Int x) {
+  return Int(1) << log2Up(x);
+}
+
 void *flagcxOpenLib(const char *path, int flags,
                     void (*error_handler)(const char *, int, const char *));
+
+////////////////////////////////////////////////////////////////////////////////
+// FlagScale configuration structures and functions
+
+struct TuneObject {
+  std::string commOp;
+  int64_t nBytes;
+
+  // Construct from JSON
+  TuneObject(const nlohmann::json &j);
+};
+
+struct FlagScaleConfig {
+  std::vector<TuneObject> tune_objects;
+  int config_id;
+  int best_config_id;
+};
+
+// Read flagscale.json file and return all values （for tuning）
+FlagScaleConfig readFlagScaleJson(const std::string &filename = "");
+
+// Convert commOp string to flagcxCommOp_t enum
+flagcxCommOp_t commOpStringToEnum(const std::string &commOpStr);
+
+// Helper function to get commOp from TuneObject (avoids macro parameter
+// substitution)
+inline std::string getTuneObjectCommOp(const TuneObject &obj) {
+  return obj.commOp;
+}
+
 #endif

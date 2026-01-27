@@ -320,6 +320,8 @@ struct flagcxDeviceAdaptor hipAdaptor {
       hipAdaptorDeviceMemset, hipAdaptorDeviceMalloc, hipAdaptorDeviceFree,
       hipAdaptorSetDevice, hipAdaptorGetDevice, hipAdaptorGetDeviceCount,
       hipAdaptorGetVendor,
+      NULL, // flagcxResult_t (*hostGetDevicePointer)(void **pDevice, void
+            // *pHost);
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
@@ -369,6 +371,8 @@ struct flagcxDeviceAdaptor hipAdaptor {
                                              // *handleOut, void *buffer,
                                              // size_t size, unsigned long long
                                              // flags);
+      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
+            // start, flagcxEvent_t end);
 };
 
 #endif // USE_AMD_ADAPTOR

@@ -7,12 +7,16 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "flagcx_hetero.h"
+#include "flagcx_net.h"
+#include "ib_common.h"
 #include "launch_kernel.h"
+#include "net.h"
 #include "param.h"
 #include "proxy.h"
 #include "reg_pool.h"
 #include "runner.h"
 #include "timer.h"
+#include "transport.h"
 #include "utils.h"
 #include <cassert>
 #include <stdio.h>
@@ -20,6 +24,7 @@
 #include <unordered_map>
 
 flagcxRegPool globalRegPool;
+struct flagcxIbGlobalHandleInfo *globalOneSideHandles = NULL;
 
 size_t getFlagcxDataTypeSize(flagcxDataType_t dtype) {
   switch (dtype) {
@@ -143,7 +148,7 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
     WARN("Invalid pointer(!=NULL) or size(0) for allocation.");
     return flagcxSuccess;
   }
-  if (comm != NULL && useHomoComm(comm)) {
+  if (comm != NULL && useHomoComm(comm) && !useHeteroComm()) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
     return flagcxSuccess;
   }
@@ -162,7 +167,7 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm) {
     WARN("Invalid pointer(=NULL)for de-allocation.");
     return flagcxSuccess;
   }
-  if (comm != NULL && useHomoComm(comm)) {
+  if (comm != NULL && useHomoComm(comm) && !useHeteroComm()) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
     return flagcxSuccess;
   }
@@ -171,14 +176,139 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
+                                     size_t size) {
+  // Check if one-sided operations are enabled
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxSuccess;
+  }
+
+  struct flagcxHeteroComm *heteroComm = comm->hetero_comm;
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+      heteroComm->netAdaptor->put == NULL ||
+      heteroComm->netAdaptor->regMr == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: heteroComm is NULL");
+    return flagcxSuccess;
+  }
+
+  struct bootstrapState *state = heteroComm->bootstrap;
+  if (state == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: state is NULL");
+    return flagcxNotSupported;
+  }
+
+  void *mrHandle = NULL;
+  struct ibv_mr *mr = NULL;
+
+  int sendPeer = (heteroComm->rank + 1) % heteroComm->nRanks;
+  int recvPeer =
+      (heteroComm->rank - 1 + heteroComm->nRanks) % heteroComm->nRanks;
+
+  flagcxNetHandle_t listenHandle = {};
+  void *listenComm = NULL;
+  FLAGCXCHECK(heteroComm->netAdaptor->listen(
+      heteroComm->netDev, (void *)listenHandle, &listenComm));
+
+  flagcxNetHandle_t peerHandle = {};
+  FLAGCXCHECK(bootstrapSend(state, recvPeer, 1001, (void *)listenHandle,
+                            sizeof(flagcxNetHandle_t)));
+  FLAGCXCHECK(bootstrapRecv(state, sendPeer, 1001, (void *)peerHandle,
+                            sizeof(flagcxNetHandle_t)));
+
+  // Establish connections
+  void *sendComm = NULL;
+  void *recvComm = NULL;
+  while (sendComm == NULL || recvComm == NULL) {
+    if (sendComm == NULL) {
+      flagcxResult_t res = heteroComm->netAdaptor->connect(
+          heteroComm->netDev, (void *)peerHandle, &sendComm);
+      if (res != flagcxSuccess && res != flagcxInProgress) {
+        INFO(FLAGCX_REG,
+             "flagcxOneSideRegister: connect to sendPeer failed, res=%d", res);
+        return res;
+      }
+    }
+
+    if (recvComm == NULL) {
+      flagcxResult_t res =
+          heteroComm->netAdaptor->accept(listenComm, &recvComm);
+      if (res != flagcxSuccess && res != flagcxInProgress) {
+        INFO(FLAGCX_REG,
+             "flagcxOneSideRegister: accept from recvPeer failed, res=%d", res);
+        return res;
+      }
+    }
+
+    if (sendComm == NULL || recvComm == NULL) {
+      sched_yield();
+    }
+  }
+  // Close listen comm
+  heteroComm->netAdaptor->closeListen(listenComm);
+
+  void *regComm = recvComm;
+  INFO(FLAGCX_REG, "flagcxOneSideRegister: sendComm and recvComm created, "
+                   "using sendComm for registration");
+
+  if (heteroComm->netAdaptor->name &&
+      strcmp(heteroComm->netAdaptor->name, "IB") == 0) {
+    struct flagcxIbSendComm *ibSendComm = (struct flagcxIbSendComm *)regComm;
+    regComm = (void *)&ibSendComm->base;
+  }
+
+  int type = FLAGCX_PTR_HOST;
+  flagcxResult_t res =
+      heteroComm->netAdaptor->regMr(regComm, buff, size, type, &mrHandle);
+  if (res != flagcxSuccess || mrHandle == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
+    return flagcxNotSupported;
+  }
+
+  struct flagcxIbMrHandle *localMrHandle = (struct flagcxIbMrHandle *)mrHandle;
+  mr = localMrHandle->mrs[0];
+
+  int nranks = state->nranks;
+  struct flagcxIbGlobalHandleInfo *info = NULL;
+  FLAGCXCHECK(flagcxCalloc(&info, 1));
+  FLAGCXCHECK(flagcxCalloc(&info->base_vas, nranks));
+  FLAGCXCHECK(flagcxCalloc(&info->rkeys, nranks));
+  FLAGCXCHECK(flagcxCalloc(&info->lkeys, nranks));
+
+  info->base_vas[state->rank] = (uintptr_t)buff;
+  info->rkeys[state->rank] = mr->rkey;
+  info->lkeys[state->rank] = mr->lkey;
+
+  FLAGCXCHECK(
+      bootstrapAllGather(state, (void *)info->base_vas, sizeof(uintptr_t)));
+  FLAGCXCHECK(bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)));
+  FLAGCXCHECK(bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)));
+  // Store globalHandles in global variable
+  globalOneSideHandles = info;
+  INFO(FLAGCX_REG, "One-sided register allgather results (rank %d, nranks %d):",
+       state->rank, nranks);
+  for (int i = 0; i < nranks; i++) {
+    INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
+         info->base_vas[i], info->rkeys[i], info->lkeys[i]);
+  }
+  INFO(FLAGCX_REG, "flagcxOneSideRegister: allgather results printed");
+
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  const char *enableOneSideReg =
+      flagcxGetEnv("FLAGCX_ENABLE_ONE_SIDE_REGISTER");
+  if (enableOneSideReg && strcmp(enableOneSideReg, "1") == 0) {
+    flagcxOneSideRegister(comm, buff, size);
+  }
+
   if (buff == NULL || size == 0) {
     WARN("Invalid buffer or size for buffer registration.");
     return flagcxInvalidArgument;
   }
-  if (useHomoComm(comm)) {
+  if (useHomoComm(comm) && !useHeteroComm()) {
     cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(comm->homo_comm, buff,
                                                       size, handle);
   } else {
@@ -191,7 +321,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHomoComm(comm)) {
+  if (useHomoComm(comm) && !useHeteroComm()) {
     cclAdaptors[flagcxCCLAdaptorDevice]->commDeregister(comm->homo_comm,
                                                         handle);
   } else {
@@ -280,6 +410,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->homoInterMyRank = -1;
   (*comm)->homoInterRanks = -1;
   (*comm)->homoInterComm = NULL;
+  (*comm)->c2cSchedule = NULL;
 
   struct bootstrapState *state = NULL;
   FLAGCXCHECK(flagcxCalloc(&state, 1));
@@ -370,6 +501,34 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   }
   (*comm)->homo_inter_rank = clusterInterRanks[clusterIdData[rank]] - start;
 
+  // Build c2cSchedule
+  FLAGCXCHECK(flagcxCalloc(&(*comm)->c2cSchedule, (*comm)->nclusters));
+  int nLocals = (*comm)->nclusters;
+  int local = (*comm)->cluster_ids[rank];
+
+  int nLocalsPow2 = pow2Up(nLocals);
+  uint32_t localRound = 0;
+  uint32_t localDelta = 0;
+  int round = 0;
+  do {
+    if ((int)localDelta < nLocals) { // Filter nonsensical local deltas
+      int sendLocal = (local + localDelta) % nLocals;
+      int recvLocal = (local - localDelta + nLocals) % nLocals;
+      (*comm)->c2cSchedule[round].sendCluster = sendLocal;
+      (*comm)->c2cSchedule[round].recvCluster = recvLocal;
+      round += 1;
+    }
+    localRound += 1;
+    // Quadratic update
+    localDelta = (localDelta + localRound) & (nLocalsPow2 - 1);
+  } while (localRound != (uint32_t)nLocalsPow2);
+  for (int i = 0; i < round; ++i) {
+    INFO(FLAGCX_INIT,
+         "cluster %d c2cSchedule[%d] sendCluster %d recvCluster %d", local, i,
+         (*comm)->c2cSchedule[i].sendCluster,
+         (*comm)->c2cSchedule[i].recvCluster);
+  }
+
   // Update comm has_single_rank_homo_comm
   for (int i = 0; i < (*comm)->nclusters; ++i) {
     if ((*comm)->cluster_sizes[i] == 1) {
@@ -396,14 +555,23 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   INFO(FLAGCX_INIT, "Flagcx USE_TUNER flag set to %d", useTuner);
   if (useTuner) {
     (*comm)->tuner = &internalTuner;
-    (*comm)->tuner->bootstrap = state;
-    (*comm)->tuner->rank = rank;
-    (*comm)->tuner->nranks = nranks;
     (*comm)->commId = commId;
     (*comm)->uniqueIdData = uniqueIdData;
     (*comm)->tunerInnerComm = NULL;
-    FLAGCXCHECK((*comm)->tuner->init((*comm)->nranks, 0, flagcxDebugLog,
-                                     &((*comm)->tunerContext)));
+    (*comm)->isTunningComm = false;
+    (*comm)->isTuningWithFlagscale = false;
+    bool isTuningWithFlagscale = false;
+    const char *isTuningWithFlagscaleEnv =
+        flagcxGetEnv("TUNING_WITH_FLAGSCALE");
+    if (isTuningWithFlagscaleEnv) {
+      isTuningWithFlagscale =
+          (std::stoi(isTuningWithFlagscaleEnv) == 1) ? true : false;
+    }
+    (*comm)->isTuningWithFlagscale = isTuningWithFlagscale;
+
+    FLAGCXCHECK((*comm)->tuner->init((*comm)->nranks, (*comm)->rank,
+                                     flagcxDebugLog, &((*comm)->tunerContext),
+                                     state));
     uint32_t nConfigs = 0;
     FLAGCXCHECK(
         (*comm)->tuner->getCandidateNumber((*comm)->tunerContext, &nConfigs));
@@ -413,6 +581,16 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
     (*comm)->homoCommMap.clear();
     (*comm)->homoBestCommMap.clear();
+    if (isTuningWithFlagscale) {
+      // Create a default communicator based on the default config
+      flagcxInnerComm_t innerComm = NULL;
+      FLAGCXCHECK(
+          flagcxHomoCommInit(commId, uniqueIdData, state, *comm, &innerComm));
+      // Insert item into homoCommMap
+      (*comm)->tunerInnerComm = innerComm;
+      // For backward compatible, also assign homo_comm field.
+      (*comm)->homo_comm = innerComm;
+    }
   } else {
     (*comm)->tuner = NULL;
     FLAGCXCHECK(flagcxHomoCommInit(commId, uniqueIdData, state, *comm,
@@ -539,13 +717,11 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     free(nicDistanceData);
     const char *deviceFuncPathEnv = flagcxGetEnv("FLAGCX_DEVICE_FUNC_PATH");
     if (deviceFuncPathEnv) {
-      FLAGCXCHECK(loadKernelSymbol(deviceFuncPathEnv, "deviceAsyncLoad",
-                                   &deviceAsyncLoad));
-      FLAGCXCHECK(loadKernelSymbol(deviceFuncPathEnv, "deviceAsyncStore",
-                                   &deviceAsyncStore));
-      if (deviceAsyncLoad == NULL || deviceAsyncStore == NULL) {
-        printf("Failed to load async kernel from %s\n", deviceFuncPathEnv);
-        exit(1);
+      FLAGCXCHECK(loadKernelSymbol(deviceFuncPathEnv, "deviceAsyncKernel",
+                                   &deviceAsyncKernel));
+      if (deviceAsyncKernel == NULL) {
+        WARN("Failed to load async kernel from %s", deviceFuncPathEnv);
+        return flagcxInvalidArgument;
       }
     }
   }
@@ -576,6 +752,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->cluster_ids);
   free(comm->cluster_sizes);
   free(comm->globalrank2homorank);
+  free(comm->c2cSchedule);
 
   // Destroy bootstrap state and net
   bootstrapClose(comm->bootstrap);
@@ -801,7 +978,10 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                flagcxRedOp_t op, flagcxComm_t comm,
                                flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHomoComm(comm)) {
+  if (useHeteroComm()) {
+    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allReduce(
+        sendbuff, recvbuff, count, datatype, op, comm, stream));
+  } else if (useHomoComm(comm)) {
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->allReduce(
         sendbuff, recvbuff, count, datatype, op, comm, stream));
   } else if (useHostComm() || comm->has_single_rank_homo_comm) {

@@ -21,6 +21,7 @@ echo "--------------------------------------------------------"
 
 echo "[INFO] Launching PyTorch API tests in heterogeneous mode"
 export FLAGCX_CLUSTER_SPLIT_LIST=2
+export FLAGCX_ENABLE_TOPO_DETECT=TRUE
 while true; do
     PORT=$(shuf -i 20000-65535 -n 1)
     (echo >/dev/tcp/127.0.0.1/$PORT) &>/dev/null || break
