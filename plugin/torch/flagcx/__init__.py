@@ -15,7 +15,7 @@ def init():
     pass
 
 def replace_prefix(arg):
-    device_list = ["cuda", "mlu", "npu", "musa"]
+    device_list = ["cuda", "mlu", "npu", "musa", "txda"]
     flagcx_prefix = "flagcx_dev"
     if isinstance(arg, str):
         for string in device_list:

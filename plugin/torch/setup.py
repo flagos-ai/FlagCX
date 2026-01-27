@@ -10,7 +10,7 @@ if '--adaptor' in sys.argv:
     arg_index = sys.argv.index('--adaptor')
     sys.argv.remove("--adaptor")
     if arg_index < len(sys.argv):
-        assert sys.argv[arg_index] in ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd"], f"Invalid adaptor: {adaptor_flag}"
+        assert sys.argv[arg_index] in ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd", "tsm"], "Invalid adaptor: {}".format(sys.argv[arg_index])
         print(f"Using {sys.argv[arg_index]} adaptor")
         if sys.argv[arg_index] == "iluvatar_corex":
             adaptor_flag = "-DUSE_ILUVATAR_COREX_ADAPTOR"
@@ -28,6 +28,8 @@ if '--adaptor' in sys.argv:
             adaptor_flag = "-DUSE_ASCEND_ADAPTOR"
         elif sys.argv[arg_index] == "amd":
             adaptor_flag = "-DUSE_AMD_ADAPTOR"
+        elif sys.argv[arg_index] == "tsm":
+            adaptor_flag = "-DUSE_TSM_ADAPTOR"
     else:
         print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
     sys.argv.remove(sys.argv[arg_index])
@@ -43,6 +45,7 @@ library_dirs = [
 ]
 
 libs = ["flagcx"]
+extra_link_args = ["-Wl,-rpath,"+f"{os.path.dirname(os.path.abspath(__file__))}/../../build/lib"]
 
 if adaptor_flag == "-DUSE_NVIDIA_ADAPTOR":
     include_dirs += ["/usr/local/cuda/include"]
@@ -91,6 +94,15 @@ elif adaptor_flag == "-DUSE_AMD_ADAPTOR":
     include_dirs += ["/opt/rocm/include"]
     library_dirs += ["/opt/rocm/lib"]
     libs += ["hiprtc", "c10_hip", "torch_hip"]
+elif adaptor_flag == "-DUSE_TSM_ADAPTOR":
+    import torch_txda
+    txda_install_path = torch_txda.__path__[0]
+    txda_library_path = txda_install_path
+    include_dirs += [os.path.join(txda_install_path, "include")]
+    include_dirs += ["/usr/local/kuiper/include"]
+    library_dirs += ["/usr/local/kuiper/lib",txda_install_path]
+    libs += ["torch_txda", "hpgr"]
+    extra_link_args += [f'-Wl,-rpath,{txda_install_path}']
 
 if adaptor_flag == "-DUSE_MUSA_ADAPTOR":
     from torch_musa.utils.musa_extension import MUSAExtension as CppExtension
@@ -105,7 +117,7 @@ module = CppExtension(
     extra_compile_args={
         'cxx': [adaptor_flag]
     },
-    extra_link_args=["-Wl,-rpath,"+f"{os.path.dirname(os.path.abspath(__file__))}/../../build/lib"],
+    extra_link_args = extra_link_args,
     library_dirs=library_dirs,
     libraries=libs,
 )
