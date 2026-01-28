@@ -2,6 +2,7 @@
 build
 plugin/*/build
 test/*/build
+debian-packages
 
 # Ignore compiled Python files and shared object files
 plugin/*/*.so

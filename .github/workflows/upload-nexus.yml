@@ -1,0 +1,106 @@
+name: Upload to Nexus Repository
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Build workflow run ID (optional, uses latest if not specified)'
+        required: false
+
+jobs:
+  upload:
+    runs-on: h20
+
+    steps:
+      - name: Download build artifacts
+        uses: dawidd6/action-download-artifact@v12
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          workflow: build-deb.yml
+          run_id: ${{ github.event.inputs.run_id }}
+          workflow_conclusion: success
+          path: packages/
+
+      - name: List downloaded packages
+        run: |
+          echo "Downloaded packages:"
+          find packages/ -name "*.deb" -exec ls -lh {} \;
+
+      - name: Upload packages to Nexus APT repository
+        env:
+          NEXUS_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.CONTAINER_REGISTRY }}
+          NEXUS_REPO_URL: https://resource.flagos.net/repository/flagos-apt-hosted
+        run: |
+          set -e
+
+          # Function to upload a deb package to Nexus APT hosted repository
+          upload_deb() {
+            local deb_file="$1"
+            local backend="$2"
+            local filename=$(basename "$deb_file")
+
+            # Extract package metadata for logging
+            local package=$(dpkg-deb -f "$deb_file" Package)
+            local version=$(dpkg-deb -f "$deb_file" Version)
+            local arch=$(dpkg-deb -f "$deb_file" Architecture)
+
+            echo "Uploading: $filename"
+            echo "  Package: $package"
+            echo "  Version: $version"
+            echo "  Architecture: $arch"
+            echo "  Backend: $backend"
+
+            # Upload to Nexus APT hosted repository
+            # Nexus APT hosted repositories accept uploads at the root level
+            local upload_url="${NEXUS_REPO_URL}/${filename}"
+
+            if curl -f -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" \
+                 --upload-file "$deb_file" \
+                 "$upload_url"; then
+              echo "✓ Successfully uploaded $filename"
+            else
+              echo "✗ Failed to upload $filename"
+              return 1
+            fi
+          }
+
+          # Upload packages for all vendors
+          for vendor in nvidia metax; do
+            vendor_dir="packages/flagcx-${vendor}-packages"
+
+            if [ -d "$vendor_dir" ]; then
+              echo ""
+              echo "=== Uploading ${vendor} packages ==="
+
+              uploaded=0
+              for deb in "$vendor_dir"/*.deb; do
+                [ -f "$deb" ] || continue
+                if upload_deb "$deb" "$vendor"; then
+                  ((uploaded++))
+                fi
+              done
+
+              if [ $uploaded -gt 0 ]; then
+                echo "✓ Uploaded $uploaded ${vendor} package(s)"
+              else
+                echo "⚠ No ${vendor} packages found to upload"
+              fi
+            else
+              echo "⚠ Skipping ${vendor}: directory not found"
+            fi
+          done
+
+      - name: Summary
+        run: |
+          echo ""
+          echo "✅ Upload completed!"
+          echo ""
+          echo "Packages uploaded to Nexus APT repository:"
+          find packages/ -name "*.deb" -exec basename {} \;
+          echo ""
+          echo "To use the repository, add to /etc/apt/sources.list.d/flagcx.list:"
+          echo "deb https://resource.flagos.net/repository/flagos-apt-hosted/ flagos-apt-hosted main"
