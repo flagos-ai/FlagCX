@@ -187,12 +187,15 @@ def main():
             tmp.write(run_sh)
             tmp_path = tmp.name
 
-        scp_push(h["host"], tmp_path, remote_path)
-        subprocess.run(["ssh", h["host"], "chmod", "+x", remote_path], check=True)
-        if not args.dry_run:
-            ssh_exec(h["host"], remote_path)
-        else:
-            print(f"[dry-run] Generated {remote_path} on {h['host']} but did not execute")
+        try:
+            scp_push(h["host"], tmp_path, remote_path)
+            subprocess.run(["ssh", h["host"], "chmod", "+x", remote_path], check=True)
+            if not args.dry_run:
+                ssh_exec(h["host"], remote_path)
+            else:
+                print(f"[dry-run] Generated {remote_path} on {h['host']} but did not execute")
+        finally:
+            os.remove(tmp_path)
 
     print("All nodes processed successfully.")
 
