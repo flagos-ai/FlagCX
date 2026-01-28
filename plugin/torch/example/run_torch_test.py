@@ -54,9 +54,11 @@ def parse_hostfile(path: str) -> List[Dict[str, str]]:
     return hosts
 
 
-def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str]:
     """
     Expect structure:
+    cmds:
+      before_start: some command
     envs:
       VAR1: value
       VAR2: value
@@ -67,6 +69,13 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     """
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
+    cmds = data.get("cmds", {})
+    if cmds and not isinstance(cmds, dict):
+        raise ConfigError("cmds must be a mapping")
+    before_start = ""
+    if isinstance(cmds, dict):
+        before_start = cmds.get("before_start", "") or ""
+
     envs = data.get("envs", {})
     if not isinstance(envs, dict):
         raise ConfigError("envs must be a mapping")
@@ -74,7 +83,7 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     if not isinstance(device_specific, dict):
         raise ConfigError("envs.device_type_specific must be a mapping")
     common = {k: v for k, v in envs.items() if k != "device_type_specific"}
-    return common, device_specific
+    return common, device_specific, before_start
 
 
 def validate_hosts(hosts: List[Dict[str, str]], device_specific: Dict[str, Dict[str, str]]):
@@ -102,13 +111,15 @@ def format_env_exports(env: Dict[str, str]) -> str:
     return "\n".join(lines)
 
 
-def build_run_script(env_exports: str, command: str) -> str:
+def build_run_script(env_exports: str, command: str, pre_command: str) -> str:
+    pre = pre_command.strip()
+    pre_block = f"{pre}\n\n" if pre else ""
     return """#!/bin/bash
 set -euo pipefail
-{env_exports}
+{pre_block}{env_exports}
 
 {command}
-""".format(env_exports=env_exports, command=command)
+""".format(env_exports=env_exports, command=command, pre_block=pre_block)
 
 
 def scp_push(host: str, local_path: str, remote_path: str):
@@ -154,7 +165,7 @@ def main():
 
     try:
         hosts = parse_hostfile(args.hostfile)
-        common_env, device_specific_env = load_env_config(args.config)
+        common_env, device_specific_env, before_start_cmd = load_env_config(args.config)
         validate_hosts(hosts, device_specific_env)
     except ConfigError as e:
         print(f"Config error: {e}", file=sys.stderr)
@@ -181,7 +192,7 @@ def main():
         if args.extra_args:
             cmd = f"{cmd} {args.extra_args}"
 
-        run_sh = build_run_script(env_exports, cmd)
+        run_sh = build_run_script(env_exports, cmd, before_start_cmd)
 
         with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
             tmp.write(run_sh)

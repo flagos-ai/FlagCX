@@ -1,3 +1,5 @@
+cmds:
+  before_start: source /root/miniconda3/bin/activate flagscale-train
 envs:
   FLAGCX_DEBUG: INFO
   FLAGCX_DEBUG_SUBSYS: ALL
