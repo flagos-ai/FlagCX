@@ -56,16 +56,7 @@ def parse_hostfile(path: str) -> List[Dict[str, str]]:
 
 def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str, str, str]:
     """
-    Expect structure:
-    cmds:
-      before_start: some command
-    envs:
-      VAR1: value
-      VAR2: value
-      device_type_specific:
-        TYPEA: { VARX: val }
-        TYPEB: { VARY: val }
-    Common vars are the direct children of envs, excluding device_type_specific.
+    Reads from yaml config file designated by the user, see example_torch_env.yaml for expected format
     """
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
