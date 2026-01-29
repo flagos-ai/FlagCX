@@ -54,7 +54,7 @@ def parse_hostfile(path: str) -> List[Dict[str, str]]:
     return hosts
 
 
-def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str]:
+def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str]:
     """
     Expect structure:
     cmds:
@@ -76,6 +76,19 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     if isinstance(cmds, dict):
         before_start = cmds.get("before_start", "") or ""
 
+    test_dir = data.get("test_dir", None)
+    if not test_dir:
+        raise ConfigError("'test_dir' must be provided in the config")
+    test_dir_abs = os.path.abspath(os.path.expanduser(test_dir))
+
+    master_port = data.get("master_port", 8281)
+    try:
+        master_port = int(master_port)
+    except Exception as exc:
+        raise ConfigError("'master_port' must be an integer") from exc
+
+    master_addr = data.get("master_addr", None)
+
     envs = data.get("envs", {})
     if not isinstance(envs, dict):
         raise ConfigError("envs must be a mapping")
@@ -83,7 +96,7 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     if not isinstance(device_specific, dict):
         raise ConfigError("envs.device_type_specific must be a mapping")
     common = {k: v for k, v in envs.items() if k != "device_type_specific"}
-    return common, device_specific, before_start
+    return common, device_specific, before_start, test_dir_abs, master_port, master_addr
 
 
 def validate_hosts(hosts: List[Dict[str, str]], device_specific: Dict[str, Dict[str, str]]):
@@ -131,33 +144,10 @@ def ssh_exec(host: str, remote_path: str):
     subprocess.run(["ssh", host, remote_path], check=True)
 
 
-def discover_flagcx_example_run_path() -> str:
-    """Try to locate the installed flagcx torch plugin and return example/run.sh path.
-    Falls back to /tmp/flagcx_torch_test/run.sh if discovery fails.
-    """
-    try:
-        import importlib
-
-        spec = importlib.util.find_spec("flagcx")
-        if spec and spec.origin:
-            base_dir = os.path.dirname(os.path.abspath(spec.origin))
-            candidate = os.path.join(base_dir, "../example", "run_torch_test.sh")
-            return candidate
-    except Exception:
-        pass
-    return "/tmp/flagcx_torch_test/run_torch_test.sh"
-
-
 def main():
     parser = argparse.ArgumentParser(description="Auto-generate and run torchrun scripts across nodes")
     parser.add_argument("--hostfile", required=True, help="Path to hostfile")
     parser.add_argument("--config", required=True, help="Path to YAML env config")
-    parser.add_argument(
-        "--remote-path",
-        default=None,
-        help="Path to place run.sh on each host. Defaults to <flagcx_install>/example/run.sh if flagcx is importable, else /tmp/flagcx_torch_test/run.sh",
-    )
-    parser.add_argument("--master-port", type=int, default=8281, help="Master port for torchrun")
     parser.add_argument("--command", default="torchrun --nnodes {nnodes} --nproc_per_node {nproc_per_node} --node_rank {node_rank} --master_addr {master_addr} --master_port {master_port} plugin/torch/example/example.py", help="Command template to run. Placeholders: {nnodes}, {nproc_per_node}, {node_rank}, {master_addr}, {master_port}.")
     parser.add_argument("--extra-args", default="", help="Extra args appended to the command")
     parser.add_argument("--dry-run", action="store_true", help="Generate scripts but do not execute remotely")
@@ -165,18 +155,18 @@ def main():
 
     try:
         hosts = parse_hostfile(args.hostfile)
-        common_env, device_specific_env, before_start_cmd = load_env_config(args.config)
+        common_env, device_specific_env, before_start_cmd, test_dir_abs, master_port_cfg, master_addr_cfg = load_env_config(args.config)
         validate_hosts(hosts, device_specific_env)
     except ConfigError as e:
         print(f"Config error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    remote_path = args.remote_path or discover_flagcx_example_run_path()
+    remote_path = os.path.join(test_dir_abs, "run_torch_test.sh")
 
     nnodes = len(hosts)
     nproc_per_node = hosts[0]["slots"]
-    master_addr = hosts[0]["host"]
-    master_port = args.master_port
+    master_addr = master_addr_cfg or hosts[0]["host"]
+    master_port = master_port_cfg
 
     for node_rank, h in enumerate(hosts):
         env = merge_envs(common_env, device_specific_env.get(h["type"], {}))
