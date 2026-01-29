@@ -1,6 +1,7 @@
 cmds:
   before_start: source /root/miniconda3/bin/activate flagscale-train
 test_dir: ./
+log_dir: ./torch_logs
 testfile: ./example.py
 master_port: 8281
 master_addr: 127.0.0.1

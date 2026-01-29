@@ -54,7 +54,7 @@ def parse_hostfile(path: str) -> List[Dict[str, str]]:
     return hosts
 
 
-def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str, str]:
+def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str, str, str]:
     """
     Expect structure:
     cmds:
@@ -81,6 +81,11 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
         raise ConfigError("'test_dir' must be provided in the config")
     test_dir_abs = os.path.abspath(os.path.expanduser(test_dir))
 
+    log_dir = data.get("log_dir", None)
+    if not log_dir:
+        raise ConfigError("'log_dir' must be provided in the config")
+    log_dir_abs = os.path.abspath(os.path.expanduser(log_dir))
+
     testfile = data.get("testfile", None)
     if not testfile:
         raise ConfigError("'testfile' must be provided in the config")
@@ -101,16 +106,20 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     if not isinstance(device_specific, dict):
         raise ConfigError("envs.device_type_specific must be a mapping")
     common = {k: v for k, v in envs.items() if k != "device_type_specific"}
-    return common, device_specific, before_start, test_dir_abs, master_port, master_addr, testfile_abs
+    return common, device_specific, before_start, test_dir_abs, master_port, master_addr, testfile_abs, log_dir_abs
 
 
 def validate_hosts(hosts: List[Dict[str, str]], device_specific: Dict[str, Dict[str, str]]):
     slot_counts = {h["slots"] for h in hosts}
     if len(slot_counts) != 1:
         raise ConfigError(f"Inconsistent slots per node: {sorted(slot_counts)}. torchrun requires a consistent nproc_per_node.")
-    for h in hosts:
-        if h["type"] not in device_specific:
-            raise ConfigError(f"Device type '{h['type']}' not found in config device_type_specific")
+    host_types = {h["type"] for h in hosts}
+    extra_types = set(device_specific.keys()) - host_types
+    if extra_types:
+        print(
+            f"Warning: device_type_specific has entries not present in hostfile: {sorted(extra_types)}",
+            file=sys.stderr,
+        )
 
 
 def merge_envs(common: Dict[str, str], specific: Dict[str, str]) -> Dict[str, str]:
@@ -145,8 +154,11 @@ def scp_push(host: str, local_path: str, remote_path: str):
     subprocess.run(["scp", local_path, f"{host}:{remote_path}"], check=True)
 
 
-def ssh_exec(host: str, remote_path: str):
-    subprocess.run(["ssh", host, remote_path], check=True)
+def ssh_exec(host: str, remote_path: str, log_path: str):
+    """Execute script on remote host using nohup, redirecting output to log file."""
+    # Use nohup to run in background, redirect stdout/stderr to log file
+    cmd = f"nohup {remote_path} > {log_path} 2>&1 &"
+    subprocess.run(["ssh", host, cmd], check=True)
 
 
 def main():
@@ -159,13 +171,11 @@ def main():
 
     try:
         hosts = parse_hostfile(args.hostfile)
-        common_env, device_specific_env, before_start_cmd, test_dir_abs, master_port_cfg, master_addr_cfg, testfile_abs = load_env_config(args.config)
+        common_env, device_specific_env, before_start_cmd, test_dir_abs, master_port_cfg, master_addr_cfg, testfile_abs, log_dir_abs = load_env_config(args.config)
         validate_hosts(hosts, device_specific_env)
     except ConfigError as e:
         print(f"Config error: {e}", file=sys.stderr)
         sys.exit(1)
-
-    remote_path = os.path.join(test_dir_abs, "run_torch_test.sh")
 
     nnodes = len(hosts)
     nproc_per_node = hosts[0]["slots"]
@@ -189,17 +199,25 @@ def main():
             tmp.write(run_sh)
             tmp_path = tmp.name
 
+        host_run_name = f"run_torch_test_{h['host']}.sh"
+        remote_path = os.path.join(test_dir_abs, host_run_name)
+        log_name = f"run_torch_test_{h['host']}.log"
+        log_path = os.path.join(log_dir_abs, log_name)
+
         try:
             scp_push(h["host"], tmp_path, remote_path)
             subprocess.run(["ssh", h["host"], "chmod", "+x", remote_path], check=True)
+            # Ensure log directory exists on remote host
+            subprocess.run(["ssh", h["host"], "mkdir", "-p", log_dir_abs], check=True)
             if not args.dry_run:
-                ssh_exec(h["host"], remote_path)
+                ssh_exec(h["host"], remote_path, log_path)
+                print(f"Started test on {h['host']}, output will be logged to {log_path}")
             else:
-                print(f"[dry-run] Generated {remote_path} on {h['host']} but did not execute")
+                print(f"[dry-run] Generated {remote_path} on {h['host']}, would log to {log_path}")
         finally:
             os.remove(tmp_path)
 
-    print("All nodes processed successfully.")
+    print(f"All {nnodes} nodes launched. Check log files in {log_dir_abs} for output.")
 
 
 if __name__ == "__main__":
