@@ -54,7 +54,7 @@ def parse_hostfile(path: str) -> List[Dict[str, str]]:
     return hosts
 
 
-def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str]:
+def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str, str]:
     """
     Expect structure:
     cmds:
@@ -81,6 +81,11 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
         raise ConfigError("'test_dir' must be provided in the config")
     test_dir_abs = os.path.abspath(os.path.expanduser(test_dir))
 
+    testfile = data.get("testfile", None)
+    if not testfile:
+        raise ConfigError("'testfile' must be provided in the config")
+    testfile_abs = os.path.abspath(os.path.expanduser(testfile))
+
     master_port = data.get("master_port", 8281)
     try:
         master_port = int(master_port)
@@ -96,7 +101,7 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     if not isinstance(device_specific, dict):
         raise ConfigError("envs.device_type_specific must be a mapping")
     common = {k: v for k, v in envs.items() if k != "device_type_specific"}
-    return common, device_specific, before_start, test_dir_abs, master_port, master_addr
+    return common, device_specific, before_start, test_dir_abs, master_port, master_addr, testfile_abs
 
 
 def validate_hosts(hosts: List[Dict[str, str]], device_specific: Dict[str, Dict[str, str]]):
@@ -148,14 +153,13 @@ def main():
     parser = argparse.ArgumentParser(description="Auto-generate and run torchrun scripts across nodes")
     parser.add_argument("--hostfile", required=True, help="Path to hostfile")
     parser.add_argument("--config", required=True, help="Path to YAML env config")
-    parser.add_argument("--command", default="torchrun --nnodes {nnodes} --nproc_per_node {nproc_per_node} --node_rank {node_rank} --master_addr {master_addr} --master_port {master_port} plugin/torch/example/example.py", help="Command template to run. Placeholders: {nnodes}, {nproc_per_node}, {node_rank}, {master_addr}, {master_port}.")
     parser.add_argument("--extra-args", default="", help="Extra args appended to the command")
     parser.add_argument("--dry-run", action="store_true", help="Generate scripts but do not execute remotely")
     args = parser.parse_args()
 
     try:
         hosts = parse_hostfile(args.hostfile)
-        common_env, device_specific_env, before_start_cmd, test_dir_abs, master_port_cfg, master_addr_cfg = load_env_config(args.config)
+        common_env, device_specific_env, before_start_cmd, test_dir_abs, master_port_cfg, master_addr_cfg, testfile_abs = load_env_config(args.config)
         validate_hosts(hosts, device_specific_env)
     except ConfigError as e:
         print(f"Config error: {e}", file=sys.stderr)
@@ -172,12 +176,9 @@ def main():
         env = merge_envs(common_env, device_specific_env.get(h["type"], {}))
         env_exports = format_env_exports(env)
 
-        cmd = args.command.format(
-            nnodes=nnodes,
-            nproc_per_node=nproc_per_node,
-            node_rank=node_rank,
-            master_addr=master_addr,
-            master_port=master_port,
+        cmd = (
+            f"torchrun --nnodes {nnodes} --nproc_per_node {nproc_per_node} --node_rank {node_rank} "
+            f"--master_addr {master_addr} --master_port {master_port} {testfile_abs}"
         )
         if args.extra_args:
             cmd = f"{cmd} {args.extra_args}"
