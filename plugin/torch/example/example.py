@@ -56,6 +56,7 @@ def init_pg():
     # Get rank and world_size from environment
     MY_RANK = int(os.environ["RANK"])
     WORLD_SIZE = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ["LOCAL_RANK"])
 
     # Initialize the default flagcx process group
     dist.init_process_group(f"cpu:gloo,{dev_name}:flagcx", rank=MY_RANK, world_size=WORLD_SIZE)
@@ -81,7 +82,7 @@ def init_pg():
 
     if torch.cuda.is_available():
         # Set device
-        torch.cuda.set_device(MY_RANK % 8)
+        torch.cuda.set_device(local_rank)
 
 def destroy_pg():
     dist.destroy_process_group()
