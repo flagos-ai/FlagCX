@@ -278,6 +278,8 @@ endif
 
 LIBDIR := $(BUILDDIR)/lib
 OBJDIR := $(BUILDDIR)/obj
+PREFIX ?= /usr/local
+DESTDIR  ?= $(PREFIX)/lib
 
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
@@ -374,5 +376,10 @@ else
 -include $(LIBOBJ:.o=.d)
 endif
 
+INSTALLDIR := /usr/local/lib
+install:
+	@mkdir -p $(DESTDIR)
+	@cp $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET)
+
 clean:
-	@rm -rf $(LIBDIR)/$(TARGET) $(OBJDIR)
+	@rm -rf $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET) $(OBJDIR)

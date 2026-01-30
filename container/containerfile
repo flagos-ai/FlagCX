@@ -1,0 +1,12 @@
+ARG BASE_IMAGE_VERSION=latest
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-nvidia
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+# 
+ARG VENDOR=USE_NVIDIA
+# workdir
+WORKDIR /workspace
+COPY . /workspace/FlagCX
+WORKDIR /workspace/FlagCX
+
+# build
+RUN make ${VENDOR}=1

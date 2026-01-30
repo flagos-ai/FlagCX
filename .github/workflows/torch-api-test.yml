@@ -64,7 +64,7 @@ jobs:
         run: |
           export PATH=/root/miniconda3/bin:$PATH
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
-          pip uninstall -y setuptools && pip install setuptools==77.0.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+          pip uninstall -y setuptools && pip install setuptools==77.0.1 -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple 
           cd /__w/FlagCX/FlagCX/plugin/torch
           python setup.py develop --adaptor nvidia
 
