@@ -23,7 +23,7 @@ if '--adaptor' in sys.argv:
     else:
         print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
 
-valid_adaptors = ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd"]
+valid_adaptors = ["nvidia", "iluvatar_corex", "cambricon", "metax", "du", "klx", "ascend", "musa", "amd", "tops"]
 assert adaptor in valid_adaptors, f"Invalid adaptor: {adaptor}"
 print(f"Using {adaptor} adaptor")
 
@@ -37,6 +37,7 @@ adaptor_map = {
     "klx": "-DUSE_KUNLUNXIN_ADAPTOR",
     "ascend": "-DUSE_ASCEND_ADAPTOR",
     "amd": "-DUSE_AMD_ADAPTOR"
+    "tops": "-DUSE_TOPS_ADAPTOR"
 }
 adaptor_flag = adaptor_map[adaptor]
 torch_flag = "-DTORCH_VER_LT_250"
@@ -112,11 +113,21 @@ elif adaptor_flag == "-DUSE_AMD_ADAPTOR":
     include_dirs += ["/opt/rocm/include"]
     library_dirs += ["/opt/rocm/lib"]
     libs += ["hiprtc", "c10_hip", "torch_hip"]
+elif adaptor_flag == "-DUSE_TOPS_ADAPTOR":
+    import torch_gcu
+    pytorch_gcu_install_path = os.path.dirname(os.path.abspath(torch_gcu.__file__))
+    pytorch_library_path = os.path.join(pytorch_gcu_install_path, "lib")
+    include_dirs += ["/opt/tops/include", os.path.join(pytorch_gcu_install_path, "include")]
+    library_dirs += ["/opt/tops/lib", pytorch_library_path]
+    libs += ["topsrt", "torch_gcu"]
 
 try:
     if adaptor_flag == "-DUSE_MUSA_ADAPTOR":
         from torch_musa.utils.musa_extension import MUSAExtension as CppExtension
         from torch_musa.utils.musa_extension import BuildExtension
+    elif adaptor_flag == "-DUSE_TOPS_ADAPTOR":
+        from tops_extension import TopsBuildExtension as BuildExtension
+        from tops_extension.torch import TopsTorchExtension as CppExtension
     else:
         from torch.utils.cpp_extension import CppExtension, BuildExtension
 except ImportError:

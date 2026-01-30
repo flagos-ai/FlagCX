@@ -9,6 +9,7 @@ USE_MUSA ?= 0
 USE_KUNLUNXIN ?= 0
 USE_DU ?= 0
 USE_AMD ?= 0
+USE_TOPS ?= 0
 ifeq ($(USE_CAMBRICON), 1)
    DEV="MLU"
 else ifeq ($(USE_ASCEND), 1)
@@ -21,6 +22,8 @@ else ifeq ($(USE_KUNLUNXIN), 1)
    DEV="XPU"
 else ifeq ($(USE_AMD), 1)
    DEV="HIP"
+else ifeq ($(USE_TOPS), 1)
+	DEV="TOPS"
 else
    DEV="CUDA"
 endif
@@ -30,7 +33,7 @@ MPI_INCLUDE = $(MPI_HOME)/include
 MPI_LIB = $(MPI_HOME)/lib
 MPI_LINK = -lmpi
 COMPILER = g++
-EXTRA_COMPILER_FLAG = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wl,-rpath,../../build/lib -std=c++11 -g
+EXTRA_COMPILER_FLAG = -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wl,-rpath,../../build/lib -std=c++11 -g -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX
 
 INCLUDEDIR := $(abspath include)
 JSON_INCLUDE = $(abspath ../../third-party/json/single_include)
