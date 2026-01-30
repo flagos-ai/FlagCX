@@ -1,5 +1,4 @@
-
-[<img width="4750" height="958" alt="github+banner__2025-11-11+13_27_10" src="https://github.com/user-attachments/assets/31746439-e7b0-4391-8418-2f3597a88141" />](https://www.flagopen.ac.cn/)
+[<img width="2182" height="602" alt="github+banner-20260130" src=".github/assets/banner-20260130.png" />](https://flagos.io/)
 
 ## About
 
