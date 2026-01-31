@@ -201,6 +201,23 @@ flagcxResult_t tcclAdaptorCommDeregister(const flagcxInnerComm_t comm,
   return fromTcclResult(result);
 }
 
+flagcxResult_t tcclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                             void *buff, size_t size,
+                                             void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t tcclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t tcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t tcclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
                                  flagcxRedOp_t op, int root,
@@ -358,6 +375,9 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     // Basic functions
     tcclAdaptorGetVersion, tcclAdaptorGetUniqueId, tcclAdaptorGetErrorString,
     tcclAdaptorGetLastError,
+    // Symmetric operations
+    tcclAdaptorCommWindowRegister, tcclAdaptorCommWindowDeregister,
+    tcclAdaptorGetStagedBuffer,
     // Communicator functions
     tcclAdaptorCommInitRank, tcclAdaptorCommFinalize, tcclAdaptorCommDestroy,
     tcclAdaptorCommAbort, tcclAdaptorCommResume, tcclAdaptorCommSuspend,

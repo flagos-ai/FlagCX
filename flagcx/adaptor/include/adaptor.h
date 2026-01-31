@@ -74,6 +74,13 @@ struct flagcxCCLAdaptor {
   const char *(*getErrorString)(flagcxResult_t result);
   const char *(*getLastError)(flagcxInnerComm_t comm);
 
+  // Symmetric operations
+  flagcxResult_t (*commWindowRegister)(const flagcxInnerComm_t comm, void *buff,
+                                        size_t size, void **win, int flags);
+  flagcxResult_t (*commWindowDeregister)(const flagcxInnerComm_t comm, void *win);
+  flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
+                                     size_t size, int isRecv);
+
   // Communicator functions
   flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
                                  flagcxUniqueId *commId, int rank,

@@ -21,6 +21,21 @@ const char *duncclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
 }
 
+flagcxResult_t duncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                                void *buff, size_t size,
+                                                void **win, int flags) {
+  return flagcxNotSupported;
+}
+flagcxResult_t duncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                  void *win) {
+  return flagcxNotSupported;
+}
+flagcxResult_t duncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                            void **buff, size_t size,
+                                            int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t duncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                          flagcxUniqueId_t commId, int rank,
                                          bootstrapState * /*bootstrap*/) {
@@ -276,6 +291,9 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     // Basic functions
     duncclAdaptorGetVersion, duncclAdaptorGetUniqueId,
     duncclAdaptorGetErrorString, duncclAdaptorGetLastError,
+    // Symmetric operations
+    duncclAdaptorCommWindowRegister, duncclAdaptorCommWindowDeregister,
+    duncclAdaptorGetStagedBuffer,
     // Communicator functions
     duncclAdaptorCommInitRank, duncclAdaptorCommFinalize,
     duncclAdaptorCommDestroy, duncclAdaptorCommAbort, duncclAdaptorCommResume,

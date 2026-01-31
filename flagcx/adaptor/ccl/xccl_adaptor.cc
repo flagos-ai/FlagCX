@@ -72,6 +72,23 @@ const char *xcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "flagcxNotSupported";
 }
 
+flagcxResult_t xcclAdaptorCommWindowRegister(const flagcxInnerComm_t comm,
+                                              void *buff, size_t size,
+                                              void **win, int flags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorCommWindowDeregister(const flagcxInnerComm_t comm,
+                                                void *win) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t xcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t commId, int rank,
                                        bootstrapState * /*bootstrap*/) {
@@ -304,6 +321,9 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     // Basic functions
     xcclAdaptorGetVersion, xcclAdaptorGetUniqueId, xcclAdaptorGetErrorString,
     xcclAdaptorGetLastError,
+    // Symmetric operations
+    xcclAdaptorCommWindowRegister, xcclAdaptorCommWindowDeregister,
+    xcclAdaptorGetStagedBuffer,
     // Communicator functions
     xcclAdaptorCommInitRank, xcclAdaptorCommFinalize, xcclAdaptorCommDestroy,
     xcclAdaptorCommAbort, xcclAdaptorCommResume, xcclAdaptorCommSuspend,

@@ -43,6 +43,21 @@ const char *mpiAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "MPI: No Error";
 }
 
+flagcxResult_t mpiAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                             void *buff, size_t size,
+                                             void **win, int flags) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mpiAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               void *win) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mpiAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                         void **buff, size_t size,
+                                         int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                       flagcxUniqueId_t /*commId*/, int rank,
                                       bootstrapState *bootstrap) {
@@ -336,6 +351,9 @@ struct flagcxCCLAdaptor mpiAdaptor = {
     // Basic functions
     mpiAdaptorGetVersion, mpiAdaptorGetUniqueId, mpiAdaptorGetErrorString,
     mpiAdaptorGetLastError,
+    // Symmetric operations
+    mpiAdaptorCommWindowRegister, mpiAdaptorCommWindowDeregister,
+    mpiAdaptorGetStagedBuffer,
     // Communicator functions
     mpiAdaptorCommInitRank, mpiAdaptorCommFinalize, mpiAdaptorCommDestroy,
     mpiAdaptorCommAbort, mpiAdaptorCommResume, mpiAdaptorCommSuspend,
