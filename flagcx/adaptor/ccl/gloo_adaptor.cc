@@ -1,7 +1,19 @@
 #include "gloo_adaptor.h"
-#include <functional>
 
 #ifdef USE_GLOO_ADAPTOR
+
+FLAGCX_PARAM(GlooIbDisable, "GLOO_IB_DISABLE", 0);
+
+static int groupDepth = 0;
+static constexpr std::chrono::milliseconds flagcxGlooDefaultTimeout =
+    std::chrono::seconds(10000);
+static std::vector<stagedBuffer_t> sendStagedBufferList;
+static std::vector<stagedBuffer_t> recvStagedBufferList;
+static std::vector<bufferPtr> unboundBufferStorage;
+
+// key: peer, value: tag
+static std::unordered_map<int, uint32_t> sendPeerTags;
+static std::unordered_map<int, uint32_t> recvPeerTags;
 
 // TODO: unsupported
 flagcxResult_t glooAdaptorGetVersion(int *version) {
@@ -11,6 +23,55 @@ flagcxResult_t glooAdaptorGetVersion(int *version) {
 // TODO: unsupported
 flagcxResult_t glooAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                          flagcxInnerComm_t comm) {
+  bool registered = true;
+  stagedBuffer *sbuff =
+      isRecv
+          ? (recvStagedBufferList.empty() ? NULL : recvStagedBufferList.back())
+          : (sendStagedBufferList.empty() ? NULL : sendStagedBufferList.back());
+  if (sbuff == NULL) {
+    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->offset = 0;
+    sbuff->size = GLOO_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
+    sbuff->cnt = 0;
+    registered = false;
+  }
+  int newSize = sbuff->size;
+  int idleSize = newSize - sbuff->offset;
+  while (idleSize < size) {
+    newSize *= 2;
+    idleSize = newSize;
+  }
+  // create a new buffer
+  if (newSize > sbuff->size && registered) {
+    sbuff = NULL;
+    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->offset = 0;
+    sbuff->cnt = 0;
+    sbuff->unboundBuffer = NULL;
+    registered = false;
+  }
+  sbuff->size = newSize;
+  if (!registered) {
+    sbuff->buffer = malloc(newSize);
+    if (sbuff->buffer == NULL) {
+      return flagcxSystemError;
+    }
+    auto unboundBuffer = comm->base->createUnboundBuffer(
+        const_cast<void *>(sbuff->buffer), sbuff->size);
+    sbuff->unboundBuffer = unboundBuffer.get();
+    unboundBufferStorage.push_back(std::move(unboundBuffer));
+    if (isRecv) {
+      recvStagedBufferList.push_back(sbuff);
+    } else {
+      sendStagedBufferList.push_back(sbuff);
+    }
+  }
+  *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
+  return flagcxSuccess;
 }
 
 // TODO: unsupported
@@ -28,36 +89,25 @@ flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        bootstrapState *bootstrap) {
   // Create gloo transport device
   std::shared_ptr<::gloo::transport::Device> dev;
-  // try {
-  //     // Firstly, try ibverbs
-  //     ::gloo::transport::ibverbs::attr attr;
-  //     dev = ::gloo::transport::ibverbs::CreateDevice(attr);
-  // } catch (const std::exception& e) {
-  //     std::cout << "Caught an exception during the creation of ibverbs
-  //     transport device: " << e.what() << ". Try tcp transport device
-  //     alternatively." << std::endl;
-  //     // Alternatively, try tcp
-  try {
+  flagcxNetProperties_t *properties =
+      (flagcxNetProperties_t *)bootstrap->properties;
+  if (flagcxParamGlooIbDisable()) {
+    // Use transport tcp
     ::gloo::transport::tcp::attr attr;
-    char line[1024];
-    const char *glooIface = flagcxGetEnv("FLAGCX_GLOO_SOCKET_IFNAME");
-    if (glooIface == NULL) {
-      FLAGCXCHECK(getHostName(line, 1024, '.'));
-      std::string hostname(line);
-      attr.hostname = hostname;
-    } else {
-      strcpy(line, glooIface);
-      std::string iface(line);
-      attr.iface = iface;
-    }
+    attr.iface = std::string(bootstrap->bootstrapNetIfName);
     dev = ::gloo::transport::tcp::CreateDevice(attr);
-  } catch (const std::exception &e) {
-    std::cout
-        << "Caught an exception during the creation of tcp transport device: "
-        << e.what() << ". Fail to create gloo transport device." << std::endl;
-    return flagcxInternalError;
+  } else {
+    // Use transport ibverbs
+    ::gloo::transport::ibverbs::attr attr;
+    attr.name = properties->name;
+    attr.port = properties->port;
+    attr.index = 3; // default index
+    const char *ibGidIndex = flagcxGetEnv("FLAGCX_IB_GID_INDEX");
+    if (ibGidIndex != NULL) {
+      attr.index = std::stoi(ibGidIndex);
+    }
+    dev = ::gloo::transport::ibverbs::CreateDevice(attr);
   }
-  // }
   if (*comm == NULL) {
     FLAGCXCHECK(flagcxCalloc(comm, 1));
   }
@@ -68,16 +118,55 @@ flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t glooAdaptorCommFinalize(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
+  unboundBufferStorage.clear();
   comm->base.reset();
   return flagcxSuccess;
 }
 
 flagcxResult_t glooAdaptorCommDestroy(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
+  unboundBufferStorage.clear();
   comm->base.reset();
   return flagcxSuccess;
 }
 
 flagcxResult_t glooAdaptorCommAbort(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
+  unboundBufferStorage.clear();
   comm->base.reset();
   return flagcxSuccess;
 }
@@ -278,11 +367,21 @@ flagcxResult_t glooAdaptorSend(const void *sendbuff, size_t count,
                                flagcxInnerComm_t comm,
                                flagcxStream_t /*stream*/) {
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  inputBuffers.push(
-      comm->base->createUnboundBuffer(const_cast<void *>(sendbuff), size));
-  inputBuffers.back()->send(peer, comm->base->rank);
-  if (!groupStarted) {
-    inputBuffers.back()->waitSend(flagcxGlooDefaultTimeout);
+  stagedBuffer_t buff = sendStagedBufferList.back();
+  uint32_t utag;
+  if (sendPeerTags.find(peer) != sendPeerTags.end()) {
+    utag = sendPeerTags[peer];
+  } else {
+    utag = 0;
+    sendPeerTags[peer] = 0;
+  }
+  buff->unboundBuffer->send(peer, utag, buff->offset, size);
+  buff->offset += size;
+  sendPeerTags[peer] = utag + 1;
+  if (groupDepth == 0) {
+    buff->unboundBuffer->waitSend(flagcxGlooDefaultTimeout);
+  } else {
+    buff->cnt++;
   }
   return flagcxSuccess;
 }
@@ -292,25 +391,51 @@ flagcxResult_t glooAdaptorRecv(void *recvbuff, size_t count,
                                flagcxInnerComm_t comm,
                                flagcxStream_t /*stream*/) {
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  auto buf =
-      comm->base->createUnboundBuffer(const_cast<void *>(recvbuff), size);
-  buf->recv(peer, peer);
-  buf->waitRecv(flagcxGlooDefaultTimeout);
+  stagedBuffer_t buff = recvStagedBufferList.back();
+  uint32_t utag;
+  if (recvPeerTags.find(peer) != recvPeerTags.end()) {
+    utag = recvPeerTags[peer];
+  } else {
+    utag = 0;
+    recvPeerTags[peer] = 0;
+  }
+  buff->unboundBuffer->recv(peer, utag, buff->offset, size);
+  buff->offset += size;
+  recvPeerTags[peer] = utag + 1;
+  if (groupDepth == 0) {
+    buff->unboundBuffer->waitRecv(flagcxGlooDefaultTimeout);
+  } else {
+    buff->cnt++;
+  }
   return flagcxSuccess;
 }
 
 flagcxResult_t glooAdaptorGroupStart() {
-  groupStarted = true;
+  groupDepth++;
   return flagcxSuccess;
 }
 
 flagcxResult_t glooAdaptorGroupEnd() {
-  if (groupStarted) {
-    while (!inputBuffers.empty()) {
-      inputBuffers.front()->waitSend(flagcxGlooDefaultTimeout);
-      inputBuffers.pop();
+  groupDepth--;
+  if (groupDepth == 0) {
+    for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+      stagedBuffer *buff = sendStagedBufferList[i];
+      while (buff->cnt > 0) {
+        buff->unboundBuffer->waitSend(flagcxGlooDefaultTimeout);
+        buff->cnt--;
+      }
+      buff->offset = 0;
     }
-    groupStarted = false;
+    for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+      stagedBuffer *buff = recvStagedBufferList[i];
+      while (buff->cnt > 0) {
+        buff->unboundBuffer->waitRecv(flagcxGlooDefaultTimeout);
+        buff->cnt--;
+      }
+      buff->offset = 0;
+    }
+    sendPeerTags.clear();
+    recvPeerTags.clear();
   }
   return flagcxSuccess;
 }
@@ -318,8 +443,8 @@ flagcxResult_t glooAdaptorGroupEnd() {
 struct flagcxCCLAdaptor glooAdaptor = {
     "GLOO",
     // Basic functions
-    glooAdaptorGetVersion, glooAdaptorGetUniqueId, glooAdaptorGetErrorString,
-    glooAdaptorGetLastError,
+    glooAdaptorGetVersion, glooAdaptorGetUniqueId, glooAdaptorGetStagedBuffer,
+    glooAdaptorGetErrorString, glooAdaptorGetLastError,
     // Communicator functions
     glooAdaptorCommInitRank, glooAdaptorCommFinalize, glooAdaptorCommDestroy,
     glooAdaptorCommAbort, glooAdaptorCommResume, glooAdaptorCommSuspend,

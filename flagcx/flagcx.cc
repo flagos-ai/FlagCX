@@ -616,6 +616,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
     // Init host cclAdaptor
     if (useHostComm() || (*comm)->has_single_rank_homo_comm) {
+      FLAGCXCHECK((*comm)->hetero_comm->netAdaptor->getProperties(
+          (*comm)->hetero_comm->netDev, state->properties));
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->commInitRank(
           &(*comm)->host_comm, nranks, commId, rank, state));
     }

@@ -75,6 +75,11 @@ flagcxResult_t hcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       flagcxResult_t)h2f_ret_map[HcclGetRootInfo((HcclRootInfo *)(*uniqueId))];
 }
 
+flagcxResult_t hcclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                          flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 const char *hcclAdaptorGetErrorString(flagcxResult_t result) {
   return HcclGetErrorString((HcclResult)f2h_ret_map[result]);
 }
@@ -320,8 +325,8 @@ flagcxResult_t hcclAdaptorGroupEnd() {
 struct flagcxCCLAdaptor hcclAdaptor = {
     "HCCL",
     // Basic functions
-    hcclAdaptorGetVersion, hcclAdaptorGetUniqueId, hcclAdaptorGetErrorString,
-    hcclAdaptorGetLastError,
+    hcclAdaptorGetVersion, hcclAdaptorGetUniqueId, hcclAdaptorGetStagedBuffer,
+    hcclAdaptorGetErrorString, hcclAdaptorGetLastError,
     // Communicator functions
     hcclAdaptorCommInitRank, hcclAdaptorCommFinalize, hcclAdaptorCommDestroy,
     hcclAdaptorCommAbort, hcclAdaptorCommResume, hcclAdaptorCommSuspend,

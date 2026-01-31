@@ -62,6 +62,11 @@ flagcxResult_t xcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       (BKCLUniqueId *)(((char *)*uniqueId) + sizeof(int)));
 }
 
+flagcxResult_t xcclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                          flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 // Unsupported
 const char *xcclAdaptorGetErrorString(flagcxResult_t result) {
   return "flagcxNotSupported";
@@ -302,8 +307,8 @@ flagcxResult_t xcclAdaptorGroupEnd() {
 struct flagcxCCLAdaptor xcclAdaptor = {
     "XCCL",
     // Basic functions
-    xcclAdaptorGetVersion, xcclAdaptorGetUniqueId, xcclAdaptorGetErrorString,
-    xcclAdaptorGetLastError,
+    xcclAdaptorGetVersion, xcclAdaptorGetUniqueId, xcclAdaptorGetStagedBuffer,
+    xcclAdaptorGetErrorString, xcclAdaptorGetLastError,
     // Communicator functions
     xcclAdaptorCommInitRank, xcclAdaptorCommFinalize, xcclAdaptorCommDestroy,
     xcclAdaptorCommAbort, xcclAdaptorCommResume, xcclAdaptorCommSuspend,

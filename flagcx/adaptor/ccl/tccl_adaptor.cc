@@ -75,6 +75,11 @@ flagcxResult_t tcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return fromTcclResult(result);
 }
 
+flagcxResult_t tcclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                          flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 const char *tcclAdaptorGetErrorString(flagcxResult_t result) {
   // TODO: supported later
   return "Not Implemented";
@@ -356,8 +361,8 @@ flagcxResult_t tcclAdaptorGroupEnd() {
 struct flagcxCCLAdaptor tcclAdaptor = {
     "TCCL",
     // Basic functions
-    tcclAdaptorGetVersion, tcclAdaptorGetUniqueId, tcclAdaptorGetErrorString,
-    tcclAdaptorGetLastError,
+    tcclAdaptorGetVersion, tcclAdaptorGetUniqueId, tcclAdaptorGetStagedBuffer,
+    tcclAdaptorGetErrorString, tcclAdaptorGetLastError,
     // Communicator functions
     tcclAdaptorCommInitRank, tcclAdaptorCommFinalize, tcclAdaptorCommDestroy,
     tcclAdaptorCommAbort, tcclAdaptorCommResume, tcclAdaptorCommSuspend,

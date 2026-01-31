@@ -13,6 +13,11 @@ flagcxResult_t ixncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t ixncclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                            flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 const char *ixncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -276,7 +281,8 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     "IXNCCL",
     // Basic functions
     ixncclAdaptorGetVersion, ixncclAdaptorGetUniqueId,
-    ixncclAdaptorGetErrorString, ixncclAdaptorGetLastError,
+    ixncclAdaptorGetStagedBuffer, ixncclAdaptorGetErrorString,
+    ixncclAdaptorGetLastError,
     // Communicator functions
     ixncclAdaptorCommInitRank, ixncclAdaptorCommFinalize,
     ixncclAdaptorCommDestroy, ixncclAdaptorCommAbort, ixncclAdaptorCommResume,

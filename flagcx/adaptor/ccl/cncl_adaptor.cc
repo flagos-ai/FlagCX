@@ -42,6 +42,11 @@ flagcxResult_t cnclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       flagcxResult_t)c2f_ret_map[cnclGetCliqueId((cnclCliqueId *)(*uniqueId))];
 }
 
+flagcxResult_t cnclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                          flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 const char *cnclAdaptorGetErrorString(flagcxResult_t result) {
   return cnclGetErrorStr((cnclResult_t)f2c_ret_map[result]);
 }
@@ -317,8 +322,8 @@ flagcxResult_t cnclAdaptorGroupEnd() {
 struct flagcxCCLAdaptor cnclAdaptor = {
     "CNCL",
     // Basic functions
-    cnclAdaptorGetVersion, cnclAdaptorGetUniqueId, cnclAdaptorGetErrorString,
-    cnclAdaptorGetLastError,
+    cnclAdaptorGetVersion, cnclAdaptorGetUniqueId, cnclAdaptorGetStagedBuffer,
+    cnclAdaptorGetErrorString, cnclAdaptorGetLastError,
     // Communicator functions
     cnclAdaptorCommInitRank, cnclAdaptorCommFinalize, cnclAdaptorCommDestroy,
     cnclAdaptorCommAbort, cnclAdaptorCommResume, cnclAdaptorCommSuspend,

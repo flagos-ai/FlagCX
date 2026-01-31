@@ -3,6 +3,10 @@
 
 #ifdef USE_MPI_ADAPTOR
 
+static int groupDepth = 0;
+static std::vector<stagedBuffer_t> sendStagedBufferList;
+static std::vector<stagedBuffer_t> recvStagedBufferList;
+
 static flagcxResult_t validateComm(flagcxInnerComm_t comm) {
   if (!comm || !comm->base) {
     return flagcxInvalidArgument;
@@ -24,6 +28,49 @@ flagcxResult_t mpiAdaptorGetVersion(int *version) {
 }
 
 flagcxResult_t mpiAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+  return flagcxSuccess;
+}
+
+flagcxResult_t mpiAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                         flagcxInnerComm_t comm) {
+  bool registered = true;
+  stagedBuffer *sbuff =
+      isRecv
+          ? (recvStagedBufferList.empty() ? NULL : recvStagedBufferList.back())
+          : (sendStagedBufferList.empty() ? NULL : sendStagedBufferList.back());
+  if (sbuff == NULL) {
+    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->offset = 0;
+    sbuff->size = MPI_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
+    registered = false;
+  }
+  int newSize = sbuff->size;
+  int idleSize = newSize - sbuff->offset;
+  while (idleSize < size) {
+    newSize *= 2;
+    idleSize = newSize;
+  }
+  // create a new buffer
+  if (newSize > sbuff->size && registered) {
+    sbuff = NULL;
+    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->offset = 0;
+    registered = false;
+  }
+  sbuff->size = newSize;
+  if (!registered) {
+    sbuff->buffer = malloc(newSize);
+    if (sbuff->buffer == NULL) {
+      return flagcxSystemError;
+    }
+    if (isRecv) {
+      recvStagedBufferList.push_back(sbuff);
+    } else {
+      sendStagedBufferList.push_back(sbuff);
+    }
+  }
+  *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
+  sbuff->offset += size;
   return flagcxSuccess;
 }
 
@@ -93,16 +140,52 @@ flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t mpiAdaptorCommFinalize(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
   comm->base.reset();
   return flagcxSuccess;
 }
 
 flagcxResult_t mpiAdaptorCommDestroy(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
   comm->base.reset();
   return flagcxSuccess;
 }
 
 flagcxResult_t mpiAdaptorCommAbort(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
   MPI_Abort(comm->base->getMpiComm(), 1);
   return flagcxSuccess;
 }
@@ -327,15 +410,29 @@ flagcxResult_t mpiAdaptorRecv(void *recvbuff, size_t count,
   return (result == MPI_SUCCESS) ? flagcxSuccess : flagcxInternalError;
 }
 
-flagcxResult_t mpiAdaptorGroupStart() { return flagcxSuccess; }
+flagcxResult_t mpiAdaptorGroupStart() {
+  groupDepth++;
+  return flagcxSuccess;
+}
 
-flagcxResult_t mpiAdaptorGroupEnd() { return flagcxSuccess; }
+flagcxResult_t mpiAdaptorGroupEnd() {
+  groupDepth--;
+  if (groupDepth == 0) {
+    for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+      sendStagedBufferList[i]->offset = 0;
+    }
+    for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+      recvStagedBufferList[i]->offset = 0;
+    }
+  }
+  return flagcxSuccess;
+}
 
 struct flagcxCCLAdaptor mpiAdaptor = {
     "MPI",
     // Basic functions
-    mpiAdaptorGetVersion, mpiAdaptorGetUniqueId, mpiAdaptorGetErrorString,
-    mpiAdaptorGetLastError,
+    mpiAdaptorGetVersion, mpiAdaptorGetUniqueId, mpiAdaptorGetStagedBuffer,
+    mpiAdaptorGetErrorString, mpiAdaptorGetLastError,
     // Communicator functions
     mpiAdaptorCommInitRank, mpiAdaptorCommFinalize, mpiAdaptorCommDestroy,
     mpiAdaptorCommAbort, mpiAdaptorCommResume, mpiAdaptorCommSuspend,

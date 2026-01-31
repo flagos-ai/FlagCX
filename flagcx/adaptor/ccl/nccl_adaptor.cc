@@ -13,6 +13,11 @@ flagcxResult_t ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t ncclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                          flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 const char *ncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -264,8 +269,8 @@ flagcxResult_t ncclAdaptorGroupEnd() { return (flagcxResult_t)ncclGroupEnd(); }
 struct flagcxCCLAdaptor ncclAdaptor = {
     "NCCL",
     // Basic functions
-    ncclAdaptorGetVersion, ncclAdaptorGetUniqueId, ncclAdaptorGetErrorString,
-    ncclAdaptorGetLastError,
+    ncclAdaptorGetVersion, ncclAdaptorGetUniqueId, ncclAdaptorGetStagedBuffer,
+    ncclAdaptorGetErrorString, ncclAdaptorGetLastError,
     // Communicator functions
     ncclAdaptorCommInitRank, ncclAdaptorCommFinalize, ncclAdaptorCommDestroy,
     ncclAdaptorCommAbort, ncclAdaptorCommResume, ncclAdaptorCommSuspend,

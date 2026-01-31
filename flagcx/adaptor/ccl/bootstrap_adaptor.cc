@@ -3,6 +3,10 @@
 
 #ifdef USE_BOOTSTRAP_ADAPTOR
 
+static int groupDepth = 0;
+static std::vector<stagedBuffer_t> sendStagedBufferList;
+static std::vector<stagedBuffer_t> recvStagedBufferList;
+
 // TODO: unsupported
 flagcxResult_t bootstrapAdaptorGetVersion(int *version) {
   return flagcxNotSupported;
@@ -11,6 +15,50 @@ flagcxResult_t bootstrapAdaptorGetVersion(int *version) {
 // TODO: unsupported
 flagcxResult_t bootstrapAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return flagcxNotSupported;
+}
+
+flagcxResult_t bootstrapAdaptorGetStagedBuffer(void **buff, int size,
+                                               int isRecv,
+                                               flagcxInnerComm_t comm) {
+  bool registered = true;
+  stagedBuffer *sbuff =
+      isRecv
+          ? (recvStagedBufferList.empty() ? NULL : recvStagedBufferList.back())
+          : (sendStagedBufferList.empty() ? NULL : sendStagedBufferList.back());
+  if (sbuff == NULL) {
+    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->offset = 0;
+    sbuff->size = BOOTSTRAP_ADAPTOR_MAX_STAGED_BUFFER_SIZE;
+    registered = false;
+  }
+  int newSize = sbuff->size;
+  int idleSize = newSize - sbuff->offset;
+  while (idleSize < size) {
+    newSize *= 2;
+    idleSize = newSize;
+  }
+  // create a new buffer
+  if (newSize > sbuff->size && registered) {
+    sbuff = NULL;
+    FLAGCXCHECK(flagcxCalloc(&sbuff, 1));
+    sbuff->offset = 0;
+    registered = false;
+  }
+  sbuff->size = newSize;
+  if (!registered) {
+    sbuff->buffer = malloc(newSize);
+    if (sbuff->buffer == NULL) {
+      return flagcxSystemError;
+    }
+    if (isRecv) {
+      recvStagedBufferList.push_back(sbuff);
+    } else {
+      sendStagedBufferList.push_back(sbuff);
+    }
+  }
+  *buff = (void *)((char *)sbuff->buffer + sbuff->offset);
+  sbuff->offset += size;
+  return flagcxSuccess;
 }
 
 // TODO: unsupported
@@ -36,17 +84,50 @@ flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t bootstrapAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  // Note that the bootstrap member is destroyed in the flagcxCommDestroy
-  // function
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorCommDestroy(flagcxInnerComm_t comm) {
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorCommAbort(flagcxInnerComm_t comm) {
-  // We don't need to do anything here
+  for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = sendStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+    stagedBuffer *buff = recvStagedBufferList[i];
+    free(buff->buffer);
+    free(buff);
+  }
+  sendStagedBufferList.clear();
+  recvStagedBufferList.clear();
   return flagcxSuccess;
 }
 
@@ -191,14 +272,13 @@ bootstrapAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   return flagcxSuccess;
 }
 
-#define BOOTSTRAP_SEND_RECV_TAG -6767
 flagcxResult_t bootstrapAdaptorSend(const void *sendbuff, size_t count,
                                     flagcxDataType_t datatype, int peer,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t /*stream*/) {
-  FLAGCXCHECK(bootstrapSend(comm->base, peer, BOOTSTRAP_SEND_RECV_TAG,
-                            (void *)sendbuff,
-                            count * getFlagcxDataTypeSize(datatype)));
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  FLAGCXCHECK(bootstrapSend(comm->base, peer, BOOTSTRAP_ADAPTOR_SEND_RECV_TAG,
+                            (void *)sendbuff, size));
   return flagcxSuccess;
 }
 
@@ -206,18 +286,29 @@ flagcxResult_t bootstrapAdaptorRecv(void *recvbuff, size_t count,
                                     flagcxDataType_t datatype, int peer,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t /*stream*/) {
-  FLAGCXCHECK(bootstrapRecv(comm->base, peer, BOOTSTRAP_SEND_RECV_TAG, recvbuff,
-                            count * getFlagcxDataTypeSize(datatype)));
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  FLAGCXCHECK(bootstrapRecv(comm->base, peer, BOOTSTRAP_ADAPTOR_SEND_RECV_TAG,
+                            recvbuff, size));
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorGroupStart() {
-  // We don't need to do anything here
+  groupDepth++;
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorGroupEnd() {
-  // We don't need to do anything here
+  groupDepth--;
+  if (groupDepth == 0) {
+    for (size_t i = 0; i < sendStagedBufferList.size(); ++i) {
+      stagedBuffer *buff = sendStagedBufferList[i];
+      buff->offset = 0;
+    }
+    for (size_t i = 0; i < recvStagedBufferList.size(); ++i) {
+      stagedBuffer *buff = recvStagedBufferList[i];
+      buff->offset = 0;
+    }
+  }
   return flagcxSuccess;
 }
 
@@ -225,7 +316,8 @@ struct flagcxCCLAdaptor bootstrapAdaptor = {
     "BOOTSTRAP",
     // Basic functions
     bootstrapAdaptorGetVersion, bootstrapAdaptorGetUniqueId,
-    bootstrapAdaptorGetErrorString, bootstrapAdaptorGetLastError,
+    bootstrapAdaptorGetStagedBuffer, bootstrapAdaptorGetErrorString,
+    bootstrapAdaptorGetLastError,
     // Communicator functions
     bootstrapAdaptorCommInitRank, bootstrapAdaptorCommFinalize,
     bootstrapAdaptorCommDestroy, bootstrapAdaptorCommAbort,

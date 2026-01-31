@@ -13,6 +13,11 @@ flagcxResult_t duncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t duncclAdaptorGetStagedBuffer(void **buff, int size, int isRecv,
+                                            flagcxInnerComm_t comm) {
+  return flagcxNotSupported;
+}
+
 const char *duncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -275,7 +280,8 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     "DUNCCL",
     // Basic functions
     duncclAdaptorGetVersion, duncclAdaptorGetUniqueId,
-    duncclAdaptorGetErrorString, duncclAdaptorGetLastError,
+    duncclAdaptorGetStagedBuffer, duncclAdaptorGetErrorString,
+    duncclAdaptorGetLastError,
     // Communicator functions
     duncclAdaptorCommInitRank, duncclAdaptorCommFinalize,
     duncclAdaptorCommDestroy, duncclAdaptorCommAbort, duncclAdaptorCommResume,
