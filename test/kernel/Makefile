@@ -21,14 +21,19 @@ ifeq ($(USE_NVIDIA), 1)
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
 endif
 
-all: test-kernel-demo
+all: test-kernel-demo test-kernel-put
 
 test-kernel-demo: test_kernel_demo.cpp
 	@echo "Compiling $@"
 	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_kernel_demo test_kernel_demo.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE) -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK) -DCOMPILE_KERNEL
 
+test-kernel-put: test_kernel_put.cpp
+       @echo "Compiling $@"
+       @$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_kernel_put test_kernel_put.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE) -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK) -DCOMPILE_KERNEL
+
 clean:
 	@rm -f test_kernel_demo
+	@rm -f test_kernel_put
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"
