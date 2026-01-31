@@ -18,6 +18,7 @@ USE_TSM ?= 0
 USE_MPI ?= 0
 USE_UCX ?= 0
 USE_IBUC ?= 0
+USE_TOPS ?= 0
 COMPILE_KERNEL ?= 0
 
 # set to empty if not provided
@@ -48,6 +49,8 @@ ifeq ($(strip $(DEVICE_HOME)),)
 		DEVICE_HOME = /opt/rocm
 	else ifeq ($(USE_TSM), 1)
 		DEVICE_HOME = /usr/local/kuiper
+	else ifeq ($(USE_TOPS), 1)
+		DEVICE_HOME = /opt/tops/
 	else
 		DEVICE_HOME = /usr/local/cuda
 	endif
@@ -74,6 +77,8 @@ ifeq ($(strip $(CCL_HOME)),)
 		CCL_HOME = /opt/rocm
 	else ifeq ($(USE_TSM), 1)
 		CCL_HOME = /usr/local/kuiper
+	else ifeq ($(USE_TOPS), 1)
+		CCL_HOME = /usr
 	else
 		CCL_HOME = /usr/local/nccl/build
 	endif
@@ -208,6 +213,14 @@ else ifeq ($(USE_TSM), 1)
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -ltccl
 	ADAPTOR_FLAG = -DUSE_TSM_ADAPTOR
+else ifeq ($(USE_TOPS), 1)
+	DEVICE_LIB = $(DEVICE_HOME)/lib
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_LINK = -ltopsrt
+	CCL_LIB = $(CCL_HOME)/lib
+	CCL_INCLUDE = $(CCL_HOME)/include
+	CCL_LINK = -leccl
+	ADAPTOR_FLAG = -DUSE_TOPS_ADAPTOR
 else
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
@@ -314,6 +327,7 @@ print_var:
 	@echo "USE_DU: $(USE_DU)"
 	@echo "USE_AMD: $(USE_AMD)"
 	@echo "USE_TSM: $(USE_TSM)"
+	@echo "USE_TOPS: $(USE_TOPS)"
 	@echo "COMPILE_KERNEL: $(COMPILE_KERNEL)"
 	@echo "DEVICE_LIB: $(DEVICE_LIB)"
 	@echo "DEVICE_INCLUDE: $(DEVICE_INCLUDE)"
