@@ -1,6 +1,7 @@
 import os
 
 import torch
+backend = "flagcx"
 try:
     #deps for cambricon devices
     import torch_mlu
@@ -17,7 +18,12 @@ except:
             import transfer_to_musa
             dev_name = "musa"
         except:
-            dev_name = "cuda"
+            try:
+                import torch_txda
+                from torch_txda import transfer_to_txda
+            except:
+                backend = "nccl"
+                dev_name = "cuda"
 
 import flagcx
 import torch.distributed as dist
@@ -58,13 +64,13 @@ def init_pg():
     WORLD_SIZE = int(os.environ["WORLD_SIZE"])
 
     # Initialize the default flagcx process group
-    dist.init_process_group(f"cpu:gloo,{dev_name}:flagcx", rank=MY_RANK, world_size=WORLD_SIZE)
+    dist.init_process_group(backend, rank=MY_RANK, world_size=WORLD_SIZE)
     print(f"ddp backend config is {dist.get_backend_config()}")
 
     # Create two groups
     ranks = list(range(WORLD_SIZE))
-    FLAGCX_GROUP1 = dist.new_group(ranks=ranks, backend=f"cpu:gloo,{dev_name}:flagcx")
-    FLAGCX_GROUP2 = dist.new_group(ranks=ranks, backend=f"cpu:gloo,{dev_name}:flagcx")
+    FLAGCX_GROUP1 = dist.new_group(ranks=ranks, backend=backend)
+    FLAGCX_GROUP2 = dist.new_group(ranks=ranks, backend=backend)
     print(f"ranks_flagcx: {dist.get_process_group_ranks(FLAGCX_GROUP1)}")
 
     # Create a group with options; this only works when flagcxBackend has Options defined
@@ -180,7 +186,7 @@ def test_allgather():
         dist.all_gather(z_list, z, group=FLAGCX_GROUP1)
         print(f"rank {MY_RANK} after all_gather with FLAGCX_GROUP1: z = {z}, z_list = {z_list}")
         all_rank_infos = [None] * WORLD_SIZE
-        #cur_rank_info = {'rank': MY_RANK, 'device_type': f"cpu:gloo,{dev_name}:flagcx"}
+        #cur_rank_info = {'rank': MY_RANK, 'device_type': backend}
         cur_rank_info = [MY_RANK, MY_RANK+1]
         dist.all_gather_object(all_rank_infos, cur_rank_info, group=FLAGCX_GROUP1)
         print(f"rank {MY_RANK} after all_gather_object with FLAGCX_GROUP1: all_rank_infos = {all_rank_infos}")

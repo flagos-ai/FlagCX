@@ -34,6 +34,10 @@
 #elif USE_AMD_ADAPTOR
 #include <ATen/hip/HIPEvent.h>
 #include <hip/hip_runtime.h>
+#elif USE_TSM_ADAPTOR
+#include "torch_txda/csrc/core/TXDAEvent.h"
+#include "torch_txda/csrc/core/TXDAStream.h"
+#include <tx_runtime.h>
 #endif
 
 namespace c10d {
@@ -288,6 +292,34 @@ public:
 
 private:
   at::cuda::CUDAEvent hipEvent_;
+};
+#elif USE_TSM_ADAPTOR
+class flagcxTxdaEvent : public flagcxEvent {
+public:
+  flagcxTxdaEvent() {
+    txda_event = torch_txda::TXDAEvent();
+  }
+
+  void record(const int device_id) override {
+    txda_event.record(torch_txda::getCurrentTXDAStream(device_id));
+  }
+
+  void record(const flagcxStream_t &stream, const int device_id) override {
+    txda_event.record(
+        torch_txda::getStreamFromExternal(*(txStream_t *)stream, device_id));
+  }
+
+  void block(const int device_id) override {
+    txda_event.block(torch_txda::getCurrentTXDAStream(device_id));
+  }
+
+  void block(const flagcxStream_t &stream, const int device_id) override {
+    txda_event.block(
+        torch_txda::getStreamFromExternal(*(txStream_t *)stream, device_id));
+  }
+
+private:
+  torch_txda::TXDAEvent txda_event;
 };
 #endif
 
