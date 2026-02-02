@@ -90,7 +90,8 @@ public:
 #elif USE_AMD_ADAPTOR
         guard_(at::hip::getStreamFromExternal(*(hipStream_t *)stream, deviceId))
 #elif USE_ENFLAME_ADAPTOR
-        guard_(torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId))
+        guard_(
+            torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId))
 #endif
   {
   }

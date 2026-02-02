@@ -7,10 +7,10 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "comm.h"
-#include "flagcx.h"
 #include "eccl.h"
-#include <tops/tops_runtime_api.h>
+#include "flagcx.h"
 #include <map>
+#include <tops/tops_runtime_api.h>
 
 struct flagcxInnerComm {
   ecclComm_t base;
@@ -36,4 +36,3 @@ struct flagcxIpcMemHandle {
   }
 
 #endif // USE_ENFLAME_ADAPTOR
-

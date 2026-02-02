@@ -35,8 +35,8 @@
 #include <ATen/hip/HIPEvent.h>
 #include <hip/hip_runtime.h>
 #elif USE_ENFLAME_ADAPTOR
-#include <gcu/gcu_guard.h>
 #include <gcu/gcu_event.h>
+#include <gcu/gcu_guard.h>
 #include <tops/tops_runtime_api.h>
 #endif
 

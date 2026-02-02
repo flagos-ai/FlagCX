@@ -120,8 +120,8 @@ flagcxResult_t ecclAdaptorGather(const void *sendbuff, void *recvbuff,
                                  int root, flagcxInnerComm_t comm,
                                  flagcxStream_t stream) {
   return (flagcxResult_t)ecclGather(sendbuff, recvbuff, count,
-                                    (ecclDataType_t)datatype, root,
-                                    comm->base, stream->base);
+                                    (ecclDataType_t)datatype, root, comm->base,
+                                    stream->base);
 }
 
 flagcxResult_t ecclAdaptorScatter(const void *sendbuff, void *recvbuff,
@@ -129,8 +129,8 @@ flagcxResult_t ecclAdaptorScatter(const void *sendbuff, void *recvbuff,
                                   int root, flagcxInnerComm_t comm,
                                   flagcxStream_t stream) {
   return (flagcxResult_t)ecclScatter(sendbuff, recvbuff, count,
-                                     (ecclDataType_t)datatype, root,
-                                     comm->base, stream->base);
+                                     (ecclDataType_t)datatype, root, comm->base,
+                                     stream->base);
 }
 
 flagcxResult_t ecclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
@@ -185,9 +185,8 @@ flagcxResult_t ecclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
   return (flagcxResult_t)ecclAlltoAllv(
-      (void *)sendbuff, sendcounts, sdispls, (ecclDataType_t)datatype,
-      recvbuff, recvcounts, rdispls, (ecclDataType_t)datatype,
-      comm->base, stream->base);
+      (void *)sendbuff, sendcounts, sdispls, (ecclDataType_t)datatype, recvbuff,
+      recvcounts, rdispls, (ecclDataType_t)datatype, comm->base, stream->base);
 }
 
 flagcxResult_t ecclAdaptorSend(const void *sendbuff, size_t count,
@@ -230,4 +229,3 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     ecclAdaptorGroupStart, ecclAdaptorGroupEnd};
 
 #endif // USE_ENFLAME_ADAPTOR
-
