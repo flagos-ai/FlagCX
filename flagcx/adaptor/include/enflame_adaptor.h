@@ -2,7 +2,7 @@
  * Copyright (c) 2025, ENFLAME CORPORATION. All rights reserved.
  ************************************************************************/
 
-#ifdef USE_TOPS_ADAPTOR
+#ifdef USE_ENFLAME_ADAPTOR
 
 #include "adaptor.h"
 #include "alloc.h"
@@ -35,5 +35,5 @@ struct flagcxIpcMemHandle {
       return flagcxUnhandledDeviceError;                                       \
   }
 
-#endif // USE_TOPS_ADAPTOR
+#endif // USE_ENFLAME_ADAPTOR
 

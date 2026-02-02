@@ -2,9 +2,9 @@
  * Copyright (c) 2025, ENFLAME CORPORATION. All rights reserved.
  ************************************************************************/
 
-#include "tops_adaptor.h"
+#include "enflame_adaptor.h"
 
-#ifdef USE_TOPS_ADAPTOR
+#ifdef USE_ENFLAME_ADAPTOR
 
 flagcxResult_t ecclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ecclGetVersion(version);
@@ -229,5 +229,5 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     // Group semantics
     ecclAdaptorGroupStart, ecclAdaptorGroupEnd};
 
-#endif // USE_TOPS_ADAPTOR
+#endif // USE_ENFLAME_ADAPTOR
 

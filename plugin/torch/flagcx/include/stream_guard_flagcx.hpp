@@ -49,7 +49,7 @@
 #include <c10/hip/HIPGuard.h>
 #include <c10/hip/impl/HIPGuardImpl.h>
 #include <hip/hip_runtime.h>
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <gcu/gcu_guard.h>
 #include <gcu/gcu_stream.h>
@@ -89,7 +89,7 @@ public:
         guard_(c10_npu::getNPUStreamFromPool(deviceId))
 #elif USE_AMD_ADAPTOR
         guard_(at::hip::getStreamFromExternal(*(hipStream_t *)stream, deviceId))
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
         guard_(torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId))
 #endif
   {
@@ -131,7 +131,7 @@ public:
 #elif USE_AMD_ADAPTOR
     guard_.reset_stream(
         at::hip::getStreamFromExternal(*(hipStream_t *)stream, deviceId_));
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
     guard_.reset_stream(
         torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId_));
 #endif
@@ -164,7 +164,7 @@ private:
   c10_npu::NPUStream guard_;
 #elif USE_AMD_ADAPTOR
   c10::hip::HIPStreamGuard guard_;
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
   torch_gcu::GCUStreamGuard guard_;
 #endif
 };

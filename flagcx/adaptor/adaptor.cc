@@ -134,7 +134,7 @@ struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor,
 #endif
 struct flagcxDeviceAdaptor *deviceAdaptor = &tsmicroAdaptor;
 
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
 #ifdef USE_BOOTSTRAP_ADAPTOR
 struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor,
                                                       &ecclAdaptor};

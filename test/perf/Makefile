@@ -9,7 +9,7 @@ USE_MUSA ?= 0
 USE_KUNLUNXIN ?= 0
 USE_DU ?= 0
 USE_AMD ?= 0
-USE_TOPS ?= 0
+USE_ENFLAME ?= 0
 ifeq ($(USE_CAMBRICON), 1)
    DEV="MLU"
 else ifeq ($(USE_ASCEND), 1)
@@ -22,8 +22,8 @@ else ifeq ($(USE_KUNLUNXIN), 1)
    DEV="XPU"
 else ifeq ($(USE_AMD), 1)
    DEV="HIP"
-else ifeq ($(USE_TOPS), 1)
-	DEV="TOPS"
+else ifeq ($(USE_ENFLAME), 1)
+   DEV="TOPS"
 else
    DEV="CUDA"
 endif

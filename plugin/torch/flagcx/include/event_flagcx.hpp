@@ -34,7 +34,7 @@
 #elif USE_AMD_ADAPTOR
 #include <ATen/hip/HIPEvent.h>
 #include <hip/hip_runtime.h>
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
 #include <gcu/gcu_guard.h>
 #include <gcu/gcu_event.h>
 #include <tops/tops_runtime_api.h>
@@ -293,7 +293,7 @@ public:
 private:
   at::cuda::CUDAEvent hipEvent_;
 };
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
 class flagcxTopsEvent : public flagcxEvent {
 public:
   flagcxTopsEvent() { topsEvent_ = torch_gcu::GCUEvent(); }

@@ -58,7 +58,7 @@ public:
     event_ = std::make_unique<flagcxXpuEvent>();
 #elif USE_AMD_ADAPTOR
     event_ = std::make_unique<flagcxHipEvent>();
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
     event_ = std::make_unique<flagcxTopsEvent>();
 #endif
   }
@@ -237,7 +237,7 @@ public:
     devName = "cuda";
 #elif USE_KUNLUNXIN_ADAPTOR
     devName = "cuda";
-#elif USE_TOPS_ADAPTOR
+#elif USE_ENFLAME_ADAPTOR
     devName = "gcu";
 #endif
     py::object module = py::module::import("torch.distributed");

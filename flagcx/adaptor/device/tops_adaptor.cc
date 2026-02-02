@@ -2,9 +2,9 @@
  * Copyright (c) 2025, ENFLAME CORPORATION. All rights reserved.
  ************************************************************************/
 
-#include "tops_adaptor.h"
+#include "enflame_adaptor.h"
 
-#ifdef USE_TOPS_ADAPTOR
+#ifdef USE_ENFLAME_ADAPTOR
 
 std::map<flagcxMemcpyType_t, topsMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, topsMemcpyHostToDevice},
@@ -319,9 +319,8 @@ flagcxResult_t topsAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev) {
   // TOPS uses topsGetDeviceProperties to get PCI bus ID
   topsDeviceProp_t devProp;
   DEVCHECK(topsGetDeviceProperties(&devProp, dev));
-  snprintf(pciBusId, len, "%04x:%02x:%02x.%01x",
-           devProp.pciDomainID, devProp.pciBusID,
-           devProp.pciDeviceID, devProp.pciFunctionID);
+  snprintf(pciBusId, len, "%04x:%02x:%02x.%01x", devProp.pciDomainID,
+           devProp.pciBusID, devProp.pciDeviceID, devProp.pciFunctionID);
   return flagcxSuccess;
 }
 
@@ -356,7 +355,7 @@ flagcxResult_t
 topsAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
                                        size_t size, unsigned long long flags) {
   // Not supported for TOPS
-  return flagcxInternalError;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t topsAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
@@ -433,5 +432,4 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorEventElapsedTime, // flagcxResult_t
 };
 
-#endif // USE_TOPS_ADAPTOR
-
+#endif // USE_ENFLAME_ADAPTOR
