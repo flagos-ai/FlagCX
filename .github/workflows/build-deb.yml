@@ -34,7 +34,7 @@ jobs:
         run: ./packaging/debian/build-helpers/build-flagcx.sh ${{ matrix.backend }}
 
       - name: Upload ${{ matrix.backend }} packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: flagcx-${{ matrix.backend }}-packages
           path: debian-packages/${{ matrix.backend }}/*.deb
