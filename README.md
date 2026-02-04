@@ -2,11 +2,11 @@
 
 ## About
 
-FlagCX is part of [FlagOS](https://flagos.io/), a unified, open-source AI system software stack that
-aims to foster an open technology ecosystem by seamlessly integrating various models, systems and chips.
-By "develop once, migrate across various chips", FlagOS aims to unlock the full computational potential
-of hardware, break down the barriers between different chip software stacks, and effectively reduce
-migration costs.
+FlagCX is part of [FlagOS](https://flagos.io/), a fully open-source system software stack
+designed to unify the model–system–chip layers and foster an open and collaborative ecosystem.
+It enables a "develop once, run anywhere" workflow across diverse AI accelerators,
+unlocking hardware performance, eliminating fragmentation among AI chipset-specific software stacks,
+and substantially lowering the cost of porting and maintaining AI workloads.
 
 [FlagCX](https://github.com/flagos-ai/FlagCX.git) is a scalable and adaptive cross-chip communication library.
 It serves as a platform where developers, researchers, and AI engineers can collaborate on various projects,
@@ -133,5 +133,3 @@ Please refer to the docs below:
 ## License
 
 This project is licensed under the [Apache License (Version 2.0)](./LICENSE).
-
-
