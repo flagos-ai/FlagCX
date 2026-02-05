@@ -138,7 +138,7 @@ sudo docker run -itd \
 
    ```
    cd /FlagCX/plugin/torch/
-   python setup.py develop --adaptor [xxx]
+   FLAGCX_ADAPTOR=[xxx] pip install -e . --no-build-isolation
    ```
 
    **Note**: `[xxx]` should be selected according to the current platform, e.g., `nvidia`, `klx`, etc.
