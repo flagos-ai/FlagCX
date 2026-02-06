@@ -583,6 +583,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->tunerInnerComm = NULL;
     (*comm)->isTunningComm = false;
     (*comm)->isTuningWithFlagscale = false;
+    (*comm)->isUseSingleTunerComm = false;
     bool isTuningWithFlagscale = false;
     const char *isTuningWithFlagscaleEnv =
         flagcxGetEnv("TUNING_WITH_FLAGSCALE");
@@ -591,6 +592,16 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
           (std::stoi(isTuningWithFlagscaleEnv) == 1) ? true : false;
     }
     (*comm)->isTuningWithFlagscale = isTuningWithFlagscale;
+
+    bool isUseSingleTunerComm = false;
+    const char *isUseSingleTunerCommEnv =
+        flagcxGetEnv("TUNNING_WITH_SINGLE_COMM");
+
+    if (isUseSingleTunerCommEnv) {
+      isUseSingleTunerComm =
+          (std::stoi(isUseSingleTunerCommEnv) == 1) ? true : false;
+    }
+    (*comm)->isUseSingleTunerComm = isUseSingleTunerComm;
 
     FLAGCXCHECK((*comm)->tuner->init((*comm)->nranks, (*comm)->rank,
                                      flagcxDebugLog, &((*comm)->tunerContext),
@@ -604,7 +615,32 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
     (*comm)->homoCommMap.clear();
     (*comm)->homoBestCommMap.clear();
-    if (isTuningWithFlagscale) {
+    (*comm)->commMap.clear();
+
+    if (!isUseSingleTunerComm) {
+      // Note: The tuner only support homo comm optimization for now
+      for (uint32_t i = 0; i < nConfigs; ++i) {
+        struct flagcxCommTag tag = {""};
+        FLAGCXCHECK(
+            (*comm)->tuner->setCandidate((*comm)->tunerContext, i, &tag));
+        INFO(FLAGCX_INIT | FLAGCX_TUNING,
+             "start to prepare communicator tag=%s(%u/%u)", tag.tag, i,
+             nConfigs);
+
+        flagcxInnerComm_t innerComm = NULL;
+        FLAGCXCHECK(
+            flagcxHomoCommInit(commId, uniqueIdData, state, *comm, &innerComm));
+        // Insert item into commMap
+        (*comm)->commMap[tag] = innerComm;
+        // For backward compatible, also assign homo_comm field.
+        (*comm)->homo_comm = innerComm;
+        if (isTuningWithFlagscale) {
+          (*comm)->tunerInnerComm = innerComm;
+        }
+      }
+    }
+
+    if (isTuningWithFlagscale && isUseSingleTunerComm) {
       // Create a default communicator based on the default config
       flagcxInnerComm_t innerComm = NULL;
       FLAGCXCHECK(

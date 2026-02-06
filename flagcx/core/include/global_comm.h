@@ -51,6 +51,7 @@ struct flagcxComm {
   void *tunerContext;
   std::map<struct TunerCollCategory, flagcxInnerComm_t>
       homoCommMap; // key: commTag returned by tuner
+  std::map<struct flagcxCommTag, flagcxInnerComm_t> commMap;
   std::map<struct TunerCollCategory, flagcxInnerComm_t>
       homoBestCommMap;              // key: commTag returned by tuner
   flagcxInnerComm_t tunerInnerComm; // innerComm selected by tuner
@@ -58,6 +59,7 @@ struct flagcxComm {
   flagcxUniqueId *uniqueIdData;
   bool isTuningWithFlagscale; // whether tuning with flagscale
   bool isTunningComm;         // whether tuning the communicator
+  bool isUseSingleTunerComm;  // whether tuning with one communicator
   struct C2cSchedulePair {
     int sendCluster;
     int recvCluster;
