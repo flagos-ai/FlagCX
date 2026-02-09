@@ -59,6 +59,19 @@ jobs:
               BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-ascend
               BASE_IMAGE_VERSION=latest
               VENDOR=USE_ASCEND
+
+          # use h20 instance just for build image.
+          - job_name: buildcx-tsingmicro-image
+            push: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
+            containerfile: 'containerfile'
+            image_name: 'flagcx-tsingmicro'
+            tag: 'latest'
+            runson: 'h20'
+            no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' && inputs.push_images }}
+            build-args: |
+              BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-tsingmicro
+              BASE_IMAGE_VERSION=latest
+              VENDOR=USE_TSM
     
     uses: flagos-ai/build-infra/.github/workflows/imagebuild.yml@main
     with:
