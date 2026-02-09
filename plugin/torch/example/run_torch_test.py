@@ -15,7 +15,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List
 
 try:
     import yaml
@@ -54,9 +54,19 @@ def parse_hostfile(path: str) -> List[Dict[str, str]]:
     return hosts
 
 
-def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]], str, str, int, str, str, str]:
+def load_env_config(path: str) -> Dict[str, Any]:
     """
-    Reads from yaml config file designated by the user, see example_torch_env.yaml for expected format
+    Reads from yaml config file designated by the user, see example_torch_env.yaml for expected format.
+
+    Returns a dict with keys:
+        - common_env: Dict[str, str]
+        - device_specific_env: Dict[str, Dict[str, str]]
+        - before_start: str
+        - test_dir: str
+        - master_port: int
+        - master_addr: str or None
+        - testfile: str
+        - log_dir: str
     """
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -82,11 +92,13 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
         raise ConfigError("'testfile' must be provided in the config")
     testfile_abs = os.path.abspath(os.path.expanduser(testfile))
 
-    master_port = data.get("master_port", 8281)
+    master_port = data.get("master_port", 12345)
     try:
         master_port = int(master_port)
     except Exception as exc:
         raise ConfigError("'master_port' must be an integer") from exc
+    if not (10000 <= master_port <= 19999):
+        raise ConfigError("'master_port' must be in range 10000-19999")
 
     master_addr = data.get("master_addr", None)
 
@@ -97,7 +109,17 @@ def load_env_config(path: str) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]
     if not isinstance(device_specific, dict):
         raise ConfigError("envs.device_type_specific must be a mapping")
     common = {k: v for k, v in envs.items() if k != "device_type_specific"}
-    return common, device_specific, before_start, test_dir_abs, master_port, master_addr, testfile_abs, log_dir_abs
+
+    return {
+        "common_env": common,
+        "device_specific_env": device_specific,
+        "before_start": before_start,
+        "test_dir": test_dir_abs,
+        "master_port": master_port,
+        "master_addr": master_addr,
+        "testfile": testfile_abs,
+        "log_dir": log_dir_abs,
+    }
 
 
 def validate_hosts(hosts: List[Dict[str, str]], device_specific: Dict[str, Dict[str, str]]):
@@ -140,20 +162,59 @@ set -euo pipefail
 """.format(env_exports=env_exports, command=command, pre_block=pre_block)
 
 
-def scp_push(host: str, local_path: str, remote_path: str):
-    subprocess.run(["ssh", host, "mkdir", "-p", os.path.dirname(remote_path)], check=True)
-    subprocess.run(["scp", local_path, f"{host}:{remote_path}"], check=True)
+def run_ssh_command(host: str, command: str) -> None:
+    """Execute a command on a remote host via SSH.
+
+    Args:
+        host: The remote host to connect to.
+        command: The command to execute on the remote host.
+
+    Exits with the subprocess return code if the command fails.
+    """
+    ssh_cmd = f"ssh {host} {shlex.quote(command)}"
+    result = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"SSH command failed on {host}: {command}")
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+        sys.exit(result.returncode)
 
 
-def ssh_exec(host: str, remote_path: str, log_path: str):
-    """Execute script on remote host using nohup, redirecting output to log file."""
-    # Use nohup to run in background, redirect stdout/stderr to log file
-    cmd = f"nohup {remote_path} > {log_path} 2>&1 &"
-    subprocess.run(["ssh", host, cmd], check=True)
+def run_scp_command(host: str, src: str, dst: str) -> None:
+    """Copy a file to a remote host via SCP.
+
+    Args:
+        host: The remote host to copy to.
+        src: The local source file path.
+        dst: The remote destination file path.
+
+    Exits with the subprocess return code if the command fails.
+    """
+    scp_cmd = f"scp {shlex.quote(src)} {host}:{shlex.quote(dst)}"
+    result = subprocess.run(scp_cmd, shell=True)
+    if result.returncode != 0:
+        print(f"SCP command failed on {host}")
+        print(f"stdout: {result.stdout}")
+        print(f"stderr: {result.stderr}")
+        sys.exit(result.returncode)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Auto-generate and run torchrun scripts across nodes")
+    parser = argparse.ArgumentParser(
+        description="Auto-generate and run torchrun scripts across nodes",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    # Run torch test across multiple nodes
+    python run_torch_test.py --hostfile hosts.txt --config env_config.yaml
+
+    # Run with extra arguments passed to the test script
+    python run_torch_test.py --hostfile hosts.txt --config env_config.yaml --extra-args "--batch-size 32"
+
+    # Dry run to see generated scripts without executing
+    python run_torch_test.py --hostfile hosts.txt --config env_config.yaml --dry-run
+        """
+    )
     parser.add_argument("--hostfile", required=True, help="Path to hostfile")
     parser.add_argument("--config", required=True, help="Path to YAML env config")
     parser.add_argument("--extra-args", default="", help="Extra args appended to the command")
@@ -162,53 +223,53 @@ def main():
 
     try:
         hosts = parse_hostfile(args.hostfile)
-        common_env, device_specific_env, before_start_cmd, test_dir_abs, master_port_cfg, master_addr_cfg, testfile_abs, log_dir_abs = load_env_config(args.config)
-        validate_hosts(hosts, device_specific_env)
+        config = load_env_config(args.config)
+        validate_hosts(hosts, config["device_specific_env"])
     except ConfigError as e:
         print(f"Config error: {e}", file=sys.stderr)
         sys.exit(1)
 
     nnodes = len(hosts)
     nproc_per_node = hosts[0]["slots"]
-    master_addr = master_addr_cfg or hosts[0]["host"]
-    master_port = master_port_cfg
+    master_addr = config["master_addr"] or hosts[0]["host"]
+    master_port = config["master_port"]
 
     for node_rank, h in enumerate(hosts):
-        env = merge_envs(common_env, device_specific_env.get(h["type"], {}))
+        env = merge_envs(config["common_env"], config["device_specific_env"].get(h["type"], {}))
         env_exports = format_env_exports(env)
 
         cmd = (
             f"torchrun --nnodes {nnodes} --nproc_per_node {nproc_per_node} --node_rank {node_rank} "
-            f"--master_addr {master_addr} --master_port {master_port} {testfile_abs}"
+            f"--master_addr {master_addr} --master_port {master_port} {config['testfile']}"
         )
         if args.extra_args:
             cmd = f"{cmd} {args.extra_args}"
 
-        run_sh = build_run_script(env_exports, cmd, before_start_cmd)
+        run_sh = build_run_script(env_exports, cmd, config["before_start"])
 
         with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as tmp:
             tmp.write(run_sh)
             tmp_path = tmp.name
 
         host_run_name = f"run_torch_test_{h['host']}.sh"
-        remote_path = os.path.join(test_dir_abs, host_run_name)
+        remote_path = os.path.join(config["test_dir"], host_run_name)
         log_name = f"run_torch_test_{h['host']}.log"
-        log_path = os.path.join(log_dir_abs, log_name)
+        log_path = os.path.join(config["log_dir"], log_name)
 
         try:
-            scp_push(h["host"], tmp_path, remote_path)
-            subprocess.run(["ssh", h["host"], "chmod", "+x", remote_path], check=True)
-            # Ensure log directory exists on remote host
-            subprocess.run(["ssh", h["host"], "mkdir", "-p", log_dir_abs], check=True)
+            run_ssh_command(h["host"], f"mkdir -p {os.path.dirname(remote_path)}")
+            run_scp_command(h["host"], tmp_path, remote_path)
+            run_ssh_command(h["host"], f"chmod +x {remote_path}")
+            run_ssh_command(h["host"], f"mkdir -p {config['log_dir']}")
             if not args.dry_run:
-                ssh_exec(h["host"], remote_path, log_path)
+                run_ssh_command(h["host"], f"nohup {remote_path} > {log_path} 2>&1 &")
                 print(f"Started test on {h['host']}, output will be logged to {log_path}")
             else:
                 print(f"[dry-run] Generated {remote_path} on {h['host']}, would log to {log_path}")
         finally:
             os.remove(tmp_path)
 
-    print(f"All {nnodes} nodes launched. Check log files in {log_dir_abs} for output.")
+    print(f"All {nnodes} nodes launched. Check log files in {config['log_dir']} for output.")
 
 
 if __name__ == "__main__":

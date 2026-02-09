@@ -3,7 +3,7 @@
 Stop torchrun processes across multiple machines in batch.
 
 Usage:
-    python stop_torch_test.py --hostfile hosts.txt [--pattern PATTERN] [--dry-run]
+    python stop_torch_test.py --hostfile hosts.txt [--dry-run]
 
 This script reads a hostfile and SSHs into each machine to kill torchrun
 processes and their children. Useful when distributed training hangs due
@@ -72,51 +72,46 @@ def ssh_exec(host: str, command: str, dry_run: bool = False) -> Tuple[int, str, 
         return (-1, "", str(e))
 
 
-def stop_processes_on_host(
-    host: str,
-    patterns: List[str],
-    dry_run: bool = False,
-    verbose: bool = False
-) -> bool:
+def stop_processes_on_host(host: str, dry_run: bool = False) -> bool:
     """
-    Stop processes matching the given patterns on a remote host.
-    
+    Stop torchrun processes on a remote host.
+
     Returns:
         True if successful (or no processes to kill), False on error.
     """
-    print(f"\n[{host}] Stopping processes...")
-    
-    success = True
-    for pattern in patterns:
-        # First, list matching processes
-        list_cmd = f"pgrep -af '{pattern}' || true"
-        ret, stdout, stderr = ssh_exec(host, list_cmd, dry_run=False)
-        
-        if stdout.strip():
-            print(f"  Found processes matching '{pattern}':")
-            for line in stdout.strip().split('\n'):
-                print(f"    {line}")
-        else:
-            print(f"  No processes matching '{pattern}'")
-            continue
-        
-        # Kill the processes
-        # Use pkill with SIGTERM first, then SIGKILL if needed
-        kill_cmd = f"pkill -f '{pattern}' 2>/dev/null; sleep 1; pkill -9 -f '{pattern}' 2>/dev/null; echo 'done'"
-        ret, stdout, stderr = ssh_exec(host, kill_cmd, dry_run=dry_run)
-        
-        if dry_run:
-            continue
-            
-        if ret != 0 and "done" not in stdout:
-            print(f"  Warning: pkill returned {ret}")
-            if stderr:
-                print(f"  stderr: {stderr}")
-            success = False
-        else:
-            print(f"  Killed processes matching '{pattern}'")
-    
-    return success
+    print(f"\n[{host}] Stopping torchrun processes...")
+
+    pattern = "torchrun"
+
+    # First, list matching processes
+    list_cmd = f"pgrep -af '{pattern}'"
+    ret, stdout, stderr = ssh_exec(host, list_cmd, dry_run=False)
+
+    if stdout.strip():
+        print(f"  Found torchrun processes:")
+        for line in stdout.strip().split('\n'):
+            print(f"    {line}")
+    else:
+        print(f"  No torchrun processes found")
+        return True
+
+    # Kill the processes
+    # Use pkill with SIGTERM first, then SIGKILL if needed
+    kill_cmd = f"pkill -f '{pattern}' 2>/dev/null; sleep 1; pkill -9 -f '{pattern}' 2>/dev/null; echo 'done'"
+    ret, stdout, stderr = ssh_exec(host, kill_cmd, dry_run=dry_run)
+
+    if dry_run:
+        return True
+
+    if ret != 0 and "done" not in stdout:
+        print(f"  Warning: pkill returned {ret}")
+        if stderr:
+            print(f"  stderr: {stderr}")
+        return False
+    else:
+        print(f"  Killed torchrun processes")
+
+    return True
 
 
 def main():
@@ -125,42 +120,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    # Stop processes matching a specific script
-    python stop_torch_test.py --hostfile hosts.txt --pattern "example.py"
-
-    # Stop with multiple patterns
-    python stop_torch_test.py --hostfile hosts.txt --pattern "example.py" --pattern "my_training"
+    # Stop all torchrun processes
+    python stop_torch_test.py --hostfile hosts.txt
 
     # Dry run to see what would be killed
-    python stop_torch_test.py --hostfile hosts.txt --pattern "example.py" --dry-run
+    python stop_torch_test.py --hostfile hosts.txt --dry-run
         """
     )
-    
+
     parser.add_argument(
         "--hostfile",
         required=True,
         help="Path to hostfile (same format as run_torch_test.py)"
     )
     parser.add_argument(
-        "--pattern",
-        action="append",
-        dest="patterns",
-        required=True,
-        help="Process pattern to kill (can be specified multiple times)"
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be killed without actually killing"
     )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Verbose output"
-    )
-    
+
     args = parser.parse_args()
-    
+
     # Parse hostfile
     try:
         hosts = parse_hostfile(args.hostfile)
@@ -170,33 +150,24 @@ Examples:
     except Exception as e:
         print(f"Error parsing hostfile: {e}", file=sys.stderr)
         sys.exit(1)
-    
+
     if not hosts:
         print("Error: No hosts found in hostfile", file=sys.stderr)
         sys.exit(1)
-    
+
     print(f"Hosts to process: {', '.join(hosts)}")
-    
-    # Use user-specified patterns
-    patterns = args.patterns
-    
-    print(f"Patterns to kill: {patterns}")
-    
+    print("Will kill: torchrun processes")
+
     if args.dry_run:
         print("\n=== DRY RUN MODE - No processes will be killed ===")
-    
+
     # Stop processes on each host
     all_success = True
     for host in hosts:
-        success = stop_processes_on_host(
-            host,
-            patterns,
-            dry_run=args.dry_run,
-            verbose=args.verbose
-        )
+        success = stop_processes_on_host(host, dry_run=args.dry_run)
         if not success:
             all_success = False
-    
+
     print("\n" + "=" * 50)
     if args.dry_run:
         print("Dry run complete. No processes were killed.")
