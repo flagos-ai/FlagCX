@@ -12,13 +12,6 @@ TEST_F(FlagCXCollTest, AllReduce) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&recvbuff, size * nranks, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
-
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
   }
@@ -67,13 +60,6 @@ TEST_F(FlagCXCollTest, AllGather) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  devHandle->deviceMalloc(&sendbuff, size / nranks, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&recvbuff, size, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
-
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
   }
@@ -120,13 +106,6 @@ TEST_F(FlagCXCollTest, ReduceScatter) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&recvbuff, size / nranks, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
-
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
   }
@@ -171,13 +150,6 @@ TEST_F(FlagCXCollTest, Reduce) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&recvbuff, size, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
-
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
   }
@@ -221,12 +193,6 @@ TEST_F(FlagCXCollTest, Reduce) {
 TEST_F(FlagCXCollTest, Gather) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
-
-  devHandle->deviceMalloc(&sendbuff, size / nranks, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
@@ -274,12 +240,6 @@ TEST_F(FlagCXCollTest, Scatter) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
 
-  devHandle->deviceMalloc(&recvbuff, size / nranks, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
-
   if (rank == 0) {
     for (size_t i = 0; i < count; i++) {
       ((float *)hostsendbuff)[i] = static_cast<float>(i);
@@ -300,7 +260,7 @@ TEST_F(FlagCXCollTest, Scatter) {
   flagcxScatter(sendbuff, recvbuff, count / nranks, flagcxFloat, 0, comm,
                 stream);
 
-  devHandle->deviceMemcpy(hostrecvbuff, recvbuff, count / nranks,
+  devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size / nranks,
                           flagcxMemcpyDeviceToHost, stream);
 
   devHandle->streamSynchronize(stream);
@@ -323,12 +283,6 @@ TEST_F(FlagCXCollTest, Scatter) {
 TEST_F(FlagCXCollTest, Broadcast) {
   flagcxComm_t &comm = handler->comm;
   flagcxDeviceHandle_t &devHandle = handler->devHandle;
-
-  devHandle->deviceMalloc(&recvbuff, size, flagcxMemDevice, stream);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, stream);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, stream);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, stream);
 
   for (size_t i = 0; i < count; i++) {
     ((float *)hostsendbuff)[i] = i % 10;
