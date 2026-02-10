@@ -1,7 +1,102 @@
 #include "nvidia_adaptor.h"
+#include "param.h"
 
 #ifdef USE_NVIDIA_ADAPTOR
 
+<<<<<<< HEAD
+=======
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+#include "nccl_device.h"
+
+#define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
+#define NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024)
+
+// Try to load custom ops once
+#define MAX_NUM_COMM_OPS 16
+static bool customOpLoaded[MAX_NUM_COMM_OPS] = {false};
+FLAGCX_PARAM(NcclWinEnable, "NCCL_WIN_ENABLE", 1);
+FLAGCX_PARAM(NcclCuMemEnable, "NCCL_CUMEM_ENABLE", -2);
+FLAGCX_PARAM(NcclNvlsEnable, "NCCL_NVLS_ENABLE", 1);
+
+using customAllReduce_t =
+    flagcxCustomOpFunc_t<ncclWindow_t, ncclWindow_t, void *, size_t,
+                         flagcxDataType_t, int, ncclDevComm &, cudaStream_t>;
+static customAllReduce_t localAllReduce = NULL;
+static customAllReduce_t interleavedAllReduce = NULL;
+
+template <typename T>
+flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
+  void *handle = flagcxOpenLib(
+      path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+      });
+  if (!handle)
+    return flagcxSystemError;
+
+  void *sym = dlsym(handle, name);
+  if (!sym) {
+    fprintf(stderr, "dlsym failed: %s\n", dlerror());
+    dlclose(handle);
+    return flagcxSystemError;
+  }
+
+  *fn = (T)sym;
+  return flagcxSuccess;
+}
+
+// Check if all GPUs have CUDA P2P connectivity
+static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
+  int currentDevice;
+  if (cudaGetDevice(&currentDevice) != cudaSuccess) {
+    return false;
+  }
+
+  int deviceCount;
+  if (cudaGetDeviceCount(&deviceCount) != cudaSuccess) {
+    return false;
+  }
+
+  int checkCount = (deviceCount < nranks) ? deviceCount : nranks;
+  for (int i = 0; i < checkCount; ++i) {
+    for (int j = i + 1; j < checkCount; ++j) {
+      int canAccess = 0;
+      if (cudaDeviceCanAccessPeer(&canAccess, i, j) != cudaSuccess || !canAccess) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Check NVLS support
+static bool checkNvlsSupport(int nranks) {
+  int nvlsEnable = flagcxParamNcclNvlsEnable();
+  
+  if (nvlsEnable == 0 || nranks < 2) {
+    return false;
+  }
+  if (nvlsEnable == 1) {
+    return true;
+  }
+#if CUDART_VERSION >= 12010
+  int driverVersion, currentDevice;
+  CUdevice dev;
+  int multicastSupported = 0;
+
+  if (cudaDriverGetVersion(&driverVersion) != cudaSuccess || driverVersion < 12010 ||
+      cudaGetDevice(&currentDevice) != cudaSuccess ||
+      cuDeviceGet(&dev, currentDevice) != CUDA_SUCCESS ||
+      cuDeviceGetAttribute(&multicastSupported, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev) != CUDA_SUCCESS) {
+    return false;
+  }
+  return (multicastSupported != 0);
+#else
+  return false;
+#endif
+}
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
+
+>>>>>>> 5ff757d (nccl_adaptor: auto-detect isAllCudaP2p/NVLS via CUDA API, use FLAGCX params, graceful fallback)
 flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -88,27 +183,41 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                                *(ncclUniqueId *)commId, rank));
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-  if ((*comm)->devBase == NULL) {
-    // TODO(MC952-arch): auto-detect symmetric support
-    // Create device communicator
-    FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
-    ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-    reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-    // TODO(MC952-arch): auto-detect multimem support
-    reqs.lsaMultimem = true;
-    using pncclDevCommCreate_t = ncclResult_t (*)(
-        ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
-    void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-    if (handle) {
-      auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-          dlsym(handle, "pncclDevCommCreate"));
-      if (fn) {
-        FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+  if ((*comm)->devBase == NULL && flagcxParamNcclWinEnable() &&
+      flagcxParamNcclCuMemEnable() != 0) {
+    bool isAllCudaP2p = checkIsAllCudaP2p((*comm)->base, nranks);
+    if (!isAllCudaP2p) {
+      WARN("ncclDevComm skipped: not all GPUs have CUDA P2P connectivity");
+    } else {
+      FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
+      ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+      reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+      reqs.lsaMultimem = checkNvlsSupport(nranks);
+      using pncclDevCommCreate_t = ncclResult_t (*)(
+          ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
+      void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
+      if (handle) {
+        auto fn = reinterpret_cast<pncclDevCommCreate_t>(
+            dlsym(handle, "pncclDevCommCreate"));
+        if (fn) {
+          ncclResult_t ret = fn((*comm)->base, &reqs, (*comm)->devBase);
+          if (ret != ncclSuccess) {
+            free((*comm)->devBase);
+            (*comm)->devBase = NULL;
+            WARN("ncclDevComm creation failed (likely missing nvlsSupport or symmetric support), using standard NCCL path");
+          }
+        } else {
+          free((*comm)->devBase);
+          (*comm)->devBase = NULL;
+        }
+        dlclose(handle);
+      } else {
+        free((*comm)->devBase);
+        (*comm)->devBase = NULL;
       }
-      dlclose(handle);
-    }
-    if ((*comm)->devBase == NULL) {
-      WARN("ncclDevComm is not initialized succefully");
+      if ((*comm)->devBase == NULL) {
+        WARN("ncclDevComm is not initialized successfully");
+      }
     }
   }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
