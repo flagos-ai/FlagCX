@@ -89,6 +89,23 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer) {
   return flagcxSuccess;
 }
 
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDevicePut(const void *srcbuff, size_t srcOffset, size_t dstOffset,
+                size_t count, flagcxDataType_t datatype, int peer,
+                void *fifoBuffer) {
+  uint64_t fstValue = ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+                      ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+  enqueue(fifoBuffer, fstValue, count, peer, datatype, flagcxDevicePrimPut);
+  return flagcxSuccess;
+}
+
+FLAGCX_DEVICE_DECORATOR flagcxResult_t
+flagcxDeviceSignal(size_t dstOffset, int peer, void *fifoBuffer) {
+  uint64_t fstValue = (uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset;
+  enqueue(fifoBuffer, fstValue, 0, peer, 0, flagcxDevicePrimSignal);
+  return flagcxSuccess;
+}
+
 FLAGCX_DEVICE_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr,
                                                uint64_t count,
                                                uint64_t peerRank,
