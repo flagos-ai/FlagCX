@@ -62,6 +62,14 @@ esac
 log_info "Building FlagCX Debian packages for $BACKEND backend"
 log_info "Using base image: ${BASE_IMAGE}:${BASE_IMAGE_VERSION}"
 
+# Sync changelog from CHANGELOG.md
+log_step "Synchronizing changelog..."
+if [ -f "${PROJECT_DIR}/packaging/sync-changelog.py" ]; then
+    python3 "${PROJECT_DIR}/packaging/sync-changelog.py" || log_warn "Failed to sync changelog"
+else
+    log_warn "sync-changelog.py not found, skipping changelog sync"
+fi
+
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile.deb"
 
 # Check if Dockerfile exists
