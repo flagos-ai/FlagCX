@@ -787,11 +787,6 @@ inline std::string getTuneObjectCommOp(const TuneObject &obj) {
   return obj.commOp;
 }
 
-// Function pointer types for custom operations
-template <typename T, typename... Args>
-using flagcxCustomOpFunc_t = T (*)(Args...);
-using flagcxLaunchFunc_t = flagcxCustomOpFunc_t<void, flagcxStream_t, void *>;
-
 template <typename T>
 flagcxResult_t loadCustomOpSymbol(const char *path, const char *name, T *fn);
 flagcxResult_t loadKernelSymbol(const char *path, const char *name,
