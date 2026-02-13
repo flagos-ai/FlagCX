@@ -1,11 +1,8 @@
 #include "nvidia_adaptor.h"
 #include "param.h"
-#include <cstdlib>
 
 #ifdef USE_NVIDIA_ADAPTOR
 
-<<<<<<< HEAD
-=======
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 #include "nccl_device.h"
 
@@ -42,7 +39,6 @@ flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
   return flagcxSuccess;
 }
 
-// Check if all GPUs have CUDA P2P connectivity
 static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
   int gpuCount;
   if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {
@@ -79,7 +75,6 @@ static bool checkNvlsSupport(int nranks) {
 }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 
->>>>>>> 5ff757d (nccl_adaptor: auto-detect isAllCudaP2p/NVLS via CUDA API, use FLAGCX params, graceful fallback)
 flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
