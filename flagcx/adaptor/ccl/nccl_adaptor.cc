@@ -1,43 +1,6 @@
 #include "nvidia_adaptor.h"
-#include "param.h"
 
 #ifdef USE_NVIDIA_ADAPTOR
-
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-#include "nccl_device.h"
-
-#define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
-#define NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024)
-
-// Try to load custom ops once
-#define MAX_NUM_COMM_OPS 16
-static bool customOpLoaded[MAX_NUM_COMM_OPS] = {false};
-
-using customAllReduce_t =
-    flagcxCustomOpFunc_t<ncclWindow_t, ncclWindow_t, void *, size_t,
-                         flagcxDataType_t, int, ncclDevComm &, cudaStream_t>;
-static customAllReduce_t localAllReduce = NULL;
-static customAllReduce_t interleavedAllReduce = NULL;
-
-template <typename T>
-flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
-  void *handle = flagcxOpenLib(
-      path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-      });
-  if (!handle)
-    return flagcxSystemError;
-
-  void *sym = dlsym(handle, name);
-  if (!sym) {
-    fprintf(stderr, "dlsym failed: %s\n", dlerror());
-    dlclose(handle);
-    return flagcxSystemError;
-  }
-
-  *fn = (T)sym;
-  return flagcxSuccess;
-}
 
 static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
   int gpuCount;
@@ -56,8 +19,6 @@ static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
   }
   return true;
 }
-
-// Check NVLS support
 static bool checkNvlsSupport(int nranks) {
   if (nranks < 2) {
     return false;
@@ -73,8 +34,6 @@ static bool checkNvlsSupport(int nranks) {
   }
   return (multicastSupported != 0);
 }
-#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-
 flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -161,53 +120,43 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                                *(ncclUniqueId *)commId, rank));
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-  const char *winEnv = flagcxGetEnv("NCCL_WIN_ENABLE");
-  const char *cuMemEnv = flagcxGetEnv("NCCL_CUMEM_ENABLE");
-  const char *crossNicEnv = flagcxGetEnv("NCCL_CROSS_NIC");
-  const char *ibDisableEnv = flagcxGetEnv("NCCL_IB_DISABLE");
-  const char *ibMergeNicsEnv = flagcxGetEnv("NCCL_IB_MERGE_NICS");
-  int winEnable = winEnv ? atoi(winEnv) : 1;
-  int cuMemEnable = cuMemEnv ? atoi(cuMemEnv) : -2;
-  int crossNic = crossNicEnv ? atoi(crossNicEnv) : 2;
-  int ibDisable = ibDisableEnv ? atoi(ibDisableEnv) : 0;
-  int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
-
-  bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) && (ibMergeNics == 0);
-  if ((*comm)->devBase == NULL && winEnable && cuMemEnable != 0 && symmetricSupport) {
-    bool isAllCudaP2p = checkIsAllCudaP2p((*comm)->base, nranks);
-    if (!isAllCudaP2p) {
-      WARN("ncclDevComm skipped: not all GPUs have CUDA P2P connectivity");
-    } else {
-      FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
-      ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-      reqs.lsaMultimem = checkNvlsSupport(nranks);
-      reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-      reqs.ginSignalCount = 1;
-      using pncclDevCommCreate_t = ncclResult_t (*)(
-          ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
-      void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-      if (handle) {
-        auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-            dlsym(handle, "pncclDevCommCreate"));
-        if (fn) {
-          ncclResult_t ret = fn((*comm)->base, &reqs, (*comm)->devBase);
-          if (ret != ncclSuccess) {
-            free((*comm)->devBase);
-            (*comm)->devBase = NULL;
-            WARN("ncclDevComm creation failed (likely missing nvlsSupport or symmetric support), using standard NCCL path");
-          }
-        } else {
-          free((*comm)->devBase);
-          (*comm)->devBase = NULL;
-        }
-        dlclose(handle);
+  if ((*comm)->devBase == NULL) {
+    const char *winEnv = flagcxGetEnv("NCCL_WIN_ENABLE");
+    const char *cuMemEnv = flagcxGetEnv("NCCL_CUMEM_ENABLE");
+    const char *crossNicEnv = flagcxGetEnv("NCCL_CROSS_NIC");
+    const char *ibDisableEnv = flagcxGetEnv("NCCL_IB_DISABLE");
+    const char *ibMergeNicsEnv = flagcxGetEnv("NCCL_IB_MERGE_NICS");
+    int winEnable = winEnv ? atoi(winEnv) : 1;
+    int cuMemEnable = cuMemEnv ? atoi(cuMemEnv) : -2;
+    int crossNic = crossNicEnv ? atoi(crossNicEnv) : 2;
+    int ibDisable = ibDisableEnv ? atoi(ibDisableEnv) : 0;
+    int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
+    bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) && (ibMergeNics == 0);
+    if (winEnable && cuMemEnable != 0 && symmetricSupport) {
+      bool isAllCudaP2p = checkIsAllCudaP2p((*comm)->base, nranks);
+      if (!isAllCudaP2p) {
+        WARN("ncclDevComm skipped: not all GPUs have CUDA P2P connectivity");
       } else {
-        free((*comm)->devBase);
-        (*comm)->devBase = NULL;
-      }
-      if ((*comm)->devBase == NULL) {
-        WARN("ncclDevComm is not initialized successfully");
+        FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
+        ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+        reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+        reqs.lsaMultimem = checkNvlsSupport(nranks);
+        reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+        reqs.ginSignalCount = 1;
+        using pncclDevCommCreate_t = ncclResult_t (*)(
+            ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
+        void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
+        if (handle) {
+          auto fn = reinterpret_cast<pncclDevCommCreate_t>(
+              dlsym(handle, "pncclDevCommCreate"));
+          if (fn) {
+            FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+          }
+          dlclose(handle);
+        }
+        if ((*comm)->devBase == NULL) {
+          WARN("ncclDevComm is not initialized succefully");
+        }
       }
     }
   }
