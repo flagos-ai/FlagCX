@@ -1,5 +1,6 @@
 #include "nvidia_adaptor.h"
 #include "param.h"
+#include <cstdlib>
 
 #ifdef USE_NVIDIA_ADAPTOR
 
@@ -14,9 +15,6 @@
 // Try to load custom ops once
 #define MAX_NUM_COMM_OPS 16
 static bool customOpLoaded[MAX_NUM_COMM_OPS] = {false};
-FLAGCX_PARAM(NcclWinEnable, "NCCL_WIN_ENABLE", 1);
-FLAGCX_PARAM(NcclCuMemEnable, "NCCL_CUMEM_ENABLE", -2);
-FLAGCX_PARAM(NcclNvlsEnable, "NCCL_NVLS_ENABLE", 1);
 
 using customAllReduce_t =
     flagcxCustomOpFunc_t<ncclWindow_t, ncclWindow_t, void *, size_t,
@@ -46,17 +44,12 @@ flagcxResult_t loadCommOpFuncSymbol(const char *path, const char *name, T *fn) {
 
 // Check if all GPUs have CUDA P2P connectivity
 static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
-  int currentDevice;
-  if (cudaGetDevice(&currentDevice) != cudaSuccess) {
+  int gpuCount;
+  if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {
     return false;
   }
 
-  int deviceCount;
-  if (cudaGetDeviceCount(&deviceCount) != cudaSuccess) {
-    return false;
-  }
-
-  int checkCount = (deviceCount < nranks) ? deviceCount : nranks;
+  int checkCount = (gpuCount < nranks) ? gpuCount : nranks;
   for (int i = 0; i < checkCount; ++i) {
     for (int j = i + 1; j < checkCount; ++j) {
       int canAccess = 0;
@@ -70,19 +63,12 @@ static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
 
 // Check NVLS support
 static bool checkNvlsSupport(int nranks) {
-  int nvlsEnable = flagcxParamNcclNvlsEnable();
-  
-  if (nvlsEnable == 0 || nranks < 2) {
+  if (nranks < 2) {
     return false;
   }
-  if (nvlsEnable == 1) {
-    return true;
-  }
-#if CUDART_VERSION >= 12010
   int driverVersion, currentDevice;
   CUdevice dev;
   int multicastSupported = 0;
-
   if (cudaDriverGetVersion(&driverVersion) != cudaSuccess || driverVersion < 12010 ||
       cudaGetDevice(&currentDevice) != cudaSuccess ||
       cuDeviceGet(&dev, currentDevice) != CUDA_SUCCESS ||
@@ -90,9 +76,6 @@ static bool checkNvlsSupport(int nranks) {
     return false;
   }
   return (multicastSupported != 0);
-#else
-  return false;
-#endif
 }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 
@@ -183,8 +166,19 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                                *(ncclUniqueId *)commId, rank));
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
-  if ((*comm)->devBase == NULL && flagcxParamNcclWinEnable() &&
-      flagcxParamNcclCuMemEnable() != 0) {
+  const char *winEnv = flagcxGetEnv("NCCL_WIN_ENABLE");
+  const char *cuMemEnv = flagcxGetEnv("NCCL_CUMEM_ENABLE");
+  const char *crossNicEnv = flagcxGetEnv("NCCL_CROSS_NIC");
+  const char *ibDisableEnv = flagcxGetEnv("NCCL_IB_DISABLE");
+  const char *ibMergeNicsEnv = flagcxGetEnv("NCCL_IB_MERGE_NICS");
+  int winEnable = winEnv ? atoi(winEnv) : 1;
+  int cuMemEnable = cuMemEnv ? atoi(cuMemEnv) : -2;
+  int crossNic = crossNicEnv ? atoi(crossNicEnv) : 2;
+  int ibDisable = ibDisableEnv ? atoi(ibDisableEnv) : 0;
+  int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
+
+  bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) && (ibMergeNics == 0);
+  if ((*comm)->devBase == NULL && winEnable && cuMemEnable != 0 && symmetricSupport) {
     bool isAllCudaP2p = checkIsAllCudaP2p((*comm)->base, nranks);
     if (!isAllCudaP2p) {
       WARN("ncclDevComm skipped: not all GPUs have CUDA P2P connectivity");
@@ -193,6 +187,8 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
       reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.lsaMultimem = checkNvlsSupport(nranks);
+      reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+      reqs.ginSignalCount = 1;
       using pncclDevCommCreate_t = ncclResult_t (*)(
           ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
       void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
