@@ -12,7 +12,8 @@ static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
   for (int i = 0; i < checkCount; ++i) {
     for (int j = i + 1; j < checkCount; ++j) {
       int canAccess = 0;
-      if (cudaDeviceCanAccessPeer(&canAccess, i, j) != cudaSuccess || !canAccess) {
+      if (cudaDeviceCanAccessPeer(&canAccess, i, j) != cudaSuccess ||
+          !canAccess) {
         return false;
       }
     }
@@ -26,10 +27,12 @@ static bool checkNvlsSupport(int nranks) {
   int driverVersion, currentDevice;
   CUdevice dev;
   int multicastSupported = 0;
-  if (cudaDriverGetVersion(&driverVersion) != cudaSuccess || driverVersion < 12010 ||
-      cudaGetDevice(&currentDevice) != cudaSuccess ||
+  if (cudaDriverGetVersion(&driverVersion) != cudaSuccess ||
+      driverVersion < 12010 || cudaGetDevice(&currentDevice) != cudaSuccess ||
       cuDeviceGet(&dev, currentDevice) != CUDA_SUCCESS ||
-      cuDeviceGetAttribute(&multicastSupported, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev) != CUDA_SUCCESS) {
+      cuDeviceGetAttribute(&multicastSupported,
+                           CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED,
+                           dev) != CUDA_SUCCESS) {
     return false;
   }
   return (multicastSupported != 0);
@@ -131,7 +134,9 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
     int crossNic = crossNicEnv ? atoi(crossNicEnv) : 2;
     int ibDisable = ibDisableEnv ? atoi(ibDisableEnv) : 0;
     int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
-    bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) && (ibMergeNics == 0) && checkIsAllCudaP2p((*comm)->base, nranks);
+    bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) &&
+                            (ibMergeNics == 0) &&
+                            checkIsAllCudaP2p((*comm)->base, nranks);
     if (winEnable && cuMemEnable != 0 && symmetricSupport) {
       FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
       ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
@@ -146,7 +151,8 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
         auto fn = reinterpret_cast<pncclDevCommCreate_t>(
             dlsym(handle, "pncclDevCommCreate"));
         if (fn) {
-          FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+          FLAGCXCHECK(
+              (flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
         }
         dlclose(handle);
       }
