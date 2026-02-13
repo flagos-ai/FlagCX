@@ -2,15 +2,14 @@
 
 #ifdef USE_NVIDIA_ADAPTOR
 
-static bool checkIsAllCudaP2p(ncclComm_t comm, int nranks) {
+static bool checkIsAllCudaP2p(ncclComm_t comm) {
   int gpuCount;
   if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {
     return false;
   }
 
-  int checkCount = (gpuCount < nranks) ? gpuCount : nranks;
-  for (int i = 0; i < checkCount; ++i) {
-    for (int j = i + 1; j < checkCount; ++j) {
+  for (int i = 0; i < gpuCount; ++i) {
+    for (int j = i + 1; j < gpuCount; ++j) {
       int canAccess = 0;
       if (cudaDeviceCanAccessPeer(&canAccess, i, j) != cudaSuccess ||
           !canAccess) {
@@ -136,7 +135,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
     int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
     bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) &&
                             (ibMergeNics == 0) &&
-                            checkIsAllCudaP2p((*comm)->base, nranks);
+                            checkIsAllCudaP2p((*comm)->base);
     if (winEnable && cuMemEnable != 0 && symmetricSupport) {
       FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
       ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
@@ -144,8 +143,9 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       reqs.lsaMultimem = checkNvlsSupport(nranks);
       reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.ginSignalCount = 1;
-      using pncclDevCommCreate_t = ncclResult_t (*)(
-          ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
+      using pncclDevCommCreate_t =
+          flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t comm,
+                               ncclDevCommRequirements *, ncclDevComm *>;
       void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
       if (handle) {
         auto fn = reinterpret_cast<pncclDevCommCreate_t>(
