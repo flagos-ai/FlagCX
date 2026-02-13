@@ -4,19 +4,20 @@ export DH_VERBOSE = 1
 
 # Allow building only specific backend via environment variable
 # Usage: FLAGCX_BUILD_BACKEND=metax dpkg-buildpackage ...
-# Valid values: metax, nvidia, all (default)
+# Valid values: metax, nvidia, ascend, all (default)
 FLAGCX_BUILD_BACKEND ?= all
 
 # Build directories for different backends
 BUILD_DIR_METAX = $(CURDIR)/build-metax
 BUILD_DIR_NVIDIA = $(CURDIR)/build-nvidia
+BUILD_DIR_ASCEND = $(CURDIR)/build-ascend
 
 %:
 	dh $@
 
 override_dh_auto_clean:
 	dh_auto_clean
-	rm -rf $(BUILD_DIR_METAX) $(BUILD_DIR_NVIDIA)
+	rm -rf $(BUILD_DIR_METAX) $(BUILD_DIR_NVIDIA) $(BUILD_DIR_ASCEND)
 	$(MAKE) clean || true
 
 override_dh_auto_build:
@@ -38,6 +39,15 @@ else ifeq ($(FLAGCX_BUILD_BACKEND),metax)
 	mkdir -p $(BUILD_DIR_METAX)/lib $(BUILD_DIR_METAX)/include
 	cp -a build/lib/libflagcx.so* $(BUILD_DIR_METAX)/lib/ || cp -a build/libflagcx.so* $(BUILD_DIR_METAX)/lib/
 	cp -r flagcx/include $(BUILD_DIR_METAX)/include/flagcx
+else ifeq ($(FLAGCX_BUILD_BACKEND),ascend)
+	@echo "Building Ascend variant only"
+	# Build Ascend variant
+	mkdir -p $(BUILD_DIR_ASCEND)
+	$(MAKE) USE_ASCEND=1 PREFIX=/usr
+	# Copy built files to ascend build dir
+	mkdir -p $(BUILD_DIR_ASCEND)/lib $(BUILD_DIR_ASCEND)/include
+	cp -a build/lib/libflagcx.so* $(BUILD_DIR_ASCEND)/lib/ || cp -a build/libflagcx.so* $(BUILD_DIR_ASCEND)/lib/
+	cp -r flagcx/include $(BUILD_DIR_ASCEND)/include/flagcx
 else
 	@echo "Building both variants"
 	# Build MetaX variant
@@ -87,6 +97,19 @@ else ifeq ($(FLAGCX_BUILD_BACKEND),metax)
 		ln -sf libflagcx.so libflagcx.so.0 && \
 		ln -sf libflagcx.so libflagcx.so.0.1.0
 	cp -r $(BUILD_DIR_METAX)/include/* debian/libflagcx-metax-dev/usr/include/flagcx/
+else ifeq ($(FLAGCX_BUILD_BACKEND),ascend)
+	@echo "Installing Ascend variant only"
+	# Install Ascend variant
+	mkdir -p debian/libflagcx-ascend/usr/lib
+	mkdir -p debian/libflagcx-ascend-dev/usr/include/flagcx
+	cp -a $(BUILD_DIR_ASCEND)/lib/libflagcx.so* debian/libflagcx-ascend/usr/lib/
+	# Fix SONAME and RPATH
+	cd debian/libflagcx-ascend/usr/lib && \
+		patchelf --set-soname libflagcx.so.0 libflagcx.so && \
+		patchelf --remove-rpath libflagcx.so && \
+		ln -sf libflagcx.so libflagcx.so.0 && \
+		ln -sf libflagcx.so libflagcx.so.0.1.0
+	cp -r $(BUILD_DIR_ASCEND)/include/* debian/libflagcx-ascend-dev/usr/include/flagcx/
 else
 	@echo "Installing both variants"
 	# Install MetaX variant

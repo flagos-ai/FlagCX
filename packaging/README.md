@@ -9,13 +9,23 @@ packaging/
 ├── debian/              # Debian/Ubuntu packaging
 │   ├── control         # Package metadata (with build profiles)
 │   ├── rules           # Build rules
-│   ├── changelog       # Version history
+│   ├── changelog       # Version history (auto-generated)
 │   ├── copyright       # License information
 │   └── build-helpers/  # Build scripts and Dockerfiles
 │       ├── build-flagcx.sh          # Unified build script
 │       ├── Dockerfile.deb           # Unified build configuration
 │       └── test-nexus-upload.sh     # Local Nexus upload test script
-└── rpm/                # Future: RPM packaging for RHEL/Fedora/etc.
+├── rpm/                 # RPM packaging for RHEL/Rocky/OpenEuler
+│   ├── specs/
+│   │   └── flagcx.spec            # RPM spec file
+│   ├── dockerfiles/
+│   │   ├── Dockerfile.nvidia      # NVIDIA backend build environment
+│   │   ├── Dockerfile.metax       # MetaX backend build environment
+│   │   └── Dockerfile.ascend      # Ascend backend build environment
+│   └── build-flagcx-rpm.sh        # Build script
+├── sync-changelog.py    # Changelog sync (docs/CHANGELOG.md -> deb/rpm)
+├── CHANGELOG-MANAGEMENT.md
+└── README.md            # This file
 ```
 
 ## Why `packaging/` Instead of Top-Level `/debian`?
@@ -25,158 +35,171 @@ Following [Debian UpstreamGuide](https://wiki.debian.org/UpstreamGuide) recommen
 > Upstream projects should NOT include a top-level `/debian` directory.
 > Use `contrib/debian/` or `packaging/debian/` instead.
 
-**Benefits:**
+Benefits:
 - Avoids conflicts with distribution maintainers' packaging
 - Clearly indicates upstream-maintained packaging
 - Allows multi-format support (Debian + RPM + others)
 - Industry standard (see [Miniflux](https://github.com/miniflux/v2/tree/main/packaging), etc.)
 
-## Building Debian Packages
+## Supported Backends and Architectures
 
-Use the unified build script to build packages for any vendor/backend:
+| Backend | DEB (Debian/Ubuntu) | RPM (RHEL/Rocky/OpenEuler) |
+|---------|--------------------|-----------------------------|
+| NVIDIA  | amd64              | x86_64 (Rocky Linux 8/9)    |
+| MetaX   | amd64              | x86_64 (TBD)                |
+| Ascend  | amd64, arm64       | x86_64, aarch64 (OpenEuler 24.03) |
 
-### Usage
+## Building Packages
+
+### Prerequisites
+
+- Docker
+- Docker Buildx (for multi-architecture builds)
+- Python 3 (for changelog sync)
+
+### Debian Packages
 
 ```bash
-./packaging/debian/build-helpers/build-flagcx.sh <vendor> [base_image_version]
-```
+./packaging/debian/build-helpers/build-flagcx.sh <backend> [base_image_version]
 
-**Parameters:**
-- `<vendor>` - Hardware vendor/backend (e.g., `nvidia`, `metax`)
-- `[base_image_version]` - Optional base image version tag (default: `latest`)
-
-**Output:** `debian-packages/<vendor>/*.deb`
-
-### Examples
-
-**Build for NVIDIA:**
-```bash
+# Examples
 ./packaging/debian/build-helpers/build-flagcx.sh nvidia
-# Output: debian-packages/nvidia/*.deb
-```
-
-**Build for MetaX:**
-```bash
 ./packaging/debian/build-helpers/build-flagcx.sh metax
-# Output: debian-packages/metax/*.deb
-```
-
-**Specify custom base image version:**
-```bash
 ./packaging/debian/build-helpers/build-flagcx.sh nvidia v1.2.3
-./packaging/debian/build-helpers/build-flagcx.sh metax latest
 ```
 
-### Base Images
+Output: `debian-packages/<backend>/*.deb`
 
-The build script uses upstream base images from `harbor.baai.ac.cn/flagbase/`:
+Base images are from `harbor.baai.ac.cn/flagbase/`:
 - NVIDIA: `flagbase-nvidia:<version>`
 - MetaX: `flagbase-metax:<version>`
 
-To add support for a new vendor, ensure a corresponding base image exists at:
-`harbor.baai.ac.cn/flagbase/flagbase-<vendor>:<version>`
+The build script automatically runs `lintian` for quality checks if available.
 
-### Quality Checks
-
-The build script automatically runs `lintian` to validate the generated packages if available:
+### RPM Packages
 
 ```bash
-# Install lintian (optional but recommended)
-sudo apt-get install lintian
+./packaging/rpm/build-flagcx-rpm.sh <backend> [base_image_version]
 
-# Build packages - lintian runs automatically
-./packaging/debian/build-helpers/build-flagcx.sh nvidia
+# Examples
+./packaging/rpm/build-flagcx-rpm.sh nvidia
+./packaging/rpm/build-flagcx-rpm.sh ascend
+./packaging/rpm/build-flagcx-rpm.sh ascend 8.5.0-910-openeuler24.03-py3.11
 ```
 
-Lintian checks are non-fatal and won't stop the build if issues are found.
+Output: `rpm-packages/<backend>/RPMS/<arch>/*.rpm`
+
+Default base images:
+- NVIDIA: `nvcr.io/nvidia/cuda:12.4.1-devel-rockylinux8`
+- Ascend: `ascendai/cann:8.5.0-910-openeuler24.03-py3.11`
 
 ## Installation
 
-Install packages for your hardware vendor:
+### Debian/Ubuntu
 
 ```bash
-# General syntax
-sudo dpkg -i debian-packages/<vendor>/*.deb
+# From local packages
+sudo dpkg -i debian-packages/<backend>/*.deb
 
-# Example: NVIDIA
-sudo dpkg -i debian-packages/nvidia/*.deb
-
-# Example: MetaX
-sudo dpkg -i debian-packages/metax/*.deb
+# From APT repository
+echo "deb https://resource.flagos.net/repository/flagos-apt-hosted/ flagos-apt-hosted main" | \
+  sudo tee /etc/apt/sources.list.d/flagcx.list
+sudo apt-get update
+sudo apt-get install libflagcx-<backend> libflagcx-<backend>-dev
 ```
+
+### RHEL/Rocky/OpenEuler
+
+```bash
+sudo yum install libflagcx-nvidia-0.8.0-1.el8.x86_64.rpm
+sudo yum install libflagcx-nvidia-devel-0.8.0-1.el8.x86_64.rpm
+
+# Or on OpenEuler
+sudo dnf install libflagcx-ascend-0.8.0-1.oe2403.aarch64.rpm
+```
+
+## Package Contents
+
+### Runtime Package (libflagcx-{backend})
+- DEB: `/usr/lib/<multiarch>/libflagcx.so.*`
+- RPM: `/usr/lib64/libflagcx.so.*`
+
+### Development Package (libflagcx-{backend}-dev / -devel)
+- Headers: `/usr/include/flagcx/`
+- DEB: `/usr/lib/<multiarch>/libflagcx.so`
+- RPM: `/usr/lib64/libflagcx.so`
+
+## Changelog Management
+
+Changelogs are managed from a single source: `docs/CHANGELOG.md`.
+
+The sync script automatically converts it to both Debian and RPM formats:
+
+```bash
+python3 packaging/sync-changelog.py
+```
+
+See [CHANGELOG-MANAGEMENT.md](CHANGELOG-MANAGEMENT.md) for details.
 
 ## CI/CD
 
 Automated builds are triggered by:
-- Push to `main` branch (when packaging files change)
-- Pull requests to `main`
+- Version tag push (`v*`)
+- Pull requests to `main` (when packaging files change)
 - Manual workflow dispatch
 
-See `.github/workflows/build-deb.yml` for details.
-
-### Publishing to Nexus APT Repository
-
-Packages are uploaded to Nexus when:
-- A version tag is pushed: `git tag v1.0.0 && git push origin v1.0.0`
-- Manual workflow dispatch via GitHub Actions
-
-After upload, users can install packages from the APT repository:
-
-```bash
-# Add the FlagOS APT repository
-echo "deb https://resource.flagos.net/repository/flagos-apt-hosted/ flagos-apt-hosted main" | \
-  sudo tee /etc/apt/sources.list.d/flagcx.list
-
-# Update package list
-sudo apt-get update
-
-# Install packages for your vendor
-sudo apt-get install libflagcx-<vendor>        # Runtime library
-sudo apt-get install libflagcx-<vendor>-dev    # Development files
-
-# Examples:
-sudo apt-get install libflagcx-nvidia libflagcx-nvidia-dev
-sudo apt-get install libflagcx-metax libflagcx-metax-dev
-```
+Workflows:
+- `.github/workflows/build-deb.yml` - Debian packages
+- `.github/workflows/build-rpm.yml` - RPM packages
 
 ## Architecture
 
-The build process uses a **unified multi-stage Dockerfile** with build profiles:
+### DEB Build
 
-### Build Profiles Support
+Uses a unified multi-stage Dockerfile with build profiles:
+- `pkg.flagcx.nvidia-only` / `pkg.flagcx.metax-only` / `pkg.flagcx.ascend-only`
+- Single `Dockerfile.deb` for all backends via build arguments
+- Builder stage (flagbase image) -> Output stage (Alpine, .deb files only)
 
-The `debian/control` file defines build profiles to support multiple backends:
-- `pkg.flagcx.nvidia-only` - Build only NVIDIA packages
-- `pkg.flagcx.metax-only` - Build only MetaX packages
+### RPM Build
 
-### Unified Dockerfile
+Uses per-backend Dockerfiles with native RPM distributions:
+- NVIDIA: Rocky Linux 8 with CUDA toolkit
+- Ascend: OpenEuler 24.03 with CANN toolkit
+- Builds via `rpmbuild` with `--define 'backend <name>'`
 
-A single `Dockerfile.deb` builds packages for all backends using build arguments:
-- `BASE_IMAGE` - Upstream base image (e.g., `flagbase-nvidia`, `flagbase-metax`)
-- `BASE_IMAGE_VERSION` - Image version tag (default: `latest`)
-- `VENDOR` - Backend vendor name (used for build profile selection)
+### Why Separate Build Environments?
 
-### Build Stages
+RPM packages must be built on RPM-based distributions:
+- Different file system layouts (`/usr/lib64` vs `/usr/lib/<multiarch>`)
+- Different dependency resolution (yum/dnf vs apt)
+- System library version mismatches
 
-1. **Builder stage**: Based on upstream flagbase images
-   - Contains all necessary build dependencies (CUDA/NCCL or MACA SDK)
-   - Installs Debian packaging tools (`debhelper`, `dpkg-dev`, etc.)
-   - Runs `dpkg-buildpackage` with `DEB_BUILD_PROFILES=pkg.flagcx.${VENDOR}-only`
-   - Only builds packages for the specified vendor
+## Key Differences: DEB vs RPM
 
-2. **Output stage**: Minimal Alpine image
-   - Only contains the built `.deb` files
-   - Used to extract packages to the host
+| Aspect | Debian/Ubuntu | RPM (RHEL/Rocky/OpenEuler) |
+|--------|---------------|----------------------------|
+| Package Tool | dpkg-buildpackage | rpmbuild |
+| Lib Directory | /usr/lib/x86_64-linux-gnu/ | /usr/lib64/ |
+| Build Deps | Build-Depends in control | BuildRequires in spec |
+| Runtime Deps | Depends in control | Requires in spec |
+| Profiles | Build-Profiles | RPM macros (--define) |
+| Quality Check | lintian | rpmlint |
 
-This approach ensures:
-- ✓ Reproducible builds using official base images
-- ✓ Single Dockerfile for all backends (DRY principle)
-- ✓ Backend selection via build profiles
-- ✓ No custom Docker images to maintain
-- ✓ Clean separation of build environment and outputs
+## Troubleshooting
 
-## Future Plans
+### Missing dependencies during build
+Ensure the base image includes all required SDKs (CUDA, MACA, CANN).
 
-- [ ] Add RPM packaging in `packaging/rpm/`
-- [ ] Add Arch Linux packaging
-- [x] Add APT repository hosting (Nexus)
+### Wrong library path (RPM)
+RPM uses `/usr/lib64` on x86_64, not `/usr/lib/x86_64-linux-gnu`.
+
+### SONAME conflicts (RPM)
+Use `patchelf --set-soname` to fix SONAME in the spec file.
+
+## References
+
+- [Debian UpstreamGuide](https://wiki.debian.org/UpstreamGuide)
+- [RPM Packaging Guide](https://rpm-packaging-guide.github.io/)
+- [Fedora Packaging Guidelines](https://docs.fedoraproject.org/en-US/packaging-guidelines/)
+- [OpenEuler Packaging](https://docs.openeuler.org/en/docs/22.03_LTS/docs/ApplicationDev/packaging-software.html)

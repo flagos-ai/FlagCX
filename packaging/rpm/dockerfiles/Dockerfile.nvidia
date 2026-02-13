@@ -1,0 +1,41 @@
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda
+ARG BASE_IMAGE_VERSION=12.4.1-devel-rockylinux8
+
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+# Install EPEL and RPM build tools
+RUN yum install -y epel-release && \
+    yum install -y \
+    rpm-build \
+    rpmdevtools \
+    gcc-c++ \
+    make \
+    cmake \
+    patchelf \
+    json-devel \
+    && yum clean all
+
+# Setup RPM build environment
+RUN rpmdev-setuptree
+
+# Copy source code
+WORKDIR /workspace
+COPY . /workspace/
+
+# Create source tarball
+RUN tar czf /root/rpmbuild/SOURCES/flagcx-0.8.0.tar.gz \
+    --transform 's,^\.,flagcx-0.8.0,' \
+    --exclude='.git' \
+    --exclude='build' \
+    --exclude='debian-packages' \
+    .
+
+# Build RPM with NVIDIA backend
+RUN rpmbuild -ba \
+    --define 'backend nvidia' \
+    /workspace/packaging/rpm/specs/flagcx.spec
+
+# List built packages
+RUN ls -lh /root/rpmbuild/RPMS/*/*.rpm
+
+CMD ["/bin/bash"]
