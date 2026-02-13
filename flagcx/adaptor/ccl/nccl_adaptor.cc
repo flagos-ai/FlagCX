@@ -131,32 +131,27 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
     int crossNic = crossNicEnv ? atoi(crossNicEnv) : 2;
     int ibDisable = ibDisableEnv ? atoi(ibDisableEnv) : 0;
     int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
-    bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) && (ibMergeNics == 0);
+    bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) && (ibMergeNics == 0) && checkIsAllCudaP2p((*comm)->base, nranks);
     if (winEnable && cuMemEnable != 0 && symmetricSupport) {
-      bool isAllCudaP2p = checkIsAllCudaP2p((*comm)->base, nranks);
-      if (!isAllCudaP2p) {
-        WARN("ncclDevComm skipped: not all GPUs have CUDA P2P connectivity");
-      } else {
-        FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
-        ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-        reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-        reqs.lsaMultimem = checkNvlsSupport(nranks);
-        reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-        reqs.ginSignalCount = 1;
-        using pncclDevCommCreate_t = ncclResult_t (*)(
-            ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
-        void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-        if (handle) {
-          auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-              dlsym(handle, "pncclDevCommCreate"));
-          if (fn) {
-            FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
-          }
-          dlclose(handle);
+      FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
+      ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+      reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+      reqs.lsaMultimem = checkNvlsSupport(nranks);
+      reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+      reqs.ginSignalCount = 1;
+      using pncclDevCommCreate_t = ncclResult_t (*)(
+          ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
+      void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
+      if (handle) {
+        auto fn = reinterpret_cast<pncclDevCommCreate_t>(
+            dlsym(handle, "pncclDevCommCreate"));
+        if (fn) {
+          FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
         }
-        if ((*comm)->devBase == NULL) {
-          WARN("ncclDevComm is not initialized succefully");
-        }
+        dlclose(handle);
+      }
+      if ((*comm)->devBase == NULL) {
+        WARN("ncclDevComm is not initialized succefully");
       }
     }
   }
