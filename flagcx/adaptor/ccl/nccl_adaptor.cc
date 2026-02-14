@@ -21,7 +21,7 @@ static bool checkIsAllCudaP2p(ncclComm_t comm) {
 }
 static bool checkNvlsSupport(int nranks) {
   if (nranks < 2) {
-    return false;
+    return true;
   }
   int driverVersion, currentDevice;
   CUdevice dev;
