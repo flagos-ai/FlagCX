@@ -345,7 +345,6 @@ struct flagcxProxyState {
   struct flagcxProxyProgressState progressState;
 
   // Kernel thread
-  bool enableProxyKernel = false;
   struct flagcxProxyKernelState kernelState;
   flagcxUniRunnerState uniRunnerState;
 

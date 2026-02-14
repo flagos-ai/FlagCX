@@ -90,7 +90,7 @@ jobs:
           cd /__w/FlagCX/FlagCX/test/unittest
           export MPI_HOME=/usr/local/mpi
           export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root  -x FLAGCX_CLUSTER_SPLIT_LIST=2  -x FLAGCX_IB_HCA=mlx5 -x FLAGCX_ENABLE_TOPO_DETECT=TRUE ./build/bin/main
+          mpirun -np 8 --allow-run-as-root  -x FLAGCX_CLUSTER_SPLIT_LIST=2  -x FLAGCX_IB_HCA=mlx5 ./build/bin/main
 
 
 

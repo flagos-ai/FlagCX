@@ -852,20 +852,6 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
                                comm->magic, flagcxSocketTypeProxy));
   FLAGCXCHECK(flagcxSocketConnect(proxySock));
 
-  // Check if kernel proxy is enabled
-  const char *kernelProxyEnv = flagcxGetEnv("FLAGCX_KERNEL_PROXY");
-  if (kernelProxyEnv) {
-    try {
-      comm->proxyState->enableProxyKernel = (std::stoi(kernelProxyEnv) == 1);
-    } catch (const std::exception &e) {
-      WARN("Invalid value for FLAGCX_KERNEL_PROXY: '%s', defaulting to false.",
-           kernelProxyEnv);
-      comm->proxyState->enableProxyKernel = 0;
-    }
-  }
-  INFO(FLAGCX_INIT, "Flagcx KERNEL_PROXY flag set to %d",
-       (int)comm->proxyState->enableProxyKernel);
-
   char proxyMsg[10];
   memcpy(proxyMsg, (string("Proxy: ") + to_string(comm->rank)).c_str(), 10);
   flagcxSocketSend(proxySock, proxyMsg, 10);
@@ -874,10 +860,10 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
                  (void *)comm);
   pthread_create(&comm->proxyState->progressState.thread, NULL,
                  flagcxProxyProgress, comm->proxyState);
-  if (comm->proxyState->enableProxyKernel) {
-    pthread_create(&comm->proxyState->kernelState.thread, NULL,
-                   flagcxProxyKernelService, (void *)comm);
-  }
+#ifdef COMPILE_KERNEL_HOST
+  pthread_create(&comm->proxyState->kernelState.thread, NULL,
+                 flagcxProxyKernelService, (void *)comm);
+#endif
 
   comm->proxyState->initialized = 1;
   return flagcxSuccess;
@@ -987,10 +973,10 @@ out:
   pthread_cond_signal(&comm->proxyState->cond);
   pthread_mutex_unlock(&comm->proxyState->mutex);
   pthread_join(comm->proxyState->progressState.thread, nullptr);
-  // Stop kernel thread if needed
-  if (comm->proxyState->enableProxyKernel) {
-    pthread_join(comm->proxyState->kernelState.thread, nullptr);
-  }
+#ifdef COMPILE_KERNEL_HOST
+  // Stop kernel thread
+  pthread_join(comm->proxyState->kernelState.thread, nullptr);
+#endif
 
   // Free P2P resources in proxy thread (CUDA resources must be freed in the
   // same thread where they were created)

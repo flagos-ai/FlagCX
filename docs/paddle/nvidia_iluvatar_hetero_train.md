@@ -47,7 +47,6 @@ We now support training ERNIE4.5 using Nvidia GPUs and Iluvatar GPUs together. P
     export FLAGCX_IB_HCA=mlx5
     export FLAGCX_DEBUG=TRACE
     export FLAGCX_DEBUG_SUBSYS=ALL
-    export FLAGCX_ENABLE_TOPO_DETECT=TRUE
     #export FLAGCX_C2C_ALGO="RING_PIPELINED"
     #export GLOG_v=4
     #export FLAGS_call_stack_level=3

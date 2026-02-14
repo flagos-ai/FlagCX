@@ -267,7 +267,6 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
       (struct flagcxCommInitRankAsyncJob *)job_;
   flagcxHeteroComm_t comm = job->comm;
   flagcxResult_t res = flagcxSuccess;
-  const char *env = flagcxGetEnv("FLAGCX_ENABLE_TOPO_DETECT");
 
   if (!job->parent) {
     // New version of calling bootstrapInit
@@ -350,20 +349,15 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
 
   FLAGCXCHECK(flagcxNetInit(comm));
   INFO(FLAGCX_INIT, "Using network %s", comm->netAdaptor->name);
-  if (env && (strcmp(env, "TRUE") == 0 || strcmp(env, "True") == 0)) {
-    INFO(FLAGCX_INIT, "getting busId for cudaDev %d", comm->cudaDev);
-    FLAGCXCHECK(getBusId(comm->cudaDev, &comm->busId));
-    INFO(FLAGCX_INIT, "getting commHash for rank %d", comm->rank);
-    comm->commHash = getHash(job->commId.internal, FLAGCX_UNIQUE_ID_BYTES);
-    INFO(FLAGCX_INIT, "commHash for rank %d is %lu", comm->rank,
-         comm->commHash);
-    // TODO: put net init into a separate function
+  INFO(FLAGCX_INIT, "getting busId for cudaDev %d", comm->cudaDev);
+  FLAGCXCHECK(getBusId(comm->cudaDev, &comm->busId));
+  INFO(FLAGCX_INIT, "getting commHash for rank %d", comm->rank);
+  comm->commHash = getHash(job->commId.internal, FLAGCX_UNIQUE_ID_BYTES);
+  INFO(FLAGCX_INIT, "commHash for rank %d is %lu", comm->rank, comm->commHash);
+  // TODO: put net init into a separate function
 
-    INFO(FLAGCX_INIT, "start initTransportsRank");
-    FLAGCXCHECKGOTO(initTransportsRank(comm, NULL), res, fail);
-  } else {
-    flagcxGetLocalNetFromGpu(comm->cudaDev, &comm->netDev, comm);
-  }
+  INFO(FLAGCX_INIT, "start initTransportsRank");
+  FLAGCXCHECKGOTO(initTransportsRank(comm, NULL), res, fail);
 
 exit:
   return res;

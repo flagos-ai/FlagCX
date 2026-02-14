@@ -58,7 +58,6 @@ do
         -genv FLAGCX_DEBUG=INFO \
         -genv FLAGCX_DEBUG_SUBSYS=INIT,NET \
         -genv FLAGCX_IB_HCA=mlx5_0 \
-        -genv FLAGCX_USENET=mlx5_0 \
         ./$TEST -b 128M -e 1G -f 2 -p 1
     if [ $? -ne 0 ]; then
         echo "$TEST execution failed!"
