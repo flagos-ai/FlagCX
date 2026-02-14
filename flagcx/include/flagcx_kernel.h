@@ -7,19 +7,6 @@
 #define FLAGCX_FIFO_CAPACITY 128
 #define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
 
-#ifdef COMPILE_KERNEL
-FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
-  int delay = 1 << (iter < 15 ? iter : 15);
-#if __CUDA_ARCH__ >= 700
-  __nanosleep(delay);
-#else
-  uint64_t start = clock64();
-  while (clock64() - start < (uint64_t)delay) { /* spin */
-  }
-#endif
-}
-#endif
-
 typedef enum {
   flagcxDevicePrimSend = 0,
   flagcxDevicePrimRecv = 1,
@@ -47,6 +34,9 @@ constexpr unsigned int flagcxDeviceTriggerOffPrim =
     flagcxDeviceTriggerOffDatatype + flagcxDeviceTriggerBitsDatatype;
 constexpr unsigned int flagcxDeviceTriggerBitsPrim = 4;
 constexpr unsigned int flagcxDeviceTriggerBitsFifoReserved = 1;
+// Valid bit for lock-free MPSC FIFO (bit 63 of snd field)
+constexpr unsigned int flagcxDeviceTriggerOffValid = 63;
+constexpr uint64_t flagcxDeviceTriggerValidMask = (1ULL << 63);
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
@@ -152,9 +142,9 @@ FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceWait(void *fifoBuffer);
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
-void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
-                   flagcxDataType_t datatype, int sendPeer, int recvPeer,
-                   flagcxComm_t comm, flagcxStream_t stream);
+flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
+                             flagcxDataType_t datatype, flagcxComm_t comm,
+                             flagcxStream_t stream);
 void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
                                   size_t nblocks, flagcxStream_t stream);
 #endif

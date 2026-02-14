@@ -50,20 +50,45 @@ flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger) {
-  int idx = -1;
-  uint64_t *buffer = (uint64_t *)fifoBuffer;
+  volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
   uint64_t capacity = buffer[0];
   uint64_t cons = buffer[1];
   uint64_t prod = buffer[2];
-  int distance = prod - cons;
-  if (distance > 0) {
-    idx = cons % capacity;
-    memcpy((void *)trigger,
-           (void *)(buffer + 3 +
-                    sizeof(flagcxDeviceTrigger) / sizeof(uint64_t) * idx),
-           sizeof(flagcxDeviceTrigger));
+
+  if (prod > cons) {
+    // Get pointer to slot's raw uint64_t fields
+    uint64_t idx = cons % capacity;
+    volatile uint64_t *slotFst =
+        buffer + 3 + idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+    volatile uint64_t *slotSnd = slotFst + 1;
+
+    // Wait for valid bit to be set (data is committed by producer)
+    // Use hybrid approach: spin vigorously first, then yield to reduce CPU
+    // usage
+    int spins = 0;
+    while (!(*slotSnd & flagcxDeviceTriggerValidMask)) {
+      __sync_synchronize();
+      if (++spins > 1000) {
+        sched_yield();
+        spins = 0;
+      }
+    }
+
+    // Memory fence before reading
     __sync_synchronize();
-    buffer[1] = buffer[1] + 1;
+
+    // Copy data (clear valid bit in the copy)
+    trigger->fst = *slotFst;
+    trigger->snd = *slotSnd & ~flagcxDeviceTriggerValidMask;
+
+    // Clear valid bit in slot for reuse
+    *slotSnd = 0;
+
+    // Memory fence before updating consumed
+    __sync_synchronize();
+
+    // Update consumed counter
+    buffer[1] = cons + 1;
   } else {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
   }

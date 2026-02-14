@@ -15,7 +15,7 @@ DEVICE_LINK =
 DEVICE_COMPILER =
 ifeq ($(USE_NVIDIA), 1)
 	DEVICE_HOME = /usr/local/cuda
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
+	DEVICE_LIB = $(DEVICE_HOME)/lib64 -L$(DEVICE_HOME)/lib64/stubs
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
 	DEVICE_LINK = -lcudart -lcuda
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc

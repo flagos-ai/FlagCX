@@ -48,8 +48,6 @@ int main(int argc, char *argv[]) {
   void *sendHandle, *recvHandle;
   size_t count;
   timer tim;
-  int recvPeer = (proc - 1 + totalProcs) % totalProcs;
-  int sendPeer = (proc + 1) % totalProcs;
 
   if (local_register) {
     // allocate buffer
@@ -66,36 +64,44 @@ int main(int argc, char *argv[]) {
   memset(hello, 0, max_bytes);
 
   // Warm-up for large size
+  // count is per-peer, total buffer = nRanks * count elements
   for (int i = 0; i < num_warmup_iters; i++) {
     // launch p2p kernel
-    flagcxP2pDemo(sendbuff, recvbuff, max_bytes / sizeof(float), DATATYPE,
-                  sendPeer, recvPeer, comm, stream);
+    flagcxP2pDemo(sendbuff, recvbuff, max_bytes / sizeof(float) / totalProcs,
+                  DATATYPE, comm, stream);
   }
   devHandle->streamSynchronize(stream);
 
   // Warm-up for small size
   for (int i = 0; i < num_warmup_iters; i++) {
     // launch p2p kernel
-    flagcxP2pDemo(sendbuff, recvbuff, min_bytes / sizeof(float), DATATYPE,
-                  sendPeer, recvPeer, comm, stream);
+    flagcxP2pDemo(sendbuff, recvbuff, min_bytes / sizeof(float) / totalProcs,
+                  DATATYPE, comm, stream);
   }
   devHandle->streamSynchronize(stream);
 
   for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
-    count = size / sizeof(float);
+    // count is per-peer elements; total buffer = nRanks * count
+    count = size / sizeof(float) / totalProcs;
 
-    strcpy((char *)hello, "_0x1234");
-    strcpy((char *)hello + size / 3, "_0x5678");
-    strcpy((char *)hello + size / 3 * 2, "_0x9abc");
+    // Initialize sendbuff: all elements = proc (my rank)
+    // After alltoall, recvbuff[p] should contain p's rank value
+    float *helloFloat = (float *)hello;
+    size_t totalElements = size / sizeof(float);
+    for (size_t i = 0; i < totalElements; i++) {
+      helloFloat[i] = (float)proc;
+    }
 
     devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
                             NULL);
 
-    if (proc == 0 && color == 0 && print_buffer) {
-      printf("sendbuff = ");
-      printf("%s", (const char *)((char *)hello));
-      printf("%s", (const char *)((char *)hello + size / 3));
-      printf("%s\n", (const char *)((char *)hello + size / 3 * 2));
+    // Print sendbuff from rank 0 and last rank
+    if (color == 0 && print_buffer && (proc == 0 || proc == totalProcs - 1)) {
+      printf("rank%d sendbuff:", proc);
+      for (int p = 0; p < totalProcs; p++) {
+        printf(" %.0f", helloFloat[p * count]);
+      }
+      printf("\n");
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -103,8 +109,7 @@ int main(int argc, char *argv[]) {
     tim.reset();
     for (int i = 0; i < num_iters; i++) {
       // launch p2p kernel
-      flagcxP2pDemo(sendbuff, recvbuff, count, DATATYPE, sendPeer, recvPeer,
-                    comm, stream);
+      flagcxP2pDemo(sendbuff, recvbuff, count, DATATYPE, comm, stream);
     }
     devHandle->streamSynchronize(stream);
 
@@ -128,18 +133,32 @@ int main(int argc, char *argv[]) {
     memset(hello, 0, size);
     devHandle->deviceMemcpy(hello, recvbuff, size, flagcxMemcpyDeviceToHost,
                             NULL);
-    if (proc == 0 && color == 0 && print_buffer) {
-      printf("recvbuff = ");
-      printf("%s", (const char *)((char *)hello));
-      printf("%s", (const char *)((char *)hello + size / 3));
-      printf("%s\n", (const char *)((char *)hello + size / 3 * 2));
+    // Print recvbuff from rank 0 and last rank
+    // Expected: 0 1 2 3 ... nRanks-1 (one value per peer)
+    if (color == 0 && print_buffer && (proc == 0 || proc == totalProcs - 1)) {
+      printf("rank%d recvbuff:", proc);
+      for (int p = 0; p < totalProcs; p++) {
+        printf(" %.0f", helloFloat[p * count]);
+      }
+      printf("\n");
     }
   }
 
+  // Destroy stream first (sync any pending work)
+  devHandle->streamDestroy(stream);
+
   if (local_register) {
-    // deregister buffer
+    // deregister buffer (must be done before comm destroy)
     flagcxCommDeregister(comm, sendHandle);
     flagcxCommDeregister(comm, recvHandle);
+  }
+
+  // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
+  // The kernel proxy thread holds a CUDA stream that can interfere with
+  // deviceFree
+  flagcxCommDestroy(comm);
+
+  if (local_register) {
     // deallocate buffer
     flagcxMemFree(sendbuff);
     flagcxMemFree(recvbuff);
@@ -148,8 +167,6 @@ int main(int argc, char *argv[]) {
     devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
   }
   free(hello);
-  devHandle->streamDestroy(stream);
-  flagcxCommDestroy(comm);
   flagcxHandleFree(handler);
 
   MPI_Finalize();

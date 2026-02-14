@@ -1,34 +1,66 @@
 #include "comm.h"
-#include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "global_comm.h"
-FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(const void *sendbuff,
-                                             void *recvbuff, size_t count,
-                                             flagcxDataType_t datatype,
-                                             int sendPeer, int recvPeer,
-                                             void *fifoBuffer) {
-  // multiple threads will be supported in future
-  int tid = threadIdx.x;
+
+#define NBLOCKS 1
+#define NTHREADS_PER_BLOCK 32
+
+// P2P kernel implementing alltoall pattern (one thread per peer)
+// Each thread handles all communication with its assigned peer
+// This preserves send/recv ordering per-peer for correct P2P matching
+// Note: Uses single block so __syncthreads() can synchronize all threads
+// Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size count
+// sendbuff: data at offset peerRank * count is sent to peerRank
+// recvbuff: data from peerRank is stored at offset peerRank * count
+FLAGCX_GLOBAL_DECORATOR void flagcxP2pKernel(
+    const void *sendbuff, void *recvbuff, size_t count,
+    flagcxDataType_t datatype, int myRank, int nRanks, void *fifoBuffer) {
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+  // Each thread handles one peer (tid = peer index)
+  // Skip if tid >= nRanks or tid == myRank (no self-communication)
+  if (tid < nRanks && tid != myRank) {
+    int peerRank = tid;
+
+    // Calculate offsets for this peer's send and receive buffers
+    size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
+    size_t offset = peerRank * count * elementSize;
+    const void *peerSendBuff = (const char *)sendbuff + offset;
+    void *peerRecvBuff = (char *)recvbuff + offset;
+
+    // Send to peer and receive from peer
+    // Each thread's operations are ordered: send then recv
+    flagcxDeviceSend(peerSendBuff, count, datatype, peerRank, fifoBuffer);
+    flagcxDeviceRecv(peerRecvBuff, count, datatype, peerRank, fifoBuffer);
+  }
+
+  // Ensure all threads finish enqueuing before termination
+  FLAGCX_DEVICE_SYNC_THREADS();
+
+  // Only thread 0 sends termination and waits
   if (tid == 0) {
-    for (int i = 0; i < 1; i++) {
-      const void *sendaddr = static_cast<const void *>(
-          static_cast<char *>(const_cast<void *>(sendbuff)));
-      flagcxDeviceSend(sendaddr, count, datatype, sendPeer, fifoBuffer);
-    }
-    for (int i = 0; i < 1; i++) {
-      void *recvaddr = static_cast<void *>(static_cast<char *>(recvbuff));
-      flagcxDeviceRecv(recvaddr, count, datatype, recvPeer, fifoBuffer);
-    }
     flagcxDeviceTerm(fifoBuffer);
     flagcxDeviceWait(fifoBuffer);
   }
 }
 
-void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
-                   flagcxDataType_t datatype, int sendPeer, int recvPeer,
-                   flagcxComm_t comm, flagcxStream_t stream) {
+// Alltoall demo: each rank sends different data to each peer and receives from all
+// sendbuff: size = nRanks * count elements (data for peer i at offset i * count)
+// recvbuff: size = nRanks * count elements (data from peer i at offset i * count)
+flagcxResult_t flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
+                             flagcxDataType_t datatype, flagcxComm_t comm,
+                             flagcxStream_t stream) {
   void *fifo = NULL;
-  flagcxCommFifoBuffer(comm, &fifo);
-  flagcxP2pKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
-      sendbuff, recvbuff, count, datatype, sendPeer, recvPeer, fifo);
+  FLAGCXCHECK(flagcxCommFifoBuffer(comm, &fifo));
+
+  int myRank, nRanks;
+  FLAGCXCHECK(flagcxCommUserRank(comm, &myRank));
+  FLAGCXCHECK(flagcxCommCount(comm, &nRanks));
+
+  // Launch kernel with (NBLOCKS, NTHREADS_PER_BLOCK) (one thread per potential peer)
+  // Single block ensures __syncthreads() synchronizes all threads before Term/Wait
+  // Each thread handles communication with one peer, preserving ordering
+  flagcxP2pKernel<<<NBLOCKS, NTHREADS_PER_BLOCK, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
+      sendbuff, recvbuff, count, datatype, myRank, nRanks, fifo);
+  return flagcxSuccess;
 }
