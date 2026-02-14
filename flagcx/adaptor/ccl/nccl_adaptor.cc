@@ -19,10 +19,7 @@ static bool checkIsAllCudaP2p(ncclComm_t comm) {
   }
   return true;
 }
-static bool checkNvlsSupport(int nranks) {
-  if (nranks < 2) {
-    return true;
-  }
+static bool checkNvlsSupport() {
   int driverVersion, currentDevice;
   CUdevice dev;
   int multicastSupported = 0;
@@ -140,7 +137,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
       ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
       reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-      reqs.lsaMultimem = checkNvlsSupport(nranks);
+      reqs.lsaMultimem = checkNvlsSupport();
       reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.ginSignalCount = 1;
       using pncclDevCommCreate_t =
