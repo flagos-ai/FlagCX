@@ -66,26 +66,38 @@ flagcxResult_t wrapper_deviceMemcpy(void *dst, void *src, size_t size,
   return deviceAdaptor->deviceMemcpy(dst, src, size, type, stream, NULL);
 }
 
-static struct flagcxDeviceHandle globalDeviceHandle {
-  // Basic functions
-  deviceAdaptor->deviceSynchronize, wrapper_deviceMemcpy,
-      deviceAdaptor->deviceMemset, deviceAdaptor->deviceMalloc,
-      deviceAdaptor->deviceFree, deviceAdaptor->setDevice,
-      deviceAdaptor->getDevice, deviceAdaptor->getDeviceCount,
-      deviceAdaptor->getVendor, deviceAdaptor->hostGetDevicePointer,
-      // Stream functions
-      deviceAdaptor->streamCreate, deviceAdaptor->streamDestroy,
-      deviceAdaptor->streamCopy, deviceAdaptor->streamFree,
-      deviceAdaptor->streamSynchronize, deviceAdaptor->streamQuery,
-      deviceAdaptor->streamWaitEvent,
-      // Event functions
-      deviceAdaptor->eventCreate, deviceAdaptor->eventDestroy,
-      deviceAdaptor->eventRecord, deviceAdaptor->eventSynchronize,
-      deviceAdaptor->eventQuery,
-      // IpcMemHandle functions
-      deviceAdaptor->ipcMemHandleCreate, deviceAdaptor->ipcMemHandleGet,
-      deviceAdaptor->ipcMemHandleOpen, deviceAdaptor->ipcMemHandleClose,
-      deviceAdaptor->ipcMemHandleFree,
+static struct flagcxDeviceHandle globalDeviceHandle{
+    // Basic functions
+    deviceAdaptor->deviceSynchronize,
+    wrapper_deviceMemcpy,
+    deviceAdaptor->deviceMemset,
+    deviceAdaptor->deviceMalloc,
+    deviceAdaptor->deviceFree,
+    deviceAdaptor->setDevice,
+    deviceAdaptor->getDevice,
+    deviceAdaptor->getDeviceCount,
+    deviceAdaptor->getVendor,
+    deviceAdaptor->hostGetDevicePointer,
+    // Stream functions
+    deviceAdaptor->streamCreate,
+    deviceAdaptor->streamDestroy,
+    deviceAdaptor->streamCopy,
+    deviceAdaptor->streamFree,
+    deviceAdaptor->streamSynchronize,
+    deviceAdaptor->streamQuery,
+    deviceAdaptor->streamWaitEvent,
+    // Event functions
+    deviceAdaptor->eventCreate,
+    deviceAdaptor->eventDestroy,
+    deviceAdaptor->eventRecord,
+    deviceAdaptor->eventSynchronize,
+    deviceAdaptor->eventQuery,
+    // IpcMemHandle functions
+    deviceAdaptor->ipcMemHandleCreate,
+    deviceAdaptor->ipcMemHandleGet,
+    deviceAdaptor->ipcMemHandleOpen,
+    deviceAdaptor->ipcMemHandleClose,
+    deviceAdaptor->ipcMemHandleFree,
 };
 
 flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
@@ -581,6 +593,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->tunerInnerComm = NULL;
     (*comm)->isTunningComm = false;
     (*comm)->isTuningWithFlagscale = false;
+    (*comm)->isUseSingleTunerComm = false;
     bool isTuningWithFlagscale = false;
     const char *isTuningWithFlagscaleEnv =
         flagcxGetEnv("TUNING_WITH_FLAGSCALE");
@@ -589,6 +602,16 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
           (std::stoi(isTuningWithFlagscaleEnv) == 1) ? true : false;
     }
     (*comm)->isTuningWithFlagscale = isTuningWithFlagscale;
+
+    bool isUseSingleTunerComm = false;
+    const char *isUseSingleTunerCommEnv =
+        flagcxGetEnv("TUNNING_WITH_SINGLE_COMM");
+
+    if (isUseSingleTunerCommEnv) {
+      isUseSingleTunerComm =
+          (std::stoi(isUseSingleTunerCommEnv) == 1) ? true : false;
+    }
+    (*comm)->isUseSingleTunerComm = isUseSingleTunerComm;
 
     FLAGCXCHECK((*comm)->tuner->init((*comm)->nranks, (*comm)->rank,
                                      flagcxDebugLog, &((*comm)->tunerContext),
@@ -602,6 +625,28 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
     (*comm)->homoCommMap.clear();
     (*comm)->homoBestCommMap.clear();
+    (*comm)->commMap.clear();
+
+    if (!isUseSingleTunerComm) {
+      // Note: The tuner only support homo comm optimization for now
+      for (uint32_t i = 0; i < nConfigs; ++i) {
+        struct flagcxCommTag tag = {""};
+        FLAGCXCHECK(
+            (*comm)->tuner->setCandidate((*comm)->tunerContext, i, &tag));
+        INFO(FLAGCX_INIT | FLAGCX_TUNING,
+             "start to prepare communicator tag=%s(%u/%u)", tag.tag, i,
+             nConfigs);
+
+        flagcxInnerComm_t innerComm = NULL;
+        FLAGCXCHECK(
+            flagcxHomoCommInit(commId, uniqueIdData, state, *comm, &innerComm));
+        // Insert item into commMap
+        (*comm)->commMap[tag] = innerComm;
+        // For backward compatible, also assign homo_comm field.
+        (*comm)->homoComm = innerComm;
+      }
+    }
+
     if (isTuningWithFlagscale) {
       // Create a default communicator based on the default config
       flagcxInnerComm_t innerComm = NULL;
