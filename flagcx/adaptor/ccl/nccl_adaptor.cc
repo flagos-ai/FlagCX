@@ -2,6 +2,37 @@
 
 #ifdef USE_NVIDIA_ADAPTOR
 
+static bool checkIsAllCudaP2p(ncclComm_t comm) {
+  int gpuCount;
+  if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {
+    return false;
+  }
+
+  for (int i = 0; i < gpuCount; ++i) {
+    for (int j = i + 1; j < gpuCount; ++j) {
+      int canAccess = 0;
+      if (cudaDeviceCanAccessPeer(&canAccess, i, j) != cudaSuccess ||
+          !canAccess) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+static bool checkNvlsSupport() {
+  int driverVersion, currentDevice;
+  CUdevice dev;
+  int multicastSupported = 0;
+  if (cudaDriverGetVersion(&driverVersion) != cudaSuccess ||
+      driverVersion < 12010 || cudaGetDevice(&currentDevice) != cudaSuccess ||
+      cuDeviceGet(&dev, currentDevice) != CUDA_SUCCESS ||
+      cuDeviceGetAttribute(&multicastSupported,
+                           CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED,
+                           dev) != CUDA_SUCCESS) {
+    return false;
+  }
+  return (multicastSupported != 0);
+}
 flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -89,26 +120,42 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   if ((*comm)->devBase == NULL) {
-    // TODO(MC952-arch): auto-detect symmetric support
-    // Create device communicator
-    FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
-    ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-    reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-    // TODO(MC952-arch): auto-detect multimem support
-    reqs.lsaMultimem = true;
-    using pncclDevCommCreate_t = ncclResult_t (*)(
-        ncclComm_t comm, ncclDevCommRequirements *, ncclDevComm *);
-    void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
-    if (handle) {
-      auto fn = reinterpret_cast<pncclDevCommCreate_t>(
-          dlsym(handle, "pncclDevCommCreate"));
-      if (fn) {
-        FLAGCXCHECK((flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+    const char *winEnv = flagcxGetEnv("NCCL_WIN_ENABLE");
+    const char *cuMemEnv = flagcxGetEnv("NCCL_CUMEM_ENABLE");
+    const char *crossNicEnv = flagcxGetEnv("NCCL_CROSS_NIC");
+    const char *ibDisableEnv = flagcxGetEnv("NCCL_IB_DISABLE");
+    const char *ibMergeNicsEnv = flagcxGetEnv("NCCL_IB_MERGE_NICS");
+    int winEnable = winEnv ? atoi(winEnv) : 1;
+    int cuMemEnable = cuMemEnv ? atoi(cuMemEnv) : -2;
+    int crossNic = crossNicEnv ? atoi(crossNicEnv) : 2;
+    int ibDisable = ibDisableEnv ? atoi(ibDisableEnv) : 0;
+    int ibMergeNics = ibMergeNicsEnv ? atoi(ibMergeNicsEnv) : 0;
+    bool symmetricSupport = (crossNic > 0) && (ibDisable == 0) &&
+                            (ibMergeNics == 0) &&
+                            checkIsAllCudaP2p((*comm)->base);
+    if (winEnable && cuMemEnable != 0 && symmetricSupport) {
+      FLAGCXCHECK(flagcxCalloc(&(*comm)->devBase, 1));
+      ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+      reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+      reqs.lsaMultimem = checkNvlsSupport();
+      reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+      reqs.ginSignalCount = 1;
+      using pncclDevCommCreate_t =
+          flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t comm,
+                               ncclDevCommRequirements *, ncclDevComm *>;
+      void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
+      if (handle) {
+        auto fn = reinterpret_cast<pncclDevCommCreate_t>(
+            dlsym(handle, "pncclDevCommCreate"));
+        if (fn) {
+          FLAGCXCHECK(
+              (flagcxResult_t)fn((*comm)->base, &reqs, (*comm)->devBase));
+        }
+        dlclose(handle);
       }
-      dlclose(handle);
-    }
-    if ((*comm)->devBase == NULL) {
-      WARN("ncclDevComm is not initialized succefully");
+      if ((*comm)->devBase == NULL) {
+        WARN("ncclDevComm is not initialized succefully");
+      }
     }
   }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
