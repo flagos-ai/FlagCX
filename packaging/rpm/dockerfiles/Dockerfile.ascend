@@ -1,0 +1,41 @@
+ARG BASE_IMAGE=ascendai/cann
+ARG BASE_IMAGE_VERSION=8.5.0-910-openeuler24.03-py3.11
+
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+# Install RPM build tools
+# OpenEuler uses different package names
+RUN yum install -y \
+    rpm-build \
+    rpmdevtools \
+    gcc-c++ \
+    make \
+    cmake \
+    patchelf \
+    nlohmann-json-devel \
+    && yum clean all
+
+# Setup RPM build environment
+RUN rpmdev-setuptree
+
+# Copy source code
+WORKDIR /workspace
+COPY . /workspace/
+
+# Create source tarball
+RUN tar czf /root/rpmbuild/SOURCES/flagcx-0.8.0.tar.gz \
+    --transform 's,^\.,flagcx-0.8.0,' \
+    --exclude='.git' \
+    --exclude='build' \
+    --exclude='debian-packages' \
+    .
+
+# Build RPM with Ascend backend
+RUN rpmbuild -ba \
+    --define 'backend ascend' \
+    /workspace/packaging/rpm/specs/flagcx.spec
+
+# List built packages
+RUN ls -lh /root/rpmbuild/RPMS/*/*.rpm
+
+CMD ["/bin/bash"]
