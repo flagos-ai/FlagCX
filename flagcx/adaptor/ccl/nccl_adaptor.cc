@@ -141,7 +141,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.ginSignalCount = 1;
       using pncclDevCommCreate_t =
-          flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t comm,
+          flagcxCustomOpFunc_t<ncclResult_t, ncclComm_t,
                                ncclDevCommRequirements *, ncclDevComm *>;
       void *handle = dlopen("libnccl.so", RTLD_NOW | RTLD_GLOBAL);
       if (handle) {
