@@ -26,6 +26,16 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getType() {
          flagcxTriggerMask(flagcxDeviceTriggerBitsPrim);
 }
 
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSrcOffset() {
+  return fst >> flagcxDeviceTriggerOffSrcOffset &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsSrcOffset);
+}
+
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstOffset() {
+  return fst >> flagcxDeviceTriggerOffDstOffset &
+         flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset);
+}
+
 flagcxResult_t flagcxFifo::flagcxFifoInit() {
   INFO(FLAGCX_KERNEL, "flagcxFifoInit called");
   uint64_t flagcxKernelFifoCapacity = flagcxParamKernelFifoCapacity();
