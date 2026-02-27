@@ -19,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [nvidia, metax]
+        backend: [nvidia, metax, ascend]
 
     steps:
       - name: Checkout repository
