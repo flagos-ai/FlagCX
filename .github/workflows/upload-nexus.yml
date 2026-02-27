@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Download build artifacts
-        uses: dawidd6/action-download-artifact@v14
+        uses: dawidd6/action-download-artifact@v15
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           workflow: build-deb.yml
