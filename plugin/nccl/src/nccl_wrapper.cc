@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2025, FlagCX CONTRIBUTORS. All rights reserved.
  *
- * NCCL 2.28.3 API wrapper that delegates to FlagCX internally.
+ * NCCL 2.27.7 API wrapper that delegates to FlagCX internally.
  * This allows frameworks using NCCL to transparently use FlagCX
  * without code modifications.
  ************************************************************************/
@@ -491,54 +491,6 @@ ncclResult_t ncclReduceScatter(const void *sendbuff, void *recvbuff,
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(flagcxReduceScatter(sendbuff, recvbuff, recvcount, fType,
                                           fOp, comm->handler->comm, sw.stream));
-}
-
-ncclResult_t ncclAlltoAll(const void *sendbuff, void *recvbuff, size_t count,
-                          ncclDataType_t datatype, ncclComm_t comm,
-                          cudaStream_t stream) {
-  if (comm == nullptr)
-    return ncclInvalidArgument;
-  flagcxDataType_t fType;
-  ncclResult_t r;
-  if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
-    return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxAlltoAll(sendbuff, recvbuff, count, fType,
-                                     comm->handler->comm, sw.stream));
-}
-
-ncclResult_t ncclGather(const void *sendbuff, void *recvbuff, size_t count,
-                        ncclDataType_t datatype, int root, ncclComm_t comm,
-                        cudaStream_t stream) {
-  if (comm == nullptr)
-    return ncclInvalidArgument;
-  flagcxDataType_t fType;
-  ncclResult_t r;
-  if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
-    return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxGather(sendbuff, recvbuff, count, fType, root,
-                                   comm->handler->comm, sw.stream));
-}
-
-ncclResult_t ncclScatter(const void *sendbuff, void *recvbuff, size_t count,
-                         ncclDataType_t datatype, int root, ncclComm_t comm,
-                         cudaStream_t stream) {
-  if (comm == nullptr)
-    return ncclInvalidArgument;
-  flagcxDataType_t fType;
-  ncclResult_t r;
-  if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
-    return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
-  FlagcxStreamWrapper sw(stream);
-  return toNcclResult(flagcxScatter(sendbuff, recvbuff, count, fType, root,
-                                    comm->handler->comm, sw.stream));
 }
 
 /* ──────────────────────────────────────────────────────────────────────

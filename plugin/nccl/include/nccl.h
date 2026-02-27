@@ -12,16 +12,16 @@
 #if CUDART_VERSION >= 11000
 #include <cuda_bf16.h>
 #endif
-#if __cplusplus && CUDART_VERSION >= 11080
+#if CUDART_VERSION >= 11080
 #include <cuda_fp8.h>
 #endif
 
 #define NCCL_MAJOR 2
-#define NCCL_MINOR 28
-#define NCCL_PATCH 3
+#define NCCL_MINOR 27
+#define NCCL_PATCH 7
 #define NCCL_SUFFIX ""
 
-#define NCCL_VERSION_CODE 22803
+#define NCCL_VERSION_CODE 22707
 #define NCCL_VERSION(X, Y, Z)                                                  \
   (((X) <= 2 && (Y) <= 8) ? (X)*1000 + (Y)*100 + (Z)                           \
                           : (X)*10000 + (Y)*100 + (Z))
@@ -31,10 +31,9 @@ extern "C" {
 #endif
 
 #include <limits.h>
-
 /* Opaque handle to communicator */
 typedef struct ncclComm *ncclComm_t;
-typedef struct ncclWindow_vidmem *ncclWindow_t;
+typedef struct ncclWindow *ncclWindow_t;
 #define NCCL_COMM_NULL NULL
 
 #define NCCL_UNIQUE_ID_BYTES 128
@@ -64,12 +63,9 @@ typedef enum {
 #define NCCL_WIN_DEFAULT 0x00
 #define NCCL_WIN_COLL_SYMMETRIC 0x01
 
-#define NCCL_WIN_REQUIRED_ALIGNMENT 4096
-
 /* NCCL performance policy */
 #define NCCL_CTA_POLICY_DEFAULT 0x00
 #define NCCL_CTA_POLICY_EFFICIENCY 0x01
-#define NCCL_CTA_POLICY_ZERO 0x02
 
 /* ncclCommShrink flags*/
 #define NCCL_SHRINK_DEFAULT 0x00 /* shrink the parent communicator */
@@ -79,7 +75,7 @@ typedef enum {
 
 /* Communicator configuration. Users can assign value to attributes to specify
  * the behavior of a communicator. */
-typedef struct ncclConfig_v22800 {
+typedef struct ncclConfig_v22700 {
   /* attributes that users should never touch. */
   size_t size;
   unsigned int magic;
@@ -97,8 +93,6 @@ typedef struct ncclConfig_v22800 {
   int CTAPolicy;
   int shrinkShare;
   int nvlsCTAs;
-  int nChannelsPerNetPeer;
-  int nvlinkCentricSched;
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is
@@ -120,8 +114,6 @@ typedef struct ncclConfig_v22800 {
         NCCL_CONFIG_UNDEF_INT,                            /* CTAPolicy */      \
         NCCL_CONFIG_UNDEF_INT,                            /* shrinkShare */    \
         NCCL_CONFIG_UNDEF_INT,                            /* nvlsCTAs */       \
-        NCCL_CONFIG_UNDEF_INT, /* nChannelsPerNetPeer */                       \
-        NCCL_CONFIG_UNDEF_INT, /* nvlinkCentricSched */                        \
   }
 
 /* This struct will be used by ncclGroupSimulateEnd() API to query information
@@ -258,12 +250,8 @@ const char *ncclGetLastError(ncclComm_t comm);
 const char *pncclGetLastError(ncclComm_t comm);
 
 /* Reload environment variables that determine logging. */
-__attribute__((deprecated("ncclResetDebugInit is not supported as part of the "
-                          "NCCL API and will be removed in the future"))) void
-ncclResetDebugInit();
-__attribute__((deprecated("pncclResetDebugInit is not supported as part of the "
-                          "NCCL API and will be removed in the future"))) void
-pncclResetDebugInit();
+void ncclResetDebugInit();
+void pncclResetDebugInit();
 
 /* Checks whether the comm has encountered any asynchronous errors */
 ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError);
@@ -497,55 +485,6 @@ ncclResult_t ncclAllGather(const void *sendbuff, void *recvbuff,
 ncclResult_t pncclAllGather(const void *sendbuff, void *recvbuff,
                             size_t sendcount, ncclDataType_t datatype,
                             ncclComm_t comm, cudaStream_t stream);
-
-/*
- * All-to-All
- *
- * Each device sends count values to all other devices and receives count values
- * from all other devices. Data to send to destination rank j is taken from
- * sendbuff+j*count and data received from source rank i is placed at
- * recvbuff+i*count.
- */
-ncclResult_t ncclAlltoAll(const void *sendbuff, void *recvbuff, size_t count,
-                          ncclDataType_t datatype, ncclComm_t comm,
-                          cudaStream_t stream);
-ncclResult_t pncclAlltoAll(const void *sendbuff, void *recvbuff, size_t count,
-                           ncclDataType_t datatype, ncclComm_t comm,
-                           cudaStream_t stream);
-
-/*
- * Gather
- *
- * Each rank sends count elements from sendbuff to the root rank.
- * On the root rank, data from rank i is placed at recvbuff + i*count.
- * On non-root ranks, recvbuff is not used.
- * root is the rank where data will be gathered.
- *
- * In-place operations will happen if sendbuff == recvbuff + root * count.
- */
-ncclResult_t ncclGather(const void *sendbuff, void *recvbuff, size_t count,
-                        ncclDataType_t datatype, int root, ncclComm_t comm,
-                        cudaStream_t stream);
-ncclResult_t pncclGather(const void *sendbuff, void *recvbuff, size_t count,
-                         ncclDataType_t datatype, int root, ncclComm_t comm,
-                         cudaStream_t stream);
-
-/*
- * Scatter
- *
- * On the root rank, count elements from sendbuff+i*count are sent to rank i.
- * On non-root ranks, sendbuff is not used.
- * Each rank receives count elements into recvbuff.
- * root is the rank that will distribute the data.
- *
- * In-place operations will happen if recvbuff == sendbuff + root * count.
- */
-ncclResult_t ncclScatter(const void *sendbuff, void *recvbuff, size_t count,
-                         ncclDataType_t datatype, int root, ncclComm_t comm,
-                         cudaStream_t stream);
-ncclResult_t pncclScatter(const void *sendbuff, void *recvbuff, size_t count,
-                          ncclDataType_t datatype, int root, ncclComm_t comm,
-                          cudaStream_t stream);
 
 /*
  * Send

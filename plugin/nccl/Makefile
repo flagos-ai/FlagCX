@@ -1,5 +1,5 @@
 # NCCL Wrapper for FlagCX
-# Produces libnccl.so that implements NCCL 2.28.3 API via FlagCX
+# Produces libnccl.so that implements NCCL 2.27.7 API via FlagCX
 
 FLAGCX_HOME ?= $(abspath ../..)
 CUDA_HOME   ?= /usr/local/cuda
@@ -11,8 +11,8 @@ INCLUDEDIR := $(BUILDDIR)/include
 
 # Library versioning
 NCCL_MAJOR   := 2
-NCCL_MINOR   := 28
-NCCL_PATCH   := 3
+NCCL_MINOR   := 27
+NCCL_PATCH   := 7
 NCCL_VERSION := $(NCCL_MAJOR).$(NCCL_MINOR).$(NCCL_PATCH)
 SONAME       := libnccl.so.$(NCCL_MAJOR)
 TARGET       := libnccl.so.$(NCCL_VERSION)
