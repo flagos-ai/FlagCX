@@ -3,7 +3,9 @@
 
 FLAGCX_HOME ?= $(abspath ../..)
 CUDA_HOME   ?= /usr/local/cuda
-BUILDDIR    ?= $(abspath build)
+NCCL_HOME     ?= /usr/local/nccl
+REAL_NCCL_LIB ?= $(NCCL_HOME)/lib/libnccl.so.2
+BUILDDIR      ?= $(abspath build)
 
 LIBDIR     := $(BUILDDIR)/lib
 OBJDIR     := $(BUILDDIR)/obj
@@ -23,13 +25,15 @@ OBJS := $(SRCS:src/%.cc=$(OBJDIR)/%.o)
 
 # Compiler flags
 CXX      := g++
-CXXFLAGS := -fPIC -fvisibility=default -std=c++11 -Wall -Wno-sign-compare -O2 -g
+CXXFLAGS := -fPIC -fvisibility=default -std=c++11 -Wall -Wno-sign-compare -O2 -g \
+            -DREAL_NCCL_PATH=\"$(REAL_NCCL_LIB)\"
 INCLUDES := -I./include \
             -I$(FLAGCX_HOME)/flagcx/include \
             -I$(CUDA_HOME)/include
 LDFLAGS  := -shared -Wl,-soname,$(SONAME) \
             -L$(FLAGCX_HOME)/build/lib -lflagcx \
             -L$(CUDA_HOME)/lib64 -lcudart \
+            -ldl \
             -Wl,-rpath,$(FLAGCX_HOME)/build/lib \
             -Wl,-rpath,$(CUDA_HOME)/lib64
 
