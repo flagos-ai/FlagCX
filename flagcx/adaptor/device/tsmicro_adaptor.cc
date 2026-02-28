@@ -129,7 +129,7 @@ flagcxResult_t tsmicroAdaptorStreamCopy(flagcxStream_t *newStream,
                                         void *oldStream) {
   (*newStream) = NULL;
   flagcxCalloc(newStream, 1);
-  memcpy((void *)*newStream, oldStream, sizeof(txStream_t));
+  (*newStream)->base = (txStream_t)oldStream;
   return flagcxSuccess;
 }
 
