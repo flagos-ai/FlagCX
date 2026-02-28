@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2015-2021, NVIDIA CORPORATION. All rights reserved.
  *
- * See LICENSE.txt for license information
+ * See flagcx/core/LICENSE-NCCL.txt for license information
  ************************************************************************/
 
 #ifndef NCCL_H_
