@@ -131,7 +131,8 @@ typedef struct {
   void resetEvent(int idx);
 } flagcxUniRunnerState;
 
-flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
+flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff,
+                            void *scratchbuff, size_t count,
                             flagcxDataType_t datatype, flagcxRedOp_t op,
                             flagcxComm_t comm, flagcxStream_t stream,
                             flagcxCommOp_t commOp);

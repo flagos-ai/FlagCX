@@ -100,9 +100,10 @@ int main(int argc, char *argv[]) {
     }
 
     devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
-                            NULL);
+                            stream);
+    devHandle->streamSynchronize(stream);
 
-    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && print_buffer) {
+    if (color == 0 && print_buffer) {
       printf("proc %d sendbuff = ", proc);
       for (size_t i = proc * recvcount; i < proc * recvcount + 10; i++) {
         printf("%f ", ((float *)hello)[i]);
@@ -138,13 +139,25 @@ int main(int argc, char *argv[]) {
 
     memset(hello, 0, size);
     devHandle->deviceMemcpy(hello, recvbuff, recvsize, flagcxMemcpyDeviceToHost,
-                            NULL);
-    if ((proc == 0 || proc == totalProcs - 1) && color == 0 && print_buffer) {
+                            stream);
+    devHandle->streamSynchronize(stream);
+
+    if (color == 0 && print_buffer) {
       printf("proc %d recvbuff = ", proc);
+      int correct = 1;
       for (size_t i = 0; i < 10; i++) {
         printf("%f ", ((float *)hello)[i]);
       }
       printf("\n");
+      for (size_t i = 0; i < recvcount; i++) {
+        if (((float *)hello)[i] != (float)(proc)*totalProcs) {
+          correct = 0;
+          printf("rank %d offset %lu wrong output %f\n", proc, i,
+                 ((float *)hello)[i]);
+          break;
+        }
+      }
+      printf("rank %d correctness = %d\n", proc, correct);
     }
   }
 
