@@ -4,10 +4,6 @@
  * NCCL 2.27.7 API wrapper that delegates to FlagCX internally.
  * This allows frameworks using NCCL to transparently use FlagCX
  * without code modifications.
- *
- * A thread-local recursive guard prevents infinite recursion when
- * FlagCX's NCCL adaptor calls back into nccl* symbols.  On re-entry
- * the call is forwarded to the real NCCL loaded via dlopen.
  ************************************************************************/
 
 #include "flagcx.h"
@@ -31,6 +27,9 @@
 
 /* ──────────────────────────────────────────────────────────────────────
  * TLS recursive guard
+ * A thread-local recursive guard prevents infinite recursion when
+ * FlagCX's NCCL adaptor calls back into nccl* symbols.  On re-entry
+ * the call is forwarded to the real NCCL loaded via dlopen.
  * ────────────────────────────────────────────────────────────────────── */
 
 static thread_local bool inWrapper = false;
