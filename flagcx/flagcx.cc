@@ -144,7 +144,7 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
 }
 
 flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
-  if (*ptr != NULL || size == 0) {
+  if (ptr == NULL || size == 0) {
     WARN("Invalid pointer(!=NULL) or size(0) for allocation.");
     return flagcxSuccess;
   }
