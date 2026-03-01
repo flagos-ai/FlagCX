@@ -573,19 +573,14 @@ ncclResult_t ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win) {
  * ────────────────────────────────────────────────────────────────────── */
 
 ncclResult_t ncclMemAlloc(void **ptr, size_t size) {
-  if (inWrapper) {
-    return getRealNccl().ncclMemAlloc(ptr, size);
-  }
-  recursionGuard guard(inWrapper);
-  return toNcclResult(flagcxMemAlloc(ptr, size));
+  /* ncclMemAlloc takes no communicator, but flagcxMemAlloc requires one
+   * to route through the correct adaptor.  Forward to real NCCL directly. */
+  return getRealNccl().ncclMemAlloc(ptr, size);
 }
 
 ncclResult_t ncclMemFree(void *ptr) {
-  if (inWrapper) {
-    return getRealNccl().ncclMemFree(ptr);
-  }
-  recursionGuard guard(inWrapper);
-  return toNcclResult(flagcxMemFree(ptr));
+  /* Same reason as ncclMemAlloc — forward to real NCCL directly. */
+  return getRealNccl().ncclMemFree(ptr);
 }
 
 /* ──────────────────────────────────────────────────────────────────────
