@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2025, FlagCX CONTRIBUTORS. All rights reserved.
+ * Copyright (c) 2025, BAAI CONTRIBUTORS. All rights reserved.
  *
  * NCCL API wrapper that delegates to FlagCX internally.
  * This allows frameworks using NCCL to transparently use FlagCX
