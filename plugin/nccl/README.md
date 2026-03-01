@@ -4,7 +4,7 @@ This plugin builds a drop-in `libnccl.so` that intercepts NCCL API calls and rou
 
 ## How It Works
 
-The wrapper exports all public NCCL 2.27.7 symbols. When an application calls an NCCL function (e.g. `ncclAllReduce`), the wrapper translates the call into the equivalent FlagCX API.
+The wrapper exports public NCCL symbols matching the version of the system-installed NCCL headers. When an application calls an NCCL function (e.g. `ncclAllReduce`), the wrapper translates the call into the equivalent FlagCX API.
 
 Because FlagCX's internal NCCL adaptor itself calls back into `nccl*` functions, the wrapper uses a **thread-local recursive guard** to prevent infinite recursion. On the first call, the wrapper delegates to FlagCX. If FlagCX re-enters an `nccl*` symbol on the same thread, the wrapper forwards the call to the **real** NCCL library (loaded via `dlopen` at runtime).
 
@@ -28,7 +28,7 @@ Real NCCL
 
 - **FlagCX** built and installed (the wrapper links against `libflagcx.so`)
 - **CUDA toolkit** (for `cuda_runtime.h` and `libcudart`)
-- **Real NCCL >= 2.27.7** installed somewhere on the system (the wrapper loads it via `dlopen` at runtime). The wrapper exposes NCCL 2.27.7 symbols, so the underlying real NCCL must be at least this version to provide all required functions.
+- **Real NCCL >= 2.21.0** installed somewhere on the system (the wrapper loads it via `dlopen` at runtime). The wrapper uses compile-time version guards (`NCCL_VERSION_CODE`) to adapt to the installed NCCL version — APIs introduced after 2.21.0 are only built when the system headers support them.
 
 ## Building
 
@@ -61,11 +61,7 @@ Build outputs go to `build/`:
 ```
 build/
   lib/
-    libnccl.so.2.27.7    # the wrapper library
-    libnccl.so.2          # symlink
-    libnccl.so            # symlink
-  include/
-    nccl.h
+    libnccl.so            # the wrapper library
 ```
 
 ## Usage
@@ -106,4 +102,12 @@ The following NCCL APIs are intercepted and routed through FlagCX:
 
 The following APIs are exported but return `ncclInvalidUsage` (no FlagCX equivalent):
 
-`ncclBcast`, `ncclCommInitAll`, `ncclCommSplit`, `ncclCommShrink`, `ncclCommInitRankScalable`, `ncclRedOpCreatePreMulSum`, `ncclRedOpDestroy`, `ncclGroupSimulateEnd`
+`ncclBcast`, `ncclCommInitAll`, `ncclCommSplit`, `ncclCommInitRankScalable`, `ncclRedOpCreatePreMulSum`, `ncclRedOpDestroy`
+
+The following APIs are version-gated and only built when the system NCCL headers are new enough:
+
+| API | Minimum NCCL version |
+|---|---|
+| `ncclGroupSimulateEnd` | 2.22.0 |
+| `ncclCommShrink` | 2.25.0 |
+| `ncclCommWindowRegister`, `ncclCommWindowDeregister` | 2.27.0 |
