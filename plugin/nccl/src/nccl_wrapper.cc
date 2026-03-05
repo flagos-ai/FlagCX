@@ -284,17 +284,6 @@ static ncclResult_t toNcclResult(flagcxResult_t res) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
- * Thread-local group tracking state
- *
- * NCCL's ncclGroupStart/End take no args; FlagCX's require a comm.
- * We track group depth and capture the first communicator used within
- * a group to pass to FlagCX group APIs.
- * ────────────────────────────────────────────────────────────────────── */
-
-static thread_local int groupDepth = 0;
-static thread_local flagcxComm_t groupComm = nullptr;
-
-/* ──────────────────────────────────────────────────────────────────────
  * Version / Error String APIs
  * ────────────────────────────────────────────────────────────────────── */
 
@@ -573,14 +562,19 @@ ncclResult_t ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win) {
  * ────────────────────────────────────────────────────────────────────── */
 
 ncclResult_t ncclMemAlloc(void **ptr, size_t size) {
-  /* ncclMemAlloc takes no communicator, but flagcxMemAlloc requires one
-   * to route through the correct adaptor.  Forward to real NCCL directly. */
-  return getRealNccl().ncclMemAlloc(ptr, size);
+  if (inWrapper) {
+    return getRealNccl().ncclMemAlloc(ptr, size);
+  }
+  recursionGuard guard(inWrapper);
+  return toNcclResult(flagcxMemAlloc(ptr, size, nullptr));
 }
 
 ncclResult_t ncclMemFree(void *ptr) {
-  /* Same reason as ncclMemAlloc — forward to real NCCL directly. */
-  return getRealNccl().ncclMemFree(ptr);
+  if (inWrapper) {
+    return getRealNccl().ncclMemFree(ptr);
+  }
+  recursionGuard guard(inWrapper);
+  return toNcclResult(flagcxMemFree(ptr, nullptr));
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -592,13 +586,7 @@ ncclResult_t ncclGroupStart() {
     return getRealNccl().ncclGroupStart();
   }
   recursionGuard guard(inWrapper);
-  groupDepth++;
-  /* Defer the actual flagcxGroupStart call until the first collective,
-   * when we have a communicator to pass. Reset groupComm. */
-  if (groupDepth == 1) {
-    groupComm = nullptr;
-  }
-  return ncclSuccess;
+  return toNcclResult(flagcxGroupStart(nullptr));
 }
 
 ncclResult_t ncclGroupEnd() {
@@ -606,25 +594,7 @@ ncclResult_t ncclGroupEnd() {
     return getRealNccl().ncclGroupEnd();
   }
   recursionGuard guard(inWrapper);
-  if (groupDepth <= 0)
-    return ncclInvalidUsage;
-  groupDepth--;
-  if (groupDepth == 0 && groupComm != nullptr) {
-    flagcxResult_t res = flagcxGroupEnd(groupComm);
-    groupComm = nullptr;
-    return toNcclResult(res);
-  }
-  return ncclSuccess;
-}
-
-/* Helper called by collective/p2p operations when inside a group.
- * Captures the first communicator and calls flagcxGroupStart. */
-static ncclResult_t maybeGroupStart(flagcxComm_t comm) {
-  if (groupDepth > 0 && groupComm == nullptr) {
-    groupComm = comm;
-    return toNcclResult(flagcxGroupStart(comm));
-  }
-  return ncclSuccess;
+  return toNcclResult(flagcxGroupEnd(nullptr));
 }
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -648,8 +618,6 @@ ncclResult_t ncclAllReduce(const void *sendbuff, void *recvbuff, size_t count,
     return r;
   if ((r = toFlagcxRedOp(op, &fOp)) != ncclSuccess)
     return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(flagcxAllReduce(sendbuff, recvbuff, count, fType, fOp,
                                       comm->handler->comm, sw.stream));
@@ -668,8 +636,6 @@ ncclResult_t ncclBroadcast(const void *sendbuff, void *recvbuff, size_t count,
   flagcxDataType_t fType;
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
-    return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
     return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(flagcxBroadcast(sendbuff, recvbuff, count, fType, root,
@@ -693,8 +659,6 @@ ncclResult_t ncclReduce(const void *sendbuff, void *recvbuff, size_t count,
     return r;
   if ((r = toFlagcxRedOp(op, &fOp)) != ncclSuccess)
     return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(flagcxReduce(sendbuff, recvbuff, count, fType, fOp, root,
                                    comm->handler->comm, sw.stream));
@@ -713,8 +677,6 @@ ncclResult_t ncclAllGather(const void *sendbuff, void *recvbuff,
   flagcxDataType_t fType;
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
-    return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
     return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(flagcxAllGather(sendbuff, recvbuff, sendcount, fType,
@@ -739,8 +701,6 @@ ncclResult_t ncclReduceScatter(const void *sendbuff, void *recvbuff,
     return r;
   if ((r = toFlagcxRedOp(op, &fOp)) != ncclSuccess)
     return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(flagcxReduceScatter(sendbuff, recvbuff, recvcount, fType,
                                           fOp, comm->handler->comm, sw.stream));
@@ -764,8 +724,6 @@ ncclResult_t ncclSend(const void *sendbuff, size_t count,
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
     return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
-    return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(
       flagcxSend(sendbuff, count, fType, peer, comm->handler->comm, sw.stream));
@@ -783,8 +741,6 @@ ncclResult_t ncclRecv(void *recvbuff, size_t count, ncclDataType_t datatype,
   flagcxDataType_t fType;
   ncclResult_t r;
   if ((r = toFlagcxDataType(datatype, &fType)) != ncclSuccess)
-    return r;
-  if ((r = maybeGroupStart(comm->handler->comm)) != ncclSuccess)
     return r;
   FlagcxStreamWrapper sw(stream);
   return toNcclResult(

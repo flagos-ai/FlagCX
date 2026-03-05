@@ -148,7 +148,11 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
     WARN("Invalid pointer(!=NULL) or size(0) for allocation.");
     return flagcxSuccess;
   }
-  if (comm != NULL && useHomoComm(comm) && !useHeteroComm()) {
+  if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
+    if (comm == NULL) {
+      INFO(FLAGCX_INIT,
+           "flagcxMemAlloc: comm is NULL, delegating to homo adaptor directly");
+    }
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
     return flagcxSuccess;
   }
@@ -167,7 +171,11 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm) {
     WARN("Invalid pointer(=NULL)for de-allocation.");
     return flagcxSuccess;
   }
-  if (comm != NULL && useHomoComm(comm) && !useHeteroComm()) {
+  if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
+    if (comm == NULL) {
+      INFO(FLAGCX_INIT,
+           "flagcxMemFree: comm is NULL, delegating to homo adaptor directly");
+    }
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
     return flagcxSuccess;
   }
@@ -1177,7 +1185,12 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupStart());
-  } else if (useHomoComm(comm)) {
+  } else if (comm == NULL || useHomoComm(comm)) {
+    if (comm == NULL) {
+      INFO(
+          FLAGCX_INIT,
+          "flagcxGroupStart: comm is NULL, delegating to homo runner directly");
+    }
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupStart());
   } else if (useHostComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->groupStart());
@@ -1190,7 +1203,11 @@ flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupEnd());
-  } else if (useHomoComm(comm)) {
+  } else if (comm == NULL || useHomoComm(comm)) {
+    if (comm == NULL) {
+      INFO(FLAGCX_INIT,
+           "flagcxGroupEnd: comm is NULL, delegating to homo runner directly");
+    }
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupEnd());
   } else if (useHostComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->groupEnd());
