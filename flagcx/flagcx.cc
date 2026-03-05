@@ -150,7 +150,7 @@ flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
   }
   if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
     if (comm == NULL) {
-      INFO(FLAGCX_INIT,
+      INFO(FLAGCX_ALLOC,
            "flagcxMemAlloc: comm is NULL, delegating to homo adaptor directly");
     }
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
@@ -173,7 +173,7 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm) {
   }
   if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
     if (comm == NULL) {
-      INFO(FLAGCX_INIT,
+      INFO(FLAGCX_ALLOC,
            "flagcxMemFree: comm is NULL, delegating to homo adaptor directly");
     }
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
@@ -1188,7 +1188,7 @@ flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
   } else if (comm == NULL || useHomoComm(comm)) {
     if (comm == NULL) {
       INFO(
-          FLAGCX_INIT,
+          FLAGCX_COLL,
           "flagcxGroupStart: comm is NULL, delegating to homo runner directly");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupStart());
@@ -1205,7 +1205,7 @@ flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupEnd());
   } else if (comm == NULL || useHomoComm(comm)) {
     if (comm == NULL) {
-      INFO(FLAGCX_INIT,
+      INFO(FLAGCX_COLL,
            "flagcxGroupEnd: comm is NULL, delegating to homo runner directly");
     }
     FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupEnd());
