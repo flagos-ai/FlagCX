@@ -1,6 +1,12 @@
 %global debug_package %{nil}
 %global _build_id_links none
 
+# Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
+%{!?backend: %{error: backend must be defined (nvidia, metax, or ascend)}}
+
+# Derive uppercase backend name for make flag (USE_NVIDIA=1, etc.)
+%global backend_upper %(echo %{backend} | tr a-z A-Z)
+
 Name:           flagcx
 Version:        0.8.0
 Release:        1%{?dist}
@@ -21,162 +27,57 @@ BuildRequires:  json-devel
 BuildRequires:  nlohmann-json-devel
 %endif
 
-# Backend-specific packages will be built with different profiles
-# This is the base spec, actual builds use --define 'backend nvidia|metax|ascend'
-
 %description
 FlagCX is a scalable and adaptive cross-chip communication library.
 It serves as a platform where developers, researchers, and AI engineers
 can collaborate on various projects.
 
-%package -n libflagcx-nvidia
-Summary:        FlagCX library for NVIDIA GPUs
+# Only the target backend's subpackages are defined
+%package -n libflagcx-%{backend}
+Summary:        FlagCX library for %{backend}
+%if "%{backend}" == "nvidia"
 Requires:       libnccl >= 2.0
+%endif
 
-%description -n libflagcx-nvidia
-FlagCX communication library built for NVIDIA hardware with NCCL backend support.
+%description -n libflagcx-%{backend}
+FlagCX communication library built for %{backend} hardware.
 
-%package -n libflagcx-nvidia-devel
-Summary:        Development files for libflagcx-nvidia
-Requires:       libflagcx-nvidia = %{version}-%{release}
+%package -n libflagcx-%{backend}-devel
+Summary:        Development files for libflagcx-%{backend}
+Requires:       libflagcx-%{backend} = %{version}-%{release}
 
-%description -n libflagcx-nvidia-devel
-Development files (headers and libraries) for libflagcx-nvidia.
-
-%package -n libflagcx-metax
-Summary:        FlagCX library for MetaX accelerators
-
-%description -n libflagcx-metax
-FlagCX communication library built for MetaX hardware with MCCL backend support.
-
-%package -n libflagcx-metax-devel
-Summary:        Development files for libflagcx-metax
-Requires:       libflagcx-metax = %{version}-%{release}
-
-%description -n libflagcx-metax-devel
-Development files (headers and libraries) for libflagcx-metax.
-
-%package -n libflagcx-ascend
-Summary:        FlagCX library for Ascend NPUs
-
-%description -n libflagcx-ascend
-FlagCX communication library built for Huawei Ascend NPUs with HCCL backend support.
-
-%package -n libflagcx-ascend-devel
-Summary:        Development files for libflagcx-ascend
-Requires:       libflagcx-ascend = %{version}-%{release}
-
-%description -n libflagcx-ascend-devel
-Development files (headers and libraries) for libflagcx-ascend.
+%description -n libflagcx-%{backend}-devel
+Development files (headers and libraries) for libflagcx-%{backend}.
 
 %prep
 %setup -q
 
 %build
-# Determine which backend to build based on RPM macro
-%if "%{?backend}" == "nvidia"
-    make USE_NVIDIA=1 PREFIX=%{_prefix}
-%endif
-
-%if "%{?backend}" == "metax"
-    make USE_METAX=1 PREFIX=%{_prefix}
-%endif
-
-%if "%{?backend}" == "ascend"
-    make USE_ASCEND=1 PREFIX=%{_prefix}
-%endif
+make USE_%{backend_upper}=1 PREFIX=%{_prefix}
 
 %install
 rm -rf %{buildroot}
 
-%if "%{?backend}" == "nvidia"
-    # Install NVIDIA variant
-    install -d %{buildroot}%{_libdir}
+# Install shared library
+install -d %{buildroot}%{_libdir}
+install -m 755 build/lib/libflagcx.so %{buildroot}%{_libdir}/libflagcx.so.0
+ln -s libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so
 
-    # Install library
-    install -m 755 build/lib/libflagcx.so %{buildroot}%{_libdir}/libflagcx.so.0
+# Install headers
+install -d %{buildroot}%{_includedir}/flagcx
+cp -r flagcx/include/* %{buildroot}%{_includedir}/flagcx/
 
-    # Create symlinks
-    ln -s libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so
+# Fix RPATH and set SONAME
+patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0 || true
+patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0 || true
 
-    install -d %{buildroot}%{_includedir}/flagcx
-    cp -r flagcx/include/* %{buildroot}%{_includedir}/flagcx/
-
-    # Fix RPATH and set SONAME
-    patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0 || true
-    patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0 || true
-%endif
-
-%if "%{?backend}" == "metax"
-    # Install MetaX variant
-    install -d %{buildroot}%{_libdir}
-
-    # Install library
-    install -m 755 build/lib/libflagcx.so %{buildroot}%{_libdir}/libflagcx.so.0
-
-    # Create symlinks
-    ln -s libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so
-
-    install -d %{buildroot}%{_includedir}/flagcx
-    cp -r flagcx/include/* %{buildroot}%{_includedir}/flagcx/
-
-    patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0 || true
-    patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0 || true
-%endif
-
-%if "%{?backend}" == "ascend"
-    # Install Ascend variant
-    install -d %{buildroot}%{_libdir}
-
-    # Install library
-    install -m 755 build/lib/libflagcx.so %{buildroot}%{_libdir}/libflagcx.so.0
-
-    # Create symlinks
-    ln -s libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so
-
-    install -d %{buildroot}%{_includedir}/flagcx
-    cp -r flagcx/include/* %{buildroot}%{_includedir}/flagcx/
-
-    patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0 || true
-    patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0 || true
-%endif
-
-%files -n libflagcx-nvidia
-%if "%{?backend}" == "nvidia"
+%files -n libflagcx-%{backend}
 %license LICENSE
 %{_libdir}/libflagcx.so.0
-%endif
 
-%files -n libflagcx-nvidia-devel
-%if "%{?backend}" == "nvidia"
+%files -n libflagcx-%{backend}-devel
 %{_includedir}/flagcx/
 %{_libdir}/libflagcx.so
-%endif
-
-%files -n libflagcx-metax
-%if "%{?backend}" == "metax"
-%license LICENSE
-%{_libdir}/libflagcx.so.0
-%endif
-
-%files -n libflagcx-metax-devel
-%if "%{?backend}" == "metax"
-%{_includedir}/flagcx/
-%{_libdir}/libflagcx.so
-%endif
-
-%files -n libflagcx-ascend
-%if "%{?backend}" == "ascend"
-%license LICENSE
-%{_libdir}/libflagcx.so.0
-%{_libdir}/libflagcx.so.%{version}
-%endif
-
-%files -n libflagcx-ascend-devel
-%if "%{?backend}" == "ascend"
-%{_includedir}/flagcx/
-%{_libdir}/libflagcx.so
-%endif
 
 %changelog
 * Sat Nov 01 2025 FlagOS Contributors <contact@flagos.io> - 0.7-1

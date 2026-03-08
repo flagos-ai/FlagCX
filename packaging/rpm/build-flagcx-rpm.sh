@@ -46,9 +46,8 @@ case "$BACKEND" in
         [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="12.4.1-devel-rockylinux8"
         ;;
     metax)
-        BASE_IMAGE="harbor.baai.ac.cn/flagbase/flagbase-metax"
-        [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="latest"
-        log_warn "MetaX RPM build may require custom base image with RPM tools"
+        BASE_IMAGE="rockylinux"
+        [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="8"
         ;;
     ascend)
         BASE_IMAGE="ascendai/cann"
@@ -64,12 +63,23 @@ esac
 log_info "Building FlagCX RPM packages for $BACKEND backend"
 log_info "Using base image: ${BASE_IMAGE}:${BASE_IMAGE_VERSION}"
 
-# Build Docker image
+# Sync changelog from CHANGELOG.md
+log_step "Synchronizing changelog..."
+if [ -f "${PROJECT_DIR}/packaging/sync-changelog.py" ]; then
+    python3 "${PROJECT_DIR}/packaging/sync-changelog.py" || log_warn "Failed to sync changelog"
+else
+    log_warn "sync-changelog.py not found, skipping changelog sync"
+fi
+
+# Build Docker image using unified Dockerfile
+DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm"
 log_step "Building Docker image..."
 docker build \
+    --network=host \
     --build-arg BASE_IMAGE="${BASE_IMAGE}" \
     --build-arg BASE_IMAGE_VERSION="${BASE_IMAGE_VERSION}" \
-    -f "${SCRIPT_DIR}/dockerfiles/Dockerfile.${BACKEND}" \
+    --build-arg BACKEND="${BACKEND}" \
+    -f "${DOCKERFILE}" \
     -t "flagcx-rpm-${BACKEND}:${BASE_IMAGE_VERSION}" \
     "${PROJECT_DIR}"
 
