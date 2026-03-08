@@ -14,13 +14,12 @@ on:
 
 jobs:
   build-rpm-packages:
-    runs-on: ubuntu-latest
+    runs-on: h20
 
     strategy:
       fail-fast: false
       matrix:
-        backend: [nvidia, ascend]
-        # metax requires custom base image setup
+        backend: [nvidia, metax, ascend]
 
     steps:
       - name: Checkout repository

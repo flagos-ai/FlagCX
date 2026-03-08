@@ -1,0 +1,61 @@
+# Unified Dockerfile to build RPM packages for FlagCX
+# Supports multiple backends via build arguments
+
+ARG BASE_IMAGE
+ARG BASE_IMAGE_VERSION
+
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+ARG BACKEND
+
+# Install RPM build tools and dependencies
+# Handles differences between RHEL/Rocky (epel + json-devel) and
+# OpenEuler (nlohmann-json-devel), and MetaX SDK repo setup.
+RUN yum install -y epel-release 2>/dev/null || true
+RUN yum install -y \
+    rpm-build \
+    rpmdevtools \
+    gcc-c++ \
+    make \
+    cmake \
+    patchelf \
+    && yum clean all
+RUN yum install -y json-devel 2>/dev/null \
+    || yum install -y nlohmann-json-devel 2>/dev/null \
+    || true
+
+# MetaX-specific: configure MACA SDK yum repository and install SDK
+RUN if [ "${BACKEND}" = "metax" ]; then \
+    printf '[maca-sdk]\nname=MACA SDK Yum Repository\nbaseurl=https://repos.metax-tech.com/r/maca-sdk-rpm-x86_64/\nenabled=1\ngpgcheck=0\n' \
+        > /etc/yum.repos.d/maca-sdk-rpm.repo && \
+    yum makecache && \
+    yum install -y maca_sdk && \
+    yum clean all; \
+    fi
+
+# Setup RPM build environment
+RUN rpmdev-setuptree
+
+# Copy source code
+WORKDIR /workspace
+COPY . /workspace/
+
+# Read version from spec and create source tarball
+RUN SPEC_VERSION=$(grep '^Version:' /workspace/packaging/rpm/specs/flagcx.spec | awk '{print $2}') && \
+    tar czf /root/rpmbuild/SOURCES/flagcx-${SPEC_VERSION}.tar.gz \
+    --transform "s,^\.,flagcx-${SPEC_VERSION}," \
+    --exclude='.git' \
+    --exclude='build' \
+    --exclude='debian-packages' \
+    --exclude='rpm-packages' \
+    .
+
+# Build RPM with specified backend
+RUN rpmbuild -ba \
+    --define "backend ${BACKEND}" \
+    /workspace/packaging/rpm/specs/flagcx.spec
+
+# List built packages
+RUN ls -lh /root/rpmbuild/RPMS/*/*.rpm
+
+CMD ["/bin/bash"]
