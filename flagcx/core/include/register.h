@@ -39,6 +39,7 @@ struct flagcxIpcImpInfo {
   void *rmtRegAddr;
   bool legacyIpcCap;
   uintptr_t offset;
+  uintptr_t userOffset;
 };
 
 struct flagcxPeerRegIpcAddr {

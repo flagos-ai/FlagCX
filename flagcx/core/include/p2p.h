@@ -88,10 +88,12 @@ struct flagcxP2pResources {
   struct flagcxP2pShmProxyInfo proxyInfo;
 };
 
-typedef enum {
-  flagcxP2pRegisterModeLookup = 0,
-  flagcxP2pRegisterModeRegister = 1,
-} flagcxP2pRegisterMode;
+// Bootstrap tag offsets for two-sided IPC registration.
+// Recv-side (isSender=false): send tag=P2P_IPC_TAG_BASE+peer, recv
+// tag=P2P_IPC_TAG_PEER+rank Send-side (isSender=true):  recv
+// tag=P2P_IPC_TAG_BASE+rank, send tag=P2P_IPC_TAG_PEER+peer
+#define P2P_IPC_TAG_BASE 4000
+#define P2P_IPC_TAG_PEER 5000
 
 flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
                                   void *data, size_t size,
@@ -149,8 +151,8 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
                                        const void *userbuff, size_t buffSize,
                                        struct flagcxConnector **peerConns,
                                        int *peerRanks, int nPeers,
-                                       flagcxP2pRegisterMode mode,
-                                       int *regBufFlag, uintptr_t *offsetOut,
+                                       bool isSender, int *regBufFlag,
+                                       uintptr_t *offsetOut,
                                        uintptr_t **peerRmtAddrsOut);
 
 flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
