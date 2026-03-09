@@ -116,13 +116,20 @@ if BuildExtension is not None:
             # -- Step 3: Build the torch C++ extension --
             super().build_extensions()
 
-            # -- Step 4: Copy libflagcx.so into the build output directory --
-            # This ensures it ends up in the wheel alongside _C.so.
+            # -- Step 4: Copy libflagcx.so to where it's needed --
+            # Into the build output dir (for wheels / regular installs)
             build_pkg_dir = os.path.join(self.build_lib, "flagcx")
             os.makedirs(build_pkg_dir, exist_ok=True)
             dst_build_so = os.path.join(build_pkg_dir, "libflagcx.so")
             print(f"[flagcx] Copying {src_so} -> {dst_build_so}")
             shutil.copy2(src_so, dst_build_so)
+
+            # Into the source package dir (for editable installs, where
+            # _C.so lives in-tree and uses $ORIGIN rpath to find it)
+            src_pkg_dir = os.path.join(ROOT_DIR, "plugin", "torch", "flagcx")
+            dst_src_so = os.path.join(src_pkg_dir, "libflagcx.so")
+            print(f"[flagcx] Copying {src_so} -> {dst_src_so}")
+            shutil.copy2(src_so, dst_src_so)
 else:
     BuildExtWithMake = None
 
