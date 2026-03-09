@@ -153,7 +153,7 @@ if BuildExtWithMake is not None:
 
 setup(
     name="flagcx",
-    version="0.8.0",
+    version="0.10.0",
     description="FlagCX: A unified collective communication library",
     package_dir={"flagcx": "plugin/torch/flagcx"},
     packages=["flagcx"],
