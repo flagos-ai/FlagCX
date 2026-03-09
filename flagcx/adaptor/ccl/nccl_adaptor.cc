@@ -182,10 +182,13 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       reqs.lsaMultimem = checkNvlsSupport();
       reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.ginSignalCount = 1;
-      FLAGCXCHECK(
-          ncclAdaptorDevCommCreate((*comm)->base, &reqs, (*comm)->devBase));
-      if ((*comm)->devBase == NULL) {
-        WARN("ncclDevComm is not initialized succefully");
+      flagcxResult_t devCommRes =
+          ncclAdaptorDevCommCreate((*comm)->base, &reqs, (*comm)->devBase);
+      if (devCommRes != flagcxSuccess) {
+        WARN("ncclDevCommCreate unavailable (res=%d), DevComm disabled",
+             devCommRes);
+        free((*comm)->devBase);
+        (*comm)->devBase = NULL;
       }
     }
   }
@@ -317,8 +320,12 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
   if (*win == NULL) {
     FLAGCXCHECK(flagcxCalloc(win, 1));
   }
-  return (flagcxResult_t)ncclCommWindowRegister(comm->base, buff, size,
-                                                &(*win)->base, winFlags);
+  flagcxResult_t res = (flagcxResult_t)ncclCommWindowRegister(
+      comm->base, buff, size, &(*win)->base, winFlags);
+  if (res == flagcxSuccess) {
+    (*win)->winFlags = winFlags;
+  }
+  return res;
 #else
   return flagcxNotSupported;
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)

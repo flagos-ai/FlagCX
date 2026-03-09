@@ -145,8 +145,8 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
 
 flagcxResult_t flagcxMemAlloc(void **ptr, size_t size, flagcxComm_t comm) {
   if (ptr == NULL || size == 0) {
-    WARN("Invalid pointer(!=NULL) or size(0) for allocation.");
-    return flagcxSuccess;
+    WARN("Invalid ptr(NULL) or size(0) for allocation.");
+    return flagcxInvalidArgument;
   }
   if (comm == NULL || (useHomoComm(comm) && !useHeteroComm())) {
     if (comm == NULL) {
@@ -336,8 +336,10 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
   // Step 2a: Homo path — backend CCL registration
   if (useHomoComm(comm) && !useHeteroComm()) {
     void *homoHandle = nullptr;
-    cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(comm->homoComm, buff,
-                                                      size, &homoHandle);
+    res = cclAdaptors[flagcxCCLAdaptorDevice]->commRegister(
+        comm->homoComm, buff, size, &homoHandle);
+    if (res != flagcxSuccess)
+      goto fail;
     regItem->homoRegHandle = homoHandle;
   }
 
@@ -409,13 +411,15 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     if (res == flagcxSuccess) {
       return flagcxSuccess;
     }
-    WARN("flagcxCommWindowRegister: backend returned %d, window not available",
+    if (res != flagcxNotSupported) {
+      return res;
+    }
+    WARN("flagcxCommWindowRegister: backend returned %d, window not available, "
+         "falling back",
          res);
-    *win = nullptr;
-    return flagcxNotSupported;
   }
   *win = nullptr;
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,

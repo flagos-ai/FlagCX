@@ -797,7 +797,7 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
       }
 
       ipcInfo.size = (size_t)baseSize;
-      ipcInfo.offset = regRecord->addr - baseAddr;
+      ipcInfo.offset = (uintptr_t)userbuff - baseAddr;
 
       // Send ipcInfo to sender via bootstrap
       INFO(FLAGCX_REG,
@@ -859,7 +859,7 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
         break;
       }
     }
-    *offsetOut = (uintptr_t)userbuff - regRecord->addr;
+    *offsetOut = 0;
   }
 
   return flagcxSuccess;

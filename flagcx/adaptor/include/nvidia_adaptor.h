@@ -70,9 +70,12 @@ struct flagcxIpcMemHandle {
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 struct flagcxWindow {
   ncclWindow_t base;
+  int winFlags;
 };
 #else
-struct flagcxWindow {};
+struct flagcxWindow {
+  int winFlags;
+};
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 
 #define DEVCHECK(func)                                                         \

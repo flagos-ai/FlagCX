@@ -190,6 +190,10 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle);
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle);
 
+/* Window registration flags */
+#define FLAGCX_WIN_DEFAULT 0x00
+#define FLAGCX_WIN_COLL_SYMMETRIC 0x01
+
 /* Register/Deregister user buffer for symmetric operation */
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,

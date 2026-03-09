@@ -3,12 +3,13 @@
  *
  * Host-side lifecycle management for flagcxDevComm_t and flagcxDevMem_t.
  *
- * Tier 1 (NCCL > 2.28): calls pncclDevCommCreate/Destroy via dlsym.
- *   DevMem supports both window mode and IPC mode at runtime.
- * Tier 2 (fallback):    IPC-based barrier + peer pointer exchange.
+ * Capability-based additive design:
+ *   Baseline (always): rawPtr + fifoBuffer + rank info
+ *   IPC layer:         peer pointers + IPC barriers (if IPC exchange succeeds)
+ *   NCCL layer:        ncclDevComm + ncclWindow_t (if NCCL > 2.28)
  *
- * IPC peer pointer exchange is shared across both tiers so that
- * -R 1 (IPC mode) works even on NCCL > 2.28.
+ * Each layer is added when available; lower layers are always present
+ * as fallback. Kernel dispatch uses priority: Window > IPC > Raw.
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
@@ -135,171 +136,27 @@ static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
 }
 
 #ifdef FLAGCX_DEVICE_API_NCCL
-
-// ==========================================================================
-// Tier 1: NCCL > 2.28
-// ==========================================================================
-
 #include "nvidia_adaptor.h"
-
-flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
-                                   const flagcxDevCommRequirements *reqs,
-                                   flagcxDevComm_t *devComm) {
-  if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
-    return flagcxInvalidArgument;
-  }
-
-  flagcxInnerComm_t innerComm = comm->homoComm;
-  if (innerComm == nullptr) {
-    return flagcxInternalError;
-  }
-
-  // Allocate the opaque handle
-  flagcxDevComm_t handle =
-      (flagcxDevComm_t)malloc(sizeof(struct flagcxDevCommInternal));
-  if (handle == nullptr) {
-    return flagcxSystemError;
-  }
-  memset(handle, 0, sizeof(struct flagcxDevCommInternal));
-
-  // Map opaque FlagCX requirements to NCCL requirements
-  ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  ncclReqs.lsaBarrierCount = reqs->fields[0];
-  ncclReqs.lsaMultimem = reqs->fields[1];
-  ncclReqs.railGinBarrierCount = reqs->fields[2];
-  ncclReqs.ginSignalCount = reqs->fields[3];
-
-  flagcxResult_t ret =
-      ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs, &handle->ncclDev);
-  if (ret != flagcxSuccess) {
-    free(handle);
-    return ret;
-  }
-
-  handle->barrierEpoch = 0;
-  *devComm = handle;
-  return flagcxSuccess;
-}
-
-flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
-                                    flagcxDevComm_t devComm) {
-  if (devComm == nullptr) {
-    return flagcxSuccess;
-  }
-  if (comm == nullptr) {
-    return flagcxInvalidArgument;
-  }
-
-  flagcxInnerComm_t innerComm = comm->homoComm;
-  if (innerComm == nullptr) {
-    free(devComm);
-    return flagcxInternalError;
-  }
-
-  ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
-
-  free(devComm);
-  return flagcxSuccess;
-}
-
-// ---------- DevMem: Tier 1 (window + IPC dual mode) ----------
-
-flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
-                                  flagcxWindow_t win, flagcxDevMem_t *devMem) {
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
-    return flagcxInvalidArgument;
-  }
-
-  flagcxDevMem_t handle =
-      (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
-  if (handle == nullptr) {
-    return flagcxSystemError;
-  }
-  memset(handle, 0, sizeof(struct flagcxDevMemInternal));
-
-  // Store local rank index for IPC pointer access
-  handle->intraRank = comm->localRank;
-
-  if (win != nullptr) {
-    // Window mode: store ncclWindow_t, no IPC needed (NCCL handles pointers)
-    handle->mode = flagcxDevMemWindow;
-    handle->ncclWin = win->base;
-    handle->winHandle = (void *)win;
-  } else {
-    // IPC mode: build peer pointer table via IPC exchange
-    handle->mode = flagcxDevMemIpc;
-    flagcxResult_t res =
-        buildIpcPeerPointers(comm, buff, size, &handle->devPeerPtrs,
-                             &handle->hostPeerPtrs, &handle->nPeers);
-    if (res != flagcxSuccess) {
-      free(handle);
-      return res;
-    }
-  }
-
-  *devMem = handle;
-  return flagcxSuccess;
-}
-
-flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
-  if (devMem == nullptr) {
-    return flagcxSuccess;
-  }
-  if (comm == nullptr) {
-    return flagcxInvalidArgument;
-  }
-
-  // Clean up IPC peer pointers (only present in IPC mode)
-  if (devMem->hostPeerPtrs) {
-    void *ownBuff = devMem->hostPeerPtrs[comm->localRank];
-    cleanupIpcPeerPointers(devMem->hostPeerPtrs, devMem->devPeerPtrs,
-                           devMem->nPeers, ownBuff);
-  }
-
-  free(devMem);
-  return flagcxSuccess;
-}
-
-#else // !FLAGCX_DEVICE_API_NCCL
+#endif
 
 // ==========================================================================
-// Tier 2: Fallback — IPC-based barrier + peer pointer exchange
+// IPC barrier setup helper (extracted from old Tier 2 DevCommCreate)
+//
+// Allocates IPC-shareable barrier flags, exchanges handles with all ranks,
+// and builds a device-side pointer array. On failure, partially-allocated
+// resources are cleaned up by flagcxDevCommDestroy (null-safe).
 // ==========================================================================
-
-flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
-                                   const flagcxDevCommRequirements *reqs,
-                                   flagcxDevComm_t *devComm) {
-  if (comm == nullptr || devComm == nullptr) {
-    return flagcxInvalidArgument;
-  }
-
+static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
+                                       flagcxDevComm_t handle) {
   int myRank = comm->rank;
   int nRanks = comm->nranks;
-  int localRank = comm->localRank;
   int localRanks = comm->localRanks;
   int *lrToR = comm->localRankToRank;
 
-  // Allocate the opaque handle
-  flagcxDevComm_t handle =
-      (flagcxDevComm_t)malloc(sizeof(struct flagcxDevCommInternal));
-  if (handle == nullptr) {
-    return flagcxSystemError;
-  }
-  memset(handle, 0, sizeof(struct flagcxDevCommInternal));
-
-  // Populate rank info
-  handle->rank = myRank;
-  handle->nRanks = nRanks;
-  handle->intraRank = localRank;
-  handle->intraSize = localRanks;
   handle->nLocalRanks = localRanks;
-
-  // Copy localRankToRank for cleanup
   handle->localRankToRank = (int *)malloc(localRanks * sizeof(int));
-  if (handle->localRankToRank == nullptr) {
-    free(handle);
+  if (handle->localRankToRank == nullptr)
     return flagcxSystemError;
-  }
   memcpy(handle->localRankToRank, lrToR, localRanks * sizeof(int));
 
   // Step 1: Allocate local barrier flags (IPC-shareable device memory)
@@ -310,18 +167,14 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
 
   // Zero barrier flags
-  deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0, barrierSize,
-                              flagcxMemDevice, NULL);
+  FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
+                                          barrierSize, flagcxMemDevice, NULL));
 
   // Step 2: Exchange barrier IPC handles with all ranks
   struct flagcxP2pIpcDesc *allBarrierDescs = (struct flagcxP2pIpcDesc *)calloc(
       nRanks, sizeof(struct flagcxP2pIpcDesc));
-  if (allBarrierDescs == nullptr) {
-    deviceAdaptor->deviceFree(handle->localBarrierFlags, flagcxMemDevice, NULL);
-    free(handle->localRankToRank);
-    free(handle);
+  if (allBarrierDescs == nullptr)
     return flagcxSystemError;
-  }
   memcpy(&allBarrierDescs[myRank], &barrierIpcDesc,
          sizeof(struct flagcxP2pIpcDesc));
   FLAGCXCHECK(bootstrapAllGather(comm->bootstrap, allBarrierDescs,
@@ -331,9 +184,6 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->peerBarrierPtrs = (void **)calloc(localRanks, sizeof(void *));
   if (handle->peerBarrierPtrs == nullptr) {
     free(allBarrierDescs);
-    deviceAdaptor->deviceFree(handle->localBarrierFlags, flagcxMemDevice, NULL);
-    free(handle->localRankToRank);
-    free(handle);
     return flagcxSystemError;
   }
   for (int lr = 0; lr < localRanks; lr++) {
@@ -357,9 +207,87 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       handle->barrierPeers, handle->peerBarrierPtrs,
       localRanks * sizeof(uint32_t *), flagcxMemcpyHostToDevice, NULL, NULL));
 
-  handle->barrierEpoch = 0;
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// Unified DevComm: Additive capability layers
+//   Baseline: rank info + fifoBuffer (always)
+//   IPC layer: barrier pointers (if reqs->fields[0] > 0)
+//   NCCL layer: ncclDevComm (if NCCL > 2.28)
+// ==========================================================================
+
+flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
+                                   const flagcxDevCommRequirements *reqs,
+                                   flagcxDevComm_t *devComm) {
+  if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
+    return flagcxInvalidArgument;
+  }
+
+  // Allocate the opaque handle
+  flagcxDevComm_t handle =
+      (flagcxDevComm_t)malloc(sizeof(struct flagcxDevCommInternal));
+  if (handle == nullptr) {
+    return flagcxSystemError;
+  }
+  memset(handle, 0, sizeof(struct flagcxDevCommInternal));
+
+  // ---- Baseline: always ----
+  handle->rank = comm->rank;
+  handle->nRanks = comm->nranks;
+  handle->intraRank = comm->localRank;
+  handle->intraSize = comm->localRanks;
+  handle->fifoBuffer =
+      (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
+
+  // ---- Grid sync counter (for multi-block two-sided kernels) ----
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->gridDoneCounter,
+                                          sizeof(unsigned int), flagcxMemDevice,
+                                          NULL));
+  FLAGCXCHECK(deviceAdaptor->deviceMemset(
+      handle->gridDoneCounter, 0, sizeof(unsigned int), flagcxMemDevice, NULL));
+
+  // ---- IPC barrier layer: if barriers requested ----
+  if (reqs->fields[0] > 0) {
+    flagcxResult_t res = setupIpcBarriers(comm, handle);
+    if (res != flagcxSuccess) {
+      WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
+           "barriers unavailable",
+           res);
+      deviceAdaptor->deviceFree(handle->gridDoneCounter, flagcxMemDevice, NULL);
+      free(handle);
+      return res;
+    }
+  }
+
+#ifdef FLAGCX_DEVICE_API_NCCL
+  // ---- NCCL layer: try ncclDevCommCreate ----
+  {
+    flagcxInnerComm_t innerComm = comm->homoComm;
+    if (innerComm != nullptr) {
+      ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+      ncclReqs.lsaBarrierCount = reqs->fields[0];
+      ncclReqs.lsaMultimem = reqs->fields[1];
+      ncclReqs.railGinBarrierCount = reqs->fields[2];
+      ncclReqs.ginSignalCount = reqs->fields[3];
+
+      flagcxResult_t ret = ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs,
+                                                    &handle->ncclDev);
+      if (ret == flagcxSuccess) {
+        handle->hasNcclDev = true;
+      } else {
+        WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d), "
+             "NCCL device layer not available",
+             ret);
+      }
+    }
+  }
+#endif
 
   *devComm = handle;
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s",
+       handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
+       handle->hasNcclDev ? " + ncclDevComm" : "");
   return flagcxSuccess;
 }
 
@@ -369,7 +297,17 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
-  // Close peer barrier IPC handles
+#ifdef FLAGCX_DEVICE_API_NCCL
+  // NCCL layer cleanup
+  if (devComm->hasNcclDev && comm != nullptr) {
+    flagcxInnerComm_t innerComm = comm->homoComm;
+    if (innerComm != nullptr) {
+      ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
+    }
+  }
+#endif
+
+  // IPC barrier cleanup
   if (devComm->peerBarrierPtrs) {
     for (int i = 0; i < devComm->nLocalRanks; i++) {
       if (devComm->peerBarrierPtrs[i] &&
@@ -379,16 +317,15 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     }
     free(devComm->peerBarrierPtrs);
   }
-
-  // Free device barrier pointer array
   if (devComm->barrierPeers) {
     deviceAdaptor->deviceFree(devComm->barrierPeers, flagcxMemDevice, NULL);
   }
-
-  // Free local barrier flags
   if (devComm->localBarrierFlags) {
     deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
                               NULL);
+  }
+  if (devComm->gridDoneCounter) {
+    deviceAdaptor->deviceFree(devComm->gridDoneCounter, flagcxMemDevice, NULL);
   }
 
   free(devComm->localRankToRank);
@@ -396,16 +333,16 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-// ---------- DevMem: Tier 2 (IPC-only, win param ignored) ----------
+// ==========================================================================
+// Unified DevMem: Additive capability layers
+//   Baseline: rawPtr (always)
+//   IPC layer: peer pointers (if comm provided and win is null)
+//   Window layer: ncclWindow_t (if win provided, Tier 1 only)
+// ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem) {
-  (void)win; // Tier 2: window mode not available, always IPC
-  if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
-    return flagcxInvalidArgument;
-  }
-  if (win != nullptr) {
-    // Window mode requires NCCL > 2.28 (Tier 1)
+  if (buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
 
@@ -416,21 +353,51 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   }
   memset(handle, 0, sizeof(struct flagcxDevMemInternal));
 
-  handle->mode = flagcxDevMemIpc;
-  handle->basePtr = buff;
+  // ---- Baseline: always ----
+  handle->rawPtr = buff;
 
-  // Store local rank index for IPC pointer access
-  handle->intraRank = comm->localRank;
+  if (comm != nullptr) {
+    handle->intraRank = comm->localRank;
 
-  flagcxResult_t res =
-      buildIpcPeerPointers(comm, buff, size, &handle->devPeerPtrs,
-                           &handle->hostPeerPtrs, &handle->nPeers);
-  if (res != flagcxSuccess) {
-    free(handle);
-    return res;
+#ifndef FLAGCX_DEVICE_API_NCCL
+    if (win != nullptr) {
+      WARN("flagcxDevMemCreate: window provided but NCCL device API "
+           "unavailable, falling back to IPC");
+      win = nullptr;
+    }
+#endif
+
+    // ---- IPC layer: try if win is null (IPC needs cudaMalloc memory) ----
+    if (win == nullptr) {
+      handle->basePtr = buff;
+      flagcxResult_t res =
+          buildIpcPeerPointers(comm, buff, size, &handle->devPeerPtrs,
+                               &handle->hostPeerPtrs, &handle->nPeers);
+      if (res != flagcxSuccess) {
+        WARN("flagcxDevMemCreate: IPC peer pointer setup failed (%d), "
+             "IPC layer not available",
+             res);
+        // devPeerPtrs stays nullptr — raw-only mode
+      }
+    }
+
+    // ---- Window layer: if win provided and valid ----
+    if (win != nullptr) {
+      handle->hasWindow = true;
+#ifdef FLAGCX_DEVICE_API_NCCL
+      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
+      handle->ncclWin = win->base;
+      handle->winHandle = (void *)win;
+#endif
+    }
   }
 
   *devMem = handle;
+  INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s%s", buff,
+       handle->devPeerPtrs ? " + IPC peerPtrs" : "",
+       handle->hasWindow ? (handle->isSymmetric ? " + Window (symmetric)"
+                                                : " + Window (basic)")
+                         : "");
   return flagcxSuccess;
 }
 
@@ -439,11 +406,12 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
     return flagcxSuccess;
   }
 
-  cleanupIpcPeerPointers(devMem->hostPeerPtrs, devMem->devPeerPtrs,
-                         devMem->nPeers, devMem->basePtr);
+  // Clean up IPC peer pointers (if present)
+  if (devMem->hostPeerPtrs) {
+    cleanupIpcPeerPointers(devMem->hostPeerPtrs, devMem->devPeerPtrs,
+                           devMem->nPeers, devMem->basePtr);
+  }
 
   free(devMem);
   return flagcxSuccess;
 }
-
-#endif // FLAGCX_DEVICE_API_NCCL

@@ -21,6 +21,10 @@
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 #define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
 #define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
+#define FLAGCX_THREAD_IDX_X threadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X blockDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
 
 FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
   int delay = 1 << (iter < 15 ? iter : 15);
@@ -42,11 +46,14 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR
 #define FLAGCX_DEVICE_THREAD_FENCE
 #define FLAGCX_DEVICE_SYNC_THREADS
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
 #endif // __CUDACC__
 
 // CUDA runtime macros — available from both nvcc and host compiler
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
-#define FLAGCX_DEVICE_LAUNCH_KERNEL cudaLaunchKernel
 
 #else
 // Non-NVIDIA platform
@@ -58,9 +65,11 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR
 #define FLAGCX_DEVICE_STREAM_PTR
 #define FLAGCX_DEVICE_THREAD_FENCE
-#define FLAGCX_DEVICE_LAUNCH_KERNEL
-#define FLAGCX_DEVICE_NANOSLEEP
 #define FLAGCX_DEVICE_SYNC_THREADS
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
 #endif
 
 #endif // FLAGCX_ADAPTOR_DEVICE_UTILS_H_

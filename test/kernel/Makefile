@@ -24,18 +24,18 @@ endif
 COMMON_INCLUDES = -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE)
 COMMON_LIBS = -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK)
 
-all: test-kernel-demo test-device-api-allreduce
+all: test-internode-kernel test-intranode-kernel
 
-test-kernel-demo: test_kernel_demo.cpp
+test-internode-kernel: test_internode_kernel.cpp
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_kernel_demo test_kernel_demo.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_internode_kernel test_internode_kernel.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
 
-test-device-api-allreduce: test_device_api_allreduce.cpp
+test-intranode-kernel: test_intranode_kernel.cpp
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_device_api_allreduce test_device_api_allreduce.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_intranode_kernel test_intranode_kernel.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
 
 clean:
-	@rm -f test_kernel_demo test_device_api_allreduce
+	@rm -f test_internode_kernel test_intranode_kernel
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"
