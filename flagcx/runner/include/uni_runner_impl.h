@@ -143,37 +143,31 @@ flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
 flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices);
+                                        flagcxRedOp_t op, flagcxComm_t comm);
 flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices);
+                                        flagcxRedOp_t op, flagcxComm_t comm);
 flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices);
+                                        flagcxRedOp_t op, flagcxComm_t comm);
 flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
                                           const void *sendbuff, void *recvbuff,
                                           size_t count,
                                           flagcxDataType_t datatype,
-                                          flagcxRedOp_t op, flagcxComm_t comm,
-                                          int numSlices, int numRedSlices);
+                                          flagcxRedOp_t op, flagcxComm_t comm);
 flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         void *scratchbuff, size_t count,
                                         flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices, int numRedSlices);
+                                        flagcxRedOp_t op, flagcxComm_t comm);
 flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          const void *sendbuff, void *recvbuff,
                                          void *scratchbuff, size_t count,
                                          flagcxDataType_t datatype,
                                          flagcxRedOp_t op, int root,
-                                         flagcxComm_t comm, int numSlices,
-                                         int numRedSlices);
+                                         flagcxComm_t comm);
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t runUniRunner(flagcxComm_t comm);

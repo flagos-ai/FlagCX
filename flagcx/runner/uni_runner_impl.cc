@@ -82,10 +82,10 @@ flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState) {
 flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices = 1) {
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
+  int numSlices = runnerState->uniRunnerNSlices;
 
   if (nranks < 2) {
     return flagcxSuccess;
@@ -159,10 +159,10 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
 flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices = 1) {
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
+  int numSlices = runnerState->uniRunnerNSlices;
 
   if (nranks < 2) {
     return flagcxSuccess;
@@ -328,10 +328,10 @@ flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
 flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices = 1) {
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
+  int numSlices = runnerState->uniRunnerNSlices;
 
   if (nranks < 2) {
     return flagcxSuccess;
@@ -616,16 +616,31 @@ flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-flagcxResult_t initUniRunnerStateSlicedAR(
-    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
-    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
-    flagcxComm_t comm, int numSlices = 1, int numRedSlices = 1) {
+flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
+                                          const void *sendbuff, void *recvbuff,
+                                          size_t count,
+                                          flagcxDataType_t datatype,
+                                          flagcxRedOp_t op, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
 
   if (nranks < 2) {
     return flagcxSuccess;
   }
+
+  if (runnerState->uniRunnerNRedSlices == 0) {
+    if (count <= 0 || runnerState->uniRunnerRedSliceSize == 0) {
+      runnerState->uniRunnerNRedSlices = 1;
+    } else {
+      runnerState->uniRunnerNRedSlices =
+          ceil((float)count / comm->nranks / runnerState->uniRunnerNSlices /
+               runnerState->uniRunnerRedSliceSize);
+    }
+    TRACE(FLAGCX_UNIRUNNER, "uniRunnerNRedSlices auto set to %lu",
+          runnerState->uniRunnerNRedSlices);
+  }
+  int numSlices = runnerState->uniRunnerNSlices;
+  int numRedSlices = runnerState->uniRunnerNRedSlices;
 
   TRACE(FLAGCX_UNIRUNNER,
         "rank %d initUniRunnerStateSlicedAR called, count=%lu, numSlices=%d, "
@@ -932,15 +947,27 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         void *scratchbuff, size_t count,
                                         flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm,
-                                        int numSlices = 1,
-                                        int numRedSlices = 1) {
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
 
   if (nranks < 2) {
     return flagcxSuccess;
   }
+
+  if (runnerState->uniRunnerNRedSlices == 0) {
+    if (count <= 0 || runnerState->uniRunnerRedSliceSize == 0) {
+      runnerState->uniRunnerNRedSlices = 1;
+    } else {
+      runnerState->uniRunnerNRedSlices =
+          ceil((float)count / comm->nranks / runnerState->uniRunnerNSlices /
+               runnerState->uniRunnerRedSliceSize);
+    }
+    TRACE(FLAGCX_UNIRUNNER, "uniRunnerNRedSlices auto set to %lu",
+          runnerState->uniRunnerNRedSlices);
+  }
+  int numSlices = runnerState->uniRunnerNSlices;
+  int numRedSlices = runnerState->uniRunnerNRedSlices;
 
   TRACE(FLAGCX_UNIRUNNER,
         "rank %d initUniRunnerStateRingRS called, recvcount=%lu, numSlices=%d, "
@@ -1157,8 +1184,7 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          void *scratchbuff, size_t count,
                                          flagcxDataType_t datatype,
                                          flagcxRedOp_t op, int root,
-                                         flagcxComm_t comm, int numSlices = 1,
-                                         int numRedSlices = 1) {
+                                         flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
   int algoRank = (rank - root + nranks) % nranks; // Rotate ranks so root is 0
@@ -1166,6 +1192,20 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
   if (nranks < 2) {
     return flagcxSuccess;
   }
+
+  if (runnerState->uniRunnerNRedSlices == 0) {
+    if (count <= 0 || runnerState->uniRunnerRedSliceSize == 0) {
+      runnerState->uniRunnerNRedSlices = 1;
+    } else {
+      runnerState->uniRunnerNRedSlices =
+          ceil((float)count / comm->nranks / runnerState->uniRunnerNSlices /
+               runnerState->uniRunnerRedSliceSize);
+    }
+    TRACE(FLAGCX_UNIRUNNER, "uniRunnerNRedSlices auto set to %lu",
+          runnerState->uniRunnerNRedSlices);
+  }
+  int numSlices = runnerState->uniRunnerNSlices;
+  int numRedSlices = runnerState->uniRunnerNRedSlices;
 
   size_t typeSize = getFlagcxDataTypeSize(datatype);
 
