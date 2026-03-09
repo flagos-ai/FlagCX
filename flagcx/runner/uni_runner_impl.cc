@@ -164,7 +164,28 @@ flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
   int nranks = comm->nranks;
   int numSlices = runnerState->uniRunnerNSlices;
 
-  if (nranks < 2) {
+  if (nranks < 1) {
+    return flagcxInvalidArgument;
+  } else if (nranks == 1) {
+    // For single rank, do local cpy if out-of-place, otherwise no-op
+    if (count > 0 && sendbuff != recvbuff) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                               sizeof(struct uniRunnerDagNode)));
+      if (runnerState->dagNodes == NULL) {
+        return flagcxSystemError;
+      }
+      runnerState->numDagNodes = 1;
+      runnerState->dagNodes[0].nodeType = uniRunnerDagNodeTypeCpy;
+      runnerState->dagNodes[0].nodeData.cpy.src = const_cast<void *>(sendbuff);
+      runnerState->dagNodes[0].nodeData.cpy.dst = recvbuff;
+      runnerState->dagNodes[0].nodeData.cpy.count = count;
+      runnerState->dagNodes[0].nodeData.cpy.datatype = datatype;
+      runnerState->dagNodes[0].numParents = 0;
+      runnerState->dagNodes[0].numChildren = 0;
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[0]);
+      runnerState->numPendingNodes = 0;
+    }
     return flagcxSuccess;
   }
 
@@ -333,7 +354,28 @@ flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   int nranks = comm->nranks;
   int numSlices = runnerState->uniRunnerNSlices;
 
-  if (nranks < 2) {
+  if (nranks < 1) {
+    return flagcxInvalidArgument;
+  } else if (nranks == 1) {
+    // For single rank, do local cpy if out-of-place, otherwise no-op
+    if (count > 0 && sendbuff != recvbuff) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                               sizeof(struct uniRunnerDagNode)));
+      if (runnerState->dagNodes == NULL) {
+        return flagcxSystemError;
+      }
+      runnerState->numDagNodes = 1;
+      runnerState->dagNodes[0].nodeType = uniRunnerDagNodeTypeCpy;
+      runnerState->dagNodes[0].nodeData.cpy.src = const_cast<void *>(sendbuff);
+      runnerState->dagNodes[0].nodeData.cpy.dst = recvbuff;
+      runnerState->dagNodes[0].nodeData.cpy.count = count;
+      runnerState->dagNodes[0].nodeData.cpy.datatype = datatype;
+      runnerState->dagNodes[0].numParents = 0;
+      runnerState->dagNodes[0].numChildren = 0;
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[0]);
+      runnerState->numPendingNodes = 0;
+    }
     return flagcxSuccess;
   }
 
@@ -624,7 +666,28 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
   int rank = comm->rank;
   int nranks = comm->nranks;
 
-  if (nranks < 2) {
+  if (nranks < 1) {
+    return flagcxInvalidArgument;
+  } else if (nranks == 1) {
+    // For single rank, do local cpy if out-of-place, otherwise no-op
+    if (count > 0 && sendbuff != recvbuff) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                               sizeof(struct uniRunnerDagNode)));
+      if (runnerState->dagNodes == NULL) {
+        return flagcxSystemError;
+      }
+      runnerState->numDagNodes = 1;
+      runnerState->dagNodes[0].nodeType = uniRunnerDagNodeTypeCpy;
+      runnerState->dagNodes[0].nodeData.cpy.src = const_cast<void *>(sendbuff);
+      runnerState->dagNodes[0].nodeData.cpy.dst = recvbuff;
+      runnerState->dagNodes[0].nodeData.cpy.count = count;
+      runnerState->dagNodes[0].nodeData.cpy.datatype = datatype;
+      runnerState->dagNodes[0].numParents = 0;
+      runnerState->dagNodes[0].numChildren = 0;
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[0]);
+      runnerState->numPendingNodes = 0;
+    }
     return flagcxSuccess;
   }
 
@@ -951,7 +1014,28 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
   int rank = comm->rank;
   int nranks = comm->nranks;
 
-  if (nranks < 2) {
+  if (nranks < 1) {
+    return flagcxInvalidArgument;
+  } else if (nranks == 1) {
+    // For single rank, do local cpy if out-of-place, otherwise no-op
+    if (count > 0 && sendbuff != recvbuff) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                               sizeof(struct uniRunnerDagNode)));
+      if (runnerState->dagNodes == NULL) {
+        return flagcxSystemError;
+      }
+      runnerState->numDagNodes = 1;
+      runnerState->dagNodes[0].nodeType = uniRunnerDagNodeTypeCpy;
+      runnerState->dagNodes[0].nodeData.cpy.src = const_cast<void *>(sendbuff);
+      runnerState->dagNodes[0].nodeData.cpy.dst = recvbuff;
+      runnerState->dagNodes[0].nodeData.cpy.count = count;
+      runnerState->dagNodes[0].nodeData.cpy.datatype = datatype;
+      runnerState->dagNodes[0].numParents = 0;
+      runnerState->dagNodes[0].numChildren = 0;
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[0]);
+      runnerState->numPendingNodes = 0;
+    }
     return flagcxSuccess;
   }
 
@@ -1189,7 +1273,28 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
   int nranks = comm->nranks;
   int algoRank = (rank - root + nranks) % nranks; // Rotate ranks so root is 0
 
-  if (nranks < 2) {
+  if (nranks < 1) {
+    return flagcxInvalidArgument;
+  } else if (nranks == 1) {
+    // For single rank, do local cpy if out-of-place, otherwise no-op
+    if (count > 0 && sendbuff != recvbuff) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                               sizeof(struct uniRunnerDagNode)));
+      if (runnerState->dagNodes == NULL) {
+        return flagcxSystemError;
+      }
+      runnerState->numDagNodes = 1;
+      runnerState->dagNodes[0].nodeType = uniRunnerDagNodeTypeCpy;
+      runnerState->dagNodes[0].nodeData.cpy.src = const_cast<void *>(sendbuff);
+      runnerState->dagNodes[0].nodeData.cpy.dst = recvbuff;
+      runnerState->dagNodes[0].nodeData.cpy.count = count;
+      runnerState->dagNodes[0].nodeData.cpy.datatype = datatype;
+      runnerState->dagNodes[0].numParents = 0;
+      runnerState->dagNodes[0].numChildren = 0;
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[0]);
+      runnerState->numPendingNodes = 0;
+    }
     return flagcxSuccess;
   }
 
