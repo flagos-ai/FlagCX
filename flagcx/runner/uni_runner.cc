@@ -22,7 +22,7 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(deviceAdaptor->deviceMalloc(
       &scratchbuff, 2 * count * getFlagcxDataTypeSize(datatype),
       flagcxMemDevice, stream));
-  FLAGCXCHECK(initUniRunner(comm, stream));
+  FLAGCXCHECKGOTO(initUniRunner(comm, stream), res, out);
   FLAGCXCHECKGOTO(initUniRunnerStateTreeRed(
                       runnerState, sendbuff, recvbuff, scratchbuff, count,
                       datatype, op, root, comm, runnerState->uniRunnerNSlices,
@@ -157,7 +157,7 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(deviceAdaptor->deviceMalloc(
       &scratchbuff, recvcount * comm->nranks * getFlagcxDataTypeSize(datatype),
       flagcxMemDevice, stream));
-  FLAGCXCHECK(initUniRunner(comm, stream));
+  FLAGCXCHECKGOTO(initUniRunner(comm, stream), res, out);
   FLAGCXCHECKGOTO(initUniRunnerStateRingRS(runnerState, sendbuff, recvbuff,
                                            scratchbuff, recvcount, datatype, op,
                                            comm, runnerState->uniRunnerNSlices,

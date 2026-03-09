@@ -1045,7 +1045,7 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
         }
         runnerState->numPendingNodes++;
       }
-      if (i == nranks - 1 && s == numSlices - 1) {
+      if (i == nranks - 2 && s == numSlices - 1) {
         runnerState->dagNodes[p2pNodeIdx].numChildren = numRedSlices;
       } else {
         runnerState->dagNodes[p2pNodeIdx].numChildren = 1 + numRedSlices;
@@ -1059,7 +1059,7 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
               p2pNodeIdx, r, runnerState->dagNodes[p2pNodeIdx].children[r]);
       }
       if (s == numSlices - 1) {
-        if (i != nranks - 1) {
+        if (i != nranks - 2) {
           runnerState->dagNodes[p2pNodeIdx].children[numRedSlices] =
               (i + 1) * (1 + numRedSlices);
           TRACE(FLAGCX_UNIRUNNER, "rank %d p2pNode %d child %d: %d", rank,
@@ -1234,13 +1234,6 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                            sizeof(struct uniRunnerP2pOpData)));
 
       // Recv Node
-      if (algoRank + (1 << i) >= nranks) {
-        TRACE(FLAGCX_UNIRUNNER,
-              "DAG init error: rank %d (algoRank %d) slice %d, step %d", rank,
-              algoRank, s, i);
-        break;
-        // return flagcxInternalError;
-      }
       int peer = (rank + (1 << i)) % nranks;
       runnerState->dagNodes[recvNodeIdx].nodeData.p2p.ops[0].type =
           flagcxDevicePrimRecv;
@@ -1415,31 +1408,22 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
     }
   }
 
-  // print ready queue
-  TRACE(FLAGCX_UNIRUNNER, "ready queue initialized:");
-  for (uniRunnerDagNode *node = runnerState->p2pReadyQueue.head; node != NULL;
-       node = node->next) {
-    int nodeIdx = node - runnerState->dagNodes;
-    TRACE(FLAGCX_UNIRUNNER, "  Node %d: type=%s", nodeIdx,
-          (node->nodeType == uniRunnerDagNodeTypeP2p) ? "P2P" : "RED");
-  }
-  TRACE(FLAGCX_UNIRUNNER, "pending nodes count: %d",
-        runnerState->numPendingNodes);
-
   return flagcxSuccess;
 }
 
 // Clean up DAG nodes
 static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
   TRACE(FLAGCX_UNIRUNNER, "cleanupDagScheduler called");
-
-  if (runnerState->dagNodes != NULL) {
+  if (!runnerState) {
+    return flagcxSuccess;
+  }
+  if (runnerState->dagNodes) {
     for (int i = 0; i < runnerState->numDagNodes; i++) {
       if (runnerState->dagNodes[i].nodeType == uniRunnerDagNodeTypeP2p &&
-          runnerState->dagNodes[i].nodeData.p2p.ops != NULL) {
+          runnerState->dagNodes[i].nodeData.p2p.ops) {
         free(runnerState->dagNodes[i].nodeData.p2p.ops);
       }
-      if (runnerState->dagNodes[i].children != NULL) {
+      if (runnerState->dagNodes[i].children) {
         free(runnerState->dagNodes[i].children);
       }
     }
@@ -1471,6 +1455,9 @@ static flagcxResult_t initP2pEvents(flagcxUniRunnerState *runnerState) {
 
 // Clean up P2P events
 static flagcxResult_t cleanupP2pEvents(flagcxUniRunnerState *runnerState) {
+  if (!runnerState) {
+    return flagcxSuccess;
+  }
   for (int i = 0; i < runnerState->p2pEventPoolSize; i++) {
     FLAGCXCHECK(deviceAdaptor->eventDestroy(runnerState->p2pEvents[i]));
   }
