@@ -293,7 +293,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               FLAGCXCHECK(flagcxP2pRegisterBuffer(
                   comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
                   /*isSender=*/false, &op->args.regBufFlag, &regOffset,
-                  &peerRmtAddr));
+                  &peerRmtAddr, op->args.p2pPeerSlotIdx));
               if (op->args.regBufFlag) {
                 INFO(FLAGCX_REG,
                      "flagcxGroup P2P recv reg rank %d <- %d buff %p size %zu "
@@ -383,7 +383,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               FLAGCXCHECK(flagcxP2pRegisterBuffer(
                   comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
                   /*isSender=*/true, &op->args.regBufFlag, &regOffset,
-                  &peerRmtAddr));
+                  &peerRmtAddr, op->args.p2pSlotIdx));
               // peerRmtAddr is fully resolved (rmtRegAddr + peer's userOffset)
               if (op->args.regBufFlag && peerRmtAddr) {
                 op->args.p2pRmtAddr = (void *)peerRmtAddr;

@@ -58,6 +58,9 @@ struct flagcxP2pSyncSlot {
 struct p2pRegInfo {
   int copyDone;    // Indicates if the copy operation is complete
   int copyStarted; // Indicates if the copy operation has started
+  uintptr_t
+      ipcUserOffset; // Per-slot IPC offset (recv-side writes, send-side reads)
+  int ipcRegReady;   // 1 = ipcUserOffset is valid for current op
 };
 
 struct flagcxP2pShm {
@@ -88,12 +91,11 @@ struct flagcxP2pResources {
   struct flagcxP2pShmProxyInfo proxyInfo;
 };
 
-// Bootstrap tag offsets for two-sided IPC registration.
-// Recv-side (isSender=false): send tag=P2P_IPC_TAG_BASE+peer, recv
-// tag=P2P_IPC_TAG_PEER+rank Send-side (isSender=true):  recv
-// tag=P2P_IPC_TAG_BASE+rank, send tag=P2P_IPC_TAG_PEER+peer
+// Bootstrap tag for one-sided IPC registration (first call only).
+// Recv-side sends to peer with tag = P2P_IPC_TAG_BASE + recvRank.
+// Send-side receives from peer with tag = P2P_IPC_TAG_BASE + peerRank.
+// Subsequent calls use SHM for offset refresh (zero bootstrap overhead).
 #define P2P_IPC_TAG_BASE 4000
-#define P2P_IPC_TAG_PEER 5000
 
 flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
                                   void *data, size_t size,
@@ -147,13 +149,12 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               struct flagcxP2pIpcDesc *ipcDesc,
                                               void **devMemPtr);
 
-flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
-                                       const void *userbuff, size_t buffSize,
-                                       struct flagcxConnector **peerConns,
-                                       int *peerRanks, int nPeers,
-                                       bool isSender, int *regBufFlag,
-                                       uintptr_t *offsetOut,
-                                       uintptr_t **peerRmtAddrsOut);
+flagcxResult_t
+flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm, const void *userbuff,
+                        size_t buffSize, struct flagcxConnector **peerConns,
+                        int *peerRanks, int nPeers, bool isSender,
+                        int *regBufFlag, uintptr_t *offsetOut,
+                        uintptr_t **peerRmtAddrsOut, size_t shmRegSlotIdx);
 
 flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
                                          struct flagcxIpcRegInfo *info);
