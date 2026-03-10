@@ -5,7 +5,9 @@
 #include "proxy.h"
 #include "reg_pool.h"
 #include <algorithm>
+#include <cassert>
 #include <map>
+#include <sched.h>  // for sched_yield
 #include <string.h> // for memcpy
 
 int64_t flagcxP2pBufferSize;
@@ -118,19 +120,20 @@ static inline bool slotIsComplete(flagcxP2pSyncSlot *s) {
 
 static inline void resetSlot(flagcxP2pSyncSlot *slotPtr,
                              struct p2pRegInfo *regPtr, int64_t newHash) {
+  // Reset reg info BEFORE publishing opHash — peer acquires on opHash,
+  // so regPtr fields must be visible-before the hash publication.
+  if (regPtr != NULL) {
+    __atomic_store_n(&regPtr->copyStarted, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->copyDone, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->ipcUserOffset, (uintptr_t)0, __ATOMIC_RELAXED);
+    __atomic_store_n(&regPtr->ipcRegReady, 0, __ATOMIC_RELEASE);
+  }
   if (slotPtr != NULL) {
     __atomic_store_n(&slotPtr->sendHead, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&slotPtr->recvTail, flagcxP2pChunks, __ATOMIC_RELAXED);
     __atomic_store_n(&slotPtr->done, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&slotPtr->peerDone, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&slotPtr->opHash, newHash, __ATOMIC_RELEASE);
-  }
-  // Reset reg info for new operation
-  if (regPtr != NULL) {
-    __atomic_store_n(&regPtr->copyStarted, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&regPtr->copyDone, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&regPtr->ipcUserOffset, (uintptr_t)0, __ATOMIC_RELAXED);
-    __atomic_store_n(&regPtr->ipcRegReady, 0, __ATOMIC_RELEASE);
   }
 }
 
@@ -448,8 +451,11 @@ flagcxResult_t flagcxP2pSendProxySetup(struct flagcxProxyConnection *connection,
     resources->proxyInfo.shm->slots[i].done = 1;     // 1 = slot is free
     resources->proxyInfo.shm->slots[i].peerDone = 1; // 1 = slot is free
   }
-  // Per-slot IPC offset fields (ipcUserOffset, ipcRegReady) are in
-  // regInfos[] and initialized by resetSlot() — no per-connection init needed.
+  // Explicitly zero-init regInfos[] — defensive against non-zero SHM memory
+  for (int i = 0; i < FLAGCX_P2P_MAX_OPS; i++) {
+    memset(&resources->proxyInfo.shm->regInfos[i], 0,
+           sizeof(resources->proxyInfo.shm->regInfos[i]));
+  }
 
   INFO(FLAGCX_P2P, "flagcxP2pSendProxySetup: Copying response, shm=%p",
        resources->proxyInfo.shm);
@@ -664,7 +670,9 @@ static flagcxResult_t p2pRegisterBuffer(
   // Compute offsets:
   // pageGap: constant per registration (base-addr to registered-buffer-start)
   // userOffset: per-call (registered-buffer-start to this call's userbuff)
+  assert((uintptr_t)regRecord->addr >= baseAddr);
   uintptr_t pageGap = regRecord->addr - baseAddr;
+  assert((uintptr_t)userbuff >= regRecord->addr);
   uintptr_t userOffset = (uintptr_t)userbuff - regRecord->addr;
 
   for (int p = 0; p < nPeers; p++) {
@@ -735,6 +743,7 @@ static flagcxResult_t p2pRegisterBuffer(
         } else {
           WARN("rank %d - Non-legacy IPC not implemented for peer %d",
                comm->rank, peerRank);
+          ret = flagcxInternalError;
           goto fail;
         }
 
@@ -769,6 +778,7 @@ static flagcxResult_t p2pRegisterBuffer(
           newInfo = (flagcxIpcRegInfo *)calloc(1, sizeof(flagcxIpcRegInfo));
           if (newInfo == NULL) {
             WARN("Failed to allocate IPC registration info");
+            ret = flagcxSystemError;
             goto fail;
           }
           newInfo->peerRank = peerRank;
@@ -800,14 +810,27 @@ static flagcxResult_t p2pRegisterBuffer(
       if (existingInfo && existingInfo->handleReady) {
         // Cache hit: read fresh userOffset from per-slot SHM, zero bootstrap
         if (shm) {
+          int spinCount = 0;
           while (__atomic_load_n(&shm->regInfos[shmRegSlotIdx].ipcRegReady,
                                  __ATOMIC_ACQUIRE) != 1) {
-            // Spin until recv-side writes the fresh offset
+            if (++spinCount > 10000000) {
+              WARN("rank %d - send-side spin timeout waiting for ipcRegReady "
+                   "(peer %d, slot %zu)",
+                   comm->rank, peerRank, shmRegSlotIdx);
+              ret = flagcxInternalError;
+              goto fail;
+            }
+            sched_yield();
           }
           receivedUserOffset = __atomic_load_n(
               &shm->regInfos[shmRegSlotIdx].ipcUserOffset, __ATOMIC_RELAXED);
           __atomic_store_n(&shm->regInfos[shmRegSlotIdx].ipcRegReady, 0,
                            __ATOMIC_RELEASE);
+        } else {
+          WARN("rank %d - send-side cache hit but shm is NULL for peer %d",
+               comm->rank, peerRank);
+          ret = flagcxInternalError;
+          goto fail;
         }
         *regBufFlag = 1;
         if (isLegacyIpc)
@@ -857,6 +880,7 @@ static flagcxResult_t p2pRegisterBuffer(
         } else {
           WARN("rank %d - Non-legacy IPC not implemented for peer %d",
                comm->rank, peerRank);
+          ret = flagcxInternalError;
           goto fail;
         }
 
@@ -866,6 +890,7 @@ static flagcxResult_t p2pRegisterBuffer(
           newInfo = (flagcxIpcRegInfo *)calloc(1, sizeof(flagcxIpcRegInfo));
           if (newInfo == NULL) {
             WARN("Failed to allocate IPC registration info");
+            ret = flagcxSystemError;
             goto fail;
           }
           newInfo->peerRank = peerRank;
