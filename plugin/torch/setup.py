@@ -58,7 +58,8 @@ if CppExtension is not None:
         extra_compile_args={
             'cxx': [adaptor_flag, torch_flag]
         },
-        extra_link_args=["-Wl,-rpath," + os.path.join(repo_root, "build", "lib")],
+        extra_link_args=["-Wl,-rpath," + os.path.join(repo_root, "build", "lib")]
+                        + ["-Wl,-rpath," + d for d in dev_libdirs],
         library_dirs=library_dirs,
         libraries=libs,
     )

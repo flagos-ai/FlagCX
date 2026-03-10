@@ -5,6 +5,21 @@ import os
 os.environ["TORCH_DEVICE_BACKEND_AUTOLOAD"] = "0"
 import torch
 os.environ.pop('TORCH_DEVICE_BACKEND_AUTOLOAD')
+
+# Pre-import the device backend (if any) before loading _C.so.
+# Loading _C.so dynamically links against the device library (e.g.
+# libtorch_npu.so), which can register the accelerator at the C++ level.
+# If we don't import the Python package first, PyTorch's auto-loader
+# will later try to register the same accelerator again, causing a
+# "Two accelerators cannot be used at the same time" error.
+_DEVICE_BACKENDS = ["torch_npu", "torch_mlu", "torch_musa", "torch_txda", "torch_gcu"]
+for _pkg in _DEVICE_BACKENDS:
+    try:
+        __import__(_pkg)
+        break
+    except ImportError:
+        continue
+
 from functools import wraps
 import torch.distributed as dist
 from torch.distributed.distributed_c10d import _coalescing_manager

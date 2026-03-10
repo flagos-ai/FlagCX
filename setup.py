@@ -106,12 +106,15 @@ if BuildExtension is not None:
                 if lib_dir not in ext.library_dirs:
                     ext.library_dirs.insert(0, lib_dir)
                 # Set $ORIGIN rpath so _C.so finds libflagcx.so in the same directory
+                # Preserve device-specific rpaths so runtime linker can find device libs
                 origin_rpath = "-Wl,-rpath,$ORIGIN"
+                dev_rpaths = ["-Wl,-rpath," + d for d in dev_libdirs]
                 ext.extra_link_args = [
                     arg for arg in ext.extra_link_args
                     if not arg.startswith("-Wl,-rpath,")
                 ]
                 ext.extra_link_args.append(origin_rpath)
+                ext.extra_link_args.extend(dev_rpaths)
 
             # -- Step 3: Build the torch C++ extension --
             super().build_extensions()
@@ -157,6 +160,9 @@ if BuildExtWithMake is not None:
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
+
+# Ensure build/ exists so egg_info can write there (via setup.cfg egg_base)
+os.makedirs(os.path.join(ROOT_DIR, "build"), exist_ok=True)
 
 setup(
     name="flagcx",
