@@ -42,7 +42,7 @@ constexpr unsigned int flagcxDeviceTriggerOffPeerRank =
 constexpr unsigned int flagcxDeviceTriggerBitsPeerRank = 20;
 constexpr unsigned int flagcxDeviceTriggerOffDatatype =
     flagcxDeviceTriggerOffPeerRank + flagcxDeviceTriggerBitsPeerRank;
-constexpr unsigned int flagcxDeviceTriggerBitsDatatype = 4;
+constexpr unsigned int flagcxDeviceTriggferBitsDatatype = 4;
 constexpr unsigned int flagcxDeviceTriggerOffPrim =
     flagcxDeviceTriggerOffDatatype + flagcxDeviceTriggerBitsDatatype;
 constexpr unsigned int flagcxDeviceTriggerBitsPrim = 4;
@@ -168,8 +168,10 @@ typedef struct {
   int fields[4];
 } flagcxDevCommRequirements;
 
-#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER {{0, 0, 0, 0}}
-
+#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
+  {                                                                            \
+    { 0, 0, 0, 0 }                                                             \
+  }
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Tier 1),
 // or IPC barrier state on fallback (Tier 2).
