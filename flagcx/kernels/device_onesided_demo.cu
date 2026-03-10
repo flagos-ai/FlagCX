@@ -1,6 +1,7 @@
 #include "comm.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "device_api/flagcx_device.h"
 #include "global_comm.h"
 
 FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
@@ -15,25 +16,27 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
 }
 
 FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(const void *srcbuff,
-                                                      size_t srcOffset,
-                                                      size_t dstOffset,
-                                                      size_t signalOffset,
-                                                      size_t count,
-                                                      flagcxDataType_t datatype,
-                                                      int peer, void *fifoBuffer) {
+                                                       size_t srcOffset,
+                                                       size_t dstOffset,
+                                                       size_t signalOffset,
+                                                       size_t count,
+                                                       flagcxDataType_t datatype,
+                                                       int peer, flagcxDevComm devComm) {
   int tid = threadIdx.x;
   if (tid == 0) {
+    void *fifoBuffer = devComm.getFifoBuffer();
     flagcxDevicePut(srcbuff, srcOffset, dstOffset, count, datatype, peer,
                     fifoBuffer);
     flagcxDeviceSignal(signalOffset, peer, fifoBuffer);
-    flagcxDeviceTerm(fifoBuffer);
-    flagcxDeviceWait(fifoBuffer);
+    flagcxDevNet net(devComm);
+    net.term();
+    net.wait();
   }
 }
 
 FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(volatile uint64_t *waitAddr,
-                                                      uint64_t expectedValue,
-                                                      void *fifoBuffer) {
+                                                       uint64_t expectedValue,
+                                                       flagcxDevComm devComm) {
   int tid = threadIdx.x;
   if (tid == 0) {
     int iter = 0;
@@ -41,26 +44,25 @@ FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(volatile uint64_t *waitAdd
       spinBackoff(iter);
       iter++;
     }
-    flagcxDeviceTerm(fifoBuffer);
-    flagcxDeviceWait(fifoBuffer);
+    flagcxDevNet net(devComm);
+    net.term();
+    net.wait();
   }
 }
 
 void flagcxOnesidedSendDemo(const void *srcbuff, size_t srcOffset,
-                            size_t dstOffset, size_t signalOffset, size_t count,
-                            flagcxDataType_t datatype, int peer,
-                            flagcxComm_t comm, flagcxStream_t stream) {
-  void *fifo = NULL;
-  flagcxCommFifoBuffer(comm, &fifo);
+                             size_t dstOffset, size_t signalOffset, size_t count,
+                             flagcxDataType_t datatype, int peer,
+                             flagcxDevComm_t devComm, flagcxStream_t stream) {
+  flagcxDevComm dc(*devComm);
   flagcxOnesidedSendKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
-      srcbuff, srcOffset, dstOffset, signalOffset, count, datatype, peer, fifo);
+      srcbuff, srcOffset, dstOffset, signalOffset, count, datatype, peer, dc);
 }
 
 void flagcxOnesidedRecvDemo(volatile uint64_t *waitAddr, uint64_t expectedValue,
-                            flagcxComm_t comm, flagcxStream_t stream) {
-  void *fifo = NULL;
-  flagcxCommFifoBuffer(comm, &fifo);
+                             flagcxDevComm_t devComm, flagcxStream_t stream) {
+  flagcxDevComm dc(*devComm);
   flagcxOnesidedRecvKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
-      waitAddr, expectedValue, fifo);
+      waitAddr, expectedValue, dc);
 }
 

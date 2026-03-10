@@ -93,6 +93,11 @@ int main(int argc, char *argv[]) {
   void *hello = malloc(max_bytes);
   memset(hello, 0, max_bytes);
 
+  // Create device communicator
+  flagcxDevComm_t devComm = nullptr;
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+
   size_t baseSignalOffset = max_bytes * max_iterations;
 
   // Warm-up iterations
@@ -165,11 +170,11 @@ int main(int argc, char *argv[]) {
                                 NULL);
 
         flagcxOnesidedSendDemo(srcbuff, 0, current_recv_offset, signalOffset,
-                               count, DATATYPE, receiverRank, comm, stream);
+                               count, DATATYPE, receiverRank, devComm, stream);
       } else if (isReceiver) {
         volatile uint64_t *signalAddr =
             (volatile uint64_t *)((char *)window + signalOffset);
-        flagcxOnesidedRecvDemo(signalAddr, 1, comm, stream);
+        flagcxOnesidedRecvDemo(signalAddr, 1, devComm, stream);
       }
     }
     devHandle->streamSynchronize(stream);
@@ -202,6 +207,10 @@ int main(int argc, char *argv[]) {
   // Cleanup
   MPI_Barrier(MPI_COMM_WORLD);
   sleep(1);
+
+  if (devComm != nullptr) {
+    flagcxDevCommDestroy(comm, devComm);
+  }
 
   devHandle->deviceFree(srcbuff, flagcxMemDevice, NULL);
   free(hello);

@@ -174,10 +174,7 @@ typedef struct {
   int fields[4];
 } flagcxDevCommRequirements;
 
-#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
-  {                                                                            \
-    { 0, 0, 0, 0 }                                                             \
-  }
+#define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER {{0, 0, 0, 0}}
 
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Tier 1),
@@ -247,7 +244,7 @@ flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
 void flagcxOnesidedSendDemo(const void *srcbuff, size_t srcOffset,
                             size_t dstOffset, size_t signalOffset, size_t count,
                             flagcxDataType_t datatype, int peer,
-                            flagcxComm_t comm, flagcxStream_t stream);
+                            flagcxDevComm_t devComm, flagcxStream_t stream);
 void flagcxOnesidedRecvDemo(volatile uint64_t *waitAddr, uint64_t expectedValue,
-                            flagcxComm_t comm, flagcxStream_t stream);
+                            flagcxDevComm_t devComm, flagcxStream_t stream);
 #endif
