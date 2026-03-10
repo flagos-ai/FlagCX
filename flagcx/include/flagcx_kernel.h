@@ -150,12 +150,6 @@ getFlagcxDataTypeSizeDevice(flagcxDataType_t dtype);
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer);
 #endif // COMPILE_KERNEL
 
-FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDevicePut(
-    const void *srcbuff, size_t srcOffset, size_t dstOffset, size_t count,
-    flagcxDataType_t datatype, int peer, void *fifoBuffer);
-FLAGCX_DEVICE_DECORATOR flagcxResult_t flagcxDeviceSignal(size_t dstOffset,
-                                                          int peer,
-                                                          void *fifoBuffer);
 void flagcxP2pDemo(const void *sendbuff, void *recvbuff, size_t count,
                    flagcxDataType_t datatype, int sendPeer, int recvPeer,
                    flagcxComm_t comm, flagcxStream_t stream);

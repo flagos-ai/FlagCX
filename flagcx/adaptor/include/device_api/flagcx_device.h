@@ -679,6 +679,25 @@ struct flagcxDevNet {
     return flagcxFifoWait(_devComm.getFifoBuffer());
   }
 
+  // ---- One-sided FIFO operations (all tiers, via FIFO) ----
+  // put/signal use FIFO for proxy-based one-sided operations.
+  // These are simpler than GIN put/signal and work on all tiers.
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+  put(const void *srcbuff, size_t srcOffset, size_t dstOffset, size_t count,
+      flagcxDataType_t datatype, int peer) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), fstValue, count, peer,
+                             datatype, flagcxDevicePrimPut);
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t signal(size_t dstOffset,
+                                                       int peer) const {
+    uint64_t fstValue = (uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset;
+    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), fstValue, 0, peer, 0,
+                             flagcxDevicePrimSignal);
+  }
+
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- GIN one-sided operations (Tier 1 only) ----
 

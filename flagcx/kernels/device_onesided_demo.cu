@@ -24,11 +24,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(const void *srcbuff,
                                                        int peer, flagcxDevComm devComm) {
   int tid = threadIdx.x;
   if (tid == 0) {
-    void *fifoBuffer = devComm.getFifoBuffer();
-    flagcxDevicePut(srcbuff, srcOffset, dstOffset, count, datatype, peer,
-                    fifoBuffer);
-    flagcxDeviceSignal(signalOffset, peer, fifoBuffer);
     flagcxDevNet net(devComm);
+    net.put(srcbuff, srcOffset, dstOffset, count, datatype, peer);
+    net.signal(signalOffset, peer);
     net.term();
     net.wait();
   }
