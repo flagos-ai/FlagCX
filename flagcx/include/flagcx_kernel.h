@@ -42,7 +42,7 @@ constexpr unsigned int flagcxDeviceTriggerOffPeerRank =
 constexpr unsigned int flagcxDeviceTriggerBitsPeerRank = 20;
 constexpr unsigned int flagcxDeviceTriggerOffDatatype =
     flagcxDeviceTriggerOffPeerRank + flagcxDeviceTriggerBitsPeerRank;
-constexpr unsigned int flagcxDeviceTriggferBitsDatatype = 4;
+constexpr unsigned int flagcxDeviceTriggerBitsDatatype = 4;
 constexpr unsigned int flagcxDeviceTriggerOffPrim =
     flagcxDeviceTriggerOffDatatype + flagcxDeviceTriggerBitsDatatype;
 constexpr unsigned int flagcxDeviceTriggerBitsPrim = 4;
