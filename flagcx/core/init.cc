@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "adaptor_plugin_load.h"
 #include "bootstrap.h"
 #include "check.h"
 #include "flagcx.h"
@@ -49,7 +50,7 @@ static flagcxResult_t flagcxInit() {
   if (!initialized) {
     // FLAGCXCHECK(loadDeviceSymbol());
     FLAGCXCHECK(bootstrapNetInit());
-    // FLAGCXCHECK(flagcxNetPluginInit());
+    FLAGCXCHECK(flagcxAdaptorPluginInit());
     __atomic_store_n(&initialized, true, __ATOMIC_RELEASE);
   }
   pthread_mutex_unlock(&initLock);
