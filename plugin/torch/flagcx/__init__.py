@@ -17,7 +17,7 @@ for _pkg in _DEVICE_BACKENDS:
     try:
         __import__(_pkg)
         break
-    except ImportError:
+    except Exception:
         continue
 
 from functools import wraps
