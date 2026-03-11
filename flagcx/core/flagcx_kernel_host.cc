@@ -44,6 +44,12 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxFifo::flagcxFifoReset() {
+  TRACE(FLAGCX_KERNEL, "flagcxFifoReset called");
+  __atomic_store_n(buffer + flagcxFifoIdxTerminate, 0, __ATOMIC_RELEASE);
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
   INFO(FLAGCX_KERNEL, "flagcxFifoDestroy called");
   FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));

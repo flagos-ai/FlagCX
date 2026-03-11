@@ -101,12 +101,13 @@ typedef struct {
   void markInUse(int index);
   // Mark event at index as available
   void markAvailable(int index);
+  // Reset all events to available
+  void reset();
 } uniRunnerP2pEventBitmap;
 
 typedef struct {
   pthread_t thread;
   flagcxFifo_t fifo;
-  flagcxStream_t commStream;
   flagcxStream_t redStream;
   flagcxStream_t cpyStream;
 
@@ -143,32 +144,37 @@ flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
 flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm);
+                                        flagcxRedOp_t op,
+                                        flagcxHeteroComm_t comm);
 flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm);
+                                        flagcxRedOp_t op,
+                                        flagcxHeteroComm_t comm);
 flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm);
+                                        flagcxRedOp_t op,
+                                        flagcxHeteroComm_t comm);
 flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
                                           const void *sendbuff, void *recvbuff,
                                           size_t count,
                                           flagcxDataType_t datatype,
-                                          flagcxRedOp_t op, flagcxComm_t comm);
+                                          flagcxRedOp_t op,
+                                          flagcxHeteroComm_t comm);
 flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         void *scratchbuff, size_t count,
                                         flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm);
+                                        flagcxRedOp_t op,
+                                        flagcxHeteroComm_t comm);
 flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          const void *sendbuff, void *recvbuff,
                                          void *scratchbuff, size_t count,
                                          flagcxDataType_t datatype,
                                          flagcxRedOp_t op, int root,
-                                         flagcxComm_t comm);
-flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
-flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
-flagcxResult_t runUniRunner(flagcxComm_t comm);
+                                         flagcxHeteroComm_t comm);
+flagcxResult_t initUniRunner(flagcxHeteroComm_t comm);
+flagcxResult_t cleanupUniRunner(flagcxHeteroComm_t comm);
+flagcxResult_t runUniRunner(flagcxHeteroComm_t comm, flagcxStream_t stream);
 #endif // FLAGCX_UNIRUNNER_IMPL_H_

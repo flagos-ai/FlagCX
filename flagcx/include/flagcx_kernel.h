@@ -118,6 +118,7 @@ public:
   ~flagcxFifo() {}
   flagcxResult_t flagcxFifoInit();
   flagcxResult_t flagcxRedFifoInit();
+  flagcxResult_t flagcxFifoReset();
   flagcxResult_t flagcxFifoDestroy();
   flagcxResult_t flagcxRedFifoDestroy();
 };
