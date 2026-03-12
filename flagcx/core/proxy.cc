@@ -1052,7 +1052,8 @@ void *flagcxProxyKernelService(void *args) {
     // globalOneSideHandles proves registration happened, but the per-peer NET
     // transport connection still needs to be established.
     struct flagcxConnector *conn = &comm->channels[0].peers[peerRank]->send[0];
-    if (conn == NULL || conn->connected == 0 || conn->proxyConn.connection == NULL ||
+    if (conn == NULL || conn->connected == 0 ||
+        conn->proxyConn.connection == NULL ||
         conn->proxyConn.connection->transport != TRANSPORT_NET) {
       return flagcxNotSupported;
     }

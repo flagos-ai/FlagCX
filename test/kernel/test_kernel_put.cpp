@@ -92,8 +92,8 @@ int main(int argc, char *argv[]) {
 
   // Receiver-side error flag for one-sided wait timeout detection
   int *deviceErrorFlag = nullptr;
-  devHandle->deviceMalloc((void **)&deviceErrorFlag, sizeof(int), flagcxMemDevice,
-                          NULL);
+  devHandle->deviceMalloc((void **)&deviceErrorFlag, sizeof(int),
+                          flagcxMemDevice, NULL);
   int hostErrorFlag = 0;
 
   void *hello = malloc(max_bytes);
@@ -191,9 +191,10 @@ int main(int argc, char *argv[]) {
         devHandle->deviceMemcpy(&hostErrorFlag, deviceErrorFlag, sizeof(int),
                                 flagcxMemcpyDeviceToHost, NULL);
         if (hostErrorFlag != 0) {
-          fprintf(stderr,
-                  "[rank %d] flagcxOnesidedRecvDemo timeout (size=%zu, iter=%d)\n",
-                  proc, size, i);
+          fprintf(
+              stderr,
+              "[rank %d] flagcxOnesidedRecvDemo timeout (size=%zu, iter=%d)\n",
+              proc, size, i);
           break;
         }
       }
