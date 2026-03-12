@@ -4,16 +4,6 @@
 #include "device_api/flagcx_device.h"
 #include "global_comm.h"
 
-FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
-  int delay = 1 << (iter < 15 ? iter : 15);
-#if __CUDA_ARCH__ >= 700
-  __nanosleep(delay);
-#else
-  uint64_t start = clock64();
-  while (clock64() - start < (uint64_t)delay) { /* spin */
-  }
-#endif
-}
 
 FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(size_t srcOffset,
                                                       size_t dstOffset,
