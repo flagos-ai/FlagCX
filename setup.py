@@ -77,6 +77,17 @@ CppExtension, BuildExtension = get_ext_classes(adaptor_flag)
 if BuildExtension is not None:
     class BuildExtWithMake(BuildExtension):
         def build_extensions(self):
+            # -- Step 0: Ensure git submodules are initialized --
+            submodule_marker = os.path.join(
+                ROOT_DIR, "third-party", "json", "single_include"
+            )
+            if not os.path.isdir(submodule_marker):
+                print("[flagcx] Initializing git submodules ...")
+                subprocess.check_call(
+                    ["git", "submodule", "update", "--init", "--recursive"],
+                    cwd=ROOT_DIR,
+                )
+
             # -- Step 1: Build libflagcx.so via make --
             build_dir = os.path.join(ROOT_DIR, "build")
             lib_dir = os.path.join(build_dir, "lib")
