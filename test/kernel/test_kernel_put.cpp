@@ -39,6 +39,9 @@ int main(int argc, char *argv[]) {
   MPI_Bcast((void *)uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0, splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  // Enable one-sided register (must be set before communicator initialization)
+  setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
+
   flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
 
   if (totalProcs < 2) {
@@ -60,9 +63,6 @@ int main(int argc, char *argv[]) {
 
   bool isSender = (proc == senderRank);
   bool isReceiver = (proc == receiverRank);
-
-  // Enable one-sided register
-  setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
 
   // Allocate and register window buffer for one-sided operations
   size_t signalBytes = sizeof(uint64_t);
@@ -90,6 +90,12 @@ int main(int argc, char *argv[]) {
   void *srcbuff = nullptr;
   devHandle->deviceMalloc(&srcbuff, max_bytes, flagcxMemDevice, NULL);
 
+  // Receiver-side error flag for one-sided wait timeout detection
+  int *deviceErrorFlag = nullptr;
+  devHandle->deviceMalloc((void **)&deviceErrorFlag, sizeof(int), flagcxMemDevice,
+                          NULL);
+  int hostErrorFlag = 0;
+
   void *hello = malloc(max_bytes);
   memset(hello, 0, max_bytes);
 
@@ -113,21 +119,25 @@ int main(int argc, char *argv[]) {
       devHandle->deviceMemcpy(srcbuff, (char *)window + current_send_offset,
                               max_bytes, flagcxMemcpyHostToDevice, NULL);
 
-      // Preconnect communication channels
-      flagcxGroupStart(comm);
-      flagcxSend(srcbuff, max_bytes, flagcxChar, receiverRank, comm, stream);
-      flagcxGroupEnd(comm);
-      // flagcxOnesidedSendDemo(srcbuff, 0, current_recv_offset, signalOffset,
-      //                        max_bytes / sizeof(float), DATATYPE,
-      //                        receiverRank, comm, stream);
+      // Dedicated one-sided warmup (avoid send/recv path)
+      flagcxOnesidedSendDemo(0, current_recv_offset, signalOffset,
+                             max_bytes / sizeof(float), DATATYPE, receiverRank,
+                             devComm, stream);
     } else if (isReceiver) {
-      // Preconnect communication channels
-      flagcxGroupStart(comm);
-      flagcxRecv(srcbuff, max_bytes, flagcxChar, senderRank, comm, stream);
-      flagcxGroupEnd(comm);
-      // volatile uint64_t *signalAddr =
-      //     (volatile uint64_t *)((char *)window + signalOffset);
-      // flagcxOnesidedRecvDemo(signalAddr, 1, comm, stream);
+      volatile uint64_t *signalAddr =
+          (volatile uint64_t *)((char *)window + signalOffset);
+      hostErrorFlag = 0;
+      devHandle->deviceMemcpy(deviceErrorFlag, &hostErrorFlag, sizeof(int),
+                              flagcxMemcpyHostToDevice, NULL);
+      flagcxOnesidedRecvDemo(signalAddr, 1, deviceErrorFlag, devComm, stream);
+      devHandle->deviceMemcpy(&hostErrorFlag, deviceErrorFlag, sizeof(int),
+                              flagcxMemcpyDeviceToHost, NULL);
+      if (hostErrorFlag != 0) {
+        fprintf(stderr,
+                "[rank %d] one-sided warmup timeout (iter=%d, bytes=%zu)\n",
+                proc, i, max_bytes);
+        break;
+      }
     }
   }
   devHandle->streamSynchronize(stream);
@@ -169,12 +179,23 @@ int main(int argc, char *argv[]) {
         devHandle->deviceMemcpy(srcbuff, hello, size, flagcxMemcpyHostToDevice,
                                 NULL);
 
-        flagcxOnesidedSendDemo(srcbuff, 0, current_recv_offset, signalOffset,
-                               count, DATATYPE, receiverRank, devComm, stream);
+        flagcxOnesidedSendDemo(0, current_recv_offset, signalOffset, count,
+                               DATATYPE, receiverRank, devComm, stream);
       } else if (isReceiver) {
         volatile uint64_t *signalAddr =
             (volatile uint64_t *)((char *)window + signalOffset);
-        flagcxOnesidedRecvDemo(signalAddr, 1, devComm, stream);
+        hostErrorFlag = 0;
+        devHandle->deviceMemcpy(deviceErrorFlag, &hostErrorFlag, sizeof(int),
+                                flagcxMemcpyHostToDevice, NULL);
+        flagcxOnesidedRecvDemo(signalAddr, 1, deviceErrorFlag, devComm, stream);
+        devHandle->deviceMemcpy(&hostErrorFlag, deviceErrorFlag, sizeof(int),
+                                flagcxMemcpyDeviceToHost, NULL);
+        if (hostErrorFlag != 0) {
+          fprintf(stderr,
+                  "[rank %d] flagcxOnesidedRecvDemo timeout (size=%zu, iter=%d)\n",
+                  proc, size, i);
+          break;
+        }
       }
     }
     devHandle->streamSynchronize(stream);
@@ -212,6 +233,7 @@ int main(int argc, char *argv[]) {
     flagcxDevCommDestroy(comm, devComm);
   }
 
+  devHandle->deviceFree(deviceErrorFlag, flagcxMemDevice, NULL);
   devHandle->deviceFree(srcbuff, flagcxMemDevice, NULL);
   free(hello);
 

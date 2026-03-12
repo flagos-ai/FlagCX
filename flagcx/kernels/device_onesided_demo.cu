@@ -15,32 +15,38 @@ FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int iter) {
 #endif
 }
 
-FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(const void *srcbuff,
-                                                       size_t srcOffset,
-                                                       size_t dstOffset,
-                                                       size_t signalOffset,
-                                                       size_t count,
-                                                       flagcxDataType_t datatype,
-                                                       int peer, flagcxDevComm devComm) {
+FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedSendKernel(size_t srcOffset,
+                                                      size_t dstOffset,
+                                                      size_t signalOffset,
+                                                      size_t count,
+                                                      flagcxDataType_t datatype,
+                                                      int peer,
+                                                      flagcxDevComm devComm) {
   int tid = threadIdx.x;
   if (tid == 0) {
     flagcxDevNet net(devComm);
-    net.put(srcbuff, srcOffset, dstOffset, count, datatype, peer);
+    net.put(srcOffset, dstOffset, count, datatype, peer);
     net.signal(signalOffset, peer);
     net.term();
     net.wait();
   }
 }
 
-FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(volatile uint64_t *waitAddr,
-                                                       uint64_t expectedValue,
-                                                       flagcxDevComm devComm) {
+FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(
+    volatile uint64_t *waitAddr, uint64_t expectedValue, volatile int *errorFlag,
+    flagcxDevComm devComm) {
   int tid = threadIdx.x;
   if (tid == 0) {
     int iter = 0;
+    constexpr int kMaxIters = 1 << 24;
     while (*waitAddr != expectedValue) {
       spinBackoff(iter);
       iter++;
+      if (iter >= kMaxIters) {
+        if (errorFlag)
+          *errorFlag = 1;
+        break;
+      }
     }
     flagcxDevNet net(devComm);
     net.term();
@@ -48,19 +54,20 @@ FLAGCX_GLOBAL_DECORATOR void flagcxOnesidedRecvKernel(volatile uint64_t *waitAdd
   }
 }
 
-void flagcxOnesidedSendDemo(const void *srcbuff, size_t srcOffset,
-                             size_t dstOffset, size_t signalOffset, size_t count,
-                             flagcxDataType_t datatype, int peer,
-                             flagcxDevComm_t devComm, flagcxStream_t stream) {
+void flagcxOnesidedSendDemo(size_t srcOffset, size_t dstOffset,
+                            size_t signalOffset, size_t count,
+                            flagcxDataType_t datatype, int peer,
+                            flagcxDevComm_t devComm, flagcxStream_t stream) {
   flagcxDevComm dc(*devComm);
   flagcxOnesidedSendKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
-      srcbuff, srcOffset, dstOffset, signalOffset, count, datatype, peer, dc);
+      srcOffset, dstOffset, signalOffset, count, datatype, peer, dc);
 }
 
 void flagcxOnesidedRecvDemo(volatile uint64_t *waitAddr, uint64_t expectedValue,
-                             flagcxDevComm_t devComm, flagcxStream_t stream) {
+                            volatile int *errorFlag, flagcxDevComm_t devComm,
+                            flagcxStream_t stream) {
   flagcxDevComm dc(*devComm);
   flagcxOnesidedRecvKernel<<<1, 1, 0, *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(
-      waitAddr, expectedValue, dc);
+      waitAddr, expectedValue, errorFlag, dc);
 }
 

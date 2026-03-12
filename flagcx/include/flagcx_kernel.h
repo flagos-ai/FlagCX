@@ -237,10 +237,11 @@ flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
                                         flagcxDevComm_t devComm,
                                         flagcxStream_t stream);
 
-void flagcxOnesidedSendDemo(const void *srcbuff, size_t srcOffset,
-                            size_t dstOffset, size_t signalOffset, size_t count,
+void flagcxOnesidedSendDemo(size_t srcOffset, size_t dstOffset,
+                            size_t signalOffset, size_t count,
                             flagcxDataType_t datatype, int peer,
                             flagcxDevComm_t devComm, flagcxStream_t stream);
 void flagcxOnesidedRecvDemo(volatile uint64_t *waitAddr, uint64_t expectedValue,
-                            flagcxDevComm_t devComm, flagcxStream_t stream);
+                            volatile int *errorFlag, flagcxDevComm_t devComm,
+                            flagcxStream_t stream);
 #endif
