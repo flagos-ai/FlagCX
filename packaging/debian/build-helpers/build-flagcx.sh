@@ -3,7 +3,7 @@ set -e
 
 # Unified FlagCX Debian package build script
 # Usage: ./packaging/debian/build-helpers/build-flagcx.sh <backend> [base_image_version]
-# Supported backends: nvidia, metax
+# Supported backends: nvidia, metax, ascend
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
@@ -31,6 +31,7 @@ if [ -z "$BACKEND" ]; then
     echo "Supported backends:"
     echo "  nvidia  - Build packages for NVIDIA GPUs"
     echo "  metax   - Build packages for MetaX accelerators"
+    echo "  ascend  - Build packages for Ascend NPUs"
     echo ""
     echo "Optional arguments:"
     echo "  base_image_version - Base image version tag (default: latest)"
@@ -52,15 +53,27 @@ case "$BACKEND" in
         BASE_IMAGE="harbor.baai.ac.cn/flagbase/flagbase-metax"
         VENDOR="metax"
         ;;
+    ascend)
+        BASE_IMAGE="harbor.baai.ac.cn/flagbase/flagbase-ascend"
+        VENDOR="ascend"
+        ;;
     *)
         log_error "Invalid backend: $BACKEND"
-        echo "Supported backends: nvidia, metax"
+        echo "Supported backends: nvidia, metax, ascend"
         exit 1
         ;;
 esac
 
 log_info "Building FlagCX Debian packages for $BACKEND backend"
 log_info "Using base image: ${BASE_IMAGE}:${BASE_IMAGE_VERSION}"
+
+# Sync changelog from CHANGELOG.md
+log_step "Synchronizing changelog..."
+if [ -f "${PROJECT_DIR}/packaging/sync-changelog.py" ]; then
+    python3 "${PROJECT_DIR}/packaging/sync-changelog.py" || log_warn "Failed to sync changelog"
+else
+    log_warn "sync-changelog.py not found, skipping changelog sync"
+fi
 
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile.deb"
 
@@ -77,11 +90,11 @@ IMAGE_TAG="flagcx-deb-${BACKEND}:${BASE_IMAGE_VERSION}"
 log_step "Building container image: $IMAGE_TAG"
 
 if ! docker build \
+    --network=host \
     -f "$DOCKERFILE" \
     --build-arg BASE_IMAGE="$BASE_IMAGE" \
     --build-arg BASE_IMAGE_VERSION="$BASE_IMAGE_VERSION" \
     --build-arg VENDOR="$VENDOR" \
-    --target output \
     -t "$IMAGE_TAG" \
     "$PROJECT_DIR"; then
     log_error "Docker build failed for $BACKEND"
