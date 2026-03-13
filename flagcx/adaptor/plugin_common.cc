@@ -9,19 +9,15 @@
 
 #include "core.h"
 
-void *flagcxAdaptorTryOpenLib(const char *name) {
-  if (name == NULL || name[0] == '\0') {
+void *flagcxAdaptorOpenPluginLib(const char *path) {
+  if (path == NULL || path[0] == '\0') {
     return NULL;
   }
-  void *handle = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+  void *handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (handle == NULL) {
-    INFO(FLAGCX_INIT, "ADAPTOR/Plugin: dlopen(%s) failed: %s", name, dlerror());
+    INFO(FLAGCX_INIT, "ADAPTOR/Plugin: dlopen(%s) failed: %s", path, dlerror());
   }
   return handle;
-}
-
-void *flagcxAdaptorOpenPluginLib(const char *path) {
-  return flagcxAdaptorTryOpenLib(path);
 }
 
 flagcxResult_t flagcxAdaptorClosePluginLib(void *handle) {

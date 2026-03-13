@@ -25,6 +25,27 @@
 //   static void *devicePluginDlHandle = NULL;
 //   static struct flagcxDeviceAdaptor *defaultDeviceAdaptor = NULL;
 
+static int devicePluginRefCount = 0;
+
 flagcxResult_t flagcxDeviceAdaptorPluginLoad() { return flagcxSuccess; }
 
 flagcxResult_t flagcxDeviceAdaptorPluginUnload() { return flagcxSuccess; }
+
+flagcxResult_t flagcxDeviceAdaptorPluginInit() {
+  flagcxResult_t ret = flagcxDeviceAdaptorPluginLoad();
+  if (ret != flagcxSuccess) {
+    // TODO (Phase 4): fallback to compile-time default
+    return ret;
+  }
+  // TODO (Phase 4): only increment when Load actually opened a library
+  // devicePluginRefCount++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxDeviceAdaptorPluginFinalize() {
+  // TODO (Phase 4): decrement and unload only when refcount reaches zero
+  // if (devicePluginRefCount > 0 && --devicePluginRefCount == 0) {
+  //   flagcxDeviceAdaptorPluginUnload();
+  // }
+  return flagcxSuccess;
+}

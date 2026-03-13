@@ -9,10 +9,7 @@
 
 // ---- Shared utility functions (used by per-type plugin loaders) ----
 
-// Try to dlopen a library by name. Returns handle or NULL.
-void *flagcxAdaptorTryOpenLib(const char *name);
-
-// Open a plugin library by path (the value of the env var).
+// Open a plugin library by path (e.g., the value of an env var).
 // Calls dlopen on the given path. Returns handle or NULL.
 void *flagcxAdaptorOpenPluginLib(const char *path);
 
@@ -37,15 +34,24 @@ flagcxResult_t flagcxDeviceAdaptorPluginUnload();
 flagcxResult_t flagcxNetAdaptorPluginLoad();
 flagcxResult_t flagcxNetAdaptorPluginUnload();
 
-// ---- Top-level init/finalize (called from FlagCX core init) ----
+// ---- Per-type plugin init/finalize (wrap Load/Unload with fallback) ----
 
-// Initialize and load all adaptor plugins based on environment variables.
-// Called once during FlagCX initialization, AFTER compile-time adaptors are
-// set. Delegates to per-type loaders: flagcxCCLAdaptorPluginLoad(), etc.
-flagcxResult_t flagcxAdaptorPluginInit();
+// CCL adaptor plugin init/finalize
+// Init calls Load, with fallback logic on failure.
+// Finalize calls Unload, with best-effort cleanup on failure.
+flagcxResult_t flagcxCCLAdaptorPluginInit();
+flagcxResult_t flagcxCCLAdaptorPluginFinalize();
 
-// Finalize and unload all adaptor plugins.
-// Delegates to per-type finalizers.
-flagcxResult_t flagcxAdaptorPluginFinalize();
+// Device adaptor plugin init/finalize
+flagcxResult_t flagcxDeviceAdaptorPluginInit();
+flagcxResult_t flagcxDeviceAdaptorPluginFinalize();
+
+// Net adaptor plugin init/finalize
+flagcxResult_t flagcxNetAdaptorPluginInit();
+flagcxResult_t flagcxNetAdaptorPluginFinalize();
+
+// Top-level orchestrators removed: each plugin type (device, ccl, net)
+// has different lifecycle requirements and will be initialized/finalized
+// at the appropriate stage in later phases.
 
 #endif // FLAGCX_ADAPTOR_PLUGIN_LOAD_H_

@@ -22,6 +22,27 @@
 // Static state needed:
 //   static void *netPluginDlHandle = NULL;
 
+static int netPluginRefCount = 0;
+
 flagcxResult_t flagcxNetAdaptorPluginLoad() { return flagcxSuccess; }
 
 flagcxResult_t flagcxNetAdaptorPluginUnload() { return flagcxSuccess; }
+
+flagcxResult_t flagcxNetAdaptorPluginInit() {
+  flagcxResult_t ret = flagcxNetAdaptorPluginLoad();
+  if (ret != flagcxSuccess) {
+    // TODO (Phase 2): fallback to compile-time default
+    return ret;
+  }
+  // TODO (Phase 2): only increment when Load actually opened a library
+  // netPluginRefCount++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetAdaptorPluginFinalize() {
+  // TODO (Phase 2): decrement and unload only when refcount reaches zero
+  // if (netPluginRefCount > 0 && --netPluginRefCount == 0) {
+  //   flagcxNetAdaptorPluginUnload();
+  // }
+  return flagcxSuccess;
+}

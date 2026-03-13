@@ -16,6 +16,9 @@ extern "C" {
 // flagcx.h)
 struct flagcxDevProps;
 
+// C-compatible typedef matching the C++ using alias in dlsymbols.h.
+typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
+
 struct flagcxDeviceAdaptor {
   char name[32];
   // Basic functions
@@ -81,8 +84,7 @@ struct flagcxDeviceAdaptor {
   flagcxResult_t (*copyArgsInit)(void **args);
   flagcxResult_t (*copyArgsFree)(void *args);
   flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream,
-                                     void (*fn)(flagcxStream_t, void *),
-                                     void *args);
+                                     flagcxLaunchFunc_t fn, void *args);
 
   // Others
   flagcxResult_t (*getDeviceProperties)(struct flagcxDevProps *props, int dev);
