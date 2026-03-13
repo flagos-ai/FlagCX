@@ -35,6 +35,8 @@
 // ============================================================
 // Section 1: flagcxDevCommInternal — Host-Side Opaque Handle
 //
+#define FLAGCX_MAX_INTER_PEERS 256
+
 // Backing struct for flagcxDevComm_t (declared in flagcx_kernel.h).
 // Populated by flagcxDevCommCreate, freed by flagcxDevCommDestroy.
 // Unified capability-based design: baseline always populated,
@@ -47,19 +49,37 @@ struct flagcxDevCommInternal {
   void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
   bool hasNcclDev;  // true if NCCL device comm layer is available (Tier 1)
 
-  // ---- Grid sync counter (for multi-block two-sided kernels) ----
-  unsigned int *gridDoneCounter; // device-allocated atomic counter
-
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
-  uint32_t *
+  uint64_t *
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
-  uint32_t *localBarrierFlags; // this rank's barrier memory (CTA_COUNT entries)
-  uint32_t barrierEpoch; // monotonically increasing, set by host before launch
+  uint64_t *localBarrierFlags; // this rank's signal array (CTA_COUNT entries)
+  uint64_t barrierEpoch; // monotonically increasing, set by host before launch
   // Host-side cleanup bookkeeping (not passed to kernel)
   void **peerBarrierPtrs; // host array of IPC-mapped pointers (for close)
   int *localRankToRank;   // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
+
+  // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
+  uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
+  uint64_t *interSignalFlagsHost; // host pointer (for recv thread + dealloc)
+  uint64_t interBarrierEpoch; // inter-node epoch (separate from barrierEpoch)
+  int nInterPeers;            // number of inter-node peers (set on ALL ranks)
+  bool isInterLeader;         // true only on localRank 0 (manages connections)
+  int *interPeerRanks;        // global ranks of inter-node peers
+  // netAdaptor connections for signal relay
+  void **signalSendComms; // [nInterPeers] netAdaptor sendComm
+  void **signalRecvComms; // [nInterPeers] netAdaptor recvComm
+  // Signal recv thread
+  pthread_t signalRecvThread;
+  int signalRecvStop;
+  // MR + staging buffers (per-peer for IB PD safety)
+  void **signalSendMrs;
+  void **signalRecvMrs;
+  char *signalSendBufs; // [nInterPeers * 8]
+  char *signalRecvBufs; // [nInterPeers * 8]
+  // netAdaptor pointer (cached for recv thread)
+  void *netAdaptorPtr;
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- NCCL layer (set if ncclDevCommCreate succeeds) ----
@@ -120,8 +140,14 @@ struct flagcxDevComm {
   bool _hasBase;     // true if NCCL device comm layer is available (Tier 1)
 
   // ---- IPC layer (may be nullptr if IPC barrier not set up) ----
-  uint32_t **_barrierPeers;
-  uint32_t _barrierEpoch;
+  uint64_t **_barrierPeers;
+  uint64_t _barrierEpoch;
+
+  // ---- Inter-node signal relay (nullptr if single-node) ----
+  uint64_t *_interSignalFlags; // device ptr to host-mapped inter signals
+  int _nInterPeers;
+  bool _isInterLeader;
+  uint64_t _interBarrierEpoch;
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- NCCL layer (valid only if _hasBase is true) ----
@@ -131,7 +157,8 @@ struct flagcxDevComm {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _rank(0), _nRanks(0), _intraRank(0), _intraSize(0),
         _fifoBuffer(nullptr), _hasBase(false), _barrierPeers(nullptr),
-        _barrierEpoch(0)
+        _barrierEpoch(0ULL), _interSignalFlags(nullptr), _nInterPeers(0),
+        _isInterLeader(false), _interBarrierEpoch(0ULL)
 #ifdef FLAGCX_DEVICE_API_NCCL
         ,
         _base()
@@ -144,7 +171,9 @@ struct flagcxDevComm {
       : _rank(di.rank), _nRanks(di.nRanks), _intraRank(di.intraRank),
         _intraSize(di.intraSize), _fifoBuffer(di.fifoBuffer),
         _hasBase(di.hasNcclDev), _barrierPeers(di.barrierPeers),
-        _barrierEpoch(di.barrierEpoch)
+        _barrierEpoch(di.barrierEpoch), _interSignalFlags(di.interSignalFlags),
+        _nInterPeers(di.nInterPeers), _isInterLeader(di.isInterLeader),
+        _interBarrierEpoch(di.interBarrierEpoch)
 #ifdef FLAGCX_DEVICE_API_NCCL
         ,
         _base(di.ncclDev)
@@ -306,8 +335,8 @@ struct flagcxCoopBlock {
 
   FLAGCX_HOST_DEVICE_INLINE flagcxCoopBlock() : _impl() {}
 
-  FLAGCX_DEVICE_INLINE_DECORATOR int thread_rank() const {
-    return _impl.thread_rank();
+  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+    return _impl.threadRank();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
   FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
@@ -315,7 +344,7 @@ struct flagcxCoopBlock {
   // Implicit conversion for passthrough to NCCL APIs
   FLAGCX_HOST_DEVICE_INLINE operator ncclCoopCta() const { return _impl; }
 #else
-  FLAGCX_DEVICE_INLINE_DECORATOR int thread_rank() const {
+  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
     return 0; // placeholder for fallback
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
@@ -323,6 +352,18 @@ struct flagcxCoopBlock {
   }
   FLAGCX_DEVICE_INLINE_DECORATOR void sync() { FLAGCX_DEVICE_SYNC_THREADS(); }
 #endif
+};
+
+// ============================================================
+// Section 6b: flagcxCoopThread — Single-Thread Cooperative Group
+//
+// On NVIDIA: wraps ncclCoopThread.
+// Used for thread-0-only control-plane ops (put, waitSignal, flush).
+// ============================================================
+struct flagcxCoopThread {
+  FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
+  FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
 };
 
 // ============================================================
@@ -360,49 +401,71 @@ struct flagcxIntraBarrierSession {
     _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
   }
 #else
-  // Fallback: flag-based barrier using IPC-mapped peer memory + atomics
-  uint32_t **_peerBarriers;
+  // Fallback: epoch-based barrier using IPC-mapped peer signals + atomics.
+  // NCCL-style: atomicAdd fan-out to peers + wait on own signal.
+  uint64_t **_peerSignals;
   int _nRanks, _myRank;
   uint32_t _ctaIndex;
-  uint32_t _phase;
+  uint64_t _epoch;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxIntraBarrierSession(Coop coop, const flagcxDevComm &devComm,
                             flagcxTeam_t team, uint32_t index)
-      : _peerBarriers(devComm._barrierPeers), _nRanks(team.nRanks),
-        _myRank(team.rank), _ctaIndex(index), _phase(devComm._barrierEpoch) {}
+      : _peerSignals(devComm._barrierPeers), _nRanks(team.nRanks),
+        _myRank(team.rank), _ctaIndex(index), _epoch(devComm._barrierEpoch) {}
 
+  // Lightweight arrive: signal all intra peers (thread-0 only, no coop.sync).
+  // Used by flagcxBarrierSession to compose with inter barrier.
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(Coop coop,
          flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    sync(coop, order);
+    _epoch += _nRanks - 1;
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      for (int i = 0; i < _nRanks - 1; i++) {
+        int peer = 1 + _myRank + i;
+        if (peer >= _nRanks)
+          peer -= _nRanks;
+        flagcxDeviceAtomicFetchAdd(&_peerSignals[peer][_ctaIndex], (uint64_t)1,
+                                   flagcxDeviceMemoryOrderRelease);
+      }
+    }
   }
 
+  // Lightweight wait: spin on own signal (thread-0 only, no coop.sync).
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    sync(coop, order);
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      int iter = 0;
+      while (flagcxDeviceAtomicLoad(&_peerSignals[_myRank][_ctaIndex],
+                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
+        spinBackoff(iter++);
+      }
+    }
   }
 
+  // Standalone sync: includes coop.sync() bookends.
+  // Used directly by flagcxIntraAllReduceKernel (intra-only demo).
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _phase++;
+    // Advance epoch: each peer will atomicAdd(1) to our signal
+    _epoch += _nRanks - 1;
     coop.sync();
-    if (threadIdx.x == 0) {
-      // Signal: write my counter with release ordering
-      flagcxDeviceAtomicStore(&_peerBarriers[_myRank][_ctaIndex], _phase,
-                              flagcxDeviceMemoryOrderRelease);
-      // Wait: spin until all peers reach this phase
-      for (int p = 0; p < _nRanks; p++) {
-        if (p == _myRank)
-          continue;
-        int iter = 0;
-        while (flagcxDeviceAtomicLoad(&_peerBarriers[p][_ctaIndex],
-                                      flagcxDeviceMemoryOrderAcquire) <
-               _phase) {
-          spinBackoff(iter++);
-        }
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      // Fan-out: signal all peers (release — our writes visible before signal)
+      for (int i = 0; i < _nRanks - 1; i++) {
+        int peer = 1 + _myRank + i;
+        if (peer >= _nRanks)
+          peer -= _nRanks;
+        flagcxDeviceAtomicFetchAdd(&_peerSignals[peer][_ctaIndex], (uint64_t)1,
+                                   flagcxDeviceMemoryOrderRelease);
+      }
+      // Wait: spin on own signal reaching epoch (acquire — peer writes visible)
+      int iter = 0;
+      while (flagcxDeviceAtomicLoad(&_peerSignals[_myRank][_ctaIndex],
+                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
+        spinBackoff(iter++);
       }
     }
     coop.sync();
@@ -627,6 +690,9 @@ toNccl(flagcxDevNet_CounterInc a) {
   return {a.counter};
 }
 FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopCta toNccl(flagcxCoopBlock) {
+  return {};
+}
+FLAGCX_DEVICE_INLINE_DECORATOR ncclCoopThread toNccl(flagcxCoopThread) {
   return {};
 }
 #endif // FLAGCX_DEVICE_API_NCCL
@@ -934,16 +1000,66 @@ struct flagcxInterBarrierSession {
   }
 };
 #else
-// Tier 2 stub — compiles but should never be instantiated at runtime.
+// Tier 2: Inter-node barrier via FIFO Signal + netAdaptor isend/irecv.
+// Sends signals to inter-node peers, waits on host-mapped interSignalFlags.
+// Only the inter leader (localRank 0) actually sends/waits; non-leaders are
+// no-ops. All ranks know nInterPeers for two-phase logic in BarrierSession.
 template <typename Coop>
 struct flagcxInterBarrierSession {
+  uint64_t *_interSignals; // host-mapped inter signal array [CTA_COUNT]
+  void *_fifoBuffer;       // for FIFO Signal entries
+  int _nInterPeers;
+  bool _isLeader;
+  uint32_t _ctaIndex;
+  uint64_t _epoch;
+
+  // Active constructor (world barrier with inter-node peers)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxInterBarrierSession(Coop, const flagcxDevNet &, flagcxTeam_t,
-                            uint32_t) {}
+  flagcxInterBarrierSession(Coop coop, const flagcxDevComm &devComm,
+                            uint32_t index)
+      : _interSignals(devComm._interSignalFlags),
+        _fifoBuffer(devComm.getFifoBuffer()),
+        _nInterPeers(devComm._nInterPeers), _isLeader(devComm._isInterLeader),
+        _ctaIndex(index), _epoch(devComm._interBarrierEpoch) {}
+
+  // Default constructor (intra-only, all operations are no-ops)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxInterBarrierSession()
+      : _interSignals(nullptr), _fifoBuffer(nullptr), _nInterPeers(0),
+        _isLeader(false), _ctaIndex(0), _epoch(0) {}
+
+  // Arrive: write one FIFO Signal entry (proxy fans out to all inter peers)
+  // Only the leader sends; non-leaders skip.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(Coop coop,
+         flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    _epoch += _nInterPeers;
+    if (FLAGCX_THREAD_IDX_X == 0 && _isLeader) {
+      flagcxFifoEnqueue(_fifoBuffer, (uint64_t)_ctaIndex, 0, 0, 0,
+                        flagcxDevicePrimBarrierSignal);
+    }
+  }
+
+  // Wait: spin on host-mapped inter signal array
+  // Only the leader waits; non-leaders skip.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    if (FLAGCX_THREAD_IDX_X == 0 && _isLeader) {
+      int iter = 0;
+      while (flagcxDeviceAtomicLoad(&_interSignals[_ctaIndex],
+                                    flagcxDeviceMemoryOrderAcquire) < _epoch) {
+        spinBackoff(iter++);
+      }
+    }
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  sync(Coop, flagcxDeviceMemoryOrder_t = flagcxDeviceMemoryOrderAcqRel,
-       flagcxGinFenceLevel = flagcxGinFenceLevel::Relaxed) {}
+  sync(Coop coop,
+       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
+    arrive(coop, order);
+    wait(coop, order);
+  }
 };
 #endif
 
@@ -982,45 +1098,60 @@ struct flagcxBarrierSession {
   }
 };
 #else
-// Tier 2: World barrier uses Term/Wait (FIFO-based, covers both intra +
-// inter)
-//           Intra barrier uses flagcxIntraBarrierSession (IPC-based, multi-CTA)
-//           Inter barrier not available standalone (use World instead)
+// Tier 2: Composes intra (IPC atomicAdd) + inter (FIFO Signal relay).
+//         Three-phase pattern for multi-node:
+//           Phase 1: intra sync (all local ranks ensure data visible)
+//           Phase 2: leader inter signal+wait (non-leaders skip)
+//           Phase 3: intra sync (broadcasts inter completion)
+//         Single-node: just one intra sync (no phase 2/3).
 template <typename Coop>
 struct flagcxBarrierSession {
-  bool _useTermWait;                      // true=World (Term/Wait), false=Intra
-  flagcxDevComm _devCommCopy;             // copy for Term/Wait in World mode
-  flagcxIntraBarrierSession<Coop> _intra; // used in Intra mode
+  flagcxIntraBarrierSession<Coop> _intra;
+  flagcxInterBarrierSession<Coop> _inter;
+  int _nInterPeers;
 
-  // World barrier: Wait via FIFO (single-CTA constraint)
-  // flagcxDevNet::wait() drains FIFO — spins until all items consumed.
+  // World barrier: intra (IPC) + inter (FIFO Signal → isend)
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
                        uint32_t index)
-      : _useTermWait(true), _devCommCopy(net._devComm),
-        _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index) {}
+      : _intra(coop, net._devComm, flagcxTeamIntra(net._devComm), index),
+        _inter(coop, net._devComm, index),
+        _nInterPeers(net._devComm._nInterPeers) {}
 
-  // Intra-only barrier: IPC-based (multi-CTA)
+  // Intra-only barrier: inter is default constructed (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
                        const flagcxDevComm &devComm, uint32_t index)
-      : _useTermWait(false), _devCommCopy(),
-        _intra(coop, devComm, flagcxTeamIntra(devComm), index) {}
+      : _intra(coop, devComm, flagcxTeamIntra(devComm), index), _inter(),
+        _nInterPeers(0) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_useTermWait) {
-      // World barrier: Wait drains FIFO (all threads sync before thread 0 acts)
+    if (_nInterPeers > 0) {
+      // Multi-node: two-phase intra barrier with inter in between
+      // Phase 1: intra sync — all local ranks ensure data is visible
       coop.sync();
-      if (threadIdx.x == 0) {
-        flagcxDevNet(_devCommCopy).wait();
-      }
+      _intra.arrive(coop, order);
+      _intra.wait(coop, order);
+      coop.sync();
+
+      // Phase 2: leader does inter signal+wait (non-leaders skip)
+      _inter.arrive(coop, order);
+      _inter.wait(coop, order);
+
+      // Phase 3: intra sync — broadcast inter completion to all local ranks
+      coop.sync();
+      _intra.arrive(coop, order);
+      _intra.wait(coop, order);
       coop.sync();
     } else {
-      // Intra-only barrier: IPC-based
-      _intra.sync(coop, order);
+      // Single-node: just one intra sync
+      coop.sync();
+      _intra.arrive(coop, order);
+      _intra.wait(coop, order);
+      coop.sync();
     }
   }
 };

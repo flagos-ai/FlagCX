@@ -14,7 +14,10 @@
 
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel.h"
-#include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include "net.h"     // flagcxNetHandle_t
+#include "p2p.h"     // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include <algorithm> // std::min, std::max
+#include <unistd.h>  // usleep
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -135,6 +138,356 @@ static void cleanupIpcPeerPointers(void **hostPeerPtrs, void **devPeerPtrs,
   }
 }
 
+// ==========================================================================
+// Inter-node signal relay: recv thread + connection setup/teardown
+//
+// Each CTA writes Signal entries to the FIFO; the proxy fans out isend.
+// The recv thread pre-posts irecv for each inter-node peer, and on
+// completion does atomicAdd on the host-mapped interSignalFlags array.
+// The GPU spins on the device pointer of interSignalFlags in
+// flagcxInterBarrierSession::wait().
+// ==========================================================================
+
+// Signal message format: 8 bytes = ctaIndex (4) + reserved (4)
+struct flagcxSignalMessage {
+  uint32_t ctaIndex;
+  uint32_t reserved;
+};
+
+// Receiver thread: polls irecv completions and updates interSignalFlags.
+static void *flagcxSignalRecvThread(void *arg) {
+  flagcxDevComm_t dc = (flagcxDevComm_t)arg;
+  int nPeers = dc->nInterPeers;
+  struct flagcxNetAdaptor *net = (struct flagcxNetAdaptor *)dc->netAdaptorPtr;
+
+  // Per-peer outstanding request
+  void **requests = (void **)calloc(nPeers, sizeof(void *));
+  if (requests == nullptr)
+    return nullptr;
+
+  int idleIters = 0;
+  while (!__atomic_load_n(&dc->signalRecvStop, __ATOMIC_ACQUIRE)) {
+    bool progress = false;
+    for (int p = 0; p < nPeers; p++) {
+      // Post irecv if no outstanding request
+      if (requests[p] == nullptr) {
+        void *data = &dc->signalRecvBufs[p * sizeof(flagcxSignalMessage)];
+        size_t sizes[1] = {sizeof(flagcxSignalMessage)};
+        int tags[1] = {0};
+        void *mhandles[1] = {dc->signalRecvMrs[p]};
+        void *phandles[1] = {nullptr};
+        net->irecv(dc->signalRecvComms[p], 1, &data, sizes, tags, mhandles,
+                   phandles, &requests[p]);
+      }
+      // Test for completion
+      if (requests[p] != nullptr) {
+        int done = 0;
+        net->test(requests[p], &done, nullptr);
+        if (done) {
+          // Extract ctaIndex from received message
+          flagcxSignalMessage *msg =
+              (flagcxSignalMessage *)&dc
+                  ->signalRecvBufs[p * sizeof(flagcxSignalMessage)];
+          uint32_t ctaIdx = msg->ctaIndex;
+          if (ctaIdx < FLAGCX_DEVICE_CTA_COUNT) {
+            // Single writer (this thread), GPU reads via PCIe-mapped pointer.
+            // volatile ensures the write reaches memory (not cached in
+            // register).
+            ((volatile uint64_t *)dc->interSignalFlagsHost)[ctaIdx]++;
+          }
+          requests[p] = nullptr; // will re-post on next iteration
+          progress = true;
+        }
+      }
+    }
+    if (progress) {
+      idleIters = 0;
+    } else {
+      idleIters++;
+      if (idleIters < 64)
+        sched_yield();
+      else
+        usleep(1); // adaptive backoff: reduce CPU when idle
+    }
+  }
+
+  free(requests);
+  return nullptr;
+}
+
+// Setup inter-node signal connections and recv thread.
+// Called from flagcxDevCommCreate when nNodes > 1.
+static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
+                                                flagcxDevComm_t handle) {
+  struct flagcxHeteroComm *hetero = comm->heteroComm;
+  if (hetero == nullptr)
+    return flagcxSuccess;
+
+  int myRank = comm->rank;
+  int nRanks = comm->nranks;
+  int myNode = hetero->node;
+  int nNodes = hetero->nNodes;
+
+  // Single-node: nothing to do
+  if (nNodes <= 1)
+    return flagcxSuccess;
+
+  // Compute inter-node peer ranks (one representative per remote node).
+  // Use localRank 0 of each remote node as the representative.
+  // This keeps the number of connections = nNodes - 1 (not nRanks -
+  // localRanks).
+  int *interPeerRanks = nullptr;
+  int nInterPeers = 0;
+
+  // Build list: for each remote node, find the global rank of its localRank 0
+  for (int r = 0; r < nRanks; r++) {
+    if (hetero->rankToNode[r] != myNode && hetero->rankToLocalRank[r] == 0) {
+      nInterPeers++;
+    }
+  }
+
+  if (nInterPeers == 0)
+    return flagcxSuccess;
+
+  interPeerRanks = (int *)malloc(nInterPeers * sizeof(int));
+  if (interPeerRanks == nullptr)
+    return flagcxSystemError;
+
+  int idx = 0;
+  for (int r = 0; r < nRanks; r++) {
+    if (hetero->rankToNode[r] != myNode && hetero->rankToLocalRank[r] == 0) {
+      interPeerRanks[idx++] = r;
+    }
+  }
+
+  // All ranks learn nInterPeers (needed for two-phase barrier logic).
+  // Only localRank 0 (the inter leader) manages connections and recv thread.
+  handle->nInterPeers = nInterPeers;
+  handle->interPeerRanks = interPeerRanks;
+
+  if (hetero->localRank != 0) {
+    // Non-leader: knows nInterPeers but has no connections/thread.
+    handle->isInterLeader = false;
+    INFO(FLAGCX_INIT,
+         "setupInterNodeSignalRelay: rank %d (non-leader), nInterPeers %d",
+         myRank, nInterPeers);
+    return flagcxSuccess;
+  }
+
+  // Leader path: allocate connections, signal flags, recv thread.
+  handle->isInterLeader = true;
+  handle->netAdaptorPtr = (void *)hetero->netAdaptor;
+
+  flagcxResult_t res = flagcxSuccess;
+
+  // Step 1: Allocate host-mapped signal flags (GPU reads, recv thread writes)
+  size_t flagsSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+  FLAGCXCHECKGOTO(
+      deviceAdaptor->deviceMalloc((void **)&handle->interSignalFlagsHost,
+                                  flagsSize, flagcxMemHost, NULL),
+      res, fail);
+  memset(handle->interSignalFlagsHost, 0, flagsSize);
+  FLAGCXCHECKGOTO(
+      deviceAdaptor->hostGetDevicePointer((void **)&handle->interSignalFlags,
+                                          handle->interSignalFlagsHost),
+      res, fail);
+
+  // Step 2: Allocate staging buffers for isend/irecv
+  handle->signalSendBufs =
+      (char *)calloc(nInterPeers, sizeof(flagcxSignalMessage));
+  handle->signalRecvBufs =
+      (char *)calloc(nInterPeers, sizeof(flagcxSignalMessage));
+  if (!handle->signalSendBufs || !handle->signalRecvBufs) {
+    res = flagcxSystemError;
+    goto fail;
+  }
+
+  // Step 3: Establish netAdaptor connections with each inter-node peer.
+  // Pattern: each peer pair does listen+exchange+connect/accept.
+  handle->signalSendComms = (void **)calloc(nInterPeers, sizeof(void *));
+  handle->signalRecvComms = (void **)calloc(nInterPeers, sizeof(void *));
+  if (!handle->signalSendComms || !handle->signalRecvComms) {
+    res = flagcxSystemError;
+    goto fail;
+  }
+
+  {
+    struct bootstrapState *bootstrap = comm->bootstrap;
+    int netDev = hetero->netDev;
+    struct flagcxNetAdaptor *net = hetero->netAdaptor;
+    // Use a deterministic tag based on both ranks so that the tag is
+    // symmetric: rank A sending to rank B uses the same tag as rank B
+    // sending to rank A.  signalTag + min(myRank, peer) * nRanks +
+    // max(myRank, peer) is unique per pair and order-independent.
+    const int signalTagBase = 2001;
+
+    for (int p = 0; p < nInterPeers; p++) {
+      int peer = interPeerRanks[p];
+      int pairTag = signalTagBase + std::min(myRank, peer) * nRanks +
+                    std::max(myRank, peer);
+
+      // Listen for incoming connection from this peer
+      flagcxNetHandle_t listenHandle = {};
+      void *listenComm = nullptr;
+      FLAGCXCHECKGOTO(net->listen(netDev, &listenHandle, &listenComm), res,
+                      fail);
+
+      // Exchange listen handles via bootstrap
+      flagcxNetHandle_t peerHandle = {};
+      FLAGCXCHECKGOTO(bootstrapSend(bootstrap, peer, pairTag, &listenHandle,
+                                    sizeof(flagcxNetHandle_t)),
+                      res, fail);
+      FLAGCXCHECKGOTO(bootstrapRecv(bootstrap, peer, pairTag, &peerHandle,
+                                    sizeof(flagcxNetHandle_t)),
+                      res, fail);
+
+      // Non-blocking connect/accept loop
+      void *sendComm = nullptr;
+      void *recvComm = nullptr;
+      while (sendComm == nullptr || recvComm == nullptr) {
+        if (sendComm == nullptr) {
+          flagcxResult_t r = net->connect(netDev, &peerHandle, &sendComm);
+          if (r != flagcxSuccess && r != flagcxInProgress) {
+            res = r;
+            goto fail;
+          }
+        }
+        if (recvComm == nullptr) {
+          flagcxResult_t r = net->accept(listenComm, &recvComm);
+          if (r != flagcxSuccess && r != flagcxInProgress) {
+            res = r;
+            goto fail;
+          }
+        }
+      }
+      net->closeListen(listenComm);
+
+      handle->signalSendComms[p] = sendComm;
+      handle->signalRecvComms[p] = recvComm;
+    }
+  }
+
+  // Step 4: Register MR per-peer (each IB connection may have a different PD)
+  handle->signalSendMrs = (void **)calloc(nInterPeers, sizeof(void *));
+  handle->signalRecvMrs = (void **)calloc(nInterPeers, sizeof(void *));
+  if (!handle->signalSendMrs || !handle->signalRecvMrs) {
+    res = flagcxSystemError;
+    goto fail;
+  }
+  for (int p = 0; p < nInterPeers; p++) {
+    FLAGCXCHECKGOTO(
+        hetero->netAdaptor->regMr(
+            handle->signalSendComms[p],
+            &handle->signalSendBufs[p * sizeof(flagcxSignalMessage)],
+            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST,
+            &handle->signalSendMrs[p]),
+        res, fail);
+    FLAGCXCHECKGOTO(
+        hetero->netAdaptor->regMr(
+            handle->signalRecvComms[p],
+            &handle->signalRecvBufs[p * sizeof(flagcxSignalMessage)],
+            sizeof(flagcxSignalMessage), FLAGCX_PTR_HOST,
+            &handle->signalRecvMrs[p]),
+        res, fail);
+  }
+
+  // Step 5: Start receiver thread
+  __atomic_store_n(&handle->signalRecvStop, 0, __ATOMIC_RELEASE);
+  {
+    int err = pthread_create(&handle->signalRecvThread, nullptr,
+                             flagcxSignalRecvThread, handle);
+    if (err != 0) {
+      res = flagcxSystemError;
+      goto fail;
+    }
+  }
+
+  // Publish to heteroComm so proxy can access signal connections
+  hetero->signalDevComm = handle;
+
+  INFO(FLAGCX_INIT,
+       "setupInterNodeSignalRelay: rank %d (leader), nInterPeers %d, recv "
+       "thread started",
+       myRank, nInterPeers);
+  return flagcxSuccess;
+
+fail:
+  // Partial cleanup on error (DevCommDestroy will handle the rest)
+  return res;
+}
+
+// Teardown inter-node signal relay (called from flagcxDevCommDestroy).
+static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
+                                        flagcxDevComm_t handle) {
+  // Free peer rank list (set on all ranks)
+  free(handle->interPeerRanks);
+  handle->interPeerRanks = nullptr;
+
+  // Only the leader has connections/thread/flags to clean up
+  if (!handle->isInterLeader)
+    return;
+
+  struct flagcxNetAdaptor *net =
+      (struct flagcxNetAdaptor *)handle->netAdaptorPtr;
+
+  // Stop recv thread
+  __atomic_store_n(&handle->signalRecvStop, 1, __ATOMIC_RELEASE);
+  if (handle->signalRecvThread) {
+    pthread_join(handle->signalRecvThread, nullptr);
+  }
+
+  // Deregister MR per-peer
+  if (handle->signalSendMrs) {
+    for (int p = 0; p < handle->nInterPeers; p++) {
+      if (handle->signalSendMrs[p] && handle->signalSendComms &&
+          handle->signalSendComms[p]) {
+        net->deregMr(handle->signalSendComms[p], handle->signalSendMrs[p]);
+      }
+    }
+    free(handle->signalSendMrs);
+  }
+  if (handle->signalRecvMrs) {
+    for (int p = 0; p < handle->nInterPeers; p++) {
+      if (handle->signalRecvMrs[p] && handle->signalRecvComms &&
+          handle->signalRecvComms[p]) {
+        net->deregMr(handle->signalRecvComms[p], handle->signalRecvMrs[p]);
+      }
+    }
+    free(handle->signalRecvMrs);
+  }
+
+  // Close connections
+  if (handle->signalSendComms) {
+    for (int p = 0; p < handle->nInterPeers; p++) {
+      if (handle->signalSendComms[p])
+        net->closeSend(handle->signalSendComms[p]);
+    }
+    free(handle->signalSendComms);
+  }
+  if (handle->signalRecvComms) {
+    for (int p = 0; p < handle->nInterPeers; p++) {
+      if (handle->signalRecvComms[p])
+        net->closeRecv(handle->signalRecvComms[p]);
+    }
+    free(handle->signalRecvComms);
+  }
+
+  // Free staging buffers
+  free(handle->signalSendBufs);
+  free(handle->signalRecvBufs);
+
+  // Free host-mapped signal flags
+  if (handle->interSignalFlagsHost) {
+    deviceAdaptor->deviceFree(handle->interSignalFlagsHost, flagcxMemHost,
+                              NULL);
+  }
+
+  // Clear heteroComm reference
+  if (comm && comm->heteroComm) {
+    comm->heteroComm->signalDevComm = nullptr;
+  }
+}
+
 #ifdef FLAGCX_DEVICE_API_NCCL
 #include "nvidia_adaptor.h"
 #endif
@@ -162,7 +515,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
   // Step 1: Allocate local barrier flags (IPC-shareable device memory)
   struct flagcxP2pIpcDesc barrierIpcDesc;
   memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
-  size_t barrierSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint32_t);
+  size_t barrierSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
   FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
 
@@ -201,11 +554,11 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   // Step 4: Build device barrier pointer array
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->barrierPeers,
-                                          localRanks * sizeof(uint32_t *),
+                                          localRanks * sizeof(uint64_t *),
                                           flagcxMemDevice, NULL));
   FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
       handle->barrierPeers, handle->peerBarrierPtrs,
-      localRanks * sizeof(uint32_t *), flagcxMemcpyHostToDevice, NULL, NULL));
+      localRanks * sizeof(uint64_t *), flagcxMemcpyHostToDevice, NULL, NULL));
 
   return flagcxSuccess;
 }
@@ -240,13 +593,6 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->fifoBuffer =
       (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
 
-  // ---- Grid sync counter (for multi-block two-sided kernels) ----
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->gridDoneCounter,
-                                          sizeof(unsigned int), flagcxMemDevice,
-                                          NULL));
-  FLAGCXCHECK(deviceAdaptor->deviceMemset(
-      handle->gridDoneCounter, 0, sizeof(unsigned int), flagcxMemDevice, NULL));
-
   // ---- IPC barrier layer: if barriers requested ----
   if (reqs->fields[0] > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, handle);
@@ -254,9 +600,21 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
            "barriers unavailable",
            res);
-      deviceAdaptor->deviceFree(handle->gridDoneCounter, flagcxMemDevice, NULL);
       free(handle);
       return res;
+    }
+  }
+
+  // ---- Inter-node signal relay: if multi-node ----
+  {
+    flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
+    if (res != flagcxSuccess) {
+      WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d), "
+           "falling back to single-node mode",
+           res);
+      // Reset so kernel uses single-node barrier path (no inter barrier)
+      handle->nInterPeers = 0;
+      handle->isInterLeader = false;
     }
   }
 
@@ -285,8 +643,9 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 #endif
 
   *devComm = handle;
-  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s",
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s",
        handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
+       handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        handle->hasNcclDev ? " + ncclDevComm" : "");
   return flagcxSuccess;
 }
@@ -307,6 +666,9 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   }
 #endif
 
+  // Inter-node signal relay cleanup
+  cleanupInterNodeSignalRelay(comm, devComm);
+
   // IPC barrier cleanup
   if (devComm->peerBarrierPtrs) {
     for (int i = 0; i < devComm->nLocalRanks; i++) {
@@ -324,10 +686,6 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
                               NULL);
   }
-  if (devComm->gridDoneCounter) {
-    deviceAdaptor->deviceFree(devComm->gridDoneCounter, flagcxMemDevice, NULL);
-  }
-
   free(devComm->localRankToRank);
   free(devComm);
   return flagcxSuccess;

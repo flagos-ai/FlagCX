@@ -8,10 +8,11 @@
  *    Tier 2 (fallback):    IPC peer pointers + atomics barrier.
  *    Same kernel code compiles for both tiers.
  *
- * 2. Inter-node AlltoAll — unified kernel with runtime dispatch.
- *    One-sided path (Tier 1 + window): put + signals via flagcxDevNet.
- *    Two-sided path (all tiers):       send/recv + FIFO via flagcxDevNet,
- *      with atomic last-block grid sync using flagcxDeviceAtomicFetchAdd.
+ * 2. Inter-node AlltoAll — unified kernel, same structure for both paths.
+ *    Thread 0 block-stride loop dispatches communication ops.
+ *    One-sided path (Tier 1 + window): put + waitSignal + flush.
+ *    Two-sided path (all tiers):       send + recv via FIFO.
+ *    Both paths wrapped by bar.sync() pre/post barriers.
  *
  * Host-side flagcxDevCommCreate/Destroy are in flagcx_device.cc.
  ************************************************************************/
@@ -124,17 +125,17 @@ flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
     return flagcxInvalidArgument;
   }
 
-  // Advance barrier epoch for next launch (2 syncs per kernel invocation)
-  devComm->barrierEpoch += 2;
+  // Advance barrier epoch for next launch (2 syncs, each += nLocalRanks-1)
+  devComm->barrierEpoch += 2 * (devComm->intraSize - 1);
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ==========================================================================
-// 2. Inter-node AlltoAll — Unified kernel with runtime dispatch
+// 2. Inter-node AlltoAll — Unified kernel
 //
-// One-sided path (Tier 1 + window): put + signals via flagcxDevNet.
-// Two-sided path (all tiers): send/recv via FIFO + atomic last-block grid sync.
+// Both one-sided (put) and two-sided (send/recv) paths share the same
+// structure: thread-0 block-stride loop over peers, wrapped by bar.sync().
 //
 // Buffer layout: [rank0_data][rank1_data]...[rankN_data], each of size `count`
 // sendMem: data at offset peerRank * count * elementSize is sent to peerRank
@@ -144,71 +145,55 @@ flagcxResult_t flagcxIntraAllReduceDemo(flagcxDevMem_t devMem, size_t count,
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxInterAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
                               size_t count, flagcxDataType_t datatype,
-                              flagcxDevComm devComm,
-                              unsigned int *gridDoneCounter) {
+                              flagcxDevComm devComm) {
 
-  if (devComm._hasBase && sendMem._isSymmetric) {
-    // ======== One-sided path (Tier 1 with windows) ========
-    flagcxDevNet net(devComm, 0);
-    uint64_t signalValue = net.readSignal(0);
+  flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
+  flagcxBarrierSession<flagcxCoopBlock> bar(
+      flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
 
-    flagcxBarrierSession<flagcxCoopBlock> bar(flagcxCoopBlock(),
-                                              flagcxTeamTagWorld{}, net,
-                                              FLAGCX_BLOCK_IDX_X);
-    bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
+  // Pre-communication barrier
+  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 
-    int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
-    int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  int nRanks = devComm.getSize();
+  size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
+  bool oneSided = devComm._hasBase && sendMem._isSymmetric;
+
+  // Thread 0 dispatches all communication ops (block-stride over peers).
+  // Both put() and send()/recv() are control-plane descriptors — NIC or
+  // proxy does the actual data movement.
+  if (FLAGCX_THREAD_IDX_X == 0) {
     int myRank = devComm.getRank();
-    int nRanks = devComm.getSize();
-    size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
+    uint64_t signalValue = 0;
+    if (oneSided) signalValue = net.readSignal(0);
 
-    for (int r = tid; r < nRanks; r += nthreads) {
-      net.put(flagcxTeamWorld(devComm), r, recvMem, myRank * size, sendMem,
-              r * size, size, flagcxDevNet_SignalInc{0});
-    }
-
-    net.waitSignal(flagcxCoopBlock(), 0, signalValue + nRanks);
-    net.flush(flagcxCoopBlock());
-
-  } else {
-    // ======== Two-sided path (all tiers, send/recv + FIFO) ========
-    flagcxDevNet net(devComm);
-    int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
-    int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
-    size_t elementSize = getFlagcxDataTypeSizeDevice(datatype);
-    int nRanks = devComm.getSize();
-
-    // Each thread handles one or more peers (grid-stride loop)
-    for (int peerRank = tid; peerRank < nRanks; peerRank += nthreads) {
-      size_t offset = peerRank * count * elementSize;
-      net.send(sendMem, offset, count, datatype, peerRank);
-      net.recv(recvMem, offset, count, datatype, peerRank);
-    }
-
-    // Grid sync: atomic last-block pattern
-    // All threads in this block sync first, then thread 0 atomically
-    // increments the counter. The last block to arrive calls term() + wait().
-    FLAGCX_DEVICE_SYNC_THREADS();
-
-    if (FLAGCX_THREAD_IDX_X == 0) {
-      // AcqRel ordering provides threadfence semantics — ensures all
-      // FIFO writes from this block are visible before last block acts
-      unsigned int arrived =
-          flagcxDeviceAtomicFetchAdd<unsigned int, flagcxDeviceScopeDevice>(
-              gridDoneCounter, 1u, flagcxDeviceMemoryOrderAcqRel);
-
-      if (arrived == FLAGCX_GRID_DIM_X - 1) {
-        // Last block: send termination and wait for all FIFO entries
-        net.term();
-        net.wait();
-
-        // Reset counter for next kernel launch
-        flagcxDeviceAtomicStore<unsigned int, flagcxDeviceScopeDevice>(
-            gridDoneCounter, 0u, flagcxDeviceMemoryOrderRelaxed);
+    for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
+         peer += FLAGCX_GRID_DIM_X) {
+      if (oneSided) {
+        net.put(flagcxTeamWorld(devComm), peer, recvMem, myRank * size,
+                sendMem, peer * size, size, flagcxDevNet_SignalInc{0},
+                flagcxDevNet_None{}, flagcxCoopThread{});
+      } else {
+        size_t offset = peer * size;
+        net.send(sendMem, offset, count, datatype, peer);
+        net.recv(recvMem, offset, count, datatype, peer);
       }
     }
+
+    if (oneSided) {
+      net.waitSignal(flagcxCoopThread{}, 0, signalValue + nRanks);
+      net.flush(flagcxCoopThread{});
+    } else {
+      // Two-sided: all CTAs must enqueue term/wait, even idle ones
+      // (blockIdx >= nRanks), because the proxy counts term entries from all
+      // CTA_COUNT channels to trigger groupEnd. Idle CTAs' term/wait are
+      // benign — no data was enqueued so wait completes instantly.
+      net.term();
+      net.wait();
+    }
   }
+
+  // Post-communication barrier
+  bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 }
 
 // Host-side unified alltoall demo function.
@@ -228,9 +213,20 @@ flagcxResult_t flagcxInterAlltoAllDemo(flagcxDevMem_t sendMem,
 
   flagcxInterAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc,
-                                    devComm->gridDoneCounter);
+         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
   cudaError_t err = cudaGetLastError();
+
+  // Advance barrier epoch:
+  // - Single-node: 2 syncs × 1 intra arrive × (intraSize-1) = 2*(intraSize-1)
+  // - Multi-node:  2 syncs × 2 intra arrives × (intraSize-1) = 4*(intraSize-1)
+  int intraArrivesPerSync = (devComm->nInterPeers > 0) ? 2 : 1;
+  devComm->barrierEpoch +=
+      2 * intraArrivesPerSync * (devComm->intraSize - 1);
+
+  // Advance inter-node barrier epoch (2 syncs per kernel, each += nInterPeers)
+  // Only meaningful on leader, but safe to advance on all ranks.
+  devComm->interBarrierEpoch += 2 * devComm->nInterPeers;
+
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }

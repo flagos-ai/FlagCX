@@ -354,6 +354,9 @@ struct flagcxHeteroComm {
   void *fifoBuffer;
   // uniRunner FIFO buffer
   void *uniRunnerFifoBuffer;
+  // Device communicator for inter-node signal relay (set by
+  // flagcxDevCommCreate)
+  flagcxDevComm_t signalDevComm;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
