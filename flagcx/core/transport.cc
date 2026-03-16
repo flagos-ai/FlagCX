@@ -88,6 +88,9 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           } else if (comm->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
+          } else {
+            deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
+                                       resources->buffSizes[0], NULL);
           }
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));
@@ -152,6 +155,9 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
               return flagcxSystemError;
             }
           } else if (comm->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+            deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
+                                       resources->buffSizes[0], NULL);
+          } else {
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
           }

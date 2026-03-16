@@ -1,5 +1,6 @@
 #include "net.h"
 #include "adaptor.h"
+#include "adaptor_plugin_load.h"
 #include "device.h"
 #include "proxy.h"
 #include "reg_pool.h"
@@ -85,6 +86,13 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
 
   netName = comm->config.netName;
 
+  if (!forceSocket) {
+    // Load net plugin if FLAGCX_NET_ADAPTOR_PLUGIN is set.
+    // This populates flagcxNetAdaptors[0] with the plugin.
+    // Must be called before the selection loop below.
+    flagcxNetAdaptorPluginInit();
+  }
+
   if (forceSocket) {
     // Force socket network usage
     for (int i = 2; i >= 0; i--) {
@@ -167,6 +175,11 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
           FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
               args->subs[step].stepBuff, (char *)data + args->totalCopySize,
               args->subs[step].stepSize, flagcxMemcpyDeviceToHost,
+              resources->cpStream, args->subs[step].copyArgs));
+        } else {
+          FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+              args->subs[step].stepBuff, (char *)data + args->totalCopySize,
+              args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
               resources->cpStream, args->subs[step].copyArgs));
         }
         FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[step],
@@ -276,6 +289,17 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
           }
         } else if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
           args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
+        } else {
+          // Plugin adaptor: flush like IBRC
+          void *req = NULL;
+          resources->netAdaptor->iflush(
+              resources->netRecvComm, 1,
+              &args->subs[args->postFlush & stepMask].stepBuff,
+              &args->subs[args->postFlush & stepMask].stepSize,
+              args->regBufFlag ? &args->regHandle : resources->mhandles, &req);
+          if (req) {
+            args->subs[args->postFlush++ & stepMask].requests[0] = req;
+          }
         }
         return flagcxSuccess;
       }
@@ -303,6 +327,11 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
             FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
                 (char *)data + args->totalCopySize, args->subs[step].stepBuff,
                 args->subs[step].stepSize, flagcxMemcpyHostToDevice,
+                resources->cpStream, args->subs[step].copyArgs));
+          } else {
+            FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+                (char *)data + args->totalCopySize, args->subs[step].stepBuff,
+                args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
                 resources->cpStream, args->subs[step].copyArgs));
           }
           FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[step],
@@ -346,6 +375,8 @@ flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
     free(resources->buffers[0]);
   } else if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
     FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  } else {
+    FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
   }
   return flagcxSuccess;
 }
@@ -362,6 +393,8 @@ flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
   if (resources->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
     free(resources->buffers[0]);
   } else if (resources->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+    FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
+  } else {
     FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
   }
   return flagcxSuccess;

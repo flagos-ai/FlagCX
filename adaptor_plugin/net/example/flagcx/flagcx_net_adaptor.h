@@ -1,0 +1,73 @@
+/*************************************************************************
+ * Copyright (c) 2025 BAAI. All rights reserved.
+ ************************************************************************/
+
+#ifndef FLAGCX_NET_ADAPTOR_H_
+#define FLAGCX_NET_ADAPTOR_H_
+
+#include "flagcx.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct flagcxNetAdaptor {
+  // Basic functions
+  const char *name;
+  flagcxResult_t (*init)();
+  flagcxResult_t (*devices)(int *ndev);
+  flagcxResult_t (*getProperties)(int dev, void *props);
+  flagcxResult_t (*reduceSupport)(flagcxDataType_t dataType,
+                                  flagcxRedOp_t redOp, int *supported);
+  flagcxResult_t (*getDeviceMr)(void *comm, void *mhandle, void **dptr_mhandle);
+  flagcxResult_t (*irecvConsumed)(void *recvComm, int n, void *request);
+
+  // Setup functions
+  flagcxResult_t (*listen)(int dev, void *handle, void **listenComm);
+  flagcxResult_t (*connect)(int dev, void *handle, void **sendComm);
+  flagcxResult_t (*accept)(void *listenComm, void **recvComm);
+  flagcxResult_t (*closeSend)(void *sendComm);
+  flagcxResult_t (*closeRecv)(void *recvComm);
+  flagcxResult_t (*closeListen)(void *listenComm);
+
+  // Memory region functions
+  flagcxResult_t (*regMr)(void *comm, void *data, size_t size, int type,
+                          void **mhandle);
+  flagcxResult_t (*regMrDmaBuf)(void *comm, void *data, size_t size, int type,
+                                uint64_t offset, int fd, void **mhandle);
+  flagcxResult_t (*deregMr)(void *comm, void *mhandle);
+
+  // Two-sided functions
+  flagcxResult_t (*isend)(void *sendComm, void *data, size_t size, int tag,
+                          void *mhandle, void *phandle, void **request);
+  flagcxResult_t (*irecv)(void *recvComm, int n, void **data, size_t *sizes,
+                          int *tags, void **mhandles, void **phandles,
+                          void **request);
+  flagcxResult_t (*iflush)(void *recvComm, int n, void **data, int *sizes,
+                           void **mhandles, void **request);
+  flagcxResult_t (*test)(void *request, int *done, int *sizes);
+
+  // One-sided
+  flagcxResult_t (*put)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                        size_t size, int srcRank, int dstRank, void **gHandles,
+                        void **request);
+  flagcxResult_t (*putSignal)(void *sendComm, uint64_t dstOff, int dstRank,
+                              void **gHandles, void **request);
+  flagcxResult_t (*waitValue)(void **gHandles, int rank, uint64_t offset,
+                              uint64_t expected);
+
+  // Device name lookup
+  flagcxResult_t (*getDevFromName)(char *name, int *dev);
+};
+
+// Net adaptor plugin API version (independent of CCL/Device versions)
+#define FLAGCX_NET_ADAPTOR_PLUGIN_VERSION 1
+
+// Versioned export symbol name
+#define FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL flagcxNetAdaptorPlugin_v1
+
+#ifdef __cplusplus
+} // end extern "C"
+#endif
+
+#endif // FLAGCX_NET_ADAPTOR_H_
