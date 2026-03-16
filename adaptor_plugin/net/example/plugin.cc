@@ -8,8 +8,6 @@
 
 #include "flagcx/flagcx_net_adaptor.h"
 
-#define __hidden __attribute__((visibility("default")))
-
 static flagcxResult_t pluginInit() { return flagcxSuccess; }
 
 static flagcxResult_t pluginDevices(int *ndev) {
@@ -118,7 +116,8 @@ static flagcxResult_t pluginGetDevFromName(char *name, int *dev) {
   return flagcxInternalError;
 }
 
-__hidden struct flagcxNetAdaptor FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL = {
+__attribute__((visibility(
+    "default"))) struct flagcxNetAdaptor FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL = {
     "Example",           pluginInit,          pluginDevices,
     pluginGetProperties, pluginReduceSupport, pluginGetDeviceMr,
     pluginIrecvConsumed, pluginListen,        pluginConnect,
