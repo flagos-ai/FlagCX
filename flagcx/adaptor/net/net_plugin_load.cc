@@ -70,10 +70,7 @@ flagcxResult_t flagcxNetAdaptorPluginUnload() {
 }
 
 flagcxResult_t flagcxNetAdaptorPluginInit() {
-  flagcxResult_t ret = flagcxNetAdaptorPluginLoad();
-  if (ret != flagcxSuccess) {
-    return ret;
-  }
+  flagcxNetAdaptorPluginLoad();
   if (netPluginDlHandle != NULL) {
     netPluginRefCount++;
   }
