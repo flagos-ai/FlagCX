@@ -1,5 +1,6 @@
 #include "flagcx.h"
 #include "adaptor.h"
+#include "adaptor_plugin_load.h"
 #include "alloc.h"
 #include "bootstrap.h"
 #include "check.h"
@@ -1561,6 +1562,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     // Free uniqueIdData
     free(comm->uniqueIdData);
   }
+
+  // Finalize net adaptor plugin (dlclose)
+  flagcxNetAdaptorPluginFinalize();
 
   return flagcxSuccess;
 }

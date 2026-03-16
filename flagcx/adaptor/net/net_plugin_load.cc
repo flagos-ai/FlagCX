@@ -82,6 +82,7 @@ flagcxResult_t flagcxNetAdaptorPluginInit() {
 
 flagcxResult_t flagcxNetAdaptorPluginFinalize() {
   if (netPluginRefCount > 0 && --netPluginRefCount == 0) {
+    INFO(FLAGCX_NET, "Unloading net adaptor plugin");
     flagcxNetAdaptorPluginUnload();
   }
   return flagcxSuccess;
