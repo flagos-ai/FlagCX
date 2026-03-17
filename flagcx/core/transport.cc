@@ -89,8 +89,17 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
           } else {
-            deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
-                                       resources->buffSizes[0], NULL);
+            flagcxNetProperties_t props;
+            comm->netAdaptor->getProperties(resources->netDev, &props);
+            resources->ptrSupport = props.ptrSupport;
+            if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+              deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
+                                         resources->buffSizes[0], NULL);
+            } else {
+              resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
+              if (!resources->buffers[0])
+                return flagcxSystemError;
+            }
           }
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));
@@ -158,8 +167,17 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
           } else {
-            deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
-                                       resources->buffSizes[0], NULL);
+            flagcxNetProperties_t props;
+            comm->netAdaptor->getProperties(resources->netDev, &props);
+            resources->ptrSupport = props.ptrSupport;
+            if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+              deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
+                                         resources->buffSizes[0], NULL);
+            } else {
+              resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
+              if (!resources->buffers[0])
+                return flagcxSystemError;
+            }
           }
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));

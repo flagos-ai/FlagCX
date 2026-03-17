@@ -593,6 +593,14 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netSendComm, resources->buffers[0],
                   resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
+            } else {
+              FLAGCXCHECK(resources->netAdaptor->regMr(
+                  resources->netSendComm, resources->buffers[0],
+                  resources->buffSizes[0],
+                  (resources->ptrSupport & FLAGCX_PTR_CUDA) ? FLAGCX_PTR_CUDA
+                                                            : FLAGCX_PTR_HOST,
+                                                            0,
+                  &resources->mhandles[0]));
             }
           }
           done = 1;
@@ -625,6 +633,14 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
               FLAGCXCHECK(resources->netAdaptor->regMr(
                   resources->netRecvComm, resources->buffers[0],
                   resources->buffSizes[0], 1, 0, &resources->mhandles[0]));
+            } else {
+              FLAGCXCHECK(resources->netAdaptor->regMr(
+                  resources->netRecvComm, resources->buffers[0],
+                  resources->buffSizes[0],
+                  (resources->ptrSupport & FLAGCX_PTR_CUDA) ? FLAGCX_PTR_CUDA
+                                                            : FLAGCX_PTR_HOST,
+                                                            0,
+                  &resources->mhandles[0]));
             }
           }
           done = 1;

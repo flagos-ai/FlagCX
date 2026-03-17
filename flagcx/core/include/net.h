@@ -46,6 +46,7 @@ struct sendNetResources {
   int netDev;
   int useGdr;
   int useDmaBuf;
+  int ptrSupport;
   int maxRecvs;
   uint64_t *gdcSync;
   void *gdrDesc;
@@ -79,6 +80,7 @@ struct recvNetResources {
   int netDev;
   int useGdr;
   int useDmaBuf;
+  int ptrSupport;
   int needFlush;
   int maxRecvs;
   uint64_t *gdcSync;
