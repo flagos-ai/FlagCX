@@ -11,12 +11,19 @@
 extern "C" {
 #endif
 
+// MR registration flags for one-sided strong ordering
+typedef enum {
+  FLAGCX_NET_MR_FLAG_NONE = 0,
+  FLAGCX_NET_MR_FLAG_FORCE_SO =
+      (1 << 0), // Force strong ordering (disable relaxed ordering)
+} flagcxNetMrFlag_t;
+
 // Version history:
-//   v1 (initial) — 25 function pointers: name, init, devices, getProperties,
-//                  reduceSupport, getDeviceMr, irecvConsumed, listen, connect,
-//                  accept, closeSend, closeRecv, closeListen, regMr,
-//                  regMrDmaBuf, deregMr, isend, irecv, iflush, test, put,
-//                  putSignal, waitValue, getDevFromName
+//   v1 — 24 function pointers: name, init, devices, getProperties,
+//         reduceSupport, getDeviceMr, irecvConsumed, listen, connect,
+//         accept, closeSend, closeRecv, closeListen, regMr, regMrDmaBuf,
+//         deregMr, isend, irecv, iflush, test, iput, iputSignal,
+//         getDevFromName
 struct flagcxNetAdaptor_v1 {
   // Basic functions
   const char *name;
@@ -38,9 +45,10 @@ struct flagcxNetAdaptor_v1 {
 
   // Memory region functions
   flagcxResult_t (*regMr)(void *comm, void *data, size_t size, int type,
-                          void **mhandle);
+                          int mrFlags, void **mhandle);
   flagcxResult_t (*regMrDmaBuf)(void *comm, void *data, size_t size, int type,
-                                uint64_t offset, int fd, void **mhandle);
+                                uint64_t offset, int fd, int mrFlags,
+                                void **mhandle);
   flagcxResult_t (*deregMr)(void *comm, void *mhandle);
 
   // Two-sided functions
@@ -54,13 +62,15 @@ struct flagcxNetAdaptor_v1 {
   flagcxResult_t (*test)(void *request, int *done, int *sizes);
 
   // One-sided
-  flagcxResult_t (*put)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
-                        size_t size, int srcRank, int dstRank, void **gHandles,
-                        void **request);
-  flagcxResult_t (*putSignal)(void *sendComm, uint64_t dstOff, int dstRank,
-                              void **gHandles, void **request);
-  flagcxResult_t (*waitValue)(void **gHandles, int rank, uint64_t offset,
-                              uint64_t expected);
+  flagcxResult_t (*iput)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                         size_t size, int srcRank, int dstRank, void **gHandles,
+                         void **request);
+  // Data + signal combined (NCCL GIN-aligned: enables chained WRITE + ATOMIC)
+  // When size == 0, only signal ATOMIC is posted (signal-only mode)
+  flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                               size_t size, int srcRank, int dstRank,
+                               void **dataHandles, uint64_t signalOff,
+                               void **signalHandles, void **request);
 
   // Device name lookup
   flagcxResult_t (*getDevFromName)(char *name, int *dev);

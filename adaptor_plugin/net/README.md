@@ -86,9 +86,10 @@ struct flagcxNetAdaptor_v1 {
   flagcxResult_t (*closeListen)(void *listenComm);
 
   flagcxResult_t (*regMr)(void *comm, void *data, size_t size, int type,
-                          void **mhandle);
+                          int mrFlags, void **mhandle);
   flagcxResult_t (*regMrDmaBuf)(void *comm, void *data, size_t size, int type,
-                                uint64_t offset, int fd, void **mhandle);
+                                uint64_t offset, int fd, int mrFlags,
+                                void **mhandle);
   flagcxResult_t (*deregMr)(void *comm, void *mhandle);
 
   flagcxResult_t (*isend)(void *sendComm, void *data, size_t size, int tag,
@@ -100,13 +101,13 @@ struct flagcxNetAdaptor_v1 {
                            void **mhandles, void **request);
   flagcxResult_t (*test)(void *request, int *done, int *sizes);
 
-  flagcxResult_t (*put)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
-                        size_t size, int srcRank, int dstRank, void **gHandles,
-                        void **request);
-  flagcxResult_t (*putSignal)(void *sendComm, uint64_t dstOff, int dstRank,
-                              void **gHandles, void **request);
-  flagcxResult_t (*waitValue)(void **gHandles, int rank, uint64_t offset,
-                              uint64_t expected);
+  flagcxResult_t (*iput)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                         size_t size, int srcRank, int dstRank, void **gHandles,
+                         void **request);
+  flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                               size_t size, int srcRank, int dstRank,
+                               void **dataHandles, uint64_t signalOff,
+                               void **signalHandles, void **request);
 
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
 };
@@ -169,11 +170,11 @@ Free resources associated with send, receive, or listen comm objects.
 
 `regMr`
 
-Register a buffer for communication. The `comm` argument can be either a sendComm or recvComm. `type` indicates `FLAGCX_PTR_HOST` or `FLAGCX_PTR_CUDA`. The returned `mhandle` is passed to subsequent send/recv calls.
+Register a buffer for communication. The `comm` argument can be either a sendComm or recvComm. `type` indicates `FLAGCX_PTR_HOST` or `FLAGCX_PTR_CUDA`. `mrFlags` is a bitmask of `flagcxNetMrFlag_t` values (e.g. `FLAGCX_NET_MR_FLAG_FORCE_SO` to force strong ordering). The returned `mhandle` is passed to subsequent send/recv calls.
 
 `regMrDmaBuf`
 
-Like `regMr` but for DMA-BUF backed memory. Only needed if `ptrSupport` includes `FLAGCX_PTR_DMABUF`.
+Like `regMr` but for DMA-BUF backed memory. Also accepts `mrFlags`. Only needed if `ptrSupport` includes `FLAGCX_PTR_DMABUF`.
 
 `deregMr`
 
@@ -199,17 +200,13 @@ Poll a request for completion. Set `*done = 1` when complete, with `*sizes` indi
 
 ### One-Sided Communication
 
-`put`
+`iput`
 
-Initiate an RDMA write from `srcOff` to `dstOff` using global handles.
+Initiate an asynchronous RDMA write from `srcOff` to `dstOff` using global handles.
 
-`putSignal`
+`iputSignal`
 
-Send a signal (atomic increment) to a remote address.
-
-`waitValue`
-
-Busy-wait until the value at a given offset matches `expected`.
+Combined data write + signal operation. When `size > 0`, posts a chained RDMA write (from `srcOff`/`dstOff` via `dataHandles`) followed by an atomic increment at `signalOff` via `signalHandles`. When `size == 0`, only the signal atomic is posted (signal-only mode). Returns a single `request` covering the entire operation.
 
 ### Device Name Lookup
 

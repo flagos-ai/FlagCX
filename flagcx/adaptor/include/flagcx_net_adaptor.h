@@ -19,11 +19,11 @@ typedef enum {
 } flagcxNetMrFlag_t;
 
 // Version history:
-//   v1 (initial) — 25 function pointers: name, init, devices, getProperties,
-//                  reduceSupport, getDeviceMr, irecvConsumed, listen, connect,
-//                  accept, closeSend, closeRecv, closeListen, regMr,
-//                  regMrDmaBuf, deregMr, isend, irecv, iflush, test, put,
-//                  putSignal, waitValue, getDevFromName
+//   v1 — 24 function pointers: name, init, devices, getProperties,
+//         reduceSupport, getDeviceMr, irecvConsumed, listen, connect,
+//         accept, closeSend, closeRecv, closeListen, regMr, regMrDmaBuf,
+//         deregMr, isend, irecv, iflush, test, iput, iputSignal,
+//         getDevFromName
 struct flagcxNetAdaptor_v1 {
   // Basic functions
   const char *name;
