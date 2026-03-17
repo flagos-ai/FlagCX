@@ -7,11 +7,13 @@
 #include "flagcx_net_adaptor.h"
 
 #include <dlfcn.h>
+#include <mutex>
 #include <stdlib.h>
 #include <string.h>
 
 static void *netPluginDlHandle = NULL;
 static int netPluginRefCount = 0;
+static std::mutex netPluginMutex;
 
 extern struct flagcxNetAdaptor *flagcxNetAdaptors[3];
 
@@ -70,6 +72,7 @@ flagcxResult_t flagcxNetAdaptorPluginUnload() {
 }
 
 flagcxResult_t flagcxNetAdaptorPluginInit() {
+  std::lock_guard<std::mutex> lock(netPluginMutex);
   flagcxNetAdaptorPluginLoad();
   if (netPluginDlHandle != NULL) {
     netPluginRefCount++;
@@ -78,6 +81,7 @@ flagcxResult_t flagcxNetAdaptorPluginInit() {
 }
 
 flagcxResult_t flagcxNetAdaptorPluginFinalize() {
+  std::lock_guard<std::mutex> lock(netPluginMutex);
   if (netPluginRefCount > 0 && --netPluginRefCount == 0) {
     INFO(FLAGCX_NET, "Unloading net adaptor plugin");
     flagcxNetAdaptorPluginUnload();
