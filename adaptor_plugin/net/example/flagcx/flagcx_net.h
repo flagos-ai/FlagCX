@@ -40,8 +40,14 @@ typedef struct {
   int maxRecvs;    // Maximum number of grouped receives.
   flagcxNetDeviceType netDeviceType; // Network offload type
   int netDeviceVersion;              // Version number for network offload
-} flagcxNetProperties_v8_t;
+} flagcxNetProperties_v1_t;
 
-typedef flagcxNetProperties_v8_t flagcxNetProperties_t;
+// Version history:
+//   v1 (initial, was v8 in NCCL) — name, pciPath, guid, ptrSupport,
+//                                   regIsGlobal, speed, port, latency,
+//                                   maxComms, maxRecvs, netDeviceType,
+//                                   netDeviceVersion
+
+typedef flagcxNetProperties_v1_t flagcxNetProperties_t;
 
 #endif // end include guard

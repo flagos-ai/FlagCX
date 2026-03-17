@@ -34,6 +34,9 @@ flagcxResult_t flagcxNetAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
+  // Future: When v2 is introduced, try dlsym("flagcxNetAdaptorPlugin_v2")
+  // first, then fall back to "flagcxNetAdaptorPlugin_v1" and wrap in a v1→v2
+  // shim.
   struct flagcxNetAdaptor *plugin = (struct flagcxNetAdaptor *)dlsym(
       netPluginDlHandle, "flagcxNetAdaptorPlugin_v1");
   if (plugin == NULL) {

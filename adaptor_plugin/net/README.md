@@ -23,7 +23,7 @@ If the variable is unset, no plugin is loaded and the built-in adaptors are used
 
 Once the library is loaded, FlagCX looks for a symbol named `flagcxNetAdaptorPlugin_v1`. This versioned naming allows future API changes while maintaining backwards compatibility.
 
-The symbol must be a `struct flagcxNetAdaptor` instance with `visibility("default")` so that `dlsym` can find it.
+The symbol must be a `struct flagcxNetAdaptor_v1` instance with `visibility("default")` so that `dlsym` can find it.
 
 ### Adaptor Slot Priority
 
@@ -36,7 +36,7 @@ FlagCX maintains an array of net adaptors. A loaded plugin is placed in slot 0, 
 Plugins should copy the required FlagCX headers into their own source tree to avoid build-time dependency on the full FlagCX source. The example plugin demonstrates this pattern with a local `flagcx/` directory containing:
 
 - `flagcx.h` — Core types and error codes
-- `flagcx_net_adaptor.h` — The `flagcxNetAdaptor` struct and plugin symbol macro
+- `flagcx_net_adaptor.h` — The `flagcxNetAdaptor_v1` struct and plugin symbol macro
 
 ### Compilation
 
@@ -44,7 +44,7 @@ Plugins must be compiled as shared libraries with `-fPIC`. Using `-fvisibility=h
 
 ```c
 __attribute__((visibility("default")))
-struct flagcxNetAdaptor FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL = {
+struct flagcxNetAdaptor_v1 FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL_V1 = {
     "MyPlugin",
     myInit, myDevices, myGetProperties,
     ...
@@ -65,10 +65,10 @@ clean:
 
 ## API (v1)
 
-Below is the `flagcxNetAdaptor` struct. Each function pointer is explained in later sections.
+Below is the `flagcxNetAdaptor_v1` struct. Each function pointer is explained in later sections.
 
 ```c
-struct flagcxNetAdaptor {
+struct flagcxNetAdaptor_v1 {
   const char *name;
   flagcxResult_t (*init)();
   flagcxResult_t (*devices)(int *ndev);

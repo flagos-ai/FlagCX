@@ -175,14 +175,14 @@ static flagcxResult_t pluginGetDevFromName(char *name, int *dev) {
   return flagcxInternalError;
 }
 
-__attribute__((visibility(
-    "default"))) struct flagcxNetAdaptor FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL = {
-    "Example",           pluginInit,          pluginDevices,
-    pluginGetProperties, pluginReduceSupport, pluginGetDeviceMr,
-    pluginIrecvConsumed, pluginListen,        pluginConnect,
-    pluginAccept,        pluginCloseSend,     pluginCloseRecv,
-    pluginCloseListen,   pluginRegMr,         pluginRegMrDmaBuf,
-    pluginDeregMr,       pluginIsend,         pluginIrecv,
-    pluginIflush,        pluginTest,          pluginPut,
-    pluginPutSignal,     pluginWaitValue,     pluginGetDevFromName,
+__attribute__((visibility("default"))) struct flagcxNetAdaptor_v1
+    FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL_V1 = {
+        "Example",           pluginInit,          pluginDevices,
+        pluginGetProperties, pluginReduceSupport, pluginGetDeviceMr,
+        pluginIrecvConsumed, pluginListen,        pluginConnect,
+        pluginAccept,        pluginCloseSend,     pluginCloseRecv,
+        pluginCloseListen,   pluginRegMr,         pluginRegMrDmaBuf,
+        pluginDeregMr,       pluginIsend,         pluginIrecv,
+        pluginIflush,        pluginTest,          pluginPut,
+        pluginPutSignal,     pluginWaitValue,     pluginGetDevFromName,
 };

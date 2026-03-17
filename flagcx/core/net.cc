@@ -28,7 +28,7 @@ enum flagcxNetState flagcxNetStates[3] = {
 flagcxResult_t flagcxNetCheckDeviceVersion(struct flagcxHeteroComm *comm,
                                            struct flagcxNetAdaptor *net,
                                            int dev) {
-  flagcxNetProperties_v8_t props;
+  flagcxNetProperties_v1_t props;
 
   FLAGCXCHECK(net->getProperties(dev, (void *)&props));
   flagcxNetDeviceType type = props.netDeviceType;
