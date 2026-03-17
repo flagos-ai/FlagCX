@@ -599,8 +599,7 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
                   resources->buffSizes[0],
                   (resources->ptrSupport & FLAGCX_PTR_CUDA) ? FLAGCX_PTR_CUDA
                                                             : FLAGCX_PTR_HOST,
-                                                            0,
-                  &resources->mhandles[0]));
+                  0, &resources->mhandles[0]));
             }
           }
           done = 1;
@@ -639,8 +638,7 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
                   resources->buffSizes[0],
                   (resources->ptrSupport & FLAGCX_PTR_CUDA) ? FLAGCX_PTR_CUDA
                                                             : FLAGCX_PTR_HOST,
-                                                            0,
-                  &resources->mhandles[0]));
+                  0, &resources->mhandles[0]));
             }
           }
           done = 1;
