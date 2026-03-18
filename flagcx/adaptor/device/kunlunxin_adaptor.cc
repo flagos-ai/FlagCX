@@ -2,6 +2,9 @@
 
 #include "kunlunxin_adaptor.h"
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, cudaMemcpyDeviceToHost},

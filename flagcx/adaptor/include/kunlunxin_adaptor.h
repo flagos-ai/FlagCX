@@ -11,9 +11,6 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 
 struct flagcxInnerComm {

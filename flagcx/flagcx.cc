@@ -1,5 +1,6 @@
 #include "flagcx.h"
 #include "adaptor.h"
+#include "adaptor_plugin_load.h"
 #include "alloc.h"
 #include "bootstrap.h"
 #include "check.h"
@@ -1284,6 +1285,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->hasSingleRankHomoComm = 0;
   }
 
+  // Load CCL adaptor plugin (must happen before any cclAdaptors[device] call)
+  flagcxCCLAdaptorPluginInit();
+
   flagcxUniqueId *uniqueIdData;
   FLAGCXCHECK(flagcxCalloc(&uniqueIdData, nranks));
 
@@ -1561,6 +1565,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     // Free uniqueIdData
     free(comm->uniqueIdData);
   }
+
+  // Finalize CCL adaptor plugin (dlclose)
+  flagcxCCLAdaptorPluginFinalize();
 
   return flagcxSuccess;
 }

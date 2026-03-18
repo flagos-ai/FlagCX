@@ -7,6 +7,9 @@
 
 #ifdef USE_METAX_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, mcMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, mcMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, mcMemcpyDeviceToHost},

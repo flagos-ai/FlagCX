@@ -1,6 +1,10 @@
 #ifdef USE_CAMBRICON_ADAPTOR
 
 #include "cambricon_adaptor.h"
+
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
 #include <map>
 
 std::map<flagcxDataType_t, cnclDataType_t> f2c_datatype_map = {

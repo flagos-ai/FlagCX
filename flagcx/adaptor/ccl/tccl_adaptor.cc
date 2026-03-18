@@ -2,6 +2,10 @@
 
 #ifdef USE_TSM_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 #include <cstring>
 #include <map>
 

@@ -2,6 +2,10 @@
 
 #ifdef USE_DU_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t duncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }

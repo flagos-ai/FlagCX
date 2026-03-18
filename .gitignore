@@ -7,6 +7,7 @@ debian-packages
 # Ignore compiled Python files and shared object files
 plugin/*/*.so
 plugin/*/*/*.so
+adaptor_plugin/*/*/*.so
 __pycache__/
 **/__pycache__/
 

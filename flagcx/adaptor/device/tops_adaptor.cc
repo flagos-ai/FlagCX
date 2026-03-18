@@ -6,6 +6,9 @@
 
 #ifdef USE_ENFLAME_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, topsMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, topsMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, topsMemcpyDeviceToHost},

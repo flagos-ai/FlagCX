@@ -1,6 +1,10 @@
 #include "ascend_adaptor.h"
 
 #ifdef USE_ASCEND_ADAPTOR
+
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
 #include <map>
 #include <vector>
 std::map<flagcxDataType_t, HcclDataType> f2h_datatype_map = {

@@ -2,6 +2,10 @@
 
 #ifdef USE_AMD_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t rcclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }

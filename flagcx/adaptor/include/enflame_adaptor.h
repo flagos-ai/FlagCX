@@ -4,9 +4,6 @@
 
 #ifdef USE_ENFLAME_ADAPTOR
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "eccl.h"
 #include "flagcx.h"
 #include <map>

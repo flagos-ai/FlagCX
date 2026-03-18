@@ -2,6 +2,9 @@
 
 #ifdef USE_TSM_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, txMemcpyKind> memcpyTypeMap = {
     {flagcxMemcpyHostToDevice, txMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, txMemcpyDeviceToHost},

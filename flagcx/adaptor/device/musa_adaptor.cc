@@ -2,6 +2,9 @@
 
 #ifdef USE_MUSA_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, musaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, musaMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, musaMemcpyDeviceToHost},

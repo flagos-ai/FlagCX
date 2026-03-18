@@ -1,8 +1,5 @@
 #ifdef USE_ILUVATAR_COREX_ADAPTOR
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 #include "nccl.h"
 #include <cuda.h>

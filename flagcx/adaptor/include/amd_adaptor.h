@@ -1,8 +1,5 @@
 #ifdef USE_AMD_ADAPTOR
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 #include "rccl.h"
 #include <hip/hip_runtime.h>

@@ -2,6 +2,9 @@
 
 #ifdef USE_AMD_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, hipMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, hipMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, hipMemcpyDeviceToHost},

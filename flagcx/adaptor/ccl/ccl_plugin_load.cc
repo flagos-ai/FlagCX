@@ -3,44 +3,87 @@
  ************************************************************************/
 
 #include "adaptor_plugin_load.h"
+#include "core.h"
+#include "flagcx_ccl_adaptor.h"
 
-// TODO (Phase 3): Implement CCL adaptor plugin loading.
-//
-// This file should:
-// 1. Read env var FLAGCX_CCL_ADAPTOR_PLUGIN
-// 2. If NULL or "none": return flagcxSuccess (keep default)
-// 3. dlopen the path via flagcxAdaptorOpenPluginLib()
-// 4. dlsym for "flagcxCCLAdaptorPlugin_v1" (struct flagcxCCLAdaptor)
-// 5. Validate: name non-NULL, critical function pointers non-NULL
-// 6. Backup default: save cclAdaptors[flagcxCCLAdaptorDevice]
-// 7. Override: cclAdaptors[flagcxCCLAdaptorDevice] = loaded plugin
-// 8. Log success/failure
-//
-// Static state needed:
-//   static void *cclPluginDlHandle = NULL;
-//   static struct flagcxCCLAdaptor *defaultCCLAdaptorDevice = NULL;
+#include <dlfcn.h>
+#include <mutex>
+#include <stdlib.h>
+#include <string.h>
 
+static void *cclPluginDlHandle = NULL;
 static int cclPluginRefCount = 0;
+static std::mutex cclPluginMutex;
+extern struct flagcxCCLAdaptor *cclAdaptors[];
 
-flagcxResult_t flagcxCCLAdaptorPluginLoad() { return flagcxSuccess; }
+flagcxResult_t flagcxCCLAdaptorPluginLoad() {
+  // Already loaded — nothing to do.
+  if (cclPluginDlHandle != NULL) {
+    return flagcxSuccess;
+  }
 
-flagcxResult_t flagcxCCLAdaptorPluginUnload() { return flagcxSuccess; }
+  const char *envValue = getenv("FLAGCX_CCL_ADAPTOR_PLUGIN");
+  if (envValue == NULL || strcmp(envValue, "none") == 0) {
+    return flagcxSuccess;
+  }
+
+  cclPluginDlHandle = flagcxAdaptorOpenPluginLib(envValue);
+  if (cclPluginDlHandle == NULL) {
+    WARN("ADAPTOR/Plugin: Failed to open CCL adaptor plugin '%s'", envValue);
+    return flagcxSuccess;
+  }
+
+  // Future: When v2 is introduced, try dlsym("flagcxCCLAdaptorPlugin_v2")
+  // first, then fall back to "flagcxCCLAdaptorPlugin_v1" and wrap in a v1→v2
+  // shim.
+  struct flagcxCCLAdaptor *plugin = (struct flagcxCCLAdaptor *)dlsym(
+      cclPluginDlHandle, "flagcxCCLAdaptorPlugin_v1");
+  if (plugin == NULL) {
+    WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxCCLAdaptorPlugin_v1' in "
+         "'%s': %s",
+         envValue, dlerror());
+    flagcxAdaptorClosePluginLib(cclPluginDlHandle);
+    cclPluginDlHandle = NULL;
+    return flagcxSuccess;
+  }
+
+  // Validate critical function pointers
+  if (plugin->name == NULL || plugin->commInitRank == NULL ||
+      plugin->commDestroy == NULL || plugin->allReduce == NULL) {
+    WARN("ADAPTOR/Plugin: CCL adaptor plugin '%s' is missing required function "
+         "pointers",
+         envValue);
+    flagcxAdaptorClosePluginLib(cclPluginDlHandle);
+    cclPluginDlHandle = NULL;
+    return flagcxSuccess;
+  }
+
+  cclAdaptors[1] = plugin;
+  INFO(FLAGCX_INIT, "ADAPTOR/Plugin: Loaded CCL adaptor plugin '%s'",
+       plugin->name);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCCLAdaptorPluginUnload() {
+  flagcxAdaptorClosePluginLib(cclPluginDlHandle);
+  cclPluginDlHandle = NULL;
+  return flagcxSuccess;
+}
 
 flagcxResult_t flagcxCCLAdaptorPluginInit() {
-  flagcxResult_t ret = flagcxCCLAdaptorPluginLoad();
-  if (ret != flagcxSuccess) {
-    // TODO (Phase 3): fallback to compile-time default
-    return ret;
+  std::lock_guard<std::mutex> lock(cclPluginMutex);
+  flagcxCCLAdaptorPluginLoad();
+  if (cclPluginDlHandle != NULL) {
+    cclPluginRefCount++;
   }
-  // TODO (Phase 3): only increment when Load actually opened a library
-  // cclPluginRefCount++;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCCLAdaptorPluginFinalize() {
-  // TODO (Phase 3): decrement and unload only when refcount reaches zero
-  // if (cclPluginRefCount > 0 && --cclPluginRefCount == 0) {
-  //   flagcxCCLAdaptorPluginUnload();
-  // }
+  std::lock_guard<std::mutex> lock(cclPluginMutex);
+  if (cclPluginRefCount > 0 && --cclPluginRefCount == 0) {
+    INFO(FLAGCX_NET, "Unloading CCL adaptor plugin");
+    flagcxCCLAdaptorPluginUnload();
+  }
   return flagcxSuccess;
 }

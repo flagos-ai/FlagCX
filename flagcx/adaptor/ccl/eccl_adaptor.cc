@@ -6,6 +6,10 @@
 
 #ifdef USE_ENFLAME_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t ecclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ecclGetVersion(version);
 }

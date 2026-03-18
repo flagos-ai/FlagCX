@@ -2,6 +2,10 @@
 
 #ifdef USE_ILUVATAR_COREX_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t ixncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }

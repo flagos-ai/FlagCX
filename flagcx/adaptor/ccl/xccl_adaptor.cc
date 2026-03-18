@@ -3,6 +3,10 @@
 
 #ifdef USE_KUNLUNXIN_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 BKCLDataType flagcxToXcclDataType(flagcxDataType_t type) {
   // use BKCL_UINT8 as unknown data type
   static const struct {

@@ -2,6 +2,9 @@
 
 #ifdef USE_ASCEND_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, aclrtMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, ACL_MEMCPY_HOST_TO_DEVICE},
     {flagcxMemcpyDeviceToHost, ACL_MEMCPY_DEVICE_TO_HOST},

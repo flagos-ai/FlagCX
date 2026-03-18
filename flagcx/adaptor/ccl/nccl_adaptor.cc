@@ -2,6 +2,10 @@
 
 #ifdef USE_NVIDIA_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 static bool checkIsAllCudaP2p(ncclComm_t comm) {
   int gpuCount;
   if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {

@@ -2,6 +2,9 @@
 
 #ifdef USE_CAMBRICON_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, cnrtMemTransDir_t> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cnrtMemcpyHostToDev},
     {flagcxMemcpyDeviceToHost, cnrtMemcpyDevToHost},

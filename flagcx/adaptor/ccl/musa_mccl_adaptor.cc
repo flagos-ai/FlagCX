@@ -2,6 +2,10 @@
 
 #ifdef USE_MUSA_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t mcclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)mcclGetVersion(version);
 }

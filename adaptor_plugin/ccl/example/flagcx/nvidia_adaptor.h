@@ -1,42 +1,28 @@
-#ifdef USE_NVIDIA_ADAPTOR
+/*************************************************************************
+ * Copyright (c) 2025 BAAI. All rights reserved.
+ *
+ * NVIDIA platform adaptor header for FlagCX CCL plugins.
+ * Copied from flagcx/adaptor/include/nvidia_adaptor.h with the
+ * USE_NVIDIA_ADAPTOR guard removed — plugin authors targeting NVIDIA
+ * include this header directly.
+ ************************************************************************/
+
+#ifndef FLAGCX_NVIDIA_ADAPTOR_H_
+#define FLAGCX_NVIDIA_ADAPTOR_H_
 
 #include "flagcx.h"
 #include "nccl.h"
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <map>
+
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 #include "nccl_device.h"
-
-#define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
-#define NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA 512
-#define NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024)
 
 struct stagedBuffer {
   void *buff;
   ncclWindow_t win;
 };
 typedef struct stagedBuffer *stagedBuffer_t;
-
-#if defined(COMPILE_KERNEL_HOST)
-extern "C" ncclResult_t
-ncclAdaptorLocalAllReduce(const void *sendbuff, void *recvbuff,
-                          ncclWindow_t sendwin, ncclWindow_t recvwin,
-                          size_t count, ncclDataType_t datatype, ncclRedOp_t op,
-                          ncclDevComm &devComm, cudaStream_t stream);
-
-extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
-    const void *sendbuff, void *recvbuff, ncclWindow_t sendwin,
-    ncclWindow_t recvwin, size_t count, ncclDataType_t datatype, ncclRedOp_t op,
-    ncclDevComm &devComm, cudaStream_t stream);
-#endif // COMPILE_KERNEL_HOST
-
-// dlsym wrappers for pncclDevCommCreate / pncclDevCommDestroy
-flagcxResult_t ncclAdaptorDevCommCreate(ncclComm_t comm,
-                                        ncclDevCommRequirements *reqs,
-                                        ncclDevComm *devComm);
-flagcxResult_t ncclAdaptorDevCommDestroy(ncclComm_t comm,
-                                         const ncclDevComm *devComm);
 
 #else
 
@@ -82,4 +68,4 @@ struct flagcxWindow {
       return flagcxUnhandledDeviceError;                                       \
   }
 
-#endif // USE_NVIDIA_ADAPTOR
+#endif // FLAGCX_NVIDIA_ADAPTOR_H_
