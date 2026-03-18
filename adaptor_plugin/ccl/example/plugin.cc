@@ -7,8 +7,8 @@
  * works. A real plugin would wrap a CCL library (e.g. NCCL, RCCL).
  ************************************************************************/
 
-#include "flagcx/flagcx.h"
 #include "flagcx/flagcx_ccl_adaptor.h"
+#include "flagcx/nvidia_adaptor.h"
 
 static flagcxResult_t pluginGetVersion(int *version) {
   return flagcxInternalError;
