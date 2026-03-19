@@ -2,6 +2,7 @@
  * Copyright (c) 2025 BAAI. All rights reserved.
  ************************************************************************/
 
+#include "adaptor.h"
 #include "adaptor_plugin_load.h"
 #include "core.h"
 #include "flagcx_ccl_adaptor.h"
@@ -14,6 +15,7 @@
 static void *cclPluginDlHandle = NULL;
 static int cclPluginRefCount = 0;
 static std::mutex cclPluginMutex;
+static struct flagcxCCLAdaptor *cclDefaultDeviceAdaptor = NULL;
 extern struct flagcxCCLAdaptor *cclAdaptors[];
 
 flagcxResult_t flagcxCCLAdaptorPluginLoad() {
@@ -58,13 +60,18 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
-  cclAdaptors[1] = plugin;
+  cclDefaultDeviceAdaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+  cclAdaptors[flagcxCCLAdaptorDevice] = plugin;
   INFO(FLAGCX_INIT, "ADAPTOR/Plugin: Loaded CCL adaptor plugin '%s'",
        plugin->name);
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCCLAdaptorPluginUnload() {
+  if (cclDefaultDeviceAdaptor != NULL) {
+    cclAdaptors[flagcxCCLAdaptorDevice] = cclDefaultDeviceAdaptor;
+    cclDefaultDeviceAdaptor = NULL;
+  }
   flagcxAdaptorClosePluginLib(cclPluginDlHandle);
   cclPluginDlHandle = NULL;
   return flagcxSuccess;
