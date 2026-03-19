@@ -108,8 +108,8 @@ The following APIs are version-gated and only built when the system NCCL headers
 
 | API | Minimum NCCL version |
 |---|---|
-| `ncclGroupSimulateEnd` | 2.22.0 |
-| `ncclCommInitRankScalable` | 2.23.0 |
-| `ncclResetDebugInit` | 2.24.0 |
-| `ncclCommShrink` | 2.27.0 |
-| `ncclCommWindowRegister`, `ncclCommWindowDeregister` | 2.27.0 |
+| `ncclGroupSimulateEnd` | 2.22.3 |
+| `ncclCommInitRankScalable` | 2.23.4 |
+| `ncclResetDebugInit` | 2.24.3 |
+| `ncclCommShrink` | 2.27.3 |
+| `ncclCommWindowRegister`, `ncclCommWindowDeregister` | 2.27.3 |

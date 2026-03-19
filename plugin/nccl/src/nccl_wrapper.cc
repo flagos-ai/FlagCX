@@ -75,7 +75,7 @@ struct realNccl {
   ncclResult_t (*ncclMemFree)(void *);
   ncclResult_t (*ncclCommRegister)(const ncclComm_t, void *, size_t, void **);
   ncclResult_t (*ncclCommDeregister)(const ncclComm_t, void *);
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 3)
   ncclResult_t (*ncclCommWindowRegister)(ncclComm_t, void *, size_t,
                                          ncclWindow_t *, int);
   ncclResult_t (*ncclCommWindowDeregister)(ncclComm_t, ncclWindow_t);
@@ -136,7 +136,7 @@ static void initRealNccl() {
   LOAD_SYM(ncclMemFree)
   LOAD_SYM(ncclCommRegister)
   LOAD_SYM(ncclCommDeregister)
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 3)
   LOAD_SYM(ncclCommWindowRegister)
   LOAD_SYM(ncclCommWindowDeregister)
 #endif
@@ -531,7 +531,7 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
   return toNcclResult(flagcxCommDeregister(comm->handler->comm, handle));
 }
 
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 3)
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void *buff, size_t size,
                                     ncclWindow_t *win, int winFlags) {
   if (inWrapper) {
@@ -765,7 +765,7 @@ ncclResult_t ncclCommSplit(ncclComm_t comm, int color, int key,
   return ncclInvalidUsage;
 }
 
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 3)
 ncclResult_t ncclCommShrink(ncclComm_t comm, int *excludeRanksList,
                             int excludeRanksCount, ncclComm_t *newcomm,
                             ncclConfig_t *config, int shrinkFlags) {
@@ -773,7 +773,7 @@ ncclResult_t ncclCommShrink(ncclComm_t comm, int *excludeRanksList,
 }
 #endif
 
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 23, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 23, 4)
 ncclResult_t ncclCommInitRankScalable(ncclComm_t *newcomm, int nranks,
                                       int myrank, int nId,
                                       ncclUniqueId *commIds,
@@ -793,13 +793,13 @@ ncclResult_t ncclRedOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclInvalidUsage;
 }
 
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 22, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 22, 3)
 ncclResult_t ncclGroupSimulateEnd(ncclSimInfo_t *simInfo) {
   return ncclInvalidUsage;
 }
 #endif
 
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 24, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 24, 3)
 void ncclResetDebugInit() { /* Deprecated in NCCL, no-op */
 }
 #endif
