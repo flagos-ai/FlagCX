@@ -28,7 +28,7 @@ Real NCCL
 
 - **FlagCX** built and installed (the wrapper links against `libflagcx.so`)
 - **CUDA toolkit** (for `cuda_runtime.h` and `libcudart`)
-- **Real NCCL >= 2.21.0** installed somewhere on the system (the wrapper loads it via `dlopen` at runtime). The wrapper uses compile-time version guards (`NCCL_VERSION_CODE`) to adapt to the installed NCCL version — APIs introduced after 2.21.0 are only built when the system headers support them.
+- **Real NCCL >= 2.21.0** installed somewhere on the system (the wrapper loads it via `dlopen` at runtime). Supported NCCL versions: **2.21 through 2.27**. The wrapper uses compile-time version guards (`NCCL_VERSION_CODE`) to adapt to the installed NCCL version — APIs introduced after 2.21.0 are only built when the system headers support them.
 
 ## Building
 
@@ -102,12 +102,14 @@ The following NCCL APIs are intercepted and routed through FlagCX:
 
 The following APIs are exported but return `ncclInvalidUsage` (no FlagCX equivalent):
 
-`ncclBcast`, `ncclCommInitAll`, `ncclCommSplit`, `ncclCommInitRankScalable`, `ncclRedOpCreatePreMulSum`, `ncclRedOpDestroy`
+`ncclBcast`, `ncclCommInitAll`, `ncclCommSplit`, `ncclRedOpCreatePreMulSum`, `ncclRedOpDestroy`
 
 The following APIs are version-gated and only built when the system NCCL headers are new enough:
 
 | API | Minimum NCCL version |
 |---|---|
 | `ncclGroupSimulateEnd` | 2.22.0 |
-| `ncclCommShrink` | 2.25.0 |
+| `ncclCommInitRankScalable` | 2.23.0 |
+| `ncclResetDebugInit` | 2.24.0 |
+| `ncclCommShrink` | 2.27.0 |
 | `ncclCommWindowRegister`, `ncclCommWindowDeregister` | 2.27.0 |

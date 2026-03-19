@@ -765,7 +765,7 @@ ncclResult_t ncclCommSplit(ncclComm_t comm, int color, int key,
   return ncclInvalidUsage;
 }
 
-#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 25, 0)
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
 ncclResult_t ncclCommShrink(ncclComm_t comm, int *excludeRanksList,
                             int excludeRanksCount, ncclComm_t *newcomm,
                             ncclConfig_t *config, int shrinkFlags) {
@@ -773,12 +773,14 @@ ncclResult_t ncclCommShrink(ncclComm_t comm, int *excludeRanksList,
 }
 #endif
 
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 23, 0)
 ncclResult_t ncclCommInitRankScalable(ncclComm_t *newcomm, int nranks,
                                       int myrank, int nId,
                                       ncclUniqueId *commIds,
                                       ncclConfig_t *config) {
   return ncclInvalidUsage;
 }
+#endif
 
 ncclResult_t ncclRedOpCreatePreMulSum(ncclRedOp_t *op, void *scalar,
                                       ncclDataType_t datatype,
@@ -797,5 +799,7 @@ ncclResult_t ncclGroupSimulateEnd(ncclSimInfo_t *simInfo) {
 }
 #endif
 
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 24, 0)
 void ncclResetDebugInit() { /* Deprecated in NCCL, no-op */
 }
+#endif
