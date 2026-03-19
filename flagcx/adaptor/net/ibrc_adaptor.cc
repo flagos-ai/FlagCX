@@ -602,7 +602,7 @@ fail:
   return ret;
 }
 
-const char *reqTypeStr[] = {"Unused", "Send", "Recv", "Flush"};
+const char *reqTypeStr[] = {"Unused", "Send", "Recv", "Flush", "Iput", "Iget"};
 
 static void flagcxIbAddEvent(struct flagcxIbRequest *req, int devIndex,
                              struct flagcxIbNetCommDevBase *base) {
@@ -2557,6 +2557,58 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                            size_t size, int srcRank, int dstRank,
+                            void **gHandles, void **request) {
+  struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
+  struct flagcxIbGlobalHandleInfo *info =
+      (struct flagcxIbGlobalHandleInfo *)gHandles;
+
+  struct flagcxIbQp *qp = &comm->base.qps[0];
+  // RDMA READ: remote source is srcRank's buffer, local destination is dstRank's buffer
+  void *srcPtr = (void *)(info->baseVas[srcRank] + srcOff); // remote
+  void *dstPtr = (void *)(info->baseVas[dstRank] + dstOff); // local
+  int lkey = info->lkeys[dstRank]; // local key for destination buffer
+  int rkey = info->rkeys[srcRank]; // remote key for source buffer
+  struct flagcxIbRequest *req;
+  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
+  req->type = FLAGCX_NET_IB_REQ_IGET;
+  req->sock = &comm->base.sock;
+  for (int i = 0; i < comm->base.ndevs; i++) {
+    req->devBases[i] = &comm->devs[i].base;
+  }
+
+  struct ibv_send_wr wr;
+  memset(&wr, 0, sizeof(wr));
+  struct ibv_sge sge;
+  memset(&sge, 0, sizeof(sge));
+
+  wr.opcode = IBV_WR_RDMA_READ;
+  wr.send_flags = IBV_SEND_SIGNALED;
+  wr.wr_id = req - comm->base.reqs;
+  wr.next = NULL;
+  wr.wr.rdma.remote_addr = (uint64_t)srcPtr; // Remote source address
+  wr.wr.rdma.rkey = rkey;
+  wr.sg_list = &sge;
+  wr.num_sge = 1;
+
+  sge.addr = (uintptr_t)dstPtr; // Local destination address
+  sge.length = (uint32_t)size;  // ibv_sge::length is 32-bit
+  if ((size_t)sge.length != size) {
+    WARN("flagcxIbIget: transfer size %zu exceeds ibv_sge 32-bit limit", size);
+    flagcxIbFreeRequest(req);
+    return flagcxInternalError;
+  }
+  sge.lkey = lkey; // Local key
+
+  struct ibv_send_wr *bad_wr;
+  FLAGCXCHECK(flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr));
+  flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
+
+  *request = req;
+  return flagcxSuccess;
+}
+
 // Adapter wrapper functions
 
 struct flagcxNetAdaptor flagcxNetIb = {
@@ -2577,7 +2629,7 @@ struct flagcxNetAdaptor flagcxNetIb = {
     flagcxIbIsend, flagcxIbIrecv, flagcxIbIflush, flagcxIbTest,
 
     // One-sided functions
-    flagcxIbIput, flagcxIbIputSignal,
+    flagcxIbIput, flagcxIbIputSignal, flagcxIbIget,
 
     // Device name lookup
     flagcxIbGetDevFromName};

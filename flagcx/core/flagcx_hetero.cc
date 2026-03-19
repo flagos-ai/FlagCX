@@ -115,6 +115,46 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   return flagcxNotSupported;
 }
 
+flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset,
+                               size_t size) {
+  if (comm->netAdaptor != NULL && comm->netAdaptor->iget != NULL) {
+    int channelId = 0;
+    int connIndex = 0;
+    struct flagcxConnector *conn =
+        &comm->channels[channelId].peers[peer]->send[connIndex];
+    if (conn->connected == 0 ||
+        conn->proxyConn.connection->transport != TRANSPORT_NET) {
+      return flagcxNotSupported;
+    }
+    struct sendNetResources *resources =
+        (struct sendNetResources *)
+            conn->proxyConn.connection->transportResources;
+    void *sendComm = resources->netSendComm;
+    // srcRank is the remote peer (data source), dstRank is the local rank
+    int srcRank = peer;
+    int dstRank = comm->rank;
+
+    void **gHandles = (void **)globalOneSideHandles;
+    if (gHandles == NULL) {
+      WARN("flagcxHeteroGet: globalOneSideHandles not initialized");
+      return flagcxInternalError;
+    }
+    void *request = NULL;
+    FLAGCXCHECK(comm->netAdaptor->iget(sendComm, (uint64_t)srcOffset,
+                                       (uint64_t)dstOffset, size, srcRank,
+                                       dstRank, gHandles, &request));
+    if (request != NULL) {
+      int done = 0;
+      while (!done) {
+        FLAGCXCHECK(comm->netAdaptor->test(request, &done, NULL));
+      }
+    }
+    return flagcxSuccess;
+  }
+  return flagcxNotSupported;
+}
+
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, size_t signalOffset) {

@@ -14,7 +14,8 @@ typedef enum {
   flagcxDevicePrimWait = 3,
   flagcxDevicePrimPut = 4,
   flagcxDevicePrimSignal = 5,
-  flagcxDevicePrimBarrierSignal = 6
+  flagcxDevicePrimBarrierSignal = 6,
+  flagcxDevicePrimGet = 9
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo
@@ -52,7 +53,7 @@ constexpr unsigned int flagcxDeviceTriggerBitsFifoReserved = 1;
 constexpr unsigned int flagcxDeviceTriggerOffValid = 63;
 constexpr uint64_t flagcxDeviceTriggerValidMask = (1ULL << 63);
 
-// Offset fields in fst (when used for PUT operations)
+// Offset fields in fst (when used for PUT/GET operations)
 constexpr unsigned int flagcxDeviceTriggerOffSrcOffset = 32;
 constexpr unsigned int flagcxDeviceTriggerBitsSrcOffset = 32;
 constexpr unsigned int flagcxDeviceTriggerOffDstOffset = 0;

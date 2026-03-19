@@ -485,6 +485,56 @@ flagcxResult_t flagcxGroupStart(flagcxComm_t comm);
  */
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm);
 
+
+/*
+ * Put with Signal (data transfer + remote signal)
+ *
+ * Posts an RDMA write of [size] bytes from the local registered data buffer
+ * at byte offset [srcOffset] to the peer's registered data buffer at byte
+ * offset [dstOffset], followed by an RDMA atomic increment of the peer's
+ * signal buffer at byte offset [signalOffset].
+ *
+ * When size == 0, only the signal atomic is posted (signal-only mode);
+ * the data buffer registration is not required in that case.
+ */
+/*
+ * Get (RDMA Read)
+ *
+ * Reads [count] elements of [datatype] from the peer's registered data buffer
+ * at byte offset [srcOffset] into the local registered data buffer at byte
+ * offset [dstOffset].
+ * Requires prior registration via flagcxOneSideRegister on both ranks.
+ */
+flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
+                         size_t dstOffset, size_t count,
+                         flagcxDataType_t datatype, flagcxStream_t stream);
+
+flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
+                               size_t dstOffset, size_t count,
+                               flagcxDataType_t datatype, size_t signalOffset,
+                               flagcxStream_t stream);
+
+/*
+ * Signal only (no data transfer)
+ *
+ * Equivalent to flagcxPutSignal with size == 0.
+ * Posts an RDMA atomic increment to the peer's signal buffer at byte
+ * offset [signalOffset].
+ */
+flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset);
+
+/*
+ * Wait for Signal
+ *
+ * Enqueues a GPU stream wait that blocks until the local signal buffer
+ * at byte offset [signalOffset] reaches the value [expected].
+ * stream must be non-NULL; the caller is responsible for synchronizing
+ * the stream after this call.
+ */
+flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
+                                size_t signalOffset, uint64_t expected,
+                                flagcxStream_t stream);
+
 #ifdef __cplusplus
 } // end extern "C"
 #endif

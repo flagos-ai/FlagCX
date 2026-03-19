@@ -2269,6 +2269,7 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     // One-sided functions
     NULL, // iput - not supported on IBUC
     NULL, // iputSignal - not supported on IBUC
+    NULL, // iget - not supported on IBUC
 
     // Device name lookup
     flagcxIbucGetDevFromName};

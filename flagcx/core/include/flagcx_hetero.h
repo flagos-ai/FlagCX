@@ -40,6 +40,9 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size);
 
+flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size);
+
 // Data + signal combined (chained WRITE + ATOMIC in IB backend)
 // When size == 0, only signal ATOMIC is posted (signal-only mode)
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,

@@ -43,29 +43,27 @@ int main(int argc, char *argv[]) {
 
   if (totalProcs < 2) {
     if (proc == 0)
-      printf("test_kernel_put requires at least 2 MPI processes\n");
+      printf("test_kernel_get requires at least 2 MPI processes\n");
     MPI_Finalize();
     return 0;
   }
 
-  const int senderRank = 0;
-  const int receiverRank = 1;
+  const int providerRank = 0;
+  const int initiatorRank = 1;
   if (totalProcs != 2) {
     if (proc == 0)
       printf(
-          "test_kernel_put requires exactly 2 ranks (sender=0, receiver=1).\n");
+          "test_kernel_get requires exactly 2 ranks (provider=0, initiator=1).\n");
     MPI_Finalize();
     return 0;
   }
 
-  bool isSender = (proc == senderRank);
-  bool isReceiver = (proc == receiverRank);
+  bool isProvider = (proc == providerRank);
+  bool isInitiator = (proc == initiatorRank);
 
-  // Allocate data and signal buffers for one-sided operations
-  size_t signalBytes = sizeof(uint64_t);
+  // Allocate data buffer for one-sided GET operations
   size_t max_iterations = std::max(num_warmup_iters, num_iters);
   size_t window_bytes = max_bytes * max_iterations;
-  size_t signal_total_bytes = signalBytes * max_iterations;
 
   // Data buffer: host memory for RDMA data transfers
   void *window = nullptr;
@@ -77,67 +75,31 @@ int main(int argc, char *argv[]) {
   }
   std::memset(window, 0, window_bytes);
 
-  // Signal buffer: GPU memory for RDMA atomic signal writes (FORCE_SO MR)
-  void *signalWindow = nullptr;
-  flagcxResult_t res = flagcxMemAlloc(&signalWindow, signal_total_bytes, comm);
-  if (res != flagcxSuccess || signalWindow == nullptr) {
-    fprintf(stderr, "[rank %d] flagcxMemAlloc failed for signal (size=%zu)\n",
-            proc, signal_total_bytes);
-    MPI_Abort(MPI_COMM_WORLD, 1);
-  }
-  devHandle->deviceMemset(signalWindow, 0, signal_total_bytes, flagcxMemDevice,
-                          NULL);
-
   // Register data buffer in global reg pool and for one-sided operations
   void *windowHandle = nullptr;
   flagcxCommRegister(comm, window, window_bytes, &windowHandle);
   FLAGCXCHECK(flagcxOneSideRegister(comm, window, window_bytes));
 
-  // Register signal buffer for one-sided operations
-  FLAGCXCHECK(
-      flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes));
-
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
-
-  // Allocate device buffers
-  void *srcbuff = nullptr;
-  devHandle->deviceMalloc(&srcbuff, max_bytes, flagcxMemDevice, NULL);
-
-  // Receiver-side error flag for one-sided wait timeout detection
-  int *deviceErrorFlag = nullptr;
-  devHandle->deviceMalloc((void **)&deviceErrorFlag, sizeof(int),
-                          flagcxMemDevice, NULL);
-  int hostErrorFlag = 0;
 
   void *hello = malloc(max_bytes);
   memset(hello, 0, max_bytes);
 
-  // Create device communicator
-  flagcxDevComm_t devComm = nullptr;
-  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
-
   // Warm-up iterations
   for (int i = 0; i < num_warmup_iters; ++i) {
-    size_t signalOffset = i * signalBytes;
-    size_t current_send_offset = i * max_bytes;
-    size_t current_recv_offset = i * max_bytes;
+    size_t current_offset = i * max_bytes;
 
-    if (isSender) {
-      uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
-      std::memset((char *)window + current_send_offset, value, max_bytes);
+    if (isProvider) {
+      uint8_t value = static_cast<uint8_t>((providerRank + i) & 0xff);
+      std::memset((char *)window + current_offset, value, max_bytes);
+    }
 
-      devHandle->deviceMemcpy(srcbuff, (char *)window + current_send_offset,
-                              max_bytes, flagcxMemcpyHostToDevice, NULL);
+    MPI_Barrier(MPI_COMM_WORLD);
 
-      FLAGCXCHECK(flagcxPutSignal(comm, receiverRank, current_send_offset,
-                                  current_recv_offset,
-                                  max_bytes / sizeof(float), DATATYPE,
-                                  signalOffset, stream));
-    } else if (isReceiver) {
-      FLAGCXCHECK(flagcxWaitSignal(comm, senderRank, signalOffset, 1, stream));
-      devHandle->streamSynchronize(stream);
+    if (isInitiator) {
+      FLAGCXCHECK(flagcxGet(comm, providerRank, current_offset, current_offset,
+                            max_bytes / sizeof(float), DATATYPE, stream));
     }
   }
 
@@ -149,7 +111,7 @@ int main(int argc, char *argv[]) {
 
     size_t count = size / sizeof(float);
 
-    if (isSender) {
+    if (isProvider) {
       strcpy((char *)hello, "_0x1234");
       strcpy((char *)hello + size / 3, "_0x5678");
       strcpy((char *)hello + size / 3 * 2, "_0x9abc");
@@ -166,25 +128,20 @@ int main(int argc, char *argv[]) {
 
     tim.reset();
     for (int i = 0; i < num_iters; ++i) {
-      size_t signalOffset = i * signalBytes;
-      size_t current_send_offset = i * size;
-      size_t current_recv_offset = i * size;
+      size_t current_src_offset = i * size;
+      size_t current_dst_offset = i * size;
 
-      if (isSender) {
-        uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
-        std::memset((char *)window + current_send_offset, value, size);
-        memcpy(hello, (char *)window + current_send_offset, size);
+      if (isProvider) {
+        uint8_t value = static_cast<uint8_t>((providerRank + i) & 0xff);
+        std::memset((char *)window + current_src_offset, value, size);
+        memcpy(hello, (char *)window + current_src_offset, size);
+      }
 
-        devHandle->deviceMemcpy(srcbuff, hello, size, flagcxMemcpyHostToDevice,
-                                NULL);
+      MPI_Barrier(MPI_COMM_WORLD);
 
-        FLAGCXCHECK(flagcxPutSignal(comm, receiverRank, current_send_offset,
-                                    current_recv_offset, count, DATATYPE,
-                                    signalOffset, stream));
-      } else if (isReceiver) {
-        FLAGCXCHECK(
-            flagcxWaitSignal(comm, senderRank, signalOffset, 1, stream));
-        devHandle->streamSynchronize(stream);
+      if (isInitiator) {
+        FLAGCXCHECK(flagcxGet(comm, providerRank, current_src_offset,
+                              current_dst_offset, count, DATATYPE, stream));
       }
     }
     devHandle->streamSynchronize(stream);
@@ -202,10 +159,10 @@ int main(int argc, char *argv[]) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    if (isReceiver && num_iters > 0) {
+    if (isInitiator && num_iters > 0) {
       memset(hello, 0, size);
       memcpy(hello, (char *)window + 0, size);
-      if (proc == 0 && color == 0 && print_buffer) {
+      if (proc == 1 && color == 0 && print_buffer) {
         printf("recvbuff = ");
         printf("%s", (const char *)((char *)hello));
         printf("%s", (const char *)((char *)hello + size / 3));
@@ -218,22 +175,14 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
   sleep(1);
 
-  if (devComm != nullptr) {
-    flagcxDevCommDestroy(comm, devComm);
-  }
-
-  devHandle->deviceFree(deviceErrorFlag, flagcxMemDevice, NULL);
-  devHandle->deviceFree(srcbuff, flagcxMemDevice, NULL);
   free(hello);
 
   flagcxOneSideDeregister(comm);
-  flagcxOneSideSignalDeregister(comm);
 
   if (windowHandle != nullptr) {
     flagcxCommDeregister(comm, windowHandle);
   }
   free(window);
-  flagcxMemFree(signalWindow, comm);
 
   devHandle->streamDestroy(stream);
   flagcxCommDestroy(comm);

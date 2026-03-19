@@ -1375,6 +1375,17 @@ struct flagcxDevNet {
     return flagcxFifoEnqueue(_devComm.getFifoBuffer(), fstValue, 0, peer, 0,
                              flagcxDevicePrimSignal);
   }
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t get(size_t srcOffset,
+                                                    size_t dstOffset,
+                                                    size_t count,
+                                                    flagcxDataType_t datatype,
+                                                    int peer) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), fstValue, count, peer,
+                             datatype, flagcxDevicePrimGet);
+  }
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   // ---- GIN one-sided operations (Tier 1 only) ----

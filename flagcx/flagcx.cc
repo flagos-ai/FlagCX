@@ -1607,3 +1607,48 @@ flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
   }
   return flagcxSuccess;
 }
+
+flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
+                         size_t dstOffset, size_t count,
+                         flagcxDataType_t datatype, flagcxStream_t stream) {
+  (void)stream;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxNotSupported;
+  }
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  return flagcxHeteroGet(comm->heteroComm, peer, srcOffset, dstOffset, size);
+}
+
+flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
+                               size_t dstOffset, size_t count,
+                               flagcxDataType_t datatype, size_t signalOffset,
+                               flagcxStream_t stream) {
+  (void)stream;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxNotSupported;
+  }
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  return flagcxHeteroPutSignal(comm->heteroComm, peer, srcOffset, dstOffset,
+                               size, signalOffset);
+}
+
+flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxNotSupported;
+  }
+  return flagcxHeteroPutSignal(comm->heteroComm, peer, 0, 0, 0, signalOffset);
+}
+
+flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
+                                size_t signalOffset, uint64_t expected,
+                                flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (useHomoComm(comm) && !useHeteroComm()) {
+    return flagcxNotSupported;
+  }
+  return flagcxHeteroWaitSignal(comm->heteroComm, peer, signalOffset, expected,
+                                stream);
+}
