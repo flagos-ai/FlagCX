@@ -2,8 +2,6 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
-#define WARP_SIZE 32
-#define FULL_MASK 0xffffffff
 #define SLOT_IDX 4
 #define FST_IDX 5
 #define SND_IDX 6
@@ -73,7 +71,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
   return flagcxSuccess;
 }
 
-FLAGCX_DEVICE_DECORATOR void
+FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
                    uint64_t nthreads, uint64_t datatype, uint64_t redOp) {
   // to be implemented by vendors
@@ -159,20 +157,13 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
 
     // (4) perform reduce task
     emptyIter = 0;
-    uint64_t fst;
-    uint64_t snd;
-    uint64_t out;
-    uint64_t count;
-    uint64_t nthreads;
-    uint64_t datatype;
-    uint64_t redop;
-    fst = shm[FST_IDX];
-    snd = shm[SND_IDX];
-    out = shm[OUT_IDX];
-    count = shm[COUNT_IDX];
-    nthreads = shm[NTHREADS_IDX];
-    datatype = shm[DATATYPE_IDX];
-    redop = shm[REDOP_IDX];
+    uint64_t fst = shm[FST_IDX];
+    uint64_t snd = shm[SND_IDX];
+    uint64_t out = shm[OUT_IDX];
+    uint64_t count = shm[COUNT_IDX];
+    uint64_t nthreads = shm[NTHREADS_IDX];
+    uint64_t datatype = shm[DATATYPE_IDX];
+    uint64_t redop = shm[REDOP_IDX];
     flagcxReduceKernel(fst, snd, out, count, nthreads, datatype, redop);
     FLAGCX_DEVICE_SYNC_THREADS();
     FLAGCX_DEVICE_THREAD_FENCE();
