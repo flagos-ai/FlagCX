@@ -131,15 +131,28 @@ int main(int argc, char *argv[]) {
       devHandle->deviceMemcpy(srcbuff, (char *)window + current_send_offset,
                               max_bytes, flagcxMemcpyHostToDevice, NULL);
 
-      FLAGCXCHECK(flagcxPutSignal(comm, receiverRank, current_send_offset,
-                                  current_recv_offset,
-                                  max_bytes / sizeof(float), DATATYPE,
-                                  signalOffset, stream));
+      // Dedicated one-sided warmup (avoid send/recv path)
+      flagcxOnesidedSendDemo(0, current_recv_offset, signalOffset,
+                             max_bytes / sizeof(float), DATATYPE, receiverRank,
+                             devComm, stream);
     } else if (isReceiver) {
-      FLAGCXCHECK(flagcxWaitSignal(comm, senderRank, signalOffset, 1, stream));
-      devHandle->streamSynchronize(stream);
+      volatile uint64_t *signalAddr =
+          (volatile uint64_t *)((char *)signalWindow + signalOffset);
+      hostErrorFlag = 0;
+      devHandle->deviceMemcpy(deviceErrorFlag, &hostErrorFlag, sizeof(int),
+                              flagcxMemcpyHostToDevice, NULL);
+      flagcxOnesidedRecvDemo(signalAddr, 1, deviceErrorFlag, devComm, stream);
+      devHandle->deviceMemcpy(&hostErrorFlag, deviceErrorFlag, sizeof(int),
+                              flagcxMemcpyDeviceToHost, NULL);
+      if (hostErrorFlag != 0) {
+        fprintf(stderr,
+                "[rank %d] one-sided warmup timeout (iter=%d, bytes=%zu)\n",
+                proc, i, max_bytes);
+        break;
+      }
     }
   }
+  devHandle->streamSynchronize(stream);
 
   // Benchmark loop
   timer tim;
@@ -178,13 +191,24 @@ int main(int argc, char *argv[]) {
         devHandle->deviceMemcpy(srcbuff, hello, size, flagcxMemcpyHostToDevice,
                                 NULL);
 
-        FLAGCXCHECK(flagcxPutSignal(comm, receiverRank, current_send_offset,
-                                    current_recv_offset, count, DATATYPE,
-                                    signalOffset, stream));
+        flagcxOnesidedSendDemo(0, current_recv_offset, signalOffset, count,
+                               DATATYPE, receiverRank, devComm, stream);
       } else if (isReceiver) {
-        FLAGCXCHECK(
-            flagcxWaitSignal(comm, senderRank, signalOffset, 1, stream));
-        devHandle->streamSynchronize(stream);
+        volatile uint64_t *signalAddr =
+            (volatile uint64_t *)((char *)signalWindow + signalOffset);
+        hostErrorFlag = 0;
+        devHandle->deviceMemcpy(deviceErrorFlag, &hostErrorFlag, sizeof(int),
+                                flagcxMemcpyHostToDevice, NULL);
+        flagcxOnesidedRecvDemo(signalAddr, 1, deviceErrorFlag, devComm, stream);
+        devHandle->deviceMemcpy(&hostErrorFlag, deviceErrorFlag, sizeof(int),
+                                flagcxMemcpyDeviceToHost, NULL);
+        if (hostErrorFlag != 0) {
+          fprintf(
+              stderr,
+              "[rank %d] flagcxOnesidedRecvDemo timeout (size=%zu, iter=%d)\n",
+              proc, size, i);
+          break;
+        }
       }
     }
     devHandle->streamSynchronize(stream);

@@ -39,7 +39,7 @@ INCLUDEDIR := $(abspath ../include)
 JSON_INCLUDE = $(abspath ../../third-party/json/single_include)
 LIBSRCFILES:= ../tools.cc
 
-all: test-sendrecv test-allreduce test-allgather test-reducescatter test-alltoall test-alltoallv test-broadcast test-gather test-scatter test-reduce test-core-sendrecv test-ipc-sendrecv test-put
+all: test-sendrecv test-allreduce test-allgather test-reducescatter test-alltoall test-alltoallv test-broadcast test-gather test-scatter test-reduce test-core-sendrecv test-ipc-sendrecv test-put test-get
 
 test-sendrecv: test_sendrecv.cpp
 	@echo "Compiling $@"
@@ -91,7 +91,11 @@ test-ipc-sendrecv: test_ipc_sendrecv.cpp
 
 test-put: test_put.cpp
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_put test_put.cpp $(LIBSRCFILES) -I../../ -I../../flagcx/include -I../../flagcx/core -I../../flagcx/core/include -I../../flagcx/service -I../../flagcx/service/include -I../../flagcx/adaptor/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_put test_put.cpp $(LIBSRCFILES) -I../../flagcx/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
+
+test-get: test_get.cpp
+	@echo "Compiling $@"
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_get test_get.cpp $(LIBSRCFILES) -I../../flagcx/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
 
 clean:
 	@rm -f test_sendrecv
@@ -107,6 +111,7 @@ clean:
 	@rm -f test_core_sendrecv
 	@rm -f test_ipc_sendrecv
 	@rm -f test_put
+	@rm -f test_get
 
 run-sendrecv:
 	@mpirun --allow-run-as-root -np 8 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_sendrecv
@@ -146,6 +151,9 @@ run-ipc-sendrecv:
 
 run-put:
 	@mpirun --allow-run-as-root -np 8 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_put
+
+run-get:
+	@mpirun --allow-run-as-root -np 2 -x UCX_POSIX_USE_PROC_LINK=n -x ${DEV}_VISIBLE_DEVICES=0,1 -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL ./test_get
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"

@@ -3,7 +3,7 @@
 #include "tools.h"
 #include <algorithm>
 #include <cstring>
-#include <iostream>
+#include <unistd.h>
 
 #define DATATYPE flagcxFloat
 
@@ -43,7 +43,7 @@ int main(int argc, char *argv[]) {
 
   if (totalProcs < 2) {
     if (proc == 0)
-      printf("test_kernel_get requires at least 2 MPI processes\n");
+      printf("test_get requires at least 2 MPI processes\n");
     MPI_Finalize();
     return 0;
   }
@@ -53,7 +53,7 @@ int main(int argc, char *argv[]) {
   if (totalProcs != 2) {
     if (proc == 0)
       printf(
-          "test_kernel_get requires exactly 2 ranks (provider=0, initiator=1).\n");
+          "test_get requires exactly 2 ranks (provider=0, initiator=1).\n");
     MPI_Finalize();
     return 0;
   }
@@ -65,7 +65,6 @@ int main(int argc, char *argv[]) {
   size_t max_iterations = std::max(num_warmup_iters, num_iters);
   size_t window_bytes = max_bytes * max_iterations;
 
-  // Data buffer: host memory for RDMA data transfers
   void *window = nullptr;
   if (posix_memalign(&window, 64, window_bytes) != 0 || window == nullptr) {
     fprintf(stderr,
@@ -75,7 +74,6 @@ int main(int argc, char *argv[]) {
   }
   std::memset(window, 0, window_bytes);
 
-  // Register data buffer in global reg pool and for one-sided operations
   void *windowHandle = nullptr;
   flagcxCommRegister(comm, window, window_bytes, &windowHandle);
   FLAGCXCHECK(flagcxOneSideRegister(comm, window, window_bytes));
@@ -176,7 +174,6 @@ int main(int argc, char *argv[]) {
   sleep(1);
 
   free(hello);
-
   flagcxOneSideDeregister(comm);
 
   if (windowHandle != nullptr) {
