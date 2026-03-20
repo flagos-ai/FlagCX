@@ -95,6 +95,40 @@ static struct flagcxDeviceHandle globalDeviceHandle {
       deviceAdaptor->ipcMemHandleFree,
 };
 
+void flagcxRebuildGlobalDeviceHandle() {
+  // Basic functions
+  globalDeviceHandle.deviceSynchronize = deviceAdaptor->deviceSynchronize;
+  globalDeviceHandle.deviceMemcpy = wrapper_deviceMemcpy;
+  globalDeviceHandle.deviceMemset = deviceAdaptor->deviceMemset;
+  globalDeviceHandle.deviceMalloc = deviceAdaptor->deviceMalloc;
+  globalDeviceHandle.deviceFree = deviceAdaptor->deviceFree;
+  globalDeviceHandle.setDevice = deviceAdaptor->setDevice;
+  globalDeviceHandle.getDevice = deviceAdaptor->getDevice;
+  globalDeviceHandle.getDeviceCount = deviceAdaptor->getDeviceCount;
+  globalDeviceHandle.getVendor = deviceAdaptor->getVendor;
+  globalDeviceHandle.hostGetDevicePointer = deviceAdaptor->hostGetDevicePointer;
+  // Stream functions
+  globalDeviceHandle.streamCreate = deviceAdaptor->streamCreate;
+  globalDeviceHandle.streamDestroy = deviceAdaptor->streamDestroy;
+  globalDeviceHandle.streamCopy = deviceAdaptor->streamCopy;
+  globalDeviceHandle.streamFree = deviceAdaptor->streamFree;
+  globalDeviceHandle.streamSynchronize = deviceAdaptor->streamSynchronize;
+  globalDeviceHandle.streamQuery = deviceAdaptor->streamQuery;
+  globalDeviceHandle.streamWaitEvent = deviceAdaptor->streamWaitEvent;
+  // Event functions
+  globalDeviceHandle.eventCreate = deviceAdaptor->eventCreate;
+  globalDeviceHandle.eventDestroy = deviceAdaptor->eventDestroy;
+  globalDeviceHandle.eventRecord = deviceAdaptor->eventRecord;
+  globalDeviceHandle.eventSynchronize = deviceAdaptor->eventSynchronize;
+  globalDeviceHandle.eventQuery = deviceAdaptor->eventQuery;
+  // IpcMemHandle functions
+  globalDeviceHandle.ipcMemHandleCreate = deviceAdaptor->ipcMemHandleCreate;
+  globalDeviceHandle.ipcMemHandleGet = deviceAdaptor->ipcMemHandleGet;
+  globalDeviceHandle.ipcMemHandleOpen = deviceAdaptor->ipcMemHandleOpen;
+  globalDeviceHandle.ipcMemHandleClose = deviceAdaptor->ipcMemHandleClose;
+  globalDeviceHandle.ipcMemHandleFree = deviceAdaptor->ipcMemHandleFree;
+}
+
 flagcxResult_t flagcxEnsureCommReady(flagcxComm_t comm) {
   if (comm == NULL) {
     return flagcxInternalError;
@@ -127,6 +161,7 @@ bool useHeteroComm() {
 }
 
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler) {
+  flagcxDeviceAdaptorPluginInit();
   (*handler) = NULL;
   flagcxCalloc(handler, 1);
   flagcxCalloc(&(*handler)->uniqueId, 1);
@@ -147,6 +182,7 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
     free(handler);
     handler = NULL;
   }
+  flagcxDeviceAdaptorPluginFinalize();
   return flagcxSuccess;
 }
 

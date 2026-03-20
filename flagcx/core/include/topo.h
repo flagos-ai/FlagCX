@@ -8,6 +8,7 @@
 #define FLAGCX_TOPO_H_
 
 #include "core.h"
+#include "flagcx_device_adaptor.h"
 #include "graph.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -209,15 +210,6 @@ struct topoArgs {
   int nranks;
   flagcxUniqueId uniqueId;
   void *bootstrap;
-};
-
-struct flagcxDevProps {
-  char name[256];
-  int pciBusId;
-  int pciDeviceId;
-  int pciDomainId;
-  // remove unused field for now
-  // int gdrSupported;
 };
 
 struct flatTopoLink {

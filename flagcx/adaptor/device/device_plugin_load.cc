@@ -2,50 +2,98 @@
  * Copyright (c) 2025 BAAI. All rights reserved.
  ************************************************************************/
 
+#include "adaptor.h"
 #include "adaptor_plugin_load.h"
+#include "core.h"
+#include "flagcx_device_adaptor.h"
 
-// TODO (Phase 4): Implement Device adaptor plugin loading.
-//
-// This file should:
-// 1. Read env var FLAGCX_DEVICE_ADAPTOR_PLUGIN
-// 2. If NULL or "none": return flagcxSuccess (keep default)
-// 3. dlopen the path via flagcxAdaptorOpenPluginLib()
-// 4. dlsym for "flagcxDeviceAdaptorPlugin_v1" (struct flagcxDeviceAdaptor)
-// 5. Validate: name non-NULL, critical function pointers non-NULL
-// 6. Backup default: save deviceAdaptor
-// 7. Override: deviceAdaptor = loaded plugin
-// 8. Log success/failure
-//
-// NOTE: Must also handle globalDeviceHandle in flagcx/flagcx.cc which
-// caches deviceAdaptor function pointers at static init time. Either
-// rebuild globalDeviceHandle after plugin loading, or change it to
-// dispatch through deviceAdaptor indirectly.
-//
-// Static state needed:
-//   static void *devicePluginDlHandle = NULL;
-//   static struct flagcxDeviceAdaptor *defaultDeviceAdaptor = NULL;
+#include <dlfcn.h>
+#include <mutex>
+#include <stdlib.h>
+#include <string.h>
 
+static void *devicePluginDlHandle = NULL;
 static int devicePluginRefCount = 0;
+static std::mutex devicePluginMutex;
+static struct flagcxDeviceAdaptor *defaultDeviceAdaptor = NULL;
+extern struct flagcxDeviceAdaptor *deviceAdaptor;
 
-flagcxResult_t flagcxDeviceAdaptorPluginLoad() { return flagcxSuccess; }
+// Defined in flagcx.cc — rebuilds globalDeviceHandle from current deviceAdaptor
+extern void flagcxRebuildGlobalDeviceHandle();
 
-flagcxResult_t flagcxDeviceAdaptorPluginUnload() { return flagcxSuccess; }
+flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
+  // Already loaded — nothing to do.
+  if (devicePluginDlHandle != NULL) {
+    return flagcxSuccess;
+  }
+
+  const char *envValue = getenv("FLAGCX_DEVICE_ADAPTOR_PLUGIN");
+  if (envValue == NULL || strcmp(envValue, "none") == 0) {
+    return flagcxSuccess;
+  }
+
+  devicePluginDlHandle = flagcxAdaptorOpenPluginLib(envValue);
+  if (devicePluginDlHandle == NULL) {
+    WARN("ADAPTOR/Plugin: Failed to open device adaptor plugin '%s'", envValue);
+    return flagcxSuccess;
+  }
+
+  struct flagcxDeviceAdaptor *plugin = (struct flagcxDeviceAdaptor *)dlsym(
+      devicePluginDlHandle, "flagcxDeviceAdaptorPlugin_v1");
+  if (plugin == NULL) {
+    WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxDeviceAdaptorPlugin_v1' "
+         "in '%s': %s",
+         envValue, dlerror());
+    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    devicePluginDlHandle = NULL;
+    return flagcxSuccess;
+  }
+
+  // Validate critical fields
+  if (plugin->name[0] == '\0' || plugin->setDevice == NULL ||
+      plugin->getDevice == NULL || plugin->deviceMalloc == NULL ||
+      plugin->deviceFree == NULL) {
+    WARN("ADAPTOR/Plugin: Device adaptor plugin '%s' is missing required "
+         "function pointers",
+         envValue);
+    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    devicePluginDlHandle = NULL;
+    return flagcxSuccess;
+  }
+
+  defaultDeviceAdaptor = deviceAdaptor;
+  deviceAdaptor = plugin;
+  flagcxRebuildGlobalDeviceHandle();
+  INFO(FLAGCX_INIT, "ADAPTOR/Plugin: Loaded device adaptor plugin '%s'",
+       plugin->name);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
+  if (defaultDeviceAdaptor != NULL) {
+    deviceAdaptor = defaultDeviceAdaptor;
+    defaultDeviceAdaptor = NULL;
+    flagcxRebuildGlobalDeviceHandle();
+  }
+  flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+  devicePluginDlHandle = NULL;
+  return flagcxSuccess;
+}
 
 flagcxResult_t flagcxDeviceAdaptorPluginInit() {
-  flagcxResult_t ret = flagcxDeviceAdaptorPluginLoad();
-  if (ret != flagcxSuccess) {
-    // TODO (Phase 4): fallback to compile-time default
-    return ret;
+  std::lock_guard<std::mutex> lock(devicePluginMutex);
+  flagcxDeviceAdaptorPluginLoad();
+  if (devicePluginDlHandle != NULL) {
+    devicePluginRefCount++;
   }
-  // TODO (Phase 4): only increment when Load actually opened a library
-  // devicePluginRefCount++;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxDeviceAdaptorPluginFinalize() {
-  // TODO (Phase 4): decrement and unload only when refcount reaches zero
-  // if (devicePluginRefCount > 0 && --devicePluginRefCount == 0) {
-  //   flagcxDeviceAdaptorPluginUnload();
-  // }
+  std::lock_guard<std::mutex> lock(devicePluginMutex);
+  if (devicePluginRefCount > 0 && --devicePluginRefCount == 0) {
+    INFO(FLAGCX_INIT, "Unloading device adaptor plugin");
+    flagcxDeviceAdaptorPluginUnload();
+  }
   return flagcxSuccess;
 }
