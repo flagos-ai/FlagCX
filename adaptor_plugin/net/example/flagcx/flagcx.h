@@ -181,9 +181,8 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* User buffer registration functions. The actual allocated size might
  * be larger than requested due to granularity requirement. */
-flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
-                              flagcxComm_t comm = NULL);
-flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm = NULL);
+flagcxResult_t flagcxMemAlloc(void **ptr, size_t size);
+flagcxResult_t flagcxMemFree(void *ptr);
 
 /* Register/Deregister user buffer for zero-copy operation */
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,

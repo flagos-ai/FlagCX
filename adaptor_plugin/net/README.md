@@ -102,12 +102,13 @@ struct flagcxNetAdaptor_v1 {
   flagcxResult_t (*test)(void *request, int *done, int *sizes);
 
   flagcxResult_t (*iput)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
-                         size_t size, int srcRank, int dstRank, void **gHandles,
-                         void **request);
+                         size_t size, int srcRank, int dstRank,
+                         void **srcHandles, void **dstHandles, void **request);
   flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                                size_t size, int srcRank, int dstRank,
                                void **dataHandles, uint64_t signalOff,
-                               void **signalHandles, void **request);
+                               void **signalHandles, uint64_t signalValue,
+                               void **request);
 
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
 };
@@ -202,11 +203,11 @@ Poll a request for completion. Set `*done = 1` when complete, with `*sizes` indi
 
 `iput`
 
-Initiate an asynchronous RDMA write from `srcOff` to `dstOff` using global handles.
+Initiate an asynchronous RDMA write from `srcOff` to `dstOff`. `srcHandles` and `dstHandles` are per-window MR handle arrays for the source and destination buffers respectively, allowing independent memory regions for each side.
 
 `iputSignal`
 
-Combined data write + signal operation. When `size > 0`, posts a chained RDMA write (from `srcOff`/`dstOff` via `dataHandles`) followed by an atomic increment at `signalOff` via `signalHandles`. When `size == 0`, only the signal atomic is posted (signal-only mode). Returns a single `request` covering the entire operation.
+Combined data write + signal operation. When `size > 0`, posts a chained RDMA write (from `srcOff`/`dstOff` via `dataHandles`) followed by an atomic fetch-and-add of `signalValue` at `signalOff` via `signalHandles`. When `size == 0`, only the signal atomic is posted (signal-only mode). Returns a single `request` covering the entire operation.
 
 ### Device Name Lookup
 

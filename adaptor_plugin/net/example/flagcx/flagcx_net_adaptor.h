@@ -61,16 +61,17 @@ struct flagcxNetAdaptor_v1 {
                            void **mhandles, void **request);
   flagcxResult_t (*test)(void *request, int *done, int *sizes);
 
-  // One-sided
+  // One-sided (per-window MR: separate src/dst handles for independent buffers)
   flagcxResult_t (*iput)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
-                         size_t size, int srcRank, int dstRank, void **gHandles,
-                         void **request);
+                         size_t size, int srcRank, int dstRank,
+                         void **srcHandles, void **dstHandles, void **request);
   // Data + signal combined (NCCL GIN-aligned: enables chained WRITE + ATOMIC)
   // When size == 0, only signal ATOMIC is posted (signal-only mode)
   flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                                size_t size, int srcRank, int dstRank,
                                void **dataHandles, uint64_t signalOff,
-                               void **signalHandles, void **request);
+                               void **signalHandles, uint64_t signalValue,
+                               void **request);
 
   // Device name lookup
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
