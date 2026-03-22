@@ -114,6 +114,8 @@ typedef struct flagcxStream *flagcxStream_t;
 typedef struct flagcxEvent *flagcxEvent_t;
 /* Opaque handle to flagcxIpcMemHandle */
 typedef struct flagcxIpcMemHandle *flagcxIpcMemHandle_t;
+/* Opaque handle to flagcxWindow */
+typedef struct flagcxWindow *flagcxWindow_t;
 
 /* Func(kernel) arguments */
 typedef struct {
@@ -179,14 +181,24 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* User buffer registration functions. The actual allocated size might
  * be larger than requested due to granularity requirement. */
-flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
-                              flagcxComm_t comm = NULL);
-flagcxResult_t flagcxMemFree(void *ptr, flagcxComm_t comm = NULL);
+flagcxResult_t flagcxMemAlloc(void **ptr, size_t size);
+flagcxResult_t flagcxMemFree(void *ptr);
 
 /* Register/Deregister user buffer for zero-copy operation */
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle);
 flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle);
+
+/* Window registration flags */
+#define FLAGCX_WIN_DEFAULT 0x00
+#define FLAGCX_WIN_COLL_SYMMETRIC 0x01
+
+/* Register/Deregister user buffer for symmetric operation */
+flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
+                                        size_t size, flagcxWindow_t *win,
+                                        int winFlags);
+flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
+                                          flagcxWindow_t win);
 
 /* Check if the FlagCX communicator type is homogeneous or heterogeneous */
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo);
@@ -249,7 +261,7 @@ flagcxResult_t flagcxCommGetDeviceNumber(const flagcxComm_t comm, int *device);
 /* Returns the user-ordered "rank" associated with the communicator. */
 flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank);
 
-/* Returns `(void *)fifoBuffer` associated with the `hetero_comm` of the input
+/* Returns `(void *)fifoBuffer` associated with the `heteroComm` of the input
  * communicator */
 flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, void **buffer);
 

@@ -1,6 +1,6 @@
-#include "device_utils.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "atomic_device.h"
 
 #define WARP_SIZE 32
 #define FULL_MASK 0xffffffff
@@ -35,26 +35,27 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
 FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
-  atomicOr(reinterpret_cast<unsigned long long *>(value) + 3,
-           (flagcxReduceTriggerComplete &
-            flagcxTriggerMask(flagcxReduceTriggerBitsState))
-               << flagcxReduceTriggerOffState);
+  flagcxDeviceAtomicFetchOr(
+      reinterpret_cast<uint64_t *>(value) + 3,
+      (uint64_t)((flagcxReduceTriggerComplete & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+          << flagcxReduceTriggerOffState),
+      flagcxDeviceMemoryOrderRelease);
 }
 
-FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
                                                       int *idx) {
   while (true) {
-    unsigned long long int oldConsumed = *(buffer + 1);
-    unsigned long long int curProduced = *(buffer + 2);
+    uint64_t oldConsumed = *(buffer + flagcxFifoIdxConsumed);
+    uint64_t curProduced = *(buffer + flagcxFifoIdxProduced);
     if (oldConsumed >= curProduced) {
       // no-op, task dequeued by other consumers
       *idx = -1;
       break;
     }
     // set consumed from `oldConsumed` to `oldConsumed+1`
-    unsigned long long int prev = atomicCAS(
-        (unsigned long long int *)(buffer + 1), oldConsumed, oldConsumed + 1);
-    if (prev == oldConsumed) {
+    uint64_t expected = oldConsumed;
+    if (flagcxDeviceAtomicCompareExchange(buffer + flagcxFifoIdxConsumed, expected, oldConsumed + 1,
+                                          flagcxDeviceMemoryOrderAcqRel)) {
       *idx = oldConsumed;
       break;
     }
@@ -76,7 +77,7 @@ flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
 }
 
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
-  volatile uint64_t *vBuf = (volatile uint64_t *)fifoBuffer;
+  uint64_t *vBuf = (uint64_t *)fifoBuffer;
   int emptyIter = 0; // backoff counter
 
   while (true) {
@@ -87,9 +88,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     int p = -1;
     int term = -1;
     if (tid == 0) {
-      c = vBuf[1]; // consumed
-      p = vBuf[2]; // produced
-      term = vBuf[3];
+      c = flagcxDeviceAtomicLoad(&vBuf[flagcxFifoIdxConsumed], flagcxDeviceMemoryOrderAcquire);
+      p = flagcxDeviceAtomicLoad(&vBuf[flagcxFifoIdxProduced], flagcxDeviceMemoryOrderAcquire);
+      term = flagcxDeviceAtomicLoad(&vBuf[flagcxFifoIdxTerminate], flagcxDeviceMemoryOrderAcquire);
     }
     c = __shfl_sync(FULL_MASK, c, 0);
     p = __shfl_sync(FULL_MASK, p, 0);
@@ -129,9 +130,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     uint64_t nthreads;
     uint64_t datatype;
     uint64_t redop;
-    int slot = myIdx & (*vBuf - 1);
+    int slot = myIdx & (vBuf[flagcxFifoIdxCapacity] - 1);
     if (tid == 0) {
-      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
+      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + flagcxFifoIdxData) + slot;
       fst = t->getInput1();
       snd = t->getInput2();
       out = t->getOutput();
@@ -148,12 +149,12 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     datatype = __shfl_sync(FULL_MASK, datatype, 0);
     redop = __shfl_sync(FULL_MASK, redop, 0);
     flagcxReduceKernel(fst, snd, out, count, nthreads, datatype, redop);
-    __syncthreads();
+    FLAGCX_DEVICE_SYNC_THREADS();
     FLAGCX_DEVICE_THREAD_FENCE();
 
     // (5) set completion flag
     if (tid == 0) {
-      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + 4) + slot;
+      flagcxReduceTrigger *t = (flagcxReduceTrigger *)(vBuf + flagcxFifoIdxData) + slot;
       t->setComplete();
     }
   }

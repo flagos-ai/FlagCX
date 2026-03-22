@@ -322,6 +322,11 @@ flagcxResult_t ixcudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
+static flagcxResult_t ixcudaAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                     uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor ixcudaAdaptor {
   "IXCUDA",
       // Basic functions
@@ -380,6 +385,7 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start,
             // flagcxEvent_t end);
+      ixcudaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ILUVATAR_COREX_ADAPTOR

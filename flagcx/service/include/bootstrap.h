@@ -32,6 +32,8 @@ struct bootstrapState {
   int nranks;
   uint64_t magic;
   volatile uint32_t *abortFlag;
+  char *bootstrapNetIfName;
+  void *properties;
 };
 
 flagcxResult_t bootstrapNetInit();

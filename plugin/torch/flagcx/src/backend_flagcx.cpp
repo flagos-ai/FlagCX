@@ -109,6 +109,11 @@ void check_device(at::Device dev1, at::Device dev2) {
     throw std::runtime_error(
         "flagcxBackend does not support multidevice tensors");
   }
+#elif USE_TSM_ADAPTOR
+  if (dev1.is_privateuseone() && dev2.is_privateuseone() && dev1 != dev2) {
+    throw std::runtime_error(
+        "flagcxBackend does not support multidevice tensors");
+  }
 #else
   if (dev1.is_cuda() && dev2.is_cuda() && dev1 != dev2) {
     throw std::runtime_error(
@@ -343,6 +348,8 @@ std::unique_ptr<flagcxEvent> &flagcxBackend::getEventByIndex(int eventId) {
     flagcxEvents_[eventId] = std::make_unique<flagcxXpuEvent>();
 #elif USE_AMD_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxHipEvent>();
+#elif USE_TSM_ADAPTOR
+    flagcxEvents_[eventId] = std::make_unique<flagcxTxdaEvent>();
 #elif USE_ENFLAME_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxTopsEvent>();
 #endif
@@ -406,6 +413,9 @@ void flagcxBackend::initComm() {
   initComm(
       c10::impl::getDeviceGuardImpl(at::DeviceType::PrivateUse1)->getDevice());
 #elif defined(USE_MUSA_ADAPTOR)
+  initComm(
+      c10::impl::getDeviceGuardImpl(at::DeviceType::PrivateUse1)->getDevice());
+#elif defined(USE_TSM_ADAPTOR)
   initComm(
       c10::impl::getDeviceGuardImpl(at::DeviceType::PrivateUse1)->getDevice());
 #endif

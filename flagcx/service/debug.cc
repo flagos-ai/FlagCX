@@ -91,6 +91,10 @@ void flagcxDebugInit() {
         mask = FLAGCX_BOOTSTRAP;
       } else if (strcasecmp(subsys, "REG") == 0) {
         mask = FLAGCX_REG;
+      } else if (strcasecmp(subsys, "KERNEL") == 0) {
+        mask = FLAGCX_KERNEL;
+      } else if (strcasecmp(subsys, "UNIRUNNER") == 0) {
+        mask = FLAGCX_UNIRUNNER;
       } else if (strcasecmp(subsys, "ALL") == 0) {
         mask = FLAGCX_ALL;
       }

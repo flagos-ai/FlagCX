@@ -42,6 +42,12 @@ flagcxResult_t cnclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       flagcxResult_t)c2f_ret_map[cnclGetCliqueId((cnclCliqueId *)(*uniqueId))];
 }
 
+flagcxResult_t cnclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *cnclAdaptorGetErrorString(flagcxResult_t result) {
   return cnclGetErrorStr((cnclResult_t)f2c_ret_map[result]);
 }
@@ -58,10 +64,10 @@ flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }
-  int dev_id = 0;
-  DEVCHECK(cnrtGetDevice(&dev_id));
+  int devId = 0;
+  DEVCHECK(cnrtGetDevice(&devId));
   return (flagcxResult_t)c2f_ret_map[cnclInitComms(
-      &(*comm)->base, 1 /*num_comm*/, &dev_id /*dev_list*/, &rank /*rank_list*/,
+      &(*comm)->base, 1 /*num_comm*/, &devId /*dev_list*/, &rank /*rank_list*/,
       nranks, (cnclCliqueId *)commId)];
 }
 
@@ -128,6 +134,17 @@ flagcxResult_t cnclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t cnclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t cnclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -239,16 +256,16 @@ flagcxResult_t cnclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   res = cnclGetCommCount(&nranks, comm->base);
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = cnclGroupStart();
   for (int r = 0; r < nranks; r++) {
     res = cnclSend(
-        const_cast<void *>(static_cast<const void *>(buffer_in + r * size)),
+        const_cast<void *>(static_cast<const void *>(bufferIn + r * size)),
         size, cnclChar, r, comm->base, stream->base);
-    res = cnclRecv(static_cast<void *>(buffer_out + r * size), size, cnclChar,
-                   r, comm->base, stream->base);
+    res = cnclRecv(static_cast<void *>(bufferOut + r * size), size, cnclChar, r,
+                   comm->base, stream->base);
   }
   res = cnclGroupEnd();
 
@@ -266,19 +283,19 @@ flagcxResult_t cnclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   res = cnclGetCommCount(&nranks, comm->base);
 
   size_t size = getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = cnclGroupStart();
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
       res = cnclSend(const_cast<void *>(static_cast<const void *>(
-                         buffer_in + sdispls[r] * size)),
+                         bufferIn + sdispls[r] * size)),
                      sendcounts[r], f2c_datatype_map[datatype], r, comm->base,
                      stream->base);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-      res = cnclRecv(static_cast<void *>(buffer_out + rdispls[r] * size),
+      res = cnclRecv(static_cast<void *>(bufferOut + rdispls[r] * size),
                      recvcounts[r], f2c_datatype_map[datatype], r, comm->base,
                      stream->base);
     }
@@ -318,13 +335,15 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     "CNCL",
     // Basic functions
     cnclAdaptorGetVersion, cnclAdaptorGetUniqueId, cnclAdaptorGetErrorString,
-    cnclAdaptorGetLastError,
+    cnclAdaptorGetLastError, cnclAdaptorGetStagedBuffer,
     // Communicator functions
     cnclAdaptorCommInitRank, cnclAdaptorCommFinalize, cnclAdaptorCommDestroy,
     cnclAdaptorCommAbort, cnclAdaptorCommResume, cnclAdaptorCommSuspend,
     cnclAdaptorCommCount, cnclAdaptorCommCuDevice, cnclAdaptorCommUserRank,
     cnclAdaptorCommGetAsyncError, cnclAdaptorMemAlloc, cnclAdaptorMemFree,
     cnclAdaptorCommRegister, cnclAdaptorCommDeregister,
+    // Symmetric functions
+    cnclAdaptorCommWindowRegister, cnclAdaptorCommWindowDeregister,
     // Communication functions
     cnclAdaptorReduce, cnclAdaptorGather, cnclAdaptorScatter,
     cnclAdaptorBroadcast, cnclAdaptorAllReduce, cnclAdaptorReduceScatter,

@@ -62,6 +62,12 @@ flagcxResult_t xcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       (BKCLUniqueId *)(((char *)*uniqueId) + sizeof(int)));
 }
 
+flagcxResult_t xcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 // Unsupported
 const char *xcclAdaptorGetErrorString(flagcxResult_t result) {
   return "flagcxNotSupported";
@@ -138,6 +144,17 @@ flagcxResult_t xcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
 // TODO: unsupported
 flagcxResult_t xcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
                                        size_t size, void **handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -303,13 +320,15 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     "XCCL",
     // Basic functions
     xcclAdaptorGetVersion, xcclAdaptorGetUniqueId, xcclAdaptorGetErrorString,
-    xcclAdaptorGetLastError,
+    xcclAdaptorGetLastError, xcclAdaptorGetStagedBuffer,
     // Communicator functions
     xcclAdaptorCommInitRank, xcclAdaptorCommFinalize, xcclAdaptorCommDestroy,
     xcclAdaptorCommAbort, xcclAdaptorCommResume, xcclAdaptorCommSuspend,
     xcclAdaptorCommCount, xcclAdaptorCommCuDevice, xcclAdaptorCommUserRank,
     xcclAdaptorCommGetAsyncError, xcclAdaptorMemAlloc, xcclAdaptorMemFree,
     xcclAdaptorCommRegister, xcclAdaptorCommDeregister,
+    // Symmetric functions
+    xcclAdaptorCommWindowRegister, xcclAdaptorCommWindowDeregister,
     // Communication functions
     xcclAdaptorReduce, xcclAdaptorGather, xcclAdaptorScatter,
     xcclAdaptorBroadcast, xcclAdaptorAllReduce, xcclAdaptorReduceScatter,

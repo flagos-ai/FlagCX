@@ -15,7 +15,7 @@ flagcxResult_t hybridRunnerReduce(const void *sendbuff, void *recvbuff,
                                   flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(count, comm->cluster_ids[root],
+  auto hashValue = getC2cCommPatternHash(count, comm->clusterIds[root],
                                          flagcxCommOpReduce, op, comm);
   if (!planCache.get(hashValue, planner)) {
     INFO(FLAGCX_COLL,
@@ -24,7 +24,7 @@ flagcxResult_t hybridRunnerReduce(const void *sendbuff, void *recvbuff,
          "(count, rootClsuterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
          "%ld), hashValue = "
          "%ld",
-         count, comm->cluster_ids[root], flagcxCommOpReduce, op,
+         count, comm->clusterIds[root], flagcxCommOpReduce, op,
          (size_t)((uintptr_t)comm), hashValue);
     planner =
         flagcxC2cPlanner(count, count, root, comm, flagcxCommOpReduce, op);
@@ -35,7 +35,7 @@ flagcxResult_t hybridRunnerReduce(const void *sendbuff, void *recvbuff,
          "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
          "%ld), hashValue = "
          "%ld",
-         count, comm->cluster_ids[root], flagcxCommOpReduce, op,
+         count, comm->clusterIds[root], flagcxCommOpReduce, op,
          (size_t)((uintptr_t)comm), hashValue);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, root, stream));
@@ -115,7 +115,7 @@ flagcxResult_t hybridRunnerBroadcast(const void *sendbuff, void *recvbuff,
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
   auto hashValue =
-      getC2cCommPatternHash(count, comm->cluster_ids[root],
+      getC2cCommPatternHash(count, comm->clusterIds[root],
                             flagcxCommOpBroadcast, flagcxRedNoOp, comm);
   if (!planCache.get(hashValue, planner)) {
     INFO(FLAGCX_COLL,
@@ -124,7 +124,7 @@ flagcxResult_t hybridRunnerBroadcast(const void *sendbuff, void *recvbuff,
          "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
          "%ld), hashValue = "
          "%ld",
-         count, comm->cluster_ids[root], flagcxCommOpBroadcast, flagcxRedNoOp,
+         count, comm->clusterIds[root], flagcxCommOpBroadcast, flagcxRedNoOp,
          (size_t)((uintptr_t)comm), hashValue);
     planner = flagcxC2cPlanner(count, count, root, comm, flagcxCommOpBroadcast,
                                flagcxRedNoOp);
@@ -135,7 +135,7 @@ flagcxResult_t hybridRunnerBroadcast(const void *sendbuff, void *recvbuff,
          "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
          "%ld), hashValue = "
          "%ld",
-         count, comm->cluster_ids[root], flagcxCommOpBroadcast, flagcxRedNoOp,
+         count, comm->clusterIds[root], flagcxCommOpBroadcast, flagcxRedNoOp,
          (size_t)((uintptr_t)comm), hashValue);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, root, stream));
@@ -321,13 +321,13 @@ flagcxResult_t hybridRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
 flagcxResult_t hybridRunnerSend(const void *sendbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxComm_t comm, flagcxStream_t stream) {
-  if (comm->cluster_ids[comm->rank] == comm->cluster_ids[peer]) {
+  if (comm->clusterIds[comm->rank] == comm->clusterIds[peer]) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->send(
-        sendbuff, count, datatype, comm->globalrank2homorank[peer],
-        comm->homo_comm, stream));
+        sendbuff, count, datatype, comm->globalRank2HomoRank[peer],
+        comm->homoComm, stream));
   } else {
     FLAGCXCHECK(flagcxHeteroSend(sendbuff, count, datatype, peer,
-                                 comm->hetero_comm, stream));
+                                 comm->heteroComm, stream));
   }
   return flagcxSuccess;
 }
@@ -335,13 +335,13 @@ flagcxResult_t hybridRunnerSend(const void *sendbuff, size_t count,
 flagcxResult_t hybridRunnerRecv(void *recvbuff, size_t count,
                                 flagcxDataType_t datatype, int peer,
                                 flagcxComm_t comm, flagcxStream_t stream) {
-  if (comm->cluster_ids[comm->rank] == comm->cluster_ids[peer]) {
+  if (comm->clusterIds[comm->rank] == comm->clusterIds[peer]) {
     FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->recv(
-        recvbuff, count, datatype, comm->globalrank2homorank[peer],
-        comm->homo_comm, stream));
+        recvbuff, count, datatype, comm->globalRank2HomoRank[peer],
+        comm->homoComm, stream));
   } else {
     FLAGCXCHECK(flagcxHeteroRecv(recvbuff, count, datatype, peer,
-                                 comm->hetero_comm, stream));
+                                 comm->heteroComm, stream));
   }
   return flagcxSuccess;
 }

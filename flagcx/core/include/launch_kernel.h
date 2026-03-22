@@ -19,17 +19,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-flagcxResult_t loadKernelSymbol(const char *path, const char *name,
-                                flagcxLaunchFunc_t *fn);
-
-#ifdef __cplusplus
-}
-#endif
-
 struct flagcxSemaphore {
   flagcxSemaphore() = default;
   virtual ~flagcxSemaphore() = default;

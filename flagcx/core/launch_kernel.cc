@@ -4,26 +4,6 @@
 
 flagcxLaunchFunc_t deviceAsyncKernel = NULL;
 
-flagcxResult_t loadKernelSymbol(const char *path, const char *name,
-                                flagcxLaunchFunc_t *fn) {
-  void *handle = flagcxOpenLib(
-      path, RTLD_LAZY, [](const char *p, int err, const char *msg) {
-        fprintf(stderr, "dlopen failed: %s\n", dlerror());
-      });
-
-  if (!handle)
-    return flagcxSystemError;
-
-  void *sym = dlsym(handle, name);
-  if (!sym) {
-    fprintf(stderr, "dlsym failed: %s\n", dlerror());
-    return flagcxSystemError;
-  }
-
-  *fn = (flagcxLaunchFunc_t)sym;
-  return flagcxSuccess;
-}
-
 FLAGCX_PARAM(SemaphoreBufferPoolCapacity, "SEMAPHORE_BUFFER_POOL_CAPACITY", 32);
 
 flagcxDeviceSemaphoreBufferPool::flagcxDeviceSemaphoreBufferPool()

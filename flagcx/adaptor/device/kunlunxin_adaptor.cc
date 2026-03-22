@@ -360,6 +360,11 @@ flagcxResult_t kunlunAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
+static flagcxResult_t kunlunAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                     uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor kunlunAdaptor {
   "KUNLUN",
       // Basic functions
@@ -417,6 +422,7 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start, flagcxEvent_t end);
+      kunlunAdaptorStreamWaitValue64,
 };
 
 #endif // USE_KUNLUNXIN_ADAPTOR

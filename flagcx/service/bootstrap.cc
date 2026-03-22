@@ -326,6 +326,11 @@ flagcxResult_t bootstrapInit(struct flagcxBootstrapHandle *handle,
   FLAGCXCHECK(bootstrapAllGather(state, state->peerCommAddresses,
                                  sizeof(union flagcxSocketAddress)));
 
+  // Set bootstrap net info
+  state->bootstrapNetIfName = bootstrapNetIfName;
+  flagcxNetProperties_t *properties;
+  FLAGCXCHECK(flagcxCalloc(&properties, 1));
+  state->properties = properties;
   INFO(FLAGCX_INIT, "rank %d nranks %d - DONE", rank, nranks);
 
   return flagcxSuccess;
@@ -1115,6 +1120,7 @@ flagcxResult_t bootstrapClose(void *commState) {
   FLAGCXCHECK(flagcxSocketClose(&state->ringRecvSocket));
 
   free(state->peerCommAddresses);
+  free(state->properties);
   free(state);
 
   return flagcxSuccess;
@@ -1129,6 +1135,7 @@ flagcxResult_t bootstrapAbort(void *commState) {
   FLAGCXCHECK(flagcxSocketClose(&state->ringRecvSocket));
   free(state->peerCommAddresses);
   free(state->peerProxyAddresses);
+  free(state->properties);
   free(state);
   return flagcxSuccess;
 }

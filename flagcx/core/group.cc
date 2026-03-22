@@ -292,8 +292,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               op->args.regBufFlag = 0;
               FLAGCXCHECK(flagcxP2pRegisterBuffer(
                   comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
-                  flagcxP2pRegisterModeRegister, &op->args.regBufFlag,
-                  &regOffset, &peerRmtAddr));
+                  /*isSender=*/false, &op->args.regBufFlag, &regOffset,
+                  &peerRmtAddr, op->args.p2pPeerSlotIdx));
               if (op->args.regBufFlag) {
                 INFO(FLAGCX_REG,
                      "flagcxGroup P2P recv reg rank %d <- %d buff %p size %zu "
@@ -382,13 +382,11 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
               uintptr_t *peerRmtAddr = NULL;
               FLAGCXCHECK(flagcxP2pRegisterBuffer(
                   comm, p2p->buff, p2p->bytes, peerConns, peerRanks, 1,
-                  flagcxP2pRegisterModeLookup, &op->args.regBufFlag, &regOffset,
-                  &peerRmtAddr));
-              // Pass the remote address to sender for zero-copy
-              // peerRmtAddr is the remote address itself (cast as uintptr_t*)
+                  /*isSender=*/true, &op->args.regBufFlag, &regOffset,
+                  &peerRmtAddr, op->args.p2pSlotIdx));
+              // peerRmtAddr is fully resolved (rmtRegAddr + peer's userOffset)
               if (op->args.regBufFlag && peerRmtAddr) {
-                op->args.p2pRmtAddr =
-                    (void *)((uintptr_t)peerRmtAddr + regOffset);
+                op->args.p2pRmtAddr = (void *)peerRmtAddr;
               }
             } else if (op->connection->transport == TRANSPORT_NET) {
               op->args.chunkSize = flagcxNetChunkSize;

@@ -81,7 +81,6 @@ We now support training ERNIE4.5 on Iluvatar machines using Paddle + FlagCX. Ple
     export FLAGCX_IB_HCA=mlx5_101
     export FLAGCX_DEBUG=TRACE
     export FLAGCX_DEBUG_SUBSYS=INIT
-    export FLAGCX_ENABLE_TOPO_DETECT=TRUE
     #export GLOG_v=4
     #export FLAGS_call_stack_level=3
     #export LD_PRELOAD=/usr/local/corex-4.3.0/lib64/libcuda.so.1

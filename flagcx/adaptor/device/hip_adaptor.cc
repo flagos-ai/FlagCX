@@ -313,6 +313,11 @@ flagcxResult_t hipAdaptorMemGetHandleForAddressRange(void *handleOut,
   return flagcxNotSupported;
 }
 
+static flagcxResult_t hipAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                  uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor hipAdaptor {
   "HIP",
       // Basic functions
@@ -373,6 +378,7 @@ struct flagcxDeviceAdaptor hipAdaptor {
                                              // flags);
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start, flagcxEvent_t end);
+      hipAdaptorStreamWaitValue64,
 };
 
 #endif // USE_AMD_ADAPTOR

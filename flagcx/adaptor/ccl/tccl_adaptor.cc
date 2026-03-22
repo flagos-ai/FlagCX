@@ -75,6 +75,12 @@ flagcxResult_t tcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return fromTcclResult(result);
 }
 
+flagcxResult_t tcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *tcclAdaptorGetErrorString(flagcxResult_t result) {
   // TODO: supported later
   return "Not Implemented";
@@ -199,6 +205,17 @@ flagcxResult_t tcclAdaptorCommDeregister(const flagcxInnerComm_t comm,
   }
   tcclResult_t result = tcclCommDeregister(comm->base, handle);
   return fromTcclResult(result);
+}
+
+flagcxResult_t tcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t tcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
+  return flagcxNotSupported;
 }
 
 flagcxResult_t tcclAdaptorReduce(const void *sendbuff, void *recvbuff,
@@ -357,13 +374,15 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     "TCCL",
     // Basic functions
     tcclAdaptorGetVersion, tcclAdaptorGetUniqueId, tcclAdaptorGetErrorString,
-    tcclAdaptorGetLastError,
+    tcclAdaptorGetLastError, tcclAdaptorGetStagedBuffer,
     // Communicator functions
     tcclAdaptorCommInitRank, tcclAdaptorCommFinalize, tcclAdaptorCommDestroy,
     tcclAdaptorCommAbort, tcclAdaptorCommResume, tcclAdaptorCommSuspend,
     tcclAdaptorCommCount, tcclAdaptorCommCuDevice, tcclAdaptorCommUserRank,
     tcclAdaptorCommGetAsyncError, tcclAdaptorMemAlloc, tcclAdaptorMemFree,
     tcclAdaptorCommRegister, tcclAdaptorCommDeregister,
+    // Symmetric functions
+    tcclAdaptorCommWindowRegister, tcclAdaptorCommWindowDeregister,
     // Communication functions
     tcclAdaptorReduce, tcclAdaptorGather, tcclAdaptorScatter,
     tcclAdaptorBroadcast, tcclAdaptorAllReduce, tcclAdaptorReduceScatter,

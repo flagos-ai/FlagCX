@@ -8,13 +8,13 @@
 #define FLAGCX_UTILS_H_
 
 #include "check.h"
+#include "dlsymbols.h"
 #include "global_comm.h"
 #include "pthread.h"
 #include "type.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <dlfcn.h>
 #include <new>
 #include <nlohmann/json.hpp>
 #include <sched.h>
@@ -758,9 +758,6 @@ inline Int pow2Up(Int x) {
   return Int(1) << log2Up(x);
 }
 
-void *flagcxOpenLib(const char *path, int flags,
-                    void (*error_handler)(const char *, int, const char *));
-
 ////////////////////////////////////////////////////////////////////////////////
 // FlagScale configuration structures and functions
 
@@ -773,9 +770,9 @@ struct TuneObject {
 };
 
 struct FlagScaleConfig {
-  std::vector<TuneObject> tune_objects;
-  int config_id;
-  int best_config_id;
+  std::vector<TuneObject> tuneObjects;
+  int configId;
+  int bestConfigId;
 };
 
 // Read flagscale.json file and return all values （for tuning）
@@ -790,4 +787,8 @@ inline std::string getTuneObjectCommOp(const TuneObject &obj) {
   return obj.commOp;
 }
 
+template <typename T>
+flagcxResult_t loadCustomOpSymbol(const char *path, const char *name, T *fn);
+flagcxResult_t loadKernelSymbol(const char *path, const char *name,
+                                flagcxLaunchFunc_t *fn);
 #endif

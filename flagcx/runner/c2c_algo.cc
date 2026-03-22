@@ -232,10 +232,10 @@ flagcxResult_t flagcxC2cP2pOp::run(void *buff, flagcxDataType_t datatype,
       static_cast<char *>(buff) + offset_ * getFlagcxDataTypeSize(datatype);
   if (isRecv_) {
     return flagcxHeteroRecv(static_cast<void *>(ptr), count_, datatype,
-                            peerRank_, comm->hetero_comm, stream);
+                            peerRank_, comm->heteroComm, stream);
   } else {
     return flagcxHeteroSend(static_cast<void *>(ptr), count_, datatype,
-                            peerRank_, comm->hetero_comm, stream);
+                            peerRank_, comm->heteroComm, stream);
   }
 }
 
@@ -315,7 +315,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype, redOp, (rootRank_ == -1) ? root : rootRank_,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpAllReduce:
       return cclAdaptors[flagcxCCLAdaptorDevice]->allReduce(
           const_cast<const void *>(static_cast<void *>(
@@ -324,7 +324,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype, redOp,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpReduceScatter:
       return cclAdaptors[flagcxCCLAdaptorDevice]->reduceScatter(
           const_cast<const void *>(static_cast<void *>(
@@ -333,7 +333,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype, redOp,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpAllGather:
       return cclAdaptors[flagcxCCLAdaptorDevice]->allGather(
           const_cast<const void *>(static_cast<void *>(
@@ -342,7 +342,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpGather:
       return cclAdaptors[flagcxCCLAdaptorDevice]->gather(
           const_cast<const void *>(static_cast<void *>(
@@ -351,7 +351,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpScatter:
       return cclAdaptors[flagcxCCLAdaptorDevice]->scatter(
           const_cast<const void *>(static_cast<void *>(
@@ -360,13 +360,13 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpSend:
       cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
       if (homoType_ == 0) {
         // send from root to inter-ranks
-        if (comm->homo_rank == ((rootRank_ == -1) ? root : rootRank_)) {
-          int clusterId = comm->cluster_ids[comm->rank];
+        if (comm->homoRank == ((rootRank_ == -1) ? root : rootRank_)) {
+          int clusterId = comm->clusterIds[comm->rank];
           for (size_t i = 0; i < comm->clusterInterRankList[clusterId].size();
                ++i) {
             if (comm->homoInterMyRank != int(i)) {
@@ -375,16 +375,16 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
                       static_cast<char *>(actualSendbuff) +
                       sendOffset_ * getFlagcxDataTypeSize(datatype))),
                   count_, datatype,
-                  comm->globalrank2homorank
+                  comm->globalRank2HomoRank
                       [comm->clusterInterRankList[clusterId][i]],
-                  comm->homo_comm, stream);
+                  comm->homoComm, stream);
             }
           }
         }
       } else if (homoType_ == 1) {
         // send from inter-rank 1,2,...,n to inter-rank 0
         if (comm->homoInterMyRank > 0) {
-          int clusterId = comm->cluster_ids[comm->rank];
+          int clusterId = comm->clusterIds[comm->rank];
           auto &buffList = interRankBufferInfoManager_.getBufferInfoList(
               clusterId, comm->rank);
           for (auto it = buffList.begin(); it != buffList.end(); it++) {
@@ -400,13 +400,13 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
       } else if (homoType_ == 2) {
         // send from inter-rank 0 to root
         if (comm->homoInterMyRank == 0 &&
-            (comm->homo_rank != ((rootRank_ == -1) ? root : rootRank_))) {
+            (comm->homoRank != ((rootRank_ == -1) ? root : rootRank_))) {
           cclAdaptors[flagcxCCLAdaptorDevice]->send(
               const_cast<const void *>(static_cast<void *>(
                   static_cast<char *>(actualSendbuff) +
                   sendOffset_ * getFlagcxDataTypeSize(datatype))),
               count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-              comm->homo_comm, stream);
+              comm->homoComm, stream);
         }
       }
       cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
@@ -416,18 +416,18 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
       if (homoType_ == 0) {
         // recv at inter-rank from root
         if (comm->homoInterMyRank != -1 &&
-            comm->homo_rank != ((rootRank_ == -1) ? root : rootRank_)) {
+            comm->homoRank != ((rootRank_ == -1) ? root : rootRank_)) {
           cclAdaptors[flagcxCCLAdaptorDevice]->recv(
               static_cast<void *>(
                   static_cast<char *>(const_cast<void *>(actualRecvbuff)) +
                   recvOffset_ * getFlagcxDataTypeSize(datatype)),
               count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-              comm->homo_comm, stream);
+              comm->homoComm, stream);
         }
       } else if (homoType_ == 1) {
         // recv at inter-rank 0 from inter-rank 1,2,...,n
         if (comm->homoInterMyRank == 0) {
-          int clusterId = comm->cluster_ids[comm->rank];
+          int clusterId = comm->clusterIds[comm->rank];
           for (size_t i = 1; i < comm->clusterInterRankList[clusterId].size();
                ++i) {
             auto &buffList = interRankBufferInfoManager_.getBufferInfoList(
@@ -447,16 +447,16 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
       } else if (homoType_ == 2) {
         // recv at root from inter-rank 0
         if (comm->homoInterMyRank != 0 &&
-            comm->homo_rank == ((rootRank_ == -1) ? root : rootRank_)) {
-          int clusterId = comm->cluster_ids[comm->rank];
+            comm->homoRank == ((rootRank_ == -1) ? root : rootRank_)) {
+          int clusterId = comm->clusterIds[comm->rank];
           cclAdaptors[flagcxCCLAdaptorDevice]->recv(
               static_cast<void *>(
                   static_cast<char *>(const_cast<void *>(actualRecvbuff)) +
                   recvOffset_ * getFlagcxDataTypeSize(datatype)),
               count_, datatype,
-              comm->globalrank2homorank[comm->clusterInterRankList[clusterId]
+              comm->globalRank2HomoRank[comm->clusterInterRankList[clusterId]
                                                                   [0]],
-              comm->homo_comm, stream);
+              comm->homoComm, stream);
         }
       }
       cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
@@ -469,7 +469,7 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype, (rootRank_ == -1) ? root : rootRank_,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpAlltoAll:
       return cclAdaptors[flagcxCCLAdaptorDevice]->alltoAll(
           const_cast<const void *>(static_cast<void *>(
@@ -478,28 +478,28 @@ flagcxResult_t flagcxC2cHomoFunc::run(const void *sendbuff, void *recvbuff,
           static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                               recvOffset_ * getFlagcxDataTypeSize(datatype)),
           count_, datatype,
-          homoType_ == 1 ? comm->homoInterComm : comm->homo_comm, stream);
+          homoType_ == 1 ? comm->homoInterComm : comm->homoComm, stream);
     case flagcxCommOpAlltoAllv:
       cclAdaptors[flagcxCCLAdaptorDevice]->groupStart();
       for (size_t i = 0; i < comm->nranks; ++i) {
         if (flagcxCCLAdaptorNeedSendrecv(sendCounts[i])) {
-          if (comm->cluster_ids[comm->rank] == comm->cluster_ids[i]) {
+          if (comm->clusterIds[comm->rank] == comm->clusterIds[i]) {
             FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->send(
                 const_cast<const void *>(static_cast<void *>(
                     static_cast<char *>(actualSendbuff) +
                     sDispls[i] * getFlagcxDataTypeSize(datatype))),
-                sendCounts[i], datatype, comm->globalrank2homorank[i],
-                comm->homo_comm, stream));
+                sendCounts[i], datatype, comm->globalRank2HomoRank[i],
+                comm->homoComm, stream));
           }
         }
         if (flagcxCCLAdaptorNeedSendrecv(recvCounts[i])) {
-          if (comm->cluster_ids[comm->rank] == comm->cluster_ids[i]) {
+          if (comm->clusterIds[comm->rank] == comm->clusterIds[i]) {
             FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->recv(
                 static_cast<void *>(static_cast<char *>(actualRecvbuff) +
                                     rDispls[i] *
                                         getFlagcxDataTypeSize(datatype)),
-                recvCounts[i], datatype, comm->globalrank2homorank[i],
-                comm->homo_comm, stream));
+                recvCounts[i], datatype, comm->globalRank2HomoRank[i],
+                comm->homoComm, stream));
           }
         }
       }
@@ -614,9 +614,9 @@ flagcxC2cPlanner::flagcxC2cPlanner(size_t sendCount, size_t recvCount,
       comm_(comm), commOp_(commOp), redOp_(redOp), sendCounts_(nullptr),
       sDispls_(nullptr), recvCounts_(nullptr), rDispls_(nullptr),
       clusterInterRankList_(comm->clusterInterRankList),
-      clusterId_(comm->cluster_ids[comm->rank]), rank_(comm->rank),
-      homoMyRank_(comm->homo_rank), homoRootRank_(comm->homo_root_rank),
-      homoRanks_(comm->homo_ranks), homoInterMyRank_(comm->homoInterMyRank),
+      clusterId_(comm->clusterIds[comm->rank]), rank_(comm->rank),
+      homoMyRank_(comm->homoRank), homoRootRank_(comm->homoRootRank),
+      homoRanks_(comm->homoRanks), homoInterMyRank_(comm->homoInterMyRank),
       homoInterRootRank_(comm->homoInterRootRank),
       homoInterRanks_(comm->homoInterRanks) {
   // set totalCount_
@@ -624,15 +624,15 @@ flagcxC2cPlanner::flagcxC2cPlanner(size_t sendCount, size_t recvCount,
   nchunks_ = totalCount_;
 
   // set rootClusterId_ and isRootCluster_
-  rootClusterId_ = comm_->cluster_ids[rootRank_];
+  rootClusterId_ = comm_->clusterIds[rootRank_];
   isRootCluster_ = (rootClusterId_ == clusterId_) ? 1 : 0;
 
   // calculate clusterOffset_ and clusterCount_
   clusterOffset_ = 0;
   for (int i = 0; i < clusterId_; ++i) {
-    clusterOffset_ += comm_->cluster_sizes[i];
+    clusterOffset_ += comm_->clusterSizes[i];
   }
-  clusterCount_ = comm_->cluster_sizes[clusterId_];
+  clusterCount_ = comm_->clusterSizes[clusterId_];
 
   // if inter ranks in all clusters equal to 1 （single-nic）
   if (commOp_ == flagcxCommOpAllReduce ||
@@ -665,7 +665,7 @@ flagcxC2cPlanner::flagcxC2cPlanner(size_t sendCount, size_t recvCount,
   // if inter ranks in current cluster equal to homo ranks
   eachNicPerRank_ = 1;
   for (size_t i = 0; i < clusterInterRankList_.size(); ++i) {
-    if (clusterInterRankList_[i].size() != comm->cluster_sizes[i]) {
+    if (clusterInterRankList_[i].size() != comm->clusterSizes[i]) {
       eachNicPerRank_ = 0;
       break;
     }
@@ -673,7 +673,7 @@ flagcxC2cPlanner::flagcxC2cPlanner(size_t sendCount, size_t recvCount,
   // treat multiple clusters of different sizes as sing-nic
   if (eachNicPerRank_) {
     for (size_t i = 0; i < comm_->nclusters; ++i) {
-      if (clusterCount_ != comm_->cluster_sizes[i]) {
+      if (clusterCount_ != comm_->clusterSizes[i]) {
         eachNicPerRank_ = 0;
         multiNic_ = 0;
         break;
@@ -772,7 +772,8 @@ flagcxC2cPlanner::flagcxC2cPlanner(size_t sendCount, size_t recvCount,
 }
 
 flagcxC2cPlanner::flagcxC2cPlanner(const char *path) {
-  INFO(FLAGCX_ENV, "FLAGCX_ALGO_IMPORT_PATH set by environment to %s", path);
+  INFO(FLAGCX_ENV, "FLAGCX_C2C_ALGO_IMPORT_PATH set by environment to %s",
+       path);
   importXml(path);
 }
 
@@ -1209,14 +1210,14 @@ flagcxResult_t flagcxC2cPlanner::refresh(int isSendRecv) {
       size_t myCount =
           (sendCount_ >= recvCount_)
               ? totalCount_ / nClusterInterRanks
-              : (sendCount_ * comm_->cluster_sizes[i]) / nClusterInterRanks;
+              : (sendCount_ * comm_->clusterSizes[i]) / nClusterInterRanks;
       size_t myRes =
           (sendCount_ >= recvCount_)
               ? totalCount_ % nClusterInterRanks
-              : (sendCount_ * comm_->cluster_sizes[i]) % nClusterInterRanks;
+              : (sendCount_ * comm_->clusterSizes[i]) % nClusterInterRanks;
       size_t minCount = (sendCount_ >= recvCount_)
                             ? totalCount_ / lcm
-                            : (sendCount_ * comm_->cluster_sizes[i]) / lcm;
+                            : (sendCount_ * comm_->clusterSizes[i]) / lcm;
       if (searchGranularity == "COARSE") {
         minCount = myCount;
       }
@@ -1242,9 +1243,9 @@ flagcxResult_t flagcxC2cPlanner::refresh(int isSendRecv) {
                commOp_ == flagcxCommOpAllReduce) &&
               algorithm_ == flagcxAlgoPipeline) {
             size_t rankCount = totalCount_ / comm_->nranks;
-            myCount = rankCount * comm_->cluster_sizes[z] / nClusterInterRanks;
-            myRes = rankCount * comm_->cluster_sizes[z] % nClusterInterRanks;
-            minCount = rankCount * comm_->cluster_sizes[z] / lcm;
+            myCount = rankCount * comm_->clusterSizes[z] / nClusterInterRanks;
+            myRes = rankCount * comm_->clusterSizes[z] % nClusterInterRanks;
+            minCount = rankCount * comm_->clusterSizes[z] / lcm;
             for (int k = 0; k < myCount / minCount; ++k) {
               interRankBufferInfoManager_.pushBackBufferInfo(
                   i, clusterInterRankList_[i][j],
@@ -1257,7 +1258,7 @@ flagcxResult_t flagcxC2cPlanner::refresh(int isSendRecv) {
                   clusterdataoffset * rankCount + myCount * j, myRes, z, 0,
                   (isScheduled || i == z), -1, -1);
             }
-            clusterdataoffset += comm_->cluster_sizes[z];
+            clusterdataoffset += comm_->clusterSizes[z];
           } else if (i != z) {
             if (isUseless == 0) {
               for (int k = 0; k < myCount / minCount; ++k) {
@@ -1280,7 +1281,7 @@ flagcxResult_t flagcxC2cPlanner::refresh(int isSendRecv) {
           }
         }
       }
-      clusterOffset += comm_->cluster_sizes[i];
+      clusterOffset += comm_->clusterSizes[i];
     }
     interRankBufferInfoManager_.printBufferInfo(0);
   } else {
@@ -1478,7 +1479,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
   if (algorithm_ == flagcxAlgoPipeline) {
     nchunks_ = comm_->nranks;
     for (int i = 0; i < comm_->nclusters; ++i) {
-      nchunks_ = lcm(nchunks_, lcm(comm_->cluster_sizes[i],
+      nchunks_ = lcm(nchunks_, lcm(comm_->clusterSizes[i],
                                    comm_->clusterInterRankList[i].size()));
     }
   }
@@ -1515,11 +1516,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         totalCount = totalCount_;
         if (commOp_ == flagcxCommOpReduceScatter) {
           offset -= clusterOffset_ * recvCount_;
-          totalCount = comm_->cluster_sizes[clusterId_] * recvCount_;
+          totalCount = comm_->clusterSizes[clusterId_] * recvCount_;
         } else if (commOp_ == flagcxCommOpAllReduce) {
           offset -= clusterOffset_ * totalCount_ / comm_->nranks;
           totalCount =
-              comm_->cluster_sizes[clusterId_] * totalCount_ / comm_->nranks;
+              comm_->clusterSizes[clusterId_] * totalCount_ / comm_->nranks;
         }
         break;
       }
@@ -1589,7 +1590,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
           size_t dataoffset = 0;
           size_t rankCount = totalCount_ / comm_->nranks;
           for (int c = 0; c < comm_->nclusters; ++c) {
-            size_t clusterdata = rankCount * comm_->cluster_sizes[c];
+            size_t clusterdata = rankCount * comm_->clusterSizes[c];
             size_t preHomoFuncCount =
                 clusterdata / clusterInterRankList_[clusterId_].size();
             size_t preHomoFuncRes =
@@ -1605,7 +1606,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                 0, preHomoFuncCommOp);
             if (preHomoFuncRes > 0) {
               preHomoFuncSteps_[step].emplace_back(
-                  comm_->globalrank2homorank[clusterInterRankList_[clusterId_]
+                  comm_->globalRank2HomoRank[clusterInterRankList_[clusterId_]
                                                  .back()],
                   0, recvType, dataoffset + clusterdata - preHomoFuncRes,
                   dataoffset + clusterdata - preHomoFuncRes, preHomoFuncRes, 0,
@@ -1622,7 +1623,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         preHomoFuncSteps_[0].emplace_back(-1, 0, recvType, 0, 0, totalCount_, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpGather) {
-        preHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+        preHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                           0, 1, 0, clusterOffset_ * sendCount_,
                                           sendCount_, 0, preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpScatter) {
@@ -1635,23 +1636,23 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
             size_t recvDataOffset = dataOffset + rankCount * homoMyRank_;
             if (algorithm_ == flagcxAlgoSequential) {
               preHomoFuncSteps_[0].emplace_back(
-                  comm_->globalrank2homorank[rootRank_], 0, 2, sendDataOffset,
+                  comm_->globalRank2HomoRank[rootRank_], 0, 2, sendDataOffset,
                   recvDataOffset, rankCount, 0, preHomoFuncCommOp);
             } else {
               preHomoFuncSteps_[step].emplace_back(
-                  comm_->globalrank2homorank[rootRank_], 0, 2, sendDataOffset,
+                  comm_->globalRank2HomoRank[rootRank_], 0, 2, sendDataOffset,
                   recvDataOffset, rankCount, 0, preHomoFuncCommOp);
               step++;
             }
           }
-          dataOffset += rankCount * comm_->cluster_sizes[c];
+          dataOffset += rankCount * comm_->clusterSizes[c];
         }
       } else if (preHomoFuncCommOp == flagcxCommOpSend) {
-        preHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+        preHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                           0, recvType, 0, 0, totalCount_, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpRecv) {
-        preHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+        preHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                           0, recvType, 0, 0, totalCount_, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpAlltoAll) {
@@ -1678,7 +1679,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
             if (commOp_ != flagcxCommOpReduce &&
                 algorithm_ == flagcxAlgoPipeline) {
               step = (clusterId_ + comm_->nclusters - 1 -
-                      comm_->cluster_ids[buffer.clusterIdToSend_]) %
+                      comm_->clusterIds[buffer.clusterIdToSend_]) %
                      comm_->nclusters;
               if (step == comm_->nclusters - 1) {
                 step = 0;
@@ -1698,11 +1699,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         preHomoFuncSteps_[0].emplace_back(-1, 0, recvType, 0, 0, totalCount_, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpSend) {
-        preHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+        preHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                           0, recvType, 0, 0, totalCount_, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommOpRecv) {
-        preHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+        preHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                           0, recvType, 0, 0, totalCount_, 0,
                                           preHomoFuncCommOp);
       } else if (preHomoFuncCommOp == flagcxCommNoOp) {
@@ -1716,7 +1717,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
     if (commOp_ == flagcxCommOpAlltoAll) {
       flagcxC2cHeteroFunc heteroFunc = flagcxC2cHeteroFunc();
       for (size_t i = 0; i < comm_->nranks; ++i) {
-        if (clusterId_ != comm_->cluster_ids[i]) {
+        if (clusterId_ != comm_->clusterIds[i]) {
           heteroFunc.addP2pOp(rank_, i, i * sendCount_, sendCount_, 0);
           heteroFunc.addP2pOp(rank_, i, i * recvCount_, recvCount_, 1);
         }
@@ -1728,11 +1729,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
       flagcxC2cHeteroFunc heteroFunc = flagcxC2cHeteroFunc();
       for (size_t i = 0; i < comm_->nranks; ++i) {
         if (flagcxCCLAdaptorNeedSendrecv(sendCounts_[i]) &&
-            clusterId_ != comm_->cluster_ids[i]) {
+            clusterId_ != comm_->clusterIds[i]) {
           heteroFunc.addP2pOp(rank_, i, sDispls_[i], sendCounts_[i], 0);
         }
         if (flagcxCCLAdaptorNeedSendrecv(recvCounts_[i]) &&
-            clusterId_ != comm_->cluster_ids[i]) {
+            clusterId_ != comm_->clusterIds[i]) {
           heteroFunc.addP2pOp(rank_, i, rDispls_[i], recvCounts_[i], 1);
         }
       }
@@ -1754,15 +1755,15 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                                 sendDataOffset, rankCount, 0);
             heteroFuncStep.push_back(std::move(heteroFunc));
           }
-          clusterOffset += comm_->cluster_sizes[c];
-          dataOffset += rankCount * comm_->cluster_sizes[c];
+          clusterOffset += comm_->clusterSizes[c];
+          dataOffset += rankCount * comm_->clusterSizes[c];
         }
       } else {
         size_t rootClusterRank = 0;
         for (int c = 0; c < comm_->nclusters; ++c) {
           if (c == rootClusterId_)
             break;
-          rootClusterRank += comm_->cluster_sizes[c];
+          rootClusterRank += comm_->clusterSizes[c];
         }
         flagcxC2cHeteroFunc heteroFunc = flagcxC2cHeteroFunc();
         heteroFunc.addP2pOp(rank_, rootClusterRank + homoMyRank_, 0, rankCount,
@@ -1799,14 +1800,14 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                                 sendCount_, 1);
             heteroFuncStep.push_back(std::move(heteroFunc));
           }
-          clusterOffset += comm_->cluster_sizes[c];
+          clusterOffset += comm_->clusterSizes[c];
         }
       } else {
         size_t rootClusterRank = 0;
         for (int c = 0; c < comm_->nclusters; ++c) {
           if (c == rootClusterId_)
             break;
-          rootClusterRank += comm_->cluster_sizes[c];
+          rootClusterRank += comm_->clusterSizes[c];
         }
         flagcxC2cHeteroFunc heteroFunc = flagcxC2cHeteroFunc();
         heteroFunc.addP2pOp(rank_, rootClusterRank + homoMyRank_, 0, sendCount_,
@@ -1875,11 +1876,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                       continue;
                     }
                     int sendClusterId = it->isRecv_
-                                            ? comm_->cluster_ids[it->peerRank_]
+                                            ? comm_->clusterIds[it->peerRank_]
                                             : clusterId_;
                     int recvClusterId = it->isRecv_
                                             ? clusterId_
-                                            : comm_->cluster_ids[it->peerRank_];
+                                            : comm_->clusterIds[it->peerRank_];
                     size_t step =
                         (sendClusterId + comm_->nclusters - 1 - recvClusterId) %
                         comm_->nclusters;
@@ -1928,7 +1929,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                 }
               }
             }
-            clusterOffset += comm_->cluster_sizes[i];
+            clusterOffset += comm_->clusterSizes[i];
           }
           interRankBufferInfoManager_.printBufferInfo(0);
           searchHeteroSendRecvOps(1, 0);
@@ -1940,11 +1941,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                 for (auto it = rankList.begin(); it != rankList.end(); ++it) {
                   if (it->isScheduled_) {
                     int sendClusterId = it->isRecv_
-                                            ? comm_->cluster_ids[it->peerRank_]
+                                            ? comm_->clusterIds[it->peerRank_]
                                             : clusterId_;
                     int recvClusterId = it->isRecv_
                                             ? clusterId_
-                                            : comm_->cluster_ids[it->peerRank_];
+                                            : comm_->clusterIds[it->peerRank_];
                     if (sendClusterId == recvClusterId) {
                       continue;
                     }
@@ -1977,7 +1978,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         } else if (homoInterFuncCommOp == flagcxCommOpReduce) {
           homoInterFuncSteps_[0].emplace_back(-1, sendType, recvType, 0, 0,
                                               totalCount_,
-                                              0, // use homo_comm
+                                              0, // use homoComm
                                               homoInterFuncCommOp);
         } else if (homoInterFuncCommOp == flagcxCommOpReduceScatter) {
           for (int c = 0; c < comm_->nclusters; ++c) {
@@ -2038,7 +2039,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         for (auto it = buffList.begin(); it != buffList.end(); it++) {
           if (it->isRecv_) {
             if (commOp_ == flagcxCommOpAllGather && eachNicPerRank_) {
-              size_t step = (comm_->cluster_ids[it->peerRank_] +
+              size_t step = (comm_->clusterIds[it->peerRank_] +
                              comm_->nclusters - 1 - clusterId_) %
                             comm_->nclusters;
               if (algorithm_ == flagcxAlgoPipeline) {
@@ -2049,7 +2050,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                   1, 1, it->offset_, it->offset_, it->count_, 2,
                   postHomoFuncCommOp);
             } else if (nPipePostSteps_ + nSeqPostSteps_ > 1) {
-              size_t step = (comm_->cluster_ids[it->peerRank_] +
+              size_t step = (comm_->clusterIds[it->peerRank_] +
                              comm_->nclusters - clusterId_) %
                             comm_->nclusters;
               postHomoFuncSteps_[step].emplace_back(
@@ -2068,7 +2069,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
     } else if (postHomoFuncCommOp == flagcxCommOpScatter) {
       if (eachNicPerRank_) {
         postHomoFuncSteps_[0].emplace_back(
-            comm_->globalrank2homorank[rootRank_], 0, 1,
+            comm_->globalRank2HomoRank[rootRank_], 0, 1,
             clusterOffset_ * recvCount_, 0, recvCount_, 2, postHomoFuncCommOp);
       } else {
         postHomoFuncSteps_[0].emplace_back(
@@ -2083,23 +2084,23 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         if (c != clusterId_) {
           if (algorithm_ == flagcxAlgoSequential) {
             preHomoFuncSteps_[0].emplace_back(
-                comm_->globalrank2homorank[rootRank_], 2, 1, 0,
+                comm_->globalRank2HomoRank[rootRank_], 2, 1, 0,
                 clusterOffset * sendCount_, sendCount_, 2, postHomoFuncCommOp);
           } else {
             preHomoFuncSteps_[step].emplace_back(
-                comm_->globalrank2homorank[rootRank_], 2, 1, 0,
+                comm_->globalRank2HomoRank[rootRank_], 2, 1, 0,
                 clusterOffset * sendCount_, sendCount_, 2, postHomoFuncCommOp);
             step++;
           }
         }
-        clusterOffset += comm_->cluster_sizes[c];
+        clusterOffset += comm_->clusterSizes[c];
       }
     } else if (postHomoFuncCommOp == flagcxCommOpSend) {
-      postHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+      postHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                          sendType, 1, 0, 0, totalCount_, 2,
                                          postHomoFuncCommOp);
     } else if (postHomoFuncCommOp == flagcxCommOpRecv) {
-      postHomoFuncSteps_[0].emplace_back(comm_->globalrank2homorank[rootRank_],
+      postHomoFuncSteps_[0].emplace_back(comm_->globalRank2HomoRank[rootRank_],
                                          sendType, 1, 0, 0, totalCount_, 2,
                                          postHomoFuncCommOp);
     } else if (postHomoFuncCommOp == flagcxCommNoOp) {
@@ -2138,7 +2139,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         if (isRootCluster_ || commOp_ != flagcxCommOpReduce) {
           int homoRankToRecvFromCluster =
               (comm_
-                   ->globalrank2homorank[clusterInterRankList_[clusterId_][0]] -
+                   ->globalRank2HomoRank[clusterInterRankList_[clusterId_][0]] -
                j - 1 + homoRanks_) %
               homoRanks_;
           if (homoMyRank_ == homoRankToRecvFromCluster) {
@@ -2148,18 +2149,18 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
         }
         if (!isRootCluster_ || commOp_ != flagcxCommOpReduce) {
           int homoRankToSendToCluster =
-              (comm_->globalrank2homorank[clusterInterRankList_[j][0]] -
-               clusterId_ - 1 + comm_->cluster_sizes[j]) %
-              comm_->cluster_sizes[j];
+              (comm_->globalRank2HomoRank[clusterInterRankList_[j][0]] -
+               clusterId_ - 1 + comm_->clusterSizes[j]) %
+              comm_->clusterSizes[j];
           int globalRankToSendToCluster =
               homoRankToSendToCluster -
-              comm_->globalrank2homorank[clusterInterRankList_[j][0]] +
+              comm_->globalRank2HomoRank[clusterInterRankList_[j][0]] +
               clusterInterRankList_[j][0];
           if (homoMyRank_ ==
               comm_
-                  ->globalrank2homorank[clusterInterRankList_[clusterId_][0]]) {
+                  ->globalRank2HomoRank[clusterInterRankList_[clusterId_][0]]) {
             if ((commOp_ == flagcxCommOpReduce &&
-                 comm_->cluster_ids[globalRankToSendToCluster] ==
+                 comm_->clusterIds[globalRankToSendToCluster] ==
                      rootClusterId_) ||
                 (commOp_ == flagcxCommOpAllReduce ||
                  commOp_ == flagcxCommOpReduceScatter)) {
@@ -2179,7 +2180,7 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
       int recvOffset = 0;
       for (size_t i = 0; i < clusterInterRankList_.size(); ++i) {
         if (clusterId_ == i) {
-          recvOffset += comm_->cluster_sizes[i];
+          recvOffset += comm_->clusterSizes[i];
           continue;
         }
         if (homoInterMyRank_ != -1) {
@@ -2191,17 +2192,17 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
                                           clusterCount_ * sendCount_, 0);
             heteroFuncStep[comm_->nclusters - 1 - step].addP2pOp(
                 rank_, clusterInterRankList_[i][0], recvOffset * sendCount_,
-                comm_->cluster_sizes[i] * sendCount_, 1);
+                comm_->clusterSizes[i] * sendCount_, 1);
           } else if (algorithm_ == flagcxAlgoSequential) {
             heteroFuncStep[0].addP2pOp(rank_, clusterInterRankList_[i][0],
                                        clusterOffset_ * sendCount_,
                                        clusterCount_ * sendCount_, 0);
             heteroFuncStep[0].addP2pOp(rank_, clusterInterRankList_[i][0],
                                        recvOffset * sendCount_,
-                                       comm_->cluster_sizes[i] * sendCount_, 1);
+                                       comm_->clusterSizes[i] * sendCount_, 1);
           }
         }
-        recvOffset += comm_->cluster_sizes[i];
+        recvOffset += comm_->clusterSizes[i];
       }
       for (size_t s = 0; s < heteroFuncStep.size(); ++s) {
         heteroFuncSteps_[s].push_back(std::move(heteroFuncStep[s]));
@@ -2213,12 +2214,12 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
     if (homoInterFuncCommOp == flagcxCommOpAllReduce) {
       homoInterFuncSteps_[0].emplace_back(-1, sendType, recvType, 0, 0,
                                           totalCount_,
-                                          0, // use homo_comm
+                                          0, // use homoComm
                                           homoInterFuncCommOp);
     } else if (homoInterFuncCommOp == flagcxCommOpReduce) {
       homoInterFuncSteps_[0].emplace_back(-1, sendType, recvType, 0, 0,
                                           totalCount_,
-                                          0, // use homo_comm
+                                          0, // use homoComm
                                           homoInterFuncCommOp);
     } else if (homoInterFuncCommOp == flagcxCommNoOp) {
       homoInterFuncSteps_[0].emplace_back(-1, sendType, recvType, 0, 0,
@@ -2239,27 +2240,27 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
           postHomoFuncSteps_[step].emplace_back(
               clusterInterRankList_[clusterId_][0] - (rank_ - homoMyRank_),
               sendType, 1, clusterOffset * sendCount_,
-              clusterOffset * sendCount_, comm_->cluster_sizes[i] * sendCount_,
+              clusterOffset * sendCount_, comm_->clusterSizes[i] * sendCount_,
               2, postHomoFuncCommOp);
         } else {
           postHomoFuncSteps_[0].emplace_back(
               clusterInterRankList_[clusterId_][0] - (rank_ - homoMyRank_),
               sendType, 1, clusterOffset * sendCount_,
-              clusterOffset * sendCount_, comm_->cluster_sizes[i] * sendCount_,
+              clusterOffset * sendCount_, comm_->clusterSizes[i] * sendCount_,
               2, postHomoFuncCommOp);
         }
-        clusterOffset += comm_->cluster_sizes[i];
+        clusterOffset += comm_->clusterSizes[i];
       }
     }
   }
-  if (getenv("FLAGCX_ALGO_EXPORT_PREFIX")) {
-    exportXml(getenv("FLAGCX_ALGO_EXPORT_PREFIX"));
-  } else if (getenv("FLAGCX_ALGO_EXPORT_PATH")) {
-    const char *algo_path = getenv("FLAGCX_ALGO_EXPORT_PATH");
-    size_t algo_hash =
+  if (getenv("FLAGCX_C2C_ALGO_EXPORT_PREFIX")) {
+    exportXml(getenv("FLAGCX_C2C_ALGO_EXPORT_PREFIX"));
+  } else if (getenv("FLAGCX_C2C_ALGO_EXPORT_PATH")) {
+    const char *algoPath = getenv("FLAGCX_C2C_ALGO_EXPORT_PATH");
+    size_t algoHash =
         genC2cAlgoHash(sendCount_, recvCount_, rootClusterId_, commOp_, redOp_);
     char prefix[128];
-    snprintf(prefix, sizeof(prefix), "%s/%lu", algo_path, algo_hash);
+    snprintf(prefix, sizeof(prefix), "%s/%lu", algoPath, algoHash);
     exportXml(prefix);
   }
   return flagcxSuccess;
@@ -2279,9 +2280,9 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
   }
 
   // root validation
-  if (root != -1 && comm_->cluster_ids[root] != rootClusterId_) {
+  if (root != -1 && comm_->clusterIds[root] != rootClusterId_) {
     WARN("Sorry, the input root cluster id is not valid %d[%d]",
-         comm_->cluster_ids[root], rootClusterId_);
+         comm_->clusterIds[root], rootClusterId_);
     return flagcxInvalidArgument;
   }
 
@@ -2323,16 +2324,16 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
   const char *algorithm = getenv("FLAGCX_C2C_ALGO");
   if (algorithm != NULL && (strcmp(algorithm, "XML_INPUT") == 0 ||
                             strcmp(algorithm, "Xml_input") == 0)) {
-    const char *algo_path = getenv("FLAGCX_ALGO_IMPORT_PATH");
-    const char *algo_prefix = getenv("FLAGCX_ALGO_IMPORT_PREFIX");
-    if (algo_prefix) {
-      FLAGCXCHECK(importXml(algo_prefix));
+    const char *algoPath = getenv("FLAGCX_C2C_ALGO_IMPORT_PATH");
+    const char *algoPrefix = getenv("FLAGCX_C2C_ALGO_IMPORT_PREFIX");
+    if (algoPrefix) {
+      FLAGCXCHECK(importXml(algoPrefix));
       importAlgoFromXmlFile = 1;
-    } else if (algo_path) {
-      size_t algo_hash = genC2cAlgoHash(sendCount_, recvCount_, rootClusterId_,
-                                        commOp_, redOp_);
+    } else if (algoPath) {
+      size_t algoHash = genC2cAlgoHash(sendCount_, recvCount_, rootClusterId_,
+                                       commOp_, redOp_);
       char prefix[128];
-      snprintf(prefix, sizeof(prefix), "%s/%lu", algo_path, algo_hash);
+      snprintf(prefix, sizeof(prefix), "%s/%lu", algoPath, algoHash);
       FLAGCXCHECK(importXml(prefix));
       importAlgoFromXmlFile = 1;
     }
@@ -2375,7 +2376,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
   for (int s = 0; s < nSeqPreSteps_; ++s) {
     for (int i = 0; i < preHomoFuncSteps_[s].size(); ++i) {
       preHomoFuncSteps_[s][i].run(sendbuff, recvbuff, scratchBuffer_, datatype,
-                                  redOp_, comm_->globalrank2homorank[root],
+                                  redOp_, comm_->globalRank2HomoRank[root],
                                   comm_, stream, sendCounts_, sDispls_,
                                   recvCounts_, rDispls_);
     }
@@ -2400,7 +2401,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     for (int i = 0; i < preHomoFuncSteps_[nSeqPreSteps_ + s].size(); ++i) {
       preHomoFuncSteps_[nSeqPreSteps_ + s][i].run(
           sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-          comm_->globalrank2homorank[root], comm_, stream, sendCounts_,
+          comm_->globalRank2HomoRank[root], comm_, stream, sendCounts_,
           sDispls_, recvCounts_, rDispls_);
     }
     cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
@@ -2420,7 +2421,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
         // execute homoInterFuncs
         homoInterFuncSteps_[s][i].run(
             sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-            comm_->globalrank2homorank[root], comm_, het_stream);
+            comm_->globalRank2HomoRank[root], comm_, het_stream);
         refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
       }
     }
@@ -2453,7 +2454,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
         // execute homoInterFuncs
         homoInterFuncSteps_[nPipePreSteps_ + s][i].run(
             sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-            comm_->globalrank2homorank[root], comm_, stream);
+            comm_->globalRank2HomoRank[root], comm_, stream);
         if (algorithm_ == flagcxAlgoPipeline &&
             (nPipePreSteps_ > 0 || nPipePostSteps_ > 0)) {
           refreshFunc_.run(recvbuff, scratchBuffer_, datatype, stream);
@@ -2469,7 +2470,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
     // execute postHomoFunc
     for (int i = 0; i < postHomoFuncSteps_[s].size(); ++i) {
       postHomoFuncSteps_[s][i].run(sendbuff, recvbuff, scratchBuffer_, datatype,
-                                   redOp_, comm_->globalrank2homorank[root],
+                                   redOp_, comm_->globalRank2HomoRank[root],
                                    comm_, stream);
     }
     cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();
@@ -2493,7 +2494,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
         // execute homoInterFuncs
         homoInterFuncSteps_[nPipePreSteps_ + nSeqInterSteps_ + s][i].run(
             sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-            comm_->globalrank2homorank[root], comm_, het_stream);
+            comm_->globalRank2HomoRank[root], comm_, het_stream);
       }
     }
     flagcxHeteroGroupEnd();
@@ -2515,7 +2516,7 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
       // execute postHomoFunc
       postHomoFuncSteps_[nPipePostSteps_ + s][i].run(
           sendbuff, recvbuff, scratchBuffer_, datatype, redOp_,
-          comm_->globalrank2homorank[root], comm_, stream);
+          comm_->globalRank2HomoRank[root], comm_, stream);
     }
   }
   cclAdaptors[flagcxCCLAdaptorDevice]->groupEnd();

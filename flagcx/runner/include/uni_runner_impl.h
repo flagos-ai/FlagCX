@@ -91,6 +91,7 @@ struct uniRunnerDagNode {
 typedef struct {
   uint64_t *bits;
   size_t nextIdx;
+  size_t size; // total number of events
 
   // Check if event at index is available
   bool isAvailable(int index);
@@ -122,6 +123,13 @@ typedef struct {
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       redInflightQueue;
 
+  uint64_t p2pEventPoolSize;
+  uint64_t uniRunnerNSlices;
+  uint64_t uniRunnerNThreads;
+  uint64_t uniRunnerNBlocks;
+  uint64_t uniRunnerNRedSlices;
+  uint64_t uniRunnerRedSliceSize;
+
   // P2P event pool
   flagcxEvent_t *p2pEvents;
   uniRunnerP2pEventBitmap p2pEventMap;
@@ -131,8 +139,36 @@ typedef struct {
   void resetEvent(int idx);
 } flagcxUniRunnerState;
 
-flagcxResult_t runUniRunner(const void *sendbuff, void *recvbuff, size_t count,
-                            flagcxDataType_t datatype, flagcxRedOp_t op,
-                            flagcxComm_t comm, flagcxStream_t stream,
-                            flagcxCommOp_t commOp);
+flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
+flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
+                                          const void *sendbuff, void *recvbuff,
+                                          size_t count,
+                                          flagcxDataType_t datatype,
+                                          flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        void *scratchbuff, size_t count,
+                                        flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
+                                         const void *sendbuff, void *recvbuff,
+                                         void *scratchbuff, size_t count,
+                                         flagcxDataType_t datatype,
+                                         flagcxRedOp_t op, int root,
+                                         flagcxComm_t comm);
+flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
+flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
+flagcxResult_t runUniRunner(flagcxComm_t comm);
 #endif // FLAGCX_UNIRUNNER_IMPL_H_

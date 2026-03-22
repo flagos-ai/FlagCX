@@ -13,6 +13,12 @@ flagcxResult_t mcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)mcclGetUniqueId((mcclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t mcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *mcclAdaptorGetErrorString(flagcxResult_t result) {
   return mcclGetErrorString((mcclResult_t)result);
 }
@@ -88,6 +94,17 @@ flagcxResult_t mcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t mcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -196,15 +213,15 @@ flagcxResult_t mcclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   res = mcclCommCount(comm->base, &nranks);
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = mcclGroupStart();
   for (int r = 0; r < nranks; r++) {
-    res = mcclSend(static_cast<const void *>(buffer_in + r * size), size,
+    res = mcclSend(static_cast<const void *>(bufferIn + r * size), size,
                    mcclChar, r, comm->base, stream->base);
-    res = mcclRecv(static_cast<void *>(buffer_out + r * size), size, mcclChar,
-                   r, comm->base, stream->base);
+    res = mcclRecv(static_cast<void *>(bufferOut + r * size), size, mcclChar, r,
+                   comm->base, stream->base);
   }
   res = mcclGroupEnd();
 
@@ -222,18 +239,18 @@ flagcxResult_t mcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   res = mcclCommCount(comm->base, &nranks);
 
   size_t size = getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = mcclGroupStart();
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
-      res = mcclSend(static_cast<const void *>(buffer_in + sdispls[r] * size),
+      res = mcclSend(static_cast<const void *>(bufferIn + sdispls[r] * size),
                      sendcounts[r], (mcclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-      res = mcclRecv(static_cast<void *>(buffer_out + rdispls[r] * size),
+      res = mcclRecv(static_cast<void *>(bufferOut + rdispls[r] * size),
                      recvcounts[r], (mcclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
@@ -267,13 +284,15 @@ struct flagcxCCLAdaptor musa_mcclAdaptor = {
     "MCCL",
     // Basic functions
     mcclAdaptorGetVersion, mcclAdaptorGetUniqueId, mcclAdaptorGetErrorString,
-    mcclAdaptorGetLastError,
+    mcclAdaptorGetLastError, mcclAdaptorGetStagedBuffer,
     // Communicator functions
     mcclAdaptorCommInitRank, mcclAdaptorCommFinalize, mcclAdaptorCommDestroy,
     mcclAdaptorCommAbort, mcclAdaptorCommResume, mcclAdaptorCommSuspend,
     mcclAdaptorCommCount, mcclAdaptorCommMuDevice, mcclAdaptorCommUserRank,
     mcclAdaptorCommGetAsyncError, mcclAdaptorMemAlloc, mcclAdaptorMemFree,
     mcclAdaptorCommRegister, mcclAdaptorCommDeregister,
+    // Symmetric functions
+    mcclAdaptorCommWindowRegister, mcclAdaptorCommWindowDeregister,
     // Communication functions
     mcclAdaptorReduce, mcclAdaptorGather, mcclAdaptorScatter,
     mcclAdaptorBroadcast, mcclAdaptorAllReduce, mcclAdaptorReduceScatter,

@@ -373,6 +373,11 @@ flagcxResult_t topsAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
+static flagcxResult_t topsAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                   uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor topsAdaptor {
   "TOPS",
       // Basic functions
@@ -430,6 +435,7 @@ struct flagcxDeviceAdaptor topsAdaptor {
                                               // size_t size, unsigned long long
                                               // flags);
       topsAdaptorEventElapsedTime, // flagcxResult_t
+      topsAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

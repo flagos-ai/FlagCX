@@ -13,6 +13,12 @@ flagcxResult_t rcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t rcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *rcclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -87,6 +93,17 @@ flagcxResult_t rcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t rcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t rcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t rcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -200,17 +217,17 @@ flagcxResult_t rcclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
                                    flagcxStream_t stream) {
   int nranks;
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
   ncclResult_t res = ncclSuccess;
 
   CCLCHECKGOTO(ncclCommCount(comm->base, &nranks), res, fail);
   CCLCHECKGOTO(ncclGroupStart(), res, fail);
   for (int r = 0; r < nranks; r++) {
-    CCLCHECKGOTO(ncclSend(static_cast<const void *>(buffer_in + r * size), size,
+    CCLCHECKGOTO(ncclSend(static_cast<const void *>(bufferIn + r * size), size,
                           ncclChar, r, comm->base, stream->base),
                  res, fail);
-    CCLCHECKGOTO(ncclRecv(static_cast<void *>(buffer_out + r * size), size,
+    CCLCHECKGOTO(ncclRecv(static_cast<void *>(bufferOut + r * size), size,
                           ncclChar, r, comm->base, stream->base),
                  res, fail);
   }
@@ -229,8 +246,8 @@ flagcxResult_t rcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                     flagcxStream_t stream) {
   int nranks;
   size_t size = getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
   ncclResult_t res = ncclSuccess;
 
   CCLCHECKGOTO(ncclCommCount(comm->base, &nranks), res, fail);
@@ -238,13 +255,13 @@ flagcxResult_t rcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
       CCLCHECKGOTO(
-          ncclSend(static_cast<const void *>(buffer_in + sdispls[r] * size),
+          ncclSend(static_cast<const void *>(bufferIn + sdispls[r] * size),
                    sendcounts[r], (ncclDataType_t)datatype, r, comm->base,
                    stream->base),
           res, fail);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-      CCLCHECKGOTO(ncclRecv(static_cast<void *>(buffer_out + rdispls[r] * size),
+      CCLCHECKGOTO(ncclRecv(static_cast<void *>(bufferOut + rdispls[r] * size),
                             recvcounts[r], (ncclDataType_t)datatype, r,
                             comm->base, stream->base),
                    res, fail);
@@ -281,13 +298,15 @@ struct flagcxCCLAdaptor rcclAdaptor = {
     "RCCL",
     // Basic functions
     rcclAdaptorGetVersion, rcclAdaptorGetUniqueId, rcclAdaptorGetErrorString,
-    rcclAdaptorGetLastError,
+    rcclAdaptorGetLastError, rcclAdaptorGetStagedBuffer,
     // Communicator functions
     rcclAdaptorCommInitRank, rcclAdaptorCommFinalize, rcclAdaptorCommDestroy,
     rcclAdaptorCommAbort, rcclAdaptorCommResume, rcclAdaptorCommSuspend,
     rcclAdaptorCommCount, rcclAdaptorCommCuDevice, rcclAdaptorCommUserRank,
     rcclAdaptorCommGetAsyncError, rcclAdaptorMemAlloc, rcclAdaptorMemFree,
     rcclAdaptorCommRegister, rcclAdaptorCommDeregister,
+    // Symmetric functions
+    rcclAdaptorCommWindowRegister, rcclAdaptorCommWindowDeregister,
     // Communication functions
     rcclAdaptorReduce, rcclAdaptorGather, rcclAdaptorScatter,
     rcclAdaptorBroadcast, rcclAdaptorAllReduce, rcclAdaptorReduceScatter,

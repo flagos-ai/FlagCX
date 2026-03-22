@@ -7,8 +7,8 @@
 #include "comm.h"
 #include "device.h"
 #include "flagcx/adaptor/include/adaptor.h"
-#include "flagcx/adaptor/include/ib_common.h"
 #include "flagcx/core/include/flagcx_hetero.h"
+#include "flagcx_kernel.h"
 #include "flagcx_net.h"
 #include "global_comm.h"
 #include "net.h"
@@ -42,6 +42,14 @@ int main(int argc, char *argv[]) {
   int num_iters = args.getTestIters();
   int print_buffer = args.isPrintBuffer();
   uint64_t split_mask = args.getSplitMask();
+  int local_register = args.getLocalRegister();
+
+  // RMA requires flagcxMemAlloc (GDR memory with SYNC_MEMOPS)
+  if (local_register < 1) {
+    fprintf(stderr,
+            "test_put requires -R 1 or -R 2 for GDR buffer allocation.\n");
+    return 1;
+  }
 
   flagcxHandlerGroup_t handler;
   flagcxHandleInit(&handler);
@@ -68,7 +76,7 @@ int main(int argc, char *argv[]) {
   flagcxCommInitRank(&comm, totalProcs, uniqueId, proc);
 
   struct flagcxComm *innerComm = comm;
-  struct flagcxHeteroComm *hetero = innerComm->hetero_comm;
+  struct flagcxHeteroComm *hetero = innerComm->heteroComm;
   if (hetero == nullptr) {
     int isHomo = 0;
     flagcxIsHomoComm(comm, &isHomo);
@@ -84,9 +92,9 @@ int main(int argc, char *argv[]) {
   }
 
   struct flagcxNetAdaptor *netAdaptor = hetero->netAdaptor;
-  if (netAdaptor == nullptr || netAdaptor->put == nullptr) {
+  if (netAdaptor == nullptr || netAdaptor->iput == nullptr) {
     if (proc == 0)
-      fprintf(stderr, "Current network adaptor does not support put\n");
+      fprintf(stderr, "Current network adaptor does not support iput\n");
     MPI_Finalize();
     return 0;
   }
@@ -110,75 +118,56 @@ int main(int argc, char *argv[]) {
   bool isSender = (proc == senderRank);
   bool isReceiver = (proc == receiverRank);
 
-  int sendRank = (proc + 1) % totalProcs;
-  int recvRank = (proc - 1 + totalProcs) % totalProcs;
-
-  // Setup network connections
-  flagcxNetHandle_t listenHandle = {};
-  void *listenComm = nullptr;
-  flagcxResult_t res =
-      netAdaptor->listen(hetero->netDev, &listenHandle, &listenComm);
-  fatal(res, "listen failed", proc);
-
-  flagcxNetHandle_t peerHandle = {};
-  MPI_Sendrecv(&listenHandle, sizeof(listenHandle), MPI_BYTE, recvRank, 100,
-               &peerHandle, sizeof(peerHandle), MPI_BYTE, sendRank, 100,
-               MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-  void *sendComm = nullptr;
-  void *recvComm = nullptr;
-  while (sendComm == nullptr || recvComm == nullptr) {
-    if (sendComm == nullptr) {
-      res = netAdaptor->connect(hetero->netDev, &peerHandle, &sendComm);
-      fatal(res, "connect failed", proc);
-    }
-
-    if (recvComm == nullptr) {
-      res = netAdaptor->accept(listenComm, &recvComm);
-      fatal(res, "accept failed", proc);
-    }
-
-    if (sendComm == nullptr || recvComm == nullptr) {
-      sched_yield();
-    }
-  }
-
-  res = netAdaptor->closeListen(listenComm);
-  fatal(res, "closeListen failed", proc);
-
   // Check one-sided extensions support
-  if (netAdaptor->put == nullptr || netAdaptor->putSignal == nullptr ||
-      netAdaptor->waitValue == nullptr || netAdaptor->test == nullptr ||
-      netAdaptor->deregMr == nullptr) {
+  if (netAdaptor->iput == nullptr || netAdaptor->iputSignal == nullptr ||
+      netAdaptor->test == nullptr || netAdaptor->deregMr == nullptr) {
     fprintf(stderr,
             "[rank %d] Net adaptor does not support one-sided extensions\n",
             proc);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
-  // Enable one-sided register to set up globalOneSideHandles
-  setenv("FLAGCX_ENABLE_ONE_SIDE_REGISTER", "1", 1);
+  flagcxResult_t res;
 
   size_t signalBytes = sizeof(uint64_t);
-  size_t max_iterations = std::max(num_warmup_iters, num_iters);
-  size_t window_bytes =
-      max_bytes * max_iterations + signalBytes * max_iterations;
+  size_t total_iters_per_size = num_warmup_iters + num_iters;
+  size_t max_data_iters = std::max(num_warmup_iters, num_iters);
+  size_t data_bytes = max_bytes * max_data_iters;
+  size_t signal_total_bytes = signalBytes * total_iters_per_size;
 
-  void *window = nullptr;
-  if (posix_memalign(&window, 64, window_bytes) != 0 || window == nullptr) {
-    fprintf(stderr,
-            "[rank %d] posix_memalign failed for host window (size=%zu)\n",
-            proc, window_bytes);
+  // Data buffer: GDR memory (SYNC_MEMOPS ensures NIC visibility via GDR BAR)
+  void *dataWindow = nullptr;
+  res = flagcxMemAlloc(&dataWindow, data_bytes);
+  if (res != flagcxSuccess || dataWindow == nullptr) {
+    fprintf(stderr, "[rank %d] flagcxMemAlloc failed for data (size=%zu)\n",
+            proc, data_bytes);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
-  std::memset(window, 0, window_bytes);
+  devHandle->deviceMemset(dataWindow, 0, data_bytes, flagcxMemDevice, NULL);
 
-  // Register window buffer using flagcxCommRegister
-  void *windowHandle = nullptr;
-  res = flagcxCommRegister(comm, window, window_bytes, &windowHandle);
-  fatal(res, "flagcxCommRegister failed", proc);
+  // Signal buffer: GDR memory (SYNC_MEMOPS for RDMA ATOMIC visibility)
+  void *signalWindow = nullptr;
+  res = flagcxMemAlloc(&signalWindow, signal_total_bytes);
+  if (res != flagcxSuccess || signalWindow == nullptr) {
+    fprintf(stderr, "[rank %d] flagcxMemAlloc failed for signal (size=%zu)\n",
+            proc, signal_total_bytes);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+  devHandle->deviceMemset(signalWindow, 0, signal_total_bytes, flagcxMemDevice,
+                          NULL);
 
-  void *globalHandles = (void *)globalOneSideHandles;
+  // Register data buffer in global reg pool
+  void *dataHandle = nullptr;
+  res = flagcxCommRegister(comm, dataWindow, data_bytes, &dataHandle);
+  fatal(res, "flagcxCommRegister (data) failed", proc);
+
+  // Register data buffer for one-sided operations
+  res = flagcxOneSideRegister(comm, dataWindow, data_bytes);
+  fatal(res, "flagcxOneSideRegister (data) failed", proc);
+
+  // Register signal buffer for one-sided operations
+  res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes);
+  fatal(res, "flagcxOneSideSignalRegister failed", proc);
 
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
@@ -201,68 +190,94 @@ int main(int argc, char *argv[]) {
 
   // Additional barrier to ensure connection is ready
   MPI_Barrier(MPI_COMM_WORLD);
+
+  // Host staging buffer for sender data fill and receiver verification
+  void *hostStaging = nullptr;
+  if (posix_memalign(&hostStaging, 64, max_bytes) != 0 ||
+      hostStaging == nullptr) {
+    fprintf(stderr, "[rank %d] posix_memalign failed for staging (size=%zu)\n",
+            proc, max_bytes);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  }
+
+  // Create stream for receiver-side wait operations
+  flagcxStream_t waitStream = nullptr;
+  if (isReceiver) {
+    devHandle->streamCreate(&waitStream);
+  }
+
   // Benchmark loop
   timer tim;
-  size_t baseSignalOffset = max_bytes * max_iterations;
   for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
     if (size == 0)
       break;
-    // Warmup iterations
+
+    // Reset signal buffer before each size iteration
+    devHandle->deviceMemset(signalWindow, 0, signal_total_bytes,
+                            flagcxMemDevice, NULL);
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // Warmup iterations (signal slots [0 .. num_warmup_iters-1])
     for (int i = 0; i < num_warmup_iters; ++i) {
-      size_t signalOffset = baseSignalOffset + i * signalBytes;
-      // Use different offset for each iteration to avoid address conflicts
+      size_t signalOffset = i * signalBytes;
       size_t current_send_offset = i * size;
       size_t current_recv_offset = i * size;
 
       if (isSender) {
-
+        // Fill host staging, then copy H2D to device data buffer
         uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
-        std::memset((char *)window + current_send_offset, value, size);
+        std::memset(hostStaging, value, size);
+        devHandle->deviceMemcpy((char *)dataWindow + current_send_offset,
+                                hostStaging, size, flagcxMemcpyHostToDevice,
+                                NULL);
 
-        res = flagcxHeteroPut(comm->hetero_comm, receiverRank,
-                              current_send_offset, current_recv_offset, size);
-        fatal(res, "flagcxHeteroPut warmup failed", proc);
-        res = flagcxHeteroPutSignal(hetero, receiverRank, signalOffset);
+        res = flagcxHeteroPutSignal(comm->heteroComm, receiverRank,
+                                    current_send_offset, current_recv_offset,
+                                    size, signalOffset, 0, 0, 1);
         fatal(res, "flagcxHeteroPutSignal warmup failed", proc);
       } else if (isReceiver) {
-        res = netAdaptor->waitValue((void **)globalHandles, receiverRank,
-                                    signalOffset, 1);
-        fatal(res, "netAdaptor->waitValue warmup failed", proc);
+        res = flagcxHeteroWaitSignal(hetero, senderRank, signalOffset, 1,
+                                     waitStream);
+        fatal(res, "flagcxHeteroWaitSignal warmup failed", proc);
+        devHandle->streamSynchronize(waitStream);
       }
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
     tim.reset();
 
-    // Benchmark iterations
+    // Benchmark iterations (signal slots [num_warmup_iters .. total_iters-1])
     for (int i = 0; i < num_iters; ++i) {
-      size_t signalOffset = baseSignalOffset + i * signalBytes;
-      // Use different offset for each iteration to avoid address conflicts
+      size_t signalOffset = (num_warmup_iters + i) * signalBytes;
       size_t current_send_offset = i * size;
       size_t current_recv_offset = i * size;
 
       if (isSender) {
-
         uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
-        std::memset((char *)window + current_send_offset, value, size);
+        std::memset(hostStaging, value, size);
+        devHandle->deviceMemcpy((char *)dataWindow + current_send_offset,
+                                hostStaging, size, flagcxMemcpyHostToDevice,
+                                NULL);
 
-        res = flagcxHeteroPut(comm->hetero_comm, receiverRank,
-                              current_send_offset, current_recv_offset, size);
-        fatal(res, "flagcxHeteroPut failed", proc);
-
-        res = flagcxHeteroPutSignal(comm->hetero_comm, receiverRank,
-                                    signalOffset);
+        res = flagcxHeteroPutSignal(comm->heteroComm, receiverRank,
+                                    current_send_offset, current_recv_offset,
+                                    size, signalOffset, 0, 0, 1);
         fatal(res, "flagcxHeteroPutSignal failed", proc);
       } else if (isReceiver) {
-        res = netAdaptor->waitValue((void **)globalHandles, receiverRank,
-                                    signalOffset, 1);
-        fatal(res, "netAdaptor->waitValue failed", proc);
+        res = flagcxHeteroWaitSignal(hetero, senderRank, signalOffset, 1,
+                                     waitStream);
+        fatal(res, "flagcxHeteroWaitSignal failed", proc);
+        devHandle->streamSynchronize(waitStream);
 
         if (print_buffer) {
+          // Copy device data to host for verification
+          devHandle->deviceMemcpy(
+              hostStaging, (char *)dataWindow + current_recv_offset,
+              std::min(size, (size_t)64), flagcxMemcpyDeviceToHost, NULL);
           printf("[rank %d] Received data at offset %zu, size %zu:\n", proc,
                  current_recv_offset, size);
           for (size_t j = 0; j < size && j < 64; ++j) {
-            printf("%02x ", ((unsigned char *)window)[current_recv_offset + j]);
+            printf("%02x ", ((unsigned char *)hostStaging)[j]);
             if ((j + 1) % 16 == 0)
               printf("\n");
           }
@@ -289,26 +304,21 @@ int main(int argc, char *argv[]) {
 
     MPI_Barrier(MPI_COMM_WORLD);
   }
-  // Cleanup: Wait for all operations to complete before closing connections
+  // Cleanup
   MPI_Barrier(MPI_COMM_WORLD);
   sleep(1);
-  res = flagcxCommDeregister(comm, windowHandle);
+  res = flagcxCommDeregister(comm, dataHandle);
   fatal(res, "flagcxCommDeregister failed", proc);
 
-  // Close connections
-  if (sendComm != nullptr) {
-    res = netAdaptor->closeSend(sendComm);
-    if (res != flagcxSuccess) {
-      // Ignore error if already closed or not needed
-    }
+  flagcxOneSideDeregister(comm);
+  flagcxOneSideSignalDeregister(comm);
+  flagcxMemFree(dataWindow);
+  flagcxMemFree(signalWindow);
+  free(hostStaging);
+
+  if (waitStream != nullptr) {
+    devHandle->streamDestroy(waitStream);
   }
-  if (recvComm != nullptr) {
-    res = netAdaptor->closeRecv(recvComm);
-    if (res != flagcxSuccess) {
-      // Ignore error if already closed or not needed
-    }
-  }
-  free(window);
 
   fatal(flagcxCommDestroy(comm), "flagcxCommDestroy failed", proc);
   fatal(flagcxHandleFree(handler), "flagcxHandleFree failed", proc);

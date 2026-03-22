@@ -25,6 +25,12 @@ const char *ecclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ecclGetLastError(comm->base);
 }
 
+flagcxResult_t ecclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t ecclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t commId, int rank,
                                        bootstrapState * /*bootstrap*/) {
@@ -94,15 +100,23 @@ flagcxResult_t ecclAdaptorMemFree(void *ptr) {
 
 flagcxResult_t ecclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
                                        size_t size, void **handle) {
-  // ECCL does not have memory registration, return success
-  *handle = buff;
-  return flagcxSuccess;
+  return flagcxNotSupported;
 }
 
 flagcxResult_t ecclAdaptorCommDeregister(const flagcxInnerComm_t comm,
                                          void *handle) {
-  // ECCL does not have memory deregistration, return success
-  return flagcxSuccess;
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ecclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
+  return flagcxNotSupported;
 }
 
 flagcxResult_t ecclAdaptorReduce(const void *sendbuff, void *recvbuff,
@@ -213,13 +227,15 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     "ECCL",
     // Basic functions
     ecclAdaptorGetVersion, ecclAdaptorGetUniqueId, ecclAdaptorGetErrorString,
-    ecclAdaptorGetLastError,
+    ecclAdaptorGetLastError, ecclAdaptorGetStagedBuffer,
     // Communicator functions
     ecclAdaptorCommInitRank, ecclAdaptorCommFinalize, ecclAdaptorCommDestroy,
     ecclAdaptorCommAbort, ecclAdaptorCommResume, ecclAdaptorCommSuspend,
     ecclAdaptorCommCount, ecclAdaptorCommCuDevice, ecclAdaptorCommUserRank,
     ecclAdaptorCommGetAsyncError, ecclAdaptorMemAlloc, ecclAdaptorMemFree,
     ecclAdaptorCommRegister, ecclAdaptorCommDeregister,
+    // Symmetric functions
+    ecclAdaptorCommWindowRegister, ecclAdaptorCommWindowDeregister,
     // Communication functions
     ecclAdaptorReduce, ecclAdaptorGather, ecclAdaptorScatter,
     ecclAdaptorBroadcast, ecclAdaptorAllReduce, ecclAdaptorReduceScatter,

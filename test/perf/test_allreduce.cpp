@@ -65,6 +65,9 @@ int main(int argc, char *argv[]) {
   hello = malloc(max_bytes);
   memset(hello, 0, max_bytes);
 
+  const char *envLocRed = getenv("FLAGCX_UNIRUNNER_USE_LOCRED");
+  const char *envRingAG = getenv("FLAGCX_UNIRUNNER_USE_RINGAG");
+
   // Warm-up for large size
   for (int i = 0; i < num_warmup_iters; i++) {
     flagcxAllReduce(sendbuff, recvbuff, max_bytes / sizeof(float), DATATYPE,
@@ -115,6 +118,11 @@ int main(int argc, char *argv[]) {
     double base_bw = (double)(size) / 1.0E9 / elapsed_time;
     double alg_bw = base_bw;
     double factor = ((double)(2 * (totalProcs - 1))) / ((double)(totalProcs));
+    if (envLocRed != NULL && atoi(envLocRed) == 1) {
+      factor = 1;
+    } else if (envRingAG != NULL && atoi(envRingAG) == 1) {
+      factor = ((double)(totalProcs - 1)) / ((double)(totalProcs));
+    }
     double bus_bw = base_bw * factor;
     if (proc == 0 && color == 0) {
       printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: %lf "
@@ -134,8 +142,6 @@ int main(int argc, char *argv[]) {
       }
       printf("\n");
 
-      const char *envLocRed = getenv("FLAGCX_UNIRUNNER_USE_LOCRED");
-      const char *envRingAG = getenv("FLAGCX_UNIRUNNER_USE_RINGAG");
       if (envLocRed != NULL && atoi(envLocRed) == 1) {
         /* red correctness check */
         int red_correct = 1;

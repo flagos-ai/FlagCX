@@ -204,7 +204,7 @@ struct flagcxChannelPeer {
   int refCount;
 };
 
-struct flagcxDevComm;
+struct flagcxKernelComm;
 
 /* flagcxWork is to be a power of two, currently 8x64 bytes, */
 /* to make sure reads to host from the CUDA kernel are aligned. */
@@ -345,7 +345,7 @@ struct alignas(16) flagcxDevChannel {
                           // last work processed
 };
 
-struct flagcxDevComm {
+struct flagcxKernelComm {
   int rank;
   int nRanks;
   int node;
@@ -366,8 +366,8 @@ struct flagcxDevComm {
   struct flagcxDevChannel *channels /*[MAXCHANNELS]*/;
 };
 
-struct alignas(16) flagcxDevCommAndChannels {
-  struct flagcxDevComm comm;
+struct alignas(16) flagcxKernelCommAndChannels {
+  struct flagcxKernelComm comm;
   struct flagcxDevChannel channels[MAXCHANNELS];
 };
 
