@@ -1909,6 +1909,44 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
+                        size_t dstOffset, size_t size, int srcMrIdx,
+                        int dstMrIdx) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroGet(comm->heteroComm, peer, srcOffset, dstOffset, size,
+                         srcMrIdx, dstMrIdx);
+}
+
+flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
+                               size_t dstOffset, size_t size,
+                               size_t signalOffset, int srcMrIdx, int dstMrIdx,
+                               uint64_t signalValue) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroPutSignal(comm->heteroComm, peer, srcOffset, dstOffset,
+                               size, signalOffset, srcMrIdx, dstMrIdx,
+                               signalValue);
+}
+
+flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset,
+                            uint64_t signalValue) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  // Signal-only: size == 0, srcMrIdx/dstMrIdx unused
+  return flagcxHeteroPutSignal(comm->heteroComm, peer, 0, 0, 0, signalOffset,
+                               0, 0, signalValue);
+}
+
+flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
+                                size_t signalOffset, uint64_t expected,
+                                flagcxStream_t stream) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroWaitSignal(comm->heteroComm, peer, signalOffset, expected,
+                                stream);
+}
+
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupStart());

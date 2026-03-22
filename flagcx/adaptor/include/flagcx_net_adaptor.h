@@ -59,6 +59,10 @@ struct flagcxNetAdaptor {
   flagcxResult_t (*iput)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                          size_t size, int srcRank, int dstRank,
                          void **srcHandles, void **dstHandles, void **request);
+  // RDMA READ: pull data from remote srcRank into local dstRank buffer
+  flagcxResult_t (*iget)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                         size_t size, int srcRank, int dstRank,
+                         void **srcHandles, void **dstHandles, void **request);
   // Data + signal combined (NCCL GIN-aligned: enables chained WRITE + ATOMIC)
   // When size == 0, only signal ATOMIC is posted (signal-only mode)
   flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,

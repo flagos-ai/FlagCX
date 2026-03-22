@@ -41,6 +41,12 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx);
 
+// RDMA READ: pull data from remote peer's srcMrIdx buffer into local dstMrIdx
+// buffer
+flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx);
+
 // Data + signal combined (chained WRITE + ATOMIC in IB backend)
 // When size == 0, only signal ATOMIC is posted (signal-only mode)
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,

@@ -12,6 +12,18 @@
 #include <sched.h>
 #include <unistd.h>
 
+// test_get: RDMA READ benchmark (flagcxGet)
+//
+// Protocol:
+//   rank 0 (producer): fills local data buffer, then calls flagcxSignal to
+//                       notify rank 1 that data is ready.
+//   rank 1 (getter):   waits for the signal via flagcxWaitSignal, then
+//                       calls flagcxGet to RDMA-READ from rank 0's buffer
+//                       into its own local buffer.
+//
+// Both ranks register their data window (flagcxOneSideRegister) and signal
+// buffer (flagcxOneSideSignalRegister) before the benchmark loop.
+
 namespace {
 
 void fatal(flagcxResult_t res, const char *msg, int rank) {
@@ -36,7 +48,7 @@ int main(int argc, char *argv[]) {
   // RMA requires flagcxMemAlloc (GDR memory with SYNC_MEMOPS)
   if (local_register < 1) {
     fprintf(stderr,
-            "test_put requires -R 1 or -R 2 for GDR buffer allocation.\n");
+            "test_get requires -R 1 or -R 2 for GDR buffer allocation.\n");
     return 1;
   }
 
@@ -68,7 +80,7 @@ int main(int argc, char *argv[]) {
   flagcxIsHomoComm(comm, &isHomo);
   if (isHomo) {
     if (proc == 0)
-      printf("Skipping put benchmark: hetero communicator not initialised "
+      printf("Skipping get benchmark: hetero communicator not initialised "
              "(isHomo=%d).\n",
              isHomo);
     flagcxCommDestroy(comm);
@@ -77,24 +89,18 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
-  if (totalProcs < 2) {
-    if (proc == 0)
-      printf("test_put requires at least 2 MPI processes\n");
-    MPI_Finalize();
-    return 0;
-  }
-
-  const int senderRank = 0;
-  const int receiverRank = 1;
   if (totalProcs != 2) {
     if (proc == 0)
-      printf("test_put requires exactly 2 ranks (sender=0, receiver=1).\n");
+      printf("test_get requires exactly 2 ranks (producer=0, getter=1).\n");
     MPI_Finalize();
     return 0;
   }
 
-  bool isSender = (proc == senderRank);
-  bool isReceiver = (proc == receiverRank);
+  const int producerRank = 0;
+  const int getterRank = 1;
+
+  bool isProducer = (proc == producerRank);
+  bool isGetter = (proc == getterRank);
 
   flagcxResult_t res;
 
@@ -105,6 +111,7 @@ int main(int argc, char *argv[]) {
   size_t signal_total_bytes = signalBytes * total_iters_per_size;
 
   // Data buffer: GDR memory (SYNC_MEMOPS ensures NIC visibility via GDR BAR)
+  // Producer: stores data to be read.  Getter: receives data via RDMA READ.
   void *dataWindow = nullptr;
   res = flagcxMemAlloc(&dataWindow, data_bytes);
   if (res != flagcxSuccess || dataWindow == nullptr) {
@@ -114,7 +121,7 @@ int main(int argc, char *argv[]) {
   }
   devHandle->deviceMemset(dataWindow, 0, data_bytes, flagcxMemDevice, NULL);
 
-  // Signal buffer: GDR memory (SYNC_MEMOPS for RDMA ATOMIC visibility)
+  // Signal buffer: producer signals getter when each chunk is ready.
   void *signalWindow = nullptr;
   res = flagcxMemAlloc(&signalWindow, signal_total_bytes);
   if (res != flagcxSuccess || signalWindow == nullptr) {
@@ -130,11 +137,11 @@ int main(int argc, char *argv[]) {
   res = flagcxCommRegister(comm, dataWindow, data_bytes, &dataHandle);
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
-  // Register data buffer for one-sided operations
+  // Register data buffer for one-sided operations (MR index 0)
   res = flagcxOneSideRegister(comm, dataWindow, data_bytes);
   if (res == flagcxNotSupported) {
     if (proc == 0)
-      printf("Skipping put benchmark: net adaptor does not support iput.\n");
+      printf("Skipping get benchmark: net adaptor does not support iget.\n");
     flagcxCommDeregister(comm, dataHandle);
     flagcxMemFree(dataWindow);
     flagcxMemFree(signalWindow);
@@ -149,29 +156,27 @@ int main(int argc, char *argv[]) {
   res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes);
   fatal(res, "flagcxOneSideSignalRegister failed", proc);
 
+  // Dummy send/recv to establish full-mesh connections used by one-sided ops
   flagcxStream_t stream;
   devHandle->streamCreate(&stream);
   void *dummyBuff = nullptr;
   devHandle->deviceMalloc(&dummyBuff, 1, flagcxMemDevice, NULL);
 
-  // Both sides must call GroupStart/GroupEnd together to ensure synchronization
   flagcxGroupStart(comm);
-  if (isSender) {
-    flagcxSend(dummyBuff, 1, flagcxChar, receiverRank, comm, stream);
-  } else if (isReceiver) {
-    flagcxRecv(dummyBuff, 1, flagcxChar, senderRank, comm, stream);
+  if (isProducer) {
+    flagcxSend(dummyBuff, 1, flagcxChar, getterRank, comm, stream);
+  } else if (isGetter) {
+    flagcxRecv(dummyBuff, 1, flagcxChar, producerRank, comm, stream);
   }
   flagcxGroupEnd(comm);
 
-  // Wait for the connection to be fully established
   devHandle->streamSynchronize(stream);
   devHandle->deviceFree(dummyBuff, flagcxMemDevice, NULL);
   devHandle->streamDestroy(stream);
 
-  // Additional barrier to ensure connection is ready
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Host staging buffer for sender data fill and receiver verification
+  // Host staging buffer for producer data fill and getter verification
   void *hostStaging = nullptr;
   if (posix_memalign(&hostStaging, 64, max_bytes) != 0 ||
       hostStaging == nullptr) {
@@ -180,9 +185,9 @@ int main(int argc, char *argv[]) {
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
-  // Create stream for receiver-side wait operations
+  // Stream used by getter for streamWaitValue64 (flagcxWaitSignal)
   flagcxStream_t waitStream = nullptr;
-  if (isReceiver) {
+  if (isGetter) {
     devHandle->streamCreate(&waitStream);
   }
 
@@ -200,25 +205,25 @@ int main(int argc, char *argv[]) {
     // Warmup iterations (signal slots [0 .. num_warmup_iters-1])
     for (int i = 0; i < num_warmup_iters; ++i) {
       size_t signalOffset = i * signalBytes;
-      size_t current_send_offset = i * size;
-      size_t current_recv_offset = i * size;
+      size_t dataOffset = i * size; // same logical offset for both sides
 
-      if (isSender) {
-        // Fill host staging, then copy H2D to device data buffer
-        uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
+      if (isProducer) {
+        // Fill data then signal getter that chunk is ready
+        uint8_t value = static_cast<uint8_t>((producerRank + i) & 0xff);
         std::memset(hostStaging, value, size);
-        devHandle->deviceMemcpy((char *)dataWindow + current_send_offset,
-                                hostStaging, size, flagcxMemcpyHostToDevice,
-                                NULL);
+        devHandle->deviceMemcpy((char *)dataWindow + dataOffset, hostStaging,
+                                size, flagcxMemcpyHostToDevice, NULL);
 
-        res = flagcxPutSignal(comm, receiverRank, current_send_offset,
-                              current_recv_offset, size, signalOffset, 0, 0,
-                              1);
-        fatal(res, "flagcxPutSignal warmup failed", proc);
-      } else if (isReceiver) {
-        res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
+        res = flagcxSignal(comm, getterRank, signalOffset, 1);
+        fatal(res, "flagcxSignal warmup failed", proc);
+      } else if (isGetter) {
+        // Wait for producer's signal then RDMA READ from producer's buffer
+        res = flagcxWaitSignal(comm, producerRank, signalOffset, 1, waitStream);
         fatal(res, "flagcxWaitSignal warmup failed", proc);
         devHandle->streamSynchronize(waitStream);
+
+        res = flagcxGet(comm, producerRank, dataOffset, dataOffset, size, 0, 0);
+        fatal(res, "flagcxGet warmup failed", proc);
       }
     }
 
@@ -228,32 +233,30 @@ int main(int argc, char *argv[]) {
     // Benchmark iterations (signal slots [num_warmup_iters .. total_iters-1])
     for (int i = 0; i < num_iters; ++i) {
       size_t signalOffset = (num_warmup_iters + i) * signalBytes;
-      size_t current_send_offset = i * size;
-      size_t current_recv_offset = i * size;
+      size_t dataOffset = i * size;
 
-      if (isSender) {
-        uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
+      if (isProducer) {
+        uint8_t value = static_cast<uint8_t>((producerRank + i) & 0xff);
         std::memset(hostStaging, value, size);
-        devHandle->deviceMemcpy((char *)dataWindow + current_send_offset,
-                                hostStaging, size, flagcxMemcpyHostToDevice,
-                                NULL);
+        devHandle->deviceMemcpy((char *)dataWindow + dataOffset, hostStaging,
+                                size, flagcxMemcpyHostToDevice, NULL);
 
-        res = flagcxPutSignal(comm, receiverRank, current_send_offset,
-                              current_recv_offset, size, signalOffset, 0, 0,
-                              1);
-        fatal(res, "flagcxPutSignal failed", proc);
-      } else if (isReceiver) {
-        res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
+        res = flagcxSignal(comm, getterRank, signalOffset, 1);
+        fatal(res, "flagcxSignal failed", proc);
+      } else if (isGetter) {
+        res = flagcxWaitSignal(comm, producerRank, signalOffset, 1, waitStream);
         fatal(res, "flagcxWaitSignal failed", proc);
         devHandle->streamSynchronize(waitStream);
 
+        res = flagcxGet(comm, producerRank, dataOffset, dataOffset, size, 0, 0);
+        fatal(res, "flagcxGet failed", proc);
+
         if (print_buffer) {
-          // Copy device data to host for verification
-          devHandle->deviceMemcpy(
-              hostStaging, (char *)dataWindow + current_recv_offset,
-              std::min(size, (size_t)64), flagcxMemcpyDeviceToHost, NULL);
-          printf("[rank %d] Received data at offset %zu, size %zu:\n", proc,
-                 current_recv_offset, size);
+          devHandle->deviceMemcpy(hostStaging, (char *)dataWindow + dataOffset,
+                                  std::min(size, (size_t)64),
+                                  flagcxMemcpyDeviceToHost, NULL);
+          printf("[rank %d] Got data at offset %zu, size %zu:\n", proc,
+                 dataOffset, size);
           for (size_t j = 0; j < size && j < 64; ++j) {
             printf("%02x ", ((unsigned char *)hostStaging)[j]);
             if ((j + 1) % 16 == 0)

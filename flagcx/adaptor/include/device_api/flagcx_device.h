@@ -1404,7 +1404,7 @@ struct flagcxDevNet {
   }
 
   // ---- One-sided FIFO operations (all tiers, via FIFO) ----
-  // put/signal use FIFO for proxy-based one-sided operations.
+  // put/get/signal use FIFO for proxy-based one-sided operations.
   // These are simpler than GIN put/signal and work on all tiers.
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t put(size_t srcOffset,
                                                     size_t dstOffset,
@@ -1421,6 +1421,25 @@ struct flagcxDevNet {
     return flagcxFifoEnqueue(
         _devComm.getFifoBuffer(), fstValue, sndValue,
         flagcxBuildTrd(flagcxDevicePrimPut, peer, trdSpecific));
+  }
+  // get: RDMA READ from remote peer's srcMrIdx into local dstMrIdx.
+  // srcOffset/dstOffset are relative to the respective MR base addresses.
+  // Encoding mirrors put() — proxy dispatches flagcxHeteroGet.
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t get(size_t srcOffset,
+                                                    size_t dstOffset,
+                                                    size_t size, int peer,
+                                                    int srcMrIdx,
+                                                    int dstMrIdx) const {
+    uint64_t fstValue =
+        ((uint64_t)srcOffset << flagcxDeviceTriggerOffSrcOffset) |
+        ((uint64_t)dstOffset << flagcxDeviceTriggerOffDstOffset);
+    uint64_t sndValue = (uint64_t)size << flagcxDeviceTriggerOffSize;
+    uint64_t trdSpecific =
+        ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
+        ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
+    return flagcxFifoEnqueue(
+        _devComm.getFifoBuffer(), fstValue, sndValue,
+        flagcxBuildTrd(flagcxDevicePrimGet, peer, trdSpecific));
   }
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t signal(int signalIdx,
                                                        int peer) const {

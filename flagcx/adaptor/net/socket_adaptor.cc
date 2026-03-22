@@ -699,6 +699,7 @@ flagcxNetAdaptor flagcxNetSocket = {
 
     // One-sided functions
     NULL, // iput - not supported on socket
+    NULL, // iget - not supported on socket
     NULL, // iputSignal - not supported on socket
 
     // Device name lookup

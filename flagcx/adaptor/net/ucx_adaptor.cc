@@ -1512,6 +1512,7 @@ struct flagcxNetAdaptor flagcxNetUcx = {
 
     // One-sided functions
     NULL, // iput - not supported on UCX
+    NULL, // iget - not supported on UCX
     NULL, // iputSignal - not supported on UCX
 
     // Device name lookup

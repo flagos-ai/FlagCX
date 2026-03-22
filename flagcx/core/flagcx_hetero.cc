@@ -116,6 +116,47 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx) {
+  if (comm->netAdaptor == NULL || comm->netAdaptor->iget == NULL)
+    return flagcxNotSupported;
+
+  if (globalOneSideHandleCount == 0 ||
+      globalOneSideHandleTable[0]->fullSendComms == NULL) {
+    WARN("flagcxHeteroGet: no full-mesh connections");
+    return flagcxInternalError;
+  }
+  void *sendComm = globalOneSideHandleTable[0]->fullSendComms[peer];
+  if (sendComm == NULL) {
+    WARN("flagcxHeteroGet: no sendComm for peer %d", peer);
+    return flagcxInternalError;
+  }
+
+  if (srcMrIdx < 0 || srcMrIdx >= globalOneSideHandleCount || dstMrIdx < 0 ||
+      dstMrIdx >= globalOneSideHandleCount) {
+    WARN("flagcxHeteroGet: invalid MR index src=%d dst=%d (count=%d)", srcMrIdx,
+         dstMrIdx, globalOneSideHandleCount);
+    return flagcxInternalError;
+  }
+  void **srcHandles = (void **)globalOneSideHandleTable[srcMrIdx];
+  void **dstHandles = (void **)globalOneSideHandleTable[dstMrIdx];
+
+  int srcRank = peer;       // remote peer is the data source
+  int dstRank = comm->rank; // local rank is the data destination
+  void *request = NULL;
+  FLAGCXCHECK(comm->netAdaptor->iget(
+      sendComm, (uint64_t)srcOffset, (uint64_t)dstOffset, size, srcRank,
+      dstRank, srcHandles, dstHandles, &request));
+  if (request != NULL) {
+    int done = 0;
+    while (!done) {
+      FLAGCXCHECK(comm->netAdaptor->test(request, &done, NULL));
+    }
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, size_t signalOffset,

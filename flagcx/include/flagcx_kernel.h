@@ -17,7 +17,8 @@ typedef enum {
   flagcxDevicePrimBarrierSignal = 6,
   flagcxDevicePrimWaitSignal = 7,
   flagcxDevicePrimPutValue = 8,
-  flagcxDevicePrimPutSignal = 9
+  flagcxDevicePrimPutSignal = 9,
+  flagcxDevicePrimGet = 10
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo

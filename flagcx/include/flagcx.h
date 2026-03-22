@@ -445,6 +445,40 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
                           flagcxComm_t comm, flagcxStream_t stream);
 
 /*
+ * One-sided RDMA operations
+ *
+ * These operations require prior registration via flagcxOneSideRegister /
+ * flagcxOneSideSignalRegister. They are only supported on heterogeneous
+ * communicators backed by an RDMA-capable net adaptor.
+ */
+
+/* RDMA READ: pull size bytes from remote peer's buffer at srcOffset into the
+ * local buffer at dstOffset. srcMrIdx / dstMrIdx index the per-window MR
+ * handle table populated by flagcxOneSideRegister. */
+flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
+                         size_t dstOffset, size_t size, int srcMrIdx,
+                         int dstMrIdx);
+
+/* RDMA WRITE + ATOMIC: write size bytes from local srcOffset to remote
+ * dstOffset, then atomically increment the remote signal at signalOffset by
+ * signalValue. When size == 0, only the signal ATOMIC is posted. */
+flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
+                               size_t dstOffset, size_t size,
+                               size_t signalOffset, int srcMrIdx, int dstMrIdx,
+                               uint64_t signalValue);
+
+/* Signal only: atomically increment remote peer's signal at signalOffset by
+ * signalValue (equivalent to flagcxPutSignal with size == 0). */
+flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset,
+                            uint64_t signalValue);
+
+/* Wait until the local signal buffer at signalOffset reaches the expected
+ * value. Uses device-side streamWaitValue64; stream must not be NULL. */
+flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
+                                size_t signalOffset, uint64_t expected,
+                                flagcxStream_t stream);
+
+/*
  * Group semantics
  *
  * When managing multiple APUs from a single thread, and since FLAGCX collective

@@ -1266,6 +1266,23 @@ void *flagcxProxyKernelService(void *args) {
         res = flagcxHeteroPutValue(comm, peerRank, value, dstOffset, dstMrIdx);
         break;
       }
+      case flagcxDevicePrimGet: {
+        TRACE(FLAGCX_P2P,
+              "rank=%d flagcxDevicePrimGet called by proxyKernelService.",
+              comm->rank);
+        int peerRank = (int)ptr->getPeerRank();
+        res = validateOneSidedPeer(comm, peerRank);
+        if (res != flagcxSuccess)
+          break;
+        int srcMrIdx = (int)ptr->getSrcMrIdx();
+        int dstMrIdx = (int)ptr->getDstMrIdx();
+        size_t srcOffset = (size_t)ptr->getSrcOffset();
+        size_t dstOffset = (size_t)ptr->getDstOffset();
+        size_t size = (size_t)ptr->getSize();
+        res = flagcxHeteroGet(comm, peerRank, srcOffset, dstOffset, size,
+                              srcMrIdx, dstMrIdx);
+        break;
+      }
       case flagcxDevicePrimWait:
         TRACE(FLAGCX_P2P,
               "rank=%d flagcxDevicePrimWait called by proxyKernelService.",
