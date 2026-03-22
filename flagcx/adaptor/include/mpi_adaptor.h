@@ -275,6 +275,14 @@ inline bool flagcxMpiContext::validateMpiEnvironment() {
   return true;
 }
 
+#define MPI_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024) // 8MB
+struct stagedBuffer {
+  int offset;
+  int size;
+  void *buffer;
+};
+typedef struct stagedBuffer *stagedBuffer_t;
+
 struct flagcxInnerComm {
   std::shared_ptr<flagcxMpiContext> base;
 };

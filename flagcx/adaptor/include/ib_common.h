@@ -12,8 +12,12 @@
 #include "ibvcore.h"
 #include "ibvwrap.h"
 #include "net.h"
+#include "onesided.h"
 #include <pthread.h>
 #include <stdint.h>
+
+// Backward-compat alias so adaptor code can keep using the old name.
+typedef struct flagcxOneSideHandleInfo flagcxIbGlobalHandleInfo;
 
 #define MAXNAMESIZE 64
 #define MAX_IB_DEVS 32
@@ -96,15 +100,15 @@ struct flagcxIbMergedDev {
 struct flagcxIbQpInfo {
   uint32_t qpn;
   struct ibv_ece ece;
-  int ece_supported;
+  int eceSupported;
   int devIndex;
 };
 
 struct flagcxIbDevInfo {
   uint32_t lid;
-  uint8_t ib_port;
+  uint8_t ibPort;
   enum ibv_mtu mtu;
-  uint8_t link_layer;
+  uint8_t linkLayer;
   uint64_t spn;
   uint64_t iid;
   uint32_t fifoRkey;
@@ -112,7 +116,7 @@ struct flagcxIbDevInfo {
 };
 
 struct flagcxIbGidInfo {
-  uint8_t link_layer;
+  uint8_t linkLayer;
   union ibv_gid localGid;
   int32_t localGidIndex;
 };
@@ -120,16 +124,6 @@ struct flagcxIbGidInfo {
 struct flagcxIbMrHandle {
   ibv_mr *mrs[FLAGCX_IB_MAX_DEVS_PER_NIC];
 };
-
-// Structure to store handle info for allgather
-struct flagcxIbGlobalHandleInfo {
-  uintptr_t *base_vas;
-  uint32_t *rkeys;
-  uint32_t *lkeys;
-};
-
-// Global variable for one-sided operation handles
-extern struct flagcxIbGlobalHandleInfo *globalOneSideHandles;
 
 #define FLAGCX_NET_IB_REQ_UNUSED 0
 #define FLAGCX_NET_IB_REQ_SEND 1
@@ -202,7 +196,7 @@ struct flagcxIbRetransEntry {
   void *data;
   uint32_t lkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
   uint32_t rkeys[FLAGCX_IB_MAX_DEVS_PER_NIC];
-  int retry_count;
+  int retryCount;
   int valid;
 };
 
@@ -312,6 +306,7 @@ struct flagcxIbRemSizesFifo {
 struct flagcxIbSendCommDev {
   struct flagcxIbNetCommDevBase base;
   struct ibv_mr *fifoMr;
+  struct ibv_mr *putSignalScratchpadMr;
 
   struct flagcxIbCtrlQp ctrlQp;
   struct ibv_mr *ackMr;
@@ -343,17 +338,18 @@ struct flagcxIbSendComm {
   alignas(32) struct ibv_send_wr wrs[FLAGCX_NET_IB_MAX_RECVS + 1];
   struct flagcxIbRemSizesFifo remSizesFifo;
   uint64_t fifoHead;
+  uint64_t putSignalScratchpad;
   int ar;
 
   struct flagcxIbRetransState retrans;
-  uint64_t last_timeout_check_us;
+  uint64_t lastTimeoutCheckUs;
 
-  int outstanding_sends;
-  int outstanding_retrans;
-  int max_outstanding;
+  int outstandingSends;
+  int outstandingRetrans;
+  int maxOutstanding;
 
-  struct flagcxIbRetransHdr retrans_hdr_pool[32];
-  struct ibv_mr *retrans_hdr_mr;
+  struct flagcxIbRetransHdr retransHdrPool[32];
+  struct ibv_mr *retransHdrMr;
 };
 
 struct flagcxIbGpuFlush {

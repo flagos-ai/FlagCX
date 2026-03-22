@@ -284,6 +284,11 @@ flagcxResult_t mluAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
   return flagcxNotSupported;
 }
 
+static flagcxResult_t mluAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                  uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor mluAdaptor {
   "MLU",
       // Basic functions
@@ -337,6 +342,7 @@ struct flagcxDeviceAdaptor mluAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start, flagcxEvent_t end);
+      mluAdaptorStreamWaitValue64,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR

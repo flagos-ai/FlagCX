@@ -6,12 +6,9 @@ const float flagcxLatMap[FLAGCX_VENDOR_NUM][2] = {
     {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}};
 
 flagcxResult_t flagcxAlgoTimeEstimator::getAlgoTime(float *time) {
-  const char *enableTopoDetect = flagcxGetEnv("FLAGCX_ENABLE_TOPO_DETECT");
   const char *interServerTopoFile =
       flagcxGetEnv("FLAGCX_INTERSERVER_ROUTE_FILE");
-  if (enableTopoDetect && interServerTopoFile &&
-      (strcmp(enableTopoDetect, "TRUE") == 0 ||
-       strcmp(enableTopoDetect, "True") == 0)) {
+  if (interServerTopoFile) {
     // algo time estimator depends on cluster level topology detection
     float preHomoTime, heteroTime, postHomoTime;
     INFO(FLAGCX_GRAPH, "COST_MODEL: getting time for prehomo funcs");
@@ -35,7 +32,7 @@ flagcxResult_t flagcxAlgoTimeEstimator::getPreHomoAlgoTime(float *time) {
   for (int i = 0; i < comm->nclusters; i++) {
     int vendor = comm->clusterVendorMap[i];
     int clusterRankSize =
-        comm->cluster_sizes[i]; // get how many ranks are in this cluster
+        comm->clusterSizes[i]; // get how many ranks are in this cluster
     float preHomoTimeForCluster = 0.0;
     for (auto &func : preHomoFuncs) {
       float algoTime = 0.0;
@@ -58,7 +55,7 @@ flagcxResult_t flagcxAlgoTimeEstimator::getPostHomoAlgoTime(float *time) {
   for (int i = 0; i < comm->nclusters; i++) {
     int vendor = comm->clusterVendorMap[i];
     int clusterRankSize =
-        comm->cluster_sizes[i]; // get how many ranks are in this cluster
+        comm->clusterSizes[i]; // get how many ranks are in this cluster
     float postHomoTimeForCluster = 0.0;
     for (auto &func : postHomoFuncs) {
       float algoTime = 0.0;
@@ -105,7 +102,7 @@ float flagcxAlgoTimeEstimator::getRefreshTime() {
 
 flagcxResult_t flagcxAlgoTimeEstimator::getHeteroAlgoTime(float *time) {
   flagcxComm_t comm = planner_.comm_;
-  flagcxHeteroComm_t heteroComm = comm->hetero_comm;
+  flagcxHeteroComm_t heteroComm = comm->heteroComm;
   // filter out hetero funcs for each rank
   std::unordered_map<int, std::vector<flagcxC2cHeteroFunc>> heteroFuncMap;
   int heteroFuncLoops = planner_.nPipePreSteps_ + planner_.nSeqInterSteps_ +
@@ -199,31 +196,31 @@ void flagcxAlgoTimeEstimator::generateHeteroFuncForSingleNic(
   flagcxComm_t comm = planner_.comm_;
   auto &clusterInterRankList = planner_.clusterInterRankList_;
   int cid = 0;
-  int clusterId = comm->cluster_ids[rank];
-  int homoMyRank = comm->globalrank2homorank[rank];
-  int homoRanks = comm->cluster_sizes[clusterId];
+  int clusterId = comm->clusterIds[rank];
+  int homoMyRank = comm->globalRank2HomoRank[rank];
+  int homoRanks = comm->clusterSizes[clusterId];
   int totalCount = planner_.totalCount_;
   for (size_t j = 0; j < clusterInterRankList.size(); ++j) {
     if (clusterId == j) {
       continue;
     }
     int homoRankToRecvFromCluster =
-        (comm->globalrank2homorank[clusterInterRankList[clusterId][0]] - cid -
+        (comm->globalRank2HomoRank[clusterInterRankList[clusterId][0]] - cid -
          1 + homoRanks) %
         homoRanks;
     if (homoMyRank == homoRankToRecvFromCluster) {
       heteroFunc.addP2pOp(rank, clusterInterRankList[j][0], 0, totalCount, 1);
     }
     int homoRankToSendToCluster =
-        (comm->globalrank2homorank[clusterInterRankList[j][0]] - cid - 1 +
-         comm->cluster_sizes[j]) %
-        comm->cluster_sizes[j];
+        (comm->globalRank2HomoRank[clusterInterRankList[j][0]] - cid - 1 +
+         comm->clusterSizes[j]) %
+        comm->clusterSizes[j];
     int globalRankToSendToCluster =
         homoRankToSendToCluster -
-        comm->globalrank2homorank[clusterInterRankList[j][0]] +
+        comm->globalRank2HomoRank[clusterInterRankList[j][0]] +
         clusterInterRankList[j][0];
     if (homoMyRank ==
-        comm->globalrank2homorank[clusterInterRankList[clusterId][0]]) {
+        comm->globalRank2HomoRank[clusterInterRankList[clusterId][0]]) {
       heteroFunc.addP2pOp(rank, globalRankToSendToCluster, 0, totalCount, 0);
     }
     cid += 1;
@@ -235,14 +232,14 @@ float flagcxAlgoTimeEstimator::getP2pTimePerNic(
     std::unordered_map<uint64_t, std::vector<int>> &nicRankMap,
     std::unordered_map<int, std::vector<flagcxC2cHeteroFunc>> &heteroFuncMap) {
   flagcxComm_t comm = planner_.comm_;
-  flagcxHeteroComm_t heteroComm = comm->hetero_comm;
+  flagcxHeteroComm_t heteroComm = comm->heteroComm;
   auto &rankList = nicRankMap[netGuid];
   float sendTime = 0.0;
   float recvTime = 0.0;
   for (int &rank : rankList) {
     auto &funcList = heteroFuncMap[rank];
     // get clusterId of current rank
-    int clusterId = comm->cluster_ids[rank];        // {rank: clusterId}
+    int clusterId = comm->clusterIds[rank];         // {rank: clusterId}
     int vendor = comm->clusterVendorMap[clusterId]; // {clusterId: vendor}
     // get cluster lat and bw
     float curClusterLat =
@@ -250,7 +247,7 @@ float flagcxAlgoTimeEstimator::getP2pTimePerNic(
     for (auto &func : funcList) {
       for (auto &p2pOp : func.p2pOps_) {
         int remoteRank = p2pOp.peerRank_;
-        int remoteClusterId = comm->cluster_ids[remoteRank];
+        int remoteClusterId = comm->clusterIds[remoteRank];
         int remoteVendor = comm->clusterVendorMap[remoteClusterId];
         float remoteClusterLat =
             flagcxLatMap[remoteVendor][FLAGCX_INTER_LAT_IDX];

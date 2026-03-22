@@ -38,9 +38,28 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
-                               size_t srcOffset, size_t dstOffset, size_t size);
+                               size_t srcOffset, size_t dstOffset, size_t size,
+                               int srcMrIdx, int dstMrIdx);
 
+// Data + signal combined (chained WRITE + ATOMIC in IB backend)
+// When size == 0, only signal ATOMIC is posted (signal-only mode)
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
-                                     size_t dstOffset);
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, size_t signalOffset,
+                                     int srcMrIdx, int dstMrIdx,
+                                     uint64_t signalValue);
+
+flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
+                                 size_t size, void *gHandleInfo);
+
+flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
+                                      size_t signalOffset, uint64_t expected,
+                                      flagcxStream_t stream);
+
+// Put a 64-bit value to remote peer's buffer at dstOffset.
+// Writes value to local staging buffer then does iput from staging MR.
+flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
+                                    uint64_t value, size_t dstOffset,
+                                    int dstMrIdx);
 
 #endif

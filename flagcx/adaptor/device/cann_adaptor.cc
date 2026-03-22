@@ -254,6 +254,11 @@ flagcxResult_t cannAdaptorLaunchHostFunc(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t cannAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                   uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor cannAdaptor {
   "CANN",
       // Basic functions
@@ -306,6 +311,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start, flagcxEvent_t end);
+      cannAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ASCEND_ADAPTOR

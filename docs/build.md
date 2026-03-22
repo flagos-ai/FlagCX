@@ -32,6 +32,7 @@
    - `USE_KUNLUNXIN=1`: Enable the support to Kunlunxin chips;
    - `USE_DU=1`, `USE_ASCEND=1`: Enable support to Huawei Ascend hardware;
    - `USE_AMD=1`: Enable support to AMD hardware;
+   - `USE_TSM=1`: Enable support to TsingMicro hardware.
    - `USE_ENFLAME=1`: Enable support to Enflame hardware.
 
    The default installation path is set to `build/`, you can manually set `BUILDDIR` environment variable to customize the build path.

@@ -5,7 +5,7 @@ mkdir -p $BUILD_DIR
 
 export MPI_HOME=/usr/local/mpi
 export PATH=$MPI_HOME/bin:$PATH
-make USE_NVIDIA=1
+make -j$(nproc) USE_NVIDIA=1
 
 if [ $? -ne 0 ]; then
     echo "Compilation failed!"
@@ -13,7 +13,7 @@ if [ $? -ne 0 ]; then
 fi
 
 cd test/perf
-make USE_NVIDIA=1
+make -j$(nproc) USE_NVIDIA=1
 
 if [ $? -ne 0 ]; then
     echo "Test compilation failed!"
@@ -30,7 +30,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_alltoall -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
@@ -45,7 +45,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_alltoallv -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
@@ -60,7 +60,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_sendrecv -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
@@ -81,7 +81,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_allgather -b 128M -e 1G -f 2 -p 1
 if [ $? -ne 0 ]; then
@@ -102,7 +102,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
 if [ $? -ne 0 ]; then
@@ -117,7 +117,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_gather -b 128M -e 1G -f 2 -r 0 -p 1
 if [ $? -ne 0 ]; then
@@ -132,7 +132,7 @@ if [ $? -ne 0 ]; then
 fi
 
 mpirun -np 8 \
-  -x FLAGCX_ENABLE_TOPO_DETECT=TRUE \
+  -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_USE_HETERO_COMM=1 \
   ./test_scatter -b 128M -e 1G -f 2 -r 0 -p 1
 if [ $? -ne 0 ]; then

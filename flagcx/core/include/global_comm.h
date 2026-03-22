@@ -11,6 +11,28 @@
 /* Opaque handle to flagcxInnerComm */
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 
+// IPC peer pointer table entry — owned by comm, referenced by devMem.
+// Cleanup deferred to flagcxCommDestroy.
+// to avoid cudaFree implicit device synchronization deadlock.
+#define FLAGCX_MAX_IPC_ENTRIES 16
+
+struct flagcxIpcTableEntry {
+  void **hostPeerPtrs; // host array: peer buffer ptrs (for ipcMemHandleClose)
+  void **devPeerPtrs;  // device array: peer buffer ptrs (for cudaFree)
+  int nPeers;          // number of local peers
+  void *basePtr;       // own buffer ptr (skip in ipcMemHandleClose loop)
+  bool inUse;          // true while a devMem references this entry
+};
+
+// Deferred device/host-pinned memory free — collected during cleanup,
+// drained in flagcxCommDestroy.
+#define FLAGCX_MAX_DEFERRED_FREES 32
+
+struct flagcxDeferredFree {
+  void *ptr;
+  int memType; // flagcxMemDevice, flagcxMemHost, etc.
+};
+
 /* Opaque handle to flagcxHeteroComm */
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
@@ -25,22 +47,24 @@ struct flagcxComm {
   int rank;
   int nranks;
   int nclusters;
-  int homo_rank;
-  int homo_root_rank;
-  int homo_inter_rank;
-  int homo_ranks;
-  int has_single_rank_homo_comm;
-  flagcxCommunicatorType_t comm_type;
+  int homoRank;
+  int homoRootRank;
+  int homoRanks;
+  int hasSingleRankHomoComm;
+  flagcxCommunicatorType_t commType;
   uint64_t magic;
   volatile uint32_t *abortFlag;
-  int *cluster_sizes;
-  int *cluster_ids;
-  int *globalrank2homorank;
-  int *cluster_inter_ranks;
+  int *clusterSizes;
+  int *clusterIds;
+  int *globalRank2HomoRank;
+  int *clusterInterRanks;
   bootstrapState *bootstrap;
-  flagcxInnerComm_t host_comm;
-  flagcxInnerComm_t homo_comm;
-  flagcxHeteroComm_t hetero_comm;
+  int localRank;        // intra-node rank index (computed from hostHash)
+  int localRanks;       // number of ranks on this node
+  int *localRankToRank; // mapping: local index -> global rank
+  flagcxInnerComm_t hostComm;
+  flagcxInnerComm_t homoComm;
+  flagcxHeteroComm_t heteroComm;
   flagcxInnerComm_t homoInterComm;
   int homoInterRootRank;
   int homoInterMyRank;
@@ -51,6 +75,7 @@ struct flagcxComm {
   void *tunerContext;
   std::map<struct TunerCollCategory, flagcxInnerComm_t>
       homoCommMap; // key: commTag returned by tuner
+  std::map<struct flagcxCommTag, flagcxInnerComm_t> commMap;
   std::map<struct TunerCollCategory, flagcxInnerComm_t>
       homoBestCommMap;              // key: commTag returned by tuner
   flagcxInnerComm_t tunerInnerComm; // innerComm selected by tuner
@@ -58,10 +83,18 @@ struct flagcxComm {
   flagcxUniqueId *uniqueIdData;
   bool isTuningWithFlagscale; // whether tuning with flagscale
   bool isTunningComm;         // whether tuning the communicator
+  bool isUseSingleTunerComm;  // whether tuning with one communicator
   struct C2cSchedulePair {
     int sendCluster;
     int recvCluster;
   } * c2cSchedule; // C2C schedule for pairing send/recv operations
+
+  // IPC peer pointer table — deferred cleanup
+  struct flagcxIpcTableEntry ipcTable[FLAGCX_MAX_IPC_ENTRIES];
+
+  // Deferred device/host-pinned memory free list
+  struct flagcxDeferredFree deferredFrees[FLAGCX_MAX_DEFERRED_FREES];
+  int deferredFreeCount;
 };
 
 #endif // end include guard

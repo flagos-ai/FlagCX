@@ -13,6 +13,12 @@ flagcxResult_t ixncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t ixncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                            void **buff, size_t size,
+                                            int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *ixncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -83,6 +89,18 @@ flagcxResult_t ixncclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
 // TODO: unsupported
 flagcxResult_t ixncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
                                          size_t size, void **handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ixncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                               void *buff, size_t size,
+                                               flagcxWindow_t *win,
+                                               int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ixncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                 flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -201,15 +219,15 @@ flagcxResult_t ixncclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   res = ncclCommCount(comm->base, &nranks);
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = ncclGroupStart();
   for (int r = 0; r < nranks; r++) {
-    res = ncclSend(static_cast<const void *>(buffer_in + r * size), size,
+    res = ncclSend(static_cast<const void *>(bufferIn + r * size), size,
                    ncclChar, r, comm->base, stream->base);
-    res = ncclRecv(static_cast<void *>(buffer_out + r * size), size, ncclChar,
-                   r, comm->base, stream->base);
+    res = ncclRecv(static_cast<void *>(bufferOut + r * size), size, ncclChar, r,
+                   comm->base, stream->base);
   }
   res = ncclGroupEnd();
 
@@ -227,18 +245,18 @@ flagcxResult_t ixncclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   res = ncclCommCount(comm->base, &nranks);
 
   size_t size = getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = ncclGroupStart();
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
-      res = ncclSend(static_cast<const void *>(buffer_in + sdispls[r] * size),
+      res = ncclSend(static_cast<const void *>(bufferIn + sdispls[r] * size),
                      sendcounts[r], (ncclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-      res = ncclRecv(static_cast<void *>(buffer_out + rdispls[r] * size),
+      res = ncclRecv(static_cast<void *>(bufferOut + rdispls[r] * size),
                      recvcounts[r], (ncclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
@@ -277,6 +295,7 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     // Basic functions
     ixncclAdaptorGetVersion, ixncclAdaptorGetUniqueId,
     ixncclAdaptorGetErrorString, ixncclAdaptorGetLastError,
+    ixncclAdaptorGetStagedBuffer,
     // Communicator functions
     ixncclAdaptorCommInitRank, ixncclAdaptorCommFinalize,
     ixncclAdaptorCommDestroy, ixncclAdaptorCommAbort, ixncclAdaptorCommResume,
@@ -284,6 +303,8 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     ixncclAdaptorCommUserRank, ixncclAdaptorCommGetAsyncError,
     ixncclAdaptorMemAlloc, ixncclAdaptorMemFree, ixncclAdaptorCommRegister,
     ixncclAdaptorCommDeregister,
+    // Symmetric functions
+    ixncclAdaptorCommWindowRegister, ixncclAdaptorCommWindowDeregister,
     // Communication functions
     ixncclAdaptorReduce, ixncclAdaptorGather, ixncclAdaptorScatter,
     ixncclAdaptorBroadcast, ixncclAdaptorAllReduce, ixncclAdaptorReduceScatter,

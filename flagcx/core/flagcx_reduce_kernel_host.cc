@@ -50,16 +50,17 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              flagcxRedOp_t redop, int *ret) {
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
-  int capacity = buffer[0];
-  int distance = buffer[2] - buffer[1];
+  int capacity = buffer[flagcxFifoIdxCapacity];
+  int distance = buffer[flagcxFifoIdxProduced] - buffer[flagcxFifoIdxConsumed];
   // red buffer full, wait for kernel to consume
   if (distance >= capacity) {
     *ret = -1;
     sched_yield();
     return flagcxSuccess;
   }
-  idx = buffer[2] % capacity;
-  flagcxReduceTrigger *trigger = ((flagcxReduceTrigger *)(buffer + 4)) + idx;
+  idx = buffer[flagcxFifoIdxProduced] % capacity;
+  flagcxReduceTrigger *trigger =
+      ((flagcxReduceTrigger *)(buffer + flagcxFifoIdxData)) + idx;
 
   // kernel reduce work in progress
   if (trigger->pollState() != flagcxReduceTriggerAvailable) {
@@ -69,7 +70,7 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
   }
   trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,
                     flagcxReduceTriggerEnqueued);
-  __atomic_fetch_add(buffer + 2, 1ul, __ATOMIC_RELEASE);
+  __atomic_fetch_add(buffer + flagcxFifoIdxProduced, 1ul, __ATOMIC_RELEASE);
   *ret = idx;
   TRACE(FLAGCX_KERNEL,
         "enqueue red: count=%lu, nthreads=%lu, datatype=%d, redop=%d, idx=%d",
@@ -82,15 +83,15 @@ flagcxResult_t flagcxFifo::flagcxRedFifoInit() {
   TRACE(FLAGCX_INIT, "flagcxRedFifoInit called");
   uint64_t flagcxReduceFifoCapacity = flagcxParamReduceFifoCapacity();
   FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&buffer,
-                                          4 * sizeof(uint64_t) +
+                                          flagcxFifoIdxData * sizeof(uint64_t) +
                                               flagcxReduceFifoCapacity *
                                                   sizeof(flagcxReduceTrigger),
                                           flagcxMemHost, NULL));
-  buffer[0] = flagcxReduceFifoCapacity;
-  buffer[1] = 0;
-  buffer[2] = 0;
-  buffer[3] = 0;
-  memset((void *)(buffer + 4), 0,
+  buffer[flagcxFifoIdxCapacity] = flagcxReduceFifoCapacity;
+  buffer[flagcxFifoIdxConsumed] = 0;
+  buffer[flagcxFifoIdxProduced] = 0;
+  buffer[flagcxFifoIdxTerminate] = 0;
+  memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxReduceFifoCapacity * sizeof(flagcxReduceTrigger));
   __sync_synchronize();
   return flagcxSuccess;

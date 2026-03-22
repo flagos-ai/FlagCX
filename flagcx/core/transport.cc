@@ -13,6 +13,9 @@
 FLAGCX_PARAM(P2pDisable, "P2P_DISABLE", 0);
 
 static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
+  // Self is always same node (self-copy uses P2P memcpy, not NET)
+  if (peer == comm->rank)
+    return true;
   // force use net transport for unirunner allreduce
   if (flagcxParamP2pDisable()) {
     return false;

@@ -169,9 +169,10 @@ parser::parser(int argc, char **argv) {
         break;
       case 'R':
         localRegister = (int)strtol(optarg, NULL, 0);
-        if (localRegister != 0 && localRegister != 1) {
-          printf("localregister=%d\n", localRegister);
-          fprintf(stderr, "Invalid local register value\n");
+        if (localRegister < 0 || localRegister > 2) {
+          fprintf(stderr,
+                  "Invalid local register value: %d (must be 0, 1, or 2)\n",
+                  localRegister);
           exit(1);
         }
         break;
@@ -188,7 +189,7 @@ parser::parser(int argc, char **argv) {
                "[-p <printbuffer 0/1>] \n\t"
                "[-r <root>] \n\t"
                "[-s <splitmask OCT/DEC/HEX>] \n\t"
-               "[-R <localregister 0/1>] \n\t"
+               "[-R <localregister 0/1/2>] \n\t"
                "[-h\n",
                basename(argv[0]));
         printf("Use default values with -b 1M -e 1G -f 2 -w 5 -n 20 -p 0 -r 0 "

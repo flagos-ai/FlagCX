@@ -450,6 +450,18 @@ flagcxResult_t cudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
+static flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream,
+                                                   void *addr, uint64_t value,
+                                                   int flags) {
+  (void)flags;
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+  CUstream cuStream = (CUstream)(stream->base);
+  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
+                                     CU_STREAM_WAIT_VALUE_GEQ);
+  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -507,6 +519,8 @@ struct flagcxDeviceAdaptor cudaAdaptor {
                                               // size_t size, unsigned long long
                                               // flags);
       cudaAdaptorEventElapsedTime, // flagcxResult_t
+      // Stream memory operations (one-sided signal polling)
+      cudaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

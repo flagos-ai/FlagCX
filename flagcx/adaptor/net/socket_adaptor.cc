@@ -595,7 +595,8 @@ flagcxResult_t flagcxNetSocketTest(void *request, int *done, int *size) {
 }
 
 flagcxResult_t flagcxNetSocketRegMr(void *comm, void *data, size_t size,
-                                    int type, void **mhandle) {
+                                    int type, int mrFlags, void **mhandle) {
+  (void)mrFlags;
   return (type != FLAGCX_PTR_HOST) ? flagcxInternalError : flagcxSuccess;
 }
 
@@ -697,7 +698,8 @@ flagcxNetAdaptor flagcxNetSocket = {
     flagcxNetSocketTest,
 
     // One-sided functions
-    NULL, NULL, NULL, // put, putSignal, waitValue
+    NULL, // iput - not supported on socket
+    NULL, // iputSignal - not supported on socket
 
     // Device name lookup
     NULL, // getDevFromName

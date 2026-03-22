@@ -111,7 +111,6 @@ Refer to [getting started](getting_started.md) for FlagCX compilation and instal
    fi
    
    export FLAGCX_IB_HCA=mlx5
-   export FLAGCX_ENABLE_TOPO_DETECT=TRUE
    export FLAGCX_DEBUG=TRUE
    export FLAGCX_DEBUG_SUBSYS=ALL
    export CUDA_VISIBLE_DEVICES=0,1
@@ -369,7 +368,6 @@ The following steps shows an example in which we run the LLaMA3-8B model on Nvid
        -env PATH=/workspace/mpich-4.2.3/build/bin \
        -env LD_LIBRARY_PATH=/workspace/mpich-4.2.3/build/lib:/root/FlagCX/build/lib:/usr/local/mpi/lib/:/opt/maca/ompi/lib \
        -env FLAGCX_IB_HCA=mlx5 \
-       -env FLAGCX_ENABLE_TOPO_DETECT=TRUE \
        -env FLAGCX_DEBUG=INFO \
        -env FLAGCX_DEBUG_SUBSYS=INIT \
        /root/FlagCX/test/perf/test_allreduce -b 128K -e 4G -f 2 -w 5 -n 100 -p 1`

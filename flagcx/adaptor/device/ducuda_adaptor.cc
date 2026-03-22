@@ -323,6 +323,11 @@ flagcxResult_t ducudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
+static flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                     uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor ducudaAdaptor {
   "DUCUDA",
       // Basic functions
@@ -381,6 +386,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start, flagcxEvent_t end);
+      ducudaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_DU_ADAPTOR

@@ -310,6 +310,11 @@ flagcxResult_t musaAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
   return flagcxSuccess;
 }
 
+static flagcxResult_t musaAdaptorStreamWaitValue64(flagcxStream_t, void *,
+                                                   uint64_t, int) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor musaAdaptor {
   "MUSA",
       // Basic functions
@@ -363,6 +368,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
             // start, flagcxEvent_t end);
+      musaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_MUSA_ADAPTOR

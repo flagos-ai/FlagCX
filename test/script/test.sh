@@ -8,10 +8,10 @@ MPI_HOME=/usr/local/mpi
 mkdir -p $BUILD_DIR
 
 if [[ "$TYPE" == "nvidia" ]]; then
-    USE_NVIDIA=1 make -j32
+    USE_NVIDIA=1 make -j$(nproc)
 
 elif [[ "$TYPE" == "bi150" ]]; then
-    USE_ILUVATAR_COREX=1 make -j32
+    USE_ILUVATAR_COREX=1 make -j$(nproc)
 
 else
     echo "无效的编译类型: $TYPE"
@@ -26,10 +26,10 @@ fi
 cd test/perf
 
 if [[ "$TYPE" == "nvidia" ]]; then
-    make USE_NVIDIA=1
+    make -j$(nproc) USE_NVIDIA=1
 
 elif [[ "$TYPE" == "bi150"  ]]; then
-    make USE_ILUVATAR_COREX=1
+    make -j$(nproc) USE_ILUVATAR_COREX=1
 else
     echo "无效的编译类型: $TYPE"
     exit 1

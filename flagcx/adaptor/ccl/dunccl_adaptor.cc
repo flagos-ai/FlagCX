@@ -13,6 +13,12 @@ flagcxResult_t duncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   return (flagcxResult_t)ncclGetUniqueId((ncclUniqueId *)(*uniqueId));
 }
 
+flagcxResult_t duncclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                            void **buff, size_t size,
+                                            int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *duncclAdaptorGetErrorString(flagcxResult_t result) {
   return ncclGetErrorString((ncclResult_t)result);
 }
@@ -89,6 +95,18 @@ flagcxResult_t duncclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 // TODO: unsupported
 flagcxResult_t duncclAdaptorCommDeregister(flagcxInnerComm_t comm,
                                            void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t duncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
+                                               void *buff, size_t size,
+                                               flagcxWindow_t *win,
+                                               int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t duncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                 flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -200,15 +218,15 @@ flagcxResult_t duncclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
   res = ncclCommCount(comm->base, &nranks);
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = ncclGroupStart();
   for (int r = 0; r < nranks; r++) {
-    res = ncclSend(static_cast<const void *>(buffer_in + r * size), size,
+    res = ncclSend(static_cast<const void *>(bufferIn + r * size), size,
                    ncclChar, r, comm->base, stream->base);
-    res = ncclRecv(static_cast<void *>(buffer_out + r * size), size, ncclChar,
-                   r, comm->base, stream->base);
+    res = ncclRecv(static_cast<void *>(bufferOut + r * size), size, ncclChar, r,
+                   comm->base, stream->base);
   }
   res = ncclGroupEnd();
 
@@ -226,18 +244,18 @@ flagcxResult_t duncclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
   res = ncclCommCount(comm->base, &nranks);
 
   size_t size = getFlagcxDataTypeSize(datatype);
-  const char *buffer_in = static_cast<const char *>(sendbuff);
-  char *buffer_out = static_cast<char *>(recvbuff);
+  const char *bufferIn = static_cast<const char *>(sendbuff);
+  char *bufferOut = static_cast<char *>(recvbuff);
 
   res = ncclGroupStart();
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
-      res = ncclSend(static_cast<const void *>(buffer_in + sdispls[r] * size),
+      res = ncclSend(static_cast<const void *>(bufferIn + sdispls[r] * size),
                      sendcounts[r], (ncclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
-      res = ncclRecv(static_cast<void *>(buffer_out + rdispls[r] * size),
+      res = ncclRecv(static_cast<void *>(bufferOut + rdispls[r] * size),
                      recvcounts[r], (ncclDataType_t)datatype, r, comm->base,
                      stream->base);
     }
@@ -276,6 +294,7 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     // Basic functions
     duncclAdaptorGetVersion, duncclAdaptorGetUniqueId,
     duncclAdaptorGetErrorString, duncclAdaptorGetLastError,
+    duncclAdaptorGetStagedBuffer,
     // Communicator functions
     duncclAdaptorCommInitRank, duncclAdaptorCommFinalize,
     duncclAdaptorCommDestroy, duncclAdaptorCommAbort, duncclAdaptorCommResume,
@@ -283,6 +302,8 @@ struct flagcxCCLAdaptor duncclAdaptor = {
     duncclAdaptorCommUserRank, duncclAdaptorCommGetAsyncError,
     duncclAdaptorMemAlloc, duncclAdaptorMemFree, duncclAdaptorCommRegister,
     duncclAdaptorCommDeregister,
+    // Symmetric functions
+    duncclAdaptorCommWindowRegister, duncclAdaptorCommWindowDeregister,
     // Communication functions
     duncclAdaptorReduce, duncclAdaptorGather, duncclAdaptorScatter,
     duncclAdaptorBroadcast, duncclAdaptorAllReduce, duncclAdaptorReduceScatter,

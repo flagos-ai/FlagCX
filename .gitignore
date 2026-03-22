@@ -7,9 +7,11 @@ debian-packages
 # Ignore compiled Python files and shared object files
 plugin/*/*.so
 plugin/*/*/*.so
-plugin/*/*/__pycache__
+__pycache__/
+**/__pycache__/
 
-# Ignore egg-info directory
+# Ignore egg-info directories
+*.egg-info/
 plugin/*/*.egg-info
 
 # Ignore vscode workspace folder

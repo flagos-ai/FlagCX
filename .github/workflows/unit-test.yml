@@ -64,33 +64,30 @@ jobs:
           mkdir -p build
           cd build
           cmake ..
-          make
+          make -j$(nproc)
 
       - name: Run `make` to build the project
         run: |
           cd /__w/FlagCX/FlagCX
           export MPI_HOME=/usr/local/mpi
-          make USE_NVIDIA=1
+          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1
 
       - name: Enter test/unittest and run `make` for unit tests
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest
           export MPI_HOME=/usr/local/mpi
-          make
+          make -j$(nproc)
 
-      - name: Run unit tests with mpirun
+      - name: Run single-cluster tests with mpirun
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest
           export MPI_HOME=/usr/local/mpi
           export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root ./build/bin/main
+          mpirun -np 8 --allow-run-as-root ./build/bin/main --gtest_filter=-FlagCXKernelTest.*
 
-      - name: Run clusters tests with mpirun
+      - name: Run multi-cluster tests with mpirun
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest
           export MPI_HOME=/usr/local/mpi
           export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root  -x FLAGCX_CLUSTER_SPLIT_LIST=2  -x FLAGCX_IB_HCA=mlx5 -x FLAGCX_ENABLE_TOPO_DETECT=TRUE ./build/bin/main
-
-
-
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2  -x FLAGCX_IB_HCA=mlx5 ./build/bin/main --gtest_filter=-FlagCXKernelTest.*

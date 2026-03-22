@@ -22,15 +22,15 @@ flagcxResult_t parseClusterSplitList(const char *input,
 
 flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
                                          flagcxCommunicatorType_t *type,
-                                         int *homo_rank, int *homo_root_rank,
-                                         int *homo_ranks, int *cluster_id,
-                                         int *cluster_inter_rank, int *ncluster,
+                                         int *homoRank, int *homoRootRank,
+                                         int *homoRanks, int *clusterId,
+                                         int *clusterInterRank, int *ncluster,
                                          int rank, int nranks) {
-  *homo_rank = rank;
-  *homo_root_rank = 0;
-  *homo_ranks = 1;
-  *cluster_id = 0;
-  *cluster_inter_rank = -1; // deprecated, to be removed
+  *homoRank = rank;
+  *homoRootRank = 0;
+  *homoRanks = 1;
+  *clusterId = 0;
+  *clusterInterRank = -1; // deprecated, to be removed
   *ncluster = 1;
   *type = flagcxCommunicatorHomo;
 
@@ -42,7 +42,7 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
   int numClusters = 1;
   int currCluster = 0;
   int aggRanks = 1;
-  int homoRootRank = 0;
+  int localHomoRootRank = 0;
   std::string myCls = allData[rank].internal;
   for (int i = 1; i < nranks; ++i) {
     std::string cls = allData[i].internal;
@@ -53,19 +53,19 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
       clusterMap[cls] = 1;
       numClusters += 1;
       if (myCls == cls) {
-        *homo_rank = *homo_rank - aggRanks;
+        *homoRank = *homoRank - aggRanks;
         currCluster = numClusters - 1;
-        homoRootRank = i;
+        localHomoRootRank = i;
       }
     }
     aggRanks += 1;
 
     if (i == rank) {
-      *homo_root_rank = homoRootRank;
+      *homoRootRank = localHomoRootRank;
     }
   }
 
-  *homo_ranks = clusterMap[myCls];
+  *homoRanks = clusterMap[myCls];
 
   if (clusterMap.size() > 1) {
     *type = flagcxCommunicatorHybrid;
@@ -74,7 +74,7 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
   }
 
   if (*type == flagcxCommunicatorHybrid) {
-    *cluster_id = currCluster;
+    *clusterId = currCluster;
     *ncluster = numClusters;
   }
 
@@ -93,28 +93,27 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
     for (int i = 0; i < currCluster; ++i) {
       subClusterId += clusterSplitList[i];
     }
-    int subHomoRanks = (*homo_ranks) / clusterSplitList[currCluster];
+    int subHomoRanks = (*homoRanks) / clusterSplitList[currCluster];
     int hasRes =
-        (((*homo_rank) / subHomoRanks) >= clusterSplitList[currCluster]) ? 1
-                                                                         : 0;
-    subClusterId += (hasRes == 1) ? ((*homo_rank) / subHomoRanks) - 1
-                                  : ((*homo_rank) / subHomoRanks);
+        (((*homoRank) / subHomoRanks) >= clusterSplitList[currCluster]) ? 1 : 0;
+    subClusterId += (hasRes == 1) ? ((*homoRank) / subHomoRanks) - 1
+                                  : ((*homoRank) / subHomoRanks);
     int subHomoRank = (hasRes == 1)
-                          ? subHomoRanks + ((*homo_rank) % subHomoRanks)
-                          : ((*homo_rank) % subHomoRanks);
+                          ? subHomoRanks + ((*homoRank) % subHomoRanks)
+                          : ((*homoRank) % subHomoRanks);
     int subHomoRootRank = rank - subHomoRank;
     if (hasRes == 1 ||
-        ((*homo_rank) / subHomoRanks) == clusterSplitList[currCluster] - 1) {
-      subHomoRanks += (*homo_ranks) % clusterSplitList[currCluster];
+        ((*homoRank) / subHomoRanks) == clusterSplitList[currCluster] - 1) {
+      subHomoRanks += (*homoRanks) % clusterSplitList[currCluster];
     }
     int subNClusters = 0;
     for (int i = 0; i < (*ncluster); ++i) {
       subNClusters += clusterSplitList[i];
     }
-    *homo_rank = subHomoRank;
-    *homo_root_rank = subHomoRootRank;
-    *homo_ranks = subHomoRanks;
-    *cluster_id = subClusterId;
+    *homoRank = subHomoRank;
+    *homoRootRank = subHomoRootRank;
+    *homoRanks = subHomoRanks;
+    *clusterId = subClusterId;
     *ncluster = subNClusters;
     *type =
         (subNClusters > 1) ? flagcxCommunicatorHybrid : flagcxCommunicatorHomo;

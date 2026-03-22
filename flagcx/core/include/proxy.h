@@ -32,6 +32,10 @@ struct flagcxProxyKernelState {
   flagcxFifo_t fifo;
   flagcxStream_t stream;
   int stop = 0;
+  // Synchronization for initialization
+  pthread_mutex_t initMutex;
+  pthread_cond_t initCond;
+  int ready = 0;
 };
 
 struct flagcxProxyArgs;
@@ -345,7 +349,6 @@ struct flagcxProxyState {
   struct flagcxProxyProgressState progressState;
 
   // Kernel thread
-  bool enableProxyKernel = false;
   struct flagcxProxyKernelState kernelState;
   flagcxUniRunnerState uniRunnerState;
 

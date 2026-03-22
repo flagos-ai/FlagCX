@@ -75,6 +75,12 @@ flagcxResult_t hcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
       flagcxResult_t)h2f_ret_map[HcclGetRootInfo((HcclRootInfo *)(*uniqueId))];
 }
 
+flagcxResult_t hcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
+                                          void **buff, size_t size,
+                                          int isRecv) {
+  return flagcxNotSupported;
+}
+
 const char *hcclAdaptorGetErrorString(flagcxResult_t result) {
   return HcclGetErrorString((HcclResult)f2h_ret_map[result]);
 }
@@ -157,6 +163,17 @@ flagcxResult_t hcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 
 // TODO: unsupported
 flagcxResult_t hcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t hcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t *win,
+                                             int winFlags) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t hcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
@@ -321,13 +338,15 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     "HCCL",
     // Basic functions
     hcclAdaptorGetVersion, hcclAdaptorGetUniqueId, hcclAdaptorGetErrorString,
-    hcclAdaptorGetLastError,
+    hcclAdaptorGetLastError, hcclAdaptorGetStagedBuffer,
     // Communicator functions
     hcclAdaptorCommInitRank, hcclAdaptorCommFinalize, hcclAdaptorCommDestroy,
     hcclAdaptorCommAbort, hcclAdaptorCommResume, hcclAdaptorCommSuspend,
     hcclAdaptorCommCount, hcclAdaptorCommCuDevice, hcclAdaptorCommUserRank,
     hcclAdaptorCommGetAsyncError, hcclAdaptorMemAlloc, hcclAdaptorMemFree,
     hcclAdaptorCommRegister, hcclAdaptorCommDeregister,
+    // Symmetric functions
+    hcclAdaptorCommWindowRegister, hcclAdaptorCommWindowDeregister,
     // Communication functions
     hcclAdaptorReduce, hcclAdaptorGather, hcclAdaptorScatter,
     hcclAdaptorBroadcast, hcclAdaptorAllReduce, hcclAdaptorReduceScatter,

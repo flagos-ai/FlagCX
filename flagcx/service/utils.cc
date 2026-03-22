@@ -414,20 +414,20 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
   int nranks = comm->nranks;
   memset((void *)commId, 0, sizeof(*commId));
   memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
-  if (comm->homo_rank == 0) {
+  if (comm->homoRank == 0) {
     cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
   }
-  if (comm->homo_rank == 0) {
+  if (comm->homoRank == 0) {
     memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
   }
   FLAGCXCHECK(
       bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
   FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
 
-  memcpy((void *)commId, (void *)&uniqueIdData[comm->homo_root_rank],
+  memcpy((void *)commId, (void *)&uniqueIdData[comm->homoRootRank],
          sizeof(flagcxUniqueId));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
-      homoComm, comm->homo_ranks, commId, comm->homo_rank, NULL));
+      homoComm, comm->homoRanks, commId, comm->homoRank, NULL));
   return flagcxSuccess;
 }
 
@@ -483,11 +483,11 @@ FlagScaleConfig readFlagScaleJson(const std::string &filename) {
                              actual_filename);
   }
 
-  // Read tune_objects array
+  // Read tuneObjects array from JSON "tune_objects" key
   if (j[groupKey].contains("tune_objects") &&
       j[groupKey]["tune_objects"].is_array()) {
     for (const auto &obj : j[groupKey]["tune_objects"]) {
-      config.tune_objects.emplace_back(obj);
+      config.tuneObjects.emplace_back(obj);
     }
   }
 

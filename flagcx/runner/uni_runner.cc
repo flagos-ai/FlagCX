@@ -3,14 +3,35 @@
  ************************************************************************/
 
 #include "flagcx_hetero.h"
+#include "proxy.h"
 #include "runner.h"
 #include "uni_runner_impl.h"
+
+FLAGCX_PARAM(UniRunnerUseLocRed, "UNIRUNNER_USE_LOCRED", 0);
+FLAGCX_PARAM(UniRunnerUseRingAG, "UNIRUNNER_USE_RINGAG", 0);
+FLAGCX_PARAM(UniRunnerUseSlicedAR, "UNIRUNNER_USE_SLICEDAR", 0);
 
 flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, int root, flagcxComm_t comm,
                                flagcxStream_t stream) {
-  return flagcxNotSupported;
+  flagcxResult_t res = flagcxSuccess;
+  flagcxHeteroComm_t hcomm = comm->heteroComm;
+  flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  void *scratchbuff = nullptr;
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+      &scratchbuff, 2 * count * getFlagcxDataTypeSize(datatype),
+      flagcxMemDevice, stream));
+  FLAGCXCHECKGOTO(initUniRunner(comm, stream), res, out);
+  FLAGCXCHECKGOTO(initUniRunnerStateTreeRed(runnerState, sendbuff, recvbuff,
+                                            scratchbuff, count, datatype, op,
+                                            root, comm),
+                  res, out);
+  FLAGCXCHECKGOTO(runUniRunner(comm), res, out);
+out:
+  FLAGCXCHECK(deviceAdaptor->deviceFree(scratchbuff, flagcxMemDevice, stream));
+  FLAGCXCHECK(cleanupUniRunner(comm));
+  return res;
 }
 
 flagcxResult_t uniRunnerGather(const void *sendbuff, void *recvbuff,
@@ -24,12 +45,12 @@ flagcxResult_t uniRunnerGather(const void *sendbuff, void *recvbuff,
   if (comm->rank == root) {
     for (int r = 0; r < comm->nranks; r++) {
       FLAGCXCHECK(flagcxHeteroRecv(static_cast<void *>(buffer + r * size),
-                                   count, datatype, r, comm->hetero_comm,
+                                   count, datatype, r, comm->heteroComm,
                                    stream));
     }
   }
   FLAGCXCHECK(flagcxHeteroSend(sendbuff, count, datatype, root,
-                               comm->hetero_comm, stream));
+                               comm->heteroComm, stream));
   FLAGCXCHECK(flagcxHeteroGroupEnd());
   return flagcxSuccess;
 }
@@ -45,12 +66,12 @@ flagcxResult_t uniRunnerScatter(const void *sendbuff, void *recvbuff,
   if (comm->rank == root) {
     for (int r = 0; r < comm->nranks; r++) {
       FLAGCXCHECK(flagcxHeteroSend(static_cast<const void *>(buffer + r * size),
-                                   count, datatype, r, comm->hetero_comm,
+                                   count, datatype, r, comm->heteroComm,
                                    stream));
     }
   }
   FLAGCXCHECK(flagcxHeteroRecv(recvbuff, count, datatype, root,
-                               comm->hetero_comm, stream));
+                               comm->heteroComm, stream));
   FLAGCXCHECK(flagcxHeteroGroupEnd());
   return flagcxSuccess;
 }
@@ -63,11 +84,11 @@ flagcxResult_t uniRunnerBroadcast(const void *sendbuff, void *recvbuff,
   if (comm->rank == root) {
     for (int r = 0; r < comm->nranks; r++) {
       FLAGCXCHECK(flagcxHeteroSend(sendbuff, count, datatype, r,
-                                   comm->hetero_comm, stream));
+                                   comm->heteroComm, stream));
     }
   }
   FLAGCXCHECK(flagcxHeteroRecv(recvbuff, count, datatype, root,
-                               comm->hetero_comm, stream));
+                               comm->heteroComm, stream));
   FLAGCXCHECK(flagcxHeteroGroupEnd());
   return flagcxSuccess;
 }
@@ -76,9 +97,35 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxRedOp_t op, flagcxComm_t comm,
                                   flagcxStream_t stream) {
-  runUniRunner(sendbuff, recvbuff, count, datatype, op, comm, stream,
-               flagcxCommOpAllReduce);
-  return flagcxSuccess;
+  flagcxResult_t res = flagcxSuccess;
+  flagcxHeteroComm_t hcomm = comm->heteroComm;
+  flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  FLAGCXCHECK(initUniRunner(comm, stream));
+  if (flagcxParamUniRunnerUseLocRed()) {
+    /* initialize uniRunnerState for reduce test */
+    FLAGCXCHECKGOTO(initUniRunnerStateLocRed(runnerState, sendbuff, recvbuff,
+                                             count, datatype, op, comm),
+                    res, out);
+  } else if (flagcxParamUniRunnerUseRingAG()) {
+    /* initialize uniRunnerState for p2p test */
+    FLAGCXCHECKGOTO(initUniRunnerStateRingAG(runnerState, sendbuff, recvbuff,
+                                             count, datatype, op, comm),
+                    res, out);
+  } else if (flagcxParamUniRunnerUseSlicedAR()) {
+    /* initialize uniRunnerState for sliced AllReduce */
+    FLAGCXCHECKGOTO(initUniRunnerStateSlicedAR(runnerState, sendbuff, recvbuff,
+                                               count, datatype, op, comm),
+                    res, out);
+  } else {
+    /* initialize uniRunnerState for ring AllReduce */
+    FLAGCXCHECKGOTO(initUniRunnerStateRingAR(runnerState, sendbuff, recvbuff,
+                                             count, datatype, op, comm),
+                    res, out);
+  }
+  FLAGCXCHECK(runUniRunner(comm));
+out:
+  FLAGCXCHECK(cleanupUniRunner(comm));
+  return res;
 }
 
 flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
@@ -86,7 +133,23 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                                       flagcxDataType_t datatype,
                                       flagcxRedOp_t op, flagcxComm_t comm,
                                       flagcxStream_t stream) {
-  return flagcxNotSupported;
+  flagcxResult_t res = flagcxSuccess;
+  flagcxHeteroComm_t hcomm = comm->heteroComm;
+  flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  void *scratchbuff = nullptr;
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+      &scratchbuff, recvcount * comm->nranks * getFlagcxDataTypeSize(datatype),
+      flagcxMemDevice, stream));
+  FLAGCXCHECKGOTO(initUniRunner(comm, stream), res, out);
+  FLAGCXCHECKGOTO(initUniRunnerStateRingRS(runnerState, sendbuff, recvbuff,
+                                           scratchbuff, recvcount, datatype, op,
+                                           comm),
+                  res, out);
+  FLAGCXCHECKGOTO(runUniRunner(comm), res, out);
+out:
+  FLAGCXCHECK(deviceAdaptor->deviceFree(scratchbuff, flagcxMemDevice, stream));
+  FLAGCXCHECK(cleanupUniRunner(comm));
+  return res;
 }
 
 flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
@@ -97,9 +160,9 @@ flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(flagcxHeteroGroupStart());
   for (int r = 0; r < comm->nranks; r++) {
     FLAGCXCHECK(flagcxHeteroSend(sendbuff, sendcount, datatype, r,
-                                 comm->hetero_comm, stream));
+                                 comm->heteroComm, stream));
     FLAGCXCHECK(flagcxHeteroRecv(static_cast<void *>(bufferOut + r * size),
-                                 sendcount, datatype, r, comm->hetero_comm,
+                                 sendcount, datatype, r, comm->heteroComm,
                                  stream));
   }
   FLAGCXCHECK(flagcxHeteroGroupEnd());
@@ -115,11 +178,9 @@ flagcxResult_t uniRunnerAlltoAll(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(flagcxHeteroGroupStart());
   for (int r = 0; r < comm->nranks; r++) {
     FLAGCXCHECK(flagcxHeteroSend(static_cast<const void *>(bufferIn + r * size),
-                                 count, datatype, r, comm->hetero_comm,
-                                 stream));
+                                 count, datatype, r, comm->heteroComm, stream));
     FLAGCXCHECK(flagcxHeteroRecv(static_cast<void *>(bufferOut + r * size),
-                                 count, datatype, r, comm->hetero_comm,
-                                 stream));
+                                 count, datatype, r, comm->heteroComm, stream));
   }
   FLAGCXCHECK(flagcxHeteroGroupEnd());
   return flagcxSuccess;
@@ -138,12 +199,12 @@ flagcxResult_t uniRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
       FLAGCXCHECK(flagcxHeteroSend(
           static_cast<const void *>(bufferIn + sdispls[r] * size),
-          sendcounts[r], datatype, r, comm->hetero_comm, stream));
+          sendcounts[r], datatype, r, comm->heteroComm, stream));
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
       FLAGCXCHECK(flagcxHeteroRecv(
           static_cast<void *>(bufferOut + rdispls[r] * size), recvcounts[r],
-          datatype, r, comm->hetero_comm, stream));
+          datatype, r, comm->heteroComm, stream));
     }
   }
   FLAGCXCHECK(flagcxHeteroGroupEnd());
@@ -154,7 +215,7 @@ flagcxResult_t uniRunnerSend(const void *sendbuff, size_t count,
                              flagcxDataType_t datatype, int peer,
                              flagcxComm_t comm, flagcxStream_t stream) {
   FLAGCXCHECK(flagcxHeteroSend(sendbuff, count, datatype, peer,
-                               comm->hetero_comm, stream));
+                               comm->heteroComm, stream));
   return flagcxSuccess;
 }
 
@@ -162,7 +223,7 @@ flagcxResult_t uniRunnerRecv(void *recvbuff, size_t count,
                              flagcxDataType_t datatype, int peer,
                              flagcxComm_t comm, flagcxStream_t stream) {
   FLAGCXCHECK(flagcxHeteroRecv(recvbuff, count, datatype, peer,
-                               comm->hetero_comm, stream));
+                               comm->heteroComm, stream));
   return flagcxSuccess;
 }
 

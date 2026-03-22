@@ -261,7 +261,8 @@ struct flagcxHeteroComm {
   uint32_t *abortFlagRefCount;
 
   // Device side of the communicator (for cudaFree's)
-  struct flagcxDevComm *devComm; // actually = &flagcxDevCommAndChannels::comm
+  struct flagcxKernelComm
+      *devComm; // actually = &flagcxKernelCommAndChannels::comm
 
   // Operation pool.
   int workFifoDepth; // size of workFifoHeap[], power of 2
@@ -353,6 +354,9 @@ struct flagcxHeteroComm {
   void *fifoBuffer;
   // uniRunner FIFO buffer
   void *uniRunnerFifoBuffer;
+  // Device communicator (set by flagcxDevCommCreate).
+  // Used by proxy for BarrierSignal, WaitSignal, PutValue handlers.
+  flagcxDevComm_t devCommHandle;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;

@@ -40,6 +40,7 @@ typedef enum {
   FLAGCX_BOOTSTRAP = 4096,
   FLAGCX_REG = 8192,
   FLAGCX_KERNEL = 16384,
+  FLAGCX_UNIRUNNER = 32768,
   FLAGCX_ALL = ~0
 } flagcxDebugLogSubSys;
 

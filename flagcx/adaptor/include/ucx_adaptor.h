@@ -36,9 +36,9 @@ struct flagcxUcxCommStage {
 
 // UCX Memory Handle
 typedef struct flagcxUcxMhandle {
-  ucp_mem_h ucp_memh;
+  ucp_mem_h ucpMemh;
   ucp_rkey_h rkey;
-  int mem_type;
+  int memType;
 } flagcxUcxMhandle_t;
 
 // UCX Endpoint List
@@ -76,7 +76,7 @@ typedef struct flagcxUcxListenComm {
                              * be used to recieve data */
   struct flagcxSocket sock; /* socket for OOB connection */
   ucp_context_h ctx; /* ucp_context associated with specific device dev */
-  flagcxUcxWorker_t *ucx_worker; /* flagcxUcxWorker created on ctx, worker can
+  flagcxUcxWorker_t *ucxWorker; /* flagcxUcxWorker created on ctx, worker can
                            be shared between multiple connections */
   ucp_tag_t tag; /* tag that is used to distiguish data that was sent to
                     this reciever. Required when shared worker is used.*/
@@ -85,7 +85,7 @@ typedef struct flagcxUcxListenComm {
 
 // UCX Connect Message
 typedef struct flagcxUcxConnectMsg {
-  size_t addr_len;
+  size_t addrLen;
 } flagcxUcxConnectMsg_t;
 
 // Forward declaration
@@ -105,7 +105,7 @@ typedef struct flagcxUcxRequest {
 typedef struct flagcxUcxGpuFlush {
   int enabled;
   int hostMem;
-  ucp_ep_h flush_ep;
+  ucp_ep_h flushEp;
 } flagcxUcxGpuFlush_t;
 
 // UCX Context Structure
@@ -116,10 +116,10 @@ typedef struct flagcxUcxCtx {
 
 // UCX Communicator Structure
 typedef struct flagcxUcxComm {
-  ucp_context_h ctx;             /* ucp_context bounded to specific device */
-  flagcxUcxGpuFlush_t gpuFlush;  /* flushing handle */
-  flagcxUcxWorker_t *ucx_worker; /* ucp worker associated with ctx */
-  ucp_ep_h ep;                   /* ucp endpoint created on worker */
+  ucp_context_h ctx;            /* ucp_context bounded to specific device */
+  flagcxUcxGpuFlush_t gpuFlush; /* flushing handle */
+  flagcxUcxWorker_t *ucxWorker; /* ucp worker associated with ctx */
+  ucp_ep_h ep;                  /* ucp endpoint created on worker */
   ucp_tag_t tag;  /* datapath tag to filter out message that are not
                      belong to this connnection */
   ucp_tag_t ctag; /* controlpath tag to filter out message that are not
@@ -127,9 +127,9 @@ typedef struct flagcxUcxComm {
   struct flagcxSocket sock; /* socket for OOB connection */
   int ready; /* indicates that receive communicator is fully initialized */
   flagcxUcxRequest_t reqs[MAX_REQUESTS]; /* max inflight requests */
-  flagcxUcxRequest_t *free_req;          /* first request available */
+  flagcxUcxRequest_t *freeReq;           /* first request available */
   flagcxUcxConnectMsg_t *msg; /* message to establish reverse connection */
-  void *connect_req;          /* msg request */
+  void *connectReq;           /* msg request */
 } flagcxUcxComm_t;
 
 // UCX Macros

@@ -98,7 +98,7 @@ int main(int argc, char *argv[]) {
       count = size / sizeof(float);
 
       for (size_t i = 0; i < count; i++) {
-        ((float *)hello)[i] = i % 10;
+        ((float *)hello)[i] = i % 10 * (1 << proc);
       }
 
       devHandle->deviceMemcpy(sendbuff, hello, size, flagcxMemcpyHostToDevice,
@@ -146,6 +146,21 @@ int main(int argc, char *argv[]) {
           printf("%f ", ((float *)hello)[i]);
         }
         printf("\n");
+        int correct = 1;
+        for (size_t i = 0; i < count; i++) {
+          if ((i % 10 == 0 && ((float *)hello)[i] != 0) ||
+              ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) >
+                  1 + 1e-5 ||
+              ((float *)hello)[i] / (float)(i % 10 * ((1 << totalProcs) - 1)) <
+                  1 - 1e-5) {
+            printf("wrong output at offset %lu, expected %f, got %f\n", i,
+                   (float)(i % 10 * ((1 << totalProcs) - 1)),
+                   ((float *)hello)[i]);
+            correct = 0;
+            break;
+          }
+        }
+        printf("proc %d (root rank) correctness = %d\n", proc, correct);
       }
     }
 
