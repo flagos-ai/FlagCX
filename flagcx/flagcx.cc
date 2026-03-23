@@ -1910,8 +1910,8 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 }
 
 flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
-                        size_t dstOffset, size_t size, int srcMrIdx,
-                        int dstMrIdx) {
+                         size_t dstOffset, size_t size, int srcMrIdx,
+                         int dstMrIdx) {
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroGet(comm->heteroComm, peer, srcOffset, dstOffset, size,
@@ -1934,8 +1934,8 @@ flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset,
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   // Signal-only: size == 0, srcMrIdx/dstMrIdx unused
-  return flagcxHeteroPutSignal(comm->heteroComm, peer, 0, 0, 0, signalOffset,
-                               0, 0, signalValue);
+  return flagcxHeteroPutSignal(comm->heteroComm, peer, 0, 0, 0, signalOffset, 0,
+                               0, signalValue);
 }
 
 flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
