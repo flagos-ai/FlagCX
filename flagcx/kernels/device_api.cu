@@ -208,26 +208,20 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
       flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
 
   int nRanks = devComm.getSize();
-  int myRank = devComm.getRank();
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
   // Pre-communication barrier
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 
-  // Thread 0 dispatches send/recv (FIFO enqueue is thread-scope).
-  if (FLAGCX_THREAD_IDX_X == 0) {
-    for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
-         peer += FLAGCX_GRID_DIM_X) {
-      size_t offset = peer * size;
-      net.send(sendMem, offset, count, datatype, peer);
-      net.recv(recvMem, offset, count, datatype, peer);
-    }
+  // All operations are Coop-scope: every thread participates,
+  // only threadRank==0 touches FIFO.
+  for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
+       peer += FLAGCX_GRID_DIM_X) {
+    size_t offset = peer * size;
+    net.send(flagcxCoopBlock{}, sendMem, offset, count, datatype, peer);
+    net.recv(flagcxCoopBlock{}, recvMem, offset, count, datatype, peer);
   }
 
-  // Two-sided: all CTAs must enqueue term/wait, even idle ones
-  // (blockIdx >= nRanks), because the proxy counts term entries from all
-  // CTA_COUNT channels to trigger groupEnd.
-  // Coop ensures only threadRank==0 touches FIFO; all threads synchronize.
   net.term(flagcxCoopBlock{});
   net.wait(flagcxCoopBlock{});
 
