@@ -180,8 +180,10 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
       ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
       reqs.lsaBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
       reqs.lsaMultimem = checkNvlsSupport();
-      // reqs.railGinBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
-      // reqs.ginSignalCount = 1;
+      // Adaptor DevComm is intra-node only; GIN barriers/signals not needed
+      // here. Kernel-level DevComm requests GIN resources via
+      // flagcxDevCommCreate. reqs.railGinBarrierCount =
+      // NCCL_ADAPTOR_DEVICE_CTA_COUNT; reqs.ginSignalCount = 1;
       flagcxResult_t devCommRes =
           ncclAdaptorDevCommCreate((*comm)->base, &reqs, (*comm)->devBase);
       if (devCommRes != flagcxSuccess) {
@@ -215,6 +217,7 @@ flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
   if (comm->devBase != NULL) {
     FLAGCXCHECK(ncclAdaptorDevCommDestroy(comm->base, comm->devBase));
     free(comm->devBase);
+    comm->devBase = NULL;
   }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK((flagcxResult_t)ncclCommFinalize(comm->base));
@@ -239,6 +242,7 @@ flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   if (comm->devBase != NULL) {
     FLAGCXCHECK(ncclAdaptorDevCommDestroy(comm->base, comm->devBase));
     free(comm->devBase);
+    comm->devBase = NULL;
   }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
@@ -263,6 +267,7 @@ flagcxResult_t ncclAdaptorCommAbort(flagcxInnerComm_t comm) {
   if (comm->devBase != NULL) {
     FLAGCXCHECK(ncclAdaptorDevCommDestroy(comm->base, comm->devBase));
     free(comm->devBase);
+    comm->devBase = NULL;
   }
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
   FLAGCXCHECK((flagcxResult_t)ncclCommAbort(comm->base));

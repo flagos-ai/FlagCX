@@ -329,7 +329,7 @@ localAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
-  bar.sync(ncclCoopCta(), cuda::memory_order_relaxed);
+  bar.sync(ncclCoopCta(), cuda::memory_order_acquire);
 
   const int globalTid = threadIdx.x + blockDim.x * blockIdx.x;
   const int globalNthreads = blockDim.x * gridDim.x;
@@ -358,7 +358,7 @@ interleavedAllReduceKernel(ncclWindow_t sendwin, size_t sendoffset,
   ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), devComm,
                                          ncclTeamLsa(devComm),
                                          devComm.lsaBarrier, blockIdx.x, true};
-  bar.sync(ncclCoopCta(), cuda::memory_order_relaxed);
+  bar.sync(ncclCoopCta(), cuda::memory_order_acquire);
 
   const int rank = devComm.rank, nRanks = devComm.nRanks;
   const int globalTid = threadIdx.x + blockDim.x * (rank + blockIdx.x * nRanks);

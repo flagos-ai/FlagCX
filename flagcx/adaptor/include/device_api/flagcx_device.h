@@ -1281,6 +1281,10 @@ enum class flagcxGinFenceLevel { Relaxed };
 #ifdef FLAGCX_DEVICE_API_VENDOR
 FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR ncclGinFenceLevel
     flagcxGinFenceLevelMap[] = {ncclGinFenceLevel::Relaxed};
+static_assert(
+    sizeof(flagcxGinFenceLevelMap) / sizeof(flagcxGinFenceLevelMap[0]) ==
+        static_cast<int>(flagcxGinFenceLevel::Relaxed) + 1,
+    "flagcxGinFenceLevelMap must cover all flagcxGinFenceLevel values");
 #endif
 
 // GIN action types and typedefs — available on all tiers for API completeness.
@@ -2009,6 +2013,10 @@ struct flagcxDevNet {
 // Section 11: flagcxInterBarrierSession — GIN Barrier (Vendor only)
 // ============================================================
 #ifdef FLAGCX_DEVICE_API_VENDOR
+// NOTE: On the vendor path, _nInterPeers is always 0 (set only by fallback's
+// setupInterNodeSignalRelay). sync() is therefore a no-op. Multi-node kernels
+// should use flagcxBarrierSession(flagcxTeamTagWorld) which wraps
+// ncclBarrierSession for combined intra+inter sync.
 template <typename Coop>
 struct flagcxInterBarrierSession {
   alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(

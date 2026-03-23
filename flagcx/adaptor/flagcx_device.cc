@@ -520,26 +520,31 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   // ---- Vendor path: NCCL device comm ----
   {
     flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm != nullptr) {
-      ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
-      ncclReqs.lsaMultimem = reqs->intraMulticast;
-      ncclReqs.barrierCount = reqs->barrierCount;
-      ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
-      ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
-      ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
-      ncclReqs.ginSignalCount = reqs->interSignalCount;
-      ncclReqs.ginForceEnable = reqs->interForceEnable;
-      ncclReqs.ginContextCount = reqs->interContextCount;
-      ncclReqs.ginCounterCount = reqs->interCounterCount;
+    if (innerComm == nullptr || innerComm->base == nullptr) {
+      WARN("flagcxDevCommCreate: vendor path requires valid homoComm, "
+           "but comm->homoComm is %s",
+           innerComm == nullptr ? "NULL" : "missing base");
+      free(handle);
+      return flagcxInternalError;
+    }
+    ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+    ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
+    ncclReqs.lsaMultimem = reqs->intraMulticast;
+    ncclReqs.barrierCount = reqs->barrierCount;
+    ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
+    ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
+    ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
+    ncclReqs.ginSignalCount = reqs->interSignalCount;
+    ncclReqs.ginForceEnable = reqs->interForceEnable;
+    ncclReqs.ginContextCount = reqs->interContextCount;
+    ncclReqs.ginCounterCount = reqs->interCounterCount;
 
-      flagcxResult_t ret = ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs,
-                                                    &handle->ncclDev);
-      if (ret != flagcxSuccess) {
-        WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d)", ret);
-        free(handle);
-        return ret;
-      }
+    flagcxResult_t ret =
+        ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs, &handle->ncclDev);
+    if (ret != flagcxSuccess) {
+      WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d)", ret);
+      free(handle);
+      return ret;
     }
   }
 #else
@@ -680,8 +685,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
       ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
     }
   }
-#endif
-
+#else
   // Inter-node signal relay cleanup
   cleanupInterNodeSignalRelay(comm, devComm);
 
@@ -719,6 +723,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxOneSideStagingDeregister(comm);
     flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
+#endif
 
   INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d done", devComm->rank);
   free(devComm->localRankToRank);
