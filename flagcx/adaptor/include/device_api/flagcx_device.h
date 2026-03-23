@@ -34,6 +34,12 @@
 #endif
 #endif
 
+#ifdef FLAGCX_DEVICE_API_NCCL
+static constexpr bool hasVendorDev = true;
+#else
+static constexpr bool hasVendorDev = false;
+#endif
+
 // ============================================================
 // Section 1: flagcxDevCommInternal — Host-Side Opaque Handle
 //
@@ -48,11 +54,7 @@ struct flagcxDevCommInternal {
   // ---- Baseline (always set) ----
   int rank, nRanks;
   int intraRank, intraSize;
-  void *fifoBuffer;   // Device-accessible FIFO (from heteroComm, may be null)
-  bool hasVendorComm; // true if vendor device comm layer is available
-                      // (Vendor)
-  bool hasVendorNet;  // true if vendor net is activated (ginContextCount > 0)
-
+  void *fifoBuffer; // Device-accessible FIFO (from heteroComm, may be null)
   // ---- IPC barrier layer (set if IPC barrier setup succeeds, else nullptr)
   // ----
   uint32_t *
@@ -148,7 +150,7 @@ typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 // Value type passed to kernels by value.
 // Unified capability-based design: baseline fields always valid,
 // IPC barrier pointers present (may be nullptr),
-// NCCL device comm present only on Vendor (guarded by _hasVendorComm).
+// NCCL device comm present only on Vendor (guarded by _hasVendorBase).
 // Constructor from flagcxDevCommInternal enables
 // tier-agnostic host code: flagcxDevComm dc(*devCommHandle);
 // ============================================================
@@ -157,9 +159,7 @@ struct flagcxDevComm {
   int _rank, _nRanks;
   int _intraRank, _intraSize;
   void *_fifoBuffer; // FIFO for device Send/Recv (from heteroComm, may be null)
-  bool _hasVendorComm; // true if vendor device comm layer is available
-                       // (Vendor)
-  bool _hasVendorNet;  // true if vendor net is activated (ginContextCount > 0)
+  bool _hasVendorBase; // true if vendor device comm layer is available
 
   // ---- IPC layer (may be nullptr if IPC barrier not set up) ----
   uint32_t **_barrierPeers;
@@ -181,13 +181,13 @@ struct flagcxDevComm {
   int _contextCount; // number of per-CTA contexts (default 4)
 
 #ifdef FLAGCX_DEVICE_API_NCCL
-  // ---- Vendor layer (valid only if _hasVendorComm is true) ----
+  // ---- Vendor layer (valid only if _hasVendorBase is true) ----
   ncclDevComm _base;
 #endif
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _rank(0), _nRanks(0), _intraRank(0), _intraSize(0),
-        _fifoBuffer(nullptr), _hasVendorComm(false), _hasVendorNet(false),
+        _fifoBuffer(nullptr), _hasVendorBase(hasVendorDev),
         _barrierPeers(nullptr), _intraBarrierEpoch(0), _nBarriers(0),
         _interSignalFlags(nullptr), _nInterPeers(0), _isInterLeader(false),
         _interBarrierEpoch(0ULL), _signalBuffer(nullptr),
@@ -204,8 +204,7 @@ struct flagcxDevComm {
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _rank(di.rank), _nRanks(di.nRanks), _intraRank(di.intraRank),
         _intraSize(di.intraSize), _fifoBuffer(di.fifoBuffer),
-        _hasVendorComm(di.hasVendorComm), _hasVendorNet(di.hasVendorNet),
-        _barrierPeers(di.barrierPeers),
+        _hasVendorBase(hasVendorDev), _barrierPeers(di.barrierPeers),
         _intraBarrierEpoch(di.intraBarrierEpoch), _nBarriers(di.nBarriers),
         _interSignalFlags(di.interSignalFlags), _nInterPeers(di.nInterPeers),
         _isInterLeader(di.isInterLeader),
@@ -377,13 +376,13 @@ struct flagcxTeamTagInter {};
 // ============================================================
 // Section 5: Team Accessor Functions (Inline Wrappers)
 //
-// On Vendor with _hasVendorComm: uses NCCL team functions.
+// On Vendor with _hasVendorBase: uses NCCL team functions.
 // Otherwise: computes from baseline fields.
 // ============================================================
 FLAGCX_DEVICE_INLINE_DECORATOR
 flagcxTeam_t flagcxTeamIntra(const flagcxDevComm &devComm) {
 #ifdef FLAGCX_DEVICE_API_NCCL
-  if (devComm._hasVendorComm)
+  if (devComm._hasVendorBase)
     return flagcxTeam_t(ncclTeamLsa(devComm._base));
 #endif
   flagcxTeam_t team;
@@ -395,7 +394,7 @@ flagcxTeam_t flagcxTeamIntra(const flagcxDevComm &devComm) {
 FLAGCX_DEVICE_INLINE_DECORATOR
 flagcxTeam_t flagcxTeamWorld(const flagcxDevComm &devComm) {
 #ifdef FLAGCX_DEVICE_API_NCCL
-  if (devComm._hasVendorComm)
+  if (devComm._hasVendorBase)
     return flagcxTeam_t(ncclTeamWorld(devComm._base));
 #endif
   flagcxTeam_t team;
@@ -407,7 +406,7 @@ flagcxTeam_t flagcxTeamWorld(const flagcxDevComm &devComm) {
 FLAGCX_DEVICE_INLINE_DECORATOR
 flagcxTeam_t flagcxTeamInter(const flagcxDevComm &devComm) {
 #ifdef FLAGCX_DEVICE_API_NCCL
-  if (devComm._hasVendorComm)
+  if (devComm._hasVendorBase)
     return flagcxTeam_t(ncclTeamRail(devComm._base));
 #endif
   flagcxTeam_t team;
@@ -487,7 +486,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR int
 flagcxTeamRankToWorld(const flagcxDevComm &devComm, flagcxTeam_t team,
                       int rank) {
 #ifdef FLAGCX_DEVICE_API_NCCL
-  if (devComm._hasVendorComm)
+  if (devComm._hasVendorBase)
     return ncclTeamRankToWorld(devComm._base, team._base, rank);
 #endif
   return devComm.getRank() + (rank - team.rank) * team.stride;
@@ -498,7 +497,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR int
 flagcxTeamRankToIntra(const flagcxDevComm &devComm, flagcxTeam_t team,
                       int rank) {
 #ifdef FLAGCX_DEVICE_API_NCCL
-  if (devComm._hasVendorComm)
+  if (devComm._hasVendorBase)
     return ncclTeamRankToLsa(devComm._base, team._base, rank);
 #endif
   return devComm.getIntraRank() + (rank - team.rank) * team.stride;
@@ -1041,7 +1040,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxDevMem
 flagcxFindMem(Coop coop, const flagcxDevComm &devComm, void const *ptr) {
   flagcxDevMem result;
 #ifdef FLAGCX_DEVICE_API_NCCL
-  if (devComm._hasVendorComm) {
+  if (devComm._hasVendorBase) {
     ncclWindow_t w = ncclFindWindow(toNccl(coop), devComm._base, ptr);
     result._base = w;
     result._hasWindow = true;
@@ -1277,6 +1276,11 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t flagcxFifoWait(void *fifoBuffer) {
 // ============================================================
 // Fence level enum — available on all tiers for unified barrier API
 enum class flagcxGinFenceLevel { Relaxed };
+
+#ifdef FLAGCX_DEVICE_API_NCCL
+FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR ncclGinFenceLevel
+    flagcxGinFenceLevelMap[] = {ncclGinFenceLevel::Relaxed};
+#endif
 
 // GIN action types and typedefs — available on all tiers for API completeness.
 // On Fallback, GIN methods are stubs (compile but trap at runtime).
@@ -2011,31 +2015,26 @@ struct flagcxInterBarrierSession {
   static_assert(sizeof(_implStorage) >=
                     sizeof(ncclGinBarrierSession<ncclCoopCta>),
                 "implStorage too small for ncclGinBarrierSession");
-  bool _hasVendorNet;
   int _nInterPeers;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxInterBarrierSession(Coop coop, const flagcxDevNet &net,
                             flagcxTeam_t team, uint32_t index)
-      : _hasVendorNet(net._devComm._hasVendorNet),
-        _nInterPeers(net._devComm._nInterPeers) {
-    if (_hasVendorNet) {
-      new (_implStorage) ncclGinBarrierSession<ncclCoopCta>(
-          ncclCoopCta(), net._gin, team._base, net._gin.comm.railGinBarrier,
-          index);
-    }
+      : _nInterPeers(net._devComm._nInterPeers) {
+    new (_implStorage)
+        ncclGinBarrierSession<ncclCoopCta>(ncclCoopCta(), net._gin, team._base,
+                                           net._gin.comm.railGinBarrier, index);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    if (_hasVendorNet && _nInterPeers > 0) {
+    if (_nInterPeers > 0) {
       reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
           ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
-                 ncclGinFenceLevel::Relaxed);
+                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
     }
-    // else: no-op (GIN not available or same-node)
   }
 };
 #else
@@ -2158,7 +2157,7 @@ struct flagcxBarrierSession {
     } else {
       reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
           ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
-                 ncclGinFenceLevel::Relaxed);
+                 flagcxGinFenceLevelMap[static_cast<int>(fence)]);
     }
   }
 };
