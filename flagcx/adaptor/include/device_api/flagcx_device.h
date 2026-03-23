@@ -1355,18 +1355,20 @@ struct flagcxDevNet {
 
 #ifdef FLAGCX_DEVICE_API_NCCL
   ncclGin _gin; // GIN backend (Vendor only)
+#endif
+  int _contextId; // per-CTA context slot (used by FIFO signal encoding)
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0)
-      : _devComm(dc), _gin(dc._base, contextIndex) {}
-#else
-  int _contextId; // per-CTA context slot: contextIndex & (contextCount-1)
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevNet(const flagcxDevComm &dc, int contextIndex = 0) : _devComm(dc) {
+      : _devComm(dc)
+#ifdef FLAGCX_DEVICE_API_NCCL
+        ,
+        _gin(dc._base, contextIndex)
+#endif
+  {
     int cnt = (dc._contextCount > 0) ? dc._contextCount : 1;
     _contextId = contextIndex % cnt;
   }
-#endif
 
   // ---- Two-sided operations (all tiers, via FIFO) ----
   // send/recv use flagcxDevMem for API consistency; extract rawPtr for FIFO.
@@ -2117,28 +2119,47 @@ struct flagcxInterBarrierSession {
 #ifdef FLAGCX_DEVICE_API_NCCL
 template <typename Coop>
 struct flagcxBarrierSession {
-  ncclBarrierSession<ncclCoopCta> _impl;
+  // Placement-new storage: large enough for ncclBarrierSession (World) or
+  // ncclLsaBarrierSession (Intra-only). ncclBarrierSession wraps LSA+GIN so
+  // it is always >= ncclLsaBarrierSession in size and alignment.
+  alignas(ncclBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
+      ncclBarrierSession<ncclCoopCta>)];
+  bool _intraOnly;
 
-  // World barrier (intra + inter)
+  // World barrier (intra + inter) — construct ncclBarrierSession
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxBarrierSession(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
                        uint32_t index, bool multimem = false)
-      : _impl(ncclCoopCta(), ncclTeamTagWorld(), net._gin, index, multimem) {}
+      : _intraOnly(false) {
+    new (_implStorage) ncclBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), ncclTeamTagWorld(), net._gin, index, multimem);
+  }
 
-  // Intra-only barrier
+  // Intra-only barrier — construct ncclLsaBarrierSession directly.
+  // Bypasses ncclBarrierSession(ncclTeamTagLsa,...) which triggers a deleted
+  // copy constructor in nccl::utility::Present (NCCL >= 2.29).
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxBarrierSession(Coop coop, flagcxTeamTagIntra,
                        const flagcxDevComm &devComm, uint32_t index,
                        bool multimem = false)
-      : _impl(ncclCoopCta(), ncclTeamTagLsa(), devComm._base, index, multimem) {
+      : _intraOnly(true) {
+    new (_implStorage) ncclLsaBarrierSession<ncclCoopCta>(
+        ncclCoopCta(), devComm._base, ncclTeamLsa(devComm._base),
+        devComm._base.lsaBarrier, index, multimem);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(Coop coop,
        flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxGinFenceLevel fence = flagcxGinFenceLevel::Relaxed) {
-    _impl.sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
-               ncclGinFenceLevel::Relaxed);
+    if (_intraOnly) {
+      reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order]);
+    } else {
+      reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
+          ->sync(ncclCoopCta(), flagcxDeviceMemoryOrderMap[order],
+                 ncclGinFenceLevel::Relaxed);
+    }
   }
 };
 #else
