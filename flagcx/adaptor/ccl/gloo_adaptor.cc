@@ -90,7 +90,7 @@ flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   std::shared_ptr<::gloo::transport::Device> dev;
   flagcxNetProperties_t *properties =
       (flagcxNetProperties_t *)bootstrap->properties;
-  if (flagcxParamGlooIbDisable()) {
+  if (flagcxParamGlooIbDisable() || flagcxDisableTopoDetection()) {
     // Use transport tcp
     ::gloo::transport::tcp::attr attr;
     attr.iface = std::string(bootstrap->bootstrapNetIfName);

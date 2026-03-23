@@ -114,6 +114,14 @@ uint64_t getHostHash(void) {
   return getHash(hostHash, strlen(hostHash));
 }
 
+bool flagcxDisableTopoDetection() {
+  const char *env = flagcxGetEnv("FLAGCX_DISABLE_TOPO_DETECTION");
+  if (env) {
+    return std::stoi(env) == 1;
+  }
+  return false;
+}
+
 /* Generate a hash of the unique identifying string for this process
  * that will be unique for both bare-metal and container instances
  * Equivalent of a hash of;

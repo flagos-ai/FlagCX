@@ -1390,14 +1390,16 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
     // Init host cclAdaptor
     if (useHostComm() || (*comm)->hasSingleRankHomoComm) {
-      FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
-          (*comm)->heteroComm->netDev, state->properties));
+      if (!flagcxDisableTopoDetection()) {
+        FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
+            (*comm)->heteroComm->netDev, state->properties));
+      }
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->commInitRank(
           &(*comm)->hostComm, nranks, commId, rank, state));
     }
   }
 
-  if (!useHomoComm(*comm) || useHeteroComm()) {
+  if ((!useHomoComm(*comm) || useHeteroComm()) && !useHostComm()) {
     // Experimental for multi-nic support
     // Collect nic distance to ranks
     (*comm)->clusterInterRankList.resize((*comm)->nclusters);

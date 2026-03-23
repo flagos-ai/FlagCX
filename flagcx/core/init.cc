@@ -232,20 +232,27 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     free(nodesFirstRank);
   }
 
-  INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
-  FLAGCXCHECKGOTO(flagcxTopoGetServerTopo(comm, &comm->topoServer), ret, fail);
-  FLAGCXCHECKGOTO(flagcxTopoComputePaths(comm->topoServer, comm), ret, fail);
-  if (comm->rank == 0) {
-    FLAGCXCHECK(flagcxTopoPrint(comm->topoServer));
-  }
-  INFO(FLAGCX_INIT, "start getting local net from gpu");
-  FLAGCXCHECKGOTO(flagcxGetLocalNetFromGpu(comm->cudaDev, &comm->netDev, comm),
-                  ret, fail);
+  if (!flagcxDisableTopoDetection()) {
+    INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
+    FLAGCXCHECKGOTO(flagcxTopoGetServerTopo(comm, &comm->topoServer), ret,
+                    fail);
+    FLAGCXCHECKGOTO(flagcxTopoComputePaths(comm->topoServer, comm), ret, fail);
+    if (comm->rank == 0) {
+      FLAGCXCHECK(flagcxTopoPrint(comm->topoServer));
+    }
+    INFO(FLAGCX_INIT, "start getting local net from gpu");
+    FLAGCXCHECKGOTO(
+        flagcxGetLocalNetFromGpu(comm->cudaDev, &comm->netDev, comm), ret,
+        fail);
 
-  INFO(FLAGCX_INIT, "start getting topoServer from other servers");
-  FLAGCXCHECKGOTO(
-      flagcxGetInterServerTopo(comm, &comm->interServerTopo, comm->topoServer),
-      ret, fail);
+    INFO(FLAGCX_INIT, "start getting topoServer from other servers");
+    FLAGCXCHECKGOTO(flagcxGetInterServerTopo(comm, &comm->interServerTopo,
+                                             comm->topoServer),
+                    ret, fail);
+  } else {
+    INFO(FLAGCX_INIT,
+         "topology detection disabled by FLAGCX_DISABLE_TOPO_DETECTION");
+  }
 
   return ret;
 fail:
