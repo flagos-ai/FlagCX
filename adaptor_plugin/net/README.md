@@ -106,9 +106,9 @@ struct flagcxNetAdaptor_v1 {
                          void **srcHandles, void **dstHandles, void **request);
   flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                                size_t size, int srcRank, int dstRank,
-                               void **dataHandles, uint64_t signalOff,
-                               void **signalHandles, uint64_t signalValue,
-                               void **request);
+                               void **srcHandles, void **dstHandles,
+                               uint64_t signalOff, void **signalHandles,
+                               uint64_t signalValue, void **request);
 
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
 };
@@ -207,7 +207,7 @@ Initiate an asynchronous RDMA write from `srcOff` to `dstOff`. `srcHandles` and 
 
 `iputSignal`
 
-Combined data write + signal operation. When `size > 0`, posts a chained RDMA write (from `srcOff`/`dstOff` via `dataHandles`) followed by an atomic fetch-and-add of `signalValue` at `signalOff` via `signalHandles`. When `size == 0`, only the signal atomic is posted (signal-only mode). Returns a single `request` covering the entire operation.
+Combined data write + signal operation. When `size > 0`, posts a chained RDMA write (from `srcOff`/`dstOff` using separate `srcHandles` and `dstHandles` for source and destination memory regions) followed by an atomic fetch-and-add of `signalValue` at `signalOff` via `signalHandles`. When `size == 0`, only the signal atomic is posted (signal-only mode). Returns a single `request` covering the entire operation.
 
 ### Device Name Lookup
 

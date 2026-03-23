@@ -164,8 +164,8 @@ static flagcxResult_t pluginIput(void *sendComm, uint64_t srcOff,
 static flagcxResult_t pluginIputSignal(void *sendComm, uint64_t srcOff,
                                        uint64_t dstOff, size_t size,
                                        int srcRank, int dstRank,
-                                       void **dataHandles, uint64_t signalOff,
-                                       void **signalHandles,
+                                       void **srcHandles, void **dstHandles,
+                                       uint64_t signalOff, void **signalHandles,
                                        uint64_t signalValue, void **request) {
   return flagcxInternalError;
 }

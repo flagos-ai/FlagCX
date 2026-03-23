@@ -69,9 +69,9 @@ struct flagcxNetAdaptor_v1 {
   // When size == 0, only signal ATOMIC is posted (signal-only mode)
   flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                                size_t size, int srcRank, int dstRank,
-                               void **dataHandles, uint64_t signalOff,
-                               void **signalHandles, uint64_t signalValue,
-                               void **request);
+                               void **srcHandles, void **dstHandles,
+                               uint64_t signalOff, void **signalHandles,
+                               uint64_t signalValue, void **request);
 
   // Device name lookup
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
