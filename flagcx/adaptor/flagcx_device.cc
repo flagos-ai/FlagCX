@@ -387,7 +387,7 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   // flagcxDevCommDestroy needs it to gate signalDeregister.
 }
 
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
 #include "nvidia_adaptor.h"
 #endif
 
@@ -516,7 +516,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->fifoBuffer =
       (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
 
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
   // ---- Vendor path: NCCL device comm ----
   {
     flagcxInnerComm_t innerComm = comm->homoComm;
@@ -645,14 +645,14 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   INFO(FLAGCX_INIT,
        "flagcxDevCommCreate: rank %d, layers: baseline"
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
        " + ncclDevComm"
 #else
        "%s%s%s"
 #endif
        ,
        handle->rank
-#ifndef FLAGCX_DEVICE_API_NCCL
+#ifndef FLAGCX_DEVICE_API_VENDOR
        ,
        handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
@@ -672,7 +672,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d enter", devComm->rank);
 
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
   // NCCL layer cleanup
   if (comm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
@@ -774,7 +774,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   if (comm != nullptr) {
     handle->intraRank = comm->localRank;
 
-#ifndef FLAGCX_DEVICE_API_NCCL
+#ifndef FLAGCX_DEVICE_API_VENDOR
     if (win != nullptr) {
       WARN("flagcxDevMemCreate: window provided but NCCL device API "
            "unavailable, falling back to IPC");
@@ -798,7 +798,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     // ---- Window layer: if win provided and valid ----
     if (win != nullptr) {
       handle->hasWindow = true;
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
       handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
       handle->ncclWin = win->base;
       handle->winHandle = (void *)win;
@@ -923,7 +923,7 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
   props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
 
   // NCCL-specific fields: fill from NCCL if available
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm != nullptr && innerComm->base != nullptr) {
     props->deviceApiSupport = true; // NCCL > 2.28 available
