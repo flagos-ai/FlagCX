@@ -212,8 +212,7 @@ int main(int argc, char *argv[]) {
                                 NULL);
 
         res = flagcxPutSignal(comm, receiverRank, current_send_offset,
-                              current_recv_offset, size, signalOffset, 0, 0,
-                              1);
+                              current_recv_offset, size, signalOffset, 0, 0, 1);
         fatal(res, "flagcxPutSignal warmup failed", proc);
       } else if (isReceiver) {
         res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
@@ -239,8 +238,7 @@ int main(int argc, char *argv[]) {
                                 NULL);
 
         res = flagcxPutSignal(comm, receiverRank, current_send_offset,
-                              current_recv_offset, size, signalOffset, 0, 0,
-                              1);
+                              current_recv_offset, size, signalOffset, 0, 0, 1);
         fatal(res, "flagcxPutSignal failed", proc);
       } else if (isReceiver) {
         res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
