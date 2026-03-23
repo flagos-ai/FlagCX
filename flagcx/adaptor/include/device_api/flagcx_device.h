@@ -1406,12 +1406,32 @@ struct flagcxDevNet {
                        ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
                            ((uint64_t)count << flagcxDeviceTriggerOffCount)));
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term() const {
-    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), 0, 0,
-                             flagcxBuildTrd(flagcxDevicePrimTerm, 0, 0));
+  // ---- Two-sided group termination (Coop-scope) ----
+  // Each CTA enqueues exactly one PrimTerm entry. Proxy counts
+  // CTA_COUNT term entries then calls GroupEnd.
+  // All threads in Coop must call this (sync barrier inside).
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      flagcxFifoEnqueue(_devComm.getFifoBuffer(), 0, 0,
+                        flagcxBuildTrd(flagcxDevicePrimTerm, 0, 0));
+    }
+    coop.sync();
+    return flagcxSuccess;
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait() const {
-    return flagcxFifoWait(_devComm.getFifoBuffer());
+
+  // ---- Two-sided wait (Coop-scope) ----
+  // Enqueues PrimWait (proxy calls streamSynchronize), then GPU spins
+  // until consumed >= produced snapshot.
+  template <typename Coop>
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      flagcxFifoWait(_devComm.getFifoBuffer());
+    }
+    coop.sync();
+    return flagcxSuccess;
   }
 
   // ---- One-sided FIFO operations (all tiers, via FIFO) ----
@@ -1874,9 +1894,10 @@ struct flagcxDevNet {
   // ---- consumed >= snapshot.  No PrimWait enqueued (one-sided path needs
   // ---- no streamSynchronize).  Matches NCCL GIN Proxy flush (CI spin).
   template <typename Coop>
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  flush(Coop coop,
-        flagcxDeviceMemoryOrder_t = flagcxDeviceMemoryOrderAcquire) const {
+  FLAGCX_DEVICE_INLINE_DECORATOR void flush(
+      Coop coop,
+      flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
+    (void)order;
     coop.sync();
     if (coop.threadRank() == 0 && _devComm.getFifoBuffer() != nullptr) {
       flagcxFifoFlush(_devComm.getFifoBuffer());

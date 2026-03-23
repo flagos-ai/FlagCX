@@ -214,7 +214,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // Pre-communication barrier
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
 
-  // Thread 0 dispatches all communication ops (block-stride over peers).
+  // Thread 0 dispatches send/recv (FIFO enqueue is thread-scope).
   if (FLAGCX_THREAD_IDX_X == 0) {
     for (int peer = FLAGCX_BLOCK_IDX_X; peer < nRanks;
          peer += FLAGCX_GRID_DIM_X) {
@@ -222,14 +222,14 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
       net.send(sendMem, offset, count, datatype, peer);
       net.recv(recvMem, offset, count, datatype, peer);
     }
-
-    // Two-sided: all CTAs must enqueue term/wait, even idle ones
-    // (blockIdx >= nRanks), because the proxy counts term entries from all
-    // CTA_COUNT channels to trigger groupEnd. Idle CTAs' term/wait are
-    // benign — no data was enqueued so wait completes instantly.
-    net.term();
-    net.wait();
   }
+
+  // Two-sided: all CTAs must enqueue term/wait, even idle ones
+  // (blockIdx >= nRanks), because the proxy counts term entries from all
+  // CTA_COUNT channels to trigger groupEnd.
+  // Coop ensures only threadRank==0 touches FIFO; all threads synchronize.
+  net.term(flagcxCoopBlock{});
+  net.wait(flagcxCoopBlock{});
 
   // Post-communication barrier
   bar.sync(flagcxCoopBlock(), flagcxDeviceMemoryOrderRelaxed);
