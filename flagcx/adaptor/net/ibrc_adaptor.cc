@@ -1316,11 +1316,11 @@ ib_recv:
     // Local ibDevN
     ibDevN = rComm->devs[devIndex].base.ibDevN;
     ibDev = flagcxIbDevs + ibDevN;
-    FLAGCXCHECK(flagcxIbCreateQp(
-        ibDev->portNum, &rCommDev->base,
-        IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC |
-            IBV_ACCESS_REMOTE_READ,
-        qp));
+    FLAGCXCHECK(flagcxIbCreateQp(ibDev->portNum, &rCommDev->base,
+                                 IBV_ACCESS_REMOTE_WRITE |
+                                     IBV_ACCESS_REMOTE_ATOMIC |
+                                     IBV_ACCESS_REMOTE_READ,
+                                 qp));
     qp->devIndex = devIndex;
     devIndex = (devIndex + 1) % rComm->base.ndevs;
 
