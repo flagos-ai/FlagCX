@@ -76,7 +76,7 @@ flagcxResult_t flagcxNetAdaptorPluginUnload() {
 
 flagcxResult_t flagcxNetAdaptorPluginInit() {
   std::lock_guard<std::mutex> lock(netPluginMutex);
-  flagcxNetAdaptorPluginLoad();
+  FLAGCXCHECK(flagcxNetAdaptorPluginLoad());
   if (netPluginDlHandle != NULL) {
     netPluginRefCount++;
   }
@@ -87,7 +87,7 @@ flagcxResult_t flagcxNetAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(netPluginMutex);
   if (netPluginRefCount > 0 && --netPluginRefCount == 0) {
     INFO(FLAGCX_NET, "Unloading net adaptor plugin");
-    flagcxNetAdaptorPluginUnload();
+    FLAGCXCHECK(flagcxNetAdaptorPluginUnload());
   }
   return flagcxSuccess;
 }

@@ -90,7 +90,7 @@ flagcxResult_t flagcxNetInit(struct flagcxHeteroComm *comm) {
     // Load net plugin if FLAGCX_NET_ADAPTOR_PLUGIN is set.
     // This populates flagcxNetAdaptors[0] with the plugin.
     // Must be called before the selection loop below.
-    flagcxNetAdaptorPluginInit();
+    FLAGCXCHECK(flagcxNetAdaptorPluginInit());
   }
 
   if (forceSocket) {

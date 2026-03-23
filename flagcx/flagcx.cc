@@ -1564,7 +1564,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   }
 
   // Finalize net adaptor plugin (dlclose)
-  flagcxNetAdaptorPluginFinalize();
+  FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
 
   return flagcxSuccess;
 }
