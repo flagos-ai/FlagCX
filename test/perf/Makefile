@@ -91,11 +91,11 @@ test-ipc-sendrecv: test_ipc_sendrecv.cpp
 
 test-put: test_put.cpp
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_put test_put.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_put test_put.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
 
 test-get: test_get.cpp
 	@echo "Compiling $@"
-	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_get test_get.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_get test_get.cpp $(LIBSRCFILES) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I$(INCLUDEDIR) -I$(JSON_INCLUDE) -I$(MPI_INCLUDE) -L../../build/lib -L$(MPI_LIB) -lflagcx $(MPI_LINK)
 
 clean:
 	@rm -f test_sendrecv

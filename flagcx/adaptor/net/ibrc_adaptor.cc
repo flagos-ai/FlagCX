@@ -1318,7 +1318,9 @@ ib_recv:
     ibDev = flagcxIbDevs + ibDevN;
     FLAGCXCHECK(flagcxIbCreateQp(
         ibDev->portNum, &rCommDev->base,
-        IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC, qp));
+        IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC |
+            IBV_ACCESS_REMOTE_READ,
+        qp));
     qp->devIndex = devIndex;
     devIndex = (devIndex + 1) % rComm->base.ndevs;
 
