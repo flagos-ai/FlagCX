@@ -8,6 +8,7 @@
  ************************************************************************/
 
 #include "flagcx/flagcx_device_adaptor.h"
+#include "flagcx/nvidia_adaptor.h"
 
 static flagcxResult_t pluginDeviceSynchronize() { return flagcxInternalError; }
 
