@@ -44,7 +44,7 @@ flagcxResult_t ducudaAdaptorDeviceMalloc(void **ptr, size_t size,
                                          flagcxMemType_t type,
                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
-    DEVCHECK(cudaMallocHost(ptr, size));
+    DEVCHECK(cudaHostAlloc(ptr, size, cudaHostAllocMapped));
   } else if (type == flagcxMemManaged) {
     DEVCHECK(cudaMallocManaged(ptr, size, cudaMemAttachGlobal));
   } else {
@@ -90,6 +90,11 @@ flagcxResult_t ducudaAdaptorGetDeviceCount(int *count) {
 
 flagcxResult_t ducudaAdaptorGetVendor(char *vendor) {
   strcpy(vendor, "DU");
+  return flagcxSuccess;
+}
+
+flagcxResult_t ducudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
   return flagcxSuccess;
 }
 
@@ -334,7 +339,8 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorDeviceSynchronize, ducudaAdaptorDeviceMemcpy,
       ducudaAdaptorDeviceMemset, ducudaAdaptorDeviceMalloc,
       ducudaAdaptorDeviceFree, ducudaAdaptorSetDevice, ducudaAdaptorGetDevice,
-      ducudaAdaptorGetDeviceCount, ducudaAdaptorGetVendor, NULL,
+      ducudaAdaptorGetDeviceCount, ducudaAdaptorGetVendor,
+      ducudaAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
