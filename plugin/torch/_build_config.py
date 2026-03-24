@@ -7,6 +7,7 @@ class selection logic.
 """
 
 import os
+import shutil
 import sys
 
 from packaging.version import Version, parse as vparse
@@ -46,6 +47,29 @@ ADAPTOR_TO_MAKE_FLAG = {
 
 VALID_ADAPTORS = list(ADAPTOR_MAP.keys())
 
+# Platform detection: command -> adaptor name
+# Order matters: nvidia-smi and rocm-smi last (some platforms are CUDA/ROCm compatible)
+_PLATFORM_COMMANDS = [
+    ("ixsmi", "iluvatar_corex"),
+    ("cnmon", "cambricon"),
+    ("mx-smi", "metax"),
+    ("hy-smi", "du"),
+    ("xpu-smi", "klx"),
+    ("npu-smi", "ascend"),
+    ("tsm_smi", "tsm"),
+    ("enflame-smi", "enflame"),
+    ("rocm-smi", "amd"),
+    ("nvidia-smi", "nvidia"),
+]
+
+
+def _detect_platform():
+    """Auto-detect hardware platform by checking for platform-specific CLI tools."""
+    for cmd, adaptor_name in _PLATFORM_COMMANDS:
+        if shutil.which(cmd) is not None:
+            return adaptor_name
+    return None
+
 
 def detect_adaptor():
     """Detect the adaptor from FLAGCX_ADAPTOR env var, --adaptor CLI arg, or
@@ -69,9 +93,22 @@ def detect_adaptor():
                 adaptor = name
                 break
 
-    # Default
+    # Auto-detect platform
     if not adaptor:
-        adaptor = "nvidia"
+        adaptor = _detect_platform()
+        if adaptor:
+            print(f"[flagcx] Auto-detected platform: {adaptor}")
+
+    # Fail with guidance if nothing detected
+    if not adaptor:
+        print(
+            "\n[flagcx] WARNING: Failed to auto-detect hardware platform.\n"
+            "Please specify the adaptor manually using one of:\n"
+            "  FLAGCX_ADAPTOR=<adaptor> pip install . --no-build-isolation\n"
+            "  pip install . --no-build-isolation --adaptor <adaptor>\n"
+            f"Valid adaptors: {VALID_ADAPTORS}\n"
+        )
+        sys.exit(1)
 
     assert adaptor in VALID_ADAPTORS, f"Invalid adaptor: {adaptor}. Valid: {VALID_ADAPTORS}"
     return adaptor
