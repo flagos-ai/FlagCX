@@ -55,6 +55,7 @@ _PLATFORM_COMMANDS = [
     ("mx-smi", "metax"),
     ("hy-smi", "du"),
     ("xpu-smi", "klx"),
+    ("mthreads-gmi", "musa"),
     ("npu-smi", "ascend"),
     ("tsm_smi", "tsm"),
     ("efsmi", "enflame"),
