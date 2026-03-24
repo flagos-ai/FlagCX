@@ -9,6 +9,7 @@
 #include "bootstrap.h"
 #include "core.h"
 #include "flagcx_common.h"
+#include "param.h"
 #include <fstream>
 #include <stdexcept>
 #include <stdlib.h>
@@ -114,13 +115,7 @@ uint64_t getHostHash(void) {
   return getHash(hostHash, strlen(hostHash));
 }
 
-bool flagcxTopoDetectionDisable() {
-  const char *env = flagcxGetEnv("FLAGCX_TOPO_DETECTION_DISABLE");
-  if (env) {
-    return std::stoi(env) == 1;
-  }
-  return false;
-}
+FLAGCX_PARAM(TopoDetectionDisable, "TOPO_DETECTION_DISABLE", 0);
 
 /* Generate a hash of the unique identifying string for this process
  * that will be unique for both bare-metal and container instances
