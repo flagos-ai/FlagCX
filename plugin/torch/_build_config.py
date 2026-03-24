@@ -57,7 +57,7 @@ _PLATFORM_COMMANDS = [
     ("xpu-smi", "klx"),
     ("npu-smi", "ascend"),
     ("tsm_smi", "tsm"),
-    ("enflame-smi", "enflame"),
+    ("efsmi", "enflame"),
     ("rocm-smi", "amd"),
     ("nvidia-smi", "nvidia"),
 ]
