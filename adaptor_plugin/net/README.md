@@ -33,7 +33,12 @@ FlagCX maintains an array of net adaptors. A loaded plugin is placed in slot 0, 
 
 ### Headers
 
-Plugins should copy the required FlagCX headers into their own source tree to avoid build-time dependency on the full FlagCX source. The example plugin demonstrates this pattern with a local `flagcx/` directory containing:
+Plugins need access to a small set of FlagCX headers. There are two approaches:
+
+1. **Symlinks** (recommended for in-tree development) — The example plugin uses relative symlinks from its local `flagcx/` directory to the upstream FlagCX headers. This keeps headers automatically in sync.
+2. **Copies** (for out-of-tree plugins) — Copy the required headers into your own source tree to avoid a build-time dependency on the full FlagCX source.
+
+The required headers are:
 
 - `flagcx.h` — Core types and error codes
 - `flagcx_net_adaptor.h` — The `flagcxNetAdaptor_v1` struct and plugin symbol macro
@@ -102,6 +107,9 @@ struct flagcxNetAdaptor_v1 {
   flagcxResult_t (*test)(void *request, int *done, int *sizes);
 
   flagcxResult_t (*iput)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
+                         size_t size, int srcRank, int dstRank,
+                         void **srcHandles, void **dstHandles, void **request);
+  flagcxResult_t (*iget)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                          size_t size, int srcRank, int dstRank,
                          void **srcHandles, void **dstHandles, void **request);
   flagcxResult_t (*iputSignal)(void *sendComm, uint64_t srcOff, uint64_t dstOff,
@@ -204,6 +212,10 @@ Poll a request for completion. Set `*done = 1` when complete, with `*sizes` indi
 `iput`
 
 Initiate an asynchronous RDMA write from `srcOff` to `dstOff`. `srcHandles` and `dstHandles` are per-window MR handle arrays for the source and destination buffers respectively, allowing independent memory regions for each side.
+
+`iget`
+
+Initiate an asynchronous RDMA read, pulling `size` bytes from the remote `srcRank` buffer at `srcOff` into the local `dstRank` buffer at `dstOff`. Like `iput`, uses per-window MR handle arrays (`srcHandles` for the remote source, `dstHandles` for the local destination). Returns a `request` to be polled with `test`.
 
 `iputSignal`
 

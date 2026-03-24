@@ -161,6 +161,13 @@ static flagcxResult_t pluginIput(void *sendComm, uint64_t srcOff,
   return flagcxInternalError;
 }
 
+static flagcxResult_t pluginIget(void *sendComm, uint64_t srcOff,
+                                 uint64_t dstOff, size_t size, int srcRank,
+                                 int dstRank, void **srcHandles,
+                                 void **dstHandles, void **request) {
+  return flagcxInternalError;
+}
+
 static flagcxResult_t pluginIputSignal(void *sendComm, uint64_t srcOff,
                                        uint64_t dstOff, size_t size,
                                        int srcRank, int dstRank,
@@ -176,12 +183,12 @@ static flagcxResult_t pluginGetDevFromName(char *name, int *dev) {
 
 __attribute__((visibility("default"))) struct flagcxNetAdaptor_v1
     FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL_V1 = {
-        "Example",           pluginInit,           pluginDevices,
-        pluginGetProperties, pluginReduceSupport,  pluginGetDeviceMr,
-        pluginIrecvConsumed, pluginListen,         pluginConnect,
-        pluginAccept,        pluginCloseSend,      pluginCloseRecv,
-        pluginCloseListen,   pluginRegMr,          pluginRegMrDmaBuf,
-        pluginDeregMr,       pluginIsend,          pluginIrecv,
-        pluginIflush,        pluginTest,           pluginIput,
-        pluginIputSignal,    pluginGetDevFromName,
+        "Example",           pluginInit,          pluginDevices,
+        pluginGetProperties, pluginReduceSupport, pluginGetDeviceMr,
+        pluginIrecvConsumed, pluginListen,        pluginConnect,
+        pluginAccept,        pluginCloseSend,     pluginCloseRecv,
+        pluginCloseListen,   pluginRegMr,         pluginRegMrDmaBuf,
+        pluginDeregMr,       pluginIsend,         pluginIrecv,
+        pluginIflush,        pluginTest,          pluginIput,
+        pluginIget,          pluginIputSignal,    pluginGetDevFromName,
 };
