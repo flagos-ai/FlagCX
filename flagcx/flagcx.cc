@@ -1390,7 +1390,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
     // Init host cclAdaptor
     if (useHostComm() || (*comm)->hasSingleRankHomoComm) {
-      if (!flagcxDisableTopoDetection()) {
+      if (!flagcxTopoDetectionDisable()) {
         FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
             (*comm)->heteroComm->netDev, state->properties));
       }

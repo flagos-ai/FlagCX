@@ -232,7 +232,7 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     free(nodesFirstRank);
   }
 
-  if (!flagcxDisableTopoDetection()) {
+  if (!flagcxTopoDetectionDisable()) {
     INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
     FLAGCXCHECKGOTO(flagcxTopoGetServerTopo(comm, &comm->topoServer), ret,
                     fail);

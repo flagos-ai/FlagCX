@@ -114,8 +114,8 @@ uint64_t getHostHash(void) {
   return getHash(hostHash, strlen(hostHash));
 }
 
-bool flagcxDisableTopoDetection() {
-  const char *env = flagcxGetEnv("FLAGCX_DISABLE_TOPO_DETECTION");
+bool flagcxTopoDetectionDisable() {
+  const char *env = flagcxGetEnv("FLAGCX_TOPO_DETECTION_DISABLE");
   if (env) {
     return std::stoi(env) == 1;
   }

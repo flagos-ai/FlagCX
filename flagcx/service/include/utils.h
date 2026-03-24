@@ -39,7 +39,7 @@ uint64_t getHostHash();
 uint64_t getPidHash();
 flagcxResult_t getRandomData(void *buffer, size_t bytes);
 
-bool flagcxDisableTopoDetection();
+bool flagcxTopoDetectionDisable();
 
 const char *flagcxOpToString(flagcxRedOp_t op);
 const char *flagcxDatatypeToString(flagcxDataType_t type);
