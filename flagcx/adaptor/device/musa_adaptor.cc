@@ -310,8 +310,16 @@ flagcxResult_t musaAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t musaAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                   uint64_t, int) {
+flagcxResult_t musaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                             int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                           flagcxEvent_t) {
   return flagcxNotSupported;
 }
 
@@ -336,9 +344,11 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorStreamCreate, musaAdaptorStreamDestroy, musaAdaptorStreamCopy,
       musaAdaptorStreamFree, musaAdaptorStreamSynchronize,
       musaAdaptorStreamQuery, musaAdaptorStreamWaitEvent,
+      musaAdaptorStreamWaitValue64, musaAdaptorStreamWriteValue64,
       // Event functions
       musaAdaptorEventCreate, musaAdaptorEventDestroy, musaAdaptorEventRecord,
       musaAdaptorEventSynchronize, musaAdaptorEventQuery,
+      musaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       musaAdaptorIpcMemHandleCreate, musaAdaptorIpcMemHandleGet,
       musaAdaptorIpcMemHandleOpen, musaAdaptorIpcMemHandleClose,
@@ -366,9 +376,6 @@ struct flagcxDeviceAdaptor musaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      musaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_MUSA_ADAPTOR

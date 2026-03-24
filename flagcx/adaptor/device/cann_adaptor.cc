@@ -254,8 +254,16 @@ flagcxResult_t cannAdaptorLaunchHostFunc(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-static flagcxResult_t cannAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                   uint64_t, int) {
+flagcxResult_t cannAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                             int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                           flagcxEvent_t) {
   return flagcxNotSupported;
 }
 
@@ -280,9 +288,11 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorStreamCreate, cannAdaptorStreamDestroy, cannAdaptorStreamCopy,
       cannAdaptorStreamFree, cannAdaptorStreamSynchronize,
       cannAdaptorStreamQuery, cannAdaptorStreamWaitEvent,
+      cannAdaptorStreamWaitValue64, cannAdaptorStreamWriteValue64,
       // Event functions
       cannAdaptorEventCreate, cannAdaptorEventDestroy, cannAdaptorEventRecord,
       cannAdaptorEventSynchronize, cannAdaptorEventQuery,
+      cannAdaptorEventElapsedTime,
       // IpcMemHandle functions
       cannAdaptorIpcMemHandleCreate, cannAdaptorIpcMemHandleGet,
       cannAdaptorIpcMemHandleOpen, cannAdaptorIpcMemHandleClose,
@@ -309,9 +319,6 @@ struct flagcxDeviceAdaptor cannAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      cannAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ASCEND_ADAPTOR

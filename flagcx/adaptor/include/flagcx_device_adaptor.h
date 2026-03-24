@@ -56,6 +56,10 @@ struct flagcxDeviceAdaptor {
   flagcxResult_t (*streamSynchronize)(flagcxStream_t stream);
   flagcxResult_t (*streamQuery)(flagcxStream_t stream);
   flagcxResult_t (*streamWaitEvent)(flagcxStream_t stream, flagcxEvent_t event);
+  flagcxResult_t (*streamWaitValue64)(flagcxStream_t stream, void *addr,
+                                      uint64_t value, int flags);
+  flagcxResult_t (*streamWriteValue64)(flagcxStream_t stream, void *addr,
+                                       uint64_t value, int flags);
 
   // Event functions
   flagcxResult_t (*eventCreate)(flagcxEvent_t *event,
@@ -64,6 +68,8 @@ struct flagcxDeviceAdaptor {
   flagcxResult_t (*eventRecord)(flagcxEvent_t event, flagcxStream_t stream);
   flagcxResult_t (*eventSynchronize)(flagcxEvent_t event);
   flagcxResult_t (*eventQuery)(flagcxEvent_t event);
+  flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t start,
+                                     flagcxEvent_t end);
 
   // IpcMemHandle functions
   flagcxResult_t (*ipcMemHandleCreate)(flagcxIpcMemHandle_t *handle,
@@ -99,13 +105,6 @@ struct flagcxDeviceAdaptor {
   flagcxResult_t (*getHandleForAddressRange)(void *handleOut, void *buffer,
                                              size_t size,
                                              unsigned long long flags);
-  // Event elapsed time
-  flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t start,
-                                     flagcxEvent_t end);
-
-  // Stream memory operations (one-sided signal polling)
-  flagcxResult_t (*streamWaitValue64)(flagcxStream_t stream, void *addr,
-                                      uint64_t value, int flags);
 };
 
 // Device adaptor plugin API version (independent of CCL/Net versions)

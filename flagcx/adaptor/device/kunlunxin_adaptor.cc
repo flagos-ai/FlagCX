@@ -360,8 +360,16 @@ flagcxResult_t kunlunAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
-static flagcxResult_t kunlunAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                     uint64_t, int) {
+flagcxResult_t kunlunAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                              int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                               int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                             flagcxEvent_t) {
   return flagcxNotSupported;
 }
 
@@ -388,11 +396,12 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunAdaptorStreamCreate, kunlunAdaptorStreamDestroy,
       kunlunAdaptorStreamCopy, kunlunAdaptorStreamFree,
       kunlunAdaptorStreamSynchronize, kunlunAdaptorStreamQuery,
-      kunlunAdaptorStreamWaitEvent,
+      kunlunAdaptorStreamWaitEvent, kunlunAdaptorStreamWaitValue64,
+      kunlunAdaptorStreamWriteValue64,
       // Event functions
       kunlunAdaptorEventCreate, kunlunAdaptorEventDestroy,
       kunlunAdaptorEventRecord, kunlunAdaptorEventSynchronize,
-      kunlunAdaptorEventQuery,
+      kunlunAdaptorEventQuery, kunlunAdaptorEventElapsedTime,
       // IpcMemHandle functions
       kunlunAdaptorIpcMemHandleCreate, kunlunAdaptorIpcMemHandleGet,
       kunlunAdaptorIpcMemHandleOpen, kunlunAdaptorIpcMemHandleClose,
@@ -420,9 +429,6 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      kunlunAdaptorStreamWaitValue64,
 };
 
 #endif // USE_KUNLUNXIN_ADAPTOR

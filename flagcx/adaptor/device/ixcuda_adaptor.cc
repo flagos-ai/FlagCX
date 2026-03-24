@@ -322,8 +322,16 @@ flagcxResult_t ixcudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
-static flagcxResult_t ixcudaAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                     uint64_t, int) {
+flagcxResult_t ixcudaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                              int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                               int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                             flagcxEvent_t) {
   return flagcxNotSupported;
 }
 
@@ -348,11 +356,12 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorStreamCreate, ixcudaAdaptorStreamDestroy,
       ixcudaAdaptorStreamCopy, ixcudaAdaptorStreamFree,
       ixcudaAdaptorStreamSynchronize, ixcudaAdaptorStreamQuery,
-      ixcudaAdaptorStreamWaitEvent,
+      ixcudaAdaptorStreamWaitEvent, ixcudaAdaptorStreamWaitValue64,
+      ixcudaAdaptorStreamWriteValue64,
       // Event functions
       ixcudaAdaptorEventCreate, ixcudaAdaptorEventDestroy,
       ixcudaAdaptorEventRecord, ixcudaAdaptorEventSynchronize,
-      ixcudaAdaptorEventQuery,
+      ixcudaAdaptorEventQuery, ixcudaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       ixcudaAdaptorIpcMemHandleCreate, ixcudaAdaptorIpcMemHandleGet,
       ixcudaAdaptorIpcMemHandleOpen, ixcudaAdaptorIpcMemHandleClose,
@@ -382,10 +391,6 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start,
-            // flagcxEvent_t end);
-      ixcudaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ILUVATAR_COREX_ADAPTOR

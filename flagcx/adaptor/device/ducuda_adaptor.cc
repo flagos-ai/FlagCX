@@ -328,8 +328,16 @@ flagcxResult_t ducudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
-static flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                     uint64_t, int) {
+flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                              int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                               int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                             flagcxEvent_t) {
   return flagcxNotSupported;
 }
 
@@ -355,11 +363,12 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorStreamCreate, ducudaAdaptorStreamDestroy,
       ducudaAdaptorStreamCopy, ducudaAdaptorStreamFree,
       ducudaAdaptorStreamSynchronize, ducudaAdaptorStreamQuery,
-      ducudaAdaptorStreamWaitEvent,
+      ducudaAdaptorStreamWaitEvent, ducudaAdaptorStreamWaitValue64,
+      ducudaAdaptorStreamWriteValue64,
       // Event functions
       ducudaAdaptorEventCreate, ducudaAdaptorEventDestroy,
       ducudaAdaptorEventRecord, ducudaAdaptorEventSynchronize,
-      ducudaAdaptorEventQuery,
+      ducudaAdaptorEventQuery, ducudaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       ducudaAdaptorIpcMemHandleCreate, ducudaAdaptorIpcMemHandleGet,
       ducudaAdaptorIpcMemHandleOpen, ducudaAdaptorIpcMemHandleClose,
@@ -390,9 +399,6 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      ducudaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_DU_ADAPTOR

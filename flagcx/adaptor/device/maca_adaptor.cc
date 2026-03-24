@@ -339,8 +339,12 @@ flagcxResult_t macaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-static flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                   uint64_t, int) {
+flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                             int) {
   return flagcxNotSupported;
 }
 
@@ -365,9 +369,11 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorStreamCreate, macaAdaptorStreamDestroy, macaAdaptorStreamCopy,
       macaAdaptorStreamFree, macaAdaptorStreamSynchronize,
       macaAdaptorStreamQuery, macaAdaptorStreamWaitEvent,
+      macaAdaptorStreamWaitValue64, macaAdaptorStreamWriteValue64,
       // Event functions
       macaAdaptorEventCreate, macaAdaptorEventDestroy, macaAdaptorEventRecord,
       macaAdaptorEventSynchronize, macaAdaptorEventQuery,
+      macaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       macaAdaptorIpcMemHandleCreate, macaAdaptorIpcMemHandleGet,
       macaAdaptorIpcMemHandleOpen, macaAdaptorIpcMemHandleClose,
@@ -395,7 +401,6 @@ struct flagcxDeviceAdaptor macaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      macaAdaptorEventElapsedTime, macaAdaptorStreamWaitValue64,
 };
 
 #endif // USE_METAX_ADAPTOR

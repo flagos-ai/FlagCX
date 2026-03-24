@@ -373,8 +373,12 @@ flagcxResult_t topsAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-static flagcxResult_t topsAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                   uint64_t, int) {
+flagcxResult_t topsAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                             int) {
   return flagcxNotSupported;
 }
 
@@ -399,9 +403,11 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorStreamCreate, topsAdaptorStreamDestroy, topsAdaptorStreamCopy,
       topsAdaptorStreamFree, topsAdaptorStreamSynchronize,
       topsAdaptorStreamQuery, topsAdaptorStreamWaitEvent,
+      topsAdaptorStreamWaitValue64, topsAdaptorStreamWriteValue64,
       // Event functions
       topsAdaptorEventCreate, topsAdaptorEventDestroy, topsAdaptorEventRecord,
       topsAdaptorEventSynchronize, topsAdaptorEventQuery,
+      topsAdaptorEventElapsedTime,
       // IpcMemHandle functions
       topsAdaptorIpcMemHandleCreate, topsAdaptorIpcMemHandleGet,
       topsAdaptorIpcMemHandleOpen, topsAdaptorIpcMemHandleClose,
@@ -434,8 +440,6 @@ struct flagcxDeviceAdaptor topsAdaptor {
                                               // *handleOut, void *buffer,
                                               // size_t size, unsigned long long
                                               // flags);
-      topsAdaptorEventElapsedTime, // flagcxResult_t
-      topsAdaptorStreamWaitValue64,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

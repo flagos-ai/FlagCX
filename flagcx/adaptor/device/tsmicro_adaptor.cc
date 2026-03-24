@@ -349,8 +349,12 @@ flagcxResult_t tsmicroAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
     return flagcxUnhandledDeviceError;
   }
 }
-static flagcxResult_t tsmicroAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                      uint64_t, int) {
+flagcxResult_t tsmicroAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                               int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorStreamWriteValue64(flagcxStream_t, void *,
+                                                uint64_t, int) {
   return flagcxNotSupported;
 }
 
@@ -376,11 +380,12 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       tsmicroAdaptorStreamCreate, tsmicroAdaptorStreamDestroy,
       tsmicroAdaptorStreamCopy, tsmicroAdaptorStreamFree,
       tsmicroAdaptorStreamSynchronize, tsmicroAdaptorStreamQuery,
-      tsmicroAdaptorStreamWaitEvent,
+      tsmicroAdaptorStreamWaitEvent, tsmicroAdaptorStreamWaitValue64,
+      tsmicroAdaptorStreamWriteValue64,
       // Event functions
       tsmicroAdaptorEventCreate, tsmicroAdaptorEventDestroy,
       tsmicroAdaptorEventRecord, tsmicroAdaptorEventSynchronize,
-      tsmicroAdaptorEventQuery,
+      tsmicroAdaptorEventQuery, tsmicroAdaptorEventElapsedTime,
       // IpcMemHandle functions
       tsmicroAdaptorIpcMemHandleCreate, tsmicroAdaptorIpcMemHandleGet,
       tsmicroAdaptorIpcMemHandleOpen, tsmicroAdaptorIpcMemHandleClose,
@@ -414,8 +419,6 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
                                                  // *handleOut, void *buffer,
                                                  // size_t size, unsigned long
                                                  // long flags);
-      tsmicroAdaptorEventElapsedTime, // flagcxResult_t
-      tsmicroAdaptorStreamWaitValue64,
 };
 
 #endif // USE_TSM_ADAPTOR
