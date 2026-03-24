@@ -161,6 +161,9 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getExpectedValue(); // trd (WaitSignal)
   FLAGCX_HOST_DECORATOR uint64_t getBufferType();    // trd (Signal/WaitSignal)
 
+  // Term accessor
+  FLAGCX_HOST_DECORATOR uint64_t getTotalCoops(); // fst (PrimTerm)
+
   // Backward compat alias
   FLAGCX_HOST_DECORATOR uint64_t getType(); // alias for getPrim()
 };

@@ -1133,23 +1133,23 @@ void *flagcxProxyKernelService(void *args) {
                                (flagcxDataType_t)(ptr->getDatatype()),
                                ptr->getPeerRank(), comm, stream);
         break;
-      case flagcxDevicePrimTerm:
+      case flagcxDevicePrimTerm: {
+        termCount++;
+        int totalCoops = (int)ptr->getTotalCoops();
         TRACE(FLAGCX_P2P,
               "rank=%d flagcxDevicePrimTerm called by proxyKernelService "
-              "termCount=%d/%d.",
-              comm->rank, termCount + 1, FLAGCX_DEVICE_CTA_COUNT);
-        termCount++;
-        if (termCount == FLAGCX_DEVICE_CTA_COUNT) {
-          if (groupCount > 0) {
-            res = flagcxHeteroGroupEnd();
-            TRACE(FLAGCX_P2P,
-                  "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
-                  comm->rank);
-            groupCount--;
-          }
+              "groupCount=%d termCount=%d/%d.",
+              comm->rank, groupCount, termCount, totalCoops);
+        if (groupCount > 0 && termCount >= totalCoops) {
+          res = flagcxHeteroGroupEnd();
+          TRACE(FLAGCX_P2P,
+                "rank=%d flagcxHeteroGroupEnd called by proxyKernelService.",
+                comm->rank);
+          groupCount--;
           termCount = 0;
         }
         break;
+      }
       case flagcxDevicePrimPut: {
         TRACE(FLAGCX_P2P,
               "rank=%d flagcxDevicePrimPut called by proxyKernelService.",

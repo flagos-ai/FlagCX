@@ -103,6 +103,11 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getBufferType() {
          flagcxTriggerMask(flagcxDeviceTriggerBitsBufferType);
 }
 
+// Term accessor
+FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getTotalCoops() {
+  return fst;
+}
+
 // ==========================================================================
 // FIFO init / destroy
 // ==========================================================================

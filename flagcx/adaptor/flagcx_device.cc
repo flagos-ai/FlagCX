@@ -16,7 +16,7 @@
 #include "flagcx_kernel.h"
 #include "net.h" // flagcxNetHandle_t
 #include "onesided.h"
-#include "p2p.h"     // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
+#include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc (+comm.h, transport.h)
 #include <algorithm> // std::min, std::max
 
 // ==========================================================================
@@ -486,6 +486,46 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 }
 
 // ==========================================================================
+// Pre-establish full-mesh connections so the kernel proxy thread never needs
+// to trigger lazy connection setup (which may cause hanging issues).
+// Called from flagcxDevCommCreate — all ranks call it collectively, so the
+// bootstrap rendezvous in flagcxTransportP2pSetup works correctly.
+// ==========================================================================
+flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
+  struct flagcxHeteroComm *hetero = comm->heteroComm;
+  if (hetero == nullptr)
+    return flagcxSuccess;
+  if (hetero->proxyState == nullptr || hetero->proxyState->initialized == 0)
+    return flagcxSuccess;
+
+  bool needPreconnect = false;
+  int channelId = 0;
+  for (int peer = 0; peer < hetero->nRanks; peer++) {
+    if (peer == hetero->rank)
+      continue;
+    if (hetero->channels[channelId].peers[peer]->send[0].connected == 0 &&
+        hetero->channels[channelId].peers[peer]->send[0].registered == 0) {
+      hetero->connectSend[peer] |= (1UL << channelId);
+      hetero->channels[channelId].peers[peer]->send[0].registered = 1;
+      needPreconnect = true;
+    }
+    if (hetero->channels[channelId].peers[peer]->recv[0].connected == 0 &&
+        hetero->channels[channelId].peers[peer]->recv[0].registered == 0) {
+      hetero->connectRecv[peer] |= (1UL << channelId);
+      hetero->channels[channelId].peers[peer]->recv[0].registered = 1;
+      needPreconnect = true;
+    }
+  }
+
+  if (needPreconnect) {
+    INFO(FLAGCX_INIT, "preconnectFullMesh: rank %d establishing %d-peer mesh",
+         hetero->rank, hetero->nRanks - 1);
+    FLAGCXCHECK(flagcxTransportP2pSetup(hetero, NULL, 0));
+  }
+  return flagcxSuccess;
+}
+
+// ==========================================================================
 // Unified DevComm: Additive capability layers
 //   Baseline: rank info + fifoBuffer (always)
 //   IPC layer: barrier pointers (if intraBarrierCount > 0)
@@ -666,6 +706,10 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
            : ""
 #endif
   );
+
+  // Pre-establish full-mesh connections from main thread
+  FLAGCXCHECK(preconnectFullMesh(comm));
+
   return flagcxSuccess;
 }
 

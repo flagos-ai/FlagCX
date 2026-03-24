@@ -1430,20 +1430,25 @@ struct flagcxDevNet {
   }
 
   // ---- Two-sided term (Layer 1: FIFO encoder) ----
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t _enqueueFifoTerm() const {
-    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), 0, 0,
+  // Encodes totalCoops (total number of Coop groups in the grid) in fst
+  // so the proxy knows how many PrimTerm entries to expect before
+  // calling GroupEnd.  Proxy reads via getTotalCoops().
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
+  _enqueueFifoTerm(int totalCoops) const {
+    return flagcxFifoEnqueue(_devComm.getFifoBuffer(), (uint64_t)totalCoops, 0,
                              flagcxBuildTrd(flagcxDevicePrimTerm, 0, 0));
   }
 
   // ---- Two-sided group termination (Coop-scope, Layer 2) ----
-  // Each CTA enqueues exactly one PrimTerm entry. Proxy counts
-  // CTA_COUNT term entries then calls GroupEnd.
+  // Each Coop group enqueues exactly one PrimTerm entry. Proxy counts
+  // totalCoops term entries then calls GroupEnd.
   // All threads in Coop must call this (sync barrier inside).
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
     coop.sync();
     if (coop.threadRank() == 0) {
-      _enqueueFifoTerm();
+      int totalCoops = (FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X) / coop.size();
+      _enqueueFifoTerm(totalCoops);
     }
     coop.sync();
     return flagcxSuccess;
