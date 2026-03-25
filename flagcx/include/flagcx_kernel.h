@@ -39,6 +39,12 @@ typedef enum {
   flagcxReduceTriggerComplete = 3
 } flagcxReduceTriggerState;
 
+typedef enum {
+  flagcxStreamFlagIdle = 0,
+  flagcxStreamFlagPend = 1,
+  flagcxStreamFlagDone = 2
+} flagcxStreamFlagState;
+
 // ==========================================================================
 // flagcxDeviceTrigger bit layout (24 bytes = 3 × uint64_t: fst, snd, trd)
 //
@@ -118,7 +124,7 @@ constexpr unsigned int flagcxDeviceTriggerBitsSignalValue =
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
-constexpr unsigned int flagcxReduceTriggerBitsCount = 32;
+constexpr unsigned int flagcxReduceTriggerBitsCount = 36;
 constexpr unsigned int flagcxReduceTriggerOffNThreads =
     flagcxReduceTriggerOffCount + flagcxReduceTriggerBitsCount;
 constexpr unsigned int flagcxReduceTriggerBitsNThreads = 16;
@@ -171,7 +177,7 @@ struct flagcxDeviceTrigger {
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
 
 struct alignas(16) flagcxReduceTrigger {
-  uint64_t value[4];
+  uint64_t value[6];
 
 #ifdef COMPILE_KERNEL
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInput1();
@@ -183,12 +189,13 @@ struct alignas(16) flagcxReduceTrigger {
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getRedop();
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getState();
   FLAGCX_DEVICE_INLINE_DECORATOR void setComplete();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getFlagIn();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getFlagOut();
 #endif
-  FLAGCX_HOST_DECORATOR void setValue(uint64_t fst, uint64_t snd, uint64_t out,
-                                      size_t count, size_t nthreads,
-                                      flagcxDataType_t datatype,
-                                      flagcxRedOp_t redOp,
-                                      flagcxReduceTriggerState state);
+  FLAGCX_HOST_DECORATOR void
+  setValue(uint64_t fst, uint64_t snd, uint64_t out, size_t count,
+           size_t nthreads, flagcxDataType_t datatype, flagcxRedOp_t redOp,
+           flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
   FLAGCX_HOST_DECORATOR uint64_t pollState();
   FLAGCX_HOST_DECORATOR void setState(int state);
 };

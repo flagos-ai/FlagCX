@@ -10,6 +10,8 @@
 #define NTHREADS_IDX 9
 #define DATATYPE_IDX 10
 #define REDOP_IDX 11
+#define FLAG_IN_IDX 12
+#define FLAG_OUT_IDX 13
 
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
   return value[0];
@@ -47,6 +49,14 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
                   flagcxTriggerMask(flagcxReduceTriggerBitsState))
                  << flagcxReduceTriggerOffState),
       flagcxDeviceMemoryOrderRelease);
+  flagcxDeviceAtomicStore((uint64_t *)shm[FLAG_OUT_IDX], flagcxStreamFlagDone,
+                          flagcxDeviceMemoryOrderRelease);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagIn() {
+  return value[4];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagOut() {
+  return value[5];
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
@@ -141,6 +151,8 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
         shm[NTHREADS_IDX] = t->getNThreads();
         shm[DATATYPE_IDX] = t->getDatatype();
         shm[REDOP_IDX] = t->getRedop();
+        shm[FLAG_IN_IDX] = t->getFlagIn();
+        shm[FLAG_OUT_IDX] = t->getFlagOut();
       }
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -149,9 +161,18 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     if (slot == cap) {
       if (term == 1)
         break;
-      // backoff if no task is performed
       emptyIter++;
       spinBackoff(emptyIter);
+      continue;
+    }
+
+    while (*(uint64_t *)shm[FLAG_IN_IDX] != flagcxStreamFlagDone) {
+      emptyIter++;
+      spinBackoff(emptyIter);
+      if (tid == 0) {
+        shm[FLAG_IN_IDX] = t->getFlagPtr();
+      }
+      FLAGCX_DEVICE_SYNC_THREADS();
       continue;
     }
 

@@ -73,6 +73,7 @@ struct uniRunnerDagNode {
   uniRunnerDagNodeType nodeType; // Discriminator for union
 
   // Common DAG structure fields (shared by all node types)
+  int nodeIdx;                   // Unique index of the node in the DAG
   int numParents;                // Number of parent dependencies
   int numChildren;               // Number of children
   int *children;                 // Array of child node indices
@@ -101,7 +102,7 @@ typedef struct {
   void markInUse(int index);
   // Mark event at index as available
   void markAvailable(int index);
-} uniRunnerP2pEventBitmap;
+} uniRunnerBitmap;
 
 typedef struct {
   pthread_t thread;
@@ -123,7 +124,6 @@ typedef struct {
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       redInflightQueue;
 
-  uint64_t p2pEventPoolSize;
   uint64_t uniRunnerNSlices;
   uint64_t uniRunnerNThreads;
   uint64_t uniRunnerNBlocks;
@@ -131,8 +131,12 @@ typedef struct {
   uint64_t uniRunnerRedSliceSize;
 
   // P2P event pool
+  uint64_t p2pEventPoolSize;
   flagcxEvent_t *p2pEvents;
-  uniRunnerP2pEventBitmap p2pEventMap;
+  uniRunnerBitmap p2pEventMap;
+
+  // stream mem flags
+  void *streamFlags;
 
   // get an available event
   int getEvent();
@@ -171,4 +175,5 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t runUniRunner(flagcxComm_t comm);
+flagcxResult_t runUniRunnerDev(flagcxComm_t comm);
 #endif // FLAGCX_UNIRUNNER_IMPL_H_

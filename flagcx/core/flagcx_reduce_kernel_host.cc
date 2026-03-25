@@ -3,15 +3,16 @@
 
 FLAGCX_PARAM(ReduceFifoCapacity, "REDUCE_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 
-FLAGCX_HOST_DECORATOR void
-flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
-                              size_t count, size_t nthreads,
-                              flagcxDataType_t datatype, flagcxRedOp_t redOp,
-                              flagcxReduceTriggerState state) {
+FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setValue(
+    uint64_t fst, uint64_t snd, uint64_t out, size_t count, size_t nthreads,
+    flagcxDataType_t datatype, flagcxRedOp_t redOp,
+    flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut) {
   uint64_t tmp[4];
   tmp[0] = fst;
   tmp[1] = snd;
   tmp[2] = out;
+  tmp[4] = flagIn;
+  tmp[5] = flagOut;
   tmp[3] = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
                << flagcxReduceTriggerOffCount |
            (nthreads & flagcxTriggerMask(flagcxReduceTriggerBitsNThreads))
