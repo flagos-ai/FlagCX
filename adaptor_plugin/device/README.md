@@ -164,18 +164,18 @@ struct flagcxDeviceAdaptor {
 
 ### Validation
 
-When loading a plugin, FlagCX validates that `name` is non-empty and all function pointers are non-NULL:
+When loading a plugin, FlagCX validates that `name` is non-empty and the function pointers that all built-in adaptors implement are non-NULL:
 - `name[0] != '\0'`
-- Basic: `deviceSynchronize`, `deviceMemcpy`, `deviceMemset`, `deviceMalloc`, `deviceFree`, `setDevice`, `getDevice`, `getDeviceCount`, `getVendor`, `hostGetDevicePointer`
-- GDR: `memHandleInit`, `memHandleDestroy`, `gdrMemAlloc`, `gdrMemFree`, `hostShareMemAlloc`, `hostShareMemFree`, `gdrPtrMmap`, `gdrPtrMunmap`
+- Basic: `deviceSynchronize`, `deviceMemcpy`, `deviceMemset`, `deviceMalloc`, `deviceFree`, `setDevice`, `getDevice`, `getDeviceCount`, `getVendor`
+- GDR: `gdrMemAlloc`, `gdrMemFree`
 - Stream: `streamCreate`, `streamDestroy`, `streamCopy`, `streamFree`, `streamSynchronize`, `streamQuery`, `streamWaitEvent`, `streamWaitValue64`, `streamWriteValue64`
 - Event: `eventCreate`, `eventDestroy`, `eventRecord`, `eventSynchronize`, `eventQuery`, `eventElapsedTime`
 - IPC: `ipcMemHandleCreate`, `ipcMemHandleGet`, `ipcMemHandleOpen`, `ipcMemHandleClose`, `ipcMemHandleFree`
-- Kernel: `launchKernel`, `copyArgsInit`, `copyArgsFree`, `launchDeviceFunc`
-- Device info: `getDeviceProperties`, `getDevicePciBusId`, `getDeviceByPciBusId`
-- Other: `launchHostFunc`, `dmaSupport`, `getHandleForAddressRange`
+- Other: `launchHostFunc`
 
-If any field is missing, the plugin is not loaded and FlagCX falls back to the built-in adaptor. Functions that your platform does not support should be implemented as stubs returning `flagcxInternalError` or `flagcxNotSupported`.
+The following fields are **not** validated because some built-in adaptors leave them NULL: `hostGetDevicePointer`, `memHandleInit`, `memHandleDestroy`, `hostShareMemAlloc`, `hostShareMemFree`, `gdrPtrMmap`, `gdrPtrMunmap`, `launchKernel`, `copyArgsInit`, `copyArgsFree`, `launchDeviceFunc`, `getDeviceProperties`, `getDevicePciBusId`, `getDeviceByPciBusId`, `dmaSupport`, `getHandleForAddressRange`.
+
+If any required field is missing, the plugin is not loaded and FlagCX falls back to the built-in adaptor.
 
 ### Error Codes
 
