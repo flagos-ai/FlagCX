@@ -17,11 +17,6 @@ static pthread_mutex_t netLock = PTHREAD_MUTEX_INITIALIZER;
 // Use adaptor system for all network types
 struct flagcxNetAdaptor *flagcxNetAdaptors[3] = {
     nullptr, getUnifiedNetAdaptor(IBRC), getUnifiedNetAdaptor(SOCKET)};
-enum flagcxNetState {
-  flagcxNetStateInit = 0,
-  flagcxNetStateEnabled = 1,
-  flagcxNetStateDisabled = 2
-};
 enum flagcxNetState flagcxNetStates[3] = {
     flagcxNetStateInit, flagcxNetStateInit, flagcxNetStateInit};
 

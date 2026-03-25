@@ -5,6 +5,7 @@
 #include "adaptor_plugin_load.h"
 #include "core.h"
 #include "flagcx_net_adaptor.h"
+#include "net.h"
 
 #include <dlfcn.h>
 #include <mutex>
@@ -17,7 +18,7 @@ static std::mutex netPluginMutex;
 
 extern struct flagcxNetAdaptor *flagcxNetAdaptors[3];
 
-flagcxResult_t flagcxNetAdaptorPluginLoad() {
+static flagcxResult_t flagcxNetAdaptorPluginLoad() {
   // Already loaded — nothing to do.
   if (netPluginDlHandle != NULL) {
     return flagcxSuccess;
@@ -50,9 +51,12 @@ flagcxResult_t flagcxNetAdaptorPluginLoad() {
 
   // Validate critical function pointers
   if (plugin->name == NULL || plugin->init == NULL || plugin->devices == NULL ||
-      plugin->listen == NULL || plugin->connect == NULL ||
-      plugin->accept == NULL || plugin->isend == NULL ||
-      plugin->irecv == NULL) {
+      plugin->getProperties == NULL || plugin->listen == NULL ||
+      plugin->connect == NULL || plugin->accept == NULL ||
+      plugin->closeSend == NULL || plugin->closeRecv == NULL ||
+      plugin->closeListen == NULL || plugin->regMr == NULL ||
+      plugin->deregMr == NULL || plugin->isend == NULL ||
+      plugin->irecv == NULL || plugin->test == NULL) {
     WARN("ADAPTOR/Plugin: Net adaptor plugin '%s' is missing required function "
          "pointers",
          envValue);
@@ -67,8 +71,9 @@ flagcxResult_t flagcxNetAdaptorPluginLoad() {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxNetAdaptorPluginUnload() {
+static flagcxResult_t flagcxNetAdaptorPluginUnload() {
   flagcxNetAdaptors[0] = nullptr;
+  flagcxNetStates[0] = flagcxNetStateInit;
   flagcxAdaptorClosePluginLib(netPluginDlHandle);
   netPluginDlHandle = NULL;
   return flagcxSuccess;
