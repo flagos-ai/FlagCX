@@ -158,13 +158,18 @@ struct flagcxCCLAdaptor_v1 {
 
 ### Validation
 
-When loading a plugin, FlagCX validates the following fields are non-NULL:
+When loading a plugin, FlagCX validates that all 34 function pointers (and `name`) are non-NULL:
 - `name`
-- `commInitRank`
-- `commDestroy`
-- `allReduce`
+- `getVersion`, `getUniqueId`, `getErrorString`, `getLastError`, `getStagedBuffer`
+- `commInitRank`, `commFinalize`, `commDestroy`, `commAbort`, `commResume`, `commSuspend`
+- `commCount`, `commGetDeviceNumber`, `commUserRank`, `commGetAsyncError`
+- `memAlloc`, `memFree`, `commRegister`, `commDeregister`
+- `commWindowRegister`, `commWindowDeregister`
+- `reduce`, `gather`, `scatter`, `broadcast`, `allReduce`, `reduceScatter`, `allGather`
+- `alltoAll`, `alltoAllv`, `send`, `recv`
+- `groupStart`, `groupEnd`
 
-If validation fails, the plugin is not loaded and FlagCX falls back to the built-in adaptor.
+If any field is NULL, the plugin is not loaded and FlagCX falls back to the built-in adaptor. Functions that your platform does not support should be implemented as stubs returning `flagcxInternalError` or `flagcxNotSupported`.
 
 ### Error Codes
 

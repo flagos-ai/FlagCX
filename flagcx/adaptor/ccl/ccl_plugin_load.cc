@@ -49,9 +49,25 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
-  // Validate critical function pointers
-  if (plugin->name == NULL || plugin->commInitRank == NULL ||
-      plugin->commDestroy == NULL || plugin->allReduce == NULL) {
+  // Validate all 34 function pointers
+  if (plugin->name == NULL || plugin->getVersion == NULL ||
+      plugin->getUniqueId == NULL || plugin->getErrorString == NULL ||
+      plugin->getLastError == NULL || plugin->getStagedBuffer == NULL ||
+      plugin->commInitRank == NULL || plugin->commFinalize == NULL ||
+      plugin->commDestroy == NULL || plugin->commAbort == NULL ||
+      plugin->commResume == NULL || plugin->commSuspend == NULL ||
+      plugin->commCount == NULL || plugin->commGetDeviceNumber == NULL ||
+      plugin->commUserRank == NULL || plugin->commGetAsyncError == NULL ||
+      plugin->memAlloc == NULL || plugin->memFree == NULL ||
+      plugin->commRegister == NULL || plugin->commDeregister == NULL ||
+      plugin->commWindowRegister == NULL ||
+      plugin->commWindowDeregister == NULL || plugin->reduce == NULL ||
+      plugin->gather == NULL || plugin->scatter == NULL ||
+      plugin->broadcast == NULL || plugin->allReduce == NULL ||
+      plugin->reduceScatter == NULL || plugin->allGather == NULL ||
+      plugin->alltoAll == NULL || plugin->alltoAllv == NULL ||
+      plugin->send == NULL || plugin->recv == NULL ||
+      plugin->groupStart == NULL || plugin->groupEnd == NULL) {
     WARN("ADAPTOR/Plugin: CCL adaptor plugin '%s' is missing required function "
          "pointers",
          envValue);

@@ -37,7 +37,7 @@ Plugins should copy the required FlagCX headers into their own source tree to av
 
 - `flagcx.h` — Core types and error codes
 - `flagcx_device_adaptor.h` — The `flagcxDeviceAdaptor` struct and plugin symbol macro
-- **Platform adaptor header** — Copy the vendor adaptor header corresponding to your target platform from `flagcx/adaptor/include/`. For example, `nvidia_adaptor.h` for NVIDIA/CUDA. This header provides struct definitions for `flagcxStream`, `flagcxEvent`, `flagcxIpcMemHandle`, `flagcxDevProps`, etc.
+- **Platform adaptor header** — Copy the vendor adaptor header corresponding to your target platform from `flagcx/adaptor/include/`. For example, `nvidia_adaptor.h` for NVIDIA/CUDA. This header provides struct definitions for `flagcxStream`, `flagcxEvent`, `flagcxIpcMemHandle`, `flagcxWindow`, etc. Note: `flagcxDevProps` is defined in `flagcx_device_adaptor.h`, not in the vendor platform header — do not rely on the vendor header for `flagcxDevProps`.
 
 When copying the vendor adaptor header, **remove the `#ifdef USE_XXX_ADAPTOR` / `#endif` guard**. Since your plugin targets a specific platform, the platform choice is implicit — adding the guard would require an unnecessary `-DUSE_XXX_ADAPTOR` flag in your Makefile. See `example/flagcx/nvidia_adaptor.h` and `cuda/flagcx/nvidia_adaptor.h` for reference.
 
@@ -164,14 +164,18 @@ struct flagcxDeviceAdaptor {
 
 ### Validation
 
-When loading a plugin, FlagCX validates the following fields:
-- `name[0] != '\0'` (name is a `char[32]`, not a pointer)
-- `setDevice` is non-NULL
-- `getDevice` is non-NULL
-- `deviceMalloc` is non-NULL
-- `deviceFree` is non-NULL
+When loading a plugin, FlagCX validates that `name` is non-empty and all function pointers are non-NULL:
+- `name[0] != '\0'`
+- Basic: `deviceSynchronize`, `deviceMemcpy`, `deviceMemset`, `deviceMalloc`, `deviceFree`, `setDevice`, `getDevice`, `getDeviceCount`, `getVendor`, `hostGetDevicePointer`
+- GDR: `memHandleInit`, `memHandleDestroy`, `gdrMemAlloc`, `gdrMemFree`, `hostShareMemAlloc`, `hostShareMemFree`, `gdrPtrMmap`, `gdrPtrMunmap`
+- Stream: `streamCreate`, `streamDestroy`, `streamCopy`, `streamFree`, `streamSynchronize`, `streamQuery`, `streamWaitEvent`, `streamWaitValue64`, `streamWriteValue64`
+- Event: `eventCreate`, `eventDestroy`, `eventRecord`, `eventSynchronize`, `eventQuery`, `eventElapsedTime`
+- IPC: `ipcMemHandleCreate`, `ipcMemHandleGet`, `ipcMemHandleOpen`, `ipcMemHandleClose`, `ipcMemHandleFree`
+- Kernel: `launchKernel`, `copyArgsInit`, `copyArgsFree`, `launchDeviceFunc`
+- Device info: `getDeviceProperties`, `getDevicePciBusId`, `getDeviceByPciBusId`
+- Other: `launchHostFunc`, `dmaSupport`, `getHandleForAddressRange`
 
-If validation fails, the plugin is not loaded and FlagCX falls back to the built-in adaptor.
+If any field is missing, the plugin is not loaded and FlagCX falls back to the built-in adaptor. Functions that your platform does not support should be implemented as stubs returning `flagcxInternalError` or `flagcxNotSupported`.
 
 ### Error Codes
 

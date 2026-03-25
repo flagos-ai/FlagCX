@@ -161,14 +161,28 @@ bool useHeteroComm() {
 }
 
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler) {
+  flagcxResult_t res = flagcxSuccess;
   flagcxDeviceAdaptorPluginInit();
+  flagcxCCLAdaptorPluginInit();
   (*handler) = NULL;
-  flagcxCalloc(handler, 1);
-  flagcxCalloc(&(*handler)->uniqueId, 1);
-  flagcxCalloc(&(*handler)->comm, 1);
-  flagcxCalloc(&(*handler)->devHandle, 1);
+  FLAGCXCHECKGOTO(flagcxCalloc(handler, 1), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&(*handler)->uniqueId, 1), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&(*handler)->comm, 1), res, fail);
+  FLAGCXCHECKGOTO(flagcxCalloc(&(*handler)->devHandle, 1), res, fail);
   *(*handler)->devHandle = globalDeviceHandle;
   return flagcxSuccess;
+
+fail:
+  if (*handler) {
+    free((*handler)->uniqueId);
+    free((*handler)->comm);
+    free((*handler)->devHandle);
+    free(*handler);
+    *handler = NULL;
+  }
+  flagcxCCLAdaptorPluginFinalize();
+  flagcxDeviceAdaptorPluginFinalize();
+  return res;
 }
 
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
@@ -182,6 +196,7 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
     free(handler);
     handler = NULL;
   }
+  flagcxCCLAdaptorPluginFinalize();
   flagcxDeviceAdaptorPluginFinalize();
   return flagcxSuccess;
 }
@@ -1321,9 +1336,6 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->hasSingleRankHomoComm = 0;
   }
 
-  // Load CCL adaptor plugin (must happen before any cclAdaptors[device] call)
-  flagcxCCLAdaptorPluginInit();
-
   flagcxUniqueId *uniqueIdData;
   FLAGCXCHECK(flagcxCalloc(&uniqueIdData, nranks));
 
@@ -1601,9 +1613,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     // Free uniqueIdData
     free(comm->uniqueIdData);
   }
-
-  // Finalize CCL adaptor plugin (dlclose)
-  flagcxCCLAdaptorPluginFinalize();
 
   return flagcxSuccess;
 }

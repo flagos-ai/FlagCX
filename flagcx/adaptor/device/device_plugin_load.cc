@@ -49,10 +49,32 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
-  // Validate critical fields
-  if (plugin->name[0] == '\0' || plugin->setDevice == NULL ||
-      plugin->getDevice == NULL || plugin->deviceMalloc == NULL ||
-      plugin->deviceFree == NULL) {
+  // Validate all function pointers
+  if (plugin->name[0] == '\0' || plugin->deviceSynchronize == NULL ||
+      plugin->deviceMemcpy == NULL || plugin->deviceMemset == NULL ||
+      plugin->deviceMalloc == NULL || plugin->deviceFree == NULL ||
+      plugin->setDevice == NULL || plugin->getDevice == NULL ||
+      plugin->getDeviceCount == NULL || plugin->getVendor == NULL ||
+      plugin->hostGetDevicePointer == NULL || plugin->memHandleInit == NULL ||
+      plugin->memHandleDestroy == NULL || plugin->gdrMemAlloc == NULL ||
+      plugin->gdrMemFree == NULL || plugin->hostShareMemAlloc == NULL ||
+      plugin->hostShareMemFree == NULL || plugin->gdrPtrMmap == NULL ||
+      plugin->gdrPtrMunmap == NULL || plugin->streamCreate == NULL ||
+      plugin->streamDestroy == NULL || plugin->streamCopy == NULL ||
+      plugin->streamFree == NULL || plugin->streamSynchronize == NULL ||
+      plugin->streamQuery == NULL || plugin->streamWaitEvent == NULL ||
+      plugin->streamWaitValue64 == NULL || plugin->streamWriteValue64 == NULL ||
+      plugin->eventCreate == NULL || plugin->eventDestroy == NULL ||
+      plugin->eventRecord == NULL || plugin->eventSynchronize == NULL ||
+      plugin->eventQuery == NULL || plugin->eventElapsedTime == NULL ||
+      plugin->ipcMemHandleCreate == NULL || plugin->ipcMemHandleGet == NULL ||
+      plugin->ipcMemHandleOpen == NULL || plugin->ipcMemHandleClose == NULL ||
+      plugin->ipcMemHandleFree == NULL || plugin->launchKernel == NULL ||
+      plugin->copyArgsInit == NULL || plugin->copyArgsFree == NULL ||
+      plugin->launchDeviceFunc == NULL || plugin->getDeviceProperties == NULL ||
+      plugin->getDevicePciBusId == NULL ||
+      plugin->getDeviceByPciBusId == NULL || plugin->launchHostFunc == NULL ||
+      plugin->dmaSupport == NULL || plugin->getHandleForAddressRange == NULL) {
     WARN("ADAPTOR/Plugin: Device adaptor plugin '%s' is missing required "
          "function pointers",
          envValue);
