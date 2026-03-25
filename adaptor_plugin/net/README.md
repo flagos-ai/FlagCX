@@ -118,6 +118,21 @@ struct flagcxNetAdaptor_v1 {
 };
 ```
 
+### Validation
+
+When loading a plugin, FlagCX validates that `name` is non-NULL and the function pointers that all built-in net adaptors implement are non-NULL:
+- `name`, `init`, `devices`, `getProperties`
+- `listen`, `connect`, `accept`, `closeSend`, `closeRecv`, `closeListen`
+- `regMr`, `deregMr`
+- `isend`, `irecv`, `iflush`, `test`
+
+The following fields are **not** validated because some built-in adaptors leave them NULL:
+- `regMrDmaBuf` — NULL in socket adaptor (no DMA-BUF support)
+- `iput`, `iget`, `iputSignal` — NULL in socket, IBUC, and UCX adaptors (one-sided not supported)
+- `getDevFromName` — NULL in socket adaptor
+
+If any required field is missing, the plugin is not loaded and FlagCX falls back to the built-in adaptors. Functions your transport does not support may be set to NULL.
+
 ### Error Codes
 
 All plugin functions return `flagcxResult_t`. Return `flagcxSuccess` on success.

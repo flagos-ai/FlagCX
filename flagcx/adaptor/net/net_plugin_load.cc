@@ -49,14 +49,16 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
-  // Validate critical function pointers
+  // Validate function pointers that all built-in net adaptors implement.
+  // Fields left NULL in some adaptors (regMrDmaBuf, iput, iget, iputSignal,
+  // getDevFromName) are intentionally not checked here.
   if (plugin->name == NULL || plugin->init == NULL || plugin->devices == NULL ||
       plugin->getProperties == NULL || plugin->listen == NULL ||
       plugin->connect == NULL || plugin->accept == NULL ||
       plugin->closeSend == NULL || plugin->closeRecv == NULL ||
       plugin->closeListen == NULL || plugin->regMr == NULL ||
       plugin->deregMr == NULL || plugin->isend == NULL ||
-      plugin->irecv == NULL || plugin->test == NULL) {
+      plugin->irecv == NULL || plugin->iflush == NULL || plugin->test == NULL) {
     WARN("ADAPTOR/Plugin: Net adaptor plugin '%s' is missing required function "
          "pointers",
          envValue);
