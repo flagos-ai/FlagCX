@@ -89,7 +89,7 @@ flagcxResult_t flagcxCCLAdaptorPluginInit() {
 flagcxResult_t flagcxCCLAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(cclPluginMutex);
   if (cclPluginRefCount > 0 && --cclPluginRefCount == 0) {
-    INFO(FLAGCX_NET, "Unloading CCL adaptor plugin");
+    INFO(FLAGCX_INIT, "Unloading CCL adaptor plugin");
     flagcxCCLAdaptorPluginUnload();
   }
   return flagcxSuccess;

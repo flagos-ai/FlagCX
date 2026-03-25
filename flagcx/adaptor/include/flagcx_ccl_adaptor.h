@@ -17,7 +17,7 @@ typedef struct flagcxInnerComm *flagcxInnerComm_t;
 struct bootstrapState;
 
 // Version history:
-//   v1 — 33 function pointers: name, getVersion, getUniqueId, getErrorString,
+//   v1 — 34 function pointers: getVersion, getUniqueId, getErrorString,
 //         getLastError, getStagedBuffer, commInitRank, commFinalize,
 //         commDestroy, commAbort, commResume, commSuspend, commCount,
 //         commGetDeviceNumber, commUserRank, commGetAsyncError, memAlloc,

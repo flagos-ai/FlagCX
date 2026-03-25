@@ -118,6 +118,17 @@ static flagcxResult_t pluginStreamWaitEvent(flagcxStream_t stream,
   return flagcxInternalError;
 }
 
+static flagcxResult_t pluginStreamWaitValue64(flagcxStream_t stream, void *addr,
+                                              uint64_t value, int flags) {
+  return flagcxInternalError;
+}
+
+static flagcxResult_t pluginStreamWriteValue64(flagcxStream_t stream,
+                                               void *addr, uint64_t value,
+                                               int flags) {
+  return flagcxInternalError;
+}
+
 // Event functions
 static flagcxResult_t pluginEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
@@ -138,6 +149,11 @@ static flagcxResult_t pluginEventSynchronize(flagcxEvent_t event) {
 }
 
 static flagcxResult_t pluginEventQuery(flagcxEvent_t event) {
+  return flagcxInternalError;
+}
+
+static flagcxResult_t pluginEventElapsedTime(float *ms, flagcxEvent_t start,
+                                             flagcxEvent_t end) {
   return flagcxInternalError;
 }
 
@@ -221,18 +237,6 @@ static flagcxResult_t pluginGetHandleForAddressRange(void *handleOut,
   return flagcxInternalError;
 }
 
-// Event elapsed time
-static flagcxResult_t pluginEventElapsedTime(float *ms, flagcxEvent_t start,
-                                             flagcxEvent_t end) {
-  return flagcxInternalError;
-}
-
-// Stream memory operations
-static flagcxResult_t pluginStreamWaitValue64(flagcxStream_t stream, void *addr,
-                                              uint64_t value, int flags) {
-  return flagcxInternalError;
-}
-
 __attribute__((visibility("default"))) struct flagcxDeviceAdaptor
     FLAGCX_DEVICE_ADAPTOR_PLUGIN_SYMBOL_V1 = {
         "Example",
@@ -264,12 +268,15 @@ __attribute__((visibility("default"))) struct flagcxDeviceAdaptor
         pluginStreamSynchronize,
         pluginStreamQuery,
         pluginStreamWaitEvent,
+        pluginStreamWaitValue64,
+        pluginStreamWriteValue64,
         // Event functions
         pluginEventCreate,
         pluginEventDestroy,
         pluginEventRecord,
         pluginEventSynchronize,
         pluginEventQuery,
+        pluginEventElapsedTime,
         // IpcMemHandle functions
         pluginIpcMemHandleCreate,
         pluginIpcMemHandleGet,
@@ -290,8 +297,4 @@ __attribute__((visibility("default"))) struct flagcxDeviceAdaptor
         // DMA buffer
         pluginDmaSupport,
         pluginGetHandleForAddressRange,
-        // Event elapsed time
-        pluginEventElapsedTime,
-        // Stream memory operations
-        pluginStreamWaitValue64,
 };
