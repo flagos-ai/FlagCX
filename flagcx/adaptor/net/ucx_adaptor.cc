@@ -1487,9 +1487,6 @@ flagcxResult_t flagcxUcxGetDevFromName(char *name, int *dev) {
 struct flagcxNetAdaptor flagcxNetUcx = {
     // Basic functions
     "UCX", flagcxUcxInit, flagcxUcxDevices, flagcxUcxGetProperties,
-    NULL, // reduceSupport
-    NULL, // getDeviceMr
-    NULL, // irecvConsumed
 
     // Setup functions
     flagcxUcxListen,      // listen

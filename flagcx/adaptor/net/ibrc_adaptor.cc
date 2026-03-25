@@ -2626,9 +2626,6 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
 struct flagcxNetAdaptor flagcxNetIb = {
     // Basic functions
     "IB", flagcxIbInit, flagcxIbDevices, flagcxIbGetProperties,
-    NULL, // reduceSupport
-    NULL, // getDeviceMr
-    NULL, // irecvConsumed
 
     // Setup functions
     flagcxIbListen, flagcxIbConnect, flagcxIbAccept, flagcxIbCloseSend,

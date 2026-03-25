@@ -678,9 +678,6 @@ flagcxNetAdaptor flagcxNetSocket = {
     // Basic functions
     "Socket", flagcxNetSocketInit, flagcxNetSocketDevices,
     flagcxNetSocketGetProperties,
-    NULL, // reduceSupport - not implemented
-    NULL, // getDeviceMr - not implemented
-    NULL, // irecvConsumed - not implemented
 
     // Setup functions
     flagcxNetSocketListen, flagcxNetSocketConnect, flagcxNetSocketAccept,

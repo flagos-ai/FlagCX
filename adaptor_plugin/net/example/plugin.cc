@@ -78,21 +78,6 @@ static flagcxResult_t pluginGetProperties(int dev, void *props) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t pluginReduceSupport(flagcxDataType_t dataType,
-                                          flagcxRedOp_t redOp, int *supported) {
-  return flagcxInternalError;
-}
-
-static flagcxResult_t pluginGetDeviceMr(void *comm, void *mhandle,
-                                        void **dptr_mhandle) {
-  return flagcxInternalError;
-}
-
-static flagcxResult_t pluginIrecvConsumed(void *recvComm, int n,
-                                          void *request) {
-  return flagcxInternalError;
-}
-
 static flagcxResult_t pluginListen(int dev, void *handle, void **listenComm) {
   return flagcxInternalError;
 }
@@ -183,12 +168,11 @@ static flagcxResult_t pluginGetDevFromName(char *name, int *dev) {
 
 __attribute__((visibility("default"))) struct flagcxNetAdaptor_v1
     FLAGCX_NET_ADAPTOR_PLUGIN_SYMBOL_V1 = {
-        "Example",           pluginInit,          pluginDevices,
-        pluginGetProperties, pluginReduceSupport, pluginGetDeviceMr,
-        pluginIrecvConsumed, pluginListen,        pluginConnect,
-        pluginAccept,        pluginCloseSend,     pluginCloseRecv,
-        pluginCloseListen,   pluginRegMr,         pluginRegMrDmaBuf,
-        pluginDeregMr,       pluginIsend,         pluginIrecv,
-        pluginIflush,        pluginTest,          pluginIput,
-        pluginIget,          pluginIputSignal,    pluginGetDevFromName,
+        "Example",           pluginInit,       pluginDevices,
+        pluginGetProperties, pluginListen,     pluginConnect,
+        pluginAccept,        pluginCloseSend,  pluginCloseRecv,
+        pluginCloseListen,   pluginRegMr,      pluginRegMrDmaBuf,
+        pluginDeregMr,       pluginIsend,      pluginIrecv,
+        pluginIflush,        pluginTest,       pluginIput,
+        pluginIget,          pluginIputSignal, pluginGetDevFromName,
 };

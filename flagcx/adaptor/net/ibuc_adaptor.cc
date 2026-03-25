@@ -2252,9 +2252,6 @@ flagcxResult_t flagcxIbucGetProperties(int dev, void *props) {
 struct flagcxNetAdaptor flagcxNetIbuc = {
     // Basic functions
     "IBUC", flagcxIbucInit, flagcxIbDevices, flagcxIbucGetProperties,
-    NULL, // reduceSupport
-    NULL, // getDeviceMr
-    NULL, // irecvConsumed
 
     // Setup functions
     flagcxIbucListen, flagcxIbucConnect, flagcxIbucAccept, flagcxIbucCloseSend,

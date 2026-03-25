@@ -78,10 +78,6 @@ struct flagcxNetAdaptor_v1 {
   flagcxResult_t (*init)();
   flagcxResult_t (*devices)(int *ndev);
   flagcxResult_t (*getProperties)(int dev, void *props);
-  flagcxResult_t (*reduceSupport)(flagcxDataType_t dataType,
-                                  flagcxRedOp_t redOp, int *supported);
-  flagcxResult_t (*getDeviceMr)(void *comm, void *mhandle, void **dptr_mhandle);
-  flagcxResult_t (*irecvConsumed)(void *recvComm, int n, void *request);
 
   flagcxResult_t (*listen)(int dev, void *handle, void **listenComm);
   flagcxResult_t (*connect)(int dev, void *handle, void **sendComm);
@@ -226,13 +222,6 @@ Combined data write + signal operation. When `size > 0`, posts a chained RDMA wr
 `getDevFromName`
 
 Resolve a device name string to a device index.
-
-### Optional Functions
-
-The following function pointers may be set to `NULL` if not supported:
-- `reduceSupport`
-- `getDeviceMr`
-- `irecvConsumed`
 
 ## Example
 
