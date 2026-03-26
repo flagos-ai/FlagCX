@@ -229,7 +229,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
  * the rest of the resources (e.g. communicator itself) without blocking. */
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object. */
+/* Frees local resources associated with communicator object.
+   The comm pointer is invalidated and must not be accessed after this call. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations

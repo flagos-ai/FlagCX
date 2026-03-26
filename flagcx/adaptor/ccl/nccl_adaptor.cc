@@ -370,24 +370,28 @@ flagcxResult_t ncclAdaptorGather(const void *sendbuff, void *recvbuff,
                                  int root, flagcxInnerComm_t comm,
                                  flagcxStream_t stream) {
   int rank, nranks;
-  ncclResult_t res = ncclSuccess;
-  res = ncclCommUserRank(comm->base, &rank);
-  res = ncclCommCount(comm->base, &nranks);
+  FLAGCXCHECK((flagcxResult_t)ncclCommUserRank(comm->base, &rank));
+  FLAGCXCHECK((flagcxResult_t)ncclCommCount(comm->base, &nranks));
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
   char *buffer = static_cast<char *>(recvbuff);
 
-  res = ncclGroupStart();
+  flagcxResult_t res = flagcxSuccess;
+  FLAGCXCHECK((flagcxResult_t)ncclGroupStart());
   if (rank == root) {
     for (int r = 0; r < nranks; r++) {
-      res = ncclRecv(static_cast<void *>(buffer + r * size), size, ncclChar, r,
-                     comm->base, stream->base);
+      FLAGCXCHECKGOTO(
+          (flagcxResult_t)ncclRecv(static_cast<void *>(buffer + r * size), size,
+                                   ncclChar, r, comm->base, stream->base),
+          res, group_exit);
     }
   }
-  res = ncclSend(sendbuff, size, ncclChar, root, comm->base, stream->base);
-  res = ncclGroupEnd();
-
-  return (flagcxResult_t)res;
+  FLAGCXCHECKGOTO((flagcxResult_t)ncclSend(sendbuff, size, ncclChar, root,
+                                           comm->base, stream->base),
+                  res, group_exit);
+group_exit:
+  FLAGCXCHECK((flagcxResult_t)ncclGroupEnd());
+  return res;
 }
 
 flagcxResult_t ncclAdaptorScatter(const void *sendbuff, void *recvbuff,
@@ -395,24 +399,28 @@ flagcxResult_t ncclAdaptorScatter(const void *sendbuff, void *recvbuff,
                                   int root, flagcxInnerComm_t comm,
                                   flagcxStream_t stream) {
   int rank, nranks;
-  ncclResult_t res = ncclSuccess;
-  res = ncclCommUserRank(comm->base, &rank);
-  res = ncclCommCount(comm->base, &nranks);
+  FLAGCXCHECK((flagcxResult_t)ncclCommUserRank(comm->base, &rank));
+  FLAGCXCHECK((flagcxResult_t)ncclCommCount(comm->base, &nranks));
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
   const char *buffer = static_cast<const char *>(sendbuff);
 
-  res = ncclGroupStart();
+  flagcxResult_t res = flagcxSuccess;
+  FLAGCXCHECK((flagcxResult_t)ncclGroupStart());
   if (rank == root) {
     for (int r = 0; r < nranks; r++) {
-      res = ncclSend(static_cast<const void *>(buffer + r * size), size,
-                     ncclChar, r, comm->base, stream->base);
+      FLAGCXCHECKGOTO(
+          (flagcxResult_t)ncclSend(static_cast<const void *>(buffer + r * size),
+                                   size, ncclChar, r, comm->base, stream->base),
+          res, group_exit);
     }
   }
-  res = ncclRecv(recvbuff, size, ncclChar, root, comm->base, stream->base);
-  res = ncclGroupEnd();
-
-  return (flagcxResult_t)res;
+  FLAGCXCHECKGOTO((flagcxResult_t)ncclRecv(recvbuff, size, ncclChar, root,
+                                           comm->base, stream->base),
+                  res, group_exit);
+group_exit:
+  FLAGCXCHECK((flagcxResult_t)ncclGroupEnd());
+  return res;
 }
 
 flagcxResult_t ncclAdaptorBroadcast(const void *sendbuff, void *recvbuff,

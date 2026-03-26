@@ -188,7 +188,6 @@ fail:
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
   if (handler != NULL) {
     free(handler->uniqueId);
-    free(handler->comm);
     free(handler->devHandle);
     handler->uniqueId = NULL;
     handler->comm = NULL;
@@ -1573,6 +1572,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->globalRank2HomoRank);
   free(comm->localRankToRank);
   free(comm->c2cSchedule);
+  free(comm->clusterInterRanks);
 
   // Destroy homo comms
   if (comm->tuner) {
@@ -1617,6 +1617,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   // Finalize net adaptor plugin (dlclose)
   FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
 
+  free(comm);
   return flagcxSuccess;
 }
 

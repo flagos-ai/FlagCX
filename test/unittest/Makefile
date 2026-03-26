@@ -1,55 +1,31 @@
-BUILDDIR ?= $(abspath ./build)
+# Unittest orchestration — delegates to component sub-directories.
+# Each component produces up to two binaries:
+#   <component>_unit_tests — from test_*.cpp (no MPI, runs locally)
+#   <component>_mpi_tests  — from coll_*.cpp (requires MPI + GPUs)
+#
+# Usage:
+#   make              Build all components
+#   make run-unit     Run all unit tests (no MPI/GPU)
+#   make run-mpi      Run all MPI tests
+#   make run          Run everything
+#   make clean        Clean all build artifacts
 
-BINDIR := $(BUILDDIR)/bin
-OBJDIR := $(BUILDDIR)/obj
+COMPONENTS := adaptor core kernel service runner
 
+.PHONY: all $(COMPONENTS) clean run-unit run-mpi run
 
+all: $(COMPONENTS)
 
-
-INCLUDEDIR := \
-        $(abspath include) \
-        $(abspath coll/include) \
-        $(abspath kernel/include) \
-        $(abspath topo/include) \
-        $(abspath ../../third-party/googletest/googletest/include)
-
-LIBSRCFILES := \
-        $(wildcard *.cpp) \
-        $(wildcard coll/*.cpp) \
-        $(wildcard kernel/*.cpp) \
-        $(wildcard topo/*.cpp)
-
-BINOBJ := $(LIBSRCFILES:%.cpp=$(OBJDIR)/%.o)
-
-
-
-
-GTEST_DIR := ../../third-party/googletest
-GTEST_LIB := $(GTEST_DIR)/build/lib
-
-
-MPI_HOME ?= /usr/local/mpi
-MPI_INCLUDE = $(MPI_HOME)/include
-MPI_LIB = $(MPI_HOME)/lib
-
-
-TARGET = main
-all: $(BINDIR)/$(TARGET)
-
-$(BINDIR)/$(TARGET): $(BINOBJ)
-	@mkdir -p `dirname $@`
-	@echo "Linking   $@"
-	@g++ $(BINOBJ) -o $@ -L../../build/lib -L$(MPI_LIB) -L/usr/local/lib -L$(GTEST_LIB) -Wl,--no-as-needed -Wl,-rpath,../../build/lib -lflagcx -lmpi -lgtest -lgtest_main -lpthread -g
-
-$(OBJDIR)/%.o: %.cpp
-	@mkdir -p `dirname $@`
-	@echo "Compiling $@"
-	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(MPI_INCLUDE) -I/usr/local/include -c -Wvla -Wno-unused-function -Wno-sign-compare -Wall -g
-
--include $(BINOBJ:.o=.d)
+$(COMPONENTS):
+	@$(MAKE) -C $@
 
 clean:
-	@rm -rf $(BINDIR)/$(TARGET) $(OBJDIR)
+	@for comp in $(COMPONENTS); do $(MAKE) -C $$comp clean; done
 
-run-all-tests:
-	@mpirun --allow-run-as-root -np 8 -x UCX_POSIX_USE_PROC_LINK=n -x CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 -x FLAGCX_LOG_LEVEL=TRACE -x FLAGCX_TOPO_FILE="topo_demo.xml" -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL ./build/bin/main
+run-unit:
+	@for comp in $(COMPONENTS); do $(MAKE) -C $$comp run-unit; done
+
+run-mpi:
+	@for comp in $(COMPONENTS); do $(MAKE) -C $$comp run-mpi; done
+
+run: run-unit run-mpi

@@ -25,6 +25,16 @@
   - Supports a naive AllReduce implementation in uniRunner mode using a CPU-centric, device-assisted algorithm.
   - Adds one-sided communication primitives via the new APIs flagcxHeteroPut and flagcxHeteroPutSignal.
 
+- **[Unreleased]** Test infrastructure restructure and bug fixes (PR #413):
+
+  - Fixed NCCL group imbalance in `ncclAdaptorGather`/`ncclAdaptorScatter`: errors inside
+    `ncclGroupStart()`/`ncclGroupEnd()` no longer skip `ncclGroupEnd()`, preventing deadlocks.
+  - Reduced unit-test buffer allocation from 1GB to 4MB per buffer, cutting memory from 32GB to 128MB for 8-rank runs.
+  - Improved collective test correctness by using rank-dependent data patterns, catching rank-ordering and single-rank-copy bugs.
+  - Added infinite-loop guard in `perfBenchmarkLoop` for `stepFactor <= 1`.
+  - Wired `PERF_COMMON_SRC` into `test/perf/host_api/Makefile` build.
+  - Removed TRACE-level debug logging from CI workflow.
+
 - **[2025/11]** Released [v0.7](https://github.com/flagos-ai/FlagCX/releases/tag/v0.7.0):
 
   - Added support to TsingMicro, including device adaptor `tsmicroAdaptor` and CCL adaptor `tcclAdaptor`.

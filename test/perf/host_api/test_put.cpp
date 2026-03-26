@@ -24,17 +24,17 @@ void fatal(flagcxResult_t res, const char *msg, int rank) {
 
 int main(int argc, char *argv[]) {
   parser args(argc, argv);
-  size_t min_bytes = args.getMinBytes();
-  size_t max_bytes = args.getMaxBytes();
-  int step_factor = args.getStepFactor();
-  int num_warmup_iters = args.getWarmupIters();
-  int num_iters = args.getTestIters();
-  int print_buffer = args.isPrintBuffer();
-  uint64_t split_mask = args.getSplitMask();
-  int local_register = args.getLocalRegister();
+  size_t minBytes = args.getMinBytes();
+  size_t maxBytes = args.getMaxBytes();
+  int stepFactor = args.getStepFactor();
+  int numWarmupIters = args.getWarmupIters();
+  int numIters = args.getTestIters();
+  int printBuffer = args.isPrintBuffer();
+  uint64_t splitMask = args.getSplitMask();
+  int localRegister = args.getLocalRegister();
 
   // RMA requires flagcxMemAlloc (GDR memory with SYNC_MEMOPS)
-  if (local_register < 1) {
+  if (localRegister < 1) {
     fprintf(stderr,
             "test_put requires -R 1 or -R 2 for GDR buffer allocation.\n");
     return 1;
@@ -51,7 +51,7 @@ int main(int argc, char *argv[]) {
   int totalProcs = 1, proc = 0;
   MPI_Comm splitComm;
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
-             splitComm, split_mask);
+             splitComm, splitMask);
 
   int nGpu;
   devHandle->getDeviceCount(&nGpu);
@@ -99,39 +99,39 @@ int main(int argc, char *argv[]) {
   flagcxResult_t res;
 
   size_t signalBytes = sizeof(uint64_t);
-  size_t total_iters_per_size = num_warmup_iters + num_iters;
-  size_t max_data_iters = std::max(num_warmup_iters, num_iters);
-  size_t data_bytes = max_bytes * max_data_iters;
-  size_t signal_total_bytes = signalBytes * total_iters_per_size;
+  size_t totalItersPerSize = numWarmupIters + numIters;
+  size_t maxDataIters = std::max(numWarmupIters, numIters);
+  size_t dataBytes = maxBytes * maxDataIters;
+  size_t signalTotalBytes = signalBytes * totalItersPerSize;
 
   // Data buffer: GDR memory (SYNC_MEMOPS ensures NIC visibility via GDR BAR)
   void *dataWindow = nullptr;
-  res = flagcxMemAlloc(&dataWindow, data_bytes);
+  res = flagcxMemAlloc(&dataWindow, dataBytes);
   if (res != flagcxSuccess || dataWindow == nullptr) {
     fprintf(stderr, "[rank %d] flagcxMemAlloc failed for data (size=%zu)\n",
-            proc, data_bytes);
+            proc, dataBytes);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
-  devHandle->deviceMemset(dataWindow, 0, data_bytes, flagcxMemDevice, NULL);
+  devHandle->deviceMemset(dataWindow, 0, dataBytes, flagcxMemDevice, NULL);
 
   // Signal buffer: GDR memory (SYNC_MEMOPS for RDMA ATOMIC visibility)
   void *signalWindow = nullptr;
-  res = flagcxMemAlloc(&signalWindow, signal_total_bytes);
+  res = flagcxMemAlloc(&signalWindow, signalTotalBytes);
   if (res != flagcxSuccess || signalWindow == nullptr) {
     fprintf(stderr, "[rank %d] flagcxMemAlloc failed for signal (size=%zu)\n",
-            proc, signal_total_bytes);
+            proc, signalTotalBytes);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
-  devHandle->deviceMemset(signalWindow, 0, signal_total_bytes, flagcxMemDevice,
+  devHandle->deviceMemset(signalWindow, 0, signalTotalBytes, flagcxMemDevice,
                           NULL);
 
   // Register data buffer in global reg pool
   void *dataHandle = nullptr;
-  res = flagcxCommRegister(comm, dataWindow, data_bytes, &dataHandle);
+  res = flagcxCommRegister(comm, dataWindow, dataBytes, &dataHandle);
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
   // Register data buffer for one-sided operations
-  res = flagcxOneSideRegister(comm, dataWindow, data_bytes);
+  res = flagcxOneSideRegister(comm, dataWindow, dataBytes);
   if (res == flagcxNotSupported) {
     if (proc == 0)
       printf("Skipping put benchmark: net adaptor does not support iput.\n");
@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
   fatal(res, "flagcxOneSideRegister (data) failed", proc);
 
   // Register signal buffer for one-sided operations
-  res = flagcxOneSideSignalRegister(comm, signalWindow, signal_total_bytes);
+  res = flagcxOneSideSignalRegister(comm, signalWindow, signalTotalBytes);
   fatal(res, "flagcxOneSideSignalRegister failed", proc);
 
   flagcxStream_t stream;
@@ -173,10 +173,10 @@ int main(int argc, char *argv[]) {
 
   // Host staging buffer for sender data fill and receiver verification
   void *hostStaging = nullptr;
-  if (posix_memalign(&hostStaging, 64, max_bytes) != 0 ||
+  if (posix_memalign(&hostStaging, 64, maxBytes) != 0 ||
       hostStaging == nullptr) {
     fprintf(stderr, "[rank %d] posix_memalign failed for staging (size=%zu)\n",
-            proc, max_bytes);
+            proc, maxBytes);
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
@@ -188,31 +188,31 @@ int main(int argc, char *argv[]) {
 
   // Benchmark loop
   timer tim;
-  for (size_t size = min_bytes; size <= max_bytes; size *= step_factor) {
+  for (size_t size = minBytes; size <= maxBytes; size *= stepFactor) {
     if (size == 0)
       break;
 
     // Reset signal buffer before each size iteration
-    devHandle->deviceMemset(signalWindow, 0, signal_total_bytes,
-                            flagcxMemDevice, NULL);
+    devHandle->deviceMemset(signalWindow, 0, signalTotalBytes, flagcxMemDevice,
+                            NULL);
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // Warmup iterations (signal slots [0 .. num_warmup_iters-1])
-    for (int i = 0; i < num_warmup_iters; ++i) {
+    // Warmup iterations (signal slots [0 .. numWarmupIters-1])
+    for (int i = 0; i < numWarmupIters; ++i) {
       size_t signalOffset = i * signalBytes;
-      size_t current_send_offset = i * size;
-      size_t current_recv_offset = i * size;
+      size_t currentSendOffset = i * size;
+      size_t currentRecvOffset = i * size;
 
       if (isSender) {
         // Fill host staging, then copy H2D to device data buffer
         uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
         std::memset(hostStaging, value, size);
-        devHandle->deviceMemcpy((char *)dataWindow + current_send_offset,
+        devHandle->deviceMemcpy((char *)dataWindow + currentSendOffset,
                                 hostStaging, size, flagcxMemcpyHostToDevice,
                                 NULL);
 
-        res = flagcxPutSignal(comm, receiverRank, current_send_offset,
-                              current_recv_offset, size, signalOffset, 0, 0, 1);
+        res = flagcxPutSignal(comm, receiverRank, currentSendOffset,
+                              currentRecvOffset, size, signalOffset, 0, 0, 1);
         fatal(res, "flagcxPutSignal warmup failed", proc);
       } else if (isReceiver) {
         res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
@@ -224,34 +224,34 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
     tim.reset();
 
-    // Benchmark iterations (signal slots [num_warmup_iters .. total_iters-1])
-    for (int i = 0; i < num_iters; ++i) {
-      size_t signalOffset = (num_warmup_iters + i) * signalBytes;
-      size_t current_send_offset = i * size;
-      size_t current_recv_offset = i * size;
+    // Benchmark iterations (signal slots [numWarmupIters .. totalIters-1])
+    for (int i = 0; i < numIters; ++i) {
+      size_t signalOffset = (numWarmupIters + i) * signalBytes;
+      size_t currentSendOffset = i * size;
+      size_t currentRecvOffset = i * size;
 
       if (isSender) {
         uint8_t value = static_cast<uint8_t>((senderRank + i) & 0xff);
         std::memset(hostStaging, value, size);
-        devHandle->deviceMemcpy((char *)dataWindow + current_send_offset,
+        devHandle->deviceMemcpy((char *)dataWindow + currentSendOffset,
                                 hostStaging, size, flagcxMemcpyHostToDevice,
                                 NULL);
 
-        res = flagcxPutSignal(comm, receiverRank, current_send_offset,
-                              current_recv_offset, size, signalOffset, 0, 0, 1);
+        res = flagcxPutSignal(comm, receiverRank, currentSendOffset,
+                              currentRecvOffset, size, signalOffset, 0, 0, 1);
         fatal(res, "flagcxPutSignal failed", proc);
       } else if (isReceiver) {
         res = flagcxWaitSignal(comm, senderRank, signalOffset, 1, waitStream);
         fatal(res, "flagcxWaitSignal failed", proc);
         devHandle->streamSynchronize(waitStream);
 
-        if (print_buffer) {
+        if (printBuffer) {
           // Copy device data to host for verification
           devHandle->deviceMemcpy(
-              hostStaging, (char *)dataWindow + current_recv_offset,
+              hostStaging, (char *)dataWindow + currentRecvOffset,
               std::min(size, (size_t)64), flagcxMemcpyDeviceToHost, NULL);
           printf("[rank %d] Received data at offset %zu, size %zu:\n", proc,
-                 current_recv_offset, size);
+                 currentRecvOffset, size);
           for (size_t j = 0; j < size && j < 64; ++j) {
             printf("%02x ", ((unsigned char *)hostStaging)[j]);
             if ((j + 1) % 16 == 0)
@@ -265,16 +265,16 @@ int main(int argc, char *argv[]) {
       }
     }
 
-    if (num_iters > 0) {
-      double elapsed_time = tim.elapsed() / num_iters;
-      MPI_Allreduce(MPI_IN_PLACE, &elapsed_time, 1, MPI_DOUBLE, MPI_SUM,
+    if (numIters > 0) {
+      double elapsedTime = tim.elapsed() / numIters;
+      MPI_Allreduce(MPI_IN_PLACE, &elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
                     MPI_COMM_WORLD);
-      elapsed_time /= worldSize;
+      elapsedTime /= worldSize;
 
-      double bandwidth = (double)size / 1.0e9 / elapsed_time;
+      double bandwidth = (double)size / 1.0e9 / elapsedTime;
       if (proc == 0 && color == 0) {
         printf("Size: %zu bytes; Avg time: %lf sec; Bandwidth: %lf GB/s\n",
-               size, elapsed_time, bandwidth);
+               size, elapsedTime, bandwidth);
       }
     }
 

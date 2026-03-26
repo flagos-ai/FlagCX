@@ -462,14 +462,18 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
     free(comm->channels[i].peers);
   }
   for (int i = 0; i < MAXCHANNELS; i++) {
+    pthread_mutex_destroy(&comm->proxyState->proxyOps[i].mutex);
     free(comm->proxyState->proxyOps[i].consPeers);
   }
+  pthread_mutex_destroy(&comm->proxyState->mutex);
+  pthread_cond_destroy(&comm->proxyState->cond);
 
   free(comm->connectSend);
   free(comm->connectRecv);
   free(comm->proxyState);
   free(comm->tasks.peers);
   free(comm->tasks.p2pOrder);
+  free(comm->p2pSchedule);
   free(comm->abortFlagRefCount);
   if (comm->topoServer) {
     flagcxTopoFree(comm->topoServer);
