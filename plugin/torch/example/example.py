@@ -22,7 +22,12 @@ except:
                 from torch_txda import transfer_to_txda
                 dev_name = "txda"
             except:
-                dev_name = "cuda"
+                try:
+                    import torch_gcu
+                    from torch_gcu import transfer_to_gcu
+                    dev_name = "gcu"
+                except:
+                    dev_name = "cuda"
 
 import flagcx
 import torch.distributed as dist

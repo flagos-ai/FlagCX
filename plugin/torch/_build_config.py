@@ -208,9 +208,6 @@ def get_ext_classes(adaptor_flag):
         if adaptor_flag == "-DUSE_MUSA_ADAPTOR":
             from torch_musa.utils.musa_extension import MUSAExtension as CppExtension
             from torch_musa.utils.musa_extension import BuildExtension
-        elif adaptor_flag == "-DUSE_ENFLAME_ADAPTOR":
-            from tops_extension import TopsBuildExtension as BuildExtension
-            from tops_extension.torch import TopsTorchExtension as CppExtension
         else:
             from torch.utils.cpp_extension import CppExtension, BuildExtension
         return CppExtension, BuildExtension
