@@ -13,6 +13,22 @@
 #define FLAG_IN_IDX 12
 #define FLAG_OUT_IDX 13
 
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxStreamFlagState
+loadStreamFlagState(uint64_t flagAddr) {
+  return static_cast<flagcxStreamFlagState>(flagcxDeviceAtomicLoad(
+      reinterpret_cast<uint64_t *>(flagAddr), flagcxDeviceMemoryOrderAcquire));
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+isStreamFlagStatePending(flagcxStreamFlagState state) {
+  return state == flagcxStreamFlagIdle || state == flagcxStreamFlagPend;
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+isStreamFlagStateDone(flagcxStreamFlagState state) {
+  return state == flagcxStreamFlagDone;
+}
+
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
   return value[0];
 }
@@ -49,8 +65,15 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
                   flagcxTriggerMask(flagcxReduceTriggerBitsState))
                  << flagcxReduceTriggerOffState),
       flagcxDeviceMemoryOrderRelease);
-  flagcxDeviceAtomicStore((uint64_t *)shm[FLAG_OUT_IDX], flagcxStreamFlagDone,
-                          flagcxDeviceMemoryOrderRelease);
+  uint64_t flagOut = getFlagOut();
+  if (flagOut != 0) {
+    flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
+    if (isStreamFlagStatePending(flagState)) {
+      flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
+                              flagcxStreamFlagDone,
+                              flagcxDeviceMemoryOrderRelease);
+    }
+  }
 }
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagIn() {
   return value[4];
@@ -166,14 +189,32 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       continue;
     }
 
-    while (*(uint64_t *)shm[FLAG_IN_IDX] != flagcxStreamFlagDone) {
+    // RED nodes are submitted from the host before they are executable, so the
+    // kernel marks the output flag as pending once it has claimed the FIFO slot.
+    if (tid == 0 && shm[FLAG_OUT_IDX] != 0) {
+      uint64_t flagOut = shm[FLAG_OUT_IDX];
+      flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
+      if (flagState == flagcxStreamFlagIdle) {
+        flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
+                                flagcxStreamFlagPend,
+                                flagcxDeviceMemoryOrderRelease);
+      }
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
+
+    uint64_t flagIn = shm[FLAG_IN_IDX];
+    while (flagIn != 0) {
+      flagcxStreamFlagState flagState = loadStreamFlagState(flagIn);
+      if (isStreamFlagStateDone(flagState)) {
+        break;
+      }
+      if (isStreamFlagStatePending(flagState)) {
+        emptyIter++;
+        spinBackoff(emptyIter);
+        continue;
+      }
       emptyIter++;
       spinBackoff(emptyIter);
-      if (tid == 0) {
-        shm[FLAG_IN_IDX] = t->getFlagPtr();
-      }
-      FLAGCX_DEVICE_SYNC_THREADS();
-      continue;
     }
 
     // (4) perform reduce task

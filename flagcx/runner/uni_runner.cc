@@ -141,9 +141,9 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
       &scratchbuff, recvcount * comm->nranks * getFlagcxDataTypeSize(datatype),
       flagcxMemDevice, stream));
   FLAGCXCHECKGOTO(initUniRunner(comm, stream), res, out);
-  FLAGCXCHECKGOTO(initUniRunnerStateRingRS(runnerState, sendbuff, recvbuff,
-                                           scratchbuff, recvcount, datatype, op,
-                                           comm),
+  FLAGCXCHECKGOTO(initUniRunnerStateRingRS(
+                      runnerState, sendbuff, recvbuff, scratchbuff, recvcount,
+                      datatype, op, comm),
                   res, out);
   FLAGCXCHECKGOTO(runUniRunner(comm), res, out);
 out:

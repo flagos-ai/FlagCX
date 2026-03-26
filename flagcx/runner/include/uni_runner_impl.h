@@ -34,17 +34,12 @@ struct uniRunnerP2pOpData {
 
 // P2P node data (supports multiple operations in a group)
 struct uniRunnerP2pNodeData {
-  // Operation information for P2P trigger
   struct uniRunnerP2pOpData *ops; // Array of P2P operations
   int numOps;                     // Number of operations
-
-  // Event for completion tracking
-  int eventIdx; // Index of the event in the pool
 };
 
 // Reduce node data (operation-specific fields only)
 struct uniRunnerRedNodeData {
-  // Operation information for reduce trigger
   void *input1;
   void *input2;
   void *output;
@@ -59,13 +54,10 @@ struct uniRunnerRedNodeData {
 
 // Copy node data (operation-specific fields only)
 struct uniRunnerCpyNodeData {
-  // Operation information for local memcpy
   void *src;
   void *dst;
   size_t count;
   flagcxDataType_t datatype;
-
-  int eventIdx;
 };
 
 // Unified DAG node with common DAG structure fields
@@ -75,6 +67,8 @@ struct uniRunnerDagNode {
   // Common DAG structure fields (shared by all node types)
   int nodeIdx;                   // Unique index of the node in the DAG
   int numParents;                // Number of parent dependencies
+  int *parents;                  // Array of parent node indices
+  int pendingParents;            // Remaining parents before host submission
   int numChildren;               // Number of children
   int *children;                 // Array of child node indices
   struct uniRunnerDagNode *next; // Queue linkage
@@ -86,23 +80,6 @@ struct uniRunnerDagNode {
     struct uniRunnerCpyNodeData cpy;
   } nodeData;
 };
-
-// Bitmap for p2pEvent availability
-// 1 means in use, 0 means available
-typedef struct {
-  uint64_t *bits;
-  size_t nextIdx;
-  size_t size; // total number of events
-
-  // Check if event at index is available
-  bool isAvailable(int index);
-  // Get first available event index, or -1 if none
-  int getAvailable();
-  // Mark event at index as in use
-  void markInUse(int index);
-  // Mark event at index as available
-  void markAvailable(int index);
-} uniRunnerBitmap;
 
 typedef struct {
   pthread_t thread;
@@ -120,8 +97,6 @@ typedef struct {
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       redReadyQueue;
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
-      p2pInflightQueue;
-  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       redInflightQueue;
 
   uint64_t uniRunnerNSlices;
@@ -130,17 +105,8 @@ typedef struct {
   uint64_t uniRunnerNRedSlices;
   uint64_t uniRunnerRedSliceSize;
 
-  // P2P event pool
-  uint64_t p2pEventPoolSize;
-  flagcxEvent_t *p2pEvents;
-  uniRunnerBitmap p2pEventMap;
-
-  // stream mem flags
+  // Stream completion flags, one uint64_t per DAG node.
   void *streamFlags;
-
-  // get an available event
-  int getEvent();
-  void resetEvent(int idx);
 } flagcxUniRunnerState;
 
 flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
@@ -175,5 +141,4 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t runUniRunner(flagcxComm_t comm);
-flagcxResult_t runUniRunnerDev(flagcxComm_t comm);
 #endif // FLAGCX_UNIRUNNER_IMPL_H_
