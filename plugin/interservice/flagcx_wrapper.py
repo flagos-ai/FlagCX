@@ -429,7 +429,10 @@ class FLAGCXLibrary:
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(old_stream.cuda_stream)))
+        if hasattr(old_stream, 'musa_stream'):
+            self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(old_stream.musa_stream)))
+        else:
+            self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(old_stream.cuda_stream)))
         return new_stream
 
     def adaptor_stream_free(self, stream):
