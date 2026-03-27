@@ -1,4 +1,4 @@
-[<img width="2182" height="602" alt="github+banner-20260130" src=".github/assets/banner-20260130.png" />](https://flagos.io/)
+[<img width="2182" height="602" alt="github+banner-20260130" src="https://github.com/flagos-ai/FlagCX/blob/main/.github/assets/banner-20260130.png" />](https://flagos.io/)
 
 <div align="right">
   <a href="https://www.linkedin.com/company/flagos-community" target="_blank">
@@ -6,19 +6,19 @@
   </a>
 
   <a href="https://www.youtube.com/@FlagOS_Official" target="_blank">
-    <img src="./docs/assets/youtube.png" alt="YouTube" width="32" height="32" />
+    <img src="https://github.com/flagos-ai/FlagCX/blob/main/docs/assets/youtube.png" alt="YouTube" width="32" height="32" />
   </a>
 
   <a href="https://x.com/FlagOS_Official" target="_blank">
-    <img src="./docs/assets/x.png" alt="X" width="32" height="32" />
+    <img src="https://github.com/flagos-ai/FlagCX/blob/main/docs/assets/x.png" alt="X" width="32" height="32" />
   </a>
 
-  <a href="https://www.facebook.com/FlagOSCommunity" target="_blank">
-    <img src="./docs/assets/Facebook.png" alt="X" width="32" height="32" />
+  <a href="https://www.facebook.com/flagosglobalcommunity/" target="_blank">
+    <img src="ihttps://github.com/flagos-ai/FlagCX/blob/main/docs/assets/Facebook.png" alt="Facebook" width="32" height="32" />
   </a>
 
   <a href="https://discord.com/invite/ubqGuFMTNE" target="_blank">
-    <img src="./docs/assets/discord.png" alt="X" width="32" height="32" />
+    <img src="https://github.com/flagos-ai/FlagCX/blob/main/docs/assets/discord.png" alt="Discord" width="32" height="32" />
   </a>
 </div>
 
