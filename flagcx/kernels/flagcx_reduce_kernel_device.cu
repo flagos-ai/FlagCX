@@ -1,8 +1,7 @@
-#include "atomic_device.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "device_api/device_traits.h"
 
-#define WARP_SIZE 32
 #define FULL_MASK 0xffffffff
 #define SLOT_IDX 4
 #define FST_IDX 5
@@ -43,7 +42,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
 FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
-  flagcxDeviceAtomicFetchOr(
+  DeviceAPI::Atomic::fetchOr(
       reinterpret_cast<uint64_t *>(value) + 3,
       (uint64_t)((flagcxReduceTriggerComplete &
                   flagcxTriggerMask(flagcxReduceTriggerBitsState))
@@ -63,9 +62,9 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
     }
     // set consumed from `oldConsumed` to `oldConsumed+1`
     uint64_t expected = oldConsumed;
-    if (flagcxDeviceAtomicCompareExchange(buffer + flagcxFifoIdxConsumed,
-                                          expected, oldConsumed + 1,
-                                          flagcxDeviceMemoryOrderAcqRel)) {
+    if (DeviceAPI::Atomic::compareExchange(buffer + flagcxFifoIdxConsumed,
+                                           expected, oldConsumed + 1,
+                                           flagcxDeviceMemoryOrderAcqRel)) {
       *idx = oldConsumed;
       break;
     }
@@ -105,11 +104,11 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
   while (true) {
     // (1) dequeue
     if (tid == 0) {
-      shm[flagcxFifoIdxConsumed] = flagcxDeviceAtomicLoad(
+      shm[flagcxFifoIdxConsumed] = DeviceAPI::Atomic::load(
           &vBuf[flagcxFifoIdxConsumed], flagcxDeviceMemoryOrderAcquire);
-      shm[flagcxFifoIdxProduced] = flagcxDeviceAtomicLoad(
+      shm[flagcxFifoIdxProduced] = DeviceAPI::Atomic::load(
           &vBuf[flagcxFifoIdxProduced], flagcxDeviceMemoryOrderAcquire);
-      shm[flagcxFifoIdxTerminate] = flagcxDeviceAtomicLoad(
+      shm[flagcxFifoIdxTerminate] = DeviceAPI::Atomic::load(
           &vBuf[flagcxFifoIdxTerminate], flagcxDeviceMemoryOrderAcquire);
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -123,7 +122,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       if (term == 1)
         break;
       emptyIter++;
-      spinBackoff(emptyIter);
+      DeviceAPI::Intrin::spinBackoff(emptyIter);
       continue;
     }
 
@@ -153,7 +152,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
         break;
       // backoff if no task is performed
       emptyIter++;
-      spinBackoff(emptyIter);
+      DeviceAPI::Intrin::spinBackoff(emptyIter);
       continue;
     }
 

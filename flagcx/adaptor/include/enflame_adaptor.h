@@ -9,6 +9,8 @@
 #include <map>
 #include <tops/tops_runtime_api.h>
 
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   ecclComm_t base;
 };

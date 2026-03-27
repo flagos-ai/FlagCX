@@ -1,4 +1,6 @@
 /*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
  * API correctness test for FlagCX inter-node one-sided Device API.
  *
  * Tests ten kernels, each covering one API facet:

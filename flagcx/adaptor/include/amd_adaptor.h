@@ -4,6 +4,8 @@
 #include "rccl.h"
 #include <hip/hip_runtime.h>
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   ncclComm_t base;
 };

@@ -283,6 +283,8 @@ struct stagedBuffer {
 };
 typedef struct stagedBuffer *stagedBuffer_t;
 
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   std::shared_ptr<flagcxMpiContext> base;
 };

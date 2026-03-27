@@ -5,6 +5,8 @@
 #include <map>
 #include <musa.h>
 #include <musa_runtime.h>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   mcclComm_t base;
 };

@@ -8,6 +8,8 @@
 #include "tx_runtime.h"
 
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   tcclComm_t base;
 };

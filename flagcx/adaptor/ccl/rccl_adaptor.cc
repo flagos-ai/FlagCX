@@ -298,6 +298,18 @@ flagcxResult_t rcclAdaptorGroupStart() {
 
 flagcxResult_t rcclAdaptorGroupEnd() { return (flagcxResult_t)ncclGroupEnd(); }
 
+flagcxResult_t
+rcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t rcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor rcclAdaptor = {
     "RCCL",
     // Basic functions
@@ -317,6 +329,8 @@ struct flagcxCCLAdaptor rcclAdaptor = {
     rcclAdaptorAllGather, rcclAdaptorAlltoAll, rcclAdaptorAlltoAllv,
     rcclAdaptorSend, rcclAdaptorRecv,
     // Group semantics
-    rcclAdaptorGroupStart, rcclAdaptorGroupEnd};
+    rcclAdaptorGroupStart, rcclAdaptorGroupEnd,
+    // Device API
+    rcclAdaptorDevCommCreate, rcclAdaptorDevCommDestroy};
 
 #endif // USE_AMD_ADAPTOR

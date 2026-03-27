@@ -6,6 +6,8 @@
 #include "cnrt.h"
 #include "flagcx.h"
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   cnclComm_t base;
 };

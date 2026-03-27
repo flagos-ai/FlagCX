@@ -5,6 +5,8 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   ncclComm_t base;
 };

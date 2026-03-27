@@ -31,17 +31,15 @@ extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
     ncclDevComm &devComm, cudaStream_t stream);
 #endif // COMPILE_KERNEL_HOST
 
-// dlsym wrappers for pncclDevCommCreate / pncclDevCommDestroy
-flagcxResult_t ncclAdaptorDevCommCreate(ncclComm_t comm,
-                                        ncclDevCommRequirements *reqs,
-                                        ncclDevComm *devComm);
-flagcxResult_t ncclAdaptorDevCommDestroy(ncclComm_t comm,
-                                         const ncclDevComm *devComm);
+struct flagcxInnerDevComm {
+  ncclDevComm base;
+};
 
 #else
 
 typedef void *stagedBuffer_t;
 typedef void ncclDevComm;
+struct flagcxInnerDevComm {};
 
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 

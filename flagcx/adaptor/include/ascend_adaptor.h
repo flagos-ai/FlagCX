@@ -3,6 +3,8 @@
 #include "flagcx.h"
 #include "hccl/hccl.h"
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   HcclComm base;
 };

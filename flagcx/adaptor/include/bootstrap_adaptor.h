@@ -16,6 +16,8 @@ struct stagedBuffer {
 };
 typedef struct stagedBuffer *stagedBuffer_t;
 
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   bootstrapState *base;
 };

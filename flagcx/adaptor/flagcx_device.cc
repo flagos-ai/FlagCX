@@ -1,12 +1,12 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Host-side lifecycle management for flagcxDevComm_t and flagcxDevMem_t.
  *
  * Capability-based additive design:
  *   Baseline (always): rawPtr + fifoBuffer + rank info
  *   IPC layer:         peer pointers + IPC barriers (if IPC exchange succeeds)
- *   NCCL layer:        ncclDevComm + ncclWindow_t (if NCCL > 2.28)
+ *   Vendor layer:      vendor DevComm + vendor Window (if vendor supported)
  *
  * Each layer is added when available; lower layers are always present
  * as fallback. Kernel dispatch uses priority: Window > IPC > Raw.
@@ -378,7 +378,7 @@ static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
   }
 
   // 4. Defer free of host-mapped signal flags (cudaFreeHost would deadlock
-  // on NCCL persistent kernels — drain after ncclCommDestroy).
+  // on vendor persistent kernels — drain after vendor comm destroy).
   if (handle->interSignalFlagsHost) {
     flagcxCommDeferFree(comm, handle->interSignalFlagsHost, flagcxMemHost);
   }
@@ -412,7 +412,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
   // Allocate IPC-shareable barrier flags
   struct flagcxP2pIpcDesc barrierIpcDesc;
   memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
-  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint32_t);
+  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
   FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
       barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
   FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
@@ -424,7 +424,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     return flagcxInternalError;
 
   // Store barrier-specific metadata on devComm handle
-  handle->barrierPeers = (uint32_t **)comm->ipcTable[slot].devPeerPtrs;
+  handle->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
   handle->barrierIpcIndex = slot;
   handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
 
@@ -475,7 +475,7 @@ flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 // Unified DevComm: Additive capability layers
 //   Baseline: rank info + fifoBuffer (always)
 //   IPC layer: barrier pointers (if intraBarrierCount > 0)
-//   NCCL layer: ncclDevComm (if NCCL > 2.28)
+//   Vendor layer: vendor DevComm (if vendor supported)
 // ==========================================================================
 
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
@@ -502,129 +502,116 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->fifoBuffer =
       (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
 
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  // ---- Vendor path: NCCL device comm ----
-  {
-    flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm == nullptr || innerComm->base == nullptr) {
-      WARN("flagcxDevCommCreate: vendor path requires valid homoComm, "
-           "but comm->homoComm is %s",
-           innerComm == nullptr ? "NULL" : "missing base");
-      free(handle);
-      return flagcxInternalError;
-    }
-    ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-    ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
-    ncclReqs.lsaMultimem = reqs->intraMulticast;
-    ncclReqs.barrierCount = reqs->barrierCount;
-    ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
-    ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
-    ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
-    ncclReqs.ginSignalCount = reqs->interSignalCount;
-    ncclReqs.ginForceEnable = reqs->interForceEnable;
-    ncclReqs.ginContextCount = reqs->interContextCount;
-    ncclReqs.ginCounterCount = reqs->interCounterCount;
-
-    flagcxResult_t ret =
-        ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs, &handle->ncclDev);
-    if (ret != flagcxSuccess) {
-      WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d)", ret);
+  // ---- Vendor path: try devCommCreate via adaptor ----
+  flagcxInnerComm_t innerComm = comm->homoComm;
+  if (innerComm != nullptr) {
+    flagcxInnerDevComm_t innerDevComm = nullptr;
+    flagcxResult_t ret = cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate(
+        innerComm, reqs, &innerDevComm);
+    if (ret != flagcxSuccess && ret != flagcxNotSupported) {
+      WARN("flagcxDevCommCreate: vendor devCommCreate failed (%d)", ret);
       free(handle);
       return ret;
     }
+    if (ret == flagcxSuccess)
+      handle->devComm = innerDevComm;
   }
-#else
-  // ---- Fallback path: IPC barriers + inter-node signal relay + one-sided ----
+  if (handle->devComm == nullptr) {
+    // ---- Fallback path: IPC barriers + inter-node signal relay + one-sided
+    // ----
 
-  // IPC barrier layer: if barriers requested
-  if (reqs->intraBarrierCount > 0) {
-    flagcxResult_t res = setupIpcBarriers(comm, handle);
-    if (res != flagcxSuccess) {
-      WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
-           "barriers unavailable",
-           res);
-      free(handle);
-      return res;
-    }
-  }
-
-  // Inter-node signal relay: if multi-node
-  {
-    flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
-    if (res != flagcxSuccess) {
-      WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d), "
-           "falling back to single-node mode",
-           res);
-      handle->nInterPeers = 0;
-      handle->isInterLeader = false;
-    }
-  }
-
-  // One-sided Fallback layer: if signals or counters requested
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
-    int ctxCount = (reqs->interContextCount > 0) ? reqs->interContextCount : 4;
-    handle->contextCount = ctxCount;
-
-    // Allocate signal buffer (GPU, SYNC_MEMOPS via gdrMemAlloc for RDMA)
-    if (reqs->interSignalCount > 0) {
-      handle->signalCount = reqs->interSignalCount;
-      size_t sigSize =
-          (size_t)handle->signalCount * ctxCount * sizeof(uint64_t);
-      FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
-                                             sigSize, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
-                                              flagcxMemDevice, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer,
-                                              sigSize, flagcxMemDevice, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
-                                              flagcxMemDevice, NULL));
-    }
-    // Allocate counter buffer (host-pinned)
-    if (reqs->interCounterCount > 0) {
-      handle->counterCount = reqs->interCounterCount;
-      size_t cntSize =
-          (size_t)handle->counterCount * ctxCount * sizeof(uint64_t);
-      FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
-                                              cntSize, flagcxMemHost, NULL));
-      memset(handle->counterBuffer, 0, cntSize);
-    }
-    // PutValue staging buffer (8 bytes host-pinned)
-    FLAGCXCHECK(
-        deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
-                                    sizeof(uint64_t), flagcxMemHost, NULL));
-    memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
-
-    // Auto-register signal buffer for RDMA one-sided access
-    if (handle->signalBuffer) {
-      flagcxResult_t regRes = flagcxOneSideSignalRegister(
-          comm, handle->signalBuffer,
-          (size_t)handle->signalCount * handle->contextCount *
-              sizeof(uint64_t));
-      if (regRes != flagcxSuccess) {
-        WARN("flagcxDevCommCreate: signal buffer MR registration failed (%d), "
-             "one-sided operations will not work",
-             regRes);
-        return regRes;
+    // IPC barrier layer: if barriers requested
+    if (reqs->intraBarrierCount > 0) {
+      flagcxResult_t res = setupIpcBarriers(comm, handle);
+      if (res != flagcxSuccess) {
+        WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
+             "barriers unavailable",
+             res);
+        free(handle);
+        return res;
       }
     }
 
-    // Auto-register staging buffer for PutValue RDMA source
-    if (handle->putValueStagingBuffer) {
-      flagcxResult_t regRes = flagcxOneSideStagingRegister(
-          comm, handle->putValueStagingBuffer, sizeof(uint64_t));
-      if (regRes != flagcxSuccess) {
-        WARN("flagcxDevCommCreate: staging buffer MR registration failed (%d), "
-             "putValue will not work",
-             regRes);
+    // Inter-node signal relay: if multi-node
+    {
+      flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
+      if (res != flagcxSuccess) {
+        WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d), "
+             "falling back to single-node mode",
+             res);
+        handle->nInterPeers = 0;
+        handle->isInterLeader = false;
       }
     }
 
-    INFO(FLAGCX_INIT,
-         "flagcxDevCommCreate: one-sided Fallback buffers allocated "
-         "(signals=%d, counters=%d, contexts=%d)",
-         handle->signalCount, handle->counterCount, handle->contextCount);
+    // One-sided Fallback layer: if signals or counters requested
+    if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+      int ctxCount =
+          (reqs->interContextCount > 0) ? reqs->interContextCount : 4;
+      handle->contextCount = ctxCount;
+
+      // Allocate signal buffer (GPU, SYNC_MEMOPS via gdrMemAlloc for RDMA)
+      if (reqs->interSignalCount > 0) {
+        handle->signalCount = reqs->interSignalCount;
+        size_t sigSize =
+            (size_t)handle->signalCount * ctxCount * sizeof(uint64_t);
+        FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
+                                               sigSize, NULL));
+        FLAGCXCHECK(deviceAdaptor->deviceMemset(
+            handle->signalBuffer, 0, sigSize, flagcxMemDevice, NULL));
+        FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+            (void **)&handle->shadowBuffer, sigSize, flagcxMemDevice, NULL));
+        FLAGCXCHECK(deviceAdaptor->deviceMemset(
+            handle->shadowBuffer, 0, sigSize, flagcxMemDevice, NULL));
+      }
+      // Allocate counter buffer (host-pinned)
+      if (reqs->interCounterCount > 0) {
+        handle->counterCount = reqs->interCounterCount;
+        size_t cntSize =
+            (size_t)handle->counterCount * ctxCount * sizeof(uint64_t);
+        FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
+                                                cntSize, flagcxMemHost, NULL));
+        memset(handle->counterBuffer, 0, cntSize);
+      }
+      // PutValue staging buffer (8 bytes host-pinned)
+      FLAGCXCHECK(
+          deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
+                                      sizeof(uint64_t), flagcxMemHost, NULL));
+      memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
+
+      // Auto-register signal buffer for RDMA one-sided access
+      if (handle->signalBuffer) {
+        flagcxResult_t regRes = flagcxOneSideSignalRegister(
+            comm, handle->signalBuffer,
+            (size_t)handle->signalCount * handle->contextCount *
+                sizeof(uint64_t));
+        if (regRes != flagcxSuccess) {
+          WARN(
+              "flagcxDevCommCreate: signal buffer MR registration failed (%d), "
+              "one-sided operations will not work",
+              regRes);
+          return regRes;
+        }
+      }
+
+      // Auto-register staging buffer for PutValue RDMA source
+      if (handle->putValueStagingBuffer) {
+        flagcxResult_t regRes = flagcxOneSideStagingRegister(
+            comm, handle->putValueStagingBuffer, sizeof(uint64_t));
+        if (regRes != flagcxSuccess) {
+          WARN("flagcxDevCommCreate: staging buffer MR registration failed "
+               "(%d), "
+               "putValue will not work",
+               regRes);
+        }
+      }
+
+      INFO(FLAGCX_INIT,
+           "flagcxDevCommCreate: one-sided Fallback buffers allocated "
+           "(signals=%d, counters=%d, contexts=%d)",
+           handle->signalCount, handle->counterCount, handle->contextCount);
+    }
   }
-#endif
 
   *devComm = handle;
 
@@ -634,24 +621,13 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     hetero->devCommHandle = handle;
   }
 
-  INFO(FLAGCX_INIT,
-       "flagcxDevCommCreate: rank %d, layers: baseline"
-#ifdef FLAGCX_DEVICE_API_VENDOR
-       " + ncclDevComm"
-#else
-       "%s%s%s"
-#endif
-       ,
-       handle->rank
-#ifndef FLAGCX_DEVICE_API_VENDOR
-       ,
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s",
+       handle->rank, handle->devComm ? " + vendor devComm" : "",
        handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        (handle->signalCount > 0 || handle->counterCount > 0)
            ? " + one-sided Fallback"
-           : ""
-#endif
-  );
+           : "");
 
   // Pre-establish full-mesh connections from main thread
   FLAGCXCHECK(preconnectFullMesh(comm));
@@ -667,21 +643,23 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d enter", devComm->rank);
 
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  // NCCL layer cleanup
-  if (comm != nullptr) {
+  // Vendor layer cleanup via adaptor
+  if (comm != nullptr && devComm->devComm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
     if (innerComm != nullptr) {
-      ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
+      cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
+                                                          devComm->devComm);
+      devComm->devComm = nullptr;
     }
   }
-#else
+
   // Inter-node signal relay cleanup
   cleanupInterNodeSignalRelay(comm, devComm);
 
   // IPC barrier cleanup — mark ipcTable entry as unused.
   // Actual ipcMemHandleClose + deviceFree deferred to flagcxCommCleanupIpcTable
-  // (after ncclCommDestroy) to avoid implicit device synchronization deadlock.
+  // (after vendor comm destroy) to avoid implicit device synchronization
+  // deadlock.
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devComm->barrierIpcIndex].inUse = false;
@@ -713,7 +691,6 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxOneSideStagingDeregister(comm);
     flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
-#endif
 
   INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d done", devComm->rank);
   free(devComm->localRankToRank);
@@ -725,7 +702,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // Unified DevMem: Additive capability layers
 //   Baseline: rawPtr (always)
 //   IPC layer: peer pointers (if comm provided and win is null)
-//   Window layer: ncclWindow_t (if win provided, Vendor only)
+//   Window layer: vendor Window (if win provided, Vendor only)
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
@@ -795,11 +772,44 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       handle->hasWindow = true;
 #ifdef FLAGCX_DEVICE_API_VENDOR
       handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
-      handle->ncclWin = win->base;
+      // Allocate vendor Window and store in opaque pointer
+      ncclWindow_t *ncclWin = (ncclWindow_t *)malloc(sizeof(ncclWindow_t));
+      if (ncclWin == nullptr) {
+        WARN("flagcxDevMemCreate: failed to allocate ncclWindow_t");
+        free(handle);
+        return flagcxSystemError;
+      }
+      *ncclWin = win->base;
+      handle->window = ncclWin;
       handle->winHandle = (void *)win;
+#else
+      handle->window = nullptr;
+      handle->winHandle = nullptr;
 #endif
     }
   }
+
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  // Fallback: always create a Window with baseline/IPC/MR fields so that
+  // flagcxDevMem(di) can copy it into _winBase for kernel use.
+  if (handle->window == nullptr) {
+    auto *fbWin = (typename DeviceAPI::Window *)malloc(
+        sizeof(typename DeviceAPI::Window));
+    if (fbWin == nullptr) {
+      WARN("flagcxDevMemCreate: failed to allocate fallback Window");
+      free(handle);
+      return flagcxSystemError;
+    }
+    fbWin->rawPtr = handle->rawPtr;
+    fbWin->peerPtrs = handle->devPeerPtrs;
+    fbWin->intraRank = handle->intraRank;
+    fbWin->mrBase = handle->mrBase;
+    fbWin->mrIndex = handle->mrIndex;
+    handle->window = fbWin;
+    handle->hasWindow =
+        (handle->rawPtr != nullptr || handle->devPeerPtrs != nullptr);
+  }
+#endif
 
   *devMem = handle;
   INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s%s", buff,
@@ -820,6 +830,11 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
   if (comm != nullptr && devMem->ipcIndex >= 0 &&
       devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devMem->ipcIndex].inUse = false;
+  }
+
+  // Free window allocation if present
+  if (devMem->window != nullptr) {
+    free(devMem->window);
   }
 
   free(devMem);
@@ -917,12 +932,12 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
   props->nRanks = comm->nranks;
   props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
 
-  // NCCL-specific fields: fill from NCCL if available
+  // Vendor-specific fields: fill from vendor if available
 #ifdef FLAGCX_DEVICE_API_VENDOR
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm != nullptr && innerComm->base != nullptr) {
-    props->deviceApiSupport = true; // NCCL > 2.28 available
-    // ncclCommQueryProperties not yet wired through adaptor — set defaults.
+    props->deviceApiSupport = true; // Vendor device API available
+    // Vendor CommQueryProperties not yet wired through adaptor — set defaults.
     // Full delegation will be added when the adaptor wrapper is available.
     props->multicastSupport = false;
     props->netType = flagcxNetTypeNone;

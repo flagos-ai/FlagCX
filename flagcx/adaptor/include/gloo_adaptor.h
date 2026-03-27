@@ -220,6 +220,8 @@ public:
   bootstrapState *bootstrap_;
 };
 
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   std::shared_ptr<flagcxGlooContext> base;
 };

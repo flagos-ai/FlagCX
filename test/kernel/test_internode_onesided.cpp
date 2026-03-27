@@ -1,4 +1,6 @@
 /*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
  * Benchmark for FlagCX inter-node one-sided AlltoAll using Device API.
  *
  * Tests one-sided put + waitSignal + flush (NCCL GIN AlltoAll pattern):

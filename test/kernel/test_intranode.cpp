@@ -1,4 +1,6 @@
 /*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
  * Intra-node kernel tests using FlagCX Device API.
  *
  * Currently tests AllReduce: each rank fills its buffer with (rank+1), then

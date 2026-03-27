@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  ************************************************************************/
 
 #ifndef FLAGCX_CCL_ADAPTOR_H_
@@ -14,6 +14,8 @@ extern "C" {
 // Forward declarations for opaque types not in flagcx.h
 // (flagcxStream_t, flagcxWindow_t are already typedef'd in flagcx.h)
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
+typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
+struct flagcxDevCommRequirements;
 struct bootstrapState;
 
 // Version history:
@@ -105,6 +107,13 @@ struct flagcxCCLAdaptor_v1 {
   // Group semantics
   flagcxResult_t (*groupStart)();
   flagcxResult_t (*groupEnd)();
+
+  // Device API - Host-side management (NCCL > 2.28, CNCL device API, etc.)
+  flagcxResult_t (*devCommCreate)(flagcxInnerComm_t comm,
+                                  const flagcxDevCommRequirements *reqs,
+                                  flagcxInnerDevComm_t *devComm);
+  flagcxResult_t (*devCommDestroy)(flagcxInnerComm_t comm,
+                                   flagcxInnerDevComm_t devComm);
 };
 #define flagcxCCLAdaptor flagcxCCLAdaptor_v1
 

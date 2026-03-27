@@ -9,6 +9,8 @@
 #include "mccl.h"
 #include <map>
 #include <mcr/mc_runtime.h>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   mcclComm_t base;
 };

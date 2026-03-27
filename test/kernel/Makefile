@@ -1,3 +1,7 @@
+#*************************************************************************
+# Copyright (c) 2026 BAAI. All rights reserved.
+#*************************************************************************
+
 MPI_HOME ?= /usr/local/mpi
 MPI_INCLUDE = $(MPI_HOME)/include
 MPI_LIB = $(MPI_HOME)/lib

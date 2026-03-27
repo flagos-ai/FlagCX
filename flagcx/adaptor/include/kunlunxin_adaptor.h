@@ -13,6 +13,8 @@
 
 #include "flagcx.h"
 
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   BKCLContext_t base;
 };
