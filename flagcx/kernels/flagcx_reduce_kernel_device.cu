@@ -64,7 +64,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
     flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
     if (isStreamFlagStatePending(flagState)) {
       flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
-                              flagcxStreamFlagDone,
+                              (uint64_t)flagcxStreamFlagDone,
                               flagcxDeviceMemoryOrderRelease);
     }
   }
@@ -203,7 +203,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
       if (flagState == flagcxStreamFlagIdle) {
         flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
-                                flagcxStreamFlagPend,
+                                (uint64_t)flagcxStreamFlagPend,
                                 flagcxDeviceMemoryOrderRelease);
       }
     }
