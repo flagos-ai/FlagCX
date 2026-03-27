@@ -2,8 +2,6 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
-#define WARP_SIZE 32
-#define FULL_MASK 0xffffffff
 #define SLOT_IDX 4
 #define FST_IDX 5
 #define SND_IDX 6
@@ -12,6 +10,24 @@
 #define NTHREADS_IDX 9
 #define DATATYPE_IDX 10
 #define REDOP_IDX 11
+#define FLAG_IN_IDX 12
+#define FLAG_OUT_IDX 13
+
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxStreamFlagState
+loadStreamFlagState(uint64_t flagAddr) {
+  return static_cast<flagcxStreamFlagState>(flagcxDeviceAtomicLoad(
+      reinterpret_cast<uint64_t *>(flagAddr), flagcxDeviceMemoryOrderAcquire));
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+isStreamFlagStatePending(flagcxStreamFlagState state) {
+  return state == flagcxStreamFlagIdle || state == flagcxStreamFlagPend;
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+isStreamFlagStateDone(flagcxStreamFlagState state) {
+  return state == flagcxStreamFlagDone;
+}
 
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
   return value[0];
@@ -43,12 +59,33 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
 FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
-  flagcxDeviceAtomicFetchOr(
-      reinterpret_cast<uint64_t *>(value) + 3,
-      (uint64_t)((flagcxReduceTriggerComplete &
-                  flagcxTriggerMask(flagcxReduceTriggerBitsState))
-                 << flagcxReduceTriggerOffState),
-      flagcxDeviceMemoryOrderRelease);
+  uint64_t flagOut = getFlagOut();
+  if (flagOut != 0) {
+    flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
+    if (isStreamFlagStatePending(flagState)) {
+      flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
+                              (uint64_t)flagcxStreamFlagDone,
+                              flagcxDeviceMemoryOrderRelease);
+    }
+  }
+  // Recycle the FIFO slot only after the output flag is visible as DONE, so a
+  // host-side re-enqueue cannot overwrite flagOut before dependent streams
+  // observe completion.
+  uint64_t currVal = flagcxDeviceAtomicLoad(
+      reinterpret_cast<uint64_t *>(value) + 3, flagcxDeviceMemoryOrderAcquire);
+  currVal &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
+               << flagcxReduceTriggerOffState);
+  currVal |= (flagcxReduceTriggerAvailable &
+              flagcxTriggerMask(flagcxReduceTriggerBitsState))
+             << flagcxReduceTriggerOffState;
+  flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(value) + 3, currVal,
+                          flagcxDeviceMemoryOrderRelease);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagIn() {
+  return value[4];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagOut() {
+  return value[5];
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
@@ -73,7 +110,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
   return flagcxSuccess;
 }
 
-FLAGCX_DEVICE_DECORATOR void
+FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
                    uint64_t nthreads, uint64_t datatype, uint64_t redOp) {
   // to be implemented by vendors
@@ -143,6 +180,8 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
         shm[NTHREADS_IDX] = t->getNThreads();
         shm[DATATYPE_IDX] = t->getDatatype();
         shm[REDOP_IDX] = t->getRedop();
+        shm[FLAG_IN_IDX] = t->getFlagIn();
+        shm[FLAG_OUT_IDX] = t->getFlagOut();
       }
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -151,33 +190,54 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
     if (slot == cap) {
       if (term == 1)
         break;
-      // backoff if no task is performed
       emptyIter++;
       spinBackoff(emptyIter);
       continue;
     }
 
+    // RED nodes are submitted from the host before they are executable, so the
+    // kernel marks the output flag as pending once it has claimed the FIFO
+    // slot.
+    if (tid == 0 && shm[FLAG_OUT_IDX] != 0) {
+      uint64_t flagOut = shm[FLAG_OUT_IDX];
+      flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
+      if (flagState == flagcxStreamFlagIdle) {
+        flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
+                                (uint64_t)flagcxStreamFlagPend,
+                                flagcxDeviceMemoryOrderRelease);
+      }
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
+
+    uint64_t flagIn = shm[FLAG_IN_IDX];
+    while (flagIn != 0) {
+      flagcxStreamFlagState flagState = loadStreamFlagState(flagIn);
+      if (isStreamFlagStateDone(flagState)) {
+        break;
+      }
+      if (isStreamFlagStatePending(flagState)) {
+        emptyIter++;
+        spinBackoff(emptyIter);
+        continue;
+      }
+      emptyIter++;
+      spinBackoff(emptyIter);
+    }
+
     // (4) perform reduce task
     emptyIter = 0;
-    uint64_t fst;
-    uint64_t snd;
-    uint64_t out;
-    uint64_t count;
-    uint64_t nthreads;
-    uint64_t datatype;
-    uint64_t redop;
-    fst = shm[FST_IDX];
-    snd = shm[SND_IDX];
-    out = shm[OUT_IDX];
-    count = shm[COUNT_IDX];
-    nthreads = shm[NTHREADS_IDX];
-    datatype = shm[DATATYPE_IDX];
-    redop = shm[REDOP_IDX];
+    uint64_t fst = shm[FST_IDX];
+    uint64_t snd = shm[SND_IDX];
+    uint64_t out = shm[OUT_IDX];
+    uint64_t count = shm[COUNT_IDX];
+    uint64_t nthreads = shm[NTHREADS_IDX];
+    uint64_t datatype = shm[DATATYPE_IDX];
+    uint64_t redop = shm[REDOP_IDX];
     flagcxReduceKernel(fst, snd, out, count, nthreads, datatype, redop);
     FLAGCX_DEVICE_SYNC_THREADS();
     FLAGCX_DEVICE_THREAD_FENCE();
 
-    // (5) set completion flag
+    // (5) signal completion and recycle the FIFO slot
     if (tid == 0) {
       flagcxReduceTrigger *t =
           (flagcxReduceTrigger *)(vBuf + flagcxFifoIdxData) + slot;

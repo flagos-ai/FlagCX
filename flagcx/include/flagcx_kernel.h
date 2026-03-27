@@ -39,6 +39,12 @@ typedef enum {
   flagcxReduceTriggerComplete = 3
 } flagcxReduceTriggerState;
 
+typedef enum {
+  flagcxStreamFlagIdle = 0,
+  flagcxStreamFlagPend = 1,
+  flagcxStreamFlagDone = 2
+} flagcxStreamFlagState;
+
 // ==========================================================================
 // flagcxDeviceTrigger bit layout (24 bytes = 3 × uint64_t: fst, snd, trd)
 //
@@ -118,7 +124,7 @@ constexpr unsigned int flagcxDeviceTriggerBitsSignalValue =
 
 constexpr unsigned int flagcxReduceTriggerBitsAddr = 64;
 constexpr unsigned int flagcxReduceTriggerOffCount = 0;
-constexpr unsigned int flagcxReduceTriggerBitsCount = 32;
+constexpr unsigned int flagcxReduceTriggerBitsCount = 36;
 constexpr unsigned int flagcxReduceTriggerOffNThreads =
     flagcxReduceTriggerOffCount + flagcxReduceTriggerBitsCount;
 constexpr unsigned int flagcxReduceTriggerBitsNThreads = 16;
@@ -171,7 +177,7 @@ struct flagcxDeviceTrigger {
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
 
 struct alignas(16) flagcxReduceTrigger {
-  uint64_t value[4];
+  uint64_t value[6];
 
 #ifdef COMPILE_KERNEL
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInput1();
@@ -183,12 +189,13 @@ struct alignas(16) flagcxReduceTrigger {
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getRedop();
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getState();
   FLAGCX_DEVICE_INLINE_DECORATOR void setComplete();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getFlagIn();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getFlagOut();
 #endif
-  FLAGCX_HOST_DECORATOR void setValue(uint64_t fst, uint64_t snd, uint64_t out,
-                                      size_t count, size_t nthreads,
-                                      flagcxDataType_t datatype,
-                                      flagcxRedOp_t redOp,
-                                      flagcxReduceTriggerState state);
+  FLAGCX_HOST_DECORATOR void
+  setValue(uint64_t fst, uint64_t snd, uint64_t out, size_t count,
+           size_t nthreads, flagcxDataType_t datatype, flagcxRedOp_t redOp,
+           flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
   FLAGCX_HOST_DECORATOR uint64_t pollState();
   FLAGCX_HOST_DECORATOR void setState(int state);
 };
@@ -213,11 +220,10 @@ typedef struct flagcxFifo *flagcxFifo_t;
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger);
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
-                                             uint64_t addr2, uint64_t addr3,
-                                             size_t count, size_t nthreads,
-                                             flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop, int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueue(void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
+        size_t count, size_t nthreads, flagcxDataType_t datatype,
+        flagcxRedOp_t redop, uint64_t flagIn, uint64_t flagOut, int *idx);
 #ifdef COMPILE_KERNEL
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
@@ -257,11 +263,12 @@ struct flagcxDevCommRequirements {
 
 #define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
   {                                                                            \
-    false,       /* intraMulticast */                                          \
-        0, 0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */      \
-        0, 0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */               \
-        false, 4, 0, 0 /* interForceEnable, interContextCount,                 \
-                          interSignalCount, interCounterCount */               \
+      false,       /* intraMulticast */                                        \
+      0,     0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */    \
+      0,     0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */             \
+      false, 4, 0,                                                             \
+      0 /* interForceEnable, interContextCount,                                \
+           interSignalCount, interCounterCount */                              \
   }
 
 // Network type enumeration (maps to ncclGinType_t on NVIDIA backend).
