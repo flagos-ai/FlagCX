@@ -37,7 +37,8 @@ static flagcxResult_t allocDagNodeDeps(uniRunnerDagNode *node) {
 
 static flagcxResult_t setDagNodeParent(uniRunnerDagNode *node, int parentSlot,
                                        int parentIdx) {
-  if (parentSlot < 0 || parentSlot >= node->numParents || node->parents == NULL) {
+  if (parentSlot < 0 || parentSlot >= node->numParents ||
+      node->parents == NULL) {
     return flagcxInvalidArgument;
   }
   node->parents[parentSlot] = parentIdx;
@@ -513,8 +514,8 @@ flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
         if (i > 0 && s == 0) {
           parentIdx = (numSlices - 1) * nodesPerSlice + 2 * (i - 1);
         }
-        FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0,
-                                     parentIdx));
+        FLAGCXCHECK(
+            setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0, parentIdx));
         if (i > 0) {
           FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 1,
                                        p2pNodeIdx - 1));
@@ -643,16 +644,15 @@ flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
         if (i == 0) {
           parentIdx = (numSlices - 1) * nodesPerSlice + 2 * (nranks - 2);
         } else {
-          parentIdx = (numSlices - 1) * nodesPerSlice + 2 * (nranks - 1) +
-                      i - 1;
+          parentIdx =
+              (numSlices - 1) * nodesPerSlice + 2 * (nranks - 1) + i - 1;
         }
       }
       FLAGCXCHECK(
           setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0, parentIdx));
       if (i == 0) {
-        FLAGCXCHECK(
-            setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 1,
-                             p2pNodeIdx - 1));
+        FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 1,
+                                     p2pNodeIdx - 1));
       }
       if (s == numSlices - 1) {
         if (p2pNodeIdx != numNodes - 1) {
@@ -869,16 +869,15 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
       if (p2pNodeIdx != 0) {
         int parentIdx = p2pNodeIdx - nodesPerSlice;
         if (i > 0 && s == 0) {
-          parentIdx = (numSlices - 1) * nodesPerSlice +
-                      (i - 1) * (1 + numRedSlices);
+          parentIdx =
+              (numSlices - 1) * nodesPerSlice + (i - 1) * (1 + numRedSlices);
         }
-        FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0,
-                                     parentIdx));
+        FLAGCXCHECK(
+            setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0, parentIdx));
         if (i > 0) {
           for (int r = 0; r < numRedSlices; r++) {
             FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx],
-                                         r + 1,
-                                         p2pNodeIdx - numRedSlices + r));
+                                         r + 1, p2pNodeIdx - numRedSlices + r));
           }
         }
       }
@@ -1034,8 +1033,7 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
       if (i == 0) {
         for (int r = 0; r < numRedSlices; r++) {
           FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx],
-                                       r + 1,
-                                       p2pNodeIdx - numRedSlices + r));
+                                       r + 1, p2pNodeIdx - numRedSlices + r));
         }
       }
       if (s == numSlices - 1) {
@@ -1240,16 +1238,15 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
       if (p2pNodeIdx != 0) {
         int parentIdx = p2pNodeIdx - nodesPerSlice;
         if (i > 0 && s == 0) {
-          parentIdx = (numSlices - 1) * nodesPerSlice +
-                      (i - 1) * (1 + numRedSlices);
+          parentIdx =
+              (numSlices - 1) * nodesPerSlice + (i - 1) * (1 + numRedSlices);
         }
-        FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0,
-                                     parentIdx));
+        FLAGCXCHECK(
+            setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx], 0, parentIdx));
         if (i > 0) {
           for (int r = 0; r < numRedSlices; r++) {
             FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[p2pNodeIdx],
-                                         r + 1,
-                                         p2pNodeIdx - numRedSlices + r));
+                                         r + 1, p2pNodeIdx - numRedSlices + r));
           }
         }
       }
@@ -1511,8 +1508,8 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
       if (recvNodeIdx != 0) {
         int parentIdx = recvNodeIdx - nodesPerSlice;
         if (i > 0 && s == 0) {
-          parentIdx = (numSlices - 1) * nodesPerSlice +
-                      (i - 1) * (1 + numRedSlices);
+          parentIdx =
+              (numSlices - 1) * nodesPerSlice + (i - 1) * (1 + numRedSlices);
         }
         FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[recvNodeIdx], 0,
                                      parentIdx));
@@ -1656,8 +1653,7 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                      parentIdx));
         for (int r = 0; r < numRedSlices; r++) {
           FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[sendNodeIdx],
-                                       r + 1,
-                                       sendNodeIdx - numRedSlices + r));
+                                       r + 1, sendNodeIdx - numRedSlices + r));
         }
       }
       if (s != numSlices - 1) {
@@ -1726,13 +1722,16 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
 
   if (current->nodeType == uniRunnerDagNodeTypeP2p) {
     // Mark the node as submitted before wiring its completion dependency.
+    TRACE(FLAGCX_UNIRUNNER, "rank %d p2p op %d streamWrite flag %d: PEND",
+          comm->rank, current->nodeIdx, current->nodeIdx);
     FLAGCXCHECK(deviceAdaptor->streamWriteValue64(runnerState->commStream, flag,
                                                   flagcxStreamFlagPend, 0));
     for (int i = 0; i < current->numParents; i++) {
+      void *parentFlag = getDagNodeFlag(runnerState, current->parents[i]);
       FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
-          runnerState->commStream,
-          getDagNodeFlag(runnerState, current->parents[i]),
-          flagcxStreamFlagDone, 0));
+          runnerState->commStream, parentFlag, flagcxStreamFlagDone, 0));
+      TRACE(FLAGCX_UNIRUNNER, "rank %d p2p op %d streamWait flag %d: DONE",
+            comm->rank, current->nodeIdx, current->parents[i]);
     }
 
     // Prepare ops list
@@ -1754,15 +1753,21 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
     }
     FLAGCXCHECK(flagcxHeteroGroupEnd());
 
+    TRACE(FLAGCX_UNIRUNNER, "rank %d p2p op %d streamWrite flag %d: DONE",
+          comm->rank, current->nodeIdx, current->nodeIdx);
     FLAGCXCHECK(deviceAdaptor->streamWriteValue64(runnerState->commStream, flag,
                                                   flagcxStreamFlagDone, 0));
   } else if (current->nodeType == uniRunnerDagNodeTypeCpy) {
+    TRACE(FLAGCX_UNIRUNNER, "rank %d cpy op %d streamWrite flag %d: PEND",
+          comm->rank, current->nodeIdx, current->nodeIdx);
     FLAGCXCHECK(deviceAdaptor->streamWriteValue64(runnerState->cpyStream, flag,
                                                   flagcxStreamFlagPend, 0));
     for (int i = 0; i < current->numParents; i++) {
+      void *parentFlag = getDagNodeFlag(runnerState, current->parents[i]);
       FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
-          runnerState->cpyStream, getDagNodeFlag(runnerState, current->parents[i]),
-          flagcxStreamFlagDone, 0));
+          runnerState->cpyStream, parentFlag, flagcxStreamFlagDone, 0));
+      TRACE(FLAGCX_UNIRUNNER, "rank %d cpy op %d streamWait flag %d: DONE",
+            comm->rank, current->nodeIdx, current->parents[i]);
     }
 
     // Launch copy
@@ -1773,6 +1778,8 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
         flagcxMemcpyDeviceToDevice, runnerState->cpyStream, NULL));
 
     // Write flag to stream
+    TRACE(FLAGCX_UNIRUNNER, "rank %d cpy op %d streamWrite flag %d: DONE",
+          comm->rank, current->nodeIdx, current->nodeIdx);
     FLAGCXCHECK(deviceAdaptor->streamWriteValue64(runnerState->cpyStream, flag,
                                                   flagcxStreamFlagDone, 0));
   } else {
@@ -1799,8 +1806,8 @@ static flagcxResult_t enqueueReadyQueue(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-static flagcxResult_t notifyChildrenScheduled(
-    flagcxUniRunnerState *runnerState, uniRunnerDagNode *current) {
+static flagcxResult_t notifyChildrenScheduled(flagcxUniRunnerState *runnerState,
+                                              uniRunnerDagNode *current) {
   for (int i = 0; i < current->numChildren; i++) {
     uniRunnerDagNode *child = &runnerState->dagNodes[current->children[i]];
     if (child->pendingParents <= 0) {
@@ -1814,12 +1821,15 @@ static flagcxResult_t notifyChildrenScheduled(
   return flagcxSuccess;
 }
 
-// Process ready queue: write triggers to FIFO and move to inflight
+// Process ready queue: submit ready nodes to the corresponding execution
+// stream/FIFO. Child readiness is host-scheduled immediately after submission;
+// execution dependencies are enforced on GPU streams via stream flags.
 static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
                                         flagcxHeteroComm_t comm) {
   // process p2pReadyQueue
   while (!flagcxIntruQueueEmpty(&runnerState->p2pReadyQueue)) {
-    uniRunnerDagNode *current = flagcxIntruQueueHead(&runnerState->p2pReadyQueue);
+    uniRunnerDagNode *current =
+        flagcxIntruQueueHead(&runnerState->p2pReadyQueue);
     FLAGCXCHECK(launchP2pOps(runnerState, comm));
     FLAGCXCHECK(notifyChildrenScheduled(runnerState, current));
   }
@@ -1855,29 +1865,7 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
     // Dequeue
     flagcxIntruQueueDequeue(&runnerState->redReadyQueue);
     current->nodeData.red.triggerIdx = idx;
-    flagcxIntruQueueEnqueue(&runnerState->redInflightQueue, current);
     FLAGCXCHECK(notifyChildrenScheduled(runnerState, current));
-  }
-
-  return flagcxSuccess;
-}
-
-// Process inflight queue: check completion and update pending nodes
-static flagcxResult_t
-processInflightQueue(flagcxUniRunnerState *runnerState) {
-  uniRunnerDagNode *prev = nullptr;
-  uniRunnerDagNode *curr = flagcxIntruQueueHead(&runnerState->redInflightQueue);
-  while (curr) {
-    flagcxReduceTrigger_t trigger =
-        (flagcxReduceTrigger *)(runnerState->fifo->buffer + flagcxFifoIdxData) +
-        curr->nodeData.red.triggerIdx;
-    if (trigger->pollState() == flagcxReduceTriggerComplete) {
-      trigger->setState(flagcxReduceTriggerAvailable);
-      curr = flagcxIntruQueueRemove(&runnerState->redInflightQueue, prev);
-    } else {
-      prev = curr;
-      curr = curr->next;
-    }
   }
 
   return flagcxSuccess;
@@ -1910,7 +1898,6 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   // Initialize queues
   flagcxIntruQueueConstruct(&runnerState->p2pReadyQueue);
   flagcxIntruQueueConstruct(&runnerState->redReadyQueue);
-  flagcxIntruQueueConstruct(&runnerState->redInflightQueue);
   runnerState->numPendingNodes = 0;
 
   // Create dedicated reduce and copy streams
@@ -1933,8 +1920,9 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   // Clean up DAG scheduler
   FLAGCXCHECK(cleanupDagScheduler(&hcomm->proxyState->uniRunnerState));
 
-  // Outstanding stream waits/writes may still touch streamFlags when runUniRunner
-  // exits early on an error path, so synchronize before releasing the device memory.
+  // Outstanding stream waits/writes may still touch streamFlags when
+  // runUniRunner exits early on an error path, so synchronize before releasing
+  // the device memory.
   FLAGCXCHECK(deviceAdaptor->streamSynchronize(redStream));
   FLAGCXCHECK(deviceAdaptor->streamSynchronize(cpyStream));
   FLAGCXCHECK(deviceAdaptor->streamSynchronize(commStream));
@@ -1982,17 +1970,16 @@ flagcxResult_t runUniRunner(flagcxComm_t comm) {
   while (true) {
     if (flagcxIntruQueueEmpty(&runnerState->p2pReadyQueue) &&
         flagcxIntruQueueEmpty(&runnerState->redReadyQueue) &&
-        flagcxIntruQueueEmpty(&runnerState->redInflightQueue) &&
         runnerState->numPendingNodes == 0) {
-      TRACE(FLAGCX_UNIRUNNER,
-            "runUniRunner: all submitted work drained, terminating runner loop");
+      TRACE(
+          FLAGCX_UNIRUNNER,
+          "runUniRunner: all submitted work drained, terminating runner loop");
       __atomic_store_n(fifo->buffer + flagcxFifoIdxTerminate, 1,
                        __ATOMIC_RELEASE);
       break;
     }
 
     FLAGCXCHECK(processReadyQueue(runnerState, hcomm));
-    FLAGCXCHECK(processInflightQueue(runnerState));
   }
   deviceAdaptor->streamSynchronize(runnerState->redStream);
   deviceAdaptor->streamSynchronize(runnerState->cpyStream);

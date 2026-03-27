@@ -44,13 +44,10 @@ FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setState(int state) {
             flagcxTriggerMask(flagcxReduceTriggerBitsState));
 }
 
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
-                                             uint64_t addr2, uint64_t addr3,
-                                             size_t count, size_t nthreads,
-                                             flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop,
-                                             uint64_t flagIn,
-                                             uint64_t flagOut, int *ret) {
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueue(void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
+        size_t count, size_t nthreads, flagcxDataType_t datatype,
+        flagcxRedOp_t redop, uint64_t flagIn, uint64_t flagOut, int *ret) {
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[flagcxFifoIdxCapacity];

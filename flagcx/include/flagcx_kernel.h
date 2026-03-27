@@ -220,13 +220,10 @@ typedef struct flagcxFifo *flagcxFifo_t;
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger);
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
-                                             uint64_t addr2, uint64_t addr3,
-                                             size_t count, size_t nthreads,
-                                             flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop,
-                                             uint64_t flagIn,
-                                             uint64_t flagOut, int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueue(void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
+        size_t count, size_t nthreads, flagcxDataType_t datatype,
+        flagcxRedOp_t redop, uint64_t flagIn, uint64_t flagOut, int *idx);
 #ifdef COMPILE_KERNEL
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
@@ -266,11 +263,12 @@ struct flagcxDevCommRequirements {
 
 #define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
   {                                                                            \
-    false,       /* intraMulticast */                                          \
-        0, 0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */      \
-        0, 0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */               \
-        false, 4, 0, 0 /* interForceEnable, interContextCount,                 \
-                          interSignalCount, interCounterCount */               \
+      false,       /* intraMulticast */                                        \
+      0,     0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */    \
+      0,     0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */             \
+      false, 4, 0,                                                             \
+      0 /* interForceEnable, interContextCount,                                \
+           interSignalCount, interCounterCount */                              \
   }
 
 // Network type enumeration (maps to ncclGinType_t on NVIDIA backend).

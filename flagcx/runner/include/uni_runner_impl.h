@@ -96,8 +96,6 @@ typedef struct {
       p2pReadyQueue;
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       redReadyQueue;
-  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
-      redInflightQueue;
 
   uint64_t uniRunnerNSlices;
   uint64_t uniRunnerNThreads;
