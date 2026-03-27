@@ -21,11 +21,14 @@ X-Build-Environment: This package is designed to be built in backend-specific
   - MetaX backend: Requires maca_sdk (from repos.metax-tech.com)
     Built in Ubuntu 22.04 with MetaX APT repository configured
  .
+  - Ascend backend: Requires Ascend CANN toolkit
+    Built in Ubuntu 22.04 with Ascend SDK
+ .
  The Build-Depends listed above are for the Debian packaging tools only.
  Backend-specific dependencies are provided by the container environment.
 
 Package: libflagcx-metax
-Build-Profiles: <!pkg.flagcx.nvidia-only>
+Build-Profiles: <!pkg.flagcx.nvidia-only !pkg.flagcx.ascend-only>
 Architecture: amd64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: FlagCX communication library for MetaX hardware
@@ -37,7 +40,7 @@ Description: FlagCX communication library for MetaX hardware
  MCCL backend support.
 
 Package: libflagcx-metax-dev
-Build-Profiles: <!pkg.flagcx.nvidia-only>
+Build-Profiles: <!pkg.flagcx.nvidia-only !pkg.flagcx.ascend-only>
 Section: libdevel
 Architecture: amd64
 Depends: libflagcx-metax (= ${binary:Version}), ${misc:Depends}
@@ -48,7 +51,7 @@ Description: FlagCX development files for MetaX hardware
  building applications against libflagcx-metax.
 
 Package: libflagcx-nvidia
-Build-Profiles: <!pkg.flagcx.metax-only>
+Build-Profiles: <!pkg.flagcx.metax-only !pkg.flagcx.ascend-only>
 Architecture: amd64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: FlagCX communication library for NVIDIA hardware
@@ -60,7 +63,7 @@ Description: FlagCX communication library for NVIDIA hardware
  NCCL backend support.
 
 Package: libflagcx-nvidia-dev
-Build-Profiles: <!pkg.flagcx.metax-only>
+Build-Profiles: <!pkg.flagcx.metax-only !pkg.flagcx.ascend-only>
 Section: libdevel
 Architecture: amd64
 Depends: libflagcx-nvidia (= ${binary:Version}), ${misc:Depends}
@@ -69,3 +72,26 @@ Description: FlagCX development files for NVIDIA hardware
  .
  This package contains the header files and development files for
  building applications against libflagcx-nvidia.
+
+Package: libflagcx-ascend
+Build-Profiles: <!pkg.flagcx.nvidia-only !pkg.flagcx.metax-only>
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: FlagCX communication library for Ascend NPUs
+ FlagCX is a scalable and adaptive cross-chip communication library.
+ It serves as a platform where developers, researchers, and AI engineers
+ can collaborate on various projects.
+ .
+ This package contains the shared library built for Huawei Ascend NPUs
+ with HCCL backend support.
+
+Package: libflagcx-ascend-dev
+Build-Profiles: <!pkg.flagcx.nvidia-only !pkg.flagcx.metax-only>
+Section: libdevel
+Architecture: amd64 arm64
+Depends: libflagcx-ascend (= ${binary:Version}), ${misc:Depends}
+Description: FlagCX development files for Ascend NPUs
+ FlagCX is a scalable and adaptive cross-chip communication library.
+ .
+ This package contains the header files and development files for
+ building applications against libflagcx-ascend.
