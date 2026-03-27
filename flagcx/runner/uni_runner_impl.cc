@@ -16,6 +16,7 @@
 #include <string>
 #include <sys/syscall.h>
 #include <sys/time.h>
+#include <unordered_set>
 #include <unistd.h>
 
 FLAGCX_PARAM(UniRunnerNSlices, "UNIRUNNER_NSLICES", 1);
@@ -39,7 +40,7 @@ static flagcxResult_t setDagNodeParent(uniRunnerDagNode *node, int parentSlot,
                                        int parentIdx) {
   if (parentSlot < 0 || parentSlot >= node->numParents ||
       node->parents == NULL) {
-    return flagcxInvalidArgument;
+    return flagcxInternalError;
   }
   node->parents[parentSlot] = parentIdx;
   node->pendingParents++;
@@ -53,14 +54,63 @@ static flagcxResult_t validateDagNodes(flagcxUniRunnerState *runnerState) {
     return flagcxSuccess;
   }
 
-  for (int i = 0; i < runnerState->numDagNodes; i++) {
-    uniRunnerDagNode *node = &runnerState->dagNodes[i];
+  const int numDagNodes = runnerState->numDagNodes;
+  uniRunnerDagNode *dagNodes = runnerState->dagNodes;
+  size_t numEdges = 0;
+
+  for (int i = 0; i < numDagNodes; i++) {
+    uniRunnerDagNode *node = &dagNodes[i];
     if (node->pendingParents != node->numParents) {
-      return flagcxInvalidArgument;
+      return flagcxInternalError;
+    }
+    if (node->numParents < 0 || node->numChildren < 0) {
+      return flagcxInternalError;
+    }
+    if ((node->numParents > 0 && node->parents == NULL) ||
+        (node->numChildren > 0 && node->children == NULL)) {
+      return flagcxInternalError;
+    }
+    numEdges += static_cast<size_t>(node->numParents);
+  }
+
+  std::unordered_set<uint64_t> dagEdges;
+  dagEdges.reserve(numEdges);
+
+  for (int i = 0; i < numDagNodes; i++) {
+    uniRunnerDagNode *node = &dagNodes[i];
+    for (int p = 0; p < node->numParents; p++) {
+      int parentIdx = node->parents[p];
+      if (parentIdx < 0 || parentIdx >= numDagNodes || parentIdx == i) {
+        return flagcxInternalError;
+      }
+      uint64_t edge =
+          (static_cast<uint64_t>(static_cast<uint32_t>(parentIdx)) << 32) |
+          static_cast<uint32_t>(i);
+      if (!dagEdges.emplace(edge).second) {
+        return flagcxInternalError;
+      }
     }
   }
 
-  return flagcxSuccess;
+  for (int i = 0; i < numDagNodes; i++) {
+    uniRunnerDagNode *node = &dagNodes[i];
+    for (int c = 0; c < node->numChildren; c++) {
+      int childIdx = node->children[c];
+      if (childIdx < 0 || childIdx >= numDagNodes || childIdx == i) {
+        return flagcxInternalError;
+      }
+      uint64_t edge =
+          (static_cast<uint64_t>(static_cast<uint32_t>(i)) << 32) |
+          static_cast<uint32_t>(childIdx);
+      std::unordered_set<uint64_t>::iterator it = dagEdges.find(edge);
+      if (it == dagEdges.end()) {
+        return flagcxInternalError;
+      }
+      dagEdges.erase(it);
+    }
+  }
+
+  return dagEdges.empty() ? flagcxSuccess : flagcxInternalError;
 }
 
 static inline void *getDagNodeFlag(flagcxUniRunnerState *runnerState,
@@ -1811,7 +1861,7 @@ static flagcxResult_t notifyChildrenScheduled(flagcxUniRunnerState *runnerState,
   for (int i = 0; i < current->numChildren; i++) {
     uniRunnerDagNode *child = &runnerState->dagNodes[current->children[i]];
     if (child->pendingParents <= 0) {
-      return flagcxInvalidArgument;
+      return flagcxInternalError;
     }
     child->pendingParents--;
     if (child->pendingParents == 0) {
