@@ -435,7 +435,7 @@ flagcxResult_t flagcxOneSideDeregister(const flagcxComm_t comm);
 // One-sided signal buffer registration (GPU memory with FORCE_SO).
 // Must be called after flagcxCommInitRank and before one-sided operations.
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
-                                           size_t size);
+                                           size_t size, int ptrType);
 // Release signal buffer resources (MR, network connections, handle arrays).
 flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm);
 

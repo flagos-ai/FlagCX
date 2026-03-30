@@ -17,7 +17,7 @@
 #include "net.h" // flagcxNetHandle_t
 #include "onesided.h"
 #include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc (+comm.h, transport.h)
-#include "utils.h"   // flagcxParamBarrierIpcDisable
+#include "utils.h"   // flagcxParamSignalHostEnable
 #include <algorithm> // std::min, std::max
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -445,7 +445,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
 
-  if (flagcxParamBarrierIpcDisable() == 0) {
+  if (flagcxParamSignalHostEnable() == 0) {
     // ── IPC device memory path (default) ─────────────────────────────────
     // Allocate device memory, exchange IPC handles, build peer ptr array.
     void *barrierFlags = nullptr;
@@ -489,10 +489,12 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     void *myDevPtr = nullptr;
     void **hostDevPtrs = nullptr;
 
-    // Build shm name prefix from magic for uniqueness.
+    // Build shm name from magic + global rank for uniqueness across all
+    // processes on the same physical machine (avoids collision when multiple
+    // "nodes" share the same POSIX shm namespace, e.g. simulated multi-node).
     char myShmName[64];
     snprintf(myShmName, sizeof(myShmName), "/flagcx_barrier_%016llx_%d",
-             (unsigned long long)comm->magic, myLocalRank);
+             (unsigned long long)comm->magic, myRank);
 
     // Step 1: Create and map own shm segment.
     int fd = shm_open(myShmName, O_CREAT | O_RDWR, 0600);
@@ -533,7 +535,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
         continue;
       char peerShmName[64];
       snprintf(peerShmName, sizeof(peerShmName), "/flagcx_barrier_%016llx_%d",
-               (unsigned long long)comm->magic, lr);
+               (unsigned long long)comm->magic, comm->localRankToRank[lr]);
       int pfd = shm_open(peerShmName, O_RDWR, 0600);
       if (pfd < 0) {
         WARN("setupIpcBarriers(shm): shm_open peer %d failed: %s", lr,
@@ -754,15 +756,21 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
           (reqs->interContextCount > 0) ? reqs->interContextCount : 4;
       handle->contextCount = ctxCount;
 
-      // Allocate signal buffer (GPU, SYNC_MEMOPS via gdrMemAlloc for RDMA)
+      // Allocate signal buffer (host-pinned or GDR device memory)
       if (reqs->interSignalCount > 0) {
         handle->signalCount = reqs->interSignalCount;
         size_t sigSize =
             (size_t)handle->signalCount * ctxCount * sizeof(uint64_t);
-        FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
-                                               sigSize, NULL));
-        FLAGCXCHECK(deviceAdaptor->deviceMemset(
-            handle->signalBuffer, 0, sigSize, flagcxMemDevice, NULL));
+        if (flagcxParamSignalHostEnable()) {
+          FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+              (void **)&handle->signalBuffer, sigSize, flagcxMemHost, NULL));
+          memset(handle->signalBuffer, 0, sigSize);
+        } else {
+          FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
+                                                 sigSize, NULL));
+          FLAGCXCHECK(deviceAdaptor->deviceMemset(
+              handle->signalBuffer, 0, sigSize, flagcxMemDevice, NULL));
+        }
         FLAGCXCHECK(deviceAdaptor->deviceMalloc(
             (void **)&handle->shadowBuffer, sigSize, flagcxMemDevice, NULL));
         FLAGCXCHECK(deviceAdaptor->deviceMemset(
@@ -785,10 +793,13 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
       // Auto-register signal buffer for RDMA one-sided access
       if (handle->signalBuffer) {
+        int sigPtrType =
+            flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
         flagcxResult_t regRes = flagcxOneSideSignalRegister(
             comm, handle->signalBuffer,
             (size_t)handle->signalCount * handle->contextCount *
-                sizeof(uint64_t));
+                sizeof(uint64_t),
+            sigPtrType);
         if (regRes != flagcxSuccess) {
           WARN(
               "flagcxDevCommCreate: signal buffer MR registration failed (%d), "
@@ -907,7 +918,9 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   // One-sided Fallback cleanup
   if (devComm->signalBuffer) {
-    flagcxCommDeferFree(comm, devComm->signalBuffer, flagcxMemDevice);
+    flagcxMemType_t sigMt =
+        flagcxParamSignalHostEnable() ? flagcxMemHost : flagcxMemDevice;
+    flagcxCommDeferFree(comm, devComm->signalBuffer, sigMt);
   }
   if (devComm->shadowBuffer) {
     flagcxCommDeferFree(comm, devComm->shadowBuffer, flagcxMemDevice);

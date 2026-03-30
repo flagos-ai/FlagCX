@@ -535,7 +535,7 @@ flagcxResult_t flagcxOneSideDeregister(const flagcxComm_t comm) {
 }
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
-                                           size_t size) {
+                                           size_t size, int ptrType) {
   if (useHomoComm(comm) && !useHeteroComm()) {
     return flagcxSuccess;
   }
@@ -588,8 +588,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   {
-    int type = FLAGCX_PTR_CUDA;
-    res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
+    res = heteroComm->netAdaptor->regMr(regComm, buff, size, ptrType,
                                         FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
   }
   if (res != flagcxSuccess || mrHandle == NULL) {
