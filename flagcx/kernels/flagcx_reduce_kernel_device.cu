@@ -1,6 +1,6 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "device_api/device_traits.h"
+#include "device_api/comm_traits.h"
 
 #define FULL_MASK 0xffffffff
 #define SLOT_IDX 4

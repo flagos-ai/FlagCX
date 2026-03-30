@@ -1,7 +1,6 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  * Copyright (c) 2015-2025, NVIDIA CORPORATION. All rights reserved.
- * See LICENSE-NCCL.txt for NCCL license information
  *
  * NVIDIA Platform Traits — CUDA SIMT intrinsics and cuda::atomic_ref.
  *

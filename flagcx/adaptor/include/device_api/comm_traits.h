@@ -79,7 +79,7 @@ struct flagcxBarrierWorld {
 };
 
 // Primary template — each backend provides specializations
-template <typename Backend, typename BarrierTag>
+template <typename Backend, typename BarrierTag, typename Coop>
 struct DevBarrier;
 
 // Vendor specializations + DeviceAPI selection
