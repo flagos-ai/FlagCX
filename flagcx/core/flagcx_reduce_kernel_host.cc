@@ -4,15 +4,16 @@
 
 FLAGCX_PARAM(ReduceFifoCapacity, "REDUCE_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 
-FLAGCX_HOST_DECORATOR void
-flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
-                              size_t count, size_t nthreads,
-                              flagcxDataType_t datatype, flagcxRedOp_t redOp,
-                              flagcxReduceTriggerState state) {
-  uint64_t tmp[4];
+FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setValue(
+    uint64_t fst, uint64_t snd, uint64_t out, size_t count, size_t nthreads,
+    flagcxDataType_t datatype, flagcxRedOp_t redOp,
+    flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut) {
+  uint64_t tmp[6];
   tmp[0] = fst;
   tmp[1] = snd;
   tmp[2] = out;
+  tmp[4] = flagIn;
+  tmp[5] = flagOut;
   tmp[3] = (count & flagcxTriggerMask(flagcxReduceTriggerBitsCount))
                << flagcxReduceTriggerOffCount |
            (nthreads & flagcxTriggerMask(flagcxReduceTriggerBitsNThreads))
@@ -23,7 +24,7 @@ flagcxReduceTrigger::setValue(uint64_t fst, uint64_t snd, uint64_t out,
                << flagcxReduceTriggerOffRedop |
            (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
                << flagcxReduceTriggerOffState;
-  memcpy(this->value, tmp, 4 * sizeof(uint64_t));
+  memcpy(this->value, tmp, sizeof(tmp));
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxReduceTrigger::pollState() {
@@ -44,11 +45,10 @@ FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setState(int state) {
             flagcxTriggerMask(flagcxReduceTriggerBitsState));
 }
 
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
-                                             uint64_t addr2, uint64_t addr3,
-                                             size_t count, size_t nthreads,
-                                             flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop, int *ret) {
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueue(void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
+        size_t count, size_t nthreads, flagcxDataType_t datatype,
+        flagcxRedOp_t redop, uint64_t flagIn, uint64_t flagOut, int *ret) {
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[flagcxFifoIdxCapacity];
@@ -76,7 +76,7 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
     return flagcxSuccess;
   }
   trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,
-                    flagcxReduceTriggerEnqueued);
+                    flagcxReduceTriggerEnqueued, flagIn, flagOut);
   __atomic_fetch_add(produced, flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
   *ret = idx;
   TRACE(FLAGCX_KERNEL,
