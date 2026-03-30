@@ -8,7 +8,7 @@
  *   - Atomic: Scoped atomic operations (load, store, fetchAdd, ...)
  *
  * Each platform (NVIDIA, DU, ...) provides a specialization.
- * DeviceTraits<D> pulls in platform capabilities via using-aliases.
+ * CommTraits<D> pulls in platform capabilities via using-aliases.
  ************************************************************************/
 
 #ifndef FLAGCX_PLATFORM_TRAITS_H_

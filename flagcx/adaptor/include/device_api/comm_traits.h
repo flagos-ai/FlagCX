@@ -1,27 +1,27 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Device Traits — Unified compile-time dispatch for device APIs.
+ * Comm Traits — Unified compile-time dispatch for device APIs.
  *
  * Architecture:
  *   PlatformTraits<P>         — platform-level: Intrin, Atomic
- *   DeviceTraits<D>           — backend-level:  Window, DevComm, Team, ...
+ *   CommTraits<D>             — backend-level:  Window, DevComm, Team, ...
  *   Fallback<PlatformTag>     — common IPC fallback (partial specialization)
  *
- * DeviceTraits pulls in platform capabilities via using-aliases (not
+ * CommTraits pulls in platform capabilities via using-aliases (not
  * inheritance). Vendor specializations wrap vendor types with member
  * functions. The Fallback partial specialization provides IPC-based
  * types that work with any platform.
  *
  * Selection:
- *   NVIDIA + NCCL > 2.28:   DeviceAPI = DeviceTraits<NvidiaVendor>
- *   NVIDIA + fallback:       DeviceAPI = DeviceTraits<Fallback<NvidiaPlatform>>
+ *   NVIDIA + NCCL > 2.28:   DeviceAPI = CommTraits<NvidiaVendor>
+ *   NVIDIA + fallback:       DeviceAPI = CommTraits<Fallback<NvidiaPlatform>>
  *
  * Kernel code uses DeviceAPI::* exclusively, no #ifdef branches.
  ************************************************************************/
 
-#ifndef FLAGCX_DEVICE_TRAITS_H_
-#define FLAGCX_DEVICE_TRAITS_H_
+#ifndef FLAGCX_COMM_TRAITS_H_
+#define FLAGCX_COMM_TRAITS_H_
 
 #include "platform_traits.h"
 #include <cstddef>
@@ -29,7 +29,7 @@
 
 // Primary template — each backend provides a specialization
 template <typename Impl>
-struct DeviceTraits;
+struct CommTraits;
 
 // Fallback tag — parameterized by platform for the partial specialization
 template <typename PlatformTag>
@@ -84,9 +84,9 @@ struct DevBarrier;
 
 // Vendor specializations + DeviceAPI selection
 #ifdef USE_NVIDIA_ADAPTOR
-#include "nvidia_device_traits.h"
+#include "nvidia_comm_traits.h"
 #elif USE_DU_ADAPTOR
-#include "du_device_traits.h"
+#include "du_comm_traits.h"
 #endif
 
-#endif // FLAGCX_DEVICE_TRAITS_H_
+#endif // FLAGCX_COMM_TRAITS_H_

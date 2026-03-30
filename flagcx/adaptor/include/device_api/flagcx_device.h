@@ -25,8 +25,8 @@
 // Device traits — provides DeviceAPI with all type/function dispatch.
 // Also defines FLAGCX_DEVICE_API_VENDOR when vendor backend is active.
 // Action types (flagcxDevNet_*, flagcxDescriptorSmem, etc.) are defined
-// inside device_traits.h before the backend-specific trait includes.
-#include "device_traits.h"
+// inside comm_traits.h before the backend-specific trait includes.
+#include "comm_traits.h"
 
 // Forward declaration for typed vendor device comm handle
 struct flagcxInnerDevComm;
@@ -411,7 +411,7 @@ flagcxTeamRankToIntra(const flagcxDevComm &devComm, flagcxTeam_t team,
 // Naming: "Tile" = N PEs cooperating (avoids vendor-specific
 //         Warp/Wave/Subgroup terms).
 //
-// All implementations live in DeviceTraits; these are thin wrappers.
+// All implementations live in CommTraits; these are thin wrappers.
 // ============================================================
 
 // ---- 6a. flagcxCoopBlock — CTA-level cooperative group ----
@@ -575,7 +575,7 @@ flagcxCoopCoalesced(flagcxCoopTile<N> coop) {
 // Section 7: flagcxDevBarrier — Barrier Session Wrappers
 //
 // Thin wrappers delegating to DeviceAPI::DevBarrier<Tag>.
-// No #ifdef FLAGCX_DEVICE_API_VENDOR — dispatch resolved by DeviceTraits.
+// No #ifdef FLAGCX_DEVICE_API_VENDOR — dispatch resolved by CommTraits.
 // ============================================================
 
 // Primary template

@@ -5,7 +5,7 @@
  *
  * NVIDIA Vendor Device Traits — wraps NCCL device API types.
  *
- * DeviceTraits<NvidiaVendor> provides:
+ * CommTraits<NvidiaVendor> provides:
  *   - Intrin, Atomic: from PlatformTraits<NvidiaPlatform> via using
  *   - Window:   wraps ncclWindow_t with member functions
  *   - DevComm:  wraps ncclDevComm with member functions
@@ -31,7 +31,7 @@
 struct NvidiaVendor {};
 
 template <>
-struct DeviceTraits<NvidiaVendor> {
+struct CommTraits<NvidiaVendor> {
   // Platform capabilities (via using, not inheritance)
   using Intrin = PlatformTraits<NvidiaPlatform>::Intrin;
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
@@ -423,9 +423,9 @@ static_assert(
 template <>
 struct DevBarrier<NvidiaVendor, flagcxBarrierIntra> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
-  using DevComm = DeviceTraits<NvidiaVendor>::DevComm;
-  using Team = DeviceTraits<NvidiaVendor>::Team;
-  using Multimem = DeviceTraits<NvidiaVendor>::Multimem;
+  using DevComm = CommTraits<NvidiaVendor>::DevComm;
+  using Team = CommTraits<NvidiaVendor>::Team;
+  using Multimem = CommTraits<NvidiaVendor>::Multimem;
 
   ncclLsaBarrierSession<ncclCoopCta> _impl;
 
@@ -465,9 +465,9 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierIntra> {
 template <>
 struct DevBarrier<NvidiaVendor, flagcxBarrierInter> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
-  using DevComm = DeviceTraits<NvidiaVendor>::DevComm;
-  using Team = DeviceTraits<NvidiaVendor>::Team;
-  using Net = DeviceTraits<NvidiaVendor>::Net;
+  using DevComm = CommTraits<NvidiaVendor>::DevComm;
+  using Team = CommTraits<NvidiaVendor>::Team;
+  using Net = CommTraits<NvidiaVendor>::Net;
 
   alignas(ncclGinBarrierSession<ncclCoopCta>) char _implStorage[sizeof(
       ncclGinBarrierSession<ncclCoopCta>)];
@@ -518,8 +518,8 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierInter> {
 template <>
 struct DevBarrier<NvidiaVendor, flagcxBarrierWorld> {
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
-  using DevComm = DeviceTraits<NvidiaVendor>::DevComm;
-  using Net = DeviceTraits<NvidiaVendor>::Net;
+  using DevComm = CommTraits<NvidiaVendor>::DevComm;
+  using Net = CommTraits<NvidiaVendor>::Net;
 
   // Storage large enough for the larger of the two session types
   static constexpr size_t kWorldSize = sizeof(ncclBarrierSession<ncclCoopCta>);
@@ -605,15 +605,15 @@ struct DevBarrier<NvidiaVendor, flagcxBarrierWorld> {
 };
 
 #define FLAGCX_DEVICE_API_VENDOR 1
-using DeviceAPI = DeviceTraits<NvidiaVendor>;
+using DeviceAPI = CommTraits<NvidiaVendor>;
 
 #else
 // ============================================================
 // NVIDIA Fallback Backend (IPC barriers + FIFO one-sided)
 // Uses common Fallback<> partial specialization with NVIDIA platform
 // ============================================================
-#include "fallback_device_traits.h"
-using DeviceAPI = DeviceTraits<Fallback<NvidiaPlatform>>;
+#include "fallback_comm_traits.h"
+using DeviceAPI = CommTraits<Fallback<NvidiaPlatform>>;
 
 #endif // NCCL version check
 

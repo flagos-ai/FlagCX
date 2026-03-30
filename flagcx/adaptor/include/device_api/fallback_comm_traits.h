@@ -3,7 +3,7 @@
  *
  * Fallback Device Traits — Common IPC-based implementation.
  *
- * DeviceTraits<Fallback<PlatformTag>> provides:
+ * CommTraits<Fallback<PlatformTag>> provides:
  *   - Intrin, Atomic: inherited from PlatformTraits<PlatformTag> via using
  *   - Window:   IPC peer pointers + raw pointer
  *   - DevComm:  rank/size + IPC barriers + signal buffers
@@ -20,7 +20,7 @@
 #include "flagcx_kernel.h"
 
 template <typename PlatformTag>
-struct DeviceTraits<Fallback<PlatformTag>> {
+struct CommTraits<Fallback<PlatformTag>> {
   // Platform capabilities (resolved via PlatformTag)
   using Intrin = typename PlatformTraits<PlatformTag>::Intrin;
   using Atomic = typename PlatformTraits<PlatformTag>::Atomic;
@@ -721,9 +721,9 @@ template <typename P>
 struct DevBarrier<Fallback<P>, flagcxBarrierIntra> {
   using Atomic = typename PlatformTraits<P>::Atomic;
   using Intrin = typename PlatformTraits<P>::Intrin;
-  using DevComm = typename DeviceTraits<Fallback<P>>::DevComm;
-  using Team = typename DeviceTraits<Fallback<P>>::Team;
-  using Multimem = typename DeviceTraits<Fallback<P>>::Multimem;
+  using DevComm = typename CommTraits<Fallback<P>>::DevComm;
+  using Team = typename CommTraits<Fallback<P>>::Team;
+  using Multimem = typename CommTraits<Fallback<P>>::Multimem;
 
   uint64_t **_peerBuffers;
   int _nRanks, _myRank;
@@ -798,9 +798,9 @@ template <typename P>
 struct DevBarrier<Fallback<P>, flagcxBarrierInter> {
   using Atomic = typename PlatformTraits<P>::Atomic;
   using Intrin = typename PlatformTraits<P>::Intrin;
-  using DevComm = typename DeviceTraits<Fallback<P>>::DevComm;
-  using Team = typename DeviceTraits<Fallback<P>>::Team;
-  using Net = typename DeviceTraits<Fallback<P>>::Net;
+  using DevComm = typename CommTraits<Fallback<P>>::DevComm;
+  using Team = typename CommTraits<Fallback<P>>::Team;
+  using Net = typename CommTraits<Fallback<P>>::Net;
 
   uint64_t *_interSignals;
   void *_fifoBuffer;
@@ -832,10 +832,10 @@ struct DevBarrier<Fallback<P>, flagcxBarrierInter> {
     _epoch += _nInterPeers;
     coop.sync();
     if (coop.threadRank() == 0 && _isLeader) {
-      DeviceTraits<Fallback<P>>::fifoEnqueue(
+      CommTraits<Fallback<P>>::fifoEnqueue(
           _fifoBuffer, (uint64_t)_ctaIndex, 0,
-          DeviceTraits<Fallback<P>>::buildTrd(flagcxDevicePrimBarrierSignal, 0,
-                                              0));
+          CommTraits<Fallback<P>>::buildTrd(flagcxDevicePrimBarrierSignal, 0,
+                                            0));
     }
     coop.sync();
   }
@@ -874,9 +874,9 @@ struct DevBarrier<Fallback<P>, flagcxBarrierInter> {
 // Single-node: just one intra sync.
 template <typename P>
 struct DevBarrier<Fallback<P>, flagcxBarrierWorld> {
-  using DevComm = typename DeviceTraits<Fallback<P>>::DevComm;
-  using Team = typename DeviceTraits<Fallback<P>>::Team;
-  using Net = typename DeviceTraits<Fallback<P>>::Net;
+  using DevComm = typename CommTraits<Fallback<P>>::DevComm;
+  using Team = typename CommTraits<Fallback<P>>::Team;
+  using Net = typename CommTraits<Fallback<P>>::Net;
 
   DevBarrier<Fallback<P>, flagcxBarrierIntra> _intra;
   DevBarrier<Fallback<P>, flagcxBarrierInter> _inter;
