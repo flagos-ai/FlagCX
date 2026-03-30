@@ -23,6 +23,12 @@ ifeq ($(USE_NVIDIA), 1)
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
 	DEVICE_LINK = -lcudart -lcuda
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
+else ifeq ($(USE_DU), 1)
+        DEVICE_HOME = $(CUDA_PATH)
+        DEVICE_LIB = $(DEVICE_HOME)/lib64 -L$(DEVICE_HOME)/lib64/stubs
+        DEVICE_INCLUDE = $(DEVICE_HOME)/include
+        DEVICE_LINK = -lcudart -lcuda
+        DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
 endif
 
 COMMON_INCLUDES = -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE)

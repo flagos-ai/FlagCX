@@ -82,17 +82,11 @@ struct flagcxBarrierWorld {
 template <typename Backend, typename BarrierTag>
 struct DevBarrier;
 
-// Common fallback partial specialization (IPC-based, works for any platform)
-#include "fallback_device_traits.h"
-
 // Vendor specializations + DeviceAPI selection
 #ifdef USE_NVIDIA_ADAPTOR
 #include "nvidia_device_traits.h"
+#elif USE_DU_ADAPTOR
+#include "du_device_traits.h"
 #endif
-
-// Future:
-// #ifdef USE_DU_ADAPTOR
-// #include "du_device_traits.h"
-// #endif
 
 #endif // FLAGCX_DEVICE_TRAITS_H_

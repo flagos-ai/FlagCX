@@ -11,7 +11,7 @@
  *   - Multimem: placeholder (no multicast)
  *
  * This partial specialization is written ONCE and works for any platform.
- * Adding a new platform (e.g. Cambricon) requires zero changes here.
+ * Adding a new platform requires zero changes here.
  ************************************************************************/
 
 #ifndef FLAGCX_FALLBACK_DEVICE_TRAITS_H_

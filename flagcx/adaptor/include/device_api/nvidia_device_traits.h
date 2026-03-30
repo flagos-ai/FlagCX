@@ -612,6 +612,7 @@ using DeviceAPI = DeviceTraits<NvidiaVendor>;
 // NVIDIA Fallback Backend (IPC barriers + FIFO one-sided)
 // Uses common Fallback<> partial specialization with NVIDIA platform
 // ============================================================
+#include "fallback_device_traits.h"
 using DeviceAPI = DeviceTraits<Fallback<NvidiaPlatform>>;
 
 #endif // NCCL version check
