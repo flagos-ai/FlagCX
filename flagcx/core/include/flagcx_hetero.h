@@ -4,6 +4,58 @@
 #include "flagcx.h"
 #include "type.h"
 #include <climits>
+#include <pthread.h>
+#include <stdint.h>
+
+enum flagcxRmaDescType {
+  FLAGCX_RMA_PUT = 0,
+  FLAGCX_RMA_PUT_SIGNAL = 1,
+  FLAGCX_RMA_GET = 2,
+  FLAGCX_RMA_PUT_VALUE = 3,
+};
+
+struct flagcxRmaDesc {
+  int peer;
+  enum flagcxRmaDescType type;
+  uint64_t srcOff;
+  uint64_t dstOff;
+  size_t size;
+  int srcMrIdx;     // -1 when not used (e.g. signal-only PutSignal)
+  int dstMrIdx;
+  uint64_t signalOff;   // PUT_SIGNAL only
+  uint64_t signalValue; // PUT_SIGNAL only
+  uint64_t putValue;    // PUT_VALUE only (value embedded in desc)
+  void *request;        // filled by progress thread after posting IB op
+  uint64_t seq;         // per-peer monotonic sequence number
+  struct flagcxRmaDesc *next;
+};
+
+// Per-comm async RMA proxy state.
+// pending queues: producer = caller (proxy kernel thread), consumer = progress thread.
+// inProgress queues: progress thread only (no locking needed).
+struct flagcxRmaProxyState {
+  // Single pending queue for all peers, protected by pendingMutex.
+  // desc->peer identifies the target; no need for per-peer slots.
+  struct flagcxRmaDesc *pendingHead;
+  struct flagcxRmaDesc *pendingTail;
+  pthread_mutex_t pendingMutex;
+
+  // Single in-progress queue (progress thread only, no locking needed).
+  struct flagcxRmaDesc *inProgressHead;
+  struct flagcxRmaDesc *inProgressTail;
+
+  // Per-peer sequence counters for flush semantics.
+  // nextSeqs[p]: last seq assigned for peer p (written by caller).
+  // doneSeqs[p]: last seq completed for peer p (written by progress thread).
+  volatile uint64_t *nextSeqs; // [nRanks]
+  volatile uint64_t *doneSeqs; // [nRanks]
+
+  int nRanks;
+  struct flagcxHeteroComm *comm; // back-pointer
+
+  pthread_t thread;
+  volatile int stop;
+};
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
@@ -57,6 +109,17 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
 
 flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
                                  size_t size, void *gHandleInfo);
+
+// Async RMA proxy lifecycle.
+flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+
+// Wait until all ops for a specific peer up to seq are complete.
+flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
+                                    uint64_t seq);
+
+// Wait until all pending RMA ops for all peers are complete.
+flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                       size_t signalOffset, uint64_t expected,

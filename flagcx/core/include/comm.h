@@ -160,6 +160,8 @@ struct flagcxCollnetHandleList {
   struct flagcxProxyConnector *proxyconn;
 };
 
+struct flagcxRmaProxyState; // forward declaration; defined in flagcx_hetero.h
+
 #define FLAGCX_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
 
 struct flagcxHeteroComm {
@@ -357,6 +359,9 @@ struct flagcxHeteroComm {
   // Device communicator (set by flagcxDevCommCreate).
   // Used by proxy for BarrierSignal, WaitSignal, PutValue handlers.
   flagcxDevComm_t devCommHandle;
+
+  // Async RMA proxy state (one-sided Put/Get offload thread).
+  struct flagcxRmaProxyState *rmaProxy;
 };
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
