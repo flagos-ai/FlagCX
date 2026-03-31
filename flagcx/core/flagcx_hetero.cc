@@ -105,43 +105,44 @@ static void *flagcxRmaProgressThread(void *arg) {
 
       flagcxResult_t res = flagcxSuccess;
       switch (desc->type) {
-      case FLAGCX_RMA_PUT:
-        res = comm->netAdaptor->iput(sendComm, desc->srcOff, desc->dstOff,
-                                     desc->size, comm->rank, p, srcHandles,
-                                     dstHandles, &desc->request);
-        break;
+        case FLAGCX_RMA_PUT:
+          res = comm->netAdaptor->iput(sendComm, desc->srcOff, desc->dstOff,
+                                       desc->size, comm->rank, p, srcHandles,
+                                       dstHandles, &desc->request);
+          break;
 
-      case FLAGCX_RMA_PUT_SIGNAL: {
-        void **sigHandles = (void **)globalOneSideSignalHandles;
-        res = comm->netAdaptor->iputSignal(
-            sendComm, desc->srcOff, desc->dstOff, desc->size, comm->rank, p,
-            srcHandles, dstHandles, desc->signalOff, sigHandles,
-            desc->signalValue, &desc->request);
-        break;
-      }
-
-      case FLAGCX_RMA_GET:
-        res = comm->netAdaptor->iget(sendComm, desc->srcOff, desc->dstOff,
-                                     desc->size, p /* srcRank */,
-                                     comm->rank /* dstRank */, srcHandles,
-                                     dstHandles, &desc->request);
-        break;
-
-      case FLAGCX_RMA_PUT_VALUE: {
-        struct flagcxOneSideHandleInfo *stagingH = globalOneSideStagingHandles;
-        if (stagingH == NULL || stagingH->baseVas == NULL) {
-          WARN("flagcxRmaProgressThread: staging handles not initialized");
-          res = flagcxInternalError;
+        case FLAGCX_RMA_PUT_SIGNAL: {
+          void **sigHandles = (void **)globalOneSideSignalHandles;
+          res = comm->netAdaptor->iputSignal(
+              sendComm, desc->srcOff, desc->dstOff, desc->size, comm->rank, p,
+              srcHandles, dstHandles, desc->signalOff, sigHandles,
+              desc->signalValue, &desc->request);
           break;
         }
-        *(volatile uint64_t *)(stagingH->baseVas[comm->rank]) = desc->putValue;
-        void **stagingHandles = (void **)stagingH;
-        void **dstH = (void **)globalOneSideHandleTable[desc->dstMrIdx];
-        res = comm->netAdaptor->iput(sendComm, 0, desc->dstOff,
-                                     sizeof(uint64_t), comm->rank, p,
-                                     stagingHandles, dstH, &desc->request);
-        break;
-      }
+
+        case FLAGCX_RMA_GET:
+          res = comm->netAdaptor->iget(
+              sendComm, desc->srcOff, desc->dstOff, desc->size, p /* srcRank */,
+              comm->rank /* dstRank */, srcHandles, dstHandles, &desc->request);
+          break;
+
+        case FLAGCX_RMA_PUT_VALUE: {
+          struct flagcxOneSideHandleInfo *stagingH =
+              globalOneSideStagingHandles;
+          if (stagingH == NULL || stagingH->baseVas == NULL) {
+            WARN("flagcxRmaProgressThread: staging handles not initialized");
+            res = flagcxInternalError;
+            break;
+          }
+          *(volatile uint64_t *)(stagingH->baseVas[comm->rank]) =
+              desc->putValue;
+          void **stagingHandles = (void **)stagingH;
+          void **dstH = (void **)globalOneSideHandleTable[desc->dstMrIdx];
+          res = comm->netAdaptor->iput(sendComm, 0, desc->dstOff,
+                                       sizeof(uint64_t), comm->rank, p,
+                                       stagingHandles, dstH, &desc->request);
+          break;
+        }
       }
 
       if (res != flagcxSuccess) {
@@ -165,7 +166,7 @@ static void *flagcxRmaProgressThread(void *arg) {
       did_work = true;
     }
 
-next:
+  next:
     if (!did_work)
       sched_yield();
   }
@@ -264,8 +265,7 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
   if (proxy == NULL)
     return flagcxSuccess;
   for (int p = 0; p < proxy->nRanks; p++) {
-    uint64_t target =
-        __atomic_load_n(&proxy->nextSeqs[p], __ATOMIC_RELAXED);
+    uint64_t target = __atomic_load_n(&proxy->nextSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)
       continue;
     while (__atomic_load_n(&proxy->doneSeqs[p], __ATOMIC_ACQUIRE) < target)
@@ -359,8 +359,8 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   desc->size = size;
   desc->srcMrIdx = srcMrIdx;
   desc->dstMrIdx = dstMrIdx;
-  desc->seq = __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1,
-                                 __ATOMIC_RELAXED);
+  desc->seq =
+      __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1, __ATOMIC_RELAXED);
   enqueuePending(comm->rmaProxy, desc);
   return flagcxSuccess;
 }
@@ -388,8 +388,8 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
   desc->size = size;
   desc->srcMrIdx = srcMrIdx;
   desc->dstMrIdx = dstMrIdx;
-  desc->seq = __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1,
-                                 __ATOMIC_RELAXED);
+  desc->seq =
+      __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1, __ATOMIC_RELAXED);
   enqueuePending(comm->rmaProxy, desc);
   return flagcxSuccess;
 }
@@ -417,8 +417,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
   desc->dstMrIdx = (size > 0) ? dstMrIdx : -1;
   desc->signalOff = (uint64_t)signalOffset;
   desc->signalValue = signalValue;
-  desc->seq = __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1,
-                                 __ATOMIC_RELAXED);
+  desc->seq =
+      __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1, __ATOMIC_RELAXED);
   enqueuePending(comm->rmaProxy, desc);
   return flagcxSuccess;
 }
@@ -490,8 +490,8 @@ flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
   desc->dstOff = (uint64_t)dstOffset;
   desc->dstMrIdx = dstMrIdx;
   desc->putValue = value;
-  desc->seq = __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1,
-                                 __ATOMIC_RELAXED);
+  desc->seq =
+      __atomic_add_fetch(&comm->rmaProxy->nextSeqs[peer], 1, __ATOMIC_RELAXED);
   enqueuePending(comm->rmaProxy, desc);
   return flagcxSuccess;
 }

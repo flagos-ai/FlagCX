@@ -20,7 +20,7 @@ struct flagcxRmaDesc {
   uint64_t srcOff;
   uint64_t dstOff;
   size_t size;
-  int srcMrIdx;     // -1 when not used (e.g. signal-only PutSignal)
+  int srcMrIdx; // -1 when not used (e.g. signal-only PutSignal)
   int dstMrIdx;
   uint64_t signalOff;   // PUT_SIGNAL only
   uint64_t signalValue; // PUT_SIGNAL only
@@ -31,8 +31,8 @@ struct flagcxRmaDesc {
 };
 
 // Per-comm async RMA proxy state.
-// pending queues: producer = caller (proxy kernel thread), consumer = progress thread.
-// inProgress queues: progress thread only (no locking needed).
+// pending queues: producer = caller (proxy kernel thread), consumer = progress
+// thread. inProgress queues: progress thread only (no locking needed).
 struct flagcxRmaProxyState {
   // Single pending queue for all peers, protected by pendingMutex.
   // desc->peer identifies the target; no need for per-peer slots.
