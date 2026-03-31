@@ -1,5 +1,6 @@
-# 2025 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved
-# 2025 - Modified by DU. All Rights Reserved.
+# Copyright (c) 2026 BAAI. All rights reserved.
+# Modified by 2025 MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved
+# Modified by 2025 DU. All Rights Reserved.
 BUILDDIR ?= $(abspath ./build)
 
 # set to 0 if not provided
@@ -109,7 +110,7 @@ endif
 DEVICE_LIB =
 DEVICE_INCLUDE =
 DEVICE_LINK =
-DEVICE_RUNTIME =
+DEVICE_PLATFORM =
 DEVICE_COMPILER =
 DEVICE_COMPILE_FLAG =
 DEVICE_LINK_FLAG =
@@ -128,12 +129,13 @@ UCX_LINK =
 NET_ADAPTOR_FLAG =
 COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
+HOST_COMPILER = g++
 ifeq ($(USE_NVIDIA), 1)
 	include makefiles/nvidia_gencode.mk
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
 	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_RUNTIME = CUDA
+	DEVICE_PLATFORM = CUDA
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
 	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
 	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
@@ -199,9 +201,9 @@ else ifeq ($(USE_DU), 1)
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -lnccl
 	ADAPTOR_FLAG = -DUSE_DU_ADAPTOR
-	DEVICE_RUNTIME = CUDA
+	DEVICE_PLATFORM = DU
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -D__CUDACC__ -g
+	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g
 	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC
 	DEVICE_FILE_EXTENSION = cu
 else ifeq ($(USE_AMD), 1)
@@ -232,7 +234,7 @@ else
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
 	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_RUNTIME = CUDA
+	DEVICE_PLATFORM = CUDA
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
 	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
 	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
@@ -376,9 +378,11 @@ else
 DEVOBJS =
 endif
 
-LINKER := g++
+HOST_LINKER   := g++
+DEVICE_LINKER := $(DEVICE_COMPILER)
+LINKER        := $(HOST_LINKER)
 ifeq ($(COMPILE_KERNEL)$(USE_DU),11)
-  LINKER := $(DEVICE_COMPILER)
+  LINKER := $(DEVICE_LINKER)
 endif
 
 $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
@@ -389,15 +393,15 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@$(HOST_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
-	@$(DEVICE_COMPILER) -dlink $^ -o $@ $(DEVICE_LINK) $(DEVICE_LINK_FLAG)
+	@$(DEVICE_LINKER) -dlink $^ -o $@ $(DEVICE_LINK) $(DEVICE_LINK_FLAG)
 
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
-	@echo "Compiling $@ ($(DEVICE_RUNTIME))"
+	@echo "Compiling $@ ($(DEVICE_PLATFORM))"
 	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
 endif
 
