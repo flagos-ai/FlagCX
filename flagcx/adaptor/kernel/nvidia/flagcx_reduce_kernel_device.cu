@@ -15,7 +15,7 @@
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxStreamFlagState
 loadStreamFlagState(uint64_t flagAddr) {
-  return static_cast<flagcxStreamFlagState>(flagcxDeviceAtomicLoad(
+  return static_cast<flagcxStreamFlagState>(DeviceAPI::Atomic::load(
       reinterpret_cast<uint64_t *>(flagAddr), flagcxDeviceMemoryOrderAcquire));
 }
 
@@ -63,23 +63,22 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
   if (flagOut != 0) {
     flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
     if (isStreamFlagStatePending(flagState)) {
-      flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
-                              (uint64_t)flagcxStreamFlagDone,
-                              flagcxDeviceMemoryOrderRelease);
+      DeviceAPI::Atomic::store(reinterpret_cast<uint64_t *>(flagOut),
+                               (uint64_t)flagcxStreamFlagDone,
+                               flagcxDeviceMemoryOrderRelease);
     }
   }
   // Recycle the FIFO slot only after the output flag is visible as DONE, so a
   // host-side re-enqueue cannot overwrite flagOut before dependent streams
   // observe completion.
-  uint64_t currVal = flagcxDeviceAtomicLoad(
-      reinterpret_cast<uint64_t *>(value) + 3, flagcxDeviceMemoryOrderAcquire);
+  uint64_t currVal =
+      DeviceAPI::Atomic::load(value + 3, flagcxDeviceMemoryOrderAcquire);
   currVal &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
                << flagcxReduceTriggerOffState);
   currVal |= (flagcxReduceTriggerAvailable &
               flagcxTriggerMask(flagcxReduceTriggerBitsState))
              << flagcxReduceTriggerOffState;
-  flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(value) + 3, currVal,
-                          flagcxDeviceMemoryOrderRelease);
+  DeviceAPI::Atomic::store(value + 3, currVal, flagcxDeviceMemoryOrderRelease);
 }
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagIn() {
   return value[4];
@@ -91,8 +90,10 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagOut() {
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
                                                       int *idx) {
   while (true) {
-    uint64_t oldConsumed = *(buffer + flagcxFifoIdxConsumed);
-    uint64_t curProduced = *(buffer + flagcxFifoIdxProduced);
+    uint64_t oldConsumed = DeviceAPI::Atomic::load(
+        buffer + flagcxFifoIdxConsumed, flagcxDeviceMemoryOrderAcquire);
+    uint64_t curProduced = DeviceAPI::Atomic::load(
+        buffer + flagcxFifoIdxProduced, flagcxDeviceMemoryOrderAcquire);
     if (oldConsumed >= curProduced) {
       // no-op, task dequeued by other consumers
       *idx = -1;
@@ -202,9 +203,9 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       uint64_t flagOut = shm[FLAG_OUT_IDX];
       flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
       if (flagState == flagcxStreamFlagIdle) {
-        flagcxDeviceAtomicStore(reinterpret_cast<uint64_t *>(flagOut),
-                                (uint64_t)flagcxStreamFlagPend,
-                                flagcxDeviceMemoryOrderRelease);
+        DeviceAPI::Atomic::store(reinterpret_cast<uint64_t *>(flagOut),
+                                 (uint64_t)flagcxStreamFlagPend,
+                                 flagcxDeviceMemoryOrderRelease);
       }
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -217,11 +218,11 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
       }
       if (isStreamFlagStatePending(flagState)) {
         emptyIter++;
-        spinBackoff(emptyIter);
+        DeviceAPI::Intrin::spinBackoff(emptyIter);
         continue;
       }
       emptyIter++;
-      spinBackoff(emptyIter);
+      DeviceAPI::Intrin::spinBackoff(emptyIter);
     }
 
     // (4) perform reduce task
