@@ -20,8 +20,8 @@
 #include <string>
 #include <sys/syscall.h>
 #include <sys/time.h>
-#include <unordered_set>
 #include <unistd.h>
+#include <unordered_set>
 
 FLAGCX_PARAM(UniRunnerNSlices, "UNIRUNNER_NSLICES", 1);
 FLAGCX_PARAM(UniRunnerNThreads, "UNIRUNNER_NTHREADS", 32);
@@ -103,9 +103,8 @@ static flagcxResult_t validateDagNodes(flagcxUniRunnerState *runnerState) {
       if (childIdx < 0 || childIdx >= numDagNodes || childIdx == i) {
         return flagcxInternalError;
       }
-      uint64_t edge =
-          (static_cast<uint64_t>(static_cast<uint32_t>(i)) << 32) |
-          static_cast<uint32_t>(childIdx);
+      uint64_t edge = (static_cast<uint64_t>(static_cast<uint32_t>(i)) << 32) |
+                      static_cast<uint32_t>(childIdx);
       std::unordered_set<uint64_t>::iterator it = dagEdges.find(edge);
       if (it == dagEdges.end()) {
         return flagcxInternalError;
@@ -121,6 +120,21 @@ static inline void *getDagNodeFlag(flagcxUniRunnerState *runnerState,
                                    int nodeIdx) {
   return static_cast<void *>(static_cast<char *>(runnerState->streamFlags) +
                              nodeIdx * sizeof(uint64_t));
+}
+
+static inline flagcxStream_t
+getDagNodeExecutionStream(flagcxUniRunnerState *runnerState,
+                          const uniRunnerDagNode *node) {
+  switch (node->nodeType) {
+    case uniRunnerDagNodeTypeP2p:
+      return runnerState->commStream;
+    case uniRunnerDagNodeTypeRed:
+      return runnerState->redStream;
+    case uniRunnerDagNodeTypeCpy:
+      return runnerState->cpyStream;
+    default:
+      return NULL;
+  }
 }
 
 flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState) {
@@ -202,6 +216,215 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
     // Enqueue the head of this slice chain to Ready Queue
     flagcxIntruQueueEnqueue(&runnerState->redReadyQueue,
                             &runnerState->dagNodes[redNodeIdx]);
+  }
+
+  return validateDagNodes(runnerState);
+}
+
+flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
+                                           const void *sendbuff, void *recvbuff,
+                                           size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxComm_t comm, int groupSize) {
+  int rank = comm->rank;
+  int nranks = comm->nranks;
+
+  if (groupSize <= 0 || groupSize > nranks || nranks % groupSize != 0) {
+    return flagcxInvalidArgument;
+  }
+
+  int nGroups = nranks / groupSize;
+  int groupIdx = rank / groupSize;
+  int locRank = rank % groupSize;
+
+  if (nranks < 1) {
+    return flagcxInvalidArgument;
+  } else if (nranks == 1) {
+    // For single rank, do local cpy if out-of-place, otherwise no-op
+    if (count > 0 && sendbuff != recvbuff) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                               sizeof(struct uniRunnerDagNode)));
+      if (runnerState->dagNodes == NULL) {
+        return flagcxSystemError;
+      }
+      runnerState->numDagNodes = 1;
+      runnerState->dagNodes[0].nodeIdx = 0;
+      runnerState->dagNodes[0].nodeType = uniRunnerDagNodeTypeCpy;
+      runnerState->dagNodes[0].nodeData.cpy.src = const_cast<void *>(sendbuff);
+      runnerState->dagNodes[0].nodeData.cpy.dst = recvbuff;
+      runnerState->dagNodes[0].nodeData.cpy.count = count;
+      runnerState->dagNodes[0].nodeData.cpy.datatype = datatype;
+      runnerState->dagNodes[0].numParents = 0;
+      runnerState->dagNodes[0].numChildren = 0;
+      FLAGCXCHECK(allocDagNodeDeps(&runnerState->dagNodes[0]));
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[0]);
+      runnerState->numPendingNodes = 0;
+    }
+    return validateDagNodes(runnerState);
+  }
+
+  TRACE(FLAGCX_UNIRUNNER,
+        "rank %d initUniRunnerStateGroupedAG called, count=%lu, groupSize=%d, "
+        "nGroups=%d",
+        rank, count, groupSize, nGroups);
+
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  size_t groupChunkCount = count * groupSize;
+  const int numNodes = nGroups + 1;
+
+  runnerState->numDagNodes = numNodes;
+  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
+                           numNodes * sizeof(struct uniRunnerDagNode)));
+  if (runnerState->dagNodes == NULL) {
+    return flagcxSystemError;
+  }
+
+  size_t localBaseOffset =
+      static_cast<size_t>(groupIdx) * groupChunkCount * typeSize;
+  for (int step = 0; step < nGroups; step++) {
+    int nodeIdx = step;
+    bool isLastStep = (step == nGroups - 1);
+    int numIntraPeers = groupSize - 1;
+    int numOps = isLastStep ? 2 * numIntraPeers : 2 * numIntraPeers + 2;
+
+    runnerState->dagNodes[nodeIdx].nodeIdx = nodeIdx;
+    runnerState->dagNodes[nodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
+    runnerState->dagNodes[nodeIdx].nodeData.p2p.numOps = numOps;
+    if (numOps > 0) {
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes[nodeIdx].nodeData.p2p.ops,
+                               numOps * sizeof(struct uniRunnerP2pOpData)));
+    }
+
+    for (int i = 0; i < numIntraPeers; i++) {
+      int locSendPeer = (locRank + i + 1) % groupSize;
+      int locRecvPeer = (locRank - i - 1 + groupSize) % groupSize;
+
+      // Send
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i].type =
+          flagcxDevicePrimSend;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i].peerRank =
+          groupIdx * groupSize + locSendPeer;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i].count = count;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i].datatype =
+          datatype;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i].addr =
+          step == 0 ? const_cast<void *>(sendbuff)
+                    : static_cast<void *>(static_cast<char *>(recvbuff) +
+                                          localBaseOffset +
+                                          locRank * count * typeSize);
+      // Recv
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i + 1].type =
+          flagcxDevicePrimRecv;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i + 1].peerRank =
+          groupIdx * groupSize + locRecvPeer;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i + 1].count = count;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i + 1].datatype =
+          datatype;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i + 1].addr =
+          static_cast<void *>(static_cast<char *>(recvbuff) + localBaseOffset +
+                              locRecvPeer * count * typeSize);
+      TRACE(FLAGCX_UNIRUNNER,
+            "Node %d: intra-group step %d, sendPeer=%d, recvPeer=%d, "
+            "sendOffset=%lu, recvOffset=%lu",
+            nodeIdx, i, groupIdx * groupSize + locSendPeer,
+            groupIdx * groupSize + locRecvPeer,
+            localBaseOffset + locRank * count * typeSize,
+            localBaseOffset + locRecvPeer * count * typeSize);
+    }
+
+    if (!isLastStep) {
+      size_t sendGroupIdx = (groupIdx + step + 1) % nGroups;
+      size_t recvGroupIdx = (groupIdx - step - 1 + nGroups) % nGroups;
+      size_t sendPeer = sendGroupIdx * groupSize + locRank;
+      size_t recvPeer = recvGroupIdx * groupSize + locRank;
+      size_t recvOffset = recvPeer * count * typeSize;
+      int opIdx = 2 * numIntraPeers;
+
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].type =
+          flagcxDevicePrimSend;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].peerRank =
+          sendPeer;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].count = count;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].datatype =
+          datatype;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].addr =
+          step == 0 ? const_cast<void *>(sendbuff)
+                    : static_cast<void *>(static_cast<char *>(recvbuff) +
+                                          localBaseOffset +
+                                          locRank * count * typeSize);
+      opIdx++;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].type =
+          flagcxDevicePrimRecv;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].peerRank =
+          recvPeer;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].count = count;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].datatype =
+          datatype;
+      runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].addr =
+          static_cast<void *>(static_cast<char *>(recvbuff) + recvOffset);
+
+      TRACE(FLAGCX_UNIRUNNER,
+            "Node %d: inter-group step %d, sendPeer=%lu, recvPeer=%lu, "
+            "recvOffset=%lu",
+            nodeIdx, step, sendPeer, recvPeer, recvOffset);
+
+      localBaseOffset = recvGroupIdx * groupChunkCount * typeSize;
+    }
+  }
+
+  int nodeIdx = numNodes - 1;
+  runnerState->dagNodes[nodeIdx].nodeIdx = nodeIdx;
+  runnerState->dagNodes[nodeIdx].nodeType = uniRunnerDagNodeTypeCpy;
+  runnerState->dagNodes[nodeIdx].nodeData.cpy.src =
+      const_cast<void *>(sendbuff);
+  runnerState->dagNodes[nodeIdx].nodeData.cpy.dst = static_cast<void *>(
+      static_cast<char *>(recvbuff) + rank * count * typeSize);
+  runnerState->dagNodes[nodeIdx].nodeData.cpy.count = count;
+  runnerState->dagNodes[nodeIdx].nodeData.cpy.datatype = datatype;
+
+  for (int s = 0; s < nGroups; s++) {
+    runnerState->dagNodes[s].numParents = (s == 0) ? 0 : 1;
+    runnerState->dagNodes[s].numChildren = (s == nGroups - 1) ? 0 : 1;
+    FLAGCXCHECK(allocDagNodeDeps(&runnerState->dagNodes[s]));
+
+    if (s == 0) {
+      flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                              &runnerState->dagNodes[s]);
+    } else {
+      runnerState->numPendingNodes++;
+      FLAGCXCHECK(setDagNodeParent(&runnerState->dagNodes[s], 0, s - 1));
+    }
+    if (s != nGroups - 1) {
+      runnerState->dagNodes[s].children[0] = s + 1;
+    }
+  }
+
+  runnerState->dagNodes[nodeIdx].numParents = 0;
+  runnerState->dagNodes[nodeIdx].numChildren = 0;
+  FLAGCXCHECK(allocDagNodeDeps(&runnerState->dagNodes[nodeIdx]));
+  flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue,
+                          &runnerState->dagNodes[nodeIdx]);
+
+  TRACE(FLAGCX_UNIRUNNER,
+        "DAG scheduler initialized with %d-rank Grouped AllGather topology",
+        nranks);
+  for (int i = 0; i < runnerState->numDagNodes; i++) {
+    TRACE(FLAGCX_UNIRUNNER, "Node %d: type=%s, numParents=%d, numChildren=%d",
+          i,
+          (runnerState->dagNodes[i].nodeType == uniRunnerDagNodeTypeP2p) ? "P2P"
+          : (runnerState->dagNodes[i].nodeType == uniRunnerDagNodeTypeRed)
+              ? "RED"
+              : "CPY",
+          runnerState->dagNodes[i].numParents,
+          runnerState->dagNodes[i].numChildren);
+    if (runnerState->dagNodes[i].numChildren > 0) {
+      std::string childStr = "  Children: ";
+      for (int c = 0; c < runnerState->dagNodes[i].numChildren; c++) {
+        childStr += std::to_string(runnerState->dagNodes[i].children[c]) + " ";
+      }
+      TRACE(FLAGCX_UNIRUNNER, "%s", childStr.c_str());
+    }
   }
 
   return validateDagNodes(runnerState);
@@ -1773,6 +1996,8 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
   uniRunnerDagNode *current =
       flagcxIntruQueueDequeue(&runnerState->p2pReadyQueue);
   void *flag = getDagNodeFlag(runnerState, current->nodeIdx);
+  flagcxStream_t currentStream =
+      getDagNodeExecutionStream(runnerState, current);
 
   if (current->nodeType == uniRunnerDagNodeTypeP2p) {
     // Mark the node as submitted before wiring its completion dependency.
@@ -1781,11 +2006,19 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
     FLAGCXCHECK(deviceAdaptor->streamWriteValue64(runnerState->commStream, flag,
                                                   flagcxStreamFlagPend, 0));
     for (int i = 0; i < current->numParents; i++) {
-      void *parentFlag = getDagNodeFlag(runnerState, current->parents[i]);
+      int parentIdx = current->parents[i];
+      uniRunnerDagNode *parent = &runnerState->dagNodes[parentIdx];
+      if (getDagNodeExecutionStream(runnerState, parent) == currentStream) {
+        TRACE(FLAGCX_UNIRUNNER,
+              "rank %d p2p op %d skip same-stream wait for parent %d",
+              comm->rank, current->nodeIdx, parentIdx);
+        continue;
+      }
+      void *parentFlag = getDagNodeFlag(runnerState, parentIdx);
       FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
           runnerState->commStream, parentFlag, flagcxStreamFlagDone, 0));
       TRACE(FLAGCX_UNIRUNNER, "rank %d p2p op %d streamWait flag %d: DONE",
-            comm->rank, current->nodeIdx, current->parents[i]);
+            comm->rank, current->nodeIdx, parentIdx);
     }
 
     // Prepare ops list
@@ -1830,11 +2063,19 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
     FLAGCXCHECK(deviceAdaptor->streamWriteValue64(runnerState->cpyStream, flag,
                                                   flagcxStreamFlagPend, 0));
     for (int i = 0; i < current->numParents; i++) {
-      void *parentFlag = getDagNodeFlag(runnerState, current->parents[i]);
+      int parentIdx = current->parents[i];
+      uniRunnerDagNode *parent = &runnerState->dagNodes[parentIdx];
+      if (getDagNodeExecutionStream(runnerState, parent) == currentStream) {
+        TRACE(FLAGCX_UNIRUNNER,
+              "rank %d cpy op %d skip same-stream wait for parent %d",
+              comm->rank, current->nodeIdx, parentIdx);
+        continue;
+      }
+      void *parentFlag = getDagNodeFlag(runnerState, parentIdx);
       FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
           runnerState->cpyStream, parentFlag, flagcxStreamFlagDone, 0));
       TRACE(FLAGCX_UNIRUNNER, "rank %d cpy op %d streamWait flag %d: DONE",
-            comm->rank, current->nodeIdx, current->parents[i]);
+            comm->rank, current->nodeIdx, parentIdx);
     }
 
     // Launch copy
@@ -1893,7 +2134,8 @@ static flagcxResult_t notifyChildrenScheduled(flagcxUniRunnerState *runnerState,
 
 // Process ready queue: submit ready nodes to the corresponding execution
 // stream/FIFO. Child readiness is host-scheduled immediately after submission;
-// execution dependencies are enforced on GPU streams via stream flags.
+// same-stream execution dependencies rely on launch order, while cross-stream
+// dependencies are enforced via stream flags.
 static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
                                         flagcxHeteroComm_t comm) {
   // process p2pReadyQueue

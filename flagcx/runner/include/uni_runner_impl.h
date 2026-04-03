@@ -113,6 +113,11 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
                                         flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
+                                           const void *sendbuff, void *recvbuff,
+                                           size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxComm_t comm, int groupSize);
 flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
