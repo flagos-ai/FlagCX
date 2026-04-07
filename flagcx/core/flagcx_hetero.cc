@@ -59,9 +59,21 @@ static void *flagcxRmaProgressThread(void *arg) {
     if (head != NULL) {
       int done = 0;
       if (head->request != NULL) {
-        comm->netAdaptor->test(head->request, &done, NULL);
+        flagcxResult_t testRes =
+            comm->netAdaptor->test(head->request, &done, NULL);
+        if (testRes != flagcxSuccess) {
+          WARN("flagcxRmaProgressThread: test failed peer=%d res=%d",
+               head->peer, (int)testRes);
+          __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+          proxy->inProgressHead = head->next;
+          if (proxy->inProgressHead == NULL)
+            proxy->inProgressTail = NULL;
+          free(head);
+          did_work = true;
+          goto next;
+        }
       } else {
-        done = 1; // NULL request means already complete
+        done = 1;
       }
       if (done) {
         proxy->inProgressHead = head->next;
@@ -95,6 +107,7 @@ static void *flagcxRmaProgressThread(void *arg) {
       }
       if (sendComm == NULL) {
         WARN("flagcxRmaProgressThread: no sendComm for peer %d", p);
+        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
         free(desc);
         did_work = true;
         goto next;
@@ -152,6 +165,7 @@ static void *flagcxRmaProgressThread(void *arg) {
       if (res != flagcxSuccess) {
         WARN("flagcxRmaProgressThread: op failed peer=%d type=%d res=%d", p,
              (int)desc->type, (int)res);
+        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
         free(desc);
       } else {
         // Enqueue to inProgress for later polling.
@@ -254,8 +268,16 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL || seq == 0)
     return flagcxSuccess;
-  while (__atomic_load_n(&proxy->doneSeqs[peer], __ATOMIC_ACQUIRE) < seq)
+  if (peer < 0 || peer >= proxy->nRanks) {
+    WARN("flagcxHeteroFlushRma: peer %d out of range (nRanks=%d)", peer,
+         proxy->nRanks);
+    return flagcxInvalidArgument;
+  }
+  while (__atomic_load_n(&proxy->doneSeqs[peer], __ATOMIC_ACQUIRE) < seq) {
+    if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
+      return flagcxRemoteError;
     sched_yield();
+  }
   return flagcxSuccess;
 }
 
@@ -267,8 +289,11 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
     uint64_t target = __atomic_load_n(&proxy->nextSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)
       continue;
-    while (__atomic_load_n(&proxy->doneSeqs[p], __ATOMIC_ACQUIRE) < target)
+    while (__atomic_load_n(&proxy->doneSeqs[p], __ATOMIC_ACQUIRE) < target) {
+      if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
+        return flagcxRemoteError;
       sched_yield();
+    }
   }
   return flagcxSuccess;
 }
@@ -286,8 +311,11 @@ flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
   if (comm == NULL || comm->rmaProxy == NULL)
     return flagcxInvalidArgument;
   while (__atomic_load_n(&comm->rmaProxy->completionCount, __ATOMIC_ACQUIRE) <
-         target)
+         target) {
+    if (__atomic_load_n(&comm->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
+      return flagcxRemoteError;
     sched_yield();
+  }
   return flagcxSuccess;
 }
 
@@ -418,6 +446,11 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      uint64_t signalValue) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL)
     return flagcxNotSupported;
+  if (peer < 0 || peer >= comm->nRanks) {
+    WARN("flagcxHeteroPutSignal: peer %d out of range (nRanks=%d)", peer,
+         comm->nRanks);
+    return flagcxInvalidArgument;
+  }
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroPutSignal: rmaProxy not initialized");
     return flagcxInternalError;
@@ -496,6 +529,16 @@ flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
                                     int dstMrIdx) {
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
+  if (peer < 0 || peer >= comm->nRanks) {
+    WARN("flagcxHeteroPutValue: peer %d out of range (nRanks=%d)", peer,
+         comm->nRanks);
+    return flagcxInvalidArgument;
+  }
+  if (dstMrIdx < 0 || dstMrIdx >= globalOneSideHandleCount) {
+    WARN("flagcxHeteroPutValue: dstMrIdx %d out of range (count=%d)", dstMrIdx,
+         globalOneSideHandleCount);
+    return flagcxInvalidArgument;
+  }
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroPutValue: rmaProxy not initialized");
     return flagcxInternalError;

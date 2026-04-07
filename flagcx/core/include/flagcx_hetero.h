@@ -54,6 +54,10 @@ struct flagcxRmaProxyState {
   // Callers record the value before issuing ops, then poll until it advances.
   volatile uint64_t completionCount;
 
+  // Set to 1 by the progress thread when an IB op fails (test error, post
+  // error, or missing sendComm). Wait functions check this and return an error.
+  volatile int rmaError;
+
   int nRanks;
   struct flagcxHeteroComm *comm; // back-pointer
 

@@ -438,7 +438,12 @@ flagcxResult_t flagcxHeteroCommInitRank(flagcxHeteroComm_t *newcomm, int nranks,
   deviceAdaptor->getDevice(&cudaDev);
   FLAGCXCHECK(
       flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config));
-  FLAGCXCHECK(flagcxHeteroRmaProxyStart(*newcomm));
+  flagcxResult_t proxyRes = flagcxHeteroRmaProxyStart(*newcomm);
+  if (proxyRes != flagcxSuccess) {
+    flagcxHeteroCommDestroy(*newcomm);
+    *newcomm = NULL;
+    return proxyRes;
+  }
   return flagcxSuccess;
 }
 
@@ -455,7 +460,7 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 }
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
-  flagcxHeteroRmaProxyStop(comm);
+  FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
   flagcxProxyDestroy(comm);
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
