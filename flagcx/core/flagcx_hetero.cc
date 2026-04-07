@@ -53,6 +53,7 @@ static void *flagcxRmaProgressThread(void *arg) {
 
   while (!__atomic_load_n(&proxy->stop, __ATOMIC_ACQUIRE)) {
     bool did_work = false;
+    struct flagcxRmaDesc *desc = NULL;
 
     // ---- 1. Poll head of inProgress for completion ----
     struct flagcxRmaDesc *head = proxy->inProgressHead;
@@ -86,7 +87,7 @@ static void *flagcxRmaProgressThread(void *arg) {
 
     // ---- 2. Dequeue one desc from pending and post IB op ----
     pthread_mutex_lock(&proxy->pendingMutex);
-    struct flagcxRmaDesc *desc = proxy->pendingHead;
+    desc = proxy->pendingHead;
     if (desc != NULL) {
       proxy->pendingHead = desc->next;
       if (proxy->pendingHead == NULL)
