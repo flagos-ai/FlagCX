@@ -111,7 +111,8 @@ int main(int argc, char *argv[]) {
   size_t total_iters_per_size = num_warmup_iters + num_iters;
   size_t max_data_iters = std::max(num_warmup_iters, num_iters);
   size_t data_bytes = max_bytes * max_data_iters;
-  // Lower half: producer→getter forward signals; upper half: getter→producer ack signals.
+  // Lower half: producer→getter forward signals; upper half: getter→producer
+  // ack signals.
   size_t signal_total_bytes = signalBytes * total_iters_per_size * 2;
 
   // Data buffer: GDR memory (SYNC_MEMOPS ensures NIC visibility via GDR BAR)
@@ -213,7 +214,8 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Warmup iterations (signal slots [0 .. num_warmup_iters-1])
-    // Ack signal slots: [total_iters_per_size .. total_iters_per_size+num_warmup_iters-1]
+    // Ack signal slots: [total_iters_per_size ..
+    // total_iters_per_size+num_warmup_iters-1]
     for (int i = 0; i < num_warmup_iters; ++i) {
       size_t signalOffset = i * signalBytes;
       size_t ackSignalOffset = (total_iters_per_size + i) * signalBytes;
@@ -228,8 +230,10 @@ int main(int argc, char *argv[]) {
 
         res = flagcxSignal(comm, getterRank, signalOffset, 1);
         fatal(res, "flagcxSignal warmup failed", proc);
-        // Wait for getter's ack: getter has finished reading, safe to reuse buffer
-        res = flagcxWaitSignal(comm, getterRank, ackSignalOffset, 1, producerWaitStream);
+        // Wait for getter's ack: getter has finished reading, safe to reuse
+        // buffer
+        res = flagcxWaitSignal(comm, getterRank, ackSignalOffset, 1,
+                               producerWaitStream);
         fatal(res, "flagcxWaitSignal ack warmup failed", proc);
         devHandle->streamSynchronize(producerWaitStream);
       } else if (isGetter) {
@@ -239,10 +243,12 @@ int main(int argc, char *argv[]) {
         devHandle->streamSynchronize(waitStream);
 
         uint64_t cntBefore;
-        fatal(flagcxReadCounter(comm, &cntBefore), "flagcxReadCounter warmup failed", proc);
+        fatal(flagcxReadCounter(comm, &cntBefore),
+              "flagcxReadCounter warmup failed", proc);
         res = flagcxGet(comm, producerRank, dataOffset, dataOffset, size, 0, 0);
         fatal(res, "flagcxGet warmup failed", proc);
-        fatal(flagcxWaitCounter(comm, cntBefore + 1), "flagcxWaitCounter warmup failed", proc);
+        fatal(flagcxWaitCounter(comm, cntBefore + 1),
+              "flagcxWaitCounter warmup failed", proc);
         // Notify producer that GET is done
         res = flagcxSignal(comm, producerRank, ackSignalOffset, 1);
         fatal(res, "flagcxSignal ack warmup failed", proc);
@@ -253,10 +259,12 @@ int main(int argc, char *argv[]) {
     tim.reset();
 
     // Benchmark iterations (signal slots [num_warmup_iters .. total_iters-1])
-    // Ack signal slots: [total_iters_per_size+num_warmup_iters .. total_iters_per_size*2-1]
+    // Ack signal slots: [total_iters_per_size+num_warmup_iters ..
+    // total_iters_per_size*2-1]
     for (int i = 0; i < num_iters; ++i) {
       size_t signalOffset = (num_warmup_iters + i) * signalBytes;
-      size_t ackSignalOffset = (total_iters_per_size + num_warmup_iters + i) * signalBytes;
+      size_t ackSignalOffset =
+          (total_iters_per_size + num_warmup_iters + i) * signalBytes;
       size_t dataOffset = i * size;
 
       if (isProducer) {
@@ -267,8 +275,10 @@ int main(int argc, char *argv[]) {
 
         res = flagcxSignal(comm, getterRank, signalOffset, 1);
         fatal(res, "flagcxSignal failed", proc);
-        // Wait for getter's ack: getter has finished reading, safe to reuse buffer
-        res = flagcxWaitSignal(comm, getterRank, ackSignalOffset, 1, producerWaitStream);
+        // Wait for getter's ack: getter has finished reading, safe to reuse
+        // buffer
+        res = flagcxWaitSignal(comm, getterRank, ackSignalOffset, 1,
+                               producerWaitStream);
         fatal(res, "flagcxWaitSignal ack failed", proc);
         devHandle->streamSynchronize(producerWaitStream);
       } else if (isGetter) {
@@ -277,10 +287,12 @@ int main(int argc, char *argv[]) {
         devHandle->streamSynchronize(waitStream);
 
         uint64_t cntBefore;
-        fatal(flagcxReadCounter(comm, &cntBefore), "flagcxReadCounter failed", proc);
+        fatal(flagcxReadCounter(comm, &cntBefore), "flagcxReadCounter failed",
+              proc);
         res = flagcxGet(comm, producerRank, dataOffset, dataOffset, size, 0, 0);
         fatal(res, "flagcxGet failed", proc);
-        fatal(flagcxWaitCounter(comm, cntBefore + 1), "flagcxWaitCounter failed", proc);
+        fatal(flagcxWaitCounter(comm, cntBefore + 1),
+              "flagcxWaitCounter failed", proc);
         // Notify producer that GET is done
         res = flagcxSignal(comm, producerRank, ackSignalOffset, 1);
         fatal(res, "flagcxSignal ack failed", proc);
