@@ -479,6 +479,21 @@ flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
                                 size_t signalOffset, uint64_t expected,
                                 flagcxStream_t stream);
 
+/* Read the current global RMA completion counter into *count.
+ * Call this before issuing RMA ops (flagcxGet / flagcxPut / etc.) to
+ * snapshot the baseline, then call flagcxWaitCounter to block until the
+ * expected number of ops have completed. */
+flagcxResult_t flagcxReadCounter(flagcxComm_t comm, uint64_t *count);
+
+/* Block until the global RMA completion counter reaches target.
+ * Typical pattern:
+ *   uint64_t before;
+ *   flagcxReadCounter(comm, &before);
+ *   flagcxGet(comm, peer, ...);          // issues 1 async RMA op
+ *   flagcxWaitCounter(comm, before + 1); // wait for that op to finish
+ */
+flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target);
+
 /*
  * Group semantics
  *

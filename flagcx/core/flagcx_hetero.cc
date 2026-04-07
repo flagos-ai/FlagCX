@@ -40,6 +40,13 @@ static void enqueuePending(struct flagcxRmaProxyState *proxy,
   pthread_mutex_unlock(&proxy->pendingMutex);
 }
 
+static void rmaDescComplete(struct flagcxRmaProxyState *proxy,
+                            struct flagcxRmaDesc *desc) {
+  __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+  __atomic_store_n(&proxy->doneSeqs[desc->peer], desc->seq, __ATOMIC_RELEASE);
+  free(desc);
+}
+
 static void *flagcxRmaProgressThread(void *arg) {
   struct flagcxRmaProxyState *proxy = (struct flagcxRmaProxyState *)arg;
   struct flagcxHeteroComm *comm = proxy->comm;
@@ -57,12 +64,10 @@ static void *flagcxRmaProgressThread(void *arg) {
         done = 1; // NULL request means already complete
       }
       if (done) {
-        int p = head->peer;
-        __atomic_store_n(&proxy->doneSeqs[p], head->seq, __ATOMIC_RELEASE);
         proxy->inProgressHead = head->next;
         if (proxy->inProgressHead == NULL)
           proxy->inProgressTail = NULL;
-        free(head);
+        rmaDescComplete(proxy, head);
         did_work = true;
       }
     }
@@ -90,7 +95,6 @@ static void *flagcxRmaProgressThread(void *arg) {
       }
       if (sendComm == NULL) {
         WARN("flagcxRmaProgressThread: no sendComm for peer %d", p);
-        __atomic_store_n(&proxy->doneSeqs[p], desc->seq, __ATOMIC_RELEASE);
         free(desc);
         did_work = true;
         goto next;
@@ -148,11 +152,6 @@ static void *flagcxRmaProgressThread(void *arg) {
       if (res != flagcxSuccess) {
         WARN("flagcxRmaProgressThread: op failed peer=%d type=%d res=%d", p,
              (int)desc->type, (int)res);
-        __atomic_store_n(&proxy->doneSeqs[p], desc->seq, __ATOMIC_RELEASE);
-        free(desc);
-      } else if (desc->request == NULL) {
-        // IB op completed inline.
-        __atomic_store_n(&proxy->doneSeqs[p], desc->seq, __ATOMIC_RELEASE);
         free(desc);
       } else {
         // Enqueue to inProgress for later polling.
@@ -271,6 +270,24 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
     while (__atomic_load_n(&proxy->doneSeqs[p], __ATOMIC_ACQUIRE) < target)
       sched_yield();
   }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroReadCounter(flagcxHeteroComm_t comm,
+                                       uint64_t *count) {
+  if (comm == NULL || comm->rmaProxy == NULL || count == NULL)
+    return flagcxInvalidArgument;
+  *count = __atomic_load_n(&comm->rmaProxy->completionCount, __ATOMIC_ACQUIRE);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
+                                       uint64_t target) {
+  if (comm == NULL || comm->rmaProxy == NULL)
+    return flagcxInvalidArgument;
+  while (__atomic_load_n(&comm->rmaProxy->completionCount, __ATOMIC_ACQUIRE) <
+         target)
+    sched_yield();
   return flagcxSuccess;
 }
 

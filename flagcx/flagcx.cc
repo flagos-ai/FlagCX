@@ -2012,6 +2012,18 @@ flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
                                 stream);
 }
 
+flagcxResult_t flagcxReadCounter(flagcxComm_t comm, uint64_t *count) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroReadCounter(comm->heteroComm, count);
+}
+
+flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroWaitCounter(comm->heteroComm, target);
+}
+
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupStart());

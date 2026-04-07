@@ -50,6 +50,10 @@ struct flagcxRmaProxyState {
   volatile uint64_t *nextSeqs; // [nRanks]
   volatile uint64_t *doneSeqs; // [nRanks]
 
+  // Global completion counter: incremented once for every IB op that completes.
+  // Callers record the value before issuing ops, then poll until it advances.
+  volatile uint64_t completionCount;
+
   int nRanks;
   struct flagcxHeteroComm *comm; // back-pointer
 
@@ -130,5 +134,14 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
                                     uint64_t value, size_t dstOffset,
                                     int dstMrIdx);
+
+// Read the current global completion counter (snapshot before issuing ops).
+flagcxResult_t flagcxHeteroReadCounter(flagcxHeteroComm_t comm,
+                                       uint64_t *count);
+
+// Wait until the global completion counter reaches target.
+// Typical use: before = snapshot, issue N ops, flagcxHeteroWaitCounter(comm, before + N).
+flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
+                                       uint64_t target);
 
 #endif
