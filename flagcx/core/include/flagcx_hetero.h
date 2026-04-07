@@ -144,7 +144,8 @@ flagcxResult_t flagcxHeteroReadCounter(flagcxHeteroComm_t comm,
                                        uint64_t *count);
 
 // Wait until the global completion counter reaches target.
-// Typical use: before = snapshot, issue N ops, flagcxHeteroWaitCounter(comm, before + N).
+// Typical use: before = snapshot, issue N ops, flagcxHeteroWaitCounter(comm,
+// before + N).
 flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
                                        uint64_t target);
 
