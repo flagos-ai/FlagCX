@@ -11,6 +11,7 @@
 #include <sched.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // ---------------------------------------------------------------------------
 // Async RMA proxy implementation
@@ -51,8 +52,13 @@ static void *flagcxRmaProgressThread(void *arg) {
   struct flagcxRmaProxyState *proxy = (struct flagcxRmaProxyState *)arg;
   struct flagcxHeteroComm *comm = proxy->comm;
 
-  while (!__atomic_load_n(&proxy->stop, __ATOMIC_ACQUIRE)) {
-    bool did_work = false;
+  bool stopping = false;
+  bool did_work = false;
+  while (!stopping || proxy->inProgressHead != NULL || did_work) {
+    if (__atomic_load_n(&proxy->stop, __ATOMIC_ACQUIRE))
+      stopping = true;
+
+    did_work = false;
     struct flagcxRmaDesc *desc = NULL;
 
     // ---- 1. Poll head of inProgress for completion ----
@@ -86,14 +92,17 @@ static void *flagcxRmaProgressThread(void *arg) {
     }
 
     // ---- 2. Dequeue one desc from pending and post IB op ----
-    pthread_mutex_lock(&proxy->pendingMutex);
-    desc = proxy->pendingHead;
-    if (desc != NULL) {
-      proxy->pendingHead = desc->next;
-      if (proxy->pendingHead == NULL)
-        proxy->pendingTail = NULL;
+    // When stopping, skip posting new ops — just let inProgress drain.
+    if (!stopping) {
+      pthread_mutex_lock(&proxy->pendingMutex);
+      desc = proxy->pendingHead;
+      if (desc != NULL) {
+        proxy->pendingHead = desc->next;
+        if (proxy->pendingHead == NULL)
+          proxy->pendingTail = NULL;
+      }
+      pthread_mutex_unlock(&proxy->pendingMutex);
     }
-    pthread_mutex_unlock(&proxy->pendingMutex);
 
     if (desc != NULL) {
       int p = desc->peer;
@@ -184,6 +193,16 @@ static void *flagcxRmaProgressThread(void *arg) {
     if (!did_work)
       sched_yield();
   }
+
+  pthread_mutex_lock(&proxy->pendingMutex);
+  struct flagcxRmaDesc *d = proxy->pendingHead;
+  proxy->pendingHead = proxy->pendingTail = NULL;
+  pthread_mutex_unlock(&proxy->pendingMutex);
+  while (d) {
+    struct flagcxRmaDesc *nxt = d->next;
+    rmaDescComplete(proxy, d);
+    d = nxt;
+  }
   return NULL;
 }
 
@@ -218,10 +237,6 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   if (pthread_create(&proxy->thread, NULL, flagcxRmaProgressThread, proxy) !=
       0) {
     WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
-    free(proxy->pendingHead);
-    free(proxy->pendingTail);
-    free(proxy->inProgressHead);
-    free(proxy->inProgressTail);
     free((void *)proxy->nextSeqs);
     free((void *)proxy->doneSeqs);
     pthread_mutex_destroy(&proxy->pendingMutex);
@@ -241,20 +256,6 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
 
   __atomic_store_n(&proxy->stop, 1, __ATOMIC_RELEASE);
   pthread_join(proxy->thread, NULL);
-
-  // Free any descriptors left in the queues (connections already torn down).
-  struct flagcxRmaDesc *d = proxy->pendingHead;
-  while (d) {
-    struct flagcxRmaDesc *nxt = d->next;
-    free(d);
-    d = nxt;
-  }
-  d = proxy->inProgressHead;
-  while (d) {
-    struct flagcxRmaDesc *nxt = d->next;
-    free(d);
-    d = nxt;
-  }
 
   free((void *)proxy->nextSeqs);
   free((void *)proxy->doneSeqs);
@@ -277,7 +278,7 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
   while (__atomic_load_n(&proxy->doneSeqs[peer], __ATOMIC_ACQUIRE) < seq) {
     if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
       return flagcxRemoteError;
-    sched_yield();
+    usleep(100);
   }
   return flagcxSuccess;
 }
@@ -293,7 +294,7 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
     while (__atomic_load_n(&proxy->doneSeqs[p], __ATOMIC_ACQUIRE) < target) {
       if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
         return flagcxRemoteError;
-      sched_yield();
+      usleep(100);
     }
   }
   return flagcxSuccess;
