@@ -410,6 +410,7 @@ static flagcxResult_t flagcxP2pAccept(void *listenComm, void **recvComm) {
   FLAGCXCHECK(flagcxCalloc(&comm, 1));
 
   // TCP accept (blocking)
+  FLAGCXCHECK(flagcxSocketInit(&comm->sock));
   FLAGCXCHECK(flagcxSocketAccept(&comm->sock, &lComm->sock));
   int ready = 0;
   while (!ready) {
