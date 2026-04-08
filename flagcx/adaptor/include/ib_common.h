@@ -499,4 +499,24 @@ static_assert(
 static_assert(MAX_REQUESTS <= 256, "request id are encoded in wr_id and we "
                                    "need up to 8 requests ids per completion");
 
+// Shared IB helpers (defined in ibrc_adaptor.cc, used by P2P adaptor)
+flagcxResult_t flagcxIbInit();
+flagcxResult_t flagcxIbDevices(int *ndev);
+flagcxResult_t flagcxIbGetProperties(int dev, void *props);
+flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
+                                struct flagcxIbNetCommDevBase *base,
+                                int accessFlags, struct flagcxIbQp *qp);
+flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
+                             uint32_t dest_qp_num,
+                             struct flagcxIbDevInfo *info);
+flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp);
+flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
+                                           void *data, size_t size, int type,
+                                           uint64_t offset, int fd, int mrFlags,
+                                           ibv_mr **mhandle);
+flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
+                                       ibv_mr *mhandle);
+flagcxResult_t flagcxIbGetGidIndex(struct ibv_context *context, uint8_t portNum,
+                                   int gidTblLen, int *gidIndex);
+
 #endif // FLAGCX_IB_COMMON_H_

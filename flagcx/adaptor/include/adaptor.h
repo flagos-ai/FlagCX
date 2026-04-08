@@ -63,8 +63,9 @@ enum NetType {
   IBRC = 1,   // InfiniBand RC (or UCX when USE_UCX=1)
   SOCKET = 2, // Socket
 #ifdef USE_IBUC
-  IBUC = 3 // InfiniBand UC
+  IBUC = 3, // InfiniBand UC
 #endif
+  IB_P2P = 4, // InfiniBand RC P2P (one-sided RDMA)
 };
 
 // Unified network adaptor function declarations
