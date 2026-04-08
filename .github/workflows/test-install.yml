@@ -1,0 +1,105 @@
+name: Test Package Installation
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: 'Backend to test'
+        required: true
+        type: choice
+        options:
+          - nvidia
+          - metax
+          - ascend
+
+jobs:
+  test-deb:
+    runs-on: h20
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - ubuntu:22.04
+          - ubuntu:24.04
+          - debian:trixie
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download DEB packages
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: flagcx-${{ inputs.backend }}-packages
+          path: packages/
+          workflow: build-deb.yml
+        continue-on-error: true
+
+      - name: Check for local packages
+        id: check-pkgs
+        run: |
+          if ls packages/*.deb 1>/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          elif ls debian-packages/${{ inputs.backend }}/*.deb 1>/dev/null 2>&1; then
+            mkdir -p packages
+            cp debian-packages/${{ inputs.backend }}/*.deb packages/
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::error::No DEB packages found. Run build-deb workflow first."
+          fi
+
+      - name: Test install on ${{ matrix.distro }}
+        if: steps.check-pkgs.outputs.found == 'true'
+        run: |
+          docker run --rm \
+            --network=host \
+            -v "$PWD/packages:/pkgs" \
+            -v "$PWD/packaging/tests:/tests" \
+            ${{ matrix.distro }} \
+            bash /tests/test-install.sh deb ${{ inputs.backend }} /pkgs
+
+  test-rpm:
+    runs-on: h20
+    strategy:
+      fail-fast: false
+      matrix:
+        distro:
+          - fedora:43
+          - opencloudos/opencloudos9-minimal:latest
+          - openanolis/anolisos:8.8
+          - openeuler/openeuler:24.03-lts
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download RPM packages
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          name: flagcx-${{ inputs.backend }}-rpm-packages
+          path: packages/
+          workflow: build-rpm.yml
+        continue-on-error: true
+
+      - name: Check for local packages
+        id: check-pkgs
+        run: |
+          if ls packages/*.rpm 1>/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          elif ls rpm-packages/${{ inputs.backend }}/**/*.rpm 1>/dev/null 2>&1; then
+            mkdir -p packages
+            cp rpm-packages/${{ inputs.backend }}/**/*.rpm packages/
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::error::No RPM packages found. Run build-rpm workflow first."
+          fi
+
+      - name: Test install on ${{ matrix.distro }}
+        if: steps.check-pkgs.outputs.found == 'true'
+        run: |
+          docker run --rm \
+            --network=host \
+            -v "$PWD/packages:/pkgs" \
+            -v "$PWD/packaging/tests:/tests" \
+            ${{ matrix.distro }} \
+            bash /tests/test-install.sh rpm ${{ inputs.backend }} /pkgs
