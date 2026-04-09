@@ -115,10 +115,10 @@ void check_device(at::Device dev1, at::Device dev2) {
         "flagcxBackend does not support multidevice tensors");
   }
 #elif USE_ENFLAME_ADAPTOR
-    if (dev1.is_privateuseone() && dev2.is_privateuseone() && dev1 != dev2) {
-      throw std::runtime_error(
-          "flagcxBackend does not support multidevice tensors");
-    }
+  if (dev1.is_privateuseone() && dev2.is_privateuseone() && dev1 != dev2) {
+    throw std::runtime_error(
+        "flagcxBackend does not support multidevice tensors");
+  }
 #else
   if (dev1.is_cuda() && dev2.is_cuda() && dev1 != dev2) {
     throw std::runtime_error(
