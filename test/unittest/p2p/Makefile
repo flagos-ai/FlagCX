@@ -5,7 +5,7 @@ UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/p2p_unit_tests
 
-.PHONY: all clean run-unit run
+.PHONY: all clean run-unit run-mpi run
 
 ALL_TARGETS :=
 ifneq ($(UNIT_SRCS),)
@@ -30,4 +30,7 @@ clean:
 run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
-run: run-unit
+run-mpi:
+	@echo "No MPI tests for p2p (yet)."
+
+run: run-unit run-mpi

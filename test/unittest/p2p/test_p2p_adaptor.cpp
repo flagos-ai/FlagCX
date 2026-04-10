@@ -217,8 +217,7 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
   memset(buf, 0, bufSize);
 
   void *mhandle = nullptr;
-  int mrFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+  int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
   EXPECT_EQ(flagcxNetIbP2p.regMr(sendComm, buf, bufSize, FLAGCX_PTR_HOST,
                                  mrFlags, &mhandle),
             flagcxSuccess);
@@ -282,8 +281,7 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   memset(srcBuf, 0xAB, bufSize);
   memset(dstBuf, 0, bufSize);
 
-  int mrFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+  int mrFlags = FLAGCX_NET_MR_FLAG_NONE;
 
   void *srcMr = nullptr;
   void *dstMr = nullptr;
