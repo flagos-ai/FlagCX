@@ -4,6 +4,7 @@
 
 #include "p2p_topo.h"
 #include "adaptor.h"
+#include "flagcx_net.h"
 #include "utils.h"
 #include "xml.h"
 
