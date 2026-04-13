@@ -177,8 +177,6 @@ struct flagcxNetAdaptor *getUnifiedNetAdaptor(int netType) {
 #endif
     case SOCKET:
       return &flagcxNetSocket;
-    case IB_P2P:
-      return &flagcxNetIbP2p;
     default:
       return NULL;
   }

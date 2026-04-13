@@ -499,7 +499,7 @@ static_assert(
 static_assert(MAX_REQUESTS <= 256, "request id are encoded in wr_id and we "
                                    "need up to 8 requests ids per completion");
 
-// Shared IB helpers (defined in ibrc_adaptor.cc, used by P2P adaptor)
+// Shared IBRC helpers (defined in ibrc_adaptor.cc, used by ibrc p2p adaptor)
 flagcxResult_t flagcxIbInit();
 flagcxResult_t flagcxIbDevices(int *ndev);
 flagcxResult_t flagcxIbGetProperties(int dev, void *props);
