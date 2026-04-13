@@ -501,7 +501,6 @@ static_assert(MAX_REQUESTS <= 256, "request id are encoded in wr_id and we "
 
 // Shared IBRC helpers (defined in ibrc_adaptor.cc, used by ibrc p2p adaptor)
 flagcxResult_t flagcxIbInit();
-flagcxResult_t flagcxIbDevices(int *ndev);
 flagcxResult_t flagcxIbGetProperties(int dev, void *props);
 flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
                                 struct flagcxIbNetCommDevBase *base,
@@ -516,7 +515,5 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                            ibv_mr **mhandle);
 flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
                                        ibv_mr *mhandle);
-flagcxResult_t flagcxIbGetGidIndex(struct ibv_context *context, uint8_t portNum,
-                                   int gidTblLen, int *gidIndex);
 
 #endif // FLAGCX_IB_COMMON_H_
