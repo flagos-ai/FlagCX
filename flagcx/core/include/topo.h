@@ -289,6 +289,9 @@ flagcxResult_t flagcxTopoPrint(struct flagcxTopoServer *topoServer);
 
 flagcxResult_t flagcxTopoPrintPaths(struct flagcxTopoServer *topoServer);
 
+flagcxResult_t flagcxTopoGetLocalNet(struct flagcxTopoServer *topoServer,
+                                     int rank, int *netDev);
+
 flagcxResult_t
 flagcxGetInterServerTopo(struct flagcxHeteroComm *comm,
                          struct flagcxInterServerTopo **interServerTopo,
