@@ -5,7 +5,7 @@ UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/topo_unit_tests
 
-.PHONY: all clean run-unit run
+.PHONY: all clean run-unit run-mpi run
 
 ALL_TARGETS :=
 ifneq ($(UNIT_SRCS),)
@@ -29,5 +29,8 @@ clean:
 
 run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
+
+run-mpi:
+	@echo "No MPI tests for topo component"
 
 run: run-unit
