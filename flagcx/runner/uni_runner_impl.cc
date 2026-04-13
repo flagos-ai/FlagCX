@@ -11,23 +11,384 @@
 #include "runner_result.h"
 #include "socket.h"
 #include "transport.h"
+#include "uni_runner_helper.h"
 #define ENABLE_TIMER 0
 #include "timer.h"
 
+#include <algorithm>
 #include <assert.h>
+#include <cstdint>
 #include <math.h>
 #include <new>
+#include <mutex>
 #include <string>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 FLAGCX_PARAM(UniRunnerNSlices, "UNIRUNNER_NSLICES", 1);
 FLAGCX_PARAM(UniRunnerNThreads, "UNIRUNNER_NTHREADS", 32);
 FLAGCX_PARAM(UniRunnerNBlocks, "UNIRUNNER_NBLOCKS", 1);
 FLAGCX_PARAM(UniRunnerNRedSlices, "UNIRUNNER_NREDSLICES", 0);
 FLAGCX_PARAM(UniRunnerRedSliceSize, "UNIRUNNER_REDSLICESIZE", 65536);
+
+namespace {
+
+constexpr char kUniRunnerDagInputPathEnv[] = "FLAGCX_UNIRUNNER_DAG_INPUT_PATH";
+constexpr char kUniRunnerDagCachePathEnv[] = "FLAGCX_UNIRUNNER_DAG_CACHE_PATH";
+
+struct uniRunnerDagRuntimeBindings {
+  const void *inputBase = NULL;
+  void *outputBase = NULL;
+  void *scratchBase = NULL;
+  size_t inputBytes = 0;
+  size_t outputBytes = 0;
+  size_t scratchBytes = 0;
+};
+
+std::mutex gUniRunnerDagCacheMutex;
+std::unordered_map<size_t, std::vector<std::shared_ptr<uniRunnerDagTemplate>>>
+    gUniRunnerDagCache;
+std::unordered_set<std::string> gUniRunnerDagLoadedPaths;
+
+static size_t hashCombine(size_t seed, size_t value) {
+  return seed ^ (value + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2));
+}
+
+static bool uniRunnerDagCacheKeysEqual(const uniRunnerDagCacheKey &lhs,
+                                       const uniRunnerDagCacheKey &rhs) {
+  return lhs.formatVersion == rhs.formatVersion &&
+         lhs.algoType == rhs.algoType && lhs.commOp == rhs.commOp &&
+         lhs.count == rhs.count && lhs.datatype == rhs.datatype &&
+         lhs.redOp == rhs.redOp && lhs.rank == rhs.rank &&
+         lhs.nranks == rhs.nranks && lhs.root == rhs.root &&
+         lhs.groupSize == rhs.groupSize && lhs.numSlices == rhs.numSlices &&
+         lhs.numRedSlices == rhs.numRedSlices &&
+         lhs.redSliceSize == rhs.redSliceSize && lhs.nthreads == rhs.nthreads &&
+         lhs.inputOutputAliased == rhs.inputOutputAliased &&
+         lhs.inputScratchAliased == rhs.inputScratchAliased &&
+         lhs.outputScratchAliased == rhs.outputScratchAliased;
+}
+
+static flagcxResult_t insertUniRunnerDagTemplateLocked(
+    const std::shared_ptr<uniRunnerDagTemplate> &dagTemplate) {
+  std::vector<std::shared_ptr<uniRunnerDagTemplate>> &bucket =
+      gUniRunnerDagCache[dagTemplate->hashValue];
+  for (std::shared_ptr<uniRunnerDagTemplate> &entry : bucket) {
+    if (uniRunnerDagCacheKeysEqual(entry->key, dagTemplate->key)) {
+      entry = dagTemplate;
+      return flagcxSuccess;
+    }
+  }
+  bucket.push_back(dagTemplate);
+  return flagcxSuccess;
+}
+
+static bool findUniRunnerDagTemplateLocked(
+    size_t hashValue, const uniRunnerDagCacheKey &key,
+    std::shared_ptr<uniRunnerDagTemplate> *dagTemplate) {
+  std::unordered_map<
+      size_t, std::vector<std::shared_ptr<uniRunnerDagTemplate>>>::iterator it =
+      gUniRunnerDagCache.find(hashValue);
+  if (it == gUniRunnerDagCache.end()) {
+    return false;
+  }
+  for (const std::shared_ptr<uniRunnerDagTemplate> &entry : it->second) {
+    if (uniRunnerDagCacheKeysEqual(entry->key, key)) {
+      *dagTemplate = entry;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void collectUniRunnerDagTemplatesLocked(
+    std::vector<uniRunnerDagTemplate> *dagTemplates) {
+  dagTemplates->clear();
+  for (const auto &bucket : gUniRunnerDagCache) {
+    for (const std::shared_ptr<uniRunnerDagTemplate> &entry : bucket.second) {
+      dagTemplates->push_back(*entry);
+    }
+  }
+}
+
+static flagcxResult_t importUniRunnerDagTemplatesLocked(
+    const std::vector<uniRunnerDagTemplate> &dagTemplates) {
+  for (const uniRunnerDagTemplate &dagTemplate : dagTemplates) {
+    FLAGCXCHECK(insertUniRunnerDagTemplateLocked(
+        std::make_shared<uniRunnerDagTemplate>(dagTemplate)));
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+dumpUniRunnerDagCacheToPathLocked(const std::string &path) {
+  std::vector<uniRunnerDagTemplate> dagTemplates;
+  collectUniRunnerDagTemplatesLocked(&dagTemplates);
+  return uniRunnerSaveDagCacheFile(path, dagTemplates);
+}
+
+static std::string getUniRunnerDagEnvPath(const char *envName) {
+  const char *path = flagcxGetEnv(envName);
+  return path == NULL ? "" : std::string(path);
+}
+
+static void appendUniRunnerDagPath(std::vector<std::string> *paths,
+                                   const std::string &path) {
+  if (path.empty()) {
+    return;
+  }
+  if (std::find(paths->begin(), paths->end(), path) == paths->end()) {
+    paths->push_back(path);
+  }
+}
+
+static std::vector<std::string> collectUniRunnerDagInputPathsFromEnv() {
+  std::vector<std::string> paths;
+  appendUniRunnerDagPath(&paths,
+                         getUniRunnerDagEnvPath(kUniRunnerDagInputPathEnv));
+  appendUniRunnerDagPath(&paths,
+                         getUniRunnerDagEnvPath(kUniRunnerDagCachePathEnv));
+  return paths;
+}
+
+static std::string getUniRunnerDagCachePathFromEnv() {
+  return getUniRunnerDagEnvPath(kUniRunnerDagCachePathEnv);
+}
+
+static flagcxResult_t loadUniRunnerDagPathIntoCache(const std::string &path) {
+  if (path.empty()) {
+    return flagcxSuccess;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
+    if (gUniRunnerDagLoadedPaths.count(path) != 0) {
+      return flagcxSuccess;
+    }
+  }
+
+  std::vector<uniRunnerDagTemplate> dagTemplates;
+  FLAGCXCHECK(uniRunnerLoadDagCacheFile(path, &dagTemplates));
+
+  std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
+  if (gUniRunnerDagLoadedPaths.count(path) != 0) {
+    return flagcxSuccess;
+  }
+  FLAGCXCHECK(importUniRunnerDagTemplatesLocked(dagTemplates));
+  gUniRunnerDagLoadedPaths.insert(path);
+  return flagcxSuccess;
+}
+
+static bool matchBindingRange(const void *ptr, const void *base, size_t bytes,
+                              int64_t *offsetBytes) {
+  if (ptr == NULL || base == NULL) {
+    return false;
+  }
+  uintptr_t ptrAddr = reinterpret_cast<uintptr_t>(ptr);
+  uintptr_t baseAddr = reinterpret_cast<uintptr_t>(base);
+  if (ptrAddr < baseAddr) {
+    return false;
+  }
+  uintptr_t delta = ptrAddr - baseAddr;
+  if (delta > bytes) {
+    return false;
+  }
+  *offsetBytes = static_cast<int64_t>(delta);
+  return true;
+}
+
+static flagcxResult_t
+captureBufferRef(const void *ptr, const uniRunnerDagRuntimeBindings &bindings,
+                 uniRunnerDagBufferRef *ref) {
+  if (ptr == NULL) {
+    ref->bufferType = uniRunnerDagBufferTypeNone;
+    ref->offsetBytes = 0;
+    return flagcxSuccess;
+  }
+
+  int64_t offsetBytes = 0;
+  if (matchBindingRange(ptr, bindings.inputBase, bindings.inputBytes,
+                        &offsetBytes)) {
+    ref->bufferType = uniRunnerDagBufferTypeInput;
+    ref->offsetBytes = offsetBytes;
+    return flagcxSuccess;
+  }
+  if (matchBindingRange(ptr, bindings.outputBase, bindings.outputBytes,
+                        &offsetBytes)) {
+    ref->bufferType = uniRunnerDagBufferTypeOutput;
+    ref->offsetBytes = offsetBytes;
+    return flagcxSuccess;
+  }
+  if (matchBindingRange(ptr, bindings.scratchBase, bindings.scratchBytes,
+                        &offsetBytes)) {
+    ref->bufferType = uniRunnerDagBufferTypeScratch;
+    ref->offsetBytes = offsetBytes;
+    return flagcxSuccess;
+  }
+  return flagcxInvalidArgument;
+}
+
+static flagcxResult_t
+resolveBufferRef(const uniRunnerDagBufferRef &ref,
+                 const uniRunnerDagRuntimeBindings &bindings, void **ptr) {
+  const char *base = NULL;
+  size_t bytes = 0;
+  switch (ref.bufferType) {
+    case uniRunnerDagBufferTypeNone:
+      *ptr = NULL;
+      return flagcxSuccess;
+    case uniRunnerDagBufferTypeInput:
+      base = static_cast<const char *>(bindings.inputBase);
+      bytes = bindings.inputBytes;
+      break;
+    case uniRunnerDagBufferTypeOutput:
+      base = static_cast<const char *>(bindings.outputBase);
+      bytes = bindings.outputBytes;
+      break;
+    case uniRunnerDagBufferTypeScratch:
+      base = static_cast<const char *>(bindings.scratchBase);
+      bytes = bindings.scratchBytes;
+      break;
+    default:
+      return flagcxInvalidArgument;
+  }
+
+  if (base == NULL || ref.offsetBytes < 0 ||
+      static_cast<size_t>(ref.offsetBytes) > bytes) {
+    return flagcxInvalidArgument;
+  }
+
+  *ptr = const_cast<char *>(base) + ref.offsetBytes;
+  return flagcxSuccess;
+}
+
+static size_t
+resolveEffectiveUniRunnerRedSlices(const flagcxUniRunnerState *runnerState,
+                                   size_t count, int nranks) {
+  if (runnerState->uniRunnerNRedSlices != 0) {
+    return runnerState->uniRunnerNRedSlices;
+  }
+  if (count == 0 || runnerState->uniRunnerRedSliceSize == 0 ||
+      runnerState->uniRunnerNSlices == 0 || nranks <= 0) {
+    return 1;
+  }
+
+  size_t divisor = static_cast<size_t>(nranks) * runnerState->uniRunnerNSlices *
+                   runnerState->uniRunnerRedSliceSize;
+  if (divisor == 0) {
+    return 1;
+  }
+  return std::max<size_t>(1, (count + divisor - 1) / divisor);
+}
+
+static uniRunnerDagCacheKey makeUniRunnerDagCacheKey(
+    uniRunnerDagAlgoType algoType, flagcxCommOp_t commOp, size_t count,
+    flagcxDataType_t datatype, flagcxRedOp_t redOp, int root, int groupSize,
+    flagcxUniRunnerState *runnerState, flagcxComm_t comm, const void *sendbuff,
+    void *recvbuff, void *scratchbuff) {
+  uniRunnerDagCacheKey key{};
+  key.formatVersion = kUniRunnerDagCacheFormatVersion;
+  key.algoType = algoType;
+  key.commOp = commOp;
+  key.count = count;
+  key.datatype = datatype;
+  key.redOp = redOp;
+  key.rank = comm->rank;
+  key.nranks = comm->nranks;
+  key.root = root;
+  key.groupSize = groupSize;
+  key.numSlices = runnerState->uniRunnerNSlices;
+  key.numRedSlices = runnerState->uniRunnerNRedSlices;
+  key.redSliceSize = runnerState->uniRunnerRedSliceSize;
+  key.nthreads = runnerState->uniRunnerNThreads;
+  key.inputOutputAliased = sendbuff == recvbuff;
+  key.inputScratchAliased = sendbuff == scratchbuff;
+  key.outputScratchAliased = recvbuff == scratchbuff;
+  return key;
+}
+
+static bool
+findUniRunnerDagTemplate(size_t hashValue, const uniRunnerDagCacheKey &key,
+                         std::shared_ptr<uniRunnerDagTemplate> *dagTemplate) {
+  std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
+  return findUniRunnerDagTemplateLocked(hashValue, key, dagTemplate);
+}
+
+static flagcxResult_t loadUniRunnerDagInputsFromEnv() {
+  std::vector<std::string> paths = collectUniRunnerDagInputPathsFromEnv();
+  flagcxResult_t firstError = flagcxSuccess;
+  bool loadedAny = false;
+  for (const std::string &path : paths) {
+    flagcxResult_t loadRes = loadUniRunnerDagPathIntoCache(path);
+    if (loadRes == flagcxSuccess) {
+      loadedAny = true;
+      continue;
+    }
+    if (loadRes != flagcxSuccess && firstError == flagcxSuccess) {
+      firstError = loadRes;
+    }
+  }
+  return loadedAny ? flagcxSuccess : firstError;
+}
+
+static flagcxResult_t cacheUniRunnerDagTemplate(
+    const std::shared_ptr<uniRunnerDagTemplate> &dagTemplate) {
+  std::string cachePath = getUniRunnerDagCachePathFromEnv();
+  {
+    std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
+    FLAGCXCHECK(insertUniRunnerDagTemplateLocked(dagTemplate));
+    if (!cachePath.empty()) {
+      gUniRunnerDagLoadedPaths.insert(cachePath);
+      FLAGCXCHECK(dumpUniRunnerDagCacheToPathLocked(cachePath));
+    }
+  }
+  return flagcxSuccess;
+}
+
+} // namespace
+
+size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key) {
+  size_t hashValue = 0;
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.formatVersion));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.algoType));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.commOp));
+  hashValue = hashCombine(hashValue, key.count);
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.datatype));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.redOp));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.rank));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.nranks));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.root + 1));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.groupSize + 1));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.numSlices));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.numRedSlices));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.redSliceSize));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(key.nthreads));
+  hashValue =
+      hashCombine(hashValue, static_cast<size_t>(key.inputOutputAliased));
+  hashValue =
+      hashCombine(hashValue, static_cast<size_t>(key.inputScratchAliased));
+  hashValue =
+      hashCombine(hashValue, static_cast<size_t>(key.outputScratchAliased));
+  return hashValue;
+}
+
+flagcxResult_t loadUniRunnerDagCacheFromEnv() {
+  return loadUniRunnerDagInputsFromEnv();
+}
+
+flagcxResult_t dumpUniRunnerDagCacheToEnv() {
+  std::string cachePath = getUniRunnerDagCachePathFromEnv();
+  if (cachePath.empty()) {
+    return flagcxSuccess;
+  }
+  std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
+  gUniRunnerDagLoadedPaths.insert(cachePath);
+  return dumpUniRunnerDagCacheToPathLocked(cachePath);
+}
 
 static flagcxResult_t allocDagNodeDeps(uniRunnerDagNode *node) {
   node->pendingParents = 0;
@@ -141,10 +502,11 @@ flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
-                                        const void *sendbuff, void *recvbuff,
-                                        size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm) {
+static flagcxResult_t
+buildUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
+                          const void *sendbuff, void *recvbuff, size_t count,
+                          flagcxDataType_t datatype, flagcxRedOp_t op,
+                          flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
   int numSlices = runnerState->uniRunnerNSlices;
@@ -221,11 +583,9 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
-                                           const void *sendbuff, void *recvbuff,
-                                           size_t count,
-                                           flagcxDataType_t datatype,
-                                           flagcxComm_t comm, int groupSize) {
+static flagcxResult_t buildUniRunnerStateGroupedAG(
+    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
+    size_t count, flagcxDataType_t datatype, flagcxComm_t comm, int groupSize) {
   int rank = comm->rank;
   int nranks = comm->nranks;
 
@@ -430,10 +790,11 @@ flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
-                                        const void *sendbuff, void *recvbuff,
-                                        size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm) {
+static flagcxResult_t
+buildUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
+                          const void *sendbuff, void *recvbuff, size_t count,
+                          flagcxDataType_t datatype, flagcxRedOp_t op,
+                          flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
   int numSlices = runnerState->uniRunnerNSlices;
@@ -629,10 +990,11 @@ flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
-                                        const void *sendbuff, void *recvbuff,
-                                        size_t count, flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm) {
+static flagcxResult_t
+buildUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
+                          const void *sendbuff, void *recvbuff, size_t count,
+                          flagcxDataType_t datatype, flagcxRedOp_t op,
+                          flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
   int numSlices = runnerState->uniRunnerNSlices;
@@ -970,11 +1332,11 @@ flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
-                                          const void *sendbuff, void *recvbuff,
-                                          size_t count,
-                                          flagcxDataType_t datatype,
-                                          flagcxRedOp_t op, flagcxComm_t comm) {
+static flagcxResult_t
+buildUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
+                            const void *sendbuff, void *recvbuff, size_t count,
+                            flagcxDataType_t datatype, flagcxRedOp_t op,
+                            flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
 
@@ -1353,11 +1715,10 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
-                                        const void *sendbuff, void *recvbuff,
-                                        void *scratchbuff, size_t count,
-                                        flagcxDataType_t datatype,
-                                        flagcxRedOp_t op, flagcxComm_t comm) {
+static flagcxResult_t buildUniRunnerStateRingRS(
+    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
+    void *scratchbuff, size_t count, flagcxDataType_t datatype,
+    flagcxRedOp_t op, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
 
@@ -1630,12 +1991,10 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
-                                         const void *sendbuff, void *recvbuff,
-                                         void *scratchbuff, size_t count,
-                                         flagcxDataType_t datatype,
-                                         flagcxRedOp_t op, int root,
-                                         flagcxComm_t comm) {
+static flagcxResult_t buildUniRunnerStateTreeRed(
+    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
+    void *scratchbuff, size_t count, flagcxDataType_t datatype,
+    flagcxRedOp_t op, int root, flagcxComm_t comm) {
   int rank = comm->rank;
   int nranks = comm->nranks;
   int algoRank = (rank - root + nranks) % nranks; // Rotate ranks so root is 0
@@ -1964,6 +2323,216 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
+static void resetDagSchedulerRuntimeState(flagcxUniRunnerState *runnerState) {
+  flagcxIntruQueueConstruct(&runnerState->p2pReadyQueue);
+  flagcxIntruQueueConstruct(&runnerState->redReadyQueue);
+  runnerState->numPendingNodes = 0;
+}
+
+static flagcxResult_t captureUniRunnerDagTemplateFromState(
+    const flagcxUniRunnerState *runnerState, const uniRunnerDagCacheKey &key,
+    const uniRunnerDagRuntimeBindings &bindings,
+    std::shared_ptr<uniRunnerDagTemplate> *dagTemplate) {
+  std::shared_ptr<uniRunnerDagTemplate> captured =
+      std::make_shared<uniRunnerDagTemplate>();
+  captured->key = key;
+  captured->hashValue = getUniRunnerDagPatternHash(key);
+  captured->nodes.reserve(runnerState->numDagNodes);
+
+  for (int i = 0; i < runnerState->numDagNodes; i++) {
+    const uniRunnerDagNode *node = &runnerState->dagNodes[i];
+    uniRunnerDagNodeDesc nodeDesc;
+    nodeDesc.nodeType = node->nodeType;
+    nodeDesc.nodeIdx = node->nodeIdx;
+    if (node->numParents > 0) {
+      nodeDesc.parents.assign(node->parents, node->parents + node->numParents);
+    }
+    if (node->numChildren > 0) {
+      nodeDesc.children.assign(node->children,
+                               node->children + node->numChildren);
+    }
+
+    if (node->nodeType == uniRunnerDagNodeTypeP2p) {
+      for (int opIdx = 0; opIdx < node->nodeData.p2p.numOps; opIdx++) {
+        const uniRunnerP2pOpData *op = &node->nodeData.p2p.ops[opIdx];
+        uniRunnerDagP2pOpDesc opDesc;
+        opDesc.count = op->count;
+        opDesc.peerRank = op->peerRank;
+        opDesc.datatype = op->datatype;
+        opDesc.type = op->type;
+        FLAGCXCHECK(captureBufferRef(op->addr, bindings, &opDesc.buffer));
+        nodeDesc.p2pOps.push_back(opDesc);
+      }
+    } else if (node->nodeType == uniRunnerDagNodeTypeRed) {
+      FLAGCXCHECK(captureBufferRef(node->nodeData.red.input1, bindings,
+                                   &nodeDesc.red.input1));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.red.input2, bindings,
+                                   &nodeDesc.red.input2));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.red.output, bindings,
+                                   &nodeDesc.red.output));
+      nodeDesc.red.count = node->nodeData.red.count;
+      nodeDesc.red.nthreads = node->nodeData.red.nthreads;
+      nodeDesc.red.datatype = node->nodeData.red.datatype;
+      nodeDesc.red.redOp = node->nodeData.red.redOp;
+    } else if (node->nodeType == uniRunnerDagNodeTypeCpy) {
+      FLAGCXCHECK(captureBufferRef(node->nodeData.cpy.src, bindings,
+                                   &nodeDesc.cpy.src));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.cpy.dst, bindings,
+                                   &nodeDesc.cpy.dst));
+      nodeDesc.cpy.count = node->nodeData.cpy.count;
+      nodeDesc.cpy.datatype = node->nodeData.cpy.datatype;
+    } else {
+      return flagcxNotSupported;
+    }
+
+    captured->nodes.push_back(nodeDesc);
+  }
+
+  *dagTemplate = captured;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
+                                const uniRunnerDagTemplate &dagTemplate,
+                                const uniRunnerDagRuntimeBindings &bindings) {
+  resetDagSchedulerRuntimeState(runnerState);
+  runnerState->numDagNodes = static_cast<int>(dagTemplate.nodes.size());
+  if (runnerState->numDagNodes == 0) {
+    runnerState->dagNodes = NULL;
+    return flagcxSuccess;
+  }
+
+  FLAGCXCHECK(
+      flagcxCalloc(&runnerState->dagNodes,
+                   runnerState->numDagNodes * sizeof(struct uniRunnerDagNode)));
+  if (runnerState->dagNodes == NULL) {
+    return flagcxSystemError;
+  }
+
+  for (int i = 0; i < runnerState->numDagNodes; i++) {
+    const uniRunnerDagNodeDesc &src = dagTemplate.nodes[i];
+    uniRunnerDagNode *dst = &runnerState->dagNodes[i];
+    dst->nodeType = src.nodeType;
+    dst->nodeIdx = src.nodeIdx;
+    dst->numParents = static_cast<int>(src.parents.size());
+    dst->numChildren = static_cast<int>(src.children.size());
+    FLAGCXCHECK(allocDagNodeDeps(dst));
+    dst->pendingParents = dst->numParents;
+    for (int parentIdx = 0; parentIdx < dst->numParents; parentIdx++) {
+      dst->parents[parentIdx] = src.parents[parentIdx];
+    }
+    for (int childIdx = 0; childIdx < dst->numChildren; childIdx++) {
+      dst->children[childIdx] = src.children[childIdx];
+    }
+
+    if (dst->nodeType == uniRunnerDagNodeTypeP2p) {
+      dst->nodeData.p2p.numOps = static_cast<int>(src.p2pOps.size());
+      if (dst->nodeData.p2p.numOps > 0) {
+        FLAGCXCHECK(flagcxCalloc(&dst->nodeData.p2p.ops,
+                                 dst->nodeData.p2p.numOps *
+                                     sizeof(struct uniRunnerP2pOpData)));
+      }
+      for (int opIdx = 0; opIdx < dst->nodeData.p2p.numOps; opIdx++) {
+        const uniRunnerDagP2pOpDesc &srcOp = src.p2pOps[opIdx];
+        uniRunnerP2pOpData *dstOp = &dst->nodeData.p2p.ops[opIdx];
+        dstOp->count = srcOp.count;
+        dstOp->peerRank = srcOp.peerRank;
+        dstOp->datatype = srcOp.datatype;
+        dstOp->type = srcOp.type;
+        FLAGCXCHECK(resolveBufferRef(srcOp.buffer, bindings, &dstOp->addr));
+      }
+    } else if (dst->nodeType == uniRunnerDagNodeTypeRed) {
+      dst->nodeData.red.triggerIdx = -1;
+      FLAGCXCHECK(resolveBufferRef(src.red.input1, bindings,
+                                   &dst->nodeData.red.input1));
+      FLAGCXCHECK(resolveBufferRef(src.red.input2, bindings,
+                                   &dst->nodeData.red.input2));
+      FLAGCXCHECK(resolveBufferRef(src.red.output, bindings,
+                                   &dst->nodeData.red.output));
+      dst->nodeData.red.count = src.red.count;
+      dst->nodeData.red.nthreads = src.red.nthreads;
+      dst->nodeData.red.datatype = src.red.datatype;
+      dst->nodeData.red.redOp = src.red.redOp;
+    } else if (dst->nodeType == uniRunnerDagNodeTypeCpy) {
+      FLAGCXCHECK(
+          resolveBufferRef(src.cpy.src, bindings, &dst->nodeData.cpy.src));
+      FLAGCXCHECK(
+          resolveBufferRef(src.cpy.dst, bindings, &dst->nodeData.cpy.dst));
+      dst->nodeData.cpy.count = src.cpy.count;
+      dst->nodeData.cpy.datatype = src.cpy.datatype;
+    } else {
+      return flagcxNotSupported;
+    }
+
+    if (dst->numParents == 0) {
+      if (dst->nodeType == uniRunnerDagNodeTypeRed) {
+        flagcxIntruQueueEnqueue(&runnerState->redReadyQueue, dst);
+      } else {
+        flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue, dst);
+      }
+    } else {
+      runnerState->numPendingNodes++;
+    }
+  }
+
+  return flagcxSuccess;
+}
+
+static flagcxResult_t tryLoadCachedUniRunnerDag(
+    flagcxUniRunnerState *runnerState, const uniRunnerDagCacheKey &key,
+    const uniRunnerDagRuntimeBindings &bindings, bool *cacheHit) {
+  *cacheHit = false;
+  std::shared_ptr<uniRunnerDagTemplate> dagTemplate;
+  size_t hashValue = getUniRunnerDagPatternHash(key);
+  if (!findUniRunnerDagTemplate(hashValue, key, &dagTemplate)) {
+    flagcxResult_t loadRes = loadUniRunnerDagInputsFromEnv();
+    if (!findUniRunnerDagTemplate(hashValue, key, &dagTemplate)) {
+      if (loadRes != flagcxSuccess) {
+        return loadRes;
+      }
+      TRACE(FLAGCX_UNIRUNNER,
+            "uniRunner DAG cache miss, algo=%s commOp=%s hash=%lu",
+            uniRunnerDagAlgoTypeToString(key.algoType),
+            uniRunnerCommOpToString(key.commOp), hashValue);
+      return flagcxSuccess;
+    }
+  }
+
+  TRACE(FLAGCX_UNIRUNNER, "uniRunner DAG cache hit, algo=%s commOp=%s hash=%lu",
+        uniRunnerDagAlgoTypeToString(key.algoType),
+        uniRunnerCommOpToString(key.commOp), hashValue);
+  FLAGCXCHECK(
+      materializeUniRunnerDagTemplate(runnerState, *dagTemplate, bindings));
+  FLAGCXCHECK(validateDagNodes(runnerState));
+  *cacheHit = true;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+cacheBuiltUniRunnerDag(const flagcxUniRunnerState *runnerState,
+                       const uniRunnerDagCacheKey &key,
+                       const uniRunnerDagRuntimeBindings &bindings) {
+  size_t hashValue = getUniRunnerDagPatternHash(key);
+  std::shared_ptr<uniRunnerDagTemplate> dagTemplate;
+  flagcxResult_t captureRes = captureUniRunnerDagTemplateFromState(
+      runnerState, key, bindings, &dagTemplate);
+  if (captureRes != flagcxSuccess) {
+    TRACE(FLAGCX_UNIRUNNER,
+          "uniRunner DAG capture skipped for hash=%lu, result=%d", hashValue,
+          captureRes);
+    return flagcxSuccess;
+  }
+
+  flagcxResult_t cacheRes = cacheUniRunnerDagTemplate(dagTemplate);
+  if (cacheRes != flagcxSuccess) {
+    TRACE(FLAGCX_UNIRUNNER,
+          "uniRunner DAG cache persist skipped for hash=%lu, result=%d",
+          hashValue, cacheRes);
+  }
+  return flagcxSuccess;
+}
+
 // Clean up DAG nodes
 static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
   TRACE(FLAGCX_UNIRUNNER, "cleanupDagScheduler called");
@@ -1987,7 +2556,190 @@ static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
     runnerState->dagNodes = NULL;
   }
   runnerState->numDagNodes = 0;
+  runnerState->numPendingNodes = 0;
   return flagcxSuccess;
+}
+
+template <typename BuildFn>
+static flagcxResult_t initUniRunnerStateCached(
+    flagcxUniRunnerState *runnerState, const uniRunnerDagCacheKey &key,
+    const uniRunnerDagRuntimeBindings &bindings, BuildFn buildFn) {
+  bool cacheHit = false;
+  flagcxResult_t cacheLoadRes =
+      tryLoadCachedUniRunnerDag(runnerState, key, bindings, &cacheHit);
+  if (cacheLoadRes == flagcxSuccess && cacheHit) {
+    return flagcxSuccess;
+  }
+  if (cacheLoadRes != flagcxSuccess) {
+    TRACE(FLAGCX_UNIRUNNER,
+          "uniRunner DAG cache load failed, rebuild dag instead, result=%d",
+          cacheLoadRes);
+    (void)cleanupDagScheduler(runnerState);
+    resetDagSchedulerRuntimeState(runnerState);
+  }
+
+  FLAGCXCHECK(buildFn());
+  return cacheBuiltUniRunnerDag(runnerState, key, bindings);
+}
+
+flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.inputBytes = count * typeSize;
+  bindings.outputBytes = count * typeSize;
+
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoLocRed, flagcxCommOpAllReduce, count, datatype, op, -1, 0,
+      runnerState, comm, sendbuff, recvbuff, NULL);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateLocRed(runnerState, sendbuff, recvbuff, count,
+                                     datatype, op, comm);
+  });
+}
+
+flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
+                                           const void *sendbuff, void *recvbuff,
+                                           size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxComm_t comm, int groupSize) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.inputBytes = count * typeSize;
+  bindings.outputBytes = count * comm->nranks * typeSize;
+
+  uniRunnerDagCacheKey key =
+      makeUniRunnerDagCacheKey(uniRunnerDagAlgoGroupedAG, flagcxCommOpAllGather,
+                               count, datatype, flagcxRedNoOp, -1, groupSize,
+                               runnerState, comm, sendbuff, recvbuff, NULL);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateGroupedAG(runnerState, sendbuff, recvbuff, count,
+                                        datatype, comm, groupSize);
+  });
+}
+
+flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.inputBytes = count * typeSize;
+  bindings.outputBytes = count * typeSize;
+
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoRingAG, flagcxCommOpAllReduce, count, datatype,
+      flagcxRedNoOp, -1, 0, runnerState, comm, sendbuff, recvbuff, NULL);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateRingAG(runnerState, sendbuff, recvbuff, count,
+                                     datatype, op, comm);
+  });
+}
+
+flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        size_t count, flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.inputBytes = count * typeSize;
+  bindings.outputBytes = count * typeSize;
+
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoRingAR, flagcxCommOpAllReduce, count, datatype, op, -1, 0,
+      runnerState, comm, sendbuff, recvbuff, NULL);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateRingAR(runnerState, sendbuff, recvbuff, count,
+                                     datatype, op, comm);
+  });
+}
+
+flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
+                                          const void *sendbuff, void *recvbuff,
+                                          size_t count,
+                                          flagcxDataType_t datatype,
+                                          flagcxRedOp_t op, flagcxComm_t comm) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  runnerState->uniRunnerNRedSlices =
+      resolveEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks);
+
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.inputBytes = count * typeSize;
+  bindings.outputBytes = count * typeSize;
+
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoSlicedAR, flagcxCommOpAllReduce, count, datatype, op, -1,
+      0, runnerState, comm, sendbuff, recvbuff, NULL);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateSlicedAR(runnerState, sendbuff, recvbuff, count,
+                                       datatype, op, comm);
+  });
+}
+
+flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
+                                        const void *sendbuff, void *recvbuff,
+                                        void *scratchbuff, size_t count,
+                                        flagcxDataType_t datatype,
+                                        flagcxRedOp_t op, flagcxComm_t comm) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  runnerState->uniRunnerNRedSlices =
+      resolveEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks);
+
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.scratchBase = scratchbuff;
+  bindings.inputBytes = count * comm->nranks * typeSize;
+  bindings.outputBytes = count * typeSize;
+  bindings.scratchBytes = count * comm->nranks * typeSize;
+
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoRingRS, flagcxCommOpReduceScatter, count, datatype, op,
+      -1, 0, runnerState, comm, sendbuff, recvbuff, scratchbuff);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateRingRS(runnerState, sendbuff, recvbuff,
+                                     scratchbuff, count, datatype, op, comm);
+  });
+}
+
+flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
+                                         const void *sendbuff, void *recvbuff,
+                                         void *scratchbuff, size_t count,
+                                         flagcxDataType_t datatype,
+                                         flagcxRedOp_t op, int root,
+                                         flagcxComm_t comm) {
+  size_t typeSize = getFlagcxDataTypeSize(datatype);
+  runnerState->uniRunnerNRedSlices =
+      resolveEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks);
+
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  bindings.scratchBase = scratchbuff;
+  bindings.inputBytes = count * typeSize;
+  bindings.outputBytes = count * typeSize;
+  bindings.scratchBytes = 2 * count * typeSize;
+
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoTreeRed, flagcxCommOpReduce, count, datatype, op, root, 0,
+      runnerState, comm, sendbuff, recvbuff, scratchbuff);
+  return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
+    return buildUniRunnerStateTreeRed(runnerState, sendbuff, recvbuff,
+                                      scratchbuff, count, datatype, op, root,
+                                      comm);
+  });
 }
 
 static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,

@@ -24,6 +24,39 @@ typedef enum {
   uniRunnerDagNodeTypeCpy = 2
 } uniRunnerDagNodeType;
 
+// Static DAG template algorithm identifiers used by the uniRunner cache.
+typedef enum {
+  uniRunnerDagAlgoDummy = 0,
+  uniRunnerDagAlgoLocRed = 1,
+  uniRunnerDagAlgoGroupedAG = 2,
+  uniRunnerDagAlgoRingAG = 3,
+  uniRunnerDagAlgoRingAR = 4,
+  uniRunnerDagAlgoSlicedAR = 5,
+  uniRunnerDagAlgoRingRS = 6,
+  uniRunnerDagAlgoTreeRed = 7
+} uniRunnerDagAlgoType;
+
+// Cache key describing a reusable uniRunner DAG template.
+struct uniRunnerDagCacheKey {
+  int formatVersion;
+  uniRunnerDagAlgoType algoType;
+  flagcxCommOp_t commOp;
+  size_t count;
+  flagcxDataType_t datatype;
+  flagcxRedOp_t redOp;
+  int rank;
+  int nranks;
+  int root;
+  int groupSize;
+  uint64_t numSlices;
+  uint64_t numRedSlices;
+  uint64_t redSliceSize;
+  uint64_t nthreads;
+  int inputOutputAliased;
+  int inputScratchAliased;
+  int outputScratchAliased;
+};
+
 // Single P2P operation data
 struct uniRunnerP2pOpData {
   void *addr;                // Buffer address
@@ -142,6 +175,9 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          flagcxDataType_t datatype,
                                          flagcxRedOp_t op, int root,
                                          flagcxComm_t comm);
+size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key);
+flagcxResult_t loadUniRunnerDagCacheFromEnv();
+flagcxResult_t dumpUniRunnerDagCacheToEnv();
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t runUniRunner(flagcxComm_t comm);
