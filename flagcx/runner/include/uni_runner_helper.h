@@ -590,6 +590,16 @@ uniRunnerLoadDagJsonFile(const std::string &path,
              : flagcxInternalError;
 }
 
+inline flagcxResult_t uniRunnerLoadDagJsonFileIfExists(
+    const std::string &path, std::vector<uniRunnerDagTemplate> *dagTemplates) {
+  flagcxResult_t loadRes = uniRunnerLoadDagJsonFile(path, dagTemplates);
+  if (loadRes == flagcxSystemError) {
+    dagTemplates->clear();
+    return flagcxSuccess;
+  }
+  return loadRes;
+}
+
 inline flagcxResult_t
 uniRunnerSaveDagJsonFile(const std::string &path,
                          const uniRunnerDagTemplate &dagTemplate) {
@@ -607,12 +617,7 @@ inline flagcxResult_t uniRunnerSaveDagJsonCollectionFile(
 inline flagcxResult_t
 uniRunnerLoadDagCacheFile(const std::string &cachePath,
                           std::vector<uniRunnerDagTemplate> *dagTemplates) {
-  flagcxResult_t loadRes = uniRunnerLoadDagJsonFile(cachePath, dagTemplates);
-  if (loadRes == flagcxSystemError) {
-    dagTemplates->clear();
-    return flagcxSuccess;
-  }
-  return loadRes;
+  return uniRunnerLoadDagJsonFileIfExists(cachePath, dagTemplates);
 }
 
 inline flagcxResult_t uniRunnerSaveDagCacheFile(

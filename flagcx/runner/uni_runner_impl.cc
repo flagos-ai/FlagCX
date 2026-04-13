@@ -17,11 +17,13 @@
 
 #include <algorithm>
 #include <assert.h>
+#include <cerrno>
 #include <cstdint>
 #include <math.h>
 #include <new>
 #include <mutex>
 #include <string>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
@@ -37,7 +39,6 @@ FLAGCX_PARAM(UniRunnerRedSliceSize, "UNIRUNNER_REDSLICESIZE", 65536);
 
 namespace {
 
-constexpr char kUniRunnerDagInputPathEnv[] = "FLAGCX_UNIRUNNER_DAG_INPUT_PATH";
 constexpr char kUniRunnerDagCachePathEnv[] = "FLAGCX_UNIRUNNER_DAG_CACHE_PATH";
 
 struct uniRunnerDagRuntimeBindings {
@@ -105,16 +106,6 @@ static bool findUniRunnerDagTemplateLocked(
   return false;
 }
 
-static void collectUniRunnerDagTemplatesLocked(
-    std::vector<uniRunnerDagTemplate> *dagTemplates) {
-  dagTemplates->clear();
-  for (const auto &bucket : gUniRunnerDagCache) {
-    for (const std::shared_ptr<uniRunnerDagTemplate> &entry : bucket.second) {
-      dagTemplates->push_back(*entry);
-    }
-  }
-}
-
 static flagcxResult_t importUniRunnerDagTemplatesLocked(
     const std::vector<uniRunnerDagTemplate> &dagTemplates) {
   for (const uniRunnerDagTemplate &dagTemplate : dagTemplates) {
@@ -124,42 +115,76 @@ static flagcxResult_t importUniRunnerDagTemplatesLocked(
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-dumpUniRunnerDagCacheToPathLocked(const std::string &path) {
-  std::vector<uniRunnerDagTemplate> dagTemplates;
-  collectUniRunnerDagTemplatesLocked(&dagTemplates);
-  return uniRunnerSaveDagCacheFile(path, dagTemplates);
-}
-
 static std::string getUniRunnerDagEnvPath(const char *envName) {
   const char *path = flagcxGetEnv(envName);
   return path == NULL ? "" : std::string(path);
 }
 
-static void appendUniRunnerDagPath(std::vector<std::string> *paths,
-                                   const std::string &path) {
-  if (path.empty()) {
-    return;
-  }
-  if (std::find(paths->begin(), paths->end(), path) == paths->end()) {
-    paths->push_back(path);
-  }
-}
-
-static std::vector<std::string> collectUniRunnerDagInputPathsFromEnv() {
-  std::vector<std::string> paths;
-  appendUniRunnerDagPath(&paths,
-                         getUniRunnerDagEnvPath(kUniRunnerDagInputPathEnv));
-  appendUniRunnerDagPath(&paths,
-                         getUniRunnerDagEnvPath(kUniRunnerDagCachePathEnv));
-  return paths;
-}
-
-static std::string getUniRunnerDagCachePathFromEnv() {
+static std::string getUniRunnerDagCacheDirFromEnv() {
   return getUniRunnerDagEnvPath(kUniRunnerDagCachePathEnv);
 }
 
-static flagcxResult_t loadUniRunnerDagPathIntoCache(const std::string &path) {
+static std::string makeUniRunnerDagFileName(size_t hashValue, int rank) {
+  return "dag_hash_" + std::to_string(hashValue) + "_rank_" +
+         std::to_string(rank) + ".json";
+}
+
+static std::string joinUniRunnerDagDirAndFile(const std::string &dir,
+                                              const std::string &fileName) {
+  if (dir.empty()) {
+    return "";
+  }
+  if (dir.back() == '/') {
+    return dir + fileName;
+  }
+  return dir + "/" + fileName;
+}
+
+static std::string makeUniRunnerDagFilePath(const std::string &dir,
+                                            size_t hashValue, int rank) {
+  return joinUniRunnerDagDirAndFile(dir,
+                                    makeUniRunnerDagFileName(hashValue, rank));
+}
+
+static flagcxResult_t ensureUniRunnerDagDirExists(const std::string &dir) {
+  if (dir.empty()) {
+    return flagcxSuccess;
+  }
+
+  std::string current;
+  if (dir[0] == '/') {
+    current = "/";
+  }
+
+  size_t pos = 0;
+  while (pos < dir.size()) {
+    size_t next = dir.find('/', pos);
+    std::string segment = dir.substr(
+        pos, next == std::string::npos ? std::string::npos : next - pos);
+    if (!segment.empty()) {
+      if (!current.empty() && current.back() != '/') {
+        current += "/";
+      }
+      current += segment;
+
+      struct stat st;
+      if (stat(current.c_str(), &st) == 0) {
+        if (!S_ISDIR(st.st_mode)) {
+          return flagcxSystemError;
+        }
+      } else if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST) {
+        return flagcxSystemError;
+      }
+    }
+    if (next == std::string::npos) {
+      break;
+    }
+    pos = next + 1;
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t loadUniRunnerDagFileIntoCache(const std::string &path) {
   if (path.empty()) {
     return flagcxSuccess;
   }
@@ -172,7 +197,10 @@ static flagcxResult_t loadUniRunnerDagPathIntoCache(const std::string &path) {
   }
 
   std::vector<uniRunnerDagTemplate> dagTemplates;
-  FLAGCXCHECK(uniRunnerLoadDagCacheFile(path, &dagTemplates));
+  FLAGCXCHECK(uniRunnerLoadDagJsonFileIfExists(path, &dagTemplates));
+  if (dagTemplates.empty()) {
+    return flagcxSuccess;
+  }
 
   std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
   if (gUniRunnerDagLoadedPaths.count(path) != 0) {
@@ -318,34 +346,32 @@ findUniRunnerDagTemplate(size_t hashValue, const uniRunnerDagCacheKey &key,
   return findUniRunnerDagTemplateLocked(hashValue, key, dagTemplate);
 }
 
-static flagcxResult_t loadUniRunnerDagInputsFromEnv() {
-  std::vector<std::string> paths = collectUniRunnerDagInputPathsFromEnv();
-  flagcxResult_t firstError = flagcxSuccess;
-  bool loadedAny = false;
-  for (const std::string &path : paths) {
-    flagcxResult_t loadRes = loadUniRunnerDagPathIntoCache(path);
-    if (loadRes == flagcxSuccess) {
-      loadedAny = true;
-      continue;
-    }
-    if (loadRes != flagcxSuccess && firstError == flagcxSuccess) {
-      firstError = loadRes;
-    }
+static flagcxResult_t loadUniRunnerDagFromCacheDir(size_t hashValue, int rank) {
+  std::string cacheDir = getUniRunnerDagCacheDirFromEnv();
+  if (cacheDir.empty()) {
+    return flagcxSuccess;
   }
-  return loadedAny ? flagcxSuccess : firstError;
+  return loadUniRunnerDagFileIntoCache(
+      makeUniRunnerDagFilePath(cacheDir, hashValue, rank));
 }
 
 static flagcxResult_t cacheUniRunnerDagTemplate(
     const std::shared_ptr<uniRunnerDagTemplate> &dagTemplate) {
-  std::string cachePath = getUniRunnerDagCachePathFromEnv();
+  size_t hashValue = getUniRunnerDagPatternHash(dagTemplate->key);
+  std::string dagDir = getUniRunnerDagCacheDirFromEnv();
+  std::string dagPath =
+      makeUniRunnerDagFilePath(dagDir, hashValue, dagTemplate->key.rank);
   {
     std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
     FLAGCXCHECK(insertUniRunnerDagTemplateLocked(dagTemplate));
-    if (!cachePath.empty()) {
-      gUniRunnerDagLoadedPaths.insert(cachePath);
-      FLAGCXCHECK(dumpUniRunnerDagCacheToPathLocked(cachePath));
-    }
   }
+  if (dagDir.empty()) {
+    return flagcxSuccess;
+  }
+  FLAGCXCHECK(ensureUniRunnerDagDirExists(dagDir));
+  FLAGCXCHECK(uniRunnerSaveDagJsonFile(dagPath, *dagTemplate));
+  std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
+  gUniRunnerDagLoadedPaths.insert(dagPath);
   return flagcxSuccess;
 }
 
@@ -374,20 +400,6 @@ size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key) {
   hashValue =
       hashCombine(hashValue, static_cast<size_t>(key.outputScratchAliased));
   return hashValue;
-}
-
-flagcxResult_t loadUniRunnerDagCacheFromEnv() {
-  return loadUniRunnerDagInputsFromEnv();
-}
-
-flagcxResult_t dumpUniRunnerDagCacheToEnv() {
-  std::string cachePath = getUniRunnerDagCachePathFromEnv();
-  if (cachePath.empty()) {
-    return flagcxSuccess;
-  }
-  std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
-  gUniRunnerDagLoadedPaths.insert(cachePath);
-  return dumpUniRunnerDagCacheToPathLocked(cachePath);
 }
 
 static flagcxResult_t allocDagNodeDeps(uniRunnerDagNode *node) {
@@ -2486,7 +2498,7 @@ static flagcxResult_t tryLoadCachedUniRunnerDag(
   std::shared_ptr<uniRunnerDagTemplate> dagTemplate;
   size_t hashValue = getUniRunnerDagPatternHash(key);
   if (!findUniRunnerDagTemplate(hashValue, key, &dagTemplate)) {
-    flagcxResult_t loadRes = loadUniRunnerDagInputsFromEnv();
+    flagcxResult_t loadRes = loadUniRunnerDagFromCacheDir(hashValue, key.rank);
     if (!findUniRunnerDagTemplate(hashValue, key, &dagTemplate)) {
       if (loadRes != flagcxSuccess) {
         return loadRes;

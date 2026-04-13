@@ -176,8 +176,6 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          flagcxRedOp_t op, int root,
                                          flagcxComm_t comm);
 size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key);
-flagcxResult_t loadUniRunnerDagCacheFromEnv();
-flagcxResult_t dumpUniRunnerDagCacheToEnv();
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t runUniRunner(flagcxComm_t comm);
