@@ -498,6 +498,16 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   // joined. Continue releasing communicator-owned host state before returning
   // that error; returning immediately here would leak the communicator.
   flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
+  flagcxResult_t streamFlagsCleanupResult = flagcxSuccess;
+  if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
+      comm->proxyState->uniRunnerState.streamFlags != NULL ||
+      comm->proxyState->uniRunnerState.streamFlagsCapacity != 0) {
+    streamFlagsCleanupResult = deviceAdaptor->setDevice(comm->cudaDev);
+    if (streamFlagsCleanupResult == flagcxSuccess) {
+      streamFlagsCleanupResult = cleanupUniRunnerPersistentState(
+          &comm->proxyState->uniRunnerState);
+    }
+  }
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
@@ -537,6 +547,9 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->peerInfo);
   free(comm);
 
-  return proxyStopResult != flagcxSuccess ? proxyStopResult
-                                          : proxyDestroyResult;
+  if (proxyStopResult != flagcxSuccess)
+    return proxyStopResult;
+  if (proxyDestroyResult != flagcxSuccess)
+    return proxyDestroyResult;
+  return streamFlagsCleanupResult;
 }

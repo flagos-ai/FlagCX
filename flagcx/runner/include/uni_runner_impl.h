@@ -137,8 +137,12 @@ typedef struct {
   uint64_t uniRunnerNRedSlices;
   uint64_t uniRunnerRedSliceSize;
 
-  // Stream completion flags, one uint64_t per DAG node.
-  void *streamFlags;
+  // Stream completion flags backed by a reusable contiguous device pool. The
+  // host-side queue stores per-node addresses within that pool.
+  void *streamFlagsPool;
+  void **streamFlags;
+  size_t streamFlagsSize;
+  size_t streamFlagsCapacity;
 } flagcxUniRunnerState;
 
 flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
@@ -178,5 +182,7 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
 size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key);
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
+flagcxResult_t
+cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState);
 flagcxResult_t runUniRunner(flagcxComm_t comm);
 #endif // FLAGCX_UNIRUNNER_IMPL_H_
