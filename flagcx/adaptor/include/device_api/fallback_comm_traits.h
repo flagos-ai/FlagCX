@@ -124,6 +124,11 @@ struct CommTraits<Fallback<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer(int contextId) const {
       return fifoBuffers[contextId];
     }
+    FLAGCX_DEVICE_INLINE_DECORATOR Multimem getMulticastHandle() const {
+      Multimem mm;
+      mm.mcBasePtr = nullptr;
+      return mm;
+    }
 
     // Populate from host-side handle (deferred template avoids forward-decl)
     template <typename DI>

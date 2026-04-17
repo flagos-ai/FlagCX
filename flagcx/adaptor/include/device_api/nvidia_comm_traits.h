@@ -133,6 +133,11 @@ struct CommTraits<NvidiaVendor> {
     getFifoBuffer(int /*contextId*/) const {
       return nullptr;
     }
+    FLAGCX_DEVICE_INLINE_DECORATOR Multimem getMulticastHandle() const {
+      Multimem mm;
+      mm._impl = _impl.lsaMultimem;
+      return mm;
+    }
 
     // No-op: vendor Comm is populated via devComm pointer cast
     template <typename DI>

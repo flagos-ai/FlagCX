@@ -499,15 +499,19 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
   }
   size_t size = count * elemSize;
 
+  // Copy sendbuff to staged buffer
+  cudaStream_t cudaStream = stream->base;
+  cudaError_t cerr = cudaMemcpyAsync(state->sendStagedBuff, sendbuff, size,
+                                      cudaMemcpyDeviceToDevice, cudaStream);
+  if (cerr != cudaSuccess)
+    return flagcxUnhandledDeviceError;
+
   // Construct device-side objects from host handles
   flagcxDevComm dc(*state->devComm);
   flagcxDevMem sm(*state->sendStagedMem);
   flagcxDevMem rm(*state->recvStagedMem);
 
   int nranks = state->devComm->intraSize;
-  cudaStream_t cudaStream = stream->base;
-
-  // sendbuff already copied to sendStagedBuff by framework
 
   flagcxResult_t res;
   if ((nranks <= 4 && size < 512 * 1024) ||
@@ -520,8 +524,8 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
     res = flagcxInterleavedAllReduceDispatch(sm, rm, count, datatype, op,
                                               dc, cudaStream);
     if (res == flagcxSuccess) {
-      cudaError_t cerr = cudaMemcpyAsync(recvbuff, state->recvStagedBuff, size,
-                                          cudaMemcpyDeviceToDevice, cudaStream);
+      cerr = cudaMemcpyAsync(recvbuff, state->recvStagedBuff, size,
+                              cudaMemcpyDeviceToDevice, cudaStream);
       if (cerr != cudaSuccess)
         return flagcxUnhandledDeviceError;
     }

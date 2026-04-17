@@ -199,6 +199,10 @@ struct flagcxDevComm {
   FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer(int contextId) const {
     return _commBase.getFifoBuffer(contextId);
   }
+  FLAGCX_DEVICE_INLINE_DECORATOR typename DeviceAPI::Multimem
+  getMulticastHandle() const {
+    return _commBase.getMulticastHandle();
+  }
 };
 
 // ============================================================
@@ -640,9 +644,7 @@ flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
 FLAGCX_DEVICE_INLINE_DECORATOR void *
 flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
                           const flagcxDevComm &devComm) {
-  (void)devComm;
-  flagcxMulticastHandle_t mmHandle;
-  return mem._winBase.getMulticastPointer(offset, mmHandle._multimemBase);
+  return mem._winBase.getMulticastPointer(offset, devComm.getMulticastHandle());
 }
 
 // ---- Additional pointer functions ----

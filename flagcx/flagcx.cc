@@ -1299,6 +1299,10 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
     return flagcxSuccess;
 
   auto *state = comm->devCommState;
+
+  // Destroy DevComm first — vendor may reference windows/buffers internally
+  if (state->devComm)
+    flagcxDevCommDestroy(comm, state->devComm);
   if (state->sendStagedMem)
     flagcxDevMemDestroy(comm, state->sendStagedMem);
   if (state->recvStagedMem)
@@ -1313,8 +1317,6 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
     cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
   if (state->recvStagedBuff)
     cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
-  if (state->devComm)
-    flagcxDevCommDestroy(comm, state->devComm);
   free(state);
   comm->devCommState = nullptr;
   return flagcxSuccess;
@@ -1761,6 +1763,10 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   free(comm->c2cSchedule);
   free(comm->clusterInterRanks);
 
+  // Destroy custom op state before homo comm — vendor DevCommDestroy
+  // needs the NCCL comm to still be alive.
+  FLAGCXCHECK(flagcxDevCommStateDestroy(comm));
+
   // Destroy homo comms
   if (comm->tuner) {
     for (const auto &item : comm->homoCommMap) {
@@ -1793,9 +1799,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
           cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
     }
   }
-
-  // Destroy custom op state
-  FLAGCXCHECK(flagcxDevCommStateDestroy(comm));
 
   // Clean up IPC peer pointer table — deferred to here.
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
@@ -2041,10 +2044,6 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
     auto *state = comm->devCommState;
     size_t size = count * getFlagcxDataTypeSize(datatype);
     if (size < state->stagedBuffSize) {
-      // Copy sendbuff to staged buffer
-      FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-          state->sendStagedBuff, (void *)sendbuff, size,
-          flagcxMemcpyDeviceToDevice, stream, NULL));
       flagcxResult_t res = state->customAllReduce(sendbuff, recvbuff, count,
                                                   datatype, op, comm, stream);
       if (res == flagcxSuccess) {
