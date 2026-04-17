@@ -290,6 +290,12 @@ flagcxResult_t mcclAdaptorGroupStart() {
 flagcxResult_t mcclAdaptorGroupEnd() { return (flagcxResult_t)mcclGroupEnd(); }
 
 flagcxResult_t
+mcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 mcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                          const flagcxDevCommRequirements * /*reqs*/,
                          flagcxInnerDevComm_t * /*devComm*/) {
@@ -322,6 +328,7 @@ struct flagcxCCLAdaptor mcclAdaptor = {
     // Group semantics
     mcclAdaptorGroupStart, mcclAdaptorGroupEnd,
     // Device API
-    mcclAdaptorDevCommCreate, mcclAdaptorDevCommDestroy};
+    mcclAdaptorDevCommReqsInit, mcclAdaptorDevCommCreate,
+    mcclAdaptorDevCommDestroy};
 
 #endif // USE_METAX_ADAPTOR

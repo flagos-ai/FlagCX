@@ -1177,6 +1177,149 @@ const char *flagcxGetLastError(flagcxComm_t comm) {
   return "Not implemented.";
 }
 
+// ---- Custom op DevComm state init/destroy ----
+
+FLAGCX_PARAM(CustomOpEnable, "CUSTOM_OP_ENABLE", 0);
+
+#define FLAGCX_CUSTOM_OP_STAGED_BUFFER_SIZE (8 * 1024 * 1024)
+
+// Forward declaration of custom allreduce implementation
+// Defined in kernels/custom_allreduce.cu (NVIDIA only).
+// Weak symbol: resolves to NULL when not linked (non-NVIDIA or no kernel
+// build).
+extern "C" __attribute__((weak)) flagcxResult_t
+flagcxCustomAllReduceImpl(const void *sendbuff, void *recvbuff, size_t count,
+                          flagcxDataType_t datatype, flagcxRedOp_t op,
+                          flagcxComm_t comm, flagcxStream_t stream);
+
+static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
+  if (!flagcxParamCustomOpEnable() || flagcxCustomAllReduceImpl == nullptr) {
+    comm->devCommState = nullptr;
+    return flagcxSuccess;
+  }
+
+  flagcxDevCommState *state;
+  FLAGCXCHECK(flagcxCalloc(&state, 1));
+
+  // 1. Auto-detect requirements via adaptor
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxResult_t res = cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit(
+      comm->homoComm, &reqs);
+  if (res == flagcxNotSupported) {
+    free(state);
+    comm->devCommState = nullptr;
+    INFO(FLAGCX_INIT, "Custom allreduce: adaptor does not support DevComm "
+                      "requirements init, disabled");
+    return flagcxSuccess; // non-fatal
+  }
+  if (res != flagcxSuccess) {
+    free(state);
+    comm->devCommState = nullptr;
+    INFO(FLAGCX_INIT, "Custom allreduce: DevComm requirements init failed, "
+                      "disabled");
+    return flagcxSuccess; // non-fatal
+  }
+
+  // 2. Create DevComm
+  res = flagcxDevCommCreate(comm, &reqs, &state->devComm);
+  if (res != flagcxSuccess) {
+    free(state);
+    comm->devCommState = nullptr;
+    INFO(FLAGCX_INIT, "Custom allreduce: DevComm creation failed, disabled");
+    return flagcxSuccess; // non-fatal
+  }
+
+  // 3. Allocate staged buffers
+  state->stagedBuffSize = FLAGCX_CUSTOM_OP_STAGED_BUFFER_SIZE;
+  res = cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(&state->sendStagedBuff,
+                                                      state->stagedBuffSize);
+  if (res != flagcxSuccess)
+    goto fail;
+  res = cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(&state->recvStagedBuff,
+                                                      state->stagedBuffSize);
+  if (res != flagcxSuccess)
+    goto fail;
+
+  // 4. Register windows (symmetric)
+  res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
+      comm->homoComm, state->sendStagedBuff, state->stagedBuffSize,
+      &state->sendStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+  if (res != flagcxSuccess)
+    goto fail;
+  res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
+      comm->homoComm, state->recvStagedBuff, state->stagedBuffSize,
+      &state->recvStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+  if (res != flagcxSuccess)
+    goto fail;
+
+  // 5. Create DevMem (for kernel parameters)
+  res = flagcxDevMemCreate(comm, state->sendStagedBuff, state->stagedBuffSize,
+                           state->sendStagedWin, &state->sendStagedMem);
+  if (res != flagcxSuccess)
+    goto fail;
+  res = flagcxDevMemCreate(comm, state->recvStagedBuff, state->stagedBuffSize,
+                           state->recvStagedWin, &state->recvStagedMem);
+  if (res != flagcxSuccess)
+    goto fail;
+
+  // 6. Register custom op
+  state->customAllReduce = flagcxCustomAllReduceImpl;
+  state->initialized = true;
+  comm->devCommState = state;
+
+  INFO(FLAGCX_INIT, "Custom allreduce: enabled, staged buffer %zuMB",
+       state->stagedBuffSize / (1024 * 1024));
+  return flagcxSuccess;
+
+fail:
+  if (state->recvStagedMem)
+    flagcxDevMemDestroy(comm, state->recvStagedMem);
+  if (state->sendStagedMem)
+    flagcxDevMemDestroy(comm, state->sendStagedMem);
+  if (state->recvStagedWin)
+    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+        comm->homoComm, state->recvStagedWin);
+  if (state->sendStagedWin)
+    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+        comm->homoComm, state->sendStagedWin);
+  if (state->recvStagedBuff)
+    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
+  if (state->sendStagedBuff)
+    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
+  if (state->devComm)
+    flagcxDevCommDestroy(comm, state->devComm);
+  free(state);
+  comm->devCommState = nullptr;
+  INFO(FLAGCX_INIT, "Custom allreduce: init failed, disabled");
+  return flagcxSuccess; // non-fatal
+}
+
+static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
+  if (comm->devCommState == nullptr)
+    return flagcxSuccess;
+
+  auto *state = comm->devCommState;
+  if (state->sendStagedMem)
+    flagcxDevMemDestroy(comm, state->sendStagedMem);
+  if (state->recvStagedMem)
+    flagcxDevMemDestroy(comm, state->recvStagedMem);
+  if (state->sendStagedWin)
+    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+        comm->homoComm, state->sendStagedWin);
+  if (state->recvStagedWin)
+    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+        comm->homoComm, state->recvStagedWin);
+  if (state->sendStagedBuff)
+    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
+  if (state->recvStagedBuff)
+    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
+  if (state->devComm)
+    flagcxDevCommDestroy(comm, state->devComm);
+  free(state);
+  comm->devCommState = nullptr;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank) {
   if (nranks < 1 || rank < 0 || rank >= nranks) {
@@ -1212,6 +1355,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->homoInterRanks = -1;
   (*comm)->homoInterComm = NULL;
   (*comm)->c2cSchedule = NULL;
+  (*comm)->devCommState = NULL;
 
   struct bootstrapState *state = NULL;
   FLAGCXCHECK(flagcxCalloc(&state, 1));
@@ -1588,6 +1732,10 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   if (!useTuner) {
     free(uniqueIdData);
   }
+
+  // Initialize custom op state (non-fatal if fails)
+  FLAGCXCHECK(flagcxDevCommStateInit(*comm));
+
   return flagcxSuccess;
 }
 
@@ -1645,6 +1793,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
           cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
     }
   }
+
+  // Destroy custom op state
+  FLAGCXCHECK(flagcxDevCommStateDestroy(comm));
 
   // Clean up IPC peer pointer table — deferred to here.
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
@@ -1883,6 +2034,29 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                flagcxRedOp_t op, flagcxComm_t comm,
                                flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+
+  // Try custom allreduce if registered
+  if (comm->devCommState != NULL &&
+      comm->devCommState->customAllReduce != NULL) {
+    auto *state = comm->devCommState;
+    size_t size = count * getFlagcxDataTypeSize(datatype);
+    if (size < state->stagedBuffSize) {
+      // Copy sendbuff to staged buffer
+      FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+          state->sendStagedBuff, (void *)sendbuff, size,
+          flagcxMemcpyDeviceToDevice, stream, NULL));
+      flagcxResult_t res = state->customAllReduce(sendbuff, recvbuff, count,
+                                                  datatype, op, comm, stream);
+      if (res == flagcxSuccess) {
+        return flagcxSuccess;
+      }
+      if (res != flagcxNotSupported) {
+        return res;
+      }
+    }
+    // size >= stagedBuffSize or flagcxNotSupported: fallback to standard path
+  }
+
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allReduce(
         sendbuff, recvbuff, count, datatype, op, comm, stream));

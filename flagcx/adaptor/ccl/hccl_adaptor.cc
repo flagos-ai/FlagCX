@@ -338,6 +338,11 @@ flagcxResult_t hcclAdaptorGroupEnd() {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxResult_t hcclAdaptorDevCommReqsInit(
+    flagcxInnerComm_t /*comm*/, flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t
 hcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                          const flagcxDevCommRequirements * /*reqs*/,
@@ -371,6 +376,7 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     // Group semantics
     hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
     // Device API
-    hcclAdaptorDevCommCreate, hcclAdaptorDevCommDestroy};
+    hcclAdaptorDevCommReqsInit, hcclAdaptorDevCommCreate,
+    hcclAdaptorDevCommDestroy};
 
 #endif // USE_ASCEND_ADAPTOR

@@ -10,26 +10,6 @@
 
 #define NCCL_ADAPTOR_DEVICE_CTA_COUNT 36
 #define NCCL_ADAPTOR_DEVICE_THREADS_PER_CTA 512
-#define NCCL_ADAPTOR_MAX_STAGED_BUFFER_SIZE (8 * 1024 * 1024)
-
-struct stagedBuffer {
-  void *buff;
-  ncclWindow_t win;
-};
-typedef struct stagedBuffer *stagedBuffer_t;
-
-#if defined(COMPILE_KERNEL_HOST)
-extern "C" ncclResult_t
-ncclAdaptorLocalAllReduce(const void *sendbuff, void *recvbuff,
-                          ncclWindow_t sendwin, ncclWindow_t recvwin,
-                          size_t count, ncclDataType_t datatype, ncclRedOp_t op,
-                          ncclDevComm &devComm, cudaStream_t stream);
-
-extern "C" ncclResult_t ncclAdaptorInterleavedAllReduce(
-    const void *sendbuff, void *recvbuff, ncclWindow_t sendwin,
-    ncclWindow_t recvwin, size_t count, ncclDataType_t datatype, ncclRedOp_t op,
-    ncclDevComm &devComm, cudaStream_t stream);
-#endif // COMPILE_KERNEL_HOST
 
 struct flagcxInnerDevComm {
   ncclDevComm base;
@@ -37,7 +17,6 @@ struct flagcxInnerDevComm {
 
 #else
 
-typedef void *stagedBuffer_t;
 typedef void ncclDevComm;
 struct flagcxInnerDevComm {};
 
@@ -45,9 +24,6 @@ struct flagcxInnerDevComm {};
 
 struct flagcxInnerComm {
   ncclComm_t base;
-  ncclDevComm *devBase;
-  stagedBuffer_t sendStagedBuff;
-  stagedBuffer_t recvStagedBuff;
 };
 
 struct flagcxStream {

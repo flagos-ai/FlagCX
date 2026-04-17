@@ -109,6 +109,8 @@ struct flagcxCCLAdaptor_v1 {
   flagcxResult_t (*groupEnd)();
 
   // Device API - Host-side management (NCCL > 2.28, CNCL device API, etc.)
+  flagcxResult_t (*devCommReqsInit)(flagcxInnerComm_t comm,
+                                    flagcxDevCommRequirements *reqs);
   flagcxResult_t (*devCommCreate)(flagcxInnerComm_t comm,
                                   const flagcxDevCommRequirements *reqs,
                                   flagcxInnerDevComm_t *devComm);
