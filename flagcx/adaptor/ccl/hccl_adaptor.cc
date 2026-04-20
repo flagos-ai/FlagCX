@@ -338,8 +338,9 @@ flagcxResult_t hcclAdaptorGroupEnd() {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxResult_t hcclAdaptorDevCommReqsInit(
-    flagcxInnerComm_t /*comm*/, flagcxDevCommRequirements * /*reqs*/) {
+flagcxResult_t
+hcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
   return flagcxNotSupported;
 }
 

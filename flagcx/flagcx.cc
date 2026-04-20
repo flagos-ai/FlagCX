@@ -1203,6 +1203,14 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
 
   // 1. Auto-detect requirements via adaptor
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  if (cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit == NULL) {
+    free(state);
+    comm->devCommState = nullptr;
+    INFO(FLAGCX_INIT,
+         "Custom allreduce: adaptor does not provide devCommReqsInit, "
+         "disabled");
+    return flagcxSuccess;
+  }
   flagcxResult_t res = cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit(
       comm->homoComm, &reqs);
   if (res == flagcxNotSupported) {
@@ -1219,6 +1227,9 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
                       "disabled");
     return flagcxSuccess; // non-fatal
   }
+
+  // Record capability flags
+  state->hasMulticast = reqs.intraMulticast;
 
   // 2. Create DevComm
   res = flagcxDevCommCreate(comm, &reqs, &state->devComm);
@@ -1272,6 +1283,8 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   return flagcxSuccess;
 
 fail:
+  if (state->devComm)
+    flagcxDevCommDestroy(comm, state->devComm);
   if (state->recvStagedMem)
     flagcxDevMemDestroy(comm, state->recvStagedMem);
   if (state->sendStagedMem)
@@ -1286,8 +1299,6 @@ fail:
     cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
   if (state->sendStagedBuff)
     cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
-  if (state->devComm)
-    flagcxDevCommDestroy(comm, state->devComm);
   free(state);
   comm->devCommState = nullptr;
   INFO(FLAGCX_INIT, "Custom allreduce: init failed, disabled");
@@ -2038,9 +2049,12 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
-  // Try custom allreduce if registered
+  // Try custom allreduce if registered — only valid for homo-only single-node
+  // with multicast support
   if (comm->devCommState != NULL &&
-      comm->devCommState->customAllReduce != NULL) {
+      comm->devCommState->customAllReduce != NULL &&
+      comm->devCommState->hasMulticast && useHomoComm(comm) &&
+      !useHeteroComm()) {
     auto *state = comm->devCommState;
     size_t size = count * getFlagcxDataTypeSize(datatype);
     if (size < state->stagedBuffSize) {

@@ -27,6 +27,8 @@ struct bootstrapState;
 //         commWindowDeregister, reduce, gather, scatter, broadcast,
 //         allReduce, reduceScatter, allGather, alltoAll, alltoAllv,
 //         send, recv, groupStart, groupEnd
+//   latest — v1 + devCommReqsInit, devCommCreate, devCommDestroy
+//            (Device API host-side management)
 struct flagcxCCLAdaptor_v1 {
   const char *name;
   // Basic functions
@@ -107,8 +109,92 @@ struct flagcxCCLAdaptor_v1 {
   // Group semantics
   flagcxResult_t (*groupStart)();
   flagcxResult_t (*groupEnd)();
+};
 
-  // Device API - Host-side management (NCCL > 2.28, CNCL device API, etc.)
+// Latest version — extends v1 with Device API host-side management pointers.
+// All v1 fields must stay layout-compatible (same order, same offsets).
+struct flagcxCCLAdaptor_latest {
+  const char *name;
+  // Basic functions
+  flagcxResult_t (*getVersion)(int *version);
+  flagcxResult_t (*getUniqueId)(flagcxUniqueId_t *uniqueId);
+  const char *(*getErrorString)(flagcxResult_t result);
+  const char *(*getLastError)(flagcxInnerComm_t comm);
+  flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
+                                    size_t size, int isRecv);
+
+  // Communicator functions
+  flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
+                                 flagcxUniqueId *commId, int rank,
+                                 bootstrapState *bootstrap);
+  flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
+  flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);
+  flagcxResult_t (*commAbort)(flagcxInnerComm_t comm);
+  flagcxResult_t (*commResume)(flagcxInnerComm_t comm);
+  flagcxResult_t (*commSuspend)(flagcxInnerComm_t comm);
+  flagcxResult_t (*commCount)(const flagcxInnerComm_t comm, int *count);
+  flagcxResult_t (*commGetDeviceNumber)(const flagcxInnerComm_t comm,
+                                        int *device);
+  flagcxResult_t (*commUserRank)(const flagcxInnerComm_t comm, int *rank);
+  flagcxResult_t (*commGetAsyncError)(flagcxInnerComm_t comm,
+                                      flagcxResult_t *asyncError);
+  flagcxResult_t (*memAlloc)(void **ptr, size_t size);
+  flagcxResult_t (*memFree)(void *ptr);
+  flagcxResult_t (*commRegister)(const flagcxInnerComm_t comm, void *buff,
+                                 size_t size, void **handle);
+  flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
+  // Symmetric functions
+  flagcxResult_t (*commWindowRegister)(flagcxInnerComm_t comm, void *buff,
+                                       size_t size, flagcxWindow_t *win,
+                                       int winFlags);
+  flagcxResult_t (*commWindowDeregister)(flagcxInnerComm_t comm,
+                                         flagcxWindow_t win);
+
+  // Communication functions
+  flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,
+                           flagcxDataType_t datatype, flagcxRedOp_t op,
+                           int root, flagcxInnerComm_t comm,
+                           flagcxStream_t stream);
+  flagcxResult_t (*gather)(const void *sendbuff, void *recvbuff, size_t count,
+                           flagcxDataType_t datatype, int root,
+                           flagcxInnerComm_t comm, flagcxStream_t stream);
+  flagcxResult_t (*scatter)(const void *sendbuff, void *recvbuff, size_t count,
+                            flagcxDataType_t datatype, int root,
+                            flagcxInnerComm_t comm, flagcxStream_t stream);
+  flagcxResult_t (*broadcast)(const void *sendbuff, void *recvbuff,
+                              size_t count, flagcxDataType_t datatype, int root,
+                              flagcxInnerComm_t comm, flagcxStream_t stream);
+  flagcxResult_t (*allReduce)(const void *sendbuff, void *recvbuff,
+                              size_t count, flagcxDataType_t datatype,
+                              flagcxRedOp_t op, flagcxInnerComm_t comm,
+                              flagcxStream_t stream);
+  flagcxResult_t (*reduceScatter)(const void *sendbuff, void *recvbuff,
+                                  size_t recvcount, flagcxDataType_t datatype,
+                                  flagcxRedOp_t op, flagcxInnerComm_t comm,
+                                  flagcxStream_t stream);
+  flagcxResult_t (*allGather)(const void *sendbuff, void *recvbuff,
+                              size_t sendcount, flagcxDataType_t datatype,
+                              flagcxInnerComm_t comm, flagcxStream_t stream);
+  flagcxResult_t (*alltoAll)(const void *sendbuff, void *recvbuff, size_t count,
+                             flagcxDataType_t datatype, flagcxInnerComm_t comm,
+                             flagcxStream_t stream);
+  flagcxResult_t (*alltoAllv)(const void *sendbuff, size_t *sendcounts,
+                              size_t *sdispls, void *recvbuff,
+                              size_t *recvcounts, size_t *rdispls,
+                              flagcxDataType_t datatype, flagcxInnerComm_t comm,
+                              flagcxStream_t stream);
+  flagcxResult_t (*send)(const void *sendbuff, size_t count,
+                         flagcxDataType_t datatype, int peer,
+                         flagcxInnerComm_t comm, flagcxStream_t stream);
+  flagcxResult_t (*recv)(void *recvbuff, size_t count,
+                         flagcxDataType_t datatype, int peer,
+                         flagcxInnerComm_t comm, flagcxStream_t stream);
+
+  // Group semantics
+  flagcxResult_t (*groupStart)();
+  flagcxResult_t (*groupEnd)();
+
+  // Added beyond v1: Device API - Host-side management (NCCL Device API, etc.)
   flagcxResult_t (*devCommReqsInit)(flagcxInnerComm_t comm,
                                     flagcxDevCommRequirements *reqs);
   flagcxResult_t (*devCommCreate)(flagcxInnerComm_t comm,
@@ -117,9 +203,20 @@ struct flagcxCCLAdaptor_v1 {
   flagcxResult_t (*devCommDestroy)(flagcxInnerComm_t comm,
                                    flagcxInnerDevComm_t devComm);
 };
-#define flagcxCCLAdaptor flagcxCCLAdaptor_v1
 
-// Versioned export symbol name
+#define flagcxCCLAdaptor flagcxCCLAdaptor_latest
+
+// Upgrade a v1 plugin struct to latest in-place into dst.
+// Fields added beyond v1 (devCommReqsInit, devCommCreate, devCommDestroy) are
+// zeroed (NULL).
+static inline void
+flagcxCCLAdaptorUpgradeV1(const struct flagcxCCLAdaptor_v1 *src,
+                          struct flagcxCCLAdaptor_latest *dst) {
+  memset(dst, 0, sizeof(*dst));
+  memcpy(dst, src, sizeof(struct flagcxCCLAdaptor_v1));
+}
+
+// Versioned export symbol names
 #define FLAGCX_CCL_ADAPTOR_PLUGIN_SYMBOL_V1 flagcxCCLAdaptorPlugin_v1
 
 #ifdef __cplusplus

@@ -460,7 +460,7 @@ flagcxResult_t ncclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
     return flagcxNotSupported;
 
   *reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs->intraBarrierCount = NCCL_ADAPTOR_DEVICE_CTA_COUNT;
+  reqs->intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs->intraMulticast = checkNvlsSupport();
   return flagcxSuccess;
 #else

@@ -35,6 +35,9 @@ struct flagcxDevCommState {
   void *recvStagedBuff;
   size_t stagedBuffSize;
 
+  // Capability flags (from devCommReqsInit)
+  bool hasMulticast;
+
   // Registered custom ops
   flagcxCustomAllReduceFn_t customAllReduce;
 

@@ -684,7 +684,8 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   // ---- Vendor path: try devCommCreate via adaptor ----
   flagcxInnerComm_t innerComm = comm->homoComm;
-  if (innerComm != nullptr) {
+  if (innerComm != nullptr &&
+      cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate != NULL) {
     flagcxInnerDevComm_t innerDevComm = nullptr;
     flagcxResult_t ret = cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate(
         innerComm, reqs, &innerDevComm);
@@ -861,7 +862,8 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   // Vendor layer cleanup via adaptor
   if (comm != nullptr && devComm->devComm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm != nullptr) {
+    if (innerComm != nullptr &&
+        cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy != NULL) {
       cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
                                                           devComm->devComm);
       devComm->devComm = nullptr;

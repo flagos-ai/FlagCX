@@ -429,12 +429,12 @@ static flagcxResult_t flagcxLocalAllReduceDispatch(
     flagcxDataType_t datatype, flagcxRedOp_t op,
     flagcxDevComm devComm, cudaStream_t stream) {
   if (op != flagcxSum && op != flagcxMin && op != flagcxMax)
-    return flagcxInvalidArgument;
+    return flagcxNotSupported;
   if ((op == flagcxMin || op == flagcxMax) &&
       (datatype != flagcxFloat16 && datatype != flagcxBfloat16))
-    return flagcxInvalidArgument;
+    return flagcxNotSupported;
   if (count % getAlignmentRequirement(datatype) != 0)
-    return flagcxInvalidArgument;
+    return flagcxNotSupported;
 
   switch (datatype) {
     case flagcxFloat16:
@@ -446,7 +446,7 @@ static flagcxResult_t flagcxLocalAllReduceDispatch(
     case flagcxBfloat16:
       return launchLocalAllReduceKernel<nv_bfloat16>(sendmem, recvbuff, count, op, devComm, stream);
     default:
-      return flagcxInvalidArgument;
+      return flagcxNotSupported;
   }
 }
 
@@ -455,12 +455,12 @@ static flagcxResult_t flagcxInterleavedAllReduceDispatch(
     flagcxDataType_t datatype, flagcxRedOp_t op,
     flagcxDevComm devComm, cudaStream_t stream) {
   if (op != flagcxSum && op != flagcxMin && op != flagcxMax)
-    return flagcxInvalidArgument;
+    return flagcxNotSupported;
   if ((op == flagcxMin || op == flagcxMax) &&
       (datatype != flagcxFloat16 && datatype != flagcxBfloat16))
-    return flagcxInvalidArgument;
+    return flagcxNotSupported;
   if (count % getAlignmentRequirement(datatype) != 0)
-    return flagcxInvalidArgument;
+    return flagcxNotSupported;
 
   switch (datatype) {
     case flagcxFloat16:
@@ -472,7 +472,7 @@ static flagcxResult_t flagcxInterleavedAllReduceDispatch(
     case flagcxBfloat16:
       return launchInterleavedAllReduceKernel<nv_bfloat16>(sendmem, recvmem, count, op, devComm, stream);
     default:
-      return flagcxInvalidArgument;
+      return flagcxNotSupported;
   }
 }
 
@@ -498,6 +498,18 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
     default: return flagcxNotSupported;
   }
   size_t size = count * elemSize;
+
+  // Validate op/datatype/alignment before staging memcpy so we don't
+  // waste a D2D copy when the dispatch will return flagcxNotSupported.
+  if (op != flagcxSum && op != flagcxMin && op != flagcxMax)
+    return flagcxNotSupported;
+  if ((op == flagcxMin || op == flagcxMax) &&
+      (datatype != flagcxFloat16 && datatype != flagcxBfloat16))
+    return flagcxNotSupported;
+  if (count % getAlignmentRequirement(datatype) != 0)
+    return flagcxNotSupported;
+  if (size > state->stagedBuffSize)
+    return flagcxNotSupported;
 
   // Copy sendbuff to staged buffer
   cudaStream_t cudaStream = stream->base;
