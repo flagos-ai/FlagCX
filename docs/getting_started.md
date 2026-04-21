@@ -126,3 +126,122 @@ Registration modes (`-R`):
 - `-R 2`: Window mode — `flagcxMemAlloc` + `flagcxCommWindowRegister`.
 
 One-sided tests (`test_internode_onesided`, `test_device_api`) require `-R 1` or `-R 2`.
+
+### Torch API Test
+
+Torch API tests verify FlagCX's PyTorch custom process group backend (`flagcx`) by running collective communication operations through `torch.distributed`. Test scripts are maintained in `plugin/torch/example/`.
+
+The test script `example.py` supports the following collective operations:
+
+`broadcast`, `reduce`, `allreduce`, `allgather`, `reducescatter`, `sendrecv`, `gather`, `scatter`, `alltoall`, `all` (default)
+
+Use the `-o` / `--op` flag to test a specific operation (e.g., `-o allreduce`). By default, all operations are tested.
+
+#### Single-Node Test
+
+For single-node testing, use `run.sh`:
+
+```shell
+cd plugin/torch/example
+# Edit run.sh to set environment variables for your hardware platform,
+# e.g., CUDA_VISIBLE_DEVICES for NVIDIA GPUs.
+./run.sh
+```
+
+To enable NCCL debug output:
+
+```shell
+./run.sh debug
+```
+
+#### Two-Node Heterogeneous Test
+
+For a 2-node heterogeneous communication test, use `run_hetero.sh`. You need to modify and run the script on each machine separately.
+
+On each node, edit `run_hetero.sh` to set:
+
+- `--node_rank`: `0` on the first node, `1` on the second
+- `--master_addr`: IP address of node 0
+- `--nproc_per_node`: number of devices per node
+- `GLOO_SOCKET_IFNAME` / `FLAGCX_SOCKET_IFNAME`: network interface for inter-node communication (e.g., `eth0` or `ibs4` for InfiniBand)
+- Hardware-specific environment variables and library paths for each node's platform
+
+Then run the script manually on each machine:
+
+```shell
+cd plugin/torch/example
+./run_hetero.sh
+```
+
+#### Multi-Node Test
+
+For multi-node testing (both homogeneous and heterogeneous), use the `run_torch_test.py` launcher. It reads a hostfile and YAML config, generates a per-node run script, copies it to each host via SCP, and launches it via SSH.
+
+Prerequisites:
+- Passwordless SSH access between all nodes
+- PyYAML installed (`pip install pyyaml`)
+
+**Step 1** — Configure the hostfile (see `example_hostfile`):
+
+```
+# <ip> slots=<n> type=<device_type>
+192.168.1.1 slots=8 type=nvidia
+192.168.1.2 slots=8 type=nvidia
+```
+
+Each line specifies a node's IP, the number of devices (`slots`), and the device type. All nodes must have the same `slots` count. The `type` field must match a key under `envs.device_type_specific` in the YAML config.
+
+**Step 2** — Configure the YAML env config (see `example_torch_env.yaml`):
+
+```yaml
+cmds:
+  before_start: source /root/miniconda3/bin/activate flagscale-train
+test_dir: ./
+log_dir: ./torch_logs
+testfile: ./example.py
+master_port: 8281
+master_addr: 192.168.1.1
+envs:
+  FLAGCX_DEBUG: INFO
+  FLAGCX_DEBUG_SUBSYS: ALL
+  device_type_specific:
+    nvidia:
+      CUDA_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+```
+
+Key fields:
+- `cmds.before_start`: shell command to run before the test (e.g., conda environment activation)
+- `test_dir`: directory on remote hosts where generated run scripts are placed
+- `log_dir`: directory on remote hosts where stdout/stderr logs are written
+- `testfile`: path to `example.py` on the remote hosts
+- `master_port`: port for distributed rendezvous (must be in range 10000–19999)
+- `master_addr`: IP of the master node (defaults to the first host in the hostfile if omitted)
+- `envs`: common environment variables for all nodes
+- `envs.device_type_specific`: per-device-type environment variables, keyed by the `type` field in the hostfile
+
+**Step 3** — Launch the test:
+
+```shell
+cd plugin/torch/example
+python run_torch_test.py --hostfile example_hostfile --config example_torch_env.yaml
+```
+
+To test a specific collective operation:
+
+```shell
+python run_torch_test.py --hostfile example_hostfile --config example_torch_env.yaml --extra-args "--op allreduce"
+```
+
+To validate the generated scripts without executing them:
+
+```shell
+python run_torch_test.py --hostfile example_hostfile --config example_torch_env.yaml --dry-run
+```
+
+Check log files in the configured `log_dir` on each remote host for output.
+
+**Stopping hung processes** — If distributed training hangs, use `stop_torch_test.py` to kill `torchrun` processes across all nodes:
+
+```shell
+python stop_torch_test.py --hostfile example_hostfile
+```
