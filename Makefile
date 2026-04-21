@@ -20,6 +20,7 @@ USE_MPI ?= 0
 USE_UCX ?= 0
 USE_IBUC ?= 0
 USE_ENFLAME ?= 0
+USE_SUNRISE ?= 0
 COMPILE_KERNEL ?= 0
 
 # set to empty if not provided
@@ -52,6 +53,8 @@ ifeq ($(strip $(DEVICE_HOME)),)
 		DEVICE_HOME = /usr/local/kuiper
 	else ifeq ($(USE_ENFLAME), 1)
 		DEVICE_HOME = /opt/tops/
+	else ifeq ($(USE_SUNRISE), 1)
+		DEVICE_HOME = /usr/local/tangrt
 	else
 		DEVICE_HOME = /usr/local/cuda
 	endif
@@ -80,6 +83,8 @@ ifeq ($(strip $(CCL_HOME)),)
 		CCL_HOME = /usr/local/kuiper
 	else ifeq ($(USE_ENFLAME), 1)
 		CCL_HOME = /usr
+	else ifeq ($(USE_SUNRISE), 1)
+		CCL_HOME = /usr/local/pccl
 	else
 		CCL_HOME = /usr/local/nccl/build
 	endif
@@ -230,6 +235,14 @@ else ifeq ($(USE_ENFLAME), 1)
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -leccl
 	ADAPTOR_FLAG = -DUSE_ENFLAME_ADAPTOR
+else ifeq ($(USE_SUNRISE), 1)
+	DEVICE_LIB = $(DEVICE_HOME)/targets/linux-x86_64/lib
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_LINK = -ltangrt_shared
+	CCL_LIB = $(CCL_HOME)/lib/linux-x86_64
+	CCL_INCLUDE = $(CCL_HOME)/include
+	CCL_LINK = -lpccl
+	ADAPTOR_FLAG = -DUSE_SUNRISE_ADAPTOR
 else
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
