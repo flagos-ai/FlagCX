@@ -1,11 +1,11 @@
 #ifdef USE_SUNRISE_ADAPTOR
-#include "tang.h"
-#include "tang_runtime.h"
-#include "pccl.h"
 #include "adaptor.h"
 #include "alloc.h"
 #include "comm.h"
 #include "flagcx.h"
+#include "pccl.h"
+#include "tang.h"
+#include "tang_runtime.h"
 #include <map>
 struct flagcxInnerComm {
   pcclComm_t base;

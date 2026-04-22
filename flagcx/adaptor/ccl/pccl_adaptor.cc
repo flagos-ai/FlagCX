@@ -5,23 +5,19 @@
 
 // Datatype and reduction op mappings
 std::map<flagcxDataType_t, pcclDataType_t> f2p_datatype_map = {
-    {flagcxInt8, pcclInt8},
-    {flagcxUint8, pcclUint8},
-    {flagcxInt, pcclInt},
-    {flagcxInt32, pcclInt32},
-    {flagcxUint32, pcclUint32},
-    {flagcxInt64, pcclInt64},
-    {flagcxUint64, pcclUint64},
-    {flagcxHalf, pcclHalf},
-    {flagcxFloat16, pcclFloat16},
-    {flagcxBfloat16, pcclBfloat16},
-    {flagcxFloat32, pcclFloat32},
-    {flagcxFloat, pcclFloat},
+    {flagcxInt8, pcclInt8},        {flagcxUint8, pcclUint8},
+    {flagcxInt, pcclInt},          {flagcxInt32, pcclInt32},
+    {flagcxUint32, pcclUint32},    {flagcxInt64, pcclInt64},
+    {flagcxUint64, pcclUint64},    {flagcxHalf, pcclHalf},
+    {flagcxFloat16, pcclFloat16},  {flagcxBfloat16, pcclBfloat16},
+    {flagcxFloat32, pcclFloat32},  {flagcxFloat, pcclFloat},
     {flagcxNumTypes, pcclTypesNum}};
 
-std::map<flagcxRedOp_t, pcclRedOp_t> f2p_reduceop_map = {
-    {flagcxSum, pcclSum}, {flagcxProd, pcclProd}, {flagcxMax, pcclMax},
-    {flagcxMin, pcclMin}, {flagcxAvg, pcclAvg}};
+std::map<flagcxRedOp_t, pcclRedOp_t> f2p_reduceop_map = {{flagcxSum, pcclSum},
+                                                         {flagcxProd, pcclProd},
+                                                         {flagcxMax, pcclMax},
+                                                         {flagcxMin, pcclMin},
+                                                         {flagcxAvg, pcclAvg}};
 
 std::map<pcclResult_t, flagcxResult_t> p2f_ret_map = {
     {pcclSuccess, flagcxSuccess},
@@ -56,7 +52,8 @@ flagcxResult_t pcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
-  return (flagcxResult_t)p2f_ret_map[pcclGetUniqueId((pcclUniqueId *)(*uniqueId))];
+  return (
+      flagcxResult_t)p2f_ret_map[pcclGetUniqueId((pcclUniqueId *)(*uniqueId))];
 }
 
 const char *pcclAdaptorGetErrorString(flagcxResult_t result) {
@@ -91,8 +88,8 @@ flagcxResult_t pcclAdaptorCommInitAll(flagcxInnerComm_t *comm, int nranks,
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }
-  return (flagcxResult_t)p2f_ret_map[
-      pcclCommInitAll(&(*comm)->base, nranks, devlist)];
+  return (flagcxResult_t)
+      p2f_ret_map[pcclCommInitAll(&(*comm)->base, nranks, devlist)];
 }
 
 // TODO: unsupported
@@ -134,8 +131,8 @@ flagcxResult_t pcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
 
 flagcxResult_t pcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
                                             flagcxResult_t *asyncError) {
-  return (flagcxResult_t)p2f_ret_map[pcclCommGetAsyncError(
-      comm->base, &f2p_ret_map[*asyncError])];
+  return (flagcxResult_t)
+      p2f_ret_map[pcclCommGetAsyncError(comm->base, &f2p_ret_map[*asyncError])];
 }
 
 // TODO: unsupported
@@ -144,9 +141,7 @@ flagcxResult_t pcclAdaptorMemAlloc(void **ptr, size_t size) {
 }
 
 // TODO: unsupported
-flagcxResult_t pcclAdaptorMemFree(void *ptr) {
-  return flagcxNotSupported;
-}
+flagcxResult_t pcclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
 
 // TODO: unsupported
 flagcxResult_t pcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
@@ -226,8 +221,7 @@ pcclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t recvcount,
 }
 
 flagcxResult_t pcclAdaptorAllGather(const void *sendbuff, void *recvbuff,
-                                    size_t sendcount,
-                                    flagcxDataType_t datatype,
+                                    size_t sendcount, flagcxDataType_t datatype,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
   return (flagcxResult_t)p2f_ret_map[pcclAllGather(
@@ -256,17 +250,17 @@ flagcxResult_t pcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
 flagcxResult_t pcclAdaptorSend(const void *sendbuff, size_t count,
                                flagcxDataType_t datatype, int peer,
                                flagcxInnerComm_t comm, flagcxStream_t stream) {
-  return (flagcxResult_t)p2f_ret_map[pcclSend(
-      sendbuff, count, f2p_datatype_map[datatype], peer, comm->base,
-      stream->base)];
+  return (flagcxResult_t)
+      p2f_ret_map[pcclSend(sendbuff, count, f2p_datatype_map[datatype], peer,
+                           comm->base, stream->base)];
 }
 
 flagcxResult_t pcclAdaptorRecv(void *recvbuff, size_t count,
                                flagcxDataType_t datatype, int peer,
                                flagcxInnerComm_t comm, flagcxStream_t stream) {
-  return (flagcxResult_t)p2f_ret_map[pcclRecv(
-      recvbuff, count, f2p_datatype_map[datatype], peer, comm->base,
-      stream->base)];
+  return (flagcxResult_t)
+      p2f_ret_map[pcclRecv(recvbuff, count, f2p_datatype_map[datatype], peer,
+                           comm->base, stream->base)];
 }
 
 flagcxResult_t pcclAdaptorGroupStart(void) {
@@ -281,43 +275,22 @@ flagcxResult_t pcclAdaptorGroupEnd(void) {
 struct flagcxCCLAdaptor pcclAdaptor = {
     "PCCL",
     // Basic functions
-    pcclAdaptorGetVersion,
-    pcclAdaptorGetUniqueId,
-    pcclAdaptorGetErrorString,
-    pcclAdaptorGetLastError,
-    pcclAdaptorGetStagedBuffer,
+    pcclAdaptorGetVersion, pcclAdaptorGetUniqueId, pcclAdaptorGetErrorString,
+    pcclAdaptorGetLastError, pcclAdaptorGetStagedBuffer,
     // Communicator functions
-    pcclAdaptorCommInitRank,
-    pcclAdaptorCommFinalize,
-    pcclAdaptorCommDestroy,
-    pcclAdaptorCommAbort,
-    pcclAdaptorCommResume,
-    pcclAdaptorCommSuspend,
-    pcclAdaptorCommCount,
-    pcclAdaptorCommCuDevice,
-    pcclAdaptorCommUserRank,
-    pcclAdaptorCommGetAsyncError,
-    pcclAdaptorMemAlloc,
-    pcclAdaptorMemFree,
-    pcclAdaptorCommRegister,
-    pcclAdaptorCommDeregister,
+    pcclAdaptorCommInitRank, pcclAdaptorCommFinalize, pcclAdaptorCommDestroy,
+    pcclAdaptorCommAbort, pcclAdaptorCommResume, pcclAdaptorCommSuspend,
+    pcclAdaptorCommCount, pcclAdaptorCommCuDevice, pcclAdaptorCommUserRank,
+    pcclAdaptorCommGetAsyncError, pcclAdaptorMemAlloc, pcclAdaptorMemFree,
+    pcclAdaptorCommRegister, pcclAdaptorCommDeregister,
     // Symmetric functions
-    pcclAdaptorCommWindowRegister,
-    pcclAdaptorCommWindowDeregister,
+    pcclAdaptorCommWindowRegister, pcclAdaptorCommWindowDeregister,
     // Communication functions
-    pcclAdaptorReduce,
-    pcclAdaptorGather,
-    pcclAdaptorScatter,
-    pcclAdaptorBroadcast,
-    pcclAdaptorAllReduce,
-    pcclAdaptorReduceScatter,
-    pcclAdaptorAllGather,
-    pcclAdaptorAlltoAll,
-    pcclAdaptorAlltoAllv,
-    pcclAdaptorSend,
-    pcclAdaptorRecv,
+    pcclAdaptorReduce, pcclAdaptorGather, pcclAdaptorScatter,
+    pcclAdaptorBroadcast, pcclAdaptorAllReduce, pcclAdaptorReduceScatter,
+    pcclAdaptorAllGather, pcclAdaptorAlltoAll, pcclAdaptorAlltoAllv,
+    pcclAdaptorSend, pcclAdaptorRecv,
     // Group semantics
-    pcclAdaptorGroupStart,
-    pcclAdaptorGroupEnd};
+    pcclAdaptorGroupStart, pcclAdaptorGroupEnd};
 
 #endif // USE_SUNRISE_ADAPTOR

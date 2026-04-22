@@ -20,7 +20,8 @@ flagcxResult_t ptpuAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
   if (stream == NULL) {
     DEVCHECK(tangMemcpy(dst, src, size, memcpy_type_map[type]));
   } else {
-    DEVCHECK(tangMemcpyAsync(dst, src, size, memcpy_type_map[type], stream->base));
+    DEVCHECK(
+        tangMemcpyAsync(dst, src, size, memcpy_type_map[type], stream->base));
   }
   return flagcxSuccess;
 }
@@ -175,7 +176,8 @@ flagcxResult_t ptpuAdaptorStreamQuery(flagcxStream_t stream) {
 flagcxResult_t ptpuAdaptorStreamWaitEvent(flagcxStream_t stream,
                                           flagcxEvent_t event) {
   if (stream != NULL && event != NULL) {
-    DEVCHECK(tangStreamWaitEvent(stream->base, event->base, tangEventWaitDefault));
+    DEVCHECK(
+        tangStreamWaitEvent(stream->base, event->base, tangEventWaitDefault));
   }
   return flagcxSuccess;
 }
@@ -190,7 +192,8 @@ flagcxResult_t ptpuAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
   return flagcxNotSupported;
 }
 
-// TODO:ref of cuda_adaptor.cc, ignore flags with tangEventBlockingSync, tangEventInterprocess
+// TODO:ref of cuda_adaptor.cc, ignore flags with tangEventBlockingSync,
+// tangEventInterprocess
 flagcxResult_t ptpuAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   (*event) = NULL;
@@ -214,7 +217,8 @@ flagcxResult_t ptpuAdaptorEventRecord(flagcxEvent_t event,
                                       flagcxStream_t stream) {
   if (event != NULL) {
     if (stream != NULL) {
-      DEVCHECK(tangEventRecordWithFlags(event->base, stream->base, tangEventRecordDefault));
+      DEVCHECK(tangEventRecordWithFlags(event->base, stream->base,
+                                        tangEventRecordDefault));
     } else {
       DEVCHECK(tangEventRecordWithFlags(event->base));
     }
@@ -276,7 +280,8 @@ flagcxResult_t ptpuAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   if (handle == NULL || devPtr == NULL || *devPtr != NULL) {
     return flagcxInvalidArgument;
   }
-  DEVCHECK(tangIpcOpenMemHandle(devPtr, handle->base, tangIpcMemLazyEnablePeerAccess));
+  DEVCHECK(tangIpcOpenMemHandle(devPtr, handle->base,
+                                tangIpcMemLazyEnablePeerAccess));
   return flagcxSuccess;
 }
 
@@ -351,8 +356,8 @@ flagcxResult_t ptpuAdaptorDmaSupport(bool *dmaBufferSupport) {
   return flagcxSuccess;
 }
 
-flagcxResult_t ptpuAdaptorGetHandleForAddressRange(void *handleOut, void *buffer,
-                                                   size_t size,
+flagcxResult_t ptpuAdaptorGetHandleForAddressRange(void *handleOut,
+                                                   void *buffer, size_t size,
                                                    unsigned long long flags) {
   (void)handleOut;
   (void)buffer;
@@ -375,21 +380,14 @@ flagcxResult_t ptpuAdaptorHostUnregister(void *ptr) {
 struct flagcxDeviceAdaptor ptpuAdaptor {
   "PTPU",
       // Basic functions
-      ptpuAdaptorDeviceSynchronize,
-      ptpuAdaptorDeviceMemcpy,
-      ptpuAdaptorDeviceMemset,
-      ptpuAdaptorDeviceMalloc,
-      ptpuAdaptorDeviceFree,
-      ptpuAdaptorSetDevice,
-      ptpuAdaptorGetDevice,
-      ptpuAdaptorGetDeviceCount,
-      ptpuAdaptorGetVendor,
-      ptpuAdaptorHostGetDevicePointer,
+      ptpuAdaptorDeviceSynchronize, ptpuAdaptorDeviceMemcpy,
+      ptpuAdaptorDeviceMemset, ptpuAdaptorDeviceMalloc, ptpuAdaptorDeviceFree,
+      ptpuAdaptorSetDevice, ptpuAdaptorGetDevice, ptpuAdaptorGetDeviceCount,
+      ptpuAdaptorGetVendor, ptpuAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
-      ptpuAdaptorGdrMemAlloc,
-      ptpuAdaptorGdrMemFree,
+      ptpuAdaptorGdrMemAlloc, ptpuAdaptorGdrMemFree,
       NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
             // *memHandle);
       NULL, // flagcxResult_t (*hostShareMemFree)(void *ptr, void *memHandle);
@@ -397,27 +395,17 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
             // sz);
       NULL, // flagcxResult_t (*gdrPtrMunmap)(void *cpuptr, size_t sz);
       // Stream functions
-      ptpuAdaptorStreamCreate,
-      ptpuAdaptorStreamDestroy,
-      ptpuAdaptorStreamCopy,
-      ptpuAdaptorStreamFree,
-      ptpuAdaptorStreamSynchronize,
-      ptpuAdaptorStreamQuery,
-      ptpuAdaptorStreamWaitEvent,
-      ptpuAdaptorStreamWaitValue64,
-      ptpuAdaptorStreamWriteValue64,
+      ptpuAdaptorStreamCreate, ptpuAdaptorStreamDestroy, ptpuAdaptorStreamCopy,
+      ptpuAdaptorStreamFree, ptpuAdaptorStreamSynchronize,
+      ptpuAdaptorStreamQuery, ptpuAdaptorStreamWaitEvent,
+      ptpuAdaptorStreamWaitValue64, ptpuAdaptorStreamWriteValue64,
       // Event functions
-      ptpuAdaptorEventCreate,
-      ptpuAdaptorEventDestroy,
-      ptpuAdaptorEventRecord,
-      ptpuAdaptorEventSynchronize,
-      ptpuAdaptorEventQuery,
+      ptpuAdaptorEventCreate, ptpuAdaptorEventDestroy, ptpuAdaptorEventRecord,
+      ptpuAdaptorEventSynchronize, ptpuAdaptorEventQuery,
       ptpuAdaptorEventElapsedTime,
       // IpcMemHandle functions
-      ptpuAdaptorIpcMemHandleCreate,
-      ptpuAdaptorIpcMemHandleGet,
-      ptpuAdaptorIpcMemHandleOpen,
-      ptpuAdaptorIpcMemHandleClose,
+      ptpuAdaptorIpcMemHandleCreate, ptpuAdaptorIpcMemHandleGet,
+      ptpuAdaptorIpcMemHandleOpen, ptpuAdaptorIpcMemHandleClose,
       ptpuAdaptorIpcMemHandleFree,
       // Kernel launch
       NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
@@ -428,15 +416,12 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       NULL, // flagcxResult_t (*copyArgsFree)(void *args);
       ptpuAdaptorLaunchDeviceFunc,
       // Others
-      ptpuAdaptorGetDeviceProperties,
-      ptpuAdaptorGetDevicePciBusId,
+      ptpuAdaptorGetDeviceProperties, ptpuAdaptorGetDevicePciBusId,
       ptpuAdaptorGetDeviceByPciBusId,
       // HostFunc launch
       ptpuAdaptorLaunchHostFunc,
       // DMA buffer
-      ptpuAdaptorDmaSupport,
-      ptpuAdaptorGetHandleForAddressRange,
-      ptpuAdaptorHostRegister,
-      ptpuAdaptorHostUnregister,
+      ptpuAdaptorDmaSupport, ptpuAdaptorGetHandleForAddressRange,
+      ptpuAdaptorHostRegister, ptpuAdaptorHostUnregister,
 };
 #endif // USE_SUNRISE_ADAPTOR
