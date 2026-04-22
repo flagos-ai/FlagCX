@@ -309,24 +309,24 @@ typedef struct flagcxInterBarrierHandle flagcxInterBarrierHandle_t;
 // No #ifdef — DeviceAPI resolves at compile time.
 // ============================================================
 FLAGCX_DEVICE_INLINE_DECORATOR
-flagcxTeam_t flagcxTeamIntra(const flagcxDevComm &devComm) {
-  flagcxTeam_t team;
+flagcxTeam flagcxTeamIntra(const flagcxDevComm &devComm) {
+  flagcxTeam team;
   team._teamBase.nRanks = devComm.getIntraSize();
   team._teamBase.rank = devComm.getIntraRank();
   team._teamBase.stride = 1;
   return team;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR
-flagcxTeam_t flagcxTeamWorld(const flagcxDevComm &devComm) {
-  flagcxTeam_t team;
+flagcxTeam flagcxTeamWorld(const flagcxDevComm &devComm) {
+  flagcxTeam team;
   team._teamBase.nRanks = devComm.getSize();
   team._teamBase.rank = devComm.getRank();
   team._teamBase.stride = 1;
   return team;
 }
 FLAGCX_DEVICE_INLINE_DECORATOR
-flagcxTeam_t flagcxTeamInter(const flagcxDevComm &devComm) {
-  flagcxTeam_t team;
+flagcxTeam flagcxTeamInter(const flagcxDevComm &devComm) {
+  flagcxTeam team;
   team._teamBase.nRanks = devComm.getSize() / devComm.getIntraSize();
   team._teamBase.rank = devComm.getRank() / devComm.getIntraSize();
   team._teamBase.stride = devComm.getIntraSize();
@@ -337,8 +337,8 @@ flagcxTeam_t flagcxTeamInter(const flagcxDevComm &devComm) {
 // These 5 functions are identical on all tiers — no vendor delegation needed.
 
 // Is team b's bPeer also a member of team a?
-FLAGCX_HOST_DEVICE_INLINE bool
-flagcxTeamRankIsMember(flagcxTeam_t a, flagcxTeam_t b, int bPeer) {
+FLAGCX_HOST_DEVICE_INLINE bool flagcxTeamRankIsMember(flagcxTeam a,
+                                                      flagcxTeam b, int bPeer) {
   int wrank = (bPeer - b._teamBase.rank) * b._teamBase.stride;
   int adelta = wrank / a._teamBase.stride;
   int amod = wrank % a._teamBase.stride;
@@ -347,8 +347,8 @@ flagcxTeamRankIsMember(flagcxTeam_t a, flagcxTeam_t b, int bPeer) {
 }
 
 // Convert team b's bPeer to team a's rank.
-FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankToTeam(flagcxTeam_t a,
-                                                   flagcxTeam_t b, int bPeer) {
+FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankToTeam(flagcxTeam a, flagcxTeam b,
+                                                   int bPeer) {
   int wrank = (bPeer - b._teamBase.rank) * b._teamBase.stride;
   int adelta = wrank / a._teamBase.stride;
   int arank = a._teamBase.rank + adelta;
@@ -356,9 +356,9 @@ FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankToTeam(flagcxTeam_t a,
 }
 
 // Extract inner sub-team (first innerSize ranks per stride group).
-FLAGCX_HOST_DEVICE_INLINE flagcxTeam_t
-flagcxTeamInnerFactor(flagcxTeam_t parent, int innerSize) {
-  flagcxTeam_t ans;
+FLAGCX_HOST_DEVICE_INLINE flagcxTeam flagcxTeamInnerFactor(flagcxTeam parent,
+                                                           int innerSize) {
+  flagcxTeam ans;
   ans._teamBase.nRanks = innerSize;
   ans._teamBase.rank = parent._teamBase.rank % innerSize;
   ans._teamBase.stride = parent._teamBase.stride;
@@ -366,9 +366,9 @@ flagcxTeamInnerFactor(flagcxTeam_t parent, int innerSize) {
 }
 
 // Extract outer sub-team (stride groups).
-FLAGCX_HOST_DEVICE_INLINE flagcxTeam_t
-flagcxTeamOuterFactor(flagcxTeam_t parent, int innerSize) {
-  flagcxTeam_t ans;
+FLAGCX_HOST_DEVICE_INLINE flagcxTeam flagcxTeamOuterFactor(flagcxTeam parent,
+                                                           int innerSize) {
+  flagcxTeam ans;
   ans._teamBase.nRanks = parent._teamBase.nRanks / innerSize;
   ans._teamBase.rank = parent._teamBase.rank / innerSize;
   ans._teamBase.stride = parent._teamBase.stride * innerSize;
@@ -376,9 +376,8 @@ flagcxTeamOuterFactor(flagcxTeam_t parent, int innerSize) {
 }
 
 // Return the index'th element of parent minus subset (set difference).
-FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankInDifference(flagcxTeam_t parent,
-                                                         flagcxTeam_t subset,
-                                                         int index) {
+FLAGCX_HOST_DEVICE_INLINE int
+flagcxTeamRankInDifference(flagcxTeam parent, flagcxTeam subset, int index) {
   int stride = subset._teamBase.stride / parent._teamBase.stride;
   int below = parent._teamBase.rank - subset._teamBase.rank * stride;
   if (stride < 0) {
@@ -400,16 +399,14 @@ FLAGCX_HOST_DEVICE_INLINE int flagcxTeamRankInDifference(flagcxTeam_t parent,
 
 // Convert team rank to world rank.
 FLAGCX_DEVICE_INLINE_DECORATOR int
-flagcxTeamRankToWorld(const flagcxDevComm &devComm, flagcxTeam_t team,
-                      int rank) {
+flagcxTeamRankToWorld(const flagcxDevComm &devComm, flagcxTeam team, int rank) {
   return devComm.getRank() +
          (rank - team._teamBase.rank) * team._teamBase.stride;
 }
 
 // Convert team rank to intra-node rank.
 FLAGCX_DEVICE_INLINE_DECORATOR int
-flagcxTeamRankToIntra(const flagcxDevComm &devComm, flagcxTeam_t team,
-                      int rank) {
+flagcxTeamRankToIntra(const flagcxDevComm &devComm, flagcxTeam team, int rank) {
   return devComm.getIntraRank() +
          (rank - team._teamBase.rank) * team._teamBase.stride;
 }
@@ -601,7 +598,7 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
   flagcxDevBarrier() : _impl() {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevBarrier(Coop coop, const flagcxDevComm &devComm, flagcxTeam_t team,
+  flagcxDevBarrier(Coop coop, const flagcxDevComm &devComm, flagcxTeam team,
                    uint32_t index, bool multimem = false,
                    flagcxMulticastHandle mcHandle = {})
       : _impl(coop, devComm._commBase, team._teamBase, index, multimem,
@@ -631,7 +628,7 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
 // On default: uses IPC peerPtrs / rawPtr fallback.
 // ============================================================
 FLAGCX_DEVICE_INLINE_DECORATOR void *
-flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam_t team,
+flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam team,
                      int peer) {
   return mem._winBase.getPeerPointer(offset, team._teamBase, peer);
 }
@@ -708,7 +705,7 @@ struct flagcxSymPtr {
   FLAGCX_DEVICE_INLINE_DECORATOR T *localPtr() const {
     return (T *)flagcxGetLocalPointer(mem, offset);
   }
-  FLAGCX_DEVICE_INLINE_DECORATOR T *peerPtr(flagcxTeam_t team, int peer) const {
+  FLAGCX_DEVICE_INLINE_DECORATOR T *peerPtr(flagcxTeam team, int peer) const {
     return (T *)flagcxGetPeerPointer(mem, offset, team, peer);
   }
   FLAGCX_DEVICE_INLINE_DECORATOR T *peerPtr(int peer) const {
@@ -935,7 +932,7 @@ struct flagcxDevTransport : DeviceAPI::Transport {
             typename Coop = flagcxCoopBlock,
             typename Desc = flagcxDevTransport_None>
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  put(flagcxTeam_t team, int peer, const flagcxDevMem &dst, size_t dstOffset,
+  put(flagcxTeam team, int peer, const flagcxDevMem &dst, size_t dstOffset,
       const flagcxDevMem &src, size_t srcOffset, size_t bytes,
       RemoteAction ra = flagcxDevTransport_None{},
       LocalAction la = flagcxDevTransport_None{}, Coop coop = flagcxCoopBlock{},
@@ -951,7 +948,7 @@ struct flagcxDevTransport : DeviceAPI::Transport {
   template <typename RemoteAction, typename Coop = flagcxCoopBlock,
             typename Desc = flagcxDevTransport_None>
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  signal(flagcxTeam_t team, int peer, RemoteAction ra,
+  signal(flagcxTeam team, int peer, RemoteAction ra,
          Coop coop = flagcxCoopBlock{}, Desc desc = flagcxDevTransport_None{},
          flagcxDeviceScope_t ar = flagcxDeviceScopeThread,
          flagcxDeviceScope_t es = flagcxDeviceScopeDevice) const {
@@ -964,9 +961,8 @@ struct flagcxDevTransport : DeviceAPI::Transport {
             typename Coop = flagcxCoopBlock,
             typename Desc = flagcxDevTransport_None>
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  putValue(flagcxTeam_t team, int peer, const flagcxDevMem &dst,
-           size_t dstOffset, T value,
-           RemoteAction ra = flagcxDevTransport_None{},
+  putValue(flagcxTeam team, int peer, const flagcxDevMem &dst, size_t dstOffset,
+           T value, RemoteAction ra = flagcxDevTransport_None{},
            Coop coop = flagcxCoopBlock{}, Desc desc = flagcxDevTransport_None{},
            flagcxDeviceScope_t ar = flagcxDeviceScopeThread,
            flagcxDeviceScope_t es = flagcxDeviceScopeDevice) const {
@@ -978,7 +974,7 @@ struct flagcxDevTransport : DeviceAPI::Transport {
   // ---- One-sided: get (fallback only) ----
   template <typename Coop = flagcxCoopBlock>
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  get(flagcxTeam_t team, int peer, const flagcxDevMem &src, size_t srcOffset,
+  get(flagcxTeam team, int peer, const flagcxDevMem &src, size_t srcOffset,
       const flagcxDevMem &dst, size_t dstOffset, size_t bytes,
       Coop coop = flagcxCoopBlock{}) const {
     DeviceAPI::Transport::get(team._teamBase, peer, src._winBase, srcOffset,
@@ -998,8 +994,8 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
   flagcxDevBarrier() : _impl() {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevBarrier(Coop coop, const flagcxDevTransport &trans,
-                   flagcxTeam_t team, uint32_t index)
+  flagcxDevBarrier(Coop coop, const flagcxDevTransport &trans, flagcxTeam team,
+                   uint32_t index)
       : _impl(coop, trans, trans._dc, team._teamBase, index,
               trans._nInterPeers) {}
 

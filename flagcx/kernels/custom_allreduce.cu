@@ -322,7 +322,7 @@ flagcxLocalAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
                            flagcxRedOp_t op, flagcxDevComm devComm) {
 #if __CUDA_ARCH__ >= 900
   // FlagCX Device API: barrier
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
       flagcxCoopBlock(), devComm, intra, FLAGCX_BLOCK_IDX_X, true};
   bar.sync(flagcxDeviceMemoryOrderAcquire);
@@ -357,7 +357,7 @@ flagcxInterleavedAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
   // FlagCX Device API: rank, barrier
   int rank = devComm.getIntraRank();
   int nRanks = devComm.getIntraSize();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
       flagcxCoopBlock(), devComm, intra, FLAGCX_BLOCK_IDX_X, true};
   bar.sync(flagcxDeviceMemoryOrderAcquire);

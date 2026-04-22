@@ -58,7 +58,7 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     return;
   }
 
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   flagcxDevTransport trans(devComm, FLAGCX_BLOCK_IDX_X);
 
   // Create barrier session using simplified FlagCX API (4 params).
@@ -297,7 +297,7 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
 // with odd counts will lose tail bytes.
 FLAGCX_DEVICE_INLINE_DECORATOR void
 ipcAlltoAll(const flagcxDevMem &sendMem, const flagcxDevMem &recvMem,
-            flagcxTeam_t intra, int intraSize, int intraBase,
+            flagcxTeam intra, int intraSize, int intraBase,
             int myWorldRank, size_t chunkSize) {
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
@@ -322,7 +322,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
   int intraBase = myRank - devComm.getIntraRank();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   int nInterRanks = nRanks - intraSize;
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
@@ -370,7 +370,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
   int intraBase = myRank - devComm.getIntraRank();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   int nInterRanks = nRanks - intraSize;
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
@@ -418,7 +418,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
   int intraBase = myRank - devComm.getIntraRank();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   int nInterRanks = nRanks - intraSize;
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
@@ -503,7 +503,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
   int intraBase = myRank - devComm.getIntraRank();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   int nInterRanks = nRanks - intraSize;
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
@@ -590,7 +590,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
   int intraBase = myRank - devComm.getIntraRank();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   int nInterRanks = nRanks - intraSize;
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
@@ -910,7 +910,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
   int intraBase = myRank - devComm.getIntraRank();
-  flagcxTeam_t intra = flagcxTeamIntra(devComm);
+  flagcxTeam intra = flagcxTeamIntra(devComm);
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
