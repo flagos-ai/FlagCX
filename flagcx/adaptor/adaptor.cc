@@ -147,6 +147,10 @@ struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor,
 #endif
 struct flagcxDeviceAdaptor *deviceAdaptor = &topsAdaptor;
 
+#elif USE_SUNRISE_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor,
+                                                      &pcclAdaptor};
+struct flagcxDeviceAdaptor *deviceAdaptor = &ptpuAdaptor;
 #endif
 
 // External adaptor declarations
