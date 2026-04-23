@@ -553,15 +553,25 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
   auto device = inputTensor.device();
   auto flagcxDataType = getFlagcxDataType(inputTensor.scalar_type());
   auto stream = getStreamByIndex(0);
-  auto work = c10::make_intrusive<flagcxWork>(OpType::ALLGATHER, stream,
-                                              handler_->devHandle);
   check_device(inputTensor.device(), outputTensorsTmp[0].device());
   initComm(device);
   syncStream(device);
 
   if (!check_same_size(outputTensorsTmp)) {
-    throw std::runtime_error(
-        "flagcx only support same size allgather operation");
+      // Implement allgather with different sizes using broadcast
+      const auto num_reduces = outputTensorsTmp.size();
+      startCoalescing();
+      for (const int64_t i : c10::irange(static_cast<int64_t>(num_reduces))) {
+	  auto& output = outputTensorsTmp[i];
+	  auto& input = (i == rank_) ? inputTensor : output;
+	  // Perform out-of-place broadcast from rank i
+	  C10D_FLAGCX_CHECK(flagcxBroadcast(input.data_ptr(), output.data_ptr(),
+				                  output.numel(), flagcxDataType, i,
+		                                  handler_->comm, stream),
+			                          std::nullopt);
+      }
+      auto work = endCoalescing();
+      return work;
   } else {
     // Flatten a vector of tensors into a single, stacked tensor.
     at::Tensor outputFlattened = newLikeFlat(outputTensorsTmp);
@@ -590,6 +600,8 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
     }
   }
 
+  auto work = c10::make_intrusive<flagcxWork>(OpType::ALLGATHER, stream,
+		                                    handler_->devHandle);
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
   // Create a future to track the allgather operation

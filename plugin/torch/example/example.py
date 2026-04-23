@@ -213,6 +213,17 @@ def test_allgather():
         cm.wait()
         print(f"rank {MY_RANK} after all_gather_coalesced async with FLAGCX_GROUP1: x = {x}, y = {y}, z = {z}, z1 = {z1}")
 
+        # Perform all_gather with different input sizes (using broadcast implementation)
+        input_diff_size = torch.rand(MY_RANK + 1).cuda()
+        for i in range(MY_RANK + 1):
+            input_diff_size[i] = MY_RANK + i
+        output_diff_size_list = [torch.empty(rank + 1).cuda() for rank in range(WORLD_SIZE)]
+        print(f"rank {MY_RANK} before all_gather with different sizes with FLAGCX_GROUP1: input_diff_size = {input_diff_size}, output_diff_size_list = {output_diff_size_list}")
+        with dist._coalescing_manager(group=FLAGCX_GROUP1, async_ops=True)  as cm:
+            dist.all_gather(output_diff_size_list, input_diff_size, group=FLAGCX_GROUP1)
+        cm.wait()
+        print(f"rank {MY_RANK} after all_gather with different sizes with FLAGCX_GROUP1: input_diff_size = {input_diff_size}, output_diff_size_list = {output_diff_size_list}")
+
 def test_reducescatter():
     if torch.cuda.is_available():
         # Create tensors
