@@ -57,9 +57,32 @@ public:
   }
 
   flagcxResult_t allocFlagcxMem(size_t sizeArg) {
+    flagcxDeviceHandle_t savedDevHandle = devHandle;
+    const int savedDeviceIdx = deviceIdx;
+    flagcxStream_t savedStream = stream;
+    const flagcxMemType_t savedMemType = memType;
     reset();
+    devHandle = savedDevHandle;
+    deviceIdx = savedDeviceIdx;
+    stream = savedStream;
+    memType = savedMemType;
     allocKind = AllocKind::FlagcxMemAlloc;
+    if (devHandle != nullptr && deviceIdx >= 0) {
+      const flagcxResult_t setRes = devHandle->setDevice(deviceIdx);
+      if (setRes != flagcxSuccess) {
+        allocKind = AllocKind::None;
+        return setRes;
+      }
+    }
     return flagcxMemAlloc(&ptr, sizeArg);
+  }
+
+  void configure(flagcxDeviceHandle_t devHandleArg, int deviceIdxArg,
+                 flagcxStream_t streamArg, flagcxMemType_t memTypeArg) {
+    devHandle = devHandleArg;
+    deviceIdx = deviceIdxArg;
+    stream = streamArg;
+    memType = memTypeArg;
   }
 
   void *get() const { return ptr; }
@@ -70,9 +93,14 @@ public:
     if (ptr == nullptr) {
       allocKind = AllocKind::None;
       devHandle = nullptr;
+      deviceIdx = -1;
       stream = nullptr;
       memType = flagcxMemDevice;
       return;
+    }
+
+    if (devHandle != nullptr && deviceIdx >= 0) {
+      devHandle->setDevice(deviceIdx);
     }
 
     if (allocKind == AllocKind::FlagcxMemAlloc) {
@@ -84,6 +112,7 @@ public:
     ptr = nullptr;
     allocKind = AllocKind::None;
     devHandle = nullptr;
+    deviceIdx = -1;
     stream = nullptr;
     memType = flagcxMemDevice;
   }
@@ -98,6 +127,7 @@ private:
   void *ptr = nullptr;
   AllocKind allocKind = AllocKind::None;
   flagcxDeviceHandle_t devHandle = nullptr;
+  int deviceIdx = -1;
   flagcxStream_t stream = nullptr;
   flagcxMemType_t memType = flagcxMemDevice;
 };
@@ -197,6 +227,9 @@ bool pollTransferDone(FlagcxP2pConn *conn, uint64_t transferId,
 
 class FlagcxP2pEngineReadTest : public ::testing::Test {
 protected:
+  static constexpr int kClientGpuIdx = 0;
+  static constexpr int kServerGpuIdx = 1;
+
   void SetUp() override {
     ASSERT_EQ(flagcxHandleInit(&handler), flagcxSuccess);
     devHandle = handler->devHandle;
@@ -204,19 +237,21 @@ protected:
 
     int numDevices = 0;
     ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
-    if (numDevices <= 0) {
+    if (numDevices <= kServerGpuIdx) {
       flagcxHandleFree(handler);
       handler = nullptr;
       devHandle = nullptr;
-      GTEST_SKIP() << "No GPU devices available";
+      GTEST_SKIP() << "At least 2 GPU devices are required";
     }
 
-    ASSERT_EQ(devHandle->setDevice(0), flagcxSuccess);
-    ASSERT_EQ(devHandle->streamCreate(&stream), flagcxSuccess);
-
+    ASSERT_EQ(devHandle->setDevice(kServerGpuIdx), flagcxSuccess);
+    ASSERT_EQ(devHandle->streamCreate(&serverStream), flagcxSuccess);
     serverEngine = flagcxP2pEngineCreate(0, false);
+    ASSERT_EQ(devHandle->setDevice(kClientGpuIdx), flagcxSuccess);
+    ASSERT_EQ(devHandle->streamCreate(&clientStream), flagcxSuccess);
     clientEngine = flagcxP2pEngineCreate(0, false);
-    if (serverEngine == nullptr || clientEngine == nullptr) {
+    if (serverEngine == nullptr || clientEngine == nullptr ||
+        serverStream == nullptr || clientStream == nullptr) {
       if (serverEngine != nullptr) {
         flagcxP2pEngineDestroy(serverEngine);
         serverEngine = nullptr;
@@ -225,8 +260,16 @@ protected:
         flagcxP2pEngineDestroy(clientEngine);
         clientEngine = nullptr;
       }
-      devHandle->streamDestroy(stream);
-      stream = nullptr;
+      if (serverStream != nullptr) {
+        devHandle->setDevice(kServerGpuIdx);
+        devHandle->streamDestroy(serverStream);
+        serverStream = nullptr;
+      }
+      if (clientStream != nullptr) {
+        devHandle->setDevice(kClientGpuIdx);
+        devHandle->streamDestroy(clientStream);
+        clientStream = nullptr;
+      }
       flagcxHandleFree(handler);
       handler = nullptr;
       devHandle = nullptr;
@@ -252,9 +295,15 @@ protected:
       flagcxP2pEngineDestroy(clientEngine);
       clientEngine = nullptr;
     }
-    if (stream != nullptr && devHandle != nullptr) {
-      devHandle->streamDestroy(stream);
-      stream = nullptr;
+    if (serverStream != nullptr && devHandle != nullptr) {
+      devHandle->setDevice(kServerGpuIdx);
+      devHandle->streamDestroy(serverStream);
+      serverStream = nullptr;
+    }
+    if (clientStream != nullptr && devHandle != nullptr) {
+      devHandle->setDevice(kClientGpuIdx);
+      devHandle->streamDestroy(clientStream);
+      clientStream = nullptr;
     }
     if (handler != nullptr) {
       flagcxHandleFree(handler);
@@ -304,29 +353,43 @@ protected:
   }
 
   void allocGpuBuffer(ScopedAllocation *buffer, size_t bytes) {
+    allocGpuBufferOnDevice(buffer, bytes, kClientGpuIdx, clientStream);
+  }
+
+  void allocGpuBufferOnDevice(ScopedAllocation *buffer, size_t bytes,
+                              int deviceIdx, flagcxStream_t stream) {
     ASSERT_NE(buffer, nullptr);
+    ASSERT_NE(devHandle, nullptr);
+    buffer->configure(devHandle, deviceIdx, stream, flagcxMemDevice);
     ASSERT_EQ(buffer->allocFlagcxMem(bytes), flagcxSuccess);
     ASSERT_NE(buffer->get(), nullptr);
   }
 
-  void allocHostBuffer(ScopedAllocation *buffer, size_t bytes) {
+  void allocHostBuffer(ScopedAllocation *buffer, size_t bytes, int deviceIdx,
+                       flagcxStream_t stream) {
     ASSERT_NE(buffer, nullptr);
     ASSERT_NE(devHandle, nullptr);
+    ASSERT_EQ(devHandle->setDevice(deviceIdx), flagcxSuccess);
+    buffer->configure(devHandle, deviceIdx, stream, flagcxMemHost);
     ASSERT_EQ(buffer->allocDevice(devHandle, bytes, flagcxMemHost, stream),
               flagcxSuccess);
     ASSERT_NE(buffer->get(), nullptr);
   }
 
-  void copyHostToDevice(void *devicePtr, void *hostPtr, size_t bytes) {
+  void copyHostToDevice(int deviceIdx, flagcxStream_t stream, void *devicePtr,
+                        void *hostPtr, size_t bytes) {
     ASSERT_NE(devHandle, nullptr);
+    ASSERT_EQ(devHandle->setDevice(deviceIdx), flagcxSuccess);
     ASSERT_EQ(devHandle->deviceMemcpy(devicePtr, hostPtr, bytes,
                                       flagcxMemcpyHostToDevice, stream),
               flagcxSuccess);
     ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
   }
 
-  void copyDeviceToHost(void *hostPtr, void *devicePtr, size_t bytes) {
+  void copyDeviceToHost(int deviceIdx, flagcxStream_t stream, void *hostPtr,
+                        void *devicePtr, size_t bytes) {
     ASSERT_NE(devHandle, nullptr);
+    ASSERT_EQ(devHandle->setDevice(deviceIdx), flagcxSuccess);
     ASSERT_EQ(devHandle->deviceMemcpy(hostPtr, devicePtr, bytes,
                                       flagcxMemcpyDeviceToHost, stream),
               flagcxSuccess);
@@ -335,7 +398,8 @@ protected:
 
   flagcxHandlerGroup_t handler = nullptr;
   flagcxDeviceHandle_t devHandle = nullptr;
-  flagcxStream_t stream = nullptr;
+  flagcxStream_t clientStream = nullptr;
+  flagcxStream_t serverStream = nullptr;
   FlagcxP2pEngine *serverEngine = nullptr;
   FlagcxP2pEngine *clientEngine = nullptr;
   FlagcxP2pConn *serverConn = nullptr;
@@ -354,10 +418,10 @@ TEST_F(FlagcxP2pEngineReadTest,
   ScopedAllocation hostExpected;
   ScopedAllocation hostActual;
 
-  allocGpuBuffer(&remoteSource, bytes);
-  allocGpuBuffer(&localDestination, bytes);
-  allocHostBuffer(&hostExpected, bytes);
-  allocHostBuffer(&hostActual, bytes);
+  allocGpuBufferOnDevice(&remoteSource, bytes, kClientGpuIdx, clientStream);
+  allocGpuBufferOnDevice(&localDestination, bytes, kServerGpuIdx, serverStream);
+  allocHostBuffer(&hostExpected, bytes, kClientGpuIdx, clientStream);
+  allocHostBuffer(&hostActual, bytes, kServerGpuIdx, serverStream);
 
   uint32_t *expected = hostExpected.as<uint32_t>();
   uint32_t *actual = hostActual.as<uint32_t>();
@@ -366,8 +430,10 @@ TEST_F(FlagcxP2pEngineReadTest,
     actual[i] = 0;
   }
 
-  copyHostToDevice(remoteSource.get(), hostExpected.get(), bytes);
-  copyHostToDevice(localDestination.get(), hostActual.get(), bytes);
+  copyHostToDevice(kClientGpuIdx, clientStream, remoteSource.get(),
+                   hostExpected.get(), bytes);
+  copyHostToDevice(kServerGpuIdx, serverStream, localDestination.get(),
+                   hostActual.get(), bytes);
 
   FlagcxP2pMr remoteMr = 0;
   FlagcxP2pMr localMr = 0;
@@ -402,7 +468,8 @@ TEST_F(FlagcxP2pEngineReadTest,
   ASSERT_TRUE(pollTransferDone(serverConn, transferId, std::chrono::seconds(10)))
       << "Timed out waiting for flagcxP2pEngineRead completion";
 
-  copyDeviceToHost(hostActual.get(), localDestination.get(), bytes);
+  copyDeviceToHost(kServerGpuIdx, serverStream, hostActual.get(),
+                   localDestination.get(), bytes);
   for (size_t i = 0; i < kElemCount; ++i) {
     EXPECT_EQ(actual[i], expected[i]) << "Mismatch at index " << i;
   }
@@ -426,11 +493,16 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow)
   ScopedAllocation hostExpectedDestination;
   ScopedAllocation hostActualDestination;
 
-  allocGpuBuffer(&remoteSource, sourceBytes);
-  allocGpuBuffer(&localDestination, destBytes);
-  allocHostBuffer(&hostExpectedSource, sourceBytes);
-  allocHostBuffer(&hostExpectedDestination, destBytes);
-  allocHostBuffer(&hostActualDestination, destBytes);
+  allocGpuBufferOnDevice(&remoteSource, sourceBytes, kClientGpuIdx,
+                         clientStream);
+  allocGpuBufferOnDevice(&localDestination, destBytes, kServerGpuIdx,
+                         serverStream);
+  allocHostBuffer(&hostExpectedSource, sourceBytes, kClientGpuIdx,
+                  clientStream);
+  allocHostBuffer(&hostExpectedDestination, destBytes, kServerGpuIdx,
+                  serverStream);
+  allocHostBuffer(&hostActualDestination, destBytes, kServerGpuIdx,
+                  serverStream);
 
   uint32_t *expectedSource = hostExpectedSource.as<uint32_t>();
   uint32_t *expectedDestination = hostExpectedDestination.as<uint32_t>();
@@ -443,9 +515,10 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow)
     actualDestination[i] = 0;
   }
 
-  copyHostToDevice(remoteSource.get(), hostExpectedSource.get(), sourceBytes);
-  copyHostToDevice(localDestination.get(), hostExpectedDestination.get(),
-                   destBytes);
+  copyHostToDevice(kClientGpuIdx, clientStream, remoteSource.get(),
+                   hostExpectedSource.get(), sourceBytes);
+  copyHostToDevice(kServerGpuIdx, serverStream, localDestination.get(),
+                   hostExpectedDestination.get(), destBytes);
 
   FlagcxP2pMr remoteMr = 0;
   FlagcxP2pMr localMr = 0;
@@ -488,8 +561,8 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow)
   ASSERT_TRUE(pollTransferDone(serverConn, transferId, std::chrono::seconds(10)))
       << "Timed out waiting for retargeted flagcxP2pEngineRead completion";
 
-  copyDeviceToHost(hostActualDestination.get(), localDestination.get(),
-                   destBytes);
+  copyDeviceToHost(kServerGpuIdx, serverStream, hostActualDestination.get(),
+                   localDestination.get(), destBytes);
   for (size_t i = 0; i < kDstOffsetElems; ++i) {
     EXPECT_EQ(actualDestination[i], expectedDestination[i]);
   }
