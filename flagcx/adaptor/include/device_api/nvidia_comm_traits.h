@@ -244,24 +244,23 @@ struct CommTraits<NvidiaVendor> {
   using Barrier = ::Barrier<NvidiaVendor, Tag, Coop>;
 
   // ---- Action type conversion helpers (flagcx -> NCCL) ----
-  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None
-  toNccl(flagcxDevTransport_None) {
+  FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_None toNccl(flagcxDevNet_None) {
     return {};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_SignalInc
-  toNccl(flagcxDevTransport_SignalInc a) {
+  toNccl(flagcxDevNet_SignalInc a) {
     return {a.signal};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_SignalAdd
-  toNccl(flagcxDevTransport_SignalAdd a) {
+  toNccl(flagcxDevNet_SignalAdd a) {
     return {a.signal, a.value};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_CounterInc
-  toNccl(flagcxDevTransport_CounterInc a) {
+  toNccl(flagcxDevNet_CounterInc a) {
     return {a.counter};
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ncclGin_DescriptorSmem
-  toNccl(flagcxDevTransport_DescriptorSmem a) {
+  toNccl(flagcxDevNet_DescriptorSmem a) {
     return {(ncclGinDescriptorSmem *)a.smem._impl};
   }
 
@@ -338,15 +337,15 @@ struct CommTraits<NvidiaVendor> {
     // --- One-sided: waitSignal ---
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevTransportSignal_t signal, uint64_t least,
-               int bits, flagcxDeviceMemoryOrder_t order) const {
+    waitSignal(Coop coop, flagcxDevNetSignal_t signal, uint64_t least, int bits,
+               flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignal(coop._impl, signal, least, bits,
                       Atomic::toNativeOrder(order));
     }
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevTransportSignal_t signal, int bits,
+    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signal, int bits,
                          flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignalMeetShadow(coop._impl, signal, bits,
                                 Atomic::toNativeOrder(order));
@@ -354,7 +353,7 @@ struct CommTraits<NvidiaVendor> {
 
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalFollowShadow(Coop coop, flagcxDevTransportSignal_t signal,
+    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signal,
                            Uint leastDelta, Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       _gin.waitSignalFollowShadow(coop._impl, signal, leastDelta, before, delta,
@@ -363,44 +362,43 @@ struct CommTraits<NvidiaVendor> {
 
     // --- Shadow manipulation ---
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
-    getSignalShadowPtr(flagcxDevTransportSignal_t signal) const {
+    getSignalShadowPtr(flagcxDevNetSignal_t signal) const {
       return _gin.getSignalShadowPtr(signal);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    increaseSignalShadow(flagcxDevTransportSignal_t signal,
-                         uint64_t delta) const {
+    increaseSignalShadow(flagcxDevNetSignal_t signal, uint64_t delta) const {
       _gin.increaseSignalShadow(signal, delta);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevTransportSignal_t signal, int bits,
+    readSignal(flagcxDevNetSignal_t signal, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       return _gin.readSignal(signal, bits, Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetSignal(flagcxDevTransportSignal_t signal) const {
+    resetSignal(flagcxDevNetSignal_t signal) const {
       _gin.resetSignal(signal);
     }
 
     // --- Counter ---
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevTransportCounter_t counter, uint64_t least,
+    waitCounter(Coop coop, flagcxDevNetCounter_t counter, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       _gin.waitCounter(coop._impl, counter, least, bits,
                        Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevTransportCounter_t counter, int bits,
+    readCounter(flagcxDevNetCounter_t counter, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       return _gin.readCounter(counter, bits, Atomic::toNativeOrder(order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetCounter(flagcxDevTransportCounter_t counter) const {
+    resetCounter(flagcxDevNetCounter_t counter) const {
       _gin.resetCounter(counter);
     }
 
@@ -663,11 +661,11 @@ using DeviceAPI = CommTraits<NvidiaVendor>;
 
 #else
 // ============================================================
-// NVIDIA Fallback Backend (IPC barriers + FIFO one-sided)
-// Uses common Fallback<> partial specialization with NVIDIA platform
+// NVIDIA Default Backend (IPC barriers + FIFO one-sided)
+// Uses common Default<> partial specialization with NVIDIA platform
 // ============================================================
-#include "fallback_comm_traits.h"
-using DeviceAPI = CommTraits<Fallback<NvidiaPlatform>>;
+#include "default_comm_traits.h"
+using DeviceAPI = CommTraits<Default<NvidiaPlatform>>;
 
 #endif // NCCL version check
 

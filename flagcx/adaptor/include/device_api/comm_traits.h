@@ -6,16 +6,16 @@
  * Architecture:
  *   PlatformTraits<P>         — platform-level: Intrin, Atomic
  *   CommTraits<D>             — backend-level:  Window, Comm, Team, ...
- *   Fallback<PlatformTag>     — common IPC fallback (partial specialization)
+ *   Default<PlatformTag>     — common IPC fallback (partial specialization)
  *
  * CommTraits pulls in platform capabilities via using-aliases (not
  * inheritance). Vendor specializations wrap vendor types with member
- * functions. The Fallback partial specialization provides IPC-based
+ * functions. The Default partial specialization provides IPC-based
  * types that work with any platform.
  *
  * Selection:
  *   NVIDIA + NCCL > 2.28:    DeviceAPI = CommTraits<NvidiaVendor>
- *   NVIDIA + fallback:       DeviceAPI = CommTraits<Fallback<NvidiaPlatform>>
+ *   NVIDIA + fallback:       DeviceAPI = CommTraits<Default<NvidiaPlatform>>
  *
  * Kernel code uses DeviceAPI::* exclusively, no #ifdef branches.
  ************************************************************************/
@@ -31,27 +31,27 @@
 template <typename Impl>
 struct CommTraits;
 
-// Fallback tag — parameterized by platform for the partial specialization
+// Default tag — parameterized by platform for the partial specialization
 template <typename PlatformTag>
-struct Fallback {};
+struct Default {};
 
 // ============================================================
 // Action types for one-sided operations (needed by traits Transport types).
 // Pure POD structs with no device builtins.
 // ============================================================
-typedef uint32_t flagcxDevTransportSignal_t;
-typedef uint32_t flagcxDevTransportCounter_t;
+typedef uint32_t flagcxDevNetSignal_t;
+typedef uint32_t flagcxDevNetCounter_t;
 
-struct flagcxDevTransport_None {};
-struct flagcxDevTransport_SignalInc {
-  flagcxDevTransportSignal_t signal;
+struct flagcxDevNet_None {};
+struct flagcxDevNet_SignalInc {
+  flagcxDevNetSignal_t signal;
 };
-struct flagcxDevTransport_SignalAdd {
-  flagcxDevTransportSignal_t signal;
+struct flagcxDevNet_SignalAdd {
+  flagcxDevNetSignal_t signal;
   uint64_t value;
 };
-struct flagcxDevTransport_CounterInc {
-  flagcxDevTransportCounter_t counter;
+struct flagcxDevNet_CounterInc {
+  flagcxDevNetCounter_t counter;
 };
 
 // Shared memory descriptor for NIC descriptor optimization.
@@ -60,7 +60,7 @@ struct flagcxDescriptorSmem {
   void *_impl = nullptr;
 };
 
-struct flagcxDevTransport_DescriptorSmem {
+struct flagcxDevNet_DescriptorSmem {
   flagcxDescriptorSmem smem;
 };
 
@@ -86,8 +86,8 @@ struct Barrier;
 #elif defined(USE_DU_ADAPTOR)
 #include "du_comm_traits.h"
 #else
-#include "fallback_comm_traits.h"
-using DeviceAPI = CommTraits<Fallback<FallbackPlatform>>;
+#include "default_comm_traits.h"
+using DeviceAPI = CommTraits<Default<DefaultPlatform>>;
 #endif
 
 #endif // FLAGCX_COMM_TRAITS_H_

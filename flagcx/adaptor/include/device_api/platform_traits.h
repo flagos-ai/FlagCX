@@ -116,7 +116,7 @@ private:
 #elif defined(USE_DU_ADAPTOR)
 #include "du_platform_traits.h"
 #else
-#include "fallback_platform_traits.h"
+#include "default_platform_traits.h"
 #endif
 
 #endif // FLAGCX_PLATFORM_TRAITS_H_
