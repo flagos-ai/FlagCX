@@ -16,15 +16,13 @@
 #include <cuda_bf16.h>
 #include <type_traits>
 
-#ifdef FLAGCX_DEVICE_API_VENDOR
-
-// Type aliases
+// Type aliases (CUDA types, available on all NVIDIA compilations)
 typedef __half half;
 typedef __nv_bfloat16 nv_bfloat16;
 
 // ============================================================
 // Algorithm-specific helpers: array_t, packed_t, pack/unpack,
-// PTX multimem asm — local to this file, not part of Device API
+// lsa_st, reduceOp, lsa_reduce — local to this file, not part of Device API
 // ============================================================
 
 // Aligned array for vectorized operations
@@ -69,8 +67,13 @@ pack(const T* data) {
     }
   } else if constexpr (ByteSize == 8) {
     uint2 ret;
-    ret.x = pack<T, 4>(&data[0]);
-    ret.y = pack<T, 4>(&data[P::num_elems / 2]);
+    if constexpr (P::num_elems == 1) {
+      // Single element (e.g. double): reinterpret directly
+      ret = *reinterpret_cast<const uint2*>(&data[0]);
+    } else {
+      ret.x = pack<T, 4>(&data[0]);
+      ret.y = pack<T, 4>(&data[P::num_elems / 2]);
+    }
     return ret;
   } else if constexpr (ByteSize == 16) {
     uint4 ret;
@@ -98,8 +101,13 @@ unpack(typename packed_t<T, ByteSize>::storage_t v, T* data) {
       data[0] = *reinterpret_cast<T*>(&v);
     }
   } else if constexpr (ByteSize == 8) {
-    unpack<T, 4>(v.x, &data[0]);
-    unpack<T, 4>(v.y, &data[P::num_elems / 2]);
+    if constexpr (P::num_elems == 1) {
+      // Single element (e.g. double): reinterpret directly
+      data[0] = *reinterpret_cast<T*>(&v);
+    } else {
+      unpack<T, 4>(v.x, &data[0]);
+      unpack<T, 4>(v.y, &data[P::num_elems / 2]);
+    }
   } else if constexpr (ByteSize == 16) {
     constexpr int quarter = P::num_elems / 4;
     unpack<T, 4>(v.x, &data[0]);
@@ -135,6 +143,12 @@ template <typename T, int ByteSize = defaultByteSize<T>()>
 FLAGCX_DEVICE_INLINE_DECORATOR constexpr size_t elemsPerPack() {
   return packed_t<T, ByteSize>::num_elems;
 }
+
+// ============================================================
+// Vendor-only: PTX multimem operations and multicast kernels (SM90+)
+// ============================================================
+
+#ifdef FLAGCX_DEVICE_API_VENDOR
 
 // ============================================================
 // PTX multimem load-reduce operations (SM90+)
@@ -296,6 +310,8 @@ multimem_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
 #endif
 }
 
+#endif // FLAGCX_DEVICE_API_VENDOR (PTX multimem functions)
+
 // Store to local memory using vectorized store
 template <typename T, int ByteSize = defaultByteSize<T>()>
 FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -309,17 +325,84 @@ lsa_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
   }
 }
 
+// Element-wise reduce operation
+template <typename T>
+FLAGCX_DEVICE_INLINE_DECORATOR T reduceOp(T a, T b, flagcxRedOp_t op) {
+  switch (op) {
+    case flagcxSum: return a + b;
+    case flagcxMin: return a < b ? a : b;
+    case flagcxMax: return a > b ? a : b;
+    default: return a + b;
+  }
+}
+
+// LSA reduce: load from each peer via intra pointers, reduce in registers
+template <typename T, int ByteSize = defaultByteSize<T>()>
+FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
+lsa_reduce(const flagcxDevMem &mem, size_t byteOffset, int nRanks, flagcxRedOp_t op) {
+  using P = packed_t<T, ByteSize>;
+  using arr_t = typename P::array_type;
+  constexpr int N = P::num_elems;
+
+  T* p0 = (T*)flagcxGetIntraPointer(mem, byteOffset, 0);
+  arr_t acc;
+  unpack<T, ByteSize>(*reinterpret_cast<typename P::storage_t*>(p0), acc.data);
+
+  for (int peer = 1; peer < nRanks; peer++) {
+    T* pp = (T*)flagcxGetIntraPointer(mem, byteOffset, peer);
+    arr_t tmp;
+    unpack<T, ByteSize>(*reinterpret_cast<typename P::storage_t*>(pp), tmp.data);
+    for (int i = 0; i < N; i++)
+      acc.data[i] = reduceOp(acc.data[i], tmp.data[i], op);
+  }
+  return acc;
+}
+
 // ============================================================
 // Kernels — communication via FlagCX Device API,
 // algorithm via local PTX functions above
 // ============================================================
 
-// Local AllReduce: reduce from multimem, store to local buffer
+// LSA AllReduce: reduce from peer pointers, store to local buffer
+// Works on any arch — no multicast dependency
 template <typename T, int ByteSize = defaultByteSize<T>()>
 __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-flagcxLocalAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
-                           void* recvbuffer, size_t count,
-                           flagcxRedOp_t op, flagcxDevComm devComm) {
+flagcxLsaAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
+                         void* recvbuffer, size_t count,
+                         flagcxRedOp_t op, flagcxDevComm devComm) {
+  flagcxTeam intra = flagcxTeamIntra(devComm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), devComm, intra, FLAGCX_BLOCK_IDX_X, true};
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  const int nRanks = devComm.getIntraSize();
+  const int globalTid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_DIM_X * FLAGCX_BLOCK_IDX_X;
+  const int globalNthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+  constexpr size_t pSize = elemsPerPack<T, ByteSize>();
+  const size_t packCount = count / pSize;
+
+  T* lsaRecvPtr = (T*)recvbuffer;
+
+  for (size_t offset = globalTid; offset < packCount; offset += globalNthreads) {
+    auto v = lsa_reduce<T, ByteSize>(sendmem, sendoffset + offset * ByteSize, nRanks, op);
+    lsa_st<T, ByteSize>(lsaRecvPtr + pSize * offset, v);
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderRelease);
+}
+
+// ============================================================
+// Multicast kernels (Vendor path only, SM90+)
+// ============================================================
+
+#ifdef FLAGCX_DEVICE_API_VENDOR
+
+// Local Multicast AllReduce: reduce from multimem, store to local buffer (SM90+)
+template <typename T, int ByteSize = defaultByteSize<T>()>
+__global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
+flagcxLocalMulticastAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
+                                    void* recvbuffer, size_t count,
+                                    flagcxRedOp_t op, flagcxDevComm devComm) {
 #if __CUDA_ARCH__ >= 900
   // FlagCX Device API: barrier
   flagcxTeam intra = flagcxTeamIntra(devComm);
@@ -346,10 +429,10 @@ flagcxLocalAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
 #endif
 }
 
-// Interleaved AllReduce: reduce from multimem, store to multimem
+// Interleaved Multicast AllReduce: reduce from multimem, store to multimem (SM90+)
 template <typename T, int ByteSize = defaultByteSize<T>()>
 __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-flagcxInterleavedAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
+flagcxInterleavedMulticastAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
                                  flagcxDevMem recvmem, size_t recvoffset,
                                  size_t count, flagcxRedOp_t op,
                                  flagcxDevComm devComm) {
@@ -382,37 +465,22 @@ flagcxInterleavedAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
 #endif
 }
 
+#endif // FLAGCX_DEVICE_API_VENDOR (multicast kernels)
+
 // ============================================================
-// Kernel launchers
+// LSA kernel launcher (available on all paths)
 // ============================================================
 
 template <typename T>
-flagcxResult_t launchLocalAllReduceKernel(flagcxDevMem sendmem, void* recvbuffer,
-                                          size_t count, flagcxRedOp_t op,
-                                          flagcxDevComm devComm, cudaStream_t stream) {
-  flagcxLocalAllReduceKernel<T><<<FLAGCX_DEVICE_CTA_COUNT,
-                                  FLAGCX_DEVICE_THREADS_PER_CTA, 0, stream>>>(
+flagcxResult_t launchLsaAllReduceKernel(flagcxDevMem sendmem, void* recvbuffer,
+                                        size_t count, flagcxRedOp_t op,
+                                        flagcxDevComm devComm, cudaStream_t stream) {
+  flagcxLsaAllReduceKernel<T><<<FLAGCX_DEVICE_CTA_COUNT,
+                                FLAGCX_DEVICE_THREADS_PER_CTA, 0, stream>>>(
       sendmem, 0, recvbuffer, count, op, devComm);
   cudaError_t err = cudaGetLastError();
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
-
-template <typename T>
-flagcxResult_t launchInterleavedAllReduceKernel(flagcxDevMem sendmem,
-                                                flagcxDevMem recvmem,
-                                                size_t count, flagcxRedOp_t op,
-                                                flagcxDevComm devComm,
-                                                cudaStream_t stream) {
-  flagcxInterleavedAllReduceKernel<T><<<FLAGCX_DEVICE_CTA_COUNT,
-                                        FLAGCX_DEVICE_THREADS_PER_CTA, 0, stream>>>(
-      sendmem, 0, recvmem, 0, count, op, devComm);
-  cudaError_t err = cudaGetLastError();
-  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-// ============================================================
-// Host entry points
-// ============================================================
 
 static inline size_t getAlignmentRequirement(flagcxDataType_t datatype) {
   switch (datatype) {
@@ -424,7 +492,7 @@ static inline size_t getAlignmentRequirement(flagcxDataType_t datatype) {
   }
 }
 
-static flagcxResult_t flagcxLocalAllReduceDispatch(
+static flagcxResult_t flagcxLsaAllReduceDispatch(
     flagcxDevMem sendmem, void* recvbuff, size_t count,
     flagcxDataType_t datatype, flagcxRedOp_t op,
     flagcxDevComm devComm, cudaStream_t stream) {
@@ -438,19 +506,75 @@ static flagcxResult_t flagcxLocalAllReduceDispatch(
 
   switch (datatype) {
     case flagcxFloat16:
-      return launchLocalAllReduceKernel<half>(sendmem, recvbuff, count, op, devComm, stream);
+      return launchLsaAllReduceKernel<half>(sendmem, recvbuff, count, op, devComm, stream);
     case flagcxFloat32:
-      return launchLocalAllReduceKernel<float>(sendmem, recvbuff, count, op, devComm, stream);
+      return launchLsaAllReduceKernel<float>(sendmem, recvbuff, count, op, devComm, stream);
     case flagcxFloat64:
-      return launchLocalAllReduceKernel<double>(sendmem, recvbuff, count, op, devComm, stream);
+      return launchLsaAllReduceKernel<double>(sendmem, recvbuff, count, op, devComm, stream);
     case flagcxBfloat16:
-      return launchLocalAllReduceKernel<nv_bfloat16>(sendmem, recvbuff, count, op, devComm, stream);
+      return launchLsaAllReduceKernel<nv_bfloat16>(sendmem, recvbuff, count, op, devComm, stream);
     default:
       return flagcxNotSupported;
   }
 }
 
-static flagcxResult_t flagcxInterleavedAllReduceDispatch(
+// ============================================================
+// Multicast kernel launchers and dispatch (Vendor path only)
+// ============================================================
+
+#ifdef FLAGCX_DEVICE_API_VENDOR
+
+template <typename T>
+flagcxResult_t launchLocalMulticastAllReduceKernel(flagcxDevMem sendmem, void* recvbuffer,
+                                                   size_t count, flagcxRedOp_t op,
+                                                   flagcxDevComm devComm, cudaStream_t stream) {
+  flagcxLocalMulticastAllReduceKernel<T><<<FLAGCX_DEVICE_CTA_COUNT,
+                                           FLAGCX_DEVICE_THREADS_PER_CTA, 0, stream>>>(
+      sendmem, 0, recvbuffer, count, op, devComm);
+  cudaError_t err = cudaGetLastError();
+  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+template <typename T>
+flagcxResult_t launchInterleavedMulticastAllReduceKernel(flagcxDevMem sendmem,
+                                                flagcxDevMem recvmem,
+                                                size_t count, flagcxRedOp_t op,
+                                                flagcxDevComm devComm,
+                                                cudaStream_t stream) {
+  flagcxInterleavedMulticastAllReduceKernel<T><<<FLAGCX_DEVICE_CTA_COUNT,
+                                        FLAGCX_DEVICE_THREADS_PER_CTA, 0, stream>>>(
+      sendmem, 0, recvmem, 0, count, op, devComm);
+  cudaError_t err = cudaGetLastError();
+  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+static flagcxResult_t flagcxLocalMulticastAllReduceDispatch(
+    flagcxDevMem sendmem, void* recvbuff, size_t count,
+    flagcxDataType_t datatype, flagcxRedOp_t op,
+    flagcxDevComm devComm, cudaStream_t stream) {
+  if (op != flagcxSum && op != flagcxMin && op != flagcxMax)
+    return flagcxNotSupported;
+  if ((op == flagcxMin || op == flagcxMax) &&
+      (datatype != flagcxFloat16 && datatype != flagcxBfloat16))
+    return flagcxNotSupported;
+  if (count % getAlignmentRequirement(datatype) != 0)
+    return flagcxNotSupported;
+
+  switch (datatype) {
+    case flagcxFloat16:
+      return launchLocalMulticastAllReduceKernel<half>(sendmem, recvbuff, count, op, devComm, stream);
+    case flagcxFloat32:
+      return launchLocalMulticastAllReduceKernel<float>(sendmem, recvbuff, count, op, devComm, stream);
+    case flagcxFloat64:
+      return launchLocalMulticastAllReduceKernel<double>(sendmem, recvbuff, count, op, devComm, stream);
+    case flagcxBfloat16:
+      return launchLocalMulticastAllReduceKernel<nv_bfloat16>(sendmem, recvbuff, count, op, devComm, stream);
+    default:
+      return flagcxNotSupported;
+  }
+}
+
+static flagcxResult_t flagcxInterleavedMulticastAllReduceDispatch(
     flagcxDevMem sendmem, flagcxDevMem recvmem, size_t count,
     flagcxDataType_t datatype, flagcxRedOp_t op,
     flagcxDevComm devComm, cudaStream_t stream) {
@@ -464,17 +588,19 @@ static flagcxResult_t flagcxInterleavedAllReduceDispatch(
 
   switch (datatype) {
     case flagcxFloat16:
-      return launchInterleavedAllReduceKernel<half>(sendmem, recvmem, count, op, devComm, stream);
+      return launchInterleavedMulticastAllReduceKernel<half>(sendmem, recvmem, count, op, devComm, stream);
     case flagcxFloat32:
-      return launchInterleavedAllReduceKernel<float>(sendmem, recvmem, count, op, devComm, stream);
+      return launchInterleavedMulticastAllReduceKernel<float>(sendmem, recvmem, count, op, devComm, stream);
     case flagcxFloat64:
-      return launchInterleavedAllReduceKernel<double>(sendmem, recvmem, count, op, devComm, stream);
+      return launchInterleavedMulticastAllReduceKernel<double>(sendmem, recvmem, count, op, devComm, stream);
     case flagcxBfloat16:
-      return launchInterleavedAllReduceKernel<nv_bfloat16>(sendmem, recvmem, count, op, devComm, stream);
+      return launchInterleavedMulticastAllReduceKernel<nv_bfloat16>(sendmem, recvmem, count, op, devComm, stream);
     default:
       return flagcxNotSupported;
   }
 }
+
+#endif // FLAGCX_DEVICE_API_VENDOR
 
 // ============================================================
 // Custom AllReduce entry point — registered as custom op
@@ -523,26 +649,33 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
   flagcxDevMem sm(*state->sendStagedMem);
   flagcxDevMem rm(*state->recvStagedMem);
 
-  int nranks = state->devComm->intraSize;
-
   flagcxResult_t res;
-  if ((nranks <= 4 && size < 512 * 1024) ||
-      (nranks <= 8 && size < 256 * 1024)) {
-    // Local allreduce: reduce from multimem, store to local recvbuff
-    res = flagcxLocalAllReduceDispatch(sm, recvbuff, count, datatype, op,
-                                       dc, cudaStream);
-  } else {
-    // Interleaved allreduce: reduce from multimem, store to multimem
-    res = flagcxInterleavedAllReduceDispatch(sm, rm, count, datatype, op,
-                                              dc, cudaStream);
-    if (res == flagcxSuccess) {
-      cerr = cudaMemcpyAsync(recvbuff, state->recvStagedBuff, size,
-                              cudaMemcpyDeviceToDevice, cudaStream);
-      if (cerr != cudaSuccess)
-        return flagcxUnhandledDeviceError;
+#ifdef FLAGCX_DEVICE_API_VENDOR
+  int nranks = state->devComm->intraSize;
+  if (state->hasMulticast) {
+    // Multicast path (SM90+ with NVLS)
+    if ((nranks <= 4 && size < 512 * 1024) ||
+        (nranks <= 8 && size < 256 * 1024)) {
+      // Local multicast allreduce: reduce from multimem, store to local recvbuff
+      res = flagcxLocalMulticastAllReduceDispatch(sm, recvbuff, count, datatype, op,
+                                                   dc, cudaStream);
+    } else {
+      // Interleaved multicast allreduce: reduce from multimem, store to multimem
+      res = flagcxInterleavedMulticastAllReduceDispatch(sm, rm, count, datatype, op,
+                                                         dc, cudaStream);
+      if (res == flagcxSuccess) {
+        cerr = cudaMemcpyAsync(recvbuff, state->recvStagedBuff, size,
+                                cudaMemcpyDeviceToDevice, cudaStream);
+        if (cerr != cudaSuccess)
+          return flagcxUnhandledDeviceError;
+      }
     }
+  } else
+#endif // FLAGCX_DEVICE_API_VENDOR
+  {
+    // LSA path: reduce from peer pointers, store to local recvbuff
+    res = flagcxLsaAllReduceDispatch(sm, recvbuff, count, datatype, op,
+                                      dc, cudaStream);
   }
   return res;
 }
-
-#endif // FLAGCX_DEVICE_API_VENDOR
