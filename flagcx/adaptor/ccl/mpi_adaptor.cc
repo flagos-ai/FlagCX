@@ -438,6 +438,11 @@ flagcxResult_t mpiAdaptorGroupEnd() {
   return flagcxSuccess;
 }
 
+flagcxResult_t mpiAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                                         flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
 flagcxResult_t
 mpiAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                         const flagcxDevCommRequirements * /*reqs*/,
@@ -470,6 +475,7 @@ struct flagcxCCLAdaptor mpiAdaptor = {
     // Group semantics
     mpiAdaptorGroupStart, mpiAdaptorGroupEnd,
     // Device API
-    mpiAdaptorDevCommCreate, mpiAdaptorDevCommDestroy};
+    mpiAdaptorDevCommReqsInit, mpiAdaptorDevCommCreate,
+    mpiAdaptorDevCommDestroy};
 
 #endif // USE_MPI_ADAPTOR

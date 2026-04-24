@@ -313,12 +313,12 @@ flagcxResult_t flagcxInterBarrierCreateRequirement(
 
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Vendor),
-// or IPC barrier state on fallback (Fallback).
+// or IPC barrier state on default path (Default).
 typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 
 // Opaque handle to device memory (host-side lifetime management).
 // Internally wraps ncclWindow_t on NVIDIA backend (Vendor),
-// or IPC peer pointer table on fallback (Fallback).
+// or IPC peer pointer table on default path (Default).
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
@@ -395,7 +395,7 @@ flagcxResult_t flagcxInterTestGet(flagcxDevMem_t sendMem,
 
 // Create a device communicator for custom kernel usage.
 // On NVIDIA backend (Vendor), internally calls pncclDevCommCreate.
-// On fallback (Fallback), sets up IPC-based barrier across intra-node peers.
+// On default path (Default), sets up IPC-based barrier across intra-node peers.
 // The returned handle must be destroyed with flagcxDevCommDestroy(comm,
 // devComm).
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,

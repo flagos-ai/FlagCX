@@ -326,6 +326,12 @@ flagcxResult_t bootstrapAdaptorGroupEnd() {
 }
 
 flagcxResult_t
+bootstrapAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                                flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 bootstrapAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                               const flagcxDevCommRequirements * /*reqs*/,
                               flagcxInnerDevComm_t * /*devComm*/) {
@@ -363,6 +369,7 @@ struct flagcxCCLAdaptor bootstrapAdaptor = {
     // Group semantics
     bootstrapAdaptorGroupStart, bootstrapAdaptorGroupEnd,
     // Device API
-    bootstrapAdaptorDevCommCreate, bootstrapAdaptorDevCommDestroy};
+    bootstrapAdaptorDevCommReqsInit, bootstrapAdaptorDevCommCreate,
+    bootstrapAdaptorDevCommDestroy};
 
 #endif // USE_BOOTSTRAP_ADAPTOR
