@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 // Forward declarations for opaque types not in flagcx.h
-// (flagcxStream_t, flagcxWindow_t are already typedef'd in flagcx.h)
+// (flagcxStream_t, flagcxSymWindow_t are already typedef'd in flagcx.h)
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
 struct flagcxDevCommRequirements;
@@ -61,10 +61,10 @@ struct flagcxCCLAdaptor_v1 {
   flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
   // Symmetric functions
   flagcxResult_t (*commWindowRegister)(flagcxInnerComm_t comm, void *buff,
-                                       size_t size, flagcxWindow_t *win,
+                                       size_t size, flagcxSymWindow_t *win,
                                        int winFlags);
   flagcxResult_t (*commWindowDeregister)(flagcxInnerComm_t comm,
-                                         flagcxWindow_t win);
+                                         flagcxSymWindow_t win);
 
   // Communication functions
   flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,

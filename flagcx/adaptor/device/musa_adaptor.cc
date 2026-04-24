@@ -331,6 +331,33 @@ flagcxResult_t musaAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t musaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t musaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                       size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t musaAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+                                     void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                      size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor musaAdaptor {
   "MUSA",
       // Basic functions
@@ -387,6 +414,11 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       musaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      musaAdaptorSymPhysAlloc, musaAdaptorSymPhysFree, musaAdaptorSymFlatMap,
+      musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSetup,
+      musaAdaptorSymMulticastTeardown, musaAdaptorSymHeapGrow,
+      musaAdaptorSymMulticastGrow,
 };
 
 #endif // USE_MUSA_ADAPTOR

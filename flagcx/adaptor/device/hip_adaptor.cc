@@ -334,6 +334,33 @@ flagcxResult_t hipAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t hipAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t hipAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                      size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t hipAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+                                    void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorSymHeapGrow(void *, void *[], int, int, void *, size_t,
+                                     size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor hipAdaptor {
   "HIP",
       // Basic functions
@@ -396,6 +423,11 @@ struct flagcxDeviceAdaptor hipAdaptor {
                                              // flags);
       hipAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
       hipAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      hipAdaptorSymPhysAlloc, hipAdaptorSymPhysFree, hipAdaptorSymFlatMap,
+      hipAdaptorSymFlatUnmap, hipAdaptorSymMulticastSetup,
+      hipAdaptorSymMulticastTeardown, hipAdaptorSymHeapGrow,
+      hipAdaptorSymMulticastGrow,
 };
 
 #endif // USE_AMD_ADAPTOR

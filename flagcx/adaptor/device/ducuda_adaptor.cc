@@ -354,6 +354,33 @@ flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
   return flagcxSuccess;
 }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t ducudaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                         size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t ducudaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
+                                       size_t, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                        size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor ducudaAdaptor {
   "DUCUDA",
       // Basic functions
@@ -415,6 +442,11 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ducudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      ducudaAdaptorSymPhysAlloc, ducudaAdaptorSymPhysFree,
+      ducudaAdaptorSymFlatMap, ducudaAdaptorSymFlatUnmap,
+      ducudaAdaptorSymMulticastSetup, ducudaAdaptorSymMulticastTeardown,
+      ducudaAdaptorSymHeapGrow, ducudaAdaptorSymMulticastGrow,
 };
 
 #endif // USE_DU_ADAPTOR

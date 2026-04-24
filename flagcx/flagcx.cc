@@ -18,6 +18,7 @@
 #include "proxy.h"
 #include "reg_pool.h"
 #include "runner.h"
+#include "sym_heap.h"
 #include "timer.h"
 #include "transport.h"
 #include "utils.h"
@@ -1093,7 +1094,7 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
 }
 
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
-                                        size_t size, flagcxWindow_t *win,
+                                        size_t size, flagcxSymWindow_t *win,
                                         int winFlags) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
@@ -1110,22 +1111,45 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
          "falling back",
          res);
   }
+  // Non-homo or homo-fallback: use symmetric heap path
+  if (winFlags & FLAGCX_WIN_COLL_SYMMETRIC) {
+    return flagcxSymWindowRegister(comm, buff, size, win, winFlags);
+  }
   *win = nullptr;
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
-                                          flagcxWindow_t win) {
+                                          flagcxSymWindow_t win) {
   if (win == nullptr) {
     return flagcxSuccess;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  // The register path falls through to symWindowRegister when:
+  //   (a) non-homo path, or (b) homo backend returned not-supported.
+  // In both cases the window was created by sym_heap, so deregister there.
+  // On the homo-only path where the backend succeeded, deregister via backend.
   if (useHomoComm(comm) && !useHeteroComm()) {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, win));
-    return flagcxSuccess;
+    // Try the homo backend. If it owns this window it will succeed.
+    // If it doesn't recognise it (e.g. sym fallback), it returns an error.
+    flagcxResult_t res =
+        cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+            comm->homoComm, win);
+    if (res == flagcxSuccess) {
+      return flagcxSuccess;
+    }
+    // Backend didn't own it — fall through to sym path
   }
-  return flagcxNotSupported;
+  return flagcxSymWindowDeregister(comm, win);
+}
+
+flagcxResult_t flagcxCommWindowGrow(flagcxComm_t comm, flagcxSymWindow_t win,
+                                    void *newBuff, size_t newSize) {
+  if (win == nullptr || newBuff == nullptr)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  // Growth is only supported on the symmetric fallback path
+  return flagcxSymWindowGrow(comm, win, newBuff, newSize);
 }
 
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {

@@ -275,6 +275,33 @@ flagcxResult_t cannAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t cannAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t cannAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                       size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t cannAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+                                     void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                      size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor cannAdaptor {
   "CANN",
       // Basic functions
@@ -330,6 +357,11 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       cannAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      cannAdaptorSymPhysAlloc, cannAdaptorSymPhysFree, cannAdaptorSymFlatMap,
+      cannAdaptorSymFlatUnmap, cannAdaptorSymMulticastSetup,
+      cannAdaptorSymMulticastTeardown, cannAdaptorSymHeapGrow,
+      cannAdaptorSymMulticastGrow,
 };
 
 #endif // USE_ASCEND_ADAPTOR

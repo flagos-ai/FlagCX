@@ -42,6 +42,7 @@ struct CommTraits<Default<PlatformTag>> {
     int intraRank;    // Local rank index
     uintptr_t mrBase; // MR base VA
     int mrIndex;      // MR table index
+    void *mcBasePtr;  // Multicast base (NULL if no NVLS)
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &team, int peer) const {
@@ -67,9 +68,10 @@ struct CommTraits<Default<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getMulticastPointer(size_t offset, const Multimem &mm) const {
-      (void)offset;
+      if (mcBasePtr)
+        return (char *)mcBasePtr + offset;
       (void)mm;
-      return nullptr; // Multicast not available in fallback
+      return nullptr;
     }
 
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {

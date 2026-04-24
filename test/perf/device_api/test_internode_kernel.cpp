@@ -47,7 +47,7 @@ int main(int argc, char *argv[]) {
 
   void *sendBuff = nullptr, *recvBuff = nullptr, *hello;
   void *sendHandle = nullptr, *recvHandle = nullptr;
-  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
+  flagcxSymWindow_t sendWin = nullptr, recvWin = nullptr;
   size_t count;
   timer tim;
 

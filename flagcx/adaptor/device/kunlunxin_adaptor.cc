@@ -383,6 +383,36 @@ flagcxResult_t kunlunAdaptorHostUnregister(void *) {
   return flagcxNotSupported;
 }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t kunlunxinAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                            size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymPhysFree(void *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymFlatMap(void *[], int, int, void *, size_t,
+                                          size_t, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                           size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymMulticastGrow(void *, void *, size_t,
+                                                size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor kunlunAdaptor {
   "KUNLUN",
       // Basic functions
@@ -442,5 +472,10 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       kunlunAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      kunlunxinAdaptorSymPhysAlloc, kunlunxinAdaptorSymPhysFree,
+      kunlunxinAdaptorSymFlatMap, kunlunxinAdaptorSymFlatUnmap,
+      kunlunxinAdaptorSymMulticastSetup, kunlunxinAdaptorSymMulticastTeardown,
+      kunlunxinAdaptorSymHeapGrow, kunlunxinAdaptorSymMulticastGrow,
 };
 #endif // USE_KUNLUNXIN_ADAPTOR

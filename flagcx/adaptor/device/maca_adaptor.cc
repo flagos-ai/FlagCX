@@ -356,6 +356,33 @@ flagcxResult_t macaAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t macaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t macaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                       size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t macaAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+                                     void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                      size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -412,6 +439,11 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       macaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      macaAdaptorSymPhysAlloc, macaAdaptorSymPhysFree, macaAdaptorSymFlatMap,
+      macaAdaptorSymFlatUnmap, macaAdaptorSymMulticastSetup,
+      macaAdaptorSymMulticastTeardown, macaAdaptorSymHeapGrow,
+      macaAdaptorSymMulticastGrow,
 };
 
 #endif // USE_METAX_ADAPTOR
