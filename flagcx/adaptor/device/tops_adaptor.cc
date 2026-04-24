@@ -390,6 +390,33 @@ flagcxResult_t topsAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t topsAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t topsAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                       size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t topsAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+                                     void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                      size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor topsAdaptor {
   "TOPS",
       // Basic functions
@@ -451,6 +478,11 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       topsAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      topsAdaptorSymPhysAlloc, topsAdaptorSymPhysFree, topsAdaptorSymFlatMap,
+      topsAdaptorSymFlatUnmap, topsAdaptorSymMulticastSetup,
+      topsAdaptorSymMulticastTeardown, topsAdaptorSymHeapGrow,
+      topsAdaptorSymMulticastGrow,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

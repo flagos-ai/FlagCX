@@ -345,6 +345,33 @@ flagcxResult_t ixcudaAdaptorHostUnregister(void *) {
   return flagcxNotSupported;
 }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t ixcudaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                         size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t ixcudaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
+                                       size_t, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
+                                        size_t, size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ixcudaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor ixcudaAdaptor {
   "IXCUDA",
       // Basic functions
@@ -404,5 +431,10 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ixcudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      ixcudaAdaptorSymPhysAlloc, ixcudaAdaptorSymPhysFree,
+      ixcudaAdaptorSymFlatMap, ixcudaAdaptorSymFlatUnmap,
+      ixcudaAdaptorSymMulticastSetup, ixcudaAdaptorSymMulticastTeardown,
+      ixcudaAdaptorSymHeapGrow, ixcudaAdaptorSymMulticastGrow,
 };
 #endif // USE_ILUVATAR_COREX_ADAPTOR

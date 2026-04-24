@@ -113,13 +113,14 @@ flagcxResult_t ecclAdaptorCommDeregister(const flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
-                                             size_t size, flagcxWindow_t *win,
+                                             size_t size,
+                                             flagcxSymWindow_t *win,
                                              int winFlags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t ecclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                               flagcxWindow_t win) {
+                                               flagcxSymWindow_t win) {
   return flagcxNotSupported;
 }
 

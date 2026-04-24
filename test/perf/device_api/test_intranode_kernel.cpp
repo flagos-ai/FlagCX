@@ -81,7 +81,7 @@ int main(int argc, char *argv[]) {
   // -R 2: Window (VMM + flagcxCommWindowRegister + flagcxDevMemCreate)
   void *regBuff = nullptr;
   void *regHandle = nullptr;
-  flagcxWindow_t win = nullptr;
+  flagcxSymWindow_t win = nullptr;
   flagcxDevMem_t devMem = nullptr;
   // -R 0 uses cudaMalloc (IPC-compatible).
   // -R 1/-R 2 use flagcxMemAlloc with comm.

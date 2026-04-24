@@ -182,7 +182,8 @@ flagcxResult_t ncclAdaptorCommDeregister(const flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
-                                             size_t size, flagcxWindow_t *win,
+                                             size_t size,
+                                             flagcxSymWindow_t *win,
                                              int winFlags) {
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
   if (*win == NULL) {
@@ -200,7 +201,7 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
 }
 
 flagcxResult_t ncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                               flagcxWindow_t win) {
+                                               flagcxSymWindow_t win) {
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
   flagcxResult_t res = flagcxSuccess;
   res = (flagcxResult_t)ncclCommWindowDeregister(comm->base, win->base);

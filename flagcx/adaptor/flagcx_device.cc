@@ -388,6 +388,7 @@ fail:
 #ifdef FLAGCX_DEVICE_API_VENDOR
 #include "nvidia_adaptor.h"
 #endif
+#include "flagcx_sym_window_fallback.h"
 
 // ==========================================================================
 // Platform wrappers for host memory registration.
@@ -950,7 +951,8 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
-                                  flagcxWindow_t win, flagcxDevMem_t *devMem) {
+                                  flagcxSymWindow_t win,
+                                  flagcxDevMem_t *devMem) {
   if (buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
@@ -992,15 +994,28 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     handle->intraRank = comm->localRank;
 
 #ifndef FLAGCX_DEVICE_API_VENDOR
-    if (win != nullptr) {
+    if (win != nullptr && !win->isSymmetricFallback) {
       WARN("flagcxDevMemCreate: window provided but NCCL device API "
            "unavailable, falling back to IPC");
       win = nullptr;
     }
 #endif
 
+    // ---- Symmetric fallback window: use pre-built flat VA / devPeerPtrs ----
+    if (win != nullptr && win->isSymmetricFallback) {
+      handle->hasWindow = true;
+      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
+      handle->devPeerPtrs = win->devPeerPtrs;
+      handle->winHandle = (void *)win;
+      if (win->mrIndex >= 0) {
+        handle->mrIndex = win->mrIndex;
+        handle->mrBase = win->mrBase;
+      }
+      // window pointer will be set in the fallback block below
+      handle->window = nullptr;
+    }
     // ---- IPC layer: try if win is null (IPC needs cudaMalloc memory) ----
-    if (win == nullptr) {
+    else if (win == nullptr) {
       int idx = buildIpcPeerPointers(comm, buff, size);
       if (idx >= 0) {
         handle->ipcIndex = idx;
@@ -1012,8 +1027,8 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       }
     }
 
-    // ---- Window layer: if win provided and valid ----
-    if (win != nullptr) {
+    // ---- Window layer: if win provided and valid (vendor path) ----
+    if (win != nullptr && !win->isSymmetricFallback) {
       handle->hasWindow = true;
 #ifdef FLAGCX_DEVICE_API_VENDOR
       handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
@@ -1050,6 +1065,8 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     fbWin->intraRank = handle->intraRank;
     fbWin->mrBase = handle->mrBase;
     fbWin->mrIndex = handle->mrIndex;
+    fbWin->mcBasePtr =
+        (win != nullptr && win->isSymmetricFallback) ? win->mcBase : nullptr;
     handle->window = fbWin;
     handle->hasWindow =
         (handle->rawPtr != nullptr || handle->devPeerPtrs != nullptr);

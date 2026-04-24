@@ -412,7 +412,8 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 // This function exchanges IPC handles to build peer pointer tables (both modes)
 // and stores the window handle (window mode only).
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
-                                  flagcxWindow_t win, flagcxDevMem_t *devMem);
+                                  flagcxSymWindow_t win,
+                                  flagcxDevMem_t *devMem);
 
 // Destroy a device memory handle created by flagcxDevMemCreate.
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);

@@ -305,6 +305,33 @@ flagcxResult_t mluAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t mluAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t mluAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                      size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t mluAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+                                    void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorSymHeapGrow(void *, void *[], int, int, void *, size_t,
+                                     size_t, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor mluAdaptor {
   "MLU",
       // Basic functions
@@ -360,6 +387,11 @@ struct flagcxDeviceAdaptor mluAdaptor {
             // void *buffer, size_t size, unsigned long long flags);
       mluAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
       mluAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      mluAdaptorSymPhysAlloc, mluAdaptorSymPhysFree, mluAdaptorSymFlatMap,
+      mluAdaptorSymFlatUnmap, mluAdaptorSymMulticastSetup,
+      mluAdaptorSymMulticastTeardown, mluAdaptorSymHeapGrow,
+      mluAdaptorSymMulticastGrow,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR
