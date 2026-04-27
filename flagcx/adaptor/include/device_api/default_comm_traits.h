@@ -260,9 +260,9 @@ struct CommTraits<Default<PlatformTag>> {
   }
 
   // ============================================================
-  // Transport: FIFO-based two-sided + one-sided + GPU-spin signal/counter
+  // Net: FIFO-based two-sided + one-sided + GPU-spin signal/counter
   // ============================================================
-  struct Transport {
+  struct Net {
     Comm _dc;
     void *fifoBuffer;
     uint64_t *signalBuffer;
@@ -273,7 +273,7 @@ struct CommTraits<Default<PlatformTag>> {
     int contextId;
 
     FLAGCX_DEVICE_INLINE_DECORATOR
-    Transport(const Comm &dc, int contextIndex)
+    Net(const Comm &dc, int contextIndex)
         : _dc(dc),
           fifoBuffer(
               dc.fifoBuffers[contextIndex %
@@ -826,7 +826,7 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   using Intrin = typename PlatformTraits<P>::Intrin;
   using Comm = typename CommTraits<Default<P>>::Comm;
   using Team = typename CommTraits<Default<P>>::Team;
-  using Transport = typename CommTraits<Default<P>>::Transport;
+  using Net = typename CommTraits<Default<P>>::Net;
 
   Coop _coop;
   uint64_t *_interSignals;
@@ -844,17 +844,17 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, const Transport &trans, const Comm &dc, Team,
-          uint32_t index, int nInterPeers)
+  Barrier(Coop coop, const Net &net, const Comm &dc, Team, uint32_t index,
+          int nInterPeers)
       : _coop(coop), _interSignals(dc.interSignalFlags),
-        _fifoBuffer(trans.fifoBuffer), _nInterPeers(nInterPeers),
+        _fifoBuffer(net.fifoBuffer), _nInterPeers(nInterPeers),
         _isLeader(dc.isInterLeader), _ctaIndex(index),
         _epoch(dc.interBarrierEpoch) {}
 
   // arrive: FIFO BarrierSignal (leader only)
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _epoch += _nInterPeers;
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
@@ -869,7 +869,7 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   // wait: spin on host-mapped inter signal array (leader only)
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
       int iter = 0;
@@ -884,7 +884,7 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   // sync = arrive + wait
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     arrive(order);
     wait(order);
   }
@@ -898,7 +898,7 @@ template <typename P, typename Coop>
 struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
   using Comm = typename CommTraits<Default<P>>::Comm;
   using Team = typename CommTraits<Default<P>>::Team;
-  using Transport = typename CommTraits<Default<P>>::Transport;
+  using Net = typename CommTraits<Default<P>>::Net;
 
   Coop _coop;
   Barrier<Default<P>, flagcxTeamTagIntra, Coop> _intra;
@@ -907,16 +907,16 @@ struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
 
   // World barrier: intra (IPC) + inter (FIFO Signal)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, flagcxTeamTagWorld, const Transport &trans, const Comm &dc,
+  Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
           uint32_t index, bool multimem, int nInterPeers)
       : _coop(coop),
         _intra(coop, dc, Team{dc.intraSize, dc.intraRank, 1}, index),
-        _inter(coop, trans, dc, Team{}, index, nInterPeers),
+        _inter(coop, net, dc, Team{}, index, nInterPeers),
         _nInterPeers(nInterPeers) {}
 
   // Intra-only barrier: inter is default constructed (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, flagcxTeamTagIntra, const Transport &, const Comm &dc,
+  Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
           uint32_t index, bool multimem, int)
       : _coop(coop),
         _intra(coop, dc, Team{dc.intraSize, dc.intraRank, 1}, index), _inter(),
@@ -924,15 +924,15 @@ struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
 
   // Inter-only barrier: intra is default constructed (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  Barrier(Coop coop, flagcxTeamTagInter, const Transport &trans, const Comm &dc,
+  Barrier(Coop coop, flagcxTeamTagInter, const Net &net, const Comm &dc,
           uint32_t index, bool, int nInterPeers)
       : _coop(coop), _intra(),
-        _inter(coop, trans, dc, Team{}, index, nInterPeers),
+        _inter(coop, net, dc, Team{}, index, nInterPeers),
         _nInterPeers(nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
       _intra.arrive(flagcxDeviceMemoryOrderRelease);
       _intra.wait(flagcxDeviceMemoryOrderRelease);
@@ -944,7 +944,7 @@ struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
       _inter.wait(order);
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
@@ -956,7 +956,7 @@ struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
       // Phase 1: intra sync
       _intra.arrive(flagcxDeviceMemoryOrderRelease);

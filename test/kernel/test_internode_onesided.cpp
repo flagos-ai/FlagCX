@@ -113,8 +113,9 @@ int main(int argc, char *argv[]) {
   void *hostBuff = malloc(maxBytes);
   memset(hostBuff, 0, maxBytes);
 
-  // Create device communicator with inter-node barrier + signal
+  // Create device communicator with intra + inter barriers + signal
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interSignalCount = 1;
   flagcxDevComm_t devComm = nullptr;

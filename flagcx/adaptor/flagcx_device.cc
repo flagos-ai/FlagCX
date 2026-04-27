@@ -689,7 +689,8 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     flagcxInnerDevComm_t innerDevComm = nullptr;
     flagcxResult_t ret = cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate(
         innerComm, reqs, &innerDevComm);
-    if (ret != flagcxSuccess && ret != flagcxNotSupported) {
+    if (ret != flagcxSuccess && ret != flagcxNotSupported &&
+        ret != flagcxInvalidArgument) {
       WARN("flagcxDevCommCreate: vendor devCommCreate failed (%d)", ret);
       free(handle);
       return ret;
@@ -713,7 +714,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     // ----
 
     // IPC barrier layer: if barriers requested
-    if (reqs->intraBarrierCount > 0) {
+    if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
       flagcxResult_t res = setupIpcBarriers(comm, handle);
       if (res != flagcxSuccess) {
         WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "

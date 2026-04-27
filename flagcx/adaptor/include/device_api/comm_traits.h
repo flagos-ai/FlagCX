@@ -36,7 +36,7 @@ template <typename PlatformTag>
 struct Default {};
 
 // ============================================================
-// Action types for one-sided operations (needed by traits Transport types).
+// Action types for one-sided operations (needed by traits Net types).
 // Pure POD structs with no device builtins.
 // ============================================================
 typedef uint32_t flagcxDevNetSignal_t;
@@ -55,7 +55,7 @@ struct flagcxDevNet_CounterInc {
 };
 
 // Shared memory descriptor for NIC descriptor optimization.
-// Uses void* on all paths; vendor Transport casts to native type in toNccl().
+// Uses void* on all paths; vendor Net casts to native type in toNccl().
 struct flagcxDescriptorSmem {
   void *_impl = nullptr;
 };
@@ -65,7 +65,7 @@ struct flagcxDevNet_DescriptorSmem {
 };
 
 // Fence level enum — available on all tiers for unified barrier API
-enum class flagcxTransportFenceLevel { Relaxed };
+enum class flagcxDevNetFenceLevel { Relaxed };
 
 // ============================================================
 // Unified team/barrier tag types.

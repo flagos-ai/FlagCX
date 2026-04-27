@@ -818,47 +818,46 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 #ifdef FLAGCX_DEVICE_COMPILE
 
 // ============================================================
-// Section 10: flagcxDevNet — Device Network Transport
+// Section 10: flagcxDevNet — Device Net
 //
-// Thin wrapper around DeviceAPI::Transport. Adds flagcxDevComm-accepting
+// Thin wrapper around DeviceAPI::Net. Adds flagcxDevComm-accepting
 // ctor, defined here after flagcxDevComm and flagcxDevMem are fully defined.
 // ============================================================
-struct flagcxDevNet : DeviceAPI::Transport {
+struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &devComm, int idx)
-      : DeviceAPI::Transport(
-            devComm._commBase,
-            devComm._contextCount > 0 ? idx % devComm._contextCount : 0),
+      : DeviceAPI::Net(devComm._commBase, devComm._contextCount > 0
+                                              ? idx % devComm._contextCount
+                                              : 0),
         _nInterPeers(devComm._nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
       flagcxDevNetSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    return DeviceAPI::Transport::readSignal(signalId, bits, order);
+    return DeviceAPI::Net::readSignal(signalId, bits, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void flush(
       Coop coop,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    DeviceAPI::Transport::flush(coop._base, order);
+    DeviceAPI::Net::flush(coop._base, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
       Coop coop, flagcxDevNetSignal_t signalId, uint64_t least, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    DeviceAPI::Transport::waitSignal(coop._base, signalId, least, bits, order);
+    DeviceAPI::Net::waitSignal(coop._base, signalId, least, bits, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalMeetShadow(
       Coop coop, flagcxDevNetSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    DeviceAPI::Transport::waitSignalMeetShadow(coop._base, signalId, bits,
-                                               order);
+    DeviceAPI::Net::waitSignalMeetShadow(coop._base, signalId, bits, order);
   }
 
   template <typename Coop, typename Uint>
@@ -866,22 +865,21 @@ struct flagcxDevNet : DeviceAPI::Transport {
       Coop coop, flagcxDevNetSignal_t signalId, Uint leastDelta, Uint *before,
       Uint *delta, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    DeviceAPI::Transport::waitSignalFollowShadow(
-        coop._base, signalId, leastDelta, before, delta, bits, order);
+    DeviceAPI::Net::waitSignalFollowShadow(coop._base, signalId, leastDelta,
+                                           before, delta, bits, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
       Coop coop, flagcxDevNetCounter_t counterId, uint64_t least, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    DeviceAPI::Transport::waitCounter(coop._base, counterId, least, bits,
-                                      order);
+    DeviceAPI::Net::waitCounter(coop._base, counterId, least, bits, order);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
       flagcxDevNetCounter_t counterId, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
-    return DeviceAPI::Transport::readCounter(counterId, bits, order);
+    return DeviceAPI::Net::readCounter(counterId, bits, order);
   }
 
   // ---- Two-sided ----
@@ -889,26 +887,26 @@ struct flagcxDevNet : DeviceAPI::Transport {
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
   send(Coop coop, const flagcxDevMem &mem, size_t offset, size_t count,
        flagcxDataType_t datatype, int peer) const {
-    return DeviceAPI::Transport::send(coop._base, mem._winBase, offset, count,
-                                      datatype, peer);
+    return DeviceAPI::Net::send(coop._base, mem._winBase, offset, count,
+                                datatype, peer);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
   recv(Coop coop, const flagcxDevMem &mem, size_t offset, size_t count,
        flagcxDataType_t datatype, int peer) const {
-    return DeviceAPI::Transport::recv(coop._base, mem._winBase, offset, count,
-                                      datatype, peer);
+    return DeviceAPI::Net::recv(coop._base, mem._winBase, offset, count,
+                                datatype, peer);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
-    return DeviceAPI::Transport::term(coop._base);
+    return DeviceAPI::Net::term(coop._base);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
-    return DeviceAPI::Transport::wait(coop._base);
+    return DeviceAPI::Net::wait(coop._base);
   }
 
   // ---- One-sided: put ----
@@ -923,9 +921,9 @@ struct flagcxDevNet : DeviceAPI::Transport {
       Desc desc = flagcxDevNet_None{},
       flagcxDeviceScope_t ar = flagcxDeviceScopeThread,
       flagcxDeviceScope_t es = flagcxDeviceScopeDevice) const {
-    DeviceAPI::Transport::put(team._teamBase, peer, dst._winBase, dstOffset,
-                              src._winBase, srcOffset, bytes, ra, la,
-                              coop._base, desc, ar, es);
+    DeviceAPI::Net::put(team._teamBase, peer, dst._winBase, dstOffset,
+                        src._winBase, srcOffset, bytes, ra, la, coop._base,
+                        desc, ar, es);
   }
 
   // ---- One-sided: signal ----
@@ -936,8 +934,7 @@ struct flagcxDevNet : DeviceAPI::Transport {
          Coop coop = flagcxCoopBlock{}, Desc desc = flagcxDevNet_None{},
          flagcxDeviceScope_t ar = flagcxDeviceScopeThread,
          flagcxDeviceScope_t es = flagcxDeviceScopeDevice) const {
-    DeviceAPI::Transport::signal(team._teamBase, peer, ra, coop._base, desc, ar,
-                                 es);
+    DeviceAPI::Net::signal(team._teamBase, peer, ra, coop._base, desc, ar, es);
   }
 
   // ---- One-sided: putValue ----
@@ -949,9 +946,8 @@ struct flagcxDevNet : DeviceAPI::Transport {
            Coop coop = flagcxCoopBlock{}, Desc desc = flagcxDevNet_None{},
            flagcxDeviceScope_t ar = flagcxDeviceScopeThread,
            flagcxDeviceScope_t es = flagcxDeviceScopeDevice) const {
-    DeviceAPI::Transport::putValue(team._teamBase, peer, dst._winBase,
-                                   dstOffset, value, ra, coop._base, desc, ar,
-                                   es);
+    DeviceAPI::Net::putValue(team._teamBase, peer, dst._winBase, dstOffset,
+                             value, ra, coop._base, desc, ar, es);
   }
 
   // ---- One-sided: get (fallback only) ----
@@ -960,8 +956,8 @@ struct flagcxDevNet : DeviceAPI::Transport {
   get(flagcxTeam team, int peer, const flagcxDevMem &src, size_t srcOffset,
       const flagcxDevMem &dst, size_t dstOffset, size_t bytes,
       Coop coop = flagcxCoopBlock{}) const {
-    DeviceAPI::Transport::get(team._teamBase, peer, src._winBase, srcOffset,
-                              dst._winBase, dstOffset, bytes, coop._base);
+    DeviceAPI::Net::get(team._teamBase, peer, src._winBase, srcOffset,
+                        dst._winBase, dstOffset, bytes, coop._base);
   }
 };
 
@@ -977,26 +973,25 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
   flagcxDevBarrier() : _impl() {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevBarrier(Coop coop, const flagcxDevNet &trans, flagcxTeam team,
+  flagcxDevBarrier(Coop coop, const flagcxDevNet &net, flagcxTeam team,
                    uint32_t index)
-      : _impl(coop, trans, trans._dc, team._teamBase, index,
-              trans._nInterPeers) {}
+      : _impl(coop, net, net._dc, team._teamBase, index, net._nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.wait(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.sync(order, fence);
   }
 };
@@ -1008,40 +1003,39 @@ struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
 
   // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevBarrier(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &trans,
+  flagcxDevBarrier(Coop coop, flagcxTeamTagWorld, const flagcxDevNet &net,
                    uint32_t index, bool multimem = false)
-      : _impl(coop, flagcxTeamTagWorld{}, trans, trans._dc, index, multimem,
-              trans._nInterPeers) {}
+      : _impl(coop, flagcxTeamTagWorld{}, net, net._dc, index, multimem,
+              net._nInterPeers) {}
 
   // Intra-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevBarrier(Coop coop, flagcxTeamTagIntra, const flagcxDevNet &trans,
+  flagcxDevBarrier(Coop coop, flagcxTeamTagIntra, const flagcxDevNet &net,
                    uint32_t index, bool multimem = false)
-      : _impl(coop, flagcxTeamTagIntra{}, trans, trans._dc, index, multimem,
-              0) {}
+      : _impl(coop, flagcxTeamTagIntra{}, net, net._dc, index, multimem, 0) {}
 
   // Inter-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
-  flagcxDevBarrier(Coop coop, flagcxTeamTagInter, const flagcxDevNet &trans,
+  flagcxDevBarrier(Coop coop, flagcxTeamTagInter, const flagcxDevNet &net,
                    uint32_t index, bool multimem = false)
-      : _impl(coop, flagcxTeamTagInter{}, trans, trans._dc, index, multimem,
-              trans._nInterPeers) {}
+      : _impl(coop, flagcxTeamTagInter{}, net, net._dc, index, multimem,
+              net._nInterPeers) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.wait(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxTransportFenceLevel fence = flagcxTransportFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.sync(order, fence);
   }
 };
