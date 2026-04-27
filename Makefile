@@ -336,7 +336,10 @@ endif
 LIBOBJ:= $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
 
 TARGET = libflagcx.so
-all: $(LIBDIR)/$(TARGET)
+FLAGCX_P2P_TARGET = libflagcx_p2p.so
+FLAGCX_P2P_SRC = flagcx/core/flagcx_p2p.cc
+FLAGCX_P2P_OBJ = $(OBJDIR)/flagcx/core/flagcx_p2p.o
+all: $(LIBDIR)/$(TARGET) $(LIBDIR)/$(FLAGCX_P2P_TARGET)
 
 print_var:
 	@echo "USE_KUNLUNXIN : $(USE_KUNLUNXIN)"
@@ -391,6 +394,14 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 	@echo "Linking   $@"
 	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) -g
 
+# Build libflagcx_p2p.so from flagcx_p2p.cc.
+# The P2P engine references FlagCX core symbols (IB net adaptor, topology
+# manager, socket helpers), so we link against libflagcx.so to resolve them.
+$(LIBDIR)/$(FLAGCX_P2P_TARGET): $(FLAGCX_P2P_OBJ) $(LIBDIR)/$(TARGET)
+	@mkdir -p `dirname $@`
+	@echo "Linking   $@"
+	@$(HOST_LINKER) $(FLAGCX_P2P_OBJ) -o $@ -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -lflagcx -lpthread -lrt -ldl -g
+
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
@@ -416,6 +427,7 @@ INSTALLDIR := /usr/local/lib
 install:
 	@mkdir -p $(DESTDIR)
 	@cp $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET)
+	@cp $(LIBDIR)/$(FLAGCX_P2P_TARGET) $(DESTDIR)/$(FLAGCX_P2P_TARGET)
 
 clean:
-	@rm -rf $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET) $(OBJDIR)
+	@rm -rf $(LIBDIR)/$(TARGET) $(LIBDIR)/$(FLAGCX_P2P_TARGET) $(DESTDIR)/$(TARGET) $(DESTDIR)/$(FLAGCX_P2P_TARGET) $(OBJDIR)
