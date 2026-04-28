@@ -1201,31 +1201,29 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   flagcxDevCommState *state;
   FLAGCXCHECK(flagcxCalloc(&state, 1));
 
-  // 1. Auto-detect requirements via adaptor
+  // 1. Auto-detect requirements via adaptor; fall back to Default path if
+  //    adaptor doesn't support DevComm (e.g. NCCL < 2.28).
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  if (cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit == NULL) {
-    free(state);
-    comm->devCommState = nullptr;
-    INFO(FLAGCX_INIT,
-         "Custom allreduce: adaptor does not provide devCommReqsInit, "
-         "disabled");
-    return flagcxSuccess;
+  bool vendorReqs = false;
+  flagcxResult_t res = flagcxSuccess;
+  if (cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit != NULL) {
+    res = cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit(comm->homoComm,
+                                                               &reqs);
+    if (res == flagcxSuccess) {
+      vendorReqs = true;
+    } else if (res != flagcxNotSupported) {
+      free(state);
+      comm->devCommState = nullptr;
+      INFO(FLAGCX_INIT, "Custom allreduce: DevComm requirements init failed, "
+                        "disabled");
+      return flagcxSuccess; // non-fatal
+    }
   }
-  flagcxResult_t res = cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit(
-      comm->homoComm, &reqs);
-  if (res == flagcxNotSupported) {
-    free(state);
-    comm->devCommState = nullptr;
-    INFO(FLAGCX_INIT, "Custom allreduce: adaptor does not support DevComm "
-                      "requirements init, disabled");
-    return flagcxSuccess; // non-fatal
-  }
-  if (res != flagcxSuccess) {
-    free(state);
-    comm->devCommState = nullptr;
-    INFO(FLAGCX_INIT, "Custom allreduce: DevComm requirements init failed, "
-                      "disabled");
-    return flagcxSuccess; // non-fatal
+  if (!vendorReqs) {
+    // Default path: IPC barriers are sufficient for LSA allreduce
+    reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+    INFO(FLAGCX_INIT, "Custom allreduce: adaptor has no DevComm support, "
+                      "using Default path (LSA only)");
   }
 
   // Record capability flags
@@ -1251,17 +1249,23 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   if (res != flagcxSuccess)
     goto fail;
 
-  // 4. Register windows (symmetric)
-  res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
-      comm->homoComm, state->sendStagedBuff, state->stagedBuffSize,
-      &state->sendStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
-  if (res != flagcxSuccess)
-    goto fail;
-  res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
-      comm->homoComm, state->recvStagedBuff, state->stagedBuffSize,
-      &state->recvStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
-  if (res != flagcxSuccess)
-    goto fail;
+  // 4. Register windows (symmetric) — skip if adaptor doesn't support it
+  if (cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister != NULL) {
+    res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
+        comm->homoComm, state->sendStagedBuff, state->stagedBuffSize,
+        &state->sendStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+    if (res != flagcxSuccess && res != flagcxNotSupported)
+      goto fail;
+    if (res == flagcxSuccess) {
+      res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
+          comm->homoComm, state->recvStagedBuff, state->stagedBuffSize,
+          &state->recvStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+      if (res != flagcxSuccess && res != flagcxNotSupported)
+        goto fail;
+      if (res != flagcxSuccess)
+        state->recvStagedWin = nullptr; // partial failure: clear
+    }
+  }
 
   // 5. Create DevMem (for kernel parameters)
   res = flagcxDevMemCreate(comm, state->sendStagedBuff, state->stagedBuffSize,
@@ -2050,14 +2054,12 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   // Try custom allreduce if registered — only valid for homo-only single-node
-  // with multicast support
   if (comm->devCommState != NULL &&
-      comm->devCommState->customAllReduce != NULL &&
-      comm->devCommState->hasMulticast && useHomoComm(comm) &&
-      !useHeteroComm()) {
+      comm->devCommState->customAllReduce != NULL && useHomoComm(comm) &&
+      !useHeteroComm() && comm->localRanks == comm->nranks) {
     auto *state = comm->devCommState;
     size_t size = count * getFlagcxDataTypeSize(datatype);
-    if (size < state->stagedBuffSize) {
+    if (size <= state->stagedBuffSize) {
       flagcxResult_t res = state->customAllReduce(sendbuff, recvbuff, count,
                                                   datatype, op, comm, stream);
       if (res == flagcxSuccess) {
