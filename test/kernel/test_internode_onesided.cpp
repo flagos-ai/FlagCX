@@ -136,6 +136,9 @@ int main(int argc, char *argv[]) {
            "Result");
   }
 
+  // Ensure all ranks have completed setup before launching kernels
+  MPI_Barrier(MPI_COMM_WORLD);
+
   // Warm-up
   for (int i = 0; i < numWarmupIters; i++) {
     size_t countPerPeer =
