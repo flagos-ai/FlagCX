@@ -312,7 +312,7 @@ multimem_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
 
 #endif // FLAGCX_DEVICE_API_VENDOR (PTX multimem functions)
 
-// Store to local memory using vectorized store
+// Store to local memory using alias-safe vectorized store
 template <typename T, int ByteSize = defaultByteSize<T>()>
 FLAGCX_DEVICE_INLINE_DECORATOR void
 lsa_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
@@ -321,7 +321,8 @@ lsa_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
     addr[0] = val.data[0];
   } else {
     using storage_t = typename packed_t<T, ByteSize>::storage_t;
-    *reinterpret_cast<storage_t*>(addr) = pack<T, ByteSize>(val.data);
+    storage_t packed = pack<T, ByteSize>(val.data);
+    __builtin_memcpy(addr, &packed, sizeof(storage_t));
   }
 }
 
@@ -342,16 +343,21 @@ FLAGCX_DEVICE_INLINE_DECORATOR typename packed_t<T, ByteSize>::array_type
 lsa_reduce(const flagcxDevMem &mem, size_t byteOffset, int nRanks, flagcxRedOp_t op) {
   using P = packed_t<T, ByteSize>;
   using arr_t = typename P::array_type;
+  using storage_t = typename P::storage_t;
   constexpr int N = P::num_elems;
 
   T* p0 = (T*)flagcxGetIntraPointer(mem, byteOffset, 0);
   arr_t acc;
-  unpack<T, ByteSize>(*reinterpret_cast<typename P::storage_t*>(p0), acc.data);
+  storage_t s0;
+  __builtin_memcpy(&s0, p0, sizeof(storage_t));
+  unpack<T, ByteSize>(s0, acc.data);
 
   for (int peer = 1; peer < nRanks; peer++) {
     T* pp = (T*)flagcxGetIntraPointer(mem, byteOffset, peer);
     arr_t tmp;
-    unpack<T, ByteSize>(*reinterpret_cast<typename P::storage_t*>(pp), tmp.data);
+    storage_t sp;
+    __builtin_memcpy(&sp, pp, sizeof(storage_t));
+    unpack<T, ByteSize>(sp, tmp.data);
     for (int i = 0; i < N; i++)
       acc.data[i] = reduceOp(acc.data[i], tmp.data[i], op);
   }
@@ -633,6 +639,10 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
       (datatype != flagcxFloat16 && datatype != flagcxBfloat16))
     return flagcxNotSupported;
   if (count % getAlignmentRequirement(datatype) != 0)
+    return flagcxNotSupported;
+  // Reject misaligned recvbuff — vectorized stores require ByteSize alignment.
+  size_t storeAlign = (elemSize <= 4) ? 4 : 8;
+  if (reinterpret_cast<uintptr_t>(recvbuff) % storeAlign != 0)
     return flagcxNotSupported;
   if (size > state->stagedBuffSize)
     return flagcxNotSupported;

@@ -159,10 +159,11 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                                       sizeof(flagcxShmIpcDesc_t)));
           } else {
             // Self-copy: initialize proxyInfo stream/events for deviceMemcpy
-            deviceAdaptor->streamCreate(&resources->proxyInfo.stream);
+            FLAGCXCHECK(
+                deviceAdaptor->streamCreate(&resources->proxyInfo.stream));
             for (int s = 0; s < FLAGCX_P2P_MAX_STEPS; s++) {
-              deviceAdaptor->eventCreate(&resources->proxyInfo.events[s],
-                                         flagcxEventDisableTiming);
+              FLAGCXCHECK(deviceAdaptor->eventCreate(
+                  &resources->proxyInfo.events[s], flagcxEventDisableTiming));
             }
           }
         } else {
