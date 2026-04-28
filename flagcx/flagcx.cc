@@ -461,6 +461,13 @@ flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
     heteroComm->oneSideHandles[slot] = info;
     heteroComm->oneSideHandleCount = slot + 1;
 
+    // Publish fullSendComms to the RMA proxy on the first registration so
+    // its progress thread can look up per-peer sendComms without racing
+    // on the realloc-resized oneSideHandles array.
+    if (slot == 0 && info->fullSendComms != NULL) {
+      flagcxHeteroRmaProxyPublishSendComms(heteroComm, info->fullSendComms);
+    }
+
     INFO(FLAGCX_REG,
          "One-sided register index %d allgather results (rank %d, nranks %d):",
          slot, state->rank, nranks);
@@ -2233,6 +2240,26 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
     return flagcxInvalidArgument;
   return flagcxHeteroGet(comm->heteroComm, peer, srcOffset, dstOffset, size,
                          srcMrIdx, dstMrIdx);
+}
+
+flagcxResult_t flagcxPut(flagcxComm_t comm, int peer, size_t srcOffset,
+                         size_t dstOffset, size_t size, int srcMrIdx,
+                         int dstMrIdx) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroPut(comm->heteroComm, peer, srcOffset, dstOffset, size,
+                         srcMrIdx, dstMrIdx);
+}
+
+flagcxResult_t flagcxBatchPut(flagcxComm_t comm, int peer,
+                              const size_t *srcOffsets,
+                              const size_t *dstOffsets, const size_t *sizes,
+                              const int *srcMrIdxs, const int *dstMrIdxs,
+                              size_t count) {
+  if (comm == NULL || comm->heteroComm == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroBatchPut(comm->heteroComm, peer, srcOffsets, dstOffsets,
+                              sizes, srcMrIdxs, dstMrIdxs, count);
 }
 
 flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,

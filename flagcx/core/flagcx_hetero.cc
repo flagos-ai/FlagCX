@@ -14,15 +14,16 @@
 #include <string.h>
 #include <unistd.h>
 
-// ---------------------------------------------------------------------------
-// Async RMA proxy implementation
-// ---------------------------------------------------------------------------
-
 #ifndef FLAGCX_RMA_QUEUE_SIZE
 #define FLAGCX_RMA_QUEUE_SIZE 256
 #endif
+#ifndef FLAGCX_RMA_BATCH_MAX
+#define FLAGCX_RMA_BATCH_MAX 256
+#endif
+#define FLAGCX_RMA_BATCH_MAX_LIMIT 256
 
 FLAGCX_PARAM(RmaQueueSize, "RMA_QUEUE_SIZE", FLAGCX_RMA_QUEUE_SIZE);
+FLAGCX_PARAM(RmaBatchMax, "RMA_BATCH_MAX", FLAGCX_RMA_BATCH_MAX);
 
 // ---- Circular buffer helpers ----
 
@@ -62,6 +63,42 @@ flagcxRmaProxyEnqueueDesc(struct flagcxRmaProxyState *proxy, int peer,
   proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx] = desc;
   // RELEASE so the progress thread sees desc contents before the pi bump.
   __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
+  pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxRmaProxyEnqueueDescBatch(struct flagcxRmaProxyState *proxy, int peer,
+                               struct flagcxRmaDesc **descs, size_t count,
+                               size_t *enqueued) {
+  *enqueued = 0;
+  if (count == 0)
+    return flagcxSuccess;
+
+  pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+  for (size_t i = 0; i < count; i++) {
+    while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
+      if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+        pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+        return flagcxRemoteError;
+      }
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+      sched_yield();
+      pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+    }
+
+    uint32_t pi = __atomic_load_n(&proxy->pis[peer], __ATOMIC_RELAXED);
+    uint32_t idx = pi & proxy->queueMask;
+    struct flagcxRmaDesc *desc = descs[i];
+    desc->peer = peer;
+    desc->next = NULL;
+    desc->request = NULL;
+    desc->opSeq = __atomic_add_fetch(&proxy->opSeqs[peer], 1,
+                                     __ATOMIC_RELAXED);
+    proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx] = desc;
+    __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
+    (*enqueued)++;
+  }
   pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
   return flagcxSuccess;
 }
@@ -110,6 +147,34 @@ static flagcxResult_t flagcxRmaProxyPostOp(struct flagcxHeteroComm *comm,
   return flagcxInternalError;
 }
 
+static flagcxResult_t
+flagcxRmaProxyPostPutBatch(struct flagcxHeteroComm *comm,
+                           struct flagcxRmaDesc **descs, int count,
+                           void *sendComm, void **requests, int *posted) {
+  *posted = 0;
+  if (count <= 0)
+    return flagcxSuccess;
+  if (comm->netAdaptor == NULL || comm->netAdaptor->iputBatch == NULL)
+    return flagcxNotSupported;
+
+  int p = descs[0]->peer;
+  uint64_t srcOffs[FLAGCX_RMA_BATCH_MAX_LIMIT];
+  uint64_t dstOffs[FLAGCX_RMA_BATCH_MAX_LIMIT];
+  size_t sizes[FLAGCX_RMA_BATCH_MAX_LIMIT];
+  for (int i = 0; i < count; i++) {
+    srcOffs[i] = descs[i]->srcOff;
+    dstOffs[i] = descs[i]->dstOff;
+    sizes[i] = descs[i]->size;
+    requests[i] = NULL;
+  }
+
+  void **srcHandles = (void **)comm->oneSideHandles[descs[0]->srcMrIdx];
+  void **dstHandles = (void **)comm->oneSideHandles[descs[0]->dstMrIdx];
+  return comm->netAdaptor->iputBatch(sendComm, count, srcOffs, dstOffs, sizes,
+                                     comm->rank, p, srcHandles, dstHandles,
+                                     requests, posted);
+}
+
 // Poll and retire completed descs at the head of inProgressQueues[peer].
 // Returns after the head desc is not yet complete (enforces per-peer FIFO).
 static bool
@@ -121,6 +186,7 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     struct flagcxRmaDesc *desc =
         flagcxIntruQueueHead(&proxy->inProgressQueues[peer]);
     int done = 0;
+    bool failed = false;
     if (desc->request != NULL) {
       flagcxResult_t res = comm->netAdaptor->test(desc->request, &done, NULL);
       if (res != flagcxSuccess) {
@@ -128,18 +194,23 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
              "res=%d",
              peer, (int)res);
         __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
-        done = 1; // retire to avoid deadlock
+        done = 1;
+        failed = true; // retire without advancing counters
       }
     } else {
-      // Error path: issuance failed; treat as done so the ring can drain.
+      // Issuance already failed; drain without advancing counters.
       done = 1;
+      failed = true;
     }
     if (!done)
       break;
     flagcxIntruQueueDequeue(&proxy->inProgressQueues[peer]);
-    // Publish completion: doneSeqs with RELEASE so waiters acquire-see it.
-    __atomic_store_n(&proxy->doneSeqs[peer], desc->opSeq, __ATOMIC_RELEASE);
-    __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+    __atomic_fetch_sub(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
+    if (!failed) {
+      // Publish completion: doneSeqs with RELEASE so waiters acquire-see it.
+      __atomic_store_n(&proxy->doneSeqs[peer], desc->opSeq, __ATOMIC_RELEASE);
+      __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+    }
     free(desc);
     did = true;
   }
@@ -157,10 +228,78 @@ flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy, int peer,
   struct flagcxHeteroComm *comm = proxy->comm;
   bool did = false;
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
+    uint32_t inFlight =
+        __atomic_load_n(&proxy->inFlights[peer], __ATOMIC_RELAXED);
+    if (inFlight >= proxy->queueSize)
+      break;
     uint32_t ci = __atomic_load_n(&proxy->cis[peer], __ATOMIC_RELAXED);
     uint32_t idx = ci & proxy->queueMask;
     struct flagcxRmaDesc *desc =
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
+
+    bool canBatch =
+        desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
+        comm->netAdaptor->name != NULL &&
+        strcmp(comm->netAdaptor->name, "IB") == 0 &&
+        comm->netAdaptor->iputBatch != NULL;
+    if (canBatch) {
+      int64_t paramBatchMax = flagcxParamRmaBatchMax();
+      if (paramBatchMax <= 0)
+        paramBatchMax = 1;
+      if (paramBatchMax > FLAGCX_RMA_BATCH_MAX_LIMIT)
+        paramBatchMax = FLAGCX_RMA_BATCH_MAX_LIMIT;
+
+      uint32_t pi = __atomic_load_n(&proxy->pis[peer], __ATOMIC_ACQUIRE);
+      uint32_t ringAvailable = pi - ci;
+      uint32_t flightAvailable = proxy->queueSize - inFlight;
+      uint32_t batchLimit = ringAvailable < flightAvailable ? ringAvailable
+                                                            : flightAvailable;
+      if (batchLimit > (uint32_t)paramBatchMax)
+        batchLimit = (uint32_t)paramBatchMax;
+
+      struct flagcxRmaDesc *descs[FLAGCX_RMA_BATCH_MAX_LIMIT];
+      int batchCount = 0;
+      for (; batchCount < (int)batchLimit; batchCount++) {
+        uint32_t curIdx = (ci + (uint32_t)batchCount) & proxy->queueMask;
+        struct flagcxRmaDesc *cur =
+            proxy->circularBuffers[(size_t)peer * proxy->queueSize + curIdx];
+        if (cur->type != FLAGCX_RMA_PUT || cur->srcMrIdx != desc->srcMrIdx ||
+            cur->dstMrIdx != desc->dstMrIdx) {
+          break;
+        }
+        descs[batchCount] = cur;
+      }
+
+      if (batchCount > 1) {
+        void *requests[FLAGCX_RMA_BATCH_MAX_LIMIT];
+        int posted = 0;
+        flagcxResult_t res = flagcxRmaProxyPostPutBatch(
+            comm, descs, batchCount, sendComm, requests, &posted);
+        if (posted == 0) {
+          if (res != flagcxSuccess && res != flagcxSystemError &&
+              res != flagcxInternalError) {
+            WARN("flagcxRmaProxyPollNonPersistDesc: batch op failed peer=%d "
+                 "res=%d",
+                 peer, (int)res);
+            __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+          }
+          break;
+        }
+
+        for (int i = 0; i < posted; i++) {
+          descs[i]->request = requests[i];
+          descs[i]->next = NULL;
+          flagcxIntruQueueEnqueue(&proxy->inProgressQueues[peer], descs[i]);
+        }
+        __atomic_store_n(&proxy->cis[peer], ci + (uint32_t)posted,
+                         __ATOMIC_RELEASE);
+        __atomic_fetch_add(&proxy->inFlights[peer], (uint32_t)posted,
+                           __ATOMIC_RELAXED);
+        did = true;
+        continue;
+      }
+    }
+
     desc->request = NULL;
     flagcxResult_t res = flagcxRmaProxyPostOp(comm, desc, sendComm);
     if (res == flagcxInternalError) {
@@ -179,33 +318,60 @@ flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy, int peer,
     // Enqueue to inProgressQueues[peer] (progress-thread private).
     desc->next = NULL;
     flagcxIntruQueueEnqueue(&proxy->inProgressQueues[peer], desc);
+    __atomic_fetch_add(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
     did = true;
   }
   return did;
+}
+
+// Drain the peer's ring without posting: dequeue, advance cis, free each
+// desc without bumping doneSeqs/completionCount. Called at shutdown when
+// no sendComm is available and we cannot actually issue the ops.
+static void flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
+                                    int peer) {
+  while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
+    uint32_t ci = __atomic_load_n(&proxy->cis[peer], __ATOMIC_RELAXED);
+    uint32_t idx = ci & proxy->queueMask;
+    struct flagcxRmaDesc *desc =
+        proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
+    __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
+    free(desc);
+  }
 }
 
 // One pass over all peers: poll completions and issue pending descs.
 // Returns true if any progress was made.
 static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
                                    bool stopping, bool *anyOutstanding) {
-  struct flagcxHeteroComm *comm = proxy->comm;
   bool did = false;
   *anyOutstanding = false;
+  // Read the cached fullSendComms once per pass (published exactly once
+  // from the registration path; NULL until then). See
+  // flagcxHeteroRmaProxyPublishSendComms() for why this is safe.
+  void *const *fullSendComms =
+      __atomic_load_n(&proxy->fullSendComms, __ATOMIC_ACQUIRE);
   for (int p = 0; p < proxy->nRanks; p++) {
     if (flagcxRmaProxyPollNonPersistCompletion(proxy, p))
       did = true;
 
-    if (!stopping) {
-      // Resolve sendComm lazily; if absent, skip issuing this peer.
-      void *sendComm = NULL;
-      if (comm->oneSideHandleCount > 0 && comm->oneSideHandles[0] != NULL &&
-          comm->oneSideHandles[0]->fullSendComms != NULL) {
-        sendComm = comm->oneSideHandles[0]->fullSendComms[p];
-      }
-      if (sendComm != NULL) {
-        if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
-          did = true;
-      } else if (!flagcxRmaProxyCircularBufEmpty(proxy, p)) {
+    void *sendComm =
+        (fullSendComms != NULL) ? fullSendComms[p] : NULL;
+    if (sendComm != NULL) {
+      if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
+        did = true;
+    } else if (!flagcxRmaProxyCircularBufEmpty(proxy, p)) {
+      if (stopping) {
+        // Shutdown with queued-but-unissued descs and no transport.
+        // Drain to let the thread exit; flag the error so waiters fail.
+        WARN("flagcxRmaProxyProgress: stop with queued descs but no "
+             "sendComm peer=%d; draining",
+             p);
+        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyDrainRing(proxy, p);
+        did = true;
+      } else {
+        // Pre-registration: caller enqueued an op before the full mesh
+        // is ready. Surface as an error rather than spin forever.
         WARN("flagcxRmaProxyProgress: no sendComm for peer %d", p);
         __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
       }
@@ -262,11 +428,12 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
       (pthread_mutex_t *)calloc(nRanks, sizeof(pthread_mutex_t));
   proxy->opSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
   proxy->doneSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
+  proxy->inFlights = (volatile uint32_t *)calloc(nRanks, sizeof(uint32_t));
 
   if (proxy->circularBuffers == NULL || proxy->pis == NULL ||
       proxy->cis == NULL || proxy->inProgressQueues == NULL ||
       proxy->peerProducerMutexes == NULL || proxy->opSeqs == NULL ||
-      proxy->doneSeqs == NULL) {
+      proxy->doneSeqs == NULL || proxy->inFlights == NULL) {
     WARN("flagcxHeteroRmaProxyStart: failed to allocate ring buffers");
     free(proxy->circularBuffers);
     free((void *)proxy->pis);
@@ -275,6 +442,7 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free(proxy->peerProducerMutexes);
     free((void *)proxy->opSeqs);
     free((void *)proxy->doneSeqs);
+    free((void *)proxy->inFlights);
     free(proxy);
     return flagcxSystemError;
   }
@@ -299,6 +467,7 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free(proxy->peerProducerMutexes);
     free((void *)proxy->opSeqs);
     free((void *)proxy->doneSeqs);
+    free((void *)proxy->inFlights);
     free(proxy);
     comm->rmaProxy = NULL;
     return flagcxSystemError;
@@ -326,8 +495,26 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   free(proxy->peerProducerMutexes);
   free((void *)proxy->opSeqs);
   free((void *)proxy->doneSeqs);
+  free((void *)proxy->inFlights);
   free(proxy);
   comm->rmaProxy = NULL;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxHeteroRmaProxyPublishSendComms(flagcxHeteroComm_t comm,
+                                     void *const *fullSendComms) {
+  if (comm == NULL || comm->rmaProxy == NULL)
+    return flagcxInvalidArgument;
+  if (fullSendComms == NULL)
+    return flagcxSuccess;
+  // Publish only if unset; later registrations reuse the same array.
+  void *const *cur =
+      __atomic_load_n(&comm->rmaProxy->fullSendComms, __ATOMIC_ACQUIRE);
+  if (cur == NULL) {
+    __atomic_store_n(&comm->rmaProxy->fullSendComms, fullSendComms,
+                     __ATOMIC_RELEASE);
+  }
   return flagcxSuccess;
 }
 
@@ -476,6 +663,64 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
   flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc);
   if (res != flagcxSuccess)
     free(desc);
+  return res;
+}
+
+flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
+                                    const size_t *srcOffsets,
+                                    const size_t *dstOffsets,
+                                    const size_t *sizes,
+                                    const int *srcMrIdxs,
+                                    const int *dstMrIdxs, size_t count) {
+  if (count == 0)
+    return flagcxSuccess;
+  if (comm == NULL || srcOffsets == NULL || dstOffsets == NULL ||
+      sizes == NULL || srcMrIdxs == NULL || dstMrIdxs == NULL)
+    return flagcxInvalidArgument;
+  if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
+    return flagcxNotSupported;
+  if (peer < 0 || peer >= comm->nRanks) {
+    WARN("flagcxHeteroBatchPut: peer %d out of range (nRanks=%d)", peer,
+         comm->nRanks);
+    return flagcxInvalidArgument;
+  }
+  if (comm->rmaProxy == NULL) {
+    WARN("flagcxHeteroBatchPut: rmaProxy not initialized");
+    return flagcxInternalError;
+  }
+
+  struct flagcxRmaDesc **descs =
+      (struct flagcxRmaDesc **)calloc(count, sizeof(struct flagcxRmaDesc *));
+  if (descs == NULL)
+    return flagcxSystemError;
+
+  for (size_t i = 0; i < count; i++) {
+    struct flagcxRmaDesc *desc =
+        (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+    if (desc == NULL) {
+      for (size_t j = 0; j < i; j++)
+        free(descs[j]);
+      free(descs);
+      return flagcxSystemError;
+    }
+    desc->type = FLAGCX_RMA_PUT;
+    desc->srcOff = (uint64_t)srcOffsets[i];
+    desc->dstOff = (uint64_t)dstOffsets[i];
+    desc->size = sizes[i];
+    desc->srcMrIdx = srcMrIdxs[i];
+    desc->dstMrIdx = dstMrIdxs[i];
+    descs[i] = desc;
+  }
+
+  size_t enqueued = 0;
+  flagcxResult_t res =
+      flagcxRmaProxyEnqueueDescBatch(comm->rmaProxy, peer, descs, count,
+                                     &enqueued);
+  if (res != flagcxSuccess) {
+    for (size_t i = enqueued; i < count; i++)
+      free(descs[i]);
+  }
+  free(descs);
   return res;
 }
 

@@ -7,6 +7,9 @@
 #include <pthread.h>
 #include <stdint.h>
 
+template <typename T, T *T::*next>
+struct flagcxIntruQueue;
+
 enum flagcxRmaDescType {
   FLAGCX_RMA_PUT = 0,
   FLAGCX_RMA_PUT_SIGNAL = 1,
@@ -45,6 +48,7 @@ struct flagcxRmaProxyState {
       *inProgressQueues; // [nRanks]
   volatile uint64_t *opSeqs;   // [nRanks]
   volatile uint64_t *doneSeqs; // [nRanks]
+  volatile uint32_t *inFlights; // [nRanks]
 
   // Global completion counter: incremented once for every op that completes.
   // Callers record the value before issuing ops, then poll until it advances.
@@ -54,6 +58,7 @@ struct flagcxRmaProxyState {
   // error, or missing sendComm). Wait functions check this and return an error.
   volatile int rmaError;
 
+  void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;
   struct flagcxHeteroComm *comm; // back-pointer
 
@@ -97,6 +102,13 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx);
 
+flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
+                                    const size_t *srcOffsets,
+                                    const size_t *dstOffsets,
+                                    const size_t *sizes,
+                                    const int *srcMrIdxs,
+                                    const int *dstMrIdxs, size_t count);
+
 // RDMA READ: pull data from remote peer's srcMrIdx buffer into local dstMrIdx
 // buffer
 flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
@@ -117,6 +129,10 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+
+// Publish the stable fullSendComms pointer to the proxy. 
+flagcxResult_t flagcxHeteroRmaProxyPublishSendComms(flagcxHeteroComm_t comm,
+                                                    void *const *fullSendComms);
 
 // Wait until all ops for a specific peer up to seq are complete.
 flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
