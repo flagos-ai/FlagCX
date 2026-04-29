@@ -1,8 +1,8 @@
 # These owners will be the default owners for everything in
 # the repo. 
 
-/docs/* @MC952-arch @mikethegoblin @aoyulong
-/flagcx/* @MC952-arch @mikethegoblin @aoyulong
-/plugin/* @MC952-arch @mikethegoblin @aoyulong
-/test/* @MC952-arch @mikethegoblin @aoyulong
-/adaptor_plugin/* @MC952-arch @mikethegoblin @aoyulong
+/docs/ @MC952-arch @mikethegoblin @aoyulong
+/flagcx/ @MC952-arch @mikethegoblin @aoyulong
+/plugin/ @MC952-arch @mikethegoblin @aoyulong
+/test/ @MC952-arch @mikethegoblin @aoyulong
+/adaptor_plugin/ @MC952-arch @mikethegoblin @aoyulong
