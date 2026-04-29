@@ -410,7 +410,7 @@ static void shmHostUnregister(void *ptr) {
 // Allocates barrier flags, exchanges pointers with local peers, and builds
 // a device-side pointer array. Two paths:
 //   Default (FLAGCX_SIGNAL_HOST_ENABLE=0): IPC device memory via ipcTable.
-//   Fallback (FLAGCX_SIGNAL_HOST_ENABLE=1): Shm + hostRegister.
+//   Host-pinned (FLAGCX_SIGNAL_HOST_ENABLE=1): Shm + hostRegister.
 //     Used on platforms (e.g. Hygon DCU) where GPU L2 cache is not flushed
 //     mid-kernel for IPC-mapped peer device memory.
 // On failure, partial resources are cleaned up by flagcxDevCommDestroy.
@@ -684,11 +684,13 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
 
   // ---- Vendor path: try devCommCreate via adaptor ----
   flagcxInnerComm_t innerComm = comm->homoComm;
-  if (innerComm != nullptr) {
+  if (innerComm != nullptr &&
+      cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate != NULL) {
     flagcxInnerDevComm_t innerDevComm = nullptr;
     flagcxResult_t ret = cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate(
         innerComm, reqs, &innerDevComm);
-    if (ret != flagcxSuccess && ret != flagcxNotSupported) {
+    if (ret != flagcxSuccess && ret != flagcxNotSupported &&
+        ret != flagcxInvalidArgument) {
       WARN("flagcxDevCommCreate: vendor devCommCreate failed (%d)", ret);
       free(handle);
       return ret;
@@ -708,11 +710,11 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       handle->nInterPeers = nNodes - 1;
   }
   if (handle->devComm == nullptr) {
-    // ---- Fallback path: IPC barriers + inter-node signal relay + one-sided
+    // ---- Default path: IPC barriers + inter-node signal relay + one-sided
     // ----
 
     // IPC barrier layer: if barriers requested
-    if (reqs->intraBarrierCount > 0) {
+    if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
       flagcxResult_t res = setupIpcBarriers(comm, handle);
       if (res != flagcxSuccess) {
         WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
@@ -745,7 +747,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
     }
 
-    // One-sided Fallback layer: if signals or counters requested
+    // One-sided Default layer: if signals or counters requested
     if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
       // Use nKernelProxies (max contextCount) for buffer sizing so that
       // the RDMA MR covers all possible context slots across DevComm
@@ -822,7 +824,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
       }
 
       INFO(FLAGCX_INIT,
-           "flagcxDevCommCreate: one-sided Fallback buffers allocated "
+           "flagcxDevCommCreate: one-sided Default buffers allocated "
            "(signals=%d, counters=%d, contexts=%d)",
            handle->signalCount, handle->counterCount, handle->contextCount);
     }
@@ -841,7 +843,7 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
        handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        (handle->signalCount > 0 || handle->counterCount > 0)
-           ? " + one-sided Fallback"
+           ? " + one-sided Default"
            : "");
 
   // Pre-establish full-mesh connections from main thread
@@ -861,7 +863,8 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   // Vendor layer cleanup via adaptor
   if (comm != nullptr && devComm->devComm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm != nullptr) {
+    if (innerComm != nullptr &&
+        cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy != NULL) {
       cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
                                                           devComm->devComm);
       devComm->devComm = nullptr;
@@ -916,7 +919,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     comm->heteroComm->devCommHandle = nullptr;
   }
 
-  // One-sided Fallback cleanup
+  // One-sided Default cleanup
   if (devComm->signalBuffer) {
     flagcxMemType_t sigMt =
         flagcxParamSignalHostEnable() ? flagcxMemHost : flagcxMemDevice;
@@ -1032,7 +1035,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   }
 
 #ifndef FLAGCX_DEVICE_API_VENDOR
-  // Fallback: always create a Window with baseline/IPC/MR fields so that
+  // Default: always create a Window with baseline/IPC/MR fields so that
   // flagcxDevMem(di) can copy it into _winBase for kernel use.
   if (handle->window == nullptr) {
     auto *fbWin = (typename DeviceAPI::Window *)malloc(

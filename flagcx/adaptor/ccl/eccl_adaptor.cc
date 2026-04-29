@@ -228,6 +228,12 @@ flagcxResult_t ecclAdaptorGroupStart() {
 flagcxResult_t ecclAdaptorGroupEnd() { return (flagcxResult_t)ecclGroupEnd(); }
 
 flagcxResult_t
+ecclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 ecclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                          const flagcxDevCommRequirements * /*reqs*/,
                          flagcxInnerDevComm_t * /*devComm*/) {
@@ -260,6 +266,7 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     // Group semantics
     ecclAdaptorGroupStart, ecclAdaptorGroupEnd,
     // Device API
-    ecclAdaptorDevCommCreate, ecclAdaptorDevCommDestroy};
+    ecclAdaptorDevCommReqsInit, ecclAdaptorDevCommCreate,
+    ecclAdaptorDevCommDestroy};
 
 #endif // USE_ENFLAME_ADAPTOR

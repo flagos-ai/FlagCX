@@ -321,6 +321,12 @@ flagcxResult_t xcclAdaptorGroupEnd() {
 }
 
 flagcxResult_t
+xcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 xcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                          const flagcxDevCommRequirements * /*reqs*/,
                          flagcxInnerDevComm_t * /*devComm*/) {
@@ -353,6 +359,7 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     // Group semantics
     xcclAdaptorGroupStart, xcclAdaptorGroupEnd,
     // Device API
-    xcclAdaptorDevCommCreate, xcclAdaptorDevCommDestroy};
+    xcclAdaptorDevCommReqsInit, xcclAdaptorDevCommCreate,
+    xcclAdaptorDevCommDestroy};
 
 #endif // USE_KUNLUNXIN_ADAPTOR

@@ -191,7 +191,7 @@ int main(int argc, char *argv[]) {
 
   // ==========================================================================
   // Window AlltoAll test (requires -R 2 for window registration)
-  // Falls back to FIFO AlltoAll on Fallback when window not available
+  // Falls back to FIFO AlltoAll on Default path when window not available
   // ==========================================================================
   if (localRegister == 2) {
     flagcxDevComm_t a2aDevComm = nullptr;

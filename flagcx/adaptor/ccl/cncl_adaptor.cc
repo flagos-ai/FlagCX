@@ -336,6 +336,12 @@ flagcxResult_t cnclAdaptorGroupEnd() {
 }
 
 flagcxResult_t
+cnclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 cnclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                          const flagcxDevCommRequirements * /*reqs*/,
                          flagcxInnerDevComm_t * /*devComm*/) {
@@ -368,6 +374,7 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     // Group semantics
     cnclAdaptorGroupStart, cnclAdaptorGroupEnd,
     // Device API
-    cnclAdaptorDevCommCreate, cnclAdaptorDevCommDestroy};
+    cnclAdaptorDevCommReqsInit, cnclAdaptorDevCommCreate,
+    cnclAdaptorDevCommDestroy};
 
 #endif // USE_CAMBRICON_ADAPTOR

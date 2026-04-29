@@ -451,6 +451,12 @@ flagcxResult_t glooAdaptorGroupEnd() {
 }
 
 flagcxResult_t
+glooAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 glooAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                          const flagcxDevCommRequirements * /*reqs*/,
                          flagcxInnerDevComm_t * /*devComm*/) {
@@ -483,6 +489,7 @@ struct flagcxCCLAdaptor glooAdaptor = {
     // Group semantics
     glooAdaptorGroupStart, glooAdaptorGroupEnd,
     // Device API
-    glooAdaptorDevCommCreate, glooAdaptorDevCommDestroy};
+    glooAdaptorDevCommReqsInit, glooAdaptorDevCommCreate,
+    glooAdaptorDevCommDestroy};
 
 #endif // USE_GLOO_ADAPTOR

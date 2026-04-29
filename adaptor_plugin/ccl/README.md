@@ -21,9 +21,9 @@ If the variable is unset, no plugin is loaded and the built-in adaptor is used.
 
 ### Symbol Versioning
 
-Once the library is loaded, FlagCX looks for a symbol named `flagcxCCLAdaptorPlugin_v1`. This versioned naming allows future API changes while maintaining backwards compatibility.
+FlagCX loads the highest known versioned symbol from the plugin library and upgrades it to the internal latest layout. Currently the only version is `flagcxCCLAdaptorPlugin_v1`. When future versions are added (v2, v3, ...), the loader will try them in descending order and upgrade to latest automatically — fields not present in older versions are set to NULL.
 
-The symbol must be a `struct flagcxCCLAdaptor_v1` instance with `visibility("default")` so that `dlsym` can find it.
+Plugins should export a `struct flagcxCCLAdaptor_v1` instance with `visibility("default")` so that `dlsym` can find it.
 
 ### Lifecycle
 

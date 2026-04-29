@@ -295,6 +295,12 @@ flagcxResult_t ixncclAdaptorGroupEnd() {
 }
 
 flagcxResult_t
+ixncclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                             flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
 ixncclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
                            const flagcxDevCommRequirements * /*reqs*/,
                            flagcxInnerDevComm_t * /*devComm*/) {
@@ -329,6 +335,7 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     // Group semantics
     ixncclAdaptorGroupStart, ixncclAdaptorGroupEnd,
     // Device API
-    ixncclAdaptorDevCommCreate, ixncclAdaptorDevCommDestroy};
+    ixncclAdaptorDevCommReqsInit, ixncclAdaptorDevCommCreate,
+    ixncclAdaptorDevCommDestroy};
 
 #endif // USE_ILUVATAR_COREX_ADAPTOR

@@ -1,5 +1,5 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  ************************************************************************/
 
 #include "adaptor.h"
@@ -16,6 +16,8 @@ static void *cclPluginDlHandle = NULL;
 static int cclPluginRefCount = 0;
 static std::mutex cclPluginMutex;
 static struct flagcxCCLAdaptor *cclDefaultDeviceAdaptor = NULL;
+// Heap-allocated latest struct used when upgrading a v1 plugin.
+static struct flagcxCCLAdaptor *cclUpgradedPlugin = NULL;
 extern struct flagcxCCLAdaptor *cclAdaptors[];
 
 flagcxResult_t flagcxCCLAdaptorPluginLoad() {
@@ -35,19 +37,28 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
-  // Future: When v2 is introduced, try dlsym("flagcxCCLAdaptorPlugin_v2")
-  // first, then fall back to "flagcxCCLAdaptorPlugin_v1" and wrap in a v1→v2
-  // shim.
-  struct flagcxCCLAdaptor *plugin = (struct flagcxCCLAdaptor *)dlsym(
+  // Try the highest known version first, then fall back to older versions.
+  // Currently only v1 exists. When v2 is added, try v2 first, then v1.
+  struct flagcxCCLAdaptor_v1 *v1 = (struct flagcxCCLAdaptor_v1 *)dlsym(
       cclPluginDlHandle, "flagcxCCLAdaptorPlugin_v1");
-  if (plugin == NULL) {
-    WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxCCLAdaptorPlugin_v1' in "
-         "'%s': %s",
+  if (v1 == NULL) {
+    WARN("ADAPTOR/Plugin: Failed to find symbol "
+         "'flagcxCCLAdaptorPlugin_v1' in '%s': %s",
          envValue, dlerror());
     flagcxAdaptorClosePluginLib(cclPluginDlHandle);
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
   }
+  // Upgrade v1 to latest — new fields (devComm*) will be NULL.
+  cclUpgradedPlugin =
+      (struct flagcxCCLAdaptor *)malloc(sizeof(struct flagcxCCLAdaptor));
+  if (cclUpgradedPlugin == NULL) {
+    flagcxAdaptorClosePluginLib(cclPluginDlHandle);
+    cclPluginDlHandle = NULL;
+    return flagcxSystemError;
+  }
+  flagcxCCLAdaptorUpgradeV1(v1, cclUpgradedPlugin);
+  struct flagcxCCLAdaptor *plugin = cclUpgradedPlugin;
 
   // Validate all 34 function pointers
   if (plugin->name == NULL || plugin->getVersion == NULL ||
@@ -71,6 +82,8 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: CCL adaptor plugin '%s' is missing required function "
          "pointers",
          envValue);
+    free(cclUpgradedPlugin);
+    cclUpgradedPlugin = NULL;
     flagcxAdaptorClosePluginLib(cclPluginDlHandle);
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
@@ -88,6 +101,8 @@ flagcxResult_t flagcxCCLAdaptorPluginUnload() {
     cclAdaptors[flagcxCCLAdaptorDevice] = cclDefaultDeviceAdaptor;
     cclDefaultDeviceAdaptor = NULL;
   }
+  free(cclUpgradedPlugin);
+  cclUpgradedPlugin = NULL;
   flagcxAdaptorClosePluginLib(cclPluginDlHandle);
   cclPluginDlHandle = NULL;
   return flagcxSuccess;

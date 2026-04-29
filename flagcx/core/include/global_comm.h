@@ -2,6 +2,7 @@
 #define FLAGCX_GLOBAL_COMM_H_
 
 #include "bootstrap.h"
+#include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
 
@@ -95,6 +96,9 @@ struct flagcxComm {
   // Deferred device/host-pinned memory free list
   struct flagcxDeferredFree deferredFrees[FLAGCX_MAX_DEFERRED_FREES];
   int deferredFreeCount;
+
+  // Custom op state (NULL = not enabled)
+  struct flagcxDevCommState *devCommState;
 };
 
 #endif // end include guard

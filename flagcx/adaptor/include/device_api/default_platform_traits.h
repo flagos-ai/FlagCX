@@ -1,60 +1,60 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Fallback Platform Traits — host-only stubs for non-NVIDIA/DU backends.
+ * Default Platform Traits — host-only stubs for non-NVIDIA/DU backends.
  *
- * Provides PlatformTraits<FallbackPlatform> with:
+ * Provides PlatformTraits<DefaultPlatform> with:
  *   - Intrin: assert-false stubs (never called; IPC path is host-only)
  *   - Atomic: GCC built-in atomics (__atomic_*)
  *   - Coop*:  single-thread no-op implementations
  *
- * Used by CommTraits<Fallback<FallbackPlatform>> when neither
+ * Used by CommTraits<Default<DefaultPlatform>> when neither
  * USE_NVIDIA_ADAPTOR nor USE_DU_ADAPTOR is defined.
  ************************************************************************/
 
-#ifndef FLAGCX_FALLBACK_PLATFORM_TRAITS_H_
-#define FLAGCX_FALLBACK_PLATFORM_TRAITS_H_
+#ifndef FLAGCX_DEFAULT_PLATFORM_TRAITS_H_
+#define FLAGCX_DEFAULT_PLATFORM_TRAITS_H_
 
 #include <cassert>
 #include <cstdint>
 
-struct FallbackPlatform {};
+struct DefaultPlatform {};
 
 template <>
-struct PlatformTraits<FallbackPlatform> {
+struct PlatformTraits<DefaultPlatform> {
   // ==============================================================
   // Intrin — assert-false stubs (IPC fallback never calls these)
   // ==============================================================
   struct Intrin {
     static constexpr int simtWidth = 1;
     static inline int lane() {
-      assert(false && "lane() on FallbackPlatform");
+      assert(false && "lane() on DefaultPlatform");
       return 0;
     }
     static inline uint32_t lanemaskLt() {
-      assert(false && "lanemaskLt() on FallbackPlatform");
+      assert(false && "lanemaskLt() on DefaultPlatform");
       return 0;
     }
     static inline uint32_t activemask() {
-      assert(false && "activemask() on FallbackPlatform");
+      assert(false && "activemask() on DefaultPlatform");
       return 1;
     }
     static inline void syncwarp(uint32_t = 0xffffffffu) {
-      assert(false && "syncwarp() on FallbackPlatform");
+      assert(false && "syncwarp() on DefaultPlatform");
     }
     static inline int popc(uint32_t x) {
       (void)x;
-      assert(false && "popc() on FallbackPlatform");
+      assert(false && "popc() on DefaultPlatform");
       return 0;
     }
     static inline void namedBarrierSync(int, int) {
-      assert(false && "namedBarrierSync() on FallbackPlatform");
+      assert(false && "namedBarrierSync() on DefaultPlatform");
     }
     static inline void spinBackoff(int) {
-      assert(false && "spinBackoff() on FallbackPlatform");
+      assert(false && "spinBackoff() on DefaultPlatform");
     }
     static inline void threadfenceSystem() {
-      assert(false && "threadfenceSystem() on FallbackPlatform");
+      assert(false && "threadfenceSystem() on DefaultPlatform");
     }
   };
 
@@ -129,4 +129,4 @@ struct PlatformTraits<FallbackPlatform> {
   using CoopAny = PlatformCoop;
 };
 
-#endif // FLAGCX_FALLBACK_PLATFORM_TRAITS_H_
+#endif // FLAGCX_DEFAULT_PLATFORM_TRAITS_H_
