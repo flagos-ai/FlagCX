@@ -2432,7 +2432,9 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
-  struct flagcxIbQp *qp = &comm->base.qps[0];
+  int qpIdx = comm->base.qpIndex;
+  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
+  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
   void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
   int lkey = srcInfo->lkeys[srcRank];
@@ -2476,6 +2478,120 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
+                                 const uint64_t *srcOffs,
+                                 const uint64_t *dstOffs,
+                                 const size_t *sizes, int srcRank,
+                                 int dstRank, void **srcHandles,
+                                 void **dstHandles, void **requests,
+                                 int *posted) {
+  if (posted == NULL || requests == NULL)
+    return flagcxInvalidArgument;
+  *posted = 0;
+  if (count <= 0)
+    return flagcxSuccess;
+  if (count > MAX_REQUESTS)
+    return flagcxInvalidArgument;
+
+  struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
+  struct flagcxOneSideHandleInfo *srcInfo =
+      (struct flagcxOneSideHandleInfo *)srcHandles;
+  struct flagcxOneSideHandleInfo *dstInfo =
+      (struct flagcxOneSideHandleInfo *)dstHandles;
+  if (comm == NULL || srcInfo == NULL || dstInfo == NULL || srcOffs == NULL ||
+      dstOffs == NULL || sizes == NULL) {
+    return flagcxInvalidArgument;
+  }
+
+  int qpIdx = comm->base.qpIndex;
+  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
+  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
+  int devIndex = qp->devIndex;
+  int lkey = srcInfo->lkeys[srcRank];
+  int rkey = dstInfo->rkeys[dstRank];
+
+  struct ibv_send_wr wrs[MAX_REQUESTS];
+  struct ibv_sge sges[MAX_REQUESTS];
+  struct flagcxIbRequest *reqs[MAX_REQUESTS];
+  memset(wrs, 0, count * sizeof(struct ibv_send_wr));
+  memset(sges, 0, count * sizeof(struct ibv_sge));
+  memset(reqs, 0, count * sizeof(struct flagcxIbRequest *));
+
+  flagcxResult_t res = flagcxSuccess;
+  struct ibv_send_wr *bad_wr = NULL;
+  int ret = 0;
+  for (int i = 0; i < count; i++) {
+    struct flagcxIbRequest *req = NULL;
+    res = flagcxIbGetRequest(&comm->base, &req);
+    if (res != flagcxSuccess) {
+      goto fail_before_post;
+    }
+    reqs[i] = req;
+    req->type = FLAGCX_NET_IB_REQ_IPUT;
+    req->sock = &comm->base.sock;
+    for (int d = 0; d < comm->base.ndevs; d++) {
+      req->devBases[d] = &comm->devs[d].base;
+    }
+
+    void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOffs[i]);
+    void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOffs[i]);
+
+    wrs[i].opcode = IBV_WR_RDMA_WRITE;
+    wrs[i].send_flags = IBV_SEND_SIGNALED;
+    wrs[i].wr_id = req - comm->base.reqs;
+    wrs[i].next = (i + 1 == count) ? NULL : &wrs[i + 1];
+    wrs[i].wr.rdma.remote_addr = (uint64_t)dstPtr;
+    wrs[i].wr.rdma.rkey = rkey;
+    wrs[i].sg_list = &sges[i];
+    wrs[i].num_sge = 1;
+
+    sges[i].addr = (uintptr_t)srcPtr;
+    sges[i].length = (uint32_t)sizes[i];
+    if ((size_t)sges[i].length != sizes[i]) {
+      WARN("flagcxIbIputBatch: transfer size %zu exceeds ibv_sge 32-bit limit",
+           sizes[i]);
+      res = flagcxInvalidArgument;
+      goto fail_before_post;
+    }
+    sges[i].lkey = lkey;
+
+    flagcxIbAddEvent(req, devIndex, &comm->devs[devIndex].base);
+  }
+
+  ret = qp->qp->context->ops.post_send(qp->qp, wrs, &bad_wr);
+  if (ret != IBV_SUCCESS) {
+    int first_failed = bad_wr ? (int)(bad_wr - wrs) : 0;
+    if (first_failed < 0 || first_failed > count)
+      first_failed = 0;
+    if (ret != ENOMEM) {
+      WARN("ibv_post_send(batch=%d) failed with error %s, posted=%d",
+           count, strerror(ret), first_failed);
+    }
+    for (int i = first_failed; i < count; i++) {
+      if (reqs[i] != NULL) {
+        flagcxIbFreeRequest(reqs[i]);
+        reqs[i] = NULL;
+      }
+    }
+    for (int i = 0; i < first_failed; i++)
+      requests[i] = reqs[i];
+    *posted = first_failed;
+    return first_failed > 0 ? flagcxSuccess : flagcxSystemError;
+  }
+
+  for (int i = 0; i < count; i++)
+    requests[i] = reqs[i];
+  *posted = count;
+  return flagcxSuccess;
+
+fail_before_post:
+  for (int i = 0; i < count; i++) {
+    if (reqs[i] != NULL)
+      flagcxIbFreeRequest(reqs[i]);
+  }
+  return res;
+}
+
 flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
@@ -2486,7 +2602,9 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
-  struct flagcxIbQp *qp = &comm->base.qps[0];
+  int qpIdx = comm->base.qpIndex;
+  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
+  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
   // For RDMA READ: remote_addr is the source (remote peer), sge is the local
   // destination
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
@@ -2550,7 +2668,9 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
     return flagcxInternalError;
   }
 
-  struct flagcxIbQp *qp = &comm->base.qps[0];
+  int qpIdx = comm->base.qpIndex;
+  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
+  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
   int devIndex = qp->devIndex;
   struct flagcxIbRequest *req;
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
@@ -2641,4 +2761,7 @@ struct flagcxNetAdaptor flagcxNetIb = {
     flagcxIbIput, flagcxIbIget, flagcxIbIputSignal,
 
     // Device name lookup
-    flagcxIbGetDevFromName};
+    flagcxIbGetDevFromName,
+
+    // Optional one-sided batch WRITE
+    flagcxIbIputBatch};

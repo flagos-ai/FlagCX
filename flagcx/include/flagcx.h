@@ -478,6 +478,22 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx);
 
+/* RDMA WRITE: push size bytes from local srcOffset to remote peer's buffer at
+ * dstOffset. srcMrIdx / dstMrIdx index the per-window MR handle table
+ * populated by flagcxOneSideRegister. */
+flagcxResult_t flagcxPut(flagcxComm_t comm, int peer, size_t srcOffset,
+                         size_t dstOffset, size_t size, int srcMrIdx,
+                         int dstMrIdx);
+
+/* Batch RDMA WRITE. Each entry uses srcOffsets[i], dstOffsets[i], sizes[i],
+ * srcMrIdxs[i], and dstMrIdxs[i]. Optimized net adaptors may submit the batch
+ * as one linked-list ibv_post_send. */
+flagcxResult_t flagcxBatchPut(flagcxComm_t comm, int peer,
+                              const size_t *srcOffsets,
+                              const size_t *dstOffsets, const size_t *sizes,
+                              const int *srcMrIdxs, const int *dstMrIdxs,
+                              size_t count);
+
 /* RDMA WRITE + ATOMIC: write size bytes from local srcOffset to remote
  * dstOffset, then atomically increment the remote signal at signalOffset by
  * signalValue. When size == 0, only the signal ATOMIC is posted. */

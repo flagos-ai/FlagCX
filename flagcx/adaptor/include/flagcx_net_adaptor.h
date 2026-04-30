@@ -74,6 +74,17 @@ struct flagcxNetAdaptor_v1 {
 
   // Device name lookup
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
+
+  // Optional one-sided batch WRITE. Implementations should post up to
+  // `count` WRs and set `posted` to the number accepted by the QP. A partial
+  // post is allowed when the send queue is temporarily full; requests[0:posted]
+  // must then be valid and requests[posted:] must remain untouched/NULL.
+  flagcxResult_t (*iputBatch)(void *sendComm, int count,
+                              const uint64_t *srcOffs,
+                              const uint64_t *dstOffs, const size_t *sizes,
+                              int srcRank, int dstRank, void **srcHandles,
+                              void **dstHandles, void **requests,
+                              int *posted);
 };
 #define flagcxNetAdaptor flagcxNetAdaptor_v1
 
