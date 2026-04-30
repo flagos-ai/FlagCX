@@ -156,14 +156,15 @@ flagcxResult_t pcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
 
 // TODO: unsupported
 flagcxResult_t pcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
-                                             size_t size, flagcxWindow_t *win,
+                                             size_t size,
+                                             flagcxInnerWindow_t *win,
                                              int winFlags) {
   return flagcxNotSupported;
 }
 
 // TODO: unsupported
 flagcxResult_t pcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                               flagcxWindow_t win) {
+                                               flagcxInnerWindow_t win) {
   return flagcxNotSupported;
 }
 

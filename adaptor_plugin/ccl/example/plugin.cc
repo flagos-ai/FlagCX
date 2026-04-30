@@ -97,13 +97,13 @@ static flagcxResult_t pluginCommDeregister(const flagcxInnerComm_t comm,
 
 static flagcxResult_t pluginCommWindowRegister(flagcxInnerComm_t comm,
                                                void *buff, size_t size,
-                                               flagcxWindow_t *win,
+                                               flagcxInnerWindow_t *win,
                                                int winFlags) {
   return flagcxInternalError;
 }
 
 static flagcxResult_t pluginCommWindowDeregister(flagcxInnerComm_t comm,
-                                                 flagcxWindow_t win) {
+                                                 flagcxInnerWindow_t win) {
   return flagcxInternalError;
 }
 
