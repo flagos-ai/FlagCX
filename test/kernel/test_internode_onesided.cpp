@@ -84,7 +84,7 @@ int main(int argc, char *argv[]) {
 
   void *sendBuff = nullptr, *recvBuff = nullptr;
   void *sendHandle = nullptr, *recvHandle = nullptr;
-  flagcxSymWindow_t sendWin = nullptr, recvWin = nullptr;
+  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
   if (localRegister == 0) {
     FLAGCXCHECK(

@@ -78,7 +78,7 @@ int main(int argc, char *argv[]) {
   // -R 2: Window mode (flagcxCommWindowRegister + flagcxDevMemCreate with win)
   void *regBuff = nullptr;
   void *regHandle = nullptr;
-  flagcxSymWindow_t win = nullptr;
+  flagcxWindow_t win = nullptr;
   flagcxDevMem_t devMem = nullptr;
   // IPC mode requires cudaMalloc memory (Decision 7.23):
   // flagcxMemAlloc uses VMM (cuMemCreate) which is incompatible with

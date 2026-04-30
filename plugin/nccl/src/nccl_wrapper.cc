@@ -542,7 +542,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void *buff, size_t size,
   if (comm == nullptr)
     return ncclInvalidArgument;
   return toNcclResult(flagcxCommWindowRegister(
-      comm->handler->comm, buff, size, (flagcxSymWindow_t *)win, winFlags));
+      comm->handler->comm, buff, size, (flagcxWindow_t *)win, winFlags));
 }
 
 ncclResult_t ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win) {
@@ -553,7 +553,7 @@ ncclResult_t ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win) {
   if (comm == nullptr)
     return ncclInvalidArgument;
   return toNcclResult(
-      flagcxCommWindowDeregister(comm->handler->comm, (flagcxSymWindow_t)win));
+      flagcxCommWindowDeregister(comm->handler->comm, (flagcxWindow_t)win));
 }
 #endif
 

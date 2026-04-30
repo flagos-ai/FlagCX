@@ -152,14 +152,13 @@ flagcxResult_t xcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
 }
 
 flagcxResult_t xcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
-                                             size_t size,
-                                             flagcxSymWindow_t *win,
+                                             size_t size, flagcxWindow_t *win,
                                              int winFlags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t xcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                               flagcxSymWindow_t win) {
+                                               flagcxWindow_t win) {
   return flagcxNotSupported;
 }
 
