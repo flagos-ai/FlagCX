@@ -61,10 +61,10 @@ struct flagcxCCLAdaptor_v1 {
   flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
   // Symmetric functions
   flagcxResult_t (*commWindowRegister)(flagcxInnerComm_t comm, void *buff,
-                                       size_t size, flagcxWindow_t *win,
+                                       size_t size, flagcxInnerWindow_t *win,
                                        int winFlags);
   flagcxResult_t (*commWindowDeregister)(flagcxInnerComm_t comm,
-                                         flagcxWindow_t win);
+                                         flagcxInnerWindow_t win);
 
   // Communication functions
   flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,
@@ -145,10 +145,10 @@ struct flagcxCCLAdaptor_latest {
   flagcxResult_t (*commDeregister)(const flagcxInnerComm_t comm, void *handle);
   // Symmetric functions
   flagcxResult_t (*commWindowRegister)(flagcxInnerComm_t comm, void *buff,
-                                       size_t size, flagcxWindow_t *win,
+                                       size_t size, flagcxInnerWindow_t *win,
                                        int winFlags);
   flagcxResult_t (*commWindowDeregister)(flagcxInnerComm_t comm,
-                                         flagcxWindow_t win);
+                                         flagcxInnerWindow_t win);
 
   // Communication functions
   flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,

@@ -101,13 +101,14 @@ flagcxResult_t rcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
 }
 
 flagcxResult_t rcclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
-                                             size_t size, flagcxWindow_t *win,
+                                             size_t size,
+                                             flagcxInnerWindow_t *win,
                                              int winFlags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t rcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                               flagcxWindow_t win) {
+                                               flagcxInnerWindow_t win) {
   return flagcxNotSupported;
 }
 

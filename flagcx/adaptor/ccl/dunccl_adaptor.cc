@@ -104,13 +104,13 @@ flagcxResult_t duncclAdaptorCommDeregister(flagcxInnerComm_t comm,
 
 flagcxResult_t duncclAdaptorCommWindowRegister(flagcxInnerComm_t comm,
                                                void *buff, size_t size,
-                                               flagcxWindow_t *win,
+                                               flagcxInnerWindow_t *win,
                                                int winFlags) {
   return flagcxNotSupported;
 }
 
 flagcxResult_t duncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
-                                                 flagcxWindow_t win) {
+                                                 flagcxInnerWindow_t win) {
   return flagcxNotSupported;
 }
 

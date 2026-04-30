@@ -1105,9 +1105,12 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         int winFlags) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
+    if (*win == NULL) {
+      FLAGCXCHECK(flagcxCalloc(win, 1));
+    }
     flagcxResult_t res =
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
-            comm->homoComm, buff, size, win, winFlags);
+            comm->homoComm, buff, size, &(*win)->vendorBase, winFlags);
     if (res == flagcxSuccess) {
       return flagcxSuccess;
     }
@@ -1141,8 +1144,9 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
     // If it doesn't recognise it (e.g. sym fallback), it returns an error.
     flagcxResult_t res =
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-            comm->homoComm, win);
+            comm->homoComm, win->vendorBase);
     if (res == flagcxSuccess) {
+      free(win);
       return flagcxSuccess;
     }
     // Backend didn't own it — fall through to sym path
