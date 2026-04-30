@@ -1094,7 +1094,7 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
 }
 
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
-                                        size_t size, flagcxSymWindow_t *win,
+                                        size_t size, flagcxWindow_t *win,
                                         int winFlags) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
@@ -1120,7 +1120,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
 }
 
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
-                                          flagcxSymWindow_t win) {
+                                          flagcxWindow_t win) {
   if (win == nullptr) {
     return flagcxSuccess;
   }
@@ -1141,15 +1141,6 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
     // Backend didn't own it — fall through to sym path
   }
   return flagcxSymWindowDeregister(comm, win);
-}
-
-flagcxResult_t flagcxCommWindowGrow(flagcxComm_t comm, flagcxSymWindow_t win,
-                                    void *newBuff, size_t newSize) {
-  if (win == nullptr || newBuff == nullptr)
-    return flagcxInvalidArgument;
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  // Growth is only supported on the symmetric fallback path
-  return flagcxSymWindowGrow(comm, win, newBuff, newSize);
 }
 
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {

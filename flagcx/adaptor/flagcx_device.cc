@@ -388,7 +388,7 @@ fail:
 #ifdef FLAGCX_DEVICE_API_VENDOR
 #include "nvidia_adaptor.h"
 #endif
-#include "flagcx_sym_window_fallback.h"
+#include "sym_heap.h"
 
 // ==========================================================================
 // Platform wrappers for host memory registration.
@@ -951,8 +951,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
-                                  flagcxSymWindow_t win,
-                                  flagcxDevMem_t *devMem) {
+                                  flagcxWindow_t win, flagcxDevMem_t *devMem) {
   if (buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
@@ -994,24 +993,25 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     handle->intraRank = comm->localRank;
 
 #ifndef FLAGCX_DEVICE_API_VENDOR
-    if (win != nullptr && !win->isSymmetricFallback) {
+    if (win != nullptr && !win->isSymmetricDefault) {
       WARN("flagcxDevMemCreate: window provided but NCCL device API "
            "unavailable, falling back to IPC");
       win = nullptr;
     }
 #endif
 
-    // ---- Symmetric fallback window: use pre-built flat VA / devPeerPtrs ----
-    if (win != nullptr && win->isSymmetricFallback) {
+    // ---- Symmetric default window: use pre-built flat VA / devPeerPtrs ----
+    if (win != nullptr && win->isSymmetricDefault) {
+      flagcxSymWindow_t d = win->defaultBase;
       handle->hasWindow = true;
-      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
-      handle->devPeerPtrs = win->devPeerPtrs;
+      handle->isSymmetric = true;
+      handle->devPeerPtrs = d != nullptr ? d->devPeerPtrs : nullptr;
       handle->winHandle = (void *)win;
-      if (win->mrIndex >= 0) {
-        handle->mrIndex = win->mrIndex;
-        handle->mrBase = win->mrBase;
+      if (d != nullptr && d->mrIndex >= 0) {
+        handle->mrIndex = d->mrIndex;
+        handle->mrBase = d->mrBase;
       }
-      // window pointer will be set in the fallback block below
+      // window pointer will be set in the default block below
       handle->window = nullptr;
     }
     // ---- IPC layer: try if win is null (IPC needs cudaMalloc memory) ----
@@ -1028,10 +1028,11 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     }
 
     // ---- Window layer: if win provided and valid (vendor path) ----
-    if (win != nullptr && !win->isSymmetricFallback) {
+    if (win != nullptr && !win->isSymmetricDefault) {
       handle->hasWindow = true;
 #ifdef FLAGCX_DEVICE_API_VENDOR
-      handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
+      handle->isSymmetric =
+          (win->vendorBase->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
       // Allocate vendor Window and store in opaque pointer
       ncclWindow_t *ncclWin = (ncclWindow_t *)malloc(sizeof(ncclWindow_t));
       if (ncclWin == nullptr) {
@@ -1039,7 +1040,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
         free(handle);
         return flagcxSystemError;
       }
-      *ncclWin = win->base;
+      *ncclWin = win->vendorBase->base;
       handle->window = ncclWin;
       handle->winHandle = (void *)win;
 #else
@@ -1065,8 +1066,10 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     fbWin->intraRank = handle->intraRank;
     fbWin->mrBase = handle->mrBase;
     fbWin->mrIndex = handle->mrIndex;
-    fbWin->mcBasePtr =
-        (win != nullptr && win->isSymmetricFallback) ? win->mcBase : nullptr;
+    fbWin->mcBasePtr = (win != nullptr && win->isSymmetricDefault &&
+                        win->defaultBase != nullptr)
+                           ? win->defaultBase->mcBase
+                           : nullptr;
     handle->window = fbWin;
     handle->hasWindow =
         (handle->rawPtr != nullptr || handle->devPeerPtrs != nullptr);

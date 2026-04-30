@@ -1,7 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Symmetric memory coordination for the non-homo (fallback) path.
+ * Symmetric memory coordination for the default (non-vendor) path.
  * Implements VMM-based flat VA mapping with IPC fallback.
  ************************************************************************/
 
@@ -10,7 +10,6 @@
 #include "alloc.h"
 #include "bootstrap.h"
 #include "check.h"
-#include "flagcx_sym_window_fallback.h"
 #include "global_comm.h"
 #include "onesided.h"
 #include "param.h"
@@ -22,26 +21,35 @@
 FLAGCX_PARAM(SymMaxHeapSize, "SYM_MAX_HEAP_SIZE", 0);
 
 flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
-                                       size_t size, flagcxSymWindow_t *win,
+                                       size_t size, flagcxWindow_t *win,
                                        int winFlags) {
   if (comm == nullptr || buff == nullptr || size == 0 || win == nullptr)
     return flagcxInvalidArgument;
 
-  flagcxSymWindow_t w =
-      (flagcxSymWindow_t)calloc(1, sizeof(struct flagcxSymWindow));
+  flagcxWindow_t w = (flagcxWindow_t)calloc(1, sizeof(struct flagcxWindow));
   if (w == nullptr)
     return flagcxSystemError;
 
-  w->winFlags = winFlags;
-  w->mrIndex = -1;
-  w->mrBase = 0;
-  w->growthPhysHandles = nullptr;
-  w->growthCount = 0;
-  w->growthCapacity = 0;
+  flagcxSymWindow_t d =
+      (flagcxSymWindow_t)calloc(1, sizeof(struct flagcxSymWindow));
+  if (d == nullptr) {
+    free(w);
+    return flagcxSystemError;
+  }
+
+  w->vendorBase = nullptr;
+  w->defaultBase = d;
+  w->isSymmetricDefault = true;
+
+  d->mrIndex = -1;
+  d->mrBase = 0;
+  d->growthPhysHandles = nullptr;
+  d->growthCount = 0;
+  d->growthCapacity = 0;
 
   int localRanks = comm->localRanks;
   int localRank = comm->localRank;
-  w->localRanks = localRanks;
+  d->localRanks = localRanks;
 
   // Determine maxHeapSize
   size_t maxHeapSize = flagcxParamSymMaxHeapSize();
@@ -49,8 +57,8 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
     maxHeapSize = size * 4; // default: 4x initial
   if (maxHeapSize < size)
     maxHeapSize = size;
-  w->heapSize = size;
-  w->maxHeapSize = maxHeapSize;
+  d->heapSize = size;
+  d->maxHeapSize = maxHeapSize;
 
   // ---- Try VMM path ----
   bool vmmOk = false;
@@ -66,6 +74,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
       int *allFds = (int *)malloc(localRanks * sizeof(int));
       if (allFds == nullptr) {
         deviceAdaptor->symPhysFree(physHandle);
+        free(d);
         free(w);
         return flagcxSystemError;
       }
@@ -93,6 +102,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
       if (peerHandles == nullptr) {
         free(allFds);
         deviceAdaptor->symPhysFree(physHandle);
+        free(d);
         free(w);
         return flagcxSystemError;
       }
@@ -111,6 +121,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
           free(peerHandles);
           free(allFds);
           deviceAdaptor->symPhysFree(physHandle);
+          free(d);
           free(w);
           return flagcxSystemError;
         }
@@ -127,21 +138,20 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
             flagcxMemcpyHostToDevice, nullptr, nullptr));
         free(hostPeerPtrs);
 
-        w->flatBase = flatBase;
-        w->devPeerPtrs = devPeerPtrs;
-        w->physHandle = physHandle;
-        w->isVMM = true;
-        w->isSymmetricFallback = true;
+        d->flatBase = flatBase;
+        d->devPeerPtrs = devPeerPtrs;
+        d->physHandle = physHandle;
+        d->isVMM = true;
         vmmOk = true;
 
         // Try multicast setup
-        w->mcBase = nullptr;
+        d->mcBase = nullptr;
         if (deviceAdaptor->symMulticastSetup != nullptr) {
           void *mcBase = nullptr;
           flagcxResult_t mcRes = deviceAdaptor->symMulticastSetup(
               physHandle, size, localRanks, &mcBase);
           if (mcRes == flagcxSuccess && mcBase != nullptr) {
-            w->mcBase = mcBase;
+            d->mcBase = mcBase;
           }
         }
 
@@ -161,13 +171,12 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
 
   // ---- IPC fallback if VMM not available ----
   if (!vmmOk) {
-    w->flatBase = nullptr;
-    w->mcBase = nullptr;
-    w->physHandle = nullptr;
-    w->isVMM = false;
-    w->isSymmetricFallback = true;
-    w->devPeerPtrs = nullptr;
-    w->maxHeapSize = size; // no growth on IPC path
+    d->flatBase = nullptr;
+    d->mcBase = nullptr;
+    d->physHandle = nullptr;
+    d->isVMM = false;
+    d->devPeerPtrs = nullptr;
+    d->maxHeapSize = size; // no growth on IPC path
     INFO(FLAGCX_INIT,
          "flagcxSymWindowRegister: VMM not available, IPC fallback "
          "(devPeerPtrs will be set by flagcxDevMemCreate)");
@@ -183,8 +192,8 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
         if (info != nullptr && info->baseVas != nullptr) {
           uintptr_t base = info->baseVas[comm->rank];
           if ((uintptr_t)buff == base) {
-            w->mrIndex = i;
-            w->mrBase = base;
+            d->mrIndex = i;
+            d->mrBase = base;
             break;
           }
         }
@@ -197,57 +206,65 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
 }
 
 flagcxResult_t flagcxSymWindowDeregister(flagcxComm_t comm,
-                                         flagcxSymWindow_t win) {
+                                         flagcxWindow_t win) {
   if (win == nullptr)
     return flagcxSuccess;
 
-  if (win->isVMM) {
-    // Free growth physHandles
-    for (int i = 0; i < win->growthCount; i++) {
-      if (win->growthPhysHandles[i] != nullptr)
-        deviceAdaptor->symPhysFree(win->growthPhysHandles[i]);
+  flagcxSymWindow_t d = win->defaultBase;
+  if (d != nullptr) {
+    if (d->isVMM) {
+      // Free growth physHandles
+      for (int i = 0; i < d->growthCount; i++) {
+        if (d->growthPhysHandles[i] != nullptr)
+          deviceAdaptor->symPhysFree(d->growthPhysHandles[i]);
+      }
+      free(d->growthPhysHandles);
+
+      // Teardown multicast
+      if (d->mcBase != nullptr &&
+          deviceAdaptor->symMulticastTeardown != nullptr)
+        deviceAdaptor->symMulticastTeardown(d->mcBase, d->maxHeapSize);
+
+      // Unmap flat VA
+      if (d->flatBase != nullptr && deviceAdaptor->symFlatUnmap != nullptr)
+        deviceAdaptor->symFlatUnmap(d->flatBase, d->maxHeapSize, d->localRanks);
+
+      // Free physical handle
+      if (d->physHandle != nullptr && deviceAdaptor->symPhysFree != nullptr)
+        deviceAdaptor->symPhysFree(d->physHandle);
     }
-    free(win->growthPhysHandles);
 
-    // Teardown multicast
-    if (win->mcBase != nullptr &&
-        deviceAdaptor->symMulticastTeardown != nullptr)
-      deviceAdaptor->symMulticastTeardown(win->mcBase, win->maxHeapSize);
+    // Free device peer pointers
+    if (d->devPeerPtrs != nullptr)
+      deviceAdaptor->deviceFree(d->devPeerPtrs, flagcxMemDevice, nullptr);
 
-    // Unmap flat VA
-    if (win->flatBase != nullptr && deviceAdaptor->symFlatUnmap != nullptr)
-      deviceAdaptor->symFlatUnmap(win->flatBase, win->maxHeapSize,
-                                  win->localRanks);
-
-    // Free physical handle
-    if (win->physHandle != nullptr && deviceAdaptor->symPhysFree != nullptr)
-      deviceAdaptor->symPhysFree(win->physHandle);
+    free(d);
   }
-
-  // Free device peer pointers
-  if (win->devPeerPtrs != nullptr)
-    deviceAdaptor->deviceFree(win->devPeerPtrs, flagcxMemDevice, nullptr);
 
   free(win);
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxSymWindow_t win,
+flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
                                    void *newBuff, size_t newSize) {
   if (comm == nullptr || win == nullptr || newBuff == nullptr)
     return flagcxInvalidArgument;
 
-  if (!win->isVMM)
+  flagcxSymWindow_t d = win->defaultBase;
+  if (d == nullptr)
     return flagcxNotSupported;
 
-  if (newSize <= win->heapSize || newSize > win->maxHeapSize)
+  if (!d->isVMM)
+    return flagcxNotSupported;
+
+  if (newSize <= d->heapSize || newSize > d->maxHeapSize)
     return flagcxInvalidArgument;
 
   if (deviceAdaptor->symHeapGrow == nullptr)
     return flagcxNotSupported;
 
-  size_t deltaSize = newSize - win->heapSize;
-  int localRanks = win->localRanks;
+  size_t deltaSize = newSize - d->heapSize;
+  int localRanks = d->localRanks;
   int localRank = comm->localRank;
 
   // Export new physical pages
@@ -292,37 +309,37 @@ flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxSymWindow_t win,
   }
 
   // Map new pages into existing flat VA
-  FLAGCXCHECK(deviceAdaptor->symHeapGrow(
-      win->flatBase, peerNewHandles, localRanks, localRank, newPhysHandle,
-      win->heapSize, newSize, win->maxHeapSize));
+  FLAGCXCHECK(deviceAdaptor->symHeapGrow(d->flatBase, peerNewHandles,
+                                         localRanks, localRank, newPhysHandle,
+                                         d->heapSize, newSize, d->maxHeapSize));
 
   free(peerNewHandles);
   free(allNewFds);
 
   // Grow multicast if available
-  if (win->mcBase != nullptr && deviceAdaptor->symMulticastGrow != nullptr) {
-    deviceAdaptor->symMulticastGrow(win->mcBase, newPhysHandle, win->heapSize,
+  if (d->mcBase != nullptr && deviceAdaptor->symMulticastGrow != nullptr) {
+    deviceAdaptor->symMulticastGrow(d->mcBase, newPhysHandle, d->heapSize,
                                     newSize);
   }
 
   // Track growth physHandle for cleanup
-  if (win->growthCount >= win->growthCapacity) {
-    int newCap = win->growthCapacity == 0 ? 4 : win->growthCapacity * 2;
+  if (d->growthCount >= d->growthCapacity) {
+    int newCap = d->growthCapacity == 0 ? 4 : d->growthCapacity * 2;
     void **newArr =
-        (void **)realloc(win->growthPhysHandles, newCap * sizeof(void *));
+        (void **)realloc(d->growthPhysHandles, newCap * sizeof(void *));
     if (newArr == nullptr) {
       deviceAdaptor->symPhysFree(newPhysHandle);
       return flagcxSystemError;
     }
-    win->growthPhysHandles = newArr;
-    win->growthCapacity = newCap;
+    d->growthPhysHandles = newArr;
+    d->growthCapacity = newCap;
   }
-  win->growthPhysHandles[win->growthCount++] = newPhysHandle;
+  d->growthPhysHandles[d->growthCount++] = newPhysHandle;
 
-  win->heapSize = newSize;
+  d->heapSize = newSize;
 
   INFO(FLAGCX_INIT, "flagcxSymWindowGrow: grown to heapSize=%zu (max=%zu)",
-       newSize, win->maxHeapSize);
+       newSize, d->maxHeapSize);
 
   return flagcxSuccess;
 }

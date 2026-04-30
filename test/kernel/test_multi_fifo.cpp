@@ -17,7 +17,7 @@
 
 static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
                         flagcxStream_t stream, void *sendBuff, void *recvBuff,
-                        flagcxSymWindow_t sendWin, flagcxSymWindow_t recvWin,
+                        flagcxWindow_t sendWin, flagcxWindow_t recvWin,
                         void *hello, size_t minBytes, size_t maxBytes,
                         int stepFactor, int numWarmupIters, int numIters,
                         int totalProcs, int proc, int worldSize,
@@ -176,7 +176,7 @@ int main(int argc, char *argv[]) {
 
   void *sendBuff = nullptr, *recvBuff = nullptr;
   void *sendHandle = nullptr, *recvHandle = nullptr;
-  flagcxSymWindow_t sendWin = nullptr, recvWin = nullptr;
+  flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
   FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
