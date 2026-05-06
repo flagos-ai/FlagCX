@@ -10,7 +10,6 @@
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, RegisterSymmetricWindow) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -31,7 +30,6 @@ TEST_F(SymMemTest, RegisterSymmetricWindow) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, RegisterDefaultFlag) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   flagcxResult_t res =
@@ -51,7 +49,6 @@ TEST_F(SymMemTest, RegisterDefaultFlag) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DeregisterAfterRegister) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -71,7 +68,6 @@ TEST_F(SymMemTest, DeregisterAfterRegister) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DeregisterNullWindow) {
-  flagcxComm_t &comm = handler->comm;
   EXPECT_EQ(flagcxCommWindowDeregister(comm, nullptr), flagcxSuccess);
 }
 
@@ -80,7 +76,6 @@ TEST_F(SymMemTest, DeregisterNullWindow) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, SymWindowFields) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -104,7 +99,6 @@ TEST_F(SymMemTest, SymWindowFields) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, RegisterMultipleWindows) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win1 = nullptr;
   flagcxWindow_t win2 = nullptr;
 

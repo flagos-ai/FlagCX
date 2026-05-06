@@ -11,19 +11,20 @@
 
 class SymMemTest : public FlagCXTest {
 protected:
-  SymMemTest() {}
+  static void SetUpTestSuite();
+  static void TearDownTestSuite();
 
-  void SetUp();
-  void TearDown();
+  void SetUp() override;
+  void TearDown() override {}
 
-  // Returns true if heteroComm is available (inter-node / forced hetero mode)
   bool hasHeteroComm() const;
 
-  flagcxHandlerGroup_t handler;
-  flagcxStream_t stream;
-  void *devBuff;  // GDR-pinned device buffer (flagcxMemAlloc)
-  void *devBuff2; // second device buffer for multi-window tests
-  void *hostBuff; // host buffer for verification
-  size_t size;
-  size_t count; // number of floats
+  static flagcxHandlerGroup_t handler;
+  static flagcxComm_t comm;
+  static flagcxStream_t stream;
+  static void *devBuff;
+  static void *devBuff2;
+  static void *hostBuff;
+  static size_t size;
+  static size_t count;
 };

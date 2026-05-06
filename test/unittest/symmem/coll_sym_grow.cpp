@@ -9,7 +9,6 @@
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, GrowBasic) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   // Register with half the buffer
@@ -42,7 +41,6 @@ TEST_F(SymMemTest, GrowBasic) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, GrowBeyondMax) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -73,7 +71,6 @@ TEST_F(SymMemTest, GrowBeyondMax) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, GrowSameSize) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -104,7 +101,6 @@ TEST_F(SymMemTest, GrowSameSize) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, GrowTracksPhysHandles) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   size_t halfSize = size / 2;

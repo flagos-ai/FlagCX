@@ -9,7 +9,6 @@
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DevMemCreateWithWindow) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -35,7 +34,6 @@ TEST_F(SymMemTest, DevMemCreateWithWindow) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DevMemCreateWithoutWindow) {
-  flagcxComm_t &comm = handler->comm;
 
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -55,7 +53,6 @@ TEST_F(SymMemTest, DevMemCreateWithoutWindow) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DevMemDestroyAfterCreate) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -79,7 +76,6 @@ TEST_F(SymMemTest, DevMemDestroyAfterCreate) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DevMemFieldsWithSymWindow) {
-  flagcxComm_t &comm = handler->comm;
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -104,7 +100,6 @@ TEST_F(SymMemTest, DevMemFieldsWithSymWindow) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DevMemNullArgs) {
-  flagcxComm_t &comm = handler->comm;
   flagcxDevMem_t devMem = nullptr;
 
   // NULL buff
@@ -125,6 +120,5 @@ TEST_F(SymMemTest, DevMemNullArgs) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, DevMemDestroyNull) {
-  flagcxComm_t &comm = handler->comm;
   EXPECT_EQ(flagcxDevMemDestroy(comm, nullptr), flagcxSuccess);
 }
