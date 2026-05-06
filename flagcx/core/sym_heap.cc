@@ -12,6 +12,7 @@
 #include "check.h"
 #include "comm.h"
 #include "global_comm.h"
+#include "ipcsocket.h"
 #include "onesided.h"
 #include "param.h"
 #include "utils.h"
@@ -71,7 +72,9 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
     flagcxResult_t res = deviceAdaptor->symPhysAlloc(buff, size, &physHandle,
                                                      &shareableFd, &handleSize);
     if (res == flagcxSuccess && physHandle != nullptr) {
-      // Exchange shareable handles with intra-node peers
+      // Exchange shareable FDs with intra-node peers via Unix Domain Socket
+      // (SCM_RIGHTS). Raw FD integers are process-local and cannot be sent
+      // over TCP bootstrap — the kernel must duplicate them via sendmsg.
       int *allFds = (int *)malloc(localRanks * sizeof(int));
       if (allFds == nullptr) {
         deviceAdaptor->symPhysFree(physHandle);
@@ -81,22 +84,52 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
       }
       allFds[localRank] = shareableFd;
 
-      // Use intra-node allgather via bootstrap send/recv
+      // Use a unique hash per window registration to avoid socket name
+      // collisions
+      uint64_t ipcHash = comm->commHash ^ (uint64_t)buff ^ size;
+
+      // Create our IPC socket (listener for receiving FDs from peers)
+      struct flagcxIpcSocket ipcSock;
+      memset(&ipcSock, 0, sizeof(ipcSock));
+      FLAGCXCHECK(
+          flagcxIpcSocketInit(&ipcSock, comm->rank, ipcHash, /*block=*/1));
+
+      // Barrier to ensure all sockets are created before sending
       struct bootstrapState *state = comm->bootstrap;
       for (int i = 0; i < localRanks; i++) {
         if (i == localRank)
           continue;
         int peerGlobalRank = comm->localRankToRank[i];
-        FLAGCXCHECK(bootstrapSend(state, peerGlobalRank, /*tag=*/0x5931,
-                                  &shareableFd, sizeof(int)));
+        int dummy = 1;
+        FLAGCXCHECK(bootstrapSend(state, peerGlobalRank, /*tag=*/0x5932, &dummy,
+                                  sizeof(dummy)));
       }
       for (int i = 0; i < localRanks; i++) {
         if (i == localRank)
           continue;
         int peerGlobalRank = comm->localRankToRank[i];
-        FLAGCXCHECK(bootstrapRecv(state, peerGlobalRank, /*tag=*/0x5931,
-                                  &allFds[i], sizeof(int)));
+        int dummy = 0;
+        FLAGCXCHECK(bootstrapRecv(state, peerGlobalRank, /*tag=*/0x5932, &dummy,
+                                  sizeof(dummy)));
       }
+
+      // Send our FD to each peer via UDS (SCM_RIGHTS)
+      for (int i = 0; i < localRanks; i++) {
+        if (i == localRank)
+          continue;
+        int peerGlobalRank = comm->localRankToRank[i];
+        FLAGCXCHECK(flagcxIpcSocketSendFd(&ipcSock, shareableFd, peerGlobalRank,
+                                          ipcHash));
+      }
+
+      // Receive FDs from each peer
+      for (int i = 0; i < localRanks; i++) {
+        if (i == localRank)
+          continue;
+        FLAGCXCHECK(flagcxIpcSocketRecvFd(&ipcSock, &allFds[i]));
+      }
+
+      flagcxIpcSocketClose(&ipcSock);
 
       // Build peer handle pointers for symFlatMap
       void **peerHandles = (void **)malloc(localRanks * sizeof(void *));
@@ -166,6 +199,11 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
       }
 
       free(peerHandles);
+      // Close received peer FDs (our own shareableFd stays open for physHandle)
+      for (int i = 0; i < localRanks; i++) {
+        if (i != localRank && allFds[i] >= 0)
+          close(allFds[i]);
+      }
       free(allFds);
     }
   }
@@ -275,7 +313,7 @@ flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
   FLAGCXCHECK(deviceAdaptor->symPhysAlloc(newBuff, deltaSize, &newPhysHandle,
                                           &newFd, &handleSize));
 
-  // Exchange new shareable handles
+  // Exchange new shareable handles via UDS (SCM_RIGHTS)
   int *allNewFds = (int *)malloc(localRanks * sizeof(int));
   if (allNewFds == nullptr) {
     deviceAdaptor->symPhysFree(newPhysHandle);
@@ -283,21 +321,48 @@ flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
   }
   allNewFds[localRank] = newFd;
 
+  uint64_t ipcHash = comm->commHash ^ (uint64_t)newBuff ^ newSize;
+
+  struct flagcxIpcSocket ipcSock;
+  memset(&ipcSock, 0, sizeof(ipcSock));
+  FLAGCXCHECK(flagcxIpcSocketInit(&ipcSock, comm->rank, ipcHash, /*block=*/1));
+
+  // Barrier to ensure all sockets are created before sending
   struct bootstrapState *state = comm->bootstrap;
   for (int i = 0; i < localRanks; i++) {
     if (i == localRank)
       continue;
     int peerGlobalRank = comm->localRankToRank[i];
-    FLAGCXCHECK(bootstrapSend(state, peerGlobalRank, /*tag=*/0x5932, &newFd,
-                              sizeof(int)));
+    int dummy = 1;
+    FLAGCXCHECK(bootstrapSend(state, peerGlobalRank, /*tag=*/0x5933, &dummy,
+                              sizeof(dummy)));
   }
   for (int i = 0; i < localRanks; i++) {
     if (i == localRank)
       continue;
     int peerGlobalRank = comm->localRankToRank[i];
-    FLAGCXCHECK(bootstrapRecv(state, peerGlobalRank, /*tag=*/0x5932,
-                              &allNewFds[i], sizeof(int)));
+    int dummy = 0;
+    FLAGCXCHECK(bootstrapRecv(state, peerGlobalRank, /*tag=*/0x5933, &dummy,
+                              sizeof(dummy)));
   }
+
+  // Send our FD to each peer via UDS
+  for (int i = 0; i < localRanks; i++) {
+    if (i == localRank)
+      continue;
+    int peerGlobalRank = comm->localRankToRank[i];
+    FLAGCXCHECK(
+        flagcxIpcSocketSendFd(&ipcSock, newFd, peerGlobalRank, ipcHash));
+  }
+
+  // Receive FDs from each peer
+  for (int i = 0; i < localRanks; i++) {
+    if (i == localRank)
+      continue;
+    FLAGCXCHECK(flagcxIpcSocketRecvFd(&ipcSock, &allNewFds[i]));
+  }
+
+  flagcxIpcSocketClose(&ipcSock);
 
   void **peerNewHandles = (void **)malloc(localRanks * sizeof(void *));
   if (peerNewHandles == nullptr) {
@@ -315,6 +380,11 @@ flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
                                          d->heapSize, newSize, d->maxHeapSize));
 
   free(peerNewHandles);
+  // Close received peer FDs
+  for (int i = 0; i < localRanks; i++) {
+    if (i != localRank && allNewFds[i] >= 0)
+      close(allNewFds[i]);
+  }
   free(allNewFds);
 
   // Grow multicast if available
