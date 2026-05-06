@@ -1,6 +1,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
+#include "onesided.h"
 #include "tools.h"
 
 #include <algorithm>
@@ -132,7 +133,7 @@ int main(int argc, char *argv[]) {
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
   // Register data buffer for one-sided operations
-  res = flagcxOneSideRegister(comm, dataWindow, dataBytes);
+  res = flagcxOneSideRegister(comm->heteroComm, dataWindow, dataBytes);
   if (res == flagcxNotSupported) {
     if (proc == 0)
       printf("Skipping put benchmark: net adaptor does not support iput.\n");

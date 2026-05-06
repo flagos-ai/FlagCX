@@ -11,7 +11,6 @@
 #include "bootstrap.h"
 #include "check.h"
 #include "comm.h"
-#include "global_comm.h"
 #include "ipcsocket.h"
 #include "onesided.h"
 #include "param.h"
@@ -22,7 +21,7 @@
 // Default max heap size multiplier (4x initial size)
 FLAGCX_PARAM(SymMaxHeapSize, "SYM_MAX_HEAP_SIZE", 0);
 
-flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
+flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
                                        int winFlags) {
   if (comm == nullptr || buff == nullptr || size == 0 || win == nullptr)
@@ -222,12 +221,11 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
   }
 
   // ---- Inter-node MR registration ----
-  if (comm->heteroComm != nullptr) {
+  {
     flagcxResult_t regRes = flagcxOneSideRegister(comm, buff, size);
     if (regRes == flagcxSuccess) {
-      struct flagcxHeteroComm *hc = comm->heteroComm;
-      for (int i = 0; i < hc->oneSideHandleCount; i++) {
-        struct flagcxOneSideHandleInfo *info = hc->oneSideHandles[i];
+      for (int i = 0; i < comm->oneSideHandleCount; i++) {
+        struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[i];
         if (info != nullptr && info->baseVas != nullptr) {
           uintptr_t base = info->baseVas[comm->rank];
           if ((uintptr_t)buff == base) {
@@ -244,7 +242,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxSymWindowDeregister(flagcxComm_t comm,
+flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
                                          flagcxWindow_t win) {
   if (win == nullptr)
     return flagcxSuccess;
@@ -284,7 +282,7 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
+flagcxResult_t flagcxSymWindowGrow(flagcxHeteroComm_t comm, flagcxWindow_t win,
                                    void *newBuff, size_t newSize) {
   if (comm == nullptr || win == nullptr || newBuff == nullptr)
     return flagcxInvalidArgument;
@@ -321,7 +319,7 @@ flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
   }
   allNewFds[localRank] = newFd;
 
-  uint64_t ipcHash = comm->commHash ^ (uint64_t)newBuff ^ newSize;
+  uint64_t ipcHash = comm->magic ^ (uint64_t)newBuff ^ newSize;
 
   struct flagcxIpcSocket ipcSock;
   memset(&ipcSock, 0, sizeof(ipcSock));

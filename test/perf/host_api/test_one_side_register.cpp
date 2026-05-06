@@ -2,6 +2,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
+#include "onesided.h"
 #include "tools.h"
 
 #include <algorithm>
@@ -158,7 +159,8 @@ int main(int argc, char *argv[]) {
   devHandle->deviceMemset(dataWin2, 0, dataBytes, flagcxMemDevice, NULL);
   devHandle->deviceMemset(sigWin2, 0, signalTotalBytes, flagcxMemDevice, NULL);
 
-  flagcxResult_t r1 = flagcxOneSideRegister(comm1, dataWin1, dataBytes);
+  flagcxResult_t r1 =
+      flagcxOneSideRegister(comm1->heteroComm, dataWin1, dataBytes);
   if (r1 == flagcxNotSupported) {
     if (proc == 0)
       printf("[SKIP] flagcxOneSideRegister returned NotSupported; "
@@ -168,7 +170,8 @@ int main(int argc, char *argv[]) {
   fatal(r1, "OneSideRegister (comm1)", proc);
 
   {
-    flagcxResult_t r2 = flagcxOneSideRegister(comm2, dataWin2, dataBytes);
+    flagcxResult_t r2 =
+        flagcxOneSideRegister(comm2->heteroComm, dataWin2, dataBytes);
     if (r2 == flagcxNotSupported) {
       if (proc == 0)
         printf("[SKIP] comm2 OneSideRegister NotSupported.\n");

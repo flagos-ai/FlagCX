@@ -1,6 +1,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
+#include "onesided.h"
 #include "tools.h"
 
 #include <algorithm>
@@ -143,7 +144,7 @@ int main(int argc, char *argv[]) {
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
   // Register data buffer for one-sided operations (MR index 0)
-  res = flagcxOneSideRegister(comm, dataWindow, data_bytes);
+  res = flagcxOneSideRegister(comm->heteroComm, dataWindow, data_bytes);
   if (res == flagcxNotSupported) {
     if (proc == 0)
       printf("Skipping get benchmark: net adaptor does not support iget.\n");
