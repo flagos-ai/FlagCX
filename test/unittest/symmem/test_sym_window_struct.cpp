@@ -36,18 +36,15 @@ TEST(SymWindowStruct, SymWindowStructLayout) {
   sw.mrIndex = -1;
   sw.mrBase = 0;
   sw.heapSize = 1024;
-  sw.maxHeapSize = 4096;
+  sw.allocSize = 2048;
   sw.localRanks = 2;
   sw.physHandle = nullptr;
   sw.mcHandle = nullptr;
-  sw.growthPhysHandles = nullptr;
-  sw.growthCount = 0;
-  sw.growthCapacity = 0;
   sw.isVMM = false;
 
   EXPECT_EQ(sw.mrIndex, -1);
   EXPECT_EQ(sw.heapSize, 1024u);
-  EXPECT_EQ(sw.maxHeapSize, 4096u);
+  EXPECT_EQ(sw.allocSize, 2048u);
   EXPECT_EQ(sw.localRanks, 2);
   EXPECT_FALSE(sw.isVMM);
 }
