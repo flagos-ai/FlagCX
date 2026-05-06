@@ -1270,19 +1270,26 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
 
   // 4. Register windows (symmetric) — skip if adaptor doesn't support it
   if (cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister != NULL) {
+    FLAGCXCHECKGOTO(flagcxCalloc(&state->sendStagedWin, 1), res, fail);
     res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
         comm->homoComm, state->sendStagedBuff, state->stagedBuffSize,
-        &state->sendStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+        &state->sendStagedWin->vendorBase, FLAGCX_WIN_COLL_SYMMETRIC);
     if (res != flagcxSuccess && res != flagcxNotSupported)
       goto fail;
     if (res == flagcxSuccess) {
+      FLAGCXCHECKGOTO(flagcxCalloc(&state->recvStagedWin, 1), res, fail);
       res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
           comm->homoComm, state->recvStagedBuff, state->stagedBuffSize,
-          &state->recvStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+          &state->recvStagedWin->vendorBase, FLAGCX_WIN_COLL_SYMMETRIC);
       if (res != flagcxSuccess && res != flagcxNotSupported)
         goto fail;
-      if (res != flagcxSuccess)
-        state->recvStagedWin = nullptr; // partial failure: clear
+      if (res != flagcxSuccess) {
+        free(state->recvStagedWin);
+        state->recvStagedWin = nullptr;
+      }
+    } else {
+      free(state->sendStagedWin);
+      state->sendStagedWin = nullptr;
     }
   }
 
@@ -1312,12 +1319,16 @@ fail:
     flagcxDevMemDestroy(comm, state->recvStagedMem);
   if (state->sendStagedMem)
     flagcxDevMemDestroy(comm, state->sendStagedMem);
-  if (state->recvStagedWin)
+  if (state->recvStagedWin) {
     cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->recvStagedWin);
-  if (state->sendStagedWin)
+        comm->homoComm, state->recvStagedWin->vendorBase);
+    free(state->recvStagedWin);
+  }
+  if (state->sendStagedWin) {
     cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->sendStagedWin);
+        comm->homoComm, state->sendStagedWin->vendorBase);
+    free(state->sendStagedWin);
+  }
   if (state->recvStagedBuff)
     cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
   if (state->sendStagedBuff)
@@ -1341,12 +1352,16 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
     flagcxDevMemDestroy(comm, state->sendStagedMem);
   if (state->recvStagedMem)
     flagcxDevMemDestroy(comm, state->recvStagedMem);
-  if (state->sendStagedWin)
+  if (state->sendStagedWin) {
     cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->sendStagedWin);
-  if (state->recvStagedWin)
+        comm->homoComm, state->sendStagedWin->vendorBase);
+    free(state->sendStagedWin);
+  }
+  if (state->recvStagedWin) {
     cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->recvStagedWin);
+        comm->homoComm, state->recvStagedWin->vendorBase);
+    free(state->recvStagedWin);
+  }
   if (state->sendStagedBuff)
     cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
   if (state->recvStagedBuff)

@@ -120,11 +120,13 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   size_t handleSize = size;
   int requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   // Query device to see if FABRIC handle support is available
+#if CUDART_VERSION >= 12040
   flag = 0;
   DEVCHECK(cuDeviceGetAttribute(
       &flag, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, currentDev));
   if (flag)
     requestedHandleTypes |= CU_MEM_HANDLE_TYPE_FABRIC;
+#endif
   memprop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
   memprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   memprop.requestedHandleTypes =
@@ -642,7 +644,7 @@ flagcxResult_t cudaAdaptorSymMulticastSetup(void *physHandle, size_t heapSize,
   }
 
   // Bind the physical allocation to the multicast object
-  DEVCHECK(cuMulticastBindAddr(mcHandle, 0, cuHandle, 0, heapSize, 0));
+  DEVCHECK(cuMulticastBindAddr(mcHandle, 0, cuHandle, heapSize, 0));
 
   // Reserve VA and map the multicast handle
   CUmemAllocationProp memprop = {};
@@ -735,7 +737,7 @@ flagcxResult_t cudaAdaptorSymMulticastGrow(void *mcBase, void *newPhysHandle,
   DEVCHECK(cuMemRetainAllocationHandle(&mcHandle, mcBase));
 
   // Bind new physical pages into the multicast object at the growth offset
-  DEVCHECK(cuMulticastBindAddr(mcHandle, 0, cuHandle, oldSize, deltaSize, 0));
+  DEVCHECK(cuMulticastBindAddr(mcHandle, oldSize, cuHandle, deltaSize, 0));
 
   // Map the new region into the existing VA
   DEVCHECK(cuMemMap(va + oldSize, deltaSize, 0, mcHandle, oldSize));

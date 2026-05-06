@@ -10,6 +10,7 @@
 #include "alloc.h"
 #include "bootstrap.h"
 #include "check.h"
+#include "comm.h"
 #include "global_comm.h"
 #include "onesided.h"
 #include "param.h"
