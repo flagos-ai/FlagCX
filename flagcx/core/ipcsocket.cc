@@ -30,7 +30,7 @@ flagcxResult_t flagcxIpcSocketInit(flagcxIpcSocket *handle, int rank,
 
   handle->fd = -1;
   handle->socketName[0] = '\0';
-  if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
+  if ((fd = socket(AF_UNIX, SOCK_DGRAM, 0)) < 0) {
     WARN("UDS: Socket creation error : %s (%d)", strerror(errno), errno);
     return flagcxSystemError;
   }
