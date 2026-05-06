@@ -13,13 +13,9 @@
 #include "comm.h"
 #include "ipcsocket.h"
 #include "onesided.h"
-#include "param.h"
 #include "utils.h"
 #include <cstdlib>
 #include <cstring>
-
-// Default max heap size multiplier (4x initial size)
-FLAGCX_PARAM(SymMaxHeapSize, "SYM_MAX_HEAP_SIZE", 0);
 
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
@@ -44,22 +40,11 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
   d->mrIndex = -1;
   d->mrBase = 0;
-  d->growthPhysHandles = nullptr;
-  d->growthCount = 0;
-  d->growthCapacity = 0;
 
   int localRanks = comm->localRanks;
   int localRank = comm->localRank;
   d->localRanks = localRanks;
-
-  // Determine maxHeapSize
-  size_t maxHeapSize = flagcxParamSymMaxHeapSize();
-  if (maxHeapSize == 0)
-    maxHeapSize = size * 4; // default: 4x initial
-  if (maxHeapSize < size)
-    maxHeapSize = size;
   d->heapSize = size;
-  d->maxHeapSize = maxHeapSize;
 
   // ---- Try VMM path ----
   bool vmmOk = false;
@@ -67,10 +52,11 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
     void *physHandle = nullptr;
     int shareableFd = -1;
     size_t handleSize = sizeof(int);
+    size_t allocSize = 0;
 
-    flagcxResult_t res = deviceAdaptor->symPhysAlloc(buff, size, &physHandle,
-                                                     &shareableFd, &handleSize);
-    if (res == flagcxSuccess && physHandle != nullptr) {
+    flagcxResult_t res = deviceAdaptor->symPhysAlloc(
+        buff, size, &physHandle, &shareableFd, &handleSize, &allocSize);
+    if (res == flagcxSuccess && physHandle != nullptr && allocSize > 0) {
       // Exchange shareable FDs with intra-node peers via Unix Domain Socket
       // (SCM_RIGHTS). Raw FD integers are process-local and cannot be sent
       // over TCP bootstrap — the kernel must duplicate them via sendmsg.
@@ -83,11 +69,10 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       }
       allFds[localRank] = shareableFd;
 
-      // Use a unique hash per window registration to avoid socket name
-      // collisions
-      uint64_t ipcHash = comm->commHash ^ (uint64_t)buff ^ size;
+      // Hash must be identical across all ranks — do not include buff
+      // (device VA is process-local and may differ across peers)
+      uint64_t ipcHash = comm->commHash ^ size;
 
-      // Create our IPC socket (listener for receiving FDs from peers)
       struct flagcxIpcSocket ipcSock;
       memset(&ipcSock, 0, sizeof(ipcSock));
       FLAGCXCHECK(
@@ -112,20 +97,26 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                   sizeof(dummy)));
       }
 
-      // Send our FD to each peer via UDS (SCM_RIGHTS)
+      // Send our FD to each peer, tagging with our localRank in the header
       for (int i = 0; i < localRanks; i++) {
         if (i == localRank)
           continue;
         int peerGlobalRank = comm->localRankToRank[i];
-        FLAGCXCHECK(flagcxIpcSocketSendFd(&ipcSock, shareableFd, peerGlobalRank,
-                                          ipcHash));
+        FLAGCXCHECK(flagcxIpcSocketSendMsg(&ipcSock, &localRank,
+                                           sizeof(localRank), shareableFd,
+                                           peerGlobalRank, ipcHash));
       }
 
-      // Receive FDs from each peer
-      for (int i = 0; i < localRanks; i++) {
-        if (i == localRank)
-          continue;
-        FLAGCXCHECK(flagcxIpcSocketRecvFd(&ipcSock, &allFds[i]));
+      // Receive FDs from each peer — use header to identify sender
+      int received = 0;
+      int expected = localRanks - 1;
+      while (received < expected) {
+        int senderLocalRank = -1;
+        int fd = -1;
+        FLAGCXCHECK(flagcxIpcSocketRecvMsg(&ipcSock, &senderLocalRank,
+                                           sizeof(senderLocalRank), &fd));
+        allFds[senderLocalRank] = fd;
+        received++;
       }
 
       flagcxIpcSocketClose(&ipcSock);
@@ -145,12 +136,12 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
       void *flatBase = nullptr;
       res = deviceAdaptor->symFlatMap(peerHandles, localRanks, localRank,
-                                      physHandle, size, maxHeapSize, &flatBase);
+                                      physHandle, allocSize, &flatBase);
       if (res == flagcxSuccess && flatBase != nullptr) {
         // Build devPeerPtrs on device
         void **hostPeerPtrs = (void **)malloc(localRanks * sizeof(void *));
         if (hostPeerPtrs == nullptr) {
-          deviceAdaptor->symFlatUnmap(flatBase, maxHeapSize, localRanks);
+          deviceAdaptor->symFlatUnmap(flatBase, allocSize, localRanks);
           free(peerHandles);
           free(allFds);
           deviceAdaptor->symPhysFree(physHandle);
@@ -159,7 +150,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
           return flagcxSystemError;
         }
         for (int i = 0; i < localRanks; i++) {
-          hostPeerPtrs[i] = (char *)flatBase + (size_t)i * maxHeapSize;
+          hostPeerPtrs[i] = (char *)flatBase + (size_t)i * allocSize;
         }
 
         void **devPeerPtrs = nullptr;
@@ -174,6 +165,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         d->flatBase = flatBase;
         d->devPeerPtrs = devPeerPtrs;
         d->physHandle = physHandle;
+        d->allocSize = allocSize;
         d->isVMM = true;
         vmmOk = true;
 
@@ -182,16 +174,11 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         if (deviceAdaptor->symMulticastSetup != nullptr) {
           void *mcBase = nullptr;
           flagcxResult_t mcRes = deviceAdaptor->symMulticastSetup(
-              physHandle, size, localRanks, &mcBase);
+              physHandle, allocSize, localRanks, &mcBase);
           if (mcRes == flagcxSuccess && mcBase != nullptr) {
             d->mcBase = mcBase;
           }
         }
-
-        INFO(FLAGCX_INIT,
-             "flagcxSymWindowRegister: VMM path OK, flatBase=%p "
-             "heapSize=%zu maxHeapSize=%zu localRanks=%d",
-             flatBase, size, maxHeapSize, localRanks);
       } else {
         deviceAdaptor->symPhysFree(physHandle);
         physHandle = nullptr;
@@ -214,10 +201,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
     d->physHandle = nullptr;
     d->isVMM = false;
     d->devPeerPtrs = nullptr;
-    d->maxHeapSize = size; // no growth on IPC path
-    INFO(FLAGCX_INIT,
-         "flagcxSymWindowRegister: VMM not available, IPC fallback "
-         "(devPeerPtrs will be set by flagcxDevMemCreate)");
+    d->allocSize = 0;
   }
 
   // ---- Inter-node MR registration ----
@@ -250,21 +234,14 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
   flagcxSymWindow_t d = win->defaultBase;
   if (d != nullptr) {
     if (d->isVMM) {
-      // Free growth physHandles
-      for (int i = 0; i < d->growthCount; i++) {
-        if (d->growthPhysHandles[i] != nullptr)
-          deviceAdaptor->symPhysFree(d->growthPhysHandles[i]);
-      }
-      free(d->growthPhysHandles);
-
       // Teardown multicast
       if (d->mcBase != nullptr &&
           deviceAdaptor->symMulticastTeardown != nullptr)
-        deviceAdaptor->symMulticastTeardown(d->mcBase, d->maxHeapSize);
+        deviceAdaptor->symMulticastTeardown(d->mcBase, d->allocSize);
 
       // Unmap flat VA
       if (d->flatBase != nullptr && deviceAdaptor->symFlatUnmap != nullptr)
-        deviceAdaptor->symFlatUnmap(d->flatBase, d->maxHeapSize, d->localRanks);
+        deviceAdaptor->symFlatUnmap(d->flatBase, d->allocSize, d->localRanks);
 
       // Free physical handle
       if (d->physHandle != nullptr && deviceAdaptor->symPhysFree != nullptr)
@@ -279,136 +256,5 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
   }
 
   free(win);
-  return flagcxSuccess;
-}
-
-flagcxResult_t flagcxSymWindowGrow(flagcxHeteroComm_t comm, flagcxWindow_t win,
-                                   void *newBuff, size_t newSize) {
-  if (comm == nullptr || win == nullptr || newBuff == nullptr)
-    return flagcxInvalidArgument;
-
-  flagcxSymWindow_t d = win->defaultBase;
-  if (d == nullptr)
-    return flagcxNotSupported;
-
-  if (!d->isVMM)
-    return flagcxNotSupported;
-
-  if (newSize <= d->heapSize || newSize > d->maxHeapSize)
-    return flagcxInvalidArgument;
-
-  if (deviceAdaptor->symHeapGrow == nullptr)
-    return flagcxNotSupported;
-
-  size_t deltaSize = newSize - d->heapSize;
-  int localRanks = d->localRanks;
-  int localRank = comm->localRank;
-
-  // Export new physical pages
-  void *newPhysHandle = nullptr;
-  int newFd = -1;
-  size_t handleSize = sizeof(int);
-  FLAGCXCHECK(deviceAdaptor->symPhysAlloc(newBuff, deltaSize, &newPhysHandle,
-                                          &newFd, &handleSize));
-
-  // Exchange new shareable handles via UDS (SCM_RIGHTS)
-  int *allNewFds = (int *)malloc(localRanks * sizeof(int));
-  if (allNewFds == nullptr) {
-    deviceAdaptor->symPhysFree(newPhysHandle);
-    return flagcxSystemError;
-  }
-  allNewFds[localRank] = newFd;
-
-  uint64_t ipcHash = comm->magic ^ (uint64_t)newBuff ^ newSize;
-
-  struct flagcxIpcSocket ipcSock;
-  memset(&ipcSock, 0, sizeof(ipcSock));
-  FLAGCXCHECK(flagcxIpcSocketInit(&ipcSock, comm->rank, ipcHash, /*block=*/1));
-
-  // Barrier to ensure all sockets are created before sending
-  struct bootstrapState *state = comm->bootstrap;
-  for (int i = 0; i < localRanks; i++) {
-    if (i == localRank)
-      continue;
-    int peerGlobalRank = comm->localRankToRank[i];
-    int dummy = 1;
-    FLAGCXCHECK(bootstrapSend(state, peerGlobalRank, /*tag=*/0x5933, &dummy,
-                              sizeof(dummy)));
-  }
-  for (int i = 0; i < localRanks; i++) {
-    if (i == localRank)
-      continue;
-    int peerGlobalRank = comm->localRankToRank[i];
-    int dummy = 0;
-    FLAGCXCHECK(bootstrapRecv(state, peerGlobalRank, /*tag=*/0x5933, &dummy,
-                              sizeof(dummy)));
-  }
-
-  // Send our FD to each peer via UDS
-  for (int i = 0; i < localRanks; i++) {
-    if (i == localRank)
-      continue;
-    int peerGlobalRank = comm->localRankToRank[i];
-    FLAGCXCHECK(
-        flagcxIpcSocketSendFd(&ipcSock, newFd, peerGlobalRank, ipcHash));
-  }
-
-  // Receive FDs from each peer
-  for (int i = 0; i < localRanks; i++) {
-    if (i == localRank)
-      continue;
-    FLAGCXCHECK(flagcxIpcSocketRecvFd(&ipcSock, &allNewFds[i]));
-  }
-
-  flagcxIpcSocketClose(&ipcSock);
-
-  void **peerNewHandles = (void **)malloc(localRanks * sizeof(void *));
-  if (peerNewHandles == nullptr) {
-    free(allNewFds);
-    deviceAdaptor->symPhysFree(newPhysHandle);
-    return flagcxSystemError;
-  }
-  for (int i = 0; i < localRanks; i++) {
-    peerNewHandles[i] = &allNewFds[i];
-  }
-
-  // Map new pages into existing flat VA
-  FLAGCXCHECK(deviceAdaptor->symHeapGrow(d->flatBase, peerNewHandles,
-                                         localRanks, localRank, newPhysHandle,
-                                         d->heapSize, newSize, d->maxHeapSize));
-
-  free(peerNewHandles);
-  // Close received peer FDs
-  for (int i = 0; i < localRanks; i++) {
-    if (i != localRank && allNewFds[i] >= 0)
-      close(allNewFds[i]);
-  }
-  free(allNewFds);
-
-  // Grow multicast if available
-  if (d->mcBase != nullptr && deviceAdaptor->symMulticastGrow != nullptr) {
-    deviceAdaptor->symMulticastGrow(d->mcBase, newPhysHandle, d->heapSize,
-                                    newSize);
-  }
-
-  // Track growth physHandle for cleanup
-  if (d->growthCount >= d->growthCapacity) {
-    int newCap = d->growthCapacity == 0 ? 4 : d->growthCapacity * 2;
-    void **newArr =
-        (void **)realloc(d->growthPhysHandles, newCap * sizeof(void *));
-    if (newArr == nullptr) {
-      deviceAdaptor->symPhysFree(newPhysHandle);
-      return flagcxSystemError;
-    }
-    d->growthPhysHandles = newArr;
-    d->growthCapacity = newCap;
-  }
-  d->growthPhysHandles[d->growthCount++] = newPhysHandle;
-
-  d->heapSize = newSize;
-
-  INFO(FLAGCX_INIT, "flagcxSymWindowGrow: grown to heapSize=%zu (max=%zu)",
-       newSize, d->maxHeapSize);
-
   return flagcxSuccess;
 }

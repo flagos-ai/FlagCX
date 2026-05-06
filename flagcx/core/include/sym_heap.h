@@ -19,18 +19,13 @@ struct flagcxSymWindow {
   void **devPeerPtrs; // device-side peer pointer array
   int mrIndex;        // one-sided MR index (-1 if none)
   uintptr_t mrBase;   // MR base VA
-  size_t heapSize;    // currently backed size per peer
-  size_t maxHeapSize; // total reserved VA per peer (for growth)
+  size_t heapSize;    // user-requested size (for bounds info)
+  size_t allocSize;   // actual physical allocation size per peer
+                      // (granularity-aligned)
   int localRanks;     // number of intra-node peers
   void *physHandle;   // for cleanup (symPhysFree)
-  void *mcHandle;     // multicast handle (for growth + cleanup)
-
-  // Growth tracking
-  void **growthPhysHandles;
-  int growthCount;
-  int growthCapacity;
-
-  bool isVMM; // true if VMM path (false = IPC fallback)
+  void *mcHandle;     // multicast handle (for cleanup)
+  bool isVMM;         // true if VMM path (false = IPC fallback)
 };
 
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
@@ -39,8 +34,5 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
 flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
                                          flagcxWindow_t win);
-
-flagcxResult_t flagcxSymWindowGrow(flagcxHeteroComm_t comm, flagcxWindow_t win,
-                                   void *newBuff, size_t newSize);
 
 #endif // FLAGCX_SYM_HEAP_H_

@@ -86,7 +86,6 @@ TEST_F(SymMemTest, SymWindowFields) {
 
   flagcxSymWindow_t d = win->defaultBase;
   EXPECT_EQ(d->heapSize, size);
-  EXPECT_GE(d->maxHeapSize, size);
   EXPECT_GT(d->localRanks, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);

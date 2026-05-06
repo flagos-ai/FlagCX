@@ -211,8 +211,10 @@ struct flagcxDeviceAdaptor_latest {
   // physHandle: out — opaque handle for map/multicast/free
   // shareableHandle: out — buffer for IPC-exportable handle
   // handleSize: in/out — buffer size / actual size
+  // allocSize: out — actual physical allocation size (granularity-aligned)
   flagcxResult_t (*symPhysAlloc)(void *ptr, size_t size, void **physHandle,
-                                 void *shareableHandle, size_t *handleSize);
+                                 void *shareableHandle, size_t *handleSize,
+                                 size_t *allocSize);
   flagcxResult_t (*symPhysFree)(void *physHandle);
 
   // Phase 2: Import peer handles + reserve flat VA + map all peers.
@@ -220,29 +222,17 @@ struct flagcxDeviceAdaptor_latest {
   // nPeers: number of local peers (including self)
   // selfIndex: this rank's index in peerHandles[]
   // selfPhysHandle: this rank's physical handle (avoids re-import)
-  // heapSize: currently backed size per peer
-  // maxHeapSize: total reserved VA per peer (for future growth)
-  // flatBase: out — contiguous VA base (maxHeapSize * nPeers reserved)
+  // allocSize: physical allocation size per peer (granularity-aligned)
+  // flatBase: out — contiguous VA base (allocSize * nPeers)
   flagcxResult_t (*symFlatMap)(void *peerHandles[], int nPeers, int selfIndex,
-                               void *selfPhysHandle, size_t heapSize,
-                               size_t maxHeapSize, void **flatBase);
-  flagcxResult_t (*symFlatUnmap)(void *flatBase, size_t maxHeapSize,
-                                 int nPeers);
+                               void *selfPhysHandle, size_t allocSize,
+                               void **flatBase);
+  flagcxResult_t (*symFlatUnmap)(void *flatBase, size_t allocSize, int nPeers);
 
   // Phase 3: Optional multicast (NULL if not supported).
-  flagcxResult_t (*symMulticastSetup)(void *physHandle, size_t heapSize,
+  flagcxResult_t (*symMulticastSetup)(void *physHandle, size_t allocSize,
                                       int nLocalDevices, void **mcBase);
-  flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t maxHeapSize);
-
-  // Phase 4: Dynamic heap growth (NULL if not supported).
-  // Grows the backed region from oldSize to newSize within the reserved VA.
-  // peerNewHandles[]: shareable handles for the NEW physical pages only
-  flagcxResult_t (*symHeapGrow)(void *flatBase, void *peerNewHandles[],
-                                int nPeers, int selfIndex,
-                                void *selfNewPhysHandle, size_t oldSize,
-                                size_t newSize, size_t maxHeapSize);
-  flagcxResult_t (*symMulticastGrow)(void *mcBase, void *newPhysHandle,
-                                     size_t oldSize, size_t newSize);
+  flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t allocSize);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

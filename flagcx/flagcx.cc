@@ -338,7 +338,6 @@ flagcxResult_t flagcxOneSideRegister(flagcxHeteroComm_t heteroComm, void *buff,
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
       heteroComm->netAdaptor->regMr == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideRegister: heteroComm is NULL or no RDMA");
     return flagcxSuccess;
   }
 
