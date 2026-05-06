@@ -457,17 +457,10 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 /*
  * One-sided RDMA operations
  *
- * These operations require prior registration via flagcxOneSideRegister /
+ * These operations require prior registration via flagcxCommWindowRegister /
  * flagcxOneSideSignalRegister. They are only supported on heterogeneous
  * communicators backed by an RDMA-capable net adaptor.
  */
-
-/* Register a data buffer for one-sided RDMA operations.  Collective: ALL ranks
- * in the communicator must call with their local buffer.  Internally performs
- * an AllGather of MR metadata so every rank knows every other rank's rkey and
- * base VA. */
-flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
-                                     size_t size);
 
 /* Register a signal buffer for one-sided RDMA operations.
  * ptrType: FLAGCX_PTR_CUDA for device memory, FLAGCX_PTR_HOST for host-pinned

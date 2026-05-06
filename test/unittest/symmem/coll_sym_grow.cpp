@@ -27,7 +27,8 @@ TEST_F(SymMemTest, GrowBasic) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Grow to full size
-  flagcxResult_t res = flagcxSymWindowGrow(comm, win, devBuff, size);
+  flagcxResult_t res =
+      flagcxSymWindowGrow(comm->heteroComm, win, devBuff, size);
   EXPECT_EQ(res, flagcxSuccess);
   EXPECT_EQ(win->defaultBase->heapSize, size);
 
@@ -58,7 +59,8 @@ TEST_F(SymMemTest, GrowBeyondMax) {
 
   // Try to grow beyond maxHeapSize
   size_t tooLarge = win->defaultBase->maxHeapSize + (1ULL << 20);
-  flagcxResult_t res = flagcxSymWindowGrow(comm, win, devBuff, tooLarge);
+  flagcxResult_t res =
+      flagcxSymWindowGrow(comm->heteroComm, win, devBuff, tooLarge);
   EXPECT_NE(res, flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -87,7 +89,8 @@ TEST_F(SymMemTest, GrowSameSize) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Grow to same size — should be a no-op
-  flagcxResult_t res = flagcxSymWindowGrow(comm, win, devBuff, size);
+  flagcxResult_t res =
+      flagcxSymWindowGrow(comm->heteroComm, win, devBuff, size);
   EXPECT_EQ(res, flagcxSuccess);
   EXPECT_EQ(win->defaultBase->heapSize, size);
 
@@ -119,7 +122,8 @@ TEST_F(SymMemTest, GrowTracksPhysHandles) {
 
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxResult_t res = flagcxSymWindowGrow(comm, win, devBuff, size);
+  flagcxResult_t res =
+      flagcxSymWindowGrow(comm->heteroComm, win, devBuff, size);
   EXPECT_EQ(res, flagcxSuccess);
   EXPECT_GT(win->defaultBase->growthCount, countBefore);
 

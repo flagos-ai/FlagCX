@@ -333,32 +333,25 @@ fail:
   return res;
 }
 
-flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
+flagcxResult_t flagcxOneSideRegister(flagcxHeteroComm_t heteroComm, void *buff,
                                      size_t size) {
-  // Check if one-sided operations are enabled
-  if (useHomoComm(comm) && !useHeteroComm()) {
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+      heteroComm->netAdaptor->iput == NULL ||
+      heteroComm->netAdaptor->regMr == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: heteroComm is NULL or no RDMA");
     return flagcxSuccess;
   }
-
-  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
 
   // Check for duplicate registration of the same buffer within this comm
   for (int i = 0; i < heteroComm->oneSideHandleCount; i++) {
     struct flagcxOneSideHandleInfo *h = heteroComm->oneSideHandles[i];
     if (h != NULL && h->baseVas != NULL &&
-        h->baseVas[comm->rank] == (uintptr_t)buff) {
+        h->baseVas[heteroComm->rank] == (uintptr_t)buff) {
       INFO(FLAGCX_REG,
            "flagcxOneSideRegister: buffer %p already registered at index %d",
            buff, i);
       return flagcxSuccess;
     }
-  }
-
-  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
-      heteroComm->netAdaptor->iput == NULL ||
-      heteroComm->netAdaptor->regMr == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideRegister: heteroComm is NULL");
-    return flagcxSuccess;
   }
 
   struct bootstrapState *state = heteroComm->bootstrap;
@@ -1057,7 +1050,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
   // Step 3: One-sided MR registration (hetero path only)
   {
-    flagcxResult_t regRes = flagcxOneSideRegister(comm, buff, size);
+    flagcxResult_t regRes = flagcxOneSideRegister(comm->heteroComm, buff, size);
     if (regRes != flagcxSuccess) {
       INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
            regRes);
@@ -1123,7 +1116,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
   }
   // Non-homo or homo-fallback: use symmetric heap path
   if (winFlags & FLAGCX_WIN_COLL_SYMMETRIC) {
-    return flagcxSymWindowRegister(comm, buff, size, win, winFlags);
+    return flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
   }
   *win = nullptr;
   return flagcxSuccess;
@@ -1151,7 +1144,7 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
     }
     // Backend didn't own it — fall through to sym path
   }
-  return flagcxSymWindowDeregister(comm, win);
+  return flagcxSymWindowDeregister(comm->heteroComm, win);
 }
 
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {

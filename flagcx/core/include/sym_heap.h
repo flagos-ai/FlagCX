@@ -9,6 +9,7 @@
 #ifndef FLAGCX_SYM_HEAP_H_
 #define FLAGCX_SYM_HEAP_H_
 
+#include "comm.h"
 #include "flagcx.h"
 
 /* Symmetric window state for the default (non-vendor) path */
@@ -32,13 +33,14 @@ struct flagcxSymWindow {
   bool isVMM; // true if VMM path (false = IPC fallback)
 };
 
-flagcxResult_t flagcxSymWindowRegister(flagcxComm_t comm, void *buff,
+flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
                                        int winFlags);
 
-flagcxResult_t flagcxSymWindowDeregister(flagcxComm_t comm, flagcxWindow_t win);
+flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
+                                         flagcxWindow_t win);
 
-flagcxResult_t flagcxSymWindowGrow(flagcxComm_t comm, flagcxWindow_t win,
+flagcxResult_t flagcxSymWindowGrow(flagcxHeteroComm_t comm, flagcxWindow_t win,
                                    void *newBuff, size_t newSize);
 
 #endif // FLAGCX_SYM_HEAP_H_
