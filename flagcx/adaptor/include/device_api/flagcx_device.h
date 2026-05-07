@@ -118,9 +118,10 @@ struct flagcxDevCommInternal {
 // Created by flagcxDevMemCreate, freed by flagcxDevMemDestroy.
 // Unified capability-based design: rawPtr always populated,
 // IPC and Window layers added when available.
-// Capabilities detected by null-checks:
-//   devPeerPtrs != nullptr  → IPC available
-//   window != nullptr       → Window available (Vendor or default)
+// Capabilities detected by Window mode:
+//   SYMMETRIC + flatBasePtr  → VMM flat VA available
+//   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
+//   window != nullptr        → Window available (Vendor or default)
 // ============================================================
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
@@ -134,9 +135,8 @@ struct flagcxDevMemInternal {
   uintptr_t mrBase; // handles[mrIndex]->baseVas[myRank] (cached for device)
 
   // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
-  void **devPeerPtrs; // cached from comm->ipcTable[ipcIndex].devPeerPtrs
-  int ipcIndex;       // index into comm->ipcTable (-1 if no IPC)
-  int intraRank;      // this rank's local rank index (for IPC local pointer)
+  int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
+  int intraRank; // this rank's local rank index (for IPC local pointer)
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
@@ -211,7 +211,8 @@ struct flagcxDevComm {
 // Value type passed to kernels by value.
 // Pure wrapper around DeviceAPI::Window which contains all fields.
 // On Vendor: Window = vendor Window
-// On default: Window = {rawPtr, peerPtrs, intraRank, mrBase, mrIndex}
+// On default: Window = {mode, flatBasePtr, allocSize, mcBasePtr, ipcBasePtrs,
+// ...}
 // ============================================================
 struct flagcxDevMem {
   typename DeviceAPI::Window _winBase;
