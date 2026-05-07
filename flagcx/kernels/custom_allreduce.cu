@@ -145,10 +145,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR constexpr size_t elemsPerPack() {
 }
 
 // ============================================================
-// Vendor-only: PTX multimem operations and multicast kernels (SM90+)
+// PTX multimem operations and multicast kernels (SM90+)
 // ============================================================
-
-#ifdef FLAGCX_DEVICE_API_VENDOR
 
 // ============================================================
 // PTX multimem load-reduce operations (SM90+)
@@ -310,8 +308,6 @@ multimem_st(T* addr, typename packed_t<T, ByteSize>::array_type val) {
 #endif
 }
 
-#endif // FLAGCX_DEVICE_API_VENDOR (PTX multimem functions)
-
 // Store to local memory using alias-safe vectorized store
 template <typename T, int ByteSize = defaultByteSize<T>()>
 FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -398,10 +394,9 @@ flagcxLsaAllReduceKernel(flagcxDevMem sendmem, size_t sendoffset,
 }
 
 // ============================================================
-// Multicast kernels (Vendor path only, SM90+)
+// Multicast kernels (SM90+)
 // ============================================================
 
-#ifdef FLAGCX_DEVICE_API_VENDOR
 
 // Local Multicast AllReduce: reduce from multimem, store to local buffer (SM90+)
 template <typename T, int ByteSize = defaultByteSize<T>()>
@@ -471,8 +466,6 @@ flagcxInterleavedMulticastAllReduceKernel(flagcxDevMem sendmem, size_t sendoffse
 #endif
 }
 
-#endif // FLAGCX_DEVICE_API_VENDOR (multicast kernels)
-
 // ============================================================
 // LSA kernel launcher (available on all paths)
 // ============================================================
@@ -525,10 +518,8 @@ static flagcxResult_t flagcxLsaAllReduceDispatch(
 }
 
 // ============================================================
-// Multicast kernel launchers and dispatch (Vendor path only)
+// Multicast kernel launchers and dispatch (SM90+)
 // ============================================================
-
-#ifdef FLAGCX_DEVICE_API_VENDOR
 
 template <typename T>
 flagcxResult_t launchLocalMulticastAllReduceKernel(flagcxDevMem sendmem, void* recvbuffer,
@@ -606,8 +597,6 @@ static flagcxResult_t flagcxInterleavedMulticastAllReduceDispatch(
   }
 }
 
-#endif // FLAGCX_DEVICE_API_VENDOR
-
 // ============================================================
 // Custom AllReduce entry point — registered as custom op
 // ============================================================
@@ -660,7 +649,6 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
   flagcxDevMem rm(*state->recvStagedMem);
 
   flagcxResult_t res;
-#ifdef FLAGCX_DEVICE_API_VENDOR
   int nranks = state->devComm->intraSize;
   if (state->hasMulticast) {
     // Multicast path (SM90+ with NVLS)
@@ -680,9 +668,7 @@ extern "C" flagcxResult_t flagcxCustomAllReduceImpl(
           return flagcxUnhandledDeviceError;
       }
     }
-  } else
-#endif // FLAGCX_DEVICE_API_VENDOR
-  {
+  } else {
     // LSA path: reduce from peer pointers, store to local recvbuff
     res = flagcxLsaAllReduceDispatch(sm, recvbuff, count, datatype, op,
                                       dc, cudaStream);

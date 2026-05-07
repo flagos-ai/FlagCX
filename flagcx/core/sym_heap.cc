@@ -169,14 +169,73 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         d->isVMM = true;
         vmmOk = true;
 
-        // Try multicast setup
+        // Try multicast setup: rank 0 creates, broadcasts FD to peers
         d->mcBase = nullptr;
-        if (deviceAdaptor->symMulticastSetup != nullptr) {
-          void *mcBase = nullptr;
-          flagcxResult_t mcRes = deviceAdaptor->symMulticastSetup(
-              physHandle, allocSize, localRanks, &mcBase);
-          if (mcRes == flagcxSuccess && mcBase != nullptr) {
-            d->mcBase = mcBase;
+        int mcSupported = 0;
+        deviceAdaptor->symMulticastSupported(&mcSupported);
+        if (mcSupported) {
+          void *mcHandle = nullptr;
+          int mcFd = -1;
+
+          if (localRank == 0) {
+            // Rank 0 creates the multicast object and gets the shareable FD
+            flagcxResult_t mcRes = deviceAdaptor->symMulticastCreate(
+                allocSize, localRanks, &mcHandle, &mcFd);
+            if (mcRes != flagcxSuccess) {
+              mcSupported = 0; // Fall through without multicast
+            }
+          }
+
+          // Broadcast success/failure from rank 0 to all peers
+          struct bootstrapState *mcState = comm->bootstrap;
+          if (localRank == 0) {
+            for (int i = 1; i < localRanks; i++) {
+              int peerGlobalRank = comm->localRankToRank[i];
+              FLAGCXCHECK(bootstrapSend(mcState, peerGlobalRank, /*tag=*/0x5933,
+                                        &mcSupported, sizeof(mcSupported)));
+            }
+          } else {
+            int rank0Global = comm->localRankToRank[0];
+            FLAGCXCHECK(bootstrapRecv(mcState, rank0Global, /*tag=*/0x5933,
+                                      &mcSupported, sizeof(mcSupported)));
+          }
+
+          if (mcSupported) {
+            // Exchange multicast FD: rank 0 sends to all peers via IPC socket
+            uint64_t mcIpcHash = ipcHash ^ 0x4D43; // "MC"
+            if (localRank == 0) {
+              // Send mcFd to each peer
+              for (int i = 1; i < localRanks; i++) {
+                int peerGlobalRank = comm->localRankToRank[i];
+                int tag = 0; // rank 0 is always the sender
+                FLAGCXCHECK(flagcxIpcSocketSendMsg(&ipcSock, &tag, sizeof(tag),
+                                                   mcFd, peerGlobalRank,
+                                                   mcIpcHash));
+              }
+            } else {
+              // Receive mcFd from rank 0
+              int tag = -1;
+              FLAGCXCHECK(
+                  flagcxIpcSocketRecvMsg(&ipcSock, &tag, sizeof(tag), &mcFd));
+            }
+
+            // All ranks: bind their physical allocation and map
+            void *mcBaseVa = nullptr;
+            flagcxResult_t mcRes = deviceAdaptor->symMulticastBind(
+                (localRank == 0) ? mcHandle : nullptr, mcFd, physHandle,
+                allocSize, localRank, localRanks, &mcBaseVa);
+            if (mcRes == flagcxSuccess && mcBaseVa != nullptr) {
+              d->mcBase = mcBaseVa;
+            }
+
+            // Close imported FD (rank 0's FD was already consumed by export)
+            if (localRank != 0 && mcFd >= 0)
+              close(mcFd);
+          }
+
+          // Store mcHandle for cleanup (rank 0 only)
+          if (localRank == 0 && mcHandle != nullptr) {
+            d->mcHandle = mcHandle;
           }
         }
       } else {
@@ -235,16 +294,19 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
   if (d != nullptr) {
     if (d->isVMM) {
       // Teardown multicast
-      if (d->mcBase != nullptr &&
-          deviceAdaptor->symMulticastTeardown != nullptr)
+      if (d->mcBase != nullptr)
         deviceAdaptor->symMulticastTeardown(d->mcBase, d->allocSize);
 
+      // Free multicast handle (rank 0 only allocated it)
+      if (d->mcHandle != nullptr)
+        free(d->mcHandle);
+
       // Unmap flat VA
-      if (d->flatBase != nullptr && deviceAdaptor->symFlatUnmap != nullptr)
+      if (d->flatBase != nullptr)
         deviceAdaptor->symFlatUnmap(d->flatBase, d->allocSize, d->localRanks);
 
       // Free physical handle
-      if (d->physHandle != nullptr && deviceAdaptor->symPhysFree != nullptr)
+      if (d->physHandle != nullptr)
         deviceAdaptor->symPhysFree(d->physHandle);
     }
 

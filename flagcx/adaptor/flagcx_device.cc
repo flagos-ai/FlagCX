@@ -1271,6 +1271,13 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
     props->multicastSupport = false;
     props->netType = flagcxNetTypeNone;
   }
+#else
+  // Default path: query multicast support via adaptor
+  props->deviceApiSupport = true;
+  int mcSupported = 0;
+  deviceAdaptor->symMulticastSupported(&mcSupported);
+  props->multicastSupport = (mcSupported != 0);
+  props->netType = flagcxNetTypeNone;
 #endif
 
   return flagcxSuccess;
