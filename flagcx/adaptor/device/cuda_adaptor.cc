@@ -603,55 +603,119 @@ flagcxResult_t cudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
   return flagcxSuccess;
 }
 
-flagcxResult_t cudaAdaptorSymMulticastSetup(void *physHandle, size_t allocSize,
-                                            int nLocalDevices, void **mcBase) {
-  if (physHandle == NULL || mcBase == NULL || nLocalDevices <= 0)
+flagcxResult_t cudaAdaptorSymMulticastSupported(int *supported) {
+  if (supported == NULL)
     return flagcxInvalidArgument;
-  *mcBase = NULL;
-
-  // Check multicast support at runtime
+  *supported = 0;
   int cudaDev;
   DEVCHECK(cudaGetDevice(&cudaDev));
   CUdevice dev;
   DEVCHECK(cuDeviceGet(&dev, cudaDev));
-  int multicastSupported = 0;
   CUresult res = cuDeviceGetAttribute(
-      &multicastSupported, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev);
-  if (res != CUDA_SUCCESS || !multicastSupported)
-    return flagcxNotSupported;
+      supported, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev);
+  if (res != CUDA_SUCCESS)
+    *supported = 0;
+  return flagcxSuccess;
+}
 
-  CUmemGenericAllocationHandle cuHandle =
-      *(CUmemGenericAllocationHandle *)physHandle;
+flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
+                                             int nLocalDevices, void **mcHandle,
+                                             int *shareableFd) {
+  if (mcHandle == NULL || shareableFd == NULL || nLocalDevices <= 0)
+    return flagcxInvalidArgument;
+  *mcHandle = NULL;
+  *shareableFd = -1;
 
-  // Create multicast object
+  // Get multicast granularity and align size
   CUmulticastObjectProp mcProp = {};
   mcProp.numDevices = (unsigned int)nLocalDevices;
   mcProp.size = allocSize;
   mcProp.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-  CUmemGenericAllocationHandle mcHandle;
-  DEVCHECK(cuMulticastCreate(&mcHandle, &mcProp));
+
+  size_t mcGran = 0;
+  DEVCHECK(cuMulticastGetGranularity(&mcGran, &mcProp,
+                                     CU_MULTICAST_GRANULARITY_RECOMMENDED));
+  mcProp.size = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+
+  CUmemGenericAllocationHandle handle;
+  DEVCHECK(cuMulticastCreate(&handle, &mcProp));
 
   // Add all local devices
   for (int i = 0; i < nLocalDevices; i++) {
     CUdevice peerDev;
     DEVCHECK(cuDeviceGet(&peerDev, i));
-    DEVCHECK(cuMulticastAddDevice(mcHandle, peerDev));
+    DEVCHECK(cuMulticastAddDevice(handle, peerDev));
   }
 
-  // Bind the physical allocation to the multicast object
-  DEVCHECK(cuMulticastBindAddr(mcHandle, 0, cuHandle, allocSize, 0));
+  // Export as POSIX FD for sharing with peers
+  int fd = -1;
+  DEVCHECK(cuMemExportToShareableHandle(
+      &fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
 
-  // Reserve VA and map the multicast handle
+  // Store handle as heap-allocated value
+  CUmemGenericAllocationHandle *handlePtr =
+      (CUmemGenericAllocationHandle *)malloc(
+          sizeof(CUmemGenericAllocationHandle));
+  if (handlePtr == NULL)
+    return flagcxSystemError;
+  *handlePtr = handle;
+  *mcHandle = handlePtr;
+  *shareableFd = fd;
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
+                                           void *physHandle, size_t allocSize,
+                                           int localRank, int nLocalDevices,
+                                           void **mcBase) {
+  if (mcBase == NULL || physHandle == NULL)
+    return flagcxInvalidArgument;
+  *mcBase = NULL;
+
+  CUmemGenericAllocationHandle cuMcHandle;
+
+  if (mcHandle != NULL) {
+    // Rank 0: already has the handle from symMulticastCreate
+    cuMcHandle = *(CUmemGenericAllocationHandle *)mcHandle;
+  } else {
+    // Other ranks: import from FD
+    if (importFd < 0)
+      return flagcxInvalidArgument;
+    DEVCHECK(cuMemImportFromShareableHandle(
+        &cuMcHandle, (void *)(intptr_t)importFd,
+        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+  }
+
+  CUmemGenericAllocationHandle cuPhysHandle =
+      *(CUmemGenericAllocationHandle *)physHandle;
+
+  // Bind this rank's physical allocation at its slot offset
+  DEVCHECK(cuMulticastBindAddr(cuMcHandle, (size_t)localRank * allocSize,
+                               cuPhysHandle, allocSize, 0));
+
+  // Get multicast granularity to compute aligned total size
+  CUmulticastObjectProp mcProp = {};
+  mcProp.numDevices = (unsigned int)nLocalDevices;
+  mcProp.size = allocSize;
+  mcProp.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  size_t mcGran = 0;
+  DEVCHECK(cuMulticastGetGranularity(&mcGran, &mcProp,
+                                     CU_MULTICAST_GRANULARITY_RECOMMENDED));
+  size_t alignedSize = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+
+  // Reserve VA and map the multicast handle (map only this rank's slot size)
   CUdeviceptr mcVa = 0;
-  DEVCHECK(cuMemAddressReserve(&mcVa, allocSize, 0, 0, 0));
-  DEVCHECK(cuMemMap(mcVa, allocSize, 0, mcHandle, 0));
+  DEVCHECK(cuMemAddressReserve(&mcVa, alignedSize, mcGran, 0, 0));
+  DEVCHECK(cuMemMap(mcVa, alignedSize, 0, cuMcHandle, 0));
 
   // Set access for the current device
+  int cudaDev;
+  DEVCHECK(cudaGetDevice(&cudaDev));
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  DEVCHECK(cuMemSetAccess(mcVa, allocSize, &accessDesc, 1));
+  DEVCHECK(cuMemSetAccess(mcVa, alignedSize, &accessDesc, 1));
 
   *mcBase = (void *)mcVa;
   return flagcxSuccess;
@@ -680,11 +744,20 @@ flagcxResult_t cudaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
 flagcxResult_t cudaAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t cudaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t cudaAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t cudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t cudaAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 #endif // CUDART_VERSION >= 12010
@@ -752,7 +825,8 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
                                  // Symmetric memory VMM functions
       cudaAdaptorSymPhysAlloc, cudaAdaptorSymPhysFree, cudaAdaptorSymFlatMap,
-      cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSetup,
+      cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
+      cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
       cudaAdaptorSymMulticastTeardown,
 };
 

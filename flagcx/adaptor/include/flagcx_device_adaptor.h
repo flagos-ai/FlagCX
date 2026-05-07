@@ -229,9 +229,15 @@ struct flagcxDeviceAdaptor_latest {
                                void **flatBase);
   flagcxResult_t (*symFlatUnmap)(void *flatBase, size_t allocSize, int nPeers);
 
-  // Phase 3: Optional multicast (NULL if not supported).
-  flagcxResult_t (*symMulticastSetup)(void *physHandle, size_t allocSize,
-                                      int nLocalDevices, void **mcBase);
+  // Phase 3: Multicast (NVLS). All function pointers are non-NULL.
+  // Non-CUDA platforms use stubs that return flagcxNotSupported.
+  flagcxResult_t (*symMulticastSupported)(int *supported);
+  flagcxResult_t (*symMulticastCreate)(size_t allocSize, int nLocalDevices,
+                                       void **mcHandle, int *shareableFd);
+  flagcxResult_t (*symMulticastBind)(void *mcHandle, int importFd,
+                                     void *physHandle, size_t allocSize,
+                                     int localRank, int nLocalDevices,
+                                     void **mcBase);
   flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t allocSize);
 };
 

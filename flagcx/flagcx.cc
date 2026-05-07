@@ -1240,8 +1240,13 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   if (!vendorReqs) {
     // Default path: IPC barriers are sufficient for LSA allreduce
     reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-    INFO(FLAGCX_INIT, "Custom allreduce: adaptor has no DevComm support, "
-                      "using Default path (LSA only)");
+    // Check if multicast (NVLS) is available via adaptor
+    int mcSupported = 0;
+    deviceAdaptor->symMulticastSupported(&mcSupported);
+    if (mcSupported)
+      reqs.intraMulticast = true;
+    INFO(FLAGCX_INIT, "Custom allreduce: using Default path (%s)",
+         reqs.intraMulticast ? "multicast + LSA" : "LSA only");
   }
 
   // Record capability flags
