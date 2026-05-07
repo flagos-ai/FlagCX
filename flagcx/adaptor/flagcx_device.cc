@@ -859,8 +859,6 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
-  INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d enter", devComm->rank);
-
   // Vendor layer cleanup via adaptor
   if (comm != nullptr && devComm->devComm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
@@ -937,7 +935,6 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     flagcxCommDeferFree(comm, devComm->putValueStagingBuffer, flagcxMemHost);
   }
 
-  INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d done", devComm->rank);
   free(devComm->localRankToRank);
   free(devComm);
   return flagcxSuccess;
@@ -1000,16 +997,25 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     }
 #endif
 
-    // ---- Symmetric default window: use pre-built flat VA / devPeerPtrs ----
+    // ---- Symmetric default window ----
     if (win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
       handle->hasWindow = true;
       handle->isSymmetric = true;
-      handle->devPeerPtrs = d != nullptr ? d->devPeerPtrs : nullptr;
       handle->winHandle = (void *)win;
       if (d != nullptr && d->mrIndex >= 0) {
         handle->mrIndex = d->mrIndex;
         handle->mrBase = d->mrBase;
+      }
+      // If VMM failed, fall back to IPC for peer access
+      if (d != nullptr && !d->isVMM) {
+        int idx = buildIpcPeerPointers(comm, buff, size);
+        if (idx >= 0) {
+          handle->ipcIndex = idx;
+        } else {
+          WARN("flagcxDevMemCreate: symmetric window VMM failed and IPC "
+               "fallback also failed — no peer access");
+        }
       }
       // window pointer will be set in the default block below
       handle->window = nullptr;
@@ -1019,11 +1025,9 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       int idx = buildIpcPeerPointers(comm, buff, size);
       if (idx >= 0) {
         handle->ipcIndex = idx;
-        handle->devPeerPtrs = comm->ipcTable[idx].devPeerPtrs;
       } else {
         WARN("flagcxDevMemCreate: IPC peer pointer setup failed, "
              "IPC layer not available");
-        // devPeerPtrs stays nullptr — raw-only mode
       }
     }
 
@@ -1051,7 +1055,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   }
 
 #ifndef FLAGCX_DEVICE_API_VENDOR
-  // Default: always create a Window with baseline/IPC/MR fields so that
+  // Default: always create a Window with mode-based fields so that
   // flagcxDevMem(di) can copy it into _winBase for kernel use.
   if (handle->window == nullptr) {
     auto *fbWin = (typename DeviceAPI::Window *)malloc(
@@ -1061,27 +1065,59 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
       free(handle);
       return flagcxSystemError;
     }
+    memset(fbWin, 0, sizeof(typename DeviceAPI::Window));
     fbWin->rawPtr = handle->rawPtr;
-    fbWin->peerPtrs = handle->devPeerPtrs;
     fbWin->intraRank = handle->intraRank;
     fbWin->mrBase = handle->mrBase;
     fbWin->mrIndex = handle->mrIndex;
-    fbWin->mcBasePtr = (win != nullptr && win->isSymmetricDefault &&
-                        win->defaultBase != nullptr)
-                           ? win->defaultBase->mcBase
-                           : nullptr;
+
+    flagcxSymWindow_t d = (win != nullptr && win->isSymmetricDefault)
+                              ? win->defaultBase
+                              : nullptr;
+
+    if (d != nullptr && d->isVMM && d->flatBase != nullptr) {
+      // SYMMETRIC mode: VMM flat VA available
+      fbWin->mode = DeviceAPI::SYMMETRIC;
+      fbWin->flatBasePtr = d->flatBase;
+      fbWin->allocSize = d->allocSize;
+      fbWin->mcBasePtr = d->mcBase;
+      fbWin->ipcBasePtrs = nullptr;
+    } else {
+      // ASYMMETRIC mode: IPC peer pointers (or raw-only if IPC failed)
+      fbWin->mode = DeviceAPI::ASYMMETRIC;
+      fbWin->flatBasePtr = nullptr;
+      fbWin->allocSize = 0;
+      fbWin->mcBasePtr = nullptr;
+      fbWin->ipcBasePtrs = (handle->ipcIndex >= 0)
+                               ? comm->ipcTable[handle->ipcIndex].devPeerPtrs
+                               : nullptr;
+    }
+
     handle->window = fbWin;
-    handle->hasWindow =
-        (handle->rawPtr != nullptr || handle->devPeerPtrs != nullptr);
+    handle->hasWindow = (fbWin->mode == DeviceAPI::SYMMETRIC &&
+                         fbWin->flatBasePtr != nullptr) ||
+                        (fbWin->mode == DeviceAPI::ASYMMETRIC &&
+                         fbWin->ipcBasePtrs != nullptr) ||
+                        (handle->rawPtr != nullptr);
   }
 #endif
 
   *devMem = handle;
-  INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s%s", buff,
-       handle->devPeerPtrs ? " + IPC peerPtrs" : "",
-       handle->hasWindow ? (handle->isSymmetric ? " + Window (symmetric)"
-                                                : " + Window (basic)")
-                         : "");
+  const char *modeStr = "";
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  if (handle->window != nullptr) {
+    auto *w = (typename DeviceAPI::Window *)handle->window;
+    modeStr = (w->mode == DeviceAPI::SYMMETRIC) ? " + Window (SYMMETRIC)"
+              : (w->ipcBasePtrs != nullptr)     ? " + Window (ASYMMETRIC/IPC)"
+                                                : " + Window (raw-only)";
+  }
+#else
+  modeStr = handle->hasWindow ? (handle->isSymmetric ? " + Window (symmetric)"
+                                                     : " + Window (basic)")
+                              : "";
+#endif
+  INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s", buff,
+       modeStr);
   return flagcxSuccess;
 }
 

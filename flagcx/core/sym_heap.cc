@@ -138,32 +138,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       res = deviceAdaptor->symFlatMap(peerHandles, localRanks, localRank,
                                       physHandle, allocSize, &flatBase);
       if (res == flagcxSuccess && flatBase != nullptr) {
-        // Build devPeerPtrs on device
-        void **hostPeerPtrs = (void **)malloc(localRanks * sizeof(void *));
-        if (hostPeerPtrs == nullptr) {
-          deviceAdaptor->symFlatUnmap(flatBase, allocSize, localRanks);
-          free(peerHandles);
-          free(allFds);
-          deviceAdaptor->symPhysFree(physHandle);
-          free(d);
-          free(w);
-          return flagcxSystemError;
-        }
-        for (int i = 0; i < localRanks; i++) {
-          hostPeerPtrs[i] = (char *)flatBase + (size_t)i * allocSize;
-        }
-
-        void **devPeerPtrs = nullptr;
-        FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&devPeerPtrs,
-                                                localRanks * sizeof(void *),
-                                                flagcxMemDevice, nullptr));
-        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-            devPeerPtrs, hostPeerPtrs, localRanks * sizeof(void *),
-            flagcxMemcpyHostToDevice, nullptr, nullptr));
-        free(hostPeerPtrs);
-
         d->flatBase = flatBase;
-        d->devPeerPtrs = devPeerPtrs;
         d->physHandle = physHandle;
         d->allocSize = allocSize;
         d->isVMM = true;
@@ -259,7 +234,6 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
     d->mcBase = nullptr;
     d->physHandle = nullptr;
     d->isVMM = false;
-    d->devPeerPtrs = nullptr;
     d->allocSize = 0;
   }
 
@@ -309,10 +283,6 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
       if (d->physHandle != nullptr)
         deviceAdaptor->symPhysFree(d->physHandle);
     }
-
-    // Free device peer pointers
-    if (d->devPeerPtrs != nullptr)
-      deviceAdaptor->deviceFree(d->devPeerPtrs, flagcxMemDevice, nullptr);
 
     free(d);
   }

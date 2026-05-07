@@ -14,18 +14,17 @@
 
 /* Symmetric window state for the default (non-vendor) path */
 struct flagcxSymWindow {
-  void *flatBase;     // flat VA base (NULL if IPC fallback)
-  void *mcBase;       // multicast base (NULL if no NVLS)
-  void **devPeerPtrs; // device-side peer pointer array
-  int mrIndex;        // one-sided MR index (-1 if none)
-  uintptr_t mrBase;   // MR base VA
-  size_t heapSize;    // user-requested size (for bounds info)
-  size_t allocSize;   // actual physical allocation size per peer
-                      // (granularity-aligned)
-  int localRanks;     // number of intra-node peers
-  void *physHandle;   // for cleanup (symPhysFree)
-  void *mcHandle;     // multicast handle (for cleanup)
-  bool isVMM;         // true if VMM path (false = IPC fallback)
+  void *flatBase;   // flat VA base (NULL if IPC fallback)
+  void *mcBase;     // multicast base (NULL if no NVLS)
+  int mrIndex;      // one-sided MR index (-1 if none)
+  uintptr_t mrBase; // MR base VA
+  size_t heapSize;  // user-requested size (for bounds info)
+  size_t allocSize; // actual physical allocation size per peer
+                    // (granularity-aligned)
+  int localRanks;   // number of intra-node peers
+  void *physHandle; // for cleanup (symPhysFree)
+  void *mcHandle;   // multicast handle (for cleanup)
+  bool isVMM;       // true if VMM path (false = IPC fallback)
 };
 
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
