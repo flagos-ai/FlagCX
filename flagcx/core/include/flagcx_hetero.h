@@ -25,11 +25,11 @@ struct flagcxRmaDesc {
   size_t size;
   int srcMrIdx; // -1 when not used (e.g. signal-only PutSignal)
   int dstMrIdx;
-  uint64_t signalOff;   // PUT_SIGNAL only
-  uint64_t signalValue; // PUT_SIGNAL only
-  uint64_t putValue;    // PUT_VALUE only (value embedded in desc)
-  void *request;        // filled by progress thread after posting IB op
-  uint64_t opSeq;       // per-peer monotonic sequence number
+  uint64_t signalOff;         // PUT_SIGNAL only
+  uint64_t signalValue;       // PUT_SIGNAL only
+  uint64_t putValue;          // PUT_VALUE only (value embedded in desc)
+  void *request;              // filled by progress thread after posting IB op
+  uint64_t opSeq;             // per-peer monotonic sequence number
   struct flagcxRmaDesc *next; // intrusive link for inProgressQueues
 };
 
@@ -37,17 +37,17 @@ struct flagcxRmaDesc {
 // pending queues: producer = caller (proxy kernel thread), consumer = progress
 // thread. inProgress queues: progress thread only (no locking needed).
 struct flagcxRmaProxyState {
-  uint32_t queueSize; // power of two
-  uint32_t queueMask; // queueSize - 1
+  uint32_t queueSize;                     // power of two
+  uint32_t queueMask;                     // queueSize - 1
   struct flagcxRmaDesc **circularBuffers; // [nRanks * queueSize]
-  volatile uint32_t *pis; // [nRanks] producer index
-  volatile uint32_t *cis; // [nRanks] consumer index
+  volatile uint32_t *pis;                 // [nRanks] producer index
+  volatile uint32_t *cis;                 // [nRanks] consumer index
 
   pthread_mutex_t *peerProducerMutexes; // [nRanks]
   struct flagcxIntruQueue<struct flagcxRmaDesc, &flagcxRmaDesc::next>
-      *inProgressQueues; // [nRanks]
-  volatile uint64_t *opSeqs;   // [nRanks]
-  volatile uint64_t *doneSeqs; // [nRanks]
+      *inProgressQueues;        // [nRanks]
+  volatile uint64_t *opSeqs;    // [nRanks]
+  volatile uint64_t *doneSeqs;  // [nRanks]
   volatile uint32_t *inFlights; // [nRanks]
 
   // Global completion counter: incremented once for every op that completes.
@@ -105,8 +105,7 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *srcOffsets,
                                     const size_t *dstOffsets,
-                                    const size_t *sizes,
-                                    const int *srcMrIdxs,
+                                    const size_t *sizes, const int *srcMrIdxs,
                                     const int *dstMrIdxs, size_t count);
 
 // RDMA READ: pull data from remote peer's srcMrIdx buffer into local dstMrIdx
@@ -130,7 +129,7 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
 
-// Publish the stable fullSendComms pointer to the proxy. 
+// Publish the stable fullSendComms pointer to the proxy.
 flagcxResult_t flagcxHeteroRmaProxyPublishSendComms(flagcxHeteroComm_t comm,
                                                     void *const *fullSendComms);
 

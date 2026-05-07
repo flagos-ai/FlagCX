@@ -2480,9 +2480,8 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
 
 flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
                                  const uint64_t *srcOffs,
-                                 const uint64_t *dstOffs,
-                                 const size_t *sizes, int srcRank,
-                                 int dstRank, void **srcHandles,
+                                 const uint64_t *dstOffs, const size_t *sizes,
+                                 int srcRank, int dstRank, void **srcHandles,
                                  void **dstHandles, void **requests,
                                  int *posted) {
   if (posted == NULL || requests == NULL)
@@ -2519,7 +2518,6 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
 
   flagcxResult_t res = flagcxSuccess;
   struct ibv_send_wr *bad_wr = NULL;
-  int ret = 0;
   for (int i = 0; i < count; i++) {
     struct flagcxIbRequest *req = NULL;
     res = flagcxIbGetRequest(&comm->base, &req);
@@ -2554,33 +2552,31 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
       goto fail_before_post;
     }
     sges[i].lkey = lkey;
-
-    flagcxIbAddEvent(req, devIndex, &comm->devs[devIndex].base);
   }
 
-  ret = qp->qp->context->ops.post_send(qp->qp, wrs, &bad_wr);
-  if (ret != IBV_SUCCESS) {
+  res = flagcxWrapIbvPostSend(qp->qp, wrs, &bad_wr);
+  if (res != flagcxSuccess) {
     int first_failed = bad_wr ? (int)(bad_wr - wrs) : 0;
     if (first_failed < 0 || first_failed > count)
       first_failed = 0;
-    if (ret != ENOMEM) {
-      WARN("ibv_post_send(batch=%d) failed with error %s, posted=%d",
-           count, strerror(ret), first_failed);
-    }
     for (int i = first_failed; i < count; i++) {
       if (reqs[i] != NULL) {
         flagcxIbFreeRequest(reqs[i]);
         reqs[i] = NULL;
       }
     }
-    for (int i = 0; i < first_failed; i++)
+    for (int i = 0; i < first_failed; i++) {
+      flagcxIbAddEvent(reqs[i], devIndex, &comm->devs[devIndex].base);
       requests[i] = reqs[i];
+    }
     *posted = first_failed;
-    return first_failed > 0 ? flagcxSuccess : flagcxSystemError;
+    return res;
   }
 
-  for (int i = 0; i < count; i++)
+  for (int i = 0; i < count; i++) {
+    flagcxIbAddEvent(reqs[i], devIndex, &comm->devs[devIndex].base);
     requests[i] = reqs[i];
+  }
   *posted = count;
   return flagcxSuccess;
 

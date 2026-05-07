@@ -93,8 +93,7 @@ flagcxRmaProxyEnqueueDescBatch(struct flagcxRmaProxyState *proxy, int peer,
     desc->peer = peer;
     desc->next = NULL;
     desc->request = NULL;
-    desc->opSeq = __atomic_add_fetch(&proxy->opSeqs[peer], 1,
-                                     __ATOMIC_RELAXED);
+    desc->opSeq = __atomic_add_fetch(&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
     proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx] = desc;
     __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
     (*enqueued)++;
@@ -139,18 +138,18 @@ static flagcxResult_t flagcxRmaProxyPostOp(struct flagcxHeteroComm *comm,
       *(volatile uint64_t *)(stagingH->baseVas[comm->rank]) = desc->putValue;
       void **stagingHandles = (void **)stagingH;
       void **dstH = (void **)comm->oneSideHandles[desc->dstMrIdx];
-      return comm->netAdaptor->iput(sendComm, 0, desc->dstOff,
-                                    sizeof(uint64_t), comm->rank, p,
-                                    stagingHandles, dstH, &desc->request);
+      return comm->netAdaptor->iput(sendComm, 0, desc->dstOff, sizeof(uint64_t),
+                                    comm->rank, p, stagingHandles, dstH,
+                                    &desc->request);
     }
   }
   return flagcxInternalError;
 }
 
-static flagcxResult_t
-flagcxRmaProxyPostPutBatch(struct flagcxHeteroComm *comm,
-                           struct flagcxRmaDesc **descs, int count,
-                           void *sendComm, void **requests, int *posted) {
+static flagcxResult_t flagcxRmaProxyPostPutBatch(struct flagcxHeteroComm *comm,
+                                                 struct flagcxRmaDesc **descs,
+                                                 int count, void *sendComm,
+                                                 void **requests, int *posted) {
   *posted = 0;
   if (count <= 0)
     return flagcxSuccess;
@@ -167,7 +166,7 @@ flagcxRmaProxyPostPutBatch(struct flagcxHeteroComm *comm,
     sizes[i] = descs[i]->size;
     requests[i] = NULL;
   }
-
+  assert(descs[0]->srcMrIdx >= 0 && descs[0]->dstMrIdx >= 0);
   void **srcHandles = (void **)comm->oneSideHandles[descs[0]->srcMrIdx];
   void **dstHandles = (void **)comm->oneSideHandles[descs[0]->dstMrIdx];
   return comm->netAdaptor->iputBatch(sendComm, count, srcOffs, dstOffs, sizes,
@@ -222,9 +221,8 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
 // request-pool-full (flagcxInternalError) leave cis untouched and retry
 // next round. On other errors mark rmaError and push to inProgress with
 // NULL request so PollNonPersistCompletion retires it.
-static bool
-flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy, int peer,
-                                 void *sendComm) {
+static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
+                                             int peer, void *sendComm) {
   struct flagcxHeteroComm *comm = proxy->comm;
   bool did = false;
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
@@ -237,11 +235,10 @@ flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy, int peer,
     struct flagcxRmaDesc *desc =
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
 
-    bool canBatch =
-        desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
-        comm->netAdaptor->name != NULL &&
-        strcmp(comm->netAdaptor->name, "IB") == 0 &&
-        comm->netAdaptor->iputBatch != NULL;
+    bool canBatch = desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
+                    comm->netAdaptor->name != NULL &&
+                    strcmp(comm->netAdaptor->name, "IB") == 0 &&
+                    comm->netAdaptor->iputBatch != NULL;
     if (canBatch) {
       int64_t paramBatchMax = flagcxParamRmaBatchMax();
       if (paramBatchMax <= 0)
@@ -252,8 +249,8 @@ flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy, int peer,
       uint32_t pi = __atomic_load_n(&proxy->pis[peer], __ATOMIC_ACQUIRE);
       uint32_t ringAvailable = pi - ci;
       uint32_t flightAvailable = proxy->queueSize - inFlight;
-      uint32_t batchLimit = ringAvailable < flightAvailable ? ringAvailable
-                                                            : flightAvailable;
+      uint32_t batchLimit =
+          ringAvailable < flightAvailable ? ringAvailable : flightAvailable;
       if (batchLimit > (uint32_t)paramBatchMax)
         batchLimit = (uint32_t)paramBatchMax;
 
@@ -354,8 +351,7 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
     if (flagcxRmaProxyPollNonPersistCompletion(proxy, p))
       did = true;
 
-    void *sendComm =
-        (fullSendComms != NULL) ? fullSendComms[p] : NULL;
+    void *sendComm = (fullSendComms != NULL) ? fullSendComms[p] : NULL;
     if (sendComm != NULL) {
       if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
         did = true;
@@ -413,6 +409,13 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   proxy->comm = comm;
 
   uint32_t qs = (uint32_t)flagcxParamRmaQueueSize();
+  if (qs < 2 || (qs & (qs - 1)) != 0) {
+    WARN("flagcxHeteroRmaProxyStart: invalid RMA queue size %u;" 
+         "FLAGCX_RMA_QUEUE_SIZE must be a power of two and >= 2",
+         qs);
+    free(proxy);
+    return flagcxInvalidArgument;
+  }
   proxy->queueSize = qs;
   proxy->queueMask = qs - 1;
 
@@ -650,8 +653,7 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
     WARN("flagcxHeteroPut: rmaProxy not initialized");
     return flagcxInternalError;
   }
-  struct flagcxRmaDesc *desc =
-      (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+  struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
   if (desc == NULL)
     return flagcxSystemError;
   desc->type = FLAGCX_RMA_PUT;
@@ -669,8 +671,7 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
                                     const size_t *srcOffsets,
                                     const size_t *dstOffsets,
-                                    const size_t *sizes,
-                                    const int *srcMrIdxs,
+                                    const size_t *sizes, const int *srcMrIdxs,
                                     const int *dstMrIdxs, size_t count) {
   if (count == 0)
     return flagcxSuccess;
@@ -713,9 +714,8 @@ flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
   }
 
   size_t enqueued = 0;
-  flagcxResult_t res =
-      flagcxRmaProxyEnqueueDescBatch(comm->rmaProxy, peer, descs, count,
-                                     &enqueued);
+  flagcxResult_t res = flagcxRmaProxyEnqueueDescBatch(comm->rmaProxy, peer,
+                                                      descs, count, &enqueued);
   if (res != flagcxSuccess) {
     for (size_t i = enqueued; i < count; i++)
       free(descs[i]);
@@ -738,8 +738,7 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
     WARN("flagcxHeteroGet: rmaProxy not initialized");
     return flagcxInternalError;
   }
-  struct flagcxRmaDesc *desc =
-      (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+  struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
   if (desc == NULL)
     return flagcxSystemError;
   desc->type = FLAGCX_RMA_GET;
@@ -770,8 +769,7 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
     WARN("flagcxHeteroPutSignal: rmaProxy not initialized");
     return flagcxInternalError;
   }
-  struct flagcxRmaDesc *desc =
-      (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+  struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
   if (desc == NULL)
     return flagcxSystemError;
   desc->type = FLAGCX_RMA_PUT_SIGNAL;
@@ -858,8 +856,7 @@ flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,
     WARN("flagcxHeteroPutValue: rmaProxy not initialized");
     return flagcxInternalError;
   }
-  struct flagcxRmaDesc *desc =
-      (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+  struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
   if (desc == NULL)
     return flagcxSystemError;
   desc->type = FLAGCX_RMA_PUT_VALUE;
