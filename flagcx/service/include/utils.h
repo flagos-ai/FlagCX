@@ -39,6 +39,9 @@ uint64_t getHostHash();
 uint64_t getPidHash();
 flagcxResult_t getRandomData(void *buffer, size_t bytes);
 
+int64_t flagcxParamTopoDetectionDisable();
+int64_t flagcxParamSignalHostEnable();
+
 const char *flagcxOpToString(flagcxRedOp_t op);
 const char *flagcxDatatypeToString(flagcxDataType_t type);
 const char *flagcxAlgoToString(int algo);

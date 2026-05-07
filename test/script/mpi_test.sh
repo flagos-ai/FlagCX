@@ -46,19 +46,22 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-TESTS=("test_alltoall" "test_alltoallv" "test_sendrecv" "test_allreduce" "test_allgather"
-       "test_reducescatter" "test_broadcast" "test_gather" "test_scatter" "test_reduce")
+# Perf binaries are in host_api/build/bin/ with perf_ prefix
+PERF_BIN=host_api/build/bin
+
+TESTS=("alltoall" "alltoallv" "sendrecv" "allreduce" "allgather"
+       "reducescatter" "broadcast" "gather" "scatter" "reduce")
 
 for TEST in "${TESTS[@]}"
 do
-    echo "Running $TEST on multiple machines ..."
+    echo "Running perf_$TEST on multiple machines ..."
     mpirun -np 16 -hosts $HOSTS \
         -genv PATH=usr/local/mpi/bin/mpirun:/usr/local/corex/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         -genv LD_LIBRARY_PATH=usr/local/mpi/lib:/usr/local/corex/lib64:/usr/local/cuda/lib64 \
         -genv FLAGCX_DEBUG=INFO \
         -genv FLAGCX_DEBUG_SUBSYS=INIT,NET \
         -genv FLAGCX_IB_HCA=mlx5_0 \
-        ./$TEST -b 128M -e 1G -f 2 -p 1
+        ./$PERF_BIN/perf_$TEST -b 128M -e 1G -f 2 -p 1
     if [ $? -ne 0 ]; then
         echo "$TEST execution failed!"
         exit 1

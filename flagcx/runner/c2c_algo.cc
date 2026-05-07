@@ -2070,11 +2070,14 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
       if (eachNicPerRank_) {
         postHomoFuncSteps_[0].emplace_back(
             comm_->globalRank2HomoRank[rootRank_], 0, 1,
-            clusterOffset_ * recvCount_, 0, recvCount_, 2, postHomoFuncCommOp);
+            clusterOffset_ * recvCount_, 0, recvCount_,
+            2 /* scratchbuff: inter-rank received data here during pre-homo */,
+            postHomoFuncCommOp);
       } else {
         postHomoFuncSteps_[0].emplace_back(
-            clusterInterRankList_[clusterId_][0] - (rank_ - homoMyRank_),
-            sendType, 1, clusterOffset_ * recvCount_, 0, recvCount_, 2,
+            clusterInterRankList_[clusterId_][0] - (rank_ - homoMyRank_), 2, 1,
+            clusterOffset_ * recvCount_, 0, recvCount_,
+            2 /* scratchbuff: inter-rank received data here during pre-homo */,
             postHomoFuncCommOp);
       }
     } else if (postHomoFuncCommOp == flagcxCommOpGather) {

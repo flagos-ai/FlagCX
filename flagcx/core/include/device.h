@@ -120,6 +120,7 @@ struct flagcxProxyConnector {
   int tpRank;
   int tpLocalRank;
   int sameProcess;
+  bool initialized;
   struct flagcxProxyConnection *connection;
   flagcxResult_t (*proxyProgress)(
       struct flagcxProxyState *proxyState,

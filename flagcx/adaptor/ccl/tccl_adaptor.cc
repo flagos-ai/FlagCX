@@ -2,6 +2,10 @@
 
 #ifdef USE_TSM_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 #include <cstring>
 #include <map>
 
@@ -370,6 +374,24 @@ flagcxResult_t tcclAdaptorGroupEnd() {
   return fromTcclResult(result);
 }
 
+flagcxResult_t
+tcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+tcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t tcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor tcclAdaptor = {
     "TCCL",
     // Basic functions
@@ -389,6 +411,9 @@ struct flagcxCCLAdaptor tcclAdaptor = {
     tcclAdaptorAllGather, tcclAdaptorAlltoAll, tcclAdaptorAlltoAllv,
     tcclAdaptorSend, tcclAdaptorRecv,
     // Group semantics
-    tcclAdaptorGroupStart, tcclAdaptorGroupEnd};
+    tcclAdaptorGroupStart, tcclAdaptorGroupEnd,
+    // Device API
+    tcclAdaptorDevCommReqsInit, tcclAdaptorDevCommCreate,
+    tcclAdaptorDevCommDestroy};
 
 #endif // USE_TSM_ADAPTOR

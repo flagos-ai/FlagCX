@@ -2,6 +2,9 @@
 
 #ifdef USE_DU_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, cudaMemcpyDeviceToHost},
@@ -44,7 +47,7 @@ flagcxResult_t ducudaAdaptorDeviceMalloc(void **ptr, size_t size,
                                          flagcxMemType_t type,
                                          flagcxStream_t stream) {
   if (type == flagcxMemHost) {
-    DEVCHECK(cudaMallocHost(ptr, size));
+    DEVCHECK(cudaHostAlloc(ptr, size, cudaHostAllocMapped));
   } else if (type == flagcxMemManaged) {
     DEVCHECK(cudaMallocManaged(ptr, size, cudaMemAttachGlobal));
   } else {
@@ -90,6 +93,11 @@ flagcxResult_t ducudaAdaptorGetDeviceCount(int *count) {
 
 flagcxResult_t ducudaAdaptorGetVendor(char *vendor) {
   strcpy(vendor, "DU");
+  return flagcxSuccess;
+}
+
+flagcxResult_t ducudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
   return flagcxSuccess;
 }
 
@@ -323,9 +331,27 @@ flagcxResult_t ducudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
-static flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                     uint64_t, int) {
+flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                              int) {
   return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                               int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                             flagcxEvent_t) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ducudaAdaptorHostRegister(void *ptr, size_t size) {
+  DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
+  return flagcxSuccess;
+}
+
+flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
+  DEVCHECK(cudaHostUnregister(ptr));
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor ducudaAdaptor {
@@ -334,7 +360,8 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorDeviceSynchronize, ducudaAdaptorDeviceMemcpy,
       ducudaAdaptorDeviceMemset, ducudaAdaptorDeviceMalloc,
       ducudaAdaptorDeviceFree, ducudaAdaptorSetDevice, ducudaAdaptorGetDevice,
-      ducudaAdaptorGetDeviceCount, ducudaAdaptorGetVendor, NULL,
+      ducudaAdaptorGetDeviceCount, ducudaAdaptorGetVendor,
+      ducudaAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
@@ -349,11 +376,12 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorStreamCreate, ducudaAdaptorStreamDestroy,
       ducudaAdaptorStreamCopy, ducudaAdaptorStreamFree,
       ducudaAdaptorStreamSynchronize, ducudaAdaptorStreamQuery,
-      ducudaAdaptorStreamWaitEvent,
+      ducudaAdaptorStreamWaitEvent, ducudaAdaptorStreamWaitValue64,
+      ducudaAdaptorStreamWriteValue64,
       // Event functions
       ducudaAdaptorEventCreate, ducudaAdaptorEventDestroy,
       ducudaAdaptorEventRecord, ducudaAdaptorEventSynchronize,
-      ducudaAdaptorEventQuery,
+      ducudaAdaptorEventQuery, ducudaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       ducudaAdaptorIpcMemHandleCreate, ducudaAdaptorIpcMemHandleGet,
       ducudaAdaptorIpcMemHandleOpen, ducudaAdaptorIpcMemHandleClose,
@@ -384,9 +412,9 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      ducudaAdaptorStreamWaitValue64,
+      ducudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                   // size_t);
+      ducudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_DU_ADAPTOR

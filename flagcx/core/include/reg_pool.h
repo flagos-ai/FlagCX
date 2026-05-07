@@ -22,6 +22,7 @@ public:
   flagcxResult_t addP2pHandle(void *comm, flagcxRegItem *reg, void *handle,
                               struct flagcxProxyConnector *proxyConn);
   flagcxResult_t removeRegItemP2pHandles(void *comm, flagcxRegItem *reg);
+  flagcxResult_t removeAllP2pHandles(void *comm);
   flagcxResult_t registerBuffer(void *comm, void *data, size_t length);
   flagcxResult_t deregisterBuffer(void *comm, void *handle);
   std::map<uintptr_t, std::map<uintptr_t, flagcxRegItem *>> &getGlobalMap();

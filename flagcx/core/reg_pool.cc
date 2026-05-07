@@ -104,6 +104,21 @@ flagcxResult_t flagcxRegPool::removeRegItemP2pHandles(void *comm,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxRegPool::removeAllP2pHandles(void *comm) {
+  if (comm == nullptr) {
+    return flagcxSuccess;
+  }
+  uintptr_t commKey = reinterpret_cast<uintptr_t>(comm);
+  auto poolIt = regPool.find(commKey);
+  if (poolIt == regPool.end()) {
+    return flagcxSuccess;
+  }
+  for (auto &reg : poolIt->second) {
+    FLAGCXCHECK(removeRegItemP2pHandles(comm, &reg));
+  }
+  return flagcxSuccess;
+}
+
 void flagcxRegPool::mapRegItemPages(uintptr_t commKey, flagcxRegItem *reg) {
   if (reg == nullptr) {
     return;

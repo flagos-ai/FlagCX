@@ -6,6 +6,10 @@
 
 #ifdef USE_ENFLAME_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t ecclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ecclGetVersion(version);
 }
@@ -223,6 +227,24 @@ flagcxResult_t ecclAdaptorGroupStart() {
 
 flagcxResult_t ecclAdaptorGroupEnd() { return (flagcxResult_t)ecclGroupEnd(); }
 
+flagcxResult_t
+ecclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+ecclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor ecclAdaptor = {
     "ECCL",
     // Basic functions
@@ -242,6 +264,9 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     ecclAdaptorAllGather, ecclAdaptorAlltoAll, ecclAdaptorAlltoAllv,
     ecclAdaptorSend, ecclAdaptorRecv,
     // Group semantics
-    ecclAdaptorGroupStart, ecclAdaptorGroupEnd};
+    ecclAdaptorGroupStart, ecclAdaptorGroupEnd,
+    // Device API
+    ecclAdaptorDevCommReqsInit, ecclAdaptorDevCommCreate,
+    ecclAdaptorDevCommDestroy};
 
 #endif // USE_ENFLAME_ADAPTOR

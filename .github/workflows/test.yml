@@ -40,7 +40,7 @@ jobs:
           . venv/bin/activate
           cd /__w/FlagCX/FlagCX
           git config --global --add safe.directory /__w/FlagCX/FlagCX
-          pip install setuptools pre-commit -i https://pypi.tuna.tsinghua.edu.cn/simple
+          pip install setuptools pre-commit
           pre-commit install
 
       - name: Run Code Format Check with pre-commit

@@ -5,13 +5,12 @@
 
 #ifdef USE_METAX_ADAPTOR
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 #include "mccl.h"
 #include <map>
 #include <mcr/mc_runtime.h>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   mcclComm_t base;
 };

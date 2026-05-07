@@ -46,6 +46,15 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
           conn->proxyConn.connection->transport = TRANSPORT_P2P;
           conn->proxyConn.connection->send = 0;
+          conn->proxyConn.connection->cudaDev = comm->cudaDev;
+          conn->proxyConn.connection->sameProcess =
+              (comm->peerInfo != NULL &&
+               comm->peerInfo[peer].hostHash ==
+                   comm->peerInfo[comm->rank].hostHash &&
+               comm->peerInfo[peer].pidHash ==
+                   comm->peerInfo[comm->rank].pidHash)
+                  ? 1
+                  : 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
             struct flagcxP2pRequest req = {(size_t(flagcxP2pBufferSize)), 0};
@@ -88,6 +97,18 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           } else if (comm->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
+          } else {
+            flagcxNetProperties_t props;
+            comm->netAdaptor->getProperties(resources->netDev, &props);
+            resources->ptrSupport = props.ptrSupport;
+            if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+              deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
+                                         resources->buffSizes[0], NULL);
+            } else {
+              resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
+              if (!resources->buffers[0])
+                return flagcxSystemError;
+            }
           }
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));
@@ -113,6 +134,15 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
           conn->proxyConn.connection->transport = TRANSPORT_P2P;
           conn->proxyConn.connection->send = 1;
+          conn->proxyConn.connection->cudaDev = comm->cudaDev;
+          conn->proxyConn.connection->sameProcess =
+              (comm->peerInfo != NULL &&
+               comm->peerInfo[peer].hostHash ==
+                   comm->peerInfo[comm->rank].hostHash &&
+               comm->peerInfo[peer].pidHash ==
+                   comm->peerInfo[comm->rank].pidHash)
+                  ? 1
+                  : 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
             struct flagcxP2pConnectInfo connectInfo = {0};
@@ -127,6 +157,14 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             FLAGCXCHECK(bootstrapSend(comm->bootstrap, peer, 3000 + c,
                                       &connectInfo.desc,
                                       sizeof(flagcxShmIpcDesc_t)));
+          } else {
+            // Self-copy: initialize proxyInfo stream/events for deviceMemcpy
+            FLAGCXCHECK(
+                deviceAdaptor->streamCreate(&resources->proxyInfo.stream));
+            for (int s = 0; s < FLAGCX_P2P_MAX_STEPS; s++) {
+              FLAGCXCHECK(deviceAdaptor->eventCreate(
+                  &resources->proxyInfo.events[s], flagcxEventDisableTiming));
+            }
           }
         } else {
           INFO(FLAGCX_NET,
@@ -154,6 +192,18 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           } else if (comm->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
+          } else {
+            flagcxNetProperties_t props;
+            comm->netAdaptor->getProperties(resources->netDev, &props);
+            resources->ptrSupport = props.ptrSupport;
+            if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+              deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
+                                         resources->buffSizes[0], NULL);
+            } else {
+              resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
+              if (!resources->buffers[0])
+                return flagcxSystemError;
+            }
           }
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));
@@ -202,7 +252,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Recv connect: rank %d <- peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          while (flagcxPollProxyResponse(comm, NULL, NULL, conn) ==
+          while (flagcxPollProxyResponse(comm, &conn->proxyConn, NULL, conn) ==
                  flagcxInProgress)
             ;
         }
@@ -245,7 +295,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Send connect: rank %d -> peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          while (flagcxPollProxyResponse(comm, NULL, NULL, conn) ==
+          while (flagcxPollProxyResponse(comm, &conn->proxyConn, NULL, conn) ==
                  flagcxInProgress)
             ;
         }

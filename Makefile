@@ -1,5 +1,6 @@
-# 2025 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
-# 2025 - Modified by DU. All Rights Reserved.
+# Copyright (c) 2026 BAAI. All rights reserved.
+# Modified by 2025 MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved
+# Modified by 2025 DU. All Rights Reserved.
 BUILDDIR ?= $(abspath ./build)
 
 # set to 0 if not provided
@@ -19,6 +20,7 @@ USE_MPI ?= 0
 USE_UCX ?= 0
 USE_IBUC ?= 0
 USE_ENFLAME ?= 0
+USE_SUNRISE ?= 0
 COMPILE_KERNEL ?= 0
 
 # set to empty if not provided
@@ -51,6 +53,8 @@ ifeq ($(strip $(DEVICE_HOME)),)
 		DEVICE_HOME = /usr/local/kuiper
 	else ifeq ($(USE_ENFLAME), 1)
 		DEVICE_HOME = /opt/tops/
+	else ifeq ($(USE_SUNRISE), 1)
+		DEVICE_HOME = /usr/local/tangrt
 	else
 		DEVICE_HOME = /usr/local/cuda
 	endif
@@ -79,6 +83,8 @@ ifeq ($(strip $(CCL_HOME)),)
 		CCL_HOME = /usr/local/kuiper
 	else ifeq ($(USE_ENFLAME), 1)
 		CCL_HOME = /usr
+	else ifeq ($(USE_SUNRISE), 1)
+		CCL_HOME = /usr/local/pccl
 	else
 		CCL_HOME = /usr/local/nccl/build
 	endif
@@ -109,9 +115,8 @@ endif
 DEVICE_LIB =
 DEVICE_INCLUDE =
 DEVICE_LINK =
-DEVICE_RUNTIME =
+DEVICE_PLATFORM =
 DEVICE_COMPILER =
-DEVICE_LINKER =
 DEVICE_COMPILE_FLAG =
 DEVICE_LINK_FLAG =
 DEVICE_FILE_EXTENSION =
@@ -129,14 +134,14 @@ UCX_LINK =
 NET_ADAPTOR_FLAG =
 COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
+HOST_COMPILER ?= g++
 ifeq ($(USE_NVIDIA), 1)
 	include makefiles/nvidia_gencode.mk
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
 	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_RUNTIME = CUDA
+	DEVICE_PLATFORM = CUDA
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_LINKER = $(DEVICE_HOME)/bin/nvcc -dlink
 	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
 	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
 	DEVICE_FILE_EXTENSION = cu
@@ -201,6 +206,11 @@ else ifeq ($(USE_DU), 1)
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -lnccl
 	ADAPTOR_FLAG = -DUSE_DU_ADAPTOR
+	DEVICE_PLATFORM = DU
+	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
+	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g
+	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC
+	DEVICE_FILE_EXTENSION = cu
 else ifeq ($(USE_AMD), 1)
 	DEVICE_LIB = $(DEVICE_HOME)/lib
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
@@ -225,14 +235,35 @@ else ifeq ($(USE_ENFLAME), 1)
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -leccl
 	ADAPTOR_FLAG = -DUSE_ENFLAME_ADAPTOR
+else ifeq ($(USE_SUNRISE), 1)
+	DEVICE_LIB = $(DEVICE_HOME)/targets/linux-x86_64/lib
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_LINK = -ltangrt_shared
+	CCL_LIB = $(CCL_HOME)/lib/linux-x86_64
+	CCL_INCLUDE = $(CCL_HOME)/include
+	CCL_LINK = -lpccl
+	ADAPTOR_FLAG = -DUSE_SUNRISE_ADAPTOR
 else
 	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
 	DEVICE_LINK = -lcudart -lcuda
+	DEVICE_PLATFORM = CUDA
+	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
+	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
+	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
+	DEVICE_FILE_EXTENSION = cu
 	CCL_LIB = $(CCL_HOME)/lib
 	CCL_INCLUDE = $(CCL_HOME)/include
 	CCL_LINK = -lnccl
 	ADAPTOR_FLAG = -DUSE_NVIDIA_ADAPTOR
+ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
+	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
+endif
+	USE_NVIDIA := 1
+endif
+
+ifeq ($(FORCE_FALLBACK), 1)
+	ADAPTOR_FLAG += -DFLAGCX_FORCE_FALLBACK
 endif
 
 ifeq ($(USE_GLOO), 1)
@@ -307,6 +338,12 @@ LIBSRCFILES:= \
 ifeq ($(COMPILE_KERNEL), 1)
 DEVSRCFILES:= \
 	$(wildcard flagcx/kernels/*.$(DEVICE_FILE_EXTENSION))
+ifneq ($(USE_NVIDIA), 1)
+EXCLUDE_SOURCES := custom_allreduce.cu
+else
+EXCLUDE_SOURCES :=
+endif
+DEVSRCFILES := $(filter-out flagcx/kernels/$(EXCLUDE_SOURCES), $(DEVSRCFILES))
 DEVOBJ:= $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
 endif
 LIBOBJ:= $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
@@ -347,6 +384,7 @@ print_var:
 	@echo "UCX_INCLUDE: $(UCX_INCLUDE)"
 	@echo "USE_IBUC: $(USE_IBUC)"
 	@echo "NET_ADAPTOR_FLAG: $(NET_ADAPTOR_FLAG)"
+	@echo "DEVSRCFILES: $(DEVSRCFILES)"
 
 ifeq ($(COMPILE_KERNEL), 1)
 DEVOBJS = $(DEVOBJ) $(OBJDIR)/kernel_dlink.o
@@ -354,24 +392,31 @@ else
 DEVOBJS =
 endif
 
+HOST_LINKER   ?= $(HOST_COMPILER)
+DEVICE_LINKER := $(DEVICE_COMPILER)
+LINKER        := $(HOST_LINKER)
+ifeq ($(COMPILE_KERNEL)$(USE_DU),11)
+  LINKER := $(DEVICE_LINKER)
+endif
+
 $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 	@mkdir -p `dirname $@`
 	@echo "Linking   $@"
-	@g++ $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) -g
+	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) -g
 
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@g++ $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) -I$(DEVICE_INCLUDE) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@$(HOST_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)
-	@$(DEVICE_LINKER) $^ -o $@ $(DEVICE_LINK) $(DEVICE_LINK_FLAG)
+	@$(DEVICE_LINKER) -dlink $^ -o $@ $(DEVICE_LINK) $(DEVICE_LINK_FLAG)
 
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
-	@echo "Compiling $@ ($(DEVICE_RUNTIME))"
-	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) -I$(DEVICE_INCLUDE) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
+	@echo "Compiling $@ ($(DEVICE_PLATFORM))"
+	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)

@@ -2,6 +2,10 @@
 
 #ifdef USE_AMD_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t rcclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -294,6 +298,24 @@ flagcxResult_t rcclAdaptorGroupStart() {
 
 flagcxResult_t rcclAdaptorGroupEnd() { return (flagcxResult_t)ncclGroupEnd(); }
 
+flagcxResult_t
+rcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+rcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t rcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor rcclAdaptor = {
     "RCCL",
     // Basic functions
@@ -313,6 +335,9 @@ struct flagcxCCLAdaptor rcclAdaptor = {
     rcclAdaptorAllGather, rcclAdaptorAlltoAll, rcclAdaptorAlltoAllv,
     rcclAdaptorSend, rcclAdaptorRecv,
     // Group semantics
-    rcclAdaptorGroupStart, rcclAdaptorGroupEnd};
+    rcclAdaptorGroupStart, rcclAdaptorGroupEnd,
+    // Device API
+    rcclAdaptorDevCommReqsInit, rcclAdaptorDevCommCreate,
+    rcclAdaptorDevCommDestroy};
 
 #endif // USE_AMD_ADAPTOR

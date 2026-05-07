@@ -3,14 +3,13 @@
 #ifndef TSMICRO_ADAPTOR_H_
 #define TSMICRO_ADAPTOR_H_
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 #include "tccl.h"
 #include "tx_runtime.h"
 
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   tcclComm_t base;
 };

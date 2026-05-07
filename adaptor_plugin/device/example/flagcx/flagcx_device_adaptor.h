@@ -1,0 +1,1 @@
+../../../../flagcx/adaptor/include/flagcx_device_adaptor.h

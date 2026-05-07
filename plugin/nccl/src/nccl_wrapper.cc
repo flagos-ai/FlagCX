@@ -435,8 +435,8 @@ ncclResult_t ncclCommDestroy(ncclComm_t comm) {
   if (comm == nullptr)
     return ncclInvalidArgument;
   flagcxResult_t res = flagcxCommDestroy(comm->handler->comm);
-  /* flagcxCommDestroy frees internal resources but not the comm struct.
-   * flagcxHandleFree will free the comm struct pointer along with handler. */
+  /* flagcxCommDestroy frees the comm struct. flagcxHandleFree frees the
+   * remaining handler members (uniqueId, devHandle) and the handler itself. */
   flagcxHandleFree(comm->handler);
   free(comm);
   return toNcclResult(res);

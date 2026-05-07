@@ -37,7 +37,7 @@ jobs:
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
           apt update -y && apt-get install -y git rdma-core ibverbs-utils perftest infiniband-diags libibverbs-dev librdmacm-dev clang-format
           pip list | grep torch && which python
-          pip install pre-commit -i https://pypi.tuna.tsinghua.edu.cn/simple
+          pip install pre-commit
           cd /__w/FlagCX/FlagCX
           git config --global --add safe.directory /__w/FlagCX/FlagCX && git status
           pre-commit install
@@ -64,7 +64,7 @@ jobs:
         run: |
           export PATH=/root/miniconda3/bin:$PATH
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
-          pip uninstall -y setuptools && pip install setuptools==77.0.1 -i https://pypi.tuna.tsinghua.edu.cn/simple --extra-index-url https://pypi.org/simple 
+          pip uninstall -y setuptools && pip install setuptools==77.0.1 --extra-index-url https://pypi.org/simple 
           cd /__w/FlagCX/FlagCX/plugin/torch
           python setup.py develop --adaptor nvidia
 

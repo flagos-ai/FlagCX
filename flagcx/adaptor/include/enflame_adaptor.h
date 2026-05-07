@@ -4,13 +4,12 @@
 
 #ifdef USE_ENFLAME_ADAPTOR
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "eccl.h"
 #include "flagcx.h"
 #include <map>
 #include <tops/tops_runtime_api.h>
+
+struct flagcxInnerDevComm {};
 
 struct flagcxInnerComm {
   ecclComm_t base;

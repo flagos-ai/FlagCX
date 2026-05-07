@@ -4,6 +4,8 @@
 #include "adaptor.h"
 #include "flagcx.h"
 
+struct flagcxHeteroComm;
+
 #define FLAGCX_FIFO_CAPACITY 128
 #define flagcxTriggerMask(w) ((w == 64) ? ~0ull : ((1ull << w) - 1))
 
@@ -17,7 +19,8 @@ typedef enum {
   flagcxDevicePrimBarrierSignal = 6,
   flagcxDevicePrimWaitSignal = 7,
   flagcxDevicePrimPutValue = 8,
-  flagcxDevicePrimPutSignal = 9
+  flagcxDevicePrimPutSignal = 9,
+  flagcxDevicePrimGet = 10
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo
@@ -160,6 +163,9 @@ struct flagcxDeviceTrigger {
   FLAGCX_HOST_DECORATOR uint64_t getSignalValue();   // trd (Signal)
   FLAGCX_HOST_DECORATOR uint64_t getExpectedValue(); // trd (WaitSignal)
   FLAGCX_HOST_DECORATOR uint64_t getBufferType();    // trd (Signal/WaitSignal)
+
+  // Term accessor
+  FLAGCX_HOST_DECORATOR uint64_t getTotalCoops(); // fst (PrimTerm)
 
   // Backward compat alias
   FLAGCX_HOST_DECORATOR uint64_t getType(); // alias for getPrim()
@@ -307,12 +313,12 @@ flagcxResult_t flagcxInterBarrierCreateRequirement(
 
 // Opaque handle to a device communicator (host-side lifetime management).
 // Internally wraps ncclDevComm on NVIDIA backend (Vendor),
-// or IPC barrier state on fallback (Fallback).
+// or IPC barrier state on default path (Default).
 typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 
 // Opaque handle to device memory (host-side lifetime management).
 // Internally wraps ncclWindow_t on NVIDIA backend (Vendor),
-// or IPC peer pointer table on fallback (Fallback).
+// or IPC peer pointer table on default path (Default).
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
@@ -334,17 +340,15 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
 
 // Inter-node Device API test kernels.
 // Each kernel tests one API facet; host verifies after streamSynchronize.
-flagcxResult_t flagcxInterTestSignalInc(flagcxDevMem_t sendMem,
-                                        flagcxDevMem_t recvMem, size_t count,
-                                        flagcxDataType_t datatype,
-                                        flagcxDevComm_t devComm,
-                                        flagcxStream_t stream);
+flagcxResult_t flagcxInterTestPutSignalInc(flagcxDevMem_t sendMem,
+                                           flagcxDevMem_t recvMem, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxDevComm_t devComm,
+                                           flagcxStream_t stream);
 
-flagcxResult_t flagcxInterTestSignalAdd(flagcxDevMem_t sendMem,
-                                        flagcxDevMem_t recvMem, size_t count,
-                                        flagcxDataType_t datatype,
-                                        flagcxDevComm_t devComm,
-                                        flagcxStream_t stream);
+flagcxResult_t flagcxInterTestPutSignalAddDecoupled(
+    flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
+    flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream);
 
 flagcxResult_t
 flagcxInterTestCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
@@ -357,8 +361,8 @@ flagcxResult_t flagcxInterTestPutValue(flagcxDevMem_t recvMem,
                                        flagcxStream_t stream,
                                        size_t putValBase);
 
-flagcxResult_t flagcxInterTestSignalOnly(flagcxDevComm_t devComm,
-                                         flagcxStream_t stream);
+flagcxResult_t flagcxInterTestSignal(flagcxDevComm_t devComm,
+                                     flagcxStream_t stream);
 
 flagcxResult_t
 flagcxInterTestFlushDecouple(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
@@ -374,6 +378,12 @@ flagcxResult_t flagcxInterTestMeetShadow(flagcxDevComm_t devComm,
 flagcxResult_t flagcxInterTestReset(flagcxDevComm_t devComm,
                                     flagcxStream_t stream, uint64_t *resultBuf);
 
+flagcxResult_t flagcxInterTestGet(flagcxDevMem_t sendMem,
+                                  flagcxDevMem_t recvMem, size_t count,
+                                  flagcxDataType_t datatype,
+                                  flagcxDevComm_t devComm,
+                                  flagcxStream_t stream);
+
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
 #ifndef FLAGCX_DEVICE_CTA_COUNT
@@ -385,7 +395,7 @@ flagcxResult_t flagcxInterTestReset(flagcxDevComm_t devComm,
 
 // Create a device communicator for custom kernel usage.
 // On NVIDIA backend (Vendor), internally calls pncclDevCommCreate.
-// On fallback (Fallback), sets up IPC-based barrier across intra-node peers.
+// On default path (Default), sets up IPC-based barrier across intra-node peers.
 // The returned handle must be destroyed with flagcxDevCommDestroy(comm,
 // devComm).
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
@@ -412,32 +422,25 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 // so that cudaFree does not deadlock on device synchronization.
 flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 
+// Tear down inter-node signal relay stored on heteroComm.
+// Must be called before flagcxHeteroCommDestroy (which frees proxyState and
+// heteroComm). Internally drains FIFOs and performs a cross-rank barrier
+// before closing RDMA connections.
+flagcxResult_t flagcxCommRelayDestroy(flagcxComm_t comm);
+
 // Deferred device/host-pinned memory free.
 // Collects pointers during DevComm/DevMem cleanup.
 void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
 flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm);
 
-// One-sided data buffer registration.
-// Must be called after flagcxCommInitRank and before one-sided operations.
-flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
-                                     size_t size);
 // Release data buffer resources (MR, network connections, handle arrays).
-flagcxResult_t flagcxOneSideDeregister(const flagcxComm_t comm);
+flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm);
 
-// One-sided signal buffer registration (GPU memory with FORCE_SO).
-// Must be called after flagcxCommInitRank and before one-sided operations.
-flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
-                                           size_t size);
 // Release signal buffer resources (MR, network connections, handle arrays).
-flagcxResult_t flagcxOneSideSignalDeregister(const flagcxComm_t comm);
-
-// One-sided staging buffer registration (host-pinned memory for PutValue).
-// Must be called after flagcxOneSideSignalRegister (requires full-mesh
-// connections).
-flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
-                                            size_t size);
-// Release staging buffer MR resources.
-flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm);
+// flagcxOneSideSignalRegister / flagcxOneSideStagingRegister /
+// flagcxOneSideStagingDeregister are declared in flagcx.h (extern "C").
+flagcxResult_t
+flagcxOneSideSignalDeregister(struct flagcxHeteroComm *heteroComm);
 
 // One-sided barrier MR registration (host-pinned memory for inter-node
 // barrier). Collective: ALL ranks must call. Leaders pass recvComm+buff,

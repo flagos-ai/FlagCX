@@ -2,6 +2,9 @@
 
 #ifdef USE_NVIDIA_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, cudaMemcpyDeviceToHost},
@@ -234,6 +237,28 @@ flagcxResult_t cudaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
+                                            uint64_t value, int flags) {
+  (void)flags;
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+  CUstream cuStream = (CUstream)(stream->base);
+  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
+                                     CU_STREAM_WAIT_VALUE_GEQ);
+  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t cudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
+                                             uint64_t value, int flags) {
+  (void)flags;
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+  CUstream cuStream = (CUstream)(stream->base);
+  CUresult err = cuStreamWriteValue64(cuStream, (CUdeviceptr)addr, value,
+                                      CU_STREAM_WRITE_VALUE_DEFAULT);
+  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
 flagcxResult_t cudaAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   (*event) = NULL;
@@ -287,6 +312,21 @@ flagcxResult_t cudaAdaptorEventQuery(flagcxEvent_t event) {
     }
   }
   return res;
+}
+
+flagcxResult_t cudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                           flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  cudaError_t error = cudaEventElapsedTime(ms, start->base, end->base);
+  if (error == cudaSuccess) {
+    return flagcxSuccess;
+  } else if (error == cudaErrorNotReady) {
+    return flagcxInProgress;
+  } else {
+    return flagcxUnhandledDeviceError;
+  }
 }
 
 flagcxResult_t cudaAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
@@ -435,31 +475,14 @@ cudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
   return flagcxSuccess;
 }
 
-flagcxResult_t cudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
-                                           flagcxEvent_t end) {
-  if (ms == NULL || start == NULL || end == NULL) {
-    return flagcxInvalidArgument;
-  }
-  cudaError_t error = cudaEventElapsedTime(ms, start->base, end->base);
-  if (error == cudaSuccess) {
-    return flagcxSuccess;
-  } else if (error == cudaErrorNotReady) {
-    return flagcxInProgress;
-  } else {
-    return flagcxUnhandledDeviceError;
-  }
+flagcxResult_t cudaAdaptorHostRegister(void *ptr, size_t size) {
+  DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
+  return flagcxSuccess;
 }
 
-static flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream,
-                                                   void *addr, uint64_t value,
-                                                   int flags) {
-  (void)flags;
-  if (stream == NULL || addr == NULL)
-    return flagcxInvalidArgument;
-  CUstream cuStream = (CUstream)(stream->base);
-  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
-                                     CU_STREAM_WAIT_VALUE_GEQ);
-  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+flagcxResult_t cudaAdaptorHostUnregister(void *ptr) {
+  DEVCHECK(cudaHostUnregister(ptr));
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor cudaAdaptor {
@@ -483,9 +506,11 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorStreamCreate, cudaAdaptorStreamDestroy, cudaAdaptorStreamCopy,
       cudaAdaptorStreamFree, cudaAdaptorStreamSynchronize,
       cudaAdaptorStreamQuery, cudaAdaptorStreamWaitEvent,
+      cudaAdaptorStreamWaitValue64, cudaAdaptorStreamWriteValue64,
       // Event functions
       cudaAdaptorEventCreate, cudaAdaptorEventDestroy, cudaAdaptorEventRecord,
       cudaAdaptorEventSynchronize, cudaAdaptorEventQuery,
+      cudaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       cudaAdaptorIpcMemHandleCreate, cudaAdaptorIpcMemHandleGet,
       cudaAdaptorIpcMemHandleOpen, cudaAdaptorIpcMemHandleClose,
@@ -518,9 +543,9 @@ struct flagcxDeviceAdaptor cudaAdaptor {
                                               // *handleOut, void *buffer,
                                               // size_t size, unsigned long long
                                               // flags);
-      cudaAdaptorEventElapsedTime, // flagcxResult_t
-      // Stream memory operations (one-sided signal polling)
-      cudaAdaptorStreamWaitValue64,
+      cudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      cudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_NVIDIA_ADAPTOR

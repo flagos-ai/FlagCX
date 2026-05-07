@@ -261,6 +261,57 @@ class FLAGCXLibrary:
         # it is better not to call it at all.
         # flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
         Function("flagcxCommDestroy", flagcxResult_t, [flagcxComm_t]),
+        
+        Function("flagcxCommRegister", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_void_p)
+        ]),
+        
+        Function("flagcxOneSideRegister", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t
+        ]),
+
+        Function("flagcxOneSideSignalRegister", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int
+        ]),
+
+        Function("flagcxOneSideStagingRegister", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t
+        ]),
+
+        Function("flagcxOneSideStagingDeregister", flagcxResult_t, [flagcxComm_t]),
+
+        Function("flagcxGet", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_int,
+            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_int, ctypes.c_int
+        ]),
+
+        Function("flagcxPutSignal", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_int,
+            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint64
+        ]),
+
+        Function("flagcxSignal", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_int,
+            ctypes.c_size_t, ctypes.c_uint64
+        ]),
+
+        Function("flagcxWaitSignal", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_int,
+            ctypes.c_size_t, ctypes.c_uint64,
+            flagcxStream_t
+        ]),
+
+        Function("flagcxReadCounter", flagcxResult_t, [
+            flagcxComm_t, ctypes.POINTER(ctypes.c_uint64)
+        ]),
+
+        Function("flagcxWaitCounter", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_uint64
+        ]),
     ]
 
     # class attribute to store the mapping from the path to the library
@@ -422,6 +473,70 @@ class FLAGCXLibrary:
     def flagcxCommDestroy(self, comm: flagcxComm_t) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxCommDestroy"](comm))
 
+    def flagcxCommRegister(self, comm: flagcxComm_t, buff: int, size: int) -> ctypes.c_void_p:
+        handle = ctypes.c_void_p()
+        self.FLAGCX_CHECK(self._funcs["flagcxCommRegister"](
+            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+            ctypes.byref(handle)))
+        return handle
+
+    def flagcxOneSideRegister(self, comm: flagcxComm_t,
+                              buff: int, size: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxOneSideRegister"](
+            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size)))
+
+    def flagcxOneSideSignalRegister(self, comm: flagcxComm_t,
+                                    buff: int, size: int,
+                                    ptrType: int = 1) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxOneSideSignalRegister"](
+            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
+            ctypes.c_int(ptrType)))
+
+    def flagcxOneSideStagingRegister(self, comm: flagcxComm_t,
+                                     buff: int, size: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxOneSideStagingRegister"](
+            comm, ctypes.c_void_p(buff), ctypes.c_size_t(size)))
+
+    def flagcxGet(self, comm: flagcxComm_t, peer: int,
+                  srcOffset: int, dstOffset: int, size: int,
+                  srcMrIdx: int, dstMrIdx: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxGet"](
+            comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
+            ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
+
+    def flagcxPutSignal(self, comm: flagcxComm_t, peer: int,
+                        srcOffset: int, dstOffset: int, size: int,
+                        signalOffset: int, srcMrIdx: int, dstMrIdx: int,
+                        signalValue: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxPutSignal"](
+            comm, peer,
+            ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
+            ctypes.c_size_t(size), ctypes.c_size_t(signalOffset),
+            srcMrIdx, dstMrIdx, ctypes.c_uint64(signalValue)))
+
+    def flagcxSignal(self, comm: flagcxComm_t, peer: int,
+                     signalOffset: int, signalValue: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxSignal"](
+            comm, peer, ctypes.c_size_t(signalOffset),
+            ctypes.c_uint64(signalValue)))
+
+    def flagcxWaitSignal(self, comm: flagcxComm_t, peer: int,
+                         signalOffset: int, expected: int,
+                         stream: flagcxStream_t) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxWaitSignal"](
+            comm, peer, ctypes.c_size_t(signalOffset),
+            ctypes.c_uint64(expected), stream))
+
+    def flagcxReadCounter(self, comm: flagcxComm_t) -> int:
+        count = ctypes.c_uint64(0)
+        self.FLAGCX_CHECK(self._funcs["flagcxReadCounter"](
+            comm, ctypes.byref(count)))
+        return count.value
+
+    def flagcxWaitCounter(self, comm: flagcxComm_t, target: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxWaitCounter"](
+            comm, ctypes.c_uint64(target)))
+
     def adaptor_stream_create(self):
         new_stream = flagcxStream_t()
         self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCreate(ctypes.byref(new_stream)))
@@ -429,7 +544,8 @@ class FLAGCXLibrary:
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
-        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(old_stream.cuda_stream)))
+        raw_stream = getattr(old_stream, 'musa_stream', old_stream.cuda_stream)
+        self.FLAGCX_CHECK(self.handler.contents.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
         return new_stream
 
     def adaptor_stream_free(self, stream):

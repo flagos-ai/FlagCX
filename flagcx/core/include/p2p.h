@@ -58,9 +58,13 @@ struct flagcxP2pSyncSlot {
 struct p2pRegInfo {
   int copyDone;    // Indicates if the copy operation is complete
   int copyStarted; // Indicates if the copy operation has started
+  // WRITE mode: recv publishes into sender's slot
+  int ipcRecvRegReady;      // 1 = ipcRecvRmtAddr valid; recv sets
+  uintptr_t ipcRecvRmtAddr; // Recv's buffer mapped in sender's address space
+  // READ mode: sender publishes into receiver's slot
+  int ipcSendRegReady; // 1 = ipcSendRmtAddr valid; sender sets
   uintptr_t
-      ipcUserOffset; // Per-slot IPC offset (recv-side writes, send-side reads)
-  int ipcRegReady;   // 1 = ipcUserOffset is valid for current op
+      ipcSendRmtAddr; // Sender's buffer mapped in receiver's address space
 };
 
 struct flagcxP2pShm {
@@ -149,12 +153,11 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               struct flagcxP2pIpcDesc *ipcDesc,
                                               void **devMemPtr);
 
-flagcxResult_t
-flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm, const void *userbuff,
-                        size_t buffSize, struct flagcxConnector **peerConns,
-                        int *peerRanks, int nPeers, bool isSender,
-                        int *regBufFlag, uintptr_t *offsetOut,
-                        uintptr_t **peerRmtAddrsOut, size_t shmRegSlotIdx);
+flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
+                                       const void *userbuff, size_t buffSize,
+                                       int *peerRanks, int nPeers,
+                                       int *regBufFlag, uintptr_t *offsetOut,
+                                       uintptr_t **peerRmtAddrsOut);
 
 flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
                                          struct flagcxIpcRegInfo *info);

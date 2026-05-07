@@ -1,4 +1,6 @@
 /*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
  * Intra-node kernel tests using FlagCX Device API.
  *
  * Currently tests AllReduce: each rank fills its buffer with (rank+1), then
@@ -92,7 +94,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxMemAlloc(&regBuff, maxBytes));
   }
   if (localRegister == 2) {
-    // Window mode (NCCL > 2.28 only; graceful fallback on Fallback)
+    // Window mode (NCCL > 2.28 only; graceful fallback on Default path)
     FLAGCXCHECK(flagcxCommWindowRegister(comm, regBuff, maxBytes, &win,
                                          FLAGCX_WIN_DEFAULT));
     FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, maxBytes, win, &devMem));

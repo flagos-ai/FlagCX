@@ -31,8 +31,6 @@ flagcxResult_t flagcxDeviceAdaptorPluginUnload();
 
 // Net adaptor plugin loading (net/net_plugin_load.cc)
 // Reads FLAGCX_NET_ADAPTOR_PLUGIN, populates flagcxNetAdaptors[0].
-flagcxResult_t flagcxNetAdaptorPluginLoad();
-flagcxResult_t flagcxNetAdaptorPluginUnload();
 
 // ---- Per-type plugin init/finalize (wrap Load/Unload with fallback) ----
 

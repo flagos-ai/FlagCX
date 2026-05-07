@@ -1,0 +1,59 @@
+name: "Unit Tests: core"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  unittest-core:
+    runs-on: [self-hosted, cx-build]
+    container:
+      image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
+      options: --gpus all --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: true
+          set-safe-directory: true
+
+      - name: Build Google Test
+        run: |
+          cd /__w/FlagCX/FlagCX/third-party/googletest
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc)
+
+      - name: Build FlagCX
+        run: |
+          cd /__w/FlagCX/FlagCX
+          export MPI_HOME=/usr/local/mpi
+          make -j$(nproc) USE_NVIDIA=1
+
+      - name: Build core unit tests
+        run: |
+          cd /__w/FlagCX/FlagCX/test/unittest/core
+          export MPI_HOME=/usr/local/mpi
+          make -j$(nproc)
+
+      - name: Run core unit tests
+        run: |
+          cd /__w/FlagCX/FlagCX/test/unittest/core
+          export MPI_HOME=/usr/local/mpi
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
+          make run-unit

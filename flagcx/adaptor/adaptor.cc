@@ -147,6 +147,10 @@ struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor,
 #endif
 struct flagcxDeviceAdaptor *deviceAdaptor = &topsAdaptor;
 
+#elif USE_SUNRISE_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor,
+                                                      &pcclAdaptor};
+struct flagcxDeviceAdaptor *deviceAdaptor = &ptpuAdaptor;
 #endif
 
 // External adaptor declarations
@@ -160,6 +164,7 @@ extern struct flagcxNetAdaptor flagcxNetIbuc;
 #ifdef USE_UCX
 extern struct flagcxNetAdaptor flagcxNetUcx;
 #endif
+extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 // Unified network adaptor entry point
 struct flagcxNetAdaptor *getUnifiedNetAdaptor(int netType) {

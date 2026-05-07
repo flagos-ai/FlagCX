@@ -1,12 +1,12 @@
 /*************************************************************************
- * Copyright (c) 2025 BAAI. All rights reserved.
+ * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Host-side lifecycle management for flagcxDevComm_t and flagcxDevMem_t.
  *
  * Capability-based additive design:
  *   Baseline (always): rawPtr + fifoBuffer + rank info
  *   IPC layer:         peer pointers + IPC barriers (if IPC exchange succeeds)
- *   NCCL layer:        ncclDevComm + ncclWindow_t (if NCCL > 2.28)
+ *   Vendor layer:      vendor DevComm + vendor Window (if vendor supported)
  *
  * Each layer is added when available; lower layers are always present
  * as fallback. Kernel dispatch uses priority: Window > IPC > Raw.
@@ -16,8 +16,11 @@
 #include "flagcx_kernel.h"
 #include "net.h" // flagcxNetHandle_t
 #include "onesided.h"
-#include "p2p.h"     // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc
-#include <algorithm> // std::min, std::max
+#include "p2p.h" // flagcxP2pAllocateShareableBuffer, flagcxP2pIpcDesc (+comm.h, transport.h)
+#include "shmutils.h" // flagcxShmOpen, flagcxShmClose, flagcxShmUnlink
+#include "utils.h"    // flagcxParamSignalHostEnable
+#include <algorithm>  // std::min, std::max
+#include <sched.h>    // sched_yield
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -125,6 +128,14 @@ static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   comm->ipcTable[slot].nPeers = localRanks;
   comm->ipcTable[slot].basePtr = buff;
   comm->ipcTable[slot].inUse = true;
+
+  INFO(FLAGCX_INIT,
+       "buildIpcPeerPointers: rank %d slot %d buff=%p devPeerPtrs=%p", myRank,
+       slot, buff, (void *)devPeerPtrs);
+  for (int lr = 0; lr < localRanks; lr++) {
+    INFO(FLAGCX_INIT, "buildIpcPeerPointers:   hostPeerPtrs[%d]=%p", lr,
+         hostPeerPtrs[lr]);
+  }
   return slot;
 
 fail:
@@ -157,6 +168,8 @@ fail:
 
 // Setup inter-node signal connections and barrier MR.
 // Called from flagcxDevCommCreate when nNodes > 1.
+// Lazy-init: on first call, establishes RDMA connections and stores them on
+// heteroComm. Subsequent calls just copy the pointers into the new handle.
 static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
                                                 flagcxDevComm_t handle) {
   struct flagcxHeteroComm *hetero = comm->heteroComm;
@@ -172,10 +185,21 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   if (nNodes <= 1)
     return flagcxSuccess;
 
-  // Compute inter-node peer ranks (one representative per remote node).
-  // Use localRank 0 of each remote node as the representative.
-  // This keeps the number of connections = nNodes - 1 (not nRanks -
-  // localRanks).
+  // Already initialized: just copy pointers into this handle
+  if (hetero->relayInitialized) {
+    handle->nInterPeers = hetero->nInterPeers;
+    handle->isInterLeader = hetero->isInterLeader;
+    handle->interPeerRanks = hetero->interPeerRanks;
+    handle->interSignalFlags = hetero->interSignalFlags;
+    handle->interSignalFlagsHost = hetero->interSignalFlagsHost;
+    handle->signalSendComms = hetero->signalSendComms;
+    handle->barrierRecvComms = hetero->barrierRecvComms;
+    handle->barrierHandleInfo = hetero->barrierHandleInfo;
+    handle->netAdaptorPtr = hetero->netAdaptorPtr;
+    return flagcxSuccess;
+  }
+
+  // First call: establish connections and store on heteroComm.
   int *interPeerRanks = nullptr;
   int nInterPeers = 0;
 
@@ -186,8 +210,10 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     }
   }
 
-  if (nInterPeers == 0)
+  if (nInterPeers == 0) {
+    hetero->relayInitialized = true;
     return flagcxSuccess;
+  }
 
   interPeerRanks = (int *)malloc(nInterPeers * sizeof(int));
   if (interPeerRanks == nullptr)
@@ -202,34 +228,34 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
 
   // All ranks learn nInterPeers (needed for two-phase barrier logic).
   // Only localRank 0 (the inter leader) manages connections.
-  handle->nInterPeers = nInterPeers;
-  handle->interPeerRanks = interPeerRanks;
-  handle->isInterLeader = (hetero->localRank == 0);
+  hetero->nInterPeers = nInterPeers;
+  hetero->interPeerRanks = interPeerRanks;
+  hetero->isInterLeader = (hetero->localRank == 0);
 
   flagcxResult_t res = flagcxSuccess;
   size_t flagsSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
 
   // ---- Leader-only: allocate flags and establish connections ----
-  if (handle->isInterLeader) {
-    handle->netAdaptorPtr = (void *)hetero->netAdaptor;
+  if (hetero->isInterLeader) {
+    hetero->netAdaptorPtr = (void *)hetero->netAdaptor;
 
     // Step 1: Allocate host-mapped signal flags (GPU reads, RDMA NIC writes)
     FLAGCXCHECKGOTO(
-        deviceAdaptor->deviceMalloc((void **)&handle->interSignalFlagsHost,
+        deviceAdaptor->deviceMalloc((void **)&hetero->interSignalFlagsHost,
                                     flagsSize, flagcxMemHost, NULL),
         res, fail);
-    memset(handle->interSignalFlagsHost, 0, flagsSize);
+    memset(hetero->interSignalFlagsHost, 0, flagsSize);
     FLAGCXCHECKGOTO(
-        deviceAdaptor->hostGetDevicePointer((void **)&handle->interSignalFlags,
-                                            handle->interSignalFlagsHost),
+        deviceAdaptor->hostGetDevicePointer((void **)&hetero->interSignalFlags,
+                                            hetero->interSignalFlagsHost),
         res, fail);
 
     // Step 2: Establish netAdaptor connections with each inter-node peer.
     // Keep sendComms for iputSignal; keep ALL recvComms alive so that
     // peers' sendComm QPs remain connected (needed for incoming RDMA atomics).
-    handle->signalSendComms = (void **)calloc(nInterPeers, sizeof(void *));
-    handle->barrierRecvComms = (void **)calloc(nInterPeers, sizeof(void *));
-    if (!handle->signalSendComms || !handle->barrierRecvComms) {
+    hetero->signalSendComms = (void **)calloc(nInterPeers, sizeof(void *));
+    hetero->barrierRecvComms = (void **)calloc(nInterPeers, sizeof(void *));
+    if (!hetero->signalSendComms || !hetero->barrierRecvComms) {
       res = flagcxSystemError;
       goto fail;
     }
@@ -281,8 +307,8 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
         }
         net->closeListen(listenComm);
 
-        handle->signalSendComms[p] = sendComm;
-        handle->barrierRecvComms[p] = recvComm;
+        hetero->signalSendComms[p] = sendComm;
+        hetero->barrierRecvComms[p] = recvComm;
       }
     }
   }
@@ -291,197 +317,325 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   {
     struct flagcxOneSideHandleInfo *barrierInfo = nullptr;
     res = flagcxOneSideBarrierRegister(
-        comm, handle->isInterLeader ? handle->barrierRecvComms[0] : nullptr,
-        handle->isInterLeader ? handle->interSignalFlagsHost : nullptr,
-        handle->isInterLeader ? flagsSize : 0, &barrierInfo);
+        comm, hetero->isInterLeader ? hetero->barrierRecvComms[0] : nullptr,
+        hetero->isInterLeader ? hetero->interSignalFlagsHost : nullptr,
+        hetero->isInterLeader ? flagsSize : 0, &barrierInfo);
     if (res != flagcxSuccess) {
       WARN("setupInterNodeSignalRelay: barrier MR registration failed (%d)",
            res);
       goto fail;
     }
-    if (handle->isInterLeader) {
-      handle->barrierHandleInfo = barrierInfo;
+    if (hetero->isInterLeader) {
+      hetero->barrierHandleInfo = barrierInfo;
     } else {
       // Non-leader participated in AllGather but doesn't need the result
       flagcxOneSideBarrierDeregister(comm, barrierInfo);
     }
   }
 
+  hetero->relayInitialized = true;
   INFO(FLAGCX_INIT, "setupInterNodeSignalRelay: rank %d (%s), nInterPeers %d",
-       myRank, handle->isInterLeader ? "leader" : "non-leader", nInterPeers);
+       myRank, hetero->isInterLeader ? "leader" : "non-leader", nInterPeers);
+
+  // Copy into handle
+  handle->nInterPeers = hetero->nInterPeers;
+  handle->isInterLeader = hetero->isInterLeader;
+  handle->interPeerRanks = hetero->interPeerRanks;
+  handle->interSignalFlags = hetero->interSignalFlags;
+  handle->interSignalFlagsHost = hetero->interSignalFlagsHost;
+  handle->signalSendComms = hetero->signalSendComms;
+  handle->barrierRecvComms = hetero->barrierRecvComms;
+  handle->barrierHandleInfo = hetero->barrierHandleInfo;
+  handle->netAdaptorPtr = hetero->netAdaptorPtr;
   return flagcxSuccess;
 
 fail:
-  // Partial cleanup on error (DevCommDestroy will handle the rest)
+  // Clean up any partially-allocated relay state so that
+  // flagcxCommRelayDestroy (which skips when relayInitialized==false) doesn't
+  // leave dangling allocations.
+  if (hetero->isInterLeader) {
+    struct flagcxNetAdaptor *net = hetero->netAdaptor;
+    if (hetero->signalSendComms) {
+      for (int p = 0; p < nInterPeers; p++) {
+        if (hetero->signalSendComms[p])
+          net->closeSend(hetero->signalSendComms[p]);
+      }
+      free(hetero->signalSendComms);
+      hetero->signalSendComms = nullptr;
+    }
+    if (hetero->barrierRecvComms) {
+      for (int p = 0; p < nInterPeers; p++) {
+        if (hetero->barrierRecvComms[p])
+          net->closeRecv(hetero->barrierRecvComms[p]);
+      }
+      free(hetero->barrierRecvComms);
+      hetero->barrierRecvComms = nullptr;
+    }
+    if (hetero->interSignalFlagsHost) {
+      deviceAdaptor->deviceFree(hetero->interSignalFlagsHost, flagcxMemHost,
+                                NULL);
+      hetero->interSignalFlagsHost = nullptr;
+      hetero->interSignalFlags = nullptr;
+    }
+  }
+  free(hetero->interPeerRanks);
+  hetero->interPeerRanks = nullptr;
+  hetero->nInterPeers = 0;
+  hetero->isInterLeader = false;
   return res;
 }
 
-// Teardown inter-node signal relay (called from flagcxDevCommDestroy).
-static void cleanupInterNodeSignalRelay(flagcxComm_t comm,
-                                        flagcxDevComm_t handle) {
-  // Step 0: Drain FIFO — wait for proxy thread to finish all pending
-  // entries (including BarrierSignal RDMA atomics) before closing connections.
-  {
-    struct flagcxHeteroComm *hetero = comm->heteroComm;
-    if (hetero && hetero->proxyState && hetero->proxyState->kernelState.fifo) {
-      volatile uint64_t *buf =
-          (volatile uint64_t *)hetero->proxyState->kernelState.fifo->buffer;
-      if (buf) {
-        while (buf[flagcxFifoIdxConsumed] < buf[flagcxFifoIdxProduced]) {
-          sched_yield();
-        }
-      }
-    }
-  }
-
-  // Step 1: Cross-rank barrier — all ranks must drain before any rank
-  // closes connections, preventing the race where rank A destroys its QP
-  // while rank B's proxy is still posting RDMA atomics to rank A.
-  bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0x7f01);
-
-  // Free peer rank list (set on all ranks)
-  free(handle->interPeerRanks);
-  handle->interPeerRanks = nullptr;
-
-  // Only the leader has connections/flags to clean up
-  if (!handle->isInterLeader)
-    return;
-
-  struct flagcxNetAdaptor *net =
-      (struct flagcxNetAdaptor *)handle->netAdaptorPtr;
-
-  // 1. Deregister barrier MR and free handle info
-  if (handle->barrierHandleInfo) {
-    flagcxOneSideBarrierDeregister(
-        comm, (struct flagcxOneSideHandleInfo *)handle->barrierHandleInfo);
-    handle->barrierHandleInfo = nullptr;
-  }
-
-  // 2. Close send comms
-  if (handle->signalSendComms) {
-    for (int p = 0; p < handle->nInterPeers; p++) {
-      if (handle->signalSendComms[p]) {
-        net->closeSend(handle->signalSendComms[p]);
-      }
-    }
-    free(handle->signalSendComms);
-  }
-
-  // 3. Close all barrier recv comms (kept alive for QP connections)
-  if (handle->barrierRecvComms) {
-    for (int p = 0; p < handle->nInterPeers; p++) {
-      if (handle->barrierRecvComms[p]) {
-        net->closeRecv(handle->barrierRecvComms[p]);
-      }
-    }
-    free(handle->barrierRecvComms);
-  }
-
-  // 4. Defer free of host-mapped signal flags (cudaFreeHost would deadlock
-  // on NCCL persistent kernels — drain after ncclCommDestroy).
-  if (handle->interSignalFlagsHost) {
-    flagcxCommDeferFree(comm, handle->interSignalFlagsHost, flagcxMemHost);
-  }
-
-  // Note: do NOT clear comm->heteroComm->devCommHandle here.
-  // flagcxDevCommDestroy needs it to gate signalDeregister.
-}
-
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
 #include "nvidia_adaptor.h"
 #endif
 
 // ==========================================================================
-// IPC barrier setup helper (extracted from old Fallback DevCommCreate)
-//
-// Allocates IPC-shareable barrier flags, exchanges handles with all ranks,
-// and builds a device-side pointer array. On failure, partially-allocated
-// resources are cleaned up by flagcxDevCommDestroy (null-safe).
+// Platform wrappers for host memory registration.
+// Used only when FLAGCX_SIGNAL_HOST_ENABLE=1.
+// Delegates to deviceAdaptor->hostRegister / hostUnregister.
+// ==========================================================================
+static flagcxResult_t shmHostRegister(void *ptr, size_t bytes) {
+  if (deviceAdaptor->hostRegister == nullptr) {
+    WARN("FLAGCX_SIGNAL_HOST_ENABLE=1: hostRegister not supported on this "
+         "platform");
+    return flagcxNotSupported;
+  }
+  return deviceAdaptor->hostRegister(ptr, bytes);
+}
+
+static void shmHostUnregister(void *ptr) {
+  if (deviceAdaptor->hostUnregister)
+    deviceAdaptor->hostUnregister(ptr);
+}
+// Allocates barrier flags, exchanges pointers with local peers, and builds
+// a device-side pointer array. Two paths:
+//   Default (FLAGCX_SIGNAL_HOST_ENABLE=0): IPC device memory via ipcTable.
+//   Host-pinned (FLAGCX_SIGNAL_HOST_ENABLE=1): Shm + hostRegister.
+//     Used on platforms (e.g. Hygon DCU) where GPU L2 cache is not flushed
+//     mid-kernel for IPC-mapped peer device memory.
+// On failure, partial resources are cleaned up by flagcxDevCommDestroy.
 // ==========================================================================
 static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
                                        flagcxDevComm_t handle) {
-  int myRank = comm->rank;
-  int nRanks = comm->nranks;
   int localRanks = comm->localRanks;
-  int *lrToR = comm->localRankToRank;
+  int myRank = comm->rank;
+  int myLocalRank = comm->localRank;
 
   handle->nLocalRanks = localRanks;
   handle->localRankToRank = (int *)malloc(localRanks * sizeof(int));
   if (handle->localRankToRank == nullptr)
     return flagcxSystemError;
-  memcpy(handle->localRankToRank, lrToR, localRanks * sizeof(int));
+  memcpy(handle->localRankToRank, comm->localRankToRank,
+         localRanks * sizeof(int));
 
-  // Step 1: Allocate local barrier flags (IPC-shareable device memory)
-  struct flagcxP2pIpcDesc barrierIpcDesc;
-  memset(&barrierIpcDesc, 0, sizeof(barrierIpcDesc));
-  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint32_t);
-  FLAGCXCHECK(flagcxP2pAllocateShareableBuffer(
-      barrierSize, 0, &barrierIpcDesc, (void **)&handle->localBarrierFlags));
+  size_t barrierSize = localRanks * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
 
-  // Zero barrier flags
-  FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->localBarrierFlags, 0,
-                                          barrierSize, flagcxMemDevice, NULL));
+  if (flagcxParamSignalHostEnable() == 0) {
+    // ── IPC device memory path (default) ─────────────────────────────────
+    // Allocate device memory, exchange IPC handles, build peer ptr array.
+    void *barrierFlags = nullptr;
+    FLAGCXCHECK(deviceAdaptor->deviceMalloc(&barrierFlags, barrierSize,
+                                            flagcxMemDevice, NULL));
+    FLAGCXCHECK(deviceAdaptor->deviceMemset(barrierFlags, 0, barrierSize,
+                                            flagcxMemDevice, NULL));
+    handle->localBarrierFlags = (uint64_t *)barrierFlags;
 
-  // Step 2: Exchange barrier IPC handles with all ranks
-  struct flagcxP2pIpcDesc *allBarrierDescs = (struct flagcxP2pIpcDesc *)calloc(
-      nRanks, sizeof(struct flagcxP2pIpcDesc));
-  if (allBarrierDescs == nullptr)
-    return flagcxSystemError;
-  memcpy(&allBarrierDescs[myRank], &barrierIpcDesc,
-         sizeof(struct flagcxP2pIpcDesc));
-  FLAGCXCHECK(bootstrapAllGather(comm->bootstrap, allBarrierDescs,
-                                 sizeof(struct flagcxP2pIpcDesc)));
+    int slot = buildIpcPeerPointers(comm, barrierFlags, barrierSize);
+    if (slot < 0) {
+      deviceAdaptor->deviceFree(barrierFlags, flagcxMemDevice, NULL);
+      handle->localBarrierFlags = nullptr;
+      return flagcxSystemError;
+    }
 
-  // Step 3: Open intra-node peer barrier IPC handles
-  void **peerBarrierPtrs = (void **)calloc(localRanks, sizeof(void *));
-  if (peerBarrierPtrs == nullptr) {
-    free(allBarrierDescs);
-    return flagcxSystemError;
+    handle->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
+    handle->barrierIpcIndex = slot;
+    handle->localBarrierShmPtr = nullptr;
+    handle->peerBarrierShmPtrs = nullptr;
+    handle->barrierShmSize = 0;
+    handle->barrierDevPeerPtrsRaw = nullptr; // tracked via ipcTable
+    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+
+    INFO(FLAGCX_INIT,
+         "setupIpcBarriers(IPC): rank %d slot %d localBarrierFlags=%p "
+         "barrierPeers=%p nBarriers=%d",
+         myRank, slot, barrierFlags, (void *)handle->barrierPeers,
+         handle->nBarriers);
+
+  } else {
+    // ── flagcxShm + hipHostRegister path (FLAGCX_SIGNAL_HOST_ENABLE=1) ──
+    // Each process creates its own shm segment via flagcxShmOpen, maps all
+    // peers, registers them as pinned memory (bypasses GPU L2), then gets
+    // per-process device VAs via hostGetDevicePointer.
+
+    flagcxResult_t res = flagcxSuccess;
+    void **peerCpuPtrs = nullptr;
+    flagcxShmHandle_t *peerShmHandles = nullptr;
+    void **devPeerPtrs = nullptr;
+    void *myDevPtr = nullptr;
+    void **hostDevPtrs = nullptr;
+
+    // Build shm path from magic + global rank for uniqueness.
+    char myShmPath[SHM_PATH_MAX];
+    snprintf(myShmPath, sizeof(myShmPath), "/dev/shm/flagcx_barrier_%016llx_%d",
+             (unsigned long long)comm->magic, myRank);
+
+    // Step 1: Create and map own shm segment.
+    flagcxShmHandle_t myShmHandle = nullptr;
+    void *myCpuPtr = nullptr;
+    FLAGCXCHECKGOTO(flagcxShmOpen(myShmPath, sizeof(myShmPath), barrierSize,
+                                  &myCpuPtr, nullptr, localRanks, &myShmHandle),
+                    res, fail_own_shm);
+
+    // Step 2: Bootstrap barrier — all ranks have created their shm.
+    FLAGCXCHECKGOTO(
+        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA01),
+        res, fail_own_shm);
+
+    // Step 3: Open and map each peer's shm segment.
+    peerCpuPtrs = (void **)calloc(localRanks, sizeof(void *));
+    peerShmHandles =
+        (flagcxShmHandle_t *)calloc(localRanks, sizeof(flagcxShmHandle_t));
+    if (peerCpuPtrs == nullptr || peerShmHandles == nullptr) {
+      res = flagcxSystemError;
+      goto fail_own_shm;
+    }
+    peerCpuPtrs[myLocalRank] = myCpuPtr;
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr == myLocalRank)
+        continue;
+      char peerShmPath[SHM_PATH_MAX];
+      snprintf(peerShmPath, sizeof(peerShmPath),
+               "/dev/shm/flagcx_barrier_%016llx_%d",
+               (unsigned long long)comm->magic, comm->localRankToRank[lr]);
+      FLAGCXCHECKGOTO(flagcxShmOpen(peerShmPath, sizeof(peerShmPath),
+                                    barrierSize, &peerCpuPtrs[lr], nullptr, -1,
+                                    &peerShmHandles[lr]),
+                      res, fail_peer_shms);
+    }
+
+    // Step 4: Bootstrap barrier — all ranks have opened peer shm.
+    // Then unlink own shm: safe because peers already have it mapped.
+    FLAGCXCHECKGOTO(
+        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA02),
+        res, fail_peer_shms);
+    flagcxShmUnlink(myShmHandle);
+
+    // Step 5: Register own CPU mapping as pinned host memory.
+    FLAGCXCHECKGOTO(shmHostRegister(myCpuPtr, barrierSize), res,
+                    fail_peer_shms);
+    FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(&myDevPtr, myCpuPtr),
+                    res, fail_unreg_own);
+    handle->localBarrierFlags = (uint64_t *)myDevPtr;
+
+    // Step 6: Register each peer's mapping and collect device VAs.
+    hostDevPtrs = (void **)calloc(localRanks, sizeof(void *));
+    if (hostDevPtrs == nullptr) {
+      res = flagcxSystemError;
+      goto fail_unreg_own;
+    }
+    hostDevPtrs[myLocalRank] = myDevPtr;
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr == myLocalRank)
+        continue;
+      FLAGCXCHECKGOTO(shmHostRegister(peerCpuPtrs[lr], barrierSize), res,
+                      fail_unreg_peers);
+      FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(&hostDevPtrs[lr],
+                                                          peerCpuPtrs[lr]),
+                      res, fail_unreg_peers);
+    }
+
+    // Step 7: Copy device VA array to device memory for kernel access.
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc((void **)&devPeerPtrs,
+                                                localRanks * sizeof(void *),
+                                                flagcxMemDevice, NULL),
+                    res, fail_unreg_peers);
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMemcpy(
+                        devPeerPtrs, hostDevPtrs, localRanks * sizeof(void *),
+                        flagcxMemcpyHostToDevice, NULL, NULL),
+                    res, fail_free_devptrs);
+    free(hostDevPtrs);
+    hostDevPtrs = nullptr;
+
+    handle->barrierPeers = (uint64_t **)devPeerPtrs;
+    handle->barrierIpcIndex = -1;
+    handle->localBarrierShmPtr = myCpuPtr;
+    handle->peerBarrierShmPtrs = peerCpuPtrs;
+    handle->barrierShmSize = barrierSize;
+    handle->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
+    handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+    // Store shm handles for cleanup in flagcxDevCommDestroy
+    handle->myShmHandle = myShmHandle;
+    handle->peerShmHandles = peerShmHandles;
+
+    INFO(FLAGCX_INIT,
+         "setupIpcBarriers(shm): rank %d localBarrierFlags=%p "
+         "barrierPeers=%p nBarriers=%d",
+         myRank, (void *)handle->localBarrierFlags,
+         (void *)handle->barrierPeers, handle->nBarriers);
+    return flagcxSuccess;
+
+  fail_free_devptrs:
+    deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
+  fail_unreg_peers:
+    free(hostDevPtrs);
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr != myLocalRank && peerCpuPtrs[lr])
+        shmHostUnregister(peerCpuPtrs[lr]);
+    }
+  fail_unreg_own:
+    shmHostUnregister(myCpuPtr);
+  fail_peer_shms:
+    for (int lr = 0; lr < localRanks; lr++) {
+      if (lr != myLocalRank && peerShmHandles && peerShmHandles[lr])
+        flagcxShmClose(peerShmHandles[lr]);
+    }
+    free(peerCpuPtrs);
+    free(peerShmHandles);
+  fail_own_shm:
+    flagcxShmClose(myShmHandle);
+    return res;
   }
-  for (int lr = 0; lr < localRanks; lr++) {
-    int gr = lrToR[lr];
-    if (gr == myRank) {
-      peerBarrierPtrs[lr] = handle->localBarrierFlags;
-    } else {
-      flagcxIpcMemHandle_t handlePtr =
-          (flagcxIpcMemHandle_t)&allBarrierDescs[gr].handleData;
-      FLAGCXCHECK(
-          deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerBarrierPtrs[lr]));
+
+  return flagcxSuccess;
+}
+
+// ==========================================================================
+// Pre-establish full-mesh connections so the kernel proxy thread never needs
+// to trigger lazy connection setup (which may cause hanging issues).
+// Called from flagcxDevCommCreate — all ranks call it collectively, so the
+// bootstrap rendezvous in flagcxTransportP2pSetup works correctly.
+// ==========================================================================
+flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
+  struct flagcxHeteroComm *hetero = comm->heteroComm;
+  if (hetero == nullptr)
+    return flagcxSuccess;
+  if (hetero->proxyState == nullptr || hetero->proxyState->initialized == 0)
+    return flagcxSuccess;
+
+  bool needPreconnect = false;
+  int channelId = 0;
+  for (int peer = 0; peer < hetero->nRanks; peer++) {
+    if (peer == hetero->rank)
+      continue;
+    if (hetero->channels[channelId].peers[peer]->send[0].connected == 0 &&
+        hetero->channels[channelId].peers[peer]->send[0].registered == 0) {
+      hetero->connectSend[peer] |= (1UL << channelId);
+      hetero->channels[channelId].peers[peer]->send[0].registered = 1;
+      needPreconnect = true;
+    }
+    if (hetero->channels[channelId].peers[peer]->recv[0].connected == 0 &&
+        hetero->channels[channelId].peers[peer]->recv[0].registered == 0) {
+      hetero->connectRecv[peer] |= (1UL << channelId);
+      hetero->channels[channelId].peers[peer]->recv[0].registered = 1;
+      needPreconnect = true;
     }
   }
-  free(allBarrierDescs);
 
-  // Step 4: Build device barrier pointer array
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->barrierPeers,
-                                          localRanks * sizeof(uint32_t *),
-                                          flagcxMemDevice, NULL));
-  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-      handle->barrierPeers, peerBarrierPtrs, localRanks * sizeof(uint32_t *),
-      flagcxMemcpyHostToDevice, NULL, NULL));
-
-  // Step 5: Store in comm->ipcTable for deferred cleanup
-  // (ipcMemHandleClose triggers implicit device sync like cudaFree)
-  int slot = -1;
-  for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
-    if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
-        comm->ipcTable[k].devPeerPtrs == nullptr) {
-      slot = k;
-      break;
-    }
+  if (needPreconnect) {
+    INFO(FLAGCX_INIT, "preconnectFullMesh: rank %d establishing %d-peer mesh",
+         hetero->rank, hetero->nRanks - 1);
+    FLAGCXCHECK(flagcxTransportP2pSetup(hetero, NULL, 0));
   }
-  if (slot < 0) {
-    WARN("setupIpcBarriers: IPC table full (max %d entries)",
-         FLAGCX_MAX_IPC_ENTRIES);
-    return flagcxInternalError;
-  }
-  comm->ipcTable[slot].hostPeerPtrs = peerBarrierPtrs;
-  comm->ipcTable[slot].devPeerPtrs = (void **)handle->barrierPeers;
-  comm->ipcTable[slot].nPeers = localRanks;
-  comm->ipcTable[slot].basePtr = handle->localBarrierFlags;
-  comm->ipcTable[slot].inUse = true;
-  handle->barrierIpcIndex = slot;
-  handle->nBarriers = FLAGCX_DEVICE_CTA_COUNT;
-
   return flagcxSuccess;
 }
 
@@ -489,7 +643,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 // Unified DevComm: Additive capability layers
 //   Baseline: rank info + fifoBuffer (always)
 //   IPC layer: barrier pointers (if intraBarrierCount > 0)
-//   NCCL layer: ncclDevComm (if NCCL > 2.28)
+//   Vendor layer: vendor DevComm (if vendor supported)
 // ==========================================================================
 
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
@@ -513,133 +667,168 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
   handle->nRanks = comm->nranks;
   handle->intraRank = comm->localRank;
   handle->intraSize = comm->localRanks;
-  handle->fifoBuffer =
-      (comm->heteroComm != nullptr) ? comm->heteroComm->fifoBuffer : nullptr;
-
-  // ---- IPC barrier layer: if barriers requested ----
-  if (reqs->intraBarrierCount > 0) {
-    flagcxResult_t res = setupIpcBarriers(comm, handle);
-    if (res != flagcxSuccess) {
-      WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
-           "barriers unavailable",
-           res);
-      free(handle);
-      return res;
-    }
-  }
-
-  // ---- Inter-node signal relay: if multi-node ----
   {
-    flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
-    if (res != flagcxSuccess) {
-      WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d), "
-           "falling back to single-node mode",
-           res);
-      // Reset so kernel uses single-node barrier path (no inter barrier)
-      handle->nInterPeers = 0;
-      handle->isInterLeader = false;
+    int ctxCount = (reqs->interContextCount > 0) ? reqs->interContextCount : 1;
+    if (comm->heteroComm != nullptr) {
+      int available = comm->heteroComm->proxyState->kernelState.contextCount;
+      if (available > 0 && ctxCount > available)
+        ctxCount = available;
     }
-  }
-
-  // ---- One-sided Fallback layer: if signals or counters requested ----
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
-    // contextCount: number of independent CTA-context slots (default 4)
-    int ctxCount = (reqs->interContextCount > 0) ? reqs->interContextCount : 4;
     handle->contextCount = ctxCount;
-
-    // Allocate signal buffer (GPU, SYNC_MEMOPS via gdrMemAlloc for RDMA)
-    // Size: contextCount × signalCount entries (2D layout)
-    if (reqs->interSignalCount > 0) {
-      handle->signalCount = reqs->interSignalCount;
-      size_t sigSize =
-          (size_t)handle->signalCount * ctxCount * sizeof(uint64_t);
-      FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
-                                             sigSize, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->signalBuffer, 0, sigSize,
-                                              flagcxMemDevice, NULL));
-      // Shadow buffer (local GPU memory, no MR needed), same 2D layout
-      FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->shadowBuffer,
-                                              sigSize, flagcxMemDevice, NULL));
-      FLAGCXCHECK(deviceAdaptor->deviceMemset(handle->shadowBuffer, 0, sigSize,
-                                              flagcxMemDevice, NULL));
-    }
-    // Allocate counter buffer (host-pinned: CPU proxy writes, GPU reads via
-    // UVA), Size: contextCount × counterCount entries (2D layout)
-    if (reqs->interCounterCount > 0) {
-      handle->counterCount = reqs->interCounterCount;
-      size_t cntSize =
-          (size_t)handle->counterCount * ctxCount * sizeof(uint64_t);
-      FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
-                                              cntSize, flagcxMemHost, NULL));
-      memset(handle->counterBuffer, 0, cntSize);
-    }
-    // PutValue staging buffer (8 bytes host-pinned)
-    FLAGCXCHECK(
-        deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
-                                    sizeof(uint64_t), flagcxMemHost, NULL));
-    memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
-
-    // Auto-register signal buffer for RDMA one-sided access
-    if (handle->signalBuffer) {
-      flagcxResult_t regRes = flagcxOneSideSignalRegister(
-          comm, handle->signalBuffer,
-          (size_t)handle->signalCount * handle->contextCount *
-              sizeof(uint64_t));
-      if (regRes != flagcxSuccess) {
-        WARN("flagcxDevCommCreate: signal buffer MR registration failed (%d), "
-             "one-sided operations will not work",
-             regRes);
-        return regRes;
-      }
-    }
-
-    // Auto-register staging buffer for PutValue RDMA source
-    if (handle->putValueStagingBuffer) {
-      flagcxResult_t regRes = flagcxOneSideStagingRegister(
-          comm, handle->putValueStagingBuffer, sizeof(uint64_t));
-      if (regRes != flagcxSuccess) {
-        WARN("flagcxDevCommCreate: staging buffer MR registration failed (%d), "
-             "putValue will not work",
-             regRes);
-      }
-    }
-
-    INFO(FLAGCX_INIT,
-         "flagcxDevCommCreate: one-sided Fallback buffers allocated "
-         "(signals=%d, counters=%d, contexts=%d)",
-         handle->signalCount, handle->counterCount, handle->contextCount);
-  }
-
-#ifdef FLAGCX_DEVICE_API_NCCL
-  // ---- NCCL layer: try ncclDevCommCreate ----
-  {
-    flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm != nullptr) {
-      ncclDevCommRequirements ncclReqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-      ncclReqs.lsaBarrierCount = reqs->intraBarrierCount;
-      ncclReqs.lsaMultimem = reqs->intraMulticast;
-      ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
-      ncclReqs.ginSignalCount = reqs->interSignalCount;
-      ncclReqs.barrierCount = reqs->barrierCount;
-      ncclReqs.ginForceEnable = reqs->interForceEnable;
-      ncclReqs.ginContextCount = reqs->interContextCount;
-      ncclReqs.ginCounterCount = reqs->interCounterCount;
-      ncclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
-      ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
-
-      flagcxResult_t ret = ncclAdaptorDevCommCreate(innerComm->base, &ncclReqs,
-                                                    &handle->ncclDev);
-      if (ret == flagcxSuccess) {
-        handle->hasVendorComm = true;
-        handle->hasVendorNet = (handle->ncclDev.ginContextCount > 0);
-      } else {
-        WARN("flagcxDevCommCreate: ncclDevCommCreate failed (%d), "
-             "NCCL device layer not available",
-             ret);
-      }
+    for (int i = 0; i < ctxCount; i++) {
+      handle->fifoBuffers[i] = (comm->heteroComm != nullptr)
+                                   ? comm->heteroComm->fifoBuffers[i]
+                                   : nullptr;
     }
   }
-#endif
+
+  // ---- Vendor path: try devCommCreate via adaptor ----
+  flagcxInnerComm_t innerComm = comm->homoComm;
+  if (innerComm != nullptr &&
+      cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate != NULL) {
+    flagcxInnerDevComm_t innerDevComm = nullptr;
+    flagcxResult_t ret = cclAdaptors[flagcxCCLAdaptorDevice]->devCommCreate(
+        innerComm, reqs, &innerDevComm);
+    if (ret != flagcxSuccess && ret != flagcxNotSupported &&
+        ret != flagcxInvalidArgument) {
+      WARN("flagcxDevCommCreate: vendor devCommCreate failed (%d)", ret);
+      free(handle);
+      return ret;
+    }
+    if (ret == flagcxSuccess)
+      handle->devComm = innerDevComm;
+  }
+  if (handle->devComm != nullptr) {
+    int nNodes = 0;
+    if (comm->heteroComm != nullptr && comm->heteroComm->nNodes > 0) {
+      nNodes = comm->heteroComm->nNodes;
+    } else if (handle->intraSize > 0 &&
+               handle->nRanks % handle->intraSize == 0) {
+      nNodes = handle->nRanks / handle->intraSize;
+    }
+    if (nNodes > 0)
+      handle->nInterPeers = nNodes - 1;
+  }
+  if (handle->devComm == nullptr) {
+    // ---- Default path: IPC barriers + inter-node signal relay + one-sided
+    // ----
+
+    // IPC barrier layer: if barriers requested
+    if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
+      flagcxResult_t res = setupIpcBarriers(comm, handle);
+      if (res != flagcxSuccess) {
+        WARN("flagcxDevCommCreate: IPC barrier setup failed (%d), "
+             "barriers unavailable",
+             res);
+        free(handle);
+        return res;
+      }
+    }
+
+    // Inter-node signal relay: if multi-node
+    {
+      flagcxResult_t res = setupInterNodeSignalRelay(comm, handle);
+      if (res != flagcxSuccess) {
+        WARN("flagcxDevCommCreate: inter-node signal relay setup failed (%d), "
+             "falling back to single-node mode",
+             res);
+        handle->nInterPeers = 0;
+        handle->isInterLeader = false;
+      }
+    }
+
+    // Reset inter-node barrier signal flags so that the new DevComm's
+    // interBarrierEpoch (starting at 0) doesn't see stale values from a
+    // previous DevComm, which would cause barriers to pass without waiting
+    // for the peer.
+    if (comm->heteroComm != nullptr &&
+        comm->heteroComm->interSignalFlagsHost != nullptr) {
+      size_t flagsSize = FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
+      memset(comm->heteroComm->interSignalFlagsHost, 0, flagsSize);
+    }
+
+    // One-sided Default layer: if signals or counters requested
+    if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+      // Use nKernelProxies (max contextCount) for buffer sizing so that
+      // the RDMA MR covers all possible context slots across DevComm
+      // re-creations with different contextCount values.
+      int bufCtxCount =
+          (comm->heteroComm != nullptr)
+              ? comm->heteroComm->proxyState->kernelState.contextCount
+              : handle->contextCount;
+      if (bufCtxCount < handle->contextCount)
+        bufCtxCount = handle->contextCount;
+
+      // Allocate signal buffer (host-pinned or GDR device memory)
+      if (reqs->interSignalCount > 0) {
+        handle->signalCount = reqs->interSignalCount;
+        size_t sigSize =
+            (size_t)handle->signalCount * bufCtxCount * sizeof(uint64_t);
+        if (flagcxParamSignalHostEnable()) {
+          FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+              (void **)&handle->signalBuffer, sigSize, flagcxMemHost, NULL));
+          memset(handle->signalBuffer, 0, sigSize);
+        } else {
+          FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&handle->signalBuffer,
+                                                 sigSize, NULL));
+          FLAGCXCHECK(deviceAdaptor->deviceMemset(
+              handle->signalBuffer, 0, sigSize, flagcxMemDevice, NULL));
+        }
+        FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+            (void **)&handle->shadowBuffer, sigSize, flagcxMemDevice, NULL));
+        FLAGCXCHECK(deviceAdaptor->deviceMemset(
+            handle->shadowBuffer, 0, sigSize, flagcxMemDevice, NULL));
+      }
+      // Allocate counter buffer (host-pinned)
+      if (reqs->interCounterCount > 0) {
+        handle->counterCount = reqs->interCounterCount;
+        size_t cntSize =
+            (size_t)handle->counterCount * bufCtxCount * sizeof(uint64_t);
+        FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&handle->counterBuffer,
+                                                cntSize, flagcxMemHost, NULL));
+        memset(handle->counterBuffer, 0, cntSize);
+      }
+      // PutValue staging buffer (8 bytes host-pinned)
+      FLAGCXCHECK(
+          deviceAdaptor->deviceMalloc((void **)&handle->putValueStagingBuffer,
+                                      sizeof(uint64_t), flagcxMemHost, NULL));
+      memset(handle->putValueStagingBuffer, 0, sizeof(uint64_t));
+
+      // Auto-register signal buffer for RDMA one-sided access
+      if (handle->signalBuffer) {
+        int sigPtrType =
+            flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
+        flagcxResult_t regRes = flagcxOneSideSignalRegister(
+            comm, handle->signalBuffer,
+            (size_t)handle->signalCount * bufCtxCount * sizeof(uint64_t),
+            sigPtrType);
+        if (regRes != flagcxSuccess) {
+          WARN(
+              "flagcxDevCommCreate: signal buffer MR registration failed (%d), "
+              "one-sided operations will not work",
+              regRes);
+          return regRes;
+        }
+      }
+
+      // Auto-register staging buffer for PutValue RDMA source
+      if (handle->putValueStagingBuffer) {
+        flagcxResult_t regRes = flagcxOneSideStagingRegister(
+            comm, handle->putValueStagingBuffer, sizeof(uint64_t));
+        if (regRes != flagcxSuccess) {
+          WARN("flagcxDevCommCreate: staging buffer MR registration failed "
+               "(%d), "
+               "putValue will not work",
+               regRes);
+        }
+      }
+
+      INFO(FLAGCX_INIT,
+           "flagcxDevCommCreate: one-sided Default buffers allocated "
+           "(signals=%d, counters=%d, contexts=%d)",
+           handle->signalCount, handle->counterCount, handle->contextCount);
+    }
+  }
 
   *devComm = handle;
 
@@ -649,14 +838,17 @@ flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
     hetero->devCommHandle = handle;
   }
 
-  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s%s",
-       handle->rank, handle->barrierPeers ? " + IPC barriers" : "",
+  INFO(FLAGCX_INIT, "flagcxDevCommCreate: rank %d, layers: baseline%s%s%s%s",
+       handle->rank, handle->devComm ? " + vendor devComm" : "",
+       handle->barrierPeers ? " + IPC barriers" : "",
        handle->nInterPeers > 0 ? " + inter-node signal relay" : "",
        (handle->signalCount > 0 || handle->counterCount > 0)
-           ? " + one-sided Fallback"
-           : "",
-       handle->hasVendorComm ? " + ncclDevComm" : "",
-       handle->hasVendorNet ? " + GIN" : "");
+           ? " + one-sided Default"
+           : "");
+
+  // Pre-establish full-mesh connections from main thread
+  FLAGCXCHECK(preconnectFullMesh(comm));
+
   return flagcxSuccess;
 }
 
@@ -668,42 +860,70 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 
   INFO(FLAGCX_INIT, "flagcxDevCommDestroy: rank %d enter", devComm->rank);
 
-#ifdef FLAGCX_DEVICE_API_NCCL
-  // NCCL layer cleanup
-  if (devComm->hasVendorComm && comm != nullptr) {
+  // Vendor layer cleanup via adaptor
+  if (comm != nullptr && devComm->devComm != nullptr) {
     flagcxInnerComm_t innerComm = comm->homoComm;
-    if (innerComm != nullptr) {
-      ncclAdaptorDevCommDestroy(innerComm->base, &devComm->ncclDev);
+    if (innerComm != nullptr &&
+        cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy != NULL) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->devCommDestroy(innerComm,
+                                                          devComm->devComm);
+      devComm->devComm = nullptr;
     }
   }
-#endif
-
-  // Inter-node signal relay cleanup
-  cleanupInterNodeSignalRelay(comm, devComm);
 
   // IPC barrier cleanup — mark ipcTable entry as unused.
   // Actual ipcMemHandleClose + deviceFree deferred to flagcxCommCleanupIpcTable
-  // (after ncclCommDestroy) to avoid implicit device synchronization deadlock.
+  // (after vendor comm destroy) to avoid implicit device synchronization
+  // deadlock.
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devComm->barrierIpcIndex].inUse = false;
   }
-  if (devComm->localBarrierFlags) {
+  // IPC path: localBarrierFlags is device-allocated (tracked via ipcTable).
+  // shm path: localBarrierFlags is a device VA alias of localBarrierShmPtr;
+  //   do NOT free it — the CPU mapping is freed below via shmHostUnregister.
+  if (devComm->localBarrierShmPtr == nullptr && devComm->localBarrierFlags &&
+      devComm->barrierIpcIndex < 0) {
+    // Standalone device allocation (not tracked via ipcTable): free directly.
     flagcxCommDeferFree(comm, devComm->localBarrierFlags, flagcxMemDevice);
+  }
+  // flagcxShm path cleanup: unregister and close all shm mappings.
+  if (devComm->localBarrierShmPtr) {
+    shmHostUnregister(devComm->localBarrierShmPtr);
+    if (devComm->myShmHandle)
+      flagcxShmClose(devComm->myShmHandle);
+  }
+  if (devComm->peerBarrierShmPtrs) {
+    for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
+      void *p = devComm->peerBarrierShmPtrs[lr];
+      if (p && p != devComm->localBarrierShmPtr) {
+        shmHostUnregister(p);
+        if (devComm->peerShmHandles && devComm->peerShmHandles[lr])
+          flagcxShmClose(devComm->peerShmHandles[lr]);
+      }
+    }
+    free(devComm->peerBarrierShmPtrs);
+    free(devComm->peerShmHandles);
+  }
+  if (devComm->barrierDevPeerPtrsRaw) {
+    // shm path: standalone device pointer array (not in ipcTable).
+    flagcxCommDeferFree(comm, devComm->barrierDevPeerPtrsRaw, flagcxMemDevice);
   }
 
   // Clear heteroComm->devComm + deregister signal buffer
   if (comm != nullptr && comm->heteroComm != nullptr &&
       comm->heteroComm->devCommHandle == devComm) {
     if (devComm->signalBuffer) {
-      flagcxOneSideSignalDeregister(comm);
+      flagcxOneSideSignalDeregister(comm->heteroComm);
     }
     comm->heteroComm->devCommHandle = nullptr;
   }
 
-  // One-sided Fallback cleanup
+  // One-sided Default cleanup
   if (devComm->signalBuffer) {
-    flagcxCommDeferFree(comm, devComm->signalBuffer, flagcxMemDevice);
+    flagcxMemType_t sigMt =
+        flagcxParamSignalHostEnable() ? flagcxMemHost : flagcxMemDevice;
+    flagcxCommDeferFree(comm, devComm->signalBuffer, sigMt);
   }
   if (devComm->shadowBuffer) {
     flagcxCommDeferFree(comm, devComm->shadowBuffer, flagcxMemDevice);
@@ -726,7 +946,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // Unified DevMem: Additive capability layers
 //   Baseline: rawPtr (always)
 //   IPC layer: peer pointers (if comm provided and win is null)
-//   Window layer: ncclWindow_t (if win provided, Vendor only)
+//   Window layer: vendor Window (if win provided, Vendor only)
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
@@ -746,19 +966,20 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   handle->rawPtr = buff;
   handle->ipcIndex = -1;
 
-  // ---- Per-window MR layer: lookup buff in globalOneSideHandleTable ----
+  // ---- Per-comm MR layer: lookup buff in heteroComm->oneSideHandles ----
   handle->mrIndex = -1;
   handle->mrBase = 0;
-  if (comm != nullptr) {
-    for (int i = 0; i < globalOneSideHandleCount; i++) {
-      struct flagcxOneSideHandleInfo *info = globalOneSideHandleTable[i];
+  if (comm != nullptr && comm->heteroComm != nullptr) {
+    struct flagcxHeteroComm *hc = comm->heteroComm;
+    for (int i = 0; i < hc->oneSideHandleCount; i++) {
+      struct flagcxOneSideHandleInfo *info = hc->oneSideHandles[i];
       if (info != NULL && info->baseVas != NULL) {
         uintptr_t base = info->baseVas[comm->rank];
         if ((uintptr_t)buff == base) {
           handle->mrIndex = i;
           handle->mrBase = base;
           INFO(FLAGCX_INIT,
-               "flagcxDevMemCreate: buff %p matched handleTable[%d], "
+               "flagcxDevMemCreate: buff %p matched oneSideHandles[%d], "
                "mrBase=0x%lx",
                buff, i, (unsigned long)base);
           break;
@@ -770,7 +991,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   if (comm != nullptr) {
     handle->intraRank = comm->localRank;
 
-#ifndef FLAGCX_DEVICE_API_NCCL
+#ifndef FLAGCX_DEVICE_API_VENDOR
     if (win != nullptr) {
       WARN("flagcxDevMemCreate: window provided but NCCL device API "
            "unavailable, falling back to IPC");
@@ -794,13 +1015,46 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     // ---- Window layer: if win provided and valid ----
     if (win != nullptr) {
       handle->hasWindow = true;
-#ifdef FLAGCX_DEVICE_API_NCCL
+#ifdef FLAGCX_DEVICE_API_VENDOR
       handle->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
-      handle->ncclWin = win->base;
+      // Allocate vendor Window and store in opaque pointer
+      ncclWindow_t *ncclWin = (ncclWindow_t *)malloc(sizeof(ncclWindow_t));
+      if (ncclWin == nullptr) {
+        WARN("flagcxDevMemCreate: failed to allocate ncclWindow_t");
+        free(handle);
+        return flagcxSystemError;
+      }
+      *ncclWin = win->base;
+      handle->window = ncclWin;
       handle->winHandle = (void *)win;
+#else
+      handle->window = nullptr;
+      handle->winHandle = nullptr;
 #endif
     }
   }
+
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  // Default: always create a Window with baseline/IPC/MR fields so that
+  // flagcxDevMem(di) can copy it into _winBase for kernel use.
+  if (handle->window == nullptr) {
+    auto *fbWin = (typename DeviceAPI::Window *)malloc(
+        sizeof(typename DeviceAPI::Window));
+    if (fbWin == nullptr) {
+      WARN("flagcxDevMemCreate: failed to allocate fallback Window");
+      free(handle);
+      return flagcxSystemError;
+    }
+    fbWin->rawPtr = handle->rawPtr;
+    fbWin->peerPtrs = handle->devPeerPtrs;
+    fbWin->intraRank = handle->intraRank;
+    fbWin->mrBase = handle->mrBase;
+    fbWin->mrIndex = handle->mrIndex;
+    handle->window = fbWin;
+    handle->hasWindow =
+        (handle->rawPtr != nullptr || handle->devPeerPtrs != nullptr);
+  }
+#endif
 
   *devMem = handle;
   INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s%s", buff,
@@ -821,6 +1075,11 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
   if (comm != nullptr && devMem->ipcIndex >= 0 &&
       devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devMem->ipcIndex].inUse = false;
+  }
+
+  // Free window allocation if present
+  if (devMem->window != nullptr) {
+    free(devMem->window);
   }
 
   free(devMem);
@@ -902,6 +1161,70 @@ flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxCommRelayDestroy(flagcxComm_t comm) {
+  if (comm == nullptr || comm->heteroComm == nullptr)
+    return flagcxSuccess;
+  struct flagcxHeteroComm *hetero = comm->heteroComm;
+  if (!hetero->relayInitialized || hetero->nInterPeers == 0)
+    return flagcxSuccess;
+
+  // Drain all FIFOs before closing RDMA connections
+  if (hetero->proxyState) {
+    int ctxCount = hetero->proxyState->kernelState.contextCount;
+    for (int i = 0; i < ctxCount; i++) {
+      if (hetero->proxyState->kernelState.fifos[i]) {
+        volatile uint64_t *buf =
+            (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
+                ->buffer;
+        if (buf) {
+          while (buf[flagcxFifoIdxConsumed] < buf[flagcxFifoIdxProduced])
+            sched_yield();
+        }
+      }
+    }
+  }
+
+  // Cross-rank barrier: all ranks drain before any rank closes connections
+  bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0x7f01);
+
+  free(hetero->interPeerRanks);
+  hetero->interPeerRanks = nullptr;
+
+  if (!hetero->isInterLeader) {
+    hetero->relayInitialized = false;
+    return flagcxSuccess;
+  }
+
+  struct flagcxNetAdaptor *net =
+      (struct flagcxNetAdaptor *)hetero->netAdaptorPtr;
+
+  if (hetero->barrierHandleInfo) {
+    flagcxOneSideBarrierDeregister(
+        comm, (struct flagcxOneSideHandleInfo *)hetero->barrierHandleInfo);
+    hetero->barrierHandleInfo = nullptr;
+  }
+  if (hetero->signalSendComms) {
+    for (int p = 0; p < hetero->nInterPeers; p++)
+      if (hetero->signalSendComms[p])
+        net->closeSend(hetero->signalSendComms[p]);
+    free(hetero->signalSendComms);
+    hetero->signalSendComms = nullptr;
+  }
+  if (hetero->barrierRecvComms) {
+    for (int p = 0; p < hetero->nInterPeers; p++)
+      if (hetero->barrierRecvComms[p])
+        net->closeRecv(hetero->barrierRecvComms[p]);
+    free(hetero->barrierRecvComms);
+    hetero->barrierRecvComms = nullptr;
+  }
+  if (hetero->interSignalFlagsHost) {
+    flagcxCommDeferFree(comm, hetero->interSignalFlagsHost, flagcxMemHost);
+    hetero->interSignalFlagsHost = nullptr;
+  }
+  hetero->relayInitialized = false;
+  return flagcxSuccess;
+}
+
 // ==========================================================================
 // Communicator property query
 // ==========================================================================
@@ -918,12 +1241,12 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
   props->nRanks = comm->nranks;
   props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
 
-  // NCCL-specific fields: fill from NCCL if available
-#ifdef FLAGCX_DEVICE_API_NCCL
+  // Vendor-specific fields: fill from vendor if available
+#ifdef FLAGCX_DEVICE_API_VENDOR
   flagcxInnerComm_t innerComm = comm->homoComm;
   if (innerComm != nullptr && innerComm->base != nullptr) {
-    props->deviceApiSupport = true; // NCCL > 2.28 available
-    // ncclCommQueryProperties not yet wired through adaptor — set defaults.
+    props->deviceApiSupport = true; // Vendor device API available
+    // Vendor CommQueryProperties not yet wired through adaptor — set defaults.
     // Full delegation will be added when the adaptor wrapper is available.
     props->multicastSupport = false;
     props->netType = flagcxNetTypeNone;

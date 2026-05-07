@@ -53,6 +53,7 @@ struct flagcxIpcRegInfo {
   struct flagcxProxyConnector *ipcProxyconn;
   struct flagcxIpcImpInfo impInfo;
   bool handleReady;
+  bool sameProcess; // cached at registration time for safe deregister
 };
 
 struct flagcxRegItem {

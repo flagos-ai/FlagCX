@@ -7,6 +7,9 @@
 
 #ifdef USE_METAX_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, mcMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, mcMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, mcMemcpyDeviceToHost},
@@ -339,10 +342,19 @@ flagcxResult_t macaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-static flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                   uint64_t, int) {
+flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
   return flagcxNotSupported;
 }
+flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                             int) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t macaAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
@@ -365,9 +377,11 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorStreamCreate, macaAdaptorStreamDestroy, macaAdaptorStreamCopy,
       macaAdaptorStreamFree, macaAdaptorStreamSynchronize,
       macaAdaptorStreamQuery, macaAdaptorStreamWaitEvent,
+      macaAdaptorStreamWaitValue64, macaAdaptorStreamWriteValue64,
       // Event functions
       macaAdaptorEventCreate, macaAdaptorEventDestroy, macaAdaptorEventRecord,
       macaAdaptorEventSynchronize, macaAdaptorEventQuery,
+      macaAdaptorEventElapsedTime,
       // IpcMemHandle functions
       macaAdaptorIpcMemHandleCreate, macaAdaptorIpcMemHandleGet,
       macaAdaptorIpcMemHandleOpen, macaAdaptorIpcMemHandleClose,
@@ -395,7 +409,9 @@ struct flagcxDeviceAdaptor macaAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      macaAdaptorEventElapsedTime, macaAdaptorStreamWaitValue64,
+      macaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
+                                 // size_t);
+      macaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_METAX_ADAPTOR

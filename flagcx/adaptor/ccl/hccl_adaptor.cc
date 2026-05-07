@@ -1,6 +1,10 @@
 #include "ascend_adaptor.h"
 
 #ifdef USE_ASCEND_ADAPTOR
+
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
 #include <map>
 #include <vector>
 std::map<flagcxDataType_t, HcclDataType> f2h_datatype_map = {
@@ -334,6 +338,24 @@ flagcxResult_t hcclAdaptorGroupEnd() {
   return flagcxSuccess;
 }
 
+flagcxResult_t
+hcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+hcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t hcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor hcclAdaptor = {
     "HCCL",
     // Basic functions
@@ -353,6 +375,9 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     hcclAdaptorAllGather, hcclAdaptorAlltoAll, hcclAdaptorAlltoAllv,
     hcclAdaptorSend, hcclAdaptorRecv,
     // Group semantics
-    hcclAdaptorGroupStart, hcclAdaptorGroupEnd};
+    hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
+    // Device API
+    hcclAdaptorDevCommReqsInit, hcclAdaptorDevCommCreate,
+    hcclAdaptorDevCommDestroy};
 
 #endif // USE_ASCEND_ADAPTOR

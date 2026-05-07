@@ -2,6 +2,10 @@
 
 #ifdef USE_ILUVATAR_COREX_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t ixncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
@@ -290,6 +294,24 @@ flagcxResult_t ixncclAdaptorGroupEnd() {
   return (flagcxResult_t)ncclGroupEnd();
 }
 
+flagcxResult_t
+ixncclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                             flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+ixncclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                           const flagcxDevCommRequirements * /*reqs*/,
+                           flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t ixncclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                           flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor ixncclAdaptor = {
     "IXNCCL",
     // Basic functions
@@ -311,6 +333,9 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     ixncclAdaptorAllGather, ixncclAdaptorAlltoAll, ixncclAdaptorAlltoAllv,
     ixncclAdaptorSend, ixncclAdaptorRecv,
     // Group semantics
-    ixncclAdaptorGroupStart, ixncclAdaptorGroupEnd};
+    ixncclAdaptorGroupStart, ixncclAdaptorGroupEnd,
+    // Device API
+    ixncclAdaptorDevCommReqsInit, ixncclAdaptorDevCommCreate,
+    ixncclAdaptorDevCommDestroy};
 
 #endif // USE_ILUVATAR_COREX_ADAPTOR

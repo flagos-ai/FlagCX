@@ -1,13 +1,12 @@
 #ifdef USE_MUSA_ADAPTOR
 
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 #include "mccl.h"
 #include <map>
 #include <musa.h>
 #include <musa_runtime.h>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   mcclComm_t base;
 };

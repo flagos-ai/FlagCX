@@ -229,7 +229,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
  * the rest of the resources (e.g. communicator itself) without blocking. */
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object. */
+/* Frees local resources associated with communicator object.
+   The comm pointer is invalidated and must not be accessed after this call. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations
@@ -260,10 +261,6 @@ flagcxResult_t flagcxCommGetDeviceNumber(const flagcxComm_t comm, int *device);
 
 /* Returns the user-ordered "rank" associated with the communicator. */
 flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank);
-
-/* Returns `(void *)fifoBuffer` associated with the `heteroComm` of the input
- * communicator */
-flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, void **buffer);
 
 /*
  * Collective communication operations
@@ -443,6 +440,77 @@ flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
 flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream);
+
+/*
+ * One-sided RDMA operations
+ *
+ * These operations require prior registration via flagcxOneSideRegister /
+ * flagcxOneSideSignalRegister. They are only supported on heterogeneous
+ * communicators backed by an RDMA-capable net adaptor.
+ */
+
+/* Register a data buffer for one-sided RDMA operations.  Collective: ALL ranks
+ * in the communicator must call with their local buffer.  Internally performs
+ * an AllGather of MR metadata so every rank knows every other rank's rkey and
+ * base VA. */
+flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
+                                     size_t size);
+
+/* Register a signal buffer for one-sided RDMA operations.
+ * ptrType: FLAGCX_PTR_CUDA for device memory, FLAGCX_PTR_HOST for host-pinned
+ * memory.  Collective: ALL ranks in the communicator must call. */
+flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
+                                           size_t size, int ptrType);
+
+/* Register a host-pinned staging buffer for one-sided PutValue operations.
+ * Must be called after flagcxOneSideSignalRegister.  Collective: ALL ranks
+ * in the communicator must call. */
+flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
+                                            size_t size);
+
+/* Release staging buffer MR resources. */
+flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm);
+
+/* RDMA READ: pull size bytes from remote peer's buffer at srcOffset into the
+ * local buffer at dstOffset. srcMrIdx / dstMrIdx index the per-window MR
+ * handle table populated by flagcxOneSideRegister. */
+flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
+                         size_t dstOffset, size_t size, int srcMrIdx,
+                         int dstMrIdx);
+
+/* RDMA WRITE + ATOMIC: write size bytes from local srcOffset to remote
+ * dstOffset, then atomically increment the remote signal at signalOffset by
+ * signalValue. When size == 0, only the signal ATOMIC is posted. */
+flagcxResult_t flagcxPutSignal(flagcxComm_t comm, int peer, size_t srcOffset,
+                               size_t dstOffset, size_t size,
+                               size_t signalOffset, int srcMrIdx, int dstMrIdx,
+                               uint64_t signalValue);
+
+/* Signal only: atomically increment remote peer's signal at signalOffset by
+ * signalValue (equivalent to flagcxPutSignal with size == 0). */
+flagcxResult_t flagcxSignal(flagcxComm_t comm, int peer, size_t signalOffset,
+                            uint64_t signalValue);
+
+/* Wait until the local signal buffer at signalOffset reaches the expected
+ * value. Uses device-side streamWaitValue64; stream must not be NULL. */
+flagcxResult_t flagcxWaitSignal(flagcxComm_t comm, int peer,
+                                size_t signalOffset, uint64_t expected,
+                                flagcxStream_t stream);
+
+/* Read the current global RMA completion counter into *count.
+ * Call this before issuing RMA ops (flagcxGet / flagcxPut / etc.) to
+ * snapshot the baseline, then call flagcxWaitCounter to block until the
+ * expected number of ops have completed. */
+flagcxResult_t flagcxReadCounter(flagcxComm_t comm, uint64_t *count);
+
+/* Block until the global RMA completion counter reaches target.
+ * Typical pattern:
+ *   uint64_t before;
+ *   flagcxReadCounter(comm, &before);
+ *   flagcxGet(comm, peer, ...);          // issues 1 async RMA op
+ *   flagcxWaitCounter(comm, before + 1); // wait for that op to finish
+ */
+flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target);
 
 /*
  * Group semantics

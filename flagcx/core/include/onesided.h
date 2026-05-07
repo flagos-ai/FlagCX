@@ -11,8 +11,6 @@
 
 #include <stdint.h>
 
-#define FLAGCX_MAX_ONE_SIDE_HANDLES 128
-
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
   uint32_t *rkeys;
@@ -24,17 +22,5 @@ struct flagcxOneSideHandleInfo {
   void **fullRecvComms; // [nRanks] per-peer recvComm (NULL if not owner)
   int nRanks;           // number of ranks (for cleanup iteration)
 };
-
-// Handle table for per-window MR addressing (aligned with NCCL GIN per-window
-// MR)
-extern struct flagcxOneSideHandleInfo
-    *globalOneSideHandleTable[FLAGCX_MAX_ONE_SIDE_HANDLES];
-extern int globalOneSideHandleCount;
-
-// Global variable for one-sided signal handles (separate MR, NCCL-style)
-extern struct flagcxOneSideHandleInfo *globalOneSideSignalHandles;
-
-// Global variable for one-sided staging handles (for PutValue inline)
-extern struct flagcxOneSideHandleInfo *globalOneSideStagingHandles;
 
 #endif // FLAGCX_ONESIDED_H_

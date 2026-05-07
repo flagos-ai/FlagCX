@@ -19,6 +19,13 @@ typedef char flagcxNetHandle_t[FLAGCX_NET_HANDLE_MAXSIZE];
 extern int64_t flagcxNetBufferSize;
 extern int64_t flagcxNetChunkSize;
 extern int64_t flagcxNetChunks;
+
+enum flagcxNetState {
+  flagcxNetStateInit = 0,
+  flagcxNetStateEnabled = 1,
+  flagcxNetStateDisabled = 2
+};
+extern enum flagcxNetState flagcxNetStates[3];
 #define FLAGCX_NET_MAX_STEPS 16
 #define FLAGCX_MAX_NET_SIZE_BYTES (1 * 1024 * 1024 * 1024 * 1024L)
 
@@ -46,6 +53,7 @@ struct sendNetResources {
   int netDev;
   int useGdr;
   int useDmaBuf;
+  int ptrSupport;
   int maxRecvs;
   uint64_t *gdcSync;
   void *gdrDesc;
@@ -79,6 +87,7 @@ struct recvNetResources {
   int netDev;
   int useGdr;
   int useDmaBuf;
+  int ptrSupport;
   int needFlush;
   int maxRecvs;
   uint64_t *gdcSync;
