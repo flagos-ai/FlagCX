@@ -2,6 +2,9 @@
 
 #ifdef USE_AMD_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, hipMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, hipMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, hipMemcpyDeviceToHost},
@@ -313,10 +316,23 @@ flagcxResult_t hipAdaptorMemGetHandleForAddressRange(void *handleOut,
   return flagcxNotSupported;
 }
 
-static flagcxResult_t hipAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                  uint64_t, int) {
+flagcxResult_t hipAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                           int) {
   return flagcxNotSupported;
 }
+flagcxResult_t hipAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                          flagcxEvent_t) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t hipAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t hipAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 struct flagcxDeviceAdaptor hipAdaptor {
   "HIP",
@@ -340,10 +356,12 @@ struct flagcxDeviceAdaptor hipAdaptor {
       // Stream functions
       hipAdaptorStreamCreate, hipAdaptorStreamDestroy, hipAdaptorStreamCopy,
       hipAdaptorStreamFree, hipAdaptorStreamSynchronize, hipAdaptorStreamQuery,
-      hipAdaptorStreamWaitEvent,
+      hipAdaptorStreamWaitEvent, hipAdaptorStreamWaitValue64,
+      hipAdaptorStreamWriteValue64,
       // Event functions
       hipAdaptorEventCreate, hipAdaptorEventDestroy, hipAdaptorEventRecord,
       hipAdaptorEventSynchronize, hipAdaptorEventQuery,
+      hipAdaptorEventElapsedTime,
       // IpcMemHandle functions
       hipAdaptorIpcMemHandleCreate, hipAdaptorIpcMemHandleGet,
       hipAdaptorIpcMemHandleOpen, hipAdaptorIpcMemHandleClose,
@@ -376,9 +394,8 @@ struct flagcxDeviceAdaptor hipAdaptor {
                                              // *handleOut, void *buffer,
                                              // size_t size, unsigned long long
                                              // flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      hipAdaptorStreamWaitValue64,
+      hipAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
+      hipAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_AMD_ADAPTOR

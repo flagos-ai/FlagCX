@@ -44,13 +44,13 @@ double timer::reset() {
 double parsesize(const char *value) {
   long long int units;
   double size;
-  char size_lit;
+  char sizeLit;
 
-  int count = sscanf(value, "%lf %1s", &size, &size_lit);
+  int count = sscanf(value, "%lf %1s", &size, &sizeLit);
 
   switch (count) {
     case 2:
-      switch (size_lit) {
+      switch (sizeLit) {
         case 'G':
         case 'g':
           units = 1024 * 1024 * 1024;

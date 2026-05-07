@@ -12,6 +12,7 @@
 #include "group.h"
 #include "net.h"
 #include "p2p.h"
+#include "reg_pool.h"
 #include "topo.h"
 #include "transport.h"
 #include "type.h"
@@ -232,20 +233,27 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     free(nodesFirstRank);
   }
 
-  INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
-  FLAGCXCHECKGOTO(flagcxTopoGetServerTopo(comm, &comm->topoServer), ret, fail);
-  FLAGCXCHECKGOTO(flagcxTopoComputePaths(comm->topoServer, comm), ret, fail);
-  if (comm->rank == 0) {
-    FLAGCXCHECK(flagcxTopoPrint(comm->topoServer));
-  }
-  INFO(FLAGCX_INIT, "start getting local net from gpu");
-  FLAGCXCHECKGOTO(flagcxGetLocalNetFromGpu(comm->cudaDev, &comm->netDev, comm),
-                  ret, fail);
+  if (!flagcxParamTopoDetectionDisable()) {
+    INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
+    FLAGCXCHECKGOTO(flagcxTopoGetServerTopo(comm, &comm->topoServer), ret,
+                    fail);
+    FLAGCXCHECKGOTO(flagcxTopoComputePaths(comm->topoServer, comm), ret, fail);
+    if (comm->rank == 0) {
+      FLAGCXCHECK(flagcxTopoPrint(comm->topoServer));
+    }
+    INFO(FLAGCX_INIT, "start getting local net from gpu");
+    FLAGCXCHECKGOTO(
+        flagcxGetLocalNetFromGpu(comm->cudaDev, &comm->netDev, comm), ret,
+        fail);
 
-  INFO(FLAGCX_INIT, "start getting topoServer from other servers");
-  FLAGCXCHECKGOTO(
-      flagcxGetInterServerTopo(comm, &comm->interServerTopo, comm->topoServer),
-      ret, fail);
+    INFO(FLAGCX_INIT, "start getting topoServer from other servers");
+    FLAGCXCHECKGOTO(flagcxGetInterServerTopo(comm, &comm->interServerTopo,
+                                             comm->topoServer),
+                    ret, fail);
+  } else {
+    INFO(FLAGCX_INIT,
+         "topology detection disabled by FLAGCX_DISABLE_TOPO_DETECTION");
+  }
 
   return ret;
 fail:
@@ -287,8 +295,19 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     int nranks = comm->nRanks;
     for (int i = 0; i < MAXCHANNELS; i++) {
       FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers, nranks));
-      for (int r = 0; r < nranks; r++)
+      for (int r = 0; r < nranks; r++) {
         FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers[r], nranks));
+      }
+    }
+    // Set tpRank = comm->rank for all channel connectors so local RPCs
+    // route through peerSocks[myRank] to the local service thread
+    for (int i = 0; i < MAXCHANNELS; i++) {
+      for (int r = 0; r < nranks; r++) {
+        for (int c = 0; c < FLAGCX_MAX_CONNS; c++) {
+          comm->channels[i].peers[r]->send[c].proxyConn.tpRank = comm->rank;
+          comm->channels[i].peers[r]->recv[c].proxyConn.tpRank = comm->rank;
+        }
+      }
     }
     FLAGCXCHECK(flagcxCalloc(&comm->connectSend, nranks));
     FLAGCXCHECK(flagcxCalloc(&comm->connectRecv, nranks));
@@ -332,6 +351,33 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     INFO(FLAGCX_INIT, "Flagcx RuntimeProxy flag set to %d", runtimeProxy);
     if (!runtimeProxy) {
       FLAGCXCHECK(flagcxProxyInit(comm));
+
+      // Allocate gproxyConn array and populate peerAddresses for peer proxy
+      // connections
+      FLAGCXCHECK(flagcxCalloc(&comm->gproxyConn, comm->nRanks));
+      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerAddresses, comm->nRanks));
+      comm->proxyState->peerAddresses[comm->rank] =
+          comm->proxyState->listenSock.addr;
+      FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
+                                     comm->proxyState->peerAddresses,
+                                     sizeof(union flagcxSocketAddress)));
+
+      // Pre-connect all peer sockets (including self)
+      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerSocks, comm->nRanks));
+      comm->proxyState->nPeerSocks = comm->nRanks;
+      for (int i = 0; i < comm->nRanks; i++) {
+        FLAGCXCHECK(flagcxSocketSetFd(-1, &comm->proxyState->peerSocks[i]));
+      }
+      for (int i = 0; i < comm->nRanks; i++) {
+        struct flagcxSocket *sock = &comm->proxyState->peerSocks[i];
+        FLAGCXCHECK(flagcxSocketInit(sock, comm->proxyState->peerAddresses + i,
+                                     comm->magic, flagcxSocketTypeProxy));
+        FLAGCXCHECK(flagcxSocketConnect(sock));
+        int ready = 0;
+        while (!ready) {
+          FLAGCXCHECK(flagcxSocketReady(sock, &ready));
+        }
+      }
     }
   }
 
@@ -431,6 +477,12 @@ flagcxResult_t flagcxHeteroCommInitRank(flagcxHeteroComm_t *newcomm, int nranks,
   deviceAdaptor->getDevice(&cudaDev);
   FLAGCXCHECK(
       flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config));
+  flagcxResult_t proxyRes = flagcxHeteroRmaProxyStart(*newcomm);
+  if (proxyRes != flagcxSuccess) {
+    flagcxHeteroCommDestroy(*newcomm);
+    *newcomm = NULL;
+    return proxyRes;
+  }
   return flagcxSuccess;
 }
 
@@ -447,6 +499,9 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 }
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
+  FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
+  // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
+  FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
   flagcxProxyDestroy(comm);
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
@@ -455,14 +510,31 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
     free(comm->channels[i].peers);
   }
   for (int i = 0; i < MAXCHANNELS; i++) {
+    pthread_mutex_destroy(&comm->proxyState->proxyOps[i].mutex);
     free(comm->proxyState->proxyOps[i].consPeers);
   }
+  pthread_mutex_destroy(&comm->proxyState->mutex);
+  pthread_cond_destroy(&comm->proxyState->cond);
 
   free(comm->connectSend);
   free(comm->connectRecv);
+  if (comm->gproxyConn) {
+    // gproxyConn[i].connection is an opaque handle pointing to a
+    // flagcxProxyConnection allocated and owned by the peer's service thread.
+    // Do NOT free it here — the peer frees it when its service thread exits.
+    free(comm->gproxyConn);
+  }
+  free(comm->proxyState->peerAddresses);
+  if (comm->proxyState->peerSocks != NULL) {
+    for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
+      flagcxSocketClose(&comm->proxyState->peerSocks[i]);
+    }
+    free(comm->proxyState->peerSocks);
+  }
   free(comm->proxyState);
   free(comm->tasks.peers);
   free(comm->tasks.p2pOrder);
+  free(comm->p2pSchedule);
   free(comm->abortFlagRefCount);
   if (comm->topoServer) {
     flagcxTopoFree(comm->topoServer);

@@ -2,13 +2,12 @@
 #ifndef SRC_ADAPTOR_API_MLU_ADAPTOR_H
 #define SRC_ADAPTOR_API_MLU_ADAPTOR_H
 
-#include "adaptor.h"
-#include "alloc.h"
 #include "cncl.h"
 #include "cnrt.h"
-#include "comm.h"
 #include "flagcx.h"
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   cnclComm_t base;
 };

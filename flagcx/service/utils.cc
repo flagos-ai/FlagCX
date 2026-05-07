@@ -9,6 +9,7 @@
 #include "bootstrap.h"
 #include "core.h"
 #include "flagcx_common.h"
+#include "param.h"
 #include <fstream>
 #include <stdexcept>
 #include <stdlib.h>
@@ -113,6 +114,9 @@ uint64_t getHostHash(void) {
 
   return getHash(hostHash, strlen(hostHash));
 }
+
+FLAGCX_PARAM(TopoDetectionDisable, "TOPO_DETECTION_DISABLE", 0);
+FLAGCX_PARAM(SignalHostEnable, "SIGNAL_HOST_ENABLE", 0);
 
 /* Generate a hash of the unique identifying string for this process
  * that will be unique for both bare-metal and container instances

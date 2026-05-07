@@ -1,11 +1,10 @@
 #ifdef USE_ASCEND_ADAPTOR
 #include "acl/acl.h"
-#include "adaptor.h"
-#include "alloc.h"
-#include "comm.h"
 #include "flagcx.h"
 #include "hccl/hccl.h"
 #include <map>
+struct flagcxInnerDevComm {};
+
 struct flagcxInnerComm {
   HcclComm base;
 };

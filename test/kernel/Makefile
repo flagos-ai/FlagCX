@@ -1,3 +1,7 @@
+#*************************************************************************
+# Copyright (c) 2026 BAAI. All rights reserved.
+#*************************************************************************
+
 MPI_HOME ?= /usr/local/mpi
 MPI_INCLUDE = $(MPI_HOME)/include
 MPI_LIB = $(MPI_HOME)/lib
@@ -19,12 +23,18 @@ ifeq ($(USE_NVIDIA), 1)
 	DEVICE_INCLUDE = $(DEVICE_HOME)/include
 	DEVICE_LINK = -lcudart -lcuda
 	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
+else ifeq ($(USE_DU), 1)
+        DEVICE_HOME = $(CUDA_PATH)
+        DEVICE_LIB = $(DEVICE_HOME)/lib64 -L$(DEVICE_HOME)/lib64/stubs
+        DEVICE_INCLUDE = $(DEVICE_HOME)/include
+        DEVICE_LINK = -lcudart -lcuda
+        DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
 endif
 
 COMMON_INCLUDES = -I../../flagcx/include -I../../flagcx/adaptor/include -I../../flagcx/service/include -I../../flagcx/core/include -I../../third-party/json/single_include -I$(INCLUDEDIR) -I$(MPI_INCLUDE) -I$(DEVICE_INCLUDE)
 COMMON_LIBS = -L../../build/lib -L$(MPI_LIB) -L$(DEVICE_LIB) -lflagcx $(MPI_LINK) $(DEVICE_LINK)
 
-all: test-intranode test-internode-twosided test-internode-onesided test-device-api
+all: test-intranode test-internode-twosided test-internode-onesided test-device-api test-multi-fifo
 
 test-intranode: test_intranode.cpp
 	@echo "Compiling $@"
@@ -42,8 +52,12 @@ test-device-api: test_device_api.cpp
 	@echo "Compiling $@"
 	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_device_api test_device_api.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
 
+test-multi-fifo: test_multi_fifo.cpp
+	@echo "Compiling $@"
+	@$(COMPILER) $(EXTRA_COMPILER_FLAG) -o test_multi_fifo test_multi_fifo.cpp $(LIBSRCFILES) $(COMMON_INCLUDES) $(COMMON_LIBS) -DCOMPILE_KERNEL
+
 clean:
-	@rm -f test_intranode test_internode_twosided test_internode_onesided test_device_api
+	@rm -f test_intranode test_internode_twosided test_internode_onesided test_device_api test_multi_fifo
 
 print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"

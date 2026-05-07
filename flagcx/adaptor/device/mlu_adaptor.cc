@@ -2,6 +2,9 @@
 
 #ifdef USE_CAMBRICON_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+
 std::map<flagcxMemcpyType_t, cnrtMemTransDir_t> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cnrtMemcpyHostToDev},
     {flagcxMemcpyDeviceToHost, cnrtMemcpyDevToHost},
@@ -284,10 +287,23 @@ flagcxResult_t mluAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
   return flagcxNotSupported;
 }
 
-static flagcxResult_t mluAdaptorStreamWaitValue64(flagcxStream_t, void *,
-                                                  uint64_t, int) {
+flagcxResult_t mluAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
+                                           int) {
   return flagcxNotSupported;
 }
+flagcxResult_t mluAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
+                                            int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorEventElapsedTime(float *, flagcxEvent_t,
+                                          flagcxEvent_t) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mluAdaptorHostRegister(void *, size_t) {
+  return flagcxNotSupported;
+}
+flagcxResult_t mluAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 struct flagcxDeviceAdaptor mluAdaptor {
   "MLU",
@@ -309,10 +325,12 @@ struct flagcxDeviceAdaptor mluAdaptor {
       // Stream functions
       mluAdaptorStreamCreate, mluAdaptorStreamDestroy, mluAdaptorStreamCopy,
       mluAdaptorStreamFree, mluAdaptorStreamSynchronize, mluAdaptorStreamQuery,
-      mluAdaptorStreamWaitEvent,
+      mluAdaptorStreamWaitEvent, mluAdaptorStreamWaitValue64,
+      mluAdaptorStreamWriteValue64,
       // Event functions
       mluAdaptorEventCreate, mluAdaptorEventDestroy, mluAdaptorEventRecord,
       mluAdaptorEventSynchronize, mluAdaptorEventQuery,
+      mluAdaptorEventElapsedTime,
       // IpcMemHandle functions
       mluAdaptorIpcMemHandleCreate, mluAdaptorIpcMemHandleGet,
       mluAdaptorIpcMemHandleOpen, mluAdaptorIpcMemHandleClose,
@@ -340,9 +358,8 @@ struct flagcxDeviceAdaptor mluAdaptor {
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
       NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
             // void *buffer, size_t size, unsigned long long flags);
-      NULL, // flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t
-            // start, flagcxEvent_t end);
-      mluAdaptorStreamWaitValue64,
+      mluAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
+      mluAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
 };
 
 #endif // USE_CAMBRICON_ADAPTOR

@@ -130,6 +130,7 @@ struct flagcxIbMrHandle {
 #define FLAGCX_NET_IB_REQ_RECV 2
 #define FLAGCX_NET_IB_REQ_FLUSH 3
 #define FLAGCX_NET_IB_REQ_IPUT 4
+#define FLAGCX_NET_IB_REQ_IGET 5
 
 extern const char *reqTypeStr[];
 
@@ -497,5 +498,22 @@ static_assert(
 
 static_assert(MAX_REQUESTS <= 256, "request id are encoded in wr_id and we "
                                    "need up to 8 requests ids per completion");
+
+// Shared IBRC helpers (defined in ibrc_adaptor.cc, used by ibrc p2p adaptor)
+flagcxResult_t flagcxIbInit();
+flagcxResult_t flagcxIbGetProperties(int dev, void *props);
+flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
+                                struct flagcxIbNetCommDevBase *base,
+                                int accessFlags, struct flagcxIbQp *qp);
+flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp, uint8_t sGidIndex,
+                             uint32_t dest_qp_num,
+                             struct flagcxIbDevInfo *info);
+flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp);
+flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
+                                           void *data, size_t size, int type,
+                                           uint64_t offset, int fd, int mrFlags,
+                                           ibv_mr **mhandle);
+flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
+                                       ibv_mr *mhandle);
 
 #endif // FLAGCX_IB_COMMON_H_

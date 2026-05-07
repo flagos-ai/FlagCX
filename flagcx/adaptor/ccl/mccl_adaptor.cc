@@ -7,6 +7,10 @@
 
 #ifdef USE_METAX_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 flagcxResult_t mcclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)mcclGetVersion(version);
 }
@@ -285,6 +289,24 @@ flagcxResult_t mcclAdaptorGroupStart() {
 
 flagcxResult_t mcclAdaptorGroupEnd() { return (flagcxResult_t)mcclGroupEnd(); }
 
+flagcxResult_t
+mcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+mcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t mcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor mcclAdaptor = {
     "MCCL",
     // Basic functions
@@ -304,6 +326,9 @@ struct flagcxCCLAdaptor mcclAdaptor = {
     mcclAdaptorAllGather, mcclAdaptorAlltoAll, mcclAdaptorAlltoAllv,
     mcclAdaptorSend, mcclAdaptorRecv,
     // Group semantics
-    mcclAdaptorGroupStart, mcclAdaptorGroupEnd};
+    mcclAdaptorGroupStart, mcclAdaptorGroupEnd,
+    // Device API
+    mcclAdaptorDevCommReqsInit, mcclAdaptorDevCommCreate,
+    mcclAdaptorDevCommDestroy};
 
 #endif // USE_METAX_ADAPTOR

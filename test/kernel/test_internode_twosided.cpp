@@ -1,3 +1,7 @@
+/*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ ************************************************************************/
+
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "tools.h"
@@ -187,7 +191,7 @@ int main(int argc, char *argv[]) {
 
   // ==========================================================================
   // Window AlltoAll test (requires -R 2 for window registration)
-  // Falls back to FIFO AlltoAll on Fallback when window not available
+  // Falls back to FIFO AlltoAll on Default path when window not available
   // ==========================================================================
   if (localRegister == 2) {
     flagcxDevComm_t a2aDevComm = nullptr;

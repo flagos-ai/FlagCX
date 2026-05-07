@@ -90,7 +90,7 @@ flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   std::shared_ptr<::gloo::transport::Device> dev;
   flagcxNetProperties_t *properties =
       (flagcxNetProperties_t *)bootstrap->properties;
-  if (flagcxParamGlooIbDisable()) {
+  if (flagcxParamGlooIbDisable() || flagcxParamTopoDetectionDisable()) {
     // Use transport tcp
     ::gloo::transport::tcp::attr attr;
     attr.iface = std::string(bootstrap->bootstrapNetIfName);
@@ -450,6 +450,24 @@ flagcxResult_t glooAdaptorGroupEnd() {
   return flagcxSuccess;
 }
 
+flagcxResult_t
+glooAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+glooAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t glooAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor glooAdaptor = {
     "GLOO",
     // Basic functions
@@ -469,6 +487,9 @@ struct flagcxCCLAdaptor glooAdaptor = {
     glooAdaptorAllGather, glooAdaptorAlltoAll, glooAdaptorAlltoAllv,
     glooAdaptorSend, glooAdaptorRecv,
     // Group semantics
-    glooAdaptorGroupStart, glooAdaptorGroupEnd};
+    glooAdaptorGroupStart, glooAdaptorGroupEnd,
+    // Device API
+    glooAdaptorDevCommReqsInit, glooAdaptorDevCommCreate,
+    glooAdaptorDevCommDestroy};
 
 #endif // USE_GLOO_ADAPTOR

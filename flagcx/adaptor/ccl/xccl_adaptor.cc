@@ -3,6 +3,10 @@
 
 #ifdef USE_KUNLUNXIN_ADAPTOR
 
+#include "adaptor.h"
+#include "alloc.h"
+#include "comm.h"
+
 BKCLDataType flagcxToXcclDataType(flagcxDataType_t type) {
   // use BKCL_UINT8 as unknown data type
   static const struct {
@@ -316,6 +320,24 @@ flagcxResult_t xcclAdaptorGroupEnd() {
   return (flagcxResult_t)bkcl_group_end();
 }
 
+flagcxResult_t
+xcclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
+                           flagcxDevCommRequirements * /*reqs*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t
+xcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
+                         const flagcxDevCommRequirements * /*reqs*/,
+                         flagcxInnerDevComm_t * /*devComm*/) {
+  return flagcxNotSupported;
+}
+
+flagcxResult_t xcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
+                                         flagcxInnerDevComm_t /*devComm*/) {
+  return flagcxNotSupported;
+}
+
 struct flagcxCCLAdaptor xcclAdaptor = {
     "XCCL",
     // Basic functions
@@ -335,6 +357,9 @@ struct flagcxCCLAdaptor xcclAdaptor = {
     xcclAdaptorAllGather, xcclAdaptorAlltoAll, xcclAdaptorAlltoAllv,
     xcclAdaptorSend, xcclAdaptorRecv,
     // Group semantics
-    xcclAdaptorGroupStart, xcclAdaptorGroupEnd};
+    xcclAdaptorGroupStart, xcclAdaptorGroupEnd,
+    // Device API
+    xcclAdaptorDevCommReqsInit, xcclAdaptorDevCommCreate,
+    xcclAdaptorDevCommDestroy};
 
 #endif // USE_KUNLUNXIN_ADAPTOR

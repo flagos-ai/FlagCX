@@ -539,7 +539,7 @@ fail:
   goto exit;
 }
 flagcxResult_t flagcxIbGetPhysProperties(int dev,
-                                         flagcxNetProperties_v8_t *props) {
+                                         flagcxNetProperties_t *props) {
   struct flagcxIbDev *ibDev = flagcxIbDevs + dev;
   pthread_mutex_lock(&ibDev->lock);
   props->name = ibDev->devName;
@@ -571,7 +571,7 @@ flagcxResult_t flagcxIbGetPhysProperties(int dev,
 }
 flagcxResult_t flagcx_p2p_ib_get_properties(flagcxIbDev *devs,
                                             int flagcxNMergedIbDevs, int dev,
-                                            flagcxNetProperties_v8_t *props) {
+                                            flagcxNetProperties_t *props) {
   if (dev >= flagcxNMergedIbDevs) {
     WARN("NET/IB : Requested properties for vNic %d, only %d vNics have been "
          "created",
@@ -588,7 +588,7 @@ flagcxResult_t flagcx_p2p_ib_get_properties(flagcxIbDev *devs,
 }
 flagcxResult_t flagcxUcxGetProperties(int dev, void *props) {
   return flagcx_p2p_ib_get_properties(flagcxIbDevs, flagcxNMergedIbDevs, dev,
-                                      (flagcxNetProperties_v8_t *)props);
+                                      (flagcxNetProperties_t *)props);
 }
 
 pthread_mutex_t flagcxUcxLock = PTHREAD_MUTEX_INITIALIZER;
@@ -1487,9 +1487,6 @@ flagcxResult_t flagcxUcxGetDevFromName(char *name, int *dev) {
 struct flagcxNetAdaptor flagcxNetUcx = {
     // Basic functions
     "UCX", flagcxUcxInit, flagcxUcxDevices, flagcxUcxGetProperties,
-    NULL, // reduceSupport
-    NULL, // getDeviceMr
-    NULL, // irecvConsumed
 
     // Setup functions
     flagcxUcxListen,      // listen
@@ -1512,6 +1509,7 @@ struct flagcxNetAdaptor flagcxNetUcx = {
 
     // One-sided functions
     NULL, // iput - not supported on UCX
+    NULL, // iget - not supported on UCX
     NULL, // iputSignal - not supported on UCX
 
     // Device name lookup

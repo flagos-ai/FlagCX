@@ -19,11 +19,18 @@ eval "$CMD"
 echo "[INFO] Completed PyTorch API tests in homogeneous mode"
 echo "--------------------------------------------------------"
 
+# Wait for previous torchrun processes to fully release sockets
+sleep 5
+
 echo "[INFO] Launching PyTorch API tests in heterogeneous mode"
 export FLAGCX_CLUSTER_SPLIT_LIST=2
 export FLAGCX_MEM_ENABLE=1
 while true; do
     PORT=$(shuf -i 20000-65535 -n 1)
+    # Ensure port is not in use or in TIME_WAIT
+    if ss -tlna | grep -q ":${PORT} "; then
+        continue
+    fi
     (echo >/dev/tcp/127.0.0.1/$PORT) &>/dev/null || break
 done
 CMD="$CMD_BASE --master_port=$PORT $PY_SCRIPT"

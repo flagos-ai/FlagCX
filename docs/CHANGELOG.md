@@ -1,4 +1,39 @@
 ## Release History
+- **[2026/03]** Released [v0.11](https://github.com/flagos-ai/FlagCX/releases/tag/v0.11.0):
+
+  - Enables kernel-based communication on heterogeneous platforms, including NVIDIA and Hygon.
+  - Adds support for both host-side and device-side one-sided communication semantics.
+  - Introduces adaptor plugin support, enabling dynamic loading of user-defined Device, CCL, and Net adaptor implementations.
+
+- **[2026/02]** Released [v0.10](https://github.com/flagos-ai/FlagCX/releases/tag/v0.10.0):
+
+  - Implements 11 chip-decoupled collective communication algorithms in uniRunner mode.
+  - Refactors Device Intra-/Inter-node API and integrates NCCL Device API support on NVIDIA platforms.
+  - Enhances usability with pip install support for FlagCX and an NCCL wrapper plugin for seamless adoption on NVIDIA platforms.
+
+- **[2026/01]** Released [v0.9](https://github.com/flagos-ai/FlagCX/releases/tag/v0.9.0):
+
+  - Adds support for Enflame, including `topsAdaptor` and `ecclAdaptor`.
+  - Extends flagcxCCLAdaptor to support symmetric operations.
+  - Introduces the NCCL Device API in ncclAdaptor to enable customized AllReduce operations.
+  - Refactors `glooAdaptor` to support both TCP and IB transports, with automatic NIC detection.
+
+
+- **[2025/12]** Released [v0.8](https://github.com/flagos-ai/FlagCX/releases/tag/v0.8.0):
+
+  - Enables intra-node zero-copy to improve data transfer efficiency for small messages.
+  - Supports a naive AllReduce implementation in uniRunner mode using a CPU-centric, device-assisted algorithm.
+  - Adds one-sided communication primitives via the new APIs flagcxHeteroPut and flagcxHeteroPutSignal.
+
+- **[Unreleased]** Test infrastructure restructure and bug fixes (PR #413):
+
+  - Fixed NCCL group imbalance in `ncclAdaptorGather`/`ncclAdaptorScatter`: errors inside
+    `ncclGroupStart()`/`ncclGroupEnd()` no longer skip `ncclGroupEnd()`, preventing deadlocks.
+  - Reduced unit-test buffer allocation from 1GB to 4MB per buffer, cutting memory from 32GB to 128MB for 8-rank runs.
+  - Improved collective test correctness by using rank-dependent data patterns, catching rank-ordering and single-rank-copy bugs.
+  - Added infinite-loop guard in `perfBenchmarkLoop` for `stepFactor <= 1`.
+  - Wired `PERF_COMMON_SRC` into `test/perf/host_api/Makefile` build.
+  - Removed TRACE-level debug logging from CI workflow.
 
 - **[2025/11]** Released [v0.7](https://github.com/flagos-ai/FlagCX/releases/tag/v0.7.0):
 
