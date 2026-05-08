@@ -801,10 +801,7 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
   return 0;
 }
 
-FlagcxP2pEngine *flagcxP2pEngineCreate(int numCpus, bool inPython) {
-  (void)numCpus;
-  (void)inPython;
-
+FlagcxP2pEngine *flagcxP2pEngineCreate() {
   FlagcxP2pEngine *engine = new FlagcxP2pEngine;
   engine->adaptor = &flagcxNetIbP2p;
   engine->topoMgr = NULL;

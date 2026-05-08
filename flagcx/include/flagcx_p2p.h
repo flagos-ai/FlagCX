@@ -106,11 +106,9 @@ struct FlagcxP2pMd {
 
 /**
  * Create and initialize a P2P engine instance.
- * @param numCpus       Reserved for API compatibility. Currently unused.
- * @param inPython      Whether the engine is being created from Python.
  * @return              Pointer to the engine instance, or NULL on failure.
  */
-FlagcxP2pEngine *flagcxP2pEngineCreate(int numCpus, bool inPython);
+FlagcxP2pEngine *flagcxP2pEngineCreate();
 
 /**
  * Destroy the engine instance and free all resources.

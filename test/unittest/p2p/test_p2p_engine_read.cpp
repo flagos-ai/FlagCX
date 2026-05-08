@@ -246,10 +246,10 @@ protected:
 
     ASSERT_EQ(devHandle->setDevice(kServerGpuIdx), flagcxSuccess);
     ASSERT_EQ(devHandle->streamCreate(&serverStream), flagcxSuccess);
-    serverEngine = flagcxP2pEngineCreate(0, false);
+    serverEngine = flagcxP2pEngineCreate();
     ASSERT_EQ(devHandle->setDevice(kClientGpuIdx), flagcxSuccess);
     ASSERT_EQ(devHandle->streamCreate(&clientStream), flagcxSuccess);
-    clientEngine = flagcxP2pEngineCreate(0, false);
+    clientEngine = flagcxP2pEngineCreate();
     if (serverEngine == nullptr || clientEngine == nullptr ||
         serverStream == nullptr || clientStream == nullptr) {
       if (serverEngine != nullptr) {
