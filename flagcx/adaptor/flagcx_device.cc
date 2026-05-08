@@ -1110,6 +1110,12 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     modeStr = (w->mode == DeviceAPI::SYMMETRIC) ? " + Window (SYMMETRIC)"
               : (w->ipcBasePtrs != nullptr)     ? " + Window (ASYMMETRIC/IPC)"
                                                 : " + Window (raw-only)";
+    if (w->mode == DeviceAPI::SYMMETRIC) {
+      INFO(FLAGCX_INIT,
+           "flagcxDevMemCreate: flatBasePtr=%p allocSize=%zu mcBasePtr=%p "
+           "intraRank=%d",
+           w->flatBasePtr, w->allocSize, w->mcBasePtr, w->intraRank);
+    }
   }
 #else
   modeStr = handle->hasWindow ? (handle->isSymmetric ? " + Window (symmetric)"
