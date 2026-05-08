@@ -672,26 +672,44 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
     return flagcxInvalidArgument;
   *mcBase = NULL;
 
+  INFO(FLAGCX_INIT,
+       "symMulticastBind: localRank=%d nLocalDevices=%d allocSize=%zu "
+       "mcHandle=%p importFd=%d physHandle=%p",
+       localRank, nLocalDevices, allocSize, mcHandle, importFd, physHandle);
+
   CUmemGenericAllocationHandle cuMcHandle;
 
   if (mcHandle != NULL) {
     // Rank 0: already has the handle from symMulticastCreate
     cuMcHandle = *(CUmemGenericAllocationHandle *)mcHandle;
+    INFO(FLAGCX_INIT, "symMulticastBind: rank 0 using existing handle");
   } else {
     // Other ranks: import from FD
     if (importFd < 0)
       return flagcxInvalidArgument;
-    DEVCHECK(cuMemImportFromShareableHandle(
+    CUresult res = cuMemImportFromShareableHandle(
         &cuMcHandle, (void *)(intptr_t)importFd,
-        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+    if (res != CUDA_SUCCESS) {
+      WARN("symMulticastBind: cuMemImportFromShareableHandle failed: %d", res);
+      return flagcxUnhandledDeviceError;
+    }
+    INFO(FLAGCX_INIT, "symMulticastBind: imported handle from fd=%d", importFd);
   }
 
   CUmemGenericAllocationHandle cuPhysHandle =
       *(CUmemGenericAllocationHandle *)physHandle;
 
-  // Bind this rank's physical allocation at its slot offset
-  DEVCHECK(cuMulticastBindAddr(cuMcHandle, (size_t)localRank * allocSize,
-                               cuPhysHandle, allocSize, 0));
+  // Bind this rank's physical allocation at offset 0 — multicast reduces
+  // all ranks' writes at the same offset within the multicast object.
+  CUresult res = cuMulticastBindAddr(cuMcHandle, 0, cuPhysHandle, 0, allocSize);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMulticastBindAddr failed: %d (localRank=%d "
+         "allocSize=%zu)",
+         res, localRank, allocSize);
+    return flagcxUnhandledDeviceError;
+  }
+  INFO(FLAGCX_INIT, "symMulticastBind: bound physical allocation");
 
   // Get multicast granularity to compute aligned total size
   CUmulticastObjectProp mcProp = {};
@@ -699,14 +717,33 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   mcProp.size = allocSize;
   mcProp.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   size_t mcGran = 0;
-  DEVCHECK(cuMulticastGetGranularity(&mcGran, &mcProp,
-                                     CU_MULTICAST_GRANULARITY_RECOMMENDED));
+  res = cuMulticastGetGranularity(&mcGran, &mcProp,
+                                  CU_MULTICAST_GRANULARITY_RECOMMENDED);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMulticastGetGranularity failed: %d", res);
+    return flagcxUnhandledDeviceError;
+  }
   size_t alignedSize = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+  INFO(FLAGCX_INIT,
+       "symMulticastBind: mcGran=%zu alignedSize=%zu (allocSize=%zu)", mcGran,
+       alignedSize, allocSize);
 
   // Reserve VA and map the multicast handle (map only this rank's slot size)
   CUdeviceptr mcVa = 0;
-  DEVCHECK(cuMemAddressReserve(&mcVa, alignedSize, mcGran, 0, 0));
-  DEVCHECK(cuMemMap(mcVa, alignedSize, 0, cuMcHandle, 0));
+  res = cuMemAddressReserve(&mcVa, alignedSize, mcGran, 0, 0);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMemAddressReserve failed: %d", res);
+    return flagcxUnhandledDeviceError;
+  }
+  INFO(FLAGCX_INIT, "symMulticastBind: reserved VA at %p", (void *)mcVa);
+
+  res = cuMemMap(mcVa, alignedSize, 0, cuMcHandle, 0);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMemMap failed: %d", res);
+    cuMemAddressFree(mcVa, alignedSize);
+    return flagcxUnhandledDeviceError;
+  }
+  INFO(FLAGCX_INIT, "symMulticastBind: mapped multicast handle");
 
   // Set access for the current device
   int cudaDev;
@@ -715,9 +752,17 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  DEVCHECK(cuMemSetAccess(mcVa, alignedSize, &accessDesc, 1));
+  res = cuMemSetAccess(mcVa, alignedSize, &accessDesc, 1);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMemSetAccess failed: %d", res);
+    cuMemUnmap(mcVa, alignedSize);
+    cuMemAddressFree(mcVa, alignedSize);
+    return flagcxUnhandledDeviceError;
+  }
+  INFO(FLAGCX_INIT, "symMulticastBind: set access for device %d", cudaDev);
 
   *mcBase = (void *)mcVa;
+  INFO(FLAGCX_INIT, "symMulticastBind: SUCCESS mcBase=%p", *mcBase);
   return flagcxSuccess;
 }
 

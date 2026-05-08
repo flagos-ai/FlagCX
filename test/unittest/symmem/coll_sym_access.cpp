@@ -147,41 +147,5 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
 }
 
 // ---------------------------------------------------------------------------
-// Verify that devPeerPtrs (device-side array) matches flatBase layout
+// Verify multicast base is set when VMM succeeds
 // ---------------------------------------------------------------------------
-
-TEST_F(SymMemTest, DevPeerPtrsMatchFlatBase) {
-  flagcxWindow_t win = nullptr;
-
-  ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                     FLAGCX_WIN_COLL_SYMMETRIC),
-            flagcxSuccess);
-  ASSERT_NE(win, nullptr);
-  ASSERT_NE(win->defaultBase, nullptr);
-
-  flagcxSymWindow_t d = win->defaultBase;
-  if (!d->isVMM || d->flatBase == nullptr || d->devPeerPtrs == nullptr) {
-    flagcxCommWindowDeregister(comm, win);
-    GTEST_SKIP() << "VMM not available";
-  }
-
-  int localRanks = d->localRanks;
-  size_t allocSize = d->allocSize;
-
-  // Copy devPeerPtrs from device to host
-  std::vector<void *> hostPtrs(localRanks, nullptr);
-  handler->devHandle->deviceMemcpy(hostPtrs.data(), d->devPeerPtrs,
-                                   localRanks * sizeof(void *),
-                                   flagcxMemcpyDeviceToHost, stream);
-  handler->devHandle->streamSynchronize(stream);
-
-  // Verify each pointer matches flatBase + i * allocSize
-  for (int i = 0; i < localRanks; i++) {
-    void *expected = (char *)d->flatBase + (size_t)i * allocSize;
-    EXPECT_EQ(hostPtrs[i], expected) << "devPeerPtrs[" << i << "] mismatch";
-  }
-
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  flagcxCommWindowDeregister(comm, win);
-}

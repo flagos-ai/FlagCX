@@ -370,29 +370,31 @@ flagcxResult_t tsmicroAdaptorHostUnregister(void *) {
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t tsmicroAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                          size_t *) {
+                                          size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t tsmicroAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
 flagcxResult_t tsmicroAdaptorSymFlatMap(void *[], int, int, void *, size_t,
-                                        size_t, void **) {
+                                        void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t tsmicroAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t tsmicroAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t tsmicroAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                              int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t tsmicroAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t tsmicroAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                         size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t tsmicroAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor tsmicroAdaptor {
@@ -462,8 +464,8 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       // Symmetric memory VMM functions (not supported)
       tsmicroAdaptorSymPhysAlloc, tsmicroAdaptorSymPhysFree,
       tsmicroAdaptorSymFlatMap, tsmicroAdaptorSymFlatUnmap,
-      tsmicroAdaptorSymMulticastSetup, tsmicroAdaptorSymMulticastTeardown,
-      tsmicroAdaptorSymHeapGrow, tsmicroAdaptorSymMulticastGrow,
+      tsmicroAdaptorSymMulticastSupported, tsmicroAdaptorSymMulticastCreate,
+      tsmicroAdaptorSymMulticastBind, tsmicroAdaptorSymMulticastTeardown,
 };
 
 #endif // USE_TSM_ADAPTOR

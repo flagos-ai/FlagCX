@@ -178,21 +178,47 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
           if (mcSupported) {
             // Exchange multicast FD: rank 0 sends to all peers via IPC socket
             uint64_t mcIpcHash = ipcHash ^ 0x4D43; // "MC"
+
+            struct flagcxIpcSocket mcIpcSock;
+            memset(&mcIpcSock, 0, sizeof(mcIpcSock));
+            FLAGCXCHECK(flagcxIpcSocketInit(&mcIpcSock, comm->rank, mcIpcHash,
+                                            /*block=*/1));
+
+            // Barrier: ensure all peers have created their IPC sockets
+            for (int i = 0; i < localRanks; i++) {
+              if (i == localRank)
+                continue;
+              int peerGlobalRank = comm->localRankToRank[i];
+              int dummy = 1;
+              FLAGCXCHECK(bootstrapSend(state, peerGlobalRank, /*tag=*/0x5934,
+                                        &dummy, sizeof(dummy)));
+            }
+            for (int i = 0; i < localRanks; i++) {
+              if (i == localRank)
+                continue;
+              int peerGlobalRank = comm->localRankToRank[i];
+              int dummy = 0;
+              FLAGCXCHECK(bootstrapRecv(state, peerGlobalRank, /*tag=*/0x5934,
+                                        &dummy, sizeof(dummy)));
+            }
+
             if (localRank == 0) {
               // Send mcFd to each peer
               for (int i = 1; i < localRanks; i++) {
                 int peerGlobalRank = comm->localRankToRank[i];
                 int tag = 0; // rank 0 is always the sender
-                FLAGCXCHECK(flagcxIpcSocketSendMsg(&ipcSock, &tag, sizeof(tag),
-                                                   mcFd, peerGlobalRank,
-                                                   mcIpcHash));
+                FLAGCXCHECK(flagcxIpcSocketSendMsg(&mcIpcSock, &tag,
+                                                   sizeof(tag), mcFd,
+                                                   peerGlobalRank, mcIpcHash));
               }
             } else {
               // Receive mcFd from rank 0
               int tag = -1;
               FLAGCXCHECK(
-                  flagcxIpcSocketRecvMsg(&ipcSock, &tag, sizeof(tag), &mcFd));
+                  flagcxIpcSocketRecvMsg(&mcIpcSock, &tag, sizeof(tag), &mcFd));
             }
+
+            flagcxIpcSocketClose(&mcIpcSock);
 
             // All ranks: bind their physical allocation and map
             void *mcBaseVa = nullptr;
@@ -201,10 +227,13 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                 allocSize, localRank, localRanks, &mcBaseVa);
             if (mcRes == flagcxSuccess && mcBaseVa != nullptr) {
               d->mcBase = mcBaseVa;
+            } else {
+              WARN("symMulticastBind failed: res=%d mcBaseVa=%p (localRank=%d)",
+                   mcRes, mcBaseVa, localRank);
             }
 
-            // Close imported FD (rank 0's FD was already consumed by export)
-            if (localRank != 0 && mcFd >= 0)
+            // Close the multicast FD (all ranks have imported by now)
+            if (mcFd >= 0)
               close(mcFd);
           }
 

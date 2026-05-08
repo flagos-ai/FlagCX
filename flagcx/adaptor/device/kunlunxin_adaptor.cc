@@ -385,32 +385,33 @@ flagcxResult_t kunlunAdaptorHostUnregister(void *) {
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t kunlunxinAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                            size_t *) {
+                                            size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymPhysFree(void *) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymFlatMap(void *[], int, int, void *, size_t,
-                                          size_t, void **) {
+                                          void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t kunlunxinAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t kunlunxinAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t kunlunxinAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t kunlunxinAdaptorSymMulticastBind(void *, int, void *, size_t,
+                                                int, int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t kunlunxinAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                           size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t kunlunxinAdaptorSymMulticastGrow(void *, void *, size_t,
-                                                size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor kunlunAdaptor {
@@ -475,7 +476,7 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       // Symmetric memory VMM functions (not supported)
       kunlunxinAdaptorSymPhysAlloc, kunlunxinAdaptorSymPhysFree,
       kunlunxinAdaptorSymFlatMap, kunlunxinAdaptorSymFlatUnmap,
-      kunlunxinAdaptorSymMulticastSetup, kunlunxinAdaptorSymMulticastTeardown,
-      kunlunxinAdaptorSymHeapGrow, kunlunxinAdaptorSymMulticastGrow,
+      kunlunxinAdaptorSymMulticastSupported, kunlunxinAdaptorSymMulticastCreate,
+      kunlunxinAdaptorSymMulticastBind, kunlunxinAdaptorSymMulticastTeardown,
 };
 #endif // USE_KUNLUNXIN_ADAPTOR

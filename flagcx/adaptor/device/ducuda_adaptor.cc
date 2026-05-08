@@ -356,29 +356,31 @@ flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t ducudaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                         size_t *) {
+                                         size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
 flagcxResult_t ducudaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
-                                       size_t, void **) {
+                                       void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t ducudaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t ducudaAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t ducudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t ducudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                             int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t ducudaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                        size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t ducudaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor ducudaAdaptor {
@@ -445,8 +447,8 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       // Symmetric memory VMM functions (not supported)
       ducudaAdaptorSymPhysAlloc, ducudaAdaptorSymPhysFree,
       ducudaAdaptorSymFlatMap, ducudaAdaptorSymFlatUnmap,
-      ducudaAdaptorSymMulticastSetup, ducudaAdaptorSymMulticastTeardown,
-      ducudaAdaptorSymHeapGrow, ducudaAdaptorSymMulticastGrow,
+      ducudaAdaptorSymMulticastSupported, ducudaAdaptorSymMulticastCreate,
+      ducudaAdaptorSymMulticastBind, ducudaAdaptorSymMulticastTeardown,
 };
 
 #endif // USE_DU_ADAPTOR

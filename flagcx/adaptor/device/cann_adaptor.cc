@@ -277,29 +277,31 @@ flagcxResult_t cannAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t cannAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                       size_t *) {
+                                       size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cannAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
-flagcxResult_t cannAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+flagcxResult_t cannAdaptorSymFlatMap(void *[], int, int, void *, size_t,
                                      void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t cannAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t cannAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t cannAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t cannAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cannAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t cannAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t cannAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                      size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t cannAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor cannAdaptor {
@@ -359,9 +361,9 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
       // Symmetric memory VMM functions (not supported)
       cannAdaptorSymPhysAlloc, cannAdaptorSymPhysFree, cannAdaptorSymFlatMap,
-      cannAdaptorSymFlatUnmap, cannAdaptorSymMulticastSetup,
-      cannAdaptorSymMulticastTeardown, cannAdaptorSymHeapGrow,
-      cannAdaptorSymMulticastGrow,
+      cannAdaptorSymFlatUnmap, cannAdaptorSymMulticastSupported,
+      cannAdaptorSymMulticastCreate, cannAdaptorSymMulticastBind,
+      cannAdaptorSymMulticastTeardown,
 };
 
 #endif // USE_ASCEND_ADAPTOR
