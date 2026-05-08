@@ -358,29 +358,31 @@ flagcxResult_t macaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t macaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                       size_t *) {
+                                       size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
-flagcxResult_t macaAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+flagcxResult_t macaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
                                      void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t macaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t macaAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t macaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t macaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t macaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                      size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t macaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor macaAdaptor {
@@ -441,9 +443,9 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
       // Symmetric memory VMM functions (not supported)
       macaAdaptorSymPhysAlloc, macaAdaptorSymPhysFree, macaAdaptorSymFlatMap,
-      macaAdaptorSymFlatUnmap, macaAdaptorSymMulticastSetup,
-      macaAdaptorSymMulticastTeardown, macaAdaptorSymHeapGrow,
-      macaAdaptorSymMulticastGrow,
+      macaAdaptorSymFlatUnmap, macaAdaptorSymMulticastSupported,
+      macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
+      macaAdaptorSymMulticastTeardown,
 };
 
 #endif // USE_METAX_ADAPTOR

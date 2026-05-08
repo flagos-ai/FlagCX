@@ -333,29 +333,31 @@ flagcxResult_t musaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t musaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                       size_t *) {
+                                       size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t musaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
-flagcxResult_t musaAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+flagcxResult_t musaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
                                      void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t musaAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t musaAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t musaAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t musaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t musaAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t musaAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                      size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t musaAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor musaAdaptor {
@@ -416,9 +418,9 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
       // Symmetric memory VMM functions (not supported)
       musaAdaptorSymPhysAlloc, musaAdaptorSymPhysFree, musaAdaptorSymFlatMap,
-      musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSetup,
-      musaAdaptorSymMulticastTeardown, musaAdaptorSymHeapGrow,
-      musaAdaptorSymMulticastGrow,
+      musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSupported,
+      musaAdaptorSymMulticastCreate, musaAdaptorSymMulticastBind,
+      musaAdaptorSymMulticastTeardown,
 };
 
 #endif // USE_MUSA_ADAPTOR

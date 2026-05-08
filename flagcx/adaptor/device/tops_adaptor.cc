@@ -392,29 +392,31 @@ flagcxResult_t topsAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t topsAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                       size_t *) {
+                                       size_t *, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t topsAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
-flagcxResult_t topsAdaptorSymFlatMap(void *[], int, int, void *, size_t, size_t,
+flagcxResult_t topsAdaptorSymFlatMap(void *[], int, int, void *, size_t,
                                      void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t topsAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
-flagcxResult_t topsAdaptorSymMulticastSetup(void *, size_t, int, void **) {
+flagcxResult_t topsAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t topsAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t topsAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **) {
   return flagcxNotSupported;
 }
 flagcxResult_t topsAdaptorSymMulticastTeardown(void *, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t topsAdaptorSymHeapGrow(void *, void *[], int, int, void *,
-                                      size_t, size_t, size_t) {
-  return flagcxNotSupported;
-}
-flagcxResult_t topsAdaptorSymMulticastGrow(void *, void *, size_t, size_t) {
-  return flagcxNotSupported;
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor topsAdaptor {
@@ -480,9 +482,9 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
       // Symmetric memory VMM functions (not supported)
       topsAdaptorSymPhysAlloc, topsAdaptorSymPhysFree, topsAdaptorSymFlatMap,
-      topsAdaptorSymFlatUnmap, topsAdaptorSymMulticastSetup,
-      topsAdaptorSymMulticastTeardown, topsAdaptorSymHeapGrow,
-      topsAdaptorSymMulticastGrow,
+      topsAdaptorSymFlatUnmap, topsAdaptorSymMulticastSupported,
+      topsAdaptorSymMulticastCreate, topsAdaptorSymMulticastBind,
+      topsAdaptorSymMulticastTeardown,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

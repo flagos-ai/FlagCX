@@ -32,7 +32,6 @@ TEST(SymWindowStruct, SymWindowStructLayout) {
   // Verify all fields exist
   sw.flatBase = nullptr;
   sw.mcBase = nullptr;
-  sw.devPeerPtrs = nullptr;
   sw.mrIndex = -1;
   sw.mrBase = 0;
   sw.heapSize = 1024;
