@@ -2432,9 +2432,7 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
-  int qpIdx = comm->base.qpIndex;
-  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
-  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
+  struct flagcxIbQp *qp = &comm->base.qps[0];
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
   void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
   int lkey = srcInfo->lkeys[srcRank];
@@ -2598,9 +2596,7 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
-  int qpIdx = comm->base.qpIndex;
-  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
-  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
+  struct flagcxIbQp *qp = &comm->base.qps[0];
   // For RDMA READ: remote_addr is the source (remote peer), sge is the local
   // destination
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
@@ -2664,9 +2660,7 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
     return flagcxInternalError;
   }
 
-  int qpIdx = comm->base.qpIndex;
-  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
-  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
+  struct flagcxIbQp *qp = &comm->base.qps[0];
   int devIndex = qp->devIndex;
   struct flagcxIbRequest *req;
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
