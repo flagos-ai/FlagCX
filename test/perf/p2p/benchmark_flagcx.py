@@ -12,7 +12,7 @@ Run server and client on different hosts with RDMA NICs.
 Requirements
 ------------
 - NIXL built with the FlagCX plugin  (libplugin_FLAGCX.so on the plugin path)
-- libflagcx_p2p.so reachable via LD_LIBRARY_PATH
+- libflagcx.so reachable via LD_LIBRARY_PATH
 - pyzmq, torch
 - Matching PyTorch CUDA major version with installed nixl-cuXX wheel
 

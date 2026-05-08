@@ -318,7 +318,7 @@ PREFIX ?= /usr/local
 DESTDIR  ?= $(PREFIX)/lib
 INC_DESTDIR ?= $(PREFIX)/include
 
-# Public headers exported alongside libflagcx.so / libflagcx_p2p.so
+# Public headers exported alongside libflagcx.so
 PUBLIC_HEADERS := \
 	flagcx/include/flagcx.h \
 	flagcx/include/flagcx_kernel.h \
@@ -358,10 +358,7 @@ endif
 LIBOBJ:= $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
 
 TARGET = libflagcx.so
-FLAGCX_P2P_TARGET = libflagcx_p2p.so
-FLAGCX_P2P_SRC = flagcx/core/flagcx_p2p.cc
-FLAGCX_P2P_OBJ = $(OBJDIR)/flagcx/core/flagcx_p2p.o
-all: $(LIBDIR)/$(TARGET) $(LIBDIR)/$(FLAGCX_P2P_TARGET) $(BUILD_PUBLIC_HEADERS)
+all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
 
 print_var:
 	@echo "USE_KUNLUNXIN : $(USE_KUNLUNXIN)"
@@ -416,14 +413,6 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 	@echo "Linking   $@"
 	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) -g
 
-# Build libflagcx_p2p.so from flagcx_p2p.cc.
-# The P2P engine references FlagCX core symbols (IB net adaptor, topology
-# manager, socket helpers), so we link against libflagcx.so to resolve them.
-$(LIBDIR)/$(FLAGCX_P2P_TARGET): $(FLAGCX_P2P_OBJ) $(LIBDIR)/$(TARGET)
-	@mkdir -p `dirname $@`
-	@echo "Linking   $@"
-	@$(HOST_LINKER) $(FLAGCX_P2P_OBJ) -o $@ -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -L$(LIBDIR) -lflagcx -lpthread -lrt -ldl -g
-
 # Copy public headers from flagcx/include/ into the build output tree so they
 # sit next to the shared libraries (build/include + build/lib).
 $(BUILD_INCDIR)/%.h: flagcx/include/%.h
@@ -456,9 +445,8 @@ INSTALLDIR := /usr/local/lib
 install:
 	@mkdir -p $(DESTDIR)
 	@cp $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET)
-	@cp $(LIBDIR)/$(FLAGCX_P2P_TARGET) $(DESTDIR)/$(FLAGCX_P2P_TARGET)
 	@mkdir -p $(INC_DESTDIR)
 	@cp $(PUBLIC_HEADERS) $(INC_DESTDIR)/
 
 clean:
-	@rm -rf $(LIBDIR)/$(TARGET) $(LIBDIR)/$(FLAGCX_P2P_TARGET) $(DESTDIR)/$(TARGET) $(DESTDIR)/$(FLAGCX_P2P_TARGET) $(BUILD_INCDIR) $(OBJDIR)
+	@rm -rf $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET) $(BUILD_INCDIR) $(OBJDIR)
