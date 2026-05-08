@@ -18,6 +18,10 @@
 #define FLAGCX_NVIDIA_DEVICE_TRAITS_H_
 
 #include "nccl.h"
+#ifndef __CUDACC__
+#include "flagcx.h"
+#include "nvidia_adaptor.h"
+#endif
 
 // ============================================================
 // NVIDIA Vendor Backend (NCCL device API)
@@ -108,6 +112,18 @@ struct CommTraits<NvidiaVendor> {
     FLAGCX_HOST_DEVICE_INLINE bool operator!=(const Window &o) const {
       return !(*this == o);
     }
+
+#ifndef __CUDACC__
+    // Host-side population from flagcxWindow_t (vendor path).
+    void populateFromHost(flagcxWindow_t win, void * /*rawPtr*/,
+                          int /*intraRank*/, int /*mrIndex*/,
+                          uintptr_t /*mrBase*/, int /*ipcIndex*/,
+                          void ** /*ipcDevPeerPtrs*/) {
+      if (win && !win->isSymmetricDefault && win->vendorBase) {
+        _impl = win->vendorBase->base;
+      }
+    }
+#endif // __CUDACC__
   };
 
   // ---- Comm: wraps ncclDevComm ----
