@@ -327,7 +327,7 @@ flagcxResult_t mluAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t mluAdaptorSymMulticastBind(void *, int, void *, size_t, int, int,
-                                          void **) {
+                                          void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t mluAdaptorSymMulticastTeardown(void *, size_t) {

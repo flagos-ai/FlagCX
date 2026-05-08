@@ -390,7 +390,7 @@ flagcxResult_t tsmicroAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t tsmicroAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                              int, void **) {
+                                              int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t tsmicroAdaptorSymMulticastTeardown(void *, size_t) {

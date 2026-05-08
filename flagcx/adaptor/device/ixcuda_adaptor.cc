@@ -367,7 +367,7 @@ flagcxResult_t ixcudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ixcudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                             int, void **) {
+                                             int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ixcudaAdaptorSymMulticastTeardown(void *, size_t) {

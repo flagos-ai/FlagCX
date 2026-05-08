@@ -356,7 +356,7 @@ flagcxResult_t hipAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t hipAdaptorSymMulticastBind(void *, int, void *, size_t, int, int,
-                                          void **) {
+                                          void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t hipAdaptorSymMulticastTeardown(void *, size_t) {
