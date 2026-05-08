@@ -378,7 +378,7 @@ flagcxResult_t macaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                           int, void **) {
+                                           int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymMulticastTeardown(void *, size_t) {

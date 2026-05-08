@@ -1113,7 +1113,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     *win = nullptr;
   }
   // Non-homo or homo-fallback: use symmetric heap path
-  if (winFlags & FLAGCX_WIN_COLL_SYMMETRIC) {
+  if ((winFlags & FLAGCX_WIN_COLL_SYMMETRIC) && comm->heteroComm != nullptr) {
     return flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
   }
   *win = nullptr;
@@ -1241,7 +1241,8 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
     reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
     // Check if multicast (NVLS) is available via adaptor
     int mcSupported = 0;
-    deviceAdaptor->symMulticastSupported(&mcSupported);
+    if (deviceAdaptor->symMulticastSupported)
+      deviceAdaptor->symMulticastSupported(&mcSupported);
     if (mcSupported)
       reqs.intraMulticast = true;
     INFO(FLAGCX_INIT, "Custom allreduce: using Default path (%s)",
@@ -1269,7 +1270,8 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
 #ifndef FLAGCX_DEVICE_API_VENDOR
   {
     int mcSupported = 0;
-    deviceAdaptor->symMulticastSupported(&mcSupported);
+    if (deviceAdaptor->symMulticastSupported)
+      deviceAdaptor->symMulticastSupported(&mcSupported);
     needVmmAlloc = (mcSupported && deviceAdaptor->gdrMemAlloc != nullptr);
   }
 #endif
@@ -1320,7 +1322,8 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   // register staged buffers via sym heap path
   if (state->sendStagedWin == nullptr && state->recvStagedWin == nullptr) {
     int mcSupported = 0;
-    deviceAdaptor->symMulticastSupported(&mcSupported);
+    if (deviceAdaptor->symMulticastSupported)
+      deviceAdaptor->symMulticastSupported(&mcSupported);
     if (mcSupported && comm->heteroComm != nullptr) {
       // Register send staged buffer
       FLAGCXCHECKGOTO(

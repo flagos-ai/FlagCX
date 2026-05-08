@@ -407,7 +407,7 @@ flagcxResult_t kunlunxinAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymMulticastBind(void *, int, void *, size_t,
-                                                int, int, void **) {
+                                                int, int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymMulticastTeardown(void *, size_t) {

@@ -412,7 +412,7 @@ flagcxResult_t topsAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t topsAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                           int, void **) {
+                                           int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t topsAdaptorSymMulticastTeardown(void *, size_t) {

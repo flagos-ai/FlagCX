@@ -376,7 +376,7 @@ flagcxResult_t ducudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                             int, void **) {
+                                             int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *, size_t) {

@@ -353,7 +353,7 @@ flagcxResult_t musaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t musaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                           int, void **) {
+                                           int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t musaAdaptorSymMulticastTeardown(void *, size_t) {

@@ -297,7 +297,7 @@ flagcxResult_t cannAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cannAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                           int, void **) {
+                                           int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cannAdaptorSymMulticastTeardown(void *, size_t) {
