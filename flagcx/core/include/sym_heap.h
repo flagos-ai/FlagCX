@@ -16,6 +16,7 @@
 struct flagcxSymWindow {
   void *flatBase;   // flat VA base (NULL if IPC fallback)
   void *mcBase;     // multicast base (NULL if no NVLS)
+  size_t mcMapSize; // multicast VA mapped size (for teardown)
   int mrIndex;      // one-sided MR index (-1 if none)
   uintptr_t mrBase; // MR base VA
   size_t heapSize;  // user-requested size (for bounds info)

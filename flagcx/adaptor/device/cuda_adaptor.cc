@@ -173,11 +173,10 @@ flagcxResult_t cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   CUmemGenericAllocationHandle handle;
   size_t size = 0;
   DEVCHECK(cuMemRetainAllocationHandle(&handle, ptr));
-  DEVCHECK(cuMemRelease(handle));
   DEVCHECK(cuMemGetAddressRange(NULL, &size, (CUdeviceptr)ptr));
   DEVCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
-  DEVCHECK(cuMemRelease(handle));
   DEVCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
+  DEVCHECK(cuMemRelease(handle));
 #else
   DEVCHECK(cudaFree(ptr));
 #endif
@@ -667,10 +666,11 @@ flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
 flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
                                            void *physHandle, size_t allocSize,
                                            int localRank, int nLocalDevices,
-                                           void **mcBase) {
-  if (mcBase == NULL || physHandle == NULL)
+                                           void **mcBase, size_t *mcMapSize) {
+  if (mcBase == NULL || physHandle == NULL || mcMapSize == NULL)
     return flagcxInvalidArgument;
   *mcBase = NULL;
+  *mcMapSize = 0;
 
   CUmemGenericAllocationHandle cuMcHandle;
 
@@ -750,15 +750,26 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   }
 
   *mcBase = (void *)mcVa;
+  *mcMapSize = alignedSize;
   return flagcxSuccess;
 }
 
-flagcxResult_t cudaAdaptorSymMulticastTeardown(void *mcBase, size_t allocSize) {
+flagcxResult_t cudaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
   if (mcBase == NULL)
     return flagcxSuccess;
   CUdeviceptr va = (CUdeviceptr)mcBase;
-  DEVCHECK(cuMemUnmap(va, allocSize));
-  DEVCHECK(cuMemAddressFree(va, allocSize));
+  DEVCHECK(cuMemUnmap(va, mcMapSize));
+  DEVCHECK(cuMemAddressFree(va, mcMapSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastFree(void *mcHandle) {
+  if (mcHandle == NULL)
+    return flagcxSuccess;
+  CUmemGenericAllocationHandle handle =
+      *(CUmemGenericAllocationHandle *)mcHandle;
+  DEVCHECK(cuMemRelease(handle));
+  free(mcHandle);
   return flagcxSuccess;
 }
 
@@ -785,12 +796,13 @@ flagcxResult_t cudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                           int, void **) {
+                                           int, void **, size_t *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cudaAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
 }
+flagcxResult_t cudaAdaptorSymMulticastFree(void *) { return flagcxSuccess; }
 
 #endif // CUDART_VERSION >= 12010
 
@@ -859,7 +871,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymPhysAlloc, cudaAdaptorSymPhysFree, cudaAdaptorSymFlatMap,
       cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
-      cudaAdaptorSymMulticastTeardown,
+      cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

@@ -237,8 +237,11 @@ struct flagcxDeviceAdaptor_latest {
   flagcxResult_t (*symMulticastBind)(void *mcHandle, int importFd,
                                      void *physHandle, size_t allocSize,
                                      int localRank, int nLocalDevices,
-                                     void **mcBase);
-  flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t allocSize);
+                                     void **mcBase, size_t *mcMapSize);
+  flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t mcMapSize);
+  // Release the multicast object handle returned by symMulticastCreate.
+  // Must be called after all ranks have torn down their mappings.
+  flagcxResult_t (*symMulticastFree)(void *mcHandle);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

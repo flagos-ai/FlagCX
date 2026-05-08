@@ -1090,6 +1090,9 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         int winFlags) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
+    if (win == nullptr) {
+      return flagcxInvalidArgument;
+    }
     if (*win == NULL) {
       FLAGCXCHECK(flagcxCalloc(win, 1));
     }
@@ -1278,6 +1281,7 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
     FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->recvStagedBuff,
                                                state->stagedBuffSize, nullptr),
                     res, fail);
+    state->stagedVmmAlloc = true;
   } else {
     FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(
                         &state->sendStagedBuff, state->stagedBuffSize),
@@ -1393,13 +1397,13 @@ fail:
     }
   }
   if (state->recvStagedBuff) {
-    if (state->recvStagedWin && state->recvStagedWin->isSymmetricDefault)
+    if (state->stagedVmmAlloc)
       deviceAdaptor->gdrMemFree(state->recvStagedBuff, nullptr);
     else
       cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
   }
   if (state->sendStagedBuff) {
-    if (state->sendStagedWin && state->sendStagedWin->isSymmetricDefault)
+    if (state->stagedVmmAlloc)
       deviceAdaptor->gdrMemFree(state->sendStagedBuff, nullptr);
     else
       cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
@@ -1446,13 +1450,13 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
     }
   }
   if (state->sendStagedBuff) {
-    if (state->sendStagedWin && state->sendStagedWin->isSymmetricDefault)
+    if (state->stagedVmmAlloc)
       deviceAdaptor->gdrMemFree(state->sendStagedBuff, nullptr);
     else
       cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
   }
   if (state->recvStagedBuff) {
-    if (state->recvStagedWin && state->recvStagedWin->isSymmetricDefault)
+    if (state->stagedVmmAlloc)
       deviceAdaptor->gdrMemFree(state->recvStagedBuff, nullptr);
     else
       cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);

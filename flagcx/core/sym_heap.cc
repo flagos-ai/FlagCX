@@ -23,20 +23,15 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
   if (comm == nullptr || buff == nullptr || size == 0 || win == nullptr)
     return flagcxInvalidArgument;
 
-  flagcxWindow_t w = (flagcxWindow_t)calloc(1, sizeof(struct flagcxWindow));
-  if (w == nullptr)
-    return flagcxSystemError;
+  flagcxWindow_t w = nullptr;
+  FLAGCXCHECK(flagcxCalloc(&w, 1));
 
-  flagcxSymWindow_t d =
-      (flagcxSymWindow_t)calloc(1, sizeof(struct flagcxSymWindow));
-  if (d == nullptr) {
-    free(w);
-    return flagcxSystemError;
-  }
+  flagcxSymWindow_t d = nullptr;
+  FLAGCXCHECK(flagcxCalloc(&d, 1));
 
   w->vendorBase = nullptr;
   w->defaultBase = d;
-  w->isSymmetricDefault = true;
+  w->isSymmetricDefault = 1;
 
   d->mrIndex = -1;
   d->mrBase = 0;
@@ -60,12 +55,13 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       // Exchange shareable FDs with intra-node peers via Unix Domain Socket
       // (SCM_RIGHTS). Raw FD integers are process-local and cannot be sent
       // over TCP bootstrap — the kernel must duplicate them via sendmsg.
-      int *allFds = (int *)malloc(localRanks * sizeof(int));
-      if (allFds == nullptr) {
+      int *allFds = nullptr;
+      FLAGCXCHECK(flagcxCalloc(&allFds, localRanks));
+      if (res != flagcxSuccess) {
         deviceAdaptor->symPhysFree(physHandle);
         free(d);
         free(w);
-        return flagcxSystemError;
+        return res;
       }
       allFds[localRank] = shareableFd;
 
@@ -122,13 +118,14 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       flagcxIpcSocketClose(&ipcSock);
 
       // Build peer handle pointers for symFlatMap
-      void **peerHandles = (void **)malloc(localRanks * sizeof(void *));
-      if (peerHandles == nullptr) {
+      void **peerHandles = nullptr;
+      FLAGCXCHECK(flagcxCalloc(&peerHandles, localRanks));
+      if (res != flagcxSuccess) {
         free(allFds);
         deviceAdaptor->symPhysFree(physHandle);
         free(d);
         free(w);
-        return flagcxSystemError;
+        return res;
       }
       for (int i = 0; i < localRanks; i++) {
         peerHandles[i] = &allFds[i];
@@ -222,11 +219,13 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
             // All ranks: bind their physical allocation and map
             void *mcBaseVa = nullptr;
+            size_t mcMapSize = 0;
             flagcxResult_t mcRes = deviceAdaptor->symMulticastBind(
                 (localRank == 0) ? mcHandle : nullptr, mcFd, physHandle,
-                allocSize, localRank, localRanks, &mcBaseVa);
+                allocSize, localRank, localRanks, &mcBaseVa, &mcMapSize);
             if (mcRes == flagcxSuccess && mcBaseVa != nullptr) {
               d->mcBase = mcBaseVa;
+              d->mcMapSize = mcMapSize;
             } else {
               WARN("symMulticastBind failed: res=%d mcBaseVa=%p (localRank=%d)",
                    mcRes, mcBaseVa, localRank);
@@ -248,9 +247,10 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       }
 
       free(peerHandles);
-      // Close received peer FDs (our own shareableFd stays open for physHandle)
+      // Close all FDs — physHandle keeps our allocation alive, and peers have
+      // already imported theirs during symFlatMap.
       for (int i = 0; i < localRanks; i++) {
-        if (i != localRank && allFds[i] >= 0)
+        if (allFds[i] >= 0)
           close(allFds[i]);
       }
       free(allFds);
@@ -298,11 +298,11 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     if (d->isVMM) {
       // Teardown multicast
       if (d->mcBase != nullptr)
-        deviceAdaptor->symMulticastTeardown(d->mcBase, d->allocSize);
+        deviceAdaptor->symMulticastTeardown(d->mcBase, d->mcMapSize);
 
-      // Free multicast handle (rank 0 only allocated it)
+      // Release multicast handle (rank 0 only allocated it)
       if (d->mcHandle != nullptr)
-        free(d->mcHandle);
+        deviceAdaptor->symMulticastFree(d->mcHandle);
 
       // Unmap flat VA
       if (d->flatBase != nullptr)

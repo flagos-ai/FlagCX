@@ -5,6 +5,7 @@
 #include "sym_heap.h"
 #include "symmem_test.hpp"
 #include <cstring>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Each rank writes a pattern, then reads from the next peer's region
@@ -24,6 +25,10 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   if (!d->isVMM || d->flatBase == nullptr) {
     flagcxCommWindowDeregister(comm, win);
     GTEST_SKIP() << "VMM not available, cannot test flat VA access";
+  }
+  if (!hasHeteroComm()) {
+    flagcxCommWindowDeregister(comm, win);
+    GTEST_SKIP() << "heteroComm not available";
   }
 
   int localRank = comm->heteroComm->localRank;
@@ -90,6 +95,10 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   if (!d->isVMM || d->flatBase == nullptr) {
     flagcxCommWindowDeregister(comm, win);
     GTEST_SKIP() << "VMM not available, cannot test flat VA access";
+  }
+  if (!hasHeteroComm()) {
+    flagcxCommWindowDeregister(comm, win);
+    GTEST_SKIP() << "heteroComm not available";
   }
 
   int localRank = comm->heteroComm->localRank;

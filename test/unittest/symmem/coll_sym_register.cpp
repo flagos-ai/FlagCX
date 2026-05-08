@@ -16,7 +16,7 @@ TEST_F(SymMemTest, RegisterSymmetricWindow) {
                                                 FLAGCX_WIN_COLL_SYMMETRIC);
   ASSERT_EQ(res, flagcxSuccess);
   ASSERT_NE(win, nullptr);
-  EXPECT_TRUE(win->isSymmetricDefault);
+  EXPECT_EQ(win->isSymmetricDefault, 1);
   EXPECT_NE(win->defaultBase, nullptr);
 
   MPI_Barrier(MPI_COMM_WORLD);

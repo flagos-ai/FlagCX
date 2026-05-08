@@ -6,6 +6,7 @@
 
 #include "flagcx.h"
 #include "sym_heap.h"
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // 1. Struct layout tests — verify fields exist and have expected types
@@ -18,11 +19,11 @@ TEST(SymWindowStruct, WindowStructLayout) {
   // Verify fields exist and are accessible
   win.vendorBase = nullptr;
   win.defaultBase = nullptr;
-  win.isSymmetricDefault = false;
+  win.isSymmetricDefault = 0;
 
   EXPECT_EQ(win.vendorBase, nullptr);
   EXPECT_EQ(win.defaultBase, nullptr);
-  EXPECT_FALSE(win.isSymmetricDefault);
+  EXPECT_EQ(win.isSymmetricDefault, 0);
 }
 
 TEST(SymWindowStruct, SymWindowStructLayout) {
