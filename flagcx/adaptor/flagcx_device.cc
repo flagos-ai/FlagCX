@@ -20,7 +20,8 @@
 #include "shmutils.h" // flagcxShmOpen, flagcxShmClose, flagcxShmUnlink
 #include "utils.h"    // flagcxParamSignalHostEnable
 #include <algorithm>  // std::min, std::max
-#include <sched.h>    // sched_yield
+#include <new>
+#include <sched.h> // sched_yield
 
 // ==========================================================================
 // Shared: IPC peer pointer exchange (used by both tiers)
@@ -385,9 +386,6 @@ fail:
   return res;
 }
 
-#ifdef FLAGCX_DEVICE_API_VENDOR
-#include "nvidia_adaptor.h"
-#endif
 #include "sym_heap.h"
 
 // ==========================================================================
@@ -989,14 +987,6 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
   if (comm != nullptr) {
     handle->intraRank = comm->localRank;
 
-#ifndef FLAGCX_DEVICE_API_VENDOR
-    if (win != nullptr && !win->isSymmetricDefault) {
-      WARN("flagcxDevMemCreate: window provided but NCCL device API "
-           "unavailable, falling back to IPC");
-      win = nullptr;
-    }
-#endif
-
     // ---- Symmetric default window ----
     if (win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
@@ -1034,94 +1024,40 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
     // ---- Window layer: if win provided and valid (vendor path) ----
     if (win != nullptr && !win->isSymmetricDefault) {
       handle->hasWindow = true;
-#ifdef FLAGCX_DEVICE_API_VENDOR
-      handle->isSymmetric =
-          (win->vendorBase->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
-      // Allocate vendor Window and store in opaque pointer
-      ncclWindow_t *ncclWin = (ncclWindow_t *)malloc(sizeof(ncclWindow_t));
-      if (ncclWin == nullptr) {
-        WARN("flagcxDevMemCreate: failed to allocate ncclWindow_t");
-        free(handle);
-        return flagcxSystemError;
-      }
-      *ncclWin = win->vendorBase->base;
-      handle->window = ncclWin;
+      handle->isSymmetric = (win->vendorBase && (win->vendorBase->winFlags &
+                                                 FLAGCX_WIN_COLL_SYMMETRIC));
       handle->winHandle = (void *)win;
-#else
-      handle->window = nullptr;
-      handle->winHandle = nullptr;
-#endif
     }
   }
 
-#ifndef FLAGCX_DEVICE_API_VENDOR
-  // Default: always create a Window with mode-based fields so that
-  // flagcxDevMem(di) can copy it into _winBase for kernel use.
-  if (handle->window == nullptr) {
-    auto *fbWin = (typename DeviceAPI::Window *)malloc(
-        sizeof(typename DeviceAPI::Window));
-    if (fbWin == nullptr) {
-      WARN("flagcxDevMemCreate: failed to allocate fallback Window");
+  // Allocate and populate kernel Window uniformly via traits
+  {
+    auto *kWin = new (std::nothrow) typename DeviceAPI::Window{};
+    if (kWin == nullptr) {
+      WARN("flagcxDevMemCreate: failed to allocate DeviceAPI::Window");
       free(handle);
       return flagcxSystemError;
     }
-    memset(fbWin, 0, sizeof(typename DeviceAPI::Window));
-    fbWin->rawPtr = handle->rawPtr;
-    fbWin->intraRank = handle->intraRank;
-    fbWin->mrBase = handle->mrBase;
-    fbWin->mrIndex = handle->mrIndex;
-
-    flagcxSymWindow_t d = (win != nullptr && win->isSymmetricDefault)
-                              ? win->defaultBase
-                              : nullptr;
-
-    if (d != nullptr && d->isVMM && d->flatBase != nullptr) {
-      // SYMMETRIC mode: VMM flat VA available
-      fbWin->mode = DeviceAPI::SYMMETRIC;
-      fbWin->flatBasePtr = d->flatBase;
-      fbWin->allocSize = d->allocSize;
-      fbWin->mcBasePtr = d->mcBase;
-      fbWin->ipcBasePtrs = nullptr;
-    } else {
-      // ASYMMETRIC mode: IPC peer pointers (or raw-only if IPC failed)
-      fbWin->mode = DeviceAPI::ASYMMETRIC;
-      fbWin->flatBasePtr = nullptr;
-      fbWin->allocSize = 0;
-      fbWin->mcBasePtr = nullptr;
-      fbWin->ipcBasePtrs = (handle->ipcIndex >= 0)
+    kWin->populateFromHost(win, handle->rawPtr, handle->intraRank,
+                           handle->mrIndex, handle->mrBase, handle->ipcIndex,
+                           (handle->ipcIndex >= 0 && comm)
                                ? comm->ipcTable[handle->ipcIndex].devPeerPtrs
-                               : nullptr;
-    }
-
-    handle->window = fbWin;
-    handle->hasWindow = (fbWin->mode == DeviceAPI::SYMMETRIC &&
-                         fbWin->flatBasePtr != nullptr) ||
-                        (fbWin->mode == DeviceAPI::ASYMMETRIC &&
-                         fbWin->ipcBasePtrs != nullptr) ||
-                        (handle->rawPtr != nullptr);
+                               : nullptr);
+    handle->window = kWin;
+    handle->hasWindow = kWin->hasAccess() || (handle->rawPtr != nullptr);
   }
-#endif
 
   *devMem = handle;
   const char *modeStr = "";
-#ifndef FLAGCX_DEVICE_API_VENDOR
-  if (handle->window != nullptr) {
-    auto *w = (typename DeviceAPI::Window *)handle->window;
-    modeStr = (w->mode == DeviceAPI::SYMMETRIC) ? " + Window (SYMMETRIC)"
-              : (w->ipcBasePtrs != nullptr)     ? " + Window (ASYMMETRIC/IPC)"
-                                                : " + Window (raw-only)";
-    if (w->mode == DeviceAPI::SYMMETRIC) {
-      INFO(FLAGCX_INIT,
-           "flagcxDevMemCreate: flatBasePtr=%p allocSize=%zu mcBasePtr=%p "
-           "intraRank=%d",
-           w->flatBasePtr, w->allocSize, w->mcBasePtr, w->intraRank);
+  if (handle->hasWindow) {
+    if (handle->isSymmetric) {
+      modeStr = " + Window (SYMMETRIC)";
+    } else {
+      modeStr = " + Window (ASYMMETRIC/IPC)";
     }
+  } else if (handle->rawPtr) {
+    modeStr = " + Window (raw-only)";
   }
-#else
-  modeStr = handle->hasWindow ? (handle->isSymmetric ? " + Window (symmetric)"
-                                                     : " + Window (basic)")
-                              : "";
-#endif
   INFO(FLAGCX_INIT, "flagcxDevMemCreate: ptr %p, layers: rawPtr%s", buff,
        modeStr);
   return flagcxSuccess;
@@ -1141,7 +1077,7 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem) {
 
   // Free window allocation if present
   if (devMem->window != nullptr) {
-    free(devMem->window);
+    delete static_cast<typename DeviceAPI::Window *>(devMem->window);
   }
 
   free(devMem);
@@ -1303,24 +1239,12 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
   props->nRanks = comm->nranks;
   props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
 
-  // Vendor-specific fields: fill from vendor if available
-#ifdef FLAGCX_DEVICE_API_VENDOR
-  flagcxInnerComm_t innerComm = comm->homoComm;
-  if (innerComm != nullptr && innerComm->base != nullptr) {
-    props->deviceApiSupport = true; // Vendor device API available
-    // Vendor CommQueryProperties not yet wired through adaptor — set defaults.
-    // Full delegation will be added when the adaptor wrapper is available.
-    props->multicastSupport = false;
-    props->netType = flagcxNetTypeNone;
-  }
-#else
-  // Default path: query multicast support via adaptor
+  // Query multicast support via adaptor
   props->deviceApiSupport = true;
   int mcSupported = 0;
   deviceAdaptor->symMulticastSupported(&mcSupported);
   props->multicastSupport = (mcSupported != 0);
   props->netType = flagcxNetTypeNone;
-#endif
 
   return flagcxSuccess;
 }

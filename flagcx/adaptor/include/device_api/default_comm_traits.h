@@ -18,6 +18,9 @@
 #define FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 
 #include "flagcx_kernel.h"
+#ifndef __CUDACC__
+#include "sym_heap.h"
+#endif
 
 template <typename PlatformTag>
 struct CommTraits<Default<PlatformTag>> {
@@ -103,6 +106,35 @@ struct CommTraits<Default<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator!=(const Window &o) const {
       return !(*this == o);
     }
+
+#ifndef __CUDACC__
+    // Host-side population from flagcxWindow_t (sym heap or IPC).
+    void populateFromHost(flagcxWindow_t win, void *rawPtr_, int intraRank_,
+                          int mrIndex_, uintptr_t mrBase_, int ipcIndex_,
+                          void **ipcDevPeerPtrs_) {
+      rawPtr = rawPtr_;
+      intraRank = intraRank_;
+      mrBase = mrBase_;
+      mrIndex = mrIndex_;
+
+      flagcxSymWindow_t d =
+          (win && win->isSymmetricDefault) ? win->defaultBase : nullptr;
+
+      if (d && d->isVMM && d->flatBase) {
+        mode = SYMMETRIC;
+        flatBasePtr = d->flatBase;
+        allocSize = d->allocSize;
+        mcBasePtr = d->mcBase;
+        ipcBasePtrs = nullptr;
+      } else {
+        mode = ASYMMETRIC;
+        flatBasePtr = nullptr;
+        allocSize = 0;
+        mcBasePtr = nullptr;
+        ipcBasePtrs = (ipcIndex_ >= 0) ? ipcDevPeerPtrs_ : nullptr;
+      }
+    }
+#endif // __CUDACC__
   };
 
   // ---- Comm: All fallback layers ----
