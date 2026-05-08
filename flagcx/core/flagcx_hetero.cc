@@ -410,7 +410,7 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
 
   uint32_t qs = (uint32_t)flagcxParamRmaQueueSize();
   if (qs < 2 || (qs & (qs - 1)) != 0) {
-    WARN("flagcxHeteroRmaProxyStart: invalid RMA queue size %u;" 
+    WARN("flagcxHeteroRmaProxyStart: invalid RMA queue size %u;"
          "FLAGCX_RMA_QUEUE_SIZE must be a power of two and >= 2",
          qs);
     free(proxy);

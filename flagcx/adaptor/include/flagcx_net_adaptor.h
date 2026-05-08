@@ -84,7 +84,7 @@ struct flagcxNetAdaptor_v2 {
   flagcxResult_t (*init)();
   flagcxResult_t (*devices)(int *ndev);
   flagcxResult_t (*getProperties)(int dev, void *props);
-  
+
   // Setup functions
   flagcxResult_t (*listen)(int dev, void *handle, void **listenComm);
   flagcxResult_t (*connect)(int dev, void *handle, void **sendComm);
