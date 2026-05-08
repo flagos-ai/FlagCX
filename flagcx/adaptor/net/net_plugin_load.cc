@@ -54,7 +54,7 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     netPluginDlHandle = NULL;
     return flagcxSystemError;
   }
-  flagcxNetAdaptorUpgradeV1(pluginV1, upgradedNetPluginAdaptor);
+  flagcxNetAdaptorUpgrade(pluginV1, upgradedNetPluginAdaptor);
   struct flagcxNetAdaptor *plugin = upgradedNetPluginAdaptor;
 
   // Validate function pointers that all built-in net adaptors implement.

@@ -78,7 +78,7 @@ struct flagcxNetAdaptor_v1 {
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
 };
 
-struct flagcxNetAdaptor_v2 {
+struct flagcxNetAdaptor_latest {
   // Basic functions
   const char *name;
   flagcxResult_t (*init)();
@@ -137,11 +137,11 @@ struct flagcxNetAdaptor_v2 {
                               void **requests, int *posted);
 };
 
-#define flagcxNetAdaptor flagcxNetAdaptor_v2
+#define flagcxNetAdaptor flagcxNetAdaptor_latest
 
 static inline void
-flagcxNetAdaptorUpgradeV1(const struct flagcxNetAdaptor_v1 *src,
-                          struct flagcxNetAdaptor_v2 *dst) {
+flagcxNetAdaptorUpgrade(const struct flagcxNetAdaptor_v1 *src,
+                        struct flagcxNetAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxNetAdaptor_v1));
 }
