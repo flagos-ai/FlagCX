@@ -35,6 +35,10 @@ struct flagcxDevCommState {
   void *recvStagedBuff;
   size_t stagedBuffSize;
 
+  // Tracks whether staged buffers were allocated via gdrMemAlloc (VMM-backed).
+  // When true, cleanup must use gdrMemFree regardless of window state.
+  bool stagedVmmAlloc;
+
   // Capability flags (from devCommReqsInit)
   bool hasMulticast;
 

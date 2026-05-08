@@ -944,7 +944,7 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // Unified DevMem: Additive capability layers
 //   Baseline: rawPtr (always)
 //   IPC layer: peer pointers (if comm provided and win is null)
-//   Window layer: vendor Window (if win provided, Vendor only)
+//   Window layer: vendor or default Window
 // ==========================================================================
 
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,

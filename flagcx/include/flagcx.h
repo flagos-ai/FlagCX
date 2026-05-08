@@ -125,8 +125,8 @@ typedef struct flagcxSymWindow *flagcxSymWindow_t;
 struct flagcxWindow {
   flagcxInnerWindow_t vendorBase; // vendor-specific window (NULL if no vendor)
   flagcxSymWindow_t
-      defaultBase;         // default symmetric-heap state (NULL on vendor path)
-  bool isSymmetricDefault; // true if using default symmetric path
+      defaultBase;        // default symmetric-heap state (NULL on vendor path)
+  int isSymmetricDefault; // 1 if using default path, 0 if using vendor path
 };
 typedef struct flagcxWindow *flagcxWindow_t;
 

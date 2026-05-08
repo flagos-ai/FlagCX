@@ -37,7 +37,7 @@ $(UNIT_TARGET): $(UNIT_OBJS)
 $(MPI_TARGET): $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) -L$(GTEST_LIB) -lgtest -lpthread $(MPI_LINK)
 
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
