@@ -62,12 +62,12 @@ flagcxProxyProgressChannelJoin(struct flagcxProxyState *proxyState,
   return flagcxSuccess;
 }
 
-static flagcxResult_t asyncProxyOpEnqueue(flagcxProxyAsyncOp **opHead,
+static flagcxResult_t asyncProxyOpEnqueue(struct flagcxProxyLocalPeer *peer,
                                           flagcxProxyAsyncOp *newOp) {
-  flagcxProxyAsyncOp *list = *opHead;
-  if (list == NULL)
-    *opHead = newOp;
-  else {
+  flagcxProxyAsyncOp *list = peer->asyncOps;
+  if (list == NULL) {
+    peer->asyncOps = newOp;
+  } else {
     while (list->next)
       list = list->next;
     list->next = newOp;
@@ -76,10 +76,10 @@ static flagcxResult_t asyncProxyOpEnqueue(flagcxProxyAsyncOp **opHead,
   return flagcxSuccess;
 }
 
-static flagcxResult_t asyncProxyOpDequeue(flagcxProxyAsyncOp **opHead,
+static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
                                           flagcxProxyAsyncOp *op) {
-  if (*opHead == op)
-    *opHead = op->next;
+  if (peer->asyncOps == op)
+    peer->asyncOps = op->next;
   if (op->next)
     op->next->prev = op->prev;
   if (op->prev)
@@ -526,7 +526,7 @@ flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
   return res;
 }
 
-static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
+static flagcxResult_t proxyProgressAsync(struct flagcxProxyLocalPeer *peer,
                                          flagcxProxyAsyncOp *op,
                                          int *asyncOpCount) {
   int done = 0;
@@ -772,7 +772,7 @@ static flagcxResult_t proxyProgressAsync(flagcxProxyAsyncOp **opHead,
           flagcxSocketSend(op->connection->sock, op->respBuff, op->respSize));
     }
 
-    asyncProxyOpDequeue(opHead, op);
+    asyncProxyOpDequeue(peer, op);
     (*asyncOpCount)--;
     return flagcxSuccess;
   }
@@ -810,10 +810,11 @@ error:
   return ret;
 }
 
-static flagcxResult_t proxyServiceInitOp(int type, struct flagcxSocket *sock,
-                                         struct flagcxProxyAsyncOp **opHead,
+static flagcxResult_t proxyServiceInitOp(int type,
+                                         struct flagcxProxyLocalPeer *peer,
                                          flagcxHeteroComm_t comm,
                                          int *asyncOpCount) {
+  struct flagcxSocket *sock = &peer->sock;
   struct flagcxProxyAsyncOp *asyncOp;
   FLAGCXCHECK(flagcxCalloc(&asyncOp, 1));
 
@@ -834,9 +835,9 @@ static flagcxResult_t proxyServiceInitOp(int type, struct flagcxSocket *sock,
   if (asyncOp->respSize)
     FLAGCXCHECK(flagcxCalloc(&asyncOp->respBuff, asyncOp->respSize));
 
-  FLAGCXCHECK(asyncProxyOpEnqueue(opHead, asyncOp));
+  FLAGCXCHECK(asyncProxyOpEnqueue(peer, asyncOp));
   (*asyncOpCount)++;
-  FLAGCXCHECK(proxyProgressAsync(opHead, asyncOp, asyncOpCount));
+  FLAGCXCHECK(proxyProgressAsync(peer, asyncOp, asyncOpCount));
   return flagcxSuccess;
 }
 
@@ -1007,8 +1008,6 @@ void *flagcxProxyService(void *args) {
   int stop = 0;
   int asyncOpCount = 0;
   struct flagcxHeteroComm *comm = (struct flagcxHeteroComm *)args;
-  struct flagcxProxyAsyncOp *opHead = NULL;
-  struct flagcxProxyAsyncOp *list = NULL;
   flagcxResult_t res = flagcxSuccess;
 
   // Peer slots [0..maxConns-1], listen socket at [maxConns]
@@ -1052,23 +1051,29 @@ void *flagcxProxyService(void *args) {
       break;
     }
 
-    // Progress all ops
-    list = opHead;
-    while (list) {
-      struct flagcxProxyAsyncOp *opNext = list->next;
-      res = proxyProgressAsync(&opHead, list, &asyncOpCount);
-      if (res == flagcxSuccess || res == flagcxInProgress) {
-        list = opNext;
-      } else {
-        WARN("[Service thread] Error encountered progressing operation with "
-             "res=%d",
-             res);
-        break;
+    // Progress async ops per-peer (NCCL-aligned)
+    for (int i = 0; i < maxnpeers; i++) {
+      if (pollfds[i].fd == -1)
+        continue;
+      struct flagcxProxyLocalPeer *peer = &peers[i];
+      struct flagcxProxyAsyncOp *op = peer->asyncOps;
+      while (op) {
+        struct flagcxProxyAsyncOp *opNext = op->next;
+        res = proxyProgressAsync(peer, op, &asyncOpCount);
+        if (res == flagcxSuccess || res == flagcxInProgress) {
+          op = opNext;
+        } else {
+          WARN("[Service thread] Error encountered progressing operation with "
+               "res=%d",
+               res);
+          break;
+        }
       }
     }
 
     // Helper lambda to process incoming data on a socket
-    auto processSocket = [&](struct flagcxSocket *sock) -> bool {
+    auto processSocket = [&](struct flagcxProxyLocalPeer *curPeer) -> bool {
+      struct flagcxSocket *sock = &curPeer->sock;
       int type;
       int closed = 0;
       res = flagcxSocketTryRecv(sock, &type, sizeof(int), &closed,
@@ -1182,7 +1187,7 @@ void *flagcxProxyService(void *args) {
           }
           return false;
         } else if (proxyMatchOpType(type)) {
-          res = proxyServiceInitOp(type, sock, &opHead, comm, &asyncOpCount);
+          res = proxyServiceInitOp(type, curPeer, comm, &asyncOpCount);
           if (res != flagcxSuccess) {
             WARN("[Service thread] Error encountered initializing operation "
                  "with res=%d",
@@ -1219,6 +1224,7 @@ void *flagcxProxyService(void *args) {
           pollfds[slot].events = POLLIN;
           peers[slot].tpRank = -1;
           peers[slot].tpLocalRank = -1;
+          peers[slot].asyncOps = NULL;
           npeers++;
           if (maxnpeers < slot + 1)
             maxnpeers = slot + 1;
@@ -1240,10 +1246,15 @@ void *flagcxProxyService(void *args) {
       if (pollfds[i].revents & (POLLHUP | POLLERR)) {
         closeConn = true;
       } else if (pollfds[i].revents & POLLIN) {
-        if (!processSocket(&peers[i].sock))
+        if (!processSocket(&peers[i]))
           closeConn = true;
       }
       if (closeConn) {
+        // Drain any remaining async ops for this peer (NCCL-aligned)
+        while (peers[i].asyncOps) {
+          asyncProxyOpDequeue(&peers[i], peers[i].asyncOps);
+          asyncOpCount--;
+        }
         flagcxSocketClose(&peers[i].sock);
         pollfds[i].fd = -1;
         npeers--;
@@ -1253,6 +1264,7 @@ void *flagcxProxyService(void *args) {
              i, peers[i].tpRank, npeers);
         peers[i].tpRank = -1;
         peers[i].tpLocalRank = -1;
+        peers[i].asyncOps = NULL;
       }
     }
 
@@ -1305,23 +1317,18 @@ out:
     free(allocatedConns[i]);
   free(allocatedConns);
 
-  // Close sockets (skip already-closed ones marked with fd = -1)
+  // Close sockets and drain any remaining async ops
   for (int i = 0; i < maxConns; i++) {
     if (pollfds[i].fd != -1) {
+      while (peers[i].asyncOps) {
+        asyncProxyOpDequeue(&peers[i], peers[i].asyncOps);
+      }
       flagcxSocketClose(&peers[i].sock);
     }
   }
   flagcxSocketClose(&comm->proxyState->listenSock);
   free(pollfds);
   free(peers);
-
-  // Dequeue unhandled ops
-  list = opHead;
-  while (list) {
-    struct flagcxProxyAsyncOp *opNext = list->next;
-    asyncProxyOpDequeue(&opHead, list);
-    list = opNext;
-  }
 
   INFO(FLAGCX_PROXY,
        "[Service thread] Wait for progress thread joined and free resources");
