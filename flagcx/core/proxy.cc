@@ -92,6 +92,134 @@ static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
   return flagcxSuccess;
 }
 
+// ============================================================
+// Proxy Init Request/Response (forward declarations for connection pool)
+// ============================================================
+
+struct flagcxProxyInitReq {
+  int transport;
+  int send;
+  int tpLocalRank;
+  int tpRank;
+  int sameProcess;
+};
+
+struct flagcxProxyInitResp {
+  flagcxProxyConnection *connection;
+};
+
+// ============================================================
+// Connection Pool
+// ============================================================
+
+#define FLAGCX_PROXY_CONN_POOL_SIZE_POW2 7
+#define FLAGCX_PROXY_CONN_POOL_SIZE (1 << (FLAGCX_PROXY_CONN_POOL_SIZE_POW2))
+#define FLAGCX_PROXY_CONN_POOL_MASK ((FLAGCX_PROXY_CONN_POOL_SIZE)-1)
+
+struct flagcxProxyConnectionPool {
+  struct flagcxProxyConnection **pools;
+  int banks;
+  int offset;
+};
+
+static flagcxResult_t
+flagcxProxyNewConnection(struct flagcxProxyConnectionPool *pool, int *id) {
+  if (pool->offset == FLAGCX_PROXY_CONN_POOL_SIZE) {
+    FLAGCXCHECK(flagcxRealloc(&pool->pools, pool->banks, pool->banks + 1));
+    FLAGCXCHECK(
+        flagcxCalloc(pool->pools + pool->banks, FLAGCX_PROXY_CONN_POOL_SIZE));
+    pool->banks++;
+    pool->offset = 0;
+  }
+  *id = ((pool->banks - 1) << FLAGCX_PROXY_CONN_POOL_SIZE_POW2) + pool->offset;
+  pool->offset++;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxProxyGetConnection(struct flagcxProxyConnectionPool *pool, int id,
+                         struct flagcxProxyConnection **conn) {
+  int bank = id >> FLAGCX_PROXY_CONN_POOL_SIZE_POW2;
+  int offset = id & FLAGCX_PROXY_CONN_POOL_MASK;
+  if ((pool->pools == NULL) || (bank > pool->banks) ||
+      (pool->pools[bank] == NULL))
+    return flagcxInternalError;
+  *conn = pool->pools[bank] + offset;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+proxyConnInit(struct flagcxProxyLocalPeer *peer,
+              struct flagcxProxyConnectionPool *connectionPool,
+              struct flagcxHeteroComm *comm, struct flagcxProxyInitReq *req,
+              struct flagcxProxyInitResp *resp,
+              struct flagcxProxyConnection **connection) {
+  int id;
+  FLAGCXCHECK(flagcxProxyNewConnection(connectionPool, &id));
+  FLAGCXCHECK(flagcxProxyGetConnection(connectionPool, id, connection));
+
+  (*connection)->sock = &peer->sock;
+  (*connection)->transport = req->transport;
+  (*connection)->send = req->send;
+  (*connection)->tpLocalRank = req->tpLocalRank;
+  (*connection)->sameProcess = req->sameProcess;
+  (*connection)->cudaDev = comm->cudaDev;
+  peer->tpLocalRank = req->tpLocalRank;
+  peer->tpRank = req->tpRank;
+
+  resp->connection = *connection;
+
+  INFO(FLAGCX_PROXY,
+       "[Service thread] New proxy %s connection %d from local rank %d, "
+       "transport %d",
+       (*connection)->send ? "send" : "recv", id, (*connection)->tpLocalRank,
+       (*connection)->transport);
+  (*connection)->state = connInitialized;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+proxyFreeConnection(struct flagcxProxyConnection *connection,
+                    struct flagcxHeteroComm *comm) {
+  if (connection->transportResources) {
+    if (connection->transport == TRANSPORT_P2P) {
+      if (connection->send) {
+        flagcxP2pSendProxyFree(
+            (struct flagcxP2pResources *)connection->transportResources);
+      } else {
+        flagcxP2pRecvProxyFree(
+            (struct flagcxP2pResources *)connection->transportResources);
+      }
+    } else if (connection->transport == TRANSPORT_NET) {
+      if (connection->send) {
+        flagcxSendProxyFree(
+            (struct sendNetResources *)connection->transportResources);
+      } else {
+        flagcxRecvProxyFree(
+            (struct recvNetResources *)connection->transportResources);
+      }
+    }
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxProxyFreeConnections(struct flagcxProxyConnectionPool *pool,
+                           struct flagcxHeteroComm *comm) {
+  for (int b = 0; b < pool->banks; b++) {
+    int max = b == pool->banks - 1 ? pool->offset : FLAGCX_PROXY_CONN_POOL_SIZE;
+    for (int i = 0; i < max; i++) {
+      struct flagcxProxyConnection *connection = pool->pools[b] + i;
+      if (connection->state != connUninitialized) {
+        proxyFreeConnection(connection, comm);
+      }
+    }
+    free(pool->pools[b]);
+  }
+  free(pool->pools);
+  return flagcxSuccess;
+}
+
 static flagcxResult_t SaveProxy(struct flagcxHeteroComm *comm,
                                 struct flagcxChannel *channel, int type,
                                 int peer, struct flagcxProxyOp *op,
@@ -526,9 +654,11 @@ flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
   return res;
 }
 
-static flagcxResult_t proxyProgressAsync(struct flagcxProxyLocalPeer *peer,
-                                         flagcxProxyAsyncOp *op,
-                                         int *asyncOpCount) {
+static flagcxResult_t
+proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
+                   int *asyncOpCount,
+                   struct flagcxProxyConnectionPool *connectionPool,
+                   struct flagcxHeteroComm *comm) {
   int done = 0;
   const char *dmaBufEnable = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
   bool dmaEnabled = false; // disabled by default
@@ -542,7 +672,15 @@ static flagcxResult_t proxyProgressAsync(struct flagcxProxyLocalPeer *peer,
     deviceAdaptor->dmaSupport(&dmaBufferSupport);
   }
   dmaBufferSupport = dmaEnabled && dmaBufferSupport;
-  if (op->type == flagcxProxyMsgConnect) {
+  if (op->type == flagcxProxyMsgInit) {
+    // Allocate connection from pool
+    flagcxResult_t res = proxyConnInit(
+        peer, connectionPool, comm, (struct flagcxProxyInitReq *)op->reqBuff,
+        (struct flagcxProxyInitResp *)op->respBuff, &op->connection);
+    if (res != flagcxSuccess)
+      return res;
+    done = 1;
+  } else if (op->type == flagcxProxyMsgConnect) {
     TRACE(FLAGCX_PROXY,
           "proxyProgressAsync::flagcxProxyMsgConnect opId=%p op.reqBuff=%p, "
           "op->reqSize=%d, op->respSize=%d, transport=%d",
@@ -810,10 +948,10 @@ error:
   return ret;
 }
 
-static flagcxResult_t proxyServiceInitOp(int type,
-                                         struct flagcxProxyLocalPeer *peer,
-                                         flagcxHeteroComm_t comm,
-                                         int *asyncOpCount) {
+static flagcxResult_t
+proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
+                   struct flagcxProxyConnectionPool *connectionPool,
+                   flagcxHeteroComm_t comm, int *asyncOpCount) {
   struct flagcxSocket *sock = &peer->sock;
   struct flagcxProxyAsyncOp *asyncOp;
   FLAGCXCHECK(flagcxCalloc(&asyncOp, 1));
@@ -831,13 +969,19 @@ static flagcxResult_t proxyServiceInitOp(int type,
   // Store opId for completion response
   FLAGCXCHECK(flagcxSocketRecv(sock, &asyncOp->opId, sizeof(asyncOp->opId)));
 
-  asyncOp->connection->sock = sock;
   if (asyncOp->respSize)
     FLAGCXCHECK(flagcxCalloc(&asyncOp->respBuff, asyncOp->respSize));
 
+  // For Init messages, connection is NULL (will be allocated from pool in
+  // proxyProgressAsync). For other messages, set the socket on the connection.
+  if (type != flagcxProxyMsgInit) {
+    asyncOp->connection->sock = sock;
+  }
+
   FLAGCXCHECK(asyncProxyOpEnqueue(peer, asyncOp));
   (*asyncOpCount)++;
-  FLAGCXCHECK(proxyProgressAsync(peer, asyncOp, asyncOpCount));
+  FLAGCXCHECK(
+      proxyProgressAsync(peer, asyncOp, asyncOpCount, connectionPool, comm));
   return flagcxSuccess;
 }
 
@@ -867,19 +1011,6 @@ fail:
 struct flagcxProxyKernelServiceArg {
   struct flagcxHeteroComm *comm;
   int contextId;
-};
-
-// Proxy init request/response for peer proxy connections
-struct flagcxProxyInitReq {
-  int transport;
-  int send;
-  int tpLocalRank;
-  int tpRank;
-  int sameProcess;
-};
-
-struct flagcxProxyInitResp {
-  flagcxProxyConnection *connection;
 };
 
 flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
@@ -930,6 +1061,12 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
   FLAGCXCHECK(flagcxProxyCallBlocking(comm, proxyConn, flagcxProxyMsgInit, &req,
                                       sizeof(req), &resp, sizeof(resp)));
   proxyConn->connection = resp.connection;
+  if (proxyConn->connection == NULL) {
+    WARN("flagcxProxyConnect: service thread returned NULL connection for rank "
+         "%d -> peer %d",
+         comm->rank, proxyRank);
+    return flagcxInternalError;
+  }
   INFO(FLAGCX_PROXY,
        "flagcxProxyConnect rank %d -> peer %d connection %p sameProcess %d",
        comm->rank, proxyRank, proxyConn->connection, proxyConn->sameProcess);
@@ -1018,10 +1155,12 @@ void *flagcxProxyService(void *args) {
       maxConns, sizeof(struct flagcxProxyLocalPeer));
   int npeers = 0;
   int maxnpeers = 0;
-  struct flagcxProxyConnection **allocatedConns = NULL;
-  int nAllocatedConns = 0;
-  int maxAllocatedConns = comm->nRanks * MAXCHANNELS * 2;
-  FLAGCXCHECKGOTO(flagcxCalloc(&allocatedConns, maxAllocatedConns), res, out);
+
+  // Connection pool — owns all connection structs
+  struct flagcxProxyConnectionPool connectionPool;
+  connectionPool.pools = NULL;
+  connectionPool.banks = 0;
+  connectionPool.offset = FLAGCX_PROXY_CONN_POOL_SIZE;
 
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
@@ -1052,7 +1191,7 @@ void *flagcxProxyService(void *args) {
       break;
     }
 
-    // Progress async ops per-peer (NCCL-aligned)
+    // Progress async ops per-peer
     for (int i = 0; i < maxnpeers; i++) {
       if (pollfds[i].fd == -1)
         continue;
@@ -1060,7 +1199,8 @@ void *flagcxProxyService(void *args) {
       struct flagcxProxyAsyncOp *op = peer->asyncOps;
       while (op) {
         struct flagcxProxyAsyncOp *opNext = op->next;
-        res = proxyProgressAsync(peer, op, &asyncOpCount);
+        res =
+            proxyProgressAsync(peer, op, &asyncOpCount, &connectionPool, comm);
         if (res == flagcxSuccess || res == flagcxInProgress) {
           op = opNext;
         } else {
@@ -1093,108 +1233,9 @@ void *flagcxProxyService(void *args) {
         } else if (type == flagcxProxyMsgClose) {
           INFO(FLAGCX_PROXY, "[Service thread] Received close from peer");
           return false; // graceful close from peer
-        } else if (type == flagcxProxyMsgInit) {
-          // Peer proxy init: create a new flagcxProxyConnection
-          struct flagcxProxyAsyncOp *asyncOp = NULL;
-          flagcxResult_t initRes = flagcxSuccess;
-          void *dummyConn = NULL;
-          struct flagcxProxyConnection *newConn = NULL;
-          struct flagcxProxyInitReq *req = NULL;
-          flagcxProxyRpcResponseHeader resp = {};
-
-          FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp, 1), initRes, initFail);
-          asyncOp->type = type;
-
-          // For Init, connection pointer sent is NULL — read and discard it
-          FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &dummyConn, sizeof(void *)),
-                          initRes, initFail);
-          FLAGCXCHECKGOTO(
-              flagcxSocketRecv(sock, &asyncOp->reqSize, sizeof(int)), initRes,
-              initFail);
-          FLAGCXCHECKGOTO(
-              flagcxSocketRecv(sock, &asyncOp->respSize, sizeof(int)), initRes,
-              initFail);
-
-          // Validate sizes
-          if (asyncOp->reqSize != (int)sizeof(struct flagcxProxyInitReq)) {
-            WARN("[Service thread] Invalid reqSize %d for Init, expected %zu",
-                 asyncOp->reqSize, sizeof(struct flagcxProxyInitReq));
-            initRes = flagcxInvalidArgument;
-            goto initFail;
-          }
-          if (asyncOp->respSize != (int)sizeof(struct flagcxProxyInitResp)) {
-            WARN("[Service thread] Invalid respSize %d for Init, expected %zu",
-                 asyncOp->respSize, sizeof(struct flagcxProxyInitResp));
-            initRes = flagcxInvalidArgument;
-            goto initFail;
-          }
-
-          FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp->reqBuff, asyncOp->reqSize),
-                          initRes, initFail);
-          FLAGCXCHECKGOTO(
-              flagcxSocketRecv(sock, asyncOp->reqBuff, asyncOp->reqSize),
-              initRes, initFail);
-          FLAGCXCHECKGOTO(
-              flagcxSocketRecv(sock, &asyncOp->opId, sizeof(asyncOp->opId)),
-              initRes, initFail);
-
-          // Create a new connection for this peer
-          FLAGCXCHECKGOTO(flagcxCalloc(&newConn, 1), initRes, initFail);
-          req = (struct flagcxProxyInitReq *)asyncOp->reqBuff;
-          newConn->transport = req->transport;
-          newConn->send = req->send;
-          newConn->tpLocalRank = req->tpLocalRank;
-          newConn->sameProcess = req->sameProcess;
-          newConn->cudaDev = comm->cudaDev;
-          newConn->sock = sock;
-
-          asyncOp->connection = newConn;
-          if (nAllocatedConns >= maxAllocatedConns) {
-            WARN("[Service thread] allocatedConns overflow (%d >= %d)",
-                 nAllocatedConns, maxAllocatedConns);
-            initRes = flagcxInternalError;
-            goto initFail;
-          }
-          allocatedConns[nAllocatedConns++] = newConn;
-          FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp->respBuff, asyncOp->respSize),
-                          initRes, initFail);
-
-          // Fill response with the connection pointer
-          if (asyncOp->respSize >= (int)sizeof(void *)) {
-            memcpy(asyncOp->respBuff, &newConn, sizeof(void *));
-          }
-
-          INFO(FLAGCX_PROXY,
-               "[Service thread] Peer proxy init: transport=%d send=%d "
-               "tpLocalRank=%d sameProcess=%d conn=%p",
-               req->transport, req->send, req->tpLocalRank, req->sameProcess,
-               newConn);
-
-          // Send response immediately
-          resp.opId = asyncOp->opId;
-          resp.res = flagcxSuccess;
-          resp.respSize = asyncOp->respSize;
-          FLAGCXCHECKGOTO(flagcxSocketSend(sock, &resp, sizeof(resp)), initRes,
-                          initFail);
-          if (asyncOp->respSize) {
-            FLAGCXCHECKGOTO(
-                flagcxSocketSend(sock, asyncOp->respBuff, asyncOp->respSize),
-                initRes, initFail);
-          }
-          free(asyncOp->reqBuff);
-          free(asyncOp->respBuff);
-          free(asyncOp);
-          return true;
-
-        initFail:
-          if (asyncOp) {
-            free(asyncOp->reqBuff);
-            free(asyncOp->respBuff);
-            free(asyncOp);
-          }
-          return false;
         } else if (proxyMatchOpType(type)) {
-          res = proxyServiceInitOp(type, curPeer, comm, &asyncOpCount);
+          res = proxyServiceInitOp(type, curPeer, &connectionPool, comm,
+                                   &asyncOpCount);
           if (res != flagcxSuccess) {
             WARN("[Service thread] Error encountered initializing operation "
                  "with res=%d",
@@ -1227,6 +1268,24 @@ void *flagcxProxyService(void *args) {
         FLAGCXCHECKGOTO(flagcxSocketInit(newSock), res, out);
         res = flagcxSocketAccept(newSock, &comm->proxyState->listenSock);
         if (res == flagcxSuccess) {
+          // The listen socket has asyncFlag=1, which gets copied into newSock
+          // via memcpy in flagcxSocketAccept. This means the accept may return
+          // before the handshake (magic+type exchange) is complete. We must
+          // finish the handshake before adding the socket to the poll set,
+          // otherwise processSocket will read handshake bytes as proxy
+          // commands.
+          if (newSock->state != flagcxSocketStateReady) {
+            newSock->asyncFlag = 0; // force blocking to complete handshake
+            int ready = 0;
+            do {
+              FLAGCXCHECKGOTO(flagcxSocketReady(newSock, &ready), res, out);
+            } while (!ready && newSock->state != flagcxSocketStateError);
+            if (newSock->state != flagcxSocketStateReady) {
+              WARN("[Service thread] Socket handshake failed at slot %d", slot);
+              flagcxSocketClose(newSock);
+              continue;
+            }
+          }
           pollfds[slot].fd = newSock->fd;
           pollfds[slot].events = POLLIN;
           peers[slot].tpRank = -1;
@@ -1257,7 +1316,7 @@ void *flagcxProxyService(void *args) {
           closeConn = true;
       }
       if (closeConn) {
-        // Drain any remaining async ops for this peer (NCCL-aligned)
+        // Drain any remaining async ops for this peer
         while (peers[i].asyncOps) {
           asyncProxyOpDequeue(&peers[i], peers[i].asyncOps);
           asyncOpCount--;
@@ -1294,37 +1353,6 @@ out:
   pthread_cond_destroy(&comm->proxyState->kernelState.initCond);
 #endif
 
-  // Free P2P resources in proxy thread (CUDA resources must be freed in the
-  // same thread where they were created)
-  for (int peer = 0; peer < comm->nRanks; peer++) {
-    for (int c = 0; c < MAXCHANNELS; c++) {
-      if (comm->channels[c].peers[peer]->recv[0].connected == 1) {
-        struct flagcxConnector *conn = comm->channels[c].peers[peer]->recv;
-        if (conn->proxyConn.connection &&
-            conn->proxyConn.connection->transport == TRANSPORT_P2P) {
-          struct flagcxP2pResources *resources =
-              (struct flagcxP2pResources *)
-                  conn->proxyConn.connection->transportResources;
-          flagcxP2pRecvProxyFree(resources);
-        }
-      }
-      if (comm->channels[c].peers[peer]->send[0].connected == 1) {
-        struct flagcxConnector *conn = comm->channels[c].peers[peer]->send;
-        if (conn->proxyConn.connection &&
-            conn->proxyConn.connection->transport == TRANSPORT_P2P) {
-          struct flagcxP2pResources *resources =
-              (struct flagcxP2pResources *)
-                  conn->proxyConn.connection->transportResources;
-          flagcxP2pSendProxyFree(resources);
-        }
-      }
-    }
-  }
-
-  // Connection structs are freed by flagcxProxyFree after service thread exits.
-  // Only free the tracking array here.
-  free(allocatedConns);
-
   // Close sockets and drain any remaining async ops
   for (int i = 0; i < maxConns; i++) {
     if (pollfds[i].fd != -1) {
@@ -1334,6 +1362,11 @@ out:
       flagcxSocketClose(&peers[i].sock);
     }
   }
+
+  // Free all connections from pool (all resource cleanup happens
+  // inside the service thread before it exits)
+  flagcxProxyFreeConnections(&connectionPool, comm);
+
   flagcxSocketClose(&comm->proxyState->listenSock);
   free(pollfds);
   free(peers);
@@ -1656,35 +1689,16 @@ out:
 }
 
 flagcxResult_t flagcxProxyFree(struct flagcxHeteroComm *comm) {
+  // Connection structs and transport resources are now freed by the service
+  // thread via flagcxProxyFreeConnections. We only NULL out
+  // the pointers here to prevent dangling references.
   for (int peer = 0; peer < comm->nRanks; peer++) {
     for (int c = 0; c < MAXCHANNELS; c++) {
       if (comm->channels[c].peers[peer]->recv[0].connected == 1) {
-        struct flagcxConnector *conn = comm->channels[c].peers[peer]->recv;
-        if (conn->proxyConn.connection) {
-          int transport = conn->proxyConn.connection->transport;
-          if (transport == TRANSPORT_NET) {
-            struct recvNetResources *resources =
-                (struct recvNetResources *)
-                    conn->proxyConn.connection->transportResources;
-            flagcxRecvProxyFree(resources);
-          }
-          free(conn->proxyConn.connection);
-          conn->proxyConn.connection = NULL;
-        }
+        comm->channels[c].peers[peer]->recv[0].proxyConn.connection = NULL;
       }
       if (comm->channels[c].peers[peer]->send[0].connected == 1) {
-        struct flagcxConnector *conn = comm->channels[c].peers[peer]->send;
-        if (conn->proxyConn.connection) {
-          int transport = conn->proxyConn.connection->transport;
-          if (transport == TRANSPORT_NET) {
-            struct sendNetResources *resources =
-                (struct sendNetResources *)
-                    conn->proxyConn.connection->transportResources;
-            flagcxSendProxyFree(resources);
-          }
-          free(conn->proxyConn.connection);
-          conn->proxyConn.connection = NULL;
-        }
+        comm->channels[c].peers[peer]->send[0].proxyConn.connection = NULL;
       }
     }
   }
