@@ -1683,24 +1683,24 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
   }
 
   INFO(FLAGCX_PROXY, "flagcxProxyStop: sending stop to service thread...");
-  // 1. Send MsgStop to own service thread via listen socket
-  // 1984-1991)
-  struct flagcxSocket sock;
-  int type = flagcxProxyMsgStop;
-  FLAGCXCHECK(flagcxSocketInit(&sock, &comm->proxyState->listenSock.addr,
-                               comm->magic, flagcxSocketTypeProxy));
-  if (flagcxSocketConnect(&sock) == flagcxSuccess) {
-    int ready = 0;
-    while (!ready) {
-      (void)flagcxSocketReady(&sock, &ready);
+  // 1. Send MsgStop to own service thread via listen socket (best-effort)
+  {
+    struct flagcxSocket sock;
+    int type = flagcxProxyMsgStop;
+    if (flagcxSocketInit(&sock, &comm->proxyState->listenSock.addr, comm->magic,
+                         flagcxSocketTypeProxy) == flagcxSuccess) {
+      if (flagcxSocketConnect(&sock) == flagcxSuccess) {
+        int ready = 0;
+        while (!ready) {
+          (void)flagcxSocketReady(&sock, &ready);
+        }
+        (void)flagcxSocketSend(&sock, &type, sizeof(int));
+      }
+      (void)flagcxSocketClose(&sock);
     }
-    (void)flagcxSocketSend(&sock, &type, sizeof(int));
   }
-  (void)flagcxSocketClose(&sock);
 
-  // 2. Send MsgClose + close each peerSock
-  //    This tells peer service threads to close the accepted connection,
-  //    decrementing their npeers.
+  // 2. Send MsgClose + close each peerSock (best-effort)
   if (comm->proxyState->peerSocks != NULL) {
     for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
       if (comm->proxyState->peerSocks[i].fd >= 0) {
@@ -1712,11 +1712,10 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
     }
   }
 
-  // 3. Set atomic stop flag
-  //    Backup: service thread checks this every 500ms poll timeout
+  // 3. Set atomic stop flag (unconditional — authoritative shutdown signal)
   __atomic_store_n(&comm->proxyState->stop, 1, __ATOMIC_RELEASE);
 
-  // 4. Signal kernel threads to stop
+  // 4. Signal kernel threads to stop (unconditional)
   comm->proxyState->kernelState.stop = 1;
   INFO(FLAGCX_PROXY, "flagcxProxyStop: done");
   return flagcxSuccess;
