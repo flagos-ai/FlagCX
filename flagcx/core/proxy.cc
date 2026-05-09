@@ -1020,7 +1020,8 @@ void *flagcxProxyService(void *args) {
   int maxnpeers = 0;
   struct flagcxProxyConnection **allocatedConns = NULL;
   int nAllocatedConns = 0;
-  FLAGCXCHECKGOTO(flagcxCalloc(&allocatedConns, comm->nRanks), res, out);
+  int maxAllocatedConns = comm->nRanks * MAXCHANNELS * 2;
+  FLAGCXCHECKGOTO(flagcxCalloc(&allocatedConns, maxAllocatedConns), res, out);
 
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
@@ -1148,6 +1149,12 @@ void *flagcxProxyService(void *args) {
           newConn->sock = sock;
 
           asyncOp->connection = newConn;
+          if (nAllocatedConns >= maxAllocatedConns) {
+            WARN("[Service thread] allocatedConns overflow (%d >= %d)",
+                 nAllocatedConns, maxAllocatedConns);
+            initRes = flagcxInternalError;
+            goto initFail;
+          }
           allocatedConns[nAllocatedConns++] = newConn;
           FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp->respBuff, asyncOp->respSize),
                           initRes, initFail);
@@ -1293,7 +1300,8 @@ out:
     for (int c = 0; c < MAXCHANNELS; c++) {
       if (comm->channels[c].peers[peer]->recv[0].connected == 1) {
         struct flagcxConnector *conn = comm->channels[c].peers[peer]->recv;
-        if (conn->proxyConn.connection->transport == TRANSPORT_P2P) {
+        if (conn->proxyConn.connection &&
+            conn->proxyConn.connection->transport == TRANSPORT_P2P) {
           struct flagcxP2pResources *resources =
               (struct flagcxP2pResources *)
                   conn->proxyConn.connection->transportResources;
@@ -1302,7 +1310,8 @@ out:
       }
       if (comm->channels[c].peers[peer]->send[0].connected == 1) {
         struct flagcxConnector *conn = comm->channels[c].peers[peer]->send;
-        if (conn->proxyConn.connection->transport == TRANSPORT_P2P) {
+        if (conn->proxyConn.connection &&
+            conn->proxyConn.connection->transport == TRANSPORT_P2P) {
           struct flagcxP2pResources *resources =
               (struct flagcxP2pResources *)
                   conn->proxyConn.connection->transportResources;
@@ -1312,9 +1321,8 @@ out:
     }
   }
 
-  // Free allocated proxy connections
-  for (int i = 0; i < nAllocatedConns; i++)
-    free(allocatedConns[i]);
+  // Connection structs are freed by flagcxProxyFree after service thread exits.
+  // Only free the tracking array here.
   free(allocatedConns);
 
   // Close sockets and drain any remaining async ops
@@ -1652,24 +1660,30 @@ flagcxResult_t flagcxProxyFree(struct flagcxHeteroComm *comm) {
     for (int c = 0; c < MAXCHANNELS; c++) {
       if (comm->channels[c].peers[peer]->recv[0].connected == 1) {
         struct flagcxConnector *conn = comm->channels[c].peers[peer]->recv;
-        int transport = conn->proxyConn.connection->transport;
-
-        if (transport == TRANSPORT_NET) {
-          struct recvNetResources *resources =
-              (struct recvNetResources *)
-                  conn->proxyConn.connection->transportResources;
-          flagcxRecvProxyFree(resources);
+        if (conn->proxyConn.connection) {
+          int transport = conn->proxyConn.connection->transport;
+          if (transport == TRANSPORT_NET) {
+            struct recvNetResources *resources =
+                (struct recvNetResources *)
+                    conn->proxyConn.connection->transportResources;
+            flagcxRecvProxyFree(resources);
+          }
+          free(conn->proxyConn.connection);
+          conn->proxyConn.connection = NULL;
         }
       }
       if (comm->channels[c].peers[peer]->send[0].connected == 1) {
         struct flagcxConnector *conn = comm->channels[c].peers[peer]->send;
-        int transport = conn->proxyConn.connection->transport;
-
-        if (transport == TRANSPORT_NET) {
-          struct sendNetResources *resources =
-              (struct sendNetResources *)
-                  conn->proxyConn.connection->transportResources;
-          flagcxSendProxyFree(resources);
+        if (conn->proxyConn.connection) {
+          int transport = conn->proxyConn.connection->transport;
+          if (transport == TRANSPORT_NET) {
+            struct sendNetResources *resources =
+                (struct sendNetResources *)
+                    conn->proxyConn.connection->transportResources;
+            flagcxSendProxyFree(resources);
+          }
+          free(conn->proxyConn.connection);
+          conn->proxyConn.connection = NULL;
         }
       }
     }
