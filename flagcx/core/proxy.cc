@@ -983,13 +983,13 @@ void *flagcxProxyService(void *args) {
   struct flagcxProxyAsyncOp *list = NULL;
   flagcxResult_t res = flagcxSuccess;
 
-  // Max connections: 1 listenSock + nRanks peer connections + 1 stop connection
-  int maxConns = 1 + comm->nRanks + 1;
+  // Peer slots [0..maxConns-1], listen socket at [maxConns] (NCCL pattern)
+  int maxConns = comm->nRanks + 1;
   struct pollfd *pollfds =
-      (struct pollfd *)calloc(maxConns, sizeof(struct pollfd));
-  struct flagcxSocket *connSocks = (struct flagcxSocket *)calloc(
-      comm->nRanks + 1, sizeof(struct flagcxSocket));
-  int nConns = 0;
+      (struct pollfd *)calloc(maxConns + 1, sizeof(struct pollfd));
+  struct flagcxSocket *connSocks =
+      (struct flagcxSocket *)calloc(maxConns, sizeof(struct flagcxSocket));
+  int npeers = 0;
   struct flagcxProxyConnection **allocatedConns = NULL;
   int nAllocatedConns = 0;
   FLAGCXCHECKGOTO(flagcxCalloc(&allocatedConns, comm->nRanks), res, out);
@@ -997,15 +997,18 @@ void *flagcxProxyService(void *args) {
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, out);
 
-  // pollfds[0] = listenSock, pollfds[1..] = accepted connections
-  pollfds[0].fd = comm->proxyState->listenSock.fd;
-  pollfds[0].events = POLLIN;
+  // All peer slots start invalid; listen socket at last index
+  for (int i = 0; i < maxConns; i++) {
+    pollfds[i].fd = -1;
+    pollfds[i].events = POLLIN;
+  }
+  pollfds[maxConns].fd = comm->proxyState->listenSock.fd;
+  pollfds[maxConns].events = POLLIN;
 
   while (!stop || (stop && opHead)) {
-    int nfds = 1 + nConns;
     int ret;
     do {
-      ret = poll(pollfds, nfds, asyncOpCount ? 0 : 500);
+      ret = poll(pollfds, maxConns + 1, asyncOpCount ? 0 : 500);
     } while (ret < 0 && errno == EINTR);
     if (ret < 0) {
       WARN("[Proxy Service] Poll failed: %s", strerror(errno));
@@ -1156,20 +1159,15 @@ void *flagcxProxyService(void *args) {
       return true;
     };
 
-    // Check listenSock for new connections (nRanks peers + 1 stop connection)
-    if (pollfds[0].revents & POLLIN) {
-      // Find a free slot (either nConns < limit, or a closed slot with fd ==
-      // -1)
+    // Check listenSock for new connections (at last index)
+    if (pollfds[maxConns].revents & POLLIN) {
+      // Find first free slot (fd == -1)
       int slot = -1;
-      for (int i = 0; i < nConns; i++) {
-        if (pollfds[1 + i].fd == -1) {
+      for (int i = 0; i < maxConns; i++) {
+        if (pollfds[i].fd == -1) {
           slot = i;
           break;
         }
-      }
-      if (slot == -1 && nConns < comm->nRanks + 1) {
-        slot = nConns;
-        nConns++;
       }
 
       if (slot >= 0) {
@@ -1177,21 +1175,32 @@ void *flagcxProxyService(void *args) {
         FLAGCXCHECKGOTO(flagcxSocketInit(newSock), res, out);
         res = flagcxSocketAccept(newSock, &comm->proxyState->listenSock);
         if (res == flagcxSuccess) {
-          pollfds[1 + slot].fd = newSock->fd;
-          pollfds[1 + slot].events = POLLIN;
-          INFO(FLAGCX_PROXY, "[Service thread] Accepted connection at slot %d",
-               slot);
+          pollfds[slot].fd = newSock->fd;
+          pollfds[slot].events = POLLIN;
+          npeers++;
+          INFO(FLAGCX_PROXY,
+               "[Service thread] Accepted connection at slot %d (npeers=%d)",
+               slot, npeers);
         }
+      } else {
+        WARN("[Service thread] No free slot for new connection (npeers=%d)",
+             npeers);
       }
     }
 
-    // Check all connected sockets
-    for (int i = 0; i < nConns && !stop; i++) {
-      if (pollfds[1 + i].revents & POLLIN) {
+    // Check all peer slots
+    for (int i = 0; i < maxConns && !stop; i++) {
+      if (pollfds[i].fd == -1)
+        continue;
+      if (pollfds[i].revents & POLLIN) {
         if (!processSocket(&connSocks[i])) {
           // Connection closed — close socket and mark fd as invalid
           flagcxSocketClose(&connSocks[i]);
-          pollfds[1 + i].fd = -1;
+          pollfds[i].fd = -1;
+          npeers--;
+          INFO(FLAGCX_PROXY,
+               "[Service thread] Closed connection at slot %d (npeers=%d)", i,
+               npeers);
         }
       }
     }
@@ -1246,8 +1255,8 @@ out:
   free(allocatedConns);
 
   // Close sockets (skip already-closed ones marked with fd = -1)
-  for (int i = 0; i < nConns; i++) {
-    if (pollfds[1 + i].fd != -1) {
+  for (int i = 0; i < maxConns; i++) {
+    if (pollfds[i].fd != -1) {
       flagcxSocketClose(&connSocks[i]);
     }
   }
@@ -1625,10 +1634,11 @@ flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
       }
       (void)flagcxSocketSend(&sock, &type, sizeof(int));
     }
-    (void)flagcxSocketClose(&sock);
     comm->proxyState->kernelState.stop = 1;
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: joining service thread...");
     pthread_join(comm->proxyState->thread, nullptr);
+    // Close stop socket after service thread exits to avoid broken pipe
+    (void)flagcxSocketClose(&sock);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: service thread joined, freeing...");
     flagcxProxyFree(comm);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: done");
