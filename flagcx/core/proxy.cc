@@ -1158,15 +1158,29 @@ void *flagcxProxyService(void *args) {
 
     // Check listenSock for new connections (nRanks peers + 1 stop connection)
     if (pollfds[0].revents & POLLIN) {
-      if (nConns < comm->nRanks + 1) {
-        struct flagcxSocket *newSock = &connSocks[nConns];
+      // Find a free slot (either nConns < limit, or a closed slot with fd ==
+      // -1)
+      int slot = -1;
+      for (int i = 0; i < nConns; i++) {
+        if (pollfds[1 + i].fd == -1) {
+          slot = i;
+          break;
+        }
+      }
+      if (slot == -1 && nConns < comm->nRanks + 1) {
+        slot = nConns;
+        nConns++;
+      }
+
+      if (slot >= 0) {
+        struct flagcxSocket *newSock = &connSocks[slot];
         FLAGCXCHECKGOTO(flagcxSocketInit(newSock), res, out);
         res = flagcxSocketAccept(newSock, &comm->proxyState->listenSock);
         if (res == flagcxSuccess) {
-          pollfds[1 + nConns].fd = newSock->fd;
-          pollfds[1 + nConns].events = POLLIN;
-          nConns++;
-          INFO(FLAGCX_PROXY, "[Service thread] Accepted connection %d", nConns);
+          pollfds[1 + slot].fd = newSock->fd;
+          pollfds[1 + slot].events = POLLIN;
+          INFO(FLAGCX_PROXY, "[Service thread] Accepted connection at slot %d",
+               slot);
         }
       }
     }
