@@ -176,7 +176,7 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     comm->localRanks = comm->nodeRanks[comm->node].localRanks;
     comm->localRankToRank = comm->nodeRanks[comm->node].localRankToRank;
 
-    // Build p2pSchedule with two-level scheduling (like NCCL)
+    // Build p2pSchedule with two-level scheduling
     int node = comm->node;
     int local = comm->localRank;
     int nLocals = comm->maxLocalRanks;
@@ -297,16 +297,6 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
       FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers, nranks));
       for (int r = 0; r < nranks; r++) {
         FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers[r], nranks));
-      }
-    }
-    // Set tpRank = comm->rank for all channel connectors so local RPCs
-    // route through peerSocks[myRank] to the local service thread
-    for (int i = 0; i < MAXCHANNELS; i++) {
-      for (int r = 0; r < nranks; r++) {
-        for (int c = 0; c < FLAGCX_MAX_CONNS; c++) {
-          comm->channels[i].peers[r]->send[c].proxyConn.tpRank = comm->rank;
-          comm->channels[i].peers[r]->recv[c].proxyConn.tpRank = comm->rank;
-        }
       }
     }
     FLAGCXCHECK(flagcxCalloc(&comm->connectSend, nranks));
@@ -477,10 +467,10 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
   // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
   FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
-  // Stop: send stop + close peerSocks (like ncclProxyStop)
-  flagcxProxyStop(comm);
-  // Destroy: join thread, free proxy resources (like ncclProxyDestroy)
-  flagcxProxyDestroy(comm);
+  // Stop: send stop + close peerSocks
+  FLAGCXCHECK(flagcxProxyStop(comm));
+  // Destroy: join thread, free proxy resources
+  FLAGCXCHECK(flagcxProxyDestroy(comm));
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);

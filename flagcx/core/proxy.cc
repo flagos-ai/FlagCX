@@ -325,13 +325,13 @@ inline void *flagcxProxyProgress(void *proxyState_) {
   struct flagcxProxyState *proxyState = (flagcxProxyState *)proxyState_;
   // flag indicating if there is any in-operating operation
   int idle = 1;
-  /* Too frequent call of ncclProxyGetPostedOps() will result in perf regression
-   * for small message communication. proxyOpAppendCounter is a counter that
-   * helps us decide if we need to append proxy ops. After each progress,
-   * proxyOpAppendCounter will increase by 1 and compare with environment
-   * variable ncclParamProgressAppendOpFreq(). If they are equal, we will append
-   * proxy ops. This will decrease the frequency of calling
-   * ncclProxyGetPostedOps() and reduce the perf impact. */
+  /* Too frequent call of flagcxProxyGetPostedOps() will result in perf
+   * regression for small message communication. proxyOpAppendCounter is a
+   * counter that helps us decide if we need to append proxy ops. After each
+   * progress, proxyOpAppendCounter will increase by 1 and compare with
+   * environment variable flagcxParamProgressAppendOpFreq(). If they are equal,
+   * we will append proxy ops. This will decrease the frequency of calling
+   * flagcxProxyGetPostedOps() and reduce the perf impact. */
   int proxyOpAppendCounter = 0;
   deviceAdaptor->setDevice(proxyState->cudaDev);
   struct flagcxProxyProgressState *state = &proxyState->progressState;
@@ -894,9 +894,26 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
   proxyConn->tpRank = proxyRank;
   proxyConn->tpLocalRank = 0;
 
-  // peerSocks must already be allocated and connected during init
-  if (comm->proxyState->peerSocks == NULL)
-    return flagcxInternalError;
+  // Lazy peerSocks allocation
+  struct flagcxProxyState *sharedProxyState = comm->proxyState;
+  if (sharedProxyState->peerSocks == NULL) {
+    FLAGCXCHECK(flagcxCalloc(&sharedProxyState->peerSocks, comm->nRanks));
+    sharedProxyState->nPeerSocks = comm->nRanks;
+    for (int i = 0; i < comm->nRanks; i++)
+      FLAGCXCHECK(flagcxSocketSetFd(-1, &sharedProxyState->peerSocks[i]));
+  }
+  // Lazy connect to peer
+  {
+    struct flagcxSocket *sock = &sharedProxyState->peerSocks[proxyRank];
+    int ready = 0;
+    FLAGCXCHECK(flagcxSocketReady(sock, &ready));
+    if (!ready) {
+      FLAGCXCHECK(flagcxSocketInit(sock,
+                                   sharedProxyState->peerAddresses + proxyRank,
+                                   comm->magic, flagcxSocketTypeProxy));
+      FLAGCXCHECK(flagcxSocketConnect(sock));
+    }
+  }
 
   struct flagcxProxyInitReq req = {};
   req.transport = transport;
@@ -932,24 +949,6 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
   FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
                                  comm->proxyState->peerAddresses,
                                  sizeof(union flagcxSocketAddress)));
-
-  // Pre-connect all peer sockets (including self)
-  // TODO: support lazy connection
-  FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerSocks, comm->nRanks));
-  comm->proxyState->nPeerSocks = comm->nRanks;
-  for (int i = 0; i < comm->nRanks; i++) {
-    FLAGCXCHECK(flagcxSocketSetFd(-1, &comm->proxyState->peerSocks[i]));
-  }
-  for (int i = 0; i < comm->nRanks; i++) {
-    struct flagcxSocket *sock = &comm->proxyState->peerSocks[i];
-    FLAGCXCHECK(flagcxSocketInit(sock, comm->proxyState->peerAddresses + i,
-                                 comm->magic, flagcxSocketTypeProxy));
-    FLAGCXCHECK(flagcxSocketConnect(sock));
-    int ready = 0;
-    while (!ready) {
-      FLAGCXCHECK(flagcxSocketReady(sock, &ready));
-    }
-  }
 
   comm->proxyState->cudaDev = comm->cudaDev;
   comm->proxyState->nRanks = comm->nRanks;
