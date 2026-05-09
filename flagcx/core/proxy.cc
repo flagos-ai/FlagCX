@@ -6,6 +6,7 @@
 
 #include "proxy.h"
 #include "adaptor.h"
+#include "bootstrap.h"
 #include "comm.h"
 #include "device_api/flagcx_device.h" // flagcxDevCommInternal, devComm
 #include "flagcx_hetero.h"
@@ -924,7 +925,35 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
                                flagcxSocketTypeProxy, NULL, 1));
   FLAGCXCHECK(flagcxSocketListen(&comm->proxyState->listenSock));
 
+  // Allgather proxy listen addresses
+  FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerAddresses, comm->nRanks));
+  comm->proxyState->peerAddresses[comm->rank] =
+      comm->proxyState->listenSock.addr;
+  FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
+                                 comm->proxyState->peerAddresses,
+                                 sizeof(union flagcxSocketAddress)));
+
+  // Pre-connect all peer sockets (including self)
+  // TODO: support lazy connection
+  FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerSocks, comm->nRanks));
+  comm->proxyState->nPeerSocks = comm->nRanks;
+  for (int i = 0; i < comm->nRanks; i++) {
+    FLAGCXCHECK(flagcxSocketSetFd(-1, &comm->proxyState->peerSocks[i]));
+  }
+  for (int i = 0; i < comm->nRanks; i++) {
+    struct flagcxSocket *sock = &comm->proxyState->peerSocks[i];
+    FLAGCXCHECK(flagcxSocketInit(sock, comm->proxyState->peerAddresses + i,
+                                 comm->magic, flagcxSocketTypeProxy));
+    FLAGCXCHECK(flagcxSocketConnect(sock));
+    int ready = 0;
+    while (!ready) {
+      FLAGCXCHECK(flagcxSocketReady(sock, &ready));
+    }
+  }
+
   comm->proxyState->cudaDev = comm->cudaDev;
+  comm->proxyState->nRanks = comm->nRanks;
+  comm->proxyState->stop = 0;
   pthread_create(&comm->proxyState->thread, NULL, flagcxProxyService,
                  (void *)comm);
   pthread_create(&comm->proxyState->progressState.thread, NULL,
@@ -987,8 +1016,8 @@ void *flagcxProxyService(void *args) {
   int maxConns = comm->nRanks + 1;
   struct pollfd *pollfds =
       (struct pollfd *)calloc(maxConns + 1, sizeof(struct pollfd));
-  struct flagcxSocket *connSocks =
-      (struct flagcxSocket *)calloc(maxConns, sizeof(struct flagcxSocket));
+  struct flagcxProxyLocalPeer *peers = (struct flagcxProxyLocalPeer *)calloc(
+      maxConns, sizeof(struct flagcxProxyLocalPeer));
   int npeers = 0;
   int maxnpeers = 0;
   struct flagcxProxyConnection **allocatedConns = NULL;
@@ -1002,11 +1031,19 @@ void *flagcxProxyService(void *args) {
   for (int i = 0; i < maxConns; i++) {
     pollfds[i].fd = -1;
     pollfds[i].events = POLLIN;
+    peers[i].tpRank = -1;
+    peers[i].tpLocalRank = -1;
   }
   pollfds[maxConns].fd = comm->proxyState->listenSock.fd;
   pollfds[maxConns].events = POLLIN;
 
   while (!stop || npeers > 0) {
+    // Check backup atomic stop flag
+    if (!stop && __atomic_load_n(&comm->proxyState->stop, __ATOMIC_ACQUIRE)) {
+      stop = 1;
+      INFO(FLAGCX_PROXY,
+           "[Service thread] Stop flag detected via atomic, npeers=%d", npeers);
+    }
     int ret;
     do {
       ret = poll(pollfds, maxConns + 1, asyncOpCount ? 0 : 500);
@@ -1175,12 +1212,14 @@ void *flagcxProxyService(void *args) {
       }
 
       if (slot >= 0) {
-        struct flagcxSocket *newSock = &connSocks[slot];
+        struct flagcxSocket *newSock = &peers[slot].sock;
         FLAGCXCHECKGOTO(flagcxSocketInit(newSock), res, out);
         res = flagcxSocketAccept(newSock, &comm->proxyState->listenSock);
         if (res == flagcxSuccess) {
           pollfds[slot].fd = newSock->fd;
           pollfds[slot].events = POLLIN;
+          peers[slot].tpRank = -1;
+          peers[slot].tpLocalRank = -1;
           npeers++;
           if (maxnpeers < slot + 1)
             maxnpeers = slot + 1;
@@ -1202,16 +1241,19 @@ void *flagcxProxyService(void *args) {
       if (pollfds[i].revents & (POLLHUP | POLLERR)) {
         closeConn = true;
       } else if (pollfds[i].revents & POLLIN) {
-        if (!processSocket(&connSocks[i]))
+        if (!processSocket(&peers[i].sock))
           closeConn = true;
       }
       if (closeConn) {
-        flagcxSocketClose(&connSocks[i]);
+        flagcxSocketClose(&peers[i].sock);
         pollfds[i].fd = -1;
         npeers--;
         INFO(FLAGCX_PROXY,
-             "[Service thread] Closed connection at slot %d (npeers=%d)", i,
-             npeers);
+             "[Service thread] Closed connection at slot %d tpRank %d "
+             "(npeers=%d)",
+             i, peers[i].tpRank, npeers);
+        peers[i].tpRank = -1;
+        peers[i].tpLocalRank = -1;
       }
     }
 
@@ -1267,12 +1309,12 @@ out:
   // Close sockets (skip already-closed ones marked with fd = -1)
   for (int i = 0; i < maxConns; i++) {
     if (pollfds[i].fd != -1) {
-      flagcxSocketClose(&connSocks[i]);
+      flagcxSocketClose(&peers[i].sock);
     }
   }
   flagcxSocketClose(&comm->proxyState->listenSock);
   free(pollfds);
-  free(connSocks);
+  free(peers);
 
   // Dequeue unhandled ops
   list = opHead;
@@ -1635,7 +1677,8 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
   }
 
   INFO(FLAGCX_PROXY, "flagcxProxyStop: sending stop to service thread...");
-  // 1. Send stop to own service thread via listen socket
+  // 1. Send MsgStop to own service thread via listen socket
+  // 1984-1991)
   struct flagcxSocket sock;
   int type = flagcxProxyMsgStop;
   FLAGCXCHECK(flagcxSocketInit(&sock, &comm->proxyState->listenSock.addr,
@@ -1649,20 +1692,25 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
   }
   (void)flagcxSocketClose(&sock);
 
-  // 2. Send Close + close each peerSock (tells peer service threads to
-  //    close the accepted connection, decrementing their npeers)
+  // 2. Send MsgClose + close each peerSock
+  //    This tells peer service threads to close the accepted connection,
+  //    decrementing their npeers.
   if (comm->proxyState->peerSocks != NULL) {
     for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
       if (comm->proxyState->peerSocks[i].fd >= 0) {
-        int type = flagcxProxyMsgClose;
-        (void)flagcxSocketSend(&comm->proxyState->peerSocks[i], &type,
+        int closeType = flagcxProxyMsgClose;
+        (void)flagcxSocketSend(&comm->proxyState->peerSocks[i], &closeType,
                                sizeof(int));
         flagcxSocketClose(&comm->proxyState->peerSocks[i]);
       }
     }
   }
 
-  // 3. Signal kernel threads to stop
+  // 3. Set atomic stop flag
+  //    Backup: service thread checks this every 500ms poll timeout
+  __atomic_store_n(&comm->proxyState->stop, 1, __ATOMIC_RELEASE);
+
+  // 4. Signal kernel threads to stop
   comm->proxyState->kernelState.stop = 1;
   INFO(FLAGCX_PROXY, "flagcxProxyStop: done");
   return flagcxSuccess;
@@ -1670,13 +1718,15 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
 
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   if (comm->proxyState->initialized == 1) {
+    // Join service thread
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: joining service thread...");
     pthread_join(comm->proxyState->thread, nullptr);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: service thread joined, freeing...");
+    // Free transport resources (must happen after thread join)
     flagcxProxyFree(comm);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: done");
   }
-  // Free heap arrays (sockets already closed by flagcxProxyStop)
+  // free peerSocks
   if (comm->proxyState->peerSocks != NULL) {
     free(comm->proxyState->peerSocks);
     comm->proxyState->peerSocks = NULL;

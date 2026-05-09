@@ -341,7 +341,6 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
 
     comm->groupNext = reinterpret_cast<struct flagcxHeteroComm *>(0x1);
     comm->preconnectNext = reinterpret_cast<struct flagcxHeteroComm *>(0x1);
-    comm->proxyState->nRanks = comm->nRanks;
 
     bool runtimeProxy = false;
     const char *runtimeEnv = flagcxGetEnv("FLAGCX_RUNTIME_PROXY");
@@ -352,32 +351,8 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     if (!runtimeProxy) {
       FLAGCXCHECK(flagcxProxyInit(comm));
 
-      // Allocate gproxyConn array and populate peerAddresses for peer proxy
-      // connections
+      // Allocate gproxyConn array for peer proxy connections
       FLAGCXCHECK(flagcxCalloc(&comm->gproxyConn, comm->nRanks));
-      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerAddresses, comm->nRanks));
-      comm->proxyState->peerAddresses[comm->rank] =
-          comm->proxyState->listenSock.addr;
-      FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
-                                     comm->proxyState->peerAddresses,
-                                     sizeof(union flagcxSocketAddress)));
-
-      // Pre-connect all peer sockets (including self)
-      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerSocks, comm->nRanks));
-      comm->proxyState->nPeerSocks = comm->nRanks;
-      for (int i = 0; i < comm->nRanks; i++) {
-        FLAGCXCHECK(flagcxSocketSetFd(-1, &comm->proxyState->peerSocks[i]));
-      }
-      for (int i = 0; i < comm->nRanks; i++) {
-        struct flagcxSocket *sock = &comm->proxyState->peerSocks[i];
-        FLAGCXCHECK(flagcxSocketInit(sock, comm->proxyState->peerAddresses + i,
-                                     comm->magic, flagcxSocketTypeProxy));
-        FLAGCXCHECK(flagcxSocketConnect(sock));
-        int ready = 0;
-        while (!ready) {
-          FLAGCXCHECK(flagcxSocketReady(sock, &ready));
-        }
-      }
     }
   }
 
