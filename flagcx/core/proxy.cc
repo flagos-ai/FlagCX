@@ -983,13 +983,14 @@ void *flagcxProxyService(void *args) {
   struct flagcxProxyAsyncOp *list = NULL;
   flagcxResult_t res = flagcxSuccess;
 
-  // Peer slots [0..maxConns-1], listen socket at [maxConns] (NCCL pattern)
+  // Peer slots [0..maxConns-1], listen socket at [maxConns]
   int maxConns = comm->nRanks + 1;
   struct pollfd *pollfds =
       (struct pollfd *)calloc(maxConns + 1, sizeof(struct pollfd));
   struct flagcxSocket *connSocks =
       (struct flagcxSocket *)calloc(maxConns, sizeof(struct flagcxSocket));
   int npeers = 0;
+  int maxnpeers = 0;
   struct flagcxProxyConnection **allocatedConns = NULL;
   int nAllocatedConns = 0;
   FLAGCXCHECKGOTO(flagcxCalloc(&allocatedConns, comm->nRanks), res, out);
@@ -1005,7 +1006,7 @@ void *flagcxProxyService(void *args) {
   pollfds[maxConns].fd = comm->proxyState->listenSock.fd;
   pollfds[maxConns].events = POLLIN;
 
-  while (!stop || (stop && opHead)) {
+  while (!stop || npeers > 0) {
     int ret;
     do {
       ret = poll(pollfds, maxConns + 1, asyncOpCount ? 0 : 500);
@@ -1046,7 +1047,10 @@ void *flagcxProxyService(void *args) {
       } else if (res == flagcxSuccess) {
         if (type == flagcxProxyMsgStop) {
           stop = 1;
-          return true;
+          return false; // close the stop socket
+        } else if (type == flagcxProxyMsgClose) {
+          INFO(FLAGCX_PROXY, "[Service thread] Received close from peer");
+          return false; // graceful close from peer
         } else if (type == flagcxProxyMsgInit) {
           // Peer proxy init: create a new flagcxProxyConnection
           struct flagcxProxyAsyncOp *asyncOp = NULL;
@@ -1178,6 +1182,8 @@ void *flagcxProxyService(void *args) {
           pollfds[slot].fd = newSock->fd;
           pollfds[slot].events = POLLIN;
           npeers++;
+          if (maxnpeers < slot + 1)
+            maxnpeers = slot + 1;
           INFO(FLAGCX_PROXY,
                "[Service thread] Accepted connection at slot %d (npeers=%d)",
                slot, npeers);
@@ -1188,24 +1194,28 @@ void *flagcxProxyService(void *args) {
       }
     }
 
-    // Check all peer slots
-    for (int i = 0; i < maxConns && !stop; i++) {
+    // Check all peer slots (only up to high-water mark)
+    for (int i = 0; i < maxnpeers; i++) {
       if (pollfds[i].fd == -1)
         continue;
-      if (pollfds[i].revents & POLLIN) {
-        if (!processSocket(&connSocks[i])) {
-          // Connection closed — close socket and mark fd as invalid
-          flagcxSocketClose(&connSocks[i]);
-          pollfds[i].fd = -1;
-          npeers--;
-          INFO(FLAGCX_PROXY,
-               "[Service thread] Closed connection at slot %d (npeers=%d)", i,
-               npeers);
-        }
+      bool closeConn = false;
+      if (pollfds[i].revents & (POLLHUP | POLLERR)) {
+        closeConn = true;
+      } else if (pollfds[i].revents & POLLIN) {
+        if (!processSocket(&connSocks[i]))
+          closeConn = true;
+      }
+      if (closeConn) {
+        flagcxSocketClose(&connSocks[i]);
+        pollfds[i].fd = -1;
+        npeers--;
+        INFO(FLAGCX_PROXY,
+             "[Service thread] Closed connection at slot %d (npeers=%d)", i,
+             npeers);
       }
     }
 
-    if (stop && !opHead)
+    if (stop && npeers == 0)
       break;
   }
 out:
@@ -1619,29 +1629,61 @@ flagcxResult_t flagcxProxyFree(struct flagcxHeteroComm *comm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
+  if (comm->proxyState->initialized != 1) {
+    return flagcxSuccess;
+  }
+
+  INFO(FLAGCX_PROXY, "flagcxProxyStop: sending stop to service thread...");
+  // 1. Send stop to own service thread via listen socket
+  struct flagcxSocket sock;
+  int type = flagcxProxyMsgStop;
+  FLAGCXCHECK(flagcxSocketInit(&sock, &comm->proxyState->listenSock.addr,
+                               comm->magic, flagcxSocketTypeProxy));
+  if (flagcxSocketConnect(&sock) == flagcxSuccess) {
+    int ready = 0;
+    while (!ready) {
+      (void)flagcxSocketReady(&sock, &ready);
+    }
+    (void)flagcxSocketSend(&sock, &type, sizeof(int));
+  }
+  (void)flagcxSocketClose(&sock);
+
+  // 2. Send Close + close each peerSock (tells peer service threads to
+  //    close the accepted connection, decrementing their npeers)
+  if (comm->proxyState->peerSocks != NULL) {
+    for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
+      if (comm->proxyState->peerSocks[i].fd >= 0) {
+        int type = flagcxProxyMsgClose;
+        (void)flagcxSocketSend(&comm->proxyState->peerSocks[i], &type,
+                               sizeof(int));
+        flagcxSocketClose(&comm->proxyState->peerSocks[i]);
+      }
+    }
+  }
+
+  // 3. Signal kernel threads to stop
+  comm->proxyState->kernelState.stop = 1;
+  INFO(FLAGCX_PROXY, "flagcxProxyStop: done");
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {
   if (comm->proxyState->initialized == 1) {
-    INFO(FLAGCX_PROXY, "flagcxProxyDestroy: sending stop to service thread...");
-    // Send stop via a temporary socket to own listenSock (like NCCL)
-    struct flagcxSocket sock;
-    int type = flagcxProxyMsgStop;
-    FLAGCXCHECK(flagcxSocketInit(&sock, &comm->proxyState->listenSock.addr,
-                                 comm->magic, flagcxSocketTypeProxy));
-    if (flagcxSocketConnect(&sock) == flagcxSuccess) {
-      int ready = 0;
-      while (!ready) {
-        (void)flagcxSocketReady(&sock, &ready);
-      }
-      (void)flagcxSocketSend(&sock, &type, sizeof(int));
-    }
-    comm->proxyState->kernelState.stop = 1;
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: joining service thread...");
     pthread_join(comm->proxyState->thread, nullptr);
-    // Close stop socket after service thread exits to avoid broken pipe
-    (void)flagcxSocketClose(&sock);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: service thread joined, freeing...");
     flagcxProxyFree(comm);
     INFO(FLAGCX_PROXY, "flagcxProxyDestroy: done");
+  }
+  // Free heap arrays (sockets already closed by flagcxProxyStop)
+  if (comm->proxyState->peerSocks != NULL) {
+    free(comm->proxyState->peerSocks);
+    comm->proxyState->peerSocks = NULL;
+  }
+  if (comm->proxyState->peerAddresses != NULL) {
+    free(comm->proxyState->peerAddresses);
+    comm->proxyState->peerAddresses = NULL;
   }
   return flagcxSuccess;
 }

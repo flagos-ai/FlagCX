@@ -502,6 +502,9 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
   // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
   FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
+  // Stop: send stop + close peerSocks (like ncclProxyStop)
+  flagcxProxyStop(comm);
+  // Destroy: join thread, free proxy resources (like ncclProxyDestroy)
   flagcxProxyDestroy(comm);
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
@@ -523,13 +526,6 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
     // flagcxProxyConnection allocated and owned by the peer's service thread.
     // Do NOT free it here — the peer frees it when its service thread exits.
     free(comm->gproxyConn);
-  }
-  free(comm->proxyState->peerAddresses);
-  if (comm->proxyState->peerSocks != NULL) {
-    for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
-      flagcxSocketClose(&comm->proxyState->peerSocks[i]);
-    }
-    free(comm->proxyState->peerSocks);
   }
   free(comm->proxyState);
   free(comm->tasks.peers);
