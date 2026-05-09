@@ -7,6 +7,9 @@
 #include <pthread.h>
 #include <stdint.h>
 
+template <typename T, T *T::*next>
+struct flagcxIntruQueue;
+
 enum flagcxRmaDescType {
   FLAGCX_RMA_PUT = 0,
   FLAGCX_RMA_PUT_SIGNAL = 1,
@@ -22,35 +25,32 @@ struct flagcxRmaDesc {
   size_t size;
   int srcMrIdx; // -1 when not used (e.g. signal-only PutSignal)
   int dstMrIdx;
-  uint64_t signalOff;   // PUT_SIGNAL only
-  uint64_t signalValue; // PUT_SIGNAL only
-  uint64_t putValue;    // PUT_VALUE only (value embedded in desc)
-  void *request;        // filled by progress thread after posting IB op
-  uint64_t seq;         // per-peer monotonic sequence number
-  struct flagcxRmaDesc *next;
+  uint64_t signalOff;         // PUT_SIGNAL only
+  uint64_t signalValue;       // PUT_SIGNAL only
+  uint64_t putValue;          // PUT_VALUE only (value embedded in desc)
+  void *request;              // filled by progress thread after posting IB op
+  uint64_t opSeq;             // per-peer monotonic sequence number
+  struct flagcxRmaDesc *next; // intrusive link for inProgressQueues
 };
 
 // Per-comm async RMA proxy state.
 // pending queues: producer = caller (proxy kernel thread), consumer = progress
 // thread. inProgress queues: progress thread only (no locking needed).
 struct flagcxRmaProxyState {
-  // Single pending queue for all peers, protected by pendingMutex.
-  // desc->peer identifies the target; no need for per-peer slots.
-  struct flagcxRmaDesc *pendingHead;
-  struct flagcxRmaDesc *pendingTail;
-  pthread_mutex_t pendingMutex;
+  uint32_t queueSize;                     // power of two
+  uint32_t queueMask;                     // queueSize - 1
+  struct flagcxRmaDesc **circularBuffers; // [nRanks * queueSize]
+  volatile uint32_t *pis;                 // [nRanks] producer index
+  volatile uint32_t *cis;                 // [nRanks] consumer index
 
-  // Single in-progress queue (progress thread only, no locking needed).
-  struct flagcxRmaDesc *inProgressHead;
-  struct flagcxRmaDesc *inProgressTail;
+  pthread_mutex_t *peerProducerMutexes; // [nRanks]
+  struct flagcxIntruQueue<struct flagcxRmaDesc, &flagcxRmaDesc::next>
+      *inProgressQueues;        // [nRanks]
+  volatile uint64_t *opSeqs;    // [nRanks]
+  volatile uint64_t *doneSeqs;  // [nRanks]
+  volatile uint32_t *inFlights; // [nRanks]
 
-  // Per-peer sequence counters for flush semantics.
-  // nextSeqs[p]: last seq assigned for peer p (written by caller).
-  // doneSeqs[p]: last seq completed for peer p (written by progress thread).
-  volatile uint64_t *nextSeqs; // [nRanks]
-  volatile uint64_t *doneSeqs; // [nRanks]
-
-  // Global completion counter: incremented once for every IB op that completes.
+  // Global completion counter: incremented once for every op that completes.
   // Callers record the value before issuing ops, then poll until it advances.
   volatile uint64_t completionCount;
 
@@ -58,6 +58,7 @@ struct flagcxRmaProxyState {
   // error, or missing sendComm). Wait functions check this and return an error.
   volatile int rmaError;
 
+  void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;
   struct flagcxHeteroComm *comm; // back-pointer
 
@@ -101,6 +102,12 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx);
 
+flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
+                                    const size_t *srcOffsets,
+                                    const size_t *dstOffsets,
+                                    const size_t *sizes, const int *srcMrIdxs,
+                                    const int *dstMrIdxs, size_t count);
+
 // RDMA READ: pull data from remote peer's srcMrIdx buffer into local dstMrIdx
 // buffer
 flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
@@ -121,6 +128,10 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+
+// Publish the stable fullSendComms pointer to the proxy.
+flagcxResult_t flagcxHeteroRmaProxyPublishSendComms(flagcxHeteroComm_t comm,
+                                                    void *const *fullSendComms);
 
 // Wait until all ops for a specific peer up to seq are complete.
 flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
