@@ -174,7 +174,7 @@ proxyConnInit(struct flagcxProxyLocalPeer *peer,
        "transport %d",
        (*connection)->send ? "send" : "recv", id, (*connection)->tpLocalRank,
        (*connection)->transport);
-  (*connection)->state = connInitialized;
+  __atomic_store_n(&(*connection)->state, connInitialized, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }
 
@@ -660,6 +660,7 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
                    struct flagcxProxyConnectionPool *connectionPool,
                    struct flagcxHeteroComm *comm) {
   int done = 0;
+  flagcxResult_t res = flagcxSuccess;
   const char *dmaBufEnable = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
   bool dmaEnabled = false; // disabled by default
   if (dmaBufEnable != NULL) {
@@ -674,7 +675,7 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
   dmaBufferSupport = dmaEnabled && dmaBufferSupport;
   if (op->type == flagcxProxyMsgInit) {
     // Allocate connection from pool
-    flagcxResult_t res = proxyConnInit(
+    res = proxyConnInit(
         peer, connectionPool, comm, (struct flagcxProxyInitReq *)op->reqBuff,
         (struct flagcxProxyInitResp *)op->respBuff, &op->connection);
     if (res != flagcxSuccess)
@@ -890,7 +891,10 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
          "done",
          op->opId, op->type, op->reqBuff, op->respSize);
     if (op->connection->transport == TRANSPORT_NET) {
-      if (op->type == flagcxProxyMsgConnect)
+      if (op->type == flagcxProxyMsgSetup)
+        __atomic_store_n(&op->connection->state, connSetupDone,
+                         __ATOMIC_RELEASE);
+      else if (op->type == flagcxProxyMsgConnect)
         __atomic_store_n(&op->connection->state, connConnected,
                          __ATOMIC_RELEASE);
     }
@@ -900,7 +904,7 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
      * If we still choose to abort and close the connection, it can cause
      * segfault if the requester is using the respBuff. */
 
-    flagcxProxyRpcResponseHeader resp = {op->opId, flagcxSuccess, op->respSize};
+    flagcxProxyRpcResponseHeader resp = {op->opId, res, op->respSize};
 
     // Send the opId for referencing async operation
     FLAGCXCHECK(flagcxSocketSend(op->connection->sock, &resp, sizeof(resp)));
@@ -913,6 +917,9 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     asyncProxyOpDequeue(peer, op);
     (*asyncOpCount)--;
     return flagcxSuccess;
+  } else if (comm->abortFlag &&
+             __atomic_load_n(comm->abortFlag, __ATOMIC_ACQUIRE) != 0) {
+    return flagcxInternalError;
   }
 
   return flagcxInProgress;
@@ -952,25 +959,33 @@ static flagcxResult_t
 proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
                    struct flagcxProxyConnectionPool *connectionPool,
                    flagcxHeteroComm_t comm, int *asyncOpCount) {
+  flagcxResult_t ret = flagcxSuccess;
   struct flagcxSocket *sock = &peer->sock;
   struct flagcxProxyAsyncOp *asyncOp;
   FLAGCXCHECK(flagcxCalloc(&asyncOp, 1));
 
   asyncOp->type = type;
-  FLAGCXCHECK(flagcxSocketRecv(sock, &asyncOp->connection, sizeof(void *)));
+  FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &asyncOp->connection, sizeof(void *)),
+                  ret, fail);
 
-  FLAGCXCHECK(flagcxSocketRecv(sock, &asyncOp->reqSize, sizeof(int)));
-  FLAGCXCHECK(flagcxSocketRecv(sock, &asyncOp->respSize, sizeof(int)));
+  FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &asyncOp->reqSize, sizeof(int)), ret,
+                  fail);
+  FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &asyncOp->respSize, sizeof(int)), ret,
+                  fail);
   if (asyncOp->reqSize) {
-    FLAGCXCHECK(flagcxCalloc(&asyncOp->reqBuff, asyncOp->reqSize));
-    FLAGCXCHECK(flagcxSocketRecv(sock, asyncOp->reqBuff, asyncOp->reqSize));
+    FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp->reqBuff, asyncOp->reqSize), ret,
+                    fail);
+    FLAGCXCHECKGOTO(flagcxSocketRecv(sock, asyncOp->reqBuff, asyncOp->reqSize),
+                    ret, fail);
   }
 
   // Store opId for completion response
-  FLAGCXCHECK(flagcxSocketRecv(sock, &asyncOp->opId, sizeof(asyncOp->opId)));
+  FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &asyncOp->opId, sizeof(asyncOp->opId)),
+                  ret, fail);
 
   if (asyncOp->respSize)
-    FLAGCXCHECK(flagcxCalloc(&asyncOp->respBuff, asyncOp->respSize));
+    FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp->respBuff, asyncOp->respSize), ret,
+                    fail);
 
   // For Init messages, connection is NULL (will be allocated from pool in
   // proxyProgressAsync). For other messages, set the socket on the connection.
@@ -978,11 +993,18 @@ proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
     asyncOp->connection->sock = sock;
   }
 
-  FLAGCXCHECK(asyncProxyOpEnqueue(peer, asyncOp));
+  asyncProxyOpEnqueue(peer, asyncOp);
   (*asyncOpCount)++;
   FLAGCXCHECK(
       proxyProgressAsync(peer, asyncOp, asyncOpCount, connectionPool, comm));
   return flagcxSuccess;
+fail:
+  if (asyncOp->reqBuff)
+    free(asyncOp->reqBuff);
+  if (asyncOp->respBuff)
+    free(asyncOp->respBuff);
+  free(asyncOp);
+  return ret;
 }
 
 flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
@@ -1077,7 +1099,7 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
   INFO(FLAGCX_INIT, "rank=%d flagcxProxyInit called.", comm->rank);
   FLAGCXCHECK(flagcxSocketInit(&comm->proxyState->listenSock,
                                &bootstrapNetIfAddr, comm->magic,
-                               flagcxSocketTypeProxy, NULL, 1));
+                               flagcxSocketTypeProxy, NULL, 0));
   FLAGCXCHECK(flagcxSocketListen(&comm->proxyState->listenSock));
 
   // Allgather proxy listen addresses
@@ -1266,26 +1288,10 @@ void *flagcxProxyService(void *args) {
       if (slot >= 0) {
         struct flagcxSocket *newSock = &peers[slot].sock;
         FLAGCXCHECKGOTO(flagcxSocketInit(newSock), res, out);
-        res = flagcxSocketAccept(newSock, &comm->proxyState->listenSock);
-        if (res == flagcxSuccess) {
-          // The listen socket has asyncFlag=1, which gets copied into newSock
-          // via memcpy in flagcxSocketAccept. This means the accept may return
-          // before the handshake (magic+type exchange) is complete. We must
-          // finish the handshake before adding the socket to the poll set,
-          // otherwise processSocket will read handshake bytes as proxy
-          // commands.
-          if (newSock->state != flagcxSocketStateReady) {
-            newSock->asyncFlag = 0; // force blocking to complete handshake
-            int ready = 0;
-            do {
-              FLAGCXCHECKGOTO(flagcxSocketReady(newSock, &ready), res, out);
-            } while (!ready && newSock->state != flagcxSocketStateError);
-            if (newSock->state != flagcxSocketStateReady) {
-              WARN("[Service thread] Socket handshake failed at slot %d", slot);
-              flagcxSocketClose(newSock);
-              continue;
-            }
-          }
+        if (flagcxSocketAccept(newSock, &comm->proxyState->listenSock) !=
+            flagcxSuccess) {
+          INFO(FLAGCX_PROXY, "[Service thread] Accept failed");
+        } else {
           pollfds[slot].fd = newSock->fd;
           pollfds[slot].events = POLLIN;
           peers[slot].tpRank = -1;
