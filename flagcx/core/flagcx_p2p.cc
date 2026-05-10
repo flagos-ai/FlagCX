@@ -212,6 +212,10 @@ struct AsyncWorker {
 
 static AsyncWorker gAsyncWorker;
 
+static FlagcxP2pCommView *getCommView(void *comm) {
+  return reinterpret_cast<FlagcxP2pCommView *>(comm);
+}
+
 static void asyncWorkerFunc() {
   while (true) {
     std::shared_ptr<AsyncTransferTask> task;
@@ -325,13 +329,22 @@ static void asyncWorkerFunc() {
   }
 }
 
+static std::mutex gAsyncWorkerLifecycleMutex;
+
 static void ensureAsyncWorkerStarted() {
-  static std::once_flag flag;
-  std::call_once(flag,
-                 [] { gAsyncWorker.thread = std::thread(asyncWorkerFunc); });
+  std::lock_guard<std::mutex> lock(gAsyncWorkerLifecycleMutex);
+  if (gAsyncWorker.thread.joinable() && !gAsyncWorker.stop.load())
+    return; // already running
+  // If previously stopped, join the old thread before restarting
+  if (gAsyncWorker.thread.joinable()) {
+    gAsyncWorker.thread.join();
+  }
+  gAsyncWorker.stop.store(false);
+  gAsyncWorker.thread = std::thread(asyncWorkerFunc);
 }
 
 static void stopAsyncWorker() {
+  std::lock_guard<std::mutex> lock(gAsyncWorkerLifecycleMutex);
   gAsyncWorker.stop.store(true);
   gAsyncWorker.cv.notify_one();
   if (gAsyncWorker.thread.joinable()) {
@@ -522,10 +535,6 @@ static void serializeIpcInfo(const FlagcxP2pIpcInfo &info, char *buf) {
 static void deserializeIpcInfo(const char *buf, FlagcxP2pIpcInfo *info) {
   memset(info, 0, sizeof(*info));
   memcpy(info, buf, sizeof(*info));
-}
-
-static FlagcxP2pCommView *getCommView(void *comm) {
-  return reinterpret_cast<FlagcxP2pCommView *>(comm);
 }
 
 static void cleanupIpcXfer(FlagcxP2pXfer *xfer) {
