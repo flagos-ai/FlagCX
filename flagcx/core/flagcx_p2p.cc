@@ -21,9 +21,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <memory>
 #include <mutex>
 #include <poll.h>
 #include <string>
@@ -178,6 +181,169 @@ static std::unordered_map<uint64_t, FlagcxP2pXfer> gXferMap;
 static std::mutex gXferMutex;
 static uint64_t gNextXferId = 1;
 
+/* ------------------------------------------------------------------ */
+/*  Async Transfer Worker Infrastructure                               */
+/* ------------------------------------------------------------------ */
+
+static constexpr int kWindowSize = 64;
+static constexpr int kBatchPollCqe = 32;
+
+enum AsyncXferOp { ASYNC_XFER_READ, ASYNC_XFER_WRITE };
+
+struct AsyncTransferTask {
+  FlagcxP2pConn *conn;
+  AsyncXferOp op;
+  int numIovs;
+  std::vector<void *> dataVec;
+  std::vector<size_t> sizeVec;
+  std::vector<FlagcxP2pRdmaDesc> descs;
+  std::vector<FlagcxP2pMemRegEntry> localEntries;
+  std::atomic<bool> done{false};
+  std::atomic<int> result{0};
+};
+
+struct AsyncWorker {
+  std::thread thread;
+  std::mutex mutex;
+  std::condition_variable cv;
+  std::deque<std::shared_ptr<AsyncTransferTask>> queue;
+  std::atomic<bool> stop{false};
+};
+
+static AsyncWorker gAsyncWorker;
+
+static void asyncWorkerFunc() {
+  while (true) {
+    std::shared_ptr<AsyncTransferTask> task;
+    {
+      std::unique_lock<std::mutex> lock(gAsyncWorker.mutex);
+      gAsyncWorker.cv.wait(lock, [] {
+        return !gAsyncWorker.queue.empty() || gAsyncWorker.stop.load();
+      });
+      if (gAsyncWorker.stop.load() && gAsyncWorker.queue.empty())
+        return;
+      task = gAsyncWorker.queue.front();
+      gAsyncWorker.queue.pop_front();
+    }
+
+    FlagcxP2pConn *conn = task->conn;
+    struct flagcxNetAdaptor *adaptor = conn->engine->adaptor;
+    const int numIovs = task->numIovs;
+    const int connIbDevN = getCommView(conn->sendComm)->ibDevN;
+
+    std::vector<void *> inflightReqs(kWindowSize, nullptr);
+    int issued = 0, completed = 0;
+    bool error = false;
+
+    while (completed < numIovs && !error) {
+      // Post up to kWindowSize ahead of completed
+      while (issued < numIovs && (issued - completed) < kWindowSize) {
+        if (task->localEntries[issued].ibDevN != connIbDevN) {
+          error = true;
+          break;
+        }
+
+        FlagcxP2pMrHandleView *localMr =
+            reinterpret_cast<FlagcxP2pMrHandleView *>(
+                task->localEntries[issued].mhandle);
+
+        FlagcxP2pMrHandleView remoteMr;
+        memset(&remoteMr, 0, sizeof(remoteMr));
+        remoteMr.baseVa = task->descs[issued].addr;
+        remoteMr.rkey = task->descs[issued].rkey;
+
+        void *request = NULL;
+        flagcxResult_t rc;
+
+        if (task->op == ASYNC_XFER_READ) {
+          const uint64_t srcOff = 0;
+          const uint64_t dstOff =
+              (uintptr_t)task->dataVec[issued] - localMr->baseVa;
+          rc = adaptor->iget(conn->sendComm, srcOff, dstOff,
+                             task->sizeVec[issued], 0, 0, (void **)&remoteMr,
+                             (void **)task->localEntries[issued].mhandle,
+                             &request);
+        } else {
+          const uint64_t srcOff =
+              (uintptr_t)task->dataVec[issued] - localMr->baseVa;
+          const uint64_t dstOff = 0;
+          rc = adaptor->iput(conn->sendComm, srcOff, dstOff,
+                             task->sizeVec[issued], 0, 0,
+                             (void **)task->localEntries[issued].mhandle,
+                             (void **)&remoteMr, &request);
+        }
+
+        if (rc != flagcxSuccess) {
+          error = true;
+          break;
+        }
+
+        inflightReqs[issued % kWindowSize] = request;
+        issued++;
+      }
+
+      // Batch-poll completions for in-flight requests
+      int newlyCompleted = 0;
+      for (int i = completed; i < issued; i++) {
+        int slot = i % kWindowSize;
+        if (inflightReqs[slot] == nullptr) {
+          if (i == completed)
+            completed++;
+          continue;
+        }
+        int done = 0, sizes = 0;
+        flagcxResult_t res = adaptor->test(inflightReqs[slot], &done, &sizes);
+        if (res != flagcxSuccess) {
+          inflightReqs[slot] = nullptr;
+          if (i == completed)
+            completed++;
+          newlyCompleted++;
+          continue;
+        }
+        if (done) {
+          inflightReqs[slot] = nullptr;
+          if (i == completed)
+            completed++;
+          newlyCompleted++;
+        }
+      }
+
+      // Advance completed pointer over contiguous completions
+      while (completed < issued &&
+             inflightReqs[completed % kWindowSize] == nullptr) {
+        completed++;
+      }
+
+      // Yield briefly if no progress was made
+      if (newlyCompleted == 0 && issued >= numIovs) {
+        std::this_thread::sleep_for(std::chrono::microseconds(1));
+      }
+    }
+
+    task->result.store(error ? -1 : 0, std::memory_order_release);
+    task->done.store(true, std::memory_order_release);
+  }
+}
+
+static void ensureAsyncWorkerStarted() {
+  static std::once_flag flag;
+  std::call_once(flag,
+                 [] { gAsyncWorker.thread = std::thread(asyncWorkerFunc); });
+}
+
+static void stopAsyncWorker() {
+  gAsyncWorker.stop.store(true);
+  gAsyncWorker.cv.notify_one();
+  if (gAsyncWorker.thread.joinable()) {
+    gAsyncWorker.thread.join();
+  }
+}
+
+// Map from transfer ID to async task (for XferStatus polling)
+static std::unordered_map<uint64_t, std::shared_ptr<AsyncTransferTask>>
+    gAsyncXferMap;
+static std::mutex gAsyncXferMutex;
+
 static bool findMemReg(uintptr_t addr, FlagcxP2pMemRegEntry *out) {
   for (std::unordered_map<uintptr_t, FlagcxP2pMemRegEntry>::const_iterator it =
            gMemRegInfo.begin();
@@ -241,7 +407,8 @@ static bool socketAddrSameHost(const union flagcxSocketAddress *a,
   return false;
 }
 
-static std::string socketAddrToHostString(const union flagcxSocketAddress *addr) {
+static std::string
+socketAddrToHostString(const union flagcxSocketAddress *addr) {
   if (addr == NULL)
     return std::string();
 
@@ -329,7 +496,8 @@ static int detectPtrTypeAndMaybeCacheIpc(void *ptr, char *ipcHandleBuf,
 
   flagcxIpcMemHandle_t handle = NULL;
   size_t handleSize = 0;
-  if (deviceAdaptor->ipcMemHandleCreate(&handle, &handleSize) != flagcxSuccess) {
+  if (deviceAdaptor->ipcMemHandleCreate(&handle, &handleSize) !=
+      flagcxSuccess) {
     return FLAGCX_PTR_HOST;
   }
 
@@ -513,7 +681,8 @@ static void notifAcceptLoop(FlagcxP2pEngine *engine) {
     if (recvAllFd(fd, &magic, sizeof(magic)) != 0 ||
         recvAllFd(fd, &type, sizeof(type)) != 0 ||
         magic != FLAGCX_SOCKET_MAGIC || type != flagcxSocketTypeProxy ||
-        setFdNonblocking(fd) != 0 || notifRegisterConn(engine, fd, &remoteAddr) != 0) {
+        setFdNonblocking(fd) != 0 ||
+        notifRegisterConn(engine, fd, &remoteAddr) != 0) {
       ::close(fd);
       continue;
     }
@@ -577,7 +746,7 @@ static void notifPollThreadFunc(FlagcxP2pEngine *engine) {
 #ifdef EPOLLRDHUP
                               | EPOLLRDHUP
 #endif
-                                  )) {
+                              )) {
         std::lock_guard<std::mutex> lock(engine->notifPeerMutex);
         notifRemoveConnLocked(engine, fd);
         continue;
@@ -635,7 +804,8 @@ static void notifPollThreadFunc(FlagcxP2pEngine *engine) {
       }
       if ((pfds[i].revents & POLLIN) == 0)
         continue;
-      if (engine->notifListenActive && pfds[i].fd == engine->notifListenSock.fd) {
+      if (engine->notifListenActive &&
+          pfds[i].fd == engine->notifListenSock.fd) {
         notifAcceptLoop(engine);
       } else {
         notifHandleRead(engine, pfds[i].fd);
@@ -878,6 +1048,8 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
   if (engine == NULL)
     return;
 
+  stopAsyncWorker();
+
   engine->stopNotif = true;
   if (engine->notifListenActive) {
     flagcxSocketClose(&engine->notifListenSock);
@@ -1015,11 +1187,14 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
   conn->sendComm = sendComm;
   conn->recvComm = NULL;
   conn->netDev = netDev;
-  conn->remoteGpuIdx = remoteMeta.gpuIdx >= 0 ? remoteMeta.gpuIdx : remoteGpuIdx;
+  conn->remoteGpuIdx =
+      remoteMeta.gpuIdx >= 0 ? remoteMeta.gpuIdx : remoteGpuIdx;
   conn->remoteNotifPort = remoteMeta.notifPort;
-  conn->isLocal = isLocal || ((remoteMeta.flags & FLAGCX_P2P_CTRL_FLAG_LOCAL) != 0);
+  conn->isLocal =
+      isLocal || ((remoteMeta.flags & FLAGCX_P2P_CTRL_FLAG_LOCAL) != 0);
   conn->sameProcess =
-      isSameProcess || ((remoteMeta.flags & FLAGCX_P2P_CTRL_FLAG_SAME_PROCESS) != 0);
+      isSameProcess ||
+      ((remoteMeta.flags & FLAGCX_P2P_CTRL_FLAG_SAME_PROCESS) != 0);
   conn->notifSockConnected = false;
   memset(&conn->notifSock, 0, sizeof(conn->notifSock));
 
@@ -1031,8 +1206,7 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
 }
 
 FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
-                                     size_t ipAddrBufLen,
-                                     int *remoteGpuIdx) {
+                                     size_t ipAddrBufLen, int *remoteGpuIdx) {
   if (engine == NULL || ipAddrBuf == NULL || remoteGpuIdx == NULL)
     return NULL;
 
@@ -1141,9 +1315,8 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   entry.ibDevN = ibDevN;
 
   setEngineDevice(engine);
-  entry.ptrType = detectPtrTypeAndMaybeCacheIpc(reinterpret_cast<void *>(data),
-                                                entry.ipcHandle,
-                                                &entry.ipcHandleSize);
+  entry.ptrType = detectPtrTypeAndMaybeCacheIpc(
+      reinterpret_cast<void *>(data), entry.ipcHandle, &entry.ipcHandleSize);
   entry.hasIpc = entry.ptrType == FLAGCX_PTR_CUDA && entry.ipcHandleSize > 0;
 
   if (engine->adaptor->regMr(&devCtx, reinterpret_cast<void *>(data), size,
@@ -1246,10 +1419,9 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
   const uint64_t dstOff = (uintptr_t)data - localMr->baseVa;
 
   void *request = NULL;
-  if (conn->engine->adaptor->iget(conn->sendComm, srcOff, dstOff, size, 0, 0,
-                                  (void **)&remoteMr,
-                                  (void **)localEntry.mhandle,
-                                  &request) != flagcxSuccess) {
+  if (conn->engine->adaptor->iget(
+          conn->sendComm, srcOff, dstOff, size, 0, 0, (void **)&remoteMr,
+          (void **)localEntry.mhandle, &request) != flagcxSuccess) {
     return -1;
   }
 
@@ -1280,8 +1452,8 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
     return -1;
 
   if (conn->isLocal && (conn->sameProcess || !ipcBufs.empty())) {
-    return startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs,
-                              transferId, ipcBufs, false);
+    return startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs, transferId,
+                              ipcBufs, false);
   }
 
   std::vector<FlagcxP2pMemRegEntry> localEntries(numIovs);
@@ -1293,43 +1465,30 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
     }
   }
 
-  const int connIbDevN = getCommView(conn->sendComm)->ibDevN;
-  FlagcxP2pXfer xfer;
-  xfer.kind = FLAGCX_P2P_XFER_NET;
-  xfer.conn = conn;
-  xfer.total = numIovs;
-  xfer.completed = 0;
-  xfer.stream = NULL;
-  xfer.event = NULL;
+  ensureAsyncWorkerStarted();
 
-  for (int i = 0; i < numIovs; i++) {
-    if (localEntries[i].ibDevN != connIbDevN)
-      return -1;
+  auto task = std::make_shared<AsyncTransferTask>();
+  task->conn = conn;
+  task->op = ASYNC_XFER_READ;
+  task->numIovs = numIovs;
+  task->dataVec = std::move(dstVec);
+  task->sizeVec = std::move(sizeVec);
+  task->descs = std::move(descs);
+  task->localEntries = std::move(localEntries);
 
-    FlagcxP2pMrHandleView *localMr =
-        reinterpret_cast<FlagcxP2pMrHandleView *>(localEntries[i].mhandle);
+  const uint64_t xferId = [&] {
+    std::lock_guard<std::mutex> lock(gAsyncXferMutex);
+    uint64_t id = gNextXferId++;
+    gAsyncXferMap[id] = task;
+    return id;
+  }();
 
-    FlagcxP2pMrHandleView remoteMr;
-    memset(&remoteMr, 0, sizeof(remoteMr));
-    remoteMr.baseVa = descs[i].addr;
-    remoteMr.rkey = descs[i].rkey;
-
-    const uint64_t srcOff = 0;
-    const uint64_t dstOff = (uintptr_t)dstVec[i] - localMr->baseVa;
-
-    void *request = NULL;
-    if (conn->engine->adaptor->iget(conn->sendComm, srcOff, dstOff, sizeVec[i],
-                                    0, 0, (void **)&remoteMr,
-                                    (void **)localEntries[i].mhandle,
-                                    &request) != flagcxSuccess) {
-      return -1;
-    }
-    xfer.requests.push_back(request);
+  {
+    std::lock_guard<std::mutex> lock(gAsyncWorker.mutex);
+    gAsyncWorker.queue.push_back(task);
   }
+  gAsyncWorker.cv.notify_one();
 
-  std::lock_guard<std::mutex> xferLock(gXferMutex);
-  const uint64_t xferId = gNextXferId++;
-  gXferMap[xferId] = std::move(xfer);
   *transferId = xferId;
   return 0;
 }
@@ -1406,8 +1565,8 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
     return -1;
 
   if (conn->isLocal && (conn->sameProcess || !ipcBufs.empty())) {
-    return startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs,
-                              transferId, ipcBufs, true);
+    return startLocalTransfer(conn, dstVec, sizeVec, descs, numIovs, transferId,
+                              ipcBufs, true);
   }
 
   std::vector<FlagcxP2pMemRegEntry> localEntries(numIovs);
@@ -1419,43 +1578,30 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
     }
   }
 
-  const int connIbDevN = getCommView(conn->sendComm)->ibDevN;
-  FlagcxP2pXfer xfer;
-  xfer.kind = FLAGCX_P2P_XFER_NET;
-  xfer.conn = conn;
-  xfer.total = numIovs;
-  xfer.completed = 0;
-  xfer.stream = NULL;
-  xfer.event = NULL;
+  ensureAsyncWorkerStarted();
 
-  for (int i = 0; i < numIovs; i++) {
-    if (localEntries[i].ibDevN != connIbDevN)
-      return -1;
+  auto task = std::make_shared<AsyncTransferTask>();
+  task->conn = conn;
+  task->op = ASYNC_XFER_WRITE;
+  task->numIovs = numIovs;
+  task->dataVec = std::move(dstVec);
+  task->sizeVec = std::move(sizeVec);
+  task->descs = std::move(descs);
+  task->localEntries = std::move(localEntries);
 
-    FlagcxP2pMrHandleView *localMr =
-        reinterpret_cast<FlagcxP2pMrHandleView *>(localEntries[i].mhandle);
+  const uint64_t xferId = [&] {
+    std::lock_guard<std::mutex> lock(gAsyncXferMutex);
+    uint64_t id = gNextXferId++;
+    gAsyncXferMap[id] = task;
+    return id;
+  }();
 
-    FlagcxP2pMrHandleView remoteMr;
-    memset(&remoteMr, 0, sizeof(remoteMr));
-    remoteMr.baseVa = descs[i].addr;
-    remoteMr.rkey = descs[i].rkey;
-
-    const uint64_t srcOff = (uintptr_t)dstVec[i] - localMr->baseVa;
-    const uint64_t dstOff = 0;
-
-    void *request = NULL;
-    if (conn->engine->adaptor->iput(conn->sendComm, srcOff, dstOff, sizeVec[i],
-                                    0, 0, (void **)localEntries[i].mhandle,
-                                    (void **)&remoteMr,
-                                    &request) != flagcxSuccess) {
-      return -1;
-    }
-    xfer.requests.push_back(request);
+  {
+    std::lock_guard<std::mutex> lock(gAsyncWorker.mutex);
+    gAsyncWorker.queue.push_back(task);
   }
+  gAsyncWorker.cv.notify_one();
 
-  std::lock_guard<std::mutex> xferLock(gXferMutex);
-  const uint64_t xferId = gNextXferId++;
-  gXferMap[xferId] = std::move(xfer);
   *transferId = xferId;
   return 0;
 }
@@ -1497,6 +1643,20 @@ bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
   if (conn == NULL)
     return true;
 
+  // Check async transfer map first (for vectored transfers)
+  {
+    std::lock_guard<std::mutex> lock(gAsyncXferMutex);
+    auto it = gAsyncXferMap.find(transferId);
+    if (it != gAsyncXferMap.end()) {
+      if (it->second->done.load(std::memory_order_acquire)) {
+        gAsyncXferMap.erase(it);
+        return true;
+      }
+      return false;
+    }
+  }
+
+  // Fall through to legacy synchronous xfer map (for single Read/Write)
   std::lock_guard<std::mutex> lock(gXferMutex);
   std::unordered_map<uint64_t, FlagcxP2pXfer>::iterator it =
       gXferMap.find(transferId);
@@ -1596,8 +1756,8 @@ int flagcxP2pEngineSendNotif(FlagcxP2pConn *conn,
   memset(&wireMsg, 0, sizeof(wireMsg));
   wireMsg.magic = FLAGCX_P2P_NOTIF_MAGIC;
   wireMsg.payload = *notifyMsg;
-  if (flagcxSocketSend(&conn->notifSock, &wireMsg,
-                       sizeof(wireMsg)) != flagcxSuccess) {
+  if (flagcxSocketSend(&conn->notifSock, &wireMsg, sizeof(wireMsg)) !=
+      flagcxSuccess) {
     return -1;
   }
   return sizeof(FlagcxP2pNotifyMsg);
