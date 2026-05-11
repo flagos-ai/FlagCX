@@ -144,6 +144,10 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
     job = flagcxIntruQueueHead(asyncJobsMain);
     do {
       pthread_join(job->thread, nullptr);
+      if (job->result != flagcxSuccess) {
+        WARN("Async job failed with result %d", job->result);
+        ret = job->result;
+      }
       job = job->next;
     } while (job != nullptr);
 
@@ -265,6 +269,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  ->recv[0]
                                  .proxyConn.connection;
             op->stream = p2p->stream;
+            if (op->connection == NULL) {
+              WARN("groupLaunch: recv proxyConn.connection is NULL for rank %d "
+                   "peer %d channel %d",
+                   comm->rank, peer, op->channelId);
+              return flagcxInternalError;
+            }
             if (op->connection->transport == TRANSPORT_P2P) {
               op->args.chunkSize = computeP2pChunkSize(p2p->bytes);
               op->args.chunkSteps =
@@ -349,6 +359,12 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  ->send[0]
                                  .proxyConn.connection;
             op->stream = p2p->stream;
+            if (op->connection == NULL) {
+              WARN("groupLaunch: send proxyConn.connection is NULL for rank %d "
+                   "peer %d channel %d",
+                   comm->rank, peer, op->channelId);
+              return flagcxInternalError;
+            }
             if (op->connection->transport == TRANSPORT_P2P) {
               op->args.chunkSize = computeP2pChunkSize(p2p->bytes);
               op->args.chunkSteps =

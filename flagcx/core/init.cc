@@ -176,7 +176,7 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     comm->localRanks = comm->nodeRanks[comm->node].localRanks;
     comm->localRankToRank = comm->nodeRanks[comm->node].localRankToRank;
 
-    // Build p2pSchedule with two-level scheduling (like NCCL)
+    // Build p2pSchedule with two-level scheduling
     int node = comm->node;
     int local = comm->localRank;
     int nLocals = comm->maxLocalRanks;
@@ -299,16 +299,6 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
         FLAGCXCHECK(flagcxCalloc(&comm->channels[i].peers[r], nranks));
       }
     }
-    // Set tpRank = comm->rank for all channel connectors so local RPCs
-    // route through peerSocks[myRank] to the local service thread
-    for (int i = 0; i < MAXCHANNELS; i++) {
-      for (int r = 0; r < nranks; r++) {
-        for (int c = 0; c < FLAGCX_MAX_CONNS; c++) {
-          comm->channels[i].peers[r]->send[c].proxyConn.tpRank = comm->rank;
-          comm->channels[i].peers[r]->recv[c].proxyConn.tpRank = comm->rank;
-        }
-      }
-    }
     FLAGCXCHECK(flagcxCalloc(&comm->connectSend, nranks));
     FLAGCXCHECK(flagcxCalloc(&comm->connectRecv, nranks));
     FLAGCXCHECK(flagcxCalloc(&comm->proxyState, 1));
@@ -341,7 +331,6 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
 
     comm->groupNext = reinterpret_cast<struct flagcxHeteroComm *>(0x1);
     comm->preconnectNext = reinterpret_cast<struct flagcxHeteroComm *>(0x1);
-    comm->proxyState->nRanks = comm->nRanks;
 
     bool runtimeProxy = false;
     const char *runtimeEnv = flagcxGetEnv("FLAGCX_RUNTIME_PROXY");
@@ -352,32 +341,8 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     if (!runtimeProxy) {
       FLAGCXCHECK(flagcxProxyInit(comm));
 
-      // Allocate gproxyConn array and populate peerAddresses for peer proxy
-      // connections
+      // Allocate gproxyConn array for peer proxy connections
       FLAGCXCHECK(flagcxCalloc(&comm->gproxyConn, comm->nRanks));
-      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerAddresses, comm->nRanks));
-      comm->proxyState->peerAddresses[comm->rank] =
-          comm->proxyState->listenSock.addr;
-      FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
-                                     comm->proxyState->peerAddresses,
-                                     sizeof(union flagcxSocketAddress)));
-
-      // Pre-connect all peer sockets (including self)
-      FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerSocks, comm->nRanks));
-      comm->proxyState->nPeerSocks = comm->nRanks;
-      for (int i = 0; i < comm->nRanks; i++) {
-        FLAGCXCHECK(flagcxSocketSetFd(-1, &comm->proxyState->peerSocks[i]));
-      }
-      for (int i = 0; i < comm->nRanks; i++) {
-        struct flagcxSocket *sock = &comm->proxyState->peerSocks[i];
-        FLAGCXCHECK(flagcxSocketInit(sock, comm->proxyState->peerAddresses + i,
-                                     comm->magic, flagcxSocketTypeProxy));
-        FLAGCXCHECK(flagcxSocketConnect(sock));
-        int ready = 0;
-        while (!ready) {
-          FLAGCXCHECK(flagcxSocketReady(sock, &ready));
-        }
-      }
     }
   }
 
@@ -502,7 +467,10 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
   // Clean up P2P IPC handles while proxy is still alive and peerSocks valid
   FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
-  flagcxProxyDestroy(comm);
+  // Stop: send stop + close peerSocks
+  FLAGCXCHECK(flagcxProxyStop(comm));
+  // Destroy: join thread, free proxy resources
+  FLAGCXCHECK(flagcxProxyDestroy(comm));
   for (int i = 0; i < MAXCHANNELS; i++) {
     for (int r = 0; r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);
@@ -523,13 +491,6 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
     // flagcxProxyConnection allocated and owned by the peer's service thread.
     // Do NOT free it here — the peer frees it when its service thread exits.
     free(comm->gproxyConn);
-  }
-  free(comm->proxyState->peerAddresses);
-  if (comm->proxyState->peerSocks != NULL) {
-    for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
-      flagcxSocketClose(&comm->proxyState->peerSocks[i]);
-    }
-    free(comm->proxyState->peerSocks);
   }
   free(comm->proxyState);
   free(comm->tasks.peers);
