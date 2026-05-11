@@ -310,8 +310,7 @@ struct flagcxIpcHdr {
   uint64_t data[16]; // 128-bytes
 };
 
-// Tracks per-accepted-connection state in the service thread (like
-// ncclProxyLocalPeer)
+// Tracks per-accepted-connection state in the service thread
 struct flagcxProxyLocalPeer {
   struct flagcxSocket sock;
   int tpRank;      // global rank of the peer that connected
@@ -338,8 +337,8 @@ struct flagcxProxyState {
   pthread_t threadUDS;
   struct flagcxSocket listenSock;
   struct flagcxSocket ipcSock;
-  volatile int
-      stop; // Set by flagcxProxyStop, checked by service thread as backup
+  // Set by flagcxProxyStop, checked by service thread as backup
+  volatile int stop;
   flagcxResult_t asyncResult;
   int nRanks;
 

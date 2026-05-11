@@ -141,7 +141,7 @@ flagcxProxyGetConnection(struct flagcxProxyConnectionPool *pool, int id,
                          struct flagcxProxyConnection **conn) {
   int bank = id >> FLAGCX_PROXY_CONN_POOL_SIZE_POW2;
   int offset = id & FLAGCX_PROXY_CONN_POOL_MASK;
-  if ((pool->pools == NULL) || (bank > pool->banks) ||
+  if ((id < 0) || (pool->pools == NULL) || (bank >= pool->banks) ||
       (pool->pools[bank] == NULL))
     return flagcxInternalError;
   *conn = pool->pools[bank] + offset;
@@ -972,6 +972,21 @@ proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
                   fail);
   FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &asyncOp->respSize, sizeof(int)), ret,
                   fail);
+
+  // Validate buffer sizes for Init to prevent heap corruption from
+  // malformed/version-mismatched peers
+  if (type == flagcxProxyMsgInit) {
+    if (asyncOp->reqSize != (int)sizeof(struct flagcxProxyInitReq) ||
+        asyncOp->respSize != (int)sizeof(struct flagcxProxyInitResp)) {
+      WARN("proxyServiceInitOp: Init message size mismatch "
+           "(reqSize=%d expected=%zu, respSize=%d expected=%zu)",
+           asyncOp->reqSize, sizeof(struct flagcxProxyInitReq),
+           asyncOp->respSize, sizeof(struct flagcxProxyInitResp));
+      ret = flagcxInternalError;
+      goto fail;
+    }
+  }
+
   if (asyncOp->reqSize) {
     FLAGCXCHECKGOTO(flagcxCalloc(&asyncOp->reqBuff, asyncOp->reqSize), ret,
                     fail);
