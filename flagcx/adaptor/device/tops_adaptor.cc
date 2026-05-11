@@ -408,7 +408,8 @@ flagcxResult_t topsAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t topsAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t topsAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t topsAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -417,6 +418,9 @@ flagcxResult_t topsAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t topsAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t topsAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor topsAdaptor {
@@ -484,7 +488,7 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorSymPhysAlloc, topsAdaptorSymPhysFree, topsAdaptorSymFlatMap,
       topsAdaptorSymFlatUnmap, topsAdaptorSymMulticastSupported,
       topsAdaptorSymMulticastCreate, topsAdaptorSymMulticastBind,
-      topsAdaptorSymMulticastTeardown,
+      topsAdaptorSymMulticastTeardown, topsAdaptorSymMulticastFree,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

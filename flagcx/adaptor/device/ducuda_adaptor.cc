@@ -372,7 +372,8 @@ flagcxResult_t ducudaAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t ducudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t ducudaAdaptorSymMulticastCreate(size_t, int, const int *,
+                                               void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -381,6 +382,9 @@ flagcxResult_t ducudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t ducudaAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor ducudaAdaptor {
@@ -449,6 +453,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorSymFlatMap, ducudaAdaptorSymFlatUnmap,
       ducudaAdaptorSymMulticastSupported, ducudaAdaptorSymMulticastCreate,
       ducudaAdaptorSymMulticastBind, ducudaAdaptorSymMulticastTeardown,
+      ducudaAdaptorSymMulticastFree,
 };
 
 #endif // USE_DU_ADAPTOR

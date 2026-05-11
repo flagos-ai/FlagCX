@@ -386,7 +386,8 @@ flagcxResult_t tsmicroAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t tsmicroAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t tsmicroAdaptorSymMulticastCreate(size_t, int, const int *,
+                                                void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t tsmicroAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -395,6 +396,9 @@ flagcxResult_t tsmicroAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t tsmicroAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor tsmicroAdaptor {
@@ -466,6 +470,7 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       tsmicroAdaptorSymFlatMap, tsmicroAdaptorSymFlatUnmap,
       tsmicroAdaptorSymMulticastSupported, tsmicroAdaptorSymMulticastCreate,
       tsmicroAdaptorSymMulticastBind, tsmicroAdaptorSymMulticastTeardown,
+      tsmicroAdaptorSymMulticastFree,
 };
 
 #endif // USE_TSM_ADAPTOR

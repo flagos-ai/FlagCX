@@ -233,6 +233,7 @@ struct flagcxDeviceAdaptor_latest {
   // Non-CUDA platforms use stubs that return flagcxNotSupported.
   flagcxResult_t (*symMulticastSupported)(int *supported);
   flagcxResult_t (*symMulticastCreate)(size_t allocSize, int nLocalDevices,
+                                       const int *localDeviceOrdinals,
                                        void **mcHandle, int *shareableFd);
   flagcxResult_t (*symMulticastBind)(void *mcHandle, int importFd,
                                      void *physHandle, size_t allocSize,

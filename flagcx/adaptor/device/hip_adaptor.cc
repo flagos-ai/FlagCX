@@ -352,7 +352,8 @@ flagcxResult_t hipAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t hipAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t hipAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                            int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t hipAdaptorSymMulticastBind(void *, int, void *, size_t, int, int,
@@ -362,6 +363,7 @@ flagcxResult_t hipAdaptorSymMulticastBind(void *, int, void *, size_t, int, int,
 flagcxResult_t hipAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
 }
+flagcxResult_t hipAdaptorSymMulticastFree(void *) { return flagcxNotSupported; }
 
 struct flagcxDeviceAdaptor hipAdaptor {
   "HIP",
@@ -429,7 +431,7 @@ struct flagcxDeviceAdaptor hipAdaptor {
       hipAdaptorSymPhysAlloc, hipAdaptorSymPhysFree, hipAdaptorSymFlatMap,
       hipAdaptorSymFlatUnmap, hipAdaptorSymMulticastSupported,
       hipAdaptorSymMulticastCreate, hipAdaptorSymMulticastBind,
-      hipAdaptorSymMulticastTeardown,
+      hipAdaptorSymMulticastTeardown, hipAdaptorSymMulticastFree,
 };
 
 #endif // USE_AMD_ADAPTOR

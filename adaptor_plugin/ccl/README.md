@@ -37,7 +37,7 @@ Plugins should copy the required FlagCX headers into their own source tree to av
 
 - `flagcx.h` — Core types and error codes
 - `flagcx_ccl_adaptor.h` — The `flagcxCCLAdaptor_v1` struct and plugin symbol macro
-- **Platform adaptor header** — Copy the vendor adaptor header corresponding to your target platform from `flagcx/adaptor/include/`. For example, `nvidia_adaptor.h` for NVIDIA/NCCL. This header provides struct definitions for `flagcxInnerComm`, `flagcxStream`, `flagcxEvent`, `flagcxIpcMemHandle`, `flagcxWindow`, etc.
+- **Platform adaptor header** — Copy the vendor adaptor header corresponding to your target platform from `flagcx/adaptor/include/`. For example, `nvidia_adaptor.h` for NVIDIA/NCCL. This header provides struct definitions for `flagcxInnerComm`, `flagcxStream`, `flagcxEvent`, `flagcxIpcMemHandle`, `flagcxInnerWindow`, etc.
 
 When copying the vendor adaptor header, **remove the `#ifdef USE_XXX_ADAPTOR` / `#endif` guard**. Since your plugin targets a specific platform, the platform choice is implicit — adding the guard would require an unnecessary `-DUSE_XXX_ADAPTOR` flag in your Makefile. See `example/flagcx/nvidia_adaptor.h` and `nccl/flagcx/nvidia_adaptor.h` for reference.
 
@@ -105,10 +105,10 @@ struct flagcxCCLAdaptor_v1 {
 
   // Symmetric functions
   flagcxResult_t (*commWindowRegister)(flagcxInnerComm_t comm, void *buff,
-                                       size_t size, flagcxWindow_t *win,
+                                       size_t size, flagcxInnerWindow_t *win,
                                        int winFlags);
   flagcxResult_t (*commWindowDeregister)(flagcxInnerComm_t comm,
-                                         flagcxWindow_t win);
+                                         flagcxInnerWindow_t win);
 
   // Communication functions
   flagcxResult_t (*reduce)(const void *sendbuff, void *recvbuff, size_t count,

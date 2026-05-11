@@ -363,7 +363,8 @@ flagcxResult_t ixcudaAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t ixcudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t ixcudaAdaptorSymMulticastCreate(size_t, int, const int *,
+                                               void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t ixcudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -372,6 +373,9 @@ flagcxResult_t ixcudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t ixcudaAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t ixcudaAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor ixcudaAdaptor {
@@ -438,5 +442,6 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorSymFlatMap, ixcudaAdaptorSymFlatUnmap,
       ixcudaAdaptorSymMulticastSupported, ixcudaAdaptorSymMulticastCreate,
       ixcudaAdaptorSymMulticastBind, ixcudaAdaptorSymMulticastTeardown,
+      ixcudaAdaptorSymMulticastFree,
 };
 #endif // USE_ILUVATAR_COREX_ADAPTOR

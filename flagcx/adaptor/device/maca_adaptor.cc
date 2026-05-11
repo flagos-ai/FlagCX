@@ -374,7 +374,8 @@ flagcxResult_t macaAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t macaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t macaAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t macaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -383,6 +384,9 @@ flagcxResult_t macaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t macaAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t macaAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor macaAdaptor {
@@ -445,7 +449,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymPhysAlloc, macaAdaptorSymPhysFree, macaAdaptorSymFlatMap,
       macaAdaptorSymFlatUnmap, macaAdaptorSymMulticastSupported,
       macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
-      macaAdaptorSymMulticastTeardown,
+      macaAdaptorSymMulticastTeardown, macaAdaptorSymMulticastFree,
 };
 
 #endif // USE_METAX_ADAPTOR

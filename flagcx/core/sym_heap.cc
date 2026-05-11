@@ -13,9 +13,11 @@
 #include "comm.h"
 #include "ipcsocket.h"
 #include "onesided.h"
+#include "transport.h"
 #include "utils.h"
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>
 
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
@@ -29,6 +31,8 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
   int *allFds = nullptr;
   void **peerHandles = nullptr;
   void *physHandle = nullptr;
+  void *mcHandle = nullptr;
+  int mcFd = -1;
   int shareableFd = -1;
   bool ipcSockOpen = false;
   bool mcIpcSockOpen = false;
@@ -63,9 +67,38 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
       flagcxResult_t allocRes = deviceAdaptor->symPhysAlloc(
           buff, size, &physHandle, &shareableFd, &handleSize, &allocSize);
-      if (allocRes == flagcxSuccess && physHandle != nullptr && allocSize > 0) {
+      int localAllocOk =
+          (allocRes == flagcxSuccess && physHandle != nullptr && allocSize > 0)
+              ? 1
+              : 0;
+
+      // Collective decision: all local ranks must agree to enter the VMM path.
+      // If any rank's symPhysAlloc failed, all ranks must skip the VMM path
+      // to avoid hanging at the intra-node barrier.
+      int allAllocOk = localAllocOk;
+      {
+        struct bootstrapState *bState = comm->bootstrap;
+        for (int i = 0; i < localRanks; i++) {
+          if (i == localRank)
+            continue;
+          int peerGlobalRank = comm->localRankToRank[i];
+          int peerOk = 0;
+          FLAGCXCHECKGOTO(bootstrapSend(bState, peerGlobalRank, /*tag=*/0x5931,
+                                        &localAllocOk, sizeof(int)),
+                          res, fail);
+          FLAGCXCHECKGOTO(bootstrapRecv(bState, peerGlobalRank, /*tag=*/0x5931,
+                                        &peerOk, sizeof(int)),
+                          res, fail);
+          if (!peerOk)
+            allAllocOk = 0;
+        }
+      }
+
+      if (allAllocOk) {
         // Exchange shareable FDs with intra-node peers via Unix Domain Socket
         FLAGCXCHECKGOTO(flagcxCalloc(&allFds, localRanks), res, fail);
+        for (int i = 0; i < localRanks; i++)
+          allFds[i] = -1;
         allFds[localRank] = shareableFd;
 
         // Hash must be identical across all ranks
@@ -136,19 +169,27 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
           if (deviceAdaptor->symMulticastSupported)
             deviceAdaptor->symMulticastSupported(&mcSupported);
           if (mcSupported) {
-            void *mcHandle = nullptr;
-            int mcFd = -1;
+            // Build local device ordinal array from peerInfo
+            int *localDevices = nullptr;
+            FLAGCXCHECKGOTO(flagcxCalloc(&localDevices, localRanks), res, fail);
+            for (int i = 0; i < localRanks; i++) {
+              int globalRank = comm->localRankToRank[i];
+              localDevices[i] = comm->peerInfo[globalRank].cudaDev;
+            }
 
             if (localRank == 0) {
-              flagcxResult_t mcRes =
-                  deviceAdaptor->symMulticastCreate
-                      ? deviceAdaptor->symMulticastCreate(allocSize, localRanks,
-                                                          &mcHandle, &mcFd)
-                      : flagcxNotSupported;
+              flagcxResult_t mcRes = deviceAdaptor->symMulticastCreate
+                                         ? deviceAdaptor->symMulticastCreate(
+                                               allocSize, localRanks,
+                                               localDevices, &mcHandle, &mcFd)
+                                         : flagcxNotSupported;
               if (mcRes != flagcxSuccess) {
                 mcSupported = 0;
               }
             }
+
+            free(localDevices);
+            localDevices = nullptr;
 
             // Broadcast success/failure from rank 0
             struct bootstrapState *mcState = comm->bootstrap;
@@ -221,13 +262,16 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
               }
 
               // Close the multicast FD
-              if (mcFd >= 0)
+              if (mcFd >= 0) {
                 close(mcFd);
+                mcFd = -1;
+              }
             }
 
             // Store mcHandle for cleanup (rank 0 only)
             if (localRank == 0 && mcHandle != nullptr) {
               d->mcHandle = mcHandle;
+              mcHandle = nullptr;
             }
           }
         } else {
@@ -243,6 +287,12 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         }
         free(allFds);
         allFds = nullptr;
+      } else if (localAllocOk) {
+        // Local alloc succeeded but a peer failed — free local resources
+        if (shareableFd >= 0) {
+          close(shareableFd);
+          shareableFd = -1;
+        }
       }
     }
 
@@ -288,6 +338,8 @@ fail:
     flagcxIpcSocketClose(&mcIpcSock);
   if (ipcSockOpen)
     flagcxIpcSocketClose(&ipcSock);
+  if (shareableFd >= 0 && (allFds == NULL || allFds[localRank] != shareableFd))
+    close(shareableFd);
   if (allFds) {
     for (int i = 0; i < comm->localRanks; i++) {
       if (allFds[i] >= 0)
@@ -298,6 +350,10 @@ fail:
   free(peerHandles);
   if (physHandle != nullptr && deviceAdaptor->symPhysFree)
     deviceAdaptor->symPhysFree(physHandle);
+  if (mcFd >= 0)
+    close(mcFd);
+  if (mcHandle != nullptr && deviceAdaptor->symMulticastFree)
+    deviceAdaptor->symMulticastFree(mcHandle);
   free(d);
   free(w);
   return res;

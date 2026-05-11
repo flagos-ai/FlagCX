@@ -323,7 +323,8 @@ flagcxResult_t mluAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t mluAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t mluAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                            int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t mluAdaptorSymMulticastBind(void *, int, void *, size_t, int, int,
@@ -333,6 +334,7 @@ flagcxResult_t mluAdaptorSymMulticastBind(void *, int, void *, size_t, int, int,
 flagcxResult_t mluAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
 }
+flagcxResult_t mluAdaptorSymMulticastFree(void *) { return flagcxNotSupported; }
 
 struct flagcxDeviceAdaptor mluAdaptor {
   "MLU",
@@ -393,7 +395,7 @@ struct flagcxDeviceAdaptor mluAdaptor {
       mluAdaptorSymPhysAlloc, mluAdaptorSymPhysFree, mluAdaptorSymFlatMap,
       mluAdaptorSymFlatUnmap, mluAdaptorSymMulticastSupported,
       mluAdaptorSymMulticastCreate, mluAdaptorSymMulticastBind,
-      mluAdaptorSymMulticastTeardown,
+      mluAdaptorSymMulticastTeardown, mluAdaptorSymMulticastFree,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR

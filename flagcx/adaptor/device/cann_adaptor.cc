@@ -293,7 +293,8 @@ flagcxResult_t cannAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t cannAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t cannAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cannAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -302,6 +303,9 @@ flagcxResult_t cannAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t cannAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t cannAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor cannAdaptor {
@@ -363,7 +367,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorSymPhysAlloc, cannAdaptorSymPhysFree, cannAdaptorSymFlatMap,
       cannAdaptorSymFlatUnmap, cannAdaptorSymMulticastSupported,
       cannAdaptorSymMulticastCreate, cannAdaptorSymMulticastBind,
-      cannAdaptorSymMulticastTeardown,
+      cannAdaptorSymMulticastTeardown, cannAdaptorSymMulticastFree,
 };
 
 #endif // USE_ASCEND_ADAPTOR

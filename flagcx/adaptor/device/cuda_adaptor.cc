@@ -618,9 +618,12 @@ flagcxResult_t cudaAdaptorSymMulticastSupported(int *supported) {
 }
 
 flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
-                                             int nLocalDevices, void **mcHandle,
+                                             int nLocalDevices,
+                                             const int *localDeviceOrdinals,
+                                             void **mcHandle,
                                              int *shareableFd) {
-  if (mcHandle == NULL || shareableFd == NULL || nLocalDevices <= 0)
+  if (mcHandle == NULL || shareableFd == NULL || nLocalDevices <= 0 ||
+      localDeviceOrdinals == NULL)
     return flagcxInvalidArgument;
   *mcHandle = NULL;
   *shareableFd = -1;
@@ -639,10 +642,10 @@ flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
   CUmemGenericAllocationHandle handle;
   DEVCHECK(cuMulticastCreate(&handle, &mcProp));
 
-  // Add all local devices
+  // Add all local devices using explicit ordinals
   for (int i = 0; i < nLocalDevices; i++) {
     CUdevice peerDev;
-    DEVCHECK(cuDeviceGet(&peerDev, i));
+    DEVCHECK(cuDeviceGet(&peerDev, localDeviceOrdinals[i]));
     DEVCHECK(cuMulticastAddDevice(handle, peerDev));
   }
 
@@ -673,6 +676,7 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   *mcMapSize = 0;
 
   CUmemGenericAllocationHandle cuMcHandle;
+  bool imported = (mcHandle == NULL);
 
   if (mcHandle != NULL) {
     // Rank 0: already has the handle from symMulticastCreate
@@ -702,6 +706,8 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
     WARN("symMulticastBind: cuMulticastBindMem failed: %d (localRank=%d "
          "allocSize=%zu)",
          res, localRank, allocSize);
+    if (imported)
+      cuMemRelease(cuMcHandle);
     return flagcxUnhandledDeviceError;
   }
 
@@ -715,6 +721,8 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
                                   CU_MULTICAST_GRANULARITY_RECOMMENDED);
   if (res != CUDA_SUCCESS) {
     WARN("symMulticastBind: cuMulticastGetGranularity failed: %d", res);
+    if (imported)
+      cuMemRelease(cuMcHandle);
     return flagcxUnhandledDeviceError;
   }
   size_t alignedSize = ((allocSize + mcGran - 1) / mcGran) * mcGran;
@@ -724,6 +732,8 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   res = cuMemAddressReserve(&mcVa, alignedSize, mcGran, 0, 0);
   if (res != CUDA_SUCCESS) {
     WARN("symMulticastBind: cuMemAddressReserve failed: %d", res);
+    if (imported)
+      cuMemRelease(cuMcHandle);
     return flagcxUnhandledDeviceError;
   }
 
@@ -731,6 +741,8 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
   if (res != CUDA_SUCCESS) {
     WARN("symMulticastBind: cuMemMap failed: %d", res);
     cuMemAddressFree(mcVa, alignedSize);
+    if (imported)
+      cuMemRelease(cuMcHandle);
     return flagcxUnhandledDeviceError;
   }
 
@@ -746,11 +758,15 @@ flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
     WARN("symMulticastBind: cuMemSetAccess failed: %d", res);
     cuMemUnmap(mcVa, alignedSize);
     cuMemAddressFree(mcVa, alignedSize);
+    if (imported)
+      cuMemRelease(cuMcHandle);
     return flagcxUnhandledDeviceError;
   }
 
   *mcBase = (void *)mcVa;
   *mcMapSize = alignedSize;
+  if (imported)
+    cuMemRelease(cuMcHandle);
   return flagcxSuccess;
 }
 
@@ -792,7 +808,8 @@ flagcxResult_t cudaAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t cudaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t cudaAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t cudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,

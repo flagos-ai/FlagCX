@@ -195,6 +195,9 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
   if (res == flagcxSuccess) {
     (*win)->base = ncclWin;
     (*win)->winFlags = winFlags;
+  } else {
+    free(*win);
+    *win = NULL;
   }
   return res;
 #else

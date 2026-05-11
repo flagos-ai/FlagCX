@@ -338,7 +338,7 @@ flagcxResult_t flagcxOneSideRegister(flagcxHeteroComm_t heteroComm, void *buff,
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
       heteroComm->netAdaptor->regMr == NULL) {
-    return flagcxSuccess;
+    return flagcxNotSupported;
   }
 
   // Check for duplicate registration of the same buffer within this comm
@@ -1095,13 +1095,15 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags) {
+  if (win == nullptr) {
+    return flagcxInvalidArgument;
+  }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
-    if (win == nullptr) {
-      return flagcxInvalidArgument;
-    }
+    bool ownedWin = false;
     if (*win == NULL) {
       FLAGCXCHECK(flagcxCalloc(win, 1));
+      ownedWin = true;
     }
     flagcxResult_t res =
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
@@ -1115,9 +1117,16 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     WARN("flagcxCommWindowRegister: backend returned %d, window not available, "
          "falling back",
          res);
-    // Free the pre-allocated window since vendor path failed
-    free(*win);
-    *win = nullptr;
+    // Free any vendorBase the backend may have partially allocated
+    if ((*win)->vendorBase != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+          comm->homoComm, (*win)->vendorBase);
+      (*win)->vendorBase = nullptr;
+    }
+    if (ownedWin) {
+      free(*win);
+      *win = nullptr;
+    }
   }
   // Non-homo or homo-fallback: use symmetric heap path
   if ((winFlags & FLAGCX_WIN_COLL_SYMMETRIC) && comm->heteroComm != nullptr) {
@@ -1133,22 +1142,20 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
     return flagcxSuccess;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  // The register path falls through to symWindowRegister when:
-  //   (a) non-homo path, or (b) homo backend returned not-supported.
-  // In both cases the window was created by sym_heap, so deregister there.
-  // On the homo-only path where the backend succeeded, deregister via backend.
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    // Try the homo backend. If it owns this window it will succeed.
-    // If it doesn't recognise it (e.g. sym fallback), it returns an error.
+  // Use isSymmetricDefault flag to determine ownership:
+  // - If backend owns it (vendorBase != nullptr && !isSymmetricDefault),
+  //   deregister via backend only
+  // - Otherwise (hetero path or homo fallback), deregister via sym_heap
+  if (useHomoComm(comm) && !useHeteroComm() && win->vendorBase != nullptr &&
+      !win->isSymmetricDefault) {
+    // Backend owns this window — deregister via backend only
     flagcxResult_t res =
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
             comm->homoComm, win->vendorBase);
-    if (res == flagcxSuccess) {
-      free(win);
-      return flagcxSuccess;
-    }
-    // Backend didn't own it — fall through to sym path
+    free(win);
+    return res; // propagate real errors, don't fall through
   }
+  // Sym-heap owns this window (hetero path, or homo fallback)
   return flagcxSymWindowDeregister(comm->heteroComm, win);
 }
 

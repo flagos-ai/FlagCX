@@ -63,12 +63,12 @@ struct flagcxIpcMemHandle {
 };
 
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
-struct flagcxWindow {
+struct flagcxInnerWindow {
   ncclWindow_t base;
   int winFlags;
 };
 #else
-struct flagcxWindow {
+struct flagcxInnerWindow {
   int winFlags;
 };
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)

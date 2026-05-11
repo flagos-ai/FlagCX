@@ -403,7 +403,8 @@ flagcxResult_t kunlunxinAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t kunlunxinAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t kunlunxinAdaptorSymMulticastCreate(size_t, int, const int *,
+                                                  void **, int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t kunlunxinAdaptorSymMulticastBind(void *, int, void *, size_t,
@@ -412,6 +413,9 @@ flagcxResult_t kunlunxinAdaptorSymMulticastBind(void *, int, void *, size_t,
 }
 flagcxResult_t kunlunxinAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t kunlunxinAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor kunlunAdaptor {
@@ -478,5 +482,6 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunxinAdaptorSymFlatMap, kunlunxinAdaptorSymFlatUnmap,
       kunlunxinAdaptorSymMulticastSupported, kunlunxinAdaptorSymMulticastCreate,
       kunlunxinAdaptorSymMulticastBind, kunlunxinAdaptorSymMulticastTeardown,
+      kunlunxinAdaptorSymMulticastFree,
 };
 #endif // USE_KUNLUNXIN_ADAPTOR

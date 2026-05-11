@@ -349,7 +349,8 @@ flagcxResult_t musaAdaptorSymMulticastSupported(int *supported) {
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t musaAdaptorSymMulticastCreate(size_t, int, void **, int *) {
+flagcxResult_t musaAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
   return flagcxNotSupported;
 }
 flagcxResult_t musaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
@@ -358,6 +359,9 @@ flagcxResult_t musaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
 }
 flagcxResult_t musaAdaptorSymMulticastTeardown(void *, size_t) {
   return flagcxSuccess;
+}
+flagcxResult_t musaAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
 }
 
 struct flagcxDeviceAdaptor musaAdaptor {
@@ -420,7 +424,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorSymPhysAlloc, musaAdaptorSymPhysFree, musaAdaptorSymFlatMap,
       musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSupported,
       musaAdaptorSymMulticastCreate, musaAdaptorSymMulticastBind,
-      musaAdaptorSymMulticastTeardown,
+      musaAdaptorSymMulticastTeardown, musaAdaptorSymMulticastFree,
 };
 
 #endif // USE_MUSA_ADAPTOR
