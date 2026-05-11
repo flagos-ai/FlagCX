@@ -3,6 +3,7 @@
  ************************************************************************/
 
 #include "adaptor_plugin_load.h"
+#include "alloc.h"
 #include "core.h"
 #include "flagcx_net_adaptor.h"
 #include "net.h"
@@ -15,6 +16,7 @@
 static void *netPluginDlHandle = NULL;
 static int netPluginRefCount = 0;
 static std::mutex netPluginMutex;
+static struct flagcxNetAdaptor *upgradedNetPluginAdaptor = NULL;
 
 extern struct flagcxNetAdaptor *flagcxNetAdaptors[3];
 
@@ -35,12 +37,9 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     return flagcxSuccess;
   }
 
-  // Future: When v2 is introduced, try dlsym("flagcxNetAdaptorPlugin_v2")
-  // first, then fall back to "flagcxNetAdaptorPlugin_v1" and wrap in a v1→v2
-  // shim.
-  struct flagcxNetAdaptor *plugin = (struct flagcxNetAdaptor *)dlsym(
+  struct flagcxNetAdaptor_v1 *pluginV1 = (struct flagcxNetAdaptor_v1 *)dlsym(
       netPluginDlHandle, "flagcxNetAdaptorPlugin_v1");
-  if (plugin == NULL) {
+  if (pluginV1 == NULL) {
     WARN("ADAPTOR/Plugin: Failed to find symbol 'flagcxNetAdaptorPlugin_v1' in "
          "'%s': %s",
          envValue, dlerror());
@@ -48,6 +47,15 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     netPluginDlHandle = NULL;
     return flagcxSuccess;
   }
+
+  if (flagcxCalloc(&upgradedNetPluginAdaptor, 1) != flagcxSuccess) {
+    WARN("ADAPTOR/Plugin: Failed to allocate upgraded net adaptor struct");
+    flagcxAdaptorClosePluginLib(netPluginDlHandle);
+    netPluginDlHandle = NULL;
+    return flagcxSystemError;
+  }
+  flagcxNetAdaptorUpgrade(pluginV1, upgradedNetPluginAdaptor);
+  struct flagcxNetAdaptor *plugin = upgradedNetPluginAdaptor;
 
   // Validate function pointers that all built-in net adaptors implement.
   // Fields left NULL in some adaptors (regMrDmaBuf, iput, iget, iputSignal,
@@ -62,6 +70,8 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Net adaptor plugin '%s' is missing required function "
          "pointers",
          envValue);
+    free(upgradedNetPluginAdaptor);
+    upgradedNetPluginAdaptor = NULL;
     flagcxAdaptorClosePluginLib(netPluginDlHandle);
     netPluginDlHandle = NULL;
     return flagcxSuccess;
@@ -76,6 +86,10 @@ static flagcxResult_t flagcxNetAdaptorPluginLoad() {
 static flagcxResult_t flagcxNetAdaptorPluginUnload() {
   flagcxNetAdaptors[0] = nullptr;
   flagcxNetStates[0] = flagcxNetStateInit;
+  if (upgradedNetPluginAdaptor != NULL) {
+    free(upgradedNetPluginAdaptor);
+    upgradedNetPluginAdaptor = NULL;
+  }
   flagcxAdaptorClosePluginLib(netPluginDlHandle);
   netPluginDlHandle = NULL;
   return flagcxSuccess;

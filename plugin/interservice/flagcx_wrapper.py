@@ -287,6 +287,22 @@ class FLAGCXLibrary:
             ctypes.c_int, ctypes.c_int
         ]),
 
+        Function("flagcxPut", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_int,
+            ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
+            ctypes.c_int, ctypes.c_int
+        ]),
+
+        Function("flagcxBatchPut", flagcxResult_t, [
+            flagcxComm_t, ctypes.c_int,
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_size_t,
+        ]),
+
         Function("flagcxPutSignal", flagcxResult_t, [
             flagcxComm_t, ctypes.c_int,
             ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t,
@@ -503,6 +519,36 @@ class FLAGCXLibrary:
         self.FLAGCX_CHECK(self._funcs["flagcxGet"](
             comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
             ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
+
+    def flagcxPut(self, comm: flagcxComm_t, peer: int,
+                  srcOffset: int, dstOffset: int, size: int,
+                  srcMrIdx: int, dstMrIdx: int) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxPut"](
+            comm, peer, ctypes.c_size_t(srcOffset), ctypes.c_size_t(dstOffset),
+            ctypes.c_size_t(size), srcMrIdx, dstMrIdx))
+
+    def flagcxBatchPut(self, comm: flagcxComm_t, peer: int,
+                       srcOffsets: list[int], dstOffsets: list[int],
+                       sizes: list[int], srcMrIdxs: list[int],
+                       dstMrIdxs: list[int]) -> None:
+        count = len(sizes)
+        if count == 0:
+            return
+        if (
+            len(srcOffsets) != count or len(dstOffsets) != count
+            or len(srcMrIdxs) != count or len(dstMrIdxs) != count
+        ):
+            raise ValueError("flagcxBatchPut argument lengths do not match")
+        size_array = ctypes.c_size_t * count
+        int_array = ctypes.c_int * count
+        self.FLAGCX_CHECK(self._funcs["flagcxBatchPut"](
+            comm, peer,
+            size_array(*srcOffsets),
+            size_array(*dstOffsets),
+            size_array(*sizes),
+            int_array(*srcMrIdxs),
+            int_array(*dstMrIdxs),
+            ctypes.c_size_t(count)))
 
     def flagcxPutSignal(self, comm: flagcxComm_t, peer: int,
                         srcOffset: int, dstOffset: int, size: int,

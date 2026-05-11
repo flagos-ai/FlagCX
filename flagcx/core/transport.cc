@@ -41,20 +41,10 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           INFO(FLAGCX_P2P,
                "P2P Recv setup: rank %d <- peer %d channel %d (same node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(flagcxCalloc(&conn->proxyConn.connection, 1));
+          FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_P2P, 0, comm->rank,
+                                         &conn->proxyConn));
           struct flagcxP2pResources *resources;
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
-          conn->proxyConn.connection->transport = TRANSPORT_P2P;
-          conn->proxyConn.connection->send = 0;
-          conn->proxyConn.connection->cudaDev = comm->cudaDev;
-          conn->proxyConn.connection->sameProcess =
-              (comm->peerInfo != NULL &&
-               comm->peerInfo[peer].hostHash ==
-                   comm->peerInfo[comm->rank].hostHash &&
-               comm->peerInfo[peer].pidHash ==
-                   comm->peerInfo[comm->rank].pidHash)
-                  ? 1
-                  : 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
             struct flagcxP2pRequest req = {(size_t(flagcxP2pBufferSize)), 0};
@@ -64,8 +54,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             FLAGCXCHECK(flagcxProxyCallBlocking(
                 comm, &conn->proxyConn, flagcxProxyMsgSetup, &req, sizeof(req),
                 &connectInfo.p2pBuff, sizeof(connectInfo.p2pBuff)));
-            // Use the buffer directly without offset， it's equal to nccl
-            // p2pMap function
+            // Use the buffer directly without offset
             char *recvBuffer = (char *)connectInfo.p2pBuff.directPtr;
             conn->conn.buffs[FLAGCX_PROTO_SIMPLE] = recvBuffer;
             FLAGCXCHECK(bootstrapSend(comm->bootstrap, peer, 2000 + c,
@@ -75,11 +64,10 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           INFO(FLAGCX_NET,
                "NET Recv setup: rank %d <- peer %d channel %d (different node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(flagcxCalloc(&conn->proxyConn.connection, 1));
+          FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_NET, 0, comm->rank,
+                                         &conn->proxyConn));
           struct recvNetResources *resources;
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
-          conn->proxyConn.connection->transport = TRANSPORT_NET;
-          conn->proxyConn.connection->send = 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
@@ -129,20 +117,10 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           INFO(FLAGCX_P2P,
                "P2P Send setup: rank %d -> peer %d channel %d (same node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(flagcxCalloc(&conn->proxyConn.connection, 1));
+          FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_P2P, 1, comm->rank,
+                                         &conn->proxyConn));
           struct flagcxP2pResources *resources;
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
-          conn->proxyConn.connection->transport = TRANSPORT_P2P;
-          conn->proxyConn.connection->send = 1;
-          conn->proxyConn.connection->cudaDev = comm->cudaDev;
-          conn->proxyConn.connection->sameProcess =
-              (comm->peerInfo != NULL &&
-               comm->peerInfo[peer].hostHash ==
-                   comm->peerInfo[comm->rank].hostHash &&
-               comm->peerInfo[peer].pidHash ==
-                   comm->peerInfo[comm->rank].pidHash)
-                  ? 1
-                  : 0;
           conn->proxyConn.connection->transportResources = (void *)resources;
           if (peer != comm->rank) {
             struct flagcxP2pConnectInfo connectInfo = {0};
@@ -170,11 +148,10 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           INFO(FLAGCX_NET,
                "NET Send setup: rank %d -> peer %d channel %d (different node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(flagcxCalloc(&conn->proxyConn.connection, 1));
+          FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_NET, 1, comm->rank,
+                                         &conn->proxyConn));
           struct sendNetResources *resources;
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
-          conn->proxyConn.connection->send = 1;
-          conn->proxyConn.connection->transport = TRANSPORT_NET;
           conn->proxyConn.connection->transportResources = (void *)resources;
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;

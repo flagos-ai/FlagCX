@@ -77,6 +77,9 @@ void FlagCXCollTest::TearDown() {
 
   flagcxHandleFree(handler);
   FlagCXTest::TearDown();
+
+  // Synchronize all ranks before the next test to prevent bootstrap hangs
+  MPI_Barrier(MPI_COMM_WORLD);
 }
 
 // ---------- main ----------
