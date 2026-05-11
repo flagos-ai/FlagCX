@@ -560,18 +560,15 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
   if (!check_same_size(outputTensorsTmp)) {
     // Implement allgather with different sizes using broadcast
     const auto num_reduces = outputTensorsTmp.size();
-    startCoalescing();
     for (const int64_t i : c10::irange(static_cast<int64_t>(num_reduces))) {
       auto &output = outputTensorsTmp[i];
       auto &input = (i == rank_) ? inputTensor : output;
       // Perform out-of-place broadcast from rank i
       C10D_FLAGCX_CHECK(flagcxBroadcast(input.data_ptr(), output.data_ptr(),
-                                        output.numel(), flagcxDataType, i,
+                                        input.numel(), flagcxDataType, i,
                                         handler_->comm, stream),
                         std::nullopt);
     }
-    auto work = endCoalescing();
-    return work;
   } else {
     // Flatten a vector of tensors into a single, stacked tensor.
     at::Tensor outputFlattened = newLikeFlat(outputTensorsTmp);

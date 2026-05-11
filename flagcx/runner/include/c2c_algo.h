@@ -6,6 +6,8 @@
 #include "flagcx_hetero.h"
 #include "group.h"
 #include "param.h"
+#include <cstdint>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <map>
@@ -18,11 +20,33 @@ typedef enum {
   flagcxAlgoInput = 2
 } flagcxAlgorithm_t;
 
-size_t getC2cCommPatternHash(size_t count, size_t rootClusterId,
-                             flagcxCommOp_t commOp, flagcxRedOp_t redOp,
-                             flagcxComm_t comm);
+struct C2cPatternKey {
+  size_t count;
+  size_t rootClusterId;
+  flagcxCommOp_t commOp;
+  flagcxRedOp_t redOp;
+  uintptr_t comm;
 
-template <typename Key, typename Value>
+  bool operator==(const C2cPatternKey &other) const {
+    return count == other.count && rootClusterId == other.rootClusterId &&
+           commOp == other.commOp && redOp == other.redOp && comm == other.comm;
+  }
+};
+
+struct C2cPatternKeyHash {
+  size_t operator()(const C2cPatternKey &k) const {
+    size_t h = 0;
+    h ^= std::hash<size_t>()(k.count) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^=
+        std::hash<size_t>()(k.rootClusterId) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>()(k.commOp) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>()(k.redOp) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uintptr_t>()(k.comm) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+template <typename Key, typename Value, typename Hash = std::hash<Key>>
 class flagcxLRUCache {
 public:
   flagcxLRUCache(size_t capacity) : capacity_(capacity) {}
@@ -60,7 +84,8 @@ public:
 private:
   size_t capacity_;
   std::list<std::pair<Key, Value>> cacheItems_;
-  std::unordered_map<Key, typename std::list<std::pair<Key, Value>>::iterator>
+  std::unordered_map<Key, typename std::list<std::pair<Key, Value>>::iterator,
+                     Hash>
       cacheMap_;
 };
 

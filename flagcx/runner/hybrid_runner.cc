@@ -6,7 +6,7 @@
 #include "runner.h"
 
 #define FLAGCX_CACHE_CAPACITY 16
-static flagcxLRUCache<size_t, flagcxC2cPlanner>
+static flagcxLRUCache<C2cPatternKey, flagcxC2cPlanner, C2cPatternKeyHash>
     planCache(FLAGCX_CACHE_CAPACITY);
 
 flagcxResult_t hybridRunnerReduce(const void *sendbuff, void *recvbuff,
@@ -15,28 +15,24 @@ flagcxResult_t hybridRunnerReduce(const void *sendbuff, void *recvbuff,
                                   flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(count, comm->clusterIds[root],
-                                         flagcxCommOpReduce, op, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {count, (size_t)comm->clusterIds[root],
+                       flagcxCommOpReduce, op, (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClsuterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, comm->clusterIds[root], flagcxCommOpReduce, op,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner =
         flagcxC2cPlanner(count, count, root, comm, flagcxCommOpReduce, op);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, comm->clusterIds[root], flagcxCommOpReduce, op,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, root, stream));
   return flagcxSuccess;
@@ -48,28 +44,22 @@ flagcxResult_t hybridRunnerGather(const void *sendbuff, void *recvbuff,
                                   flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(count, root, flagcxCommOpGather,
-                                         flagcxRedNoOp, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {count, (size_t)root, flagcxCommOpGather, flagcxRedNoOp,
+                       (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootRank, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, root, flagcxCommOpGather, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootRank, commOp, redOp, comm) = (%ld, %ld, %d, %d, %ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner = flagcxC2cPlanner(count, count * comm->nranks, root, comm,
                                flagcxCommOpGather, flagcxRedNoOp);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootRank, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, root, flagcxCommOpGather, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootRank, commOp, redOp, comm) = (%ld, %ld, %d, %d, %ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, root, stream));
   return flagcxSuccess;
@@ -81,28 +71,22 @@ flagcxResult_t hybridRunnerScatter(const void *sendbuff, void *recvbuff,
                                    flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(count, root, flagcxCommOpScatter,
-                                         flagcxRedNoOp, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {count, (size_t)root, flagcxCommOpScatter, flagcxRedNoOp,
+                       (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootRank, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, root, flagcxCommOpScatter, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootRank, commOp, redOp, comm) = (%ld, %ld, %d, %d, %ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner = flagcxC2cPlanner(count * comm->nranks, count, root, comm,
                                flagcxCommOpScatter, flagcxRedNoOp);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootRank, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, root, flagcxCommOpScatter, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootRank, commOp, redOp, comm) = (%ld, %ld, %d, %d, %ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, root, stream));
   return flagcxSuccess;
@@ -114,29 +98,24 @@ flagcxResult_t hybridRunnerBroadcast(const void *sendbuff, void *recvbuff,
                                      flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue =
-      getC2cCommPatternHash(count, comm->clusterIds[root],
-                            flagcxCommOpBroadcast, flagcxRedNoOp, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {count, (size_t)comm->clusterIds[root],
+                       flagcxCommOpBroadcast, flagcxRedNoOp, (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, comm->clusterIds[root], flagcxCommOpBroadcast, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner = flagcxC2cPlanner(count, count, root, comm, flagcxCommOpBroadcast,
                                flagcxRedNoOp);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, comm->clusterIds[root], flagcxCommOpBroadcast, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, root, stream));
   return flagcxSuccess;
@@ -148,33 +127,24 @@ flagcxResult_t hybridRunnerAllReduce(const void *sendbuff, void *recvbuff,
                                      flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue =
-      getC2cCommPatternHash(count, comm->nclusters, flagcxCommOpAllReduce, op,
-                            comm); // use nclusters as rootClusterId for hash
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {count, (size_t)comm->nclusters, flagcxCommOpAllReduce,
+                       op, (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, comm->nclusters, flagcxCommOpAllReduce, op,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner =
         flagcxC2cPlanner(count, count, -1, comm, flagcxCommOpAllReduce, op);
-    planCache.put(hashValue, planner);
-    // TODO: add estimator part
-    // flagcxAlgoTimeEstimator estimator(planner, datatype);
-    // float time = 0.0;
-    // FLAGCXCHECK(estimator.getAlgoTime(&time));
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, comm->nclusters, flagcxCommOpAllReduce, op,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, -1, stream));
   return flagcxSuccess;
@@ -187,29 +157,24 @@ flagcxResult_t hybridRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                                          flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(
-      recvcount, comm->nclusters, flagcxCommOpReduceScatter, op,
-      comm); // use nclusters as rootClusterId for hash
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {recvcount, (size_t)comm->nclusters,
+                       flagcxCommOpReduceScatter, op, (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         recvcount, comm->nclusters, flagcxCommOpReduceScatter, op,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner = flagcxC2cPlanner(comm->nranks * recvcount, recvcount, -1, comm,
                                flagcxCommOpReduceScatter, op);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         recvcount, comm->nclusters, flagcxCommOpReduceScatter, op,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, -1, stream));
   return flagcxSuccess;
@@ -221,30 +186,24 @@ flagcxResult_t hybridRunnerAllGather(const void *sendbuff, void *recvbuff,
                                      flagcxComm_t comm, flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(
-      sendcount, comm->nclusters,
-      flagcxCommOpAllGather, // use nclusters as rootClusterId for hash
-      flagcxRedNoOp, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {sendcount, (size_t)comm->nclusters,
+                       flagcxCommOpAllGather, flagcxRedNoOp, (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         sendcount, comm->nclusters, flagcxCommOpAllGather, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner = flagcxC2cPlanner(sendcount, sendcount * comm->nranks, -1, comm,
                                flagcxCommOpAllGather, flagcxRedNoOp);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         sendcount, comm->nclusters, flagcxCommOpAllGather, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, -1, stream));
   return flagcxSuccess;
@@ -255,29 +214,24 @@ flagcxResult_t hybridRunnerAlltoAll(const void *sendbuff, void *recvbuff,
                                     flagcxComm_t comm, flagcxStream_t stream) {
   // Construct flagcxC2cPlanner and find corresponding strategy
   flagcxC2cPlanner planner;
-  auto hashValue =
-      getC2cCommPatternHash(count, 1, // use 1 as rootClusterId for hash
-                            flagcxCommOpAlltoAll, flagcxRedNoOp, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {count, 1, flagcxCommOpAlltoAll, flagcxRedNoOp,
+                       (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, 1, flagcxCommOpAlltoAll, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner = flagcxC2cPlanner(count, count, -1, comm, flagcxCommOpAlltoAll,
                                flagcxRedNoOp);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         count, 1, flagcxCommOpAlltoAll, flagcxRedNoOp,
-         (size_t)((uintptr_t)comm), hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, -1, stream));
   return flagcxSuccess;
@@ -289,29 +243,24 @@ flagcxResult_t hybridRunnerAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                      flagcxDataType_t datatype,
                                      flagcxComm_t comm, flagcxStream_t stream) {
   flagcxC2cPlanner planner;
-  auto hashValue = getC2cCommPatternHash(
-      1, 1, // use 1 both as count and rootClusterId for hash
-      flagcxCommOpAlltoAllv, flagcxRedNoOp, comm);
-  if (!planCache.get(hashValue, planner)) {
+  C2cPatternKey key = {1, 1, flagcxCommOpAlltoAllv, flagcxRedNoOp,
+                       (uintptr_t)comm};
+  if (!planCache.get(key, planner)) {
     INFO(FLAGCX_COLL,
          "No available plan is found, create a new one with "
          "communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%d, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         1, 1, flagcxCommOpAlltoAllv, flagcxRedNoOp, (size_t)((uintptr_t)comm),
-         hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
     planner =
         flagcxC2cPlanner(1, 1, -1, comm, flagcxCommOpAlltoAllv, flagcxRedNoOp);
-    planCache.put(hashValue, planner);
+    planCache.put(key, planner);
   } else {
     INFO(FLAGCX_COLL,
          "Found available plan with communication pattern "
-         "(count, rootClusterId, commOp, redOp, comm) = (%d, %d, %d, %d, "
-         "%ld), hashValue = "
-         "%ld",
-         1, 1, flagcxCommOpAlltoAllv, flagcxRedNoOp, (size_t)((uintptr_t)comm),
-         hashValue);
+         "(count, rootClusterId, commOp, redOp, comm) = (%ld, %ld, %d, %d, "
+         "%ld)",
+         key.count, key.rootClusterId, key.commOp, key.redOp, key.comm);
   }
   FLAGCXCHECK(planner.execute(sendbuff, recvbuff, datatype, -1, stream,
                               sendcounts, sdispls, recvcounts, rdispls));
