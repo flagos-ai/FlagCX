@@ -22,8 +22,8 @@
 /*  Constants                                                         */
 /* ------------------------------------------------------------------ */
 
-#define FLAGCX_P2P_MSG_SIZE      256
-#define FLAGCX_P2P_DESC_SIZE     64
+#define FLAGCX_P2P_MSG_SIZE 256
+#define FLAGCX_P2P_DESC_SIZE 64
 #define FLAGCX_P2P_IPC_INFO_SIZE 128
 
 /* ------------------------------------------------------------------ */
@@ -52,39 +52,39 @@ typedef uint64_t FlagcxP2pMr;
 /* ------------------------------------------------------------------ */
 
 struct FlagcxP2pRdmaDesc {
-    uint64_t addr;        /* Remote buffer virtual address            */
-    uint32_t size;        /* Buffer length in bytes                   */
-    uint32_t rkey;        /* Remote memory-region key (rkey)          */
-    uint32_t nmsgs;       /* Reserved: message count                  */
-    uint32_t rid;         /* Reserved: request id                     */
-    uint64_t idx;         /* Reserved: index                          */
-    char     padding[32]; /* Pad to 64 bytes                          */
+  uint64_t addr;    /* Remote buffer virtual address            */
+  uint32_t size;    /* Buffer length in bytes                   */
+  uint32_t rkey;    /* Remote memory-region key (rkey)          */
+  uint32_t nmsgs;   /* Reserved: message count                  */
+  uint32_t rid;     /* Reserved: request id                     */
+  uint64_t idx;     /* Reserved: index                          */
+  char padding[32]; /* Pad to 64 bytes                          */
 };
 static_assert(sizeof(FlagcxP2pRdmaDesc) == 64,
               "FlagcxP2pRdmaDesc must be 64 bytes");
 
 /* Serialization helpers (byte-level, endian-neutral on same arch). */
 
-inline void
-flagcxP2pSerializeRdmaDesc(const FlagcxP2pRdmaDesc &desc, char *buf) {
-    std::memcpy(buf + 0,  &desc.addr,    sizeof(uint64_t));
-    std::memcpy(buf + 8,  &desc.size,    sizeof(uint32_t));
-    std::memcpy(buf + 12, &desc.rkey,    sizeof(uint32_t));
-    std::memcpy(buf + 16, &desc.nmsgs,   sizeof(uint32_t));
-    std::memcpy(buf + 20, &desc.rid,     sizeof(uint32_t));
-    std::memcpy(buf + 24, &desc.idx,     sizeof(uint64_t));
-    std::memcpy(buf + 32, &desc.padding, sizeof(desc.padding));
+inline void flagcxP2pSerializeRdmaDesc(const FlagcxP2pRdmaDesc &desc,
+                                       char *buf) {
+  std::memcpy(buf + 0, &desc.addr, sizeof(uint64_t));
+  std::memcpy(buf + 8, &desc.size, sizeof(uint32_t));
+  std::memcpy(buf + 12, &desc.rkey, sizeof(uint32_t));
+  std::memcpy(buf + 16, &desc.nmsgs, sizeof(uint32_t));
+  std::memcpy(buf + 20, &desc.rid, sizeof(uint32_t));
+  std::memcpy(buf + 24, &desc.idx, sizeof(uint64_t));
+  std::memcpy(buf + 32, &desc.padding, sizeof(desc.padding));
 }
 
-inline void
-flagcxP2pDeserializeRdmaDesc(const char *buf, FlagcxP2pRdmaDesc *desc) {
-    std::memcpy(&desc->addr,    buf + 0,  sizeof(uint64_t));
-    std::memcpy(&desc->size,    buf + 8,  sizeof(uint32_t));
-    std::memcpy(&desc->rkey,    buf + 12, sizeof(uint32_t));
-    std::memcpy(&desc->nmsgs,   buf + 16, sizeof(uint32_t));
-    std::memcpy(&desc->rid,     buf + 20, sizeof(uint32_t));
-    std::memcpy(&desc->idx,     buf + 24, sizeof(uint64_t));
-    std::memcpy(desc->padding,  buf + 32, sizeof(desc->padding));
+inline void flagcxP2pDeserializeRdmaDesc(const char *buf,
+                                         FlagcxP2pRdmaDesc *desc) {
+  std::memcpy(&desc->addr, buf + 0, sizeof(uint64_t));
+  std::memcpy(&desc->size, buf + 8, sizeof(uint32_t));
+  std::memcpy(&desc->rkey, buf + 12, sizeof(uint32_t));
+  std::memcpy(&desc->nmsgs, buf + 16, sizeof(uint32_t));
+  std::memcpy(&desc->rid, buf + 20, sizeof(uint32_t));
+  std::memcpy(&desc->idx, buf + 24, sizeof(uint64_t));
+  std::memcpy(desc->padding, buf + 32, sizeof(desc->padding));
 }
 
 /* ------------------------------------------------------------------ */
@@ -92,12 +92,12 @@ flagcxP2pDeserializeRdmaDesc(const char *buf, FlagcxP2pRdmaDesc *desc) {
 /* ------------------------------------------------------------------ */
 
 struct FlagcxP2pNotifyMsg {
-    char name[FLAGCX_P2P_MSG_SIZE]; /* Sender agent name              */
-    char msg[FLAGCX_P2P_MSG_SIZE];  /* Payload (serialized)           */
+  char name[FLAGCX_P2P_MSG_SIZE]; /* Sender agent name              */
+  char msg[FLAGCX_P2P_MSG_SIZE];  /* Payload (serialized)           */
 };
 
 struct FlagcxP2pMd {
-    FlagcxP2pNotifyMsg notifyData;
+  FlagcxP2pNotifyMsg notifyData;
 };
 
 /* ================================================================== */
@@ -136,10 +136,8 @@ void flagcxP2pEngineStopAccept(FlagcxP2pEngine *engine);
  * @return              Connection handle, or NULL on failure.
  */
 FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
-                                      const char *ipAddr,
-                                      int remoteGpuIdx,
-                                      int remotePort,
-                                      bool sameProcess = false);
+                                      const char *ipAddr, int remoteGpuIdx,
+                                      int remotePort, bool sameProcess = false);
 
 /**
  * Start the listener/notification thread for a connection.
@@ -156,10 +154,8 @@ int flagcxP2pEngineStartListener(FlagcxP2pConn *conn);
  * @param remoteGpuIdx  Pointer to store the remote GPU index.
  * @return              Connection handle, or NULL on failure.
  */
-FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine,
-                                     char *ipAddrBuf,
-                                     size_t ipAddrBufLen,
-                                     int *remoteGpuIdx);
+FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
+                                     size_t ipAddrBufLen, int *remoteGpuIdx);
 
 /**
  * Destroy a connection and release its resources.
@@ -186,8 +182,8 @@ bool flagcxP2pEngineConnIsLocal(FlagcxP2pConn *conn);
  * @param mrId          [out] Memory region handle.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data,
-                       size_t size, FlagcxP2pMr &mrId);
+int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
+                       FlagcxP2pMr &mrId);
 
 /**
  * Deregister a memory region.
@@ -213,10 +209,8 @@ void flagcxP2pEngineMrDestroy(FlagcxP2pEngine *engine, FlagcxP2pMr mr);
  *                      (FLAGCX_P2P_DESC_SIZE bytes).
  * @return              0 on success, -1 on failure.
  */
-int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine,
-                               FlagcxP2pMr mr,
-                               const void *data, size_t size,
-                               char *descBuf);
+int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
+                               const void *data, size_t size, char *descBuf);
 
 /**
  * Update the remote address and size in an RDMA descriptor.
@@ -228,8 +222,8 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine,
  * @param size          New transfer size.
  * @return              0 on success, -1 on failure.
  */
-int flagcxP2pEngineUpdateDesc(FlagcxP2pRdmaDesc &desc,
-                              uint64_t remoteAddr, uint32_t size);
+int flagcxP2pEngineUpdateDesc(FlagcxP2pRdmaDesc &desc, uint64_t remoteAddr,
+                              uint32_t size);
 
 /* ================================================================== */
 /*  One-sided READ (RDMA GET)                                         */
@@ -245,9 +239,8 @@ int flagcxP2pEngineUpdateDesc(FlagcxP2pRdmaDesc &desc,
  * @param transferId    [out] Transfer ID for status polling.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr,
-                        const void *data, size_t size,
-                        FlagcxP2pRdmaDesc desc,
+int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
+                        size_t size, FlagcxP2pRdmaDesc desc,
                         uint64_t *transferId);
 
 /**
@@ -265,15 +258,13 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr,
  * @param ipcBufs       Optional: serialized IPC info for local transfers.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineReadVector(
-    FlagcxP2pConn *conn,
-    std::vector<FlagcxP2pMr> mrIds,
-    std::vector<void *> dstVec,
-    std::vector<size_t> sizeVec,
-    std::vector<FlagcxP2pRdmaDesc> descs,
-    int numIovs,
-    uint64_t *transferId,
-    std::vector<char *> ipcBufs = {});
+int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
+                              std::vector<FlagcxP2pMr> mrIds,
+                              std::vector<void *> dstVec,
+                              std::vector<size_t> sizeVec,
+                              std::vector<FlagcxP2pRdmaDesc> descs, int numIovs,
+                              uint64_t *transferId,
+                              std::vector<char *> ipcBufs = {});
 
 /* ================================================================== */
 /*  One-sided WRITE (RDMA PUT)                                        */
@@ -289,9 +280,8 @@ int flagcxP2pEngineReadVector(
  * @param transferId    [out] Transfer ID for status polling.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr,
-                         const void *data, size_t size,
-                         FlagcxP2pRdmaDesc desc,
+int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
+                         size_t size, FlagcxP2pRdmaDesc desc,
                          uint64_t *transferId);
 
 /**
@@ -309,15 +299,13 @@ int flagcxP2pEngineWrite(FlagcxP2pConn *conn, FlagcxP2pMr mr,
  * @param ipcBufs       Optional: serialized IPC info for local transfers.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineWriteVector(
-    FlagcxP2pConn *conn,
-    std::vector<FlagcxP2pMr> mrIds,
-    std::vector<void *> dstVec,
-    std::vector<size_t> sizeVec,
-    std::vector<FlagcxP2pRdmaDesc> descs,
-    int numIovs,
-    uint64_t *transferId,
-    std::vector<char *> ipcBufs = {});
+int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
+                               std::vector<FlagcxP2pMr> mrIds,
+                               std::vector<void *> dstVec,
+                               std::vector<size_t> sizeVec,
+                               std::vector<FlagcxP2pRdmaDesc> descs,
+                               int numIovs, uint64_t *transferId,
+                               std::vector<char *> ipcBufs = {});
 
 /* ================================================================== */
 /*  Two-sided send / recv                                             */
@@ -332,9 +320,8 @@ int flagcxP2pEngineWriteVector(
  * @param transferId    [out] Transfer ID for status polling.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineSend(FlagcxP2pConn *conn, FlagcxP2pMr mr,
-                        const void *data, size_t size,
-                        uint64_t *transferId);
+int flagcxP2pEngineSend(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
+                        size_t size, uint64_t *transferId);
 
 /**
  * Vectored send (non-blocking).
@@ -346,13 +333,11 @@ int flagcxP2pEngineSend(FlagcxP2pConn *conn, FlagcxP2pMr mr,
  * @param transferId    [out] Transfer ID for status polling.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineSendVector(
-    FlagcxP2pConn *conn,
-    std::vector<FlagcxP2pMr> mrIds,
-    std::vector<const void *> srcVec,
-    std::vector<size_t> sizeVec,
-    int numIovs,
-    uint64_t *transferId);
+int flagcxP2pEngineSendVector(FlagcxP2pConn *conn,
+                              std::vector<FlagcxP2pMr> mrIds,
+                              std::vector<const void *> srcVec,
+                              std::vector<size_t> sizeVec, int numIovs,
+                              uint64_t *transferId);
 
 /**
  * Receive data from a peer (blocking).
@@ -362,8 +347,8 @@ int flagcxP2pEngineSendVector(
  * @param maxSize       Maximum number of bytes to receive.
  * @return              0 on success, non-zero on failure.
  */
-int flagcxP2pEngineRecv(FlagcxP2pConn *conn, FlagcxP2pMr mr,
-                        void *data, size_t maxSize);
+int flagcxP2pEngineRecv(FlagcxP2pConn *conn, FlagcxP2pMr mr, void *data,
+                        size_t maxSize);
 
 /* ================================================================== */
 /*  Transfer status                                                   */
@@ -424,9 +409,8 @@ int flagcxP2pEngineSendNotif(FlagcxP2pConn *conn,
  * @param hasIpc        [out] True if valid IPC info exists (GPU memory).
  * @return              0 on success, -1 on failure.
  */
-int flagcxP2pEngineGetIpcInfo(FlagcxP2pEngine *engine,
-                              uintptr_t addr, char *ipcBuf,
-                              bool *hasIpc);
+int flagcxP2pEngineGetIpcInfo(FlagcxP2pEngine *engine, uintptr_t addr,
+                              char *ipcBuf, bool *hasIpc);
 
 /**
  * Update offset and size in a serialized IPC info buffer to point at

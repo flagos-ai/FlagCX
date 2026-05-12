@@ -87,7 +87,10 @@ public:
 
   void *get() const { return ptr; }
 
-  template <typename T> T *as() const { return static_cast<T *>(ptr); }
+  template <typename T>
+  T *as() const {
+    return static_cast<T *>(ptr);
+  }
 
   void reset() {
     if (ptr == nullptr) {
@@ -170,9 +173,9 @@ bool parseEngineMetadata(const char *metadata, ParsedEngineMetadata *out) {
 
   const std::string text(metadata);
   const size_t firstSep = text.find('?');
-  const size_t secondSep =
-      firstSep == std::string::npos ? std::string::npos
-                                    : text.find('?', firstSep + 1);
+  const size_t secondSep = firstSep == std::string::npos
+                               ? std::string::npos
+                               : text.find('?', firstSep + 1);
   if (firstSep == std::string::npos || secondSep == std::string::npos) {
     return false;
   }
@@ -329,17 +332,16 @@ protected:
       char ipBuf[256] = {};
       int remoteGpuIdx = -1;
       AcceptResult result;
-      result.conn =
-          flagcxP2pEngineAccept(clientEngine, ipBuf, sizeof(ipBuf),
-                                &remoteGpuIdx);
+      result.conn = flagcxP2pEngineAccept(clientEngine, ipBuf, sizeof(ipBuf),
+                                          &remoteGpuIdx);
       result.remoteIp = ipBuf;
       result.remoteGpuIdx = remoteGpuIdx;
       return result;
     });
 
-    serverConn = flagcxP2pEngineConnect(serverEngine, parsed.ip.c_str(),
-                                        parsed.remoteGpuIdx, parsed.rdmaPort,
-                                        false);
+    serverConn =
+        flagcxP2pEngineConnect(serverEngine, parsed.ip.c_str(),
+                               parsed.remoteGpuIdx, parsed.rdmaPort, false);
     ASSERT_NE(serverConn, nullptr);
 
     ASSERT_EQ(acceptFuture.wait_for(std::chrono::seconds(10)),
@@ -446,16 +448,16 @@ TEST_F(FlagcxP2pEngineReadTest,
             0);
   remoteMrGuard.set(clientEngine, remoteMr);
 
-  ASSERT_EQ(flagcxP2pEngineReg(
-                serverEngine,
-                reinterpret_cast<uintptr_t>(localDestination.get()), bytes,
-                localMr),
-            0);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(serverEngine,
+                         reinterpret_cast<uintptr_t>(localDestination.get()),
+                         bytes, localMr),
+      0);
   localMrGuard.set(serverEngine, localMr);
 
   char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
-  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr, remoteSource.get(),
-                                       bytes, descBuf),
+  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr,
+                                       remoteSource.get(), bytes, descBuf),
             0);
 
   FlagcxP2pRdmaDesc remoteDesc;
@@ -465,7 +467,8 @@ TEST_F(FlagcxP2pEngineReadTest,
   ASSERT_EQ(flagcxP2pEngineRead(serverConn, localMr, localDestination.get(),
                                 bytes, remoteDesc, &transferId),
             0);
-  ASSERT_TRUE(pollTransferDone(serverConn, transferId, std::chrono::seconds(10)))
+  ASSERT_TRUE(
+      pollTransferDone(serverConn, transferId, std::chrono::seconds(10)))
       << "Timed out waiting for flagcxP2pEngineRead completion";
 
   copyDeviceToHost(kServerGpuIdx, serverStream, hostActual.get(),
@@ -475,7 +478,8 @@ TEST_F(FlagcxP2pEngineReadTest,
   }
 }
 
-TEST_F(FlagcxP2pEngineReadTest, ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
+TEST_F(FlagcxP2pEngineReadTest,
+       ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
   connectViaClientMetadata();
 
   constexpr size_t kSourceElems = 256;
@@ -531,16 +535,17 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow)
             0);
   remoteMrGuard.set(clientEngine, remoteMr);
 
-  ASSERT_EQ(flagcxP2pEngineReg(
-                serverEngine,
-                reinterpret_cast<uintptr_t>(localDestination.get()), destBytes,
-                localMr),
-            0);
+  ASSERT_EQ(
+      flagcxP2pEngineReg(serverEngine,
+                         reinterpret_cast<uintptr_t>(localDestination.get()),
+                         destBytes, localMr),
+      0);
   localMrGuard.set(serverEngine, localMr);
 
   char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
-  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr, remoteSource.get(),
-                                       sourceBytes, descBuf),
+  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr,
+                                       remoteSource.get(), sourceBytes,
+                                       descBuf),
             0);
 
   FlagcxP2pRdmaDesc remoteDesc;
@@ -553,12 +558,13 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow)
             0);
 
   uint64_t transferId = 0;
-  ASSERT_EQ(flagcxP2pEngineRead(serverConn, localMr,
-                                localDestination.as<uint32_t>() +
-                                    kDstOffsetElems,
-                                readBytes, remoteDesc, &transferId),
-            0);
-  ASSERT_TRUE(pollTransferDone(serverConn, transferId, std::chrono::seconds(10)))
+  ASSERT_EQ(
+      flagcxP2pEngineRead(serverConn, localMr,
+                          localDestination.as<uint32_t>() + kDstOffsetElems,
+                          readBytes, remoteDesc, &transferId),
+      0);
+  ASSERT_TRUE(
+      pollTransferDone(serverConn, transferId, std::chrono::seconds(10)))
       << "Timed out waiting for retargeted flagcxP2pEngineRead completion";
 
   copyDeviceToHost(kServerGpuIdx, serverStream, hostActualDestination.get(),
