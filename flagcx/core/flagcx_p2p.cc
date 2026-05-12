@@ -21,7 +21,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <poll.h>
+#include <pthread.h>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -204,8 +204,8 @@ struct AsyncTransferTask {
 
 struct AsyncWorker {
   std::thread thread;
-  std::mutex mutex;
-  std::condition_variable cv;
+  pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+  pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
   std::deque<std::shared_ptr<AsyncTransferTask>> queue;
   std::atomic<bool> stop{false};
 };
@@ -219,16 +219,17 @@ static FlagcxP2pCommView *getCommView(void *comm) {
 static void asyncWorkerFunc() {
   while (true) {
     std::shared_ptr<AsyncTransferTask> task;
-    {
-      std::unique_lock<std::mutex> lock(gAsyncWorker.mutex);
-      gAsyncWorker.cv.wait(lock, [] {
-        return !gAsyncWorker.queue.empty() || gAsyncWorker.stop.load();
-      });
-      if (gAsyncWorker.stop.load() && gAsyncWorker.queue.empty())
-        return;
-      task = gAsyncWorker.queue.front();
-      gAsyncWorker.queue.pop_front();
+    pthread_mutex_lock(&gAsyncWorker.mutex);
+    while (gAsyncWorker.queue.empty() && !gAsyncWorker.stop.load()) {
+      pthread_cond_wait(&gAsyncWorker.cv, &gAsyncWorker.mutex);
     }
+    if (gAsyncWorker.stop.load() && gAsyncWorker.queue.empty()) {
+      pthread_mutex_unlock(&gAsyncWorker.mutex);
+      return;
+    }
+    task = gAsyncWorker.queue.front();
+    gAsyncWorker.queue.pop_front();
+    pthread_mutex_unlock(&gAsyncWorker.mutex);
 
     FlagcxP2pConn *conn = task->conn;
     struct flagcxNetAdaptor *adaptor = conn->engine->adaptor;
@@ -346,7 +347,7 @@ static void ensureAsyncWorkerStarted() {
 static void stopAsyncWorker() {
   std::lock_guard<std::mutex> lock(gAsyncWorkerLifecycleMutex);
   gAsyncWorker.stop.store(true);
-  gAsyncWorker.cv.notify_one();
+  pthread_cond_broadcast(&gAsyncWorker.cv);
   if (gAsyncWorker.thread.joinable()) {
     gAsyncWorker.thread.join();
   }
@@ -1493,10 +1494,11 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
   }();
 
   {
-    std::lock_guard<std::mutex> lock(gAsyncWorker.mutex);
+    pthread_mutex_lock(&gAsyncWorker.mutex);
     gAsyncWorker.queue.push_back(task);
+    pthread_mutex_unlock(&gAsyncWorker.mutex);
   }
-  gAsyncWorker.cv.notify_one();
+  pthread_cond_signal(&gAsyncWorker.cv);
 
   *transferId = xferId;
   return 0;
@@ -1606,10 +1608,11 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
   }();
 
   {
-    std::lock_guard<std::mutex> lock(gAsyncWorker.mutex);
+    pthread_mutex_lock(&gAsyncWorker.mutex);
     gAsyncWorker.queue.push_back(task);
+    pthread_mutex_unlock(&gAsyncWorker.mutex);
   }
-  gAsyncWorker.cv.notify_one();
+  pthread_cond_signal(&gAsyncWorker.cv);
 
   *transferId = xferId;
   return 0;
