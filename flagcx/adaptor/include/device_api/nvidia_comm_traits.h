@@ -21,6 +21,7 @@
 #ifndef __CUDACC__
 #include "flagcx.h"
 #include "nvidia_adaptor.h"
+#include "sym_heap.h"
 #endif
 
 // ============================================================

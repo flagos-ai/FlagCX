@@ -25,7 +25,8 @@ struct flagcxOneSideHandleInfo {
   int nRanks;           // number of ranks (for cleanup iteration)
 };
 
-flagcxResult_t flagcxOneSideRegister(flagcxHeteroComm_t comm, void *buff,
-                                     size_t size);
+// Internal implementation used by sym_heap and flagcxCommRegister
+flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
+                                             void *buff, size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

@@ -114,20 +114,14 @@ typedef struct flagcxStream *flagcxStream_t;
 typedef struct flagcxEvent *flagcxEvent_t;
 /* Opaque handle to flagcxIpcMemHandle */
 typedef struct flagcxIpcMemHandle *flagcxIpcMemHandle_t;
-/* Forward-declare inner window (defined in nvidia_adaptor.h etc.) */
+/* Forward-declare inner window (defined in device adaptor header files) */
 struct flagcxInnerWindow;
 typedef struct flagcxInnerWindow *flagcxInnerWindow_t;
 /* Forward-declare symmetric window (defined in sym_heap.h) */
 struct flagcxSymWindow;
 typedef struct flagcxSymWindow *flagcxSymWindow_t;
-
-/* Window handle — unified across vendor and default paths */
-struct flagcxWindow {
-  flagcxInnerWindow_t vendorBase; // vendor-specific window (NULL if no vendor)
-  flagcxSymWindow_t
-      defaultBase;        // default symmetric-heap state (NULL on vendor path)
-  int isSymmetricDefault; // 1 if using default path, 0 if using vendor path
-};
+/* Opaque window handle (defined in sym_heap.h) */
+struct flagcxWindow;
 typedef struct flagcxWindow *flagcxWindow_t;
 
 /* Func(kernel) arguments */
@@ -212,6 +206,13 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         int winFlags);
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
                                           flagcxWindow_t win);
+
+/* Register a buffer for one-sided RDMA operations (Get/Put/PutValue).
+ * Creates MR handles for RDMA-capable net adaptors.
+ * Collective: ALL ranks in the communicator must call.
+ * Returns flagcxNotSupported if the net adaptor doesn't support RDMA. */
+flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
+                                     size_t size);
 
 /* Check if the FlagCX communicator type is homogeneous or heterogeneous */
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo);
@@ -457,8 +458,8 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 /*
  * One-sided RDMA operations
  *
- * These operations require prior registration via flagcxCommWindowRegister /
- * flagcxOneSideSignalRegister. They are only supported on heterogeneous
+ * These operations require prior registration via flagcxOneSideRegister or
+ * flagcxCommWindowRegister. They are only supported on heterogeneous
  * communicators backed by an RDMA-capable net adaptor.
  */
 

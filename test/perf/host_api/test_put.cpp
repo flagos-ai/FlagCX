@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
   fatal(res, "flagcxCommRegister (data) failed", proc);
 
   // Register data buffer for one-sided operations
-  res = flagcxOneSideRegister(comm->heteroComm, dataWindow, dataBytes);
+  res = flagcxOneSideRegister(comm, dataWindow, dataBytes);
   if (res == flagcxNotSupported) {
     if (proc == 0)
       printf("Skipping put benchmark: net adaptor does not support iput.\n");

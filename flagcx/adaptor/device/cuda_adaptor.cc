@@ -4,6 +4,7 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include <unistd.h>
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -628,6 +629,10 @@ flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
   *mcHandle = NULL;
   *shareableFd = -1;
 
+  CUmemGenericAllocationHandle handle = 0;
+  int fd = -1;
+  CUresult err;
+
   // Get multicast granularity and align size
   CUmulticastObjectProp mcProp = {};
   mcProp.numDevices = (unsigned int)nLocalDevices;
@@ -635,35 +640,52 @@ flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
   mcProp.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 
   size_t mcGran = 0;
-  DEVCHECK(cuMulticastGetGranularity(&mcGran, &mcProp,
-                                     CU_MULTICAST_GRANULARITY_RECOMMENDED));
+  err = cuMulticastGetGranularity(&mcGran, &mcProp,
+                                  CU_MULTICAST_GRANULARITY_RECOMMENDED);
+  if (err != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
   mcProp.size = ((allocSize + mcGran - 1) / mcGran) * mcGran;
 
-  CUmemGenericAllocationHandle handle;
-  DEVCHECK(cuMulticastCreate(&handle, &mcProp));
+  err = cuMulticastCreate(&handle, &mcProp);
+  if (err != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
 
   // Add all local devices using explicit ordinals
   for (int i = 0; i < nLocalDevices; i++) {
     CUdevice peerDev;
-    DEVCHECK(cuDeviceGet(&peerDev, localDeviceOrdinals[i]));
-    DEVCHECK(cuMulticastAddDevice(handle, peerDev));
+    err = cuDeviceGet(&peerDev, localDeviceOrdinals[i]);
+    if (err != CUDA_SUCCESS)
+      goto cleanup_handle;
+    err = cuMulticastAddDevice(handle, peerDev);
+    if (err != CUDA_SUCCESS)
+      goto cleanup_handle;
   }
 
   // Export as POSIX FD for sharing with peers
-  int fd = -1;
-  DEVCHECK(cuMemExportToShareableHandle(
-      &fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  err = cuMemExportToShareableHandle(
+      &fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
+  if (err != CUDA_SUCCESS)
+    goto cleanup_handle;
 
   // Store handle as heap-allocated value
-  CUmemGenericAllocationHandle *handlePtr =
-      (CUmemGenericAllocationHandle *)malloc(
-          sizeof(CUmemGenericAllocationHandle));
-  if (handlePtr == NULL)
-    return flagcxSystemError;
-  *handlePtr = handle;
-  *mcHandle = handlePtr;
-  *shareableFd = fd;
+  {
+    CUmemGenericAllocationHandle *handlePtr =
+        (CUmemGenericAllocationHandle *)malloc(
+            sizeof(CUmemGenericAllocationHandle));
+    if (handlePtr == NULL)
+      goto cleanup_fd;
+
+    *handlePtr = handle;
+    *mcHandle = handlePtr;
+    *shareableFd = fd;
+  }
   return flagcxSuccess;
+
+cleanup_fd:
+  close(fd);
+cleanup_handle:
+  cuMemRelease(handle);
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,

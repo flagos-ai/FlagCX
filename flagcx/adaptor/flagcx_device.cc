@@ -1044,7 +1044,7 @@ flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                ? comm->ipcTable[handle->ipcIndex].devPeerPtrs
                                : nullptr);
     handle->window = kWin;
-    handle->hasWindow = kWin->hasAccess() || (handle->rawPtr != nullptr);
+    handle->hasWindow = kWin->hasAccess();
   }
 
   *devMem = handle;

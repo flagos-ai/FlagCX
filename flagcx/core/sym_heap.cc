@@ -314,7 +314,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
   // ---- Inter-node MR registration ----
   {
-    flagcxResult_t regRes = flagcxOneSideRegister(comm, buff, size);
+    flagcxResult_t regRes = flagcxOneSideRegisterInternal(comm, buff, size);
     if (regRes == flagcxSuccess) {
       for (int i = 0; i < comm->oneSideHandleCount; i++) {
         struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[i];

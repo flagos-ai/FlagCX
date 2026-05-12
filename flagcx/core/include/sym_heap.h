@@ -12,6 +12,15 @@
 #include "comm.h"
 #include "flagcx.h"
 
+/* Concrete definition of the opaque flagcxWindow handle.
+ * Internal only — external code must treat flagcxWindow_t as opaque. */
+struct flagcxWindow {
+  flagcxInnerWindow_t vendorBase; // vendor-specific window (NULL if no vendor)
+  flagcxSymWindow_t
+      defaultBase;        // default symmetric-heap state (NULL on vendor path)
+  int isSymmetricDefault; // 1 if using default path, 0 if using vendor path
+};
+
 /* Symmetric window state for the default (non-vendor) path */
 struct flagcxSymWindow {
   void *flatBase;   // flat VA base (NULL if IPC fallback)

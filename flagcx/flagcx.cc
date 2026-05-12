@@ -333,8 +333,8 @@ fail:
   return res;
 }
 
-flagcxResult_t flagcxOneSideRegister(flagcxHeteroComm_t heteroComm, void *buff,
-                                     size_t size) {
+flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
+                                             void *buff, size_t size) {
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
       heteroComm->netAdaptor->regMr == NULL) {
@@ -496,6 +496,14 @@ fail_info:
   free(info);
 fail:
   return res;
+}
+
+flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
+                                     size_t size) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (comm->heteroComm == nullptr)
+    return flagcxNotSupported;
+  return flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);
 }
 
 flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
@@ -1049,7 +1057,8 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
   // Step 3: One-sided MR registration (hetero path only)
   {
-    flagcxResult_t regRes = flagcxOneSideRegister(comm->heteroComm, buff, size);
+    flagcxResult_t regRes =
+        flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);
     if (regRes != flagcxSuccess) {
       INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
            regRes);
@@ -1095,16 +1104,12 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags) {
-  if (win == nullptr) {
+  if (win == nullptr || *win != nullptr) {
     return flagcxInvalidArgument;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
-    bool ownedWin = false;
-    if (*win == NULL) {
-      FLAGCXCHECK(flagcxCalloc(win, 1));
-      ownedWin = true;
-    }
+    FLAGCXCHECK(flagcxCalloc(win, 1));
     flagcxResult_t res =
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
             comm->homoComm, buff, size, &(*win)->vendorBase, winFlags);
@@ -1112,6 +1117,8 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
       return flagcxSuccess;
     }
     if (res != flagcxNotSupported) {
+      free(*win);
+      *win = nullptr;
       return res;
     }
     WARN("flagcxCommWindowRegister: backend returned %d, window not available, "
@@ -1123,10 +1130,8 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
           comm->homoComm, (*win)->vendorBase);
       (*win)->vendorBase = nullptr;
     }
-    if (ownedWin) {
-      free(*win);
-      *win = nullptr;
-    }
+    free(*win);
+    *win = nullptr;
   }
   // Non-homo or homo-fallback: use symmetric heap path
   if ((winFlags & FLAGCX_WIN_COLL_SYMMETRIC) && comm->heteroComm != nullptr) {
