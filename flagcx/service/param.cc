@@ -93,3 +93,5 @@ const char *flagcxGetEnv(const char *name) {
   pthread_once(&once, initEnv);
   return getenv(name);
 }
+
+FLAGCX_PARAM(VmmEnable, "VMM_ENABLE", 1);

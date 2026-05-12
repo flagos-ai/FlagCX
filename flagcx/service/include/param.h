@@ -32,4 +32,6 @@ void flagcxLoadParam(char const *env, int64_t deftVal, int64_t uninitialized,
     return cache;                                                              \
   }
 
+int64_t flagcxParamVmmEnable();
+
 #endif

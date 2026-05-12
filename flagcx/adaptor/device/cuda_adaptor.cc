@@ -4,6 +4,7 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "param.h"
 #include <unistd.h>
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
@@ -108,12 +109,18 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxInvalidArgument;
   }
 #if CUDART_VERSION >= 12010
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaMalloc(ptr, size));
+    return flagcxSuccess;
+  }
+
   size_t memGran = 0;
   CUdevice currentDev;
   CUmemAllocationProp memprop = {};
   CUmemGenericAllocationHandle handle = (CUmemGenericAllocationHandle)-1;
   int cudaDev;
   int flag;
+  CUresult cuRes;
 
   DEVCHECK(cudaGetDevice(&cudaDev));
   DEVCHECK(cuDeviceGet(&currentDev, cudaDev));
@@ -146,15 +153,34 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   /* Allocate the physical memory on the device */
   DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
   /* Reserve a virtual address range */
-  DEVCHECK(cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0));
+  cuRes = cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
   /* Map the virtual address range to the physical allocation */
-  DEVCHECK(cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0));
+  cuRes = cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
   /* Set access for the current device */
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = currentDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  DEVCHECK(cuMemSetAccess((CUdeviceptr)*ptr, handleSize, &accessDesc, 1));
+  cuRes = cuMemSetAccess((CUdeviceptr)*ptr, handleSize, &accessDesc, 1);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemUnmap((CUdeviceptr)*ptr, handleSize);
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
+  /* Release the create-time handle reference; the mapping holds its own. */
+  cuMemRelease(handle);
 #else
   DEVCHECK(cudaMalloc(ptr, size));
   cudaPointerAttributes attrs;
@@ -171,13 +197,15 @@ flagcxResult_t cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
     return flagcxSuccess;
   }
 #if CUDART_VERSION >= 12010
-  CUmemGenericAllocationHandle handle;
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaFree(ptr));
+    return flagcxSuccess;
+  }
+
   size_t size = 0;
-  DEVCHECK(cuMemRetainAllocationHandle(&handle, ptr));
   DEVCHECK(cuMemGetAddressRange(NULL, &size, (CUdeviceptr)ptr));
   DEVCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
   DEVCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
-  DEVCHECK(cuMemRelease(handle));
 #else
   DEVCHECK(cudaFree(ptr));
 #endif

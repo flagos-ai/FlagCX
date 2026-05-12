@@ -13,6 +13,7 @@
 #include "comm.h"
 #include "ipcsocket.h"
 #include "onesided.h"
+#include "param.h"
 #include "transport.h"
 #include "utils.h"
 #include <cstdlib>
@@ -61,7 +62,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
   // ---- Try VMM path ----
   {
     bool vmmOk = false;
-    if (deviceAdaptor->symPhysAlloc != nullptr) {
+    if (deviceAdaptor->symPhysAlloc != nullptr && flagcxParamVmmEnable()) {
       size_t handleSize = sizeof(int);
       size_t allocSize = 0;
 

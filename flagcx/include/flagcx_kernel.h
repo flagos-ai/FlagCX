@@ -277,10 +277,10 @@ typedef enum {
 struct flagcxCommProperties {
   int rank;
   int nRanks;
-  int deviceId;            // → ncclCommProperties.cudaDev (platform-neutral)
-  bool deviceApiSupport;   // → ncclCommProperties.deviceApiSupport
-  bool multicastSupport;   // → ncclCommProperties.multimemSupport
-  flagcxNetType_t netType; // → ncclCommProperties.ginType
+  int deviceId; // → ncclCommProperties.cudaDev (platform-neutral)
+  bool vendorDeviceApiSupport; // → ncclCommProperties.deviceApiSupport
+  bool multicastSupport;       // → ncclCommProperties.multimemSupport
+  flagcxNetType_t netType;     // → ncclCommProperties.ginType
 };
 typedef struct flagcxCommProperties flagcxCommProperties_t;
 

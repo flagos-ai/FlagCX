@@ -1240,7 +1240,11 @@ flagcxResult_t flagcxCommQueryProperties(flagcxComm_t comm,
   props->deviceId = comm->heteroComm ? comm->heteroComm->cudaDev : -1;
 
   // Query multicast support via adaptor
-  props->deviceApiSupport = true;
+#ifdef FLAGCX_DEVICE_API_VENDOR
+  props->vendorDeviceApiSupport = true;
+#else
+  props->vendorDeviceApiSupport = false;
+#endif
   int mcSupported = 0;
   if (deviceAdaptor->symMulticastSupported)
     deviceAdaptor->symMulticastSupported(&mcSupported);

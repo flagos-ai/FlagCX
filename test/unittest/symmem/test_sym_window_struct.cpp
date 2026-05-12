@@ -71,26 +71,29 @@ TEST(SymWindowValidation, RegisterNullComm) {
 }
 
 TEST(SymWindowValidation, RegisterNullBuff) {
-  // We can't easily get a real comm without MPI, but we can verify that
-  // NULL buff is rejected. Pass a non-null comm placeholder — the function
-  // checks buff before using comm internals.
+  // Pass a non-null comm placeholder so the test exercises the buff-null check
+  // specifically, not the comm-null check. The function checks all args in a
+  // single compound condition before dereferencing comm.
+  flagcxHeteroComm_t fakeComm = reinterpret_cast<flagcxHeteroComm_t>(0x1);
   flagcxWindow_t win = nullptr;
-  // NULL buff should be caught before comm is dereferenced
-  flagcxResult_t res = flagcxSymWindowRegister(nullptr, nullptr, 1024, &win, 0);
+  flagcxResult_t res =
+      flagcxSymWindowRegister(fakeComm, nullptr, 1024, &win, 0);
   EXPECT_EQ(res, flagcxInvalidArgument);
 }
 
 TEST(SymWindowValidation, RegisterZeroSize) {
+  flagcxHeteroComm_t fakeComm = reinterpret_cast<flagcxHeteroComm_t>(0x1);
   flagcxWindow_t win = nullptr;
   char dummy[64] = {};
-  flagcxResult_t res = flagcxSymWindowRegister(nullptr, dummy, 0, &win, 0);
+  flagcxResult_t res = flagcxSymWindowRegister(fakeComm, dummy, 0, &win, 0);
   EXPECT_EQ(res, flagcxInvalidArgument);
 }
 
 TEST(SymWindowValidation, RegisterNullWinPtr) {
+  flagcxHeteroComm_t fakeComm = reinterpret_cast<flagcxHeteroComm_t>(0x1);
   char dummy[64] = {};
   flagcxResult_t res =
-      flagcxSymWindowRegister(nullptr, dummy, sizeof(dummy), nullptr, 0);
+      flagcxSymWindowRegister(fakeComm, dummy, sizeof(dummy), nullptr, 0);
   EXPECT_EQ(res, flagcxInvalidArgument);
 }
 
