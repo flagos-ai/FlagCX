@@ -85,13 +85,19 @@ jobs:
           export PATH=$MPI_HOME/bin:$PATH
           mpirun -np 8 --allow-run-as-root ./build/bin/runner_mpi_tests
 
-      - name: Run multi-cluster tests with mpirun
+      - name: Run multi-cluster tests using P2P transport with mpirun
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest/runner
           export MPI_HOME=/usr/local/mpi
           export PATH=$MPI_HOME/bin:$PATH
           mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 ./build/bin/runner_mpi_tests
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_IB_HCA=mlx5 ./build/bin/runner_mpi_tests
+
+      - name: Run multi-cluster tests using NET transport with mpirun
+        run: |
+          cd /__w/FlagCX/FlagCX/test/unittest/runner
+          export MPI_HOME=/usr/local/mpi
+          export PATH=$MPI_HOME/bin:$PATH
+          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_VMM_ENABLE=0 ./build/bin/runner_mpi_tests
 
       - name: Run kernel tests with mpirun
         run: |

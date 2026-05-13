@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "param.h"
+#include <unistd.h>
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -106,14 +108,19 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
-#if 0
 #if CUDART_VERSION >= 12010
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaMalloc(ptr, size));
+    return flagcxSuccess;
+  }
+
   size_t memGran = 0;
   CUdevice currentDev;
   CUmemAllocationProp memprop = {};
   CUmemGenericAllocationHandle handle = (CUmemGenericAllocationHandle)-1;
   int cudaDev;
   int flag;
+  CUresult cuRes;
 
   DEVCHECK(cudaGetDevice(&cudaDev));
   DEVCHECK(cuDeviceGet(&currentDev, cudaDev));
@@ -121,33 +128,67 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   size_t handleSize = size;
   int requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   // Query device to see if FABRIC handle support is available
+#if CUDART_VERSION >= 12040
   flag = 0;
-  DEVCHECK(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, currentDev));
-  if (flag) requestedHandleTypes |= CU_MEM_HANDLE_TYPE_FABRIC;
+  DEVCHECK(cuDeviceGetAttribute(
+      &flag, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED, currentDev));
+  if (flag)
+    requestedHandleTypes |= CU_MEM_HANDLE_TYPE_FABRIC;
+#endif
   memprop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
   memprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  memprop.requestedHandleTypes = (CUmemAllocationHandleType) requestedHandleTypes;
+  memprop.requestedHandleTypes =
+      (CUmemAllocationHandleType)requestedHandleTypes;
   memprop.location.id = currentDev;
   // Query device to see if RDMA support is available
   flag = 0;
-  DEVCHECK(cuDeviceGetAttribute(&flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED, currentDev));
-  if (flag) memprop.allocFlags.gpuDirectRDMACapable = 1;
-  DEVCHECK(cuMemGetAllocationGranularity(&memGran, &memprop, CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
+  DEVCHECK(cuDeviceGetAttribute(
+      &flag, CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      currentDev));
+  if (flag)
+    memprop.allocFlags.gpuDirectRDMACapable = 1;
+  DEVCHECK(cuMemGetAllocationGranularity(&memGran, &memprop,
+                                         CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
   ALIGN_SIZE(handleSize, memGran);
   /* Allocate the physical memory on the device */
   DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
   /* Reserve a virtual address range */
-  DEVCHECK(cuMemAddressReserve((CUdeviceptr*)ptr, handleSize, memGran, 0, 0));
+  cuRes = cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemRelease(handle);
+    return flagcxUnhandledDeviceError;
+  }
   /* Map the virtual address range to the physical allocation */
-  DEVCHECK(cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0));
-#endif
-#endif
+  cuRes = cuMemMap((CUdeviceptr)*ptr, handleSize, 0, handle, 0);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
+  /* Set access for the current device */
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  accessDesc.location.id = currentDev;
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  cuRes = cuMemSetAccess((CUdeviceptr)*ptr, handleSize, &accessDesc, 1);
+  if (cuRes != CUDA_SUCCESS) {
+    cuMemUnmap((CUdeviceptr)*ptr, handleSize);
+    cuMemAddressFree((CUdeviceptr)*ptr, handleSize);
+    cuMemRelease(handle);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
+  /* Release the create-time handle reference; the mapping holds its own. */
+  cuMemRelease(handle);
+#else
   DEVCHECK(cudaMalloc(ptr, size));
   cudaPointerAttributes attrs;
   DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
   unsigned flags = 1;
   DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
                                  (CUdeviceptr)attrs.devicePointer));
+#endif
   return flagcxSuccess;
 }
 
@@ -155,21 +196,19 @@ flagcxResult_t cudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
-#if 0
 #if CUDART_VERSION >= 12010
-  CUdevice ptrDev = 0;
-  CUmemGenericAllocationHandle handle;
+  if (!flagcxParamVmmEnable()) {
+    DEVCHECK(cudaFree(ptr));
+    return flagcxSuccess;
+  }
+
   size_t size = 0;
-  DEVCHECK(cuPointerGetAttribute((void*)&ptrDev, CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL, (CUdeviceptr)ptr));
-  DEVCHECK(cuMemRetainAllocationHandle(&handle, ptr));
-  DEVCHECK(cuMemRelease(handle));
   DEVCHECK(cuMemGetAddressRange(NULL, &size, (CUdeviceptr)ptr));
   DEVCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
-  DEVCHECK(cuMemRelease(handle));
   DEVCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
-#endif
-#endif
+#else
   DEVCHECK(cudaFree(ptr));
+#endif
   return flagcxSuccess;
 }
 
@@ -485,6 +524,355 @@ flagcxResult_t cudaAdaptorHostUnregister(void *ptr) {
   return flagcxSuccess;
 }
 
+// ==========================================================================
+// Symmetric memory VMM functions
+// ==========================================================================
+
+#if CUDART_VERSION >= 12010
+
+flagcxResult_t cudaAdaptorSymPhysAlloc(void *ptr, size_t size,
+                                       void **physHandle, void *shareableHandle,
+                                       size_t *handleSize, size_t *allocSize) {
+  if (ptr == NULL || physHandle == NULL || shareableHandle == NULL ||
+      handleSize == NULL || allocSize == NULL)
+    return flagcxInvalidArgument;
+
+  CUmemGenericAllocationHandle *cuHandle =
+      (CUmemGenericAllocationHandle *)malloc(
+          sizeof(CUmemGenericAllocationHandle));
+  if (cuHandle == NULL)
+    return flagcxSystemError;
+
+  // Retain the physical allocation handle from the VMM-backed pointer
+  DEVCHECK(cuMemRetainAllocationHandle(cuHandle, ptr));
+
+  // Discover actual physical allocation size (already granularity-aligned)
+  size_t actualAllocSize = 0;
+  DEVCHECK(cuMemGetAddressRange(NULL, &actualAllocSize, (CUdeviceptr)ptr));
+  *allocSize = actualAllocSize;
+
+  // Export as POSIX fd for IPC sharing
+  if (*handleSize < sizeof(int)) {
+    free(cuHandle);
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cuMemExportToShareableHandle(
+      shareableHandle, *cuHandle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0));
+  *handleSize = sizeof(int); // POSIX fd is an int
+  *physHandle = cuHandle;
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymPhysFree(void *physHandle) {
+  if (physHandle == NULL)
+    return flagcxSuccess;
+  CUmemGenericAllocationHandle *cuHandle =
+      (CUmemGenericAllocationHandle *)physHandle;
+  cuMemRelease(*cuHandle);
+  free(cuHandle);
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
+                                     int selfIndex, void *selfPhysHandle,
+                                     size_t allocSize, void **flatBase) {
+  if (peerHandles == NULL || selfPhysHandle == NULL || flatBase == NULL ||
+      nPeers <= 0 || allocSize == 0)
+    return flagcxInvalidArgument;
+
+  CUmemGenericAllocationHandle selfHandle =
+      *(CUmemGenericAllocationHandle *)selfPhysHandle;
+
+  // allocSize is already granularity-aligned (from cuMemGetAddressRange)
+  size_t totalSize = allocSize * nPeers;
+
+  // Reserve the full VA range
+  CUdeviceptr base = 0;
+  DEVCHECK(cuMemAddressReserve(&base, totalSize, 0, 0, 0));
+
+  // Import and map each peer's physical memory
+  int cudaDev;
+  DEVCHECK(cudaGetDevice(&cudaDev));
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  accessDesc.location.id = cudaDev;
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+
+  for (int i = 0; i < nPeers; i++) {
+    CUmemGenericAllocationHandle peerHandle;
+    if (i == selfIndex) {
+      peerHandle = selfHandle;
+    } else {
+      int fd = *(int *)peerHandles[i];
+      DEVCHECK(cuMemImportFromShareableHandle(
+          &peerHandle, (void *)(uintptr_t)fd,
+          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+    }
+    CUdeviceptr slot = base + (CUdeviceptr)i * allocSize;
+    DEVCHECK(cuMemMap(slot, allocSize, 0, peerHandle, 0));
+    DEVCHECK(cuMemSetAccess(slot, allocSize, &accessDesc, 1));
+    if (i != selfIndex) {
+      cuMemRelease(peerHandle);
+    }
+  }
+
+  *flatBase = (void *)base;
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
+                                       int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+  CUdeviceptr base = (CUdeviceptr)flatBase;
+  size_t totalSize = allocSize * nPeers;
+  DEVCHECK(cuMemUnmap(base, totalSize));
+  DEVCHECK(cuMemAddressFree(base, totalSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastSupported(int *supported) {
+  if (supported == NULL)
+    return flagcxInvalidArgument;
+  *supported = 0;
+  int cudaDev;
+  DEVCHECK(cudaGetDevice(&cudaDev));
+  CUdevice dev;
+  DEVCHECK(cuDeviceGet(&dev, cudaDev));
+  CUresult res = cuDeviceGetAttribute(
+      supported, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev);
+  if (res != CUDA_SUCCESS)
+    *supported = 0;
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastCreate(size_t allocSize,
+                                             int nLocalDevices,
+                                             const int *localDeviceOrdinals,
+                                             void **mcHandle,
+                                             int *shareableFd) {
+  if (mcHandle == NULL || shareableFd == NULL || nLocalDevices <= 0 ||
+      localDeviceOrdinals == NULL)
+    return flagcxInvalidArgument;
+  *mcHandle = NULL;
+  *shareableFd = -1;
+
+  CUmemGenericAllocationHandle handle = 0;
+  int fd = -1;
+  CUresult err;
+
+  // Get multicast granularity and align size
+  CUmulticastObjectProp mcProp = {};
+  mcProp.numDevices = (unsigned int)nLocalDevices;
+  mcProp.size = allocSize;
+  mcProp.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+
+  size_t mcGran = 0;
+  err = cuMulticastGetGranularity(&mcGran, &mcProp,
+                                  CU_MULTICAST_GRANULARITY_RECOMMENDED);
+  if (err != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  mcProp.size = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+
+  err = cuMulticastCreate(&handle, &mcProp);
+  if (err != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+
+  // Add all local devices using explicit ordinals
+  for (int i = 0; i < nLocalDevices; i++) {
+    CUdevice peerDev;
+    err = cuDeviceGet(&peerDev, localDeviceOrdinals[i]);
+    if (err != CUDA_SUCCESS)
+      goto cleanup_handle;
+    err = cuMulticastAddDevice(handle, peerDev);
+    if (err != CUDA_SUCCESS)
+      goto cleanup_handle;
+  }
+
+  // Export as POSIX FD for sharing with peers
+  err = cuMemExportToShareableHandle(
+      &fd, handle, CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0);
+  if (err != CUDA_SUCCESS)
+    goto cleanup_handle;
+
+  // Store handle as heap-allocated value
+  {
+    CUmemGenericAllocationHandle *handlePtr =
+        (CUmemGenericAllocationHandle *)malloc(
+            sizeof(CUmemGenericAllocationHandle));
+    if (handlePtr == NULL)
+      goto cleanup_fd;
+
+    *handlePtr = handle;
+    *mcHandle = handlePtr;
+    *shareableFd = fd;
+  }
+  return flagcxSuccess;
+
+cleanup_fd:
+  close(fd);
+cleanup_handle:
+  cuMemRelease(handle);
+  return flagcxUnhandledDeviceError;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
+                                           void *physHandle, size_t allocSize,
+                                           int localRank, int nLocalDevices,
+                                           void **mcBase, size_t *mcMapSize) {
+  if (mcBase == NULL || physHandle == NULL || mcMapSize == NULL)
+    return flagcxInvalidArgument;
+  *mcBase = NULL;
+  *mcMapSize = 0;
+
+  CUmemGenericAllocationHandle cuMcHandle;
+  bool imported = (mcHandle == NULL);
+
+  if (mcHandle != NULL) {
+    // Rank 0: already has the handle from symMulticastCreate
+    cuMcHandle = *(CUmemGenericAllocationHandle *)mcHandle;
+  } else {
+    // Other ranks: import from FD
+    if (importFd < 0)
+      return flagcxInvalidArgument;
+    CUresult res = cuMemImportFromShareableHandle(
+        &cuMcHandle, (void *)(intptr_t)importFd,
+        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+    if (res != CUDA_SUCCESS) {
+      WARN("symMulticastBind: cuMemImportFromShareableHandle failed: %d", res);
+      return flagcxUnhandledDeviceError;
+    }
+  }
+
+  CUmemGenericAllocationHandle cuPhysHandle =
+      *(CUmemGenericAllocationHandle *)physHandle;
+
+  // Bind this rank's physical allocation to the multicast object.
+  // Use cuMulticastBindMem (takes physical handle), not cuMulticastBindAddr
+  // (which takes a virtual address).
+  CUresult res =
+      cuMulticastBindMem(cuMcHandle, 0, cuPhysHandle, 0, allocSize, 0);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMulticastBindMem failed: %d (localRank=%d "
+         "allocSize=%zu)",
+         res, localRank, allocSize);
+    if (imported)
+      cuMemRelease(cuMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  // Get multicast granularity to compute aligned total size
+  CUmulticastObjectProp mcProp = {};
+  mcProp.numDevices = (unsigned int)nLocalDevices;
+  mcProp.size = allocSize;
+  mcProp.handleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  size_t mcGran = 0;
+  res = cuMulticastGetGranularity(&mcGran, &mcProp,
+                                  CU_MULTICAST_GRANULARITY_RECOMMENDED);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMulticastGetGranularity failed: %d", res);
+    if (imported)
+      cuMemRelease(cuMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+  size_t alignedSize = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+
+  // Reserve VA and map the multicast handle
+  CUdeviceptr mcVa = 0;
+  res = cuMemAddressReserve(&mcVa, alignedSize, mcGran, 0, 0);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMemAddressReserve failed: %d", res);
+    if (imported)
+      cuMemRelease(cuMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  res = cuMemMap(mcVa, alignedSize, 0, cuMcHandle, 0);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMemMap failed: %d", res);
+    cuMemAddressFree(mcVa, alignedSize);
+    if (imported)
+      cuMemRelease(cuMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  // Set access for the current device
+  int cudaDev;
+  DEVCHECK(cudaGetDevice(&cudaDev));
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  accessDesc.location.id = cudaDev;
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  res = cuMemSetAccess(mcVa, alignedSize, &accessDesc, 1);
+  if (res != CUDA_SUCCESS) {
+    WARN("symMulticastBind: cuMemSetAccess failed: %d", res);
+    cuMemUnmap(mcVa, alignedSize);
+    cuMemAddressFree(mcVa, alignedSize);
+    if (imported)
+      cuMemRelease(cuMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  *mcBase = (void *)mcVa;
+  *mcMapSize = alignedSize;
+  if (imported)
+    cuMemRelease(cuMcHandle);
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  CUdeviceptr va = (CUdeviceptr)mcBase;
+  DEVCHECK(cuMemUnmap(va, mcMapSize));
+  DEVCHECK(cuMemAddressFree(va, mcMapSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t cudaAdaptorSymMulticastFree(void *mcHandle) {
+  if (mcHandle == NULL)
+    return flagcxSuccess;
+  CUmemGenericAllocationHandle handle =
+      *(CUmemGenericAllocationHandle *)mcHandle;
+  DEVCHECK(cuMemRelease(handle));
+  free(mcHandle);
+  return flagcxSuccess;
+}
+
+#else // CUDART_VERSION < 12010
+
+flagcxResult_t cudaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                       size_t *, size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t cudaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
+                                     void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t cudaAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **, size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t cudaAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxSuccess;
+}
+flagcxResult_t cudaAdaptorSymMulticastFree(void *) { return flagcxSuccess; }
+
+#endif // CUDART_VERSION >= 12010
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -546,6 +934,11 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       cudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+                                 // Symmetric memory VMM functions
+      cudaAdaptorSymPhysAlloc, cudaAdaptorSymPhysFree, cudaAdaptorSymFlatMap,
+      cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
+      cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
+      cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

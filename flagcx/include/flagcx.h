@@ -114,7 +114,14 @@ typedef struct flagcxStream *flagcxStream_t;
 typedef struct flagcxEvent *flagcxEvent_t;
 /* Opaque handle to flagcxIpcMemHandle */
 typedef struct flagcxIpcMemHandle *flagcxIpcMemHandle_t;
-/* Opaque handle to flagcxWindow */
+/* Forward-declare inner window (defined in device adaptor header files) */
+struct flagcxInnerWindow;
+typedef struct flagcxInnerWindow *flagcxInnerWindow_t;
+/* Forward-declare symmetric window (defined in sym_heap.h) */
+struct flagcxSymWindow;
+typedef struct flagcxSymWindow *flagcxSymWindow_t;
+/* Opaque window handle (defined in sym_heap.h) */
+struct flagcxWindow;
 typedef struct flagcxWindow *flagcxWindow_t;
 
 /* Func(kernel) arguments */
@@ -199,6 +206,13 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         int winFlags);
 flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
                                           flagcxWindow_t win);
+
+/* Register a buffer for one-sided RDMA operations (Get/Put/PutValue).
+ * Creates MR handles for RDMA-capable net adaptors.
+ * Collective: ALL ranks in the communicator must call.
+ * Returns flagcxNotSupported if the net adaptor doesn't support RDMA. */
+flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
+                                     size_t size);
 
 /* Check if the FlagCX communicator type is homogeneous or heterogeneous */
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo);
@@ -444,17 +458,10 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 /*
  * One-sided RDMA operations
  *
- * These operations require prior registration via flagcxOneSideRegister /
- * flagcxOneSideSignalRegister. They are only supported on heterogeneous
+ * These operations require prior registration via flagcxOneSideRegister or
+ * flagcxCommWindowRegister. They are only supported on heterogeneous
  * communicators backed by an RDMA-capable net adaptor.
  */
-
-/* Register a data buffer for one-sided RDMA operations.  Collective: ALL ranks
- * in the communicator must call with their local buffer.  Internally performs
- * an AllGather of MR metadata so every rank knows every other rank's rkey and
- * base VA. */
-flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
-                                     size_t size);
 
 /* Register a signal buffer for one-sided RDMA operations.
  * ptrType: FLAGCX_PTR_CUDA for device memory, FLAGCX_PTR_HOST for host-pinned

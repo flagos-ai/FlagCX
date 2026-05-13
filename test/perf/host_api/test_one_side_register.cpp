@@ -2,6 +2,7 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 #include "flagcx_net.h"
+#include "onesided.h"
 #include "tools.h"
 
 #include <algorithm>

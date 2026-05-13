@@ -203,6 +203,46 @@ struct flagcxDeviceAdaptor_latest {
   // hostGetDevicePointer returns a valid per-process GPU VA.
   flagcxResult_t (*hostRegister)(void *ptr, size_t size);
   flagcxResult_t (*hostUnregister)(void *ptr);
+
+  // ---- Symmetric memory VMM functions (NULL if not supported) ----
+
+  // Phase 1: Export existing VMM allocation as shareable handle.
+  // ptr must have been allocated by gdrMemAlloc (VMM-backed).
+  // physHandle: out — opaque handle for map/multicast/free
+  // shareableHandle: out — buffer for IPC-exportable handle
+  // handleSize: in/out — buffer size / actual size
+  // allocSize: out — actual physical allocation size (granularity-aligned)
+  flagcxResult_t (*symPhysAlloc)(void *ptr, size_t size, void **physHandle,
+                                 void *shareableHandle, size_t *handleSize,
+                                 size_t *allocSize);
+  flagcxResult_t (*symPhysFree)(void *physHandle);
+
+  // Phase 2: Import peer handles + reserve flat VA + map all peers.
+  // peerHandles[]: shareable handles from all local peers
+  // nPeers: number of local peers (including self)
+  // selfIndex: this rank's index in peerHandles[]
+  // selfPhysHandle: this rank's physical handle (avoids re-import)
+  // allocSize: physical allocation size per peer (granularity-aligned)
+  // flatBase: out — contiguous VA base (allocSize * nPeers)
+  flagcxResult_t (*symFlatMap)(void *peerHandles[], int nPeers, int selfIndex,
+                               void *selfPhysHandle, size_t allocSize,
+                               void **flatBase);
+  flagcxResult_t (*symFlatUnmap)(void *flatBase, size_t allocSize, int nPeers);
+
+  // Phase 3: Multicast (NVLS). All function pointers are non-NULL.
+  // Non-CUDA platforms use stubs that return flagcxNotSupported.
+  flagcxResult_t (*symMulticastSupported)(int *supported);
+  flagcxResult_t (*symMulticastCreate)(size_t allocSize, int nLocalDevices,
+                                       const int *localDeviceOrdinals,
+                                       void **mcHandle, int *shareableFd);
+  flagcxResult_t (*symMulticastBind)(void *mcHandle, int importFd,
+                                     void *physHandle, size_t allocSize,
+                                     int localRank, int nLocalDevices,
+                                     void **mcBase, size_t *mcMapSize);
+  flagcxResult_t (*symMulticastTeardown)(void *mcBase, size_t mcMapSize);
+  // Release the multicast object handle returned by symMulticastCreate.
+  // Must be called after all ranks have torn down their mappings.
+  flagcxResult_t (*symMulticastFree)(void *mcHandle);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

@@ -11,6 +11,8 @@
 
 #include <stdint.h>
 
+#include "comm.h" // for flagcxHeteroComm_t
+
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
   uint32_t *rkeys;
@@ -22,5 +24,9 @@ struct flagcxOneSideHandleInfo {
   void **fullRecvComms; // [nRanks] per-peer recvComm (NULL if not owner)
   int nRanks;           // number of ranks (for cleanup iteration)
 };
+
+// Internal implementation used by sym_heap and flagcxCommRegister
+flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
+                                             void *buff, size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

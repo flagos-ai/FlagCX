@@ -18,6 +18,9 @@
 #define FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 
 #include "flagcx_kernel.h"
+#ifndef __CUDACC__
+#include "sym_heap.h"
+#endif
 
 template <typename PlatformTag>
 struct CommTraits<Default<PlatformTag>> {
@@ -35,56 +38,103 @@ struct CommTraits<Default<PlatformTag>> {
     void *mcBasePtr;
   };
 
-  // ---- Window: IPC + MR + rawPtr ----
+  // ---- Window: Symmetric (VMM) or Asymmetric (IPC) ----
+  enum WindowMode { SYMMETRIC = 0, ASYMMETRIC = 1 };
   struct Window {
-    void *rawPtr;     // Raw memory pointer (always valid)
-    void **peerPtrs;  // IPC peer pointers (nullptr if no IPC)
-    int intraRank;    // Local rank index
-    uintptr_t mrBase; // MR base VA
-    int mrIndex;      // MR table index
+    WindowMode mode;    // SYMMETRIC (VMM) or ASYMMETRIC (IPC)
+    void *flatBasePtr;  // Flat VA base (SYMMETRIC mode, nullable)
+    size_t allocSize;   // Per-rank allocation size (SYMMETRIC mode)
+    void *mcBasePtr;    // Multicast base (nullable, SYMMETRIC mode only)
+    void **ipcBasePtrs; // IPC peer pointers (ASYMMETRIC mode, nullable)
+    int intraRank;      // Local rank index
+    uintptr_t mrBase;   // MR base VA (inter-node, orthogonal to mode)
+    int mrIndex;        // MR table index (-1 if none)
+    void *rawPtr;       // Raw pointer fallback (for getLocalPointer)
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &team, int peer) const {
-      if (peerPtrs) {
+      if (mode == SYMMETRIC && flatBasePtr) {
         int index = team.rank + (peer - team.rank) * team.stride;
-        return (char *)peerPtrs[index] + offset;
+        return (char *)flatBasePtr + (size_t)index * allocSize + offset;
+      } else if (ipcBasePtrs) {
+        int index = team.rank + (peer - team.rank) * team.stride;
+        return (char *)ipcBasePtrs[index] + offset;
       }
       return nullptr;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
-      if (peerPtrs)
-        return (char *)peerPtrs[intraRank] + offset;
+      if (mode == SYMMETRIC && flatBasePtr)
+        return (char *)flatBasePtr + (size_t)intraRank * allocSize + offset;
+      else if (ipcBasePtrs)
+        return (char *)ipcBasePtrs[intraRank] + offset;
       return (char *)rawPtr + offset;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
-      if (peerPtrs)
-        return (char *)peerPtrs[peer] + offset;
+      if (mode == SYMMETRIC && flatBasePtr)
+        return (char *)flatBasePtr + (size_t)peer * allocSize + offset;
+      else if (ipcBasePtrs)
+        return (char *)ipcBasePtrs[peer] + offset;
       return nullptr;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getMulticastPointer(size_t offset, const Multimem &mm) const {
-      (void)offset;
+      if (mcBasePtr)
+        return (char *)mcBasePtr + offset;
       (void)mm;
-      return nullptr; // Multicast not available in fallback
+      return nullptr;
     }
 
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
-      return peerPtrs != nullptr;
+      return (mode == SYMMETRIC && flatBasePtr != nullptr) ||
+             (mode == ASYMMETRIC && ipcBasePtrs != nullptr);
     }
     FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const { return rawPtr; }
-    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const { return peerPtrs; }
+    FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
+      return ipcBasePtrs;
+    }
     FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const { return mrIndex; }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator==(const Window &o) const {
+      if (mode == SYMMETRIC && o.mode == SYMMETRIC)
+        return flatBasePtr == o.flatBasePtr && intraRank == o.intraRank;
       return rawPtr == o.rawPtr;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR bool operator!=(const Window &o) const {
       return !(*this == o);
     }
+
+#ifndef __CUDACC__
+    // Host-side population from flagcxWindow_t (sym heap or IPC).
+    void populateFromHost(flagcxWindow_t win, void *rawPtr_, int intraRank_,
+                          int mrIndex_, uintptr_t mrBase_, int ipcIndex_,
+                          void **ipcDevPeerPtrs_) {
+      rawPtr = rawPtr_;
+      intraRank = intraRank_;
+      mrBase = mrBase_;
+      mrIndex = mrIndex_;
+
+      flagcxSymWindow_t d =
+          (win && win->isSymmetricDefault) ? win->defaultBase : nullptr;
+
+      if (d && d->isVMM && d->flatBase) {
+        mode = SYMMETRIC;
+        flatBasePtr = d->flatBase;
+        allocSize = d->allocSize;
+        mcBasePtr = d->mcBase;
+        ipcBasePtrs = nullptr;
+      } else {
+        mode = ASYMMETRIC;
+        flatBasePtr = nullptr;
+        allocSize = 0;
+        mcBasePtr = nullptr;
+        ipcBasePtrs = (ipcIndex_ >= 0) ? ipcDevPeerPtrs_ : nullptr;
+      }
+    }
+#endif // __CUDACC__
   };
 
   // ---- Comm: All fallback layers ----

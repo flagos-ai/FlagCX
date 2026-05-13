@@ -37,7 +37,7 @@ Plugins should copy the required FlagCX headers into their own source tree to av
 
 - `flagcx.h` — Core types and error codes
 - `flagcx_device_adaptor.h` — The `flagcxDeviceAdaptor` struct and plugin symbol macro
-- **Platform adaptor header** — Copy the vendor adaptor header corresponding to your target platform from `flagcx/adaptor/include/`. For example, `nvidia_adaptor.h` for NVIDIA/CUDA. This header provides struct definitions for `flagcxStream`, `flagcxEvent`, `flagcxIpcMemHandle`, `flagcxWindow`, etc. Note: `flagcxDevProps` is defined in `flagcx_device_adaptor.h`, not in the vendor platform header — do not rely on the vendor header for `flagcxDevProps`.
+- **Platform adaptor header** — Copy the vendor adaptor header corresponding to your target platform from `flagcx/adaptor/include/`. For example, `nvidia_adaptor.h` for NVIDIA/CUDA. This header provides struct definitions for `flagcxStream`, `flagcxEvent`, `flagcxIpcMemHandle`, `flagcxInnerWindow`, etc. Note: `flagcxDevProps` is defined in `flagcx_device_adaptor.h`, not in the vendor platform header — do not rely on the vendor header for `flagcxDevProps`.
 
 When copying the vendor adaptor header, **remove the `#ifdef USE_XXX_ADAPTOR` / `#endif` guard**. Since your plugin targets a specific platform, the platform choice is implicit — adding the guard would require an unnecessary `-DUSE_XXX_ADAPTOR` flag in your Makefile. See `example/flagcx/nvidia_adaptor.h` and `cuda/flagcx/nvidia_adaptor.h` for reference.
 

@@ -368,6 +368,39 @@ flagcxResult_t tsmicroAdaptorHostUnregister(void *) {
   return flagcxNotSupported;
 }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t tsmicroAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                          size_t *, size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t tsmicroAdaptorSymFlatMap(void *[], int, int, void *, size_t,
+                                        void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastCreate(size_t, int, const int *,
+                                                void **, int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                              int, void **, size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxSuccess;
+}
+flagcxResult_t tsmicroAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor tsmicroAdaptor {
   "TSM",
       // Basic functions
@@ -432,6 +465,12 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       tsmicroAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                     // size_t);
       tsmicroAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      tsmicroAdaptorSymPhysAlloc, tsmicroAdaptorSymPhysFree,
+      tsmicroAdaptorSymFlatMap, tsmicroAdaptorSymFlatUnmap,
+      tsmicroAdaptorSymMulticastSupported, tsmicroAdaptorSymMulticastCreate,
+      tsmicroAdaptorSymMulticastBind, tsmicroAdaptorSymMulticastTeardown,
+      tsmicroAdaptorSymMulticastFree,
 };
 
 #endif // USE_TSM_ADAPTOR

@@ -331,6 +331,39 @@ flagcxResult_t musaAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t musaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
+// Symmetric memory VMM stubs (not supported)
+flagcxResult_t musaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
+                                       size_t *, size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t musaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
+                                     void **) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymFlatUnmap(void *, size_t, int) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastSupported(int *supported) {
+  if (supported)
+    *supported = 0;
+  return flagcxSuccess;
+}
+flagcxResult_t musaAdaptorSymMulticastCreate(size_t, int, const int *, void **,
+                                             int *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
+                                           int, void **, size_t *) {
+  return flagcxNotSupported;
+}
+flagcxResult_t musaAdaptorSymMulticastTeardown(void *, size_t) {
+  return flagcxSuccess;
+}
+flagcxResult_t musaAdaptorSymMulticastFree(void *) {
+  return flagcxNotSupported;
+}
+
 struct flagcxDeviceAdaptor musaAdaptor {
   "MUSA",
       // Basic functions
@@ -387,6 +420,11 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       musaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      // Symmetric memory VMM functions (not supported)
+      musaAdaptorSymPhysAlloc, musaAdaptorSymPhysFree, musaAdaptorSymFlatMap,
+      musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSupported,
+      musaAdaptorSymMulticastCreate, musaAdaptorSymMulticastBind,
+      musaAdaptorSymMulticastTeardown, musaAdaptorSymMulticastFree,
 };
 
 #endif // USE_MUSA_ADAPTOR

@@ -22,6 +22,21 @@ struct flagcxInnerDevComm {};
 
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 
+#if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
+
+struct flagcxInnerWindow {
+  ncclWindow_t base;
+  int winFlags;
+};
+
+#else
+
+struct flagcxInnerWindow {
+  int winFlags;
+};
+
+#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
+
 struct flagcxInnerComm {
   ncclComm_t base;
 };
@@ -37,17 +52,6 @@ struct flagcxEvent {
 struct flagcxIpcMemHandle {
   cudaIpcMemHandle_t base;
 };
-
-#if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
-struct flagcxWindow {
-  ncclWindow_t base;
-  int winFlags;
-};
-#else
-struct flagcxWindow {
-  int winFlags;
-};
-#endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 
 #define DEVCHECK(func)                                                         \
   {                                                                            \

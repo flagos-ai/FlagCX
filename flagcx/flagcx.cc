@@ -18,6 +18,7 @@
 #include "proxy.h"
 #include "reg_pool.h"
 #include "runner.h"
+#include "sym_heap.h"
 #include "timer.h"
 #include "transport.h"
 #include "utils.h"
@@ -332,32 +333,24 @@ fail:
   return res;
 }
 
-flagcxResult_t flagcxOneSideRegister(const flagcxComm_t comm, void *buff,
-                                     size_t size) {
-  // Check if one-sided operations are enabled
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    return flagcxSuccess;
+flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
+                                             void *buff, size_t size) {
+  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+      heteroComm->netAdaptor->iput == NULL ||
+      heteroComm->netAdaptor->regMr == NULL) {
+    return flagcxNotSupported;
   }
-
-  struct flagcxHeteroComm *heteroComm = comm->heteroComm;
 
   // Check for duplicate registration of the same buffer within this comm
   for (int i = 0; i < heteroComm->oneSideHandleCount; i++) {
     struct flagcxOneSideHandleInfo *h = heteroComm->oneSideHandles[i];
     if (h != NULL && h->baseVas != NULL &&
-        h->baseVas[comm->rank] == (uintptr_t)buff) {
+        h->baseVas[heteroComm->rank] == (uintptr_t)buff) {
       INFO(FLAGCX_REG,
            "flagcxOneSideRegister: buffer %p already registered at index %d",
            buff, i);
       return flagcxSuccess;
     }
-  }
-
-  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
-      heteroComm->netAdaptor->iput == NULL ||
-      heteroComm->netAdaptor->regMr == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideRegister: heteroComm is NULL");
-    return flagcxSuccess;
   }
 
   struct bootstrapState *state = heteroComm->bootstrap;
@@ -503,6 +496,14 @@ fail_info:
   free(info);
 fail:
   return res;
+}
+
+flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
+                                     size_t size) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (comm->heteroComm == nullptr)
+    return flagcxNotSupported;
+  return flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);
 }
 
 flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
@@ -1056,7 +1057,8 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
 
   // Step 3: One-sided MR registration (hetero path only)
   {
-    flagcxResult_t regRes = flagcxOneSideRegister(comm, buff, size);
+    flagcxResult_t regRes =
+        flagcxOneSideRegisterInternal(comm->heteroComm, buff, size);
     if (regRes != flagcxSuccess) {
       INFO(FLAGCX_REG, "flagcxCommRegister: one-sided register skipped (%d)",
            regRes);
@@ -1102,20 +1104,38 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle) {
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags) {
+  if (win == nullptr || *win != nullptr) {
+    return flagcxInvalidArgument;
+  }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
+    FLAGCXCHECK(flagcxCalloc(win, 1));
     flagcxResult_t res =
         cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
-            comm->homoComm, buff, size, win, winFlags);
+            comm->homoComm, buff, size, &(*win)->vendorBase, winFlags);
     if (res == flagcxSuccess) {
       return flagcxSuccess;
     }
     if (res != flagcxNotSupported) {
+      free(*win);
+      *win = nullptr;
       return res;
     }
     WARN("flagcxCommWindowRegister: backend returned %d, window not available, "
          "falling back",
          res);
+    // Free any vendorBase the backend may have partially allocated
+    if ((*win)->vendorBase != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+          comm->homoComm, (*win)->vendorBase);
+      (*win)->vendorBase = nullptr;
+    }
+    free(*win);
+    *win = nullptr;
+  }
+  // Non-homo or homo-fallback: use symmetric heap path
+  if ((winFlags & FLAGCX_WIN_COLL_SYMMETRIC) && comm->heteroComm != nullptr) {
+    return flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
   }
   *win = nullptr;
   return flagcxSuccess;
@@ -1127,12 +1147,21 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
     return flagcxSuccess;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (useHomoComm(comm) && !useHeteroComm()) {
-    FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, win));
-    return flagcxSuccess;
+  // Use isSymmetricDefault flag to determine ownership:
+  // - If backend owns it (vendorBase != nullptr && !isSymmetricDefault),
+  //   deregister via backend only
+  // - Otherwise (hetero path or homo fallback), deregister via sym_heap
+  if (useHomoComm(comm) && !useHeteroComm() && win->vendorBase != nullptr &&
+      !win->isSymmetricDefault) {
+    // Backend owns this window — deregister via backend only
+    flagcxResult_t res =
+        cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+            comm->homoComm, win->vendorBase);
+    free(win);
+    return res; // propagate real errors, don't fall through
   }
-  return flagcxNotSupported;
+  // Sym-heap owns this window (hetero path, or homo fallback)
+  return flagcxSymWindowDeregister(comm->heteroComm, win);
 }
 
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {
@@ -1229,8 +1258,14 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   if (!vendorReqs) {
     // Default path: IPC barriers are sufficient for LSA allreduce
     reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-    INFO(FLAGCX_INIT, "Custom allreduce: adaptor has no DevComm support, "
-                      "using Default path (LSA only)");
+    // Check if multicast (NVLS) is available via adaptor
+    int mcSupported = 0;
+    if (deviceAdaptor->symMulticastSupported)
+      deviceAdaptor->symMulticastSupported(&mcSupported);
+    if (mcSupported)
+      reqs.intraMulticast = true;
+    INFO(FLAGCX_INIT, "Custom allreduce: using Default path (%s)",
+         reqs.intraMulticast ? "multicast + LSA" : "LSA only");
   }
 
   // Record capability flags
@@ -1247,30 +1282,80 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
 
   // 3. Allocate staged buffers
   state->stagedBuffSize = FLAGCX_CUSTOM_OP_STAGED_BUFFER_SIZE;
-  res = cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(&state->sendStagedBuff,
-                                                      state->stagedBuffSize);
-  if (res != flagcxSuccess)
-    goto fail;
-  res = cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(&state->recvStagedBuff,
-                                                      state->stagedBuffSize);
-  if (res != flagcxSuccess)
-    goto fail;
+
+  // On the default path with multicast, use VMM-backed allocation so that
+  // symPhysAlloc can export the physical handle for flat VA + multicast.
+  bool needVmmAlloc = false;
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  {
+    int mcSupported = 0;
+    if (deviceAdaptor->symMulticastSupported)
+      deviceAdaptor->symMulticastSupported(&mcSupported);
+    needVmmAlloc = (mcSupported && deviceAdaptor->gdrMemAlloc != nullptr);
+  }
+#endif
+
+  if (needVmmAlloc) {
+    FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->sendStagedBuff,
+                                               state->stagedBuffSize, nullptr),
+                    res, fail);
+    FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->recvStagedBuff,
+                                               state->stagedBuffSize, nullptr),
+                    res, fail);
+    state->stagedVmmAlloc = true;
+  } else {
+    FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(
+                        &state->sendStagedBuff, state->stagedBuffSize),
+                    res, fail);
+    FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(
+                        &state->recvStagedBuff, state->stagedBuffSize),
+                    res, fail);
+  }
 
   // 4. Register windows (symmetric) — skip if adaptor doesn't support it
   if (cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister != NULL) {
+    FLAGCXCHECKGOTO(flagcxCalloc(&state->sendStagedWin, 1), res, fail);
     res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
         comm->homoComm, state->sendStagedBuff, state->stagedBuffSize,
-        &state->sendStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+        &state->sendStagedWin->vendorBase, FLAGCX_WIN_COLL_SYMMETRIC);
     if (res != flagcxSuccess && res != flagcxNotSupported)
       goto fail;
     if (res == flagcxSuccess) {
+      FLAGCXCHECKGOTO(flagcxCalloc(&state->recvStagedWin, 1), res, fail);
       res = cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister(
           comm->homoComm, state->recvStagedBuff, state->stagedBuffSize,
-          &state->recvStagedWin, FLAGCX_WIN_COLL_SYMMETRIC);
+          &state->recvStagedWin->vendorBase, FLAGCX_WIN_COLL_SYMMETRIC);
       if (res != flagcxSuccess && res != flagcxNotSupported)
         goto fail;
-      if (res != flagcxSuccess)
-        state->recvStagedWin = nullptr; // partial failure: clear
+      if (res != flagcxSuccess) {
+        free(state->recvStagedWin);
+        state->recvStagedWin = nullptr;
+      }
+    } else {
+      free(state->sendStagedWin);
+      state->sendStagedWin = nullptr;
+    }
+  }
+
+  // Default path: if vendor didn't provide windows and multicast is supported,
+  // register staged buffers via sym heap path
+  if (state->sendStagedWin == nullptr && state->recvStagedWin == nullptr) {
+    int mcSupported = 0;
+    if (deviceAdaptor->symMulticastSupported)
+      deviceAdaptor->symMulticastSupported(&mcSupported);
+    if (mcSupported && comm->heteroComm != nullptr) {
+      // Register send staged buffer
+      FLAGCXCHECKGOTO(
+          flagcxSymWindowRegister(comm->heteroComm, state->sendStagedBuff,
+                                  state->stagedBuffSize, &state->sendStagedWin,
+                                  FLAGCX_WIN_COLL_SYMMETRIC),
+          res, fail);
+      // Register recv staged buffer
+      FLAGCXCHECKGOTO(
+          flagcxSymWindowRegister(comm->heteroComm, state->recvStagedBuff,
+                                  state->stagedBuffSize, &state->recvStagedWin,
+                                  FLAGCX_WIN_COLL_SYMMETRIC),
+          res, fail);
     }
   }
 
@@ -1283,6 +1368,17 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
                            state->recvStagedWin, &state->recvStagedMem);
   if (res != flagcxSuccess)
     goto fail;
+
+  // Verify multicast is actually available on the staged buffers
+  if (state->hasMulticast && state->sendStagedWin != nullptr &&
+      state->sendStagedWin->isSymmetricDefault) {
+    flagcxSymWindow_t d = state->sendStagedWin->defaultBase;
+    if (d == nullptr || d->mcBase == nullptr) {
+      INFO(FLAGCX_INIT,
+           "Custom allreduce: multicast bind failed, falling back to LSA");
+      state->hasMulticast = false;
+    }
+  }
 
   // 6. Register custom op
   state->customAllReduce = flagcxCustomAllReduceImpl;
@@ -1300,16 +1396,40 @@ fail:
     flagcxDevMemDestroy(comm, state->recvStagedMem);
   if (state->sendStagedMem)
     flagcxDevMemDestroy(comm, state->sendStagedMem);
-  if (state->recvStagedWin)
-    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->recvStagedWin);
-  if (state->sendStagedWin)
-    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->sendStagedWin);
-  if (state->recvStagedBuff)
-    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
-  if (state->sendStagedBuff)
-    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
+  if (state->recvStagedWin) {
+    if (state->recvStagedWin->vendorBase != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+          comm->homoComm, state->recvStagedWin->vendorBase);
+      free(state->recvStagedWin);
+    } else if (state->recvStagedWin->isSymmetricDefault) {
+      flagcxSymWindowDeregister(comm->heteroComm, state->recvStagedWin);
+    } else {
+      free(state->recvStagedWin);
+    }
+  }
+  if (state->sendStagedWin) {
+    if (state->sendStagedWin->vendorBase != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+          comm->homoComm, state->sendStagedWin->vendorBase);
+      free(state->sendStagedWin);
+    } else if (state->sendStagedWin->isSymmetricDefault) {
+      flagcxSymWindowDeregister(comm->heteroComm, state->sendStagedWin);
+    } else {
+      free(state->sendStagedWin);
+    }
+  }
+  if (state->recvStagedBuff) {
+    if (state->stagedVmmAlloc)
+      deviceAdaptor->gdrMemFree(state->recvStagedBuff, nullptr);
+    else
+      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
+  }
+  if (state->sendStagedBuff) {
+    if (state->stagedVmmAlloc)
+      deviceAdaptor->gdrMemFree(state->sendStagedBuff, nullptr);
+    else
+      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
+  }
   free(state);
   comm->devCommState = nullptr;
   INFO(FLAGCX_INIT, "Custom allreduce: init failed, disabled");
@@ -1329,16 +1449,40 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
     flagcxDevMemDestroy(comm, state->sendStagedMem);
   if (state->recvStagedMem)
     flagcxDevMemDestroy(comm, state->recvStagedMem);
-  if (state->sendStagedWin)
-    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->sendStagedWin);
-  if (state->recvStagedWin)
-    cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
-        comm->homoComm, state->recvStagedWin);
-  if (state->sendStagedBuff)
-    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
-  if (state->recvStagedBuff)
-    cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
+  if (state->sendStagedWin) {
+    if (state->sendStagedWin->vendorBase != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+          comm->homoComm, state->sendStagedWin->vendorBase);
+      free(state->sendStagedWin);
+    } else if (state->sendStagedWin->isSymmetricDefault) {
+      flagcxSymWindowDeregister(comm->heteroComm, state->sendStagedWin);
+    } else {
+      free(state->sendStagedWin);
+    }
+  }
+  if (state->recvStagedWin) {
+    if (state->recvStagedWin->vendorBase != nullptr) {
+      cclAdaptors[flagcxCCLAdaptorDevice]->commWindowDeregister(
+          comm->homoComm, state->recvStagedWin->vendorBase);
+      free(state->recvStagedWin);
+    } else if (state->recvStagedWin->isSymmetricDefault) {
+      flagcxSymWindowDeregister(comm->heteroComm, state->recvStagedWin);
+    } else {
+      free(state->recvStagedWin);
+    }
+  }
+  if (state->sendStagedBuff) {
+    if (state->stagedVmmAlloc)
+      deviceAdaptor->gdrMemFree(state->sendStagedBuff, nullptr);
+    else
+      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->sendStagedBuff);
+  }
+  if (state->recvStagedBuff) {
+    if (state->stagedVmmAlloc)
+      deviceAdaptor->gdrMemFree(state->recvStagedBuff, nullptr);
+    else
+      cclAdaptors[flagcxCCLAdaptorDevice]->memFree(state->recvStagedBuff);
+  }
   free(state);
   comm->devCommState = nullptr;
   return flagcxSuccess;
@@ -2060,10 +2204,10 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                flagcxStream_t stream) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
-  // Try custom allreduce if registered — only valid for homo-only single-node
+  // Try custom allreduce if registered
   if (comm->devCommState != NULL &&
-      comm->devCommState->customAllReduce != NULL && useHomoComm(comm) &&
-      !useHeteroComm() && comm->localRanks == comm->nranks) {
+      comm->devCommState->customAllReduce != NULL &&
+      comm->localRanks == comm->nranks) {
     auto *state = comm->devCommState;
     size_t size = count * getFlagcxDataTypeSize(datatype);
     if (size <= state->stagedBuffSize) {
