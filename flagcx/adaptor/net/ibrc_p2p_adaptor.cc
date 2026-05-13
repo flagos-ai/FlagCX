@@ -68,7 +68,7 @@ struct flagcxP2pConnMeta {
 };
 
 // P2P request — simplified from flagcxIbRequest
-#define FLAGCX_P2P_MAX_REQUESTS 32
+#define FLAGCX_P2P_MAX_REQUESTS 128
 #define FLAGCX_P2P_REQ_UNUSED 0
 #define FLAGCX_P2P_REQ_IPUT 1
 #define FLAGCX_P2P_REQ_IGET 2

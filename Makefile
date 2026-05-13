@@ -313,8 +313,17 @@ endif
 
 LIBDIR := $(BUILDDIR)/lib
 OBJDIR := $(BUILDDIR)/obj
+BUILD_INCDIR := $(BUILDDIR)/include
 PREFIX ?= /usr/local
 DESTDIR  ?= $(PREFIX)/lib
+INC_DESTDIR ?= $(PREFIX)/include
+
+# Public headers exported alongside libflagcx.so
+PUBLIC_HEADERS := \
+	flagcx/include/flagcx.h \
+	flagcx/include/flagcx_kernel.h \
+	flagcx/include/flagcx_p2p.h
+BUILD_PUBLIC_HEADERS := $(PUBLIC_HEADERS:flagcx/include/%=$(BUILD_INCDIR)/%)
 
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
@@ -349,7 +358,7 @@ endif
 LIBOBJ:= $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
 
 TARGET = libflagcx.so
-all: $(LIBDIR)/$(TARGET)
+all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
 
 print_var:
 	@echo "USE_KUNLUNXIN : $(USE_KUNLUNXIN)"
@@ -404,6 +413,13 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 	@echo "Linking   $@"
 	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) -g
 
+# Copy public headers from flagcx/include/ into the build output tree so they
+# sit next to the shared libraries (build/include + build/lib).
+$(BUILD_INCDIR)/%.h: flagcx/include/%.h
+	@mkdir -p `dirname $@`
+	@echo "Copying   $@"
+	@cp $< $@
+
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
@@ -429,6 +445,8 @@ INSTALLDIR := /usr/local/lib
 install:
 	@mkdir -p $(DESTDIR)
 	@cp $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET)
+	@mkdir -p $(INC_DESTDIR)
+	@cp $(PUBLIC_HEADERS) $(INC_DESTDIR)/
 
 clean:
-	@rm -rf $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET) $(OBJDIR)
+	@rm -rf $(LIBDIR)/$(TARGET) $(DESTDIR)/$(TARGET) $(BUILD_INCDIR) $(OBJDIR)
