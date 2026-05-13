@@ -422,22 +422,23 @@ static flagcxResult_t flagcxP2pAccept(void *listenComm, void **recvComm) {
   struct flagcxP2pRecvComm *comm;
   FLAGCXCHECK(flagcxCalloc(&comm, 1));
 
-  // TCP accept (blocking with timeout)
-  FLAGCXCHECK(flagcxSocketInit(&comm->sock));
-  FLAGCXCHECK(flagcxSocketAccept(&comm->sock, &lComm->sock));
-  int ready = 0;
-  auto acceptStart = std::chrono::steady_clock::now();
+  // TCP accept (blocking, no timeout)
+  flagcxResult_t res;
+  int ready;
+  FLAGCXCHECKGOTO(flagcxSocketInit(&comm->sock), res, accept_fail);
+  FLAGCXCHECKGOTO(flagcxSocketAccept(&comm->sock, &lComm->sock), res,
+                  accept_fail);
+  ready = 0;
   while (!ready) {
-    FLAGCXCHECK(flagcxSocketReady(&comm->sock, &ready));
+    FLAGCXCHECKGOTO(flagcxSocketReady(&comm->sock, &ready), res, accept_fail);
     if (!ready) {
-      if (std::chrono::steady_clock::now() - acceptStart >
-          std::chrono::seconds(30)) {
-        WARN("NET/IB_P2P : accept socket ready timed out after 30s");
-        free(comm);
-        return flagcxSystemError;
-      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+  }
+  if (0) {
+  accept_fail:
+    free(comm);
+    return res;
   }
 
   // Set up PD, CQ, QP
