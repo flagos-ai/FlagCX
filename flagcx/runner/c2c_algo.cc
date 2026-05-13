@@ -27,18 +27,6 @@ inline int getLcmOfInterRankList(
   return result;
 }
 
-size_t getC2cCommPatternHash(size_t count, size_t rootClusterId,
-                             flagcxCommOp_t commOp, flagcxRedOp_t redOp,
-                             flagcxComm_t comm) {
-  std::size_t h1 = std::hash<size_t>()(count);
-  std::size_t h2 = std::hash<size_t>()(rootClusterId);
-  std::size_t h3 = std::hash<size_t>()(commOp);
-  std::size_t h4 = std::hash<size_t>()(redOp);
-  std::size_t h5 = std::hash<size_t>()((size_t)((uintptr_t)comm));
-  std::size_t h = h1 ^ (h2 << 1) ^ (h3 << 2) ^ (h4 << 3) ^ (h5 << 4);
-  return (static_cast<size_t>(h) << 4) + static_cast<size_t>(commOp);
-}
-
 flagcxInterRankBufferInfoManager::flagcxInterRankBufferInfoManager(
     size_t totalCount)
     : totalCount_(totalCount) {}
@@ -1261,21 +1249,29 @@ flagcxResult_t flagcxC2cPlanner::refresh(int isSendRecv) {
             clusterdataoffset += comm_->clusterSizes[z];
           } else if (i != z) {
             if (isUseless == 0) {
-              for (int k = 0; k < myCount / minCount; ++k) {
-                interRankBufferInfoManager_.pushBackBufferInfo(
-                    i, clusterInterRankList_[i][j],
-                    (sendCount_ >= recvCount_) ? myCount * j + minCount * k
-                                               : clusterOffset * sendCount_ +
-                                                     myCount * j + minCount * k,
-                    minCount, z, 0, isScheduled, -1, -1);
+              // Distribute remainder evenly: last myRes ranks each get one
+              // extra element instead of dumping all remainder on the last
+              // rank.
+              size_t rankCount =
+                  myCount + (j >= nClusterInterRanks - myRes ? 1 : 0);
+              size_t rankOffset = 0;
+              if (j < nClusterInterRanks - myRes) {
+                rankOffset = myCount * j;
+              } else {
+                rankOffset = myCount * (nClusterInterRanks - myRes) +
+                             (myCount + 1) * (j - (nClusterInterRanks - myRes));
               }
-              if (j == nClusterInterRanks - 1 && myRes > 0) {
+              size_t rankMinCount =
+                  (searchGranularity == "COARSE") ? rankCount : minCount;
+              for (size_t k = 0;
+                   k < (rankMinCount > 0 ? rankCount / rankMinCount : 0); ++k) {
                 interRankBufferInfoManager_.pushBackBufferInfo(
                     i, clusterInterRankList_[i][j],
                     (sendCount_ >= recvCount_)
-                        ? myCount * (j + 1)
-                        : clusterOffset * sendCount_ + myCount * (j + 1),
-                    myRes, z, 0, isScheduled, -1, -1);
+                        ? rankOffset + rankMinCount * k
+                        : clusterOffset * sendCount_ + rankOffset +
+                              rankMinCount * k,
+                    rankMinCount, z, 0, isScheduled, -1, -1);
               }
             }
           }
