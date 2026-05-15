@@ -453,9 +453,7 @@ class FlagCXBenchmark(TransportBenchmark):
 
         self.comm = None
         self.buffer: torch.Tensor = None
-        self.signal_buffer: torch.Tensor = None
         self.zmq_sock = None
-        self.counter = 0
 
     def setup(self, size: int, num_blocks: int) -> None:
         import ctypes
@@ -493,11 +491,13 @@ class FlagCXBenchmark(TransportBenchmark):
         )
 
         # Allocate and register signal buffer
-        self.signal_buffer = torch.zeros(1, device=dev, dtype=torch.int64)
-        self.flagcx.flagcxOneSideSignalRegister(
-            self.comm, self.signal_buffer.data_ptr(),
-            self.signal_buffer.numel() * self.signal_buffer.element_size(), 0
-        )
+        # TODO: if we support flagcxWaitCounter(sender) and flagcxWaitSignal(receiver)
+        #       then we need to implement a flagcxOneSideSignalRegister, like below:
+        # self.signal_buffer = torch.zeros(1, dtype=torch.int64).pin_memory()
+        # self.flagcx.flagcxOneSideSignalRegister(
+        #     self.comm, self.signal_buffer.data_ptr(),
+        #     self.signal_buffer.numel() * self.signal_buffer.element_size(), 1
+        # )
 
         # Sync ready
         if "server" in self.role:
@@ -507,22 +507,22 @@ class FlagCXBenchmark(TransportBenchmark):
             self.zmq_sock.recv()
             self.zmq_sock.send(b"READY")
 
-        self.counter = 0
         self._total_bytes = total_bytes
         self._num_blocks = num_blocks
 
     def run_transfer(self) -> None:
         """Client puts data to server."""
-        self.counter += 1
         rank = 0 if "server" in self.role else 1
         peer = 1 - rank
         block_size = self._total_bytes // self._num_blocks
 
         if rank == 1:  # client
+            before = self.flagcx.flagcxReadCounter(self.comm)
             if self._num_blocks == 1:
                 self.flagcx.flagcxPut(
                     self.comm, peer, 0, 0, self._total_bytes, 0, 0
                 )
+                n_ops = 1
             else:
                 offsets = [i * block_size for i in range(self._num_blocks)]
                 sizes = [block_size] * self._num_blocks
@@ -531,9 +531,12 @@ class FlagCXBenchmark(TransportBenchmark):
                     self.comm, peer, offsets, offsets, sizes,
                     mr_idxs, mr_idxs
                 )
-            self.flagcx.flagcxSignal(self.comm, peer, 0, self.counter)
+                n_ops = self._num_blocks
+            self.flagcx.flagcxWaitCounter(self.comm, before + n_ops)
+            self.zmq_sock.send(b"DONE")
         else:  # server waits
-            self.flagcx.flagcxWaitCounter(self.comm, self.counter)
+            while self.zmq_sock.recv() != b"DONE":
+                pass
 
     def verify_strict(self) -> None:
         """Strict element-by-element verification. Raises on mismatch."""
@@ -564,8 +567,6 @@ class FlagCXBenchmark(TransportBenchmark):
             self.zmq_sock = None
         self.comm = None
         self.buffer = None
-        self.signal_buffer = None
-        self.counter = 0
 
 
 # ---------------------------------------------------------------------------
@@ -630,11 +631,12 @@ def benchmark_size(bench: TransportBenchmark, size: int, num_blocks: int,
 
     # Stats
     avg_s = elapsed / iters
-    bw_GBs = (size / avg_s) / (1024**3) if avg_s > 0 else 0
-    bw_Gbps = (size * 8 / avg_s) / 1e9 if avg_s > 0 else 0
+    total_bytes = size * num_blocks
+    bw_GBs = (total_bytes / avg_s) / (1024**3) if avg_s > 0 else 0
+    bw_Gbps = (total_bytes * 8 / avg_s) / 1e9 if avg_s > 0 else 0
 
     print(
-        f"  {_pretty_size(size):>10s}  |  "
+        f"  {_pretty_size(total_bytes):>10s}  |  "
         f"lat={avg_s * 1000:8.3f} ms  |  "
         f"BW={bw_GBs:7.2f} GB/s  ({bw_Gbps:7.2f} Gbps)  |  "
         f"iters={iters}"
@@ -698,7 +700,7 @@ def main() -> None:
         help="NIXL backend plugin (UCX, UCCL, FLAGCX, etc.)"
     )
     p.add_argument(
-        "--zmq-port", type=int, default=9000,
+        "--zmq-port", type=int, default=4566,
         help="ZMQ coordination port"
     )
     p.add_argument(
