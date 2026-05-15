@@ -254,3 +254,42 @@ OSError: libflagcx.so: cannot open shared object file
 
 ### CUDA Out of Memory
 **Solution**: Reduce `--sizes` or use `--device=cpu` for testing.
+
+## Plotting Results
+
+Use `plot_benchmark.py` to generate comparison figures from benchmark log files.
+
+### Save benchmark output to log files
+
+```bash
+# Run benchmarks and save output
+python3 kv_transfer_benchmark.py --connector=nixl --role=server \
+    --remote-ip=10.8.2.169 --device=gpu --nixl-backend=FLAGCX \
+    --sizes=1024,4096,16384,65536,262144,1048576,16777216 --iters=20 \
+    | tee nixl_flagcx.log
+
+python3 kv_transfer_benchmark.py --connector=mooncake --role=server \
+    --remote-ip=10.8.2.169 --device=gpu \
+    --sizes=1024,4096,16384,65536,262144,1048576,16777216 --iters=20 \
+    | tee mooncake.log
+
+python3 kv_transfer_benchmark.py --connector=flagcx --role=server \
+    --remote-ip=10.8.2.169 --device=gpu \
+    --sizes=1024,4096,16384,65536,262144,1048576,16777216 --iters=20 \
+    | tee flagcx.log
+```
+
+### Generate comparison plot
+
+```bash
+# Auto-discover all *.log files in current directory
+python3 plot_benchmark.py
+
+# Specify log directory and output path
+python3 plot_benchmark.py --log-dir=./results --output=comparison.png
+
+# Display interactively
+python3 plot_benchmark.py --show
+```
+
+The script auto-detects connector labels from log file headers (`connector=XXX`, `nixl-backend=YYY`) and produces a side-by-side figure with latency and bandwidth subplots.
