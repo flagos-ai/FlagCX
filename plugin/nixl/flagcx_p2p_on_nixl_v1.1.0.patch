@@ -1,0 +1,1574 @@
+diff --git a/examples/python/expanded_two_peers.py b/examples/python/expanded_two_peers.py
+index e34a55b..9fc287e 100755
+--- a/examples/python/expanded_two_peers.py
++++ b/examples/python/expanded_two_peers.py
+@@ -105,12 +105,7 @@ if __name__ == "__main__":
+             # Send transfer relevant information to the initiator.
+             agent.send_notif(
+                 "initiator",
+-                pickle.dumps(
+-                    (
+-                        target_desc_str,
+-                        (base_addr, tensors, tensor_size, dev_id, mem_str),
+-                    )
+-                ),
++                pickle.dumps((base_addr, tensors, tensor_size, dev_id, mem_str)),
+             )
+         except Exception as e:
+             logger.exception(
+@@ -163,10 +158,15 @@ if __name__ == "__main__":
+             agent.fetch_remote_metadata("target", args.ip, args.port)
+ 
+             notifs = agent.get_new_notifs()
+-            while len(notifs) == 0:
++            while len(notifs) == 0 or "target" not in notifs:
+                 notifs = agent.get_new_notifs()
+-            target_descs_ser, layout_info = pickle.loads(notifs["target"][0])
+-            target_descs = agent.deserialize_descs(target_descs_ser)
++            layout_info = pickle.loads(notifs["target"][0])
++            base_addr, tensors_n, tensor_size, remote_dev, remote_mem = layout_info
++            remote_tuples = [
++                (base_addr + i * tensor_size, tensor_size, remote_dev)
++                for i in range(tensors_n)
++            ]
++            target_descs = agent.get_xfer_descs(remote_tuples, mem_type=remote_mem)
+ 
+             # Ensure remote metadata has arrived from fetch, required to generate transfer handles
+             ready = False
+@@ -216,7 +216,6 @@ if __name__ == "__main__":
+         #    NIXL prepares and maps in one step. As an example, randomly select which half of each tensor to write, using 2 descriptors per transfer.
+         write_handles = []
+         # Build local/remote descriptors for both WRITE requests
+-        base_addr, tensors, tensor_size, remote_dev, remote_mem = layout_info
+         local_mem = "cuda" if str(tensor.device).startswith("cuda") else "cpu"
+         local_dev = tensor.get_device()
+         if local_dev == -1:
+diff --git a/meson.build b/meson.build
+index 8aa6f49..2cfcab8 100644
+--- a/meson.build
++++ b/meson.build
+@@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
+     error('Cannot specify both enable_plugins and disable_plugins options')
+ endif
+ 
+-all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB']
++all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'FLAGCX', 'AZURE_BLOB']
+ 
+ enabled_plugins = {}
+ 
+diff --git a/src/plugins/flagcx/README.md b/src/plugins/flagcx/README.md
+new file mode 100644
+index 0000000..b19f7b9
+--- /dev/null
++++ b/src/plugins/flagcx/README.md
+@@ -0,0 +1,29 @@
++## FlagCX Backend Plugin [Preview]
++
++[FlagCX](https://github.com/FlagOpen/FlagCX) is a heterogeneous communication library that supports GPU memory transfers via one-sided RDMA operations. This backend plugin wraps the FlagCX P2P engine, mirroring the architecture of the UCCL backend plugin. The FlagCX P2P engine provides a NIXL-friendly API for point-to-point RDMA READ/WRITE operations with automatic NIC selection based on PCIe topology.
++
++## Capabilities
++
++Currently, the FlagCX P2P backend supports internode communication over RDMA. Intranode IPC communication will be added soon.
++
++## Installation Guide
++
++1. Build and install the FlagCX library (`libflagcx`), which includes the P2P engine.
++
++2. Build NIXL using regular method as in [README](https://github.com/ai-dynamo/nixl/blob/main/README.md). The FlagCX plugin is auto-discovered when `libflagcx` is found.
++
++## Usage Guide
++
++Example Usage to create a NIXL agent with FlagCX P2P engine:
++
++    ```python
++    config = nixl_agent_config(backends=["FLAGCX"])
++    agent = nixl_agent("agent-name", config)
++    ```
++
++The FlagCX engine auto-discovers the right NIC based on PCIe topology during memory registration.
++
++### Road Map
++
++- Intra-node IPC communication support
++- Progress thread support
+diff --git a/src/plugins/flagcx/flagcx_backend.cpp b/src/plugins/flagcx/flagcx_backend.cpp
+new file mode 100644
+index 0000000..22d6a4b
+--- /dev/null
++++ b/src/plugins/flagcx/flagcx_backend.cpp
+@@ -0,0 +1,663 @@
++/*
++ * Copyright (c) 2026 BAAI. All rights reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "flagcx_backend.h"
++#include "serdes/serdes.h"
++#include <iostream>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <set>
++#include <stdexcept>
++#include <sys/socket.h>
++#include <unistd.h>
++#include <chrono>
++
++// Parse connection string in format: ip_addr:port?gpu_index?notif_port
++// FlagCX metadata format includes an extra notif_port field compared to UCCL.
++// We only need ip, port, and gpu_index for the connect call.
++bool
++parseConnectionString(const std::string &conn_str,
++                      std::unique_ptr<char[]> &ip_addr,
++                      int &port,
++                      int &gpu_index) {
++    size_t colon_pos = conn_str.find(':');
++    if (colon_pos == std::string::npos) {
++        NIXL_ERROR << "Invalid connection string format: missing colon separator";
++        return false;
++    }
++    size_t question_pos = conn_str.find('?', colon_pos);
++    if (question_pos == std::string::npos) {
++        NIXL_ERROR << "Invalid connection string format: missing question mark separator";
++        return false;
++    }
++
++    std::string ip_str = conn_str.substr(0, colon_pos);
++    ip_addr = std::make_unique<char[]>(ip_str.length() + 1);
++    strcpy(ip_addr.get(), ip_str.c_str());
++
++    std::string port_str = conn_str.substr(colon_pos + 1, question_pos - colon_pos - 1);
++    try {
++        port = std::stoi(port_str);
++    }
++    catch (const std::exception &e) {
++        NIXL_ERROR << "Invalid port number: " << port_str;
++        return false;
++    }
++
++    // gpu_index is the second ?-separated field; ignore any trailing fields (notif_port)
++    std::string rest = conn_str.substr(question_pos + 1);
++    size_t next_question = rest.find('?');
++    std::string gpu_str = (next_question != std::string::npos) ? rest.substr(0, next_question) : rest;
++    try {
++        gpu_index = std::stoi(gpu_str);
++    }
++    catch (const std::exception &e) {
++        NIXL_ERROR << "Invalid GPU index: " << gpu_str;
++        return false;
++    }
++
++    return true;
++}
++
++nixlFlagcxEngine::nixlFlagcxEngine(const nixlBackendInitParams *init_params)
++    : nixlBackendEngine(init_params),
++      stop_listener_(false) {
++
++    local_agent_name_ = init_params->localAgent;
++
++    engine_ = flagcxP2pEngineCreate();
++    NIXL_DEBUG << "FlagCX P2P engine created";
++
++    listener_thread_ = std::thread(&nixlFlagcxEngine::startListener, this);
++}
++
++nixlFlagcxEngine::~nixlFlagcxEngine() {
++    stop_listener_ = true;
++
++    if (engine_) {
++        flagcxP2pEngineStopAccept(engine_);
++    }
++
++    if (listener_thread_.joinable()) {
++        listener_thread_.join();
++    }
++
++    {
++        std::lock_guard<std::mutex> lock(mem_mutex_);
++        for (auto &[addr, priv] : mem_reg_info_) {
++            if (priv && priv->mr_id != 0) {
++                flagcxP2pEngineMrDestroy(engine_, priv->mr_id);
++            }
++            delete priv;
++        }
++        mem_reg_info_.clear();
++    }
++    {
++        std::lock_guard<std::mutex> lock(conn_mutex_);
++        std::set<std::string> destroyed_agents;
++        for (auto &[agent_name, conn_id] : connected_agents_) {
++            if (destroyed_agents.find(agent_name) == destroyed_agents.end()) {
++                FlagcxP2pConn *conn = reinterpret_cast<FlagcxP2pConn *>(conn_id);
++                if (conn) {
++                    flagcxP2pEngineConnDestroy(conn);
++                    destroyed_agents.insert(agent_name);
++                }
++            }
++        }
++        connected_agents_.clear();
++    }
++
++    if (engine_) {
++        flagcxP2pEngineDestroy(engine_);
++        engine_ = nullptr;
++    }
++}
++
++void
++nixlFlagcxEngine::startListener() {
++    NIXL_DEBUG << "FlagCX accepting connections";
++    while (!stop_listener_) {
++
++        char ip_buf[256];
++        int remote_gpu_idx;
++        FlagcxP2pConn *conn = flagcxP2pEngineAccept(engine_, ip_buf, sizeof(ip_buf), &remote_gpu_idx);
++        if (!conn) {
++            if (stop_listener_) {
++                NIXL_DEBUG << "Listener thread stopping";
++                break;
++            }
++            NIXL_ERROR << "Failed to accept connection from remote agent";
++            continue;
++        }
++        flagcxP2pEngineStartListener(conn);
++        NIXL_DEBUG << "Connected to remote agent: " << ip_buf;
++        {
++            std::lock_guard<std::mutex> lock(conn_mutex_);
++            connected_agents_[ip_buf] = reinterpret_cast<uint64_t>(conn);
++        }
++    }
++}
++
++nixl_mem_list_t
++nixlFlagcxEngine::getSupportedMems() const {
++    nixl_mem_list_t mems;
++    mems.push_back(DRAM_SEG);
++    mems.push_back(VRAM_SEG);
++
++    return mems;
++}
++
++nixl_status_t
++nixlFlagcxEngine::getPublicData(const nixlBackendMD *meta, std::string &str) const {
++    nixlFlagcxBackendMD *priv = (nixlFlagcxBackendMD *)meta;
++
++    // Export desc_buf as hex string
++    str.clear();
++    str.reserve(FLAGCX_P2P_DESC_SIZE * 2);
++    for (int i = 0; i < FLAGCX_P2P_DESC_SIZE; i++) {
++        char hex[3];
++        snprintf(hex, sizeof(hex), "%02x", static_cast<unsigned char>(priv->desc_buf[i]));
++        str += hex;
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::getConnInfo(std::string &str) const {
++    if (!engine_) {
++        return NIXL_ERR_BACKEND;
++    }
++
++    char *metadata = nullptr;
++    int result = flagcxP2pEngineGetMetadata(engine_, &metadata);
++    if (result != 0 || !metadata) {
++        return NIXL_ERR_BACKEND;
++    }
++
++    str = std::string(metadata);
++    delete[] metadata;
++    NIXL_DEBUG << "FlagCX engine metadata: " << str;
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::loadRemoteConnInfo(const std::string &remote_agent,
++                                     const std::string &remote_conn_info) {
++    NIXL_DEBUG << "FlagCX engine remote_agent: " << remote_agent
++               << " loadRemoteConnInfo: " << remote_conn_info;
++    std::lock_guard<std::mutex> lock(conn_mutex_);
++
++    std::unique_ptr<char[]> ip_addr;
++    int port = 0;
++    int gpu_index = 0;
++
++    if (!parseConnectionString(remote_conn_info, ip_addr, port, gpu_index)) {
++        return NIXL_ERR_BACKEND;
++    }
++
++    FlagcxP2pConn *conn = nullptr;
++
++    NIXL_DEBUG << "Connecting to " << ip_addr.get() << ":" << port << "?gpu=" << gpu_index
++               << std::endl;
++    conn = flagcxP2pEngineConnect(engine_, ip_addr.get(), gpu_index, port);
++    if (!conn) {
++        NIXL_ERROR << "Failed to connect to remote agent " << remote_agent;
++        return NIXL_ERR_BACKEND;
++    }
++
++    NIXL_DEBUG << "Successfully connected to remote agent " << remote_agent;
++    flagcxP2pEngineStartListener(conn);
++
++    connected_agents_[remote_agent] = reinterpret_cast<uint64_t>(conn);
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::connect(const std::string &remote_agent) {
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::disconnect(const std::string &remote_agent) {
++    std::lock_guard<std::mutex> lock(conn_mutex_);
++    auto conn_iter = connected_agents_.find(remote_agent);
++    if (conn_iter == connected_agents_.end()) {
++        NIXL_ERROR << "No connection found for remote agent: " << remote_agent;
++        return NIXL_ERR_BACKEND;
++    }
++    FlagcxP2pConn *conn = reinterpret_cast<FlagcxP2pConn *>(conn_iter->second);
++    if (!conn) {
++        NIXL_ERROR << "Invalid connection for remote agent: " << remote_agent;
++        return NIXL_ERR_BACKEND;
++    }
++
++    if (conn) {
++        NIXL_DEBUG << "Disconnecting from agent: " << remote_agent;
++        flagcxP2pEngineConnDestroy(conn);
++        connected_agents_.erase(remote_agent);
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::registerMem(const nixlBlobDesc &mem,
++                              const nixl_mem_t &nixl_mem,
++                              nixlBackendMD *&out) {
++    std::lock_guard<std::mutex> lock(mem_mutex_);
++
++    if (mem_reg_info_.count(mem.addr)) {
++        auto priv = mem_reg_info_[mem.addr];
++        NIXL_DEBUG << "Registering memory: " << std::hex << mem.addr << ", len: " << std::dec
++                   << mem.len;
++        priv->ref_cnt++;
++        out = priv;
++        return NIXL_SUCCESS;
++    }
++
++    FlagcxP2pMr mr;
++    int result = flagcxP2pEngineReg(engine_, mem.addr, mem.len, mr);
++    if (result != 0) {
++        NIXL_ERROR << "Failed to register memory with FlagCX engine";
++        return NIXL_ERR_BACKEND;
++    }
++
++    auto priv = new nixlFlagcxBackendMD(true);
++    priv->addr = (void *)mem.addr;
++    priv->length = mem.len;
++    priv->ref_cnt = 1;
++    priv->mr_id = mr;
++
++    // Pre-compute RDMA descriptor for one-sided operations
++    result = flagcxP2pEnginePrepareDesc(engine_, mr, (void *)mem.addr, mem.len, priv->desc_buf);
++    if (result != 0) {
++        NIXL_ERROR << "Failed to prepare descriptor for memory region";
++        flagcxP2pEngineMrDestroy(engine_, mr);
++        delete priv;
++        return NIXL_ERR_BACKEND;
++    }
++
++    out = priv;
++    mem_reg_info_[mem.addr] = priv;
++    NIXL_DEBUG << "Registering memory: " << std::hex << mem.addr << " Device: " << mem.devId
++               << " ref_cnt: " << priv->ref_cnt << " mr_id: " << priv->mr_id;
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::deregisterMem(nixlBackendMD *meta) {
++    std::lock_guard<std::mutex> lock(mem_mutex_);
++    auto priv = static_cast<nixlFlagcxBackendMD *>(meta);
++    priv->ref_cnt--;
++    if (priv->ref_cnt > 0) return NIXL_SUCCESS;
++
++    flagcxP2pEngineMrDestroy(engine_, priv->mr_id);
++    NIXL_DEBUG << "Deregistered memory: " << std::hex << priv->addr << " mr_id: " << priv->mr_id;
++
++    mem_reg_info_.erase((uint64_t)priv->addr);
++    delete priv;
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::loadLocalMD(nixlBackendMD *input, nixlBackendMD *&output) {
++    nixlFlagcxBackendMD *input_md = (nixlFlagcxBackendMD *)input;
++    NIXL_DEBUG << "FlagCX Load Local MD: " << std::hex << input_md->addr
++               << "Meta Info:" << input_md->mr_id;
++
++    nixlFlagcxBackendMD *output_md = (nixlFlagcxBackendMD *)output;
++    output_md->addr = (void *)input_md->addr;
++    output_md->length = input_md->length;
++    output_md->ref_cnt = 1;
++    output_md->mr_id = reinterpret_cast<uint64_t>(input_md->mr_id);
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::loadRemoteMD(const nixlBlobDesc &input,
++                               const nixl_mem_t &nixl_mem,
++                               const std::string &remote_agent,
++                               nixlBackendMD *&output) {
++    NIXL_DEBUG << "FlagCX Load Remote MD: " << std::hex << input.addr
++               << " Meta Info:" << input.metaInfo << " remote_agent: " << remote_agent;
++
++    output = new nixlFlagcxBackendMD(true);
++    nixlFlagcxBackendMD *output_md = static_cast<nixlFlagcxBackendMD *>(output);
++    output_md->addr = (void *)input.addr;
++    output_md->length = input.len;
++    output_md->ref_cnt = 1;
++
++    // Decode RDMA descriptor from hex string
++    const std::string &hex_str = input.metaInfo;
++
++    if (hex_str.length() == FLAGCX_P2P_DESC_SIZE * 2) {
++        for (int i = 0; i < FLAGCX_P2P_DESC_SIZE; i++) {
++            std::string byte_str = hex_str.substr(i * 2, 2);
++            output_md->desc_buf[i] = static_cast<char>(strtoul(byte_str.c_str(), NULL, 16));
++        }
++    } else {
++        NIXL_ERROR << "Invalid descriptor hex string length: " << hex_str.length() << " (expected "
++                   << FLAGCX_P2P_DESC_SIZE * 2 << ")";
++        delete output_md;
++        output = nullptr;
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::unloadMD(nixlBackendMD *input) {
++    nixlFlagcxBackendMD *md = (nixlFlagcxBackendMD *)input;
++    delete md;
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::prepXfer(const nixl_xfer_op_t &operation,
++                           const nixl_meta_dlist_t &local,
++                           const nixl_meta_dlist_t &remote,
++                           const std::string &remote_agent,
++                           nixlBackendReqH *&handle,
++                           const nixl_opt_b_args_t *opt_args) const {
++    nixlFlagcxBackendMD *lmd;
++    nixlFlagcxBackendMD *rmd;
++    handle = nullptr;
++
++    NIXL_DEBUG << "FlagCX PrepXfer: " << operation << " remote_agent: " << remote_agent;
++
++    FlagcxP2pConn *conn = nullptr;
++    {
++        std::lock_guard<std::mutex> lock(conn_mutex_);
++        auto conn_iter = connected_agents_.find(remote_agent);
++        if (conn_iter == connected_agents_.end()) {
++            NIXL_ERROR << "No connection found for remote agent: " << remote_agent;
++            return NIXL_ERR_BACKEND;
++        }
++        conn = reinterpret_cast<FlagcxP2pConn *>(conn_iter->second);
++        if (!conn) {
++            NIXL_ERROR << "Invalid connection for remote agent: " << remote_agent;
++            return NIXL_ERR_BACKEND;
++        }
++    }
++
++    size_t lcnt = local.descCount();
++    size_t rcnt = remote.descCount();
++
++    if (lcnt != rcnt) {
++        NIXL_ERROR << "Local and remote descriptor counts don't match: " << lcnt << " != " << rcnt;
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    handle = new nixlFlagcxReqH(conn);
++    nixlFlagcxReqH *flagcx_handle = static_cast<nixlFlagcxReqH *>(handle);
++
++    flagcx_handle->rdma_descs.resize(lcnt);
++
++    std::lock_guard<std::mutex> lock(mem_mutex_);
++    for (size_t i = 0; i < lcnt; i++) {
++        lmd = (nixlFlagcxBackendMD *)local[i].metadataP;
++        rmd = (nixlFlagcxBackendMD *)remote[i].metadataP;
++        size_t rsize = remote[i].len;
++        uintptr_t remote_addr = remote[i].addr;
++
++        auto local_mem_iter = mem_reg_info_.find((uint64_t)lmd->addr);
++        if (local_mem_iter == mem_reg_info_.end()) {
++            NIXL_ERROR << "Local memory not registered for address:" << std::hex << lmd->addr;
++            return NIXL_ERR_BACKEND;
++        }
++
++        // Deserialize RDMA descriptor from char[] into FlagcxP2pRdmaDesc struct
++        flagcxP2pDeserializeRdmaDesc(rmd->desc_buf, &flagcx_handle->rdma_descs[i]);
++
++        flagcxP2pEngineUpdateDesc(flagcx_handle->rdma_descs[i], remote_addr, rsize);
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::postXfer(const nixl_xfer_op_t &operation,
++                           const nixl_meta_dlist_t &local,
++                           const nixl_meta_dlist_t &remote,
++                           const std::string &remote_agent,
++                           nixlBackendReqH *&handle,
++                           const nixl_opt_b_args_t *opt_args) const {
++    nixlFlagcxReqH *flagcx_handle;
++    nixlFlagcxBackendMD *lmd;
++
++    NIXL_DEBUG << "FlagCX PostXfer: " << operation << " remote_agent: " << remote_agent;
++
++    FlagcxP2pConn *conn = nullptr;
++    {
++        std::lock_guard<std::mutex> lock(conn_mutex_);
++        auto conn_iter = connected_agents_.find(remote_agent);
++        if (conn_iter == connected_agents_.end()) {
++            NIXL_ERROR << "No connection found for remote agent: " << remote_agent;
++            return NIXL_ERR_BACKEND;
++        }
++
++        conn = reinterpret_cast<FlagcxP2pConn *>(conn_iter->second);
++        if (!conn) {
++            NIXL_ERROR << "Invalid connection for remote agent: " << remote_agent;
++            return NIXL_ERR_BACKEND;
++        }
++    }
++
++    size_t lcnt = local.descCount();
++    size_t rcnt = remote.descCount();
++
++    if (lcnt != rcnt) {
++        NIXL_ERROR << "Local and remote descriptor counts don't match: " << lcnt << " != " << rcnt;
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    std::vector<FlagcxP2pMr> mr_ids;
++    std::vector<void *> addr_v;
++    std::vector<size_t> size_v;
++
++    std::lock_guard<std::mutex> lock(mem_mutex_);
++    for (size_t i = 0; i < lcnt; i++) {
++        lmd = (nixlFlagcxBackendMD *)local[i].metadataP;
++        size_t lsize = local[i].len;
++        size_t rsize = remote[i].len;
++        uintptr_t local_addr = local[i].addr;
++
++        if (lsize != rsize) {
++            NIXL_ERROR << "Local and remote sizes don't match: " << lsize << " != " << rsize;
++            return NIXL_ERR_INVALID_PARAM;
++        }
++
++        auto local_mem_iter = mem_reg_info_.find((uint64_t)lmd->addr);
++        if (local_mem_iter == mem_reg_info_.end()) {
++            NIXL_ERROR << "Local memory not registered for base address: " << std::hex << lmd->addr;
++            return NIXL_ERR_BACKEND;
++        }
++
++        auto local_priv = local_mem_iter->second;
++
++        mr_ids.push_back(local_priv->mr_id);
++        addr_v.push_back((void *)local_addr);
++        size_v.push_back(lsize);
++    }
++
++    int result = 0;
++    uint64_t transfer_id = 0;
++    flagcx_handle = static_cast<nixlFlagcxReqH *>(handle);
++
++    switch (operation) {
++    case NIXL_READ: {
++        result = flagcxP2pEngineReadVector(
++            conn, mr_ids, addr_v, size_v, flagcx_handle->rdma_descs, lcnt, &transfer_id);
++        break;
++    }
++    case NIXL_WRITE: {
++        result = flagcxP2pEngineWriteVector(
++            conn, mr_ids, addr_v, size_v, flagcx_handle->rdma_descs, lcnt, &transfer_id);
++        break;
++    }
++    default:
++        NIXL_ERROR << "Unsupported operation type: " << operation;
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    if (result != 0) {
++        NIXL_ERROR << "FlagCX operation failed with result: " << result;
++        return NIXL_ERR_BACKEND;
++    }
++
++    if (!handle) {
++        handle = new nixlFlagcxReqH(conn);
++    }
++    flagcx_handle->transfer_id = transfer_id;
++
++    NIXL_DEBUG << "Successfully posted vector " << (operation == NIXL_READ ? "READ" : "WRITE")
++               << " operation with " << lcnt << " iovecs, transfer_id: " << transfer_id;
++
++    if (opt_args && opt_args->hasNotif) {
++        flagcx_handle->notif_msg = opt_args->notifMsg;
++    }
++
++    return NIXL_IN_PROG;
++}
++
++nixl_status_t
++nixlFlagcxEngine::checkXfer(nixlBackendReqH *handle) const {
++    if (!handle) {
++        NIXL_ERROR << "Invalid handle provided to checkXfer";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    nixlFlagcxReqH *flagcx_handle = dynamic_cast<nixlFlagcxReqH *>(handle);
++    if (!flagcx_handle) {
++        NIXL_ERROR << "Invalid handle type for FlagCX backend";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    FlagcxP2pConn *conn = flagcx_handle->conn;
++    if (!conn) {
++        NIXL_ERROR << "No connection found in handle";
++        return NIXL_ERR_BACKEND;
++    }
++
++    bool is_done = flagcxP2pEngineXferStatus(conn, flagcx_handle->transfer_id);
++    if (is_done) {
++        nixlSerDes ser_des;
++        ser_des.addStr("msg", flagcx_handle->notif_msg);
++        std::string serialized = ser_des.exportStr();
++
++        if (serialized.size() > sizeof(FlagcxP2pNotifyMsg::msg)) {
++            NIXL_ERROR << "Notification message too large: " << serialized.size()
++                       << " bytes, max: " << sizeof(FlagcxP2pNotifyMsg::msg) << " bytes";
++        } else {
++            FlagcxP2pNotifyMsg notify_msg = {};
++            strncpy(notify_msg.name, local_agent_name_.c_str(), sizeof(notify_msg.name) - 1);
++            memcpy(notify_msg.msg, serialized.c_str(), serialized.size());
++
++            int result = flagcxP2pEngineSendNotif(conn, &notify_msg);
++            if (result < 0) {
++                NIXL_ERROR << "Failed to send notify message";
++                return NIXL_ERR_BACKEND;
++            }
++            NIXL_DEBUG << "Transfer complete, sent notification: " << flagcx_handle->notif_msg;
++        }
++        return NIXL_SUCCESS;
++    }
++
++    return NIXL_IN_PROG;
++}
++
++nixl_status_t
++nixlFlagcxEngine::releaseReqH(nixlBackendReqH *handle) const {
++    if (!handle) {
++        return NIXL_SUCCESS;
++    }
++
++    nixlFlagcxReqH *flagcx_handle = dynamic_cast<nixlFlagcxReqH *>(handle);
++    if (flagcx_handle) {
++        delete flagcx_handle;
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::getNotifs(notif_list_t &notif_list) {
++    if (notif_list.size() != 0) return NIXL_ERR_INVALID_PARAM;
++
++    std::vector<FlagcxP2pNotifyMsg> notify_msgs = flagcxP2pEngineGetNotifs();
++    for (size_t i = 0; i < notify_msgs.size(); i++) {
++        size_t msg_len = sizeof(notify_msgs[i].msg);
++        std::string serialized_str(notify_msgs[i].msg, msg_len);
++        nixlSerDes ser_des;
++        nixl_status_t ret = ser_des.importStr(serialized_str);
++        if (ret != NIXL_SUCCESS) {
++            NIXL_ERROR << "Failed to deserialize notification message";
++            continue;
++        }
++        std::string remote_name(notify_msgs[i].name);
++        std::string msg = ser_des.getStr("msg");
++
++        notif_list.push_back(std::make_pair(remote_name, msg));
++    }
++
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlFlagcxEngine::genNotif(const std::string &remote_agent, const std::string &msg) const {
++    std::lock_guard<std::mutex> lock(conn_mutex_);
++    auto conn_iter = connected_agents_.find(remote_agent);
++    if (conn_iter == connected_agents_.end()) {
++        NIXL_ERROR << "No connection found for remote agent: " << remote_agent;
++        return NIXL_ERR_BACKEND;
++    }
++
++    FlagcxP2pConn *conn = reinterpret_cast<FlagcxP2pConn *>(conn_iter->second);
++    if (!conn) {
++        NIXL_ERROR << "Invalid connection for remote agent: " << remote_agent;
++        return NIXL_ERR_BACKEND;
++    }
++
++    nixlSerDes ser_des;
++    ser_des.addStr("msg", msg);
++    std::string serialized = ser_des.exportStr();
++
++    if (serialized.size() > sizeof(FlagcxP2pNotifyMsg::msg)) {
++        NIXL_ERROR << "Notification message too large: " << serialized.size()
++                   << " bytes, max: " << sizeof(FlagcxP2pNotifyMsg::msg) << " bytes";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    FlagcxP2pNotifyMsg notify_msg;
++    memset(&notify_msg, 0, sizeof(notify_msg));
++    strncpy(notify_msg.name, local_agent_name_.c_str(), sizeof(notify_msg.name) - 1);
++    memcpy(notify_msg.msg, serialized.c_str(), serialized.size());
++
++    int result = flagcxP2pEngineSendNotif(conn, &notify_msg);
++    if (result < 0) {
++        NIXL_ERROR << "Failed to send notify message";
++        return NIXL_ERR_BACKEND;
++    }
++
++    return NIXL_SUCCESS;
++}
+diff --git a/src/plugins/flagcx/flagcx_backend.h b/src/plugins/flagcx/flagcx_backend.h
+new file mode 100644
+index 0000000..cd50af4
+--- /dev/null
++++ b/src/plugins/flagcx/flagcx_backend.h
+@@ -0,0 +1,165 @@
++/*
++ * Copyright (c) 2026 BAAI. All rights reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#ifndef __FLAGCX_BACKEND_H
++#define __FLAGCX_BACKEND_H
++
++#include <vector>
++#include <array>
++#include <mutex>
++#include <unordered_map>
++#include <unordered_set>
++#include <string>
++#include <thread>
++#include <atomic>
++#include <map>
++
++#include "nixl.h"
++#include <nixl_types.h>
++#include "backend/backend_engine.h"
++#include "common/nixl_log.h"
++
++#include "flagcx_p2p.h"
++
++class nixlFlagcxBackendMD;
++class nixlFlagcxReqH;
++
++class nixlFlagcxEngine : public nixlBackendEngine {
++public:
++    nixlFlagcxEngine(const nixlBackendInitParams *init_params);
++    ~nixlFlagcxEngine();
++
++    bool
++    supportsRemote() const {
++        return true;
++    }
++
++    bool
++    supportsLocal() const {
++        return false;
++    }
++
++    bool
++    supportsNotif() const {
++        return true;
++    }
++
++    bool
++    supportsProgTh() const {
++        return false;
++    }
++
++    nixl_mem_list_t
++    getSupportedMems() const;
++
++    nixl_status_t
++    getPublicData(const nixlBackendMD *meta, std::string &str) const;
++    nixl_status_t
++    getConnInfo(std::string &str) const;
++    nixl_status_t
++    loadRemoteConnInfo(const std::string &remote_agent, const std::string &remote_conn_info);
++
++    nixl_status_t
++    connect(const std::string &remote_agent) override;
++    nixl_status_t
++    disconnect(const std::string &remote_agent);
++
++    nixl_status_t
++    registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out);
++    nixl_status_t
++    deregisterMem(nixlBackendMD *meta);
++
++    nixl_status_t
++    loadLocalMD(nixlBackendMD *input, nixlBackendMD *&output);
++
++    nixl_status_t
++    loadRemoteMD(const nixlBlobDesc &input,
++                 const nixl_mem_t &nixl_mem,
++                 const std::string &remote_agent,
++                 nixlBackendMD *&output);
++
++    nixl_status_t
++    unloadMD(nixlBackendMD *input);
++
++    nixl_status_t
++    prepXfer(const nixl_xfer_op_t &operation,
++             const nixl_meta_dlist_t &local,
++             const nixl_meta_dlist_t &remote,
++             const std::string &remote_agent,
++             nixlBackendReqH *&handle,
++             const nixl_opt_b_args_t *opt_args = nullptr) const;
++
++    nixl_status_t
++    postXfer(const nixl_xfer_op_t &operation,
++             const nixl_meta_dlist_t &local,
++             const nixl_meta_dlist_t &remote,
++             const std::string &remote_agent,
++             nixlBackendReqH *&handle,
++             const nixl_opt_b_args_t *opt_args = nullptr) const;
++
++    nixl_status_t
++    checkXfer(nixlBackendReqH *handle) const;
++    nixl_status_t
++    releaseReqH(nixlBackendReqH *handle) const;
++
++    nixl_status_t
++    getNotifs(notif_list_t &notif_list);
++    nixl_status_t
++    genNotif(const std::string &remote_agent, const std::string &msg) const override;
++
++private:
++    void
++    startListener();
++
++    mutable std::mutex mem_mutex_;
++    mutable std::mutex conn_mutex_;
++    FlagcxP2pEngine *engine_;
++    std::string local_agent_name_;
++    std::unordered_map<uint64_t, nixlFlagcxBackendMD *> mem_reg_info_;
++    std::unordered_map<std::string, uint64_t> connected_agents_;
++    std::thread listener_thread_;
++    std::atomic<bool> stop_listener_;
++};
++
++// FlagCX Backend Memory Descriptor
++class nixlFlagcxBackendMD : public nixlBackendMD {
++public:
++    nixlFlagcxBackendMD(bool isPrivate) : nixlBackendMD(isPrivate) {
++        memset(desc_buf, 0, FLAGCX_P2P_DESC_SIZE);
++    }
++
++    virtual ~nixlFlagcxBackendMD() {}
++
++    void *addr;
++    size_t length;
++    int ref_cnt;
++    FlagcxP2pMr mr_id;
++    char desc_buf[FLAGCX_P2P_DESC_SIZE];
++};
++
++// FlagCX Backend Request Handle
++class nixlFlagcxReqH : public nixlBackendReqH {
++public:
++    nixlFlagcxReqH(FlagcxP2pConn *conn) : conn(conn) {}
++
++    virtual ~nixlFlagcxReqH() {}
++
++    FlagcxP2pConn *conn;
++    uint64_t transfer_id;
++    nixl_blob_t notif_msg;
++    std::vector<FlagcxP2pRdmaDesc> rdma_descs;
++};
++
++#endif
+diff --git a/src/plugins/flagcx/flagcx_plugin.cpp b/src/plugins/flagcx/flagcx_plugin.cpp
+new file mode 100644
+index 0000000..8383156
+--- /dev/null
++++ b/src/plugins/flagcx/flagcx_plugin.cpp
+@@ -0,0 +1,45 @@
++/*
++ * Copyright (c) 2026 BAAI. All rights reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include "backend/backend_plugin.h"
++#include "flagcx_backend.h"
++
++namespace {
++nixl_b_params_t
++get_flagcx_options() {
++    return nixl_b_params_t{};
++}
++} // namespace
++
++// Plugin type alias for convenience
++using flagcx_plugin_t = nixlBackendPluginCreator<nixlFlagcxEngine>;
++
++#ifdef STATIC_PLUGIN_FLAGCX
++nixlBackendPlugin *
++createStaticFLAGCXPlugin() {
++    return flagcx_plugin_t::create(
++        NIXL_PLUGIN_API_VERSION, "FLAGCX", "0.1.0", get_flagcx_options(), {DRAM_SEG, VRAM_SEG});
++}
++#else
++extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin *
++nixl_plugin_init() {
++    return flagcx_plugin_t::create(
++        NIXL_PLUGIN_API_VERSION, "FLAGCX", "0.1.0", get_flagcx_options(), {DRAM_SEG, VRAM_SEG});
++}
++
++extern "C" NIXL_PLUGIN_EXPORT void
++nixl_plugin_fini() {}
++#endif
+diff --git a/src/plugins/flagcx/meson.build b/src/plugins/flagcx/meson.build
+new file mode 100644
+index 0000000..d847170
+--- /dev/null
++++ b/src/plugins/flagcx/meson.build
+@@ -0,0 +1,45 @@
++# Copyright (c) 2026 BAAI. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++cpp = meson.get_compiler('cpp')
++compile_flags = []
++
++
++if 'FLAGCX' in static_plugins
++    flagcx_backend_lib = static_library('FLAGCX',
++               'flagcx_backend.cpp', 'flagcx_backend.h', 'flagcx_plugin.cpp',
++               dependencies: [nixl_infra, serdes_interface, cuda_dep, libflagcx, nixl_common_dep],
++               include_directories: nixl_inc_dirs,
++               install: false,
++               cpp_args : compile_flags,
++               name_prefix: 'libplugin_')  # Custom prefix for plugin libraries
++else
++    flagcx_backend_lib = shared_library('FLAGCX',
++               'flagcx_backend.cpp', 'flagcx_backend.h', 'flagcx_plugin.cpp',
++               dependencies: [nixl_infra, serdes_interface, cuda_dep, libflagcx, nixl_common_dep],
++               include_directories: [nixl_inc_dirs, utils_inc_dirs],
++               install: true,
++               cpp_args : compile_flags + ['-fPIC'],
++               name_prefix: 'libplugin_',  # Custom prefix for plugin libraries
++               install_dir: plugin_install_dir)
++
++    if get_option('buildtype') == 'debug'
++        run_command('sh', '-c',
++                    'echo "FLAGCX=' + flagcx_backend_lib.full_path() + '" >> ' + plugin_build_dir + '/pluginlist',
++                    check: true
++                )
++    endif
++endif
++
++flagcx_backend_interface = declare_dependency(link_with: flagcx_backend_lib)
+diff --git a/src/plugins/meson.build b/src/plugins/meson.build
+index d41c77f..b5a9773 100644
+--- a/src/plugins/meson.build
++++ b/src/plugins/meson.build
+@@ -91,6 +91,15 @@ if enabled_plugins.get('UCCL')
+     endif
+ endif
+ 
++libflagcx = cc.find_library('flagcx', required: false)
++if enabled_plugins.get('FLAGCX')
++    if not libflagcx.found() and is_explicit_enable
++        error('FLAGCX plugin requested but flagcx library not found')
++    elif libflagcx.found()
++        subdir('flagcx')
++    endif
++endif
++
+ hf3fs_lib_path = '/usr/lib/'
+ hf3fs_lib_file = 'hf3fs_api_shared'
+ hf3fs_lib_found = cc.find_library(hf3fs_lib_file, dirs: [hf3fs_lib_path], required: false)
+diff --git a/test/gtest/plugins/flagcx/flagcx_test.cpp b/test/gtest/plugins/flagcx/flagcx_test.cpp
+new file mode 100644
+index 0000000..cf18fb5
+--- /dev/null
++++ b/test/gtest/plugins/flagcx/flagcx_test.cpp
+@@ -0,0 +1,426 @@
++/*
++ * Copyright (c) 2026 BAAI. All rights reserved.
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <algorithm>
++#include <chrono>
++#include <thread>
++#include <gtest/gtest.h>
++#include <nixl_types.h>
++#include "common.h"
++#include "nixl.h"
++
++namespace gtest {
++namespace nixl {
++    constexpr const char *flagcx_backend_name = "FLAGCX";
++
++    static nixlBackendH *
++    createFlagcxBackend(nixlAgent &agent) {
++        std::vector<nixl_backend_t> plugins;
++        nixl_status_t status = agent.getAvailPlugins(plugins);
++        EXPECT_EQ(status, NIXL_SUCCESS);
++        auto it = std::find(plugins.begin(), plugins.end(), flagcx_backend_name);
++        EXPECT_NE(it, plugins.end()) << "FLAGCX plugin not found";
++
++        nixl_b_params_t params;
++        nixl_mem_list_t mems;
++        status = agent.getPluginParams(*it, mems, params);
++        EXPECT_EQ(NIXL_SUCCESS, status);
++        nixlBackendH *backend_handle = nullptr;
++        status = agent.createBackend(*it, params, backend_handle);
++        EXPECT_EQ(NIXL_SUCCESS, status);
++        EXPECT_NE(nullptr, backend_handle);
++        return backend_handle;
++    }
++
++    template<typename DListT, typename DescT>
++    void
++    fillRegList(DListT &dlist, DescT &desc, const std::vector<std::byte> &data) {
++        desc.addr = reinterpret_cast<uintptr_t>(data.data());
++        desc.len = data.size();
++        desc.devId = 0;
++        dlist.addDesc(desc);
++    }
++} // namespace nixl
++
++class TestFlagcxBackend : public testing::Test {
++    class Agent {
++        struct MemDesc {
++            MemDesc() : m_dlist(DRAM_SEG), m_desc() {}
++
++            void
++            init(nixlBackendH *backend) {
++                m_params = {.backends = {backend}};
++                nixl::fillRegList(m_dlist, m_desc, m_data);
++            }
++
++            void
++            fillData() {
++                std::fill(m_data.begin(), m_data.end(), std::byte(std::rand()));
++            }
++
++            static constexpr size_t m_data_size = 256;
++            std::vector<std::byte> m_data = std::vector<std::byte>(m_data_size);
++            nixl_opt_args_t m_params;
++            nixl_reg_dlist_t m_dlist;
++            nixlBlobDesc m_desc;
++        };
++
++    public:
++        void
++        init(const std::string &name);
++
++        void
++        destroy();
++        void
++        fillRegList(nixl_xfer_dlist_t &dlist, nixlBasicDesc &desc) const;
++        std::string
++        getLocalMD() const;
++        void
++        loadRemoteMD(const std::string &remote_name);
++        nixl_status_t
++        createXferReq(const nixl_xfer_op_t &op,
++                      nixl_xfer_dlist_t &sReq_descs,
++                      nixl_xfer_dlist_t &rReq_descs,
++                      nixlXferReqH *&req_handle) const;
++        nixl_status_t
++        postXferReq(nixlXferReqH *req_handle) const;
++        nixl_status_t
++        waitForCompletion(nixlXferReqH *req_handle);
++        nixl_status_t
++        waitForNotif(const std::string &expectedNotif);
++        void
++        fillData();
++        bool
++        dataCmp(const Agent &other) const;
++
++    private:
++        std::string m_name;
++        nixlBackendH *m_backend = nullptr;
++        std::unique_ptr<nixlAgent> m_priv = nullptr;
++        std::string m_MetaRemote;
++        MemDesc m_mem;
++    };
++
++protected:
++    enum class TestType {
++        BASIC_XFER,
++        LOAD_REMOTE_THEN_FAIL,
++        XFER_THEN_FAIL,
++        XFER_FAIL_RESTORE,
++        FAIL_AFTER_POST,
++    };
++
++    TestFlagcxBackend();
++    template<TestType test_type, enum nixl_xfer_op_t op>
++    void
++    testXfer();
++
++private:
++    template<TestType test_type>
++    bool
++    failBeforePost(size_t iter);
++    template<TestType test_type>
++    bool
++    failAfterPost(size_t iter);
++    template<TestType test_type>
++    bool
++    isFailure(size_t iter);
++    template<TestType test_type>
++    size_t
++    numIter();
++    void
++    exchangeMetaData();
++    template<TestType test_type>
++    std::variant<nixlXferReqH *, nixl_status_t>
++    postXfer(enum nixl_xfer_op_t op, size_t iter);
++
++    ScopedEnv m_env;
++    Agent m_Initiator;
++    Agent m_Target;
++    std::string m_backend_name;
++};
++
++void
++TestFlagcxBackend::Agent::init(const std::string &name) {
++    nixlAgentConfig cfg;
++    cfg.useProgThread = true;
++    m_priv = std::make_unique<nixlAgent>(name, cfg);
++    // Create FlagCX backend for testing
++    m_backend = nixl::createFlagcxBackend(*m_priv);
++    m_mem.init(m_backend);
++    m_mem.fillData();
++
++    EXPECT_EQ(NIXL_SUCCESS, m_priv->registerMem(m_mem.m_dlist, &m_mem.m_params));
++}
++
++void
++TestFlagcxBackend::Agent::destroy() {
++    m_priv->deregisterMem(m_mem.m_dlist, &m_mem.m_params);
++    m_priv->invalidateRemoteMD(m_MetaRemote);
++    m_priv.reset();
++    m_backend = nullptr;
++}
++
++void
++TestFlagcxBackend::Agent::fillRegList(nixl_xfer_dlist_t &dlist, nixlBasicDesc &desc) const {
++    nixl::fillRegList(dlist, desc, m_mem.m_data);
++}
++
++std::string
++TestFlagcxBackend::Agent::getLocalMD() const {
++    std::string meta;
++    EXPECT_EQ(NIXL_SUCCESS, m_priv->getLocalMD(meta));
++    return meta;
++}
++
++void
++TestFlagcxBackend::Agent::loadRemoteMD(const std::string &remote_name) {
++    EXPECT_EQ(NIXL_SUCCESS, m_priv->loadRemoteMD(remote_name, m_MetaRemote))
++        << "Agent " << m_name << " failed to load remote metadata";
++}
++
++nixl_status_t
++TestFlagcxBackend::Agent::createXferReq(const nixl_xfer_op_t &op,
++                                        nixl_xfer_dlist_t &sReq_descs,
++                                        nixl_xfer_dlist_t &rReq_descs,
++                                        nixlXferReqH *&req_handle) const {
++    nixl_opt_args_t extra_params = {.backends = {m_backend}};
++    extra_params.notif = "notification";
++    return m_priv->createXferReq(
++        op, sReq_descs, rReq_descs, m_MetaRemote, req_handle, &extra_params);
++}
++
++nixl_status_t
++TestFlagcxBackend::Agent::postXferReq(nixlXferReqH *req_handle) const {
++    return m_priv->postXferReq(req_handle);
++}
++
++nixl_status_t
++TestFlagcxBackend::Agent::waitForCompletion(nixlXferReqH *req_handle) {
++    nixl_status_t status;
++
++    do {
++        status = m_priv->getXferStatus(req_handle);
++        EXPECT_NE(NIXL_ERR_NOT_POSTED, status);
++    } while (status == NIXL_IN_PROG);
++
++    m_priv->releaseXferReq(req_handle);
++
++    return status;
++}
++
++nixl_status_t
++TestFlagcxBackend::Agent::waitForNotif(const std::string &expectedNotif) {
++    nixl_notifs_t notif_map;
++
++    do {
++        EXPECT_EQ(NIXL_SUCCESS, m_priv->getNotifs(notif_map));
++    } while (notif_map.empty());
++
++    std::vector<std::string> notifs = notif_map[m_MetaRemote];
++    EXPECT_EQ(1u, notifs.size());
++    EXPECT_EQ(expectedNotif, notifs.front());
++    return NIXL_SUCCESS;
++}
++
++void
++TestFlagcxBackend::Agent::fillData() {
++    m_mem.fillData();
++}
++
++bool
++TestFlagcxBackend::Agent::dataCmp(const TestFlagcxBackend::Agent &other) const {
++    return m_mem.m_data == other.m_mem.m_data;
++}
++
++TestFlagcxBackend::TestFlagcxBackend() {
++    m_backend_name = "FLAGCX";
++    m_env.addVar("NIXL_PLUGIN_DIR", std::string(BUILD_DIR) + "/src/plugins/flagcx");
++}
++
++template<TestFlagcxBackend::TestType test_type, enum nixl_xfer_op_t op>
++void
++TestFlagcxBackend::testXfer() {
++    const std::string initiator_name = "initiator";
++    const std::string target_name = "target";
++
++    m_Initiator.init(initiator_name);
++    m_Target.init(target_name);
++
++    exchangeMetaData();
++
++    for (size_t i = 0; i < numIter<test_type>(); ++i) {
++        nixl_status_t status;
++        auto result = postXfer<test_type>(op, i);
++        if (std::holds_alternative<nixl_status_t>(result)) {
++            // Transfer completed immediately
++            status = std::get<nixl_status_t>(result);
++        } else {
++            // Transfer was posted, wait for completion
++            nixlXferReqH *req_handle = std::get<nixlXferReqH *>(result);
++            status = m_Initiator.waitForCompletion(req_handle);
++        }
++
++        if (isFailure<test_type>(i)) {
++            if (failBeforePost<test_type>(i)) {
++                EXPECT_EQ(status, NIXL_ERR_REMOTE_DISCONNECT);
++            } else {
++                EXPECT_TRUE((status == NIXL_ERR_REMOTE_DISCONNECT) || (status == NIXL_SUCCESS));
++            }
++
++            if (test_type == TestType::XFER_FAIL_RESTORE) {
++                m_Target.init(target_name);
++                exchangeMetaData();
++            }
++        } else {
++            EXPECT_EQ(NIXL_SUCCESS, status);
++            EXPECT_EQ(NIXL_SUCCESS, m_Target.waitForNotif("notification"));
++            EXPECT_TRUE(m_Target.dataCmp(m_Initiator));
++
++            // Update the data for the next iteration
++            m_Initiator.fillData();
++            m_Target.fillData();
++        }
++    }
++
++    switch (test_type) {
++    case TestType::BASIC_XFER:
++    case TestType::XFER_FAIL_RESTORE:
++        m_Target.destroy();
++        m_Initiator.destroy();
++        return;
++    case TestType::LOAD_REMOTE_THEN_FAIL:
++    case TestType::XFER_THEN_FAIL:
++    case TestType::FAIL_AFTER_POST:
++        m_Initiator.destroy();
++        return;
++    }
++}
++
++template<TestFlagcxBackend::TestType test_type>
++bool
++TestFlagcxBackend::failBeforePost(size_t iter) {
++    switch (test_type) {
++    case TestType::BASIC_XFER:
++        return false;
++    case TestType::LOAD_REMOTE_THEN_FAIL:
++        return iter == 0;
++    case TestType::XFER_THEN_FAIL:
++    case TestType::XFER_FAIL_RESTORE:
++        return iter == 1;
++    case TestType::FAIL_AFTER_POST:
++        return false;
++    }
++}
++
++template<TestFlagcxBackend::TestType test_type>
++bool
++TestFlagcxBackend::failAfterPost(size_t iter) {
++    return (test_type == TestType::FAIL_AFTER_POST) && (iter == 1);
++}
++
++template<TestFlagcxBackend::TestType test_type>
++bool
++TestFlagcxBackend::isFailure(size_t iter) {
++    return failBeforePost<test_type>(iter) || failAfterPost<test_type>(iter);
++}
++
++template<TestFlagcxBackend::TestType test_type>
++size_t
++TestFlagcxBackend::numIter() {
++    switch (test_type) {
++    case TestType::BASIC_XFER:
++    case TestType::LOAD_REMOTE_THEN_FAIL:
++        return 1;
++    case TestType::XFER_THEN_FAIL:
++    case TestType::FAIL_AFTER_POST:
++        return 2;
++    case TestType::XFER_FAIL_RESTORE:
++        return 3;
++    }
++}
++
++void
++TestFlagcxBackend::exchangeMetaData() {
++    m_Initiator.loadRemoteMD(m_Target.getLocalMD());
++    m_Target.loadRemoteMD(m_Initiator.getLocalMD());
++}
++
++template<TestFlagcxBackend::TestType test_type>
++std::variant<nixlXferReqH *, nixl_status_t>
++TestFlagcxBackend::postXfer(enum nixl_xfer_op_t op, size_t iter) {
++    EXPECT_TRUE(op == NIXL_WRITE || op == NIXL_READ);
++
++    nixlBasicDesc sReq_src;
++    nixl_xfer_dlist_t sReq_descs(DRAM_SEG);
++    m_Initiator.fillRegList(sReq_descs, sReq_src);
++
++    nixlBasicDesc rReq_dst;
++    nixl_xfer_dlist_t rReq_descs(DRAM_SEG);
++    m_Target.fillRegList(rReq_descs, rReq_dst);
++
++    nixlXferReqH *req_handle;
++    nixl_status_t status = m_Initiator.createXferReq(op, sReq_descs, rReq_descs, req_handle);
++    EXPECT_EQ(NIXL_SUCCESS, status)
++        << "createXferReq failed with unexpected error: " << nixlEnumStrings::statusStr(status);
++
++    if (failBeforePost<test_type>(iter)) {
++        m_Target.destroy();
++    }
++
++    status = m_Initiator.postXferReq(req_handle);
++
++    if (failAfterPost<test_type>(iter)) {
++        m_Target.destroy();
++    }
++
++    if (isFailure<test_type>(iter) && (status == NIXL_ERR_REMOTE_DISCONNECT)) {
++        // failed handle destroyed on post
++        return status;
++    }
++
++    EXPECT_LE(0, status) << "status: " << nixlEnumStrings::statusStr(status);
++    return req_handle;
++}
++
++TEST_F(TestFlagcxBackend, BasicXfer) {
++    testXfer<TestType::BASIC_XFER, NIXL_READ>();
++    std::this_thread::sleep_for(std::chrono::seconds(1));
++    testXfer<TestType::BASIC_XFER, NIXL_WRITE>();
++}
++
++// TODO: Enable failure tests after hardening corner cases
++// TEST_F(TestFlagcxBackend, LoadRemoteThenFail) {
++//     testXfer<TestType::LOAD_REMOTE_THEN_FAIL, NIXL_WRITE>();
++//     testXfer<TestType::LOAD_REMOTE_THEN_FAIL, NIXL_READ>();
++// }
++
++// TEST_F(TestFlagcxBackend, XferThenFail) {
++//     testXfer<TestType::XFER_THEN_FAIL, NIXL_WRITE>();
++//     testXfer<TestType::XFER_THEN_FAIL, NIXL_READ>();
++// }
++
++// TEST_F(TestFlagcxBackend, XferFailRestore) {
++//     testXfer<TestType::XFER_FAIL_RESTORE, NIXL_WRITE>();
++//     testXfer<TestType::XFER_FAIL_RESTORE, NIXL_READ>();
++// }
++
++// TEST_F(TestFlagcxBackend, XferPostThenFail) {
++//     testXfer<TestType::FAIL_AFTER_POST, NIXL_WRITE>();
++//     testXfer<TestType::FAIL_AFTER_POST, NIXL_READ>();
++// }
++
++} // namespace gtest
+diff --git a/test/gtest/plugins/flagcx/meson.build b/test/gtest/plugins/flagcx/meson.build
+new file mode 100644
+index 0000000..5cca1e7
+--- /dev/null
++++ b/test/gtest/plugins/flagcx/meson.build
+@@ -0,0 +1,66 @@
++# Copyright (c) 2026 BAAI. All rights reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++cpp = meson.get_compiler('cpp')
++
++flagcx_lib = cpp.find_library('flagcx', dirs: ['/usr/local/lib'], required: false)
++flagcx_rdma_lib = cpp.find_library('rdma_plugin', dirs: ['/usr/local/lib'], required: false)
++
++if not flagcx_lib.found() or not flagcx_rdma_lib.found()
++    message('FlagCX libraries not found, skipping flagcx_gtest build')
++    subdir_done()
++endif
++
++python_dep = dependency('python3', required: false)
++pybind11_dep = dependency('pybind11', required: false)
++
++if not python_dep.found() or not pybind11_dep.found()
++    message('Python dependencies not found, skipping flagcx_gtest build')
++    subdir_done()
++endif
++
++cpp_flags = []
++cpp_flags += '-DBUILD_DIR="' + meson.project_build_root() + '"'
++
++if cuda_dep.found()
++    cuda_dependencies = [cuda_dep]
++    cpp_flags += '-DHAVE_CUDA'
++else
++    cuda_dependencies = []
++    cpp_flags += '-UHAVE_CUDA'
++endif
++
++flagcx_test_exe = executable('flagcx_gtest',
++    sources : ['flagcx_test.cpp', '../../main.cpp', '../../common.cpp'],
++    include_directories: [nixl_inc_dirs, utils_inc_dirs, gtest_inc_dirs, '.'],
++    cpp_args : cpp_flags,
++    dependencies : [
++        nixl_dep,
++        nixl_infra,
++        nixl_common_deps,
++        thread_dep,
++        python_dep,
++        pybind11_dep,
++        flagcx_rdma_lib,
++        flagcx_lib,
++        gtest_dep,
++        gmock_dep,
++        absl_strings_dep,
++        absl_time_dep
++    ] + cuda_dependencies,
++    link_with: [nixl_build_lib],
++    install : true
++)
++
++test('flagcx_gtest', flagcx_test_exe)
+diff --git a/test/gtest/plugins/meson.build b/test/gtest/plugins/meson.build
+index cb4573e..64d58f0 100644
+--- a/test/gtest/plugins/meson.build
++++ b/test/gtest/plugins/meson.build
+@@ -17,6 +17,10 @@ if enabled_plugins.get('UCCL')
+     subdir('uccl')
+ endif
+ 
++if enabled_plugins.get('FLAGCX')
++    subdir('flagcx')
++endif
++
+ if enabled_plugins.get('AZURE_BLOB')
+     subdir('azure_blob')
+ endif
