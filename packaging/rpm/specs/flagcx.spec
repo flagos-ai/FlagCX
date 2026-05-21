@@ -77,9 +77,10 @@ ln -s libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so
 install -d %{buildroot}%{_includedir}/flagcx
 cp -r flagcx/include/* %{buildroot}%{_includedir}/flagcx/
 
-# Fix RPATH and set SONAME
-patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0 || true
-patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0 || true
+# Fix RPATH and set SONAME — fail loud if patchelf can't normalize the .so,
+# otherwise a misconfigured SONAME ships and crashes consumers at runtime.
+patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0
+patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 
 %files -n libflagcx-%{backend}
 %license LICENSE

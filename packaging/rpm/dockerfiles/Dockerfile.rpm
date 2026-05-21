@@ -11,7 +11,7 @@ ARG BACKEND
 # Install RPM build tools and dependencies
 # Handles differences between RHEL/Rocky (epel + json-devel) and
 # OpenEuler (nlohmann-json-devel), and MetaX SDK repo setup.
-RUN yum install -y epel-release 2>/dev/null || true
+RUN yum install -y epel-release || echo "EPEL not available (likely OpenEuler), continuing without it"
 RUN yum install -y \
     rpm-build \
     rpmdevtools \

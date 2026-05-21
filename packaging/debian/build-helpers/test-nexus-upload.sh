@@ -118,8 +118,15 @@ case "$BACKEND" in
         upload_backend "metax"
         ;;
     all)
-        upload_backend "nvidia" || true
-        upload_backend "metax" || true
+        # Run both backends regardless of individual failures, but surface
+        # an aggregate non-zero exit so CI doesn't silently pass.
+        fail=0
+        upload_backend "nvidia" || fail=1
+        upload_backend "metax" || fail=1
+        if [ "$fail" -ne 0 ]; then
+            log_error "One or more backend uploads failed"
+            exit 1
+        fi
         ;;
     *)
         log_error "Invalid backend: $BACKEND"
