@@ -12,7 +12,7 @@ Version:        0.8.0
 Release:        1%{?dist}
 Summary:        FlagCX scalable cross-chip communication library
 
-License:        ASL 2.0
+License:        Apache-2.0
 URL:            https://github.com/flagos-ai/FlagCX
 Source0:        %{name}-%{version}.tar.gz
 
