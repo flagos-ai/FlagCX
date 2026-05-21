@@ -25,6 +25,9 @@ RUN yum install -y json-devel 2>/dev/null \
     || { echo "ERROR: neither json-devel nor nlohmann-json-devel is available; rpmbuild requires nlohmann::json headers" >&2; exit 1; }
 
 # MetaX-specific: configure MACA SDK yum repository and install SDK
+# TODO: switch gpgcheck=1 once MetaX publishes a stable GPG key for
+# repos.metax-tech.com. Today this repo serves unsigned packages; gpgcheck=1
+# + gpgkey= would just fail. Tracked as a known security gap.
 RUN if [ "${BACKEND}" = "metax" ]; then \
     printf '[maca-sdk]\nname=MACA SDK Yum Repository\nbaseurl=https://repos.metax-tech.com/r/maca-sdk-rpm-x86_64/\nenabled=1\ngpgcheck=0\n' \
         > /etc/yum.repos.d/maca-sdk-rpm.repo && \

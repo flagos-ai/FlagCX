@@ -1,5 +1,9 @@
 %global debug_package %{nil}
 %global _build_id_links none
+# Main "flagcx" package intentionally has no %files of its own; all artifacts
+# live in the libflagcx-%{backend}{,-devel} subpackages. Without this guard,
+# rpmbuild treats an empty main package manifest as an error.
+%global _empty_manifest_terminate_build 0
 
 # Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
 %{!?backend: %{error: backend must be defined (nvidia, metax, or ascend)}}
@@ -46,6 +50,9 @@ can collaborate on various projects.
 %package -n libflagcx-%{backend}
 Summary:        FlagCX library for %{backend}
 %if "%{backend}" == "nvidia"
+# TODO: tighten libnccl lower bound. FlagCX's NCCL adaptor likely needs
+# >= 2.18 (group-call API, ncclConfig changes) but the exact floor has
+# not yet been confirmed against the source tree.
 Requires:       libnccl >= 2.0
 %endif
 
