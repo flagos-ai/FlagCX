@@ -20,11 +20,21 @@ BuildRequires:  gcc-c++
 BuildRequires:  make
 BuildRequires:  cmake
 BuildRequires:  patchelf
-# nlohmann-json package name varies by distro
+# nlohmann-json package name varies by distro:
+#   - RHEL/Rocky 8 (via EPEL): json-devel
+#   - RHEL/Rocky 9 (via EPEL): nlohmann-json-devel
+#   - OpenEuler / others: nlohmann-json-devel (fallback)
+# TODO: verify Rocky 9 / RHEL 9 build path end-to-end; the EPEL 9 package
+# name is nlohmann-json-devel, but this has only been smoke-tested.
 %if 0%{?rhel} == 8
 BuildRequires:  json-devel
 %else
+%if 0%{?rhel} >= 9
 BuildRequires:  nlohmann-json-devel
+%else
+# Non-RHEL (OpenEuler, etc.) – assume upstream nlohmann-json-devel package name.
+BuildRequires:  nlohmann-json-devel
+%endif
 %endif
 
 %description

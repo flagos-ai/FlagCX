@@ -22,7 +22,7 @@ RUN yum install -y \
     && yum clean all
 RUN yum install -y json-devel 2>/dev/null \
     || yum install -y nlohmann-json-devel 2>/dev/null \
-    || true
+    || { echo "ERROR: neither json-devel nor nlohmann-json-devel is available; rpmbuild requires nlohmann::json headers" >&2; exit 1; }
 
 # MetaX-specific: configure MACA SDK yum repository and install SDK
 RUN if [ "${BACKEND}" = "metax" ]; then \

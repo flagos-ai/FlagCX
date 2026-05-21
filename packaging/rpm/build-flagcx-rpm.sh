@@ -89,9 +89,15 @@ OUTPUT_DIR="${PROJECT_DIR}/rpm-packages/${BACKEND}"
 mkdir -p "${OUTPUT_DIR}"
 
 CONTAINER_ID=$(docker create "flagcx-rpm-${BACKEND}:${BASE_IMAGE_VERSION}")
-docker cp "${CONTAINER_ID}:/root/rpmbuild/RPMS/" "${OUTPUT_DIR}/" 2>/dev/null || true
-docker cp "${CONTAINER_ID}:/root/rpmbuild/SRPMS/" "${OUTPUT_DIR}/" 2>/dev/null || true
+docker cp "${CONTAINER_ID}:/root/rpmbuild/RPMS/" "${OUTPUT_DIR}/"
+docker cp "${CONTAINER_ID}:/root/rpmbuild/SRPMS/" "${OUTPUT_DIR}/"
 docker rm "${CONTAINER_ID}"
+
+# Fail loudly if no RPMs were extracted, so CI doesn't silently upload empty artifacts.
+if ! find "${OUTPUT_DIR}" -name '*.rpm' | grep -q .; then
+    log_error "No RPM packages found under ${OUTPUT_DIR}"
+    exit 1
+fi
 
 log_info "✓ Packages built successfully for ${BACKEND}:"
 echo ""
