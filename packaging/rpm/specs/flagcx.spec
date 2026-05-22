@@ -18,7 +18,7 @@ Summary:        FlagCX scalable cross-chip communication library
 
 License:        Apache-2.0
 URL:            https://github.com/flagos-ai/FlagCX
-Source0:        %{name}-%{version}.tar.gz
+Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 
 BuildRequires:  gcc-c++
 BuildRequires:  make
