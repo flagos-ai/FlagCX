@@ -11,6 +11,16 @@
 # Derive uppercase backend name for make flag (USE_NVIDIA=1, etc.)
 %global backend_upper %(echo %{backend} | tr a-z A-Z)
 
+# Pin build/install arch by backend: Ascend NPU hosts are aarch64,
+# everything else (NVIDIA / MetaX / etc.) is x86_64. ExclusiveArch
+# makes rpmbuild refuse to even start on a mismatched host, which is
+# safer than producing a CPU-arch-mislabeled rpm.
+%if "%{backend}" == "ascend"
+ExclusiveArch:  aarch64
+%else
+ExclusiveArch:  x86_64
+%endif
+
 Name:           flagcx
 Version:        0.8.0
 Release:        1%{?dist}
