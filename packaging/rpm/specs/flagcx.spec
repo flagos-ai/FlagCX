@@ -18,7 +18,7 @@ Summary:        FlagCX scalable cross-chip communication library
 
 License:        Apache-2.0
 URL:            https://github.com/flagos-ai/FlagCX
-Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
+Source0:        %{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 BuildRequires:  gcc-c++
 BuildRequires:  make
@@ -50,10 +50,10 @@ can collaborate on various projects.
 %package -n libflagcx-%{backend}
 Summary:        FlagCX library for %{backend}
 %if "%{backend}" == "nvidia"
-# TODO: tighten libnccl lower bound. FlagCX's NCCL adaptor likely needs
-# >= 2.18 (group-call API, ncclConfig changes) but the exact floor has
-# not yet been confirmed against the source tree.
-Requires:       libnccl >= 2.0
+# Group-call API arrived in NCCL 2.10; ncclConfig appeared in 2.14.
+# 2.10 is the practical minimum for FlagCX's adaptor today; bump to 2.14
+# once we confirm ncclConfig is actually exercised.
+Requires:       libnccl >= 2.10
 %endif
 
 %description -n libflagcx-%{backend}
