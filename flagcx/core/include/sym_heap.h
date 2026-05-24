@@ -12,6 +12,13 @@
 #include "comm.h"
 #include "flagcx.h"
 
+#ifndef FLAGCX_INNER_WINDOW_DEFINED
+#define FLAGCX_INNER_WINDOW_DEFINED
+struct flagcxInnerWindow {
+  int winFlags;
+};
+#endif
+
 /* Concrete definition of the opaque flagcxWindow handle.
  * Internal only — external code must treat flagcxWindow_t as opaque. */
 struct flagcxWindow {

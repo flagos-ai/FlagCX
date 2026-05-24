@@ -22,6 +22,8 @@ struct flagcxInnerDevComm {};
 
 #endif // NCCL_VERSION_CODE > NCCL_VERSION(2, 28, 0)
 
+#define FLAGCX_INNER_WINDOW_DEFINED
+
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
 
 struct flagcxInnerWindow {
