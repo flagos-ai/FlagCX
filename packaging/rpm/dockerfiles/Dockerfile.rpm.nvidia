@@ -1,0 +1,11 @@
+# Build FlagCX NVIDIA RPM packages on Rocky Linux based CUDA images.
+
+ARG BASE_IMAGE_VERSION=12.4.1-devel-rockylinux8
+FROM nvcr.io/nvidia/cuda:${BASE_IMAGE_VERSION}
+
+WORKDIR /workspace
+COPY . /workspace/
+
+RUN bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia
+
+CMD ["/bin/bash"]

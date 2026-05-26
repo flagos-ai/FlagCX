@@ -1,0 +1,11 @@
+# Build FlagCX Ascend RPM packages on CANN OpenEuler images.
+
+ARG BASE_IMAGE_VERSION=8.5.0-910-openeuler24.03-py3.11
+FROM ascendai/cann:${BASE_IMAGE_VERSION}
+
+WORKDIR /workspace
+COPY . /workspace/
+
+RUN bash packaging/rpm/dockerfiles/build-rpm-common.sh ascend
+
+CMD ["/bin/bash"]

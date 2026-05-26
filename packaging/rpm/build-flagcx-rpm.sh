@@ -44,14 +44,17 @@ case "$BACKEND" in
     nvidia)
         BASE_IMAGE="nvcr.io/nvidia/cuda"
         [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="12.4.1-devel-rockylinux8"
+        DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.nvidia"
         ;;
     metax)
         BASE_IMAGE="rockylinux"
         [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="8"
+        DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.metax"
         ;;
     ascend)
         BASE_IMAGE="ascendai/cann"
         [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="8.5.0-910-openeuler24.03-py3.11"
+        DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.ascend"
         ;;
     *)
         log_error "Invalid backend: $BACKEND"
@@ -71,14 +74,11 @@ else
     log_warn "sync-changelog.py not found, skipping changelog sync"
 fi
 
-# Build Docker image using unified Dockerfile
-DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm"
+# Build Docker image using backend-specific Dockerfile with shared RPM logic.
 log_step "Building Docker image..."
 docker build \
     --network=host \
-    --build-arg BASE_IMAGE="${BASE_IMAGE}" \
     --build-arg BASE_IMAGE_VERSION="${BASE_IMAGE_VERSION}" \
-    --build-arg BACKEND="${BACKEND}" \
     -f "${DOCKERFILE}" \
     -t "flagcx-rpm-${BACKEND}:${BASE_IMAGE_VERSION}" \
     "${PROJECT_DIR}"
