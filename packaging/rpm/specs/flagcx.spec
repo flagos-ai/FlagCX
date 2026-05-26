@@ -11,12 +11,12 @@
 # Derive uppercase backend name for make flag (USE_NVIDIA=1, etc.)
 %global backend_upper %(echo %{backend} | tr a-z A-Z)
 
-# Pin build/install arch by backend: Ascend NPU hosts are aarch64,
-# everything else (NVIDIA / MetaX / etc.) is x86_64. ExclusiveArch
-# makes rpmbuild refuse to even start on a mismatched host, which is
-# safer than producing a CPU-arch-mislabeled rpm.
+# Pin build/install arch by backend. Ascend CANN images are available for
+# both x86_64 development hosts and aarch64 deployment hosts; NVIDIA and
+# MetaX RPM builds currently target x86_64. ExclusiveArch makes rpmbuild
+# refuse to start on unsupported hosts, avoiding CPU-arch-mislabeled RPMs.
 %if "%{backend}" == "ascend"
-ExclusiveArch:  aarch64
+ExclusiveArch:  x86_64 aarch64
 %else
 ExclusiveArch:  x86_64
 %endif
