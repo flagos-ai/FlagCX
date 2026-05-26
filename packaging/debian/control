@@ -7,7 +7,7 @@ Build-Depends: debhelper-compat (= 13),
                make,
                cmake,
                patchelf
-Standards-Version: 4.6.2
+Standards-Version: 4.6.0
 Homepage: https://github.com/flagos-ai/FlagCX
 Vcs-Browser: https://github.com/flagos-ai/FlagCX
 Vcs-Git: https://github.com/flagos-ai/FlagCX.git

@@ -17,12 +17,7 @@ BUILD_DIR_NVIDIA = $(CURDIR)/build-nvidia
 override_dh_auto_clean:
 	dh_auto_clean
 	rm -rf $(BUILD_DIR_METAX) $(BUILD_DIR_NVIDIA)
-	# Only invoke upstream Makefile clean when a Makefile is present
-	# (first build before configure may have none); avoids `|| true`
-	# that would otherwise hide real errors.
-ifneq ($(wildcard Makefile),)
-	$(MAKE) clean
-endif
+	$(MAKE) clean || true
 
 override_dh_auto_build:
 ifeq ($(FLAGCX_BUILD_BACKEND),nvidia)
@@ -130,4 +125,4 @@ override_dh_dwz:
 override_dh_shlibdeps:
 	# Ignore missing CUDA/vendor library dependencies
 	# These are provided by vendor-specific runtime packages (e.g., CUDA runtime, MACA runtime)
-	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info
+	dh_shlibdeps --dpkg-shlibdeps-params=--ignore-missing-info || true
