@@ -36,3 +36,33 @@ jobs:
           name: flagcx-${{ matrix.backend }}-rpm-packages
           path: rpm-packages/${{ matrix.backend }}/**/*.rpm
           retention-days: 7
+
+      # Publish straight from the locally-built artifacts on the same self-hosted
+      # runner: h20 can reach the internal Nexus but not codeload/api.github.com
+      # reliably, so we deliberately avoid any cross-workflow artifact round-trip.
+      - name: Publish ${{ matrix.backend }} RPMs to Nexus YUM repository
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          NEXUS_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          NEXUS_PASSWORD: ${{ secrets.CONTAINER_REGISTRY }}
+          NEXUS_REPO_URL: https://resource.flagos.net/repository/flagos-yum-hosted
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+
+          uploaded=0
+          while IFS= read -r -d '' rpm; do
+            # rel keeps the RPMS/<arch>/<file> or SRPMS/<file> layout under the backend
+            rel="${rpm#rpm-packages/${BACKEND}/}"
+            echo "Uploading ${rpm} -> ${BACKEND}/${rel}"
+            curl -f -u "${NEXUS_USERNAME}:${NEXUS_PASSWORD}" \
+              --upload-file "$rpm" \
+              "${NEXUS_REPO_URL}/${BACKEND}/${rel}"
+            uploaded=$((uploaded + 1))
+          done < <(find "rpm-packages/${BACKEND}" -name '*.rpm' -print0)
+
+          if [ "$uploaded" -eq 0 ]; then
+            echo "No RPMs found for ${BACKEND}"
+            exit 1
+          fi
+          echo "Uploaded ${uploaded} ${BACKEND} RPM(s) to Nexus YUM repository"
