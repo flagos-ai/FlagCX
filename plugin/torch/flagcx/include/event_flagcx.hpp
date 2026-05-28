@@ -42,6 +42,10 @@
 #include <gcu/gcu_event.h>
 #include <gcu/gcu_guard.h>
 #include <tops/tops_runtime_api.h>
+#elif USE_SUNRISE_ADAPTOR
+#include <tang_runtime.h>
+#include <torch_ptpu/core/Event.h>
+#include <torch_ptpu/core/Stream.h>
 #endif
 
 namespace c10d {
@@ -348,6 +352,55 @@ public:
 
 private:
   torch_gcu::GCUEvent topsEvent_;
+};
+#elif USE_SUNRISE_ADAPTOR
+class flagcxPtpuEvent : public flagcxEvent {
+public:
+  flagcxPtpuEvent() : event_(tangEventDisableTiming) {}
+
+  void record(const int deviceId) override {
+    event_.record(torchpt::get_current_stream(deviceId));
+  }
+
+  void record(const flagcxStream_t &stream, const int deviceId) override {
+    ensurePrimed(deviceId);
+    auto rc = tangEventRecord(event_.raw(), *(tangStream_t *)stream);
+    TORCH_CHECK(rc == tangSuccess,
+                "tangEventRecord on flagcx-allocated tangStream_t failed: ",
+                tangGetErrorString(rc));
+  }
+
+  void block(const int deviceId) override {
+    if (event_.raw() == nullptr) {
+      return;
+    }
+    event_.block(torchpt::get_current_stream(deviceId));
+  }
+
+  void block(const flagcxStream_t &stream, const int /* deviceId */) override {
+    if (event_.raw() == nullptr) {
+      return;
+    }
+    auto rc = tangStreamWaitEvent(*(tangStream_t *)stream, event_.raw(),
+                                  tangEventWaitDefault);
+    TORCH_CHECK(rc == tangSuccess,
+                "tangStreamWaitEvent on flagcx-allocated tangStream_t failed: ",
+                tangGetErrorString(rc));
+  }
+
+private:
+  // PTPUEvent lazily allocates tangEvent_t on first record(PTPUStream),
+  // but the external-stream overloads bypass that. Prime by recording
+  // once on the pool stream; the subsequent real tangEventRecord
+  // overwrites it, so cost is one redundant enqueue on first call only.
+  void ensurePrimed(int deviceId) {
+    if (event_.raw() != nullptr) {
+      return;
+    }
+    event_.record(torchpt::get_current_stream(deviceId));
+  }
+
+  torchpt::PTPUEvent event_;
 };
 #endif
 

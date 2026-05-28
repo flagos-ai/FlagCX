@@ -85,6 +85,8 @@ struct Barrier;
 #include "nvidia_comm_traits.h"
 #elif defined(USE_DU_ADAPTOR)
 #include "du_comm_traits.h"
+#elif defined(USE_SUNRISE_ADAPTOR)
+#include "sunrise_comm_traits.h"
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<Default<DefaultPlatform>>;

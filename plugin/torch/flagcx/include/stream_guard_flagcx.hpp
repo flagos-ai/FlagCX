@@ -57,6 +57,8 @@
 #include <gcu/gcu_guard.h>
 #include <gcu/gcu_stream.h>
 #include <tops/tops_runtime_api.h>
+#elif USE_SUNRISE_ADAPTOR
+#include <torch_ptpu/core/Stream.h>
 #endif
 
 namespace c10d {
@@ -98,10 +100,28 @@ public:
 #elif USE_ENFLAME_ADAPTOR
         guard_(
             torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId))
+// torch_ptpu intentionally does not expose a getStreamFromExternal-style API.
+// Instead we pick a stream from the pool, run torch ops on it, and rely on
+// flagcxBackend::syncStream() / flagcxPtpuEvent for cross-stream
+// happens-before with the FlagCX collective stream.
+#elif USE_SUNRISE_ADAPTOR
+        sunrisePrevStream_(torchpt::get_current_stream(deviceId)),
+        guard_(torchpt::get_stream_from_pool(deviceId, /*prio=*/0))
 #endif
   {
+#ifdef USE_SUNRISE_ADAPTOR
+    torchpt::set_current_stream(guard_.unwrap());
+#endif
   }
+#ifdef USE_SUNRISE_ADAPTOR
+  // torchpt::PTPUStream is a value type, not an RAII guard, so we have
+  // to restore the previous current stream by hand on destruction.
+  ~flagcxStreamGuard() {
+    torchpt::set_current_stream(sunrisePrevStream_.unwrap());
+  }
+#else
   ~flagcxStreamGuard() = default;
+#endif
 
   // No copy
   flagcxStreamGuard(const flagcxStreamGuard &) = delete;
@@ -144,6 +164,9 @@ public:
 #elif USE_ENFLAME_ADAPTOR
     guard_.reset_stream(
         torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId_));
+#elif USE_SUNRISE_ADAPTOR
+    guard_ = torchpt::get_stream_from_pool(deviceId_, /*prio=*/0);
+    torchpt::set_current_stream(guard_.unwrap());
 #endif
     currentStream_ = stream;
   }
@@ -178,6 +201,9 @@ private:
   torch_txda::TXDAStreamGuard guard_;
 #elif USE_ENFLAME_ADAPTOR
   torch_gcu::GCUStreamGuard guard_;
+#elif USE_SUNRISE_ADAPTOR
+  torchpt::PTPUStream sunrisePrevStream_;
+  torchpt::PTPUStream guard_;
 #endif
 };
 

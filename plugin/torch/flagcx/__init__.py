@@ -12,7 +12,7 @@ os.environ.pop('TORCH_DEVICE_BACKEND_AUTOLOAD')
 # If we don't import the Python package first, PyTorch's auto-loader
 # will later try to register the same accelerator again, causing a
 # "Two accelerators cannot be used at the same time" error.
-_DEVICE_BACKENDS = ["torch_npu", "torch_mlu", "torch_musa", "torch_txda", "torch_gcu"]
+_DEVICE_BACKENDS = ["torch_npu", "torch_mlu", "torch_musa", "torch_txda", "torch_gcu", "torch_ptpu"]
 for _pkg in _DEVICE_BACKENDS:
     try:
         __import__(_pkg)
@@ -26,11 +26,16 @@ from torch.distributed.distributed_c10d import _coalescing_manager
 
 from ._C import *
 
+# ptpu only: torch_ptpu auto-registers "pccl" for "ptpu" during its import
+# so reclaim the slot here for ptpu only.
+if "ptpu" in dist.Backend.backend_capability.get("flagcx", []):
+    dist.Backend.default_device_backend_map["ptpu"] = "flagcx"
+
 def init():
     pass
 
 def replace_prefix(arg):
-    device_list = ["cuda", "mlu", "npu", "musa", "txda", "gcu"]
+    device_list = ["cuda", "mlu", "npu", "musa", "txda", "gcu", "ptpu"]
     flagcx_prefix = "flagcx_dev"
     if isinstance(arg, str):
         for string in device_list:

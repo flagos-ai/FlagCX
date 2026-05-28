@@ -28,6 +28,7 @@ ADAPTOR_MAP = {
     "amd": "-DUSE_AMD_ADAPTOR",
     "tsm": "-DUSE_TSM_ADAPTOR",
     "enflame": "-DUSE_ENFLAME_ADAPTOR",
+    "sunrise": "-DUSE_SUNRISE_ADAPTOR",
 }
 
 # Adaptor name -> Make variable (for root setup.py make invocation)
@@ -43,6 +44,7 @@ ADAPTOR_TO_MAKE_FLAG = {
     "amd": "USE_AMD",
     "tsm": "USE_TSM",
     "enflame": "USE_ENFLAME",
+    "sunrise": "USE_SUNRISE",
 }
 
 VALID_ADAPTORS = list(ADAPTOR_MAP.keys())
@@ -61,6 +63,7 @@ _PLATFORM_COMMANDS = [
     ("efsmi", "enflame"),
     ("rocm-smi", "amd"),
     ("nvidia-smi", "nvidia"),
+    ("pt-smi", "sunrise"),
 ]
 
 
@@ -197,6 +200,25 @@ def get_device_config(adaptor_flag):
         include_dirs += ["/opt/tops/include", os.path.join(pytorch_gcu_install_path, "include")]
         library_dirs += ["/opt/tops/lib", pytorch_library_path]
         libs += ["topsrt", "torch_gcu"]
+    elif adaptor_flag == "-DUSE_SUNRISE_ADAPTOR":
+        # All torchpt:: symbols (PTPUStream/PTPUEvent/PTPUDeviceGuardImpl)
+        # live only in torch_ptpu/_C.cpython-*.so. The torch_ptpu/lib/ folder
+        # holds kernel libs with zero torchpt:: symbols, and TorchPTPUConfig.cmake
+        # itself targets _C*.so, so we must link against _C*.so by exact name.
+        import torch_ptpu
+        torch_ptpu_dir = os.path.dirname(os.path.abspath(torch_ptpu.__file__))
+        c_so_basename = os.path.basename(torch_ptpu._C.__file__)
+
+        tang_toolkit_dir = os.environ.get("CMAKE_TANG_TOOLKIT_DIR", "/usr/local/tangrt")
+        include_dirs += [
+            os.path.join(torch_ptpu_dir, "include"),
+            os.path.join(tang_toolkit_dir, "include"),
+        ]
+        library_dirs += [
+            torch_ptpu_dir,
+            os.path.join(tang_toolkit_dir, "lib", "linux-x86_64"),
+        ]
+        libs += [f":{c_so_basename}", "tangrt_shared"]
 
     return include_dirs, library_dirs, libs
 

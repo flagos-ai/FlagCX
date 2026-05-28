@@ -13,9 +13,11 @@
 #include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/python.h>
 
+#include <functional>
 #include <memory>
 #include <pybind11/chrono.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "event_flagcx.hpp"
@@ -62,6 +64,8 @@ public:
     event_ = std::make_unique<flagcxTxdaEvent>();
 #elif USE_ENFLAME_ADAPTOR
     event_ = std::make_unique<flagcxTopsEvent>();
+#elif USE_SUNRISE_ADAPTOR
+    event_ = std::make_unique<flagcxPtpuEvent>();
 #endif
   }
   bool isCompleted() override;
@@ -243,6 +247,8 @@ public:
     devName = "txda";
 #elif USE_ENFLAME_ADAPTOR
     devName = "gcu";
+#elif USE_SUNRISE_ADAPTOR
+    devName = "ptpu";
 #endif
     py::object module = py::module::import("torch.distributed");
     py::object registerBackend =
@@ -287,6 +293,26 @@ protected:
 #endif
 #ifdef USE_ASCEND_ADAPTOR
   aclrtStream acl_stream;
+#endif
+#ifdef USE_SUNRISE_ADAPTOR
+  // PCCL p2p needs a dedicated 2-rank pair sub-comm (1-rank for self).
+  // Lazily created/cached per (rank_, peer); unique_id is swapped via
+  // store_ (lower rank publishes). Peer p2p_rank is (rank_ < peer ? 1 : 0)
+  // so callers compute it locally rather than returning it.
+  flagcxComm_t getOrInitPtpuPairComm(int peer);
+  std::unordered_map<std::string, flagcxComm_t> ptpuPairComms_;
+
+  // PTPU coalescing state. Group-bracket on handler_->comm + pair-comm
+  // send/recv crashes PCCL; user-ordered pair-comm issue ring-deadlocks
+  // on >=3 ranks. So we queue ops in pendingOps and replay them in
+  // peer-ascending (canonical) order in endCoalescing().
+  struct PtpuCoalesceCtx {
+    bool active = false;
+    // (peer-rank, runner-lambda). Runner captures tensor by value so
+    // storage stays alive until endCoalescing() flushes.
+    std::vector<std::pair<int, std::function<void()>>> pendingOps;
+  };
+  PtpuCoalesceCtx ptpuCoalesce_;
 #endif
 
 private:
