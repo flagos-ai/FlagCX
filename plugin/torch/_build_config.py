@@ -201,10 +201,6 @@ def get_device_config(adaptor_flag):
         library_dirs += ["/opt/tops/lib", pytorch_library_path]
         libs += ["topsrt", "torch_gcu"]
     elif adaptor_flag == "-DUSE_SUNRISE_ADAPTOR":
-        # All torchpt:: symbols (PTPUStream/PTPUEvent/PTPUDeviceGuardImpl)
-        # live only in torch_ptpu/_C.cpython-*.so. The torch_ptpu/lib/ folder
-        # holds kernel libs with zero torchpt:: symbols, and TorchPTPUConfig.cmake
-        # itself targets _C*.so, so we must link against _C*.so by exact name.
         import torch_ptpu
         torch_ptpu_dir = os.path.dirname(os.path.abspath(torch_ptpu.__file__))
         c_so_basename = os.path.basename(torch_ptpu._C.__file__)
