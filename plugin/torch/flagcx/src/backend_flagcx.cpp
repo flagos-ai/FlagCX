@@ -488,15 +488,10 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
               "endCoalescing called without a matching startCoalescing on "
               "the PTPU backend");
 
-  // Sort by peer asc so every rank touches pair sub-comms in canonical
-  // (min,max) order. getOrInitPtpuPairComm blocks on a peer handshake;
-  // canonical ordering turns that into a total order on pair keys and
-  // eliminates the ring-of-pairs deadlock for >=3 ranks.
-
-  // No flagcxGroupStart/End: PCCL group brackets are process-global and
-  // pair-comm send/recv are already async per-stream, so serial issue
-  // still satisfies batch_isend_irecv's "enqueue-then-wait" semantics
-  // and avoids the comm mismatch that caused the SIGSEGV.
+  // Sort by peer asc to issue pair sub-comms in canonical (min,max) order,
+  // avoiding the ring-of-pairs deadlock from getOrInitPtpuPairComm handshake.
+  // No flagcxGroupStart/End: pair-comm send/recv are already async per-stream,
+  // so serial issue still meets batch_isend_irecv's enqueue-then-wait semantics.
   std::stable_sort(
       ptpuCoalesce_.pendingOps.begin(), ptpuCoalesce_.pendingOps.end(),
       [](const auto &a, const auto &b) { return a.first < b.first; });
