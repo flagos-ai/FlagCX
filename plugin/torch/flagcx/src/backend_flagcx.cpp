@@ -488,10 +488,15 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
               "endCoalescing called without a matching startCoalescing on "
               "the PTPU backend");
 
-  // Sort by peer asc to issue pair sub-comms in canonical (min,max) order,
-  // avoiding the ring-of-pairs deadlock from getOrInitPtpuPairComm handshake.
-  // No flagcxGroupStart/End: pair-comm send/recv are already async per-stream,
-  // so serial issue still meets batch_isend_irecv's enqueue-then-wait semantics.
+  // Sort by peer asc so every rank touches pair sub-comms in canonical
+  // (min,max) order. getOrInitPtpuPairComm blocks on a peer handshake;
+  // canonical ordering turns that into a total order on pair keys and
+  // eliminates the ring-of-pairs deadlock for >=3 ranks.
+
+  // No flagcxGroupStart/End: PCCL group brackets are process-global and
+  // pair-comm send/recv are already async per-stream, so serial issue
+  // still satisfies batch_isend_irecv's "enqueue-then-wait" semantics
+  // and avoids the comm mismatch that caused the SIGSEGV.
   std::stable_sort(
       ptpuCoalesce_.pendingOps.begin(), ptpuCoalesce_.pendingOps.end(),
       [](const auto &a, const auto &b) { return a.first < b.first; });
@@ -1311,33 +1316,34 @@ flagcxComm_t flagcxBackend::getOrInitPtpuPairComm(int peer) {
     return it->second;
   }
 
-  // Allocate a unique_id buffer. flagcxGetUniqueId() also creates a small
-  // bootstrap listener as a side-effect; on the follower side we simply
-  // overwrite the buffer with the leader's id (the follower's listener
-  // remains unused, matching how initComm() handles the global comm).
-  flagcxUniqueId_t uid = nullptr;
-  C10D_FLAGCX_CHECK(flagcxGetUniqueId(&uid), std::nullopt);
-  if (numRanks == 2) {
-    const std::string storeKey = "flagcx/p2p/" + key + "/uniqueId";
-    if (p2pRank == 0) {
+  // The leader (p2pRank 0) generates the id, spawning the bootstrap listener
+  // the pair connects to, and publishes it via store_; the follower only
+  // receives it. The id buffer lives on the stack: flagcxCommInitRank merely
+  // reads it, so nothing needs to outlive this call.
+  flagcxUniqueId uidStorage{};
+  flagcxUniqueId_t uid = &uidStorage;
+  const std::string storeKey = "flagcx/p2p/" + key + "/uniqueId";
+  if (p2pRank == 0) {
+    C10D_FLAGCX_CHECK(flagcxGetUniqueId(&uid), std::nullopt);
+    if (numRanks == 2) {
       auto vec = std::vector<uint8_t>(reinterpret_cast<uint8_t *>(uid),
                                       reinterpret_cast<uint8_t *>(uid) +
                                           sizeof(flagcxUniqueId));
       store_->set(storeKey, std::string(vec.begin(), vec.end()));
-    } else {
-      try {
-        auto vec = store_->get(storeKey);
-        TORCH_CHECK_WITH(DistBackendError, vec.size() == sizeof(flagcxUniqueId),
-                         "Invalid size for flagcxUniqueId on p2p key '", key,
-                         "'");
-        std::memcpy(reinterpret_cast<uint8_t *>(uid), vec.data(),
-                    sizeof(flagcxUniqueId));
-      } catch (const std::exception &e) {
-        C10_THROW_ERROR(DistBackendError,
-                        std::string("Failed to retrieve PCCL p2p unique id "
-                                    "from the store for key '") +
-                            key + "': " + e.what());
-      }
+    }
+  } else {
+    try {
+      auto vec = store_->get(storeKey);
+      TORCH_CHECK_WITH(DistBackendError, vec.size() == sizeof(flagcxUniqueId),
+                       "Invalid size for flagcxUniqueId on p2p key '", key,
+                       "'");
+      std::memcpy(reinterpret_cast<uint8_t *>(uid), vec.data(),
+                  sizeof(flagcxUniqueId));
+    } catch (const std::exception &e) {
+      C10_THROW_ERROR(DistBackendError,
+                      std::string("Failed to retrieve PCCL p2p unique id "
+                                  "from the store for key '") +
+                          key + "': " + e.what());
     }
   }
 
