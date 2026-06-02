@@ -21,7 +21,16 @@ struct flagcxBootstrapHandle {
 static_assert(sizeof(struct flagcxBootstrapHandle) <= sizeof(flagcxUniqueId),
               "Bootstrap handle is too large to fit inside FLAGCX unique ID");
 
-struct bootstrapState {
+// ============================================================================
+// Bootstrap State
+// ============================================================================
+
+enum flagcxBootstrapMode {
+  FLAGCX_BOOTSTRAP_COLL = 0, // Collective mode (ring topology, N ranks)
+  FLAGCX_BOOTSTRAP_P2P = 1   // P2P mode (direct socket, 1:1 RPC)
+};
+
+struct bootstrapCollState {
   struct flagcxSocket listenSock;
   struct flagcxSocket ringRecvSocket;
   struct flagcxSocket ringSendSocket;
@@ -36,160 +45,178 @@ struct bootstrapState {
   void *properties;
 };
 
+// Keep old name as typedef for source compatibility during transition
+typedef struct bootstrapCollState bootstrapState;
+
+struct bootstrapP2pState {
+  bool isListener;          // true = listen mode, false = connected mode
+  struct flagcxSocket sock; // listen socket OR connected peer socket
+  union flagcxSocketAddress localAddr;
+  uint64_t magic;
+  volatile uint32_t *abortFlag;
+};
+
+struct flagcxBootstrapState {
+  enum flagcxBootstrapMode mode;
+  union {
+    struct bootstrapCollState *coll;
+    struct bootstrapP2pState *p2p;
+  };
+};
+
+// ============================================================================
+// Unified API (dispatches based on state->mode)
+// ============================================================================
+
+// Send data to peer. In coll mode, uses ring relay. In P2P mode, sends
+// directly over the connected socket (peer param ignored).
+flagcxResult_t bootstrapSend(struct flagcxBootstrapState *state, int peer,
+                             int tag, void *data, int size);
+
+// Receive data from peer. In coll mode, accepts from ring. In P2P mode,
+// receives directly from the connected socket (peer param ignored).
+flagcxResult_t bootstrapRecv(struct flagcxBootstrapState *state, int peer,
+                             int tag, void *data, int size);
+
+// Deadlock-free bidirectional exchange. In coll mode, lower rank sends first.
+// In P2P mode, uses the same ordering based on a "who initiated" convention.
+flagcxResult_t bootstrapExchange(struct flagcxBootstrapState *state, int peer,
+                                 int tag, const void *sendData, int sendSize,
+                                 void *recvData, int recvSize);
+
+// Unified close. Dispatches on state->mode to free the appropriate resources.
+flagcxResult_t bootstrapClose(struct flagcxBootstrapState *state);
+
+// ============================================================================
+// Collective Mode API
+// ============================================================================
+
+// Shared network init — discovers local NIC for socket binding.
+// Idempotent, safe to call multiple times. Both Coll and P2P depend on this.
 flagcxResult_t bootstrapNetInit();
-flagcxResult_t bootstrapCreateRoot(struct flagcxBootstrapHandle *handle,
-                                   bool idFromEnv);
+
+flagcxResult_t bootstrapCollCreateRoot(struct flagcxBootstrapHandle *handle,
+                                       bool idFromEnv);
 flagcxResult_t bootstrapGetUniqueId(struct flagcxBootstrapHandle *handle);
-flagcxResult_t bootstrapInit(struct flagcxBootstrapHandle *handle,
-                             void *commState);
-flagcxResult_t bootstrapAllGather(void *commState, void *allData, int size);
 
-flagcxResult_t bootstrapSend(void *commState, int peer, int tag, void *data,
-                             int size);
-flagcxResult_t bootstrapRecv(void *commState, int peer, int tag, void *data,
-                             int size);
-flagcxResult_t bootstrapBarrier(void *commState, int rank, int nranks, int tag);
-flagcxResult_t bootstrapBroadcast(void *commState, int rank, int nranks,
-                                  int root, void *bcastData, int size);
-flagcxResult_t bootstrapIntraNodeBarrier(void *commState, int *ranks, int rank,
-                                         int nranks, int tag);
-flagcxResult_t bootstrapIntraNodeBroadcast(void *commState, int *ranks,
-                                           int rank, int nranks, int root,
-                                           void *bcastData, int size);
-flagcxResult_t bootstrapClose(void *commState);
-flagcxResult_t bootstrapAbort(void *commState);
+// Initialize collective bootstrap (ring topology, N ranks)
+flagcxResult_t bootstrapCollInit(struct flagcxBootstrapHandle *handle, int rank,
+                                 int nranks, uint64_t magic,
+                                 volatile uint32_t *abortFlag,
+                                 struct flagcxBootstrapState **state);
 
-/* A bunch of collective communication operators */
+// Collective operations (coll mode only)
+flagcxResult_t bootstrapCollAllGather(struct flagcxBootstrapState *state,
+                                      void *allData, int size);
+flagcxResult_t bootstrapCollBarrier(struct flagcxBootstrapState *state,
+                                    int rank, int nranks, int tag);
+flagcxResult_t bootstrapCollBroadcast(struct flagcxBootstrapState *state,
+                                      int rank, int nranks, int root,
+                                      void *bcastData, int size);
+flagcxResult_t bootstrapCollIntraNodeBarrier(struct flagcxBootstrapState *state,
+                                             int *ranks, int rank, int nranks,
+                                             int tag);
+flagcxResult_t
+bootstrapCollIntraNodeBroadcast(struct flagcxBootstrapState *state, int *ranks,
+                                int rank, int nranks, int root, void *bcastData,
+                                int size);
+flagcxResult_t bootstrapCollAbort(struct flagcxBootstrapState *state);
+
+// ============================================================================
+// P2P Mode API (RPC-style listen/connect/accept)
+// ============================================================================
+
+// Open a listen socket. Ensures bootstrapNetInit() has been called.
+// Returns handle containing address for peer to connect.
+flagcxResult_t bootstrapP2pListen(uint64_t magic, volatile uint32_t *abortFlag,
+                                  void *listenHandle,
+                                  struct flagcxBootstrapState **state);
+
+// Connect to a peer's listen socket using handle received out-of-band.
+flagcxResult_t bootstrapP2pConnect(void *peerHandle, uint64_t magic,
+                                   volatile uint32_t *abortFlag,
+                                   struct flagcxBootstrapState **state);
+
+// Accept an incoming connection on a listen state. Returns a new connected
+// state.
+flagcxResult_t bootstrapP2pAccept(struct flagcxBootstrapState *listenState,
+                                  struct flagcxBootstrapState **connState);
+
+// ============================================================================
+// Typed collective communication operators (coll mode only)
+// ============================================================================
+
 /*
  * Broadcast
- *
- * Root device send sendcount values from other GPUs into recvbuff,
- * receiving data from rank i at offset i*sendcount.
- * Assumes recvcount is equal to nranks*sendcount, which means that recvbuff
- * should have a size of at least nranks*sendcount elements.
- *
- * In-place operations will happen if sendbuff == recvbuff.
  */
-flagcxResult_t BroadcastBootstrap(void *commState, const void *sendbuff,
-                                  void *recvbuff, size_t sendcount,
-                                  flagcxDataType_t datatype, int root);
+flagcxResult_t BroadcastBootstrap(struct flagcxBootstrapState *state,
+                                  const void *sendbuff, void *recvbuff,
+                                  size_t count, flagcxDataType_t datatype,
+                                  int root);
 
-/* A bunch of collective communication operators */
 /*
  * Gather
- *
- * Each rank sends sendcount values from its sendbuff to the root rank.
- * Root rank receives data from rank i at offset i*sendcount in recvbuff.
- * Assumes recvcount is equal to nranks*sendcount, which means that recvbuff
- * should have a size of at least nranks*sendcount elements.
- *
- * In-place operations will happen if sendbuff == recvbuff + rank * sendcount.
  */
-flagcxResult_t GatherBootstrap(void *commState, const void *sendbuff,
-                               void *recvbuff, size_t count,
-                               flagcxDataType_t datatype, int root);
+flagcxResult_t GatherBootstrap(struct flagcxBootstrapState *state,
+                               const void *sendbuff, void *recvbuff,
+                               size_t count, flagcxDataType_t datatype,
+                               int root);
 
-/* A bunch of collective communication operators */
 /*
  * Scatter
- *
- * Root rank sends sendcount values to each rank, with data for rank i
- * starting at offset i*sendcount in sendbuff.
- * Each rank receives sendcount values into its recvbuff.
- * Assumes sendcount is equal to recvcount for each rank.
- *
- * In-place operations will happen if recvbuff = sendbuff + rank * sendcount.
  */
-flagcxResult_t ScatterBootstrap(void *commState, const void *sendbuff,
-                                void *recvbuff, size_t count,
-                                flagcxDataType_t datatype, int root);
-/* A bunch of collective communication operators */
-/*
- * All-Gather
- *
- * Each device gathers sendcount values from other GPUs into recvbuff,
- * receiving data from rank i at offset i*sendcount.
- * Assumes recvcount is equal to nranks*sendcount, which means that recvbuff
- * should have a size of at least nranks*sendcount elements.
- *
- * In-place operations will happen if sendbuff == recvbuff + rank * sendcount.
- */
-flagcxResult_t AllGatherBootstrap(void *commState, const void *sendbuff,
-                                  void *recvbuff, size_t sendcount,
-                                  flagcxDataType_t datatype);
-/*
- * All-Reduce
- *
- * Reduces data arrays of length count(NOT bytes size) in sendbuff using op
- * operation, and leaves identical copies of result on each recvbuff.
- *
- * In-place operation will happen if sendbuff == recvbuff.
- */
-flagcxResult_t AllReduceBootstrap(void *commState, const void *sendbuff,
-                                  void *recvbuff, size_t count,
-                                  flagcxDataType_t datatype, flagcxRedOp_t op);
+flagcxResult_t ScatterBootstrap(struct flagcxBootstrapState *state,
+                                const void *sendbuff, void *recvbuff,
+                                size_t count, flagcxDataType_t datatype,
+                                int root);
+
 /*
  * Reduce
- *
- * Reduces data arrays of length count(NOT bytes size) in sendbuff using op
- * operation, and leaves identical copies of result on root recvbuff.
- *
- * In-place operation will happen if sendbuff == recvbuff.
  */
-flagcxResult_t ReduceBootstrap(void *commState, const void *sendbuff,
-                               void *recvbuff, size_t count,
-                               flagcxDataType_t datatype, flagcxRedOp_t op,
-                               int root);
+flagcxResult_t ReduceBootstrap(struct flagcxBootstrapState *state,
+                               const void *sendbuff, void *recvbuff,
+                               size_t count, flagcxDataType_t datatype,
+                               flagcxRedOp_t op, int root);
+
 /*
- * Reduce-Scatter
- *
- * Reduces data in sendbuff using op operation and leaves reduced result
- * scattered over the devices so that recvbuff on rank i will contain the i-th
- * block of the result.
- * Assumes sendcount is equal to nranks*recvcount, which means that sendbuff
- * should have a size of at least nranks*recvcount elements.
- *
- * In-place operations will happen if recvbuff == sendbuff + rank * recvcount.
+ * All-reduce
  */
-flagcxResult_t ReduceScatterBootstrap(void *commState, const void *sendbuff,
-                                      void *recvbuff, size_t recvcount,
+flagcxResult_t AllReduceBootstrap(struct flagcxBootstrapState *state,
+                                  const void *sendbuff, void *recvbuff,
+                                  size_t count, flagcxDataType_t datatype,
+                                  flagcxRedOp_t op);
+
+/*
+ * All-gather
+ */
+flagcxResult_t AllGatherBootstrap(struct flagcxBootstrapState *state,
+                                  const void *sendbuff, void *recvbuff,
+                                  size_t sendcount, flagcxDataType_t datatype);
+
+/*
+ * Reduce-scatter
+ */
+flagcxResult_t ReduceScatterBootstrap(struct flagcxBootstrapState *state,
+                                      const void *sendbuff, void *recvbuff,
+                                      size_t recvcount,
                                       flagcxDataType_t datatype,
                                       flagcxRedOp_t op);
 
 /*
  * All-to-all
- *
- * Every rank sends j-th block of its own sendbuff to the j-th rank of the
- * communicator. Meanwhile, every rank receives j-th block of its own recvbuff
- * from j-th rank.
- *
- * Every block has the size of count elements.
- *
- * In-place operations will happen if sendbuff == recvbuff.
  */
-flagcxResult_t AlltoAllBootstrap(void *commState, const void *sendbuff,
-                                 void *recvbuff, size_t count,
-                                 flagcxDataType_t datatype);
+flagcxResult_t AlltoAllBootstrap(struct flagcxBootstrapState *state,
+                                 const void *sendbuff, void *recvbuff,
+                                 size_t count, flagcxDataType_t datatype);
 
 /*
  * All-to-all with variable block sizes
- *
- * Every rank sends j-th block of its own sendbuff to the j-th rank of the
- * communicator. Meanwhile, every rank receives j-th block of its own recvbuff
- * from j-th rank.
- *
- * Each block can have different sizes:
- * - sendcounts[j] specifies the number of elements to send to rank j
- * - sdispls[j] specifies the offset in sendbuff for the j-th block
- * - recvcounts[j] specifies the number of elements to receive from rank j
- * - rdispls[j] specifies the offset in recvbuff for the j-th block
- *
- * In-place operations will happen if sendbuff == recvbuff.
  */
-flagcxResult_t AlltoAllvBootstrap(void *commState, const void *sendbuff,
-                                  size_t *sendcounts, size_t *sdispls,
-                                  void *recvbuff, size_t *recvcounts,
-                                  size_t *rdispls, flagcxDataType_t datatype);
+flagcxResult_t AlltoAllvBootstrap(struct flagcxBootstrapState *state,
+                                  const void *sendbuff, size_t *sendcounts,
+                                  size_t *sdispls, void *recvbuff,
+                                  size_t *recvcounts, size_t *rdispls,
+                                  flagcxDataType_t datatype);
 
 #ifdef __cplusplus
 } // end extern "C"

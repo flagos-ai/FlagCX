@@ -36,9 +36,10 @@ const char *mcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return mcclGetLastError(comm->base);
 }
 
-flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
-                                       bootstrapState * /*bootstrap*/) {
+flagcxResult_t
+mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                        flagcxUniqueId_t commId, int rank,
+                        struct flagcxBootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }

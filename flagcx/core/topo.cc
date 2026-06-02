@@ -1476,9 +1476,9 @@ flagcxGetInterServerTopo(struct flagcxHeteroComm *comm,
   // we need to flatten topoServer first to remove all pointer types in the
   // structure before copying and trasferring it to other ranks
   FLAGCXCHECK(flattenTopoServer(topoServer, flatServerData + rank));
-  FLAGCXCHECK(bootstrapAllGather(comm->bootstrap, (void *)flatServerData,
-                                 sizeof(flatTopoServer)));
-  FLAGCXCHECK(bootstrapBarrier(comm->bootstrap, rank, nRanks, 0));
+  FLAGCXCHECK(bootstrapCollAllGather(comm->bootstrap, (void *)flatServerData,
+                                     sizeof(flatTopoServer)));
+  FLAGCXCHECK(bootstrapCollBarrier(comm->bootstrap, rank, nRanks, 0));
 
   // reorder serverId
   FLAGCXCHECK(flagcxTopoReorderServerId(flatServerData, nRanks));

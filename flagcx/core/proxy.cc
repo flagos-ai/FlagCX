@@ -1121,9 +1121,9 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
   FLAGCXCHECK(flagcxCalloc(&comm->proxyState->peerAddresses, comm->nRanks));
   comm->proxyState->peerAddresses[comm->rank] =
       comm->proxyState->listenSock.addr;
-  FLAGCXCHECK(bootstrapAllGather(comm->bootstrap,
-                                 comm->proxyState->peerAddresses,
-                                 sizeof(union flagcxSocketAddress)));
+  FLAGCXCHECK(bootstrapCollAllGather(comm->bootstrap,
+                                     comm->proxyState->peerAddresses,
+                                     sizeof(union flagcxSocketAddress)));
 
   comm->proxyState->cudaDev = comm->cudaDev;
   comm->proxyState->nRanks = comm->nRanks;

@@ -89,8 +89,8 @@ static int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
     goto fail;
   }
   memcpy(&allDescs[myRank], &myIpcDesc, sizeof(struct flagcxP2pIpcDesc));
-  FLAGCXCHECKGOTO(bootstrapAllGather(comm->bootstrap, allDescs,
-                                     sizeof(struct flagcxP2pIpcDesc)),
+  FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap, allDescs,
+                                         sizeof(struct flagcxP2pIpcDesc)),
                   res, fail);
 
   // Step 3: Open intra-node peer IPC handles
@@ -263,7 +263,7 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     }
 
     {
-      struct bootstrapState *bootstrap = comm->bootstrap;
+      struct flagcxBootstrapState *bootstrap = comm->bootstrap;
       int netDev = hetero->netDev;
       struct flagcxNetAdaptor *net = hetero->netAdaptor;
       const int signalTagBase = 2001;
@@ -488,7 +488,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
     // Step 2: Bootstrap barrier — all ranks have created their shm.
     FLAGCXCHECKGOTO(
-        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA01),
+        bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA01),
         res, fail_own_shm);
 
     // Step 3: Open and map each peer's shm segment.
@@ -516,7 +516,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     // Step 4: Bootstrap barrier — all ranks have opened peer shm.
     // Then unlink own shm: safe because peers already have it mapped.
     FLAGCXCHECKGOTO(
-        bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA02),
+        bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks, 0xBA02),
         res, fail_peer_shms);
     flagcxShmUnlink(myShmHandle);
 
@@ -1440,7 +1440,7 @@ flagcxResult_t flagcxCommRelayDestroy(flagcxComm_t comm) {
   }
 
   // Cross-rank barrier: all ranks drain before any rank closes connections
-  bootstrapBarrier(comm->bootstrap, comm->rank, comm->nranks, 0x7f01);
+  bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks, 0x7f01);
 
   free(hetero->interPeerRanks);
   hetero->interPeerRanks = nullptr;

@@ -91,7 +91,7 @@ const char *mpiAdaptorGetLastError(flagcxInnerComm_t comm) {
 
 flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                       flagcxUniqueId_t /*commId*/, int rank,
-                                      bootstrapState *bootstrap) {
+                                      struct flagcxBootstrapState *bootstrap) {
   int initialized;
   MPI_Initialized(&initialized);
 

@@ -78,7 +78,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       // to avoid hanging at the intra-node barrier.
       int allAllocOk = localAllocOk;
       {
-        struct bootstrapState *bState = comm->bootstrap;
+        struct flagcxBootstrapState *bState = comm->bootstrap;
         for (int i = 0; i < localRanks; i++) {
           if (i == localRank)
             continue;
@@ -111,10 +111,10 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         ipcSockOpen = true;
 
         // Barrier to ensure all sockets are created before sending
-        struct bootstrapState *state = comm->bootstrap;
-        FLAGCXCHECKGOTO(bootstrapIntraNodeBarrier(state, comm->localRankToRank,
-                                                  localRank, localRanks,
-                                                  /*tag=*/0x5932),
+        struct flagcxBootstrapState *state = comm->bootstrap;
+        FLAGCXCHECKGOTO(bootstrapCollIntraNodeBarrier(
+                            state, comm->localRankToRank, localRank, localRanks,
+                            /*tag=*/0x5932),
                         res, fail);
 
         // Send our FD to each peer
@@ -193,7 +193,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
             localDevices = nullptr;
 
             // Broadcast success/failure from rank 0
-            struct bootstrapState *mcState = comm->bootstrap;
+            struct flagcxBootstrapState *mcState = comm->bootstrap;
             if (localRank == 0) {
               for (int i = 1; i < localRanks; i++) {
                 int peerGlobalRank = comm->localRankToRank[i];
@@ -219,7 +219,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
               mcIpcSockOpen = true;
 
               // Barrier: ensure all peers have created their IPC sockets
-              FLAGCXCHECKGOTO(bootstrapIntraNodeBarrier(
+              FLAGCXCHECKGOTO(bootstrapCollIntraNodeBarrier(
                                   state, comm->localRankToRank, localRank,
                                   localRanks, /*tag=*/0x5934),
                               res, fail);

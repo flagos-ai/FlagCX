@@ -147,7 +147,8 @@ struct MaxLengthData {
 
 class flagcxGlooContext : public ::gloo::Context {
 public:
-  flagcxGlooContext(int rank, int nranks, bootstrapState *bootstrap)
+  flagcxGlooContext(int rank, int nranks,
+                    struct flagcxBootstrapState *bootstrap)
       : ::gloo::Context(rank, nranks) {
     bootstrap_ = bootstrap;
   }
@@ -176,9 +177,9 @@ public:
     MaxLengthData *maxLengthData;
     flagcxCalloc(&maxLengthData, size);
     maxLengthData[rank].maxLength = maxLength;
-    bootstrapAllGather(bootstrap_, (void *)maxLengthData,
-                       sizeof(MaxLengthData));
-    bootstrapBarrier(bootstrap_, rank, size, 0);
+    bootstrapCollAllGather(bootstrap_, (void *)maxLengthData,
+                           sizeof(MaxLengthData));
+    bootstrapCollBarrier(bootstrap_, rank, size, 0);
     for (int i = 0; i < size; ++i) {
       maxLength = std::max(maxLength, maxLengthData[i].maxLength);
     }
@@ -196,9 +197,9 @@ public:
     }
 
     // bootstrap allgather to get all addresses
-    bootstrapAllGather(bootstrap_, (void *)addressData.data(),
-                       size * maxLength);
-    bootstrapBarrier(bootstrap_, rank, size, 0);
+    bootstrapCollAllGather(bootstrap_, (void *)addressData.data(),
+                           size * maxLength);
+    bootstrapCollBarrier(bootstrap_, rank, size, 0);
 
     // Connect every pair
     for (int i = 0; i < size; ++i) {
@@ -217,7 +218,7 @@ public:
   }
 
 public:
-  bootstrapState *bootstrap_;
+  struct flagcxBootstrapState *bootstrap_;
 };
 
 struct flagcxInnerDevComm {};

@@ -255,9 +255,8 @@ flagcxResult_t flagcxMemFree(void *ptr) {
 static flagcxResult_t
 flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
                            struct flagcxOneSideHandleInfo *info) {
-  struct bootstrapState *state = heteroComm->bootstrap;
-  int nranks = state->nranks;
-  int rank = state->rank;
+  int nranks = heteroComm->nRanks;
+  int rank = heteroComm->rank;
   flagcxResult_t res = flagcxSuccess;
 
   void *listenComm = NULL;
@@ -278,8 +277,9 @@ flagcxOneSideBuildFullMesh(struct flagcxHeteroComm *heteroComm,
     // Allgather listen handles from all ranks
     FLAGCXCHECKGOTO(flagcxCalloc(&allHandles, nranks), res, fail_listen);
     memcpy(&allHandles[rank], &myListenHandle, sizeof(flagcxNetHandle_t));
-    FLAGCXCHECKGOTO(bootstrapAllGather(state, (void *)allHandles,
-                                       sizeof(flagcxNetHandle_t)),
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)allHandles,
+                                           sizeof(flagcxNetHandle_t)),
                     res, fail_handles);
 
     // 2. Deadlock-free full-mesh connection (NCCL GIN pattern)
@@ -371,9 +371,8 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     }
   }
 
-  struct bootstrapState *state = heteroComm->bootstrap;
-  if (state == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideRegister: state is NULL");
+  if (heteroComm->bootstrap == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: bootstrap is NULL");
     return flagcxNotSupported;
   }
 
@@ -417,8 +416,8 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   {
     void *selfRecvComm =
         isFirstHandle
-            ? info->fullRecvComms[state->rank]
-            : heteroComm->oneSideHandles[0]->fullRecvComms[state->rank];
+            ? info->fullRecvComms[heteroComm->rank]
+            : heteroComm->oneSideHandles[0]->fullRecvComms[heteroComm->rank];
     info->localRecvComm = selfRecvComm;
     regComm = selfRecvComm;
     if (heteroComm->netAdaptor->name &&
@@ -448,25 +447,28 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
 
   // Allgather MR info
   {
-    int nranks = state->nranks;
+    int nranks = heteroComm->nRanks;
     FLAGCXCHECKGOTO(flagcxCalloc(&info->baseVas, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[state->rank] = (uintptr_t)buff;
-    info->rkeys[state->rank] = mr->rkey;
-    info->lkeys[state->rank] = mr->lkey;
+    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
+    info->rkeys[heteroComm->rank] = mr->rkey;
+    info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
 
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->baseVas, sizeof(uintptr_t)),
-        res, fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)), res,
-        fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)), res,
-        fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->baseVas,
+                                           sizeof(uintptr_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->rkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->lkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
 
     int slot = heteroComm->oneSideHandleCount;
     heteroComm->oneSideHandles[slot] = info;
@@ -481,7 +483,7 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
 
     INFO(FLAGCX_REG,
          "One-sided register index %d allgather results (rank %d, nranks %d):",
-         slot, state->rank, nranks);
+         slot, heteroComm->rank, nranks);
     for (int i = 0; i < nranks; i++) {
       INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
            info->baseVas[i], info->rkeys[i], info->lkeys[i]);
@@ -501,7 +503,7 @@ fail_mr:
 fail_mesh:
   if (isFirstHandle) {
     // Clean up full-mesh connections on first-handle failure
-    for (int i = 0; i < state->nranks; i++) {
+    for (int i = 0; i < heteroComm->nRanks; i++) {
       if (info->fullSendComms && info->fullSendComms[i])
         heteroComm->netAdaptor->closeSend(info->fullSendComms[i]);
       if (info->fullRecvComms && info->fullRecvComms[i])
@@ -606,9 +608,8 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  struct bootstrapState *state = heteroComm->bootstrap;
-  if (state == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: state is NULL");
+  if (heteroComm->bootstrap == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: bootstrap is NULL");
     return flagcxNotSupported;
   }
 
@@ -635,7 +636,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
 
   // Use self recvComm from this comm's first data handle for MR registration
   // (PD match)
-  void *selfRecvComm = firstDataHandle->fullRecvComms[state->rank];
+  void *selfRecvComm = firstDataHandle->fullRecvComms[heteroComm->rank];
   regComm = selfRecvComm;
   if (heteroComm->netAdaptor->name &&
       strcmp(heteroComm->netAdaptor->name, "IB") == 0) {
@@ -659,31 +660,33 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
   }
 
   {
-    int nranks = state->nranks;
+    int nranks = heteroComm->nRanks;
     FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->baseVas, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[state->rank] = (uintptr_t)buff;
-    info->rkeys[state->rank] = mr->rkey;
-    info->lkeys[state->rank] = mr->lkey;
+    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
+    info->rkeys[heteroComm->rank] = mr->rkey;
+    info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
 
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->baseVas, sizeof(uintptr_t)),
-        res, fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)), res,
-        fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)), res,
-        fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->baseVas,
+                                           sizeof(uintptr_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->rkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->lkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
     heteroComm->signalHandle = info;
-    INFO(FLAGCX_REG,
-         "Signal register allgather results (rank %d, nranks %d):", state->rank,
-         nranks);
+    INFO(FLAGCX_REG, "Signal register allgather results (rank %d, nranks %d):",
+         heteroComm->rank, nranks);
     for (int i = 0; i < nranks; i++) {
       INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
            info->baseVas[i], info->rkeys[i], info->lkeys[i]);
@@ -758,9 +761,8 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  struct bootstrapState *state = heteroComm->bootstrap;
-  if (state == NULL) {
-    INFO(FLAGCX_REG, "flagcxOneSideStagingRegister: state is NULL");
+  if (heteroComm->bootstrap == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideStagingRegister: bootstrap is NULL");
     return flagcxNotSupported;
   }
 
@@ -787,7 +789,7 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
 
   // Use self recvComm from this comm's first data handle for MR registration
   // (PD match)
-  void *selfRecvComm = firstDataHandleStg->fullRecvComms[state->rank];
+  void *selfRecvComm = firstDataHandleStg->fullRecvComms[heteroComm->rank];
   regComm = selfRecvComm;
   if (heteroComm->netAdaptor->name &&
       strcmp(heteroComm->netAdaptor->name, "IB") == 0) {
@@ -812,30 +814,33 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
   }
 
   {
-    int nranks = state->nranks;
+    int nranks = heteroComm->nRanks;
     FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->baseVas, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->lkeys, nranks), res, fail_mr);
 
-    info->baseVas[state->rank] = (uintptr_t)buff;
-    info->rkeys[state->rank] = mr->rkey;
-    info->lkeys[state->rank] = mr->lkey;
+    info->baseVas[heteroComm->rank] = (uintptr_t)buff;
+    info->rkeys[heteroComm->rank] = mr->rkey;
+    info->lkeys[heteroComm->rank] = mr->lkey;
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
 
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->baseVas, sizeof(uintptr_t)),
-        res, fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)), res,
-        fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)), res,
-        fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->baseVas,
+                                           sizeof(uintptr_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->rkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(heteroComm->bootstrap,
+                                           (void *)info->lkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
     heteroComm->stagingHandle = info;
     INFO(FLAGCX_REG, "Staging register allgather results (rank %d, nranks %d):",
-         state->rank, nranks);
+         heteroComm->rank, nranks);
     for (int i = 0; i < nranks; i++) {
       INFO(FLAGCX_REG, "  Rank %d: base_va=0x%lx, rkey=0x%x, lkey=0x%x", i,
            info->baseVas[i], info->rkeys[i], info->lkeys[i]);
@@ -897,8 +902,7 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
       heteroComm->netAdaptor->regMr == NULL)
     return flagcxNotSupported;
 
-  struct bootstrapState *state = comm->bootstrap;
-  if (state == NULL)
+  if (comm->bootstrap == NULL)
     return flagcxNotSupported;
 
   struct flagcxNetAdaptor *net = heteroComm->netAdaptor;
@@ -931,8 +935,8 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
 
   // ALL ranks: allocate info, populate own entry, AllGather
   {
-    int nranks = state->nranks;
-    int myRank = state->rank;
+    int nranks = comm->nranks;
+    int myRank = comm->rank;
     FLAGCXCHECKGOTO(flagcxCalloc(&info, 1), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->baseVas, nranks), res, fail_mr);
     FLAGCXCHECKGOTO(flagcxCalloc(&info->rkeys, nranks), res, fail_mr);
@@ -944,15 +948,16 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
     info->localMrHandle = mrHandle;
     info->localRecvComm = recvComm;
 
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->baseVas, sizeof(uintptr_t)),
-        res, fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->rkeys, sizeof(uint32_t)), res,
-        fail_mr);
-    FLAGCXCHECKGOTO(
-        bootstrapAllGather(state, (void *)info->lkeys, sizeof(uint32_t)), res,
-        fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap,
+                                           (void *)info->baseVas,
+                                           sizeof(uintptr_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap, (void *)info->rkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
+    FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap, (void *)info->lkeys,
+                                           sizeof(uint32_t)),
+                    res, fail_mr);
 
     INFO(FLAGCX_REG,
          "Barrier register allgather results (rank %d, nranks %d):", myRank,
@@ -1563,7 +1568,7 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
 
 flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
                                   flagcxUniqueId *uniqueIdData,
-                                  struct bootstrapState *state,
+                                  struct flagcxBootstrapState *state,
                                   flagcxComm_t comm,
                                   flagcxInnerComm_t *homoComm /*out*/) {
   int rank = comm->rank;
@@ -1576,9 +1581,9 @@ flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
   if (comm->homoRank == 0) {
     memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
   }
-  FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)uniqueIdData, sizeof(flagcxUniqueId)));
-  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+  FLAGCXCHECK(bootstrapCollAllGather(state, (void *)uniqueIdData,
+                                     sizeof(flagcxUniqueId)));
+  FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
 
   memcpy((void *)commId, (void *)&uniqueIdData[comm->homoRootRank],
          sizeof(flagcxUniqueId));
@@ -1634,20 +1639,17 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   flagcxIntruQueueConstruct(&(*comm)->deferredBufferQueue);
   (*comm)->deferredBufferCount = 0;
 
-  struct bootstrapState *state = NULL;
-  FLAGCXCHECK(flagcxCalloc(&state, 1));
-  state->rank = rank;
-  state->nranks = nranks;
-  state->abortFlag = (*comm)->abortFlag;
-  (*comm)->bootstrap = state;
-  state->magic = ((struct flagcxBootstrapHandle *)commId)->magic;
-  (*comm)->magic = ((struct flagcxBootstrapHandle *)commId)->magic;
+  uint64_t magic = ((struct flagcxBootstrapHandle *)commId)->magic;
+  (*comm)->magic = magic;
 
   // Init bootstrap net
   FLAGCXCHECK(bootstrapNetInit());
 
-  // Init bootstrap state
-  FLAGCXCHECK(bootstrapInit((struct flagcxBootstrapHandle *)commId, state));
+  // Init bootstrap state (creates wrapped state)
+  FLAGCXCHECK(bootstrapCollInit((struct flagcxBootstrapHandle *)commId, rank,
+                                nranks, magic, (*comm)->abortFlag,
+                                &(*comm)->bootstrap));
+  struct flagcxBootstrapState *state = (*comm)->bootstrap;
 
   // Ready to detect heterogeneous/homogeneous communicator
   // Use bootstrap allgather to exchange Device info
@@ -1660,8 +1662,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(flagcxCalloc(&vendorData, nranks));
   memcpy(vendorData + rank, &vendor, sizeof(flagcxVendor));
   FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)vendorData, sizeof(flagcxVendor)));
-  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+      bootstrapCollAllGather(state, (void *)vendorData, sizeof(flagcxVendor)));
+  FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
 
   // Compute intra-node topology using hostHash
   {
@@ -1669,8 +1671,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     uint64_t *hostHashes = nullptr;
     FLAGCXCHECK(flagcxCalloc(&hostHashes, nranks));
     hostHashes[rank] = myHash;
-    FLAGCXCHECK(bootstrapAllGather(state, hostHashes, sizeof(uint64_t)));
-    FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+    FLAGCXCHECK(bootstrapCollAllGather(state, hostHashes, sizeof(uint64_t)));
+    FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
 
     int localCount = 0;
     for (int r = 0; r < nranks; r++) {
@@ -1705,12 +1707,13 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
       vendorData, &(*comm)->commType, globalRankToHomoRankData + rank,
       &(*comm)->homoRootRank, &(*comm)->homoRanks, clusterIdData + rank,
       clusterInterRankData + rank, &(*comm)->nclusters, rank, nranks));
+  FLAGCXCHECK(bootstrapCollAllGather(state, (void *)globalRankToHomoRankData,
+                                     sizeof(int)));
   FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)globalRankToHomoRankData, sizeof(int)));
-  FLAGCXCHECK(bootstrapAllGather(state, (void *)clusterIdData, sizeof(int)));
+      bootstrapCollAllGather(state, (void *)clusterIdData, sizeof(int)));
   FLAGCXCHECK(
-      bootstrapAllGather(state, (void *)clusterInterRankData, sizeof(int)));
-  FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+      bootstrapCollAllGather(state, (void *)clusterInterRankData, sizeof(int)));
+  FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
   (*comm)->homoRank = globalRankToHomoRankData[rank];
   (*comm)->clusterIds = clusterIdData;
   (*comm)->globalRank2HomoRank = globalRankToHomoRankData;
@@ -1891,9 +1894,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
       flagcxHeteroGetUniqueId(commId);
       memcpy((void *)&uniqueIdData[0], (void *)commId, sizeof(flagcxUniqueId));
     }
-    FLAGCXCHECK(bootstrapAllGather(state, (void *)uniqueIdData,
-                                   sizeof(flagcxUniqueId)));
-    FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+    FLAGCXCHECK(bootstrapCollAllGather(state, (void *)uniqueIdData,
+                                       sizeof(flagcxUniqueId)));
+    FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
 
     memcpy((void *)commId, (void *)&uniqueIdData[0], sizeof(flagcxUniqueId));
     // call flagcxHeteroCommInitRank
@@ -1904,7 +1907,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     if (useHostComm() || (*comm)->hasSingleRankHomoComm) {
       if (!flagcxParamTopoDetectionDisable()) {
         FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
-            (*comm)->heteroComm->netDev, state->properties));
+            (*comm)->heteroComm->netDev, state->coll->properties));
       }
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->commInitRank(
           &(*comm)->hostComm, nranks, commId, rank, state));
@@ -1919,9 +1922,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     FLAGCXCHECK(flagcxCalloc(&nicDistanceData, nranks));
     FLAGCXCHECK(flagcxGetNicDistance((*comm)->heteroComm->topoServer, rank,
                                      nicDistanceData + rank));
-    FLAGCXCHECK(bootstrapAllGather(state, (void *)nicDistanceData,
-                                   sizeof(flagcxNicDistance)));
-    FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+    FLAGCXCHECK(bootstrapCollAllGather(state, (void *)nicDistanceData,
+                                       sizeof(flagcxNicDistance)));
+    FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
     for (int i = 0; i < (*comm)->nclusters; ++i) {
       int minDistance = INT_MAX;
       std::unordered_map<int, std::vector<int>> nicDistanceToRanks;
@@ -1982,9 +1985,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
              sizeof(flagcxUniqueId));
     }
     // Collect uniqueIdData globally
-    FLAGCXCHECK(bootstrapAllGather(state, (void *)uniqueIdData,
-                                   sizeof(flagcxUniqueId)));
-    FLAGCXCHECK(bootstrapBarrier(state, rank, nranks, 0));
+    FLAGCXCHECK(bootstrapCollAllGather(state, (void *)uniqueIdData,
+                                       sizeof(flagcxUniqueId)));
+    FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
     // Call cclAdaptor->commInitRank
     if ((*comm)->homoInterRootRank != -1) {
       memcpy((void *)commId, (void *)&uniqueIdData[(*comm)->homoInterRootRank],

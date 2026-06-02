@@ -94,9 +94,10 @@ const char *hcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
 }
 
-flagcxResult_t hcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
-                                       bootstrapState * /*bootstrap*/) {
+flagcxResult_t
+hcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                        flagcxUniqueId_t commId, int rank,
+                        struct flagcxBootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }

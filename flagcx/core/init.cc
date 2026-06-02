@@ -102,10 +102,11 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
                   ret, fail);
   // Question: where did we initialize comm->bootstrap?
   INFO(FLAGCX_INIT, "start bootstrapAllGather for peerInfo");
-  FLAGCXCHECKGOTO(bootstrapAllGather(comm->bootstrap, (void *)comm->peerInfo,
-                                     sizeof(struct flagcxPeerInfo)),
+  FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap,
+                                         (void *)comm->peerInfo,
+                                         sizeof(struct flagcxPeerInfo)),
                   ret, fail);
-  FLAGCXCHECKGOTO(bootstrapBarrier(comm->bootstrap, rank, nranks, 0), ret,
+  FLAGCXCHECKGOTO(bootstrapCollBarrier(comm->bootstrap, rank, nranks, 0), ret,
                   fail);
 
   // check for duplicate GPUs
@@ -277,17 +278,13 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
 
   if (!job->parent) {
     // New version of calling bootstrapInit
-    struct bootstrapState *state;
-    FLAGCXCHECK(flagcxCalloc(&state, 1));
-    state->rank = comm->rank;
-    state->nranks = comm->nRanks;
-    state->abortFlag = comm->abortFlag;
-    comm->bootstrap = state;
-    state->magic = ((struct flagcxBootstrapHandle *)&job->commId)->magic;
-    comm->magic = ((struct flagcxBootstrapHandle *)&job->commId)->magic;
+    uint64_t magic = ((struct flagcxBootstrapHandle *)&job->commId)->magic;
+    comm->magic = magic;
     FLAGCXCHECKGOTO(
-        bootstrapInit((struct flagcxBootstrapHandle *)&job->commId, state), res,
-        fail);
+        bootstrapCollInit((struct flagcxBootstrapHandle *)&job->commId,
+                          comm->rank, comm->nRanks, magic, comm->abortFlag,
+                          &comm->bootstrap),
+        res, fail);
   }
 
   if (!job->parent) {
@@ -388,8 +385,8 @@ static flagcxResult_t flagcxCommInitRankDev(flagcxHeteroComm_t *newcomm,
   if (env && myrank == 0) {
     INFO(FLAGCX_ENV, "FLAGCX_COMM_ID set by environment to %s", env);
     FLAGCXCHECKGOTO(
-        bootstrapCreateRoot((struct flagcxBootstrapHandle *)&commId, true), res,
-        fail);
+        bootstrapCollCreateRoot((struct flagcxBootstrapHandle *)&commId, true),
+        res, fail);
   }
 
   if (nranks < 1 || myrank < 0 || myrank >= nranks) {

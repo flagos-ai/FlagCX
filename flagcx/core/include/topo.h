@@ -209,7 +209,7 @@ struct topoArgs {
   int rank;
   int nranks;
   flagcxUniqueId uniqueId;
-  void *bootstrap;
+  struct flagcxBootstrapState *bootstrap;
 };
 
 struct flatTopoLink {

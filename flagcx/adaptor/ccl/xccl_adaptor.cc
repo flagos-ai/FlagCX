@@ -82,9 +82,10 @@ const char *xcclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "flagcxNotSupported";
 }
 
-flagcxResult_t xcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
-                                       bootstrapState * /*bootstrap*/) {
+flagcxResult_t
+xcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                        flagcxUniqueId_t commId, int rank,
+                        struct flagcxBootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }

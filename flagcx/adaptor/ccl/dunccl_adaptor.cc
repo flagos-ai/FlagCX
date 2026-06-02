@@ -31,9 +31,10 @@ const char *duncclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
 }
 
-flagcxResult_t duncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                         flagcxUniqueId_t commId, int rank,
-                                         bootstrapState * /*bootstrap*/) {
+flagcxResult_t
+duncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                          flagcxUniqueId_t commId, int rank,
+                          struct flagcxBootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }
