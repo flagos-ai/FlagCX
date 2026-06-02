@@ -62,10 +62,9 @@ const char *cnclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
 }
 
-flagcxResult_t
-cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                        flagcxUniqueId_t commId, int rank,
-                        struct flagcxBootstrapState * /*bootstrap*/) {
+flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                                       flagcxUniqueId_t commId, int rank,
+                                       struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }

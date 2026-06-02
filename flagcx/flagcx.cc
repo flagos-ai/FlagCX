@@ -1568,7 +1568,7 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
 
 flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
                                   flagcxUniqueId *uniqueIdData,
-                                  struct flagcxBootstrapState *state,
+                                  struct bootstrapState *state,
                                   flagcxComm_t comm,
                                   flagcxInnerComm_t *homoComm /*out*/) {
   int rank = comm->rank;
@@ -1649,7 +1649,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(bootstrapCollInit((struct flagcxBootstrapHandle *)commId, rank,
                                 nranks, magic, (*comm)->abortFlag,
                                 &(*comm)->bootstrap));
-  struct flagcxBootstrapState *state = (*comm)->bootstrap;
+  struct bootstrapState *state = (*comm)->bootstrap;
 
   // Ready to detect heterogeneous/homogeneous communicator
   // Use bootstrap allgather to exchange Device info

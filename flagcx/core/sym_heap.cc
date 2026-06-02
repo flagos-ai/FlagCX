@@ -78,7 +78,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
       // to avoid hanging at the intra-node barrier.
       int allAllocOk = localAllocOk;
       {
-        struct flagcxBootstrapState *bState = comm->bootstrap;
+        struct bootstrapState *bState = comm->bootstrap;
         for (int i = 0; i < localRanks; i++) {
           if (i == localRank)
             continue;
@@ -111,7 +111,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         ipcSockOpen = true;
 
         // Barrier to ensure all sockets are created before sending
-        struct flagcxBootstrapState *state = comm->bootstrap;
+        struct bootstrapState *state = comm->bootstrap;
         FLAGCXCHECKGOTO(bootstrapCollIntraNodeBarrier(
                             state, comm->localRankToRank, localRank, localRanks,
                             /*tag=*/0x5932),
@@ -193,7 +193,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
             localDevices = nullptr;
 
             // Broadcast success/failure from rank 0
-            struct flagcxBootstrapState *mcState = comm->bootstrap;
+            struct bootstrapState *mcState = comm->bootstrap;
             if (localRank == 0) {
               for (int i = 1; i < localRanks; i++) {
                 int peerGlobalRank = comm->localRankToRank[i];

@@ -76,7 +76,7 @@ struct flagcxComm {
   int *clusterIds;
   int *globalRank2HomoRank;
   int *clusterInterRanks;
-  struct flagcxBootstrapState *bootstrap;
+  struct bootstrapState *bootstrap;
   int localRank;        // intra-node rank index (computed from hostHash)
   int localRanks;       // number of ranks on this node
   int *localRankToRank; // mapping: local index -> global rank
@@ -129,7 +129,7 @@ struct flagcxComm {
 // return homoComm via homoComm parameter.
 flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
                                   flagcxUniqueId *uniqueIdData,
-                                  struct flagcxBootstrapState *state,
+                                  struct bootstrapState *state,
                                   flagcxComm_t comm,
                                   flagcxInnerComm_t *homoComm /*out*/);
 

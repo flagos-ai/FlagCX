@@ -16,7 +16,7 @@ extern "C" {
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
 struct flagcxDevCommRequirements;
-struct flagcxBootstrapState;
+struct bootstrapState;
 
 // Version history:
 //   v1 — 34 function pointers: getVersion, getUniqueId, getErrorString,
@@ -42,7 +42,7 @@ struct flagcxCCLAdaptor_v1 {
   // Communicator functions
   flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
                                  flagcxUniqueId *commId, int rank,
-                                 struct flagcxBootstrapState *bootstrap);
+                                 struct bootstrapState *bootstrap);
   flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
   flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);
   flagcxResult_t (*commAbort)(flagcxInnerComm_t comm);
@@ -126,7 +126,7 @@ struct flagcxCCLAdaptor_latest {
   // Communicator functions
   flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
                                  flagcxUniqueId *commId, int rank,
-                                 struct flagcxBootstrapState *bootstrap);
+                                 struct bootstrapState *bootstrap);
   flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
   flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);
   flagcxResult_t (*commAbort)(flagcxInnerComm_t comm);

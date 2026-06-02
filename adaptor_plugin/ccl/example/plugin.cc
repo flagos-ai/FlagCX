@@ -32,9 +32,9 @@ static flagcxResult_t pluginGetStagedBuffer(const flagcxInnerComm_t comm,
   return flagcxInternalError;
 }
 
-static flagcxResult_t
-pluginCommInitRank(flagcxInnerComm_t *comm, int nranks, flagcxUniqueId *commId,
-                   int rank, struct flagcxBootstrapState *bootstrap) {
+static flagcxResult_t pluginCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                                         flagcxUniqueId *commId, int rank,
+                                         struct bootstrapState *bootstrap) {
   return flagcxInternalError;
 }
 

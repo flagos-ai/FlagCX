@@ -34,7 +34,7 @@ const char *ixncclAdaptorGetLastError(flagcxInnerComm_t comm) {
 flagcxResult_t
 ixncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                           flagcxUniqueId_t commId, int rank,
-                          struct flagcxBootstrapState * /*bootstrap*/) {
+                          struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
   }

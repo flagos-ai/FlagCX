@@ -45,9 +45,6 @@ struct bootstrapCollState {
   void *properties;
 };
 
-// Keep old name as typedef for source compatibility during transition
-typedef struct bootstrapCollState bootstrapState;
-
 struct bootstrapP2pState {
   bool isListener;          // true = listen mode, false = connected mode
   struct flagcxSocket sock; // listen socket OR connected peer socket
@@ -56,7 +53,7 @@ struct bootstrapP2pState {
   volatile uint32_t *abortFlag;
 };
 
-struct flagcxBootstrapState {
+struct bootstrapState {
   enum flagcxBootstrapMode mode;
   union {
     struct bootstrapCollState *coll;
@@ -70,22 +67,22 @@ struct flagcxBootstrapState {
 
 // Send data to peer. In coll mode, uses ring relay. In P2P mode, sends
 // directly over the connected socket (peer param ignored).
-flagcxResult_t bootstrapSend(struct flagcxBootstrapState *state, int peer,
-                             int tag, void *data, int size);
+flagcxResult_t bootstrapSend(struct bootstrapState *state, int peer, int tag,
+                             void *data, int size);
 
 // Receive data from peer. In coll mode, accepts from ring. In P2P mode,
 // receives directly from the connected socket (peer param ignored).
-flagcxResult_t bootstrapRecv(struct flagcxBootstrapState *state, int peer,
-                             int tag, void *data, int size);
+flagcxResult_t bootstrapRecv(struct bootstrapState *state, int peer, int tag,
+                             void *data, int size);
 
 // Deadlock-free bidirectional exchange. In coll mode, lower rank sends first.
 // In P2P mode, uses the same ordering based on a "who initiated" convention.
-flagcxResult_t bootstrapExchange(struct flagcxBootstrapState *state, int peer,
+flagcxResult_t bootstrapExchange(struct bootstrapState *state, int peer,
                                  int tag, const void *sendData, int sendSize,
                                  void *recvData, int recvSize);
 
 // Unified close. Dispatches on state->mode to free the appropriate resources.
-flagcxResult_t bootstrapClose(struct flagcxBootstrapState *state);
+flagcxResult_t bootstrapClose(struct bootstrapState *state);
 
 // ============================================================================
 // Collective Mode API
@@ -103,24 +100,24 @@ flagcxResult_t bootstrapGetUniqueId(struct flagcxBootstrapHandle *handle);
 flagcxResult_t bootstrapCollInit(struct flagcxBootstrapHandle *handle, int rank,
                                  int nranks, uint64_t magic,
                                  volatile uint32_t *abortFlag,
-                                 struct flagcxBootstrapState **state);
+                                 struct bootstrapState **state);
 
 // Collective operations (coll mode only)
-flagcxResult_t bootstrapCollAllGather(struct flagcxBootstrapState *state,
+flagcxResult_t bootstrapCollAllGather(struct bootstrapState *state,
                                       void *allData, int size);
-flagcxResult_t bootstrapCollBarrier(struct flagcxBootstrapState *state,
-                                    int rank, int nranks, int tag);
-flagcxResult_t bootstrapCollBroadcast(struct flagcxBootstrapState *state,
-                                      int rank, int nranks, int root,
-                                      void *bcastData, int size);
-flagcxResult_t bootstrapCollIntraNodeBarrier(struct flagcxBootstrapState *state,
+flagcxResult_t bootstrapCollBarrier(struct bootstrapState *state, int rank,
+                                    int nranks, int tag);
+flagcxResult_t bootstrapCollBroadcast(struct bootstrapState *state, int rank,
+                                      int nranks, int root, void *bcastData,
+                                      int size);
+flagcxResult_t bootstrapCollIntraNodeBarrier(struct bootstrapState *state,
                                              int *ranks, int rank, int nranks,
                                              int tag);
-flagcxResult_t
-bootstrapCollIntraNodeBroadcast(struct flagcxBootstrapState *state, int *ranks,
-                                int rank, int nranks, int root, void *bcastData,
-                                int size);
-flagcxResult_t bootstrapCollAbort(struct flagcxBootstrapState *state);
+flagcxResult_t bootstrapCollIntraNodeBroadcast(struct bootstrapState *state,
+                                               int *ranks, int rank, int nranks,
+                                               int root, void *bcastData,
+                                               int size);
+flagcxResult_t bootstrapCollAbort(struct bootstrapState *state);
 
 // ============================================================================
 // P2P Mode API (RPC-style listen/connect/accept)
@@ -130,17 +127,17 @@ flagcxResult_t bootstrapCollAbort(struct flagcxBootstrapState *state);
 // Returns handle containing address for peer to connect.
 flagcxResult_t bootstrapP2pListen(uint64_t magic, volatile uint32_t *abortFlag,
                                   void *listenHandle,
-                                  struct flagcxBootstrapState **state);
+                                  struct bootstrapState **state);
 
 // Connect to a peer's listen socket using handle received out-of-band.
 flagcxResult_t bootstrapP2pConnect(void *peerHandle, uint64_t magic,
                                    volatile uint32_t *abortFlag,
-                                   struct flagcxBootstrapState **state);
+                                   struct bootstrapState **state);
 
 // Accept an incoming connection on a listen state. Returns a new connected
 // state.
-flagcxResult_t bootstrapP2pAccept(struct flagcxBootstrapState *listenState,
-                                  struct flagcxBootstrapState **connState);
+flagcxResult_t bootstrapP2pAccept(struct bootstrapState *listenState,
+                                  struct bootstrapState **connState);
 
 // ============================================================================
 // Typed collective communication operators (coll mode only)
@@ -149,7 +146,7 @@ flagcxResult_t bootstrapP2pAccept(struct flagcxBootstrapState *listenState,
 /*
  * Broadcast
  */
-flagcxResult_t BroadcastBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t BroadcastBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   int root);
@@ -157,7 +154,7 @@ flagcxResult_t BroadcastBootstrap(struct flagcxBootstrapState *state,
 /*
  * Gather
  */
-flagcxResult_t GatherBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t GatherBootstrap(struct bootstrapState *state,
                                const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                int root);
@@ -165,7 +162,7 @@ flagcxResult_t GatherBootstrap(struct flagcxBootstrapState *state,
 /*
  * Scatter
  */
-flagcxResult_t ScatterBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t ScatterBootstrap(struct bootstrapState *state,
                                 const void *sendbuff, void *recvbuff,
                                 size_t count, flagcxDataType_t datatype,
                                 int root);
@@ -173,7 +170,7 @@ flagcxResult_t ScatterBootstrap(struct flagcxBootstrapState *state,
 /*
  * Reduce
  */
-flagcxResult_t ReduceBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t ReduceBootstrap(struct bootstrapState *state,
                                const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, int root);
@@ -181,7 +178,7 @@ flagcxResult_t ReduceBootstrap(struct flagcxBootstrapState *state,
 /*
  * All-reduce
  */
-flagcxResult_t AllReduceBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t AllReduceBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxRedOp_t op);
@@ -189,14 +186,14 @@ flagcxResult_t AllReduceBootstrap(struct flagcxBootstrapState *state,
 /*
  * All-gather
  */
-flagcxResult_t AllGatherBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t AllGatherBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, void *recvbuff,
                                   size_t sendcount, flagcxDataType_t datatype);
 
 /*
  * Reduce-scatter
  */
-flagcxResult_t ReduceScatterBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t ReduceScatterBootstrap(struct bootstrapState *state,
                                       const void *sendbuff, void *recvbuff,
                                       size_t recvcount,
                                       flagcxDataType_t datatype,
@@ -205,14 +202,14 @@ flagcxResult_t ReduceScatterBootstrap(struct flagcxBootstrapState *state,
 /*
  * All-to-all
  */
-flagcxResult_t AlltoAllBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t AlltoAllBootstrap(struct bootstrapState *state,
                                  const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype);
 
 /*
  * All-to-all with variable block sizes
  */
-flagcxResult_t AlltoAllvBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t AlltoAllvBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, size_t *sendcounts,
                                   size_t *sdispls, void *recvbuff,
                                   size_t *recvcounts, size_t *rdispls,

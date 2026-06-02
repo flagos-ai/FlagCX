@@ -111,7 +111,7 @@ static bool operator<(const struct TunerCommTagCounterKey &lhs,
 
 // customized context structure for internal use
 struct flagcxTunerContext {
-  struct flagcxBootstrapState *bootstrap;
+  struct bootstrapState *bootstrap;
 
   int rank;
   int nranks;
@@ -186,7 +186,7 @@ flagcxResult_t flagcxTunerInit(size_t nRanks, size_t rank,
                                flagcxDebugLogger_t logFunction, void **context,
                                void *commState) {
   struct flagcxTunerContext *ctx = new struct flagcxTunerContext;
-  ctx->bootstrap = (struct flagcxBootstrapState *)commState;
+  ctx->bootstrap = (struct bootstrapState *)commState;
   ctx->rank = rank;
   ctx->nranks = nRanks;
   FLAGCXCHECK(generateCandidate(ctx->configList));
@@ -407,9 +407,9 @@ flagcxCreateOrReplaceHomoComm(flagcxComm_t *comm,
   }
 
   flagcxInnerComm_t innerComm = NULL;
-  FLAGCXCHECK(flagcxHomoCommInit(
-      (*comm)->commId, (*comm)->uniqueIdData,
-      (struct flagcxBootstrapState *)(ctx->bootstrap), *comm, &innerComm));
+  FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
+                                 (struct bootstrapState *)(ctx->bootstrap),
+                                 *comm, &innerComm));
   // Store new communicator of collCat into homoCommMap
   (*comm)->homoCommMap[collCat] = innerComm;
   // For backward compatible, also assign homoComm field.
@@ -666,9 +666,9 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
       FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
       flagcxInnerComm_t newInner = NULL;
-      FLAGCXCHECK(flagcxHomoCommInit(
-          (*comm)->commId, (*comm)->uniqueIdData,
-          (struct flagcxBootstrapState *)(ctx->bootstrap), *comm, &newInner));
+      FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
+                                     (struct bootstrapState *)(ctx->bootstrap),
+                                     *comm, &newInner));
       (*comm)->tunerInnerComm = newInner;
       (*comm)->homoComm = newInner;
     } else {
@@ -709,9 +709,9 @@ flagcxResult_t flagcxTunerSwitchCommConfig(void *context, flagcxComm_t *comm,
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
       FLAGCXCHECK(setEnvConfig(cfg, FLAGCX_ENV_TYPE_CREATION));
       flagcxInnerComm_t newInner = NULL;
-      FLAGCXCHECK(flagcxHomoCommInit(
-          (*comm)->commId, (*comm)->uniqueIdData,
-          (struct flagcxBootstrapState *)(ctx->bootstrap), *comm, &newInner));
+      FLAGCXCHECK(flagcxHomoCommInit((*comm)->commId, (*comm)->uniqueIdData,
+                                     (struct bootstrapState *)(ctx->bootstrap),
+                                     *comm, &newInner));
       (*comm)->tunerInnerComm = newInner;
       (*comm)->homoComm = newInner;
     } else {

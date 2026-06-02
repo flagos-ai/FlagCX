@@ -70,10 +70,10 @@ const char *bootstrapAdaptorGetLastError(flagcxInnerComm_t comm) {
   return "Not Implemented";
 }
 
-flagcxResult_t
-bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                             flagcxUniqueId_t /*commId*/, int rank,
-                             struct flagcxBootstrapState *bootstrap) {
+flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                                            flagcxUniqueId_t /*commId*/,
+                                            int rank,
+                                            struct bootstrapState *bootstrap) {
   if (*comm == NULL) {
     FLAGCXCHECK(flagcxCalloc(comm, 1));
   }

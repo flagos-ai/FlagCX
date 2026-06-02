@@ -89,6 +89,10 @@ static flagcxResult_t bootstrapNetRecv(struct flagcxSocket *sock, void *data,
   FLAGCXCHECK(flagcxSocketRecv(sock, data, std::min(recvSize, size)));
   return flagcxSuccess;
 }
+// Sequential send-then-recv is safe here because bootstrapNetSendRecv is only
+// called on ring topology with separate ringSendSocket and ringRecvSocket.
+// One rank's send-to-next and recv-from-prev use independent sockets, so there
+// is no risk of deadlock.
 static flagcxResult_t bootstrapNetSendRecv(struct flagcxSocket *sendSocket,
                                            void *sendData, int sendSize,
                                            struct flagcxSocket *recvSocket,
@@ -106,14 +110,15 @@ struct extInfo {
 };
 
 #include <cstdint>
-enum {
-  BOOTSTRAP_TIMER_TOTAL = 0,
-  BOOTSTRAP_TIMER_ALLOC,
-  BOOTSTRAP_TIMER_MEM,
-  BOOTSTRAP_TIMER_COMM,
-  BOOTSTRAP_TIMER_CALC,
-  BOOTSTRAP_TIMERS_COUNT
-};
+#include <sys/resource.h>
+
+static flagcxResult_t setFilesLimit() {
+  struct rlimit filesLimit;
+  SYSCHECK(getrlimit(RLIMIT_NOFILE, &filesLimit), "getrlimit");
+  filesLimit.rlim_cur = filesLimit.rlim_max;
+  SYSCHECK(setrlimit(RLIMIT_NOFILE, &filesLimit), "setrlimit");
+  return flagcxSuccess;
+}
 
 // Root thread for collective bootstrap ring setup
 static void *bootstrapRoot(void *rargs) {
@@ -121,6 +126,8 @@ static void *bootstrapRoot(void *rargs) {
   struct flagcxSocket *listenSock = args->listenSock;
   uint64_t magic = args->magic;
   free(args);
+
+  setFilesLimit();
 
   struct extInfo info;
   struct extInfo *rankInfo = NULL;
@@ -161,6 +168,9 @@ static void *bootstrapRoot(void *rargs) {
 
   TRACE(FLAGCX_INIT, "DONE magic %lx", magic);
 fail:
+  if (res != flagcxSuccess) {
+    WARN("bootstrapRoot thread failed with error %d", res);
+  }
   if (rankInfo)
     free(rankInfo);
   flagcxSocketClose(listenSock);
@@ -224,10 +234,10 @@ struct unexConn {
   struct unexConn *next;
 };
 
-// Helper to unwrap flagcxBootstrapState -> bootstrapCollState
+// Helper to unwrap bootstrapState -> bootstrapCollState
 // The coll state is always valid regardless of current mode.
 static inline struct bootstrapCollState *
-unwrapCollState(struct flagcxBootstrapState *state) {
+unwrapCollState(struct bootstrapState *state) {
   if (state == NULL || state->coll == NULL) {
     return NULL;
   }
@@ -241,9 +251,9 @@ unwrapCollState(struct flagcxBootstrapState *state) {
 flagcxResult_t bootstrapCollInit(struct flagcxBootstrapHandle *handle, int rank,
                                  int nranks, uint64_t magic,
                                  volatile uint32_t *abortFlag,
-                                 struct flagcxBootstrapState **stateOut) {
+                                 struct bootstrapState **stateOut) {
   // Allocate wrapper
-  struct flagcxBootstrapState *wrapper;
+  struct bootstrapState *wrapper;
   FLAGCXCHECK(flagcxCalloc(&wrapper, 1));
   wrapper->mode = FLAGCX_BOOTSTRAP_COLL;
 
@@ -335,7 +345,7 @@ flagcxResult_t bootstrapCollInit(struct flagcxBootstrapHandle *handle, int rank,
 // Collective Mode: Send/Recv internals (ring relay)
 // ============================================================================
 
-static flagcxResult_t bootstrapCollConnect(struct flagcxBootstrapState *state,
+static flagcxResult_t bootstrapCollConnect(struct bootstrapState *state,
                                            int peer, int tag,
                                            struct flagcxSocket *sock) {
   flagcxResult_t ret = flagcxSuccess;
@@ -409,7 +419,7 @@ static void unexpectedFree(struct bootstrapCollState *state) {
   }
 }
 
-static flagcxResult_t bootstrapCollAccept(struct flagcxBootstrapState *state,
+static flagcxResult_t bootstrapCollAccept(struct bootstrapState *state,
                                           int peer, int tag,
                                           struct flagcxSocket *sock) {
   flagcxResult_t ret = flagcxSuccess;
@@ -440,9 +450,9 @@ fail:
   return ret;
 }
 
-static flagcxResult_t
-bootstrapCollSendInternal(struct flagcxBootstrapState *state, int peer, int tag,
-                          void *data, int size) {
+static flagcxResult_t bootstrapCollSendInternal(struct bootstrapState *state,
+                                                int peer, int tag, void *data,
+                                                int size) {
   flagcxResult_t ret = flagcxSuccess;
   struct flagcxSocket sock;
 
@@ -456,9 +466,9 @@ exit:
   return ret;
 }
 
-static flagcxResult_t
-bootstrapCollRecvInternal(struct flagcxBootstrapState *state, int peer, int tag,
-                          void *data, int size) {
+static flagcxResult_t bootstrapCollRecvInternal(struct bootstrapState *state,
+                                                int peer, int tag, void *data,
+                                                int size) {
   flagcxResult_t ret;
   struct flagcxSocket sock;
   FLAGCXCHECK(bootstrapCollAccept(state, peer, tag, &sock));
@@ -473,8 +483,8 @@ exit:
 // Unified Send / Recv / Exchange / Close (dispatch on mode)
 // ============================================================================
 
-flagcxResult_t bootstrapSend(struct flagcxBootstrapState *state, int peer,
-                             int tag, void *data, int size) {
+flagcxResult_t bootstrapSend(struct bootstrapState *state, int peer, int tag,
+                             void *data, int size) {
   if (state == NULL)
     return flagcxInvalidArgument;
 
@@ -493,8 +503,8 @@ flagcxResult_t bootstrapSend(struct flagcxBootstrapState *state, int peer,
   return bootstrapCollSendInternal(state, peer, tag, data, size);
 }
 
-flagcxResult_t bootstrapRecv(struct flagcxBootstrapState *state, int peer,
-                             int tag, void *data, int size) {
+flagcxResult_t bootstrapRecv(struct bootstrapState *state, int peer, int tag,
+                             void *data, int size) {
   if (state == NULL)
     return flagcxInvalidArgument;
 
@@ -522,7 +532,7 @@ flagcxResult_t bootstrapRecv(struct flagcxBootstrapState *state, int peer,
   return bootstrapCollRecvInternal(state, peer, tag, data, size);
 }
 
-flagcxResult_t bootstrapExchange(struct flagcxBootstrapState *state, int peer,
+flagcxResult_t bootstrapExchange(struct bootstrapState *state, int peer,
                                  int tag, const void *sendData, int sendSize,
                                  void *recvData, int recvSize) {
   if (state == NULL)
@@ -551,7 +561,7 @@ flagcxResult_t bootstrapExchange(struct flagcxBootstrapState *state, int peer,
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapClose(struct flagcxBootstrapState *state) {
+flagcxResult_t bootstrapClose(struct bootstrapState *state) {
   if (state == NULL)
     return flagcxSuccess;
 
@@ -591,7 +601,7 @@ flagcxResult_t bootstrapClose(struct flagcxBootstrapState *state) {
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapCollAbort(struct flagcxBootstrapState *state) {
+flagcxResult_t bootstrapCollAbort(struct bootstrapState *state) {
   if (state == NULL)
     return flagcxSuccess;
   struct bootstrapCollState *coll = state->coll;
@@ -627,7 +637,7 @@ static flagcxResult_t bootstrapRingAllGather(struct flagcxSocket *prevSocket,
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapCollAllGather(struct flagcxBootstrapState *state,
+flagcxResult_t bootstrapCollAllGather(struct bootstrapState *state,
                                       void *allData, int size) {
   struct bootstrapCollState *coll = unwrapCollState(state);
   if (coll == NULL)
@@ -640,7 +650,7 @@ flagcxResult_t bootstrapCollAllGather(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapCollIntraNodeBarrier(struct flagcxBootstrapState *state,
+flagcxResult_t bootstrapCollIntraNodeBarrier(struct bootstrapState *state,
                                              int *ranks, int rank, int nranks,
                                              int tag) {
   if (nranks == 1)
@@ -661,15 +671,15 @@ flagcxResult_t bootstrapCollIntraNodeBarrier(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapCollBarrier(struct flagcxBootstrapState *state,
-                                    int rank, int nranks, int tag) {
+flagcxResult_t bootstrapCollBarrier(struct bootstrapState *state, int rank,
+                                    int nranks, int tag) {
   return bootstrapCollIntraNodeBarrier(state, NULL, rank, nranks, tag);
 }
 
-flagcxResult_t
-bootstrapCollIntraNodeBroadcast(struct flagcxBootstrapState *state, int *ranks,
-                                int rank, int nranks, int root, void *bcastData,
-                                int size) {
+flagcxResult_t bootstrapCollIntraNodeBroadcast(struct bootstrapState *state,
+                                               int *ranks, int rank, int nranks,
+                                               int root, void *bcastData,
+                                               int size) {
   if (nranks == 1)
     return flagcxSuccess;
   TRACE(FLAGCX_INIT, "rank %d nranks %d root %d size %d - ENTER", rank, nranks,
@@ -693,9 +703,9 @@ bootstrapCollIntraNodeBroadcast(struct flagcxBootstrapState *state, int *ranks,
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapCollBroadcast(struct flagcxBootstrapState *state,
-                                      int rank, int nranks, int root,
-                                      void *bcastData, int size) {
+flagcxResult_t bootstrapCollBroadcast(struct bootstrapState *state, int rank,
+                                      int nranks, int root, void *bcastData,
+                                      int size) {
   return bootstrapCollIntraNodeBroadcast(state, NULL, rank, nranks, root,
                                          bcastData, size);
 }
@@ -855,7 +865,7 @@ bootstrapRingAllReduce(struct flagcxSocket *prevSocket,
 }
 
 static flagcxResult_t
-bootstrapRingReduce(struct flagcxBootstrapState *commState,
+bootstrapRingReduce(struct bootstrapState *commState,
                     struct flagcxSocket *prevSocket,
                     struct flagcxSocket *nextSocket, int rank, int nranks,
                     const char *sendbuff, char *recvbuff, size_t count,
@@ -904,7 +914,7 @@ bootstrapRingReduce(struct flagcxBootstrapState *commState,
   return flagcxSuccess;
 }
 
-flagcxResult_t AllReduceBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t AllReduceBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxRedOp_t op) {
@@ -925,7 +935,7 @@ flagcxResult_t AllReduceBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t ReduceBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t ReduceBootstrap(struct bootstrapState *state,
                                const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, int root) {
@@ -946,7 +956,7 @@ flagcxResult_t ReduceBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t ReduceScatterBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t ReduceScatterBootstrap(struct bootstrapState *state,
                                       const void *sendbuff, void *recvbuff,
                                       size_t recvcount,
                                       flagcxDataType_t datatype,
@@ -975,7 +985,7 @@ flagcxResult_t ReduceScatterBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t AlltoAllBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t AlltoAllBootstrap(struct bootstrapState *state,
                                  const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype) {
   struct bootstrapCollState *coll = unwrapCollState(state);
@@ -1021,7 +1031,7 @@ flagcxResult_t AlltoAllBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t BroadcastBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t BroadcastBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   int root) {
@@ -1059,7 +1069,7 @@ flagcxResult_t BroadcastBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t GatherBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t GatherBootstrap(struct bootstrapState *state,
                                const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                int root) {
@@ -1068,7 +1078,7 @@ flagcxResult_t GatherBootstrap(struct flagcxBootstrapState *state,
     return flagcxInvalidArgument;
   int rank = coll->rank;
   int nranks = coll->nranks;
-  const int bootstrapTag = -9994;
+  const int bootstrapTag = -9996;
 
   if (nranks == 1) {
     if (sendbuff != recvbuff) {
@@ -1098,7 +1108,54 @@ flagcxResult_t GatherBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t AlltoAllvBootstrap(struct flagcxBootstrapState *state,
+flagcxResult_t ScatterBootstrap(struct bootstrapState *state,
+                                const void *sendbuff, void *recvbuff,
+                                size_t count, flagcxDataType_t datatype,
+                                int root) {
+  struct bootstrapCollState *coll = unwrapCollState(state);
+  if (coll == NULL)
+    return flagcxInvalidArgument;
+  int rank = coll->rank;
+  int nranks = coll->nranks;
+  size_t size = count * getFlagcxDataTypeSize(datatype);
+  const int bootstrapTag = -9997;
+
+  if (rank == root) {
+    // Root sends to all non-root ranks
+    memcpy((void *)recvbuff, (const char *)sendbuff + rank * size, size);
+    for (int i = 0; i < nranks; i++) {
+      if (i != root) {
+        FLAGCXCHECK(bootstrapSend(state, i, bootstrapTag,
+                                  (void *)((const char *)sendbuff + i * size),
+                                  size));
+      }
+    }
+  } else {
+    // Non-root receives from root
+    FLAGCXCHECK(bootstrapRecv(state, root, bootstrapTag, recvbuff, size));
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t AllGatherBootstrap(struct bootstrapState *state,
+                                  const void *sendbuff, void *recvbuff,
+                                  size_t sendcount, flagcxDataType_t datatype) {
+  struct bootstrapCollState *coll = unwrapCollState(state);
+  if (coll == NULL)
+    return flagcxInvalidArgument;
+  int rank = coll->rank;
+  size_t size = sendcount * getFlagcxDataTypeSize(datatype);
+
+  // Copy own data into the correct slot (memmove handles in-place case
+  // where sendbuff == recvbuff + rank * size)
+  memmove((char *)recvbuff + rank * size, sendbuff, size);
+
+  // Use the existing bootstrapCollAllGather on the receive buffer
+  FLAGCXCHECK(bootstrapCollAllGather(state, recvbuff, size));
+  return flagcxSuccess;
+}
+
+flagcxResult_t AlltoAllvBootstrap(struct bootstrapState *state,
                                   const void *sendbuff, size_t *sendcounts,
                                   size_t *sdispls, void *recvbuff,
                                   size_t *recvcounts, size_t *rdispls,
@@ -1116,7 +1173,7 @@ flagcxResult_t AlltoAllvBootstrap(struct flagcxBootstrapState *state,
              (void *)((char *)sendbuff + sdispls[i] * typeSize),
              sendcounts[i] * typeSize);
     }
-    const int bootstrapTag = -9995;
+    const int bootstrapTag = -9998;
     if (rank > i) {
       FLAGCXCHECK(
           bootstrapSend(state, i, bootstrapTag,
@@ -1140,58 +1197,13 @@ flagcxResult_t AlltoAllvBootstrap(struct flagcxBootstrapState *state,
   return flagcxSuccess;
 }
 
-flagcxResult_t ScatterBootstrap(struct flagcxBootstrapState *state,
-                                const void *sendbuff, void *recvbuff,
-                                size_t count, flagcxDataType_t datatype,
-                                int root) {
-  struct bootstrapCollState *coll = unwrapCollState(state);
-  if (coll == NULL)
-    return flagcxInvalidArgument;
-  int rank = coll->rank;
-  int nranks = coll->nranks;
-  size_t size = count * getFlagcxDataTypeSize(datatype);
-
-  if (rank == root) {
-    // Root sends to all non-root ranks
-    memcpy((void *)recvbuff, (const char *)sendbuff + rank * size, size);
-    for (int i = 0; i < nranks; i++) {
-      if (i != root) {
-        FLAGCXCHECK(bootstrapSend(state, i, -9994,
-                                  (void *)((const char *)sendbuff + i * size),
-                                  size));
-      }
-    }
-  } else {
-    // Non-root receives from root
-    FLAGCXCHECK(bootstrapRecv(state, root, -9994, recvbuff, size));
-  }
-  return flagcxSuccess;
-}
-
-flagcxResult_t AllGatherBootstrap(struct flagcxBootstrapState *state,
-                                  const void *sendbuff, void *recvbuff,
-                                  size_t sendcount, flagcxDataType_t datatype) {
-  struct bootstrapCollState *coll = unwrapCollState(state);
-  if (coll == NULL)
-    return flagcxInvalidArgument;
-  int rank = coll->rank;
-  size_t size = sendcount * getFlagcxDataTypeSize(datatype);
-
-  // Copy own data into the correct slot
-  memcpy((char *)recvbuff + rank * size, sendbuff, size);
-
-  // Use the existing bootstrapCollAllGather on the receive buffer
-  FLAGCXCHECK(bootstrapCollAllGather(state, recvbuff, size));
-  return flagcxSuccess;
-}
-
 // ============================================================================
 // P2P Mode: RPC-style Listen / Connect / Accept
 // ============================================================================
 
 flagcxResult_t bootstrapP2pListen(uint64_t magic, volatile uint32_t *abortFlag,
                                   void *listenHandle,
-                                  struct flagcxBootstrapState **stateOut) {
+                                  struct bootstrapState **stateOut) {
   // Ensure network interface is discovered
   FLAGCXCHECK(bootstrapNetInit());
 
@@ -1215,7 +1227,7 @@ flagcxResult_t bootstrapP2pListen(uint64_t magic, volatile uint32_t *abortFlag,
   memcpy(&handle->addr, &p2p->localAddr, sizeof(union flagcxSocketAddress));
 
   // Wrap in state
-  struct flagcxBootstrapState *wrapper;
+  struct bootstrapState *wrapper;
   FLAGCXCHECK(flagcxCalloc(&wrapper, 1));
   wrapper->mode = FLAGCX_BOOTSTRAP_P2P;
   wrapper->p2p = p2p;
@@ -1226,7 +1238,7 @@ flagcxResult_t bootstrapP2pListen(uint64_t magic, volatile uint32_t *abortFlag,
 
 flagcxResult_t bootstrapP2pConnect(void *peerHandle, uint64_t magic,
                                    volatile uint32_t *abortFlag,
-                                   struct flagcxBootstrapState **stateOut) {
+                                   struct bootstrapState **stateOut) {
   // Ensure network interface is discovered
   FLAGCXCHECK(bootstrapNetInit());
 
@@ -1246,7 +1258,7 @@ flagcxResult_t bootstrapP2pConnect(void *peerHandle, uint64_t magic,
   FLAGCXCHECK(flagcxSocketConnect(&p2p->sock));
 
   // Wrap in state
-  struct flagcxBootstrapState *wrapper;
+  struct bootstrapState *wrapper;
   FLAGCXCHECK(flagcxCalloc(&wrapper, 1));
   wrapper->mode = FLAGCX_BOOTSTRAP_P2P;
   wrapper->p2p = p2p;
@@ -1255,8 +1267,8 @@ flagcxResult_t bootstrapP2pConnect(void *peerHandle, uint64_t magic,
   return flagcxSuccess;
 }
 
-flagcxResult_t bootstrapP2pAccept(struct flagcxBootstrapState *listenState,
-                                  struct flagcxBootstrapState **connStateOut) {
+flagcxResult_t bootstrapP2pAccept(struct bootstrapState *listenState,
+                                  struct bootstrapState **connStateOut) {
   if (listenState == NULL || listenState->mode != FLAGCX_BOOTSTRAP_P2P) {
     WARN("bootstrapP2pAccept: not a P2P listen state");
     return flagcxInvalidArgument;
@@ -1279,7 +1291,7 @@ flagcxResult_t bootstrapP2pAccept(struct flagcxBootstrapState *listenState,
   FLAGCXCHECK(flagcxSocketAccept(&connP2p->sock, &listenP2p->sock));
 
   // Wrap in state
-  struct flagcxBootstrapState *wrapper;
+  struct bootstrapState *wrapper;
   FLAGCXCHECK(flagcxCalloc(&wrapper, 1));
   wrapper->mode = FLAGCX_BOOTSTRAP_P2P;
   wrapper->p2p = connP2p;

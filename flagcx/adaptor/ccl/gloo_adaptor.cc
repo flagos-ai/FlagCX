@@ -85,7 +85,7 @@ const char *glooAdaptorGetLastError(flagcxInnerComm_t comm) {
 
 flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                        flagcxUniqueId_t /*commId*/, int rank,
-                                       struct flagcxBootstrapState *bootstrap) {
+                                       struct bootstrapState *bootstrap) {
   // Create gloo transport device
   std::shared_ptr<::gloo::transport::Device> dev;
   flagcxNetProperties_t *properties =

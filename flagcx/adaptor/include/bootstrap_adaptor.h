@@ -19,7 +19,7 @@ typedef struct stagedBuffer *stagedBuffer_t;
 struct flagcxInnerDevComm {};
 
 struct flagcxInnerComm {
-  struct flagcxBootstrapState *base;
+  struct bootstrapState *base;
 };
 
 #endif // USE_BOOTSTRAP_ADAPTOR

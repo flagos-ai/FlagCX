@@ -147,8 +147,7 @@ struct MaxLengthData {
 
 class flagcxGlooContext : public ::gloo::Context {
 public:
-  flagcxGlooContext(int rank, int nranks,
-                    struct flagcxBootstrapState *bootstrap)
+  flagcxGlooContext(int rank, int nranks, struct bootstrapState *bootstrap)
       : ::gloo::Context(rank, nranks) {
     bootstrap_ = bootstrap;
   }
@@ -218,7 +217,7 @@ public:
   }
 
 public:
-  struct flagcxBootstrapState *bootstrap_;
+  struct bootstrapState *bootstrap_;
 };
 
 struct flagcxInnerDevComm {};

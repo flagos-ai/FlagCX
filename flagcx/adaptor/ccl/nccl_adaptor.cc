@@ -104,10 +104,9 @@ const char *ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
   return ncclGetLastError(comm->base);
 }
 
-flagcxResult_t
-ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                        flagcxUniqueId_t commId, int rank,
-                        struct flagcxBootstrapState * /*bootstrap*/) {
+flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
+                                       flagcxUniqueId_t commId, int rank,
+                                       struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     void *p = malloc(sizeof(struct flagcxInnerComm));
     memset(p, 0, sizeof(struct flagcxInnerComm));

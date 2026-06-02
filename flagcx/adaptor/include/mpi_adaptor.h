@@ -177,15 +177,14 @@ void callMpi(int func_type, flagcxDataType_t datatype, Args... args) {
 
 class flagcxMpiContext {
 public:
-  flagcxMpiContext(int rank, int nranks,
-                   struct flagcxBootstrapState *bootstrap);
+  flagcxMpiContext(int rank, int nranks, struct bootstrapState *bootstrap);
   ~flagcxMpiContext();
 
   // Getters
   MPI_Comm getMpiComm() const { return mpiComm_; }
   int getRank() const { return rank_; }
   int getSize() const { return size_; }
-  struct flagcxBootstrapState *getBootstrap() const {
+  struct bootstrapState *getBootstrap() const {
     return bootstrap_;
   }
   bool isValidContext() const { return isValid_; }
@@ -199,7 +198,7 @@ private:
   MPI_Comm mpiComm_;
   int rank_;
   int size_;
-  struct flagcxBootstrapState *bootstrap_;
+  struct bootstrapState *bootstrap_;
   bool isValid_;
   bool ownsComm_;
   std::string lastError_;
@@ -212,8 +211,8 @@ private:
   bool validateMpiEnvironment();
 };
 
-inline flagcxMpiContext::flagcxMpiContext(
-    int rank, int nranks, struct flagcxBootstrapState *bootstrap)
+inline flagcxMpiContext::flagcxMpiContext(int rank, int nranks,
+                                          struct bootstrapState *bootstrap)
     : mpiComm_(MPI_COMM_NULL), rank_(rank), size_(nranks),
       bootstrap_(bootstrap), isValid_(false), ownsComm_(false) {
 

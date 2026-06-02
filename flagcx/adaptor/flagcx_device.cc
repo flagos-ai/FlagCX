@@ -263,7 +263,7 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
     }
 
     {
-      struct flagcxBootstrapState *bootstrap = comm->bootstrap;
+      struct bootstrapState *bootstrap = comm->bootstrap;
       int netDev = hetero->netDev;
       struct flagcxNetAdaptor *net = hetero->netAdaptor;
       const int signalTagBase = 2001;
