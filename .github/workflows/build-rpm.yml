@@ -13,13 +13,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Build on GitHub-hosted runners. The RPMs are produced entirely inside
+  # backend-specific Docker images pulled from public registries (nvcr.io,
+  # Docker Hub, repos.metax-tech.com), so the build is host-agnostic and needs
+  # neither the internal h20 runner nor a real GPU. This keeps PR checks green
+  # without depending on the internal network's flaky public egress.
+  #
+  # ascend targets aarch64 (the CANN 910 base image is arm64), so it runs on an
+  # arm64 runner; nvidia and metax target x86_64.
   build-rpm-packages:
-    runs-on: h20
-
     strategy:
       fail-fast: false
       matrix:
-        backend: [nvidia, metax, ascend]
+        include:
+          - backend: nvidia
+            runner: ubuntu-latest
+          - backend: metax
+            runner: ubuntu-latest
+          - backend: ascend
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - name: Checkout repository
@@ -37,11 +50,34 @@ jobs:
           path: rpm-packages/${{ matrix.backend }}/**/*.rpm
           retention-days: 7
 
-      # Publish straight from the locally-built artifacts on the same self-hosted
-      # runner: h20 can reach the internal Nexus but not codeload/api.github.com
-      # reliably, so we deliberately avoid any cross-workflow artifact round-trip.
+  # Publish on the internal h20 runner, which can reach the internal Nexus.
+  # Tag-only and never triggered by pull_request, so fork PRs are never handed
+  # the Nexus credentials (GitHub withholds secrets from fork PRs anyway; the
+  # explicit tag guard is a second layer).
+  #
+  # TODO(unverified): this is the first design where h20 pulls a same-run
+  # artifact via download-artifact (results.actions blob, a different endpoint
+  # than codeload). It cannot be validated until the first v* tag is pushed; if
+  # h20's egress to that endpoint is also unreliable, move this step to an
+  # internal host with stable GitHub access, or fix h20's public egress.
+  publish-rpm-packages:
+    needs: build-rpm-packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: h20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [nvidia, metax, ascend]
+
+    steps:
+      - name: Download ${{ matrix.backend }} RPM packages
+        uses: actions/download-artifact@v4
+        with:
+          name: flagcx-${{ matrix.backend }}-rpm-packages
+          path: rpm-packages/${{ matrix.backend }}
+
       - name: Publish ${{ matrix.backend }} RPMs to Nexus YUM repository
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           NEXUS_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           NEXUS_PASSWORD: ${{ secrets.CONTAINER_REGISTRY }}
