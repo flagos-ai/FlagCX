@@ -860,6 +860,7 @@ static flagcxResult_t flagcxP2pTestBatch(void **requests, int nRequests,
       if (req->task.hasErrors())
         anyFailed = true;
       flagcxP2pFreeSliceReq(req);
+      requests[i] = NULL;
     }
   }
   *doneCount = completed;

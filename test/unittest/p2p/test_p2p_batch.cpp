@@ -360,9 +360,8 @@ TEST_F(P2pBatchTest, IgetBatchInvalidCountReturnsError) {
   void *request = nullptr;
   // count=0 should be handled gracefully (either success with NULL req or
   // error)
-  flagcxResult_t rc =
-      flagcxNetIbP2p.igetBatch(sendComm_, 0, nullptr, nullptr, nullptr, 0, 0,
-                               nullptr, nullptr, &request);
+  (void)flagcxNetIbP2p.igetBatch(sendComm_, 0, nullptr, nullptr, nullptr, 0, 0,
+                                 nullptr, nullptr, &request);
   // Negative count should fail
   flagcxResult_t rcNeg =
       flagcxNetIbP2p.igetBatch(sendComm_, -1, nullptr, nullptr, nullptr, 0, 0,

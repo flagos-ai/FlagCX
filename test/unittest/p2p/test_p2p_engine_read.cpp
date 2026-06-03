@@ -238,7 +238,12 @@ protected:
     ASSERT_NE(devHandle, nullptr);
 
     int numDevices = 0;
-    ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
+    flagcxResult_t countRes = devHandle->getDeviceCount(&numDevices);
+    if (countRes != flagcxSuccess) {
+      flagcxDeviceHandleFree(devHandle);
+      devHandle = nullptr;
+      GTEST_SKIP() << "GPU device enumeration failed, skipping P2P read tests";
+    }
     if (numDevices <= kServerGpuIdx) {
       flagcxDeviceHandleFree(devHandle);
       devHandle = nullptr;
