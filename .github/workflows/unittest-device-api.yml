@@ -50,10 +50,12 @@ jobs:
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           mpirun -np 8 --allow-run-as-root \
-            -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
-            -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
+            -x NCCL_CUMEM_ENABLE=0 \
+            -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \
+            -x NCCL_DEBUG=TRACE -x NCCL_DEBUG_SUBSYS=ALL \
             build/bin/test_device_api -b 1M -e 4M -f 2 -R 2
           mpirun -np 8 --allow-run-as-root \
-            -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
-            -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
+            -x NCCL_CUMEM_ENABLE=0 \
+            -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \
+            -x NCCL_DEBUG=TRACE -x NCCL_DEBUG_SUBSYS=ALL \
             build/bin/test_device_ir -b 1M -e 4M -f 2 -R 2
