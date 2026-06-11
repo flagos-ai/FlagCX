@@ -14,8 +14,9 @@ Supports:
 Uses ZMQ for out-of-band coordination between server and client.
 
 Modes:
-  - perf (default): Pure performance measurement, no verification overhead
-  - correctness: Strict element-by-element verification with detailed error reporting
+  - uniform: simple sizes x num_blocks sweep (one value per byte)
+  - noncontig: models a PD step — a batch of requests whose KV blocks are
+    scattered across a large (total_req) block pool, swept over request length
 
 Usage
 -----
@@ -26,17 +27,6 @@ Usage
   python kv_transfer_benchmark.py --connector=nixl --role=client \\
       --remote-ip=10.8.2.169 --device=gpu --nixl-backend=UCX
 
-  # NIXL with FLAGCX backend
-  python kv_transfer_benchmark.py --connector=nixl --role=server \\
-      --remote-ip=10.8.2.169 --device=gpu --nixl-backend=FLAGCX
-
-  # Mooncake
-  python kv_transfer_benchmark.py --connector=mooncake --role=server \\
-      --remote-ip=10.8.2.169 --device=gpu
-
-  python kv_transfer_benchmark.py --connector=mooncake --role=client \\
-      --remote-ip=10.8.2.169 --device=gpu
-
   # FlagCX (direct library)
   python kv_transfer_benchmark.py --connector=flagcx --role=server \\
       --remote-ip=10.8.2.169 --device=gpu
@@ -44,21 +34,169 @@ Usage
   python kv_transfer_benchmark.py --connector=flagcx --role=client \\
       --remote-ip=10.8.2.169 --device=gpu
 
-  # Correctness mode
-  python kv_transfer_benchmark.py --connector=nixl --role=client \\
-      --remote-ip=10.8.2.169 --mode=correctness
+  # Non-contiguous step mode
+  python kv_transfer_benchmark.py --connector=flagcx --role=client \\
+      --remote-ip=10.8.2.169 --mode=noncontig --contiguity=0.3
 """
 
 from __future__ import annotations
 
 import argparse
+import math
+import random
 import sys
 import time
 from abc import ABC, abstractmethod
-from typing import Any, List
+from dataclasses import dataclass, field
+from typing import List
 
 import torch
 import zmq
+
+# bytes per KV element, selectable via --dtype.
+_DTYPE_BYTES = {"bf16": 2, "fp16": 2, "fp8": 1, "fp32": 4}
+
+
+@dataclass
+class StepPattern:
+    """A modeled single-step transfer: a list of variable-size, scattered WRs.
+
+    Each WR carries a 1-byte ``tag`` (1..255). The source fills its region with
+    the tag; after the transfer the destination region must equal it, so
+    verification checks the per-WR src->dst mapping (untouched bytes stay 0).
+    """
+
+    sizes: List[int]                                       # bytes per WR
+    src_offsets: List[int] = field(default_factory=list)   # byte offset in src
+    dst_offsets: List[int] = field(default_factory=list)   # byte offset in dst
+    tags: List[int] = field(default_factory=list)          # 1..255 per WR
+    pool_bytes: int = 0                                     # full buffer span
+
+    @property
+    def wr_count(self) -> int:
+        return len(self.sizes)
+
+    @property
+    def total_bytes(self) -> int:
+        """Bytes actually transferred this step (sum of WRs)."""
+        return sum(self.sizes)
+
+
+def compute_block_len(block_size: int, num_kv_heads: int, head_dim: int,
+                      tp: int, dtype_bytes: int) -> int:
+    """Bytes of one KV block, for one layer, on one tp rank.
+
+    Each rank owns ``num_kv_heads // tp`` heads (floored to >= 1 for GQA); the
+    factor 2 is K and V. Matches FlagCXConnector's per-rank ``block_len``.
+    """
+    heads_per_rank = max(1, num_kv_heads // tp)
+    return 2 * block_size * heads_per_rank * head_dim * dtype_bytes
+
+
+def _request_run_lengths(blocks_per_req: int, contiguity: float,
+                         rng: random.Random) -> List[int]:
+    """Split ``blocks_per_req`` blocks into contiguous runs.
+
+    ``contiguity`` is the probability the next block extends the current run.
+    1.0 => one run (fully contiguous); 0.0 => every block its own run.
+    """
+    if blocks_per_req <= 0:
+        return []
+    if contiguity >= 1.0:
+        return [blocks_per_req]
+    runs: List[int] = []
+    cur = 1
+    for _ in range(blocks_per_req - 1):
+        if rng.random() < contiguity:
+            cur += 1
+        else:
+            runs.append(cur)
+            cur = 1
+    runs.append(cur)
+    return runs
+
+
+def generate_step_pattern(block_len: int, num_layers: int, blocks_per_req: int,
+                          batch: int, total_req: int, contiguity: float,
+                          seed: int, coalesce: bool = True) -> StepPattern:
+    """Build one step's WRs for ``batch`` requests, scattered across a pool.
+
+    The pool holds ``total_req`` requests' blocks (per layer); only ``batch``
+    requests are transferred, with their runs scattered across the pool to
+    model fragmentation. ``coalesce=False`` (NIXL) emits one WR per block.
+    """
+    rng = random.Random(seed)
+    if coalesce:
+        per_req_runs = [_request_run_lengths(blocks_per_req, contiguity, rng)
+                        for _ in range(batch)]
+    else:
+        per_req_runs = [[1] * blocks_per_req for _ in range(batch)]
+
+    run_blocks: List[int] = []
+    for _layer in range(num_layers):
+        for runs in per_req_runs:
+            run_blocks.extend(runs)
+
+    sizes = [r * block_len for r in run_blocks]
+    tags = [(i % 255) + 1 for i in range(len(sizes))]
+
+    pool_blocks = total_req * blocks_per_req * num_layers
+    # src and dst are independent pool allocations -> different scatters.
+    src_offsets = _scatter_offsets(run_blocks, pool_blocks, block_len,
+                                   random.Random(seed ^ 0xA5A5))
+    dst_offsets = _scatter_offsets(run_blocks, pool_blocks, block_len,
+                                   random.Random(seed ^ 0x5A5A))
+    return StepPattern(sizes=sizes, src_offsets=src_offsets,
+                       dst_offsets=dst_offsets, tags=tags,
+                       pool_bytes=pool_blocks * block_len)
+
+
+def _scatter_offsets(run_blocks: List[int], pool_blocks: int, block_len: int,
+                     rng: random.Random) -> List[int]:
+    """Place each run at a block-aligned, non-overlapping, scattered offset.
+
+    Distributes the free blocks (pool minus transferred) as random gaps before
+    each run, laying runs out in a shuffled order. Returns one byte offset/run.
+    """
+    k = len(run_blocks)
+    if k == 0:
+        return []
+    order = list(range(k))
+    rng.shuffle(order)
+    free = max(0, pool_blocks - sum(run_blocks))
+    cuts = sorted(rng.randint(0, free) for _ in range(k))
+    offsets = [0] * k
+    block = 0
+    prev = 0
+    for pos, idx in enumerate(order):
+        block += cuts[pos] - prev
+        prev = cuts[pos]
+        offsets[idx] = block * block_len
+        block += run_blocks[idx]
+    return offsets
+
+
+def _blocks_from_pattern(pattern: StepPattern, is_source: bool,
+                         device: str, gpu_idx: int) -> List[torch.Tensor]:
+    """One byte-exact uint8 tensor per WR. Source fills its tag; dest fills 0."""
+    dev = f"cuda:{gpu_idx}" if device == "gpu" else "cpu"
+    return [
+        torch.full((sz,), tag if is_source else 0, device=dev, dtype=torch.uint8)
+        for sz, tag in zip(pattern.sizes, pattern.tags)
+    ]
+
+
+def _verify_dest_blocks(dataset: List[torch.Tensor], pattern: StepPattern,
+                        role: str) -> None:
+    """Dest side: every WR tensor must equal its tag."""
+    for i, (blk, tag) in enumerate(zip(dataset, pattern.tags)):
+        if not torch.all(blk == tag).item():
+            bad = int((blk != tag).sum().item())
+            raise AssertionError(
+                f"[{role}] STEP VERIFY FAIL: WR {i} (size={blk.numel()}, "
+                f"tag={tag}) has {bad} bytes != tag."
+            )
+
 
 # ---------------------------------------------------------------------------
 # Abstract base
@@ -70,6 +208,8 @@ class TransportBenchmark(ABC):
 
     # Subclasses set this to the fixed op type for their connector.
     OP_TYPE: str = ""
+    COALESCE: bool = True
+    SOURCE_ROLE: str = "client"
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -79,10 +219,21 @@ class TransportBenchmark(ABC):
         self.remote_ip = args.remote_ip
         self.op_type = self.OP_TYPE
         self.zmq_port = args.zmq_port
+        self._pattern: "StepPattern | None" = None
+
+    @property
+    def is_source(self) -> bool:
+        """True if this process holds the source data for the transfer."""
+        return self.SOURCE_ROLE in self.role
 
     @abstractmethod
-    def setup(self, size: int, num_blocks: int) -> None:
-        """Initialize transport, allocate buffers, exchange metadata."""
+    def setup(self, size: int, num_blocks: int,
+              pattern: "StepPattern | None" = None) -> None:
+        """Initialize transport, allocate buffers, exchange metadata.
+
+        When ``pattern`` is given (step mode), its WR sizes/offsets override the
+        uniform ``size``/``num_blocks`` split.
+        """
 
     @abstractmethod
     def run_transfer(self) -> None:
@@ -106,6 +257,8 @@ class NixlBenchmark(TransportBenchmark):
     """Benchmark using NIXL agent with configurable backend (UCX/FLAGCX)."""
 
     OP_TYPE = "read"
+    COALESCE = False
+    SOURCE_ROLE = "server"
 
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
@@ -126,9 +279,14 @@ class NixlBenchmark(TransportBenchmark):
         self.zmq_sock = None
         self.dataset: List[torch.Tensor] = []
 
-    def setup(self, size: int, num_blocks: int) -> None:
-        # Allocate dataset
-        self.dataset = self._create_dataset(size, num_blocks)
+    def setup(self, size: int, num_blocks: int,
+              pattern: "StepPattern | None" = None) -> None:
+        self._pattern = pattern
+        if pattern is not None:
+            self.dataset = _blocks_from_pattern(
+                pattern, self.is_source, self.device, self.gpu_idx)
+        else:
+            self.dataset = self._create_dataset(size, num_blocks)
 
         # ZMQ coordination
         self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
@@ -194,8 +352,11 @@ class NixlBenchmark(TransportBenchmark):
             self.handle = None
 
     def verify_strict(self) -> None:
-        """Strict element-by-element verification. Raises on mismatch."""
-        if "client" not in self.role:
+        """Verify on the dest side. Raises on mismatch."""
+        if self.is_source:  # source side has nothing to check
+            return
+        if self._pattern is not None:
+            _verify_dest_blocks(self.dataset, self._pattern, self.role)
             return
 
         expected = 0.0
@@ -290,9 +451,14 @@ class MooncakeBenchmark(TransportBenchmark):
         self.local_lens: List[int] = []
         self.remote_ptrs: List[int] = []
 
-    def setup(self, size: int, num_blocks: int) -> None:
-        # Allocate dataset
-        self.dataset = self._create_dataset(size, num_blocks)
+    def setup(self, size: int, num_blocks: int,
+              pattern: "StepPattern | None" = None) -> None:
+        self._pattern = pattern
+        if pattern is not None:
+            self.dataset = _blocks_from_pattern(
+                pattern, self.is_source, self.device, self.gpu_idx)
+        else:
+            self.dataset = self._create_dataset(size, num_blocks)
 
         # Initialize TransferEngine
         import socket
@@ -368,8 +534,11 @@ class MooncakeBenchmark(TransportBenchmark):
                 pass
 
     def verify_strict(self) -> None:
-        """Strict element-by-element verification. Raises on mismatch."""
-        if "server" not in self.role:
+        """Verify on the dest side (server). Raises on mismatch."""
+        if self.is_source:  # client is the source for write semantics
+            return
+        if self._pattern is not None:
+            _verify_dest_blocks(self.dataset, self._pattern, self.role)
             return
 
         expected = 1.0
@@ -442,105 +611,127 @@ class FlagCXBenchmark(TransportBenchmark):
         if wrapper_dir not in sys.path:
             sys.path.insert(0, wrapper_dir)
 
-        from flagcx_wrapper import FLAGCXLibrary, flagcxUniqueId
+        from flagcx_wrapper import FLAGCXLibrary
         self._FLAGCXLibrary = FLAGCXLibrary
-        self._flagcxUniqueId = flagcxUniqueId
 
         lib_path = args.flagcx_lib_path
         if not lib_path:
             lib_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
         self.flagcx = FLAGCXLibrary(lib_path)
 
-        self.comm = None
+        self.engine = None
         self.buffer: torch.Tensor = None
         self.zmq_sock = None
+        self.conn = None
+        self._src_vas: List[int] = []
+        self._dst_vas: List[int] = []
+        self._sizes: List[int] = []
 
-    def setup(self, size: int, num_blocks: int) -> None:
-        import ctypes
+    def _fill_source_buffer(self, pattern: StepPattern) -> None:
+        """Source side: write each WR's tag into its src_offset region."""
+        for off, sz, tag in zip(pattern.src_offsets, pattern.sizes, pattern.tags):
+            self.buffer[off:off + sz] = tag
+
+    def setup(self, size: int, num_blocks: int,
+              pattern: "StepPattern | None" = None) -> None:
+        import json
+        import socket
+
+        is_server = "server" in self.role  # server == receiver / write target
 
         # ZMQ coordination
         self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
+        self.engine = self.flagcx.flagcxP2pEngineCreate()
 
-        # Exchange unique ID and init communicator
-        rank = 0 if "server" in self.role else 1
-        if rank == 0:
-            uid_ptr = self.flagcx.flagcxGetUniqueId()
-            uid_bytes = bytes(uid_ptr.contents.internal)
-            self.zmq_sock.send(uid_bytes)
+        self._pattern = pattern
+        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
+        if pattern is not None:
+            self.buffer = torch.zeros(
+                (pattern.pool_bytes,), device=dev, dtype=torch.uint8
+            )
+            if self.is_source:
+                self._fill_source_buffer(pattern)
         else:
-            uid_bytes = self.zmq_sock.recv()
-            uid_ptr = ctypes.pointer(
-                self.flagcx.unique_id_from_bytes(uid_bytes)
+            value = 0 if is_server else 1
+            total_bytes = size * num_blocks
+            n_elems = total_bytes // 4  # float32
+            self.buffer = torch.full(
+                (n_elems,), value, device=dev, dtype=torch.float32
             )
 
-        self.comm = self.flagcx.flagcxCommInitRank(2, uid_ptr, rank)
+        base_addr = self.buffer.data_ptr()
+        reg_bytes = self.buffer.numel() * self.buffer.element_size()
+        self.flagcx.flagcxP2pRegister(self.engine, base_addr, reg_bytes)
 
-        # Allocate data buffer
-        total_bytes = size * num_blocks
-        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
-        value = 0 if "server" in self.role else 1
-        n_elems = total_bytes // 4  # float32
-        self.buffer = torch.full(
-            (n_elems,), value, device=dev, dtype=torch.float32
-        )
-
-        # Register data MR (index 0)
-        self.flagcx.flagcxOneSideRegister(
-            self.comm, self.buffer.data_ptr(),
-            self.buffer.numel() * self.buffer.element_size()
-        )
-
-        # Allocate and register signal buffer
-        # TODO: if we support flagcxWaitCounter(sender) and flagcxWaitSignal(receiver)
-        #       then we need to implement a flagcxOneSideSignalRegister, like below:
-        # self.signal_buffer = torch.zeros(1, dtype=torch.int64).pin_memory()
-        # self.flagcx.flagcxOneSideSignalRegister(
-        #     self.comm, self.signal_buffer.data_ptr(),
-        #     self.signal_buffer.numel() * self.signal_buffer.element_size(), 1
-        # )
-
-        # Sync ready
-        if "server" in self.role:
-            self.zmq_sock.send(b"READY")
+        if is_server:
+            # Receiver: start the RPC accept server and advertise its session
+            # ("host:rpc_port") + buffer base VA so the sender can write here.
+            self.flagcx.flagcxP2pStartRpcServer(self.engine)
+            rpc_port = self.flagcx.flagcxP2pGetRpcPort(self.engine)
+            host = self.remote_ip
+            if host in ("", "0.0.0.0", None):
+                host = socket.gethostbyname(socket.gethostname())
+            self.zmq_sock.send(json.dumps({
+                "session": f"{host}:{rpc_port}",
+                "base_addr": base_addr,
+            }).encode("utf-8"))
+            # Barrier: wait for the sender to finish connecting.
             self.zmq_sock.recv()
         else:
-            self.zmq_sock.recv()
+            # Sender: learn the receiver's session + remote base VA, then open
+            # the P2P connection (QP + desc-table handshake on first call).
+            remote_info = json.loads(self.zmq_sock.recv().decode("utf-8"))
+            remote_session = remote_info["session"]
+            remote_base = int(remote_info["base_addr"])
+            self.conn = self.flagcx.flagcxP2pGetConn(self.engine, remote_session)
+
+            # Precompute the absolute-VA write lists once.
+            if pattern is not None:
+                self._sizes = list(pattern.sizes)
+                self._src_vas = [base_addr + o for o in pattern.src_offsets]
+                self._dst_vas = [remote_base + o for o in pattern.dst_offsets]
+            elif num_blocks <= 1:
+                self._sizes = [total_bytes]
+                self._src_vas = [base_addr]
+                self._dst_vas = [remote_base]
+            else:
+                block_size = total_bytes // num_blocks
+                self._sizes = [block_size] * num_blocks
+                self._src_vas = [base_addr + i * block_size
+                                 for i in range(num_blocks)]
+                self._dst_vas = [remote_base + i * block_size
+                                 for i in range(num_blocks)]
             self.zmq_sock.send(b"READY")
 
-        self._total_bytes = total_bytes
-        self._num_blocks = num_blocks
-
     def run_transfer(self) -> None:
-        """Client puts data to server."""
-        rank = 0 if "server" in self.role else 1
-        peer = 1 - rank
-        block_size = self._total_bytes // self._num_blocks
-
-        if rank == 1:  # client
-            before = self.flagcx.flagcxReadCounter(self.comm)
-            if self._num_blocks == 1:
-                self.flagcx.flagcxPut(
-                    self.comm, peer, 0, 0, self._total_bytes, 0, 0
-                )
-                n_ops = 1
-            else:
-                offsets = [i * block_size for i in range(self._num_blocks)]
-                sizes = [block_size] * self._num_blocks
-                mr_idxs = [0] * self._num_blocks
-                self.flagcx.flagcxBatchPut(
-                    self.comm, peer, offsets, offsets, sizes,
-                    mr_idxs, mr_idxs
-                )
-                n_ops = self._num_blocks
-            self.flagcx.flagcxWaitCounter(self.comm, before + n_ops)
-            self.zmq_sock.send(b"DONE")
-        else:  # server waits
+        """Sender (client) RDMA-writes its buffer into the receiver's buffer."""
+        if "server" in self.role:  # receiver: nothing to drive, just wait
             while self.zmq_sock.recv() != b"DONE":
                 pass
+            return
+
+        # flagcxP2pBatchWriteSync is synchronous: it returns once the batched
+        # one-sided write has completed on the wire.
+        self.flagcx.flagcxP2pBatchWriteSync(
+            self.conn, self._src_vas, self._dst_vas, self._sizes
+        )
+        self.zmq_sock.send(b"DONE")
 
     def verify_strict(self) -> None:
-        """Strict element-by-element verification. Raises on mismatch."""
-        if "server" not in self.role:
+        """Verify on the receiver (server). Raises on mismatch."""
+        if self.is_source:  # client is the source for write semantics
+            return
+        if self._pattern is not None:
+            p = self._pattern
+            for i, (off, sz, tag) in enumerate(
+                    zip(p.dst_offsets, p.sizes, p.tags)):
+                region = self.buffer[off:off + sz]
+                if not torch.all(region == tag).item():
+                    bad = int((region != tag).sum().item())
+                    raise AssertionError(
+                        f"[{self.role}] STEP VERIFY FAIL: WR {i} @dst {off} "
+                        f"(size={sz}, tag={tag}) has {bad} bytes != tag."
+                    )
             return
 
         expected = 1.0
@@ -557,16 +748,20 @@ class FlagCXBenchmark(TransportBenchmark):
             )
 
     def teardown(self) -> None:
-        if self.comm is not None:
+        if self.engine is not None:
             try:
-                self.flagcx.flagcxCommDestroy(self.comm)
+                self.flagcx.flagcxP2pEngineDestroy(self.engine)
             except Exception:
                 pass
         if self.zmq_sock is not None:
             self.zmq_sock.close()
             self.zmq_sock = None
-        self.comm = None
+        self.engine = None
+        self.conn = None
         self.buffer = None
+        self._src_vas = []
+        self._dst_vas = []
+        self._sizes = []
 
 
 # ---------------------------------------------------------------------------
@@ -600,12 +795,20 @@ def _parse_sizes(val: str) -> List[int]:
         return [int(s) for s in val.split(",") if s]
     except ValueError as e:
         raise argparse.ArgumentTypeError(
-            "--sizes must be comma-separated integers (bytes)"
+            "expected comma-separated integers"
         ) from e
 
 
+def _gpu_buffer_fits(required: int, args: argparse.Namespace) -> bool:
+    """True if ``required`` bytes fit in the local GPU (90% of free mem)."""
+    if args.device != "gpu" or not torch.cuda.is_available():
+        return True
+    free, _ = torch.cuda.mem_get_info(args.local_gpu_idx)
+    return required <= free * 0.9
+
+
 # ---------------------------------------------------------------------------
-# Benchmark driver
+# Benchmark drivers
 # ---------------------------------------------------------------------------
 
 
@@ -644,8 +847,46 @@ def benchmark_size(bench: TransportBenchmark, size: int, num_blocks: int,
 
     # Verify correctness
     bench.verify_strict()
-    print(f"  ✓ Verification passed")
+    bench.teardown()
 
+
+def benchmark_step(bench: TransportBenchmark, pattern: StepPattern,
+                   contiguity: float, req_tokens: int,
+                   iters: int, warmup: int) -> None:
+    """Run benchmark for one non-contiguous step pattern."""
+    bench.setup(0, 0, pattern=pattern)
+
+    for _ in range(warmup):
+        bench.run_transfer()
+
+    if torch.cuda.is_available() and bench.device == "gpu":
+        torch.cuda.synchronize(bench.gpu_idx)
+
+    t_start = time.perf_counter()
+    for _ in range(iters):
+        bench.run_transfer()
+    if torch.cuda.is_available() and bench.device == "gpu":
+        torch.cuda.synchronize(bench.gpu_idx)
+    elapsed = time.perf_counter() - t_start
+
+    avg_s = elapsed / iters
+    total = pattern.total_bytes
+    bw_GBs = (total / avg_s) / (1024**3) if avg_s > 0 else 0
+    bw_Gbps = (total * 8 / avg_s) / 1e9 if avg_s > 0 else 0
+    avg_wr = total / pattern.wr_count if pattern.wr_count else 0
+
+    print(
+        f"  reqlen={req_tokens // 1024:>3d}k | "
+        f"contig={contiguity:4.2f} | "
+        f"WRs={pattern.wr_count:6d} | "
+        f"WRsize[min/avg/max]={_pretty_size(min(pattern.sizes))}/"
+        f"{_pretty_size(int(avg_wr))}/{_pretty_size(max(pattern.sizes))} | "
+        f"xfer={_pretty_size(total):>9s} | "
+        f"lat={avg_s * 1000:8.3f} ms | "
+        f"BW={bw_GBs:7.2f} GB/s ({bw_Gbps:7.2f} Gbps)"
+    )
+
+    bench.verify_strict()
     bench.teardown()
 
 
@@ -667,6 +908,11 @@ def main() -> None:
         help="server listens; client initiates the transfer"
     )
     p.add_argument(
+        "--mode", choices=["uniform", "noncontig"], default="uniform",
+        help="uniform: --sizes x --num-blocks sweep; "
+             "noncontig: scattered PD-step sweep over request length"
+    )
+    p.add_argument(
         "--remote-ip", default="0.0.0.0",
         help="server IP — client dials it, server binds it"
     )
@@ -684,6 +930,10 @@ def main() -> None:
         help="comma-separated message sizes in bytes"
     )
     p.add_argument(
+        "--num-blocks", type=int, default=1,
+        help="number of tensor blocks per transfer"
+    )
+    p.add_argument(
         "--iters", type=int, default=100,
         help="timed iterations per size"
     )
@@ -692,8 +942,50 @@ def main() -> None:
         help="number of warmup iterations before timed runs"
     )
     p.add_argument(
-        "--num-blocks", type=int, default=1,
-        help="number of tensor blocks per transfer"
+        "--req-lens", type=_parse_sizes,
+        default=[1024, 2048, 4096, 8192, 16384, 32768, 65536],
+        help="[noncontig] comma-separated request lengths in tokens to sweep"
+    )
+    p.add_argument(
+        "--total-req", type=int, default=500,
+        help="[noncontig] requests in the block pool (sets total buffer size)"
+    )
+    p.add_argument(
+        "--batch", type=int, default=8,
+        help="[noncontig] requests transferred per step"
+    )
+    p.add_argument(
+        "--block-size", type=int, default=16,
+        help="[noncontig] KV tokens per block (blocks_per_req = req_len/this)"
+    )
+    p.add_argument(
+        "--num-kv-heads", type=int, default=8,
+        help="[noncontig] model num_key_value_heads (sharded across tp ranks)"
+    )
+    p.add_argument(
+        "--head-dim", type=int, default=128,
+        help="[noncontig] attention head_dim"
+    )
+    p.add_argument(
+        "--tp", type=int, default=8,
+        help="[noncontig] tensor-parallel size; each rank owns num_kv_heads//tp"
+    )
+    p.add_argument(
+        "--dtype", choices=list(_DTYPE_BYTES), default="bf16",
+        help="[noncontig] KV element dtype"
+    )
+    p.add_argument(
+        "--num-layers", type=int, default=48,
+        help="[noncontig] number of layers (one WR group each)"
+    )
+    p.add_argument(
+        "--contiguity", type=float, default=1.0,
+        help="[noncontig] block run-extension probability in [0,1]: "
+             "1.0=fully contiguous, 0.0=fully scattered (coalescing backends)"
+    )
+    p.add_argument(
+        "--seed", type=int, default=1234,
+        help="[noncontig] RNG seed for the scatter pattern (same on both sides)"
     )
     p.add_argument(
         "--nixl-backend", default="UCX",
@@ -727,15 +1019,11 @@ def main() -> None:
     else:
         raise ValueError(f"Unknown connector: {args.connector}")
 
-    # Print header
     print(f"KV Transfer Benchmark  connector={args.connector}  role={args.role}")
     print(
-        f"  device={args.device}  gpu={args.local_gpu_idx}  "
-        f"op={bench.op_type}  iters={args.iters}  warmup={args.warmup_iters}  "
-        f"num_blocks={args.num_blocks}"
+        f"  mode={args.mode}  device={args.device}  gpu={args.local_gpu_idx}  "
+        f"op={bench.op_type}  iters={args.iters}  warmup={args.warmup_iters}"
     )
-    print(f"  NOTE: {args.connector} connector uses op_type={bench.op_type} "
-          f"(matching vLLM connector semantics)")
     if args.connector == "nixl":
         print(f"  nixl-backend={args.nixl_backend}")
     elif args.connector == "mooncake":
@@ -743,15 +1031,69 @@ def main() -> None:
     elif args.connector == "flagcx":
         lib = args.flagcx_lib_path or "$FLAGCX_PATH/build/lib/libflagcx.so"
         print(f"  lib={lib}")
-    print(f"  sizes: {', '.join(_pretty_size(s) for s in args.sizes)}")
-    print("-" * 72)
 
-    # Run benchmark for each size
-    for size in args.sizes:
-        benchmark_size(bench, size, args.num_blocks, args.iters, args.warmup_iters)
+    if args.mode == "uniform":
+        print(f"  num_blocks={args.num_blocks}")
+        print(f"  sizes: {', '.join(_pretty_size(s) for s in args.sizes)}")
+        print("-" * 72)
+        for size in args.sizes:
+            benchmark_size(bench, size, args.num_blocks,
+                              args.iters, args.warmup_iters)
+    else:
+        _run_noncontig(bench, args)
 
     print("-" * 72)
     print("Done.")
+
+
+def _run_noncontig(bench: TransportBenchmark, args: argparse.Namespace) -> None:
+    """Sweep the non-contiguous step pattern over request length."""
+    dtype_bytes = _DTYPE_BYTES[args.dtype]
+    block_len = compute_block_len(
+        args.block_size, args.num_kv_heads, args.head_dim, args.tp, dtype_bytes,
+    )
+    coalesce = type(bench).COALESCE
+    effective_contiguity = args.contiguity if coalesce else 0.0
+    heads_per_rank = max(1, args.num_kv_heads // args.tp)
+
+    print(
+        f"  block_len={_pretty_size(block_len)} "
+        f"(block_size={args.block_size} x heads/rank={heads_per_rank}"
+        f"[={args.num_kv_heads}//{args.tp}] x head_dim={args.head_dim} "
+        f"x 2(KV) x {args.dtype})"
+    )
+    print(
+        f"  num_layers={args.num_layers}  total_req={args.total_req}"
+        f"  batch={args.batch}  seed={args.seed}"
+        f"  coalesce={coalesce}  contiguity={args.contiguity}"
+    )
+    print("-" * 72)
+
+    for req_tokens in args.req_lens:
+        blocks_per_req = max(1, math.ceil(req_tokens / args.block_size))
+        # FlagCX allocates the whole pool; per-WR backends only the transfer.
+        pool_bytes = args.total_req * blocks_per_req * args.num_layers * block_len
+        xfer_bytes = args.batch * blocks_per_req * args.num_layers * block_len
+        required = pool_bytes if args.connector == "flagcx" else xfer_bytes
+        if not _gpu_buffer_fits(required, args):
+            print(
+                f"  reqlen={req_tokens // 1024:>3d}k | SKIP: needs "
+                f"{_pretty_size(required)} > GPU free mem"
+            )
+            continue
+
+        pattern = generate_step_pattern(
+            block_len=block_len,
+            num_layers=args.num_layers,
+            blocks_per_req=blocks_per_req,
+            batch=args.batch,
+            total_req=args.total_req,
+            contiguity=effective_contiguity,
+            seed=args.seed,
+            coalesce=coalesce,
+        )
+        benchmark_step(bench, pattern, args.contiguity, req_tokens,
+                       args.iters, args.warmup_iters)
 
 
 if __name__ == "__main__":
