@@ -14,7 +14,7 @@ Supports:
 Uses ZMQ for out-of-band coordination between server and client.
 
 Modes:
-  - uniform: simple sizes x num_blocks sweep (one value per byte)
+  - uniform(default): simple sizes x num_blocks sweep (one value per byte)
   - noncontig: models a PD step — a batch of requests whose KV blocks are
     scattered across a large (total_req) block pool, swept over request length
 
@@ -27,6 +27,17 @@ Usage
   python kv_transfer_benchmark.py --connector=nixl --role=client \\
       --remote-ip=10.8.2.169 --device=gpu --nixl-backend=UCX
 
+  # NIXL with FLAGCX backend
+  python kv_transfer_benchmark.py --connector=nixl --role=server \\
+      --remote-ip=10.8.2.169 --device=gpu --nixl-backend=FLAGCX
+
+  # Mooncake
+  python kv_transfer_benchmark.py --connector=mooncake --role=server \\
+      --remote-ip=10.8.2.169 --device=gpu
+
+  python kv_transfer_benchmark.py --connector=mooncake --role=client \\
+      --remote-ip=10.8.2.169 --device=gpu
+
   # FlagCX (direct library)
   python kv_transfer_benchmark.py --connector=flagcx --role=server \\
       --remote-ip=10.8.2.169 --device=gpu
@@ -34,9 +45,9 @@ Usage
   python kv_transfer_benchmark.py --connector=flagcx --role=client \\
       --remote-ip=10.8.2.169 --device=gpu
 
-  # Non-contiguous step mode
+  # Non-contiguous step mode (fragmented KV-cache block pool)
   python kv_transfer_benchmark.py --connector=flagcx --role=client \\
-      --remote-ip=10.8.2.169 --mode=noncontig --contiguity=0.3
+      --remote-ip=10.8.2.169 --mode=noncontig --pool-util=0.9
 """
 
 from __future__ import annotations
@@ -47,14 +58,14 @@ import random
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Tuple
 
 import torch
 import zmq
 
-# bytes per KV element, selectable via --dtype.
-_DTYPE_BYTES = {"bf16": 2, "fp16": 2, "fp8": 1, "fp32": 4}
+_DTYPE_BYTES = {"bf16": 2, "fp16": 2, "fp8": 1, "fp32": 4, "fp4": 0.5}
 
 
 @dataclass
@@ -90,90 +101,119 @@ def compute_block_len(block_size: int, num_kv_heads: int, head_dim: int,
     factor 2 is K and V. Matches FlagCXConnector's per-rank ``block_len``.
     """
     heads_per_rank = max(1, num_kv_heads // tp)
-    return 2 * block_size * heads_per_rank * head_dim * dtype_bytes
+    return int(2 * block_size * heads_per_rank * head_dim * dtype_bytes)
 
 
-def _request_run_lengths(blocks_per_req: int, contiguity: float,
-                         rng: random.Random) -> List[int]:
-    """Split ``blocks_per_req`` blocks into contiguous runs.
+class _BlockPool:
+    """Minimal port of vLLM's BlockPool free queue (v1/core/block_pool.py).
 
-    ``contiguity`` is the probability the next block extends the current run.
-    1.0 => one run (fully contiguous); 0.0 => every block its own run.
+    A fixed pool of ``num_blocks`` ids, reused by every request. Allocation pops
+    from the head (``popleft_n``); freeing appends to the tail (``append_n``).
+    vLLM's doubly-linked FreeKVCacheBlockQueue is collapsed to a deque — only
+    its FIFO order matters for which ids a request receives.
     """
-    if blocks_per_req <= 0:
-        return []
-    if contiguity >= 1.0:
-        return [blocks_per_req]
-    runs: List[int] = []
-    cur = 1
-    for _ in range(blocks_per_req - 1):
-        if rng.random() < contiguity:
-            cur += 1
-        else:
-            runs.append(cur)
-            cur = 1
-    runs.append(cur)
+
+    def __init__(self, num_blocks: int):
+        self.num_blocks = num_blocks
+        self.free = deque(range(num_blocks))
+
+    def alloc(self, n: int) -> List[int]:
+        return [self.free.popleft() for _ in range(n)]
+
+    def free_blocks(self, ids: List[int]) -> None:
+        self.free.extend(ids)
+
+    @property
+    def used(self) -> int:
+        return self.num_blocks - len(self.free)
+
+
+def _fragmented_alloc(num_blocks: int, bpr: int, batch: int, total_req: int,
+                      util: float, bg_choices: List[int],
+                      rng: random.Random) -> List[List[int]]:
+    """Churn the pool with mixed-size traffic, then allocate the transfer batch.
+
+    Models a busy engine: ``total_req`` background requests of mixed sizes
+    (``bg_choices``, in blocks) arrive and finish in random order, kept near
+    ``util`` occupancy. Uniform-size traffic never fragments — the size mix is
+    what scatters the free queue; the batch then pops scattered ids from it.
+    Returns one block-id list per transferred request.
+    """
+    pool = _BlockPool(num_blocks)
+    active: List[List[int]] = []
+    target = int(num_blocks * util)
+
+    for _ in range(total_req):
+        need = rng.choice(bg_choices)
+        if need > num_blocks:
+            continue
+        while (pool.used + need > target or need > len(pool.free)) and active:
+            pool.free_blocks(active.pop(rng.randrange(len(active))))
+        if need <= len(pool.free):
+            active.append(pool.alloc(need))
+
+    batch_ids: List[List[int]] = []
+    for _ in range(batch):
+        while bpr > len(pool.free) and active:
+            pool.free_blocks(active.pop(rng.randrange(len(active))))
+        if bpr > len(pool.free):
+            raise RuntimeError("block pool too small for the transfer batch")
+        batch_ids.append(pool.alloc(bpr))
+    return batch_ids
+
+
+def _joint_runs(src_ids: List[int], dst_ids: List[int],
+                coalesce: bool) -> List[Tuple[int, int, int]]:
+    """Coalesce a request's blocks into (src_start, dst_start, run) WRs.
+
+    A run extends only while BOTH src and dst ids stay contiguous (a write maps
+    one contiguous src span to one contiguous dst span), matching the
+    connector's _group_contiguous. ``coalesce=False`` (NIXL) => one WR/block.
+    """
+    runs: List[Tuple[int, int, int]] = []
+    i, n = 0, len(src_ids)
+    while i < n:
+        j = i + 1
+        if coalesce:
+            while (j < n and src_ids[j] == src_ids[j - 1] + 1
+                   and dst_ids[j] == dst_ids[j - 1] + 1):
+                j += 1
+        runs.append((src_ids[i], dst_ids[i], j - i))
+        i = j
     return runs
 
 
-def generate_step_pattern(block_len: int, num_layers: int, blocks_per_req: int,
-                          batch: int, total_req: int, contiguity: float,
-                          seed: int, coalesce: bool = True) -> StepPattern:
-    """Build one step's WRs for ``batch`` requests, scattered across a pool.
+def build_step_pattern(block_len: int, num_layers: int, num_blocks: int,
+                       bpr: int, batch: int, total_req: int, util: float,
+                       bg_choices: List[int], seed: int,
+                       coalesce: bool = True) -> StepPattern:
+    """Build one PD-step transfer from real (fragmented) block allocations.
 
-    The pool holds ``total_req`` requests' blocks (per layer); only ``batch``
-    requests are transferred, with their runs scattered across the pool to
-    model fragmentation. ``coalesce=False`` (NIXL) emits one WR per block.
+    Sender and receiver are independent engines, so their pools are fragmented
+    with different seeds; a request's i-th block maps src_ids[i] -> dst_ids[i].
+    The block-id set is shared across layers (one block table per request).
     """
-    rng = random.Random(seed)
-    if coalesce:
-        per_req_runs = [_request_run_lengths(blocks_per_req, contiguity, rng)
-                        for _ in range(batch)]
-    else:
-        per_req_runs = [[1] * blocks_per_req for _ in range(batch)]
+    src_batch = _fragmented_alloc(num_blocks, bpr, batch, total_req, util,
+                                  bg_choices, random.Random(seed ^ 0xA5A5))
+    dst_batch = _fragmented_alloc(num_blocks, bpr, batch, total_req, util,
+                                  bg_choices, random.Random(seed ^ 0x5A5A))
 
-    run_blocks: List[int] = []
-    for _layer in range(num_layers):
-        for runs in per_req_runs:
-            run_blocks.extend(runs)
+    layer_region = num_blocks * block_len
+    sizes: List[int] = []
+    src_offsets: List[int] = []
+    dst_offsets: List[int] = []
+    for layer in range(num_layers):
+        base = layer * layer_region
+        for src_ids, dst_ids in zip(src_batch, dst_batch):
+            for s_start, d_start, run in _joint_runs(src_ids, dst_ids, coalesce):
+                sizes.append(run * block_len)
+                src_offsets.append(base + s_start * block_len)
+                dst_offsets.append(base + d_start * block_len)
 
-    sizes = [r * block_len for r in run_blocks]
     tags = [(i % 255) + 1 for i in range(len(sizes))]
-
-    pool_blocks = total_req * blocks_per_req * num_layers
-    # src and dst are independent pool allocations -> different scatters.
-    src_offsets = _scatter_offsets(run_blocks, pool_blocks, block_len,
-                                   random.Random(seed ^ 0xA5A5))
-    dst_offsets = _scatter_offsets(run_blocks, pool_blocks, block_len,
-                                   random.Random(seed ^ 0x5A5A))
     return StepPattern(sizes=sizes, src_offsets=src_offsets,
                        dst_offsets=dst_offsets, tags=tags,
-                       pool_bytes=pool_blocks * block_len)
-
-
-def _scatter_offsets(run_blocks: List[int], pool_blocks: int, block_len: int,
-                     rng: random.Random) -> List[int]:
-    """Place each run at a block-aligned, non-overlapping, scattered offset.
-
-    Distributes the free blocks (pool minus transferred) as random gaps before
-    each run, laying runs out in a shuffled order. Returns one byte offset/run.
-    """
-    k = len(run_blocks)
-    if k == 0:
-        return []
-    order = list(range(k))
-    rng.shuffle(order)
-    free = max(0, pool_blocks - sum(run_blocks))
-    cuts = sorted(rng.randint(0, free) for _ in range(k))
-    offsets = [0] * k
-    block = 0
-    prev = 0
-    for pos, idx in enumerate(order):
-        block += cuts[pos] - prev
-        prev = cuts[pos]
-        offsets[idx] = block * block_len
-        block += run_blocks[idx]
-    return offsets
+                       pool_bytes=num_layers * layer_region)
 
 
 def _blocks_from_pattern(pattern: StepPattern, is_source: bool,
@@ -799,12 +839,22 @@ def _parse_sizes(val: str) -> List[int]:
         ) from e
 
 
-def _gpu_buffer_fits(required: int, args: argparse.Namespace) -> bool:
-    """True if ``required`` bytes fit in the local GPU (90% of free mem)."""
-    if args.device != "gpu" or not torch.cuda.is_available():
-        return True
-    free, _ = torch.cuda.mem_get_info(args.local_gpu_idx)
-    return required <= free * 0.9
+def _kv_cache_num_blocks(block_len: int, num_layers: int,
+                         args: argparse.Namespace) -> int:
+    """Fixed pool size (blocks) sized to the KV-cache memory budget.
+
+    Like a real engine: fill the available memory with KV cache. Budget is
+    --kv-cache-gb if set, else 90% of free GPU mem (8 GiB fallback on CPU).
+    """
+    per_block = block_len * num_layers
+    if args.kv_cache_gb:
+        budget = int(args.kv_cache_gb * (1024 ** 3))
+    elif args.device == "gpu" and torch.cuda.is_available():
+        free, _ = torch.cuda.mem_get_info(args.local_gpu_idx)
+        budget = int(free * 0.9)
+    else:
+        budget = 8 * (1024 ** 3)
+    return max(1, budget // per_block)
 
 
 # ---------------------------------------------------------------------------
@@ -851,8 +901,7 @@ def benchmark_size(bench: TransportBenchmark, size: int, num_blocks: int,
 
 
 def benchmark_step(bench: TransportBenchmark, pattern: StepPattern,
-                   contiguity: float, req_tokens: int,
-                   iters: int, warmup: int) -> None:
+                   req_tokens: int, iters: int, warmup: int) -> None:
     """Run benchmark for one non-contiguous step pattern."""
     bench.setup(0, 0, pattern=pattern)
 
@@ -877,7 +926,6 @@ def benchmark_step(bench: TransportBenchmark, pattern: StepPattern,
 
     print(
         f"  reqlen={req_tokens // 1024:>3d}k | "
-        f"contig={contiguity:4.2f} | "
         f"WRs={pattern.wr_count:6d} | "
         f"WRsize[min/avg/max]={_pretty_size(min(pattern.sizes))}/"
         f"{_pretty_size(int(avg_wr))}/{_pretty_size(max(pattern.sizes))} | "
@@ -947,12 +995,23 @@ def main() -> None:
         help="[noncontig] comma-separated request lengths in tokens to sweep"
     )
     p.add_argument(
-        "--total-req", type=int, default=500,
-        help="[noncontig] requests in the block pool (sets total buffer size)"
+        "--total-req", type=int, default=300,
+        help="[noncontig] background requests churned through the pool to "
+             "fragment its free queue (does not size the buffer)"
     )
     p.add_argument(
         "--batch", type=int, default=8,
         help="[noncontig] requests transferred per step"
+    )
+    p.add_argument(
+        "--pool-util", type=float, default=0.9,
+        help="[noncontig] target pool occupancy during churn; higher => more "
+             "fragmentation"
+    )
+    p.add_argument(
+        "--kv-cache-gb", type=float, default=None,
+        help="[noncontig] KV-cache buffer budget in GiB (default: 90%% of free "
+             "GPU mem). Sets the fixed, reused block pool size."
     )
     p.add_argument(
         "--block-size", type=int, default=16,
@@ -979,13 +1038,8 @@ def main() -> None:
         help="[noncontig] number of layers (one WR group each)"
     )
     p.add_argument(
-        "--contiguity", type=float, default=1.0,
-        help="[noncontig] block run-extension probability in [0,1]: "
-             "1.0=fully contiguous, 0.0=fully scattered (coalescing backends)"
-    )
-    p.add_argument(
         "--seed", type=int, default=1234,
-        help="[noncontig] RNG seed for the scatter pattern (same on both sides)"
+        help="[noncontig] RNG seed for the churn pattern (same on both sides)"
     )
     p.add_argument(
         "--nixl-backend", default="UCX",
@@ -1053,8 +1107,13 @@ def _run_noncontig(bench: TransportBenchmark, args: argparse.Namespace) -> None:
         args.block_size, args.num_kv_heads, args.head_dim, args.tp, dtype_bytes,
     )
     coalesce = type(bench).COALESCE
-    effective_contiguity = args.contiguity if coalesce else 0.0
     heads_per_rank = max(1, args.num_kv_heads // args.tp)
+
+    # Fixed, reused block pool sized to the memory budget (like a real engine).
+    num_blocks = _kv_cache_num_blocks(block_len, args.num_layers, args)
+    pool_bytes = num_blocks * args.num_layers * block_len
+    # Background size mix (in blocks) = the swept request lengths themselves.
+    bg_choices = [max(1, math.ceil(L / args.block_size)) for L in args.req_lens]
 
     print(
         f"  block_len={_pretty_size(block_len)} "
@@ -1063,37 +1122,37 @@ def _run_noncontig(bench: TransportBenchmark, args: argparse.Namespace) -> None:
         f"x 2(KV) x {args.dtype})"
     )
     print(
-        f"  num_layers={args.num_layers}  total_req={args.total_req}"
-        f"  batch={args.batch}  seed={args.seed}"
-        f"  coalesce={coalesce}  contiguity={args.contiguity}"
+        f"  num_layers={args.num_layers}  num_gpu_blocks={num_blocks}"
+        f"  pool={_pretty_size(pool_bytes)}  util={args.pool_util}"
+    )
+    print(
+        f"  total_req={args.total_req}  batch={args.batch}"
+        f"  coalesce={coalesce}  seed={args.seed}"
     )
     print("-" * 72)
 
     for req_tokens in args.req_lens:
-        blocks_per_req = max(1, math.ceil(req_tokens / args.block_size))
-        # FlagCX allocates the whole pool; per-WR backends only the transfer.
-        pool_bytes = args.total_req * blocks_per_req * args.num_layers * block_len
-        xfer_bytes = args.batch * blocks_per_req * args.num_layers * block_len
-        required = pool_bytes if args.connector == "flagcx" else xfer_bytes
-        if not _gpu_buffer_fits(required, args):
+        bpr = max(1, math.ceil(req_tokens / args.block_size))
+        if args.batch * bpr > num_blocks:
             print(
-                f"  reqlen={req_tokens // 1024:>3d}k | SKIP: needs "
-                f"{_pretty_size(required)} > GPU free mem"
+                f"  reqlen={req_tokens // 1024:>3d}k | SKIP: batch working set "
+                f"{args.batch * bpr} blocks > pool {num_blocks} blocks"
             )
             continue
 
-        pattern = generate_step_pattern(
+        pattern = build_step_pattern(
             block_len=block_len,
             num_layers=args.num_layers,
-            blocks_per_req=blocks_per_req,
+            num_blocks=num_blocks,
+            bpr=bpr,
             batch=args.batch,
             total_req=args.total_req,
-            contiguity=effective_contiguity,
+            util=args.pool_util,
+            bg_choices=bg_choices,
             seed=args.seed,
             coalesce=coalesce,
         )
-        benchmark_step(bench, pattern, args.contiguity, req_tokens,
-                       args.iters, args.warmup_iters)
+        benchmark_step(bench, pattern, req_tokens, args.iters, args.warmup_iters)
 
 
 if __name__ == "__main__":
