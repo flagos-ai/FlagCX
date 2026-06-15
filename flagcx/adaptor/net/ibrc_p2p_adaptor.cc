@@ -68,6 +68,7 @@ static_assert(sizeof(struct flagcxP2pListenHandle) <= FLAGCX_NET_HANDLE_MAXSIZE,
 // P2P listen comm
 struct flagcxP2pListenComm {
   int dev;
+  volatile uint32_t abortFlag;
   struct flagcxSocket sock;
 };
 
@@ -245,9 +246,10 @@ static flagcxResult_t flagcxP2pListen(int dev, void *opaqueHandle,
       (struct flagcxP2pListenHandle *)opaqueHandle;
   memset(handle, 0, sizeof(struct flagcxP2pListenHandle));
   comm->dev = dev;
+  comm->abortFlag = 0;
   handle->magic = FLAGCX_SOCKET_MAGIC;
   FLAGCXCHECK(flagcxSocketInit(&comm->sock, &flagcxIbIfAddr, handle->magic,
-                               flagcxSocketTypeNetIb, NULL, 1));
+                               flagcxSocketTypeNetIb, &comm->abortFlag, 1));
   FLAGCXCHECK(flagcxSocketListen(&comm->sock));
   FLAGCXCHECK(flagcxSocketGetAddr(&comm->sock, &handle->connectAddr));
   *listenComm = comm;
@@ -490,6 +492,9 @@ connect_fail:
 static flagcxResult_t flagcxP2pAccept(void *listenComm, void **recvComm) {
   struct flagcxP2pListenComm *lComm = (struct flagcxP2pListenComm *)listenComm;
   *recvComm = NULL;
+  if (lComm == NULL ||
+      __atomic_load_n(&lComm->abortFlag, __ATOMIC_RELAXED) != 0)
+    return flagcxInternalError;
 
   // Allocate recv comm
   struct flagcxP2pRecvComm *comm;
@@ -502,18 +507,28 @@ static flagcxResult_t flagcxP2pAccept(void *listenComm, void **recvComm) {
   struct flagcxP2pConnMeta remoteMeta[kFlagcxP2pMaxQpsPerEngine];
   int localReady = 1, remoteReady = 0;
   uint32_t localNumQps = 0, remoteNumQps = 0, agreedNumQps = 0;
-  FLAGCXCHECKGOTO(flagcxSocketInit(&comm->sock), res, accept_fail);
-  FLAGCXCHECKGOTO(flagcxSocketAccept(&comm->sock, &lComm->sock), res,
-                  accept_fail);
+  FLAGCXCHECKGOTO(flagcxSocketInit(&comm->sock, NULL, FLAGCX_SOCKET_MAGIC,
+                                   flagcxSocketTypeNetIb, &lComm->abortFlag),
+                  res, accept_fail);
+  res = flagcxSocketAccept(&comm->sock, &lComm->sock);
+  if (res != flagcxSuccess)
+    goto accept_fail;
   ready = 0;
   while (!ready) {
-    FLAGCXCHECKGOTO(flagcxSocketReady(&comm->sock, &ready), res, accept_fail);
+    if (__atomic_load_n(&lComm->abortFlag, __ATOMIC_RELAXED) != 0) {
+      res = flagcxInternalError;
+      goto accept_fail;
+    }
+    res = flagcxSocketReady(&comm->sock, &ready);
+    if (res != flagcxSuccess)
+      goto accept_fail;
     if (!ready) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
   if (0) {
   accept_fail:
+    flagcxSocketClose(&comm->sock);
     free(comm);
     return res;
   }
@@ -913,10 +928,19 @@ static flagcxResult_t flagcxP2pCloseRecv(void *recvComm) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxNetIbP2pAbortListen(void *listenComm) {
+  struct flagcxP2pListenComm *comm = (struct flagcxP2pListenComm *)listenComm;
+  if (comm) {
+    __atomic_store_n(&comm->abortFlag, 1, __ATOMIC_RELEASE);
+    FLAGCXCHECK(flagcxSocketClose(&comm->sock));
+  }
+  return flagcxSuccess;
+}
+
 static flagcxResult_t flagcxP2pCloseListen(void *listenComm) {
   struct flagcxP2pListenComm *comm = (struct flagcxP2pListenComm *)listenComm;
   if (comm) {
-    FLAGCXCHECK(flagcxSocketClose(&comm->sock));
+    FLAGCXCHECK(flagcxNetIbP2pAbortListen(comm));
     free(comm);
   }
   return flagcxSuccess;

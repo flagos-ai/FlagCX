@@ -1353,8 +1353,15 @@ flagcxResult_t bootstrapP2pAccept(struct bootstrapState *listenState,
   connP2p->abortFlag = listenP2p->abortFlag;
 
   // Accept incoming connection
-  FLAGCXCHECK(flagcxSocketInit(&connP2p->sock));
-  FLAGCXCHECK(flagcxSocketAccept(&connP2p->sock, &listenP2p->sock));
+  FLAGCXCHECK(flagcxSocketInit(&connP2p->sock, NULL, listenP2p->magic,
+                               flagcxSocketTypeBootstrap,
+                               listenP2p->abortFlag));
+  flagcxResult_t res = flagcxSocketAccept(&connP2p->sock, &listenP2p->sock);
+  if (res != flagcxSuccess) {
+    flagcxSocketClose(&connP2p->sock);
+    free(connP2p);
+    return res;
+  }
 
   // Wrap in state
   struct bootstrapState *wrapper;

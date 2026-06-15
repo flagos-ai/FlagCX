@@ -18,6 +18,11 @@
 #include <string.h>
 #include <unistd.h>
 
+static inline bool socketAbortRequested(struct flagcxSocket *sock) {
+  return sock != NULL && sock->abortFlag != NULL &&
+         __atomic_load_n(sock->abortFlag, __ATOMIC_RELAXED) != 0;
+}
+
 static flagcxResult_t socketProgressOpt(int op, struct flagcxSocket *sock,
                                         void *ptr, int size, int *offset,
                                         int block, int *closed) {
@@ -493,11 +498,16 @@ flagcxResult_t flagcxSocketGetAddr(struct flagcxSocket *sock,
 }
 
 static flagcxResult_t socketTryAccept(struct flagcxSocket *sock) {
+  if (socketAbortRequested(sock))
+    return flagcxInProgress;
+
   socklen_t socklen = sizeof(union flagcxSocketAddress);
   sock->fd = accept(sock->acceptFd, &sock->addr.sa, &socklen);
   if (sock->fd != -1) {
     sock->state = flagcxSocketStateAccepted;
   } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+    if (socketAbortRequested(sock) && (errno == EBADF || errno == EINVAL))
+      return flagcxInProgress;
     WARN("socketTryAccept: Accept failed: %s", strerror(errno));
     return flagcxSystemError;
   }
@@ -684,6 +694,10 @@ flagcxResult_t flagcxSocketReady(struct flagcxSocket *sock, int *running) {
     *running = 0;
     return flagcxSuccess;
   }
+  if (socketAbortRequested(sock)) {
+    *running = 0;
+    return flagcxInternalError;
+  }
   if (sock->state == flagcxSocketStateError ||
       sock->state == flagcxSocketStateClosed) {
     WARN("flagcxSocketReady: unexpected socket state %d", sock->state);
@@ -735,7 +749,7 @@ flagcxResult_t flagcxSocketConnect(struct flagcxSocket *sock) {
             sock->state == flagcxSocketStateConnectPolling ||
             sock->state == flagcxSocketStateConnected));
 
-  if (sock->abortFlag && __atomic_load_n(sock->abortFlag, __ATOMIC_RELAXED))
+  if (socketAbortRequested(sock))
     return flagcxInternalError;
 
   switch (sock->state) {
@@ -762,6 +776,10 @@ flagcxResult_t flagcxSocketAccept(struct flagcxSocket *sock,
     goto exit;
   }
   if (listenSock->state != flagcxSocketStateReady) {
+    if (socketAbortRequested(listenSock)) {
+      ret = flagcxInternalError;
+      goto exit;
+    }
     WARN("flagcxSocketAccept: wrong socket state %d", listenSock->state);
     if (listenSock->state == flagcxSocketStateError)
       ret = flagcxSystemError;
@@ -784,7 +802,7 @@ flagcxResult_t flagcxSocketAccept(struct flagcxSocket *sock,
            (sock->state == flagcxSocketStateAccepting ||
             sock->state == flagcxSocketStateAccepted));
 
-  if (sock->abortFlag && __atomic_load_n(sock->abortFlag, __ATOMIC_RELAXED))
+  if (socketAbortRequested(sock))
     return flagcxInternalError;
 
   switch (sock->state) {

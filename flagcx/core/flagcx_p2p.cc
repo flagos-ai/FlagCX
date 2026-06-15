@@ -44,6 +44,7 @@
 #include <unistd.h>
 
 extern struct flagcxNetAdaptor flagcxNetIbP2p;
+extern flagcxResult_t flagcxNetIbP2pAbortListen(void *listenComm);
 
 extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
                                               int count, FlagcxSlice **slices);
@@ -273,6 +274,8 @@ struct FlagcxP2pEngine {
      during connect/accept handshake. */
   struct bootstrapState *bsListenState;
   int bsListenPort;
+  std::atomic<bool> stopAccept;
+  volatile uint32_t acceptAbortFlag;
 
   /* Control-plane RPC service: accept daemon + per-session connection
      cache (initiator side) + kept-alive accepted connections (server
@@ -1687,6 +1690,8 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   engine->stopRpcServer = false;
   engine->bsListenState = NULL;
   engine->bsListenPort = 0;
+  engine->stopAccept = false;
+  engine->acceptAbortFlag = 0;
   memset(engine->listeners, 0, sizeof(engine->listeners));
   memset(&engine->notifListenSock, 0, sizeof(engine->notifListenSock));
 
@@ -1753,8 +1758,8 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   struct bootstrapState *bsState = NULL;
   char bsListenHandle[FLAGCX_NET_HANDLE_MAXSIZE];
   memset(bsListenHandle, 0, sizeof(bsListenHandle));
-  if (bootstrapP2pListen(FLAGCX_SOCKET_MAGIC, NULL, bsListenHandle, &bsState) ==
-      flagcxSuccess) {
+  if (bootstrapP2pListen(FLAGCX_SOCKET_MAGIC, &engine->acceptAbortFlag,
+                         bsListenHandle, &bsState) == flagcxSuccess) {
     engine->bsListenState = bsState;
     union flagcxSocketAddress bsAddr;
     flagcxSocketGetAddr(&bsState->p2p->sock, &bsAddr);
@@ -1770,8 +1775,7 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
   if (engine == NULL)
     return;
 
-  engine->stopNotif = true;
-  engine->stopRpcServer = true;
+  flagcxP2pEngineStopAccept(engine);
   if (engine->notifListenActive) {
     flagcxSocketClose(&engine->notifListenSock);
     engine->notifListenActive = false;
@@ -1806,7 +1810,8 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
     }
   }
 
-  if (engine->rpcServerThread.joinable()) {
+  if (engine->rpcServerThread.joinable() &&
+      engine->rpcServerThread.get_id() != std::this_thread::get_id()) {
     engine->rpcServerThread.join();
   }
   {
@@ -1861,23 +1866,30 @@ void flagcxP2pEngineStopAccept(FlagcxP2pEngine *engine) {
   if (engine == NULL)
     return;
 
+  engine->stopAccept.store(true, std::memory_order_release);
   engine->stopNotif = true;
+  engine->stopRpcServer.store(true, std::memory_order_release);
+  __atomic_store_n(&engine->acceptAbortFlag, 1, __ATOMIC_RELEASE);
+
   if (engine->notifListenActive) {
     flagcxSocketClose(&engine->notifListenSock);
     engine->notifListenActive = false;
   }
 
-  if (engine->bsListenState) {
-    bootstrapClose(engine->bsListenState);
-    engine->bsListenState = NULL;
-    engine->bsListenPort = 0;
+  if (engine->bsListenState && engine->bsListenState->p2p) {
+    flagcxSocketClose(&engine->bsListenState->p2p->sock);
   }
 
   for (int d = 0; d < engine->nDevs; d++) {
     if (engine->listeners[d].listenComm) {
-      engine->adaptor->closeListen(engine->listeners[d].listenComm);
-      engine->listeners[d].listenComm = NULL;
+      flagcxNetIbP2pAbortListen(engine->listeners[d].listenComm);
     }
+  }
+
+  if (engine->rpcServerThread.joinable() &&
+      engine->rpcServerThread.get_id() != std::this_thread::get_id()) {
+    engine->rpcServerThread.join();
+    engine->rpcServerActive.store(false, std::memory_order_release);
   }
 }
 
@@ -2047,6 +2059,8 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
                                      size_t ipAddrBufLen, int *remoteGpuIdx) {
   if (engine == NULL || ipAddrBuf == NULL || remoteGpuIdx == NULL)
     return NULL;
+  if (engine->stopAccept.load(std::memory_order_acquire))
+    return NULL;
 
   const int dev = chooseEngineNetDev(engine);
   if (engine->bsListenState == NULL)
@@ -2058,6 +2072,10 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
   // Step 1: Accept bootstrap P2P connection from connector
   struct bootstrapState *bsConn = NULL;
   if (bootstrapP2pAccept(engine->bsListenState, &bsConn) != flagcxSuccess) {
+    return NULL;
+  }
+  if (engine->stopAccept.load(std::memory_order_acquire)) {
+    bootstrapClose(bsConn);
     return NULL;
   }
 
@@ -2077,6 +2095,10 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
 
   // Step 3: Accept IB connection using the adaptor
   void *recvComm = NULL;
+  if (engine->stopAccept.load(std::memory_order_acquire)) {
+    bootstrapClose(bsConn);
+    return NULL;
+  }
   if (engine->adaptor->accept(engine->listeners[dev].listenComm, &recvComm) !=
       flagcxSuccess) {
     bootstrapClose(bsConn);
@@ -2719,6 +2741,7 @@ int flagcxP2pEngineStartRpcServer(FlagcxP2pEngine *engine) {
       std::lock_guard<std::mutex> lock(engine->acceptedMutex);
       engine->acceptedConns.push_back(conn);
     }
+    engine->rpcServerActive.store(false, std::memory_order_release);
   });
   INFO(FLAGCX_INIT, "NET/IB_P2P : RPC server thread started (port=%d)",
        flagcxP2pEngineGetRpcPort(engine));
