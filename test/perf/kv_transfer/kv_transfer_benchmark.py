@@ -14,9 +14,8 @@ Supports:
 Uses ZMQ for out-of-band coordination between server and client.
 
 Modes:
-  - uniform(default): simple sizes x num_blocks sweep (one value per byte)
-  - noncontig: models a PD step — a batch of requests whose KV blocks are
-    scattered across a large (total_req) block pool, swept over request length
+  - perf (default): Pure performance measurement, no verification overhead
+  - correctness: Strict element-by-element verification with detailed error reporting
 
 Usage
 -----
@@ -45,190 +44,21 @@ Usage
   python kv_transfer_benchmark.py --connector=flagcx --role=client \\
       --remote-ip=10.8.2.169 --device=gpu
 
-  # Non-contiguous step mode (fragmented KV-cache block pool)
-  python kv_transfer_benchmark.py --connector=flagcx --role=client \\
-      --remote-ip=10.8.2.169 --mode=noncontig --pool-util=0.9
+  # Correctness mode
+  python kv_transfer_benchmark.py --connector=nixl --role=client \\
+      --remote-ip=10.8.2.169 --mode=correctness
 """
 
 from __future__ import annotations
 
 import argparse
-import math
-import random
 import sys
 import time
 from abc import ABC, abstractmethod
-from collections import deque
-from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Any, List
 
 import torch
 import zmq
-
-_DTYPE_BYTES = {"bf16": 2, "fp16": 2, "fp8": 1, "fp32": 4, "fp4": 0.5}
-
-
-@dataclass
-class StepPattern:
-    """A modeled single-step transfer: a list of variable-size, scattered WRs.
-
-    Each WR carries a 1-byte ``tag`` (1..255). The source fills its region with
-    the tag; after the transfer the destination region must equal it, so
-    verification checks the per-WR src->dst mapping (untouched bytes stay 0).
-    """
-
-    sizes: List[int]                                       # bytes per WR
-    src_offsets: List[int] = field(default_factory=list)   # byte offset in src
-    dst_offsets: List[int] = field(default_factory=list)   # byte offset in dst
-    tags: List[int] = field(default_factory=list)          # 1..255 per WR
-    pool_bytes: int = 0                                     # full buffer span
-
-    @property
-    def wr_count(self) -> int:
-        return len(self.sizes)
-
-    @property
-    def total_bytes(self) -> int:
-        """Bytes actually transferred this step (sum of WRs)."""
-        return sum(self.sizes)
-
-
-def compute_block_len(block_size: int, num_kv_heads: int, head_dim: int,
-                      tp: int, dtype_bytes: int) -> int:
-    """Bytes of one KV block, for one layer, on one tp rank.
-
-    Each rank owns ``num_kv_heads // tp`` heads (floored to >= 1 for GQA); the
-    factor 2 is K and V. Matches FlagCXConnector's per-rank ``block_len``.
-    """
-    heads_per_rank = max(1, num_kv_heads // tp)
-    return int(2 * block_size * heads_per_rank * head_dim * dtype_bytes)
-
-
-class _BlockPool:
-    """Minimal port of vLLM's BlockPool free queue (v1/core/block_pool.py).
-
-    A fixed pool of ``num_blocks`` ids, reused by every request. Allocation pops
-    from the head (``popleft_n``); freeing appends to the tail (``append_n``).
-    vLLM's doubly-linked FreeKVCacheBlockQueue is collapsed to a deque — only
-    its FIFO order matters for which ids a request receives.
-    """
-
-    def __init__(self, num_blocks: int):
-        self.num_blocks = num_blocks
-        self.free = deque(range(num_blocks))
-
-    def alloc(self, n: int) -> List[int]:
-        return [self.free.popleft() for _ in range(n)]
-
-    def free_blocks(self, ids: List[int]) -> None:
-        self.free.extend(ids)
-
-    @property
-    def used(self) -> int:
-        return self.num_blocks - len(self.free)
-
-
-def _fragmented_alloc(num_blocks: int, bpr: int, batch: int, total_req: int,
-                      util: float, bg_choices: List[int],
-                      rng: random.Random) -> List[List[int]]:
-    """Churn the pool with mixed-size traffic, then allocate the transfer batch.
-
-    Models a busy engine: ``total_req`` background requests of mixed sizes
-    (``bg_choices``, in blocks) arrive and finish in random order, kept near
-    ``util`` occupancy. Uniform-size traffic never fragments — the size mix is
-    what scatters the free queue; the batch then pops scattered ids from it.
-    Returns one block-id list per transferred request.
-    """
-    pool = _BlockPool(num_blocks)
-    active: List[List[int]] = []
-    target = int(num_blocks * util)
-
-    for _ in range(total_req):
-        need = rng.choice(bg_choices)
-        if need > num_blocks:
-            continue
-        while (pool.used + need > target or need > len(pool.free)) and active:
-            pool.free_blocks(active.pop(rng.randrange(len(active))))
-        if need <= len(pool.free):
-            active.append(pool.alloc(need))
-
-    batch_ids: List[List[int]] = []
-    for _ in range(batch):
-        while bpr > len(pool.free) and active:
-            pool.free_blocks(active.pop(rng.randrange(len(active))))
-        if bpr > len(pool.free):
-            raise RuntimeError("block pool too small for the transfer batch")
-        batch_ids.append(pool.alloc(bpr))
-    return batch_ids
-
-
-def _joint_runs(src_ids: List[int], dst_ids: List[int],
-                coalesce: bool) -> List[Tuple[int, int, int]]:
-    """Coalesce a request's blocks into (src_start, dst_start, run) WRs.
-
-    A run extends only while BOTH src and dst ids stay contiguous (a write maps
-    one contiguous src span to one contiguous dst span), matching the
-    connector's _group_contiguous. ``coalesce=False`` (NIXL) => one WR/block.
-    """
-    runs: List[Tuple[int, int, int]] = []
-    i, n = 0, len(src_ids)
-    while i < n:
-        j = i + 1
-        if coalesce:
-            while (j < n and src_ids[j] == src_ids[j - 1] + 1
-                   and dst_ids[j] == dst_ids[j - 1] + 1):
-                j += 1
-        runs.append((src_ids[i], dst_ids[i], j - i))
-        i = j
-    return runs
-
-
-def build_step_pattern(block_len: int, num_layers: int, num_blocks: int,
-                       bpr: int, batch: int, total_req: int, util: float,
-                       bg_choices: List[int], seed: int,
-                       coalesce: bool = True) -> StepPattern:
-    """Build one PD-step transfer from real (fragmented) block allocations.
-
-    Sender and receiver are independent engines, so their pools are fragmented
-    with different seeds; a request's i-th block maps src_ids[i] -> dst_ids[i].
-    The block-id set is shared across layers (one block table per request).
-    """
-    src_batch = _fragmented_alloc(num_blocks, bpr, batch, total_req, util,
-                                  bg_choices, random.Random(seed ^ 0xA5A5))
-    dst_batch = _fragmented_alloc(num_blocks, bpr, batch, total_req, util,
-                                  bg_choices, random.Random(seed ^ 0x5A5A))
-
-    layer_region = num_blocks * block_len
-    sizes: List[int] = []
-    src_offsets: List[int] = []
-    dst_offsets: List[int] = []
-    for layer in range(num_layers):
-        base = layer * layer_region
-        for src_ids, dst_ids in zip(src_batch, dst_batch):
-            for s_start, d_start, run in _joint_runs(src_ids, dst_ids, coalesce):
-                sizes.append(run * block_len)
-                src_offsets.append(base + s_start * block_len)
-                dst_offsets.append(base + d_start * block_len)
-
-    tags = [(i % 255) + 1 for i in range(len(sizes))]
-    return StepPattern(sizes=sizes, src_offsets=src_offsets,
-                       dst_offsets=dst_offsets, tags=tags,
-                       pool_bytes=num_layers * layer_region)
-
-
-def _verify_dest_pool(buffer: torch.Tensor, pattern: StepPattern,
-                      role: str) -> None:
-    """Dest side (pool buffer): each WR's dst_offset region must equal its tag."""
-    for i, (off, sz, tag) in enumerate(
-            zip(pattern.dst_offsets, pattern.sizes, pattern.tags)):
-        region = buffer[off:off + sz]
-        if not torch.all(region == tag).item():
-            bad = int((region != tag).sum().item())
-            raise AssertionError(
-                f"[{role}] STEP VERIFY FAIL: WR {i} @dst {off} (size={sz}, "
-                f"tag={tag}) has {bad} bytes != tag."
-            )
-
 
 # ---------------------------------------------------------------------------
 # Abstract base
@@ -240,8 +70,6 @@ class TransportBenchmark(ABC):
 
     # Subclasses set this to the fixed op type for their connector.
     OP_TYPE: str = ""
-    COALESCE: bool = True
-    SOURCE_ROLE: str = "client"
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -251,51 +79,10 @@ class TransportBenchmark(ABC):
         self.remote_ip = args.remote_ip
         self.op_type = self.OP_TYPE
         self.zmq_port = args.zmq_port
-        self._pattern: "StepPattern | None" = None
-        # In noncontig mode this is one large contiguous pool buffer
-        # (pool_bytes), allocated and registered ONCE via setup_pool() and
-        # reused across every reqlen — each step only re-derives WR offsets.
-        self.buffer: "torch.Tensor | None" = None
-
-    @property
-    def is_source(self) -> bool:
-        """True if this process holds the source data for the transfer."""
-        return self.SOURCE_ROLE in self.role
-
-    def _fill_source_buffer(self, pattern: StepPattern) -> None:
-        """Source side: write each WR's tag into its src_offset region."""
-        for off, sz, tag in zip(pattern.src_offsets, pattern.sizes,
-                                pattern.tags):
-            self.buffer[off:off + sz] = tag
-
-    def _refresh_pool_for_step(self, pattern: StepPattern) -> None:
-        """Reset the reused pool buffer for a new step pattern.
-
-        Dest side zeroes the pool so verification only passes if this step's
-        WRs actually land; source side zeroes then stamps this step's tags.
-        A device sync makes the reset visible before any remote write/read.
-        """
-        self.buffer.zero_()
-        if self.is_source:
-            self._fill_source_buffer(pattern)
-        if self.device == "gpu" and torch.cuda.is_available():
-            torch.cuda.synchronize(self.gpu_idx)
 
     @abstractmethod
     def setup(self, size: int, num_blocks: int) -> None:
-        """[uniform mode] Init transport, allocate per-size buffers, exchange
-        metadata. Called once per swept message size."""
-
-    @abstractmethod
-    def setup_pool(self, pool_bytes: int) -> None:
-        """[noncontig mode] One-time init: create the engine/agent, allocate
-        and register the full ``pool_bytes`` buffer, and establish the
-        connection. Reused across every reqlen step."""
-
-    @abstractmethod
-    def prepare_step(self, pattern: "StepPattern") -> None:
-        """[noncontig mode] Per-reqlen: refresh the pool buffer for ``pattern``
-        and re-derive this step's WR address/size lists. No (de)registration."""
+        """Initialize transport, allocate buffers, exchange metadata."""
 
     @abstractmethod
     def run_transfer(self) -> None:
@@ -319,8 +106,6 @@ class NixlBenchmark(TransportBenchmark):
     """Benchmark using NIXL agent with configurable backend (UCX/FLAGCX)."""
 
     OP_TYPE = "read"
-    COALESCE = False
-    SOURCE_ROLE = "server"
 
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
@@ -340,16 +125,24 @@ class NixlBenchmark(TransportBenchmark):
         self.handle = None
         self.zmq_sock = None
         self.dataset: List[torch.Tensor] = []
-        self._local_xfer = None  # this side's xfer descriptor list for a step
 
-    def _create_agent(self) -> None:
-        """Create the ZMQ socket and NIXL agent. Shared by both modes."""
+    def setup(self, size: int, num_blocks: int) -> None:
+        # Allocate dataset
+        self.dataset = self._create_dataset(size, num_blocks)
+
+        # ZMQ coordination
         self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
+
+        # Create NIXL agent
         config = self._nixl_config_cls(backends=[self.backend])
         self.agent = self._nixl_agent_cls(self.role, config)
 
-    def _exchange_agent_meta(self) -> None:
-        """Swap NIXL agent metadata and register the peer. One-time."""
+        # Register memory
+        self.reg_descs = self.agent.register_memory(
+            self.agent.get_reg_descs(self.dataset)
+        )
+
+        # Exchange agent metadata
         local_meta = self.agent.get_agent_metadata()
         if "client" in self.role:
             self.zmq_sock.send(local_meta)
@@ -359,59 +152,9 @@ class NixlBenchmark(TransportBenchmark):
             self.zmq_sock.send(local_meta)
         self.agent.add_remote_agent(remote_meta)
 
-    def _make_xfer_descs(self, offsets: List[int], sizes: List[int]):
-        """Build a NIXL xfer descriptor list for sub-regions of the pool.
-
-        Each entry is (abs_addr, len, dev_id) within the already-registered
-        pool buffer, so no per-step (de)registration is needed.
-        """
-        base = self.buffer.data_ptr()
-        mem = "VRAM" if self.device == "gpu" else "DRAM"
-        devid = self.gpu_idx if self.device == "gpu" else 0
-        descs = [(base + o, s, devid) for o, s in zip(offsets, sizes)]
-        return self.agent.get_xfer_descs(descs, mem)
-
-    def setup(self, size: int, num_blocks: int) -> None:
-        """[uniform] Per-size dataset alloc + register + metadata exchange."""
-        self.dataset = self._create_dataset(size, num_blocks)
-        self._create_agent()
-        self.reg_descs = self.agent.register_memory(
-            self.agent.get_reg_descs(self.dataset)
-        )
-        self._exchange_agent_meta()
-        # Uniform transfers the whole registered set, one WR per block.
-        self._local_xfer = self.reg_descs.trim()
-
-    def setup_pool(self, pool_bytes: int) -> None:
-        """[noncontig] One-time: alloc + register the full pool, swap metadata.
-
-        The pool is registered as a single region exactly once; per-step xfer
-        descriptors are sliced from it in ``prepare_step`` without re-reg.
-        """
-        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
-        self.buffer = torch.zeros((pool_bytes,), device=dev, dtype=torch.uint8)
-        self._create_agent()
-        self.reg_descs = self.agent.register_memory(
-            self.agent.get_reg_descs([self.buffer])
-        )
-        self._exchange_agent_meta()
-
-    def prepare_step(self, pattern: StepPattern) -> None:
-        """[noncontig] Refresh the pool + build this side's per-step descs.
-
-        Server holds the READ source (src_offsets); client is the READ dest
-        (dst_offsets). The per-iteration handshake in ``run_transfer`` then
-        swaps these and serializes source-fill before the read.
-        """
-        self._pattern = pattern
-        self._refresh_pool_for_step(pattern)
-        offsets = (pattern.src_offsets if self.is_source
-                   else pattern.dst_offsets)
-        self._local_xfer = self._make_xfer_descs(offsets, list(pattern.sizes))
-
     def _init_transfer_handle(self) -> None:
         """Per-iteration handshake: exchange descriptors and build handle."""
-        local_xfer = self._local_xfer
+        local_xfer = self.reg_descs.trim()
 
         if "server" in self.role:
             msg = self.zmq_sock.recv().decode("utf-8")
@@ -451,11 +194,8 @@ class NixlBenchmark(TransportBenchmark):
             self.handle = None
 
     def verify_strict(self) -> None:
-        """Verify on the dest side. Raises on mismatch."""
-        if self.is_source:  # source side has nothing to check
-            return
-        if self._pattern is not None:
-            _verify_dest_pool(self.buffer, self._pattern, self.role)
+        """Strict element-by-element verification. Raises on mismatch."""
+        if "client" not in self.role:
             return
 
         expected = 0.0
@@ -496,8 +236,6 @@ class NixlBenchmark(TransportBenchmark):
         self.reg_descs = None
         self.handle = None
         self.dataset = []
-        self.buffer = None
-        self._local_xfer = None
 
     def _create_dataset(self, size: int, num_blocks: int) -> List[torch.Tensor]:
         """Allocate tensor blocks. Server=0s, Client=1s."""
@@ -551,14 +289,12 @@ class MooncakeBenchmark(TransportBenchmark):
         self.local_ptrs: List[int] = []
         self.local_lens: List[int] = []
         self.remote_ptrs: List[int] = []
-        self._base_addr: int = 0      # local pool base VA (noncontig)
-        self._remote_base: int = 0    # receiver's pool base VA (noncontig)
-        self._wr_src: List[int] = []  # per-transfer local addrs
-        self._wr_dst: List[int] = []  # per-transfer remote addrs
-        self._wr_len: List[int] = []  # per-transfer sizes
 
-    def _init_engine(self) -> str:
-        """Init the TransferEngine and return the local IP. Shared by both modes."""
+    def setup(self, size: int, num_blocks: int) -> None:
+        # Allocate dataset
+        self.dataset = self._create_dataset(size, num_blocks)
+
+        # Initialize TransferEngine
         import socket
         hostname = socket.gethostname()
         try:
@@ -573,80 +309,34 @@ class MooncakeBenchmark(TransportBenchmark):
                 f"Mooncake TransferEngine initialization failed (ret={ret})"
             )
         self.rpc_port = self.engine.get_rpc_port()
-        return local_ip
 
-    def setup(self, size: int, num_blocks: int) -> None:
-        """[uniform] Per-size dataset alloc + register + metadata exchange."""
-        self.dataset = self._create_dataset(size, num_blocks)
-        local_ip = self._init_engine()
-
-        # Register each block as its own region.
+        # Register memory
         self.local_ptrs = []
         self.local_lens = []
         for blk in self.dataset:
-            self.local_ptrs.append(blk.data_ptr())
-            self.local_lens.append(blk.numel() * blk.element_size())
+            ptr = blk.data_ptr()
+            nbytes = blk.numel() * blk.element_size()
+            self.local_ptrs.append(ptr)
+            self.local_lens.append(nbytes)
 
         ret = self.engine.batch_register_memory(self.local_ptrs, self.local_lens)
         if ret != 0:
-            raise RuntimeError(f"Mooncake memory registration failed (ret={ret})")
+            raise RuntimeError(
+                f"Mooncake memory registration failed (ret={ret})"
+            )
 
+        # ZMQ coordination — exchange session info and remote addresses
         self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
-        self.remote_session, self.remote_ptrs, _ = self._exchange_metadata(
-            local_ip, self.local_ptrs, self.local_lens)
-        # Uniform transfers every registered block, one WR each.
-        self._wr_src = self.local_ptrs
-        self._wr_dst = self.remote_ptrs
-        self._wr_len = self.local_lens
+        self._exchange_metadata(local_ip)
 
-    def setup_pool(self, pool_bytes: int) -> None:
-        """[noncontig] One-time: alloc + register the full pool, exchange base.
-
-        The whole pool is registered as a single region exactly once; each step
-        only re-derives base+offset addresses, so registration is not redone.
-        """
-        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
-        self.buffer = torch.zeros((pool_bytes,), device=dev, dtype=torch.uint8)
-        local_ip = self._init_engine()
-
-        self._base_addr = self.buffer.data_ptr()
-        self.local_ptrs = [self._base_addr]
-        self.local_lens = [pool_bytes]
-        ret = self.engine.batch_register_memory(self.local_ptrs, self.local_lens)
-        if ret != 0:
-            raise RuntimeError(f"Mooncake memory registration failed (ret={ret})")
-
-        self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
-        self.remote_session, remote_ptrs, _ = self._exchange_metadata(
-            local_ip, self.local_ptrs, self.local_lens)
-        self._remote_base = remote_ptrs[0]
-
-    def prepare_step(self, pattern: StepPattern) -> None:
-        """[noncontig] Refresh the pool + re-derive base+offset WR lists."""
-        self._pattern = pattern
-        self._refresh_pool_for_step(pattern)
-        if self.is_source:  # client writes
-            base, rb = self._base_addr, self._remote_base
-            self._wr_src = [base + o for o in pattern.src_offsets]
-            self._wr_dst = [rb + o for o in pattern.dst_offsets]
-            self._wr_len = list(pattern.sizes)
-            # Barrier: only write after the receiver has zeroed its pool.
-            self.zmq_sock.send(b"READY")
-        else:
-            self.zmq_sock.recv()  # receiver: signal pool reset is done
-
-    def _exchange_metadata(self, local_ip: str, ptrs: List[int],
-                           lens: List[int]) -> "Tuple[str, List[int], List[int]]":
-        """Exchange session hostname:port and buffer addresses via ZMQ.
-
-        Returns the remote ``(session, ptrs, lens)``.
-        """
+    def _exchange_metadata(self, local_ip: str) -> None:
+        """Exchange session hostname:port and buffer addresses via ZMQ."""
         import json
 
         local_info = json.dumps({
             "session": f"{local_ip}:{self.rpc_port}",
-            "ptrs": ptrs,
-            "lens": lens,
+            "ptrs": self.local_ptrs,
+            "lens": self.local_lens,
         }).encode("utf-8")
 
         if "server" in self.role:
@@ -657,17 +347,17 @@ class MooncakeBenchmark(TransportBenchmark):
             remote_info_raw = self.zmq_sock.recv()
 
         remote_info = json.loads(remote_info_raw.decode("utf-8"))
-        return (remote_info["session"], remote_info["ptrs"],
-                remote_info["lens"])
+        self.remote_session = remote_info["session"]
+        self.remote_ptrs = remote_info["ptrs"]
 
     def run_transfer(self) -> None:
-        """Client writes its data to the server's buffer(s)."""
+        """Client writes its data to server's buffers."""
         if "client" in self.role:
             ret = self.engine.batch_transfer_sync_write(
                 self.remote_session,
-                self._wr_src,
-                self._wr_dst,
-                self._wr_len,
+                self.local_ptrs,
+                self.remote_ptrs,
+                self.local_lens,
             )
             if ret != 0:
                 raise RuntimeError(f"Mooncake transfer failed (ret={ret})")
@@ -678,11 +368,8 @@ class MooncakeBenchmark(TransportBenchmark):
                 pass
 
     def verify_strict(self) -> None:
-        """Verify on the dest side (server). Raises on mismatch."""
-        if self.is_source:  # client is the source for write semantics
-            return
-        if self._pattern is not None:
-            _verify_dest_pool(self.buffer, self._pattern, self.role)
+        """Strict element-by-element verification. Raises on mismatch."""
+        if "server" not in self.role:
             return
 
         expected = 1.0
@@ -705,13 +392,9 @@ class MooncakeBenchmark(TransportBenchmark):
             self.zmq_sock = None
         self.engine = None
         self.dataset = []
-        self.buffer = None
         self.local_ptrs = []
         self.local_lens = []
         self.remote_ptrs = []
-        self._wr_src = []
-        self._wr_dst = []
-        self._wr_len = []
 
     def _create_dataset(self, size: int, num_blocks: int) -> List[torch.Tensor]:
         """Allocate tensor blocks. Server=0s, Client=1s."""
@@ -759,140 +442,105 @@ class FlagCXBenchmark(TransportBenchmark):
         if wrapper_dir not in sys.path:
             sys.path.insert(0, wrapper_dir)
 
-        from flagcx_wrapper import FLAGCXLibrary
+        from flagcx_wrapper import FLAGCXLibrary, flagcxUniqueId
         self._FLAGCXLibrary = FLAGCXLibrary
+        self._flagcxUniqueId = flagcxUniqueId
 
         lib_path = args.flagcx_lib_path
         if not lib_path:
             lib_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
         self.flagcx = FLAGCXLibrary(lib_path)
 
-        self.engine = None
+        self.comm = None
         self.buffer: torch.Tensor = None
         self.zmq_sock = None
-        self.conn = None
-        self._base_addr: int = 0     # local pool/buffer base VA
-        self._remote_base: int = 0   # sender: receiver's pool base VA
-        self._src_vas: List[int] = []
-        self._dst_vas: List[int] = []
-        self._sizes: List[int] = []
-
-    def _register_and_connect(self) -> None:
-        """Register ``self.buffer`` and establish the P2P connection ONCE.
-
-        Sets ``self._base_addr`` and (sender) ``self._remote_base``/``self.conn``.
-        Shared by uniform ``setup`` and noncontig ``setup_pool``.
-        """
-        import json
-        import socket
-
-        base_addr = self.buffer.data_ptr()
-        reg_bytes = self.buffer.numel() * self.buffer.element_size()
-        self.flagcx.flagcxP2pRegister(self.engine, base_addr, reg_bytes)
-        self._base_addr = base_addr
-
-        if "server" in self.role:
-            # Receiver: start the RPC accept server and advertise its session
-            # ("host:rpc_port") + buffer base VA so the sender can write here.
-            self.flagcx.flagcxP2pStartRpcServer(self.engine)
-            rpc_port = self.flagcx.flagcxP2pGetRpcPort(self.engine)
-            host = self.remote_ip
-            if host in ("", "0.0.0.0", None):
-                host = socket.gethostbyname(socket.gethostname())
-            self.zmq_sock.send(json.dumps({
-                "session": f"{host}:{rpc_port}",
-                "base_addr": base_addr,
-            }).encode("utf-8"))
-            # Barrier: wait for the sender to finish connecting.
-            self.zmq_sock.recv()
-        else:
-            # Sender: learn the receiver's session + remote base VA, then open
-            # the P2P connection (QP + desc-table handshake on first call).
-            remote_info = json.loads(self.zmq_sock.recv().decode("utf-8"))
-            self._remote_base = int(remote_info["base_addr"])
-            self.conn = self.flagcx.flagcxP2pGetConn(
-                self.engine, remote_info["session"])
-            self.zmq_sock.send(b"READY")
 
     def setup(self, size: int, num_blocks: int) -> None:
-        """[uniform] Per-size buffer alloc + one-shot register/connect."""
-        is_server = "server" in self.role  # server == receiver / write target
-        self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
-        self.engine = self.flagcx.flagcxP2pEngineCreate()
+        import ctypes
 
-        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
-        value = 0 if is_server else 1
+        # ZMQ coordination
+        self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
+
+        # Exchange unique ID and init communicator
+        rank = 0 if "server" in self.role else 1
+        if rank == 0:
+            uid_ptr = self.flagcx.flagcxGetUniqueId()
+            uid_bytes = bytes(uid_ptr.contents.internal)
+            self.zmq_sock.send(uid_bytes)
+        else:
+            uid_bytes = self.zmq_sock.recv()
+            uid_ptr = ctypes.pointer(
+                self.flagcx.unique_id_from_bytes(uid_bytes)
+            )
+
+        self.comm = self.flagcx.flagcxCommInitRank(2, uid_ptr, rank)
+
+        # Allocate data buffer
         total_bytes = size * num_blocks
+        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
+        value = 0 if "server" in self.role else 1
         n_elems = total_bytes // 4  # float32
         self.buffer = torch.full(
             (n_elems,), value, device=dev, dtype=torch.float32
         )
 
-        self._register_and_connect()
+        # Register data MR (index 0)
+        self.flagcx.flagcxOneSideRegister(
+            self.comm, self.buffer.data_ptr(),
+            self.buffer.numel() * self.buffer.element_size()
+        )
 
-        if not is_server:
-            base_addr, remote_base = self._base_addr, self._remote_base
-            if num_blocks <= 1:
-                self._sizes = [total_bytes]
-                self._src_vas = [base_addr]
-                self._dst_vas = [remote_base]
-            else:
-                block_size = total_bytes // num_blocks
-                self._sizes = [block_size] * num_blocks
-                self._src_vas = [base_addr + i * block_size
-                                 for i in range(num_blocks)]
-                self._dst_vas = [remote_base + i * block_size
-                                 for i in range(num_blocks)]
+        # Allocate and register signal buffer
+        # TODO: if we support flagcxWaitCounter(sender) and flagcxWaitSignal(receiver)
+        #       then we need to implement a flagcxOneSideSignalRegister, like below:
+        # self.signal_buffer = torch.zeros(1, dtype=torch.int64).pin_memory()
+        # self.flagcx.flagcxOneSideSignalRegister(
+        #     self.comm, self.signal_buffer.data_ptr(),
+        #     self.signal_buffer.numel() * self.signal_buffer.element_size(), 1
+        # )
 
-    def setup_pool(self, pool_bytes: int) -> None:
-        """[noncontig] One-time: alloc + register the full pool, then connect.
-
-        The 70+ GB MR registration (``flagcxP2pRegister`` -> ``ibv_reg_mr``)
-        happens here exactly once and is reused across every reqlen step.
-        """
-        self.zmq_sock = _init_zmq(self.remote_ip, self.zmq_port, self.role)
-        self.engine = self.flagcx.flagcxP2pEngineCreate()
-        dev = f"cuda:{self.gpu_idx}" if self.device == "gpu" else "cpu"
-        self.buffer = torch.zeros((pool_bytes,), device=dev, dtype=torch.uint8)
-        self._register_and_connect()
-
-    def prepare_step(self, pattern: StepPattern) -> None:
-        """[noncontig] Refresh the pool for this step + re-derive WR VAs.
-
-        No (de)registration — only a buffer reset and pointer arithmetic.
-        """
-        self._pattern = pattern
-        self._refresh_pool_for_step(pattern)
-        if self.is_source:
-            base, remote_base = self._base_addr, self._remote_base
-            self._sizes = list(pattern.sizes)
-            self._src_vas = [base + o for o in pattern.src_offsets]
-            self._dst_vas = [remote_base + o for o in pattern.dst_offsets]
-            # Barrier: only write after the receiver has zeroed its pool.
+        # Sync ready
+        if "server" in self.role:
             self.zmq_sock.send(b"READY")
+            self.zmq_sock.recv()
         else:
-            self.zmq_sock.recv()  # receiver: signal pool reset is done
+            self.zmq_sock.recv()
+            self.zmq_sock.send(b"READY")
+
+        self._total_bytes = total_bytes
+        self._num_blocks = num_blocks
 
     def run_transfer(self) -> None:
-        """Sender (client) RDMA-writes its buffer into the receiver's buffer."""
-        if "server" in self.role:  # receiver: nothing to drive, just wait
+        """Client puts data to server."""
+        rank = 0 if "server" in self.role else 1
+        peer = 1 - rank
+        block_size = self._total_bytes // self._num_blocks
+
+        if rank == 1:  # client
+            before = self.flagcx.flagcxReadCounter(self.comm)
+            if self._num_blocks == 1:
+                self.flagcx.flagcxPut(
+                    self.comm, peer, 0, 0, self._total_bytes, 0, 0
+                )
+                n_ops = 1
+            else:
+                offsets = [i * block_size for i in range(self._num_blocks)]
+                sizes = [block_size] * self._num_blocks
+                mr_idxs = [0] * self._num_blocks
+                self.flagcx.flagcxBatchPut(
+                    self.comm, peer, offsets, offsets, sizes,
+                    mr_idxs, mr_idxs
+                )
+                n_ops = self._num_blocks
+            self.flagcx.flagcxWaitCounter(self.comm, before + n_ops)
+            self.zmq_sock.send(b"DONE")
+        else:  # server waits
             while self.zmq_sock.recv() != b"DONE":
                 pass
-            return
-
-        # flagcxP2pBatchWriteSync is synchronous: it returns once the batched
-        # one-sided write has completed on the wire.
-        self.flagcx.flagcxP2pBatchWriteSync(
-            self.conn, self._src_vas, self._dst_vas, self._sizes
-        )
-        self.zmq_sock.send(b"DONE")
 
     def verify_strict(self) -> None:
-        """Verify on the receiver (server). Raises on mismatch."""
-        if self.is_source:  # client is the source for write semantics
-            return
-        if self._pattern is not None:
-            _verify_dest_pool(self.buffer, self._pattern, self.role)
+        """Strict element-by-element verification. Raises on mismatch."""
+        if "server" not in self.role:
             return
 
         expected = 1.0
@@ -909,20 +557,16 @@ class FlagCXBenchmark(TransportBenchmark):
             )
 
     def teardown(self) -> None:
-        if self.engine is not None:
+        if self.comm is not None:
             try:
-                self.flagcx.flagcxP2pEngineDestroy(self.engine)
+                self.flagcx.flagcxCommDestroy(self.comm)
             except Exception:
                 pass
         if self.zmq_sock is not None:
             self.zmq_sock.close()
             self.zmq_sock = None
-        self.engine = None
-        self.conn = None
+        self.comm = None
         self.buffer = None
-        self._src_vas = []
-        self._dst_vas = []
-        self._sizes = []
 
 
 # ---------------------------------------------------------------------------
@@ -956,30 +600,12 @@ def _parse_sizes(val: str) -> List[int]:
         return [int(s) for s in val.split(",") if s]
     except ValueError as e:
         raise argparse.ArgumentTypeError(
-            "expected comma-separated integers"
+            "--sizes must be comma-separated integers (bytes)"
         ) from e
 
 
-def _kv_cache_num_blocks(block_len: int, num_layers: int,
-                         args: argparse.Namespace) -> int:
-    """Fixed pool size (blocks) sized to the KV-cache memory budget.
-
-    Like a real engine: fill the available memory with KV cache. Budget is
-    --kv-cache-gb if set, else 90% of free GPU mem (8 GiB fallback on CPU).
-    """
-    per_block = block_len * num_layers
-    if args.kv_cache_gb:
-        budget = int(args.kv_cache_gb * (1024 ** 3))
-    elif args.device == "gpu" and torch.cuda.is_available():
-        free, _ = torch.cuda.mem_get_info(args.local_gpu_idx)
-        budget = int(free * 0.9)
-    else:
-        budget = 8 * (1024 ** 3)
-    return max(1, budget // per_block)
-
-
 # ---------------------------------------------------------------------------
-# Benchmark drivers
+# Benchmark driver
 # ---------------------------------------------------------------------------
 
 
@@ -1018,50 +644,9 @@ def benchmark_size(bench: TransportBenchmark, size: int, num_blocks: int,
 
     # Verify correctness
     bench.verify_strict()
+    print(f"  ✓ Verification passed")
+
     bench.teardown()
-
-
-def benchmark_step(bench: TransportBenchmark, pattern: StepPattern,
-                   req_tokens: int, iters: int, warmup: int) -> None:
-    """Run benchmark for one non-contiguous step pattern.
-
-    The engine, pool buffer, and MR registration are set up ONCE by the
-    caller (``setup_pool``); here we only refresh per-step WR offsets, so the
-    expensive 70+ GB registration is not redone between reqlens.
-    """
-    bench.prepare_step(pattern)
-
-    for _ in range(warmup):
-        bench.run_transfer()
-
-    if torch.cuda.is_available() and bench.device == "gpu":
-        torch.cuda.synchronize(bench.gpu_idx)
-
-    t_start = time.perf_counter()
-    for _ in range(iters):
-        bench.run_transfer()
-    if torch.cuda.is_available() and bench.device == "gpu":
-        torch.cuda.synchronize(bench.gpu_idx)
-    elapsed = time.perf_counter() - t_start
-
-    avg_s = elapsed / iters
-    total = pattern.total_bytes
-    bw_GBs = (total / avg_s) / (1024**3) if avg_s > 0 else 0
-    bw_Gbps = (total * 8 / avg_s) / 1e9 if avg_s > 0 else 0
-    avg_wr = total / pattern.wr_count if pattern.wr_count else 0
-
-    print(
-        f"  reqlen={req_tokens // 1024:>3d}k | "
-        f"WRs={pattern.wr_count:6d} | "
-        f"WRsize[min/avg/max]={_pretty_size(min(pattern.sizes))}/"
-        f"{_pretty_size(int(avg_wr))}/{_pretty_size(max(pattern.sizes))} | "
-        f"xfer={_pretty_size(total):>9s} | "
-        f"lat={avg_s * 1000:8.3f} ms | "
-        f"BW={bw_GBs:7.2f} GB/s ({bw_Gbps:7.2f} Gbps)"
-    )
-
-    # Per-step verify only; pool teardown is deferred to the end of the sweep.
-    bench.verify_strict()
 
 
 # ---------------------------------------------------------------------------
@@ -1082,11 +667,6 @@ def main() -> None:
         help="server listens; client initiates the transfer"
     )
     p.add_argument(
-        "--mode", choices=["uniform", "noncontig"], default="uniform",
-        help="uniform: --sizes x --num-blocks sweep; "
-             "noncontig: scattered PD-step sweep over request length"
-    )
-    p.add_argument(
         "--remote-ip", default="0.0.0.0",
         help="server IP — client dials it, server binds it"
     )
@@ -1104,10 +684,6 @@ def main() -> None:
         help="comma-separated message sizes in bytes"
     )
     p.add_argument(
-        "--num-blocks", type=int, default=1,
-        help="number of tensor blocks per transfer"
-    )
-    p.add_argument(
         "--iters", type=int, default=100,
         help="timed iterations per size"
     )
@@ -1116,56 +692,8 @@ def main() -> None:
         help="number of warmup iterations before timed runs"
     )
     p.add_argument(
-        "--req-lens", type=_parse_sizes,
-        default=[1024, 2048, 4096, 8192, 16384, 32768, 65536],
-        help="[noncontig] comma-separated request lengths in tokens to sweep"
-    )
-    p.add_argument(
-        "--total-req", type=int, default=300,
-        help="[noncontig] background requests churned through the pool to "
-             "fragment its free queue (does not size the buffer)"
-    )
-    p.add_argument(
-        "--batch", type=int, default=8,
-        help="[noncontig] requests transferred per step"
-    )
-    p.add_argument(
-        "--pool-util", type=float, default=0.9,
-        help="[noncontig] target pool occupancy during churn; higher => more "
-             "fragmentation"
-    )
-    p.add_argument(
-        "--kv-cache-gb", type=float, default=None,
-        help="[noncontig] KV-cache buffer budget in GiB (default: 90%% of free "
-             "GPU mem). Sets the fixed, reused block pool size."
-    )
-    p.add_argument(
-        "--block-size", type=int, default=16,
-        help="[noncontig] KV tokens per block (blocks_per_req = req_len/this)"
-    )
-    p.add_argument(
-        "--num-kv-heads", type=int, default=8,
-        help="[noncontig] model num_key_value_heads (sharded across tp ranks)"
-    )
-    p.add_argument(
-        "--head-dim", type=int, default=128,
-        help="[noncontig] attention head_dim"
-    )
-    p.add_argument(
-        "--tp", type=int, default=8,
-        help="[noncontig] tensor-parallel size; each rank owns num_kv_heads//tp"
-    )
-    p.add_argument(
-        "--dtype", choices=list(_DTYPE_BYTES), default="bf16",
-        help="[noncontig] KV element dtype"
-    )
-    p.add_argument(
-        "--num-layers", type=int, default=48,
-        help="[noncontig] number of layers (one WR group each)"
-    )
-    p.add_argument(
-        "--seed", type=int, default=1234,
-        help="[noncontig] RNG seed for the churn pattern (same on both sides)"
+        "--num-blocks", type=int, default=1,
+        help="number of tensor blocks per transfer"
     )
     p.add_argument(
         "--nixl-backend", default="UCX",
@@ -1199,11 +727,15 @@ def main() -> None:
     else:
         raise ValueError(f"Unknown connector: {args.connector}")
 
+    # Print header
     print(f"KV Transfer Benchmark  connector={args.connector}  role={args.role}")
     print(
-        f"  mode={args.mode}  device={args.device}  gpu={args.local_gpu_idx}  "
-        f"op={bench.op_type}  iters={args.iters}  warmup={args.warmup_iters}"
+        f"  device={args.device}  gpu={args.local_gpu_idx}  "
+        f"op={bench.op_type}  iters={args.iters}  warmup={args.warmup_iters}  "
+        f"num_blocks={args.num_blocks}"
     )
+    print(f"  NOTE: {args.connector} connector uses op_type={bench.op_type} "
+          f"(matching vLLM connector semantics)")
     if args.connector == "nixl":
         print(f"  nixl-backend={args.nixl_backend}")
     elif args.connector == "mooncake":
@@ -1211,82 +743,15 @@ def main() -> None:
     elif args.connector == "flagcx":
         lib = args.flagcx_lib_path or "$FLAGCX_PATH/build/lib/libflagcx.so"
         print(f"  lib={lib}")
+    print(f"  sizes: {', '.join(_pretty_size(s) for s in args.sizes)}")
+    print("-" * 72)
 
-    if args.mode == "uniform":
-        print(f"  num_blocks={args.num_blocks}")
-        print(f"  sizes: {', '.join(_pretty_size(s) for s in args.sizes)}")
-        print("-" * 72)
-        for size in args.sizes:
-            benchmark_size(bench, size, args.num_blocks,
-                              args.iters, args.warmup_iters)
-    else:
-        _run_noncontig(bench, args)
+    # Run benchmark for each size
+    for size in args.sizes:
+        benchmark_size(bench, size, args.num_blocks, args.iters, args.warmup_iters)
 
     print("-" * 72)
     print("Done.")
-
-
-def _run_noncontig(bench: TransportBenchmark, args: argparse.Namespace) -> None:
-    """Sweep the non-contiguous step pattern over request length."""
-    dtype_bytes = _DTYPE_BYTES[args.dtype]
-    block_len = compute_block_len(
-        args.block_size, args.num_kv_heads, args.head_dim, args.tp, dtype_bytes,
-    )
-    coalesce = type(bench).COALESCE
-    heads_per_rank = max(1, args.num_kv_heads // args.tp)
-
-    # Fixed, reused block pool sized to the memory budget (like a real engine).
-    num_blocks = _kv_cache_num_blocks(block_len, args.num_layers, args)
-    pool_bytes = num_blocks * args.num_layers * block_len
-    # Background size mix (in blocks) = the swept request lengths themselves.
-    bg_choices = [max(1, math.ceil(L / args.block_size)) for L in args.req_lens]
-
-    print(
-        f"  block_len={_pretty_size(block_len)} "
-        f"(block_size={args.block_size} x heads/rank={heads_per_rank}"
-        f"[={args.num_kv_heads}//{args.tp}] x head_dim={args.head_dim} "
-        f"x 2(KV) x {args.dtype})"
-    )
-    print(
-        f"  num_layers={args.num_layers}  num_gpu_blocks={num_blocks}"
-        f"  pool={_pretty_size(pool_bytes)}  util={args.pool_util}"
-    )
-    print(
-        f"  total_req={args.total_req}  batch={args.batch}"
-        f"  coalesce={coalesce}  seed={args.seed}"
-    )
-    print("-" * 72)
-
-    # One-time: create the engine, allocate + register the full pool buffer,
-    # and establish the connection. The pool size is fixed across all reqlens,
-    # so the costly MR registration happens exactly once here (not per step).
-    bench.setup_pool(pool_bytes)
-    try:
-        for req_tokens in args.req_lens:
-            bpr = max(1, math.ceil(req_tokens / args.block_size))
-            if args.batch * bpr > num_blocks:
-                print(
-                    f"  reqlen={req_tokens // 1024:>3d}k | SKIP: batch working "
-                    f"set {args.batch * bpr} blocks > pool {num_blocks} blocks"
-                )
-                continue
-
-            pattern = build_step_pattern(
-                block_len=block_len,
-                num_layers=args.num_layers,
-                num_blocks=num_blocks,
-                bpr=bpr,
-                batch=args.batch,
-                total_req=args.total_req,
-                util=args.pool_util,
-                bg_choices=bg_choices,
-                seed=args.seed,
-                coalesce=coalesce,
-            )
-            benchmark_step(bench, pattern, req_tokens, args.iters,
-                           args.warmup_iters)
-    finally:
-        bench.teardown()
 
 
 if __name__ == "__main__":
