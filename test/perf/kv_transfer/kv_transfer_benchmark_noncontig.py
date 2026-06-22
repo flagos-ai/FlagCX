@@ -221,9 +221,11 @@ class NixlTransport(Transport):
         self.reg = self.agent.register_memory(self.agent.get_reg_descs([self.buffer]))
         meta = self.agent.get_agent_metadata()
         if "client" in self.role:
-            self.sock.send(meta); peer = self.sock.recv()
+            self.sock.send(meta)
+            peer = self.sock.recv()
         else:
-            peer = self.sock.recv(); self.sock.send(meta)
+            peer = self.sock.recv()
+            self.sock.send(meta)
         self.agent.add_remote_agent(peer)
 
     def prepare_step(self, pat):
