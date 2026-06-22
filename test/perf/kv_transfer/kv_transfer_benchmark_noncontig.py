@@ -430,9 +430,9 @@ def run_size(t: Transport, pat: Pattern, iters: int, warmup: int) -> None:
         torch.cuda.synchronize(t.gpu_idx)
     avg = (time.perf_counter() - start) / iters
     bw = (pat.total_bytes / avg) / (1024**3) if avg else 0
-    print(f"  size={_pretty(pat.total_bytes):>9s} | WRs={pat.n:>7d} "
-          f"(block={_pretty(pat.block_bytes)}) | lat={avg*1000:8.3f} ms | "
-          f"BW={bw:7.2f} GB/s ({bw*8*1024**3/1e9:7.2f} Gbps)")
+    print(f"  {_pretty(pat.total_bytes):>9s}  |  lat={avg*1000:8.3f} ms  |  "
+          f"BW={bw:7.2f} GB/s  ({bw*8*1024**3/1e9:7.2f} Gbps)  |  "
+          f"WRs={pat.n} block={_pretty(pat.block_bytes)}")
     t.verify()
 
 
