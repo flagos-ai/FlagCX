@@ -761,9 +761,6 @@ flagcxResult_t FlagcxWorkerPool::submitPostSend(void *sendComm,
   if (count <= 0 || slices == nullptr)
     return flagcxSuccess;
 
-  // Match Mooncake's endpoint-affine dispatch: every slice for the same
-  // endpoint (sendComm) goes to one stable shard, hence one posting worker.
-  // Shift away allocator alignment bits before applying Mooncake's multiplier.
   const uintptr_t endpointKey = reinterpret_cast<uintptr_t>(sendComm) >> 4;
   const int shard = static_cast<int>((endpointKey * 10007ull) %
                                      static_cast<uint64_t>(numShards_));
