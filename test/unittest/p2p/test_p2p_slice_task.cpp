@@ -187,7 +187,6 @@ TEST(SliceTest, AggregateInitializationWorks) {
       0xAABB,               // lkey
       0xCCDD,               // rkey
       FLAGCX_SLICE_OP_READ, // opcode
-      std::string(),        // peerNicPath
       &task,                // task
       nullptr               // qpDepth
   };

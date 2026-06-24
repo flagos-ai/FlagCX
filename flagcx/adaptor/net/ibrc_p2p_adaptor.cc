@@ -22,7 +22,6 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
-#include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -634,7 +633,6 @@ flagcxP2pBuildSingleSliceReq(struct flagcxP2pSendComm *comm, uint64_t localVa,
   req->slice.lkey = lkey;
   req->slice.rkey = rkey;
   req->slice.opcode = opcode;
-  req->slice.peerNicPath = std::string();
   req->slice.task = &req->task;
   req->slice.qpDepth = NULL;
   req->task.sliceList.push_back(&req->slice);
@@ -715,7 +713,6 @@ flagcxP2pIgetBatch(void *sendComm, int count, const uint64_t *srcOffs,
                               dst->lkey,
                               src->rkey,
                               FLAGCX_SLICE_OP_READ,
-                              std::string(),
                               &req->task,
                               NULL};
     req->task.sliceList.push_back(s);
@@ -749,9 +746,12 @@ static inline enum ibv_wr_opcode flagcxSliceOpcodeToVerbs(uint8_t op) {
   return op == FLAGCX_SLICE_OP_READ ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
 }
 
-extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
-                                              int count, FlagcxSlice **slices) {
+extern "C" flagcxResult_t
+flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp, int count,
+                    FlagcxSlice **slices, int *failedCount) {
   struct flagcxP2pSendComm *comm = (struct flagcxP2pSendComm *)sendComm;
+  if (failedCount != NULL)
+    *failedCount = 0;
   const char *opLabel = (slices != NULL && count > 0 && slices[0] != NULL &&
                          slices[0]->opcode == FLAGCX_SLICE_OP_READ)
                             ? "READ"
@@ -762,23 +762,50 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
     WARN("NET/IB_P2P : invalid sliceBatch arguments (op=%s, count=%d, qp=%p, "
          "max=%d)",
          opLabel, count, (void *)qp, maxWrPerPost);
+    int failed = 0;
+    if (slices != NULL && count > 0) {
+      for (int i = 0; i < count; i++) {
+        if (slices[i] != NULL) {
+          if (slices[i]->qpDepth != NULL)
+            __sync_fetch_and_sub(slices[i]->qpDepth, 1);
+          slices[i]->markFailed();
+          failed++;
+        }
+      }
+    }
+    if (failedCount != NULL)
+      *failedCount = failed;
     return flagcxInternalError;
   }
 
-  // count can be up to flagcxP2pGlobalConfig().maxWrPerPost (default 256,
-  // bounded at 1024). Heap-allocate to keep the stack small.
-  std::vector<struct ibv_send_wr> wrs(count);
-  std::vector<struct ibv_sge> sges(count);
+  static thread_local std::vector<struct ibv_send_wr> wrScratch;
+  static thread_local std::vector<struct ibv_sge> sgeScratch;
+  if ((int)wrScratch.size() < maxWrPerPost) {
+    wrScratch.resize(maxWrPerPost);
+    sgeScratch.resize(maxWrPerPost);
+  }
+  struct ibv_send_wr *wrs = wrScratch.data();
+  struct ibv_sge *sges = sgeScratch.data();
+  memset(wrs, 0, sizeof(*wrs) * count);
 
   for (int i = 0; i < count; i++) {
     FlagcxSlice *s = slices[i];
     if (s == NULL) {
       WARN("NET/IB_P2P : sliceBatch slice[%d] is NULL", i);
-      for (int k = 0; k < i; k++)
+      for (int k = 0; k < i; k++) {
+        if (slices[k]->qpDepth != NULL)
+          __sync_fetch_and_sub(slices[k]->qpDepth, 1);
         slices[k]->markFailed();
-      for (int k = i; k < count; k++)
-        if (slices[k])
+      }
+      for (int k = i; k < count; k++) {
+        if (slices[k]) {
+          if (slices[k]->qpDepth != NULL)
+            __sync_fetch_and_sub(slices[k]->qpDepth, 1);
           slices[k]->markFailed();
+        }
+      }
+      if (failedCount != NULL)
+        *failedCount = count;
       return flagcxInternalError;
     }
 
@@ -797,11 +824,11 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
   }
 
   struct ibv_send_wr *bad_wr = NULL;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp, &wrs[0], &bad_wr);
+  flagcxResult_t res = flagcxWrapIbvPostSend(qp, wrs, &bad_wr);
   if (res != flagcxSuccess) {
     int failedFrom = 0;
     if (bad_wr != NULL) {
-      ptrdiff_t off = bad_wr - &wrs[0];
+      ptrdiff_t off = bad_wr - wrs;
       if (off >= 0 && off < count)
         failedFrom = (int)off;
     }
@@ -812,6 +839,8 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
         __sync_fetch_and_sub(slices[k]->qpDepth, 1);
       slices[k]->markFailed();
     }
+    if (failedCount != NULL)
+      *failedCount = count - failedFrom;
     WARN("NET/IB_P2P : sliceBatch ibv_post_send failed (op=%s, count=%d, "
          "failedFrom=%d)",
          opLabel, count, failedFrom);
