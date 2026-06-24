@@ -13,6 +13,7 @@
 
 #include "adaptor.h"
 #include "bootstrap.h"
+#include "cpuset.h"
 #include "debug.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
@@ -34,6 +35,7 @@
 #include <mutex>
 #include <poll.h>
 #include <pthread.h>
+#include <sched.h>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -344,6 +346,57 @@ static std::unordered_map<uint64_t, FlagcxP2pXfer> gXferMap;
 static std::mutex gXferMutex;
 static uint64_t gNextXferId = 1;
 
+struct FlagcxSliceCache {
+  static constexpr size_t kCap = 4096;
+  std::vector<FlagcxSlice *> ring;
+  uint64_t head = 0, tail = 0;
+  FlagcxSliceCache() { ring.resize(kCap, nullptr); }
+  ~FlagcxSliceCache() {
+    for (uint64_t i = tail; i != head; i++)
+      delete ring[i % kCap];
+  }
+  FlagcxSlice *allocate() {
+    if (head == tail)
+      return new FlagcxSlice();
+    FlagcxSlice *s = ring[tail % kCap];
+    tail++;
+    return s;
+  }
+  void deallocate(FlagcxSlice *s) {
+    if (s == nullptr)
+      return;
+    if (head - tail == kCap) { // ring full: fall back to free
+      delete s;
+      return;
+    }
+    ring[head % kCap] = s;
+    head++;
+  }
+};
+
+static FlagcxSliceCache &sliceCache() {
+  static thread_local FlagcxSliceCache cache;
+  return cache;
+}
+
+static inline FlagcxSlice *acquireSlice(uint64_t srcVa, uint64_t dstVa,
+                                        uint32_t length, uint32_t lkey,
+                                        uint32_t rkey, uint8_t opcode,
+                                        const std::string &peerNicPath,
+                                        FlagcxTransferTask *task) {
+  FlagcxSlice *s = sliceCache().allocate();
+  s->srcVa = srcVa;
+  s->dstVa = dstVa;
+  s->length = length;
+  s->lkey = lkey;
+  s->rkey = rkey;
+  s->opcode = opcode;
+  s->peerNicPath = peerNicPath;
+  s->task = task;
+  s->qpDepth = nullptr;
+  return s;
+}
+
 inline void flagcxBuildSlicesRuntime(FlagcxTransferTask *task, uint64_t srcVa,
                                      uint64_t dstVa, size_t totalLen,
                                      uint32_t lkey, uint32_t rkey,
@@ -351,9 +404,8 @@ inline void flagcxBuildSlicesRuntime(FlagcxTransferTask *task, uint64_t srcVa,
                                      const std::string &peerNicPath,
                                      size_t blockSize, size_t fragmentSize) {
   if (blockSize == 0 || totalLen <= blockSize) {
-    auto *s = new FlagcxSlice{srcVa,       dstVa, (uint32_t)totalLen,
-                              lkey,        rkey,  opcode,
-                              peerNicPath, task,  nullptr};
+    FlagcxSlice *s = acquireSlice(srcVa, dstVa, (uint32_t)totalLen, lkey, rkey,
+                                  opcode, peerNicPath, task);
     task->sliceList.push_back(s);
     task->sliceCount.fetch_add(1, std::memory_order_release);
     return;
@@ -363,9 +415,8 @@ inline void flagcxBuildSlicesRuntime(FlagcxTransferTask *task, uint64_t srcVa,
   while (off < totalLen) {
     bool merge = (totalLen - off) <= blockSize + fragmentSize;
     size_t len = merge ? (totalLen - off) : blockSize;
-    auto *s =
-        new FlagcxSlice{srcVa + off, dstVa + off, (uint32_t)len, lkey,   rkey,
-                        opcode,      peerNicPath, task,          nullptr};
+    FlagcxSlice *s = acquireSlice(srcVa + off, dstVa + off, (uint32_t)len, lkey,
+                                  rkey, opcode, peerNicPath, task);
     task->sliceList.push_back(s);
     task->sliceCount.fetch_add(1, std::memory_order_release);
     off += len;
@@ -395,10 +446,13 @@ public:
   FlagcxWorkerPool(const FlagcxWorkerPool &) = delete;
   FlagcxWorkerPool &operator=(const FlagcxWorkerPool &) = delete;
 
-  struct ibv_cq *getSharedCq() const {
-    return shared_cq_;
+  struct ibv_cq *cqForSlot(int slot) const {
+    if (cqs_.empty())
+      return nullptr;
+    return cqs_[(size_t)slot % cqs_.size()];
   }
-  void registerQp(void *sendComm, struct ibv_qp *qp);
+  int workerCount() const { return numWorkers_; }
+  void registerQp(void *sendComm, struct ibv_qp *qp, int slot);
   void unregisterQp(struct ibv_qp *qp);
 
   flagcxResult_t submitPostSend(void *sendComm, FlagcxSlice **slices,
@@ -410,8 +464,10 @@ public:
 private:
   void transferWorkerLoop(int tid);
   void performPostSend(int tid);
-  void performPollCq();
+  void performPollCq(int tid);
   void notifWorkerLoop();
+
+  void pinToNicCpus(const char *role, int id);
 
   static uint64_t nowNs() {
     using clk = std::chrono::steady_clock;
@@ -421,7 +477,10 @@ private:
   }
 
   int ibDevN_;
-  struct ibv_cq *shared_cq_ = nullptr;
+  std::vector<struct ibv_cq *> cqs_; // one CQ per worker; worker t polls cqs_[t]
+
+  cpu_set_t cpuAffinity_;
+  bool hasCpuAffinity_ = false;
 
   int numWorkers_;
   int numShards_;
@@ -457,6 +516,39 @@ private:
   std::atomic<bool> notifSpawned_{false};
 };
 
+static bool flagcxP2pGetNicCpuset(struct ibv_context *ctx, cpu_set_t *mask) {
+  if (ctx == nullptr || ctx->device == nullptr || mask == nullptr)
+    return false;
+  const char *devName = flagcxWrapIbvGetDeviceName(ctx->device);
+  if (devName == nullptr)
+    return false;
+  char path[256];
+  snprintf(path, sizeof(path), "/sys/class/infiniband/%s/device/local_cpus",
+           devName);
+  FILE *fp = fopen(path, "r");
+  if (fp == nullptr)
+    return false;
+  char buf[1024];
+  char *line = fgets(buf, sizeof(buf), fp);
+  fclose(fp);
+  if (line == nullptr)
+    return false;
+  // Strip trailing newline/CR before parsing.
+  size_t n = strlen(buf);
+  while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
+    buf[--n] = '\0';
+  CPU_ZERO(mask);
+  if (flagcxStrToCpuset(buf, mask) != flagcxSuccess)
+    return false;
+  int set = CPU_COUNT(mask);
+  if (set == 0)
+    return false;
+  long online = sysconf(_SC_NPROCESSORS_ONLN);
+  if (online > 0 && set >= online)
+    return false;
+  return true;
+}
+
 FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
     : ibDevN_(ibDevN) {
   const auto &C = flagcxP2pGlobalConfig();
@@ -481,17 +573,21 @@ FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
          ibDevN_, C.qpsPerConn, numWorkers_);
   }
 
-  flagcxResult_t res = flagcxWrapIbvCreateCq(
-      &shared_cq_, ctx, (int)C.sharedCqDepth, NULL, NULL, 0);
-  if (res != flagcxSuccess) {
-    WARN("NET/IB_P2P : pool[%d] failed to create shared CQ", ibDevN_);
-    shared_cq_ = nullptr;
-    return;
+  cqs_.resize(numWorkers_, nullptr);
+  for (int t = 0; t < numWorkers_; t++) {
+    flagcxResult_t res = flagcxWrapIbvCreateCq(
+        &cqs_[t], ctx, (int)C.sharedCqDepth, NULL, NULL, 0);
+    if (res != flagcxSuccess || cqs_[t] == nullptr) {
+      WARN("NET/IB_P2P : pool[%d] failed to create CQ %d/%d", ibDevN_, t,
+           numWorkers_);
+      cqs_.clear();
+      return;
+    }
   }
   INFO(FLAGCX_INIT,
-       "NET/IB_P2P : pool[%d] shared CQ created (depth=%zu, workers=%d, "
+       "NET/IB_P2P : pool[%d] %d per-worker CQs created (depth=%zu, "
        "shards=%d, qpsPerConn=%d)",
-       ibDevN_, C.sharedCqDepth, numWorkers_, numShards_, C.qpsPerConn);
+       ibDevN_, numWorkers_, C.sharedCqDepth, numShards_, C.qpsPerConn);
 
   slice_queues_.resize(numShards_);
   slice_locks_.reset(new std::mutex[numShards_]);
@@ -502,6 +598,8 @@ FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
   workerQpIdx_.resize(numWorkers_);
   workerQpCursor_.assign(numWorkers_, 0);
   collective_slice_queue_.resize(numWorkers_);
+
+  hasCpuAffinity_ = flagcxP2pGetNicCpuset(ctx, &cpuAffinity_);
 
   transferThreads_.reserve(numWorkers_);
   for (int t = 0; t < numWorkers_; t++) {
@@ -550,15 +648,45 @@ void FlagcxWorkerPool::stopNotif() {
   notifSpawned_.store(false, std::memory_order_release);
 }
 
+void FlagcxWorkerPool::pinToNicCpus(const char *role, int id) {
+  if (!hasCpuAffinity_)
+    return;
+  cpu_set_t inherited, target;
+  if (sched_getaffinity(0, sizeof(cpu_set_t), &inherited) != 0) {
+    WARN("NET/IB_P2P : pool[%d] %s %d sched_getaffinity failed (errno=%d); "
+         "leaving thread unpinned",
+         ibDevN_, role, id, errno);
+    return;
+  }
+  CPU_AND(&target, &cpuAffinity_, &inherited);
+  if (CPU_COUNT(&target) == 0) {
+    INFO(FLAGCX_INIT,
+         "NET/IB_P2P : pool[%d] %s %d NIC-local set disjoint from inherited "
+         "affinity (%d cpus); leaving thread on inherited affinity",
+         ibDevN_, role, id, CPU_COUNT(&inherited));
+    return;
+  }
+  if (sched_setaffinity(0, sizeof(cpu_set_t), &target) != 0) {
+    WARN("NET/IB_P2P : pool[%d] %s %d sched_setaffinity failed (errno=%d)",
+         ibDevN_, role, id, errno);
+  } else {
+    INFO(FLAGCX_INIT,
+         "NET/IB_P2P : pool[%d] %s %d pinned to %d CPUs (NIC-local ∩ "
+         "inherited)",
+         ibDevN_, role, id, CPU_COUNT(&target));
+  }
+}
+
 void FlagcxWorkerPool::notifWorkerLoop() {
   if (engine_ == nullptr)
     return;
+  pinToNicCpus("notifWorker", 0);
   // Reuse the original engine-side body — same behavior, just owned by
   // the pool's thread.
   notifPollThreadFunc(engine_);
 }
 
-void FlagcxWorkerPool::registerQp(void *sendComm, struct ibv_qp *qp) {
+void FlagcxWorkerPool::registerQp(void *sendComm, struct ibv_qp *qp, int slot) {
   if (!qp || numWorkers_ <= 0)
     return;
 
@@ -589,8 +717,9 @@ void FlagcxWorkerPool::registerQp(void *sendComm, struct ibv_qp *qp) {
   qpEntries_.emplace_back(new PoolQpEntry(qp, sendComm));
   qpNumToIdx_[qp->qp_num] = idx;
 
-  int connIdx = connQpRegCount_[sendComm]++;
-  int slot = connIdx % numWorkers_;
+  connQpRegCount_[sendComm]++;
+  if (slot < 0 || slot >= numWorkers_)
+    slot = 0;
   workerQpIdx_[slot].push_back(idx);
 }
 
@@ -667,6 +796,7 @@ flagcxResult_t FlagcxWorkerPool::submitPostSend(void *sendComm,
 }
 
 void FlagcxWorkerPool::transferWorkerLoop(int tid) {
+  pinToNicCpus("transferWorker", tid);
   const static uint64_t kWaitPeriodInNano = 100ull * 1000 * 1000; // 100ms
   uint64_t last_wait_ts = nowNs();
 
@@ -690,7 +820,7 @@ void FlagcxWorkerPool::transferWorkerLoop(int tid) {
     }
 
     performPostSend(tid);
-    performPollCq();
+    performPollCq(tid);
   }
 }
 
@@ -795,16 +925,17 @@ void FlagcxWorkerPool::performPostSend(int tid) {
   }
 }
 
-void FlagcxWorkerPool::performPollCq() {
-  if (shared_cq_ == nullptr)
+void FlagcxWorkerPool::performPollCq(int tid) {
+  if (tid < 0 || tid >= (int)cqs_.size() || cqs_[tid] == nullptr)
     return;
+  struct ibv_cq *cq = cqs_[tid];
 
   constexpr int kMaxPollBatch = 256;
   struct ibv_wc wcs[kMaxPollBatch];
   int batch = (int)std::min<size_t>(batchPollSize_, kMaxPollBatch);
   int n = 0;
-  if (flagcxWrapIbvPollCq(shared_cq_, batch, wcs, &n) != flagcxSuccess) {
-    WARN("NET/IB_P2P : ibv_poll_cq failed on shared CQ %p", shared_cq_);
+  if (flagcxWrapIbvPollCq(cq, batch, wcs, &n) != flagcxSuccess) {
+    WARN("NET/IB_P2P : ibv_poll_cq failed on CQ %p (worker %d)", cq, tid);
     return;
   }
   if (n == 0)
@@ -860,17 +991,24 @@ static FlagcxWorkerPool *lookupPool(int ibDevN) {
 } // namespace
 
 // ---- Hooks consumed by ibrc_p2p_adaptor.cc (forward-declared there). ----
-struct ibv_cq *flagcxP2pPoolGetSharedCq(int ibDevN, struct ibv_context *ctx) {
+struct ibv_cq *flagcxP2pPoolGetCq(int ibDevN, struct ibv_context *ctx,
+                                  int slot) {
   FlagcxWorkerPool *pool = getOrCreatePool(ibDevN, ctx);
-  return pool ? pool->getSharedCq() : NULL;
+  return pool ? pool->cqForSlot(slot) : NULL;
 }
 
-void flagcxP2pPoolRegisterQp(int ibDevN, void *sendComm, struct ibv_qp *qp) {
+int flagcxP2pPoolGetWorkerCount(int ibDevN, struct ibv_context *ctx) {
+  FlagcxWorkerPool *pool = getOrCreatePool(ibDevN, ctx);
+  return pool ? pool->workerCount() : 0;
+}
+
+void flagcxP2pPoolRegisterQp(int ibDevN, void *sendComm, struct ibv_qp *qp,
+                             int slot) {
   if (qp == nullptr)
     return;
   FlagcxWorkerPool *pool = lookupPool(ibDevN);
   if (pool)
-    pool->registerQp(sendComm, qp);
+    pool->registerQp(sendComm, qp, slot);
 }
 
 void flagcxP2pPoolUnregisterQp(int ibDevN, struct ibv_qp *qp) {
@@ -2615,7 +2753,7 @@ bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
                    std::memory_order_relaxed));
         }
         for (auto *s : task->fx.sliceList)
-          delete s;
+          sliceCache().deallocate(s);
         task->fx.sliceList.clear();
         gPoolXferMap.erase(it);
         return true;
@@ -2906,26 +3044,12 @@ int flagcxP2pRpcBatchWriteSync(void *connPtr, int count, const uint64_t *srcVa,
   if (srcVa == NULL || dstVa == NULL || sizes == NULL)
     return -1;
 
-  std::vector<FlagcxP2pMr> mrVec(count);
   std::vector<void *> srcVec(count);
   std::vector<size_t> sizeVec(count);
   std::vector<FlagcxP2pRdmaDesc> descs(count);
 
-  // Resolve the local MR for each source VA from the global region table
-  // (gMemRegInfo), mirroring how MakeDesc resolves the remote rkey.
-  {
-    std::lock_guard<std::mutex> memLock(gMemMutex);
-    for (int i = 0; i < count; i++) {
-      FlagcxP2pMemRegEntry localEntry;
-      if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntry)) {
-        WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
-             (unsigned long long)srcVa[i]);
-        return -1;
-      }
-      mrVec[i] = localEntry.mrId;
-    }
-  }
-
+  // Resolve every remote rkey/desc up front. No global lock here: MakeDesc
+  // scans the per-conn remoteRegions table, not gMemRegInfo.
   for (int i = 0; i < count; i++) {
     srcVec[i] = reinterpret_cast<void *>(static_cast<uintptr_t>(srcVa[i]));
     sizeVec[i] = static_cast<size_t>(sizes[i]);
@@ -2938,7 +3062,77 @@ int flagcxP2pRpcBatchWriteSync(void *connPtr, int count, const uint64_t *srcVa,
     }
   }
 
-  return flagcxP2pEngineWriteVectorSync(conn, mrVec, srcVec, sizeVec, descs);
+  if (conn->isLocal && conn->sameProcess) {
+    std::vector<FlagcxP2pMr> mrVec(count);
+    {
+      std::lock_guard<std::mutex> memLock(gMemMutex);
+      for (int i = 0; i < count; i++) {
+        FlagcxP2pMemRegEntry localEntry;
+        if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntry)) {
+          WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
+               (unsigned long long)srcVa[i]);
+          return -1;
+        }
+        mrVec[i] = localEntry.mrId;
+      }
+    }
+    return flagcxP2pEngineWriteVectorSync(conn, mrVec, srcVec, sizeVec, descs);
+  }
+
+  std::vector<FlagcxP2pMemRegEntry> localEntries(count);
+  {
+    std::lock_guard<std::mutex> memLock(gMemMutex);
+    for (int i = 0; i < count; i++) {
+      if (!findMemReg(static_cast<uintptr_t>(srcVa[i]), &localEntries[i])) {
+        WARN("NET/IB_P2P : BatchWriteSync no local MR for source VA 0x%llx",
+             (unsigned long long)srcVa[i]);
+        return -1;
+      }
+      if (!memRegContains(localEntries[i], static_cast<uintptr_t>(srcVa[i]),
+                          static_cast<size_t>(sizes[i]))) {
+        WARN("NET/IB_P2P : BatchWriteSync source VA 0x%llx size %llu out of MR "
+             "bounds",
+             (unsigned long long)srcVa[i], (unsigned long long)sizes[i]);
+        return -1;
+      }
+    }
+  }
+
+  const int connIbDevN = getCommView(conn->sendComm)->ibDevN;
+  auto task = std::make_shared<PoolTransferTask>();
+  task->conn = conn;
+  if (!buildAndSubmitToPool(task.get(), srcVec, sizeVec, descs, localEntries,
+                            count, conn->sendComm, connIbDevN,
+                            FLAGCX_SLICE_OP_WRITE)) {
+    auto *sentinel = new FlagcxSlice{
+        0,         0,      0, 0, 0, FLAGCX_SLICE_OP_WRITE, std::string(),
+        &task->fx, nullptr};
+    task->fx.sliceList.push_back(sentinel);
+    task->fx.sliceCount.fetch_add(1, std::memory_order_release);
+    sentinel->markFailed();
+    task->postOk.store(false, std::memory_order_release);
+  }
+
+  uint64_t xferId;
+  {
+    std::lock_guard<std::mutex> lock(gPoolXferMutex);
+    xferId = gNextXferId++;
+    gPoolXferMap[xferId] = task;
+  }
+
+  // Synchronously wait for completion (mirror flagcxP2pEngineWriteVectorSync).
+  uint64_t spins = 0;
+  while (!task->fx.isAllDone()) {
+    if ((++spins & 0xFFF) == 0) {
+      std::this_thread::yield();
+      continue;
+    }
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+  }
+  flagcxP2pEngineXferStatus(conn, xferId);
+  return 0;
 }
 
 } // extern "C"

@@ -27,10 +27,11 @@
 #include <unistd.h>
 #include <vector>
 
-extern struct ibv_cq *flagcxP2pPoolGetSharedCq(int ibDevN,
-                                               struct ibv_context *ctx);
+extern struct ibv_cq *flagcxP2pPoolGetCq(int ibDevN, struct ibv_context *ctx,
+                                         int slot);
+extern int flagcxP2pPoolGetWorkerCount(int ibDevN, struct ibv_context *ctx);
 extern void flagcxP2pPoolRegisterQp(int ibDevN, void *sendComm,
-                                    struct ibv_qp *qp);
+                                    struct ibv_qp *qp, int slot);
 extern void flagcxP2pPoolUnregisterQp(int ibDevN, struct ibv_qp *qp);
 extern flagcxResult_t flagcxP2pPoolSubmit(int ibDevN, void *sendComm,
                                           FlagcxSlice **slices, int count);
@@ -276,16 +277,13 @@ static flagcxResult_t flagcxP2pSetupConn(int dev, void *outerComm,
   base->pd = ibDev->pd;
   pthread_mutex_unlock(&ibDev->lock);
 
-  // Step 0: pull the shared CQ from the per-ibDev WorkerPool. The pool is
-  // lazily created on first call (and lives for the process lifetime).
-  struct ibv_cq *sharedCq = flagcxP2pPoolGetSharedCq(ibDevN, ibDev->context);
-  if (sharedCq == NULL) {
-    WARN("NET/IB_P2P : pool[%d] returned NULL shared CQ", ibDevN);
+  int poolWorkers = flagcxP2pPoolGetWorkerCount(ibDevN, ibDev->context);
+  if (poolWorkers <= 0) {
+    WARN("NET/IB_P2P : pool[%d] has no worker CQs", ibDevN);
     flagcxP2pReleasePd(ibDevN);
     base->pd = NULL;
     return flagcxInternalError;
   }
-  base->cq = sharedCq;
 
   int accessFlags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                     IBV_ACCESS_REMOTE_ATOMIC;
@@ -303,11 +301,18 @@ static flagcxResult_t flagcxP2pSetupConn(int dev, void *outerComm,
   base->gidInfo.linkLayer = ibDev->link;
 
   for (int i = 0; i < numQps; i++) {
+    int slot = i % poolWorkers;
+    base->cq = flagcxP2pPoolGetCq(ibDevN, ibDev->context, slot);
+    if (base->cq == NULL) {
+      WARN("NET/IB_P2P : pool[%d] NULL CQ for slot %d", ibDevN, slot);
+      res = flagcxInternalError;
+      goto setup_fail;
+    }
     FLAGCXCHECKGOTO(
         flagcxIbCreateQp(ibDev->portNum, base, accessFlags, &qp_list[i]), res,
         setup_fail);
     qp_list[i].devIndex = 0;
-    flagcxP2pPoolRegisterQp(ibDevN, outerComm, qp_list[i].qp);
+    flagcxP2pPoolRegisterQp(ibDevN, outerComm, qp_list[i].qp, slot);
   }
 
   return flagcxSuccess;
