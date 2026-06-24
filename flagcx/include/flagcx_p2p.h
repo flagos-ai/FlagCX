@@ -99,6 +99,10 @@ struct FlagcxTransferTask {
   std::atomic<uint64_t> sliceCount{0};
   std::atomic<uint64_t> doneSliceCount{0};
   std::atomic<uint64_t> failedCount{0};
+  std::atomic<uint64_t> syncStartNs{0};
+  std::atomic<uint64_t> postSendStartNs{0};
+  std::atomic<uint64_t> postSendEndNs{0};
+  std::atomic<uint64_t> cqDoneNs{0};
   std::vector<struct FlagcxSlice *> sliceList;
 
   bool isAllDone() const {
