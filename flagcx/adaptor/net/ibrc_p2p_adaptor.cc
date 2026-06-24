@@ -746,9 +746,9 @@ static inline enum ibv_wr_opcode flagcxSliceOpcodeToVerbs(uint8_t op) {
   return op == FLAGCX_SLICE_OP_READ ? IBV_WR_RDMA_READ : IBV_WR_RDMA_WRITE;
 }
 
-extern "C" flagcxResult_t
-flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp, int count,
-                    FlagcxSlice **slices, int *failedCount) {
+extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
+                                              int count, FlagcxSlice **slices,
+                                              int *failedCount) {
   struct flagcxP2pSendComm *comm = (struct flagcxP2pSendComm *)sendComm;
   if (failedCount != NULL)
     *failedCount = 0;
