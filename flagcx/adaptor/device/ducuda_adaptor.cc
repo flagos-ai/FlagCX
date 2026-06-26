@@ -301,13 +301,11 @@ flagcxResult_t ducudaAdaptorDmaSupport(bool *dmaBufferSupport) {
   return flagcxSuccess;
 }
 
-flagcxResult_t
-ducudaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
-                                       size_t size, unsigned long long flags) {
-  //unsupportted on dcu
+flagcxResult_t ducudaAdaptorMemGetHandleForAddressRange(
+    void *handleOut, void *buffer, size_t size, unsigned long long flags) {
+  // unsupportted on dcu
   return flagcxNotSupported;
 }
-
 
 flagcxResult_t ducudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
                                                 int dev) {
@@ -348,7 +346,7 @@ flagcxResult_t ducudaAdaptorGetDeviceByPciBusId(int *dev,
 }
 
 flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
-                                            uint64_t value, int flags) {
+                                              uint64_t value, int flags) {
   (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
@@ -357,8 +355,9 @@ flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
                                      CU_STREAM_WAIT_VALUE_GEQ);
   return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
-flagcxResult_t ducudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
-                                            uint64_t value, int flags) {
+flagcxResult_t ducudaAdaptorStreamWriteValue64(flagcxStream_t stream,
+                                               void *addr, uint64_t value,
+                                               int flags) {
   (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
@@ -368,7 +367,7 @@ flagcxResult_t ducudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr
   return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 flagcxResult_t ducudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
-                                           flagcxEvent_t end) {
+                                             flagcxEvent_t end) {
   if (ms == NULL || start == NULL || end == NULL) {
     return flagcxInvalidArgument;
   }
@@ -394,8 +393,10 @@ flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t ducudaAdaptorSymPhysAlloc(void *ptr, size_t size,
-                                       void **physHandle, void *shareableHandle,
-                                       size_t *handleSize, size_t *allocSize) {
+                                         void **physHandle,
+                                         void *shareableHandle,
+                                         size_t *handleSize,
+                                         size_t *allocSize) {
   if (ptr == NULL || physHandle == NULL || shareableHandle == NULL ||
       handleSize == NULL || allocSize == NULL)
     return flagcxInvalidArgument;
@@ -425,7 +426,7 @@ flagcxResult_t ducudaAdaptorSymPhysAlloc(void *ptr, size_t size,
   *physHandle = cuHandle;
   return flagcxSuccess;
 }
-flagcxResult_t ducudaAdaptorSymPhysFree(void *physHandle) { 
+flagcxResult_t ducudaAdaptorSymPhysFree(void *physHandle) {
   if (physHandle == NULL)
     return flagcxSuccess;
   CUmemGenericAllocationHandle *cuHandle =
@@ -435,8 +436,8 @@ flagcxResult_t ducudaAdaptorSymPhysFree(void *physHandle) {
   return flagcxSuccess;
 }
 flagcxResult_t ducudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
-                                     int selfIndex, void *selfPhysHandle,
-                                     size_t allocSize, void **flatBase) {
+                                       int selfIndex, void *selfPhysHandle,
+                                       size_t allocSize, void **flatBase) {
   if (peerHandles == NULL || selfPhysHandle == NULL || flatBase == NULL ||
       nPeers <= 0 || allocSize == 0)
     return flagcxInvalidArgument;
@@ -481,7 +482,7 @@ flagcxResult_t ducudaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
   return flagcxSuccess;
 }
 flagcxResult_t ducudaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
-                                       int nPeers) {
+                                         int nPeers) {
   if (flatBase == NULL)
     return flagcxSuccess;
   CUdeviceptr base = (CUdeviceptr)flatBase;
@@ -494,16 +495,16 @@ flagcxResult_t ducudaAdaptorSymMulticastSupported(int *supported) {
   // not supported on dcu
   if (supported == NULL)
     return flagcxInvalidArgument;
-  
+
   if (supported)
     *supported = 0;
   return flagcxSuccess;
 }
 flagcxResult_t ducudaAdaptorSymMulticastCreate(size_t allocSize,
-                                             int nLocalDevices,
-                                             const int *localDeviceOrdinals,
-                                             void **mcHandle,
-                                             int *shareableFd) {
+                                               int nLocalDevices,
+                                               const int *localDeviceOrdinals,
+                                               void **mcHandle,
+                                               int *shareableFd) {
   // not supported on dcu
   if (mcHandle)
     *mcHandle = NULL;
@@ -514,9 +515,9 @@ flagcxResult_t ducudaAdaptorSymMulticastCreate(size_t allocSize,
   return flagcxNotSupported;
 }
 flagcxResult_t ducudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
-                                           void *physHandle, size_t allocSize,
-                                           int localRank, int nLocalDevices,
-                                           void **mcBase, size_t *mcMapSize) {
+                                             void *physHandle, size_t allocSize,
+                                             int localRank, int nLocalDevices,
+                                             void **mcBase, size_t *mcMapSize) {
   // not supported on dcu
   if (mcBase)
     *mcBase = NULL;
@@ -526,7 +527,8 @@ flagcxResult_t ducudaAdaptorSymMulticastBind(void *mcHandle, int importFd,
 
   return flagcxNotSupported;
 }
-flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
+flagcxResult_t ducudaAdaptorSymMulticastTeardown(void *mcBase,
+                                                 size_t mcMapSize) {
   // not supported on dcu
   return flagcxSuccess;
 }
@@ -590,9 +592,13 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
                                         // *dev, const char *pciBusId);
       ducudaAdaptorLaunchHostFunc,
       // DMA buffer
-      ducudaAdaptorDmaSupport, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-      ducudaAdaptorMemGetHandleForAddressRange, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-            // void *buffer, size_t size, unsigned long long flags);
+      ducudaAdaptorDmaSupport, // flagcxResult_t (*dmaSupport)(bool
+                               // *dmaBufferSupport);
+      ducudaAdaptorMemGetHandleForAddressRange, // flagcxResult_t
+                                                // (*memGetHandleForAddressRange)(void
+                                                // *handleOut, void *buffer,
+                                                // size_t size, unsigned long
+                                                // long flags);
       ducudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ducudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
