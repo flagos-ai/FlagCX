@@ -577,15 +577,6 @@ FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
   maxWrPerPost_ = C.maxWrPerPost;
   batchPollSize_ = C.batchPollSize;
 
-  if (numWorkers_ > 0 && numShards_ % numWorkers_ != 0) {
-    int rounded = ((numShards_ + numWorkers_ - 1) / numWorkers_) * numWorkers_;
-    INFO(FLAGCX_INIT,
-         "NET/IB_P2P : pool[%d] rounded shardCount %d → %d for even "
-         "worker assignment (W=%d)",
-         ibDevN_, numShards_, rounded, numWorkers_);
-    numShards_ = rounded;
-  }
-
   if (numWorkers_ > 0 && C.qpsPerConn % numWorkers_ != 0) {
     WARN("NET/IB_P2P : pool[%d] qpsPerEngine=%d not divisible by "
          "workersPerPool=%d — QPs spread per connection but unevenly; some "
@@ -779,30 +770,27 @@ flagcxResult_t FlagcxWorkerPool::submitPostSend(void *sendComm,
     std::this_thread::yield();
   }
 
-  std::vector<std::vector<FlagcxSlice *>> perShard(numShards_);
-  int enqueued = 0;
-  for (int i = 0; i < count; i++) {
-    if (slices[i] == nullptr)
-      continue;
-    const int shard = static_cast<int>(
-        shardRoundRobin_.fetch_add(1, std::memory_order_relaxed) %
-        static_cast<uint64_t>(numShards_));
-    perShard[shard].push_back(slices[i]);
-    enqueued++;
+  const int fanout = std::min(numShards_, count);
+  int shard = 0;
+  if (fanout != numShards_) {
+    shard = static_cast<int>(shardRoundRobin_.fetch_add(
+                                 fanout, std::memory_order_relaxed) %
+                             static_cast<uint64_t>(numShards_));
   }
-  if (enqueued == 0)
-    return flagcxSuccess;
-
-  for (int s = 0; s < numShards_; s++) {
-    if (perShard[s].empty())
-      continue;
-    std::lock_guard<std::mutex> lk(slice_locks_[s]);
-    auto &vec = slice_queues_[s][sendComm];
-    vec.insert(vec.end(), perShard[s].begin(), perShard[s].end());
-    slice_queue_count_[s].fetch_add((int)perShard[s].size(),
-                                    std::memory_order_relaxed);
+  int offset = 0;
+  for (int i = 0; i < fanout; i++) {
+    const int remaining = count - offset;
+    const int shardsLeft = fanout - i;
+    const int take = (remaining + shardsLeft - 1) / shardsLeft;
+    std::lock_guard<std::mutex> lk(slice_locks_[shard]);
+    auto &vec = slice_queues_[shard][sendComm];
+    vec.insert(vec.end(), slices + offset, slices + offset + take);
+    slice_queue_count_[shard].fetch_add(take, std::memory_order_relaxed);
+    offset += take;
+    if (++shard == numShards_)
+      shard = 0;
   }
-  submitted_.fetch_add(enqueued, std::memory_order_release);
+  submitted_.fetch_add(count, std::memory_order_release);
 
   if (suspended_flag_.load(std::memory_order_acquire) > 0) {
     std::lock_guard<std::mutex> lk(cv_mu_);
