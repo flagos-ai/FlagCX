@@ -773,9 +773,9 @@ flagcxResult_t FlagcxWorkerPool::submitPostSend(void *sendComm,
   const int fanout = std::min(numShards_, count);
   int shard = 0;
   if (fanout != numShards_) {
-    shard = static_cast<int>(shardRoundRobin_.fetch_add(
-                                 fanout, std::memory_order_relaxed) %
-                             static_cast<uint64_t>(numShards_));
+    shard = static_cast<int>(
+        shardRoundRobin_.fetch_add(fanout, std::memory_order_relaxed) %
+        static_cast<uint64_t>(numShards_));
   }
   int offset = 0;
   for (int i = 0; i < fanout; i++) {
