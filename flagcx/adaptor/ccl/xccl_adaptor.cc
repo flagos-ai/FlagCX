@@ -45,6 +45,8 @@ BKCLOp flagcxRedOpToBKCLOp(flagcxRedOp_t op) {
       return BKCLOp::BKCL_MAX;
     case flagcxMin:
       return BKCLOp::BKCL_MIN;
+    case flagcxAvg:
+      return BKCLOp::BKCL_AVG;
     default:
       // return BKCLOp::BKCL_NUM_OPS to account for unknown redOp type
       return BKCLOp::BKCL_NUM_OPS;
