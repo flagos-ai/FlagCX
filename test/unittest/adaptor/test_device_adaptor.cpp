@@ -446,3 +446,193 @@ int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+// Test: obtain the device-visible alias of mapped host memory.
+TEST_F(DeviceAdaptorTest, HostGetDevicePointer) {
+  ASSERT_NE(devHandle->hostGetDevicePointer, nullptr);
+  void *hostPtr = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&hostPtr, TEST_SIZE, flagcxMemHost, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(hostPtr, nullptr);
+  void *devicePtr = nullptr;
+  EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, hostPtr), flagcxSuccess);
+  EXPECT_NE(devicePtr, nullptr);
+  EXPECT_EQ(devHandle->hostGetDevicePointer(nullptr, hostPtr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, nullptr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->deviceFree(hostPtr, flagcxMemHost, nullptr),
+            flagcxSuccess);
+}
+
+// Test: Host memory register / get device pointer / unregister
+// flagcxDeviceHandle does not expose hostRegister/hostUnregister, so we
+// access them through the internal deviceAdaptor pointer (from adaptor.h).
+// Portable across all backends: skips if not implemented (NULL or NotSupported).
+TEST_F(DeviceAdaptorTest, HostRegisterUnregister) {
+  if (!deviceAdaptor->hostRegister || !deviceAdaptor->hostUnregister) {
+    GTEST_SKIP() << "hostRegister/hostUnregister not implemented";
+  }
+
+  const size_t sz = 4096;
+  void *hostPtr = malloc(sz);
+  ASSERT_NE(hostPtr, nullptr);
+
+  // Register host memory as pinned (page-locked) memory.
+  auto result = deviceAdaptor->hostRegister(hostPtr, sz);
+  if (result == flagcxNotSupported) {
+    free(hostPtr);
+    GTEST_SKIP() << "hostRegister not supported on this backend";
+  }
+  EXPECT_EQ(result, flagcxSuccess);
+
+  if (result == flagcxSuccess) {
+    // Unregister
+    auto r2 = deviceAdaptor->hostUnregister(hostPtr);
+    EXPECT_EQ(r2, flagcxSuccess);
+  }
+  free(hostPtr);
+
+  // Verify invalid arguments are rejected (only if backend has real impl)
+  auto nullResult = deviceAdaptor->hostRegister(NULL, sz);
+  if (nullResult != flagcxNotSupported) {
+    EXPECT_EQ(nullResult, flagcxInvalidArgument);
+  }
+  auto zeroResult = deviceAdaptor->hostRegister(hostPtr, 0);
+  if (zeroResult != flagcxNotSupported) {
+    EXPECT_EQ(zeroResult, flagcxInvalidArgument);
+  }
+  auto unregNullResult = deviceAdaptor->hostUnregister(NULL);
+  if (unregNullResult != flagcxNotSupported) {
+    EXPECT_EQ(unregNullResult, flagcxInvalidArgument);
+  }
+}
+
+// Test: getDevicePciBusId — string format and invalid-arg guards
+TEST_F(DeviceAdaptorTest, GetDevicePciBusId) {
+  int numDevices = 0;
+  ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
+  ASSERT_GT(numDevices, 0);
+
+  for (int dev = 0; dev < numDevices; dev++) {
+    char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
+    ASSERT_EQ(deviceAdaptor->getDevicePciBusId(pciBusId, sizeof(pciBusId), dev),
+              flagcxSuccess)
+        << "getDevicePciBusId failed for device " << dev;
+    EXPECT_NE(pciBusId[0], '\0') << "empty PCI bus ID for device " << dev;
+
+    // Verify format: domain:bus:device.function (4 hex fields)
+    unsigned int domain = 0, bus = 0, pciDevice = 0, function = 0;
+    EXPECT_EQ(sscanf(pciBusId, "%x:%x:%x.%x", &domain, &bus, &pciDevice, &function),
+              4)
+        << "unexpected PCI bus ID format: " << pciBusId;
+
+    std::cout << "Device " << dev << ": pci=" << pciBusId << std::endl;
+  }
+
+  // Invalid-argument guards
+  char buf[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
+  EXPECT_EQ(deviceAdaptor->getDevicePciBusId(nullptr, sizeof(buf), 0),
+            flagcxInvalidArgument);
+
+  // Out-of-range device index
+  EXPECT_NE(deviceAdaptor->getDevicePciBusId(buf, sizeof(buf), -1), flagcxSuccess);
+  EXPECT_NE(deviceAdaptor->getDevicePciBusId(buf, sizeof(buf), numDevices),
+            flagcxSuccess);
+}
+
+// Test: getDeviceProperties — name and PCI fields, invalid-arg guards
+TEST_F(DeviceAdaptorTest, GetDeviceProperties) {
+  int numDevices = 0;
+  ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
+  ASSERT_GT(numDevices, 0);
+
+  for (int dev = 0; dev < numDevices; dev++) {
+    flagcxDevProps props = {};
+    ASSERT_EQ(deviceAdaptor->getDeviceProperties(&props, dev), flagcxSuccess)
+        << "getDeviceProperties failed for device " << dev;
+    EXPECT_NE(props.name[0], '\0') << "empty device name for device " << dev;
+
+    // PCI fields are parsed from cudaDeviceGetPCIBusId string
+    EXPECT_GE(props.pciBusId,    0) << "pciBusId out of range for device " << dev;
+    EXPECT_LE(props.pciBusId,  255) << "pciBusId out of range for device " << dev;
+    EXPECT_GE(props.pciDeviceId, 0) << "pciDeviceId out of range for device " << dev;
+    EXPECT_LE(props.pciDeviceId, 31) << "pciDeviceId out of range for device " << dev;
+    EXPECT_GE(props.pciDomainId, 0) << "pciDomainId out of range for device " << dev;
+    EXPECT_LE(props.pciDomainId, 65535) << "pciDomainId out of range for device " << dev;
+
+    std::cout << "Device " << dev << ": name=" << props.name
+              << ", pciBusId=" << props.pciBusId
+              << ", pciDeviceId=" << props.pciDeviceId
+              << ", pciDomainId=" << props.pciDomainId << std::endl;
+  }
+
+  // Invalid-argument guards
+  EXPECT_EQ(deviceAdaptor->getDeviceProperties(nullptr, 0),
+            flagcxInvalidArgument);
+
+  // Out-of-range device index
+  flagcxDevProps props = {};
+  EXPECT_NE(deviceAdaptor->getDeviceProperties(&props, -1), flagcxSuccess);
+  EXPECT_NE(deviceAdaptor->getDeviceProperties(&props, numDevices),
+            flagcxSuccess);
+}
+
+// Test: getDeviceByPciBusId — reverse lookup and invalid-arg guards
+TEST_F(DeviceAdaptorTest, GetDeviceByPciBusId) {
+  int numDevices = 0;
+  ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
+  ASSERT_GT(numDevices, 0);
+
+  for (int dev = 0; dev < numDevices; dev++) {
+    // Get PCI bus ID string directly from runtime (independent of getDevicePciBusId)
+    char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
+    ASSERT_EQ(cudaDeviceGetPCIBusId(pciBusId, sizeof(pciBusId), dev), cudaSuccess)
+        << "cudaDeviceGetPCIBusId failed for dev=" << dev;
+
+    // Reverse lookup: string -> device index
+    int result = -1;
+    ASSERT_EQ(deviceAdaptor->getDeviceByPciBusId(&result, pciBusId), flagcxSuccess)
+        << "getDeviceByPciBusId failed for pci=" << pciBusId;
+    EXPECT_EQ(result, dev)
+        << "round-trip mismatch: pci=" << pciBusId
+        << " returned dev=" << result << " expected=" << dev;
+
+    std::cout << "Device " << dev << ": pci=" << pciBusId
+              << " -> dev=" << result << std::endl;
+  }
+
+  // Invalid-argument guards
+  int dev = -1;
+  char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
+  EXPECT_EQ(deviceAdaptor->getDeviceByPciBusId(nullptr, pciBusId),
+            flagcxInvalidArgument);
+  EXPECT_EQ(deviceAdaptor->getDeviceByPciBusId(&dev, nullptr),
+            flagcxInvalidArgument);
+
+  // Invalid PCI string
+  EXPECT_NE(deviceAdaptor->getDeviceByPciBusId(&dev, "invalid"), flagcxSuccess);
+}
+
+// Test: eventElapsedTime reports the duration between two timing events.
+TEST_F(DeviceAdaptorTest, EventElapsedTime) {
+  ASSERT_NE(devHandle->eventElapsedTime, nullptr);
+  flagcxEvent_t startEvent = nullptr;
+  flagcxEvent_t endEvent = nullptr;
+  ASSERT_EQ(devHandle->eventCreate(&startEvent, flagcxEventDefault), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&endEvent, flagcxEventDefault), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventRecord(startEvent, stream), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventRecord(endEvent, stream), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventSynchronize(endEvent), flagcxSuccess);
+  float elapsedMs = -1.0f;
+  EXPECT_EQ(devHandle->eventElapsedTime(&elapsedMs, startEvent, endEvent),
+            flagcxSuccess);
+  EXPECT_GE(elapsedMs, 0.0f);
+  EXPECT_EQ(devHandle->eventElapsedTime(nullptr, startEvent, endEvent),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->eventElapsedTime(&elapsedMs, nullptr, endEvent),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->eventElapsedTime(&elapsedMs, startEvent, nullptr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->eventDestroy(startEvent), flagcxSuccess);
+  EXPECT_EQ(devHandle->eventDestroy(endEvent), flagcxSuccess);
+}

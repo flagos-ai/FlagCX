@@ -103,6 +103,9 @@ flagcxResult_t kunlunAdaptorGetVendor(char *vendor) {
 }
 
 flagcxResult_t kunlunAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  if (pDevice == NULL || pHost == NULL) {
+    return flagcxInvalidArgument;
+  }
   DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
   return flagcxSuccess;
 }
@@ -331,16 +334,29 @@ flagcxResult_t kunlunAdaptorGetDeviceProperties(struct flagcxDevProps *props,
     return flagcxInvalidArgument;
   }
 
+  // Get device name via cudaGetDeviceProperties
   cudaDeviceProp devProp;
   DEVCHECK(cudaGetDeviceProperties(&devProp, dev));
   strncpy(props->name, devProp.name, sizeof(props->name) - 1);
   props->name[sizeof(props->name) - 1] = '\0';
-  props->pciBusId = devProp.pciBusID;
-  props->pciDeviceId = devProp.pciDeviceID;
-  props->pciDomainId = devProp.pciDomainID;
-  // TODO: see if there's another way to get this info. In some cuda versions,
-  // cudaDeviceProp does not have `gpuDirectRDMASupported` field
-  // props->gdrSupported = devProp.gpuDirectRDMASupported;
+
+  // XPU runtime does not write PCI fields in cudaDeviceProp.
+  // Parse them from the stable PCI bus ID string instead.
+  char pciBusIdStr[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
+  DEVCHECK(cudaDeviceGetPCIBusId(pciBusIdStr, sizeof(pciBusIdStr), dev));
+
+  // Format: "DDDD:BB:SS.F"
+  unsigned int domain = 0, bus = 0, slot = 0, func = 0;
+  if (sscanf(pciBusIdStr, "%x:%x:%x.%x", &domain, &bus, &slot, &func) != 4) {
+    return flagcxInternalError;
+  }
+  if (domain > 0xffff || bus > 0xff || slot > 0x1f || func > 0x7) {
+    return flagcxInternalError;
+  }
+
+  props->pciDomainId = static_cast<int>(domain);
+  props->pciBusId    = static_cast<int>(bus);
+  props->pciDeviceId = static_cast<int>(slot);
 
   return flagcxSuccess;
 }
@@ -371,16 +387,30 @@ flagcxResult_t kunlunAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
                                                int) {
   return flagcxNotSupported;
 }
-flagcxResult_t kunlunAdaptorEventElapsedTime(float *, flagcxEvent_t,
-                                             flagcxEvent_t) {
-  return flagcxNotSupported;
+flagcxResult_t kunlunAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                             flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cudaEventElapsedTime(ms, start->base, end->base));
+  return flagcxSuccess;
 }
 
-flagcxResult_t kunlunAdaptorHostRegister(void *, size_t) {
-  return flagcxNotSupported;
+flagcxResult_t kunlunAdaptorHostRegister(void *ptr, size_t size) {
+  if (ptr == NULL || size == 0) {
+    return flagcxInvalidArgument;
+  }
+  // XPU's cudaHostRegisterMapped triggers a runtime assertion crash
+  // (rm_mem.cc:2284), so use Default flag to register as page-locked memory.
+  DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterDefault));
+  return flagcxSuccess;
 }
-flagcxResult_t kunlunAdaptorHostUnregister(void *) {
-  return flagcxNotSupported;
+flagcxResult_t kunlunAdaptorHostUnregister(void *ptr) {
+  if (ptr == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cudaHostUnregister(ptr));
+  return flagcxSuccess;
 }
 
 // Symmetric memory VMM stubs (not supported)
