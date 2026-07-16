@@ -267,7 +267,16 @@ flagcxResult_t kunlunAdaptorEventQuery(flagcxEvent_t event) {
 
 flagcxResult_t kunlunAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
                                                size_t *size) {
-  flagcxCalloc(handle, 1);
+  if (handle == NULL) {
+    return flagcxInvalidArgument;
+  }
+
+  *handle = NULL;
+  flagcxResult_t result = flagcxCalloc(handle, 1);
+  if (result != flagcxSuccess) {
+    return result;
+  }
+
   if (size != NULL) {
     *size = sizeof(cudaIpcMemHandle_t);
   }
