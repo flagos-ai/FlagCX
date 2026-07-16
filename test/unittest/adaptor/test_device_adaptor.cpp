@@ -3,6 +3,7 @@
  * Single device adaptor test - no multi-GPU or MPI required
  ************************************************************************/
 
+#include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <iostream>
@@ -10,6 +11,10 @@
 #include "adaptor.h"
 #include "flagcx.h"
 #include "topo.h"
+
+#ifdef USE_KUNLUNXIN_ADAPTOR
+#include "kunlunxin_adaptor.h"
+#endif
 
 class DeviceAdaptorTest : public ::testing::Test {
 protected:
@@ -441,6 +446,67 @@ TEST_F(DeviceAdaptorTest, StreamCopyAndFree) {
   // Clean up the original
   devHandle->streamDestroy(tempStream);
 }
+#ifdef USE_KUNLUNXIN_ADAPTOR
+// Test: ipcMemHandleCreate allocates a wrapper and reports its serialized size.
+// Get/Open/Close/Free are intentionally not called in this test.
+TEST_F(DeviceAdaptorTest, IpcMemHandleCreate) {
+  ASSERT_NE(devHandle->ipcMemHandleCreate, nullptr);
+
+  flagcxIpcMemHandle_t handle = nullptr;
+  size_t handleSize = 0;
+  EXPECT_EQ(devHandle->ipcMemHandleCreate(&handle, &handleSize),
+            flagcxSuccess);
+  EXPECT_NE(handle, nullptr);
+  EXPECT_GT(handleSize, static_cast<size_t>(0));
+
+  flagcxIpcMemHandle_t handleWithoutSize = nullptr;
+  EXPECT_EQ(devHandle->ipcMemHandleCreate(&handleWithoutSize, nullptr),
+            flagcxSuccess);
+  EXPECT_NE(handleWithoutSize, nullptr);
+
+  EXPECT_EQ(devHandle->ipcMemHandleCreate(nullptr, &handleSize),
+            flagcxInvalidArgument);
+
+  // Direct cleanup keeps this test independent of ipcMemHandleFree.
+  std::free(handle);
+  std::free(handleWithoutSize);
+}
+
+// Test: ipcMemHandleGet exports a handle from a live device allocation.
+// The wrapper is allocated directly so Create/Open/Close/Free are not involved.
+TEST_F(DeviceAdaptorTest, IpcMemHandleGet) {
+  ASSERT_NE(devHandle->ipcMemHandleGet, nullptr);
+
+  constexpr size_t bufferSize = 4096;
+  void *devPtr = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&devPtr, bufferSize, flagcxMemDevice,
+                                    stream),
+            flagcxSuccess);
+  ASSERT_NE(devPtr, nullptr);
+
+  flagcxIpcMemHandle_t handle = nullptr;
+  flagcxCalloc(&handle, 1);
+  ASSERT_NE(handle, nullptr);
+
+  EXPECT_EQ(devHandle->ipcMemHandleGet(handle, devPtr), flagcxSuccess);
+  EXPECT_EQ(devHandle->ipcMemHandleGet(nullptr, devPtr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->ipcMemHandleGet(handle, nullptr),
+            flagcxInvalidArgument);
+
+  std::free(handle);
+  EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+            flagcxSuccess);
+}
+
+// Test: ipcMemHandleClose rejects a null mapped pointer.
+// Successful Close is covered by the MPI lifecycle test.
+TEST_F(DeviceAdaptorTest, IpcMemHandleClose) {
+  ASSERT_NE(devHandle->ipcMemHandleClose, nullptr);
+  EXPECT_EQ(devHandle->ipcMemHandleClose(nullptr), flagcxInvalidArgument);
+}
+
+#endif
 
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);

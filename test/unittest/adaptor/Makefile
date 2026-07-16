@@ -35,12 +35,12 @@ $(MPI_TARGET): $(MPI_OBJS)
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(DEVICE_INCLUDE) $(CCL_INCLUDE) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)
 
 $(OBJDIR)/coll_%.o: coll_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
 
 clean:
 	@rm -rf $(BUILDDIR)
