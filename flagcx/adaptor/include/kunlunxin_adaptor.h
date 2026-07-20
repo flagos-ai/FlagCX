@@ -31,6 +31,16 @@ struct flagcxIpcMemHandle {
   cudaIpcMemHandle_t base;
 };
 
+// GDR memory handle for alloc-internal mmap.
+// Allocated by memHandleInit, released by memHandleDestroy.
+// gdrMemAlloc fills all fields; gdrMemFree clears them after cleanup.
+struct KunlunXinGdrMemHandle {
+  void  *devPtr;         // device pointer from xpu_malloc
+  void  *hostMappedPtr;  // host VA from xccl_mmap, passed to ibv_reg_mr
+  size_t size;           // allocation size
+  bool   mapped;         // true between xccl_mmap and xccl_munmap
+};
+
 namespace baidu {
 namespace xpu {
 namespace bkcl {

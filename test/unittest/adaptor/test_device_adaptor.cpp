@@ -11,6 +11,58 @@
 #include "flagcx.h"
 #include "topo.h"
 
+#ifdef USE_KUNLUNXIN_ADAPTOR
+#include <cuda_runtime.h>
+#include <infiniband/verbs.h>
+#include "kunlunxin_adaptor.h"
+#endif
+
+#ifdef USE_KUNLUNXIN_ADAPTOR
+namespace {
+// Scenario helper: register the mapped host VA with any available IB device,
+// then deregister it. This is intentionally used only by the lifecycle test.
+testing::AssertionResult verifyMrRegistration(void *ptr, size_t size) {
+  int count = 0;
+  ibv_device **devices = ibv_get_device_list(&count);
+  if (devices == nullptr || count == 0) {
+    if (devices != nullptr) ibv_free_device_list(devices);
+    return testing::AssertionFailure() << "no IB device is available";
+  }
+  for (int i = 0; i < count; ++i) {
+    ibv_context *context = ibv_open_device(devices[i]);
+    if (context == nullptr) continue;
+    ibv_pd *pd = ibv_alloc_pd(context);
+    if (pd != nullptr) {
+      const int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+                         IBV_ACCESS_REMOTE_READ;
+      ibv_mr *mr = ibv_reg_mr(pd, ptr, size, access);
+      if (mr != nullptr) {
+        const uint32_t lkey = mr->lkey;
+        const uint32_t rkey = mr->rkey;
+        const std::string deviceName = ibv_get_device_name(devices[i]);
+        const int deregResult = ibv_dereg_mr(mr);
+        ibv_dealloc_pd(pd);
+        ibv_close_device(context);
+        ibv_free_device_list(devices);
+        if (deregResult != 0) {
+          return testing::AssertionFailure()
+                 << "ibv_dereg_mr failed on " << deviceName
+                 << ", ret=" << deregResult;
+        }
+        std::cout << "[GDR lifecycle] ibv_reg_mr device="
+                  << deviceName << " lkey=" << lkey << " rkey=" << rkey
+                  << std::endl;
+        return testing::AssertionSuccess();
+      }
+      ibv_dealloc_pd(pd);
+    }
+    ibv_close_device(context);
+  }
+  ibv_free_device_list(devices);
+  return testing::AssertionFailure()
+         << "ibv_reg_mr failed on every available IB device";
+}
+}  // namespace
 class DeviceAdaptorTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -441,6 +493,238 @@ TEST_F(DeviceAdaptorTest, StreamCopyAndFree) {
   // Clean up the original
   devHandle->streamDestroy(tempStream);
 }
+/*
+ * KunlunXin GDR test coverage
+ *
+ * Local validation:
+ * - GdrMemAlloc, GdrMemFree and MemHandleInitDestroy test one interface at a
+ *   time without using the paired interface as the test setup or oracle.
+ * - GdrMemoryLifecycle covers allocation, mapping, CPU/XPU data visibility,
+ *   MR registration/deregistration and cleanup.
+ *
+ * Required environment (export before XCCL/runtime initialization):
+ * - BKCL_USE_PEERMEM_XDR=1: enable the BKCL/XCCL peermem mapping used by
+ *   xccl_mmap. Without it, xccl_mmap returned no host-mapped address in the
+ *   validated environment.
+ * - CUDA_ENABLE_P2P_NO_UVA=1: enable the KunlunXin no-UVA peer-memory path.
+ *   This is a runtime prerequisite and does not replace xccl_mmap.
+ *
+ * Two-node acceptance:
+ * After the upper layer propagates the same non-null memHandle, reuse the
+ * existing RMA/SendRecv MPI suite on two physical nodes. Expect the RDMA path
+ * to be selected, the destination XPU payload to match, and gdrMemFree plus
+ * memHandleDestroy to complete. A same-node run may select IPC/SHM/P2P.
+ */
+
+// Unit test: only gdrMemAlloc is the target interface.
+// Cleanup deliberately uses xccl_munmap + xpu_free, not gdrMemFree.
+TEST_F(DeviceAdaptorTest, GdrMemAlloc) {
+  ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
+
+  KunlunXinGdrMemHandle handle{};
+  void *rawHandle = &handle;
+  void *sentinel = reinterpret_cast<void *>(0x1);
+  void *out = sentinel;
+
+  EXPECT_EQ(deviceAdaptor->gdrMemAlloc(nullptr, TEST_SIZE, rawHandle),
+            flagcxInvalidArgument);
+  EXPECT_EQ(deviceAdaptor->gdrMemAlloc(&out, 0, rawHandle),
+            flagcxInvalidArgument);
+  EXPECT_EQ(out, sentinel);
+  EXPECT_EQ(deviceAdaptor->gdrMemAlloc(&out, TEST_SIZE, nullptr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(out, sentinel);
+
+  out = nullptr;
+  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&out, TEST_SIZE, rawHandle),
+            flagcxSuccess)
+      << "BKCL_USE_PEERMEM_XDR=1 and CUDA_ENABLE_P2P_NO_UVA=1 are required";
+  ASSERT_NE(out, nullptr);
+
+  EXPECT_EQ(handle.devPtr, out);
+  EXPECT_NE(handle.hostMappedPtr, nullptr);
+  EXPECT_EQ(handle.size, TEST_SIZE);
+  EXPECT_TRUE(handle.mapped);
+
+  void *second = nullptr;
+  EXPECT_EQ(deviceAdaptor->gdrMemAlloc(&second, TEST_SIZE, rawHandle),
+            flagcxInvalidArgument);
+  EXPECT_EQ(second, nullptr);
+
+  // The returned device pointer must be usable by the device copy path.
+  uint64_t source = 0x1122334455667788ULL;
+  uint64_t destination = 0;
+  auto copyResult = devHandle->deviceMemcpy(
+      out, &source, sizeof(source), flagcxMemcpyHostToDevice, stream);
+  EXPECT_EQ(copyResult, flagcxSuccess);
+  if (copyResult == flagcxSuccess) {
+    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+    copyResult = devHandle->deviceMemcpy(
+        &destination, out, sizeof(destination), flagcxMemcpyDeviceToHost,
+        stream);
+    EXPECT_EQ(copyResult, flagcxSuccess);
+    if (copyResult == flagcxSuccess) {
+      EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+      EXPECT_EQ(destination, source);
+    }
+  }
+
+  // Direct cleanup keeps this test independent from gdrMemFree.
+  if (handle.hostMappedPtr == nullptr) {
+    xpu_free(out);
+    handle = {};
+    FAIL() << "gdrMemAlloc returned success without a host mapping";
+  }
+  EXPECT_EQ(baidu::xpu::bkcl::xccl_munmap(handle.hostMappedPtr, handle.size),
+            0);
+  EXPECT_EQ(xpu_free(out), 0);
+  handle = {};
+}
+
+// Unit test: only gdrMemFree is the target interface.
+// Its input is constructed directly, without calling gdrMemAlloc.
+TEST_F(DeviceAdaptorTest, GdrMemFree) {
+  ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
+  EXPECT_EQ(deviceAdaptor->gdrMemFree(nullptr, nullptr), flagcxSuccess);
+
+  void *devPtr = nullptr;
+  ASSERT_EQ(xpu_malloc(&devPtr, TEST_SIZE), 0);
+  ASSERT_NE(devPtr, nullptr);
+
+  void *hostPtr = nullptr;
+  const int mmapResult =
+      baidu::xpu::bkcl::xccl_mmap(&hostPtr, devPtr, TEST_SIZE);
+  if (mmapResult != 0 || hostPtr == nullptr) {
+    xpu_free(devPtr);
+    FAIL() << "xccl_mmap failed; check the peermem environment";
+  }
+
+  KunlunXinGdrMemHandle handle{devPtr, hostPtr, TEST_SIZE, true};
+  void *wrongPtr = reinterpret_cast<void *>(0xdeadbeef);
+  EXPECT_EQ(deviceAdaptor->gdrMemFree(wrongPtr, &handle),
+            flagcxInvalidArgument);
+  EXPECT_TRUE(handle.mapped);
+  EXPECT_EQ(handle.devPtr, devPtr);
+
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(devPtr, &handle), flagcxSuccess);
+  EXPECT_EQ(handle.devPtr, nullptr);
+  EXPECT_EQ(handle.hostMappedPtr, nullptr);
+  EXPECT_EQ(handle.size, static_cast<size_t>(0));
+  EXPECT_FALSE(handle.mapped);
+}
+
+// Unit test for the handle constructor/destructor contract only.
+TEST_F(DeviceAdaptorTest, MemHandleInitDestroy) {
+  ASSERT_NE(deviceAdaptor->memHandleInit, nullptr);
+  ASSERT_NE(deviceAdaptor->memHandleDestroy, nullptr);
+
+  EXPECT_EQ(deviceAdaptor->memHandleInit(0, nullptr), flagcxInvalidArgument);
+  EXPECT_EQ(deviceAdaptor->memHandleDestroy(0, nullptr), flagcxSuccess);
+
+  void *rawHandle = nullptr;
+  ASSERT_EQ(deviceAdaptor->memHandleInit(0, &rawHandle), flagcxSuccess);
+  ASSERT_NE(rawHandle, nullptr);
+
+  auto *handle = static_cast<KunlunXinGdrMemHandle *>(rawHandle);
+  EXPECT_EQ(handle->devPtr, nullptr);
+  EXPECT_EQ(handle->hostMappedPtr, nullptr);
+  EXPECT_EQ(handle->size, static_cast<size_t>(0));
+  EXPECT_FALSE(handle->mapped);
+
+  handle->devPtr = reinterpret_cast<void *>(0x1);
+  EXPECT_EQ(deviceAdaptor->memHandleDestroy(0, rawHandle),
+            flagcxInvalidArgument);
+  handle->devPtr = nullptr;
+  EXPECT_EQ(deviceAdaptor->memHandleDestroy(0, rawHandle), flagcxSuccess);
+}
+
+// Scenario test: public adaptor interfaces plus the downstream RDMA
+// registration operation, covering the complete local GDR lifecycle.
+// This local scenario validates through MR registration. The follow-up
+// two-node acceptance test should verify an actual remote RDMA WRITE/READ and
+// payload visibility by reusing the repository RMA/SendRecv MPI suite.
+// Requires BKCL_USE_PEERMEM_XDR=1 and CUDA_ENABLE_P2P_NO_UVA=1 in the process
+// environment before XCCL/runtime initialization.
+TEST_F(DeviceAdaptorTest, GdrMemoryLifecycle) {
+  ASSERT_NE(deviceAdaptor->memHandleInit, nullptr);
+  ASSERT_NE(deviceAdaptor->memHandleDestroy, nullptr);
+  ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
+  ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
+
+  void *rawHandle = nullptr;
+  ASSERT_EQ(deviceAdaptor->memHandleInit(0, &rawHandle), flagcxSuccess);
+  ASSERT_NE(rawHandle, nullptr);
+
+  void *devPtr = nullptr;
+  const auto allocResult =
+      deviceAdaptor->gdrMemAlloc(&devPtr, TEST_SIZE, rawHandle);
+  if (allocResult != flagcxSuccess || devPtr == nullptr) {
+    deviceAdaptor->memHandleDestroy(0, rawHandle);
+    FAIL() << "gdrMemAlloc failed; check the peermem environment";
+  }
+
+  auto *handle = static_cast<KunlunXinGdrMemHandle *>(rawHandle);
+  auto cleanup = [&]() {
+    if (devPtr != nullptr) {
+      EXPECT_EQ(deviceAdaptor->gdrMemFree(devPtr, rawHandle), flagcxSuccess);
+      devPtr = nullptr;
+    }
+    if (rawHandle != nullptr) {
+      EXPECT_EQ(deviceAdaptor->memHandleDestroy(0, rawHandle), flagcxSuccess);
+      rawHandle = nullptr;
+    }
+  };
+
+  if (!handle->mapped || handle->hostMappedPtr == nullptr) {
+    cleanup();
+    FAIL() << "gdrMemAlloc did not create a host mapping";
+  }
+
+  // CPU mapped view -> device view.
+  auto *mappedValue = static_cast<uint64_t *>(handle->hostMappedPtr);
+  const uint64_t cpuValue = 0x1122334455667788ULL;
+  __atomic_store_n(mappedValue, cpuValue, __ATOMIC_RELEASE);
+
+  uint64_t deviceRead = 0;
+  auto result = devHandle->deviceMemcpy(
+      &deviceRead, devPtr, sizeof(deviceRead), flagcxMemcpyDeviceToHost,
+      stream);
+  if (result != flagcxSuccess ||
+      devHandle->streamSynchronize(stream) != flagcxSuccess) {
+    cleanup();
+    FAIL() << "device read after mapped CPU write failed";
+  }
+  EXPECT_EQ(deviceRead, cpuValue);
+
+  // Device view -> CPU mapped view.
+  uint64_t deviceValue = 0x8877665544332211ULL;
+  result = devHandle->deviceMemcpy(devPtr, &deviceValue, sizeof(deviceValue),
+                                   flagcxMemcpyHostToDevice, stream);
+  if (result != flagcxSuccess ||
+      devHandle->streamSynchronize(stream) != flagcxSuccess) {
+    cleanup();
+    FAIL() << "device write before mapped CPU read failed";
+  }
+  EXPECT_EQ(__atomic_load_n(mappedValue, __ATOMIC_ACQUIRE), deviceValue);
+
+  const auto mrResult =
+      verifyMrRegistration(handle->hostMappedPtr, handle->size);
+  if (!mrResult) {
+    cleanup();
+    FAIL() << mrResult.message();
+  }
+
+  ASSERT_EQ(deviceAdaptor->gdrMemFree(devPtr, rawHandle), flagcxSuccess);
+  devPtr = nullptr;
+  EXPECT_EQ(handle->devPtr, nullptr);
+  EXPECT_EQ(handle->hostMappedPtr, nullptr);
+  EXPECT_FALSE(handle->mapped);
+
+  EXPECT_EQ(deviceAdaptor->memHandleDestroy(0, rawHandle), flagcxSuccess);
+  rawHandle = nullptr;
+}
+#endif  // USE_KUNLUNXIN_ADAPTOR
+
 
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
