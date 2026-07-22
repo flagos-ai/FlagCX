@@ -76,6 +76,16 @@ ifeq ($(USE_NVIDIA), 1)
   DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
   ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
   PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
+else ifeq ($(USE_KUNLUNXIN), 1)
+  DEVICE_HOME      ?= /usr/local/xpu
+  DEVICE_LIB       := $(DEVICE_HOME)/so
+  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
+  DEVICE_LINK      := -L$(DEVICE_LIB) -Wl,-rpath,$(DEVICE_LIB) -lxpurt -lcudart
+  ADAPTOR_DEFINE   := -DUSE_KUNLUNXIN_ADAPTOR
+  CCL_HOME         ?= /usr/local/xccl
+  CCL_LIB          ?= $(CCL_HOME)/so
+  CCL_INCLUDE      := -I$(CCL_HOME)/include
+  CCL_LINK         := -L$(CCL_LIB) -Wl,-rpath,$(CCL_LIB) -lbkcl
 else ifeq ($(USE_DU), 1)
   DEVICE_HOME      ?= $(CUDA_PATH)
   DEVICE_LIB       := $(DEVICE_HOME)/lib64

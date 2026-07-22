@@ -1,5 +1,8 @@
 include ../../make.inc
-
+ADAPTOR_EXTRA_LINK :=
+ifeq ($(USE_KUNLUNXIN), 1)
+ADAPTOR_EXTRA_LINK += -libverbs
+endif
 # [unit] tests: test_*.cpp — single GPU, no MPI required
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
@@ -25,22 +28,22 @@ all: $(ALL_TARGETS)
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(CCL_LINK) $(ADAPTOR_EXTRA_LINK) $(GTEST_LINK)
 
 $(MPI_TARGET): $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(CCL_LINK) $(ADAPTOR_EXTRA_LINK) $(GTEST_LINK) $(MPI_LINK)
 
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(DEVICE_INCLUDE) $(CCL_INCLUDE) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)
 
 $(OBJDIR)/coll_%.o: coll_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(DEVICE_INCLUDE) $(CCL_INCLUDE) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(MPI_INCLUDE)
 
 clean:
 	@rm -rf $(BUILDDIR)

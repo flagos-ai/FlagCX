@@ -5,6 +5,8 @@
 #include "adaptor.h"
 #include "alloc.h"
 
+#include <xpu/runtime.h>
+
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, cudaMemcpyDeviceToHost},
@@ -107,17 +109,75 @@ flagcxResult_t kunlunAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
   return flagcxSuccess;
 }
 
-flagcxResult_t kunlunAdaptorGdrMemAlloc(void **ptr, size_t size,
-                                        void *memHandle) {
-  if (ptr == NULL) {
+/*
+ * GdrMem lifecycle:
+ *   memHandleInit
+ *   gdrMemAlloc -> xpu_malloc + xccl_mmap
+ *   caller registers hostMappedPtr and completes communication
+ *   caller deregisters the MR
+ *   gdrMemFree -> xccl_munmap + xpu_free
+ *   memHandleDestroy
+ *
+ * memHandle is mandatory. It is passed by value, so gdrMemAlloc cannot safely
+ * create and return an implicit handle when the argument is null.
+ *
+ * Production upper-layer wiring is outside this implementation: the upper
+ * layer must own and propagate the same handle through allocation and cleanup.
+ */
+
+flagcxResult_t kunlunAdaptorMemHandleInit(int dev_id, void **memHandle) {
+  (void)dev_id;
+  if (memHandle == NULL) return flagcxInvalidArgument;
+  auto *h = new (std::nothrow) KunlunXinGdrMemHandle{};
+  if (h == NULL) return flagcxSystemError;
+  *memHandle = h;
+  return flagcxSuccess;
+}
+
+flagcxResult_t kunlunAdaptorMemHandleDestroy(int dev, void *memHandle) {
+  (void)dev;
+  if (memHandle == NULL) return flagcxSuccess;
+  auto *h = static_cast<KunlunXinGdrMemHandle *>(memHandle);
+  // Refuse to destroy a handle that still has a live mapping or unreleased device pointer.
+  if (h->mapped || h->devPtr != NULL) {
     return flagcxInvalidArgument;
   }
-  DEVCHECK(cudaMalloc(ptr, size));
-  cudaPointerAttributes attrs;
-  DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
-  unsigned flags = 1;
-  DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
-                                 (CUdeviceptr)attrs.devicePointer));
+  delete h;
+  return flagcxSuccess;
+}
+
+flagcxResult_t kunlunAdaptorGdrMemAlloc(void **ptr, size_t size,
+                                        void *memHandle) {
+  if (ptr == NULL || size == 0 || memHandle == NULL) {
+    return flagcxInvalidArgument;
+  }
+
+  auto *handle = static_cast<KunlunXinGdrMemHandle *>(memHandle);
+  // Reject if handle already holds a live mapping.
+  if (handle->mapped || handle->devPtr != NULL) {
+    return flagcxInvalidArgument;
+  }
+
+  // Step 1: allocate device memory.
+  void *devPtr = NULL;
+  int ret = xpu_malloc(&devPtr, size);
+  if (ret != 0 || devPtr == NULL) {
+    return flagcxUnhandledDeviceError;
+  }
+
+  // Step 2: map device VA to host VA (requires BKCL_USE_PEERMEM_XDR=1).
+  void *hostPtr = NULL;
+  ret = baidu::xpu::bkcl::xccl_mmap(&hostPtr, devPtr, size);
+  if (ret != 0 || hostPtr == NULL) {
+    xpu_free(devPtr);
+    return flagcxUnhandledDeviceError;
+  }
+
+  handle->devPtr        = devPtr;
+  handle->hostMappedPtr = hostPtr;
+  handle->size          = size;
+  handle->mapped        = true;
+  *ptr = devPtr;
   return flagcxSuccess;
 }
 
@@ -125,7 +185,30 @@ flagcxResult_t kunlunAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
-  DEVCHECK(cudaFree(ptr));
+  if (memHandle == NULL) {
+    return flagcxInvalidArgument;
+  }
+
+  auto *handle = static_cast<KunlunXinGdrMemHandle *>(memHandle);
+
+  // Sanity check: ptr must match what we allocated.
+  if (handle->devPtr != ptr) {
+    return flagcxInvalidArgument;
+  }
+
+  // Step 1: unmap host mapping — must pass hostMappedPtr, not devPtr.
+  if (handle->mapped && handle->hostMappedPtr != NULL) {
+    int ret = baidu::xpu::bkcl::xccl_munmap(handle->hostMappedPtr,
+                                             handle->size);
+    if (ret != 0) return flagcxUnhandledDeviceError;
+  }
+
+  // Step 2: free device memory.
+  int ret = xpu_free(ptr);
+  if (ret != 0) return flagcxUnhandledDeviceError;
+
+  // Clear all handle fields.
+  *handle = {};
   return flagcxSuccess;
 }
 
@@ -427,8 +510,8 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunAdaptorGetDeviceCount, kunlunAdaptorGetVendor,
       kunlunAdaptorHostGetDevicePointer,
       // GDR functions
-      NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
-      NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
+      kunlunAdaptorMemHandleInit,    // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
+      kunlunAdaptorMemHandleDestroy, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
       kunlunAdaptorGdrMemAlloc, kunlunAdaptorGdrMemFree,
       NULL, // flagcxResult_t (*hostShareMemAlloc)(void **ptr, size_t size, void
             // *memHandle);
