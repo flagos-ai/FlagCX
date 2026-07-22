@@ -1,6 +1,9 @@
 /*************************************************************************
  * Copyright (c) 2026. All Rights Reserved.
- * Cross-process IPC memory handle test (requires MPI and KunlunXin XPU).
+ * Cross-process IPC memory handle test.
+ *
+ * Run exactly two MPI ranks on the same host. Device IPC handles are
+ * host-local and cannot be transferred between different nodes.
  ************************************************************************/
 
 #include <gtest/gtest.h>
@@ -32,16 +35,25 @@ namespace {
     }                                                                          \
   } while (0)
 
+#define ASSERT_MPI_TRUE(condition)                                            \
+  do {                                                                        \
+    if (!(condition)) {                                                       \
+      ADD_FAILURE() << "MPI assertion failed: " << #condition;               \
+      MPI_Abort(MPI_COMM_WORLD, 1);                                           \
+      return;                                                                 \
+    }                                                                         \
+  } while (0)
+
 class IpcMemHandleMpiTest : public ::testing::Test {
 protected:
   void SetUp() override {
     flagcxDeviceHandleInit(&devHandle);
-    ASSERT_NE(devHandle, nullptr);
+    ASSERT_MPI_TRUE(devHandle != nullptr);
 
     int deviceCount = 0;
     ASSERT_FLAGCX_SUCCESS(devHandle->getDeviceCount(&deviceCount));
     if (deviceCount <= 0) {
-      ADD_FAILURE() << "No visible XPU device";
+      ADD_FAILURE() << "No visible device";
       MPI_Abort(MPI_COMM_WORLD, 1);
       return;
     }
@@ -70,11 +82,51 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
   constexpr size_t bufferSize = 4096;
   constexpr int expectedValue = 0x12345678;
 
+  int localApisAvailable =
+      devHandle->ipcMemHandleCreate != nullptr &&
+      devHandle->ipcMemHandleGet != nullptr &&
+      devHandle->ipcMemHandleOpen != nullptr &&
+      devHandle->ipcMemHandleClose != nullptr &&
+      devHandle->ipcMemHandleFree != nullptr;
+  int allApisAvailable = 0;
+  ASSERT_MPI_SUCCESS(MPI_Allreduce(&localApisAvailable, &allApisAvailable, 1,
+                                   MPI_INT, MPI_MIN, MPI_COMM_WORLD));
+  if (!allApisAvailable) {
+    GTEST_SKIP() << "IPC memory handle APIs are not available";
+  }
+
+  // Every rank creates its receive/export storage before communication. This
+  // also provides a coordinated runtime capability check for stub backends.
+  flagcxIpcMemHandle_t handle = nullptr;
+  size_t localHandleSize = 0;
+  flagcxResult_t createResult =
+      devHandle->ipcMemHandleCreate(&handle, &localHandleSize);
+  if (createResult != flagcxSuccess &&
+    createResult != flagcxNotSupported) {
+    ADD_FAILURE() << "ipcMemHandleCreate returned "
+                  << static_cast<int>(createResult);
+    MPI_Abort(MPI_COMM_WORLD, static_cast<int>(createResult));
+    return;
+  }
+  int localSupported = createResult != flagcxNotSupported;
+  int allSupported = 0;
+  ASSERT_MPI_SUCCESS(MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT,
+                                   MPI_MIN, MPI_COMM_WORLD));
+  if (!allSupported) {
+    if (createResult == flagcxSuccess && handle != nullptr) {
+      ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
+    }
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  ASSERT_FLAGCX_SUCCESS(createResult);
+  ASSERT_MPI_TRUE(handle != nullptr);
+  ASSERT_MPI_TRUE(localHandleSize > 0);
+
   if (rank == 0) {
     void *devPtr = nullptr;
     ASSERT_FLAGCX_SUCCESS(devHandle->deviceMalloc(
         &devPtr, bufferSize, flagcxMemDevice, nullptr));
-    ASSERT_NE(devPtr, nullptr);
+    ASSERT_MPI_TRUE(devPtr != nullptr);
 
     int hostValue = expectedValue;
     ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
@@ -82,23 +134,18 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
         nullptr));
     ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(nullptr));
 
-    flagcxIpcMemHandle_t handle = nullptr;
-    size_t handleSize = 0;
-    ASSERT_FLAGCX_SUCCESS(
-        devHandle->ipcMemHandleCreate(&handle, &handleSize));
-    ASSERT_NE(handle, nullptr);
-    ASSERT_GT(handleSize, static_cast<size_t>(0));
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleGet(handle, devPtr));
 
-    ASSERT_MPI_SUCCESS(MPI_Send(&handleSize, sizeof(handleSize), MPI_BYTE, 1,
-                                0, MPI_COMM_WORLD));
-    ASSERT_MPI_SUCCESS(MPI_Send(handle, static_cast<int>(handleSize), MPI_BYTE,
-                                1, 1, MPI_COMM_WORLD));
+    ASSERT_MPI_SUCCESS(MPI_Send(&localHandleSize, sizeof(localHandleSize),
+                                MPI_BYTE, 1, 0, MPI_COMM_WORLD));
+    ASSERT_MPI_SUCCESS(
+        MPI_Send(handle, static_cast<int>(localHandleSize), MPI_BYTE, 1, 1,
+                 MPI_COMM_WORLD));
 
     int acknowledgement = 0;
     ASSERT_MPI_SUCCESS(MPI_Recv(&acknowledgement, 1, MPI_INT, 1, 2,
                                 MPI_COMM_WORLD, MPI_STATUS_IGNORE));
-    ASSERT_EQ(acknowledgement, 1);
+    ASSERT_MPI_TRUE(acknowledgement == 1);
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
     ASSERT_FLAGCX_SUCCESS(
@@ -109,11 +156,6 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
                                 MPI_BYTE, 0, 0, MPI_COMM_WORLD,
                                 MPI_STATUS_IGNORE));
 
-    flagcxIpcMemHandle_t handle = nullptr;
-    size_t localHandleSize = 0;
-    ASSERT_FLAGCX_SUCCESS(
-        devHandle->ipcMemHandleCreate(&handle, &localHandleSize));
-    ASSERT_NE(handle, nullptr);
     if (localHandleSize != receivedHandleSize) {
       ADD_FAILURE() << "IPC handle size mismatch: local=" << localHandleSize
                     << ", remote=" << receivedHandleSize;
@@ -127,14 +169,14 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
 
     void *mappedPtr = nullptr;
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleOpen(handle, &mappedPtr));
-    ASSERT_NE(mappedPtr, nullptr);
+    ASSERT_MPI_TRUE(mappedPtr != nullptr);
 
     int receivedValue = 0;
     ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
         &receivedValue, mappedPtr, sizeof(receivedValue),
         flagcxMemcpyDeviceToHost, nullptr));
     ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(nullptr));
-    EXPECT_EQ(receivedValue, expectedValue);
+    ASSERT_MPI_TRUE(receivedValue == expectedValue);
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleClose(mappedPtr));
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));

@@ -9,6 +9,8 @@ UNIT_TARGET := $(BINDIR)/adaptor_unit_tests
 MPI_SRCS   := $(wildcard coll_*.cpp)
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/adaptor_mpi_tests
+MPIRUN     ?= mpirun
+MPI_NP     ?= 2
 
 .PHONY: all clean run-unit run-mpi run
 
@@ -35,12 +37,12 @@ $(MPI_TARGET): $(MPI_OBJS)
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(DEVICE_INCLUDE) $(CCL_INCLUDE) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE)
 
 $(OBJDIR)/coll_%.o: coll_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ADAPTOR_DEFINE) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(MPI_INCLUDE)
 
 clean:
 	@rm -rf $(BUILDDIR)
@@ -49,6 +51,6 @@ run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
 run-mpi: $(MPI_TARGET)
-	@mpirun --allow-run-as-root -np 8 $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_TARGET)
 
 run: run-unit run-mpi
