@@ -182,10 +182,11 @@ else ifeq ($(USE_CAMBRICON), 1)
 	CCL_LINK = -lcncl
 	ADAPTOR_FLAG = -DUSE_CAMBRICON_ADAPTOR
 else ifeq ($(USE_METAX), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
+	DEVICE_LIB = $(DEVICE_HOME)/lib
+	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/mcr
+	DEVICE_COMPILER = $(DEVICE_HOME)/mxgpu_llvm/bin/mxcc
+	CCL_LIB = $(CCL_HOME)/lib
+	CCL_INCLUDE = $(CCL_HOME)/include/mccl
 	CCL_LINK = -lmccl
 	ADAPTOR_FLAG = -DUSE_METAX_ADAPTOR
 else ifeq ($(USE_MUSA), 1)

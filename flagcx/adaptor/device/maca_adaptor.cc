@@ -101,6 +101,11 @@ flagcxResult_t macaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  DEVCHECK(mcHostGetDevicePointer(pDevice, pHost, 0));
+  return flagcxSuccess;
+}
+
 flagcxResult_t macaAdaptorGdrMemAlloc(void **ptr, size_t size,
                                       void *memHandle) {
   if (ptr == NULL) {
@@ -351,42 +356,332 @@ flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
   return flagcxNotSupported;
 }
 
-flagcxResult_t macaAdaptorHostRegister(void *, size_t) {
-  return flagcxNotSupported;
+flagcxResult_t
+macaAdaptorMemGetHandleForAddressRange(void *handleOut, void *buffer,
+                                       size_t size, unsigned long long flags) {
+  // MCdeviceptr dptr = (MCdeviceptr)buffer;
+  DEVCHECK(mcMemGetHandleForAddressRange(handleOut, buffer, size, 0x1, flags));
+  return flagcxSuccess;
 }
-flagcxResult_t macaAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
-// Symmetric memory VMM stubs (not supported)
-flagcxResult_t macaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                       size_t *, size_t *) {
-  return flagcxNotSupported;
+flagcxResult_t macaAdaptorHostRegister(void *ptr, size_t size) {
+  DEVCHECK(mcHostRegister(ptr, size, mcHostRegisterMapped));
+  return flagcxSuccess;
 }
-flagcxResult_t macaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
-flagcxResult_t macaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
-                                     void **) {
-  return flagcxNotSupported;
+flagcxResult_t macaAdaptorHostUnregister(void *ptr) {
+  DEVCHECK(mcHostUnregister(ptr));
+  return flagcxSuccess;
 }
-flagcxResult_t macaAdaptorSymFlatUnmap(void *, size_t, int) {
-  return flagcxNotSupported;
+
+flagcxResult_t macaAdaptorSymPhysAlloc(void *ptr, size_t size,
+                                       void **physHandle, void *shareableHandle,
+                                       size_t *handleSize, size_t *allocSize) {
+  if (ptr == NULL || physHandle == NULL || shareableHandle == NULL ||
+      handleSize == NULL || allocSize == NULL)
+    return flagcxInvalidArgument;
+
+  mcMemGenericAllocationHandle *mcHandle =
+      (mcMemGenericAllocationHandle *)malloc(
+          sizeof(mcMemGenericAllocationHandle));
+  if (mcHandle == NULL)
+    return flagcxSystemError;
+
+  // Retain the physical allocation handle from the VMM-backed pointer
+  DEVCHECK(mcMemRetainAllocationHandle(mcHandle, ptr));
+
+  // Discover actual physical allocation size (already granularity-aligned)
+  size_t actualAllocSize = 0;
+  DEVCHECK(mcMemGetAddressRange(NULL, &actualAllocSize, ptr));
+  *allocSize = actualAllocSize;
+
+  // Export as POSIX fd for IPC sharing
+  if (*handleSize < sizeof(int)) {
+    free(mcHandle);
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(mcMemExportToShareableHandle(shareableHandle, *mcHandle,
+                                        mcMemHandleTypePosixFileDescriptor, 0));
+  *handleSize = sizeof(int); // POSIX fd is an int
+  *physHandle = mcHandle;
+  return flagcxSuccess;
 }
+
+// flagcxResult_t macaAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
+flagcxResult_t macaAdaptorSymPhysFree(void *physHandle) {
+  if (physHandle == NULL)
+    return flagcxSuccess;
+  mcMemGenericAllocationHandle *mcHandle =
+      (mcMemGenericAllocationHandle *)physHandle;
+  mcMemRelease(*mcHandle);
+  free(mcHandle);
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymFlatMap(void *peerHandles[], int nPeers,
+                                     int selfIndex, void *selfPhysHandle,
+                                     size_t allocSize, void **flatBase) {
+  if (peerHandles == NULL || selfPhysHandle == NULL || flatBase == NULL ||
+      nPeers <= 0 || allocSize == 0)
+    return flagcxInvalidArgument;
+
+  mcMemGenericAllocationHandle selfHandle =
+      *(mcMemGenericAllocationHandle *)selfPhysHandle;
+
+  // allocSize is already granularity-aligned (from cuMemGetAddressRange)
+  size_t totalSize = allocSize * nPeers;
+
+  // Reserve the full VA range
+  mcDeviceptr_t base = 0;
+  DEVCHECK(mcMemAddressReserve(&base, totalSize, 0, 0, 0));
+
+  // Import and map each peer's physical memory
+  int macaDev;
+  DEVCHECK(mcGetDevice(&macaDev));
+  mcMemAccessDesc accessDesc = {};
+  accessDesc.location.type = mcMemLocationTypeDevice;
+  accessDesc.location.id = macaDev;
+  accessDesc.flags = mcMemAccessFlagsProtReadWrite;
+
+  for (int i = 0; i < nPeers; i++) {
+    mcMemGenericAllocationHandle peerHandle;
+    if (i == selfIndex) {
+      peerHandle = selfHandle;
+    } else {
+      int fd = *(int *)peerHandles[i];
+      DEVCHECK(
+          mcMemImportFromShareableHandle(&peerHandle, (void *)(uintptr_t)fd,
+                                         mcMemHandleTypePosixFileDescriptor));
+    }
+    mcDeviceptr_t slot =
+        (mcDeviceptr_t)((uintptr_t)base + (uint64_t)i * allocSize);
+    DEVCHECK(mcMemMap(slot, allocSize, 0, peerHandle, 0));
+    DEVCHECK(mcMemSetAccess(slot, allocSize, &accessDesc, 1));
+    if (i != selfIndex) {
+      mcMemRelease(peerHandle);
+    }
+  }
+
+  *flatBase = (void *)base;
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymFlatUnmap(void *flatBase, size_t allocSize,
+                                       int nPeers) {
+  if (flatBase == NULL)
+    return flagcxSuccess;
+  mcDeviceptr_t base = (mcDeviceptr_t)flatBase;
+  size_t totalSize = allocSize * nPeers;
+  DEVCHECK(mcMemUnmap(base, totalSize));
+  DEVCHECK(mcMemAddressFree(base, totalSize));
+  return flagcxSuccess;
+}
+
 flagcxResult_t macaAdaptorSymMulticastSupported(int *supported) {
-  if (supported)
+  if (supported == NULL)
+    return flagcxInvalidArgument;
+  *supported = 0;
+  int macaDev;
+  DEVCHECK(mcGetDevice(&macaDev));
+  MCdevice dev;
+  DEVCHECK(mcDeviceGet(&dev, macaDev));
+  mcError_t res =
+      mcDeviceGetAttribute(supported, mcDeviceAttributeMulticastSupported, dev);
+  if (res != mcSuccess)
     *supported = 0;
   return flagcxSuccess;
 }
-flagcxResult_t macaAdaptorSymMulticastCreate(size_t, int, const int *, void **,
-                                             int *) {
-  return flagcxNotSupported;
+
+flagcxResult_t macaAdaptorSymMulticastCreate(size_t allocSize,
+                                             int nLocalDevices,
+                                             const int *localDeviceOrdinals,
+                                             void **mcHandle,
+                                             int *shareableFd) {
+  if (mcHandle == NULL || shareableFd == NULL || nLocalDevices <= 0 ||
+      localDeviceOrdinals == NULL)
+    return flagcxInvalidArgument;
+  *mcHandle = NULL;
+  *shareableFd = -1;
+
+  mcMemGenericAllocationHandle handle = 0;
+  int fd = -1;
+  mcError_t err;
+
+  // Get multicast granularity and align size
+  mcMulticastObjectProp mcProp = {};
+  mcProp.numDevices = (unsigned int)nLocalDevices;
+  mcProp.size = allocSize;
+  mcProp.handleTypes = mcMemHandleTypePosixFileDescriptor;
+
+  size_t mcGran = 0;
+  err = mcMulticastGetGranularity(&mcGran, &mcProp,
+                                  MC_MULTICAST_GRANULARITY_RECOMMENDED);
+  if (err != mcSuccess)
+    return flagcxUnhandledDeviceError;
+  mcProp.size = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+
+  err = mcMulticastCreate(&handle, &mcProp);
+  if (err != mcSuccess)
+    return flagcxUnhandledDeviceError;
+
+  // Add all local devices using explicit ordinals
+  for (int i = 0; i < nLocalDevices; i++) {
+    MCdevice peerDev;
+    err = mcDeviceGet(&peerDev, localDeviceOrdinals[i]);
+    if (err != mcSuccess)
+      goto cleanup_handle;
+    err = mcMulticastAddDevice(handle, peerDev);
+    if (err != mcSuccess)
+      goto cleanup_handle;
+  }
+
+  // Export as POSIX FD for sharing with peers
+  err = mcMemExportToShareableHandle(&fd, handle,
+                                     mcMemHandleTypePosixFileDescriptor, 0);
+  if (err != mcSuccess)
+    goto cleanup_handle;
+
+  // Store handle as heap-allocated value
+  {
+    mcMemGenericAllocationHandle *handlePtr =
+        (mcMemGenericAllocationHandle *)malloc(
+            sizeof(mcMemGenericAllocationHandle));
+    if (handlePtr == NULL)
+      goto cleanup_fd;
+
+    *handlePtr = handle;
+    *mcHandle = handlePtr;
+    *shareableFd = fd;
+  }
+  return flagcxSuccess;
+
+cleanup_fd:
+  close(fd);
+cleanup_handle:
+  mcMemRelease(handle);
+  return flagcxUnhandledDeviceError;
 }
-flagcxResult_t macaAdaptorSymMulticastBind(void *, int, void *, size_t, int,
-                                           int, void **, size_t *) {
-  return flagcxNotSupported;
-}
-flagcxResult_t macaAdaptorSymMulticastTeardown(void *, size_t) {
+
+flagcxResult_t macaAdaptorSymMulticastBind(void *mcHandle, int importFd,
+                                           void *physHandle, size_t allocSize,
+                                           int localRank, int nLocalDevices,
+                                           void **mcBase, size_t *mcMapSize) {
+  if (mcBase == NULL || physHandle == NULL || mcMapSize == NULL)
+    return flagcxInvalidArgument;
+  *mcBase = NULL;
+  *mcMapSize = 0;
+
+  mcMemGenericAllocationHandle mcMcHandle;
+  bool imported = (mcHandle == NULL);
+
+  if (mcHandle != NULL) {
+    // Rank 0: already has the handle from symMulticastCreate
+    mcMcHandle = *(mcMemGenericAllocationHandle *)mcHandle;
+  } else {
+    // Other ranks: import from FD
+    if (importFd < 0)
+      return flagcxInvalidArgument;
+    mcError_t res =
+        mcMemImportFromShareableHandle(&mcMcHandle, (void *)(intptr_t)importFd,
+                                       mcMemHandleTypePosixFileDescriptor);
+    if (res != mcSuccess) {
+      WARN("symMulticastBind: cuMemImportFromShareableHandle failed: %d", res);
+      return flagcxUnhandledDeviceError;
+    }
+  }
+
+  mcMemGenericAllocationHandle mcPhysHandle =
+      *(mcMemGenericAllocationHandle *)physHandle;
+
+  // Bind this rank's physical allocation to the multicast object.
+  // Use cuMulticastBindMem (takes physical handle), not cuMulticastBindAddr
+  // (which takes a virtual address).
+  mcError_t res =
+      mcMulticastBindMem(mcMcHandle, 0, mcPhysHandle, 0, allocSize, 0);
+  if (res != mcSuccess) {
+    WARN("symMulticastBind: mcMulticastBindMem failed: %d (localRank=%d "
+         "allocSize=%zu)",
+         res, localRank, allocSize);
+    if (imported)
+      mcMemRelease(mcMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  // Get multicast granularity to compute aligned total size
+  mcMulticastObjectProp mcProp = {};
+  mcProp.numDevices = (unsigned int)nLocalDevices;
+  mcProp.size = allocSize;
+  mcProp.handleTypes = mcMemHandleTypePosixFileDescriptor;
+  size_t mcGran = 0;
+  res = mcMulticastGetGranularity(&mcGran, &mcProp,
+                                  MC_MULTICAST_GRANULARITY_RECOMMENDED);
+  if (res != mcSuccess) {
+    WARN("symMulticastBind: mcMulticastGetGranularity failed: %d", res);
+    if (imported)
+      mcMemRelease(mcMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+  size_t alignedSize = ((allocSize + mcGran - 1) / mcGran) * mcGran;
+
+  // Reserve VA and map the multicast handle
+  mcDeviceptr_t mcVa = 0;
+  res = mcMemAddressReserve(&mcVa, alignedSize, mcGran, 0, 0);
+  if (res != mcSuccess) {
+    WARN("symMulticastBind: mcMemAddressReserve failed: %d", res);
+    if (imported)
+      mcMemRelease(mcMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  res = mcMemMap(mcVa, alignedSize, 0, mcMcHandle, 0);
+  if (res != mcSuccess) {
+    WARN("symMulticastBind: mcMemMap failed: %d", res);
+    mcMemAddressFree(mcVa, alignedSize);
+    if (imported)
+      mcMemRelease(mcMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  // Set access for the current device
+  int macaDev;
+  DEVCHECK(mcGetDevice(&macaDev));
+  mcMemAccessDesc accessDesc = {};
+  accessDesc.location.type = mcMemLocationTypeDevice;
+  accessDesc.location.id = macaDev;
+  accessDesc.flags = mcMemAccessFlagsProtReadWrite;
+  res = mcMemSetAccess(mcVa, alignedSize, &accessDesc, 1);
+  if (res != mcSuccess) {
+    WARN("symMulticastBind: cuMemSetAccess failed: %d", res);
+    mcMemUnmap(mcVa, alignedSize);
+    mcMemAddressFree(mcVa, alignedSize);
+    if (imported)
+      mcMemRelease(mcMcHandle);
+    return flagcxUnhandledDeviceError;
+  }
+
+  *mcBase = (void *)mcVa;
+  *mcMapSize = alignedSize;
+  if (imported)
+    mcMemRelease(mcMcHandle);
   return flagcxSuccess;
 }
-flagcxResult_t macaAdaptorSymMulticastFree(void *) {
-  return flagcxNotSupported;
+
+flagcxResult_t macaAdaptorSymMulticastTeardown(void *mcBase, size_t mcMapSize) {
+  if (mcBase == NULL)
+    return flagcxSuccess;
+  mcDeviceptr_t va = (mcDeviceptr_t)mcBase;
+  DEVCHECK(mcMemUnmap(va, mcMapSize));
+  DEVCHECK(mcMemAddressFree(va, mcMapSize));
+  return flagcxSuccess;
+}
+
+flagcxResult_t macaAdaptorSymMulticastFree(void *mcHandle) {
+  if (mcHandle == NULL)
+    return flagcxSuccess;
+  mcMemGenericAllocationHandle handle =
+      *(mcMemGenericAllocationHandle *)mcHandle;
+  DEVCHECK(mcMemRelease(handle));
+  free(mcHandle);
+  return flagcxSuccess;
 }
 
 struct flagcxDeviceAdaptor macaAdaptor {
@@ -395,7 +690,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorDeviceSynchronize, macaAdaptorDeviceMemcpy,
       macaAdaptorDeviceMemset, macaAdaptorDeviceMalloc, macaAdaptorDeviceFree,
       macaAdaptorSetDevice, macaAdaptorGetDevice, macaAdaptorGetDeviceCount,
-      macaAdaptorGetVendor, NULL,
+      macaAdaptorGetVendor, macaAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
@@ -440,8 +735,11 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorLaunchHostFunc,
       // DMA buffer
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-            // void *buffer, size_t size, unsigned long long flags);
+      macaAdaptorMemGetHandleForAddressRange, // flagcxResult_t
+                                              // (*memGetHandleForAddressRange)(void
+                                              // *handleOut, void *buffer,
+                                              // size_t size, unsigned long long
+                                              // flags);
       macaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       macaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
