@@ -10,7 +10,7 @@ MPI_SRCS   := $(wildcard coll_*.cpp)
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/adaptor_mpi_tests
 MPIRUN     ?= mpirun
-MPI_NP     ?= 2
+MPI_NP     ?= 8
 
 .PHONY: all clean run-unit run-mpi run
 

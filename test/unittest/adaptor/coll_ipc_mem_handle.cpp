@@ -76,7 +76,8 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
   ASSERT_MPI_SUCCESS(MPI_Comm_size(MPI_COMM_WORLD, &worldSize));
 
   if (worldSize != 2) {
-    GTEST_SKIP() << "CrossProcessLifecycle requires exactly 2 MPI ranks";
+    GTEST_SKIP() << "CrossProcessLifecycle requires exactly 2 MPI ranks; "
+                 << "run with: make MPI_NP=2 run-mpi";
   }
 
   constexpr size_t bufferSize = 4096;
