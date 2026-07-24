@@ -441,6 +441,86 @@ TEST_F(DeviceAdaptorTest, StreamCopyAndFree) {
   // Clean up the original
   devHandle->streamDestroy(tempStream);
 }
+// Test ipcMemHandleCreate through the public opaque-handle contract.
+// ipcMemHandleFree is used only to release resources created by this test.
+TEST_F(DeviceAdaptorTest, IpcMemHandleCreate) {
+  if (devHandle->ipcMemHandleCreate == nullptr ||
+      devHandle->ipcMemHandleFree == nullptr) {
+    GTEST_SKIP() << "IPC memory handle APIs are not available";
+  }
+
+  flagcxIpcMemHandle_t handle = nullptr;
+  size_t handleSize = 0;
+  flagcxResult_t result =
+      devHandle->ipcMemHandleCreate(&handle, &handleSize);
+  if (result == flagcxNotSupported) {
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  ASSERT_EQ(result, flagcxSuccess);
+  ASSERT_NE(handle, nullptr);
+  EXPECT_GT(handleSize, static_cast<size_t>(0));
+  EXPECT_EQ(devHandle->ipcMemHandleFree(handle), flagcxSuccess);
+
+  flagcxIpcMemHandle_t handleWithoutSize = nullptr;
+  ASSERT_EQ(devHandle->ipcMemHandleCreate(&handleWithoutSize, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(handleWithoutSize, nullptr);
+  EXPECT_EQ(devHandle->ipcMemHandleFree(handleWithoutSize), flagcxSuccess);
+}
+
+// Test ipcMemHandleGet with a handle created through the public API.
+// Create/Free are fixture operations; Get remains the assertion target.
+TEST_F(DeviceAdaptorTest, IpcMemHandleGet) {
+  if (devHandle->ipcMemHandleCreate == nullptr ||
+      devHandle->ipcMemHandleGet == nullptr ||
+      devHandle->ipcMemHandleFree == nullptr) {
+    GTEST_SKIP() << "IPC memory handle APIs are not available";
+  }
+
+  constexpr size_t bufferSize = 4096;
+  void *devPtr = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&devPtr, bufferSize, flagcxMemDevice,
+                                    stream),
+            flagcxSuccess);
+  ASSERT_NE(devPtr, nullptr);
+
+  flagcxIpcMemHandle_t handle = nullptr;
+  flagcxResult_t result = devHandle->ipcMemHandleCreate(&handle, nullptr);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+              flagcxSuccess);
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  if (result != flagcxSuccess || handle == nullptr) {
+    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+              flagcxSuccess);
+    FAIL() << "ipcMemHandleCreate returned " << static_cast<int>(result);
+  }
+
+  EXPECT_EQ(devHandle->ipcMemHandleGet(handle, devPtr), flagcxSuccess);
+  EXPECT_EQ(devHandle->ipcMemHandleGet(nullptr, devPtr),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->ipcMemHandleGet(handle, nullptr),
+            flagcxInvalidArgument);
+
+  EXPECT_EQ(devHandle->ipcMemHandleFree(handle), flagcxSuccess);
+  EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+            flagcxSuccess);
+}
+
+// Test: ipcMemHandleClose rejects a null mapped pointer.
+// Successful Close is covered by the MPI lifecycle test.
+TEST_F(DeviceAdaptorTest, IpcMemHandleClose) {
+  if (devHandle->ipcMemHandleClose == nullptr) {
+    GTEST_SKIP() << "ipcMemHandleClose is not available";
+  }
+
+  flagcxResult_t result = devHandle->ipcMemHandleClose(nullptr);
+  if (result == flagcxNotSupported) {
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  EXPECT_EQ(result, flagcxInvalidArgument);
+}
 
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);

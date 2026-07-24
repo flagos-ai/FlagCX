@@ -9,6 +9,8 @@ UNIT_TARGET := $(BINDIR)/adaptor_unit_tests
 MPI_SRCS   := $(wildcard coll_*.cpp)
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/adaptor_mpi_tests
+MPIRUN     ?= mpirun
+MPI_NP     ?= 8
 
 .PHONY: all clean run-unit run-mpi run
 
@@ -49,6 +51,6 @@ run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
 run-mpi: $(MPI_TARGET)
-	@mpirun --allow-run-as-root -np 8 $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_TARGET)
 
 run: run-unit run-mpi
