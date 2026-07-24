@@ -172,6 +172,8 @@ struct flagcxDeviceHandle {
   flagcxResult_t (*eventRecord)(flagcxEvent_t event, flagcxStream_t stream);
   flagcxResult_t (*eventSynchronize)(flagcxEvent_t event);
   flagcxResult_t (*eventQuery)(flagcxEvent_t event);
+  flagcxResult_t (*eventElapsedTime)(float *ms, flagcxEvent_t start,
+                                     flagcxEvent_t end);
   // IpcMemHandle functions
   flagcxResult_t (*ipcMemHandleCreate)(flagcxIpcMemHandle_t *handle,
                                        size_t *size);

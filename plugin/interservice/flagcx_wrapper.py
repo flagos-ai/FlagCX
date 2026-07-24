@@ -93,6 +93,8 @@ EVENT_DESTROY_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t)
 EVENT_RECORD_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t, flagcxStream_t)
 EVENT_SYNCHRONIZE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t)
 EVENT_QUERY_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxEvent_t)
+EVENT_ELAPSED_TIME_FUNCTYPE = ctypes.CFUNCTYPE(
+    flagcxResult_t, ctypes.POINTER(ctypes.c_float), flagcxEvent_t, flagcxEvent_t)
 
 IPC_MEM_HANDLE_CREATE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, ctypes.POINTER(flagcxIpcMemHandle_t), ctypes.POINTER(ctypes.c_size_t))
 IPC_MEM_HANDLE_GET_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t, flagcxIpcMemHandle_t, ctypes.c_void_p)
@@ -127,6 +129,7 @@ class flagcxDeviceHandle(ctypes.Structure):
         ("eventRecord", EVENT_RECORD_FUNCTYPE),
         ("eventSynchronize", EVENT_SYNCHRONIZE_FUNCTYPE),
         ("eventQuery", EVENT_QUERY_FUNCTYPE),
+        ("eventElapsedTime", EVENT_ELAPSED_TIME_FUNCTYPE),
         # IpcMemHandle functions
         ("ipcMemHandleCreate", IPC_MEM_HANDLE_CREATE_FUNCTYPE),
         ("ipcMemHandleGet", IPC_MEM_HANDLE_GET_FUNCTYPE),

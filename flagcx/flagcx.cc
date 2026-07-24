@@ -85,7 +85,7 @@ static struct flagcxDeviceHandle globalDeviceHandle {
       // Event functions
       deviceAdaptor->eventCreate, deviceAdaptor->eventDestroy,
       deviceAdaptor->eventRecord, deviceAdaptor->eventSynchronize,
-      deviceAdaptor->eventQuery,
+      deviceAdaptor->eventQuery, deviceAdaptor->eventElapsedTime,
       // IpcMemHandle functions
       deviceAdaptor->ipcMemHandleCreate, deviceAdaptor->ipcMemHandleGet,
       deviceAdaptor->ipcMemHandleOpen, deviceAdaptor->ipcMemHandleClose,
@@ -118,6 +118,7 @@ void flagcxRebuildGlobalDeviceHandle() {
   globalDeviceHandle.eventRecord = deviceAdaptor->eventRecord;
   globalDeviceHandle.eventSynchronize = deviceAdaptor->eventSynchronize;
   globalDeviceHandle.eventQuery = deviceAdaptor->eventQuery;
+  globalDeviceHandle.eventElapsedTime = deviceAdaptor->eventElapsedTime;
   // IpcMemHandle functions
   globalDeviceHandle.ipcMemHandleCreate = deviceAdaptor->ipcMemHandleCreate;
   globalDeviceHandle.ipcMemHandleGet = deviceAdaptor->ipcMemHandleGet;
