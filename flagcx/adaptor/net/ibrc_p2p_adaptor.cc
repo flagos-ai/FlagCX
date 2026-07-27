@@ -14,6 +14,9 @@
 #include "ibvwrap.h"
 #include "socket.h"
 
+#include "adaptor.h"
+#include "param.h"
+
 #include <algorithm>
 #include <assert.h>
 #include <atomic>
@@ -215,8 +218,39 @@ static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
 
 static flagcxResult_t flagcxP2pRegMr(void *comm, void *data, size_t size,
                                      int type, int mrFlags, void **mhandle) {
-  return flagcxP2pRegMrDmaBuf(comm, data, size, type, 0ULL, -1, mrFlags,
-                              mhandle);
+  // VMM-allocated device memory (e.g. PPU with FLAGCX_VMM_ENABLE=1) cannot be
+  // registered through peer-mem (ibv_reg_mr); export the range as a DMA-BUF fd
+  // and register via ibv_reg_dmabuf_mr instead. Fall back to fd=-1 (peer-mem)
+  // when no exporter is available, mirroring flagcxOneSideRegister.
+  int fd = -1;
+  if (flagcxParamVmmEnable() && deviceAdaptor != NULL &&
+      deviceAdaptor->getHandleForAddressRange != NULL) {
+    // cuMemGetHandleForAddressRange requires a page-aligned base and size, so
+    // align the exported range (base down, size up). data/size below stay raw:
+    // flagcxIbRegMrDmaBufInternal re-derives the same aligned base as the
+    // dma-buf's byte 0 and registers with offset 0, so the two line up. The
+    // rounded-up range never exceeds the (granularity-aligned) VMM allocation.
+    static __thread uintptr_t pageSize = 0;
+    if (pageSize == 0) {
+      pageSize = sysconf(_SC_PAGESIZE);
+    }
+    uintptr_t alignedAddr = (uintptr_t)data & -pageSize;
+    size_t alignedSize =
+        (((uintptr_t)data - alignedAddr) + size + pageSize - 1) & -pageSize;
+    int dmaBufFd = -1;
+    if (deviceAdaptor->getHandleForAddressRange(
+            (void *)&dmaBufFd, (void *)alignedAddr, alignedSize, 0) ==
+            flagcxSuccess &&
+        dmaBufFd >= 0) {
+      fd = dmaBufFd;
+    }
+  }
+  flagcxResult_t res =
+      flagcxP2pRegMrDmaBuf(comm, data, size, type, 0ULL, fd, mrFlags, mhandle);
+  if (fd >= 0) {
+    close(fd);
+  }
+  return res;
 }
 
 static flagcxResult_t flagcxP2pDeregMr(void *comm, void *mhandle) {
