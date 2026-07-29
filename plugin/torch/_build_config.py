@@ -215,6 +215,7 @@ def get_device_config(adaptor_flag):
         ]
         library_dirs += [
             torch_ptpu_dir,
+            os.path.join(tang_toolkit_dir, "lib"),
             os.path.join(tang_toolkit_dir, "lib", "linux-x86_64"),
         ]
         libs += [f":{c_so_basename}", "tangrt_shared"]

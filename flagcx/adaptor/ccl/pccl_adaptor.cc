@@ -207,6 +207,14 @@ flagcxResult_t pcclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
+  // FlagCX bypasses PyTorch; ensure the comm's device is active.
+  if (comm != nullptr && comm->base != nullptr) {
+    int comm_dev = -1;
+    if (pcclCommCuDevice(comm->base, &comm_dev) == pcclSuccess &&
+        comm_dev >= 0) {
+      tangSetDevice(comm_dev);
+    }
+  }
   return (flagcxResult_t)p2f_ret_map[pcclAllReduce(
       sendbuff, recvbuff, count, f2p_datatype_map[datatype],
       f2p_reduceop_map[op], comm->base, stream->base)];
