@@ -588,8 +588,8 @@ TEST_F(DeviceAdaptorTest, GetDeviceByPciBusId) {
   for (int dev = 0; dev < numDevices; dev++) {
     // Get PCI bus ID string directly from runtime (independent of getDevicePciBusId)
     char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
-    ASSERT_EQ(cudaDeviceGetPCIBusId(pciBusId, sizeof(pciBusId), dev), cudaSuccess)
-        << "cudaDeviceGetPCIBusId failed for dev=" << dev;
+    ASSERT_EQ(deviceAdaptor->getDevicePciBusId(pciBusId, sizeof(pciBusId), dev), flagcxSuccess)
+        << "getDevicePciBusId failed for dev=" << dev;
 
     // Reverse lookup: string -> device index
     int result = -1;
