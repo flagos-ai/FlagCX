@@ -680,6 +680,8 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
         true);
     if (r != accl::barex::BAREX_SUCCESS) {
       WARN("NET/BAREX : HELLO send sync error: %s", bxstr(r));
+      /* per xchannel.h: on send failure the buffer is NOT auto-released */
+      e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
       delete st;
       handle->connectState = nullptr;
       return flagcxInternalError;
@@ -849,6 +851,16 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
   }
 
   std::lock_guard<std::mutex> lk(e->mu);
+  auto raced = e->mrByBase.find(base);
+  if (raced != e->mrByBase.end()) {
+    /* a concurrent regMr of the same base won between our dedup check
+       and this insert; keep theirs, drop our duplicate registration */
+    e->mempool->DeregUserMr(data, dtype);
+    delete mr;
+    raced->second->refCount++;
+    *mhandle = raced->second;
+    return flagcxSuccess;
+  }
   e->mrByBase[base] = mr;
   *mhandle = mr;
   return flagcxSuccess;
@@ -1012,6 +1024,8 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
       true);
   if (r != accl::barex::BAREX_SUCCESS) {
     WARN("NET/BAREX : CTS send sync error: %s", bxstr(r));
+    /* per xchannel.h: on send failure the buffer is NOT auto-released */
+    e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
     req->state.store(BAREX_REQ_FREE, std::memory_order_release);
     return flagcxInternalError;
   }
@@ -1124,8 +1138,8 @@ struct flagcxNetAdaptor flagcxNetBarex = {
    of the global symbol table — libpccl's internal u2mm implementation
    resolves against a globally visible libu2mm and crashes in
    wrap_u2mm_symbols during pcclCommInitRank otherwise. */
-extern "C" __attribute__((visibility("default")))
-struct flagcxNetAdaptor_v1 flagcxNetAdaptorPlugin_v1 = {
+extern "C" __attribute__((visibility(
+    "default"))) struct flagcxNetAdaptor_v1 flagcxNetAdaptorPlugin_v1 = {
     "BAREX",
     barexnet::barexInit,
     barexnet::barexDevices,

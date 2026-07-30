@@ -310,25 +310,17 @@ public:
   void OnRecvCall(XChannel *, char *, size_t, x_msg_header) override {}
 };
 
-/* one-shot waiter for connect latches */
-struct AcclWaiter {
+/* one-shot waiter for connect latches — heap-allocated and shared with
+   every callback so a late ACCL callback after our timeout can never
+   touch destroyed stack state. */
+struct AcclConnectCtl {
   std::mutex mu;
   std::condition_variable cv;
   int remaining;
-  bool ok = true;
-  explicit AcclWaiter(int n) : remaining(n) {}
-  void done(bool success) {
-    std::lock_guard<std::mutex> lk(mu);
-    if (!success)
-      ok = false;
-    if (--remaining <= 0)
-      cv.notify_all();
-  }
-  bool wait(int sec) {
-    std::unique_lock<std::mutex> lk(mu);
-    cv.wait_for(lk, std::chrono::seconds(sec), [&] { return remaining <= 0; });
-    return remaining <= 0 && ok;
-  }
+  bool abandoned = false;
+  bool anyFailed = false;
+  std::vector<XChannel *> channels;
+  explicit AcclConnectCtl(int n) : remaining(n) {}
 };
 
 /* ------------------------------------------------------------------ */
@@ -377,6 +369,10 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
       if (fd >= 0) {
         const int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&one, sizeof(one));
+        /* accepted fds don't inherit O_NONBLOCK; bound the magic read so
+           a stalled peer can't wedge this single poll loop past shutdown */
+        struct timeval tv = {2, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         uint64_t magic = 0;
         int type = 0;
         if (recvAllFdAccl(fd, &magic, sizeof(magic)) != 0 ||
@@ -384,6 +380,8 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
             magic != FLAGCX_SOCKET_MAGIC) {
           ::close(fd);
         } else {
+          tv.tv_sec = 0; /* back to non-timeout; poll() gates reads below */
+          setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
           peers.push_back(NotifPeerFd{fd, {}});
         }
       }
@@ -804,6 +802,10 @@ void flagcxAcclEngineStopAccept(FlagcxP2pEngine *e) {
   engine->stopAccept.store(true, std::memory_order_release);
   engine->stopRpc.store(true, std::memory_order_release);
   engine->acceptAbortFlag = 1;
+  /* unblock the rpc thread parked in bootstrapP2pAccept (same trick as
+     the ibrc engine: closing the listen socket fails the accept) */
+  if (engine->bsListenState != nullptr && engine->bsListenState->p2p != nullptr)
+    flagcxSocketClose(&engine->bsListenState->p2p->sock);
 }
 
 void flagcxAcclEngineDestroy(FlagcxP2pEngine *e) {
@@ -932,27 +934,45 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
   (void)remoteGpuIdx;
   (void)sameProcess; /* v1: no IPC fast path */
 
-  /* data-plane channels: qpsPerCtx per client context */
+  /* data-plane channels: qpsPerCtx per client context. The control
+     block is shared with the callbacks; if we time out and move on, a
+     late callback sees `abandoned` and destroys its channel instead of
+     touching freed state. */
   const int qps = (int)flagcxParamP2pAcclQpsPerCtx();
   const int total = qps * (int)engine->clientCtxs.size();
-  AcclWaiter latch(total);
-  std::mutex chMu;
+  auto ctl = std::make_shared<AcclConnectCtl>(total);
   for (int i = 0; i < total; i++) {
     BarexResult r = engine->connector->Connect(
-        std::string(ipAddr), peerBarexPort,
-        [conn, &latch, &chMu](XChannel *ch, Status s) {
+        std::string(ipAddr), peerBarexPort, [ctl](XChannel *ch, Status s) {
+          std::lock_guard<std::mutex> lk(ctl->mu);
           if (s.IsOk() && ch != nullptr) {
-            std::lock_guard<std::mutex> lk(chMu);
-            conn->channels.push_back(ch);
-            latch.done(true);
+            if (ctl->abandoned)
+              ch->Destroy();
+            else
+              ctl->channels.push_back(ch);
           } else {
-            latch.done(false);
+            ctl->anyFailed = true;
           }
+          if (--ctl->remaining <= 0)
+            ctl->cv.notify_all();
         });
-    if (r != BAREX_SUCCESS)
-      latch.done(false);
+    if (r != BAREX_SUCCESS) {
+      std::lock_guard<std::mutex> lk(ctl->mu);
+      ctl->anyFailed = true;
+      if (--ctl->remaining <= 0)
+        ctl->cv.notify_all();
+    }
   }
-  const bool allUp = latch.wait((int)flagcxParamP2pAcclConnectTimeoutSec());
+  bool allUp = false;
+  {
+    std::unique_lock<std::mutex> lk(ctl->mu);
+    ctl->cv.wait_for(
+        lk, std::chrono::seconds((int)flagcxParamP2pAcclConnectTimeoutSec()),
+        [&] { return ctl->remaining <= 0; });
+    ctl->abandoned = true; /* late callbacks self-clean from here on */
+    allUp = ctl->remaining <= 0 && !ctl->anyFailed;
+    conn->channels = std::move(ctl->channels);
+  }
   if (conn->channels.empty()) {
     WARN("NET/ACCL_P2P : connect to %s:%d produced no channels", ipAddr,
          peerBarexPort);
@@ -1098,6 +1118,14 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
   }
 
   std::lock_guard<std::mutex> lk(engine->mrMu);
+  auto raced = engine->mrByBase.find(data);
+  if (raced != engine->mrByBase.end()) {
+    /* concurrent Reg of the same base won the race between our dedup
+       check and this insert; keep theirs, drop our duplicate MR */
+    engine->mempool->DeregUserMr(reinterpret_cast<void *>(data), dtype);
+    mrId = raced->second.mrId;
+    return 0;
+  }
   entry.mrId = engine->nextMrId++;
   engine->mrByBase[data] = entry;
   mrId = entry.mrId;
