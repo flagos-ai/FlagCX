@@ -177,6 +177,10 @@ extern struct flagcxNetAdaptor flagcxNetIbuc;
 #ifdef USE_UCX
 extern struct flagcxNetAdaptor flagcxNetUcx;
 #endif
+
+#ifdef USE_ACCL_BAREX
+extern struct flagcxNetAdaptor flagcxNetBarex;
+#endif
 extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 // Unified network adaptor entry point
@@ -189,6 +193,10 @@ struct flagcxNetAdaptor *getUnifiedNetAdaptor(int netType) {
 #elif USE_IBUC
       // When IBUC is enabled, use IBUC instead of IBRC
       return &flagcxNetIbuc;
+#elif USE_ACCL_BAREX
+      // When ACCL barex is enabled (PPU + vsolar hosts), use it instead
+      // of IBRC; FLAGCX_BAREX_DISABLE=1 falls back to socket at runtime.
+      return &flagcxNetBarex;
 #else
       return &flagcxNetIb;
 #endif
