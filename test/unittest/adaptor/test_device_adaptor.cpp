@@ -442,21 +442,17 @@ TEST_F(DeviceAdaptorTest, StreamCopyAndFree) {
   devHandle->streamDestroy(tempStream);
 }
 
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
 // Test: obtain the device-visible alias of mapped host memory.
 TEST_F(DeviceAdaptorTest, HostGetDevicePointer) {
-  if (!devHandle->hostGetDevicePointer) {
-    GTEST_SKIP() << "hostGetDevicePointer not implemented";
-  }
+  ASSERT_NE(devHandle->hostGetDevicePointer, nullptr);
   void *hostPtr = nullptr;
-  ASSERT_EQ(devHandle->deviceMalloc(&hostPtr, TEST_SIZE, flagcxMemHost, nullptr),
-            flagcxSuccess);
+  ASSERT_EQ(
+      devHandle->deviceMalloc(&hostPtr, TEST_SIZE, flagcxMemHost, nullptr),
+      flagcxSuccess);
   ASSERT_NE(hostPtr, nullptr);
   void *devicePtr = nullptr;
-  EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, hostPtr), flagcxSuccess);
+  EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, hostPtr),
+            flagcxSuccess);
   EXPECT_NE(devicePtr, nullptr);
   EXPECT_EQ(devHandle->hostGetDevicePointer(nullptr, hostPtr),
             flagcxInvalidArgument);
@@ -469,7 +465,8 @@ TEST_F(DeviceAdaptorTest, HostGetDevicePointer) {
 // Test: Host memory register / get device pointer / unregister
 // flagcxDeviceHandle does not expose hostRegister/hostUnregister, so we
 // access them through the internal deviceAdaptor pointer (from adaptor.h).
-// Portable across all backends: skips if not implemented (NULL or NotSupported).
+// Portable across all backends: skips if not implemented (NULL or
+// NotSupported).
 TEST_F(DeviceAdaptorTest, HostRegisterUnregister) {
   if (!deviceAdaptor->hostRegister || !deviceAdaptor->hostUnregister) {
     GTEST_SKIP() << "hostRegister/hostUnregister not implemented";
@@ -514,7 +511,6 @@ TEST_F(DeviceAdaptorTest, GetDevicePciBusId) {
   int numDevices = 0;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_GT(numDevices, 0);
-
   for (int dev = 0; dev < numDevices; dev++) {
     char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
     ASSERT_EQ(deviceAdaptor->getDevicePciBusId(pciBusId, sizeof(pciBusId), dev),
@@ -524,8 +520,9 @@ TEST_F(DeviceAdaptorTest, GetDevicePciBusId) {
 
     // Verify format: domain:bus:device.function (4 hex fields)
     unsigned int domain = 0, bus = 0, pciDevice = 0, function = 0;
-    EXPECT_EQ(sscanf(pciBusId, "%x:%x:%x.%x", &domain, &bus, &pciDevice, &function),
-              4)
+    EXPECT_EQ(
+        sscanf(pciBusId, "%x:%x:%x.%x", &domain, &bus, &pciDevice, &function),
+        4)
         << "unexpected PCI bus ID format: " << pciBusId;
 
     std::cout << "Device " << dev << ": pci=" << pciBusId << std::endl;
@@ -537,7 +534,8 @@ TEST_F(DeviceAdaptorTest, GetDevicePciBusId) {
             flagcxInvalidArgument);
 
   // Out-of-range device index
-  EXPECT_NE(deviceAdaptor->getDevicePciBusId(buf, sizeof(buf), -1), flagcxSuccess);
+  EXPECT_NE(deviceAdaptor->getDevicePciBusId(buf, sizeof(buf), -1),
+            flagcxSuccess);
   EXPECT_NE(deviceAdaptor->getDevicePciBusId(buf, sizeof(buf), numDevices),
             flagcxSuccess);
 }
@@ -547,7 +545,6 @@ TEST_F(DeviceAdaptorTest, GetDeviceProperties) {
   int numDevices = 0;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_GT(numDevices, 0);
-
   for (int dev = 0; dev < numDevices; dev++) {
     flagcxDevProps props = {};
     ASSERT_EQ(deviceAdaptor->getDeviceProperties(&props, dev), flagcxSuccess)
@@ -555,12 +552,17 @@ TEST_F(DeviceAdaptorTest, GetDeviceProperties) {
     EXPECT_NE(props.name[0], '\0') << "empty device name for device " << dev;
 
     // PCI fields are parsed from cudaDeviceGetPCIBusId string
-    EXPECT_GE(props.pciBusId,    0) << "pciBusId out of range for device " << dev;
-    EXPECT_LE(props.pciBusId,  255) << "pciBusId out of range for device " << dev;
-    EXPECT_GE(props.pciDeviceId, 0) << "pciDeviceId out of range for device " << dev;
-    EXPECT_LE(props.pciDeviceId, 31) << "pciDeviceId out of range for device " << dev;
-    EXPECT_GE(props.pciDomainId, 0) << "pciDomainId out of range for device " << dev;
-    EXPECT_LE(props.pciDomainId, 65535) << "pciDomainId out of range for device " << dev;
+    EXPECT_GE(props.pciBusId, 0) << "pciBusId out of range for device " << dev;
+    EXPECT_LE(props.pciBusId, 255)
+        << "pciBusId out of range for device " << dev;
+    EXPECT_GE(props.pciDeviceId, 0)
+        << "pciDeviceId out of range for device " << dev;
+    EXPECT_LE(props.pciDeviceId, 31)
+        << "pciDeviceId out of range for device " << dev;
+    EXPECT_GE(props.pciDomainId, 0)
+        << "pciDomainId out of range for device " << dev;
+    EXPECT_LE(props.pciDomainId, 65535)
+        << "pciDomainId out of range for device " << dev;
 
     std::cout << "Device " << dev << ": name=" << props.name
               << ", pciBusId=" << props.pciBusId
@@ -584,20 +586,20 @@ TEST_F(DeviceAdaptorTest, GetDeviceByPciBusId) {
   int numDevices = 0;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_GT(numDevices, 0);
-
   for (int dev = 0; dev < numDevices; dev++) {
-    // Get PCI bus ID string directly from runtime (independent of getDevicePciBusId)
+    // Get PCI bus ID string directly from runtime (independent of
+    // getDevicePciBusId)
     char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
     ASSERT_EQ(deviceAdaptor->getDevicePciBusId(pciBusId, sizeof(pciBusId), dev), flagcxSuccess)
         << "getDevicePciBusId failed for dev=" << dev;
 
     // Reverse lookup: string -> device index
     int result = -1;
-    ASSERT_EQ(deviceAdaptor->getDeviceByPciBusId(&result, pciBusId), flagcxSuccess)
+    ASSERT_EQ(deviceAdaptor->getDeviceByPciBusId(&result, pciBusId),
+              flagcxSuccess)
         << "getDeviceByPciBusId failed for pci=" << pciBusId;
-    EXPECT_EQ(result, dev)
-        << "round-trip mismatch: pci=" << pciBusId
-        << " returned dev=" << result << " expected=" << dev;
+    EXPECT_EQ(result, dev) << "round-trip mismatch: pci=" << pciBusId
+                           << " returned dev=" << result << " expected=" << dev;
 
     std::cout << "Device " << dev << ": pci=" << pciBusId
               << " -> dev=" << result << std::endl;
@@ -620,8 +622,10 @@ TEST_F(DeviceAdaptorTest, EventElapsedTime) {
   ASSERT_NE(devHandle->eventElapsedTime, nullptr);
   flagcxEvent_t startEvent = nullptr;
   flagcxEvent_t endEvent = nullptr;
-  ASSERT_EQ(devHandle->eventCreate(&startEvent, flagcxEventDefault), flagcxSuccess);
-  ASSERT_EQ(devHandle->eventCreate(&endEvent, flagcxEventDefault), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&startEvent, flagcxEventDefault),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&endEvent, flagcxEventDefault),
+            flagcxSuccess);
   ASSERT_EQ(devHandle->eventRecord(startEvent, stream), flagcxSuccess);
   ASSERT_EQ(devHandle->eventRecord(endEvent, stream), flagcxSuccess);
   ASSERT_EQ(devHandle->eventSynchronize(endEvent), flagcxSuccess);
@@ -637,4 +641,87 @@ TEST_F(DeviceAdaptorTest, EventElapsedTime) {
             flagcxInvalidArgument);
   EXPECT_EQ(devHandle->eventDestroy(startEvent), flagcxSuccess);
   EXPECT_EQ(devHandle->eventDestroy(endEvent), flagcxSuccess);
+}
+
+// Test ipcMemHandleCreate through the public opaque-handle contract.
+// ipcMemHandleFree is used only to release resources created by this test.
+TEST_F(DeviceAdaptorTest, IpcMemHandleCreate) {
+  if (devHandle->ipcMemHandleCreate == nullptr ||
+      devHandle->ipcMemHandleFree == nullptr) {
+    GTEST_SKIP() << "IPC memory handle APIs are not available";
+  }
+
+  flagcxIpcMemHandle_t handle = nullptr;
+  size_t handleSize = 0;
+  flagcxResult_t result = devHandle->ipcMemHandleCreate(&handle, &handleSize);
+  if (result == flagcxNotSupported) {
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  ASSERT_EQ(result, flagcxSuccess);
+  ASSERT_NE(handle, nullptr);
+  EXPECT_GT(handleSize, static_cast<size_t>(0));
+  EXPECT_EQ(devHandle->ipcMemHandleFree(handle), flagcxSuccess);
+
+  flagcxIpcMemHandle_t handleWithoutSize = nullptr;
+  ASSERT_EQ(devHandle->ipcMemHandleCreate(&handleWithoutSize, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(handleWithoutSize, nullptr);
+  EXPECT_EQ(devHandle->ipcMemHandleFree(handleWithoutSize), flagcxSuccess);
+}
+
+// Test ipcMemHandleGet with a handle created through the public API.
+// Create/Free are fixture operations; Get remains the assertion target.
+TEST_F(DeviceAdaptorTest, IpcMemHandleGet) {
+  if (devHandle->ipcMemHandleCreate == nullptr ||
+      devHandle->ipcMemHandleGet == nullptr ||
+      devHandle->ipcMemHandleFree == nullptr) {
+    GTEST_SKIP() << "IPC memory handle APIs are not available";
+  }
+
+  constexpr size_t bufferSize = 4096;
+  void *devPtr = nullptr;
+  ASSERT_EQ(
+      devHandle->deviceMalloc(&devPtr, bufferSize, flagcxMemDevice, stream),
+      flagcxSuccess);
+  ASSERT_NE(devPtr, nullptr);
+
+  flagcxIpcMemHandle_t handle = nullptr;
+  flagcxResult_t result = devHandle->ipcMemHandleCreate(&handle, nullptr);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+              flagcxSuccess);
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  if (result != flagcxSuccess || handle == nullptr) {
+    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+              flagcxSuccess);
+    FAIL() << "ipcMemHandleCreate returned " << static_cast<int>(result);
+  }
+
+  EXPECT_EQ(devHandle->ipcMemHandleGet(handle, devPtr), flagcxSuccess);
+  EXPECT_EQ(devHandle->ipcMemHandleGet(nullptr, devPtr), flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->ipcMemHandleGet(handle, nullptr), flagcxInvalidArgument);
+
+  EXPECT_EQ(devHandle->ipcMemHandleFree(handle), flagcxSuccess);
+  EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+            flagcxSuccess);
+}
+
+// Test: ipcMemHandleClose rejects a null mapped pointer.
+// Successful Close is covered by the MPI lifecycle test.
+TEST_F(DeviceAdaptorTest, IpcMemHandleClose) {
+  if (devHandle->ipcMemHandleClose == nullptr) {
+    GTEST_SKIP() << "ipcMemHandleClose is not available";
+  }
+
+  flagcxResult_t result = devHandle->ipcMemHandleClose(nullptr);
+  if (result == flagcxNotSupported) {
+    GTEST_SKIP() << "IPC memory handles are not supported";
+  }
+  EXPECT_EQ(result, flagcxInvalidArgument);
+}
+
+int main(int argc, char **argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }
