@@ -82,7 +82,6 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <map>
 #include <mutex>
 #include <random>
@@ -153,6 +152,10 @@ struct BarexCtsMsg {
   uint64_t size;
   uint32_t nKeys;
   uint32_t rkeys[kMaxNics];
+  uint32_t seq; /* receiver's post-order index; sender matches in this order
+                   because CTS are delivered via a multi-threaded callback
+                   pool and may otherwise reorder — see barexIsend/OnRecvCall.
+                   Occupies the struct's former tail padding (size stays 64). */
 };
 static_assert(sizeof(BarexCtsMsg) == 64, "CTS wire layout must be stable");
 
@@ -228,8 +231,15 @@ struct BarexComm {
   bool isSend = false;
   std::atomic<bool> dead{false};
 
-  std::mutex mu;                    /* guards ctsQueue + slot alloc */
-  std::deque<BarexCtsMsg> ctsQueue; /* sender side: CTS from receiver */
+  std::mutex mu; /* guards ctsPending + slot alloc + seq counters */
+  /* Sender side: CTS from the receiver, keyed by the receiver's post-order
+     seq. The sender consumes strictly in seq order (sendExpectedSeq) so a
+     chunk's data always lands in the buffer the receiver posted for that
+     same chunk, regardless of the order the callback pool delivered the
+     CTS. Receiver side: recvSeq stamps each outgoing CTS in post order. */
+  std::map<uint64_t, BarexCtsMsg> ctsPending;
+  uint64_t recvSeq = 0;         /* receiver: next CTS seq to stamp */
+  uint64_t sendExpectedSeq = 0; /* sender: next CTS seq to consume */
   BarexRequest requests[kMaxRequests];
 
   BarexRequest *allocRequest() {
@@ -341,7 +351,7 @@ public:
         return;
       }
       std::lock_guard<std::mutex> lk(comm->mu);
-      comm->ctsQueue.push_back(cts);
+      comm->ctsPending[cts.seq] = cts;
       return;
     }
 
@@ -921,13 +931,22 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
   BarexRequest *req = nullptr;
   {
     std::lock_guard<std::mutex> lk(comm->mu);
-    if (comm->ctsQueue.empty())
-      return flagcxSuccess; /* receiver not ready — proxy retries */
+    /* Consume CTS strictly in the receiver's post order. The proxy calls
+       isend once per chunk in increasing chunk index, so chunk k must pair
+       with the CTS the receiver posted for its k-th irecv (seq == k). If
+       that CTS has not arrived yet (the callback pool may deliver a later
+       seq first), leave sendExpectedSeq untouched and let the proxy retry —
+       do NOT pair this chunk with a different CTS or the data lands in the
+       wrong buffer. */
+    auto it = comm->ctsPending.find(comm->sendExpectedSeq);
+    if (it == comm->ctsPending.end())
+      return flagcxSuccess; /* CTS for this chunk not here yet — retry */
     req = comm->allocRequest();
     if (req == nullptr)
-      return flagcxSuccess; /* request pool exhausted — retry */
-    cts = comm->ctsQueue.front();
-    comm->ctsQueue.pop_front();
+      return flagcxSuccess; /* request pool exhausted — retry (keep CTS) */
+    cts = it->second;
+    comm->ctsPending.erase(it);
+    comm->sendExpectedSeq++;
   }
 
   /* Receiver posted cts.size; both sides run the same chunk schedule so
@@ -984,9 +1003,12 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   BarexEngine *e = comm->engine;
 
   BarexRequest *req = nullptr;
+  uint64_t seq = 0;
   {
     std::lock_guard<std::mutex> lk(comm->mu);
     req = comm->allocRequest();
+    if (req != nullptr)
+      seq = comm->recvSeq++; /* stamp in post order (same lock as alloc) */
   }
   if (req == nullptr)
     return flagcxSuccess; /* pool exhausted — proxy re-posts */
@@ -999,6 +1021,7 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   cts.addr = (uint64_t)(uintptr_t)data[0];
   cts.size = sizes[0];
   cts.nKeys = mr->nKeys;
+  cts.seq = (uint32_t)seq;
   memcpy(cts.rkeys, mr->rkeys, sizeof(cts.rkeys));
 
   memp_t msg;
