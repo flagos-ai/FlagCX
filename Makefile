@@ -216,10 +216,8 @@ ifeq ($(USE_IBUC), 1)
 	NET_ADAPTOR_FLAG += -DUSE_IBUC
 endif
 
-# ACCL (accl::barex) P2P transport — vendor library for PPU + vsolar
-# hosts where peer-mem/DMA-BUF registration is unavailable. Headers and
-# libaccl_barex.so ship in the accl-barex devel package (/usr/include,
-# /usr/lib). Runtime selection: FLAGCX_P2P_TRANSPORT=accl.
+# ACCL (accl::barex) transport for PPU + vsolar hosts lacking peer-mem/DMA-BUF.
+# Devel package installs under /usr; select at runtime with FLAGCX_P2P_TRANSPORT=accl.
 ifeq ($(USE_ACCL_BAREX), 1)
 	ACCL_BAREX_HOME ?= /usr
 	ACCL_BAREX_INCLUDE = $(ACCL_BAREX_HOME)/include

@@ -526,9 +526,7 @@ public:
   FlagcxWorkerPool(const FlagcxWorkerPool &) = delete;
   FlagcxWorkerPool &operator=(const FlagcxWorkerPool &) = delete;
 
-  struct ibv_cq *getSharedCq() const {
-    return shared_cq_;
-  }
+  struct ibv_cq *getSharedCq() const { return shared_cq_; }
   int workerCount() const { return numWorkers_; }
   void registerQp(void *sendComm, struct ibv_qp *qp);
   void unregisterQp(struct ibv_qp *qp);
@@ -2043,10 +2041,8 @@ static int bootstrapExchangeDescTable(struct bootstrapState *bsState,
 }
 
 FlagcxP2pEngine *flagcxP2pEngineCreate() {
-  /* FLAGCX_P2P_TRANSPORT=accl routes the whole engine to the ACCL
-     (accl::barex) transport — required on PPU+vsolar hosts. Default is
-     the existing ibrc path; every entry point below checks the engine/
-     conn kind tag and forwards, so callers see one unchanged API. */
+  /* FLAGCX_P2P_TRANSPORT=accl routes the engine to the ACCL transport
+     (PPU+vsolar); default is ibrc. Entry points forward by kind tag. */
   const char *transport = flagcxGetEnv("FLAGCX_P2P_TRANSPORT");
   if (transport != NULL && strcasecmp(transport, "accl") == 0) {
 #ifdef USE_ACCL_BAREX

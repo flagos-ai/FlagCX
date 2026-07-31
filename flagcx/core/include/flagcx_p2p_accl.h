@@ -1,19 +1,16 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * FlagCX P2P engine — ACCL (accl::barex) transport.
+ * FlagCX P2P engine — ACCL (accl::barex) transport (internal header).
  *
- * Internal header. The public flagcx_p2p.h API stays unchanged; the
- * entry points in flagcx_p2p.cc route to this transport when the engine
- * was created with FLAGCX_P2P_TRANSPORT=accl. Every internal engine /
- * connection struct starts with a uint32_t kind tag so the shared entry
- * points can tell the transports apart without knowing their layouts.
+ * The public flagcx_p2p.h API stays unchanged; flagcx_p2p.cc routes to
+ * this transport when the engine is created with FLAGCX_P2P_TRANSPORT=accl.
+ * Every internal engine/conn struct starts with a uint32_t kind tag so the
+ * shared entry points can tell the transports apart.
  *
- * Built only when USE_ACCL_BAREX=1 (links against libaccl_barex, the
- * vendor library required for memory registration and RDMA on PPU +
- * vsolar hosts, where standard peer-mem / DMA-BUF registration is not
- * available). Without it the stubs below keep the dispatch sites
- * compiling and FLAGCX_P2P_TRANSPORT=accl fails engine creation.
+ * Built only when USE_ACCL_BAREX=1 (links libaccl_barex, required for
+ * memory registration and RDMA on PPU + vsolar). Otherwise the stubs
+ * below keep the dispatch sites compiling and accl engine creation fails.
  ************************************************************************/
 
 #ifndef FLAGCX_P2P_ACCL_H_

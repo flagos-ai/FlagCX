@@ -1,36 +1,21 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * FlagCX P2P engine — ACCL (accl::barex) transport implementation.
+ * FlagCX P2P engine: ACCL (accl::barex) transport for PPU + vsolar
+ * hosts, where GPU memory can only be registered and moved through
+ * ACCL (no peer-mem/DMA-BUF; VMM unpinnable — run FLAGCX_VMM_ENABLE=0).
  *
- * On PPU (810e) + vsolar RDMA hosts, device memory can only be
- * registered and moved through the vendor ACCL library: peer-mem and
- * DMA-BUF registration are not supported by the driver stack, and
- * CUDA-VMM memory cannot be pinned at all (run with
- * FLAGCX_VMM_ENABLE=0 so buffers come from cudaMalloc).
+ * Shape mirrors Mooncake's barex_transport: one XSimpleMempool over the
+ * selected NICs (RegUserMr returns one MR/rkey per NIC); one server +
+ * client XContext per NIC; XListener/XConnector own setup (no QP here);
+ * transfers post via XChannel::WriteBatch/ReadBatch with callback
+ * completion (no CQ poll); the per-slice remote key comes from the
+ * region's per-NIC rkey vector via channel->GetPeerNicId().
  *
- * Shape mirrors Mooncake's barex_transport:
- *   - one XSimpleMempool over the selected NICs; RegUserMr returns one
- *     MR (lkey/rkey) per NIC,
- *   - one server + one client XContext per NIC; XListener/XConnector
- *     own connection setup (no QP handling here),
- *   - transfers post through XChannel::WriteBatch/ReadBatch; completion
- *     arrives on ACCL threads via callbacks (no CQ polling),
- *   - the remote key for a slice is picked at post time by
- *     channel->GetPeerNicId() from the region's per-NIC rkey vector.
- *
- * Peer rendezvous reuses FlagCX's bootstrap sockets with an
- * ACCL-specific hello (barex data port + notif port); the desc table
- * carries rkey VECTORS. Both ends of a connection must run this
- * transport — the hello magic rejects an ibrc peer explicitly.
- *
- * The 64-byte FlagcxP2pRdmaDesc is kept: rkeys[0] sits in .rkey (same
- * offset ibrc uses), the key count in .nmsgs, rkeys[1..7] in .padding.
- * Serialize/Deserialize/UpdateDesc work unchanged.
- *
- * v1 limits: transfers are initiated by the connecting side only (the
- * NIXL/PD-disaggregation pattern); no IPC fast path; two-sided
- * send/recv unsupported.
+ * Rendezvous reuses FlagCX bootstrap with an ACCL hello (magic rejects
+ * ibrc peers). The 64-byte FlagcxP2pRdmaDesc is kept: rkeys[0] at ibrc's
+ * .rkey offset, count in .nmsgs, rkeys[1..7] in .padding. v1: transfers
+ * initiated by the connecting side only; no IPC path; no two-sided.
  ************************************************************************/
 
 #ifdef USE_ACCL_BAREX
@@ -934,10 +919,9 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
   (void)remoteGpuIdx;
   (void)sameProcess; /* v1: no IPC fast path */
 
-  /* data-plane channels: qpsPerCtx per client context. The control
-     block is shared with the callbacks; if we time out and move on, a
-     late callback sees `abandoned` and destroys its channel instead of
-     touching freed state. */
+  /* data-plane channels: qpsPerCtx per client ctx. Control block shared
+     with callbacks; on timeout a late callback sees `abandoned` and
+     destroys its own channel instead of touching freed state. */
   const int qps = (int)flagcxParamP2pAcclQpsPerCtx();
   const int total = qps * (int)engine->clientCtxs.size();
   auto ctl = std::make_shared<AcclConnectCtl>(total);

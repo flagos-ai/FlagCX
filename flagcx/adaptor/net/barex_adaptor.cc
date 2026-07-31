@@ -1,42 +1,21 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * FlagCX net adaptor "barex" — collective/C2C network transport over the
- * vendor ACCL library (accl::barex) for PPU + vsolar hosts.
+ * FlagCX net adaptor "barex": collective/C2C transport over the vendor
+ * ACCL library (accl::barex) for PPU + vsolar hosts, where GPU memory
+ * cannot be registered via peer-mem or DMA-BUF and must go through
+ * ACCL's RegUserMr / XChannel. Requires FLAGCX_VMM_ENABLE=0 (VMM memory
+ * is unpinnable) so staging buffers come from cudaMalloc.
  *
- * Why this exists: on PPU (810e), device memory cannot be registered
- * through peer-mem or DMA-BUF (the driver stack supports neither), so
- * the in-tree IBRC adaptor cannot move GPU buffers. The only supported
- * way to pin PPU memory for RDMA is ACCL's XSimpleMempool::RegUserMr;
- * data movement must likewise go through ACCL channels. CUDA-VMM memory
- * cannot be pinned at all — run with FLAGCX_VMM_ENABLE=0 so staging
- * buffers (deviceAdaptor->gdrMemAlloc) come from cudaMalloc.
+ * Rendezvous (mirrors ibrc's CTS design): connect sends HELLO{commId}
+ * over an XChannel; irecv posts CTS{slot,addr,size,rkeys,seq}; isend
+ * answers WriteSingle(imm=slot) and OnImmRecvCall completes the recv
+ * (write-with-imm orders payload before the imm). Shared state is mutex-
+ * or atomic-guarded (callbacks run on ACCL IO threads).
  *
- * Wire protocol (rendezvous, mirroring the ibrc adaptor's CTS design
- * with ACCL primitives):
- *   - connect/accept: the 64-byte listen handle carries the engine's
- *     OOB IP, the shared barex data port, and a random commId. The
- *     connector opens an XChannel to the listener and sends HELLO
- *     {commId}; the acceptor demuxes the channel to the matching
- *     pending accept.
- *   - irecv posts CTS {slot, addr, size, per-NIC rkeys} to the sender
- *     over XChannel::Send (small host message).
- *   - isend pops a CTS and issues one WriteSingle(signal_peer=true,
- *     imm_data=slot) straight into the receiver's buffer; the
- *     receiver's OnImmRecvCall(imm) marks the recv request complete
- *     (RDMA write-with-imm orders data placement before imm delivery).
- *   - test() reads an atomic request state; iflush is a no-op (write
- *     completion on an RC channel implies remote placement; PPU-side
- *     ordering is the vendor stack's contract, validated by
- *     barex_benchmark -E data checks).
- *
- * Threading: connect/accept run on the proxy service thread,
- * isend/irecv/test on the proxy progress thread, callbacks on ACCL IO
- * threads — every shared structure below is mutex- or atomic-guarded.
- *
- * Selected at build time via USE_ACCL_BAREX=1 (takes the IBRC registry
- * slot, like USE_UCX does); FLAGCX_BAREX_DISABLE=1 falls back to the
- * socket adaptor at runtime.
+ * Built with USE_ACCL_BAREX=1 (IBRC registry slot, like USE_UCX) or
+ * loaded as a plugin .so (preferred; see the export note below).
+ * FLAGCX_BAREX_DISABLE=1 opts out at runtime.
  ************************************************************************/
 
 #ifdef USE_ACCL_BAREX
@@ -152,10 +131,8 @@ struct BarexCtsMsg {
   uint64_t size;
   uint32_t nKeys;
   uint32_t rkeys[kMaxNics];
-  uint32_t seq; /* receiver's post-order index; sender matches in this order
-                   because CTS are delivered via a multi-threaded callback
-                   pool and may otherwise reorder — see barexIsend/OnRecvCall.
-                   Occupies the struct's former tail padding (size stays 64). */
+  uint32_t seq; /* receiver's post-order index; sender consumes CTS in
+                   this order (callbacks may reorder). Former padding. */
 };
 static_assert(sizeof(BarexCtsMsg) == 64, "CTS wire layout must be stable");
 
@@ -170,9 +147,8 @@ struct BarexNetHandle {
   uint32_t state;                        /* connect-side stage */
   uint32_t pad;
   void *connectState; /* connect-side heap state across retries */
-  /* NOTE: transport.cc writes handle->stage.comm (flagcxIbHandle offset
-     56..64) after bootstrapRecv; our fields end at 56, so that write
-     lands in the buffer's tail padding. Keep this struct <= 56 bytes. */
+  /* Keep <= 56 bytes: transport.cc writes stage.comm at offset 56 after
+     bootstrapRecv, landing in this buffer's tail padding. */
 };
 static_assert(sizeof(BarexNetHandle) <= 56,
               "must not overlap flagcxIbHandle::stage.comm at offset 56");
@@ -232,11 +208,9 @@ struct BarexComm {
   std::atomic<bool> dead{false};
 
   std::mutex mu; /* guards ctsPending + slot alloc + seq counters */
-  /* Sender side: CTS from the receiver, keyed by the receiver's post-order
-     seq. The sender consumes strictly in seq order (sendExpectedSeq) so a
-     chunk's data always lands in the buffer the receiver posted for that
-     same chunk, regardless of the order the callback pool delivered the
-     CTS. Receiver side: recvSeq stamps each outgoing CTS in post order. */
+  /* Sender: CTS keyed by the receiver's post-order seq, consumed strictly
+     in order (sendExpectedSeq) so chunk k lands in the buffer posted for
+     it regardless of callback delivery order. Receiver: recvSeq stamps. */
   std::map<uint64_t, BarexCtsMsg> ctsPending;
   uint64_t recvSeq = 0;         /* receiver: next CTS seq to stamp */
   uint64_t sendExpectedSeq = 0; /* sender: next CTS seq to consume */
@@ -544,9 +518,7 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   p->name = const_cast<char *>(name);
   p->pciPath = nullptr;
   p->guid = (uint64_t)dev;
-  /* GPU staging works because RegUserMr pins cudaMalloc'd PPU memory
-     (VMM must be off). No DMABUF: the whole point of this adaptor is
-     that the PPU stack has no dmabuf support. */
+  /* RegUserMr pins cudaMalloc'd PPU memory (VMM off). PPU has no dmabuf. */
   p->ptrSupport = FLAGCX_PTR_HOST | FLAGCX_PTR_CUDA;
   p->regIsGlobal = 1; /* MRs live in the engine-wide mempool */
   p->speed = (int)flagcxParamBarexSpeed();
@@ -592,8 +564,7 @@ static flagcxResult_t barexListen(int dev, void *opaqueHandle,
 }
 
 /* Non-blocking, resumable: *sendComm stays NULL until the channel is up
-   and HELLO has been delivered. State survives retries inside the
-   handle (the proxy re-passes the same buffer each call). */
+   and HELLO delivered; state lives in the handle across retries. */
 static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
                                    void **sendComm) {
   *sendComm = nullptr;
@@ -876,9 +847,7 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
   return flagcxSuccess;
 }
 
-/* The recv-side proxy calls this unguarded when FLAGCX_DMABUF_ENABLE=1;
-   the PPU stack has no dmabuf, so treat the fd as irrelevant and pin
-   through RegUserMr like regMr does. */
+/* PPU has no dmabuf; ignore the fd and pin through RegUserMr like regMr. */
 static flagcxResult_t barexRegMrDmaBuf(void *comm, void *data, size_t size,
                                        int type, uint64_t offset, int fd,
                                        int mrFlags, void **mhandle) {
@@ -931,13 +900,9 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
   BarexRequest *req = nullptr;
   {
     std::lock_guard<std::mutex> lk(comm->mu);
-    /* Consume CTS strictly in the receiver's post order. The proxy calls
-       isend once per chunk in increasing chunk index, so chunk k must pair
-       with the CTS the receiver posted for its k-th irecv (seq == k). If
-       that CTS has not arrived yet (the callback pool may deliver a later
-       seq first), leave sendExpectedSeq untouched and let the proxy retry —
-       do NOT pair this chunk with a different CTS or the data lands in the
-       wrong buffer. */
+    /* Consume CTS in receiver post order (seq == chunk index). If the
+       expected seq hasn't arrived, leave sendExpectedSeq and let the proxy
+       retry — never pair a chunk with a different CTS. */
     auto it = comm->ctsPending.find(comm->sendExpectedSeq);
     if (it == comm->ctsPending.end())
       return flagcxSuccess; /* CTS for this chunk not here yet — retry */
@@ -949,9 +914,7 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
     comm->sendExpectedSeq++;
   }
 
-  /* Receiver posted cts.size; both sides run the same chunk schedule so
-     sizes agree, but clamp for safety (ibrc semantics: send truncates
-     to the posted recv size). */
+  /* Clamp to the posted recv size (ibrc semantics: send truncates). */
   const size_t wsize = size < cts.size ? size : (size_t)cts.size;
   req->size = wsize;
 
@@ -1057,13 +1020,9 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   return flagcxSuccess;
 }
 
-/* Write completion on an RC channel implies remote placement, and
-   write-with-imm orders payload before the imm that completes the recv
-   request; the vendor stack owns NIC->PPU visibility (validated by
-   barex_benchmark -E). Nothing to flush — but the IBRC-slot consumer
-   (net.cc flagcxProxyRecv) only advances its flush stage when a request
-   is returned, so hand back the shared (void*)0x1 sentinel the caller
-   already special-cases as "instantly done" before calling test(). */
+/* Nothing to flush: write-with-imm orders payload before the completing
+   imm. Return the (void*)0x1 sentinel because the IBRC-slot consumer
+   (net.cc flagcxProxyRecv) only advances its flush stage on a request. */
 static flagcxResult_t barexIflush(void *recvComm, int n, void **data,
                                   int *sizes, void **mhandles, void **request) {
   (void)recvComm;
@@ -1086,9 +1045,8 @@ static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
   if (st == BAREX_REQ_PENDING)
     return flagcxSuccess;
   if (st == BAREX_REQ_ERROR) {
-    /* Sticky: the proxy ignores test()'s return code and would re-test
-       the same pointer, so the slot must not be recycled. The comm is
-       broken; surface the error every call. */
+    /* Sticky: proxy re-tests the same pointer, so don't recycle the slot;
+       surface the error every call. */
     return flagcxInternalError;
   }
   *done = 1;
@@ -1121,8 +1079,8 @@ static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
 
 } // namespace barexnet
 
-/* One-sided iput/iget/iputSignal serve the P2P/one-sided engine, not
-   the proxy collective path — left NULL like the UCX adaptor. */
+/* One-sided iput/iget/iputSignal serve the P2P engine, not the proxy
+   collective path — left NULL like the UCX adaptor. */
 struct flagcxNetAdaptor flagcxNetBarex = {
     // Basic functions
     "BAREX", barexnet::barexInit, barexnet::barexDevices,
@@ -1154,13 +1112,10 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     NULL, // igetBatch
 };
 
-/* Plugin export (FLAGCX_NET_ADAPTOR_PLUGIN mechanism, v1 vtable).
-   IMPORTANT deployment note: prefer loading barex as a plugin .so rather
-   than linking libaccl_barex into libflagcx. The plugin loader dlopens
-   with RTLD_LOCAL, which keeps libaccl_barex's dependency libu2mm.so out
-   of the global symbol table — libpccl's internal u2mm implementation
-   resolves against a globally visible libu2mm and crashes in
-   wrap_u2mm_symbols during pcclCommInitRank otherwise. */
+/* Plugin export (FLAGCX_NET_ADAPTOR_PLUGIN, v1 vtable). Prefer this over
+   linking libaccl_barex into libflagcx: the loader uses RTLD_LOCAL, keeping
+   libu2mm.so out of the global symbol table — otherwise libpccl's own u2mm
+   crashes in wrap_u2mm_symbols during pcclCommInitRank. */
 extern "C" __attribute__((visibility(
     "default"))) struct flagcxNetAdaptor_v1 flagcxNetAdaptorPlugin_v1 = {
     "BAREX",
