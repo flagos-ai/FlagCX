@@ -590,7 +590,8 @@ TEST_F(DeviceAdaptorTest, GetDeviceByPciBusId) {
     // Get PCI bus ID string directly from runtime (independent of
     // getDevicePciBusId)
     char pciBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
-    ASSERT_EQ(deviceAdaptor->getDevicePciBusId(pciBusId, sizeof(pciBusId), dev), flagcxSuccess)
+    ASSERT_EQ(deviceAdaptor->getDevicePciBusId(pciBusId, sizeof(pciBusId), dev),
+              flagcxSuccess)
         << "getDevicePciBusId failed for dev=" << dev;
 
     // Reverse lookup: string -> device index
@@ -681,19 +682,19 @@ TEST_F(DeviceAdaptorTest, IpcMemHandleGet) {
   constexpr size_t bufferSize = 4096;
   void *devPtr = nullptr;
   ASSERT_EQ(
-      devHandle->deviceMalloc(&devPtr, bufferSize, flagcxMemDevice, stream),
+      devHandle->deviceMalloc(&devPtr, bufferSize, flagcxMemDevice, nullptr),
       flagcxSuccess);
   ASSERT_NE(devPtr, nullptr);
 
   flagcxIpcMemHandle_t handle = nullptr;
   flagcxResult_t result = devHandle->ipcMemHandleCreate(&handle, nullptr);
   if (result == flagcxNotSupported) {
-    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, nullptr),
               flagcxSuccess);
     GTEST_SKIP() << "IPC memory handles are not supported";
   }
   if (result != flagcxSuccess || handle == nullptr) {
-    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+    EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, nullptr),
               flagcxSuccess);
     FAIL() << "ipcMemHandleCreate returned " << static_cast<int>(result);
   }
@@ -703,7 +704,7 @@ TEST_F(DeviceAdaptorTest, IpcMemHandleGet) {
   EXPECT_EQ(devHandle->ipcMemHandleGet(handle, nullptr), flagcxInvalidArgument);
 
   EXPECT_EQ(devHandle->ipcMemHandleFree(handle), flagcxSuccess);
-  EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, stream),
+  EXPECT_EQ(devHandle->deviceFree(devPtr, flagcxMemDevice, nullptr),
             flagcxSuccess);
 }
 

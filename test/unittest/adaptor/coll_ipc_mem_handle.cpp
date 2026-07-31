@@ -12,11 +12,10 @@
 #include "adaptor.h"
 #include "flagcx.h"
 
-
 namespace {
 
-#define ASSERT_FLAGCX_SUCCESS(expr)                                           \
-  do {                                                                        \
+#define ASSERT_FLAGCX_SUCCESS(expr)                                            \
+  do {                                                                         \
     flagcxResult_t result = (expr);                                            \
     if (result != flagcxSuccess) {                                             \
       ADD_FAILURE() << #expr << " returned " << static_cast<int>(result);      \
@@ -25,8 +24,8 @@ namespace {
     }                                                                          \
   } while (0)
 
-#define ASSERT_MPI_SUCCESS(expr)                                              \
-  do {                                                                        \
+#define ASSERT_MPI_SUCCESS(expr)                                               \
+  do {                                                                         \
     int result = (expr);                                                       \
     if (result != MPI_SUCCESS) {                                               \
       ADD_FAILURE() << #expr << " returned " << result;                        \
@@ -35,13 +34,13 @@ namespace {
     }                                                                          \
   } while (0)
 
-#define ASSERT_MPI_TRUE(condition)                                            \
-  do {                                                                        \
-    if (!(condition)) {                                                       \
-      ADD_FAILURE() << "MPI assertion failed: " << #condition;               \
-      MPI_Abort(MPI_COMM_WORLD, 1);                                           \
-      return;                                                                 \
-    }                                                                         \
+#define ASSERT_MPI_TRUE(condition)                                             \
+  do {                                                                         \
+    if (!(condition)) {                                                        \
+      ADD_FAILURE() << "MPI assertion failed: " << #condition;                 \
+      MPI_Abort(MPI_COMM_WORLD, 1);                                            \
+      return;                                                                  \
+    }                                                                          \
   } while (0)
 
 class IpcMemHandleMpiTest : public ::testing::Test {
@@ -83,12 +82,11 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
   constexpr size_t bufferSize = 4096;
   constexpr int expectedValue = 0x12345678;
 
-  int localApisAvailable =
-      devHandle->ipcMemHandleCreate != nullptr &&
-      devHandle->ipcMemHandleGet != nullptr &&
-      devHandle->ipcMemHandleOpen != nullptr &&
-      devHandle->ipcMemHandleClose != nullptr &&
-      devHandle->ipcMemHandleFree != nullptr;
+  int localApisAvailable = devHandle->ipcMemHandleCreate != nullptr &&
+                           devHandle->ipcMemHandleGet != nullptr &&
+                           devHandle->ipcMemHandleOpen != nullptr &&
+                           devHandle->ipcMemHandleClose != nullptr &&
+                           devHandle->ipcMemHandleFree != nullptr;
   int allApisAvailable = 0;
   ASSERT_MPI_SUCCESS(MPI_Allreduce(&localApisAvailable, &allApisAvailable, 1,
                                    MPI_INT, MPI_MIN, MPI_COMM_WORLD));
@@ -102,8 +100,7 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
   size_t localHandleSize = 0;
   flagcxResult_t createResult =
       devHandle->ipcMemHandleCreate(&handle, &localHandleSize);
-  if (createResult != flagcxSuccess &&
-    createResult != flagcxNotSupported) {
+  if (createResult != flagcxSuccess && createResult != flagcxNotSupported) {
     ADD_FAILURE() << "ipcMemHandleCreate returned "
                   << static_cast<int>(createResult);
     MPI_Abort(MPI_COMM_WORLD, static_cast<int>(createResult));
@@ -125,23 +122,22 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
 
   if (rank == 0) {
     void *devPtr = nullptr;
-    ASSERT_FLAGCX_SUCCESS(devHandle->deviceMalloc(
-        &devPtr, bufferSize, flagcxMemDevice, nullptr));
+    ASSERT_FLAGCX_SUCCESS(
+        devHandle->deviceMalloc(&devPtr, bufferSize, flagcxMemDevice, nullptr));
     ASSERT_MPI_TRUE(devPtr != nullptr);
 
     int hostValue = expectedValue;
-    ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
-        devPtr, &hostValue, sizeof(hostValue), flagcxMemcpyHostToDevice,
-        nullptr));
+    ASSERT_FLAGCX_SUCCESS(
+        devHandle->deviceMemcpy(devPtr, &hostValue, sizeof(hostValue),
+                                flagcxMemcpyHostToDevice, nullptr));
     ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(nullptr));
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleGet(handle, devPtr));
 
     ASSERT_MPI_SUCCESS(MPI_Send(&localHandleSize, sizeof(localHandleSize),
                                 MPI_BYTE, 1, 0, MPI_COMM_WORLD));
-    ASSERT_MPI_SUCCESS(
-        MPI_Send(handle, static_cast<int>(localHandleSize), MPI_BYTE, 1, 1,
-                 MPI_COMM_WORLD));
+    ASSERT_MPI_SUCCESS(MPI_Send(handle, static_cast<int>(localHandleSize),
+                                MPI_BYTE, 1, 1, MPI_COMM_WORLD));
 
     int acknowledgement = 0;
     ASSERT_MPI_SUCCESS(MPI_Recv(&acknowledgement, 1, MPI_INT, 1, 2,
@@ -191,7 +187,6 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
 }
 
 } // namespace
-
 
 int main(int argc, char **argv) {
   int mpiResult = MPI_Init(&argc, &argv);
