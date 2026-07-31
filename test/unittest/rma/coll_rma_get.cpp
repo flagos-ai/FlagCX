@@ -74,8 +74,9 @@ TEST_F(RmaTest, GetSmall) {
     for (size_t i = 0; i < testSize; ++i) {
       if (received[i] != 0xCD) {
         mismatches++;
-        if (mismatches == 1)
+        if (mismatches == 1) {
           EXPECT_EQ(received[i], 0xCD) << "Mismatch at byte " << i;
+        }
       }
     }
     EXPECT_EQ(mismatches, 0);
@@ -130,8 +131,9 @@ TEST_F(RmaTest, GetLarge) {
       uint8_t expected = static_cast<uint8_t>((i * 7) & 0xFF);
       if (received[i] != expected) {
         mismatches++;
-        if (mismatches == 1)
+        if (mismatches == 1) {
           EXPECT_EQ(received[i], expected) << "Mismatch at byte " << i;
+        }
       }
     }
     EXPECT_EQ(mismatches, 0);
@@ -184,9 +186,10 @@ TEST_F(RmaTest, GetBidirectional) {
     uint8_t expected = static_cast<uint8_t>((peer + 1 + i) & 0xFF);
     if (received[i] != expected) {
       mismatches++;
-      if (mismatches == 1)
+      if (mismatches == 1) {
         EXPECT_EQ(received[i], expected)
             << "Mismatch at byte " << i << " reading from rank " << peer;
+      }
     }
   }
   EXPECT_EQ(mismatches, 0);

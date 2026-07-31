@@ -1,0 +1,22 @@
+# makefiles/platforms/amd.mk
+# AMD ROCm platform configuration.
+
+DEVICE_HOME  ?= /opt/rocm
+DEVICE_LIB   := $(DEVICE_HOME)/lib
+DEVICE_INCLUDE := $(DEVICE_HOME)/include
+DEVICE_LINK  := -lhiprtc
+DEVICE_PLATFORM :=
+DEVICE_COMPILER :=
+DEVICE_COMPILE_FLAG :=
+DEVICE_LINK_FLAG :=
+DEVICE_FILE_EXTENSION :=
+
+CCL_HOME    ?= /opt/rocm
+CCL_LIB     := $(CCL_HOME)/lib
+CCL_INCLUDE := $(CCL_HOME)/include/rccl
+CCL_LINK    := -lrccl
+ADAPTOR_FLAG := -DUSE_AMD_ADAPTOR -D__HIP_PLATFORM_AMD__
+
+PLATFORM_KERNEL_DIR  :=
+PLATFORM_KERNEL_SRCS :=
+PLATFORM_EXTRA_SRCS  :=

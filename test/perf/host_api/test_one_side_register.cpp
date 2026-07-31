@@ -259,7 +259,7 @@ int main(int argc, char *argv[]) {
       printf("\n[Phase 3] deregister comm1, then put via comm2\n");
 
     flagcxCommWindowDeregister(comm1, dataWin1);
-    flagcxOneSideSignalDeregister(comm1->heteroComm);
+    flagcxOneSideSignalDeregister(comm1);
     dataWin1 = nullptr;
     MPI_Barrier(MPI_COMM_WORLD);
 
@@ -300,7 +300,7 @@ int main(int argc, char *argv[]) {
     devHandle->streamDestroy(waitStream);
 
     flagcxCommWindowDeregister(comm2, dataWin2);
-    flagcxOneSideSignalDeregister(comm2->heteroComm);
+    flagcxOneSideSignalDeregister(comm2);
     dataWin2 = nullptr;
   }
 

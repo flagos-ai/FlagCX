@@ -30,13 +30,19 @@ enum flagcxProxyOpState {
 struct flagcxProxyKernelState {
   pthread_t threads[FLAGCX_DEVICE_CTA_COUNT];
   flagcxFifo_t fifos[FLAGCX_DEVICE_CTA_COUNT];
-  int contextCount = 1;
+  int contextCount = 0;
   flagcxStream_t stream;
   int stop = 0;
   // Synchronization for initialization
   pthread_mutex_t initMutex;
   pthread_cond_t initCond;
   int ready = 0;
+  int initFailed = 0;
+  // Shared per-peer spinlocks for PUT_VALUE staging slot protection.
+  // All kernel proxy threads lock pvLocks[peer] before writing the staging
+  // buffer and posting iput, preventing cross-thread corruption.
+  pthread_spinlock_t *pvLocks = nullptr;
+  int pvLocksCount = 0;
 };
 
 struct flagcxProxyArgs;

@@ -3,10 +3,16 @@ include ../../make.inc
 # Local include directories for test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
-# device_api.cu object (compiled in test/device_api/build/obj/)
-KERNEL_DIR     := $(PROJECT_ROOT)/test/device_api
-DEVICE_API_OBJ := $(KERNEL_DIR)/build/obj/device_api.o
-DEVICE_API_INCLUDE := -I$(KERNEL_DIR)
+# device_api.cu object (compiled in test/kernel/[platform]/)
+DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
+DEVICE_API_INCLUDE := $(KERNEL_INCLUDE)
+
+# Device-link object (only needed for NVSHMEM)
+ifeq ($(USE_SHMEM), 1)
+DLINK_OBJ := $(KERNEL_OBJ_DIR)/dlink_api.o
+else
+DLINK_OBJ :=
+endif
 
 # Device linking provided by make.inc (DEVICE_LINK, DEVICE_HOME, etc.)
 
@@ -36,9 +42,14 @@ endif
 
 all: $(ALL_TARGETS)
 
-# Build device_api.o from test/device_api/ if not already built
+# Build device_api.o (and dlink_api.o if USE_SHMEM) from test/kernel/
+DEVICE_API_TARGETS := device_api.o
+ifeq ($(USE_SHMEM), 1)
+DEVICE_API_TARGETS += dlink_api.o
+endif
+
 device-api-obj:
-	@$(MAKE) -C $(KERNEL_DIR) device_api.o USE_NVIDIA=$(USE_NVIDIA) USE_DU=$(USE_DU)
+	@$(MAKE) -C $(KERNEL_DIR) $(DEVICE_API_TARGETS)
 
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
@@ -48,7 +59,7 @@ $(UNIT_TARGET): $(UNIT_OBJS)
 $(MPI_TARGET): device-api-obj $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(MPI_OBJS) $(DEVICE_API_OBJ) -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK) $(DEVICE_LINK)
+	@$(CXX) $(MPI_OBJS) $(DEVICE_API_OBJ) $(DLINK_OBJ) -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)

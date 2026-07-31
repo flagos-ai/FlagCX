@@ -27,11 +27,7 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
-#if defined(USE_DU_ADAPTOR)
 #include "du_adaptor.h"
-#else
-#include "nvidia_adaptor.h"
-#endif
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>
@@ -85,6 +81,18 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     }
     return;
   }
+
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    int rank = devComm.getIntraRank();
+    int nRanks = devComm.getIntraSize();
+    for (int p = 0; p < nRanks; p++) {
+      void *ptr = flagcxGetIntraPointer(mem, offset, p);
+      if (ptr == nullptr) {
+        printf("[rank %d] ERROR: getIntraPointer(peer=%d) returned NULL\n", rank, p);
+      }
+    }
+  }
+  __syncthreads();
 
   flagcxTeam intra = flagcxTeamIntra(devComm);
   flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
@@ -279,6 +287,10 @@ flagcxResult_t flagcxInterOneSidedAlltoAll(flagcxDevMem_t sendMem,
          *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
   cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    printf("[flagcxInterOneSidedAlltoAll] kernel launch FAILED: %s (%d)\n",
+           cudaGetErrorString(err), (int)err);
+  }
 
   return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -306,7 +318,10 @@ flagcxResult_t flagcxInterTwoSidedAlltoAll(flagcxDevMem_t sendMem,
 }
 
 
-// Shared IPC alltoall helper: each thread copies its portion of all intra peers.
+// Shared IPC alltoall helper: each CTA copies its own partition of all intra
+// peers.  Work is partitioned by word range so that the per-CTA barrier
+// (indexed by FLAGCX_BLOCK_IDX_X) correctly synchronizes the writes each CTA
+// performs — no cross-CTA grid barrier needed.
 // NOTE: assumes chunkSize is a multiple of 4 bytes (i.e., element type is
 // >= 4-byte aligned -- float, int32, etc.). Sub-4-byte types (half, int8)
 // with odd counts will lose tail bytes.
@@ -314,16 +329,22 @@ FLAGCX_DEVICE_INLINE_DECORATOR void
 ipcAlltoAll(const flagcxDevMem &sendMem, const flagcxDevMem &recvMem,
             flagcxTeam intra, int intraSize, int intraBase,
             int myWorldRank, size_t chunkSize) {
-  int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
-  int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
   size_t nWords = chunkSize / sizeof(uint32_t);
+  size_t wordsPerCta =
+      (nWords + (size_t)FLAGCX_GRID_DIM_X - 1) / (size_t)FLAGCX_GRID_DIM_X;
+  size_t wStart = (size_t)FLAGCX_BLOCK_IDX_X * wordsPerCta;
+  size_t wEnd = wStart + wordsPerCta;
+  if (wEnd > nWords)
+    wEnd = nWords;
+  int ctaTid = FLAGCX_THREAD_IDX_X;
+  int ctaThreads = FLAGCX_BLOCK_DIM_X;
   for (int lr = 0; lr < intraSize; lr++) {
     int worldPeer = intraBase + lr;
     uint32_t *src = (uint32_t *)flagcxGetLocalPointer(
         sendMem, (size_t)worldPeer * chunkSize);
     uint32_t *dst = (uint32_t *)flagcxGetPeerPointer(
         recvMem, (size_t)myWorldRank * chunkSize, intra, lr);
-    for (size_t w = (size_t)tid; w < nWords; w += (size_t)nthreads)
+    for (size_t w = wStart + (size_t)ctaTid; w < wEnd; w += (size_t)ctaThreads)
       dst[w] = src[w];
   }
 }

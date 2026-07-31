@@ -1,0 +1,22 @@
+# makefiles/platforms/metax.mk
+# MetaX platform configuration.
+
+DEVICE_HOME  ?= /opt/maca
+DEVICE_LIB   := $(DEVICE_HOME)/lib64
+DEVICE_INCLUDE := $(DEVICE_HOME)/include
+DEVICE_LINK  :=
+DEVICE_PLATFORM :=
+DEVICE_COMPILER :=
+DEVICE_COMPILE_FLAG :=
+DEVICE_LINK_FLAG :=
+DEVICE_FILE_EXTENSION :=
+
+CCL_HOME    ?= /opt/maca
+CCL_LIB     := $(CCL_HOME)/lib64
+CCL_INCLUDE := $(CCL_HOME)/include
+CCL_LINK    := -lmccl
+ADAPTOR_FLAG := -DUSE_METAX_ADAPTOR
+
+PLATFORM_KERNEL_DIR  :=
+PLATFORM_KERNEL_SRCS :=
+PLATFORM_EXTRA_SRCS  :=

@@ -6,7 +6,7 @@
  *   - Struct-based IR wrappers: K1–K8
  *   - S-suffixed (scalar) IR functions:      S1–S10
  *
- * Compiled from device_ir.cu in test/device_api/.
+ * Compiled from device_ir.cu in test/kernel/[platform]/.
  ************************************************************************/
 
 #ifndef TEST_KERNEL_DEVICE_IR_H_

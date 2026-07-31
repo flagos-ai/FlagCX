@@ -71,7 +71,6 @@ static double bwFactorFn(int totalProcs) {
 }
 
 static void dataInitFn(PerfContext &ctx, size_t size, size_t count) {
-  AlltoallvData *d = (AlltoallvData *)ctx.userData;
   size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
   size_t perPeer = count / ctx.totalProcs;
 

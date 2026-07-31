@@ -294,7 +294,7 @@ class FLAGCXLibrary:
         
         Function("flagcxCommRegister", flagcxResult_t, [
             flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.POINTER(ctypes.c_void_p)
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_int
         ]),
         
         Function("flagcxOneSideRegister", flagcxResult_t, [
@@ -361,19 +361,19 @@ class FLAGCXLibrary:
 
         # Device API — Memory Management
         Function("flagcxMemAlloc", flagcxResult_t, [
-            ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t
+            ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_int
         ]),
 
-        Function("flagcxMemFree", flagcxResult_t, [ctypes.c_void_p]),
+        Function("flagcxMemFree", flagcxResult_t, [ctypes.c_void_p, ctypes.c_int]),
 
         # Device API — Window Registration
         Function("flagcxCommWindowRegister", flagcxResult_t, [
             flagcxComm_t, ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.POINTER(flagcxWindow_t), ctypes.c_int
+            ctypes.POINTER(flagcxWindow_t), ctypes.c_int, ctypes.c_int
         ]),
 
         Function("flagcxCommWindowDeregister", flagcxResult_t, [
-            flagcxComm_t, flagcxWindow_t
+            flagcxComm_t, flagcxWindow_t, ctypes.c_int
         ]),
 
         # Device API — DevComm Lifecycle
@@ -628,11 +628,12 @@ class FLAGCXLibrary:
     def flagcxCommDestroy(self, comm: flagcxComm_t) -> None:
         self.FLAGCX_CHECK(self._funcs["flagcxCommDestroy"](comm))
 
-    def flagcxCommRegister(self, comm: flagcxComm_t, buff: int, size: int) -> ctypes.c_void_p:
+    def flagcxCommRegister(self, comm: flagcxComm_t, buff: int, size: int,
+                            allocator: int = 0) -> ctypes.c_void_p:
         handle = ctypes.c_void_p()
         self.FLAGCX_CHECK(self._funcs["flagcxCommRegister"](
             comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
-            ctypes.byref(handle)))
+            ctypes.byref(handle), ctypes.c_int(allocator)))
         return handle
 
     def flagcxOneSideRegister(self, comm: flagcxComm_t,
@@ -722,24 +723,27 @@ class FLAGCXLibrary:
         self.FLAGCX_CHECK(self._funcs["flagcxWaitCounter"](
             comm, ctypes.c_uint64(target)))
 
-    def flagcxMemAlloc(self, size: int) -> ctypes.c_void_p:
+    def flagcxMemAlloc(self, size: int, allocator: int = 0) -> ctypes.c_void_p:
         ptr = ctypes.c_void_p()
-        self.FLAGCX_CHECK(self._funcs["flagcxMemAlloc"](ctypes.byref(ptr), ctypes.c_size_t(size)))
+        self.FLAGCX_CHECK(self._funcs["flagcxMemAlloc"](
+            ctypes.byref(ptr), ctypes.c_size_t(size), ctypes.c_int(allocator)))
         return ptr
 
-    def flagcxMemFree(self, ptr: ctypes.c_void_p) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxMemFree"](ptr))
+    def flagcxMemFree(self, ptr: ctypes.c_void_p, allocator: int = 0) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxMemFree"](ptr, ctypes.c_int(allocator)))
 
     def flagcxCommWindowRegister(self, comm: flagcxComm_t, buff: int, size: int,
-                                  flags: int = 0) -> flagcxWindow_t:
+                                  flags: int = 0, allocator: int = 0) -> flagcxWindow_t:
         win = flagcxWindow_t()
         self.FLAGCX_CHECK(self._funcs["flagcxCommWindowRegister"](
             comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
-            ctypes.byref(win), ctypes.c_int(flags)))
+            ctypes.byref(win), ctypes.c_int(flags), ctypes.c_int(allocator)))
         return win
 
-    def flagcxCommWindowDeregister(self, comm: flagcxComm_t, win: flagcxWindow_t) -> None:
-        self.FLAGCX_CHECK(self._funcs["flagcxCommWindowDeregister"](comm, win))
+    def flagcxCommWindowDeregister(self, comm: flagcxComm_t, win: flagcxWindow_t,
+                                    allocator: int = 0) -> None:
+        self.FLAGCX_CHECK(self._funcs["flagcxCommWindowDeregister"](
+            comm, win, ctypes.c_int(allocator)))
 
     def flagcxDevCommCreate(self, comm: flagcxComm_t,
                              reqs: flagcxDevCommRequirements) -> flagcxDevComm_t:

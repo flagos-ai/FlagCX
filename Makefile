@@ -21,7 +21,12 @@ USE_UCX ?= 0
 USE_IBUC ?= 0
 USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
+USE_PPU ?= 0
 COMPILE_KERNEL ?= 0
+
+# Device API backend selection
+USE_SHMEM ?= 0
+SHMEM_HOME ?= /usr/local/nvshmem
 
 # set to empty if not provided
 DEVICE_HOME ?=
@@ -55,6 +60,8 @@ ifeq ($(strip $(DEVICE_HOME)),)
 		DEVICE_HOME = /opt/tops/
 	else ifeq ($(USE_SUNRISE), 1)
 		DEVICE_HOME = /usr/local/tangrt
+	else ifeq ($(USE_PPU), 1)
+		DEVICE_HOME = /usr/local/cuda
 	else
 		DEVICE_HOME = /usr/local/cuda
 	endif
@@ -85,6 +92,8 @@ ifeq ($(strip $(CCL_HOME)),)
 		CCL_HOME = /usr
 	else ifeq ($(USE_SUNRISE), 1)
 		CCL_HOME = /usr/local/pccl
+	else ifeq ($(USE_PPU), 1)
+		CCL_HOME = /usr/local/cuda
 	else
 		CCL_HOME = /usr/local/nccl/build
 	endif
@@ -136,134 +145,34 @@ COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
 ifeq ($(USE_NVIDIA), 1)
-	include makefiles/nvidia_gencode.mk
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
-	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_PLATFORM = CUDA
-	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
-	DEVICE_FILE_EXTENSION = cu
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_NVIDIA_ADAPTOR
-ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
-	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
-endif
+  include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lascendcl
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lhccl
-	ADAPTOR_FLAG = -DUSE_ASCEND_ADAPTOR
+  include makefiles/ascend.mk
 else ifeq ($(USE_ILUVATAR_COREX), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcudart -lcuda
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_ILUVATAR_COREX_ADAPTOR
+  include makefiles/iluvatar_corex.mk
 else ifeq ($(USE_CAMBRICON), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcnrt
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lcncl
-	ADAPTOR_FLAG = -DUSE_CAMBRICON_ADAPTOR
+  include makefiles/cambricon.mk
 else ifeq ($(USE_METAX), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lmccl
-	ADAPTOR_FLAG = -DUSE_METAX_ADAPTOR
+  include makefiles/metax.mk
 else ifeq ($(USE_MUSA), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lmccl -lmusa
-	ADAPTOR_FLAG = -DUSE_MUSA_ADAPTOR
+  include makefiles/musa.mk
 else ifeq ($(USE_KUNLUNXIN), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/so
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lxpurt -lcudart
-	CCL_LIB = $(CCL_HOME)/so
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lbkcl
-	ADAPTOR_FLAG = -DUSE_KUNLUNXIN_ADAPTOR
+  include makefiles/kunlunxin.mk
 else ifeq ($(USE_DU), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lcudart -lcuda
-	CCL_LIB = $(CCL_HOME)/lib64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_DU_ADAPTOR
-	DEVICE_PLATFORM = DU
-	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC
-	DEVICE_FILE_EXTENSION = cu
+  include makefiles/du.mk
 else ifeq ($(USE_AMD), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lhiprtc
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include/rccl
-	CCL_LINK = -lrccl
-	ADAPTOR_FLAG = -DUSE_AMD_ADAPTOR -D__HIP_PLATFORM_AMD__
+  include makefiles/amd.mk
 else ifeq ($(USE_TSM), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -lhpgr
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -ltccl
-	ADAPTOR_FLAG = -DUSE_TSM_ADAPTOR
+  include makefiles/tsm.mk
 else ifeq ($(USE_ENFLAME), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -ltopsrt
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -leccl
-	ADAPTOR_FLAG = -DUSE_ENFLAME_ADAPTOR
+  include makefiles/enflame.mk
 else ifeq ($(USE_SUNRISE), 1)
-	DEVICE_LIB = $(DEVICE_HOME)/targets/linux-x86_64/lib
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include
-	DEVICE_LINK = -ltangrt_shared
-	CCL_LIB = $(CCL_HOME)/lib/linux-x86_64
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lpccl
-	ADAPTOR_FLAG = -DUSE_SUNRISE_ADAPTOR
+  include makefiles/sunrise.mk
+else ifeq ($(USE_PPU), 1)
+  include makefiles/ppu.mk
 else
-	DEVICE_LIB = $(DEVICE_HOME)/lib64
-	DEVICE_INCLUDE = $(DEVICE_HOME)/include $(DEVICE_HOME)/include/cccl
-	DEVICE_LINK = -lcudart -lcuda
-	DEVICE_PLATFORM = CUDA
-	DEVICE_COMPILER = $(DEVICE_HOME)/bin/nvcc
-	DEVICE_COMPILE_FLAG = -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
-	DEVICE_LINK_FLAG = --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
-	DEVICE_FILE_EXTENSION = cu
-	CCL_LIB = $(CCL_HOME)/lib
-	CCL_INCLUDE = $(CCL_HOME)/include
-	CCL_LINK = -lnccl
-	ADAPTOR_FLAG = -DUSE_NVIDIA_ADAPTOR
-ifeq ($(NVCC_GENCODE_MULTICAST_UNSUPPORTED), 1)
-	ADAPTOR_FLAG += -DNVCC_GENCODE_MULTICAST_UNSUPPORTED
-endif
-	USE_NVIDIA := 1
-endif
-
-ifeq ($(FORCE_DEFAULT_PATH), 1)
-	ADAPTOR_FLAG += -DFLAGCX_FORCE_DEFAULT_PATH
+  include makefiles/nvidia.mk
+  USE_NVIDIA := 1
 endif
 
 ifeq ($(USE_GLOO), 1)
@@ -328,10 +237,17 @@ BUILD_PUBLIC_HEADERS := $(PUBLIC_HEADERS:flagcx/include/%=$(BUILD_INCDIR)/%)
 INCLUDEDIR := \
 	$(abspath flagcx/include) \
 	$(abspath flagcx/adaptor/include) \
+	$(abspath flagcx/adaptor/device_api) \
+	$(abspath flagcx/adaptor/shmem) \
 	$(abspath flagcx/runner/include) \
 	$(abspath flagcx/core/include) \
 	$(abspath flagcx/service/include) \
 	$(abspath third-party/json/single_include)
+
+# Append NVSHMEM include path (must come after INCLUDEDIR := assignment)
+ifeq ($(USE_SHMEM), 1)
+INCLUDEDIR += $(SHMEM_HOME)/include
+endif
 
 LIBSRCFILES:= \
 	$(wildcard flagcx/*.cc) \
@@ -344,18 +260,14 @@ LIBSRCFILES:= \
 	$(wildcard flagcx/core/*.cc) \
 	$(wildcard flagcx/service/*.cc)
 
+# Platform .mk provides extra sources (device_api backend, shmem adaptor)
+LIBSRCFILES += $(PLATFORM_EXTRA_SRCS)
+
 ifeq ($(COMPILE_KERNEL), 1)
-DEVSRCFILES:= \
-	$(wildcard flagcx/kernels/*.$(DEVICE_FILE_EXTENSION))
-ifneq ($(USE_NVIDIA), 1)
-EXCLUDE_SOURCES := custom_allreduce.cu
-else
-EXCLUDE_SOURCES :=
+DEVSRCFILES := $(PLATFORM_KERNEL_SRCS)
+DEVOBJ := $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
 endif
-DEVSRCFILES := $(filter-out flagcx/kernels/$(EXCLUDE_SOURCES), $(DEVSRCFILES))
-DEVOBJ:= $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
-endif
-LIBOBJ:= $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
+LIBOBJ := $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
 
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)

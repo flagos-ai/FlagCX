@@ -24,6 +24,11 @@
 #include <cstring>
 #include <unistd.h>
 
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+extern "C" void flagcxNvshmemSyncDeviceState();
+extern "C" void flagcxNvshmemFinalizeDeviceState();
+#endif
+
 #define DATATYPE flagcxFloat
 
 int main(int argc, char *argv[]) {
@@ -78,9 +83,27 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
+  // Create device communicator first — this triggers nvshmem_init()
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interSignalCount = 1;
+  flagcxDevComm_t devComm = nullptr;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxNvshmemSyncDeviceState();
+#endif
+
   // AlltoAll buffer layout: [rank0_data][rank1_data]...[rankN_data]
   // Each chunk has countPerPeer elements (= maxBytes / nRanks / sizeof(float))
   // Total buffer size = maxBytes (contains data for all peers)
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
 
   void *sendBuff = nullptr, *recvBuff = nullptr;
   void *sendHandle = nullptr, *recvHandle = nullptr;
@@ -92,18 +115,22 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(
         devHandle->deviceMalloc(&recvBuff, maxBytes, flagcxMemDevice, NULL));
   } else {
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
   }
 
   if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
   } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle));
+    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
+                                   memAllocator));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle,
+                                   memAllocator));
   }
 
   flagcxStream_t stream;
@@ -112,14 +139,6 @@ int main(int argc, char *argv[]) {
   // Host buffer for data preparation and verification
   void *hostBuff = malloc(maxBytes);
   memset(hostBuff, 0, maxBytes);
-
-  // Create device communicator with intra + inter barriers + signal
-  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 1;
-  flagcxDevComm_t devComm = nullptr;
-  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   // Create device memory handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -245,29 +264,33 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
 
-  // Destroy device communicator (before comm destroy)
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-
-  // Deregister buffer (before comm destroy)
+  // Deregister and free SHMEM buffers before DevCommDestroy
+  // (which calls nvshmem_finalize)
   if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
+    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
   }
-
-  // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
-  FLAGCXCHECK(flagcxCommDestroy(comm));
-
-  // Free buffer
   if (localRegister >= 1) {
-    FLAGCXCHECK(flagcxMemFree(sendBuff));
-    FLAGCXCHECK(flagcxMemFree(recvBuff));
+    FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+    FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   } else if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
   }
+
+  // Destroy device communicator (before comm destroy)
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+
+#ifdef FLAGCX_COMM_TRAITS_SHMEM
+  flagcxNvshmemFinalizeDeviceState();
+#endif
+
+  // Destroy comm
+  FLAGCXCHECK(flagcxCommDestroy(comm));
+
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

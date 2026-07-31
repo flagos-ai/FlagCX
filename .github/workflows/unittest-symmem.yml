@@ -49,7 +49,7 @@ jobs:
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest/symmem
           export MPI_HOME=/usr/local/mpi
-          make -j$(nproc)
+          make -j$(nproc) USE_NVIDIA=1
 
       - name: Run symmem tests
         run: |

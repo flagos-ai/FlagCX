@@ -789,6 +789,10 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
       return flagcxRemoteError;
     usleep(100);
   }
+  // Final rmaError check: kernel proxy or network failures set rmaError;
+  // catch errors that occurred after doneSeqs reached the target.
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
+    return flagcxRemoteError;
   return flagcxSuccess;
 }
 
@@ -827,6 +831,10 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
       usleep(100);
     }
   }
+  // Final rmaError check: kernel proxy or network failures set rmaError;
+  // catch errors that occurred after doneSeqs reached the target.
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
+    return flagcxRemoteError;
   return flagcxSuccess;
 }
 

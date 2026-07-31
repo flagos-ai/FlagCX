@@ -65,43 +65,54 @@ USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 
 # ---------------------------------------------------------------------------
-# Device platform resolution (for test components needing nvcc / device libs).
-# Checks USE_NVIDIA first, then USE_DU, then defaults to NVIDIA paths.
+# Device platform resolution — include platform .mk from library build.
 # ---------------------------------------------------------------------------
+USE_SHMEM ?= 0
+SHMEM_HOME ?= /usr/local/nvshmem
+
 ifeq ($(USE_NVIDIA), 1)
-  DEVICE_HOME      ?= /usr/local/cuda
-  DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
-  ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
-  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
+  include $(PROJECT_ROOT)/makefiles/nvidia.mk
 else ifeq ($(USE_KUNLUNXIN), 1)
-  DEVICE_HOME      ?= /usr/local/xpu
-  DEVICE_LIB       := $(DEVICE_HOME)/so
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -lxpurt -lcudart
-  ADAPTOR_DEFINE   := -DUSE_KUNLUNXIN_ADAPTOR
-  CCL_HOME         ?= /usr/local/xccl
-  CCL_INCLUDE      := -I$(CCL_HOME)/include
+  include $(PROJECT_ROOT)/makefiles/kunlunxin.mk
 else ifeq ($(USE_DU), 1)
-  DEVICE_HOME      ?= $(CUDA_PATH)
-  DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
-  ADAPTOR_DEFINE   := -DUSE_DU_ADAPTOR
-  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/du
+  include $(PROJECT_ROOT)/makefiles/du.mk
+else ifeq ($(USE_ASCEND), 1)
+  include $(PROJECT_ROOT)/makefiles/ascend.mk
+else ifeq ($(USE_METAX), 1)
+  include $(PROJECT_ROOT)/makefiles/metax.mk
 else
-  # Default: NVIDIA paths (same as top-level Makefile fallback)
-  DEVICE_HOME      ?= /usr/local/cuda
-  DEVICE_LIB       := $(DEVICE_HOME)/lib64
-  DEVICE_INCLUDE   := -I$(DEVICE_HOME)/include
-  DEVICE_LINK      := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs -lcudart -lcuda
-  DEVICE_COMPILER  := $(DEVICE_HOME)/bin/nvcc
-  ADAPTOR_DEFINE   := -DUSE_NVIDIA_ADAPTOR
-  PLATFORM_IR_DIR  := $(PROJECT_ROOT)/bindings/ir/nvidia
+  $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, etc.)
 endif
+
+# Test-specific overrides (format for compiler flags)
+DEVICE_INCLUDE := $(addprefix -I,$(DEVICE_INCLUDE))
+CCL_INCLUDE    := -I$(CCL_INCLUDE)
+DEVICE_LINK    := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs $(DEVICE_LINK)
+ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
+ifeq ($(DEVICE_PLATFORM), CUDA)
+  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/nvidia
+else
+  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+endif
+
+# SHMEM include path (used when USE_SHMEM=1)
+ifeq ($(USE_SHMEM), 1)
+SHMEM_INCLUDE := -I$(SHMEM_HOME)/include
+else
+SHMEM_INCLUDE :=
+endif
+
+# Test kernel build directory (platform-specific device code)
+KERNEL_DIR := $(PROJECT_ROOT)/test/kernel
+ifeq ($(strip $(DEVICE_PLATFORM)),)
+  $(error DEVICE_PLATFORM is not set by the selected makefiles/<platform>.mk; cannot determine test kernel platform)
+endif
+KERNEL_PLATFORM := $(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+ifeq ($(KERNEL_PLATFORM), cuda)
+  KERNEL_PLATFORM := nvidia
+endif
+KERNEL_OBJ_DIR := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/build/obj
+KERNEL_INCLUDE := -I$(KERNEL_DIR)/include
 
 # Debug helper — use 'make print-config' to verify paths.
 # NOTE: Do NOT define targets in make.inc (would override default target

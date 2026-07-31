@@ -6,16 +6,17 @@
  * Architecture:
  *   PlatformTraits<P>         — platform-level: Intrin, Atomic
  *   CommTraits<D>             — backend-level:  Window, Comm, Team, ...
- *   Default<PlatformTag>     — common IPC fallback (partial specialization)
+ *   DefaultBackend<PlatformTag> — common IPC fallback (partial specialization)
  *
  * CommTraits pulls in platform capabilities via using-aliases (not
  * inheritance). Vendor specializations wrap vendor types with member
- * functions. The Default partial specialization provides IPC-based
+ * functions. The DefaultBackend partial specialization provides IPC-based
  * types that work with any platform.
  *
  * Selection:
- *   NVIDIA + NCCL > 2.28:    DeviceAPI = CommTraits<NvidiaVendor>
- *   NVIDIA + fallback:       DeviceAPI = CommTraits<Default<NvidiaPlatform>>
+ *   NVIDIA + NCCL > 2.28:    DeviceAPI = CommTraits<NcclBackend>
+ *   NVIDIA + fallback:       DeviceAPI =
+ *CommTraits<DefaultBackend<NvidiaPlatform>>
  *
  * Kernel code uses DeviceAPI::* exclusively, no #ifdef branches.
  ************************************************************************/
@@ -31,9 +32,9 @@
 template <typename Impl>
 struct CommTraits;
 
-// Default tag — parameterized by platform for the partial specialization
+// DefaultBackend tag — parameterized by platform for the partial specialization
 template <typename PlatformTag>
-struct Default {};
+struct DefaultBackend {};
 
 // ============================================================
 // Action types for one-sided operations (needed by traits Net types).
@@ -89,7 +90,7 @@ struct Barrier;
 #include "sunrise_comm_traits.h"
 #else
 #include "default_comm_traits.h"
-using DeviceAPI = CommTraits<Default<DefaultPlatform>>;
+using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;
 #endif
 
 #endif // FLAGCX_COMM_TRAITS_H_

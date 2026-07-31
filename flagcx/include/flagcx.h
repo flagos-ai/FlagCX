@@ -211,24 +211,60 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* User buffer registration functions. The actual allocated size might
  * be larger than requested due to granularity requirement. */
-flagcxResult_t flagcxMemAlloc(void **ptr, size_t size);
-flagcxResult_t flagcxMemFree(void *ptr);
+
+/* Memory allocator backend selection */
+typedef enum {
+  flagcxMemCCL =
+      0, /* CCL-managed (ncclMemAlloc in homo, gdrMemAlloc in hetero) */
+  flagcxMemSHMEM = 1, /* NVSHMEM symmetric heap (nvshmem_malloc) */
+} flagcxMemAllocator_t;
+
+#ifdef __cplusplus
+flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
+                              flagcxMemAllocator_t allocator = flagcxMemCCL);
+flagcxResult_t flagcxMemFree(void *ptr,
+                             flagcxMemAllocator_t allocator = flagcxMemCCL);
 
 /* Register/Deregister user buffer for zero-copy operation */
+flagcxResult_t
+flagcxCommRegister(const flagcxComm_t comm, void *buff, size_t size,
+                   void **handle,
+                   flagcxMemAllocator_t allocator = flagcxMemCCL);
+flagcxResult_t
+flagcxCommDeregister(const flagcxComm_t comm, void *handle,
+                     flagcxMemAllocator_t allocator = flagcxMemCCL);
+#else
+flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
+                              flagcxMemAllocator_t allocator);
+flagcxResult_t flagcxMemFree(void *ptr, flagcxMemAllocator_t allocator);
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
-                                  size_t size, void **handle);
-flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle);
+                                  size_t size, void **handle,
+                                  flagcxMemAllocator_t allocator);
+flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
+                                    flagcxMemAllocator_t allocator);
+#endif
 
 /* Window registration flags */
 #define FLAGCX_WIN_DEFAULT 0x00
 #define FLAGCX_WIN_COLL_SYMMETRIC 0x01
 
 /* Register/Deregister user buffer for symmetric operation */
+#ifdef __cplusplus
+flagcxResult_t
+flagcxCommWindowRegister(flagcxComm_t comm, void *buff, size_t size,
+                         flagcxWindow_t *win, int winFlags,
+                         flagcxMemAllocator_t allocator = flagcxMemCCL);
+flagcxResult_t
+flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
+                           flagcxMemAllocator_t allocator = flagcxMemCCL);
+#else
 flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
-                                        int winFlags);
-flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm,
-                                          flagcxWindow_t win);
+                                        int winFlags,
+                                        flagcxMemAllocator_t allocator);
+flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
+                                          flagcxMemAllocator_t allocator);
+#endif
 
 /* Register a buffer for one-sided RDMA operations (Get/Put/PutValue).
  * Creates MR handles for RDMA-capable net adaptors.

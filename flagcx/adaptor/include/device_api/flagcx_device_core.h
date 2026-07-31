@@ -749,6 +749,10 @@ struct flagcxDevNet : DeviceAPI::Net {
                                               : 0),
         _nInterPeers(devComm._nInterPeers) {}
 
+  FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
+    return DeviceAPI::Net::isValid();
+  }
+
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
       flagcxDevNetSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {

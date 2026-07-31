@@ -49,6 +49,13 @@ int main(int argc, char *argv[]) {
 
   int worldSize = 1, worldRank = 0;
   int totalProcs = 1, proc = 0;
+// Print with rank prefix from all ranks, flushing immediately
+#define RPRINTF(...)                                                           \
+  do {                                                                         \
+    printf("[R%02d] ", proc);                                                  \
+    printf(__VA_ARGS__);                                                       \
+    fflush(stdout);                                                            \
+  } while (0)
   MPI_Comm splitComm;
   uint64_t splitMask = 0;
   int color = 0;
@@ -122,10 +129,10 @@ int main(int argc, char *argv[]) {
                 (hostResults[2] == proc) && // single-node: intraRank == rank
                 (hostResults[3] == totalProcs);
 
-  if (proc == 0) {
-    printf("K1 CommQueries: %s (rank=%d size=%d intraRank=%d intraSize=%d)\n",
-           k1Pass ? "PASS" : "FAIL", hostResults[0], hostResults[1],
-           hostResults[2], hostResults[3]);
+  {
+    RPRINTF("K1 CommQueries: %s (rank=%d size=%d intraRank=%d intraSize=%d)\n",
+            k1Pass ? "PASS" : "FAIL", hostResults[0], hostResults[1],
+            hostResults[2], hostResults[3]);
   }
 
   // -------------------------------------------------------------------------
@@ -151,9 +158,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (proc == 0) {
-    printf("K2 CoopGroup: %s\n", k2Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K2 CoopGroup: %s\n", k2Pass ? "PASS" : "FAIL"); }
 
   // -------------------------------------------------------------------------
   // Test K3: Team Queries
@@ -170,9 +175,7 @@ int main(int argc, char *argv[]) {
 
   bool k3Pass = (hostResults[1] == proc); // worldRank should match proc
 
-  if (proc == 0) {
-    printf("K3 TeamQueries: %s\n", k3Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K3 TeamQueries: %s\n", k3Pass ? "PASS" : "FAIL"); }
 
   // -------------------------------------------------------------------------
   // Test K4: Local Pointer
@@ -189,9 +192,7 @@ int main(int argc, char *argv[]) {
 
   bool k4Pass = (hostResults[0] == 1); // Should match raw buffer
 
-  if (proc == 0) {
-    printf("K4 LocalPointer: %s\n", k4Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K4 LocalPointer: %s\n", k4Pass ? "PASS" : "FAIL"); }
 
   // -------------------------------------------------------------------------
   // Test K5: Intra Pointer (LSA read)
@@ -235,9 +236,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (proc == 0) {
-    printf("K5 IntraPointer: %s\n", k5Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K5 IntraPointer: %s\n", k5Pass ? "PASS" : "FAIL"); }
 
   delete[] hostOutput;
   FLAGCXCHECK(devHandle->deviceFree(devOutput, flagcxMemDevice, NULL));
@@ -261,9 +260,7 @@ int main(int argc, char *argv[]) {
                 (hostResults[3] == 4) && // int32
                 (hostResults[4] == 8);   // uint64
 
-  if (proc == 0) {
-    printf("K6 DataTypeSize: %s\n", k6Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K6 DataTypeSize: %s\n", k6Pass ? "PASS" : "FAIL"); }
 
   // -------------------------------------------------------------------------
   // Test K7: Intra Barrier Sync
@@ -298,9 +295,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (proc == 0) {
-    printf("K7 IntraBarrierSync: %s\n", k7Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K7 IntraBarrierSync: %s\n", k7Pass ? "PASS" : "FAIL"); }
 
   delete[] hostBarrierResult;
   FLAGCXCHECK(devHandle->deviceFree(k7Output, flagcxMemDevice, NULL));
@@ -338,9 +333,7 @@ int main(int argc, char *argv[]) {
     }
   }
 
-  if (proc == 0) {
-    printf("K8 IntraBarrierArriveWait: %s\n", k8Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K8 IntraBarrierArriveWait: %s\n", k8Pass ? "PASS" : "FAIL"); }
 
   delete[] hostArriveWaitResult;
   FLAGCXCHECK(devHandle->deviceFree(k8Output, flagcxMemDevice, NULL));
@@ -350,9 +343,7 @@ int main(int argc, char *argv[]) {
   // Scalar IR Tests (S1 - S6)
   // =========================================================================
 
-  if (proc == 0) {
-    printf("\n--- Scalar IR Tests ---\n");
-  }
+  { RPRINTF("\n--- Scalar IR Tests ---\n"); }
 
   // -------------------------------------------------------------------------
   // S1: Cooperative Group (Scalar)
@@ -382,9 +373,7 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S1 CoopGroup(Scalar): %s\n", s1Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S1 CoopGroup(Scalar): %s\n", s1Pass ? "PASS" : "FAIL"); }
   delete[] hostS1;
   FLAGCXCHECK(devHandle->deviceFree(s1Results, flagcxMemDevice, NULL));
 
@@ -404,9 +393,7 @@ int main(int argc, char *argv[]) {
 
   // intraRank -> worldRank via INTRA team should give back our proc rank
   bool s2Pass = (hostS2[1] == proc);
-  if (proc == 0) {
-    printf("S2 TeamQueries(Scalar): %s\n", s2Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S2 TeamQueries(Scalar): %s\n", s2Pass ? "PASS" : "FAIL"); }
   FLAGCXCHECK(devHandle->deviceFree(s2Results, flagcxMemDevice, NULL));
 
   // -------------------------------------------------------------------------
@@ -424,9 +411,7 @@ int main(int argc, char *argv[]) {
                                       flagcxMemcpyDeviceToHost, NULL));
 
   bool s3Pass = (hostS3 == 1);
-  if (proc == 0) {
-    printf("S3 LocalPointer(Scalar): %s\n", s3Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S3 LocalPointer(Scalar): %s\n", s3Pass ? "PASS" : "FAIL"); }
   FLAGCXCHECK(devHandle->deviceFree(s3Results, flagcxMemDevice, NULL));
 
   // -------------------------------------------------------------------------
@@ -463,12 +448,13 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S4 IntraPointer(Scalar): %s\n", s4Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S4 IntraPointer(Scalar): %s\n", s4Pass ? "PASS" : "FAIL"); }
   delete[] hostInitS4;
   delete[] hostS4;
   FLAGCXCHECK(devHandle->deviceFree(s4Output, flagcxMemDevice, NULL));
+
+  // Ensure all ranks have finished S4 reads before any rank modifies regBuff
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
   // S5: Intra Barrier Sync (Scalar)
@@ -499,11 +485,18 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S5 IntraBarrierSync(Scalar): %s\n", s5Pass ? "PASS" : "FAIL");
+  { RPRINTF("S5 IntraBarrierSync(Scalar): %s\n", s5Pass ? "PASS" : "FAIL"); }
+  if (!s5Pass) {
+    RPRINTF("  S5 debug: expected=%f peer=%d intraRank=%d intraSize=%d\n",
+            expectedS5, peer, comm->localRank, comm->localRanks);
+    RPRINTF("  S5 values: [%f %f %f %f %f %f %f %f]\n", hostS5[0], hostS5[1],
+            hostS5[2], hostS5[3], hostS5[4], hostS5[5], hostS5[6], hostS5[7]);
   }
   delete[] hostS5;
   FLAGCXCHECK(devHandle->deviceFree(s5Output, flagcxMemDevice, NULL));
+
+  // Ensure all ranks have finished S5 reads before any rank modifies regBuff
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
   // S6: Intra Barrier Arrive/Wait (Scalar)
@@ -534,11 +527,15 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S6 IntraBarrierArriveWait(Scalar): %s\n", s6Pass ? "PASS" : "FAIL");
+  {
+    RPRINTF("S6 IntraBarrierArriveWait(Scalar): %s\n",
+            s6Pass ? "PASS" : "FAIL");
   }
   delete[] hostS6;
   FLAGCXCHECK(devHandle->deviceFree(s6Output, flagcxMemDevice, NULL));
+
+  // Ensure all ranks have finished S6 reads before any rank modifies regBuff
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
   // K7b: Intra Barrier Sync(AcqRel)
@@ -569,11 +566,12 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("K7b IntraBarrierSync(AcqRel): %s\n", k7bPass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("K7b IntraBarrierSync(AcqRel): %s\n", k7bPass ? "PASS" : "FAIL"); }
   delete[] hostK7b;
   FLAGCXCHECK(devHandle->deviceFree(k7bOutput, flagcxMemDevice, NULL));
+
+  // Ensure all ranks have finished K7b reads before any rank modifies regBuff
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
   // K8b: Arrive(Release) + Wait(AcqRel)
@@ -604,12 +602,15 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("K8b IntraBarrierArriveWait(AcqRel): %s\n",
-           k8bPass ? "PASS" : "FAIL");
+  {
+    RPRINTF("K8b IntraBarrierArriveWait(AcqRel): %s\n",
+            k8bPass ? "PASS" : "FAIL");
   }
   delete[] hostK8b;
   FLAGCXCHECK(devHandle->deviceFree(k8bOutput, flagcxMemDevice, NULL));
+
+  // Ensure all ranks have finished K8b reads before any rank modifies regBuff
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
   // S5b: ArriveS(Release) + WaitS(Acquire)
@@ -640,12 +641,15 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S5b IntraBarrierArriveWait(Split): %s\n",
-           s5bPass ? "PASS" : "FAIL");
+  {
+    RPRINTF("S5b IntraBarrierArriveWait(Split): %s\n",
+            s5bPass ? "PASS" : "FAIL");
   }
   delete[] hostS5b;
   FLAGCXCHECK(devHandle->deviceFree(s5bOutput, flagcxMemDevice, NULL));
+
+  // Ensure all ranks have finished S5b reads before any rank modifies regBuff
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // -------------------------------------------------------------------------
   // S5c: SyncS(Release) + read + SyncS(Acquire)
@@ -676,18 +680,14 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S5c IntraBarrierSync(Split): %s\n", s5cPass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S5c IntraBarrierSync(Split): %s\n", s5cPass ? "PASS" : "FAIL"); }
   delete[] hostS5c;
   FLAGCXCHECK(devHandle->deviceFree(s5cOutput, flagcxMemDevice, NULL));
 
   // -------------------------------------------------------------------------
   // S7: TILE_SPAN Cooperative Group
   // -------------------------------------------------------------------------
-  if (proc == 0) {
-    printf("\n--- Extended Coop Tests ---\n");
-  }
+  { RPRINTF("\n--- Extended Coop Tests ---\n"); }
 
   int nBlocksS7 = 4, nThreadsS7 = 128;
   int totalThreadsS7 = nBlocksS7 * nThreadsS7;
@@ -715,9 +715,7 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S7 CoopTileSpan: %s\n", s7Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S7 CoopTileSpan: %s\n", s7Pass ? "PASS" : "FAIL"); }
   delete[] hostS7;
   FLAGCXCHECK(devHandle->deviceFree(s7Results, flagcxMemDevice, NULL));
 
@@ -743,9 +741,7 @@ int main(int argc, char *argv[]) {
       break;
     }
   }
-  if (proc == 0) {
-    printf("S8 CoopLanes: %s\n", s8Pass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("S8 CoopLanes: %s\n", s8Pass ? "PASS" : "FAIL"); }
   delete[] hostS8;
   FLAGCXCHECK(devHandle->deviceFree(s8Results, flagcxMemDevice, NULL));
 
@@ -761,9 +757,7 @@ int main(int argc, char *argv[]) {
   int globalPass = 0;
   MPI_Allreduce(&allPass, &globalPass, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 
-  if (proc == 0) {
-    printf("\n=== Overall: %s ===\n", globalPass ? "PASS" : "FAIL");
-  }
+  { RPRINTF("\n=== Overall: %s ===\n", globalPass ? "PASS" : "FAIL"); }
 
   // Cleanup
   FLAGCXCHECK(devHandle->deviceFree(devResults, flagcxMemDevice, NULL));

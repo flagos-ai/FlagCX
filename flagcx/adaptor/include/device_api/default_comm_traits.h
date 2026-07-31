@@ -3,7 +3,7 @@
  *
  * Default Device Traits — Common IPC-based implementation.
  *
- * CommTraits<Default<PlatformTag>> provides:
+ * CommTraits<DefaultBackend<PlatformTag>> provides:
  *   - Intrin, Atomic: inherited from PlatformTraits<PlatformTag> via using
  *   - Window:   IPC peer pointers + raw pointer
  *   - Comm:  rank/size + IPC barriers + signal buffers
@@ -23,7 +23,7 @@
 #endif
 
 template <typename PlatformTag>
-struct CommTraits<Default<PlatformTag>> {
+struct CommTraits<DefaultBackend<PlatformTag>> {
   // Platform capabilities (resolved via PlatformTag)
   using Intrin = typename PlatformTraits<PlatformTag>::Intrin;
   using Atomic = typename PlatformTraits<PlatformTag>::Atomic;
@@ -229,7 +229,7 @@ struct CommTraits<Default<PlatformTag>> {
   // ---- Barrier alias: delegates to standalone Barrier<Backend, Tag>
   // ----
   template <typename Tag, typename Coop>
-  using Barrier = ::Barrier<Default<PlatformTag>, Tag, Coop>;
+  using Barrier = ::Barrier<DefaultBackend<PlatformTag>, Tag, Coop>;
 
   // ============================================================
   // Static FIFO helpers (used by Net and InterBarrierSession)
@@ -337,6 +337,11 @@ struct CommTraits<Default<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR bool isIntraPeer(int peer) const {
       int intraBase = _dc.rank - _dc.intraRank;
       return peer >= intraBase && peer < intraBase + _dc.intraSize;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
+      return signalBuffer != nullptr && counterBuffer != nullptr &&
+             fifoBuffer != nullptr;
     }
 
     // ---- Two-sided FIFO encoders ----
@@ -494,8 +499,10 @@ struct CommTraits<Default<PlatformTag>> {
     // ---- MR offset helper ----
     FLAGCX_DEVICE_INLINE_DECORATOR
     static size_t toDataOffset(const Window &win, size_t off) {
-      void *ptr = win.getLocalPointer(off);
-      return (uintptr_t)ptr - win.mrBase;
+      // Use rawPtr (the original buffer VA used for MR registration) rather
+      // than getLocalPointer() which may return a VMM flat-mapped VA that
+      // differs from the MR-registered VA.
+      return (uintptr_t)win.getRawPtr() + off - win.mrBase;
     }
 
     // ---- Action decomposition helpers ----
@@ -774,21 +781,21 @@ struct CommTraits<Default<PlatformTag>> {
 };
 
 // ============================================================
-// Barrier specializations for Default<P>
+// Barrier specializations for DefaultBackend<P>
 //
 // Standalone partial specializations (C++ forbids explicit specialization
 // of member templates inside a partial class specialization).
 // ============================================================
 
-// ---- Barrier<Default<P>, flagcxTeamTagIntra, Coop> ----
+// ---- Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> ----
 // Thread-striped per-peer inbox barrier using IPC-mapped atomics.
 template <typename P, typename Coop>
-struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
+struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   using Atomic = typename PlatformTraits<P>::Atomic;
   using Intrin = typename PlatformTraits<P>::Intrin;
-  using Comm = typename CommTraits<Default<P>>::Comm;
-  using Team = typename CommTraits<Default<P>>::Team;
-  using Multimem = typename CommTraits<Default<P>>::Multimem;
+  using Comm = typename CommTraits<DefaultBackend<P>>::Comm;
+  using Team = typename CommTraits<DefaultBackend<P>>::Team;
+  using Multimem = typename CommTraits<DefaultBackend<P>>::Multimem;
 
   Coop _coop;
   uint64_t **_peerBuffers;
@@ -812,7 +819,7 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
         _epochBuffer(dc.epochBuffer),
         _epoch(Atomic::load(&dc.epochBuffer[index],
-                            flagcxDeviceMemoryOrderRelaxed)) {}
+                            flagcxDeviceMemoryOrderAcquire)) {}
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -856,16 +863,16 @@ struct Barrier<Default<P>, flagcxTeamTagIntra, Coop> {
   }
 };
 
-// ---- Barrier<Default<P>, flagcxTeamTagInter, Coop> ----
+// ---- Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> ----
 // Inter-node barrier via FIFO BarrierSignal + host-mapped interSignalFlags.
 // Only the inter leader actually sends/waits; non-leaders are no-ops.
 template <typename P, typename Coop>
-struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
+struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   using Atomic = typename PlatformTraits<P>::Atomic;
   using Intrin = typename PlatformTraits<P>::Intrin;
-  using Comm = typename CommTraits<Default<P>>::Comm;
-  using Team = typename CommTraits<Default<P>>::Team;
-  using Net = typename CommTraits<Default<P>>::Net;
+  using Comm = typename CommTraits<DefaultBackend<P>>::Comm;
+  using Team = typename CommTraits<DefaultBackend<P>>::Team;
+  using Net = typename CommTraits<DefaultBackend<P>>::Net;
 
   Coop _coop;
   uint64_t *_interSignals;
@@ -903,10 +910,10 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
     }
     _coop.sync();
     if (_coop.threadRank() == 0 && _isLeader) {
-      CommTraits<Default<P>>::fifoEnqueue(
+      CommTraits<DefaultBackend<P>>::fifoEnqueue(
           _fifoBuffer, (uint64_t)_ctaIndex, 0,
-          CommTraits<Default<P>>::buildTrd(flagcxDevicePrimBarrierSignal, 0,
-                                           0));
+          CommTraits<DefaultBackend<P>>::buildTrd(flagcxDevicePrimBarrierSignal,
+                                                  0, 0));
     }
     _coop.sync();
   }
@@ -935,19 +942,19 @@ struct Barrier<Default<P>, flagcxTeamTagInter, Coop> {
   }
 };
 
-// ---- Barrier<Default<P>, flagcxTeamTagWorld, Coop> ----
+// ---- Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> ----
 // Composes intra + inter barriers.
 // Three-phase pattern for multi-node: intra → inter → intra.
 // Single-node: just one intra sync.
 template <typename P, typename Coop>
-struct Barrier<Default<P>, flagcxTeamTagWorld, Coop> {
-  using Comm = typename CommTraits<Default<P>>::Comm;
-  using Team = typename CommTraits<Default<P>>::Team;
-  using Net = typename CommTraits<Default<P>>::Net;
+struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
+  using Comm = typename CommTraits<DefaultBackend<P>>::Comm;
+  using Team = typename CommTraits<DefaultBackend<P>>::Team;
+  using Net = typename CommTraits<DefaultBackend<P>>::Net;
 
   Coop _coop;
-  Barrier<Default<P>, flagcxTeamTagIntra, Coop> _intra;
-  Barrier<Default<P>, flagcxTeamTagInter, Coop> _inter;
+  Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> _intra;
+  Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> _inter;
   int _nInterPeers;
 
   // World barrier: intra (IPC) + inter (FIFO Signal)

@@ -77,8 +77,9 @@ TEST_F(RmaTest, PutSignalSmall) {
     for (size_t i = 0; i < testSize; ++i) {
       if (received[i] != 0xAB) {
         mismatches++;
-        if (mismatches == 1)
+        if (mismatches == 1) {
           EXPECT_EQ(received[i], 0xAB) << "Mismatch at byte " << i;
+        }
       }
     }
     EXPECT_EQ(mismatches, 0);
@@ -132,8 +133,9 @@ TEST_F(RmaTest, PutSignalLarge) {
       uint8_t expected = static_cast<uint8_t>(i & 0xFF);
       if (received[i] != expected) {
         mismatches++;
-        if (mismatches == 1)
+        if (mismatches == 1) {
           EXPECT_EQ(received[i], expected) << "Mismatch at byte " << i;
+        }
       }
     }
     EXPECT_EQ(mismatches, 0);

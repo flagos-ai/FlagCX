@@ -49,11 +49,11 @@ jobs:
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest/p2p
           export MPI_HOME=/usr/local/mpi
-          make -j$(nproc)
+          make -j$(nproc) USE_NVIDIA=1
 
       - name: Run p2p unit tests (requires IB hardware)
         run: |
           cd /__w/FlagCX/FlagCX/test/unittest/p2p
           export MPI_HOME=/usr/local/mpi
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
-          make run-unit
+          make run-unit USE_NVIDIA=1

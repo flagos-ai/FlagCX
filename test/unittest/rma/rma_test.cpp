@@ -76,7 +76,7 @@ void RmaTest::TearDownTestSuite() {
   }
 
   if (signalBuff && comm && comm->heteroComm) {
-    flagcxOneSideSignalDeregister(comm->heteroComm);
+    flagcxOneSideSignalDeregister(comm);
     flagcxMemFree(signalBuff);
     signalBuff = nullptr;
   }

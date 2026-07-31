@@ -29,6 +29,7 @@ ADAPTOR_MAP = {
     "tsm": "-DUSE_TSM_ADAPTOR",
     "enflame": "-DUSE_ENFLAME_ADAPTOR",
     "sunrise": "-DUSE_SUNRISE_ADAPTOR",
+    "ppu": "-DUSE_PPU_ADAPTOR",
 }
 
 # Adaptor name -> Make variable (for root setup.py make invocation)
@@ -45,6 +46,7 @@ ADAPTOR_TO_MAKE_FLAG = {
     "tsm": "USE_TSM",
     "enflame": "USE_ENFLAME",
     "sunrise": "USE_SUNRISE",
+    "ppu": "USE_PPU",
 }
 
 VALID_ADAPTORS = list(ADAPTOR_MAP.keys())
@@ -62,6 +64,7 @@ _PLATFORM_COMMANDS = [
     ("tsm_smi", "tsm"),
     ("efsmi", "enflame"),
     ("rocm-smi", "amd"),
+    ("ppu-smi", "ppu"),
     ("nvidia-smi", "nvidia"),
     ("pt-smi", "sunrise"),
 ]
@@ -215,6 +218,10 @@ def get_device_config(adaptor_flag):
             os.path.join(tang_toolkit_dir, "lib", "linux-x86_64"),
         ]
         libs += [f":{c_so_basename}", "tangrt_shared"]
+    elif adaptor_flag == "-DUSE_PPU_ADAPTOR":
+        include_dirs += ["/usr/local/cuda/include"]
+        library_dirs += ["/usr/local/cuda/lib64"]
+        libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
 
     return include_dirs, library_dirs, libs
 

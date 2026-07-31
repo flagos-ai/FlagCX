@@ -9,10 +9,10 @@
 
 // ============================================================
 // DU Default Backend (IPC barriers + FIFO one-sided)
-// Uses common Default<> partial specialization with DU platform
+// Uses common DefaultBackend<> partial specialization with DU platform
 // ============================================================
 #include "default_comm_traits.h"
 
-using DeviceAPI = CommTraits<Default<DuPlatform>>;
+using DeviceAPI = CommTraits<DefaultBackend<DuPlatform>>;
 
 #endif // FLAGCX_DU_COMM_TRAITS_H_

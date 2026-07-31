@@ -69,6 +69,10 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
       flagcxResult_t allocRes = deviceAdaptor->symPhysAlloc(
           buff, size, &physHandle, &shareableFd, &handleSize, &allocSize);
+      INFO(FLAGCX_INIT,
+           "[symWindowRegister] symPhysAlloc: res=%d physHandle=%p "
+           "shareableFd=%d allocSize=%zu buff=%p size=%zu",
+           (int)allocRes, physHandle, shareableFd, allocSize, buff, size);
       int localAllocOk =
           (allocRes == flagcxSuccess && physHandle != nullptr && allocSize > 0)
               ? 1
@@ -157,6 +161,10 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                 ? deviceAdaptor->symFlatMap(peerHandles, localRanks, localRank,
                                             physHandle, allocSize, &flatBase)
                 : flagcxNotSupported;
+        INFO(FLAGCX_INIT,
+             "[symWindowRegister] symFlatMap: mapRes=%d flatBase=%p "
+             "localRanks=%d allocSize=%zu",
+             (int)mapRes, flatBase, localRanks, allocSize);
         if (mapRes == flagcxSuccess && flatBase != nullptr) {
           d->flatBase = flatBase;
           d->physHandle = physHandle;
@@ -316,6 +324,9 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
   // ---- Inter-node MR registration ----
   {
+    INFO(FLAGCX_INIT,
+         "[symWindowRegister] vmmOk=%d, registering MR for buff=%p size=%zu",
+         (int)d->isVMM, buff, size);
     flagcxResult_t regRes = flagcxOneSideRegisterInternal(comm, buff, size);
     if (regRes == flagcxSuccess) {
       for (int i = 0; i < comm->oneSideHandleCount; i++) {

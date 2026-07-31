@@ -2681,7 +2681,6 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
     void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
     uint32_t lkey = srcInfo->lkeys[srcRank];
     uint32_t rkey = dstInfo->rkeys[dstRank];
-
     wr[0].opcode = IBV_WR_RDMA_WRITE;
     wr[0].send_flags = 0; // No CQE — only signal gets CQE
     wr[0].wr_id = req - comm->base.reqs;

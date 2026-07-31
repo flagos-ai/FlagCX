@@ -13,11 +13,7 @@
 
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#if defined(USE_DU_ADAPTOR)
 #include "du_adaptor.h"
-#else
-#include "nvidia_adaptor.h"
-#endif
 #include "flagcx_device_internal.h"
 
 // IR wrapper declarations + implementations (needed for nvcc inline compilation)
@@ -663,7 +659,7 @@ __global__ void kernelNetSignalCounterS(const void *devCommPtr, int *results) {
     }
 
     const flagcxDevNet *netObj = (const flagcxDevNet *)net;
-    if (netObj->signalBuffer == nullptr) {
+    if (!netObj->isValid()) {
       results[0] = 0;
       return;
     }
