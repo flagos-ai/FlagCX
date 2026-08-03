@@ -930,6 +930,11 @@ flagcxResult_t cudaAdaptorSymMulticastFree(void *) { return flagcxSuccess; }
 
 #endif // CUDART_VERSION >= 12010
 
+flagcxResult_t cudaAdaptorGetLastError() {
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxSystemError;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -996,6 +1001,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
       cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
+      cudaAdaptorGetLastError,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

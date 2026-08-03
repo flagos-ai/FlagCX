@@ -419,6 +419,10 @@ class FLAGCXLibrary:
             flagcxP2pEngine_t, ctypes.c_uint64, ctypes.c_uint64,
             ctypes.POINTER(ctypes.c_uint64)
         ]),
+        Function("flagcxP2pRpcRegisterHost", ctypes.c_int, [
+            flagcxP2pEngine_t, ctypes.c_uint64, ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_uint64)
+        ]),
         Function("flagcxP2pRpcGetConn", flagcxP2pConn_t, [
             flagcxP2pEngine_t, ctypes.c_char_p
         ]),
@@ -447,9 +451,12 @@ class FLAGCXLibrary:
             so_path = os.path.join(flagcx_path, "lib", "libflagcx.so")
             if os.path.isfile(so_path):
                 return so_path
+            build_so_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
+            if os.path.isfile(build_so_path):
+                return build_so_path
             raise FileNotFoundError(
-                f"FLAGCX_PATH is set to '{flagcx_path}' but "
-                f"'{so_path}' does not exist. "
+                f"FLAGCX_PATH is set to '{flagcx_path}' but neither "
+                f"'{so_path}' nor '{build_so_path}' exists. "
                 f"Please build FlagCX or check FLAGCX_PATH."
             )
         # 2. Fall back to <repo_root>/build/lib/libflagcx.so
@@ -816,6 +823,17 @@ class FLAGCXLibrary:
         if rc != 0:
             raise RuntimeError(
                 f"flagcxP2pRegister failed (addr={hex(addr)}, size={size})")
+        return mr_id.value
+
+    def flagcxP2pRegisterHost(self, engine: flagcxP2pEngine_t,
+                              addr: int, size: int) -> int:
+        mr_id = ctypes.c_uint64(0)
+        rc = self._funcs["flagcxP2pRpcRegisterHost"](
+            engine, ctypes.c_uint64(addr), ctypes.c_uint64(size),
+            ctypes.byref(mr_id))
+        if rc != 0:
+            raise RuntimeError(
+                f"flagcxP2pRegisterHost failed (addr={hex(addr)}, size={size})")
         return mr_id.value
 
     def flagcxP2pGetConn(self, engine: flagcxP2pEngine_t,

@@ -1477,7 +1477,7 @@ static int detectPtrTypeAndMaybeCacheIpc(void *ptr, char *ipcHandleBuf,
     deviceAdaptor->ipcMemHandleFree(handle);
     return FLAGCX_PTR_CUDA;
   }
-
+  if (deviceAdaptor->getLastError) deviceAdaptor->getLastError();
   deviceAdaptor->ipcMemHandleFree(handle);
   return FLAGCX_PTR_HOST;
 }
@@ -2632,10 +2632,21 @@ bool flagcxP2pEngineConnIsLocal(FlagcxP2pConn *conn) {
   return conn != NULL && conn->isLocal;
 }
 
-int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
-                       FlagcxP2pMr &mrId) {
+int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
+                         int hintType, FlagcxP2pMr &mrId) {
   if (engine == NULL || data == 0)
     return -1;
+
+  auto resolvePtrType = [&](char *ipcHandleBuf,
+                            uint32_t *ipcHandleSize) -> int {
+    if (hintType == FLAGCX_PTR_HOST || hintType == FLAGCX_PTR_CUDA) {
+      if (ipcHandleSize)
+        *ipcHandleSize = 0;
+      return hintType;
+    }
+    return detectPtrTypeAndMaybeCacheIpc(reinterpret_cast<void *>(data),
+                                         ipcHandleBuf, ipcHandleSize);
+  };
 
   if (!flagcxParamMrSortedLookup()) {
     /* Legacy: mutex + hash maps */
@@ -2666,8 +2677,7 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
     entry.ibDevN = ibDevN;
 
     setEngineDevice(engine);
-    entry.ptrType = detectPtrTypeAndMaybeCacheIpc(
-        reinterpret_cast<void *>(data), entry.ipcHandle, &entry.ipcHandleSize);
+    entry.ptrType = resolvePtrType(entry.ipcHandle, &entry.ipcHandleSize);
     entry.hasIpc = entry.ptrType == FLAGCX_PTR_CUDA && entry.ipcHandleSize > 0;
 
     if (engine->adaptor->regMr(&devCtx, reinterpret_cast<void *>(data), size,
@@ -2721,8 +2731,7 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   memset(ipcHandle, 0, sizeof(ipcHandle));
 
   setEngineDevice(engine);
-  int ptrType = detectPtrTypeAndMaybeCacheIpc(reinterpret_cast<void *>(data),
-                                              ipcHandle, &ipcHandleSize);
+  int ptrType = resolvePtrType(ipcHandle, &ipcHandleSize);
   bool hasIpc = ptrType == FLAGCX_PTR_CUDA && ipcHandleSize > 0;
 
   /* Register with adaptor */
@@ -2764,6 +2773,11 @@ int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   mrId = assignedId;
   pthread_mutex_unlock(&gMrLifecycleMutex);
   return 0;
+}
+
+int flagcxP2pEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
+                       FlagcxP2pMr &mrId) {
+  return flagcxP2pEngineRegEx(engine, data, size, 0, mrId);
 }
 
 void flagcxP2pEngineMrDestroy(FlagcxP2pEngine *engine, FlagcxP2pMr mr) {
@@ -3474,6 +3488,21 @@ int flagcxP2pRpcRegister(void *engine, uint64_t addr, uint64_t size,
   const int rc = flagcxP2pEngineReg(reinterpret_cast<FlagcxP2pEngine *>(engine),
                                     static_cast<uintptr_t>(addr),
                                     static_cast<size_t>(size), mrId);
+  if (rc != 0)
+    return rc;
+  *mrIdOut = mrId;
+  return 0;
+}
+
+int flagcxP2pRpcRegisterHost(void *engine, uint64_t addr, uint64_t size,
+                             uint64_t *mrIdOut) {
+  if (mrIdOut == NULL)
+    return -1;
+  FlagcxP2pMr mrId = 0;
+  const int rc = flagcxP2pEngineRegEx(
+      reinterpret_cast<FlagcxP2pEngine *>(engine),
+      static_cast<uintptr_t>(addr), static_cast<size_t>(size),
+      FLAGCX_PTR_HOST, mrId);
   if (rc != 0)
     return rc;
   *mrIdOut = mrId;

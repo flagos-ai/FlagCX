@@ -243,6 +243,8 @@ struct flagcxDeviceAdaptor_latest {
   // Release the multicast object handle returned by symMulticastCreate.
   // Must be called after all ranks have torn down their mappings.
   flagcxResult_t (*symMulticastFree)(void *mcHandle);
+
+  flagcxResult_t (*getLastError)();
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest
