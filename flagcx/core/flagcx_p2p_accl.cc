@@ -28,24 +28,11 @@
 #include "param.h"
 #include "socket.h"
 
-/* FlagCX's topo.h defines node-type macros (CPU=3, NIC=4, NET=5, ...)
-   that collide with accl::barex's device_type enumerators. They are not
-   used in this file — drop them before pulling the vendor headers. */
-#ifdef CPU
 #undef CPU
-#endif
-#ifdef GPU
 #undef GPU
-#endif
-#ifdef NIC
 #undef NIC
-#endif
-#ifdef NET
 #undef NET
-#endif
-#ifdef PCI
 #undef PCI
-#endif
 
 #include <accl/barex/barex_types.h>
 #include <accl/barex/xchannel.h>
@@ -80,9 +67,6 @@
 using namespace accl::barex;
 
 namespace {
-
-FLAGCX_PARAM(P2pAcclQpsPerCtx, "P2P_ACCL_QPS_PER_CTX", 2);
-FLAGCX_PARAM(P2pAcclConnectTimeoutSec, "P2P_ACCL_CONNECT_TIMEOUT", 20);
 
 constexpr uint64_t kAcclHelloMagic = 0xACC1F1A6C0DE0001ull;
 constexpr uint32_t kAcclNotifMagic = 0xDEADDEADu;   /* same wire as ibrc */
@@ -922,7 +906,8 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
   /* data-plane channels: qpsPerCtx per client ctx. Control block shared
      with callbacks; on timeout a late callback sees `abandoned` and
      destroys its own channel instead of touching freed state. */
-  const int qps = (int)flagcxParamP2pAcclQpsPerCtx();
+  const auto &config = flagcxP2pGlobalConfig();
+  const int qps = config.qpsPerConn;
   const int total = qps * (int)engine->clientCtxs.size();
   auto ctl = std::make_shared<AcclConnectCtl>(total);
   for (int i = 0; i < total; i++) {
@@ -950,9 +935,8 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
   bool allUp = false;
   {
     std::unique_lock<std::mutex> lk(ctl->mu);
-    ctl->cv.wait_for(
-        lk, std::chrono::seconds((int)flagcxParamP2pAcclConnectTimeoutSec()),
-        [&] { return ctl->remaining <= 0; });
+    ctl->cv.wait_for(lk, std::chrono::seconds(480),
+                     [&] { return ctl->remaining <= 0; });
     ctl->abandoned = true; /* late callbacks self-clean from here on */
     allUp = ctl->remaining <= 0 && !ctl->anyFailed;
     conn->channels = std::move(ctl->channels);
