@@ -619,7 +619,7 @@ int flagcxP2pRpcRegister(void *engine, uint64_t addr, uint64_t size,
                          uint64_t *mrIdOut);
 
 /* Same interface as flagcxP2pRpcRegister, but on chips/adaptors whose runtime
-   cannot reset the current error state, this host entry avoids producing the 
+   cannot reset the current error state, this host entry avoids producing the
    error at all. */
 int flagcxP2pRpcRegisterHost(void *engine, uint64_t addr, uint64_t size,
                              uint64_t *mrIdOut);

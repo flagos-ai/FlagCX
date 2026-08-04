@@ -1477,7 +1477,8 @@ static int detectPtrTypeAndMaybeCacheIpc(void *ptr, char *ipcHandleBuf,
     deviceAdaptor->ipcMemHandleFree(handle);
     return FLAGCX_PTR_CUDA;
   }
-  if (deviceAdaptor->getLastError) deviceAdaptor->getLastError();
+  if (deviceAdaptor->getLastError)
+    deviceAdaptor->getLastError();
   deviceAdaptor->ipcMemHandleFree(handle);
   return FLAGCX_PTR_HOST;
 }
@@ -3500,9 +3501,8 @@ int flagcxP2pRpcRegisterHost(void *engine, uint64_t addr, uint64_t size,
     return -1;
   FlagcxP2pMr mrId = 0;
   const int rc = flagcxP2pEngineRegEx(
-      reinterpret_cast<FlagcxP2pEngine *>(engine),
-      static_cast<uintptr_t>(addr), static_cast<size_t>(size),
-      FLAGCX_PTR_HOST, mrId);
+      reinterpret_cast<FlagcxP2pEngine *>(engine), static_cast<uintptr_t>(addr),
+      static_cast<size_t>(size), FLAGCX_PTR_HOST, mrId);
   if (rc != 0)
     return rc;
   *mrIdOut = mrId;
