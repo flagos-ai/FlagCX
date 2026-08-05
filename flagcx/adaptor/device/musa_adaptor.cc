@@ -425,6 +425,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorSymFlatUnmap, musaAdaptorSymMulticastSupported,
       musaAdaptorSymMulticastCreate, musaAdaptorSymMulticastBind,
       musaAdaptorSymMulticastTeardown, musaAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_MUSA_ADAPTOR

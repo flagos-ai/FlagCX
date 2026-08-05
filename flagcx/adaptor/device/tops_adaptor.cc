@@ -489,6 +489,7 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorSymFlatUnmap, topsAdaptorSymMulticastSupported,
       topsAdaptorSymMulticastCreate, topsAdaptorSymMulticastBind,
       topsAdaptorSymMulticastTeardown, topsAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_ENFLAME_ADAPTOR

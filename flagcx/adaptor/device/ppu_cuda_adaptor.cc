@@ -686,6 +686,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymMulticastSupported, ppucudaAdaptorSymMulticastCreate,
       ppucudaAdaptorSymMulticastBind, ppucudaAdaptorSymMulticastTeardown,
       ppucudaAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_PPU_ADAPTOR

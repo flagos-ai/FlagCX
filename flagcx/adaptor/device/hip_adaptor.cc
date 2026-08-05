@@ -432,6 +432,7 @@ struct flagcxDeviceAdaptor hipAdaptor {
       hipAdaptorSymFlatUnmap, hipAdaptorSymMulticastSupported,
       hipAdaptorSymMulticastCreate, hipAdaptorSymMulticastBind,
       hipAdaptorSymMulticastTeardown, hipAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_AMD_ADAPTOR

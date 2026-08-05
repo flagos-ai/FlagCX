@@ -92,8 +92,10 @@ void loadGlobalConfig(FlagcxP2pGlobalConfig &c) {
                       4, "P2P_QPS_PER_CONN");
   c.workersPerPool = clampParam<int>(flagcxParamP2pWorkersPerPool(), 1, 8, 4,
                                      "P2P_WORKERS_PER_POOL");
+  c.workersPerPool = std::min(c.workersPerPool, c.qpsPerConn);
   c.shardCount =
       clampParam<int>(flagcxParamP2pShardCount(), 1, 64, 8, "P2P_SHARD_COUNT");
+  c.shardCount = std::max(c.shardCount, c.workersPerPool);
   c.sharedCqDepth = clampParam<size_t>(flagcxParamP2pCqDepth(), 1, 1u << 20,
                                        4096, "P2P_CQ_DEPTH");
   c.maxWrPerPost = clampParam<size_t>(flagcxParamP2pMaxWrPerPost(), 1, 1024,

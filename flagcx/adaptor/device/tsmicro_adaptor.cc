@@ -471,6 +471,7 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       tsmicroAdaptorSymMulticastSupported, tsmicroAdaptorSymMulticastCreate,
       tsmicroAdaptorSymMulticastBind, tsmicroAdaptorSymMulticastTeardown,
       tsmicroAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_TSM_ADAPTOR
