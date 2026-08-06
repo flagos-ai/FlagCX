@@ -35,20 +35,12 @@ BuildRequires:  make
 BuildRequires:  cmake
 BuildRequires:  patchelf
 # nlohmann-json package name varies by distro:
-#   - RHEL/Rocky 8 (via EPEL): json-devel
-#   - RHEL/Rocky 9 (via EPEL): nlohmann-json-devel
-#   - OpenEuler / others: nlohmann-json-devel (fallback)
-# TODO: verify Rocky 9 / RHEL 9 build path end-to-end; the EPEL 9 package
-# name is nlohmann-json-devel, but this has only been smoke-tested.
-%if 0%{?rhel} == 8
+#   - Fedora and RHEL/Rocky 8/9 (via EPEL): json-devel
+#   - openEuler: nlohmann-json-devel
+%if 0%{?fedora} || 0%{?rhel}
 BuildRequires:  json-devel
 %else
-%if 0%{?rhel} >= 9
 BuildRequires:  nlohmann-json-devel
-%else
-# Non-RHEL (OpenEuler, etc.) – assume upstream nlohmann-json-devel package name.
-BuildRequires:  nlohmann-json-devel
-%endif
 %endif
 
 %description
@@ -80,7 +72,7 @@ Development files (headers and libraries) for libflagcx-%{backend}.
 %setup -q
 
 %build
-make USE_%{backend_upper}=1 PREFIX=%{_prefix}
+make USE_%{backend_upper}=1 PREFIX=%{_prefix} JSON_INCLUDE_DIR=%{_includedir}
 
 %install
 rm -rf %{buildroot}

@@ -226,6 +226,8 @@ BUILD_INCDIR := $(BUILDDIR)/include
 PREFIX ?= /usr/local
 DESTDIR  ?= $(PREFIX)/lib
 INC_DESTDIR ?= $(PREFIX)/include
+# Source builds use the submodule; distro builds override this with /usr/include.
+JSON_INCLUDE_DIR ?= $(abspath third-party/json/single_include)
 
 # Public headers exported alongside libflagcx.so
 PUBLIC_HEADERS := \
@@ -242,7 +244,7 @@ INCLUDEDIR := \
 	$(abspath flagcx/runner/include) \
 	$(abspath flagcx/core/include) \
 	$(abspath flagcx/service/include) \
-	$(abspath third-party/json/single_include)
+	$(JSON_INCLUDE_DIR)
 
 # Append NVSHMEM include path (must come after INCLUDEDIR := assignment)
 ifeq ($(USE_SHMEM), 1)

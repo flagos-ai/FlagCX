@@ -48,10 +48,15 @@ sources = [
     os.path.join("plugin", "torch", "flagcx", "src", "utils_flagcx.cpp"),
 ]
 
+VENDORED_JSON_INCLUDE_DIR = os.path.join(
+    ROOT_DIR, "third-party", "json", "single_include"
+)
+JSON_INCLUDE_DIR = os.environ.get("JSON_INCLUDE_DIR") or VENDORED_JSON_INCLUDE_DIR
+
 include_dirs = [
     os.path.join(PLUGIN_DIR, "flagcx", "include"),
     os.path.join(ROOT_DIR, "flagcx", "include"),
-    os.path.join(ROOT_DIR, "third-party", "json", "single_include"),
+    JSON_INCLUDE_DIR,
 ]
 
 # Will be updated in build_ext to point at the built libflagcx.so
@@ -77,22 +82,31 @@ CppExtension, BuildExtension = get_ext_classes(adaptor_flag)
 if BuildExtension is not None:
     class BuildExtWithMake(BuildExtension):
         def build_extensions(self):
-            # -- Step 0: Ensure git submodules are initialized --
-            submodule_marker = os.path.join(
-                ROOT_DIR, "third-party", "json", "single_include"
-            )
-            if not os.path.isdir(submodule_marker):
+            # -- Step 0: Resolve nlohmann-json headers --
+            json_header = os.path.join(JSON_INCLUDE_DIR, "nlohmann", "json.hpp")
+            if (
+                JSON_INCLUDE_DIR == VENDORED_JSON_INCLUDE_DIR
+                and not os.path.isfile(json_header)
+            ):
                 print("[flagcx] Initializing git submodules ...")
                 subprocess.check_call(
                     ["git", "submodule", "update", "--init", "--recursive"],
                     cwd=ROOT_DIR,
+                )
+            if not os.path.isfile(json_header):
+                raise RuntimeError(
+                    f"nlohmann/json.hpp not found under JSON_INCLUDE_DIR={JSON_INCLUDE_DIR}"
                 )
 
             # -- Step 1: Build libflagcx.so via make --
             build_dir = os.path.join(ROOT_DIR, "build")
             lib_dir = os.path.join(build_dir, "lib")
 
-            make_args = [f"BUILDDIR={build_dir}", f"{adaptor_make_flag}=1"]
+            make_args = [
+                f"BUILDDIR={build_dir}",
+                f"{adaptor_make_flag}=1",
+                f"JSON_INCLUDE_DIR={JSON_INCLUDE_DIR}",
+            ]
 
             # Forward additional env vars to make
             env_to_make = [
