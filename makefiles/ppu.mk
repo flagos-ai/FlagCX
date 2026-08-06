@@ -20,4 +20,7 @@ ADAPTOR_FLAG := -DUSE_PPU_ADAPTOR
 
 PLATFORM_KERNEL_DIR  :=
 PLATFORM_KERNEL_SRCS :=
-PLATFORM_EXTRA_SRCS  :=
+# Device API backend: flagcx_device.cc dispatches through devApiBackend,
+# which must be provided by a backend source (see nvidia.mk).
+ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
+PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc
