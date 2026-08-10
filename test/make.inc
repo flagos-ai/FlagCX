@@ -83,6 +83,7 @@ USE_KUNLUNXIN      ?= 0
 USE_DU             ?= 0
 USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
+USE_PPU            ?= 0
 
 # ---------------------------------------------------------------------------
 # Device platform resolution — include platform .mk from library build.
@@ -100,6 +101,8 @@ else ifeq ($(USE_ASCEND), 1)
   include $(PROJECT_ROOT)/makefiles/ascend.mk
 else ifeq ($(USE_METAX), 1)
   include $(PROJECT_ROOT)/makefiles/metax.mk
+else ifeq ($(USE_PPU), 1)
+  include $(PROJECT_ROOT)/makefiles/ppu.mk
 else
   ifneq ($(MAKECMDGOALS),clean)
     $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, etc.)
