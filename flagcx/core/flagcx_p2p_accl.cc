@@ -72,8 +72,6 @@ constexpr uint64_t kAcclHelloMagic = 0xACC1F1A6C0DE0001ull;
 constexpr uint32_t kAcclNotifMagic = 0xDEADDEADu;   /* same wire as ibrc */
 constexpr int kMaxNics = kFlagcxP2pMaxQpsPerEngine; /* 8, matches desc */
 
-/* --- wire formats (accl<->accl only) --- */
-
 struct AcclHelloWire {
   uint64_t magic;
   int32_t barexPort;
@@ -99,8 +97,6 @@ struct AcclNotifWireMsg {
   uint32_t reserved;
   FlagcxP2pNotifyMsg payload;
 };
-
-/* --- runtime state --- */
 
 struct AcclRemoteRegion {
   uint64_t baseAddr;
@@ -292,10 +288,8 @@ struct AcclConnectCtl {
   explicit AcclConnectCtl(int n) : remaining(n) {}
 };
 
-/* ------------------------------------------------------------------ */
-/* Notification plane: listen socket + poll thread feeding the shared  */
-/* notify list in flagcx_p2p.cc (same wire format as the ibrc engine). */
-/* ------------------------------------------------------------------ */
+/* Notification plane: listen socket + poll thread feeding the shared notify
+ * list in flagcx_p2p.cc (same wire format as the ibrc engine). */
 
 int recvAllFdAccl(int fd, void *buf, size_t len) {
   char *p = static_cast<char *>(buf);
@@ -393,9 +387,7 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
       ::close(p.fd);
 }
 
-/* ------------------------------------------------------------------ */
-/* Desc helpers: rkey vector folded into the 64-byte desc              */
-/* ------------------------------------------------------------------ */
+/* Desc helpers: rkey vector folded into the 64-byte desc */
 
 void fillDescKeys(FlagcxP2pRdmaDesc *desc, const uint32_t *rkeys,
                   uint32_t nKeys) {
@@ -632,10 +624,6 @@ int connectNotif(FlagcxAcclConn *conn) {
 
 } // namespace
 
-/* ================================================================== */
-/*  Lifecycle                                                          */
-/* ================================================================== */
-
 FlagcxP2pEngine *flagcxAcclEngineCreate() {
   /* ACCL orders devices by ACCL_USE_NICS; seed it from FLAGCX_IB_HCA so
      both peers see identical NIC indexing (rkey vectors align). */
@@ -864,10 +852,6 @@ void flagcxAcclEngineDestroy(FlagcxP2pEngine *e) {
   delete engine;
 }
 
-/* ================================================================== */
-/*  Connections                                                        */
-/* ================================================================== */
-
 FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
                                        int remoteGpuIdx, int remotePort,
                                        bool sameProcess) {
@@ -1023,10 +1007,6 @@ bool flagcxAcclEngineConnIsLocal(FlagcxP2pConn *c) {
   return conn != nullptr && conn->isLocal;
 }
 
-/* ================================================================== */
-/*  Memory registration                                                */
-/* ================================================================== */
-
 int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
                         FlagcxP2pMr &mrId) {
   FlagcxAcclEngine *engine = E(e);
@@ -1152,10 +1132,6 @@ int flagcxAcclEngineMakeDesc(FlagcxP2pConn *c, uint64_t remoteVa, uint32_t size,
   return -1;
 }
 
-/* ================================================================== */
-/*  Data movement                                                      */
-/* ================================================================== */
-
 int flagcxAcclEngineRead(FlagcxP2pConn *c, FlagcxP2pMr mr, const void *data,
                          size_t size, FlagcxP2pRdmaDesc desc,
                          uint64_t *transferId) {
@@ -1254,10 +1230,6 @@ int flagcxAcclEngineWriteVectorSync(
   return 0;
 }
 
-/* ================================================================== */
-/*  Metadata / RPC control plane                                       */
-/* ================================================================== */
-
 int flagcxAcclEngineGetMetadata(FlagcxP2pEngine *e, char **metadataStr) {
   FlagcxAcclEngine *engine = E(e);
   if (engine == nullptr || metadataStr == nullptr)
@@ -1347,10 +1319,6 @@ FlagcxP2pConn *flagcxAcclEngineGetConn(FlagcxP2pEngine *e,
   engine->sessions[key] = conn;
   return conn;
 }
-
-/* ================================================================== */
-/*  Notifications / IPC                                                */
-/* ================================================================== */
 
 int flagcxAcclEngineSendNotif(FlagcxP2pConn *c, FlagcxP2pNotifyMsg *notifyMsg) {
   FlagcxAcclConn *conn = C(c);

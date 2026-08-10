@@ -109,10 +109,6 @@ static void addrSetPort(union flagcxSocketAddress *addr, int port) {
     addr->sin6.sin6_port = htons(port);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Wire messages (barex<->barex only, exchanged over XChannel::Send)  */
-/* ------------------------------------------------------------------ */
-
 enum BarexMsgType : uint32_t {
   BAREX_MSG_HELLO = 0xB0E10001u,
   BAREX_MSG_CTS = 0xB0E10002u,
@@ -136,10 +132,8 @@ struct BarexCtsMsg {
 };
 static_assert(sizeof(BarexCtsMsg) == 64, "CTS wire layout must be stable");
 
-/* ------------------------------------------------------------------ */
-/*  Listen handle — must fit the 64-byte flagcxIbHandle buffer the      */
-/*  collective path allocates (transport.cc uses sizeof(flagcxIbHandle))*/
-/* ------------------------------------------------------------------ */
+/* Listen handle — must fit the 64-byte flagcxIbHandle buffer the collective
+ * path allocates (transport.cc uses sizeof(flagcxIbHandle)) */
 
 struct BarexNetHandle {
   union flagcxSocketAddress connectAddr; /* OOB IP + barex data port */
@@ -161,10 +155,6 @@ enum BarexConnectStage : uint32_t {
   BAREX_CONN_HELLO = 2,
 };
 
-/* ------------------------------------------------------------------ */
-/*  Requests                                                            */
-/* ------------------------------------------------------------------ */
-
 enum BarexReqState : int {
   BAREX_REQ_FREE = 0,
   BAREX_REQ_PENDING = 1,
@@ -179,11 +169,9 @@ struct BarexRequest {
   uint32_t slot = 0;
 };
 
-/* ------------------------------------------------------------------ */
-/*  MR registry — engine-wide, refcounted (regIsGlobal semantics; the   */
-/*  -R 1 user-buffer path may register one buffer through several       */
-/*  proxy connections)                                                  */
-/* ------------------------------------------------------------------ */
+/* MR registry is engine-wide and refcounted (regIsGlobal semantics: the
+   user-buffer path may register one buffer through several proxy
+   connections). */
 
 struct BarexMr {
   memp_t mem; /* as returned by RegUserMr: per-NIC ibv_mr map */
@@ -195,10 +183,6 @@ struct BarexMr {
   uint32_t rkeys[kMaxNics] = {0};
   int refCount = 0;
 };
-
-/* ------------------------------------------------------------------ */
-/*  Comms                                                               */
-/* ------------------------------------------------------------------ */
 
 struct BarexComm {
   struct BarexEngine *engine = nullptr;
@@ -217,7 +201,6 @@ struct BarexComm {
   BarexRequest requests[kMaxRequests];
 
   BarexRequest *allocRequest() {
-    /* callers hold mu */
     for (int i = 0; i < kMaxRequests; i++) {
       int expected = BAREX_REQ_FREE;
       if (requests[i].state.compare_exchange_strong(expected,
@@ -245,10 +228,6 @@ struct BarexConnectState {
   std::atomic<bool> helloFailed{false};
   BarexComm *comm = nullptr;
 };
-
-/* ------------------------------------------------------------------ */
-/*  Engine — lazy process-wide singleton over the ACCL stack            */
-/* ------------------------------------------------------------------ */
 
 struct PendingAccept {
   XChannel *channel = nullptr; /* set once HELLO with commId arrives */
@@ -279,10 +258,6 @@ struct BarexEngine {
 
 static BarexEngine *gEngine = nullptr;
 static std::mutex gEngineMu;
-
-/* ------------------------------------------------------------------ */
-/*  ACCL callback: demux HELLO / CTS / imm completions                  */
-/* ------------------------------------------------------------------ */
 
 class BarexNetCallback : public XChannelCallback {
 public:
@@ -354,10 +329,6 @@ public:
 private:
   BarexEngine *engine_;
 };
-
-/* ------------------------------------------------------------------ */
-/*  Engine lifecycle                                                    */
-/* ------------------------------------------------------------------ */
 
 /* Cheap probe used by init()/devices(): device list only, no contexts. */
 static flagcxResult_t barexProbeDevices(int *ndev) {
@@ -482,10 +453,6 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
   return flagcxSuccess;
 }
 
-/* ------------------------------------------------------------------ */
-/*  vtable: basic                                                       */
-/* ------------------------------------------------------------------ */
-
 static flagcxResult_t barexInit() {
   if (flagcxParamBarexDisable()) {
     INFO(FLAGCX_INIT | FLAGCX_NET,
@@ -530,10 +497,6 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   p->netDeviceVersion = FLAGCX_NET_DEVICE_INVALID_VERSION;
   return flagcxSuccess;
 }
-
-/* ------------------------------------------------------------------ */
-/*  vtable: listen / connect / accept                                   */
-/* ------------------------------------------------------------------ */
 
 static flagcxResult_t barexListen(int dev, void *opaqueHandle,
                                   void **listenComm) {
@@ -671,7 +634,6 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
     return flagcxSuccess; /* in progress */
   }
 
-  /* BAREX_CONN_HELLO */
   if (st->helloFailed.load(std::memory_order_acquire)) {
     WARN("NET/BAREX : HELLO delivery failed");
     delete st;
@@ -764,10 +726,6 @@ static flagcxResult_t barexCloseListen(void *listenComm) {
   delete lc;
   return flagcxSuccess;
 }
-
-/* ------------------------------------------------------------------ */
-/*  vtable: memory registration                                         */
-/* ------------------------------------------------------------------ */
 
 static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
                                  int mrFlags, void **mhandle) {
@@ -878,10 +836,6 @@ static flagcxResult_t barexDeregMr(void *comm, void *mhandle) {
   delete mr;
   return flagcxSuccess;
 }
-
-/* ------------------------------------------------------------------ */
-/*  vtable: two-sided data path                                         */
-/* ------------------------------------------------------------------ */
 
 static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
                                  int tag, void *mhandle, void *phandle,
@@ -1055,10 +1009,6 @@ static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
   req->state.store(BAREX_REQ_FREE, std::memory_order_release);
   return flagcxSuccess;
 }
-
-/* ------------------------------------------------------------------ */
-/*  vtable: misc                                                        */
-/* ------------------------------------------------------------------ */
 
 static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
   if (name == nullptr || dev == nullptr)
