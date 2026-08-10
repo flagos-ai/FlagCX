@@ -107,8 +107,10 @@ struct AcclRemoteRegion {
 
 struct AcclMrEntry {
   uint64_t mrId;
-  uintptr_t baseAddr;
+  uintptr_t baseAddr; /* this chunk */
   size_t size;
+  uintptr_t regBase; /* whole logical registration this chunk belongs to */
+  size_t regSize;
   device_type dtype;
   int deviceId;
   uint32_t nKeys;
@@ -158,7 +160,10 @@ struct FlagcxAcclEngine {
 
   std::mutex mrMu;
   uint64_t nextMrId = 1;
-  std::map<uintptr_t, AcclMrEntry> mrByBase;
+  std::map<uintptr_t, AcclMrEntry> mrByBase; /* keyed by chunk base */
+  /* vsolar caps a single GPU MR at 64MB, so registrations are split into
+     chunks of at most this many bytes (FLAGCX_ACCL_MAX_MR_MB, 0 = off). */
+  size_t mrChunkBytes = 64ull << 20;
 
   std::mutex xferMu;
   uint64_t nextXferId = 1;
@@ -186,8 +191,11 @@ struct FlagcxAcclConn {
   struct flagcxSocket notifSock;
   bool notifConnected = false;
 
-  std::vector<AcclRemoteRegion> remoteRegions;
-  std::vector<XChannel *> channels; /* initiator side only */
+  std::vector<AcclRemoteRegion> remoteRegions; /* one per remote chunk */
+  /* merged contiguous extents of remoteRegions, for range validation
+     (chunks of one logical registration are contiguous by construction) */
+  std::vector<std::pair<uint64_t, uint64_t>> remoteSpans; /* base, size */
+  std::vector<XChannel *> channels;                       /* initiator side */
   std::atomic<uint64_t> rr{0};
 };
 
@@ -426,6 +434,34 @@ bool findMrContaining(FlagcxAcclEngine *engine, uintptr_t addr, size_t size,
   return false;
 }
 
+/* Chunked registrations: a remote VA resolves to the chunk that contains
+   it (regions are sorted by base). Returns nullptr when the conn has no
+   region table (legacy peers exchanging single-region descs). */
+const AcclRemoteRegion *findRemoteRegion(const FlagcxAcclConn *conn,
+                                         uint64_t va) {
+  const auto &regions = conn->remoteRegions;
+  if (regions.empty())
+    return nullptr;
+  size_t lo = 0, hi = regions.size();
+  while (lo < hi) { /* first region with base > va, then step back */
+    size_t mid = lo + (hi - lo) / 2;
+    if (regions[mid].baseAddr <= va)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  if (lo == 0)
+    return nullptr;
+  const AcclRemoteRegion &r = regions[lo - 1];
+  return (va >= r.baseAddr && va < r.baseAddr + r.size) ? &r : nullptr;
+}
+
+uint32_t regionKeyForNic(const AcclRemoteRegion &r, int nic) {
+  if (nic < 0 || (uint32_t)nic >= r.nKeys || nic >= kMaxNics)
+    return r.nKeys > 0 ? r.rkeys[0] : 0;
+  return r.rkeys[nic];
+}
+
 XChannel *pickChannel(FlagcxAcclConn *conn) {
   const size_t n = conn->channels.size();
   if (n == 0)
@@ -467,26 +503,50 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
            sizeVec[i]);
       return -1;
     }
-    AcclMrEntry entry;
-    if (!findMrContaining(engine, (uintptr_t)localVec[i], sizeVec[i], &entry)) {
-      WARN("NET/ACCL_P2P : local buffer %p not registered", localVec[i]);
-      return -1;
+    /* Registrations are chunked (vsolar 64MB per-MR cap), so one iov may
+       span several local MRs and several remote regions. Split at every
+       chunk boundary on either side; each slice carries the lkey/rkey of
+       the chunks it lands in. */
+    uintptr_t lcur = (uintptr_t)localVec[i];
+    uint64_t rcur = descs[i].addr;
+    size_t remaining = sizeVec[i];
+    while (remaining > 0) {
+      AcclMrEntry entry;
+      if (!findMrContaining(engine, lcur, 1, &entry)) {
+        WARN("NET/ACCL_P2P : local buffer %p not registered", (void *)lcur);
+        return -1;
+      }
+      if (localNic < 0 || (uint32_t)localNic >= entry.nKeys) {
+        WARN("NET/ACCL_P2P : lkey for nic %d missing (nKeys=%u)", localNic,
+             entry.nKeys);
+        return -1;
+      }
+      size_t slice = std::min(remaining, entry.baseAddr + entry.size - lcur);
+      uint32_t rkey;
+      const AcclRemoteRegion *rr = findRemoteRegion(conn, rcur);
+      if (rr != nullptr) {
+        slice = std::min(slice, (size_t)(rr->baseAddr + rr->size - rcur));
+        rkey = regionKeyForNic(*rr, peerNic);
+      } else {
+        /* no region table entry — trust the caller's desc keys wholesale */
+        rkey = descKeyForNic(descs[i], peerNic);
+      }
+
+      rw_memp_t w{};
+      w.sg.addr = (uint64_t)lcur;
+      w.sg.length = (uint32_t)slice;
+      w.sg.lkey = entry.lkeys[localNic];
+      w.data.d_type = entry.dtype;
+      w.data.device_id = entry.deviceId;
+      w.r_addr = rcur;
+      w.r_key = rkey;
+      w.r_ttl_ms = UINT64_MAX;
+      batch->push_back(w);
+
+      lcur += slice;
+      rcur += slice;
+      remaining -= slice;
     }
-    if (localNic < 0 || (uint32_t)localNic >= entry.nKeys) {
-      WARN("NET/ACCL_P2P : lkey for nic %d missing (nKeys=%u)", localNic,
-           entry.nKeys);
-      return -1;
-    }
-    rw_memp_t w{};
-    w.sg.addr = (uint64_t)(uintptr_t)localVec[i];
-    w.sg.length = (uint32_t)sizeVec[i];
-    w.sg.lkey = entry.lkeys[localNic];
-    w.data.d_type = entry.dtype;
-    w.data.device_id = entry.deviceId;
-    w.r_addr = descs[i].addr;
-    w.r_key = descKeyForNic(descs[i], peerNic);
-    w.r_ttl_ms = UINT64_MAX;
-    batch->push_back(w);
   }
   if (batch->empty()) {
     *transferId = 0; /* nothing to do; XferStatus(0) reports done */
@@ -588,6 +648,20 @@ int acclHandshake(FlagcxAcclEngine *engine, struct bootstrapState *bsConn,
     memcpy(r.rkeys, remoteTable[i].rkeys, sizeof(r.rkeys));
     conn->remoteRegions.push_back(r);
   }
+  std::sort(conn->remoteRegions.begin(), conn->remoteRegions.end(),
+            [](const AcclRemoteRegion &a, const AcclRemoteRegion &b) {
+              return a.baseAddr < b.baseAddr;
+            });
+  /* merge contiguous chunks into spans for range validation */
+  conn->remoteSpans.clear();
+  for (const AcclRemoteRegion &r : conn->remoteRegions) {
+    if (!conn->remoteSpans.empty() &&
+        conn->remoteSpans.back().first + conn->remoteSpans.back().second ==
+            r.baseAddr)
+      conn->remoteSpans.back().second += r.size;
+    else
+      conn->remoteSpans.emplace_back(r.baseAddr, r.size);
+  }
   return remoteHello.barexPort;
 }
 
@@ -637,6 +711,14 @@ FlagcxP2pEngine *flagcxAcclEngineCreate() {
   auto *engine = new FlagcxAcclEngine();
   engine->localGpuIdx = inferLocalGpuIdxAccl();
   memset(&engine->notifListenSock, 0, sizeof(engine->notifListenSock));
+
+  const char *mrMb = flagcxGetEnv("FLAGCX_ACCL_MAX_MR_MB");
+  if (mrMb != nullptr) {
+    engine->mrChunkBytes = (size_t)strtoull(mrMb, nullptr, 10) << 20;
+    INFO(FLAGCX_INIT, "NET/ACCL_P2P : MR chunk size %zu MB%s",
+         engine->mrChunkBytes >> 20,
+         engine->mrChunkBytes == 0 ? " (chunking off)" : "");
+  }
 
   XDeviceManager *mgr = nullptr;
   if (XDeviceManager::Singleton(mgr) != BAREX_SUCCESS || mgr == nullptr) {
@@ -1017,7 +1099,7 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
     std::lock_guard<std::mutex> lk(engine->mrMu);
     auto it = engine->mrByBase.find(data);
     if (it != engine->mrByBase.end()) {
-      if (it->second.size != size) {
+      if (it->second.regBase != data || it->second.regSize != size) {
         WARN("NET/ACCL_P2P : re-register 0x%lx with different size",
              (unsigned long)data);
         return -1;
@@ -1031,52 +1113,77 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
   int devId;
   classifyPtr(reinterpret_cast<void *>(data), &dtype, &devId);
 
-  memp_t mem;
-  BarexResult r = engine->mempool->RegUserMr(
-      mem, reinterpret_cast<void *>(data), size, dtype, devId);
-  if (r != BAREX_SUCCESS) {
-    WARN("NET/ACCL_P2P : RegUserMr(%p,%zu,%s,dev%d) failed: %s "
-         "(VMM memory cannot be registered — run with FLAGCX_VMM_ENABLE=0)",
-         reinterpret_cast<void *>(data), size, dtype == GPU ? "GPU" : "CPU",
-         devId, bxstr(r));
-    return -1;
-  }
-
-  AcclMrEntry entry;
-  memset(&entry, 0, sizeof(entry));
-  entry.baseAddr = data;
-  entry.size = size;
-  entry.dtype = dtype;
-  entry.deviceId = devId;
-  entry.nKeys = 0;
-  for (auto &kv : mem.mrs) {
-    const int nic = kv.first;
-    if (nic < 0 || nic >= kMaxNics || kv.second == nullptr) {
-      WARN("NET/ACCL_P2P : unexpected mr map entry nic=%d", nic);
-      continue;
+  /* vsolar rejects GPU MRs above ~64MB (ibv_reg_mr ENOMEM), so register in
+     chunks like Mooncake's barex transport does (eic_max_block_size). */
+  const size_t chunkBytes =
+      engine->mrChunkBytes > 0 ? engine->mrChunkBytes : size;
+  std::vector<AcclMrEntry> chunks;
+  for (size_t off = 0; off < size; off += chunkBytes) {
+    const uintptr_t cbase = data + off;
+    const size_t csize = std::min(chunkBytes, size - off);
+    memp_t mem;
+    BarexResult r = engine->mempool->RegUserMr(
+        mem, reinterpret_cast<void *>(cbase), csize, dtype, devId);
+    if (r != BAREX_SUCCESS) {
+      WARN("NET/ACCL_P2P : RegUserMr(%p,%zu,%s,dev%d) failed: %s "
+           "(chunk %zu/%zu of %p+%zu; VMM memory cannot be registered — "
+           "run with FLAGCX_VMM_ENABLE=0)",
+           reinterpret_cast<void *>(cbase), csize, dtype == GPU ? "GPU" : "CPU",
+           devId, bxstr(r), off / chunkBytes + 1,
+           (size + chunkBytes - 1) / chunkBytes, reinterpret_cast<void *>(data),
+           size);
+      for (const AcclMrEntry &c : chunks)
+        engine->mempool->DeregUserMr(reinterpret_cast<void *>(c.baseAddr),
+                                     dtype);
+      return -1;
     }
-    entry.lkeys[nic] = kv.second->lkey;
-    entry.rkeys[nic] = kv.second->rkey;
-    if ((uint32_t)(nic + 1) > entry.nKeys)
-      entry.nKeys = nic + 1;
-  }
-  if (entry.nKeys == 0) {
-    engine->mempool->DeregUserMr(reinterpret_cast<void *>(data), dtype);
-    return -1;
+
+    AcclMrEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.baseAddr = cbase;
+    entry.size = csize;
+    entry.regBase = data;
+    entry.regSize = size;
+    entry.dtype = dtype;
+    entry.deviceId = devId;
+    entry.nKeys = 0;
+    for (auto &kv : mem.mrs) {
+      const int nic = kv.first;
+      if (nic < 0 || nic >= kMaxNics || kv.second == nullptr) {
+        WARN("NET/ACCL_P2P : unexpected mr map entry nic=%d", nic);
+        continue;
+      }
+      entry.lkeys[nic] = kv.second->lkey;
+      entry.rkeys[nic] = kv.second->rkey;
+      if ((uint32_t)(nic + 1) > entry.nKeys)
+        entry.nKeys = nic + 1;
+    }
+    if (entry.nKeys == 0) {
+      engine->mempool->DeregUserMr(reinterpret_cast<void *>(cbase), dtype);
+      for (const AcclMrEntry &c : chunks)
+        engine->mempool->DeregUserMr(reinterpret_cast<void *>(c.baseAddr),
+                                     dtype);
+      return -1;
+    }
+    chunks.push_back(entry);
   }
 
   std::lock_guard<std::mutex> lk(engine->mrMu);
   auto raced = engine->mrByBase.find(data);
   if (raced != engine->mrByBase.end()) {
     /* concurrent Reg of the same base won the race between our dedup
-       check and this insert; keep theirs, drop our duplicate MR */
-    engine->mempool->DeregUserMr(reinterpret_cast<void *>(data), dtype);
+       check and this insert; keep theirs, drop our duplicate MRs */
+    for (const AcclMrEntry &c : chunks)
+      engine->mempool->DeregUserMr(reinterpret_cast<void *>(c.baseAddr), dtype);
     mrId = raced->second.mrId;
     return 0;
   }
-  entry.mrId = engine->nextMrId++;
-  engine->mrByBase[data] = entry;
-  mrId = entry.mrId;
+  const uint64_t id = engine->nextMrId++;
+  for (AcclMrEntry &c : chunks) {
+    c.mrId = id;
+    engine->mrByBase[c.baseAddr] = c;
+  }
+  mrId = id;
   return 0;
 }
 
@@ -1085,12 +1192,13 @@ void flagcxAcclEngineMrDestroy(FlagcxP2pEngine *e, FlagcxP2pMr mr) {
   if (engine == nullptr)
     return;
   std::lock_guard<std::mutex> lk(engine->mrMu);
-  for (auto it = engine->mrByBase.begin(); it != engine->mrByBase.end(); ++it) {
+  for (auto it = engine->mrByBase.begin(); it != engine->mrByBase.end();) {
     if (it->second.mrId == mr) {
       engine->mempool->DeregUserMr(reinterpret_cast<void *>(it->first),
                                    it->second.dtype);
-      engine->mrByBase.erase(it);
-      return;
+      it = engine->mrByBase.erase(it);
+    } else {
+      ++it;
     }
   }
 }
@@ -1101,14 +1209,21 @@ int flagcxAcclEnginePrepareDesc(FlagcxP2pEngine *e, FlagcxP2pMr mr,
   if (engine == nullptr || data == nullptr || descBuf == nullptr)
     return -1;
   std::lock_guard<std::mutex> lk(engine->mrMu);
+  const uintptr_t addr = (uintptr_t)data;
   for (auto &kv : engine->mrByBase) {
-    if (kv.second.mrId != mr)
+    const AcclMrEntry &entry = kv.second;
+    if (entry.mrId != mr)
+      continue;
+    /* chunked mrId: pick the chunk containing data. The 64B desc can only
+       carry one chunk's rkeys; a peer writing across chunk boundaries must
+       resolve per-chunk keys from its handshake region table. */
+    if (addr < entry.baseAddr || addr >= entry.baseAddr + entry.size)
       continue;
     FlagcxP2pRdmaDesc desc;
     memset(&desc, 0, sizeof(desc));
-    desc.addr = (uint64_t)(uintptr_t)data;
+    desc.addr = (uint64_t)addr;
     desc.size = (uint32_t)size;
-    fillDescKeys(&desc, kv.second.rkeys, kv.second.nKeys);
+    fillDescKeys(&desc, entry.rkeys, entry.nKeys);
     flagcxP2pSerializeRdmaDesc(desc, descBuf);
     return 0;
   }
@@ -1120,12 +1235,18 @@ int flagcxAcclEngineMakeDesc(FlagcxP2pConn *c, uint64_t remoteVa, uint32_t size,
   FlagcxAcclConn *conn = C(c);
   if (conn == nullptr || desc == nullptr)
     return -1;
-  for (const auto &r : conn->remoteRegions) {
-    if (remoteVa >= r.baseAddr && remoteVa + size <= r.baseAddr + r.size) {
+  /* the range may cross chunk boundaries — validate against merged spans;
+     acclSubmit re-resolves per-chunk rkeys, the desc carries the first
+     chunk's keys for legacy/single-chunk consumers. */
+  for (const auto &span : conn->remoteSpans) {
+    if (remoteVa >= span.first && remoteVa + size <= span.first + span.second) {
+      const AcclRemoteRegion *r = findRemoteRegion(conn, remoteVa);
+      if (r == nullptr)
+        return -1;
       memset(desc, 0, sizeof(*desc));
       desc->addr = remoteVa;
       desc->size = size;
-      fillDescKeys(desc, r.rkeys, r.nKeys);
+      fillDescKeys(desc, r->rkeys, r->nKeys);
       return 0;
     }
   }
