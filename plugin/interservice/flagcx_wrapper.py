@@ -867,7 +867,7 @@ class FLAGCXLibrary:
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
-        raw_stream = getattr(old_stream, 'musa_stream', old_stream.cuda_stream)
+        raw_stream = getattr(old_stream, 'musa_stream', getattr(old_stream, 'npu_stream', getattr(old_stream, 'cuda_stream', 0)))
         self.FLAGCX_CHECK(self.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
         return new_stream
 
