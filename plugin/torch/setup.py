@@ -74,6 +74,13 @@ setup(
     version="0.13.0",
     ext_modules=ext_modules,
     cmdclass=cmdclass,
-    packages=find_packages(),
+    packages=find_packages() + find_packages(
+        where=os.path.join(repo_root),
+        include=["plugin", "plugin.*"],
+    ),
+    package_dir={
+        "plugin": os.path.join(repo_root, "plugin"),
+        "plugin.interservice": os.path.join(repo_root, "plugin", "interservice"),
+    },
     entry_points={"torch.backends": ["flagcx = flagcx:init"]},
 )
