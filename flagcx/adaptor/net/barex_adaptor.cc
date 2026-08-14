@@ -601,6 +601,11 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
                                 ch->GetLocalNicId(),
                                 0) != accl::barex::BAREX_SUCCESS) {
       WARN("NET/BAREX : HELLO buffer alloc failed");
+      {
+        std::lock_guard<std::mutex> lk(e->mu);
+        e->channelComm.erase(ch);
+      }
+      delete comm;
       delete st;
       handle->connectState = nullptr;
       return flagcxInternalError;
@@ -626,6 +631,11 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
       WARN("NET/BAREX : HELLO send sync error: %s", bxstr(r));
       /* per xchannel.h: on send failure the buffer is NOT auto-released */
       e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
+      {
+        std::lock_guard<std::mutex> lk(e->mu);
+        e->channelComm.erase(ch);
+      }
+      delete comm;
       delete st;
       handle->connectState = nullptr;
       return flagcxInternalError;
@@ -636,6 +646,11 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
 
   if (st->helloFailed.load(std::memory_order_acquire)) {
     WARN("NET/BAREX : HELLO delivery failed");
+    if (st->comm != nullptr) {
+      std::lock_guard<std::mutex> lk(e->mu);
+      e->channelComm.erase(st->comm->channel);
+    }
+    delete st->comm;
     delete st;
     handle->connectState = nullptr;
     return flagcxInternalError;
