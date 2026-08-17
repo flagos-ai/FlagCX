@@ -209,6 +209,10 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_DEVICE_ADAPTOR_PLUGIN` | None | Path to device adaptor plugin shared library |
 | `FLAGCX_NET_ADAPTOR_PLUGIN` | None | Path to network adaptor plugin shared library |
 | `FLAGCX_CCL_ADAPTOR_PLUGIN` | None | Path to CCL adaptor plugin shared library |
+| `FLAGCX_TORCH_BACKEND` | `torch_gcu` | Torch integration used by the Enflame plugin. Set to `flagos` to build and load against torch-fl without importing or linking `torch_gcu` |
+| `FLAGOS_INSTALL_PATH` | None | torch-fl package root containing `include/flagos.h` and `lib/libflagos.so` for `FLAGCX_TORCH_BACKEND=flagos` builds |
+| `FLAGOS_INCLUDE_DIR` | None | Explicit directory containing `flagos.h`; overrides the include path derived from `FLAGOS_INSTALL_PATH` |
+| `FLAGOS_LIBRARY_DIR` | None | Explicit directory containing `libflagos.so`; overrides the library path derived from `FLAGOS_INSTALL_PATH` |
 
 ---
 

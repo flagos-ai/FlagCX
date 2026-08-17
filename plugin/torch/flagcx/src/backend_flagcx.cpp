@@ -266,14 +266,32 @@ bool flagcxWork::isCompleted() { return future_->completed(); }
 bool flagcxWork::isSuccess() const { return future_->hasValue(); }
 
 bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  int previousDevice = 0;
+  C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  try {
+    event_->block(deviceId_);
+    C10D_FLAGCX_CHECK(devHandle_->streamSynchronize(stream_), std::nullopt);
+  } catch (...) {
+    devHandle_->setDevice(previousDevice);
+    throw;
+  }
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(previousDevice), std::nullopt);
+#else
   event_->block(deviceId_);
   if (isBarrierOp_) {
     C10D_FLAGCX_CHECK(devHandle_->streamSynchronize(stream_), std::nullopt);
   }
+#endif
+  stashedTensors_.clear();
   return true;
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  wait();
+#endif
   return future_;
 }
 
@@ -666,6 +684,7 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
   initComm(device);
   syncStream(device);
 
+  at::Tensor outputFlattened;
   if (!check_same_size(outputTensorsTmp)) {
     // Implement allgather with different sizes using broadcast
     const auto num_reduces = outputTensorsTmp.size();
@@ -680,7 +699,7 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
     }
   } else {
     // Flatten a vector of tensors into a single, stacked tensor.
-    at::Tensor outputFlattened = newLikeFlat(outputTensorsTmp);
+    outputFlattened = newLikeFlat(outputTensorsTmp);
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
@@ -696,11 +715,18 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
                         inputTensor.numel(), flagcxDataType, comm_, stream),
         std::nullopt);
 
-    // Copy the flattened tensor back into a vector of tensors.
+    // Copy the contiguous receive buffer back without dispatching an ATen
+    // copy kernel. GCU's int64 copy path is not reliable, and DDP uses int64
+    // tensors for parameter-shape verification.
     {
       flagcxStreamGuard guard(stream, device.index());
       for (const auto j : c10::irange(outputTensorsTmp.size())) {
-        outputTensorsTmp[j].copy_(outputFlattened[j], true);
+        C10D_FLAGCX_CHECK(
+            devHandle_->deviceMemcpy(
+                outputTensorsTmp[j].data_ptr(), outputFlattened[j].data_ptr(),
+                outputTensorsTmp[j].numel() * outputTensorsTmp[j].element_size(),
+                flagcxMemcpyDeviceToDevice, stream),
+            std::nullopt);
       }
     }
   }
@@ -709,6 +735,12 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
       c10::make_intrusive<flagcxWork>(OpType::ALLGATHER, stream, devHandle_);
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
+  if (outputFlattened.defined()) {
+    work->stashedTensors_.push_back(std::move(outputFlattened));
+  }
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  C10D_FLAGCX_CHECK(devHandle_->streamSynchronize(stream), std::nullopt);
+#endif
   // Create a future to track the allgather operation
   std::vector<at::Device> devices{inputTensor.device()};
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
@@ -915,6 +947,8 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
+  work->stashedTensors_.push_back(std::move(inputFlattened));
+  work->stashedTensors_.push_back(std::move(outputFlattened));
   // Create a future to track the alltoall operation
   std::vector<at::Device> devices{device};
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
@@ -1093,6 +1127,7 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
+  work->stashedTensors_.push_back(std::move(outputFlattened));
   // Create a future to track the gather operation
   std::vector<at::Device> devices{inputTensor.device()};
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
@@ -1155,12 +1190,13 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
   initComm(device);
   syncStream(device);
 
+  at::Tensor inputFlattened;
   if (!check_same_size(inputTensorsTmp)) {
     throw std::runtime_error(
         "flagcx only support same size reducescatter operation");
   } else {
     // Flatten a vector of tensors into a single, stacked tensor.
-    at::Tensor inputFlattened = newLikeFlat(inputTensorsTmp);
+    inputFlattened = newLikeFlat(inputTensorsTmp);
 
     // Copy the input tensors to the flattened tensor.
     {
@@ -1189,6 +1225,7 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
+  work->stashedTensors_.push_back(std::move(inputFlattened));
   // Create a future to track the reducescatter operation
   std::vector<at::Device> devices{outputTensor.device()};
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
@@ -1322,6 +1359,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
+  work->stashedTensors_.push_back(std::move(inputFlattened));
   // Create a future to track the scatter operation
   std::vector<at::Device> devices{outputTensor.device()};
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(

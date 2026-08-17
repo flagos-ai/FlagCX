@@ -209,12 +209,55 @@ def get_device_config(adaptor_flag):
         library_dirs += ["/usr/local/kuiper/lib", txda_library_path]
         libs += ["torch_txda", "hpgr"]
     elif adaptor_flag == "-DUSE_ENFLAME_ADAPTOR":
-        import torch_gcu
-        pytorch_gcu_install_path = os.path.dirname(os.path.abspath(torch_gcu.__file__))
-        pytorch_library_path = os.path.join(pytorch_gcu_install_path, "lib")
-        include_dirs += ["/opt/tops/include", os.path.join(pytorch_gcu_install_path, "include")]
-        library_dirs += ["/opt/tops/lib", pytorch_library_path]
-        libs += ["topsrt", "torch_gcu"]
+        include_dirs += ["/opt/tops/include"]
+        library_dirs += ["/opt/tops/lib"]
+        libs += ["topsrt"]
+        if os.environ.get("FLAGCX_TORCH_BACKEND", "torch_gcu").strip().lower() == "flagos":
+            # torch_fl owns the PrivateUse1 stream/event implementation. Keep
+            # this mode independent of the vendor torch_gcu package.
+            flagos_install_path = os.environ.get("FLAGOS_INSTALL_PATH", "")
+            flagos_include_dir = os.environ.get("FLAGOS_INCLUDE_DIR", "")
+            flagos_library_dir = os.environ.get("FLAGOS_LIBRARY_DIR", "")
+            if flagos_install_path:
+                flagos_include_dir = flagos_include_dir or os.path.join(
+                    flagos_install_path, "include"
+                )
+                flagos_library_dir = flagos_library_dir or os.path.join(
+                    flagos_install_path, "lib"
+                )
+            if not flagos_include_dir or not flagos_library_dir:
+                import torch_fl
+
+                torch_fl_path = os.path.dirname(os.path.abspath(torch_fl.__file__))
+                flagos_include_dir = flagos_include_dir or os.path.join(
+                    torch_fl_path, "include"
+                )
+                flagos_library_dir = flagos_library_dir or os.path.join(
+                    torch_fl_path, "lib"
+                )
+                if not os.path.isfile(os.path.join(flagos_include_dir, "flagos.h")):
+                    source_root = os.path.dirname(torch_fl_path)
+                    flagos_include_dir = os.path.join(source_root, "csrc", "include")
+            if not os.path.isfile(os.path.join(flagos_include_dir, "flagos.h")):
+                raise RuntimeError(
+                    "FLAGCX_TORCH_BACKEND=flagos requires flagos.h; set "
+                    "FLAGOS_INSTALL_PATH or FLAGOS_INCLUDE_DIR"
+                )
+            if not os.path.isfile(os.path.join(flagos_library_dir, "libflagos.so")):
+                raise RuntimeError(
+                    "FLAGCX_TORCH_BACKEND=flagos requires libflagos.so; set "
+                    "FLAGOS_INSTALL_PATH or FLAGOS_LIBRARY_DIR"
+                )
+            include_dirs += [flagos_include_dir]
+            library_dirs += [flagos_library_dir]
+            libs += ["flagos"]
+        else:
+            import torch_gcu
+            pytorch_gcu_install_path = os.path.dirname(os.path.abspath(torch_gcu.__file__))
+            pytorch_library_path = os.path.join(pytorch_gcu_install_path, "lib")
+            include_dirs += [os.path.join(pytorch_gcu_install_path, "include")]
+            library_dirs += [pytorch_library_path]
+            libs += ["torch_gcu"]
     elif adaptor_flag == "-DUSE_SUNRISE_ADAPTOR":
         import torch_ptpu
         torch_ptpu_dir = os.path.dirname(os.path.abspath(torch_ptpu.__file__))
@@ -237,6 +280,29 @@ def get_device_config(adaptor_flag):
         libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
 
     return include_dirs, library_dirs, libs
+
+
+def get_device_rpath_dirs(adaptor_flag, library_dirs):
+    """Return runtime library paths that belong in the extension artifact."""
+    if (
+        adaptor_flag == "-DUSE_ENFLAME_ADAPTOR"
+        and os.environ.get("FLAGCX_TORCH_BACKEND", "").strip().lower() == "flagos"
+    ):
+        flagos_library_dir = os.environ.get("FLAGOS_LIBRARY_DIR", "")
+        flagos_install_path = os.environ.get("FLAGOS_INSTALL_PATH", "")
+        if not flagos_library_dir and flagos_install_path:
+            flagos_library_dir = os.path.join(flagos_install_path, "lib")
+        if not flagos_library_dir:
+            try:
+                import torch_fl
+
+                flagos_library_dir = os.path.join(
+                    os.path.dirname(os.path.abspath(torch_fl.__file__)), "lib"
+                )
+            except ImportError:
+                pass
+        return [path for path in library_dirs if path != flagos_library_dir]
+    return list(library_dirs)
 
 
 def get_ext_classes(adaptor_flag):

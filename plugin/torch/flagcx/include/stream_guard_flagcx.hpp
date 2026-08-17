@@ -53,10 +53,15 @@
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <tx_runtime.h>
 #elif USE_ENFLAME_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+#include <flagos.h>
+#include <tops/tops_runtime_api.h>
+#else
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <gcu/gcu_guard.h>
 #include <gcu/gcu_stream.h>
 #include <tops/tops_runtime_api.h>
+#endif
 #elif USE_SUNRISE_ADAPTOR
 #include <torch_ptpu/core/Stream.h>
 #endif
@@ -98,8 +103,15 @@ public:
         guard_(
             torch_txda::getStreamFromExternal(*(txStream_t *)stream, deviceId))
 #elif USE_ENFLAME_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+        guard_(*reinterpret_cast<topsStream_t *>(stream)),
+        previous_(reinterpret_cast<topsStream_t>(
+            GetCurrentStreamForDevice(deviceId))),
+        previousDevice_(0)
+#else
         guard_(
             torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId))
+#endif
 // torch_ptpu intentionally does not expose a getStreamFromExternal-style API.
 // Instead we pick a stream from the pool, run torch ops on it, and rely on
 // flagcxBackend::syncStream() / flagcxPtpuEvent for cross-stream
@@ -109,11 +121,21 @@ public:
         guard_(torchpt::get_stream_from_pool(deviceId, /*prio=*/0))
 #endif
   {
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    GetDevice(&previousDevice_);
+    SetDevice(deviceId_);
+    SetCurrentStreamForDevice(deviceId_, reinterpret_cast<Stream_t>(guard_));
+#endif
 #ifdef USE_SUNRISE_ADAPTOR
     torchpt::set_current_stream(guard_.unwrap());
 #endif
   }
-#ifdef USE_SUNRISE_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  ~flagcxStreamGuard() {
+    SetCurrentStreamForDevice(deviceId_, reinterpret_cast<Stream_t>(previous_));
+    SetDevice(previousDevice_);
+  }
+#elif USE_SUNRISE_ADAPTOR
   // torchpt::PTPUStream is a value type, not an RAII guard, so we have
   // to restore the previous current stream by hand on destruction.
   ~flagcxStreamGuard() {
@@ -162,8 +184,13 @@ public:
     guard_.reset_stream(
         torch_txda::getStreamFromExternal(*(txStream_t *)stream, deviceId_));
 #elif USE_ENFLAME_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    guard_ = *reinterpret_cast<topsStream_t *>(stream);
+    SetCurrentStreamForDevice(deviceId_, reinterpret_cast<Stream_t>(guard_));
+#else
     guard_.reset_stream(
         torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId_));
+#endif
 #elif USE_SUNRISE_ADAPTOR
     guard_ = torchpt::get_stream_from_pool(deviceId_, /*prio=*/0);
     torchpt::set_current_stream(guard_.unwrap());
@@ -200,7 +227,13 @@ private:
 #elif USE_TSM_ADAPTOR
   torch_txda::TXDAStreamGuard guard_;
 #elif USE_ENFLAME_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  topsStream_t guard_;
+  topsStream_t previous_;
+  int previousDevice_;
+#else
   torch_gcu::GCUStreamGuard guard_;
+#endif
 #elif USE_SUNRISE_ADAPTOR
   torchpt::PTPUStream sunrisePrevStream_;
   torchpt::PTPUStream guard_;

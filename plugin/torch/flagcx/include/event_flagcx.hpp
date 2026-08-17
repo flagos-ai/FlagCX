@@ -39,9 +39,14 @@
 #include "torch_txda/csrc/core/TXDAStream.h"
 #include <tx_runtime.h>
 #elif USE_ENFLAME_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+#include <flagos.h>
+#include <tops/tops_runtime_api.h>
+#else
 #include <gcu/gcu_event.h>
 #include <gcu/gcu_guard.h>
 #include <tops/tops_runtime_api.h>
+#endif
 #elif USE_SUNRISE_ADAPTOR
 #include <tang_runtime.h>
 #include <torch_ptpu/core/Event.h>
@@ -330,6 +335,51 @@ private:
 #elif USE_ENFLAME_ADAPTOR
 class flagcxTopsEvent : public flagcxEvent {
 public:
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  flagcxTopsEvent() {
+    TORCH_CHECK(
+        topsEventCreateWithFlags(&event_, topsEventDisableTiming) == topsSuccess,
+        "topsEventCreateWithFlags failed");
+  }
+
+  ~flagcxTopsEvent() override {
+    if (event_ != nullptr) {
+      topsEventDestroy(event_);
+    }
+  }
+
+  void record(const int deviceId) override {
+    TORCH_CHECK(
+        topsEventRecord(event_, reinterpret_cast<topsStream_t>(
+            GetCurrentStreamForDevice(deviceId))) == topsSuccess,
+        "topsEventRecord failed");
+  }
+
+  void record(const flagcxStream_t &stream, const int /*deviceId*/) override {
+    TORCH_CHECK(
+        topsEventRecord(event_, *reinterpret_cast<topsStream_t *>(stream)) ==
+            topsSuccess,
+        "topsEventRecord failed");
+  }
+
+  void block(const int deviceId) override {
+    TORCH_CHECK(
+        topsStreamWaitEvent(
+            reinterpret_cast<topsStream_t>(GetCurrentStreamForDevice(deviceId)),
+            event_, 0) == topsSuccess,
+        "topsStreamWaitEvent failed");
+  }
+
+  void block(const flagcxStream_t &stream, const int /*deviceId*/) override {
+    TORCH_CHECK(
+        topsStreamWaitEvent(*reinterpret_cast<topsStream_t *>(stream), event_, 0) ==
+            topsSuccess,
+        "topsStreamWaitEvent failed");
+  }
+
+private:
+  topsEvent_t event_ = nullptr;
+#else
   flagcxTopsEvent() { topsEvent_ = torch_gcu::GCUEvent(); }
 
   void record(const int deviceId) override {
@@ -352,6 +402,7 @@ public:
 
 private:
   torch_gcu::GCUEvent topsEvent_;
+#endif
 };
 #elif USE_SUNRISE_ADAPTOR
 class flagcxPtpuEvent : public flagcxEvent {
