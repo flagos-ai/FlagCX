@@ -16,6 +16,7 @@ from _build_config import (
     detect_adaptor,
     detect_torch_flag,
     get_device_config,
+    get_device_rpath_dirs,
     get_ext_classes,
 )
 
@@ -24,6 +25,10 @@ print(f"Using {adaptor} adaptor")
 
 adaptor_flag = ADAPTOR_MAP[adaptor]
 torch_flag = detect_torch_flag()
+torch_backend_flags = []
+if adaptor == "enflame" and os.environ.get("FLAGCX_TORCH_BACKEND", "").strip().lower() == "flagos":
+    # Compile the Enflame plugin against torch_fl's C ABI instead of torch_gcu.
+    torch_backend_flags.append("-DFLAGCX_TORCH_BACKEND_FLAGOS")
 
 plugin_dir = os.path.dirname(os.path.abspath(__file__))
 repo_root = os.path.join(plugin_dir, "..", "..")
@@ -56,10 +61,13 @@ if CppExtension is not None:
         sources=sources,
         include_dirs=include_dirs,
         extra_compile_args={
-            'cxx': [adaptor_flag, torch_flag]
+            'cxx': [adaptor_flag, torch_flag] + torch_backend_flags
         },
         extra_link_args=["-Wl,-rpath," + os.path.join(repo_root, "build", "lib")]
-                        + ["-Wl,-rpath," + d for d in dev_libdirs],
+                        + [
+                            "-Wl,-rpath," + d
+                            for d in get_device_rpath_dirs(adaptor_flag, dev_libdirs)
+                        ],
         library_dirs=library_dirs,
         libraries=libs,
     )
