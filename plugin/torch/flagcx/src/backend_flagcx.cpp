@@ -722,10 +722,11 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
       flagcxStreamGuard guard(stream, device.index());
       for (const auto j : c10::irange(outputTensorsTmp.size())) {
         C10D_FLAGCX_CHECK(
-            devHandle_->deviceMemcpy(
-                outputTensorsTmp[j].data_ptr(), outputFlattened[j].data_ptr(),
-                outputTensorsTmp[j].numel() * outputTensorsTmp[j].element_size(),
-                flagcxMemcpyDeviceToDevice, stream),
+            devHandle_->deviceMemcpy(outputTensorsTmp[j].data_ptr(),
+                                     outputFlattened[j].data_ptr(),
+                                     outputTensorsTmp[j].numel() *
+                                         outputTensorsTmp[j].element_size(),
+                                     flagcxMemcpyDeviceToDevice, stream),
             std::nullopt);
       }
     }
