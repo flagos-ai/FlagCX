@@ -337,9 +337,9 @@ class flagcxTopsEvent : public flagcxEvent {
 public:
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
   flagcxTopsEvent() {
-    TORCH_CHECK(
-        topsEventCreateWithFlags(&event_, topsEventDisableTiming) == topsSuccess,
-        "topsEventCreateWithFlags failed");
+    TORCH_CHECK(topsEventCreateWithFlags(&event_, topsEventDisableTiming) ==
+                    topsSuccess,
+                "topsEventCreateWithFlags failed");
   }
 
   ~flagcxTopsEvent() override {
@@ -349,32 +349,29 @@ public:
   }
 
   void record(const int deviceId) override {
-    TORCH_CHECK(
-        topsEventRecord(event_, reinterpret_cast<topsStream_t>(
-            GetCurrentStreamForDevice(deviceId))) == topsSuccess,
-        "topsEventRecord failed");
+    TORCH_CHECK(topsEventRecord(event_, reinterpret_cast<topsStream_t>(
+                                            GetCurrentStreamForDevice(
+                                                deviceId))) == topsSuccess,
+                "topsEventRecord failed");
   }
 
   void record(const flagcxStream_t &stream, const int /*deviceId*/) override {
-    TORCH_CHECK(
-        topsEventRecord(event_, *reinterpret_cast<topsStream_t *>(stream)) ==
-            topsSuccess,
-        "topsEventRecord failed");
+    TORCH_CHECK(topsEventRecord(event_, *reinterpret_cast<topsStream_t *>(
+                                            stream)) == topsSuccess,
+                "topsEventRecord failed");
   }
 
   void block(const int deviceId) override {
-    TORCH_CHECK(
-        topsStreamWaitEvent(
-            reinterpret_cast<topsStream_t>(GetCurrentStreamForDevice(deviceId)),
-            event_, 0) == topsSuccess,
-        "topsStreamWaitEvent failed");
+    TORCH_CHECK(topsStreamWaitEvent(reinterpret_cast<topsStream_t>(
+                                        GetCurrentStreamForDevice(deviceId)),
+                                    event_, 0) == topsSuccess,
+                "topsStreamWaitEvent failed");
   }
 
   void block(const flagcxStream_t &stream, const int /*deviceId*/) override {
-    TORCH_CHECK(
-        topsStreamWaitEvent(*reinterpret_cast<topsStream_t *>(stream), event_, 0) ==
-            topsSuccess,
-        "topsStreamWaitEvent failed");
+    TORCH_CHECK(topsStreamWaitEvent(*reinterpret_cast<topsStream_t *>(stream),
+                                    event_, 0) == topsSuccess,
+                "topsStreamWaitEvent failed");
   }
 
 private:
