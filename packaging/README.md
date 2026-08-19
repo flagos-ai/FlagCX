@@ -15,7 +15,7 @@ packaging/
 │       ├── build-flagcx.sh          # Unified build script
 │       ├── Dockerfile.deb           # Unified build configuration
 │       └── test-nexus-upload.sh     # Local Nexus upload test script
-└── rpm/                # Future: RPM packaging for RHEL/Fedora/etc.
+└── rpm/                # RPM packaging for RHEL/Rocky/openEuler
 ```
 
 ## Why `packaging/` Instead of Top-Level `/debian`?
@@ -104,6 +104,29 @@ sudo dpkg -i debian-packages/nvidia/*.deb
 # Example: MetaX
 sudo dpkg -i debian-packages/metax/*.deb
 ```
+
+## Building RPM Packages
+
+Use the RPM build target that matches the backend and distribution:
+
+```bash
+# NVIDIA CUDA 12 on Rocky Linux 8
+./packaging/rpm/build-flagcx-rpm.sh nvidia
+
+# NVIDIA CUDA 12 on openEuler 24.03 LTS
+RPM_DISTRO=openeuler2403 ./packaging/rpm/build-flagcx-rpm.sh nvidia
+
+# Other supported backends
+./packaging/rpm/build-flagcx-rpm.sh metax
+./packaging/rpm/build-flagcx-rpm.sh ascend
+```
+
+The openEuler target assembles its build-time CUDA 12 and NCCL prefixes from
+NVIDIA's PyPI wheels. Set `CUDA_PIP_INDEX_URL` to use a reachable mirror. The
+resulting `.oe2403` RPM intentionally does not claim RPM dependencies on
+`libcuda.so.1`, `libcudart.so.12`, or `libnccl.so.2`, because openEuler has no
+RPM provider for them; those ABI-compatible libraries must be present in the
+deployment environment.
 
 ## CI/CD
 

@@ -1,11 +1,47 @@
-# Build FlagCX NVIDIA RPM packages on Rocky Linux based CUDA images.
+# Build FlagCX NVIDIA RPM packages. The same definition covers Rocky Linux
+# and openEuler; RPM_DISTRO selects only the build environment preparation.
 
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda
 ARG BASE_IMAGE_VERSION=12.4.1-devel-rockylinux8
-FROM nvcr.io/nvidia/cuda:${BASE_IMAGE_VERSION}
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+ARG RPM_DISTRO=rocky8
+ARG CUDA_PIP_INDEX_URL=https://pypi.org/simple
 
 WORKDIR /workspace
+COPY packaging/rpm/dockerfiles/prepare-cuda12-pip.sh /tmp/prepare-cuda12-pip.sh
+
+RUN case "${RPM_DISTRO}" in \
+        rocky8) \
+            ;; \
+        openeuler2403) \
+            dnf install -y python3-pip findutils && \
+            dnf clean all && \
+            python3 -m pip install --no-cache-dir \
+                --index-url "${CUDA_PIP_INDEX_URL}" \
+                --only-binary=:all: \
+                nvidia-cuda-runtime-cu12 \
+                nvidia-cuda-nvcc-cu12 \
+                nvidia-cuda-cccl-cu12 \
+                nvidia-nccl-cu12 && \
+            bash /tmp/prepare-cuda12-pip.sh \
+            ;; \
+        *) \
+            echo "ERROR: unsupported NVIDIA RPM distro: ${RPM_DISTRO}" >&2; \
+            exit 1 \
+            ;; \
+    esac
+
 COPY . /workspace/
 
-RUN bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia
+RUN if [ "${RPM_DISTRO}" = "openeuler2403" ]; then \
+        DEVICE_HOME=/opt/cuda12 \
+        CCL_HOME=/opt/nccl12 \
+        RPM_DIST_TAG=.oe2403 \
+        RPM_EXTERNAL_VENDOR_RUNTIME=1 \
+        bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia; \
+    else \
+        bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia; \
+    fi
 
 CMD ["/bin/bash"]
