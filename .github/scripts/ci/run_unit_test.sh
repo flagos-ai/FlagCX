@@ -245,9 +245,9 @@ run_suite() {
 }
 
 case "$SUITE" in
-  device_api|device_api_unified_ir|symmem)
+  device_api|device_api_unified_ir)
     ;;
-  adaptor|core|p2p|rma|runner|service)
+  adaptor|core|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   *)
