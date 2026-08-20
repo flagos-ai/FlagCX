@@ -297,10 +297,7 @@ protected:
   aclrtStream acl_stream;
 #endif
 
-  // Pair-comm support for backends that require dedicated 2-rank sub-comms
-  // for p2p operations (e.g. PCCL/sunrise). Detected at runtime via
-  // devHandle_->getVendor().
-  bool needsPairComm_ = false;
+  // Dedicated 2-rank communicators used by P2P operations.
   std::unordered_map<std::string, flagcxComm_t> pairComms_;
   struct pairCoalesceCtx {
     bool active = false;
