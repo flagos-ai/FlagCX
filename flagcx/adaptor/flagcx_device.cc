@@ -182,6 +182,7 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
   if (comm == nullptr || buff == nullptr || size == 0) {
     return flagcxInvalidArgument;
   }
+  *devMem = nullptr;
 
   flagcxDevMem_t handle =
       (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
@@ -345,10 +346,10 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
       continue; // empty slot
     }
 
-    if (e->inUse) {
-      WARN("flagcxCommCleanupIpcTable: entry %d still in use — "
+    if (e->refCount != 0) {
+      WARN("flagcxCommCleanupIpcTable: entry %d still has %zu references — "
            "flagcxDevMemDestroy should be called before flagcxCommDestroy",
-           k);
+           k, e->refCount);
     }
 
     // Close IPC handles
@@ -371,6 +372,11 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
       e->devPeerPtrs = nullptr;
     }
 
+    e->basePtr = nullptr;
+    e->size = 0;
+    e->nPeers = 0;
+    e->refCount = 0;
+    e->bindingGeneration = 0;
     e->inUse = false;
   }
 
@@ -418,6 +424,32 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   e->nPeers = 0;
   e->basePtr = nullptr;
   e->inUse = false;
+}
+
+void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType) {
+  if (comm == nullptr || ptr == nullptr)
+    return;
+  if (comm->deferredFreeCount < FLAGCX_MAX_DEFERRED_FREES) {
+    flagcxDeferredFree *entry = &comm->deferredFrees[comm->deferredFreeCount++];
+    entry->ptr = ptr;
+    entry->memType = memType;
+    entry->next = nullptr;
+    return;
+  }
+  flagcxDeferredFree *entry =
+      static_cast<flagcxDeferredFree *>(malloc(sizeof(flagcxDeferredFree)));
+  if (entry == nullptr) {
+    WARN("flagcxCommDeferFree: failed to track deferred allocation %p", ptr);
+    return;
+  }
+  entry->ptr = ptr;
+  entry->memType = memType;
+  entry->next = nullptr;
+  if (comm->deferredFreeOverflowTail != nullptr)
+    comm->deferredFreeOverflowTail->next = entry;
+  else
+    comm->deferredFreeOverflowHead = entry;
+  comm->deferredFreeOverflowTail = entry;
 }
 
 // ==========================================================================
@@ -839,6 +871,25 @@ flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm) {
     pthread_mutex_destroy(&owner->cachedPtrMutex);
     free(owner);
   }
+  for (int i = 0; i < comm->deferredFreeCount; ++i) {
+    flagcxDeferredFree *entry = &comm->deferredFrees[i];
+    if (entry->ptr != nullptr)
+      deviceAdaptor->deviceFree(
+          entry->ptr, static_cast<flagcxMemType_t>(entry->memType), NULL);
+    entry->ptr = nullptr;
+  }
+  comm->deferredFreeCount = 0;
+  flagcxDeferredFree *overflow = comm->deferredFreeOverflowHead;
+  while (overflow != nullptr) {
+    flagcxDeferredFree *next = overflow->next;
+    if (overflow->ptr != nullptr)
+      deviceAdaptor->deviceFree(
+          overflow->ptr, static_cast<flagcxMemType_t>(overflow->memType), NULL);
+    free(overflow);
+    overflow = next;
+  }
+  comm->deferredFreeOverflowHead = nullptr;
+  comm->deferredFreeOverflowTail = nullptr;
   return flagcxSuccess;
 }
 

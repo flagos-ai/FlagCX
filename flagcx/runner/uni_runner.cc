@@ -12,6 +12,7 @@
 FLAGCX_PARAM(UniRunnerUseLocRed, "UNIRUNNER_USE_LOCRED", 0);
 FLAGCX_PARAM(UniRunnerUseRingAG, "UNIRUNNER_USE_RINGAG", 0);
 FLAGCX_PARAM(UniRunnerUseSlicedAR, "UNIRUNNER_USE_SLICEDAR", 0);
+FLAGCX_PARAM(UniRunnerUseIpcAR, "UNIRUNNER_USE_IPCAR", 0);
 FLAGCX_PARAM(UniRunnerUseGroupedAG, "UNIRUNNER_USE_GROUPEDAG", 1);
 FLAGCX_PARAM(UniRunnerGroupSize, "UNIRUNNER_GROUPSIZE", 0);
 
@@ -44,8 +45,11 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   void *scratchbuff = nullptr;
   bool initialized = false;
-  res = deviceAdaptor->deviceMalloc(&scratchbuff,
-                                    2 * count * getFlagcxDataTypeSize(datatype),
+  size_t scratchBytes = 0;
+  FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
+  FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpReduce));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 2, datatype, &scratchBytes));
+  res = deviceAdaptor->deviceMalloc(&scratchbuff, scratchBytes,
                                     flagcxMemDevice, stream);
   if (res != flagcxSuccess)
     return res;
@@ -151,10 +155,16 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
+  FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpAllReduce));
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     return res;
-  if (flagcxParamUniRunnerUseLocRed()) {
+  if (flagcxParamUniRunnerUseIpcAR()) {
+    FLAGCXCHECKGOTO(initUniRunnerStateIpcAR(runnerState, sendbuff, recvbuff,
+                                            count, datatype, op, comm),
+                    res, out);
+  } else if (flagcxParamUniRunnerUseLocRed()) {
     /* initialize uniRunnerState for reduce test */
     FLAGCXCHECKGOTO(initUniRunnerStateLocRed(runnerState, sendbuff, recvbuff,
                                              count, datatype, op, comm),
@@ -191,9 +201,13 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   void *scratchbuff = nullptr;
   bool initialized = false;
-  res = deviceAdaptor->deviceMalloc(
-      &scratchbuff, recvcount * comm->nranks * getFlagcxDataTypeSize(datatype),
-      flagcxMemDevice, stream);
+  size_t scratchBytes = 0;
+  FLAGCXCHECK(validateUniRunnerReduceArgs(recvcount, datatype, op));
+  FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpReduceScatter));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(recvcount, comm->nranks, datatype,
+                                        &scratchBytes));
+  res = deviceAdaptor->deviceMalloc(&scratchbuff, scratchBytes,
+                                    flagcxMemDevice, stream);
   if (res != flagcxSuccess)
     return res;
   res = initUniRunner(comm, stream);
@@ -217,8 +231,17 @@ out:
 flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
                                   size_t sendcount, flagcxDataType_t datatype,
                                   flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL || comm->nranks <= 0) {
+    return flagcxInvalidArgument;
+  }
+  size_t size = 0;
+  size_t totalSize = 0;
+  FLAGCXCHECK(
+      checkedUniRunnerTypeBytes(sendcount, 1, datatype, &size));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(
+      sendcount, static_cast<size_t>(comm->nranks), datatype, &totalSize));
+
   if (!flagcxParamUniRunnerUseGroupedAG()) {
-    size_t size = sendcount * getFlagcxDataTypeSize(datatype);
     char *bufferOut = static_cast<char *>(recvbuff);
     return flagcxRunnerRunGroup(
         []() { return flagcxHeteroGroupStart(); },
@@ -241,11 +264,14 @@ flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
         []() { return flagcxHeteroGroupEnd(); });
   }
 
+  (void)totalSize;
+
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   int groupSize = resolveUniRunnerGroupedAGGroupSize(comm);
 
+  FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpAllGather));
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     return res;

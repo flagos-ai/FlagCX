@@ -243,6 +243,7 @@ struct flagcxDevMemInternal {
   // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
   int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
   int intraRank; // this rank's local rank index (for IPC local pointer)
+  void **ipcDevPeerPtrs; // device pointer to the local-rank peer base table
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window

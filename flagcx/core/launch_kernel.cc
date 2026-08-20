@@ -76,3 +76,94 @@ void cpuAsyncKernel(void *args) {
   semaphore->signalStart();
   semaphore->wait();
 }
+
+flagcxStreamValueBufferPool streamValueBufferPool;
+
+flagcxStreamValueBufferPool::~flagcxStreamValueBufferPool() {
+  for (auto &chunk : chunks) {
+    free(chunk.inUse);
+    deviceAdaptor->deviceFree(chunk.signals, flagcxMemHost, nullptr);
+  }
+}
+
+flagcxResult_t flagcxStreamValueBufferPool::grow() {
+  Chunk chunk{};
+  chunk.capacity = flagcxParamSemaphoreBufferPoolCapacity();
+  if (chunk.capacity < 1) {
+    chunk.capacity = 1;
+  }
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+      reinterpret_cast<void **>(&chunk.signals),
+      static_cast<size_t>(chunk.capacity) * 2 * sizeof(uint64_t),
+      flagcxMemHost, nullptr));
+  FLAGCXCHECK(deviceAdaptor->hostGetDevicePointer(&chunk.dSignals,
+                                                  chunk.signals));
+  FLAGCXCHECK(flagcxCalloc(&chunk.inUse, chunk.capacity));
+  chunks.push_back(chunk);
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxStreamValueBufferPool::acquire(uint64_t **signals,
+                                                    void **dSignals) {
+  std::lock_guard<std::mutex> lock(mutex);
+  for (auto &chunk : chunks) {
+    for (int slot = 0; slot < chunk.capacity; ++slot) {
+      if (chunk.inUse[slot] == 0) {
+        chunk.inUse[slot] = 1;
+        *signals = chunk.signals + 2 * slot;
+        *dSignals =
+            static_cast<char *>(chunk.dSignals) +
+            static_cast<size_t>(2 * slot) * sizeof(uint64_t);
+        memset(*signals, 0, 2 * sizeof(uint64_t));
+        return flagcxSuccess;
+      }
+    }
+  }
+
+  FLAGCXCHECK(grow());
+  Chunk &chunk = chunks.back();
+  chunk.inUse[0] = 1;
+  *signals = chunk.signals;
+  *dSignals = chunk.dSignals;
+  memset(*signals, 0, 2 * sizeof(uint64_t));
+  return flagcxSuccess;
+}
+
+void flagcxStreamValueBufferPool::release(uint64_t *signals) {
+  if (signals == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(mutex);
+  const uintptr_t address = reinterpret_cast<uintptr_t>(signals);
+  for (auto &chunk : chunks) {
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(chunk.signals);
+    const uintptr_t end =
+        begin + static_cast<size_t>(chunk.capacity) * 2 * sizeof(uint64_t);
+    if (address >= begin && address < end) {
+      const size_t offset = address - begin;
+      assert(offset % (2 * sizeof(uint64_t)) == 0);
+      chunk.inUse[offset / (2 * sizeof(uint64_t))] = 0;
+      return;
+    }
+  }
+  assert(false);
+}
+
+flagcxResult_t flagcxStreamValueSemaphore::enqueueCompletion(
+    flagcxStream_t launchStream) {
+  FLAGCXCHECK(
+      deviceAdaptor->eventCreate(&completionEvent, flagcxEventDisableTiming));
+  FLAGCXCHECK(deviceAdaptor->streamWriteValue64(launchStream, dSignals, 1, 0));
+  FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
+      launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0));
+  FLAGCXCHECK(deviceAdaptor->eventRecord(completionEvent, launchStream));
+  return flagcxSuccess;
+}
+
+int flagcxStreamValueSemaphore::pollEnd() {
+  if (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) != 0 ||
+      completionEvent == nullptr) {
+    return 0;
+  }
+  return deviceAdaptor->eventQuery(completionEvent) == flagcxSuccess;
+}

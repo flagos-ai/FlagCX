@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
@@ -14,7 +15,17 @@
 
 using Json = nlohmann::json;
 
-inline constexpr int kUniRunnerDagCacheFormatVersion = 1;
+inline constexpr int kUniRunnerDagCacheFormatVersion = 5;
+
+inline bool uniRunnerDagDataTypeValueValid(int value) {
+  return value >= 0 && value < flagcxNumTypes;
+}
+
+inline bool uniRunnerDagRedOpValueValid(int value, bool allowNoOp) {
+  if (allowNoOp && value == flagcxRedNoOp)
+    return true;
+  return value >= flagcxSum && value < flagcxNumRedOps;
+}
 
 enum uniRunnerDagBufferType {
   uniRunnerDagBufferTypeNone = 0,
@@ -27,6 +38,27 @@ struct uniRunnerDagBufferRef {
   uniRunnerDagBufferType bufferType = uniRunnerDagBufferTypeNone;
   int64_t offsetBytes = 0;
 };
+
+inline bool uniRunnerDagBindingRangeContains(const void *ptr, const void *base,
+                                             size_t bytes,
+                                             size_t accessBytes,
+                                             int64_t *offsetBytes) {
+  if (ptr == nullptr || base == nullptr || offsetBytes == nullptr) {
+    return false;
+  }
+  const uintptr_t ptrAddr = reinterpret_cast<uintptr_t>(ptr);
+  const uintptr_t baseAddr = reinterpret_cast<uintptr_t>(base);
+  if (ptrAddr < baseAddr) {
+    return false;
+  }
+  const uintptr_t delta = ptrAddr - baseAddr;
+  if (delta > bytes || accessBytes > bytes - static_cast<size_t>(delta) ||
+      delta > static_cast<uintptr_t>(std::numeric_limits<int64_t>::max())) {
+    return false;
+  }
+  *offsetBytes = static_cast<int64_t>(delta);
+  return true;
+}
 
 struct uniRunnerDagP2pOpDesc {
   uniRunnerDagBufferRef buffer;
@@ -41,7 +73,6 @@ struct uniRunnerDagRedOpDesc {
   uniRunnerDagBufferRef input2;
   uniRunnerDagBufferRef output;
   size_t count = 0;
-  size_t nthreads = 0;
   flagcxDataType_t datatype = flagcxInt8;
   flagcxRedOp_t redOp = flagcxRedNoOp;
 };
@@ -53,6 +84,18 @@ struct uniRunnerDagCpyOpDesc {
   flagcxDataType_t datatype = flagcxInt8;
 };
 
+// Cacheable IPC DAG structure. Invocation-local execution state (for example
+// DevMem/Window handles, parent flag offsets, trigger indices, epochs, chunk
+// counters, and trigger state) is deliberately rebound after materialization.
+struct uniRunnerDagIpcOpDesc {
+  size_t srcOffsetBytes = 0;
+  size_t dstOffsetBytes = 0;
+  size_t bytes = 0;
+  flagcxIpcBufferType srcBufferType = flagcxIpcBufferInput;
+  int peerLocalRank = -1;
+  uint32_t readySlot = 0;
+};
+
 struct uniRunnerDagNodeDesc {
   uniRunnerDagNodeType nodeType = uniRunnerDagNodeTypeP2p;
   int nodeIdx = 0;
@@ -61,6 +104,7 @@ struct uniRunnerDagNodeDesc {
   std::vector<uniRunnerDagP2pOpDesc> p2pOps;
   uniRunnerDagRedOpDesc red;
   uniRunnerDagCpyOpDesc cpy;
+  uniRunnerDagIpcOpDesc ipc;
 };
 
 struct uniRunnerDagTemplate {
@@ -68,6 +112,34 @@ struct uniRunnerDagTemplate {
   size_t hashValue = 0;
   std::vector<uniRunnerDagNodeDesc> nodes;
 };
+
+// Process-local compiled form of a cacheable DAG. Disk persistence continues
+// to contain only dagTemplate; the stable topological order is reconstructed
+// once when a template first enters this process and then reused read-only.
+struct uniRunnerCompiledDagTemplate {
+  uniRunnerDagTemplate dagTemplate;
+  std::vector<int> topoOrder;
+  size_t numNodes = 0;
+  size_t numHostNodes = 0;
+  size_t numRedNodes = 0;
+  size_t numIpcNodes = 0;
+  size_t maxParallelRedNodes = 0;
+  size_t maxRedNodeCount = 0;
+  size_t maxIpcNodeBytes = 0;
+};
+
+flagcxResult_t compileUniRunnerDagTemplate(
+    const uniRunnerDagTemplate &dagTemplate,
+    uniRunnerCompiledDagTemplate *compiledTemplate);
+
+// Production validation helpers exposed here so CPU-only cache tests exercise
+// the exact IPC materialization and topology identity rules.
+flagcxResult_t validateUniRunnerIpcDagTemplateBindings(
+    const uniRunnerDagTemplate &dagTemplate, size_t inputBytes,
+    size_t outputBytes, int localRanks);
+flagcxResult_t getUniRunnerIpcTopologyHash(int localRanks, int nranks,
+                                           const int *localRankToRank,
+                                           uint64_t *topologyHash);
 
 inline const char *uniRunnerDagAlgoTypeToString(uniRunnerDagAlgoType algoType) {
   switch (algoType) {
@@ -87,6 +159,8 @@ inline const char *uniRunnerDagAlgoTypeToString(uniRunnerDagAlgoType algoType) {
       return "ring_rs";
     case uniRunnerDagAlgoTreeRed:
       return "tree_red";
+    case uniRunnerDagAlgoIpcAR:
+      return "ipc_ar";
     default:
       return "unknown";
   }
@@ -110,6 +184,8 @@ inline bool uniRunnerDagAlgoTypeFromString(const std::string &text,
     *algoType = uniRunnerDagAlgoRingRS;
   } else if (text == "tree_red") {
     *algoType = uniRunnerDagAlgoTreeRed;
+  } else if (text == "ipc_ar") {
+    *algoType = uniRunnerDagAlgoIpcAR;
   } else {
     return false;
   }
@@ -187,6 +263,8 @@ inline const char *uniRunnerDagNodeTypeToString(uniRunnerDagNodeType nodeType) {
       return "red";
     case uniRunnerDagNodeTypeCpy:
       return "cpy";
+    case uniRunnerDagNodeTypeIpc:
+      return "ipc";
     default:
       return "unknown";
   }
@@ -200,6 +278,8 @@ inline bool uniRunnerDagNodeTypeFromString(const std::string &text,
     *nodeType = uniRunnerDagNodeTypeRed;
   } else if (text == "cpy") {
     *nodeType = uniRunnerDagNodeTypeCpy;
+  } else if (text == "ipc") {
+    *nodeType = uniRunnerDagNodeTypeIpc;
   } else {
     return false;
   }
@@ -232,6 +312,34 @@ inline bool uniRunnerDagBufferTypeFromString(const std::string &text,
     *type = uniRunnerDagBufferTypeOutput;
   } else if (text == "scratch") {
     *type = uniRunnerDagBufferTypeScratch;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+inline const char *
+uniRunnerDagIpcBufferTypeToString(flagcxIpcBufferType bufferType) {
+  switch (bufferType) {
+    case flagcxIpcBufferInput:
+      return "input";
+    case flagcxIpcBufferOutput:
+      return "output";
+    default:
+      return "unknown";
+  }
+}
+
+inline bool
+uniRunnerDagIpcBufferTypeFromString(const std::string &text,
+                                    flagcxIpcBufferType *bufferType) {
+  if (bufferType == nullptr) {
+    return false;
+  }
+  if (text == "input") {
+    *bufferType = flagcxIpcBufferInput;
+  } else if (text == "output") {
+    *bufferType = flagcxIpcBufferOutput;
   } else {
     return false;
   }
@@ -314,8 +422,9 @@ inline bool uniRunnerDagBufferRefFromJson(const Json &j,
 
 inline Json uniRunnerDagCacheKeyToJson(const uniRunnerDagCacheKey &key) {
   return Json{
-      {"format_version", key.formatVersion},
-      {"algo", uniRunnerDagAlgoTypeToString(key.algoType)},
+      // Persist uint64_t as decimal text so external JSON tooling cannot lose
+      // precision by routing the value through an IEEE-754 number.
+      {"algo_hash", std::to_string(key.algoHash)},
       {"comm_op", uniRunnerCommOpToString(key.commOp)},
       {"count", key.count},
       {"datatype", static_cast<int>(key.datatype)},
@@ -323,40 +432,154 @@ inline Json uniRunnerDagCacheKeyToJson(const uniRunnerDagCacheKey &key) {
       {"rank", key.rank},
       {"nranks", key.nranks},
       {"root", key.root},
-      {"group_size", key.groupSize},
-      {"num_slices", key.numSlices},
-      {"num_red_slices", key.numRedSlices},
-      {"red_slice_size", key.redSliceSize},
-      {"nthreads", key.nthreads},
-      {"input_output_aliased", key.inputOutputAliased},
-      {"input_scratch_aliased", key.inputScratchAliased},
-      {"output_scratch_aliased", key.outputScratchAliased},
   };
+}
+
+inline bool uniRunnerDagUint64FromJsonString(const Json &j, const char *field,
+                                             uint64_t *value) {
+  if (value == nullptr || !j.contains(field) || !j.at(field).is_string()) {
+    return false;
+  }
+  try {
+    const std::string encoded = j.at(field).get<std::string>();
+    if (encoded.empty() ||
+        encoded.find_first_not_of("0123456789") != std::string::npos) {
+      return false;
+    }
+    size_t consumed = 0;
+    const unsigned long long parsed = std::stoull(encoded, &consumed, 10);
+    if (consumed != encoded.size()) {
+      return false;
+    }
+    *value = static_cast<uint64_t>(parsed);
+  } catch (...) {
+    return false;
+  }
+  return true;
+}
+
+inline bool uniRunnerDagSizeFromJson(const Json &j, size_t *value) {
+  if (value == nullptr) {
+    return false;
+  }
+  try {
+    if (j.is_number_unsigned()) {
+      const uint64_t decoded = j.get<uint64_t>();
+      if (decoded > std::numeric_limits<size_t>::max()) {
+        return false;
+      }
+      *value = static_cast<size_t>(decoded);
+      return true;
+    }
+    if (j.is_number_integer()) {
+      const int64_t decoded = j.get<int64_t>();
+      if (decoded < 0 ||
+          static_cast<uint64_t>(decoded) >
+              std::numeric_limits<size_t>::max()) {
+        return false;
+      }
+      *value = static_cast<size_t>(decoded);
+      return true;
+    }
+  } catch (...) {
+    return false;
+  }
+  return false;
+}
+
+inline bool uniRunnerDagNonNegativeIntFromJson(const Json &j, int *value) {
+  if (value == nullptr) {
+    return false;
+  }
+  size_t decoded = 0;
+  if (!uniRunnerDagSizeFromJson(j, &decoded) ||
+      decoded > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return false;
+  }
+  *value = static_cast<int>(decoded);
+  return true;
+}
+
+inline bool uniRunnerDagUint32FromJson(const Json &j, uint32_t *value) {
+  if (value == nullptr) {
+    return false;
+  }
+  size_t decoded = 0;
+  if (!uniRunnerDagSizeFromJson(j, &decoded) ||
+      decoded > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+    return false;
+  }
+  *value = static_cast<uint32_t>(decoded);
+  return true;
+}
+
+inline Json
+uniRunnerDagIpcOpDescToJson(const uniRunnerDagIpcOpDesc &ipc) {
+  return Json{
+      {"src_offset_bytes", ipc.srcOffsetBytes},
+      {"dst_offset_bytes", ipc.dstOffsetBytes},
+      {"bytes", ipc.bytes},
+      {"src_buffer_type",
+       uniRunnerDagIpcBufferTypeToString(ipc.srcBufferType)},
+      {"peer_local_rank", ipc.peerLocalRank},
+      {"ready_slot", ipc.readySlot},
+  };
+}
+
+inline bool uniRunnerDagIpcOpDescFromJson(const Json &j,
+                                          uniRunnerDagIpcOpDesc *ipc) {
+  if (ipc == nullptr || !j.is_object() || j.size() != 6 ||
+      !j.contains("src_offset_bytes") || !j.contains("dst_offset_bytes") ||
+      !j.contains("bytes") || !j.contains("src_buffer_type") ||
+      !j.contains("peer_local_rank") || !j.contains("ready_slot")) {
+    return false;
+  }
+  try {
+    const std::string srcBufferType =
+        j.at("src_buffer_type").get<std::string>();
+    return uniRunnerDagSizeFromJson(j.at("src_offset_bytes"),
+                                    &ipc->srcOffsetBytes) &&
+           uniRunnerDagSizeFromJson(j.at("dst_offset_bytes"),
+                                    &ipc->dstOffsetBytes) &&
+           uniRunnerDagSizeFromJson(j.at("bytes"), &ipc->bytes) &&
+           uniRunnerDagIpcBufferTypeFromString(srcBufferType,
+                                               &ipc->srcBufferType) &&
+           uniRunnerDagNonNegativeIntFromJson(j.at("peer_local_rank"),
+                                               &ipc->peerLocalRank) &&
+           uniRunnerDagUint32FromJson(j.at("ready_slot"), &ipc->readySlot);
+  } catch (...) {
+    return false;
+  }
 }
 
 inline bool uniRunnerDagCacheKeyFromJson(const Json &j,
                                          uniRunnerDagCacheKey *key) {
-  std::string algoName = j.at("algo").get<std::string>();
-  std::string commOpName = j.at("comm_op").get<std::string>();
-  if (!uniRunnerDagAlgoTypeFromString(algoName, &key->algoType) ||
-      !uniRunnerCommOpFromString(commOpName, &key->commOp)) {
+  if (key == nullptr || !j.is_object()) {
     return false;
   }
-  key->formatVersion = j.at("format_version").get<int>();
-  key->count = j.at("count").get<size_t>();
-  key->datatype = static_cast<flagcxDataType_t>(j.at("datatype").get<int>());
-  key->redOp = static_cast<flagcxRedOp_t>(j.at("red_op").get<int>());
-  key->rank = j.at("rank").get<int>();
-  key->nranks = j.at("nranks").get<int>();
-  key->root = j.at("root").get<int>();
-  key->groupSize = j.at("group_size").get<int>();
-  key->numSlices = j.at("num_slices").get<uint64_t>();
-  key->numRedSlices = j.at("num_red_slices").get<uint64_t>();
-  key->redSliceSize = j.at("red_slice_size").get<uint64_t>();
-  key->nthreads = j.at("nthreads").get<uint64_t>();
-  key->inputOutputAliased = j.at("input_output_aliased").get<int>();
-  key->inputScratchAliased = j.at("input_scratch_aliased").get<int>();
-  key->outputScratchAliased = j.at("output_scratch_aliased").get<int>();
+  try {
+    const std::string commOpName = j.at("comm_op").get<std::string>();
+    if (!uniRunnerCommOpFromString(commOpName, &key->commOp) ||
+        !uniRunnerDagUint64FromJsonString(j, "algo_hash", &key->algoHash)) {
+      return false;
+    }
+    if (!uniRunnerDagSizeFromJson(j.at("count"), &key->count)) {
+      return false;
+    }
+    const int datatype = j.at("datatype").get<int>();
+    const int redOp = j.at("red_op").get<int>();
+    if (!uniRunnerDagDataTypeValueValid(datatype) ||
+        !uniRunnerDagRedOpValueValid(redOp, true)) {
+      return false;
+    }
+    key->datatype = static_cast<flagcxDataType_t>(datatype);
+    key->redOp = static_cast<flagcxRedOp_t>(redOp);
+    key->rank = j.at("rank").get<int>();
+    key->nranks = j.at("nranks").get<int>();
+    key->root = j.at("root").get<int>();
+  } catch (...) {
+    return false;
+  }
   return true;
 }
 
@@ -389,7 +612,6 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
           {"input2", uniRunnerDagBufferRefToJson(node.red.input2)},
           {"output", uniRunnerDagBufferRefToJson(node.red.output)},
           {"count", node.red.count},
-          {"nthreads", node.red.nthreads},
           {"datatype", static_cast<int>(node.red.datatype)},
           {"red_op", static_cast<int>(node.red.redOp)},
       };
@@ -400,11 +622,14 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
           {"count", node.cpy.count},
           {"datatype", static_cast<int>(node.cpy.datatype)},
       };
+    } else if (node.nodeType == uniRunnerDagNodeTypeIpc) {
+      nodeJson["ipc"] = uniRunnerDagIpcOpDescToJson(node.ipc);
     }
     nodes.push_back(nodeJson);
   }
 
   return Json{
+      {"format_version", kUniRunnerDagCacheFormatVersion},
       {"hash", std::to_string(hashValue)},
       {"key", uniRunnerDagCacheKeyToJson(dagTemplate.key)},
       {"dag", Json{{"num_nodes", dagTemplate.nodes.size()}, {"nodes", nodes}}},
@@ -413,72 +638,159 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
 
 inline bool uniRunnerDagTemplateFromJson(const Json &j,
                                          uniRunnerDagTemplate *dagTemplate) {
-  if (!uniRunnerDagCacheKeyFromJson(j.at("key"), &dagTemplate->key)) {
+  if (dagTemplate == nullptr) {
     return false;
   }
-  size_t computedHash = getUniRunnerDagPatternHash(dagTemplate->key);
-  if (j.contains("hash")) {
-    size_t encodedHash =
-        static_cast<size_t>(std::stoull(j.at("hash").get<std::string>()));
-    if (encodedHash != computedHash) {
+  try {
+    if (!j.is_object() || !j.contains("format_version") ||
+        !j.at("format_version").is_number_integer() ||
+        j.at("format_version").get<int>() !=
+            kUniRunnerDagCacheFormatVersion) {
       return false;
     }
-  }
-  dagTemplate->hashValue = computedHash;
-  dagTemplate->nodes.clear();
-
-  const Json &nodes = j.at("dag").at("nodes");
-  for (const Json &nodeJson : nodes) {
-    uniRunnerDagNodeDesc node;
-    std::string nodeType = nodeJson.at("node_type").get<std::string>();
-    if (!uniRunnerDagNodeTypeFromString(nodeType, &node.nodeType)) {
+    if (!uniRunnerDagCacheKeyFromJson(j.at("key"), &dagTemplate->key)) {
       return false;
     }
-    node.nodeIdx = nodeJson.at("node_idx").get<int>();
-    node.parents = nodeJson.at("parents").get<std::vector<int>>();
-    node.children = nodeJson.at("children").get<std::vector<int>>();
+    size_t computedHash = getUniRunnerDagPatternHash(dagTemplate->key);
+    if (j.contains("hash")) {
+      uint64_t encodedHashValue = 0;
+      if (!uniRunnerDagUint64FromJsonString(j, "hash", &encodedHashValue) ||
+          encodedHashValue > std::numeric_limits<size_t>::max()) {
+        return false;
+      }
+      const size_t encodedHash = static_cast<size_t>(encodedHashValue);
+      if (encodedHash != computedHash) {
+        return false;
+      }
+    }
+    const Json &dagJson = j.at("dag");
+    if (!dagJson.is_object() || !dagJson.contains("num_nodes") ||
+        !dagJson.contains("nodes") || !dagJson.at("nodes").is_array()) {
+      return false;
+    }
+    size_t declaredNumNodes = 0;
+    const Json &numNodesJson = dagJson.at("num_nodes");
+    if (numNodesJson.is_number_unsigned()) {
+      const uint64_t value = numNodesJson.get<uint64_t>();
+      if (value >
+          static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+        return false;
+      }
+      declaredNumNodes = static_cast<size_t>(value);
+    } else if (numNodesJson.is_number_integer()) {
+      const int64_t value = numNodesJson.get<int64_t>();
+      if (value < 0 || value > std::numeric_limits<int>::max()) {
+        return false;
+      }
+      declaredNumNodes = static_cast<size_t>(value);
+    } else {
+      return false;
+    }
 
-    if (node.nodeType == uniRunnerDagNodeTypeP2p) {
-      for (const Json &opJson : nodeJson.at("p2p_ops")) {
-        uniRunnerDagP2pOpDesc op;
-        std::string primType = opJson.at("type").get<std::string>();
-        if (!uniRunnerDevicePrimFromString(primType, &op.type) ||
-            !uniRunnerDagBufferRefFromJson(opJson.at("buffer"), &op.buffer)) {
+    const Json &nodes = dagJson.at("nodes");
+    if (nodes.size() != declaredNumNodes) {
+      return false;
+    }
+    dagTemplate->hashValue = computedHash;
+    dagTemplate->nodes.clear();
+    dagTemplate->nodes.reserve(declaredNumNodes);
+
+    const size_t maxInt =
+        static_cast<size_t>(std::numeric_limits<int>::max());
+    for (const Json &nodeJson : nodes) {
+      uniRunnerDagNodeDesc node;
+      std::string nodeType = nodeJson.at("node_type").get<std::string>();
+      if (!uniRunnerDagNodeTypeFromString(nodeType, &node.nodeType)) {
+        return false;
+      }
+      node.nodeIdx = nodeJson.at("node_idx").get<int>();
+      if (!nodeJson.at("parents").is_array() ||
+          !nodeJson.at("children").is_array() ||
+          nodeJson.at("parents").size() > maxInt ||
+          nodeJson.at("children").size() > maxInt) {
+        return false;
+      }
+      node.parents = nodeJson.at("parents").get<std::vector<int>>();
+      node.children = nodeJson.at("children").get<std::vector<int>>();
+
+      if (node.nodeType == uniRunnerDagNodeTypeP2p) {
+        const Json &opsJson = nodeJson.at("p2p_ops");
+        if (!opsJson.is_array() || opsJson.size() > maxInt) {
           return false;
         }
-        op.peerRank = opJson.at("peer_rank").get<int>();
-        op.count = opJson.at("count").get<size_t>();
-        op.datatype =
-            static_cast<flagcxDataType_t>(opJson.at("datatype").get<int>());
-        node.p2pOps.push_back(op);
+        node.p2pOps.reserve(opsJson.size());
+        for (const Json &opJson : opsJson) {
+          uniRunnerDagP2pOpDesc op;
+          std::string primType = opJson.at("type").get<std::string>();
+          if (!uniRunnerDevicePrimFromString(primType, &op.type) ||
+              !uniRunnerDagBufferRefFromJson(opJson.at("buffer"),
+                                             &op.buffer)) {
+            return false;
+          }
+          op.peerRank = opJson.at("peer_rank").get<int>();
+          if (!uniRunnerDagSizeFromJson(opJson.at("count"), &op.count)) {
+            return false;
+          }
+          const int datatype = opJson.at("datatype").get<int>();
+          if (!uniRunnerDagDataTypeValueValid(datatype)) {
+            return false;
+          }
+          op.datatype = static_cast<flagcxDataType_t>(datatype);
+          node.p2pOps.push_back(op);
+        }
+      } else if (node.nodeType == uniRunnerDagNodeTypeRed) {
+        const Json &redJson = nodeJson.at("red");
+        if (!uniRunnerDagBufferRefFromJson(redJson.at("input1"),
+                                           &node.red.input1) ||
+            !uniRunnerDagBufferRefFromJson(redJson.at("input2"),
+                                           &node.red.input2) ||
+            !uniRunnerDagBufferRefFromJson(redJson.at("output"),
+                                           &node.red.output)) {
+          return false;
+        }
+        if (!uniRunnerDagSizeFromJson(redJson.at("count"),
+                                      &node.red.count)) {
+          return false;
+        }
+        const int datatype = redJson.at("datatype").get<int>();
+        const int redOp = redJson.at("red_op").get<int>();
+        if (!uniRunnerDagDataTypeValueValid(datatype) ||
+            !uniRunnerDagRedOpValueValid(redOp, false)) {
+          return false;
+        }
+        node.red.datatype = static_cast<flagcxDataType_t>(datatype);
+        node.red.redOp = static_cast<flagcxRedOp_t>(redOp);
+      } else if (node.nodeType == uniRunnerDagNodeTypeCpy) {
+        const Json &cpyJson = nodeJson.at("cpy");
+        if (!uniRunnerDagBufferRefFromJson(cpyJson.at("src"), &node.cpy.src) ||
+            !uniRunnerDagBufferRefFromJson(cpyJson.at("dst"), &node.cpy.dst)) {
+          return false;
+        }
+        if (!uniRunnerDagSizeFromJson(cpyJson.at("count"),
+                                      &node.cpy.count)) {
+          return false;
+        }
+        const int datatype = cpyJson.at("datatype").get<int>();
+        if (!uniRunnerDagDataTypeValueValid(datatype)) {
+          return false;
+        }
+        node.cpy.datatype = static_cast<flagcxDataType_t>(datatype);
+      } else if (node.nodeType == uniRunnerDagNodeTypeIpc) {
+        // IPC nodes have exactly the four common DAG fields plus their six-field
+        // structural payload. Rejecting extras prevents runtime trigger state
+        // from silently becoming part of the persistent cache schema.
+        if (nodeJson.size() != 5 || !nodeJson.contains("node_idx") ||
+            !nodeJson.contains("node_type") ||
+            !nodeJson.contains("parents") ||
+            !nodeJson.contains("children") || !nodeJson.contains("ipc") ||
+            !uniRunnerDagIpcOpDescFromJson(nodeJson.at("ipc"), &node.ipc)) {
+          return false;
+        }
       }
-    } else if (node.nodeType == uniRunnerDagNodeTypeRed) {
-      const Json &redJson = nodeJson.at("red");
-      if (!uniRunnerDagBufferRefFromJson(redJson.at("input1"),
-                                         &node.red.input1) ||
-          !uniRunnerDagBufferRefFromJson(redJson.at("input2"),
-                                         &node.red.input2) ||
-          !uniRunnerDagBufferRefFromJson(redJson.at("output"),
-                                         &node.red.output)) {
-        return false;
-      }
-      node.red.count = redJson.at("count").get<size_t>();
-      node.red.nthreads = redJson.at("nthreads").get<size_t>();
-      node.red.datatype =
-          static_cast<flagcxDataType_t>(redJson.at("datatype").get<int>());
-      node.red.redOp =
-          static_cast<flagcxRedOp_t>(redJson.at("red_op").get<int>());
-    } else if (node.nodeType == uniRunnerDagNodeTypeCpy) {
-      const Json &cpyJson = nodeJson.at("cpy");
-      if (!uniRunnerDagBufferRefFromJson(cpyJson.at("src"), &node.cpy.src) ||
-          !uniRunnerDagBufferRefFromJson(cpyJson.at("dst"), &node.cpy.dst)) {
-        return false;
-      }
-      node.cpy.count = cpyJson.at("count").get<size_t>();
-      node.cpy.datatype =
-          static_cast<flagcxDataType_t>(cpyJson.at("datatype").get<int>());
+      dagTemplate->nodes.push_back(node);
     }
-    dagTemplate->nodes.push_back(node);
+  } catch (...) {
+    return false;
   }
   return true;
 }
@@ -509,21 +821,30 @@ inline Json uniRunnerSerializeDagCacheFile(
 
 inline bool uniRunnerDeserializeDagCacheFile(
     const Json &root, std::vector<uniRunnerDagTemplate> *dagTemplates) {
-  if (root.contains("format_version") &&
-      root["format_version"].get<int>() != kUniRunnerDagCacheFormatVersion) {
+  if (dagTemplates == nullptr) {
     return false;
   }
-  if (!root.contains("entries") || !root["entries"].is_array()) {
-    return false;
-  }
-
-  dagTemplates->clear();
-  for (const Json &entryJson : root["entries"]) {
-    uniRunnerDagTemplate dagTemplate;
-    if (!uniRunnerDeserializeDagTemplate(entryJson, &dagTemplate)) {
+  try {
+    if (!root.is_object() || !root.contains("format_version") ||
+        !root.at("format_version").is_number_integer() ||
+        root.at("format_version").get<int>() !=
+            kUniRunnerDagCacheFormatVersion) {
       return false;
     }
-    dagTemplates->push_back(std::move(dagTemplate));
+    if (!root.contains("entries") || !root["entries"].is_array()) {
+      return false;
+    }
+
+    dagTemplates->clear();
+    for (const Json &entryJson : root["entries"]) {
+      uniRunnerDagTemplate dagTemplate;
+      if (!uniRunnerDeserializeDagTemplate(entryJson, &dagTemplate)) {
+        return false;
+      }
+      dagTemplates->push_back(std::move(dagTemplate));
+    }
+  } catch (...) {
+    return false;
   }
   return true;
 }

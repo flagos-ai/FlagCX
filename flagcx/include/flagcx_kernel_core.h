@@ -79,10 +79,60 @@ typedef enum {
 } flagcxReduceTriggerState;
 
 typedef enum {
+  flagcxIpcBufferInput = 0,
+  flagcxIpcBufferOutput = 1
+} flagcxIpcBufferType;
+
+typedef enum {
   flagcxStreamFlagIdle = 0,
   flagcxStreamFlagPend = 1,
   flagcxStreamFlagDone = 2
 } flagcxStreamFlagState;
+
+// IPC ready slots use monotonically increasing serial numbers with zero
+// reserved for "never published".  A producer may advance the same slot to a
+// later epoch before a slower consumer observes the exact expected value, so
+// equality is too strict.  Serial-number arithmetic keeps that later value
+// valid across UINT64_MAX -> 1 while rejecting stale values, provided ranks do
+// not differ by 2^63 or more invocations.
+FLAGCX_HOST_DEVICE_INLINE bool flagcxIpcEpochReached(uint64_t observed,
+                                                     uint64_t expected) {
+  return observed != 0 && expected != 0 &&
+         observed - expected < (uint64_t(1) << 63);
+}
+
+FLAGCX_HOST_DEVICE_INLINE uint64_t flagcxNextIpcEpoch(uint64_t epoch) {
+  ++epoch;
+  return epoch == 0 ? 1 : epoch;
+}
+
+// Static IPC reserves the high bit of an end-of-invocation control value to
+// propagate a remote abort. Epoch zero remains uninitialized, so a static IPC
+// invocation uses the closed interval [1, INT64_MAX].
+static constexpr uint64_t flagcxIpcControlAbortBit = uint64_t(1) << 63;
+
+FLAGCX_HOST_DEVICE_INLINE bool flagcxIpcControlEpochValid(uint64_t epoch) {
+  return epoch != 0 && (epoch & flagcxIpcControlAbortBit) == 0;
+}
+
+FLAGCX_HOST_DEVICE_INLINE bool flagcxIpcControlEpochReached(uint64_t value,
+                                                            uint64_t epoch) {
+  const uint64_t observedEpoch = value & ~flagcxIpcControlAbortBit;
+  // Control epochs deliberately do not wrap.  A faster rank may overwrite
+  // done[E] with done[E+1] before a slower rank observes E, so accepting only
+  // equality can strand the slower rank forever.
+  return flagcxIpcControlEpochValid(epoch) && observedEpoch != 0 &&
+         observedEpoch >= epoch;
+}
+
+struct alignas(16) flagcxStaticIpcControl {
+  uint64_t epoch;
+  uint64_t readyDataOffset;
+  uint64_t abortSlot;
+  uint64_t doneBase;
+  uint32_t localRank;
+  uint32_t localRanks;
+};
 
 // ==========================================================================
 // flagcxDeviceTrigger bit layout (24 bytes = 3 × uint64_t: fst, snd, trd)
@@ -180,6 +230,11 @@ constexpr unsigned int flagcxReduceTriggerOffState =
 constexpr unsigned int flagcxReduceTriggerBitsState = 2;
 constexpr unsigned int flagcxReduceTriggerBitsFifoReserved = 1;
 
+static_assert(flagcxNumTypes <= (1u << flagcxReduceTriggerBitsDatatype),
+              "Reduce trigger datatype field is too narrow");
+static_assert(flagcxRedNoOp < (1u << flagcxReduceTriggerBitsRedop),
+              "Reduce trigger redop field is too narrow");
+
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
 #ifndef FLAGCX_DEVICE_CTA_COUNT
@@ -249,6 +304,27 @@ struct alignas(16) flagcxReduceTrigger {
                                       uint64_t flagIn, uint64_t flagOut);
   FLAGCX_HOST_DECORATOR uint64_t pollState();
   FLAGCX_HOST_DECORATOR void setState(int state);
+};
+
+// Intra-node IPC/LSA push trigger. The source and destination memory handles
+// are bound once at collective-kernel launch; FIFO entries only carry buffer
+// selection, byte offsets, peer-local rank, and DAG synchronization metadata.
+struct alignas(16) flagcxIpcTrigger {
+  uint64_t srcOffsetBytes;
+  uint64_t dstOffsetBytes;
+  uint64_t bytes;
+  uint64_t chunkSize;
+  uint64_t flagOut;
+  uint64_t epoch;
+  uint32_t srcBufferType;
+  uint32_t peerLocalRank;
+  uint32_t readySlot;
+  uint32_t parentFlagsOffset;
+  uint32_t numParentFlags;
+  uint32_t numChunks;
+  uint32_t completedChunks; // atomically published after peer stores
+  uint32_t state;
+  uint64_t nextChunk; // atomically claimed by IPC executor blocks
 };
 typedef flagcxReduceTrigger *flagcxReduceTrigger_t;
 

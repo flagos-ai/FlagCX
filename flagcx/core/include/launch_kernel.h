@@ -139,6 +139,26 @@ struct flagcxDeviceSemaphoreBufferPool {
 };
 static flagcxDeviceSemaphoreBufferPool deviceSemaphoreBufferPool;
 
+struct flagcxStreamValueBufferPool {
+  struct Chunk {
+    int capacity;
+    uint64_t *signals;
+    void *dSignals;
+    int *inUse;
+  };
+
+  std::mutex mutex;
+  std::vector<Chunk> chunks;
+
+  ~flagcxStreamValueBufferPool();
+  flagcxResult_t acquire(uint64_t **signals, void **dSignals);
+  void release(uint64_t *signals);
+
+private:
+  flagcxResult_t grow();
+};
+extern flagcxStreamValueBufferPool streamValueBufferPool;
+
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
   int slotId;
@@ -221,6 +241,76 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
   }
   // Since the device kernel handles the signaling,
   // host-side wait is intentionally no-op and not needed
+  void wait() override {}
+};
+
+struct flagcxStreamValueSemaphore : public flagcxSemaphore {
+  int counter;
+  uint64_t *signals;
+  void *dSignals;
+  flagcxEvent_t completionEvent;
+  std::map<int, int> stepInfo;
+  std::vector<std::pair<int, int>> steps;
+  std::vector<flagcxEvent_t> events;
+
+  flagcxStreamValueSemaphore()
+      : counter(0), signals(nullptr), dSignals(nullptr),
+        completionEvent(nullptr) {
+    streamValueBufferPool.acquire(&signals, &dSignals);
+  }
+  ~flagcxStreamValueSemaphore() override {
+    if (completionEvent != nullptr) {
+      deviceAdaptor->eventDestroy(completionEvent);
+    }
+    for (auto event : events) {
+      deviceAdaptor->eventDestroy(event);
+    }
+    streamValueBufferPool.release(signals);
+  }
+
+  flagcxResult_t enqueueCompletion(flagcxStream_t launchStream);
+
+  flagcxEvent_t getEvent() override {
+    events.push_back(nullptr);
+    auto &event = events.back();
+    deviceAdaptor->eventCreate(&event, flagcxEventDisableTiming);
+    return event;
+  }
+  void signalStart() override {}
+  void *getSignals() override { return dSignals; }
+  void subCounter(int opId = 0) override {
+    auto it = stepInfo.find(opId);
+    assert(it != stepInfo.end());
+    const int idx = it->second;
+    const int previous =
+        __atomic_fetch_add(&steps[idx].first, 1, __ATOMIC_ACQ_REL);
+    if (previous + 1 ==
+        __atomic_load_n(&steps[idx].second, __ATOMIC_ACQUIRE)) {
+      if (__atomic_sub_fetch(&counter, 1, __ATOMIC_ACQ_REL) == 0) {
+        __atomic_store_n(signals + 1, uint64_t(1), __ATOMIC_RELEASE);
+      }
+    }
+  }
+  void addCounter(int opId = 0) override {
+    auto it = stepInfo.find(opId);
+    if (it != stepInfo.end()) {
+      __atomic_fetch_add(&steps[it->second].second, 1, __ATOMIC_RELEASE);
+    } else {
+      stepInfo[opId] = static_cast<int>(steps.size());
+      steps.emplace_back(0, 1);
+      __atomic_fetch_add(&counter, 1, __ATOMIC_RELEASE);
+    }
+  }
+  int getCounter() override {
+    return __atomic_load_n(&counter, __ATOMIC_ACQUIRE);
+  }
+  int pollStart(int opId = 0, int step = 0) override {
+    auto it = stepInfo.find(opId);
+    assert(it != stepInfo.end());
+    return __atomic_load_n(signals, __ATOMIC_ACQUIRE) >= 1 &&
+           __atomic_load_n(&steps[it->second].first, __ATOMIC_ACQUIRE) >= step;
+  }
+  int pollEnd() override;
   void wait() override {}
 };
 

@@ -109,8 +109,15 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   int defaultStep = 0;
   // Each groupLaunch we create a semaphore to track the
   // p2p ops and a stream to launch host or device func
+  const bool useStreamValueGroup =
+      deviceAdaptor->streamWaitValue64 != nullptr &&
+      deviceAdaptor->streamWriteValue64 != nullptr;
   std::shared_ptr<flagcxSemaphore> semaphore;
-  if (deviceAsyncKernel) {
+  std::shared_ptr<flagcxStreamValueSemaphore> streamValueSemaphore;
+  if (useStreamValueGroup) {
+    streamValueSemaphore = std::make_shared<flagcxStreamValueSemaphore>();
+    semaphore = streamValueSemaphore;
+  } else if (deviceAsyncKernel) {
     semaphore = std::make_shared<flagcxDeviceSemaphore>();
   } else {
     semaphore = std::make_shared<flagcxHostSemaphore>();
@@ -408,7 +415,9 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   }
 
   if (launchStream != nullptr && launchEvent != nullptr) {
-    if (deviceAsyncKernel) {
+    if (useStreamValueGroup) {
+      FLAGCXCHECK(streamValueSemaphore->enqueueCompletion(launchStream));
+    } else if (deviceAsyncKernel) {
       FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
           launchStream, deviceAsyncKernel, (void *)semaphore->getSignals()));
       // device semaphore need this event to signal completion

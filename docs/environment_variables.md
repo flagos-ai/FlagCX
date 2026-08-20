@@ -129,11 +129,14 @@ This document provides a comprehensive reference for all environment variables u
 |----------|---------|-------------|
 | `FLAGCX_P2P_EVENT_POOL_SIZE` | 1024 | Size of P2P event pool |
 | `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for uniRunner |
-| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for uniRunner |
-| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for uniRunner |
+| `FLAGCX_UNIRUNNER_MAX_THREADS` | 512 | Maximum threads per block for the uniRunner RED/IPC executor kernel; the DAG-derived launch uses a power of two and at least 32 threads |
+| `FLAGCX_UNIRUNNER_MAX_BLOCKS` | 32 | Maximum total RED and IPC blocks for a uniRunner launch; the DAG-derived launch may use fewer blocks |
+| `FLAGCX_UNIRUNNER_NIPCBLOCKS` | 0 | Legacy IPC block setting; DAG-derived static IPC launches override it |
+| `FLAGCX_UNIRUNNER_IPCCHUNKSIZE` | 262144 | IPC transfer chunk size in bytes; static IPC blocks own chunks by chunk index modulo the derived IPC block count |
 | `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in uniRunner |
 | `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in uniRunner |
 | `FLAGCX_UNIRUNNER_USE_SLICEDAR` | 0 | When set to 1, uses sliced allreduce in uniRunner |
+| `FLAGCX_UNIRUNNER_USE_IPCAR` | 0 | When set to 1, uses intra-node IPC push for uniRunner sliced allreduce |
 | `FLAGCX_UNIRUNNER_NREDSLICES` | 0 | Number of reduction slices for uniRunner (0 = auto) |
 | `FLAGCX_UNIRUNNER_REDSLICESIZE` | 65536 | Reduction slice size in bytes for uniRunner |
 

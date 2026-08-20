@@ -501,7 +501,10 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   flagcxResult_t streamFlagsCleanupResult = flagcxSuccess;
   if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
       comm->proxyState->uniRunnerState.streamFlags != NULL ||
-      comm->proxyState->uniRunnerState.streamFlagsCapacity != 0) {
+      comm->proxyState->uniRunnerState.streamFlagsCapacity != 0 ||
+      comm->proxyState->uniRunnerState.ipcInputMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcOutputMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcReadyMem != NULL) {
     streamFlagsCleanupResult = deviceAdaptor->setDevice(comm->cudaDev);
     if (streamFlagsCleanupResult == flagcxSuccess) {
       streamFlagsCleanupResult = cleanupUniRunnerPersistentState(
