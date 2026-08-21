@@ -39,7 +39,7 @@ TEST_F(FlagCXKernelTest, DISABLED_TwoSidedAlltoAll) {
             flagcxSuccess);
 
   // Launch two-sided AlltoAll kernel (send/recv + term/wait via FIFO)
-  flagcxResult_t result = flagcxInterTwoSidedAlltoAll(
+  flagcxResult_t result = launchKernelNetTwoSidedAlltoAll(
       sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
@@ -100,7 +100,7 @@ TEST_F(FlagCXKernelTest, DISABLED_OneSidedAlltoAll) {
             flagcxSuccess);
 
   // Launch one-sided AlltoAll kernel (put + waitSignal + flush)
-  flagcxResult_t result = flagcxInterOneSidedAlltoAll(
+  flagcxResult_t result = launchKernelNetOneSidedAlltoAll(
       sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);

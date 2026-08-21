@@ -31,7 +31,7 @@ __global__ void kernel_test_put(DC::Net *net, DC::Window dst, DC::Window src,
 }
 
 __global__ void kernel_test_signal(DC::Net *net, int peer,
-                                   flagcxDevNetSignal_t sigId) {
+                                   flagcxDevSignal_t sigId) {
   DC::Team team = {net->_dc.nRanks, net->_dc.rank, 1};
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
   flagcxDevNet_SignalInc ra = {sigId};
@@ -41,10 +41,10 @@ __global__ void kernel_test_signal(DC::Net *net, int peer,
 }
 
 __global__ void kernel_test_wait_signal(DC::Net *net,
-                                        flagcxDevNetSignal_t sigId,
+                                        flagcxDevSignal_t sigId,
                                         uint64_t expected) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcqRel);
+  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcquire);
 }
 
 __global__ void kernel_test_flush_quiet(DC::Net *net) {
@@ -62,10 +62,11 @@ __global__ void kernel_inc_counter(uint64_t *counterBuf, int idx) {
 }
 
 __global__ void kernel_wait_counter(DC::Net *net,
-                                    flagcxDevNetCounter_t counterId,
+                                    flagcxDevCounter_t counterId,
                                     uint64_t least) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitCounter(coop, counterId, least, 64, flagcxDeviceMemoryOrderAcqRel);
+  net->waitCounter(coop, counterId, least, 64,
+                   flagcxDeviceMemoryOrderAcquire);
 }
 
 __global__ void kernel_test_barrier_world(DC::Comm *devDc, uint32_t ctaIdx) {
@@ -94,13 +95,13 @@ extern "C" void launchKernelTestPut(void *devNet, void *dst, size_t dstSize,
 extern "C" void launchKernelTestSignal(void *devNet, int peer, int sigId,
                                         void *stream) {
   kernel_test_signal<<<1, 32, 0, (cudaStream_t)stream>>>(
-      (DC::Net *)devNet, peer, (flagcxDevNetSignal_t)sigId);
+      (DC::Net *)devNet, peer, (flagcxDevSignal_t)sigId);
 }
 
 extern "C" void launchKernelTestWaitSignal(void *devNet, int sigId,
                                             uint64_t expected, void *stream) {
   kernel_test_wait_signal<<<1, 32, 0, (cudaStream_t)stream>>>(
-      (DC::Net *)devNet, (flagcxDevNetSignal_t)sigId, expected);
+      (DC::Net *)devNet, (flagcxDevSignal_t)sigId, expected);
 }
 
 extern "C" void launchKernelTestFlushQuiet(void *devNet, void *stream) {
@@ -121,7 +122,7 @@ extern "C" void launchKernelIncCounter(uint64_t *counterBuf, int idx,
 extern "C" void launchKernelWaitCounter(void *devNet, int counterId,
                                          uint64_t least, void *stream) {
   kernel_wait_counter<<<1, 32, 0, (cudaStream_t)stream>>>(
-      (DC::Net *)devNet, (flagcxDevNetCounter_t)counterId, least);
+      (DC::Net *)devNet, (flagcxDevCounter_t)counterId, least);
 }
 
 extern "C" void launchKernelTestBarrierWorld(void *devDc, uint32_t ctaIdx,

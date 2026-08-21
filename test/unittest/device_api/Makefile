@@ -1,5 +1,19 @@
 include ../../make.inc
 
+# MPI launcher configuration. Open MPI remains the default used by CI.
+# Use `MPI_FLAVOR=mpich` for MPICH/Hydra (`--genv`, no root-only option).
+MPI_FLAVOR ?= openmpi
+MPIRUN ?= mpirun
+ifeq ($(MPI_FLAVOR),openmpi)
+MPI_ENV_FLAG := -x
+MPI_ROOT_ARGS ?= --allow-run-as-root
+else ifeq ($(MPI_FLAVOR),mpich)
+MPI_ENV_FLAG := --genv
+MPI_ROOT_ARGS ?=
+else
+$(error Unsupported MPI_FLAVOR '$(MPI_FLAVOR)'; use openmpi or mpich)
+endif
+
 # Shared device kernel objects (built in test/kernel/[platform]/)
 DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
 DEVICE_IR_OBJ  := $(KERNEL_OBJ_DIR)/device_ir.o
@@ -33,9 +47,13 @@ CXXFLAGS += -DCOMPILE_KERNEL
 # Test targets
 MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_inter \
-               $(BINDIR)/test_device_api
+               $(BINDIR)/test_device_ir_unified_intra \
+               $(BINDIR)/test_device_ir_unified_inter \
+               $(BINDIR)/test_device_api_intra \
+               $(BINDIR)/test_device_api_inter
 
-.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter run
+.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter \
+        run-mpi-unified-intra run-mpi-unified-inter run
 
 all: $(MPI_TARGETS)
 
@@ -68,7 +86,22 @@ $(BINDIR)/test_device_ir_inter: test_device_ir_inter.cpp $(DEVICE_IR_OBJ) $(DLIN
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
-$(BINDIR)/test_device_api: test_device_api.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_unified_intra: test_device_ir_unified_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
+$(BINDIR)/test_device_ir_unified_inter: test_device_ir_unified_inter.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
+$(BINDIR)/test_device_api_intra: test_device_api_intra.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+
+$(BINDIR)/test_device_api_inter: test_device_api_inter.cpp $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $< $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
@@ -81,25 +114,59 @@ run-unit:
 	@echo "device_api: no unit tests (all require MPI + GPU)"
 
 # Env vars for inter-node testing on single node
-HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 \
-              -x FLAGCX_MEM_ENABLE=1 \
-              -x FLAGCX_VMM_ENABLE=0 \
-              -x FLAGCX_P2P_DISABLE=1 \
-              -x FLAGCX_DEBUG=Version \
-              -x FLAGCX_DEBUG_SUBSYS= \
-              -x LD_LIBRARY_PATH
+HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \
+              $(MPI_ENV_FLAG) FLAGCX_MEM_ENABLE=1 \
+              $(MPI_ENV_FLAG) FLAGCX_VMM_ENABLE=0 \
+              $(MPI_ENV_FLAG) FLAGCX_P2P_DISABLE=1 \
+              $(MPI_ENV_FLAG) FLAGCX_DEBUG=Version \
+              $(MPI_ENV_FLAG) FLAGCX_DEBUG_SUBSYS= \
+              $(MPI_ENV_FLAG) LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)
+
+# Unified IR keeps P2P enabled. The inter target creates two logical nodes with
+# MPI MPMD app contexts instead of globally disabling P2P or using a wrapper.
+UNIFIED_COMMON_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \
+                      $(MPI_ENV_FLAG) FLAGCX_VMM_ENABLE=0 \
+                      $(MPI_ENV_FLAG) LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)
+INTER_NODE0_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node0 \
+                   $(MPI_ENV_FLAG) NCCL_HOSTID=node0
+INTER_NODE1_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node1 \
+                   $(MPI_ENV_FLAG) NCCL_HOSTID=node1
+UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
 
 # Intra-node tests: safe to run on a single node
-run-mpi-intra: $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api
+run-mpi-intra: $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra
 	@echo "Running intra-node tests..."
-	mpirun -np 8 --allow-run-as-root $(BINDIR)/test_device_ir_intra
-	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_api -b 1M -e 4M -f 2 -R 2
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(BINDIR)/test_device_ir_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(BINDIR)/test_device_api_intra
 
 # Inter-node tests: require FLAGCX_USE_HETERO_COMM=1 or actual multi-node
-run-mpi-inter: $(BINDIR)/test_device_ir_inter
+run-mpi-inter: $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter
 	@echo "Running inter-node Device IR tests..."
-	mpirun -np 8 --allow-run-as-root $(HETERO_ENV) $(BINDIR)/test_device_ir_inter
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n 4 $(HETERO_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
+		: -n 4 $(HETERO_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
+	@echo "Running inter-node Device API tests..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n 4 $(HETERO_ENV) $(INTER_NODE0_ENV) \
+		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2 \
+		: -n 4 $(HETERO_ENV) $(INTER_NODE1_ENV) \
+		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
 
-run-mpi: run-mpi-intra run-mpi-inter
+# Unified Intra suite: INTRA + WORLD teams (single-node)
+run-mpi-unified-intra: $(BINDIR)/test_device_ir_unified_intra
+	@echo "Running unified intra suite tests (INTRA + WORLD, 8-combo)..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 8 $(UNIFIED_COMMON_ENV) \
+		$(BINDIR)/test_device_ir_unified_intra $(UNIFIED_TEST_ARGS)
+
+# Unified Inter suite: INTER + WORLD teams (two logical 4-rank nodes)
+run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
+	@echo "Running unified inter suite tests (INTER + WORLD, 8-combo)..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n 4 $(UNIFIED_COMMON_ENV) $(INTER_NODE0_ENV) \
+		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS) \
+		: -n 4 $(UNIFIED_COMMON_ENV) $(INTER_NODE1_ENV) \
+		$(BINDIR)/test_device_ir_unified_inter $(UNIFIED_TEST_ARGS)
+
+run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra run-mpi-unified-inter
 
 run: run-mpi

@@ -28,6 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <unordered_map>
+#include <vector>
 
 flagcxRegPool globalRegPool;
 
@@ -1876,27 +1877,64 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxHomoCommInit(flagcxUniqueId_t commId,
-                                  flagcxUniqueId *uniqueIdData,
-                                  struct bootstrapState *state,
+static flagcxResult_t flagcxCollectUniqueIdResult(struct bootstrapState *state,
+                                                  int rank, int nranks,
+                                                  flagcxResult_t localResult) {
+  std::vector<flagcxResult_t> resultData(nranks, flagcxSuccess);
+  resultData[rank] = localResult;
+  FLAGCXCHECK(bootstrapCollAllGather(state, (void *)resultData.data(),
+                                     sizeof(flagcxResult_t)));
+  FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
+
+  for (int peer = 0; peer < nranks; peer++) {
+    if (resultData[peer] != flagcxSuccess) {
+      return resultData[peer];
+    }
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBuildHomoRankList(flagcxComm_t comm,
+                                              std::vector<int> &globalRanks) {
+  globalRanks.assign(comm->homoRanks, -1);
+  int clusterId = comm->clusterIds[comm->rank];
+  for (int globalRank = 0; globalRank < comm->nranks; globalRank++) {
+    if (comm->clusterIds[globalRank] != clusterId) {
+      continue;
+    }
+    int homoRank = comm->globalRank2HomoRank[globalRank];
+    if (homoRank < 0 || homoRank >= comm->homoRanks ||
+        globalRanks[homoRank] != -1) {
+      return flagcxInternalError;
+    }
+    globalRanks[homoRank] = globalRank;
+  }
+  for (int globalRank : globalRanks) {
+    if (globalRank == -1) {
+      return flagcxInternalError;
+    }
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHomoCommInit(struct bootstrapState *state,
                                   flagcxComm_t comm,
                                   flagcxInnerComm_t *homoComm /*out*/) {
   int rank = comm->rank;
   int nranks = comm->nranks;
-  memset((void *)commId, 0, sizeof(*commId));
-  memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
-  if (comm->homoRank == 0) {
-    cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
+  flagcxInnerUniqueId commIdStorage = {};
+  flagcxInnerUniqueId_t commId = &commIdStorage;
+  std::vector<int> homoGlobalRanks;
+  flagcxResult_t uniqueIdResult =
+      flagcxBuildHomoRankList(comm, homoGlobalRanks);
+  if (uniqueIdResult == flagcxSuccess && comm->homoRank == 0) {
+    uniqueIdResult = cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
   }
-  if (comm->homoRank == 0) {
-    memcpy((void *)&uniqueIdData[rank], (void *)commId, sizeof(flagcxUniqueId));
-  }
-  FLAGCXCHECK(bootstrapCollAllGather(state, (void *)uniqueIdData,
-                                     sizeof(flagcxUniqueId)));
-  FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
+  FLAGCXCHECK(flagcxCollectUniqueIdResult(state, rank, nranks, uniqueIdResult));
 
-  memcpy((void *)commId, (void *)&uniqueIdData[comm->homoRootRank],
-         sizeof(flagcxUniqueId));
+  FLAGCXCHECK(bootstrapCollSubgroupBroadcast(state, homoGlobalRanks.data(),
+                                             comm->homoRank, comm->homoRanks, 0,
+                                             (void *)commId, sizeof(*commId)));
   FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
       homoComm, comm->homoRanks, commId, comm->homoRank, NULL));
   return flagcxSuccess;
@@ -2108,9 +2146,6 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     (*comm)->hasSingleRankHomoComm = 0;
   }
 
-  flagcxUniqueId *uniqueIdData;
-  FLAGCXCHECK(flagcxCalloc(&uniqueIdData, nranks));
-
   // Tuner init
   bool useTuner = false;
   const char *useTunerEnv = flagcxGetEnv("FLAGCX_USE_TUNER");
@@ -2120,9 +2155,6 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   INFO(FLAGCX_INIT, "Flagcx USE_TUNER flag set to %d", useTuner);
   if (useTuner) {
     (*comm)->tuner = &internalTuner;
-    FLAGCXCHECK(flagcxCalloc(&(*comm)->commId, 1));
-    memcpy((*comm)->commId, commId, sizeof(flagcxUniqueId));
-    (*comm)->uniqueIdData = uniqueIdData;
     (*comm)->tunerInnerComm = NULL;
     (*comm)->isTunningComm = false;
     (*comm)->isTuningWithFlagscale = false;
@@ -2171,8 +2203,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
              nConfigs);
 
         flagcxInnerComm_t innerComm = NULL;
-        FLAGCXCHECK(
-            flagcxHomoCommInit(commId, uniqueIdData, state, *comm, &innerComm));
+        FLAGCXCHECK(flagcxHomoCommInit(state, *comm, &innerComm));
         // Insert item into commMap
         (*comm)->commMap[tag] = innerComm;
         // For backward compatible, also assign homo_comm field.
@@ -2183,8 +2214,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     if (isTuningWithFlagscale) {
       // Create a default communicator based on the default config
       flagcxInnerComm_t innerComm = NULL;
-      FLAGCXCHECK(
-          flagcxHomoCommInit(commId, uniqueIdData, state, *comm, &innerComm));
+      FLAGCXCHECK(flagcxHomoCommInit(state, *comm, &innerComm));
       // Insert item into homoCommMap
       (*comm)->tunerInnerComm = innerComm;
       // For backward compatible, also assign homoComm field.
@@ -2192,26 +2222,23 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
     }
   } else {
     (*comm)->tuner = NULL;
-    FLAGCXCHECK(flagcxHomoCommInit(commId, uniqueIdData, state, *comm,
-                                   &((*comm)->homoComm)));
+    FLAGCXCHECK(flagcxHomoCommInit(state, *comm, &((*comm)->homoComm)));
   }
 
   if (!useHomoComm(*comm) || useHeteroComm()) {
-    // Reset commId and hetero root rank calls flagcxHeteroGetUniqueId
-    memset((void *)commId, 0, sizeof(flagcxUniqueId));
-    memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
+    flagcxUniqueId heteroCommId = {};
+    flagcxResult_t uniqueIdResult = flagcxSuccess;
     if (rank == 0) {
-      flagcxHeteroGetUniqueId(commId);
-      memcpy((void *)&uniqueIdData[0], (void *)commId, sizeof(flagcxUniqueId));
+      uniqueIdResult = flagcxHeteroGetUniqueId(&heteroCommId);
     }
-    FLAGCXCHECK(bootstrapCollAllGather(state, (void *)uniqueIdData,
-                                       sizeof(flagcxUniqueId)));
-    FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
-
-    memcpy((void *)commId, (void *)&uniqueIdData[0], sizeof(flagcxUniqueId));
-    // call flagcxHeteroCommInitRank
     FLAGCXCHECK(
-        flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks, *commId, rank));
+        flagcxCollectUniqueIdResult(state, rank, nranks, uniqueIdResult));
+    FLAGCXCHECK(bootstrapCollBroadcast(
+        state, rank, nranks, 0, (void *)&heteroCommId, sizeof(heteroCommId)));
+
+    // call flagcxHeteroCommInitRank
+    FLAGCXCHECK(flagcxHeteroCommInitRank(&(*comm)->heteroComm, nranks,
+                                         heteroCommId, rank));
 
     // Share ipcTable with heteroComm for intra-node D2D bypass
     (*comm)->heteroComm->ipcTable = (*comm)->ipcTable;
@@ -2223,8 +2250,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
         FLAGCXCHECK((*comm)->heteroComm->netAdaptor->getProperties(
             (*comm)->heteroComm->netDev, bootstrapGetNetProperties()));
       }
+      flagcxInnerUniqueId hostCommId = {};
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorHost]->commInitRank(
-          &(*comm)->hostComm, nranks, commId, rank, state));
+          &(*comm)->hostComm, nranks, &hostCommId, rank, state));
     }
   }
 
@@ -2287,27 +2315,26 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
          (*comm)->homoInterRanks, (*comm)->hasSingleRankHomoComm);
 
     // Experimental for multi-nic support
-    // Reset commId and homo inter root rank calls underlying GetUniqueId
-    // function for initialization of homo inter communicator
-    memset((void *)commId, 0, sizeof(flagcxUniqueId));
-    memset((void *)uniqueIdData, 0, nranks * sizeof(flagcxUniqueId));
+    flagcxInnerUniqueId homoInterCommIdStorage = {};
+    flagcxInnerUniqueId_t homoInterCommId = &homoInterCommIdStorage;
     // Let homoInterRootRank call underlying GetUniqueId function
     // for initialization of homo inter communicator
+    flagcxResult_t uniqueIdResult = flagcxSuccess;
     if (rank == (*comm)->homoInterRootRank) {
-      cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&commId);
-      memcpy((void *)&uniqueIdData[rank], (void *)commId,
-             sizeof(flagcxUniqueId));
+      uniqueIdResult =
+          cclAdaptors[flagcxCCLAdaptorDevice]->getUniqueId(&homoInterCommId);
     }
-    // Collect uniqueIdData globally
-    FLAGCXCHECK(bootstrapCollAllGather(state, (void *)uniqueIdData,
-                                       sizeof(flagcxUniqueId)));
-    FLAGCXCHECK(bootstrapCollBarrier(state, rank, nranks, 0));
+    FLAGCXCHECK(
+        flagcxCollectUniqueIdResult(state, rank, nranks, uniqueIdResult));
+
     // Call cclAdaptor->commInitRank
     if ((*comm)->homoInterRootRank != -1) {
-      memcpy((void *)commId, (void *)&uniqueIdData[(*comm)->homoInterRootRank],
-             sizeof(flagcxUniqueId));
+      FLAGCXCHECK(bootstrapCollSubgroupBroadcast(
+          state, myClusterInterRanks.data(), (*comm)->homoInterMyRank,
+          (*comm)->homoInterRanks, 0, (void *)homoInterCommId,
+          sizeof(*homoInterCommId)));
       FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commInitRank(
-          &(*comm)->homoInterComm, (*comm)->homoInterRanks, commId,
+          &(*comm)->homoInterComm, (*comm)->homoInterRanks, homoInterCommId,
           (*comm)->homoInterMyRank, NULL));
     }
     free(nicDistanceData);
@@ -2324,10 +2351,6 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 
   free(clusterInterRankData);
   free(vendorData);
-  if (!useTuner) {
-    free(uniqueIdData);
-  }
-
   // Initialize custom op state (non-fatal if fails)
   FLAGCXCHECK(flagcxDevCommStateInit(*comm));
 
@@ -2411,9 +2434,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   // Destroy tuner
   if (comm->tuner) {
     comm->tuner->destroy(comm->tunerContext);
-    // Free uniqueIdData and commId
-    free(comm->uniqueIdData);
-    free(comm->commId);
   }
 
   // Finalize net adaptor plugin (dlclose)

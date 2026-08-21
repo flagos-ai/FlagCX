@@ -110,6 +110,10 @@ flagcxResult_t bootstrapCollBarrier(struct bootstrapState *state, int rank,
 flagcxResult_t bootstrapCollBroadcast(struct bootstrapState *state, int rank,
                                       int nranks, int root, void *bcastData,
                                       int size);
+flagcxResult_t
+bootstrapCollSubgroupBroadcast(struct bootstrapState *state, int *globalRanks,
+                               int subgroupRank, int subgroupSize,
+                               int subgroupRoot, void *bcastData, int size);
 flagcxResult_t bootstrapCollIntraNodeBarrier(struct bootstrapState *state,
                                              int *ranks, int rank, int nranks,
                                              int tag);

@@ -522,5 +522,6 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunxinAdaptorSymMulticastSupported, kunlunxinAdaptorSymMulticastCreate,
       kunlunxinAdaptorSymMulticastBind, kunlunxinAdaptorSymMulticastTeardown,
       kunlunxinAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 #endif // USE_KUNLUNXIN_ADAPTOR

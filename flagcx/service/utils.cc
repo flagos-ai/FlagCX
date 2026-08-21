@@ -117,6 +117,7 @@ uint64_t getHostHash(void) {
 
 FLAGCX_PARAM(TopoDetectionDisable, "TOPO_DETECTION_DISABLE", 0);
 FLAGCX_PARAM(SignalHostEnable, "SIGNAL_HOST_ENABLE", 0);
+FLAGCX_PARAM(DeviceOneSidedForceNet, "DEVICE_ONE_SIDED_FORCE_NET", 0);
 
 /* Generate a hash of the unique identifying string for this process
  * that will be unique for both bare-metal and container instances

@@ -450,6 +450,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymFlatUnmap, macaAdaptorSymMulticastSupported,
       macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
       macaAdaptorSymMulticastTeardown, macaAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_METAX_ADAPTOR

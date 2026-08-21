@@ -7,6 +7,9 @@
 #include "comm.h"
 #include <map>
 
+static_assert(sizeof(cnclCliqueId) <= sizeof(flagcxInnerUniqueId),
+              "cnclCliqueId does not fit inside flagcxInnerUniqueId");
+
 std::map<flagcxDataType_t, cnclDataType_t> f2c_datatype_map = {
     {flagcxInt8, cnclInt8},       {flagcxUint8, cnclUint8},
     {flagcxInt, cnclInt},         {flagcxInt32, cnclInt32},
@@ -38,7 +41,7 @@ flagcxResult_t cnclAdaptorGetVersion(int *version) {
   return flagcxUnhandledDeviceError;
 }
 
-flagcxResult_t cnclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t cnclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -63,7 +66,7 @@ const char *cnclAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);

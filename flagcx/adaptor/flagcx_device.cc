@@ -37,6 +37,7 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
   memset(handle, 0, sizeof(struct flagcxDevCommInternal));
   pthread_mutex_init(&handle->cachedPtrMutex, NULL);
   handle->barrierIpcIndex = -1;
+  handle->signalIpcSlot = -1;
 
   // Baseline: always
   handle->rank = comm->rank;

@@ -58,8 +58,11 @@ struct CommTraits<NvshmemBackend> {
     void *rawPtr;
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
-    getPeerPointer(size_t offset, const Team &, int peer) const {
-      return nvshmem_ptr((char *)symBase + offset, peer);
+    getPeerPointer(size_t offset, const Team &team, int peer) const {
+      int myPE = nvshmem_my_pe();
+      int base = myPE - team.rank * team.stride;
+      int worldPeer = base + peer * team.stride;
+      return nvshmem_ptr((char *)symBase + offset, worldPeer);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
       return (char *)rawPtr + offset;
@@ -100,14 +103,8 @@ struct CommTraits<NvshmemBackend> {
     int counterCount;
     uint64_t *shadowBuffer;
 
-    uint64_t *intraBarrierSignals;
-    uint64_t *interBarrierSignals;
-    uint64_t *worldBarrierSignals;
-    uint64_t *barrierUsage;
-
-    int intraBarrierCount;
-    int interBarrierCount;
-    int worldBarrierCount;
+    uint64_t *gridSyncState; // per-block flags: arrive[CTA_COUNT] +
+                             // release[CTA_COUNT], x3 barriers
 
     FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
       return intraRank;
@@ -124,6 +121,31 @@ struct CommTraits<NvshmemBackend> {
       Multimem mm;
       mm.mcBasePtr = nullptr;
       return mm;
+    }
+
+    // P2P signal support — NVSHMEM always has P2P capability
+    FLAGCX_DEVICE_INLINE_DECORATOR bool p2pSignalSupport(int /*peer*/) const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalPeerPtr(int localPeer) const {
+      int worldPeer = rank - intraRank + localPeer;
+      return (uint64_t *)nvshmem_ptr((void *)signalBuffer, worldPeer);
+    }
+
+    // Unified IR must use NVSHMEM signal operations rather than directly
+    // atomically updating an implementation-owned symmetric buffer.
+    FLAGCX_DEVICE_INLINE_DECORATOR bool usesDirectP2pSignals() const {
+      return false;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool isOneSidedTransportReady() const {
+      return true;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR bool supportsDirectCounterAccess() const {
+      return counterBuffer != nullptr;
     }
 
     template <typename DI>
@@ -144,13 +166,7 @@ struct CommTraits<NvshmemBackend> {
       dc.counterBuffer = di.counterBuffer;
       dc.counterCount = di.counterCount;
       dc.shadowBuffer = di.shadowBuffer;
-      dc.intraBarrierSignals = nullptr;
-      dc.interBarrierSignals = nullptr;
-      dc.worldBarrierSignals = nullptr;
-      dc.barrierUsage = nullptr;
-      dc.intraBarrierCount = 0;
-      dc.interBarrierCount = 0;
-      dc.worldBarrierCount = 0;
+      dc.gridSyncState = nullptr;
     }
   };
 
@@ -183,9 +199,10 @@ struct CommTraits<NvshmemBackend> {
   // ---- Net ----
   struct Net {
     Comm _dc;
+    int _contextId;
 
     FLAGCX_HOST_DEVICE_INLINE
-    Net(const Comm &dc, int /*contextIndex*/) : _dc(dc) {}
+    Net(const Comm &dc, int contextIndex) : _dc(dc), _contextId(contextIndex) {}
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
       if (_dc.signalCount > 0 && _dc.signalBuffer == nullptr)
@@ -195,11 +212,31 @@ struct CommTraits<NvshmemBackend> {
       return true;
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR int getContextId() const {
+      return _contextId;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getSignalPtr(flagcxDevSignal_t signalId) const {
+      return &_dc.signalBuffer[signalIndex(signalId)];
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getPeerSignalPtr(int localPeer, flagcxDevSignal_t signalId) const {
+      uint64_t *peerBuffer = _dc.getSignalPeerPtr(localPeer);
+      return peerBuffer ? &peerBuffer[signalIndex(signalId)] : nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    getCounterPtr(flagcxDevCounter_t counterId) const {
+      return &_dc.counterBuffer[counterIndex(counterId)];
+    }
+
     // ---- Helper: resolve PE from team + peer index ----
     FLAGCX_DEVICE_INLINE_DECORATOR int resolvePE(Team team, int peer) const {
-      // team.rank is my rank within team; peer is absolute rank
-      // For NVSHMEM, peer IS the PE number (world-scope)
-      return peer;
+      // peer is team-local rank; derive base from own world rank
+      int base = _dc.rank - team.rank * team.stride;
+      return base + peer * team.stride;
     }
 
     // ---- One-sided: put ----
@@ -208,7 +245,6 @@ struct CommTraits<NvshmemBackend> {
     put(Team team, int peer, Window dst, size_t dstOff, Window src,
         size_t srcOff, size_t bytes, RA ra, LA la, Coop coop, Desc desc,
         flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
@@ -216,7 +252,7 @@ struct CommTraits<NvshmemBackend> {
       if (coop.threadRank() == 0) {
         void *dstPtr = (char *)dst.symBase + dstOff;
         void *srcPtr = (char *)src.rawPtr + srcOff;
-        int pe = peer;
+        int pe = resolvePE(team, peer);
         putImpl(dstPtr, srcPtr, bytes, pe, ra, la);
       }
       coop.sync();
@@ -228,15 +264,15 @@ struct CommTraits<NvshmemBackend> {
     putValue(Team team, int peer, Window dst, size_t dstOff, T value, RA ra,
              Coop coop, Desc desc, flagcxDeviceScope_t ar,
              flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
       coop.sync();
       if (coop.threadRank() == 0) {
+        int pe = resolvePE(team, peer);
         void *dstPtr = (char *)dst.symBase + dstOff;
-        nvshmem_putmem(dstPtr, (const void *)&value, sizeof(T), peer);
-        signalImpl(peer, ra);
+        nvshmem_putmem(dstPtr, (const void *)&value, sizeof(T), pe);
+        signalImpl(pe, ra);
       }
       coop.sync();
     }
@@ -246,13 +282,13 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signal(Team team, int peer, RA ra, Coop coop, Desc desc,
            flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
-      (void)team;
       (void)desc;
       (void)ar;
       (void)es;
       coop.sync();
       if (coop.threadRank() == 0) {
-        signalImpl(peer, ra);
+        int pe = resolvePE(team, peer);
+        signalImpl(pe, ra);
       }
       coop.sync();
     }
@@ -274,13 +310,13 @@ struct CommTraits<NvshmemBackend> {
     // ---- Wait: waitSignal ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignal(Coop coop, flagcxDevNetSignal_t signalId, uint64_t least,
-               int bits, flagcxDeviceMemoryOrder_t order) const {
+    waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
+               flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t *addr = _dc.signalBuffer + (int)signalId;
+        uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, least);
       }
       coop.sync();
@@ -289,14 +325,14 @@ struct CommTraits<NvshmemBackend> {
     // ---- Wait: waitSignalMeetShadow ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalMeetShadow(Coop coop, flagcxDevNetSignal_t signalId, int bits,
+    waitSignalMeetShadow(Coop coop, flagcxDevSignal_t signalId, int bits,
                          flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t target = _dc.shadowBuffer[(int)signalId];
-        uint64_t *addr = _dc.signalBuffer + (int)signalId;
+        uint64_t target = *getSignalShadowPtr(signalId);
+        uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, target);
       }
       coop.sync();
@@ -305,18 +341,17 @@ struct CommTraits<NvshmemBackend> {
     // ---- Wait: waitSignalFollowShadow ----
     template <typename Coop, typename Uint>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitSignalFollowShadow(Coop coop, flagcxDevNetSignal_t signalId,
+    waitSignalFollowShadow(Coop coop, flagcxDevSignal_t signalId,
                            Uint leastDelta, Uint *before, Uint *delta, int bits,
                            flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        uint64_t shadow = _dc.shadowBuffer[(int)signalId];
+        uint64_t shadow = *getSignalShadowPtr(signalId);
         uint64_t target = shadow + (uint64_t)leastDelta;
-        uint64_t *addr = _dc.signalBuffer + (int)signalId;
+        uint64_t *addr = getSignalPtr(signalId);
         nvshmem_uint64_wait_until(addr, NVSHMEM_CMP_GE, target);
-        uint64_t cur = Atomic::load(addr, flagcxDeviceMemoryOrderAcquire);
+        uint64_t cur = Atomic::load(addr, order);
         if (before)
           *before = (Uint)shadow;
         if (delta)
@@ -327,43 +362,41 @@ struct CommTraits<NvshmemBackend> {
 
     // ---- Shadow access ----
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
-    getSignalShadowPtr(flagcxDevNetSignal_t signalId) const {
-      return &_dc.shadowBuffer[(int)signalId];
+    getSignalShadowPtr(flagcxDevSignal_t signalId) const {
+      return &_dc.shadowBuffer[signalIndex(signalId)];
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    increaseSignalShadow(flagcxDevNetSignal_t signalId, uint64_t delta) const {
-      _dc.shadowBuffer[(int)signalId] += delta;
+    increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
+      *getSignalShadowPtr(signalId) += delta;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readSignal(flagcxDevNetSignal_t signalId, int bits,
+    readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
-      return Atomic::load(&_dc.signalBuffer[(int)signalId],
-                          flagcxDeviceMemoryOrderAcquire);
+      return Atomic::load(getSignalPtr(signalId), order);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetSignal(flagcxDevNetSignal_t signalId) const {
-      Atomic::store(&_dc.signalBuffer[(int)signalId], (uint64_t)0,
+    resetSignal(flagcxDevSignal_t signalId) const {
+      Atomic::store(getSignalPtr(signalId), (uint64_t)0,
+                    flagcxDeviceMemoryOrderRelease);
+      Atomic::store(getSignalShadowPtr(signalId), (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
 
     // ---- Counter: waitCounter ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    waitCounter(Coop coop, flagcxDevNetCounter_t counterId, uint64_t least,
+    waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
       coop.sync();
       if (coop.threadRank() == 0) {
-        int idx = (int)counterId;
+        uint64_t *counter = getCounterPtr(counterId);
         int iter = 0;
-        while (Atomic::load(&_dc.counterBuffer[idx],
-                            flagcxDeviceMemoryOrderAcquire) < least) {
+        while (Atomic::load(counter, order) < least) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -371,12 +404,10 @@ struct CommTraits<NvshmemBackend> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    readCounter(flagcxDevNetCounter_t counterId, int bits,
+    readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
       (void)bits;
-      (void)order;
-      return Atomic::load(&_dc.counterBuffer[(int)counterId],
-                          flagcxDeviceMemoryOrderAcquire);
+      return Atomic::load(getCounterPtr(counterId), order);
     }
 
     // ---- Two-sided: send/recv/term/wait (NVSHMEM uses one-sided, these are
@@ -412,23 +443,33 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     get(Team team, int peer, Window src, size_t srcOff, Window dst,
         size_t dstOff, size_t bytes, Coop coop) const {
-      (void)team;
       coop.sync();
       if (coop.threadRank() == 0) {
+        int pe = resolvePE(team, peer);
         void *dstPtr = (char *)dst.rawPtr + dstOff;
         void *srcPtr = (char *)src.symBase + srcOff;
-        nvshmem_getmem(dstPtr, srcPtr, bytes, peer);
+        nvshmem_getmem(dstPtr, srcPtr, bytes, pe);
       }
       coop.sync();
     }
 
   private:
+    FLAGCX_DEVICE_INLINE_DECORATOR int
+    signalIndex(flagcxDevSignal_t signalId) const {
+      return _contextId * _dc.signalCount + (int)signalId;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int
+    counterIndex(flagcxDevCounter_t counterId) const {
+      return _contextId * _dc.counterCount + (int)counterId;
+    }
+
     // ---- put dispatch: select fused put+signal vs plain put ----
     template <typename LA>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     putImpl(void *dst, void *src, size_t bytes, int pe,
             flagcxDevNet_SignalInc ra, LA la) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmem_putmem_signal(dst, src, bytes, sigAddr, 1, NVSHMEM_SIGNAL_ADD,
                             pe);
       counterImpl(la);
@@ -438,7 +479,7 @@ struct CommTraits<NvshmemBackend> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     putImpl(void *dst, void *src, size_t bytes, int pe,
             flagcxDevNet_SignalAdd ra, LA la) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmem_putmem_signal(dst, src, bytes, sigAddr, ra.value,
                             NVSHMEM_SIGNAL_ADD, pe);
       counterImpl(la);
@@ -462,12 +503,12 @@ struct CommTraits<NvshmemBackend> {
     // ---- signal dispatch ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signalImpl(int pe, flagcxDevNet_SignalInc ra) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmemx_signal_op(sigAddr, 1, NVSHMEM_SIGNAL_ADD, pe);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signalImpl(int pe, flagcxDevNet_SignalAdd ra) const {
-      uint64_t *sigAddr = _dc.signalBuffer + (int)ra.signal;
+      uint64_t *sigAddr = getSignalPtr(ra.signal);
       nvshmemx_signal_op(sigAddr, ra.value, NVSHMEM_SIGNAL_ADD, pe);
     }
     template <typename RA>
@@ -476,7 +517,7 @@ struct CommTraits<NvshmemBackend> {
     // ---- counter helper ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
     counterImpl(flagcxDevNet_CounterInc c) const {
-      Atomic::fetchAdd(&_dc.counterBuffer[(int)c.counter], (uint64_t)1,
+      Atomic::fetchAdd(getCounterPtr(c.counter), (uint64_t)1,
                        flagcxDeviceMemoryOrderRelease);
     }
     template <typename LA>
@@ -485,9 +526,8 @@ struct CommTraits<NvshmemBackend> {
   public:
     // ---- reset counter ----
     FLAGCX_DEVICE_INLINE_DECORATOR void
-    resetCounter(flagcxDevNetCounter_t counterId) const {
-      int idx = (int)counterId;
-      Atomic::store(&_dc.counterBuffer[idx], (uint64_t)0,
+    resetCounter(flagcxDevCounter_t counterId) const {
+      Atomic::store(getCounterPtr(counterId), (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
   }; // struct Net
@@ -495,6 +535,61 @@ struct CommTraits<NvshmemBackend> {
 
 // ============================================================
 // Barrier specializations for NvshmemBackend
+// ============================================================
+// Grid-wide synchronization helpers for NVSHMEM barriers.
+// Block 0 collects arrive flags from all blocks, performs the
+// nvshmemx_barrier_block PE-level barrier, then releases others.
+// ============================================================
+
+template <typename Coop>
+FLAGCX_DEVICE_INLINE_DECORATOR void
+nvshmemGridArrive(Coop &coop, nvshmem_team_t team, volatile uint64_t *arrive,
+                  volatile uint64_t *release) {
+#ifdef __CUDACC__
+  int numBlocks = FLAGCX_GRID_DIM_X;
+  coop.sync();
+  if (coop.threadRank() == 0) {
+    arrive[FLAGCX_BLOCK_IDX_X]++;
+  }
+  if (FLAGCX_BLOCK_IDX_X == 0) {
+    coop.sync();
+    uint64_t expected = arrive[0];
+    for (int i = coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+      if (i == 0)
+        continue;
+      while (arrive[i] < expected) {
+      }
+    }
+    coop.sync();
+  }
+#endif
+}
+
+template <typename Coop>
+FLAGCX_DEVICE_INLINE_DECORATOR void
+nvshmemGridWait(Coop &coop, nvshmem_team_t team, volatile uint64_t *arrive,
+                volatile uint64_t *release) {
+#ifdef __CUDACC__
+  int numBlocks = FLAGCX_GRID_DIM_X;
+  if (FLAGCX_BLOCK_IDX_X == 0) {
+    coop.sync();
+    nvshmemx_barrier_block(team);
+    coop.sync();
+    for (int i = coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
+      release[i]++;
+    }
+  } else {
+    if (coop.threadRank() == 0) {
+      uint64_t cur = release[FLAGCX_BLOCK_IDX_X];
+      while (release[FLAGCX_BLOCK_IDX_X] == cur) {
+      }
+    }
+  }
+  coop.sync();
+#endif
+}
+
+// ============================================================
 // Signal-based split-phase barriers using nvshmemx_signal_op.
 // ============================================================
 
@@ -510,56 +605,37 @@ struct Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> {
   Coop _coop;
   nvshmem_team_t _team;
   int _teamSize, _teamRank;
-  uint64_t *_barrierSignals;
-  uint64_t *_usageCount;
+  volatile uint64_t *_gridSyncState; // arrive[CTA_COUNT] + release[CTA_COUNT]
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
       : _coop(), _team(NVSHMEM_TEAM_INVALID), _teamSize(0), _teamRank(0),
-        _barrierSignals(nullptr), _usageCount(nullptr) {}
+        _gridSyncState(nullptr) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
           const Multimem & = {})
       : _coop(coop), _team(dc.intraTeam), _teamSize(dc.intraSize),
         _teamRank(dc.intraRank),
-        _barrierSignals(dc.intraBarrierSignals + index * dc.intraSize),
-        _usageCount(&dc.barrierUsage[index]) {}
+        _gridSyncState((volatile uint64_t *)dc.gridSyncState) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      nvshmem_fence();
-    _coop.sync();
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      int peerPE = nvshmem_team_translate_pe(_team, peer, NVSHMEM_TEAM_WORLD);
-      nvshmemx_signal_op(_barrierSignals + _teamRank, 1, NVSHMEM_SIGNAL_ADD,
-                         peerPE);
-    }
+    nvshmemGridArrive(_coop, _team, _gridSyncState,
+                      _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    uint64_t target = *_usageCount + 1;
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      nvshmem_uint64_wait_until(_barrierSignals + peer, NVSHMEM_CMP_GE, target);
-    }
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      *_usageCount = target;
-    _coop.sync();
+    nvshmemGridWait(_coop, _team, _gridSyncState,
+                    _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel) {
-    arrive(order);
-    wait(order);
+    nvshmemGridArrive(_coop, _team, _gridSyncState,
+                      _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
+    nvshmemGridWait(_coop, _team, _gridSyncState,
+                    _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 };
 
@@ -576,61 +652,41 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
   Coop _coop;
   nvshmem_team_t _team;
   int _teamSize, _teamRank;
-  uint64_t *_barrierSignals;
-  uint64_t *_usageCount;
+  volatile uint64_t *_gridSyncState; // arrive[CTA_COUNT] + release[CTA_COUNT]
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
       : _coop(), _team(NVSHMEM_TEAM_INVALID), _teamSize(0), _teamRank(0),
-        _barrierSignals(nullptr), _usageCount(nullptr) {}
+        _gridSyncState(nullptr) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Net &, const Comm &dc, Team, uint32_t index, int = 0)
       : _coop(coop), _team(dc.interTeam),
         _teamSize((dc.intraSize > 0) ? dc.nRanks / dc.intraSize : 1),
         _teamRank((dc.intraSize > 0) ? dc.rank / dc.intraSize : 0),
-        _barrierSignals(
-            dc.interBarrierSignals +
-            index * ((dc.intraSize > 0) ? dc.nRanks / dc.intraSize : 1)),
-        _usageCount(&dc.barrierUsage[dc.intraBarrierCount + index]) {}
+        _gridSyncState((volatile uint64_t *)(dc.gridSyncState +
+                                             2 * FLAGCX_DEVICE_CTA_COUNT)) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      nvshmem_fence();
-    _coop.sync();
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      int peerPE = nvshmem_team_translate_pe(_team, peer, NVSHMEM_TEAM_WORLD);
-      nvshmemx_signal_op(_barrierSignals + _teamRank, 1, NVSHMEM_SIGNAL_ADD,
-                         peerPE);
-    }
+    nvshmemGridArrive(_coop, _team, _gridSyncState,
+                      _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
-    uint64_t target = *_usageCount + 1;
-    for (int i = _coop.threadRank(); i < _teamSize - 1; i += _coop.size()) {
-      int peer = 1 + _teamRank + i;
-      if (peer >= _teamSize)
-        peer -= _teamSize;
-      nvshmem_uint64_wait_until(_barrierSignals + peer, NVSHMEM_CMP_GE, target);
-    }
-    _coop.sync();
-    if (_coop.threadRank() == 0)
-      *_usageCount = target;
-    _coop.sync();
+    nvshmemGridWait(_coop, _team, _gridSyncState,
+                    _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    arrive(order, fence);
-    wait(order, fence);
+    nvshmemGridArrive(_coop, _team, _gridSyncState,
+                      _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
+    nvshmemGridWait(_coop, _team, _gridSyncState,
+                    _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 };
 
@@ -645,74 +701,56 @@ struct Barrier<NvshmemBackend, flagcxTeamTagWorld, Coop> {
   using Multimem = CommTraits<NvshmemBackend>::Multimem;
 
   Coop _coop;
-  Barrier<NvshmemBackend, flagcxTeamTagIntra, Coop> _intra;
-  Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> _inter;
-  int _nInterPeers;
+  nvshmem_team_t _team;
+  volatile uint64_t *_gridSyncState; // arrive[CTA_COUNT] + release[CTA_COUNT]
 
   FLAGCX_DEVICE_INLINE_DECORATOR Barrier()
-      : _coop(), _intra(), _inter(), _nInterPeers(0) {}
+      : _coop(), _team(NVSHMEM_TEAM_INVALID), _gridSyncState(nullptr) {}
 
   // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
           uint32_t index, bool multimem, int nInterPeers)
-      : _coop(coop), _intra(coop, dc, Team{}, index),
-        _inter(coop, net, dc, Team{}, index, nInterPeers),
-        _nInterPeers(nInterPeers) {}
+      : _coop(coop), _team(dc.worldTeam),
+        _gridSyncState((volatile uint64_t *)(dc.gridSyncState +
+                                             4 * FLAGCX_DEVICE_CTA_COUNT)) {}
 
   // Intra-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
           uint32_t index, bool, int)
-      : _coop(coop), _intra(coop, dc, Team{}, index), _inter(),
-        _nInterPeers(0) {}
+      : _coop(coop), _team(dc.intraTeam),
+        _gridSyncState((volatile uint64_t *)dc.gridSyncState) {}
 
   // Inter-only barrier
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &net, const Comm &dc,
           uint32_t index, bool, int nInterPeers)
-      : _coop(coop), _intra(),
-        _inter(coop, net, dc, Team{}, index, nInterPeers),
-        _nInterPeers(nInterPeers) {}
+      : _coop(coop), _team(dc.interTeam),
+        _gridSyncState((volatile uint64_t *)(dc.gridSyncState +
+                                             2 * FLAGCX_DEVICE_CTA_COUNT)) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _intra.arrive(flagcxDeviceMemoryOrderRelease);
-      _intra.wait(flagcxDeviceMemoryOrderRelease);
-      _inter.arrive(order);
-    } else {
-      _intra.arrive(order);
-    }
+    nvshmemGridArrive(_coop, _team, _gridSyncState,
+                      _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _inter.wait(order);
-      _intra.arrive(flagcxDeviceMemoryOrderAcquire);
-      _intra.wait(flagcxDeviceMemoryOrderAcquire);
-    } else {
-      _intra.wait(order);
-    }
+    nvshmemGridWait(_coop, _team, _gridSyncState,
+                    _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nInterPeers > 0) {
-      _intra.arrive(flagcxDeviceMemoryOrderRelease);
-      _intra.wait(flagcxDeviceMemoryOrderRelease);
-      _inter.arrive(order);
-      _inter.wait(order);
-      _intra.arrive(flagcxDeviceMemoryOrderAcquire);
-      _intra.wait(flagcxDeviceMemoryOrderAcquire);
-    } else {
-      _intra.arrive(order);
-      _intra.wait(order);
-    }
+    nvshmemGridArrive(_coop, _team, _gridSyncState,
+                      _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
+    nvshmemGridWait(_coop, _team, _gridSyncState,
+                    _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 };
 

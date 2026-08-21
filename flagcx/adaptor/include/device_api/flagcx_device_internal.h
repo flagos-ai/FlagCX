@@ -64,18 +64,13 @@ struct flagcxDevCommInternal {
   flagcxShmHandle_t myShmHandle;     // own shm handle (flagcxShmClose)
   flagcxShmHandle_t *peerShmHandles; // peer shm handles [nLocalRanks]
 
-  // ---- Inter-node signal relay (set if nInterPeers > 0, else nullptr) ----
-  uint64_t *interSignalFlags;     // device pointer (from hostGetDevicePointer)
-  uint64_t *interSignalFlagsHost; // host pointer (for recv thread + dealloc)
+  // ---- Inter-node signal relay (set if nInterPeers > 0) ----
   int nInterPeers;     // number of inter-node peers (set on ALL ranks)
-  bool isInterLeader;  // true only on localRank 0 (manages connections)
   int *interPeerRanks; // global ranks of inter-node peers
-  // netAdaptor connections for signal relay (one-sided RDMA atomic)
-  void **signalSendComms;  // [nInterPeers] sendComm (for iputSignal)
-  void **barrierRecvComms; // [nInterPeers] recvComm (kept alive for QP)
-  void *barrierHandleInfo; // flagcxOneSideHandleInfo* with rkeys/baseVas
-  // netAdaptor pointer (cached for proxy)
-  void *netAdaptorPtr;
+  // NCCL GIN-style barrier fields (all ranks)
+  int teamRank;          // this rank's position in the inter-node team
+  int nTeamRanks;        // total number of nodes (team size for barrier)
+  int barrierSignalBase; // first signal slot index used for barriers
 
   // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
   // 0)
@@ -94,6 +89,17 @@ struct flagcxDevCommInternal {
   void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
   void *putValueStagingMr;     // MR handle for staging buffer
 
+  // One-sided transport readiness.  Signal send/wait must use the same
+  // communicator-wide path because waits do not identify a sender.
+  int netOneSidedReady;
+  int netSignalReady;
+  int netPutValueReady;
+  int useP2pSignals;
+
+  // ---- P2P signal IPC pointers (intra-node direct atomic path) ----
+  uint64_t **signalPeerPtrs; // Device array: [localRanks] → peer signal bufs
+  int signalIpcSlot; // IPC table slot for signal peer pointers (-1 if not used)
+
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
@@ -101,6 +107,7 @@ struct flagcxDevCommInternal {
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr;      // Lazily allocated by flagcxDevCommGetDevicePtr
   void *cachedNetContextsPtr; // Device memory for pre-allocated flagcxDevNet[]
+  void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
 };

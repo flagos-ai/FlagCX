@@ -29,4 +29,6 @@ protected:
   static flagcxWindow_t dataWin;
   static size_t size;
   static size_t signalSize;
+  static bool oneSidedAvailable;
+  static const char *oneSidedSkipReason;
 };

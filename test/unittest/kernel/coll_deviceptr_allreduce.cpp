@@ -62,9 +62,9 @@ TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Run IntraAllReduce
-  EXPECT_EQ(
-      flagcxIntraAllReduce(devMem, floatCount, flagcxFloat, devComm, stream),
-      flagcxSuccess);
+  EXPECT_EQ(launchKernelIntraAllReduce(devMem, floatCount, flagcxFloat, devComm,
+                                       stream),
+            flagcxSuccess);
   ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);

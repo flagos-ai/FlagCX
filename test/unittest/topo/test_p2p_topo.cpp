@@ -27,7 +27,9 @@ protected:
 
     int ndev = 0;
     ASSERT_EQ(netAdaptor->devices(&ndev), flagcxSuccess);
-    ASSERT_GT(ndev, 0) << "No IB P2P devices found";
+    if (ndev <= 0) {
+      GTEST_SKIP() << "No IB P2P devices found";
+    }
     std::cout << "Net adaptor: " << netAdaptor->name << " (" << ndev
               << " devices)" << std::endl;
   }

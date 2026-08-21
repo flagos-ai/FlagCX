@@ -6,6 +6,9 @@ export DH_VERBOSE = 1
 # Usage: FLAGCX_BUILD_BACKEND=metax dpkg-buildpackage ...
 # Valid values: metax, nvidia, all (default)
 FLAGCX_BUILD_BACKEND ?= all
+# Distro packages build against nlohmann-json3-dev, not the git submodule.
+JSON_INCLUDE_DIR ?= /usr/include
+export JSON_INCLUDE_DIR
 
 # Build directories for different backends
 BUILD_DIR_METAX = $(CURDIR)/build-metax

@@ -21,7 +21,7 @@ flagcxResult_t glooAdaptorGetVersion(int *version) {
 }
 
 // TODO: unsupported
-flagcxResult_t glooAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t glooAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   return flagcxNotSupported;
 }
 
@@ -84,7 +84,8 @@ const char *glooAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t glooAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t /*commId*/, int rank,
+                                       flagcxInnerUniqueId_t /*commId*/,
+                                       int rank,
                                        struct bootstrapState *bootstrap) {
   // Create gloo transport device
   std::shared_ptr<::gloo::transport::Device> dev;

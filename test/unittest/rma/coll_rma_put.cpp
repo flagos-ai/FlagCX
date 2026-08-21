@@ -33,6 +33,15 @@ static void establishConnection(flagcxComm_t comm,
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
+static int collectiveOpStatus(flagcxResult_t res) {
+  int localStatus =
+      (res == flagcxSuccess) ? 0 : (res == flagcxNotSupported ? 1 : 2);
+  int globalStatus = 0;
+  MPI_Allreduce(&localStatus, &globalStatus, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  return globalStatus;
+}
+
 // ---------------------------------------------------------------------------
 // PutSignal: rank 0 writes known pattern to rank 1, rank 1 verifies
 // ---------------------------------------------------------------------------
@@ -51,15 +60,25 @@ TEST_F(RmaTest, PutSignalSmall) {
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
     // Fill source with 0xAB pattern
     std::vector<uint8_t> pattern(testSize, 0xAB);
     devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
                             flagcxMemcpyHostToDevice, nullptr);
 
-    flagcxResult_t res = flagcxPutSignal(dataBuff, testSize, flagcxChar, 1,
-                                         dataWin, 0, 0, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
+    opRes = flagcxPutSignal(dataBuff, testSize, flagcxChar, 1, dataWin, 0, 0,
+                            comm, s);
+  }
+
+  int globalStatus = collectiveOpStatus(opRes);
+  if (globalStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxPutSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalStatus, 0);
+
+  if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     // Wait for signal from rank 0
@@ -106,6 +125,7 @@ TEST_F(RmaTest, PutSignalLarge) {
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
     // Fill with ascending byte pattern
     std::vector<uint8_t> pattern(testSize);
@@ -114,9 +134,18 @@ TEST_F(RmaTest, PutSignalLarge) {
     devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
                             flagcxMemcpyHostToDevice, nullptr);
 
-    flagcxResult_t res = flagcxPutSignal(dataBuff, testSize, flagcxChar, 1,
-                                         dataWin, 0, 0, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
+    opRes = flagcxPutSignal(dataBuff, testSize, flagcxChar, 1, dataWin, 0, 0,
+                            comm, s);
+  }
+
+  int globalStatus = collectiveOpStatus(opRes);
+  if (globalStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxPutSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalStatus, 0);
+
+  if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     flagcxWaitSignalDesc_t desc = {1, 0};

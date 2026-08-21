@@ -15,6 +15,16 @@
 
 #include "flagcx_device_core.h"
 
+#ifndef FLAGCX_DEPRECATED
+#if defined(__GNUC__) || defined(__clang__)
+#define FLAGCX_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#elif defined(_MSC_VER)
+#define FLAGCX_DEPRECATED(msg) __declspec(deprecated(msg))
+#else
+#define FLAGCX_DEPRECATED(msg)
+#endif
+#endif
+
 /* ================================================================
  * C-compatible wrapper structs
  * ================================================================ */
@@ -231,27 +241,27 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetInitC(void *trans, const void *comm, int idx);
 /** @brief Read a signal value (non-blocking). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t
-flagcxDevNetReadSignal(const void *trans, flagcxDevNetSignal_t signalId,
-                       int bits, flagcxDeviceMemoryOrder_t order);
+flagcxDevNetReadSignal(const void *trans, flagcxDevSignal_t signalId, int bits,
+                       flagcxDeviceMemoryOrder_t order);
 /** @brief Spin-wait until signal >= least. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetWaitSignal(const void *trans, const void *coop,
-                       flagcxDevNetSignal_t signalId, uint64_t least, int bits,
+                       flagcxDevSignal_t signalId, uint64_t least, int bits,
                        flagcxDeviceMemoryOrder_t order);
 /** @brief Spin-wait until signal meets its shadow value. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetWaitSignalMeetShadow(const void *trans, const void *coop,
-                                 flagcxDevNetSignal_t signalId, int bits,
+                                 flagcxDevSignal_t signalId, int bits,
                                  flagcxDeviceMemoryOrder_t order);
 /** @brief Read a counter value (non-blocking). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t
-flagcxDevNetReadCounter(const void *trans, flagcxDevNetCounter_t counterId,
+flagcxDevNetReadCounter(const void *trans, flagcxDevCounter_t counterId,
                         int bits, flagcxDeviceMemoryOrder_t order);
 /** @brief Spin-wait until counter >= least. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetWaitCounter(const void *trans, const void *coop,
-                        flagcxDevNetCounter_t counterId, uint64_t least,
-                        int bits, flagcxDeviceMemoryOrder_t order);
+                        flagcxDevCounter_t counterId, uint64_t least, int bits,
+                        flagcxDeviceMemoryOrder_t order);
 /** @brief Flush pending RDMA/network writes. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetFlush(const void *trans, const void *coop,
@@ -266,15 +276,15 @@ flagcxDevNetFlush(const void *trans, const void *coop,
  * @param delta  Value to add to signal shadow.
  * ================================================================ */
 
-/** @brief Reset a signal slot to zero. */
+/** @brief Reset a signal slot and its local shadow to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevNetResetSignal(const void *net, flagcxDevNetSignal_t slot);
+flagcxDevNetResetSignal(const void *net, flagcxDevSignal_t slot);
 /** @brief Reset a counter slot to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevNetResetCounter(const void *net, flagcxDevNetCounter_t slot);
+flagcxDevNetResetCounter(const void *net, flagcxDevCounter_t slot);
 /** @brief Increase the local shadow for a signal. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevNetIncreaseSignalShadow(const void *net, flagcxDevNetSignal_t slot,
+flagcxDevNetIncreaseSignalShadow(const void *net, flagcxDevSignal_t slot,
                                  uint64_t delta);
 
 /* ================================================================
@@ -308,7 +318,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int
 flagcxDevNetTerm(const void *trans, const void *coop);
 
 /* ================================================================
- * Category 11: Transport — One-Sided put (16)
+ * Category 11: Transport — One-Sided put
+ * (6 supported + 10 deprecated compatibility variants)
  *
  * Naming: flagcxDevNetPut[_R<remote>][_L<local>]
  * Actions: None, SigInc, SigAdd, CtrInc
@@ -324,9 +335,9 @@ flagcxDevNetTerm(const void *trans, const void *coop);
  * @param coop           Pointer to flagcxCoopAny struct.
  * @param remoteSignal   Remote signal slot (R variants).
  * @param remoteValue    Value to add to remote signal (RSigAdd).
- * @param remoteCounter  Remote counter slot (RCtrInc).
- * @param localSignal    Local signal slot (L variants).
- * @param localValue     Value to add to local signal (LSigAdd).
+ * @param remoteCounter  Remote counter slot (deprecated RCtrInc variants).
+ * @param localSignal    Local signal slot (deprecated LSig variants).
+ * @param localValue     Value to add to a local signal (LSigAdd variants).
  * @param localCounter   Local counter slot (LCtrInc).
  * ================================================================ */
 
@@ -341,104 +352,117 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPut_RSigInc(const void *trans, const void *team, int peer,
                         const void *dst, size_t dstOffset, const void *src,
                         size_t srcOffset, size_t bytes, const void *coop,
-                        flagcxDevNetSignal_t remoteSignal);
+                        flagcxDevSignal_t remoteSignal);
 
 /* (SigAdd, None) */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigAdd(
-    const void *trans, const void *team, int peer, const void *dst,
-    size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal, uint64_t remoteValue);
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPut_RSigAdd(const void *trans, const void *team, int peer,
+                        const void *dst, size_t dstOffset, const void *src,
+                        size_t srcOffset, size_t bytes, const void *coop,
+                        flagcxDevSignal_t remoteSignal, uint64_t remoteValue);
+
+/* Deprecated compatibility variants retained for one deprecation cycle. */
 
 /* (CtrInc, None) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPut_RCtrInc(const void *trans, const void *team, int peer,
                         const void *dst, size_t dstOffset, const void *src,
                         size_t srcOffset, size_t bytes, const void *coop,
-                        flagcxDevNetCounter_t remoteCounter);
+                        flagcxDevCounter_t remoteCounter);
 
 /* (None, SigInc) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPut_LSigInc(const void *trans, const void *team, int peer,
                         const void *dst, size_t dstOffset, const void *src,
                         size_t srcOffset, size_t bytes, const void *coop,
-                        flagcxDevNetSignal_t localSignal);
+                        flagcxDevSignal_t localSignal);
 
 /* (SigInc, SigInc) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigInc_LSigInc(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal,
-    flagcxDevNetSignal_t localSignal);
+    const void *coop, flagcxDevSignal_t remoteSignal,
+    flagcxDevSignal_t localSignal);
 
 /* (SigAdd, SigInc) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigAdd_LSigInc(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal, uint64_t remoteValue,
-    flagcxDevNetSignal_t localSignal);
+    const void *coop, flagcxDevSignal_t remoteSignal, uint64_t remoteValue,
+    flagcxDevSignal_t localSignal);
 
 /* (CtrInc, SigInc) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RCtrInc_LSigInc(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetCounter_t remoteCounter,
-    flagcxDevNetSignal_t localSignal);
+    const void *coop, flagcxDevCounter_t remoteCounter,
+    flagcxDevSignal_t localSignal);
 
 /* (None, SigAdd) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPut_LSigAdd(const void *trans, const void *team, int peer,
                         const void *dst, size_t dstOffset, const void *src,
                         size_t srcOffset, size_t bytes, const void *coop,
-                        flagcxDevNetSignal_t localSignal, uint64_t localValue);
+                        flagcxDevSignal_t localSignal, uint64_t localValue);
 
 /* (SigInc, SigAdd) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigInc_LSigAdd(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal,
-    flagcxDevNetSignal_t localSignal, uint64_t localValue);
+    const void *coop, flagcxDevSignal_t remoteSignal,
+    flagcxDevSignal_t localSignal, uint64_t localValue);
 
 /* (SigAdd, SigAdd) */
+FLAGCX_DEPRECATED("migrate to local-counter completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigAdd_LSigAdd(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal, uint64_t remoteValue,
-    flagcxDevNetSignal_t localSignal, uint64_t localValue);
+    const void *coop, flagcxDevSignal_t remoteSignal, uint64_t remoteValue,
+    flagcxDevSignal_t localSignal, uint64_t localValue);
 
 /* (CtrInc, SigAdd) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RCtrInc_LSigAdd(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetCounter_t remoteCounter,
-    flagcxDevNetSignal_t localSignal, uint64_t localValue);
+    const void *coop, flagcxDevCounter_t remoteCounter,
+    flagcxDevSignal_t localSignal, uint64_t localValue);
 
 /* (None, CtrInc) */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPut_LCtrInc(const void *trans, const void *team, int peer,
                         const void *dst, size_t dstOffset, const void *src,
                         size_t srcOffset, size_t bytes, const void *coop,
-                        flagcxDevNetCounter_t localCounter);
+                        flagcxDevCounter_t localCounter);
 
 /* (SigInc, CtrInc) */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigInc_LCtrInc(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal,
-    flagcxDevNetCounter_t localCounter);
+    const void *coop, flagcxDevSignal_t remoteSignal,
+    flagcxDevCounter_t localCounter);
 
 /* (SigAdd, CtrInc) */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RSigAdd_LCtrInc(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetSignal_t remoteSignal, uint64_t remoteValue,
-    flagcxDevNetCounter_t localCounter);
+    const void *coop, flagcxDevSignal_t remoteSignal, uint64_t remoteValue,
+    flagcxDevCounter_t localCounter);
 
 /* (CtrInc, CtrInc) */
+FLAGCX_DEPRECATED("migrate to flagcxDev* unified one-sided operations")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RCtrInc_LCtrInc(
     const void *trans, const void *team, int peer, const void *dst,
     size_t dstOffset, const void *src, size_t srcOffset, size_t bytes,
-    const void *coop, flagcxDevNetCounter_t remoteCounter,
-    flagcxDevNetCounter_t localCounter);
+    const void *coop, flagcxDevCounter_t remoteCounter,
+    flagcxDevCounter_t localCounter);
 
 /* ================================================================
  * Category 12: Transport — One-Sided signal (3)
@@ -457,16 +481,17 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPut_RCtrInc_LCtrInc(
 /** @brief Increment remote signal by 1. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetSignalSigInc(const void *trans, const void *team, int peer,
-                         const void *coop, flagcxDevNetSignal_t signal);
+                         const void *coop, flagcxDevSignal_t signal);
 /** @brief Add value to remote signal. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetSignalSigAdd(const void *trans, const void *team, int peer,
-                         const void *coop, flagcxDevNetSignal_t signal,
+                         const void *coop, flagcxDevSignal_t signal,
                          uint64_t value);
-/** @brief Increment remote counter by 1. */
+/** @brief Increment a remote counter (deprecated compatibility entry point). */
+FLAGCX_DEPRECATED("migrate to signal completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetSignalCtrInc(const void *trans, const void *team, int peer,
-                         const void *coop, flagcxDevNetCounter_t counter);
+                         const void *coop, flagcxDevCounter_t counter);
 
 /* ================================================================
  * Category 13: Transport — One-Sided putValue<uint64_t> (4)
@@ -483,7 +508,7 @@ flagcxDevNetSignalCtrInc(const void *trans, const void *team, int peer,
  * @param coop           Pointer to flagcxCoopAny struct.
  * @param remoteSignal   Remote signal slot (R variants).
  * @param remoteAddValue Value to add to remote signal (RSigAdd).
- * @param remoteCounter  Remote counter slot (RCtrInc).
+ * @param remoteCounter  Remote counter slot (deprecated RCtrInc variant).
  * ================================================================ */
 
 /** @brief Put a 64-bit value (no side effect). */
@@ -496,21 +521,22 @@ flagcxDevNetPutValue(const void *trans, const void *team, int peer,
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutValue_RSigInc(const void *trans, const void *team, int peer,
                              const void *dst, size_t dstOffset, uint64_t value,
-                             const void *coop,
-                             flagcxDevNetSignal_t remoteSignal);
+                             const void *coop, flagcxDevSignal_t remoteSignal);
 
 /** @brief Put a 64-bit value + add to remote signal. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevNetPutValue_RSigAdd(
-    const void *trans, const void *team, int peer, const void *dst,
-    size_t dstOffset, uint64_t value, const void *coop,
-    flagcxDevNetSignal_t remoteSignal, uint64_t remoteAddValue);
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
+flagcxDevNetPutValue_RSigAdd(const void *trans, const void *team, int peer,
+                             const void *dst, size_t dstOffset, uint64_t value,
+                             const void *coop, flagcxDevSignal_t remoteSignal,
+                             uint64_t remoteAddValue);
 
-/** @brief Put a 64-bit value + increment remote counter. */
+/** @brief Put a value + increment remote counter (deprecated compatibility). */
+FLAGCX_DEPRECATED("migrate to signal completion in the Unified IR API")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxDevNetPutValue_RCtrInc(const void *trans, const void *team, int peer,
                              const void *dst, size_t dstOffset, uint64_t value,
                              const void *coop,
-                             flagcxDevNetCounter_t remoteCounter);
+                             flagcxDevCounter_t remoteCounter);
 
 /* ================================================================
  * Category 14: Transport — One-Sided get (1)

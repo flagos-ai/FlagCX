@@ -19,4 +19,4 @@ ADAPTOR_FLAG := -DUSE_ASCEND_ADAPTOR
 
 PLATFORM_KERNEL_DIR  :=
 PLATFORM_KERNEL_SRCS :=
-PLATFORM_EXTRA_SRCS  :=
+PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc

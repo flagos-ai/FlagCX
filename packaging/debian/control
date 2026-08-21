@@ -6,6 +6,7 @@ Build-Depends: debhelper-compat (= 13),
                g++ (>= 9),
                make,
                cmake,
+               nlohmann-json3-dev,
                patchelf
 Standards-Version: 4.6.0
 Homepage: https://github.com/flagos-ai/FlagCX
@@ -21,8 +22,8 @@ X-Build-Environment: This package is designed to be built in backend-specific
   - MetaX backend: Requires maca_sdk (from repos.metax-tech.com)
     Built in Ubuntu 22.04 with MetaX APT repository configured
  .
- The Build-Depends listed above are for the Debian packaging tools only.
- Backend-specific dependencies are provided by the container environment.
+ Common build dependencies are declared above. Backend-specific dependencies
+ are provided by the container environment.
 
 Package: libflagcx-metax
 Build-Profiles: <!pkg.flagcx.nvidia-only>

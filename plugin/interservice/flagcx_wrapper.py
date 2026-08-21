@@ -54,8 +54,13 @@ class flagcxDevCommRequirements(ctypes.Structure):
         ("interCounterCount", ctypes.c_int),
     ]
 
+FLAGCX_UNIQUE_ID_BYTES = 256
+
+
 class flagcxUniqueId(ctypes.Structure):
-    _fields_ = [("internal", ctypes.c_byte * 256)]
+    _fields_ = [("internal", ctypes.c_byte * FLAGCX_UNIQUE_ID_BYTES)]
+
+
 flagcxUniqueId_t = ctypes.POINTER(flagcxUniqueId)
 
 DEVICE_SYNCHRONIZE_FUNCTYPE = ctypes.CFUNCTYPE(flagcxResult_t)
@@ -419,6 +424,10 @@ class FLAGCXLibrary:
             flagcxP2pEngine_t, ctypes.c_uint64, ctypes.c_uint64,
             ctypes.POINTER(ctypes.c_uint64)
         ]),
+        Function("flagcxP2pRpcRegisterHost", ctypes.c_int, [
+            flagcxP2pEngine_t, ctypes.c_uint64, ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_uint64)
+        ]),
         Function("flagcxP2pRpcGetConn", flagcxP2pConn_t, [
             flagcxP2pEngine_t, ctypes.c_char_p
         ]),
@@ -447,12 +456,21 @@ class FLAGCXLibrary:
             so_path = os.path.join(flagcx_path, "lib", "libflagcx.so")
             if os.path.isfile(so_path):
                 return so_path
+            build_so_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
+            if os.path.isfile(build_so_path):
+                return build_so_path
             raise FileNotFoundError(
-                f"FLAGCX_PATH is set to '{flagcx_path}' but "
-                f"'{so_path}' does not exist. "
+                f"FLAGCX_PATH is set to '{flagcx_path}' but neither "
+                f"'{so_path}' nor '{build_so_path}' exists. "
                 f"Please build FlagCX or check FLAGCX_PATH."
             )
-        # 2. Fall back to <repo_root>/build/lib/libflagcx.so
+        # 2. Check alongside the installed flagcx Python package
+        #    (build.sh copies libflagcx.so into the package directory)
+        pkg_dir = os.path.dirname(os.path.abspath(__file__))
+        pkg_so = os.path.join(pkg_dir, "libflagcx.so")
+        if os.path.isfile(pkg_so):
+            return pkg_so
+        # 3. Fall back to <repo_root>/build/lib/libflagcx.so
         repo_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
@@ -462,8 +480,9 @@ class FLAGCXLibrary:
         raise FileNotFoundError(
             f"Cannot find libflagcx.so. Searched:\n"
             f"  - $FLAGCX_PATH/lib/libflagcx.so (FLAGCX_PATH not set)\n"
-            f"  - {so_path} (not found)\n"
-            f"Please set FLAGCX_PATH or build FlagCX first."
+            f"  - {pkg_so} (not in package)\n"
+            f"  - {so_path} (not in source tree)\n"
+            f"Please set FLAGCX_PATH or reinstall flagcx."
         )
 
     def __init__(self, so_file: Optional[str] = None):
@@ -534,18 +553,20 @@ class FLAGCXLibrary:
         """
         Reconstructs a flagcxUniqueId object from bytes data.
         Args:
-            data: Must be a 256-byte data block (matching FlagCX's unique_id).
+            data: Must match the size of FlagCX's unique_id.
         Returns:
             flagcxUniqueId: The reconstructed FlagCX Unique ID object.
         Raises:
-            ValueError: If the input data length is not 256 bytes.
+            ValueError: If the input data length does not match unique_id.
         """
-        if len(data) != 256:
+        if len(data) != FLAGCX_UNIQUE_ID_BYTES:
             raise ValueError(
-                f"Expected 256 bytes for ncclUniqueId, got {len(data)} bytes")
+                f"Expected {FLAGCX_UNIQUE_ID_BYTES} bytes for flagcxUniqueId, "
+                f"got {len(data)} bytes")
 
         unique_id = flagcxUniqueId()
-        ctypes.memmove(ctypes.addressof(unique_id.internal), data, 256)
+        ctypes.memmove(ctypes.addressof(unique_id.internal), data,
+                       FLAGCX_UNIQUE_ID_BYTES)
         return unique_id
 
     def flagcxCommInitRank(self, world_size: int, unique_id: flagcxUniqueId,
@@ -818,6 +839,17 @@ class FLAGCXLibrary:
                 f"flagcxP2pRegister failed (addr={hex(addr)}, size={size})")
         return mr_id.value
 
+    def flagcxP2pRegisterHost(self, engine: flagcxP2pEngine_t,
+                              addr: int, size: int) -> int:
+        mr_id = ctypes.c_uint64(0)
+        rc = self._funcs["flagcxP2pRpcRegisterHost"](
+            engine, ctypes.c_uint64(addr), ctypes.c_uint64(size),
+            ctypes.byref(mr_id))
+        if rc != 0:
+            raise RuntimeError(
+                f"flagcxP2pRegisterHost failed (addr={hex(addr)}, size={size})")
+        return mr_id.value
+
     def flagcxP2pGetConn(self, engine: flagcxP2pEngine_t,
                          session: str) -> flagcxP2pConn_t:
         conn = self._funcs["flagcxP2pRpcGetConn"](
@@ -849,7 +881,7 @@ class FLAGCXLibrary:
 
     def adaptor_stream_copy(self, old_stream):
         new_stream = flagcxStream_t()
-        raw_stream = getattr(old_stream, 'musa_stream', old_stream.cuda_stream)
+        raw_stream = getattr(old_stream, 'musa_stream', getattr(old_stream, 'npu_stream', getattr(old_stream, 'cuda_stream', 0)))
         self.FLAGCX_CHECK(self.devHandle.contents.streamCopy(ctypes.byref(new_stream), ctypes.c_void_p(raw_stream)))
         return new_stream
 
@@ -864,6 +896,7 @@ class FLAGCXLibrary:
 
 
 __all__ = [
-    "FLAGCXLibrary", "flagcxDataTypeEnum", "flagcxRedOpTypeEnum", "flagcxUniqueId",
-    "flagcxDeviceHandle_t", "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
+    "FLAGCX_UNIQUE_ID_BYTES", "FLAGCXLibrary", "flagcxDataTypeEnum",
+    "flagcxRedOpTypeEnum", "flagcxUniqueId", "flagcxDeviceHandle_t",
+    "flagcxComm_t", "flagcxStream_t", "flagcxEvent_t", "buffer_type"
 ]

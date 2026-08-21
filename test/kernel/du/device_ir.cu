@@ -665,22 +665,22 @@ __global__ void kernelNetSignalCounterS(const void *devCommPtr, int *results) {
     }
 
     // Reset signal slot 0
-    flagcxDevNetResetSignal(net, (flagcxDevNetSignal_t)0);
+    flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
     // Read it — should be 0
-    uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+    uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
     results[0] = (sig0 == 0) ? 1 : 0;
 
     // Increase shadow by 5, read signal (still 0, shadow is separate)
-    flagcxDevNetIncreaseSignalShadow(net, (flagcxDevNetSignal_t)0, 5);
-    uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevNetSignal_t)0, 64,
+    flagcxDevNetIncreaseSignalShadow(net, (flagcxDevSignal_t)0, 5);
+    uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
                                             flagcxDeviceMemoryOrderRelaxed);
     results[1] = (sig1 == 0) ? 1 : 0;
 
     // Reset counter slot 0
-    flagcxDevNetResetCounter(net, (flagcxDevNetCounter_t)0);
+    flagcxDevNetResetCounter(net, (flagcxDevCounter_t)0);
     // Read counter — should be 0
-    uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevNetCounter_t)0, 64,
+    uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, 64,
                                              flagcxDeviceMemoryOrderRelaxed);
     results[2] = (ctr0 == 0) ? 1 : 0;
   }

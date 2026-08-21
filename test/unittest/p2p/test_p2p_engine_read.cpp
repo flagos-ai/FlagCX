@@ -19,7 +19,10 @@
 
 #include "adaptor.h"
 #include "flagcx.h"
+#include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
+
+extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 namespace {
 
@@ -234,6 +237,10 @@ protected:
   static constexpr int kServerGpuIdx = 1;
 
   void SetUp() override {
+    if (!hasIbDevices()) {
+      GTEST_SKIP() << "No IB devices available, skipping P2P read tests";
+    }
+
     ASSERT_EQ(flagcxDeviceHandleInit(&devHandle), flagcxSuccess);
     ASSERT_NE(devHandle, nullptr);
 
@@ -407,6 +414,13 @@ protected:
   FlagcxP2pEngine *clientEngine = nullptr;
   FlagcxP2pConn *serverConn = nullptr;
   FlagcxP2pConn *clientConn = nullptr;
+
+private:
+  static bool hasIbDevices() {
+    int nDevs = 0;
+    return flagcxNetIbP2p.init() == flagcxSuccess &&
+           flagcxNetIbP2p.devices(&nDevs) == flagcxSuccess && nDevs > 0;
+  }
 };
 
 TEST_F(FlagcxP2pEngineReadTest,

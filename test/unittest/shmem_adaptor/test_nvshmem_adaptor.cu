@@ -116,7 +116,7 @@ static void test_put() {
 // Test: signal operation (PE 0 signals PE 1)
 // ============================================================
 __global__ void kernel_test_signal(DC::Net *net, int peer,
-                                   flagcxDevNetSignal_t sigId) {
+                                   flagcxDevSignal_t sigId) {
   DC::Team team = {net->_dc.nRanks, net->_dc.rank, 1};
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
   flagcxDevNet_SignalInc ra = {sigId};
@@ -126,10 +126,10 @@ __global__ void kernel_test_signal(DC::Net *net, int peer,
 }
 
 __global__ void kernel_test_wait_signal(DC::Net *net,
-                                        flagcxDevNetSignal_t sigId,
+                                        flagcxDevSignal_t sigId,
                                         uint64_t expected) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcqRel);
+  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcquire);
 }
 
 static void test_signal_and_wait() {
@@ -215,10 +215,11 @@ __global__ void kernel_inc_counter(uint64_t *counterBuf, int idx) {
 }
 
 __global__ void kernel_wait_counter(DC::Net *net,
-                                    flagcxDevNetCounter_t counterId,
+                                    flagcxDevCounter_t counterId,
                                     uint64_t least) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitCounter(coop, counterId, least, 64, flagcxDeviceMemoryOrderAcqRel);
+  net->waitCounter(coop, counterId, least, 64,
+                   flagcxDeviceMemoryOrderAcquire);
 }
 
 static void test_counter_wait() {

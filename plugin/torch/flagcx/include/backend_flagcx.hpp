@@ -231,7 +231,7 @@ public:
 #ifdef USE_NVIDIA_ADAPTOR
     devName = "cuda";
 #elif USE_ASCEND_ADAPTOR
-    devName = "cann";
+    devName = "npu";
 #elif USE_ILUVATAR_COREX_ADAPTOR
     devName = "cuda";
 #elif USE_CAMBRICON_ADAPTOR

@@ -76,15 +76,19 @@ struct flagcxDevComm {
   // Actually flagcxDevNet[] but kept as void* for C/opaque linkage.
   void *_netContexts;
 
+  // Grid-wide barrier state for NCCL destructor ordering.
+  // [0] = arrive counter, [1] = sense. Allocated by NCCL backend only.
+  unsigned int *_gridBarrierState;
+
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
-        _nInterPeers(0), _netContexts(nullptr) {}
+        _nInterPeers(0), _netContexts(nullptr), _gridBarrierState(nullptr) {}
 
 #ifndef __clang_llvm_bitcode_lib__
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers),
-        _netContexts(nullptr) {
+        _netContexts(nullptr), _gridBarrierState(nullptr) {
     if (di.devComm) {
       _commBase = *(typename DeviceAPI::Comm *)di.devComm;
     } else {
@@ -108,6 +112,9 @@ struct flagcxDevComm {
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int getSize() const {
     return _commBase.getSize();
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR int getContextCount() const {
+    return _contextCount;
   }
   FLAGCX_DEVICE_INLINE_DECORATOR void *getFifoBuffer(int contextId) const {
     return _commBase.getFifoBuffer(contextId);
@@ -402,7 +409,7 @@ struct flagcxCoopLanes {
   }
 };
 
-// ---- 6g. flagcxCoopAny — type-erased cooperative group ----
+// ---- 6h. flagcxCoopAny — type-erased cooperative group ----
 struct flagcxCoopAny {
   typename DeviceAPI::CoopAny _base;
 
@@ -741,20 +748,24 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 // ============================================================
 struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
+  unsigned int *_gridBarrierState;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &devComm, int idx)
       : DeviceAPI::Net(devComm._commBase, devComm._contextCount > 0
                                               ? idx % devComm._contextCount
                                               : 0),
-        _nInterPeers(devComm._nInterPeers) {}
+        _nInterPeers(devComm._nInterPeers),
+        _gridBarrierState(devComm._gridBarrierState) {
+    // Guard against division by zero if contextCount is 0
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
     return DeviceAPI::Net::isValid();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
-      flagcxDevNetSignal_t signalId, int bits = 64,
+      flagcxDevSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     return DeviceAPI::Net::readSignal(signalId, bits, order);
   }
@@ -768,21 +779,21 @@ struct flagcxDevNet : DeviceAPI::Net {
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
-      Coop coop, flagcxDevNetSignal_t signalId, uint64_t least, int bits = 64,
+      Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignal(coop._base, signalId, least, bits, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalMeetShadow(
-      Coop coop, flagcxDevNetSignal_t signalId, int bits = 64,
+      Coop coop, flagcxDevSignal_t signalId, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignalMeetShadow(coop._base, signalId, bits, order);
   }
 
   template <typename Coop, typename Uint>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalFollowShadow(
-      Coop coop, flagcxDevNetSignal_t signalId, Uint leastDelta, Uint *before,
+      Coop coop, flagcxDevSignal_t signalId, Uint leastDelta, Uint *before,
       Uint *delta, int bits = 64,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignalFollowShadow(coop._base, signalId, leastDelta,
@@ -791,13 +802,13 @@ struct flagcxDevNet : DeviceAPI::Net {
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
-      Coop coop, flagcxDevNetCounter_t counterId, uint64_t least, int bits = 56,
+      Coop coop, flagcxDevCounter_t counterId, uint64_t least, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitCounter(coop._base, counterId, least, bits, order);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
-      flagcxDevNetCounter_t counterId, int bits = 56,
+      flagcxDevCounter_t counterId, int bits = 56,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     return DeviceAPI::Net::readCounter(counterId, bits, order);
   }

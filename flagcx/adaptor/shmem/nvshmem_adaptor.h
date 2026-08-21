@@ -24,14 +24,8 @@ struct flagcxShmemCommInternal {
   int counterCount;
   uint64_t *shadowBuffer;
 
-  uint64_t *intraBarrierSignals;
-  uint64_t *interBarrierSignals;
-  uint64_t *worldBarrierSignals;
-  uint64_t *barrierUsage;
-
-  int intraBarrierCount;
-  int interBarrierCount;
-  int worldBarrierCount;
+  uint64_t
+      *gridSyncState; // 3 barriers x (arrive[CTA_COUNT] + release[CTA_COUNT])
 };
 
 #endif // FLAGCX_NVSHMEM_ADAPTOR_H_

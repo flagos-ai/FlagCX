@@ -1,0 +1,77 @@
+name: Common Unit Tests
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        description: Platform identifier used only for display and artifacts
+        required: true
+        type: string
+      display_name:
+        description: Human-readable platform name
+        required: true
+        type: string
+      runs_on:
+        description: JSON array of runner labels
+        required: true
+        type: string
+      image:
+        description: CI container image
+        required: true
+        type: string
+      container_volumes:
+        description: JSON array of container volume mounts
+        required: true
+        type: string
+      container_options:
+        description: Options passed to the job container
+        required: true
+        type: string
+      set_env:
+        description: Platform-owned environment script
+        required: true
+        type: string
+      suites:
+        description: JSON array of unit-test suite names
+        required: true
+        type: string
+
+jobs:
+  unit_test:
+    name: ${{ inputs.display_name }} / ${{ matrix.suite }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(inputs.suites) }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    container:
+      image: ${{ inputs.image }}
+      volumes: ${{ fromJSON(inputs.container_volumes) }}
+      options: ${{ inputs.container_options }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          submodules: false
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Run unit-test suite
+        env:
+          FLAGCX_CI_SET_ENV: ${{ inputs.set_env }}
+          FLAGCX_CI_SUITE: ${{ matrix.suite }}
+        run: bash .github/scripts/ci/run_unit_test.sh "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"

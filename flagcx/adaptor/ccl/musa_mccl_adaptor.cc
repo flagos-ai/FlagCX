@@ -6,11 +6,14 @@
 #include "alloc.h"
 #include "comm.h"
 
+static_assert(sizeof(mcclUniqueId) <= sizeof(flagcxInnerUniqueId),
+              "mcclUniqueId does not fit inside flagcxInnerUniqueId");
+
 flagcxResult_t mcclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)mcclGetVersion(version);
 }
 
-flagcxResult_t mcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t mcclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -33,7 +36,7 @@ const char *mcclAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);

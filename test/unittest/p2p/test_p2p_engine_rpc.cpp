@@ -12,7 +12,10 @@
 
 #include <gtest/gtest.h>
 
+#include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
+
+extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 namespace {
 
@@ -96,22 +99,28 @@ protected:
   }
 
   // Helper: connect client to server via bootstrap port
-  void connectViaBsPort() {
-    ASSERT_NE(serverEngine, nullptr);
-    ASSERT_NE(clientEngine, nullptr);
+  ::testing::AssertionResult connectViaBsPort() {
+    if (serverEngine == nullptr)
+      return ::testing::AssertionFailure() << "serverEngine is null";
+    if (clientEngine == nullptr)
+      return ::testing::AssertionFailure() << "clientEngine is null";
 
     char *metaRaw = nullptr;
-    ASSERT_EQ(flagcxP2pEngineGetMetadata(serverEngine, &metaRaw), 0);
-    ASSERT_NE(metaRaw, nullptr);
+    if (flagcxP2pEngineGetMetadata(serverEngine, &metaRaw) != 0)
+      return ::testing::AssertionFailure() << "metadata query failed";
+    if (metaRaw == nullptr)
+      return ::testing::AssertionFailure() << "metadata is null";
     std::unique_ptr<char[]> metadata(metaRaw);
 
     ParsedMetadata parsed;
-    ASSERT_TRUE(parseMetadata(metadata.get(), &parsed))
-        << "metadata=" << metadata.get();
+    if (!parseMetadata(metadata.get(), &parsed))
+      return ::testing::AssertionFailure() << "metadata=" << metadata.get();
 
     // Get server's RPC port (bootstrap listen port)
     const int serverRpcPort = flagcxP2pEngineGetRpcPort(serverEngine);
-    ASSERT_GT(serverRpcPort, 0);
+    if (serverRpcPort <= 0)
+      return ::testing::AssertionFailure()
+             << "invalid RPC port " << serverRpcPort;
 
     // Accept in background thread
     auto acceptFuture = std::async(std::launch::async, [this]() {
@@ -127,13 +136,28 @@ protected:
     // Connect from client to server's bootstrap port
     clientConn = flagcxP2pEngineConnect(clientEngine, parsed.ip.c_str(),
                                         parsed.gpuIdx, serverRpcPort, false);
-    ASSERT_NE(clientConn, nullptr);
+    if (clientConn == nullptr) {
+      flagcxP2pEngineStopAccept(serverEngine);
+      if (acceptFuture.wait_for(std::chrono::seconds(1)) ==
+          std::future_status::ready) {
+        serverConn = acceptFuture.get();
+      }
+      return ::testing::AssertionFailure() << "client connection is null";
+    }
 
-    ASSERT_EQ(acceptFuture.wait_for(std::chrono::seconds(10)),
-              std::future_status::ready)
-        << "Accept timed out";
+    if (acceptFuture.wait_for(std::chrono::seconds(10)) !=
+        std::future_status::ready) {
+      flagcxP2pEngineStopAccept(serverEngine);
+      if (acceptFuture.wait_for(std::chrono::seconds(1)) ==
+          std::future_status::ready) {
+        serverConn = acceptFuture.get();
+      }
+      return ::testing::AssertionFailure() << "Accept timed out";
+    }
     serverConn = acceptFuture.get();
-    ASSERT_NE(serverConn, nullptr);
+    if (serverConn == nullptr)
+      return ::testing::AssertionFailure() << "server connection is null";
+    return ::testing::AssertionSuccess();
   }
 
   FlagcxP2pEngine *serverEngine = nullptr;
@@ -142,6 +166,23 @@ protected:
   FlagcxP2pConn *clientConn = nullptr;
   std::string acceptedIp;
   int acceptedRemoteGpuIdx = -1;
+
+  static bool hasIbDevices() {
+    int nDevs = 0;
+    return flagcxNetIbP2p.init() == flagcxSuccess &&
+           flagcxNetIbP2p.devices(&nDevs) == flagcxSuccess && nDevs > 0;
+  }
+};
+
+class P2pEngineRpcIbTest : public P2pEngineRpcTest {
+protected:
+  void SetUp() override {
+    P2pEngineRpcTest::SetUp();
+    if (!hasIbDevices()) {
+      GTEST_SKIP()
+          << "No IB devices available, skipping P2P RPC connection test";
+    }
+  }
 };
 
 // ============================================================================
@@ -213,14 +254,14 @@ TEST_F(P2pEngineRpcTest, GetMetadataPortMatchesRpcPort) {
 // 3. Connect / Accept handshake
 // ============================================================================
 
-TEST_F(P2pEngineRpcTest, ConnectAcceptBasic) {
-  connectViaBsPort();
+TEST_F(P2pEngineRpcIbTest, ConnectAcceptBasic) {
+  ASSERT_TRUE(connectViaBsPort());
   EXPECT_NE(clientConn, nullptr);
   EXPECT_NE(serverConn, nullptr);
 }
 
-TEST_F(P2pEngineRpcTest, ConnectAcceptExchangesGpuIdx) {
-  connectViaBsPort();
+TEST_F(P2pEngineRpcIbTest, ConnectAcceptExchangesGpuIdx) {
+  ASSERT_TRUE(connectViaBsPort());
   // Check that remote GPU index was exchanged on accept side
   EXPECT_GE(acceptedRemoteGpuIdx, -1);
   // Both connections are non-null (verified in connectViaBsPort)
@@ -228,21 +269,21 @@ TEST_F(P2pEngineRpcTest, ConnectAcceptExchangesGpuIdx) {
   EXPECT_NE(serverConn, nullptr);
 }
 
-TEST_F(P2pEngineRpcTest, ConnectAcceptIsLocalSameHost) {
-  connectViaBsPort();
+TEST_F(P2pEngineRpcIbTest, ConnectAcceptIsLocalSameHost) {
+  ASSERT_TRUE(connectViaBsPort());
   // Single-host test — both sides should detect local connection
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(serverConn));
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(clientConn));
 }
 
-TEST_F(P2pEngineRpcTest, ConnectToInvalidHostReturnsNull) {
-  // RFC 5737 TEST-NET-1: 192.0.2.0/24 — reserved, unreachable
+TEST_F(P2pEngineRpcIbTest, ConnectToInvalidHostReturnsNull) {
+  // Use an invalid numeric IPv4 literal so address parsing fails fast.
   FlagcxP2pConn *conn =
-      flagcxP2pEngineConnect(clientEngine, "192.0.2.1", -1, 12345, false);
+      flagcxP2pEngineConnect(clientEngine, "256.256.256.256", -1, 12345, false);
   EXPECT_EQ(conn, nullptr);
 }
 
-TEST_F(P2pEngineRpcTest, ConnectToInvalidPortReturnsNull) {
+TEST_F(P2pEngineRpcIbTest, ConnectToInvalidPortReturnsNull) {
   // Connect to localhost:1 (privileged, nothing listening)
   FlagcxP2pConn *conn =
       flagcxP2pEngineConnect(clientEngine, "127.0.0.1", -1, 1, false);
@@ -269,7 +310,7 @@ TEST_F(P2pEngineRpcTest, StartRpcServerTwiceIsIdempotent) {
   // Second call should return 0 (already running)
 }
 
-TEST_F(P2pEngineRpcTest, GetConnCreatesConnection) {
+TEST_F(P2pEngineRpcIbTest, GetConnCreatesConnection) {
   ASSERT_EQ(flagcxP2pEngineStartRpcServer(serverEngine), 0);
 
   char *metaRaw = nullptr;
@@ -294,7 +335,7 @@ TEST_F(P2pEngineRpcTest, GetConnCreatesConnection) {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
-TEST_F(P2pEngineRpcTest, GetConnReturnsCachedOnSecondCall) {
+TEST_F(P2pEngineRpcIbTest, GetConnReturnsCachedOnSecondCall) {
   ASSERT_EQ(flagcxP2pEngineStartRpcServer(serverEngine), 0);
 
   char *metaRaw = nullptr;
@@ -325,8 +366,8 @@ TEST_F(P2pEngineRpcTest, GetConnInvalidSessionReturnsNull) {
 // 5. Descriptor Table Exchange
 // ============================================================================
 
-TEST_F(P2pEngineRpcTest, DescTableExchangedOnConnect) {
-  connectViaBsPort();
+TEST_F(P2pEngineRpcIbTest, DescTableExchangedOnConnect) {
+  ASSERT_TRUE(connectViaBsPort());
   // After handshake with no registered memory, MakeDesc should fail
   // (no remote regions to map) — this indirectly confirms empty desc table
   FlagcxP2pRdmaDesc desc;
@@ -343,8 +384,8 @@ TEST(P2pEngineConnTeardown, ConnDestroyNullIsNoop) {
   // Should not crash
 }
 
-TEST_F(P2pEngineRpcTest, ConnDestroyAfterHandshake) {
-  connectViaBsPort();
+TEST_F(P2pEngineRpcIbTest, ConnDestroyAfterHandshake) {
+  ASSERT_TRUE(connectViaBsPort());
   flagcxP2pEngineConnDestroy(clientConn);
   clientConn = nullptr;
   flagcxP2pEngineConnDestroy(serverConn);

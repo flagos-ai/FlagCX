@@ -3,6 +3,9 @@
 #ifdef USE_SUNRISE_ADAPTOR
 #include <map>
 
+static_assert(sizeof(pcclUniqueId) <= sizeof(flagcxInnerUniqueId),
+              "pcclUniqueId does not fit inside flagcxInnerUniqueId");
+
 // Datatype and reduction op mappings
 std::map<flagcxDataType_t, pcclDataType_t> f2p_datatype_map = {
     {flagcxInt8, pcclInt8},        {flagcxUint8, pcclUint8},
@@ -48,7 +51,7 @@ flagcxResult_t pcclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)p2f_ret_map[pcclGetVersion(version)];
 }
 
-flagcxResult_t pcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t pcclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -73,7 +76,7 @@ flagcxResult_t pcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
 
 // Communicator functions
 flagcxResult_t pcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);
@@ -207,6 +210,14 @@ flagcxResult_t pcclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     flagcxRedOp_t op, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
+  // FlagCX bypasses PyTorch; ensure the comm's device is active.
+  if (comm != nullptr && comm->base != nullptr) {
+    int comm_dev = -1;
+    if (pcclCommCuDevice(comm->base, &comm_dev) == pcclSuccess &&
+        comm_dev >= 0) {
+      tangSetDevice(comm_dev);
+    }
+  }
   return (flagcxResult_t)p2f_ret_map[pcclAllReduce(
       sendbuff, recvbuff, count, f2p_datatype_map[datatype],
       f2p_reduceop_map[op], comm->base, stream->base)];

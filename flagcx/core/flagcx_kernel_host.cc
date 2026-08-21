@@ -123,8 +123,7 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   buffer[flagcxFifoIdxCapacity] = flagcxKernelFifoCapacity;
   buffer[flagcxFifoIdxConsumed] = 0;
   buffer[flagcxFifoIdxProduced] = 0;
-  buffer[flagcxFifoIdxTerminate] =
-      0; // reserved, unused for flagcxDeviceTrigger fifo
+  buffer[flagcxFifoIdxCompleted] = 0; // IB completion count (GPU polls this)
   memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
   return flagcxSuccess;
@@ -142,40 +141,56 @@ flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger) {
-  volatile uint64_t *buffer = (volatile uint64_t *)fifoBuffer;
+  uint64_t *buffer = (uint64_t *)fifoBuffer;
   uint64_t capacity = buffer[flagcxFifoIdxCapacity];
-  uint64_t cons = buffer[flagcxFifoIdxConsumed];
-  uint64_t prod = buffer[flagcxFifoIdxProduced];
+  // Use atomic loads for GPU-written fields: the GPU writes produced via
+  // system-scoped atomics (atom.acq_rel.sys).  A plain volatile read may
+  // return stale data on ARM hosts and can be speculatively reordered on x86.
+  // __atomic_load_n with ACQUIRE ensures we observe the latest GPU write.
+  uint64_t cons =
+      __atomic_load_n(&buffer[flagcxFifoIdxConsumed], __ATOMIC_RELAXED);
+  uint64_t prod =
+      __atomic_load_n(&buffer[flagcxFifoIdxProduced], __ATOMIC_ACQUIRE);
 
   if (prod > cons) {
     // Get pointer to slot's raw uint64_t fields (3 words per entry)
     uint64_t idx = cons % capacity;
-    volatile uint64_t *slotFst =
-        buffer + flagcxFifoIdxData +
-        idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
-    volatile uint64_t *slotSnd = slotFst + 1;
-    volatile uint64_t *slotTrd = slotFst + 2;
+    uint64_t *slotFst = buffer + flagcxFifoIdxData +
+                        idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+    uint64_t *slotSnd = slotFst + 1;
+    uint64_t *slotTrd = slotFst + 2;
 
-    // Wait for valid bit on trd (word2, written last by producer)
+    // Wait for valid bit on trd (word2, written last by producer with release)
     int spins = 0;
-    while (!(*slotTrd & flagcxDeviceTriggerValidMask)) {
-      __sync_synchronize();
+    while (!(__atomic_load_n(slotTrd, __ATOMIC_ACQUIRE) &
+             flagcxDeviceTriggerValidMask)) {
       if (++spins > 1000) {
+        if (spins == 1001) {
+          INFO(FLAGCX_P2P,
+               "dequeue: spinning on valid bit prod=%lu cons=%lu idx=%lu "
+               "slotTrd=0x%lx validMask=0x%lx",
+               prod, cons, idx, __atomic_load_n(slotTrd, __ATOMIC_RELAXED),
+               flagcxDeviceTriggerValidMask);
+        }
         sched_yield();
         spins = 0;
       }
     }
 
-    // Memory fence before reading payload
-    __sync_synchronize();
+    // Acquire on slotTrd above ensures payload (fst/snd) is visible
+    trigger->fst = __atomic_load_n(slotFst, __ATOMIC_RELAXED);
+    trigger->snd = __atomic_load_n(slotSnd, __ATOMIC_RELAXED);
+    trigger->trd = __atomic_load_n(slotTrd, __ATOMIC_RELAXED) &
+                   ~flagcxDeviceTriggerValidMask;
 
-    // Copy data (clear valid bit in the copy)
-    trigger->fst = *slotFst;
-    trigger->snd = *slotSnd;
-    trigger->trd = *slotTrd & ~flagcxDeviceTriggerValidMask;
+    TRACE(FLAGCX_P2P,
+          "dequeue: got entry prod=%lu cons=%lu prim=%lu peer=%lu "
+          "fst=0x%lx snd=0x%lx trd=0x%lx",
+          prod, cons, trigger->getPrim(), trigger->getPeerRank(), trigger->fst,
+          trigger->snd, trigger->trd);
 
     // Clear trd valid bit in slot for reuse
-    *slotTrd = 0;
+    __atomic_store_n(slotTrd, (uint64_t)0, __ATOMIC_RELAXED);
   } else {
     memset((void *)trigger, 0, sizeof(flagcxDeviceTrigger));
   }

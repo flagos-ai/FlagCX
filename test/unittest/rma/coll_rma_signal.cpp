@@ -31,6 +31,15 @@ static void establishConnection(flagcxComm_t comm,
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
+static int collectiveOpStatus(flagcxResult_t res) {
+  int localStatus =
+      (res == flagcxSuccess) ? 0 : (res == flagcxNotSupported ? 1 : 2);
+  int globalStatus = 0;
+  MPI_Allreduce(&localStatus, &globalStatus, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  return globalStatus;
+}
+
 // ---------------------------------------------------------------------------
 // SignalOnly: rank 0 sends signal without data, rank 1 waits
 // ---------------------------------------------------------------------------
@@ -46,9 +55,19 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
-    flagcxResult_t res = flagcxSignal(1, 0, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
+    opRes = flagcxSignal(1, 0, comm, s);
+  }
+
+  int globalStatus = collectiveOpStatus(opRes);
+  if (globalStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalStatus, 0);
+
+  if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     flagcxWaitSignalDesc_t desc = {1, 0};
@@ -78,11 +97,24 @@ TEST_F(RmaTest, MultipleSignals) {
 
   const int numSignals = 4;
 
+  flagcxResult_t opRes = flagcxSuccess;
   if (rank == 0) {
     for (int i = 0; i < numSignals; ++i) {
-      flagcxResult_t res = flagcxSignal(1, 0, comm, s);
-      ASSERT_EQ(res, flagcxSuccess);
+      opRes = flagcxSignal(1, 0, comm, s);
+      if (opRes != flagcxSuccess) {
+        break;
+      }
     }
+  }
+
+  int globalStatus = collectiveOpStatus(opRes);
+  if (globalStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalStatus, 0);
+
+  if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     // Wait for all 4 signals from rank 0

@@ -771,6 +771,15 @@ flagcxResult_t bootstrapCollBroadcast(struct bootstrapState *state, int rank,
                                          bcastData, size);
 }
 
+flagcxResult_t
+bootstrapCollSubgroupBroadcast(struct bootstrapState *state, int *globalRanks,
+                               int subgroupRank, int subgroupSize,
+                               int subgroupRoot, void *bcastData, int size) {
+  return bootstrapCollIntraNodeBroadcast(state, globalRanks, subgroupRank,
+                                         subgroupSize, subgroupRoot, bcastData,
+                                         size);
+}
+
 // ============================================================================
 // Typed Collective Operations (Reduce, AllReduce, etc.)
 // ============================================================================

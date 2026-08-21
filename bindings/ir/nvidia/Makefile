@@ -16,6 +16,7 @@ ifneq ($(EMIT_LLVM_IR), 0)
 
 # Source (one level up — shared wrapper)
 LLVM_SRC := ../flagcx_device_wrapper_impl.h
+LLVM_COMPAT_IMPL := ../flagcx_device_compat_ir_impl.h
 BUILDDIR ?= $(abspath ../../../build)
 OBJDIR := $(BUILDDIR)/obj/llvm_ir
 LIBDIR := $(BUILDDIR)/lib
@@ -108,7 +109,7 @@ $(WRAPPER_HEADER): ../flagcx_device_wrapper.h
 	@mkdir -p $(INCLUDEDIR)
 	cp -f $< $@
 
-$(UNOPTIMIZED_BC): $(LLVM_SRC)
+$(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
 	@echo "Generating unoptimized LLVM bitcode..."
 	$(CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
@@ -144,7 +145,19 @@ $(FINAL_BC): $(LLVM_IR_FILE)
 	@echo "Generating final bitcode from cleaned LLVM IR..."
 	$(LLVM_AS) $< -o $@
 
-llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER)
+check_public_symbols: $(LLVM_IR_FILE)
+	@echo "Checking public Device IR symbols..."
+	@missing=0; \
+	while IFS= read -r symbol; do \
+		case "$$symbol" in ''|'#'*) continue ;; esac; \
+		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(" $(LLVM_IR_FILE); then \
+			echo "Missing public Device IR symbol: $$symbol"; \
+			missing=1; \
+		fi; \
+	done < $(SYMBOLS_FILE); \
+	test $$missing -eq 0
+
+llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
 	@echo "LLVM IR and bitcode generated successfully:"
 	@echo "  C++ Standard:      $(BITCODE_CXX_STD)"
 	@echo "  GPU Architecture:  $(BITCODE_LIB_ARCH)"
@@ -165,4 +178,4 @@ build: llvm_ir
 clean:
 	rm -rf $(OBJDIR) $(FINAL_BC) $(WRAPPER_HEADER)
 
-.PHONY: all llvm_ir build clean
+.PHONY: all llvm_ir check_public_symbols build clean

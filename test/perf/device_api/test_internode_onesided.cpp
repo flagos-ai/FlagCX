@@ -162,8 +162,8 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < numWarmupIters; i++) {
     size_t countPerPeer =
         std::max((size_t)1, maxBytes / sizeof(float) / totalProcs);
-    FLAGCXCHECK(flagcxInterOneSidedAlltoAll(sendMem, recvMem, countPerPeer,
-                                            DATATYPE, devComm, stream));
+    FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(sendMem, recvMem, countPerPeer,
+                                                DATATYPE, devComm, stream));
   }
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
@@ -195,8 +195,8 @@ int main(int argc, char *argv[]) {
 
     tim.reset();
     for (int i = 0; i < numIters; i++) {
-      FLAGCXCHECK(flagcxInterOneSidedAlltoAll(sendMem, recvMem, countPerPeer,
-                                              DATATYPE, devComm, stream));
+      FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(
+          sendMem, recvMem, countPerPeer, DATATYPE, devComm, stream));
     }
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     double elapsedTime = tim.elapsed() / numIters;

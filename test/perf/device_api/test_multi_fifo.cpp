@@ -37,7 +37,7 @@ static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
 
   // Warm-up
   for (int i = 0; i < numWarmupIters; i++) {
-    FLAGCXCHECK(flagcxInterOneSidedAlltoAll(
+    FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(
         sendMem, recvMem,
         std::max((size_t)1, maxBytes / sizeof(float) / totalProcs), DATATYPE,
         devComm, stream));
@@ -65,8 +65,8 @@ static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
 
     timer tim;
     for (int i = 0; i < numIters; i++) {
-      FLAGCXCHECK(flagcxInterOneSidedAlltoAll(sendMem, recvMem, count, DATATYPE,
-                                              devComm, stream));
+      FLAGCXCHECK(launchKernelNetOneSidedAlltoAll(sendMem, recvMem, count,
+                                                  DATATYPE, devComm, stream));
     }
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     if (numIters == 0) {

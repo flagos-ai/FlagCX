@@ -608,6 +608,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorSymMulticastSupported, ducudaAdaptorSymMulticastCreate,
       ducudaAdaptorSymMulticastBind, ducudaAdaptorSymMulticastTeardown,
       ducudaAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 
 #endif // USE_DU_ADAPTOR

@@ -13,7 +13,7 @@ flagcxResult_t bootstrapAdaptorGetVersion(int *version) {
 }
 
 // TODO: unsupported
-flagcxResult_t bootstrapAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t bootstrapAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   return flagcxNotSupported;
 }
 
@@ -71,7 +71,7 @@ const char *bootstrapAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                            flagcxUniqueId_t /*commId*/,
+                                            flagcxInnerUniqueId_t /*commId*/,
                                             int rank,
                                             struct bootstrapState *bootstrap) {
   if (*comm == NULL) {

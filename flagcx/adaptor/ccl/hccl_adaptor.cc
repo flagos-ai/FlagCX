@@ -7,6 +7,10 @@
 #include "comm.h"
 #include <map>
 #include <vector>
+
+static_assert(sizeof(HcclRootInfo) <= sizeof(flagcxInnerUniqueId),
+              "HcclRootInfo does not fit inside flagcxInnerUniqueId");
+
 std::map<flagcxDataType_t, HcclDataType> f2h_datatype_map = {
     {flagcxInt8, HCCL_DATA_TYPE_INT8},
     {flagcxUint8, HCCL_DATA_TYPE_UINT8},
@@ -75,7 +79,7 @@ flagcxResult_t hcclAdaptorGetVersion(int *version) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t hcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t hcclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   return (
       flagcxResult_t)h2f_ret_map[HcclGetRootInfo((HcclRootInfo *)(*uniqueId))];
 }
@@ -96,7 +100,7 @@ const char *hcclAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t hcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);

@@ -146,7 +146,7 @@ int main(int argc, char *argv[]) {
                                           count * sizeof(float),
                                           flagcxMemcpyDeviceToDevice, stream));
       FLAGCXCHECK(
-          flagcxIntraAllReduce(devMem, count, DATATYPE, devComm, stream));
+          launchKernelIntraAllReduce(devMem, count, DATATYPE, devComm, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(recvbuff, regBuff,
                                           count * sizeof(float),
                                           flagcxMemcpyDeviceToDevice, stream));
@@ -176,7 +176,7 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(regBuff, sendbuff, bytes,
                                           flagcxMemcpyDeviceToDevice, stream));
       FLAGCXCHECK(
-          flagcxIntraAllReduce(devMem, count, DATATYPE, devComm, stream));
+          launchKernelIntraAllReduce(devMem, count, DATATYPE, devComm, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(recvbuff, regBuff, bytes,
                                           flagcxMemcpyDeviceToDevice, stream));
     }

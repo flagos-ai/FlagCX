@@ -27,10 +27,14 @@ protected:
     }
   }
 
-  void skipIfNoIb() {
-    if (initResult != flagcxSuccess || nDevs <= 0) {
+  void SetUp() override {
+    if (!hasIbDevices()) {
       GTEST_SKIP() << "No IB devices available, skipping";
     }
+  }
+
+  static bool hasIbDevices() {
+    return initResult == flagcxSuccess && nDevs > 0;
   }
 
   static flagcxResult_t initResult;
@@ -97,18 +101,11 @@ TEST(P2pAdaptorStruct, TwoSidedStubsReturnError) {
 // ---------------------------------------------------------------------------
 // 2. Init + Devices — requires IB hardware
 // ---------------------------------------------------------------------------
-TEST_F(P2pAdaptorTest, InitSucceeds) {
-  skipIfNoIb();
-  EXPECT_EQ(initResult, flagcxSuccess);
-}
+TEST_F(P2pAdaptorTest, InitSucceeds) { EXPECT_EQ(initResult, flagcxSuccess); }
 
-TEST_F(P2pAdaptorTest, DevicesReturnsPositive) {
-  skipIfNoIb();
-  EXPECT_GT(nDevs, 0);
-}
+TEST_F(P2pAdaptorTest, DevicesReturnsPositive) { EXPECT_GT(nDevs, 0); }
 
 TEST_F(P2pAdaptorTest, InitIsIdempotent) {
-  skipIfNoIb();
   // Calling init again should succeed without side effects
   EXPECT_EQ(flagcxNetIbP2p.init(), flagcxSuccess);
   int nDevs2 = 0;
@@ -120,7 +117,6 @@ TEST_F(P2pAdaptorTest, InitIsIdempotent) {
 // 3. GetProperties — requires IB hardware
 // ---------------------------------------------------------------------------
 TEST_F(P2pAdaptorTest, GetPropertiesForEachDevice) {
-  skipIfNoIb();
   for (int d = 0; d < nDevs; d++) {
     flagcxNetProperties_t props;
     memset(&props, 0, sizeof(props));
@@ -135,7 +131,7 @@ TEST_F(P2pAdaptorTest, GetPropertiesForEachDevice) {
 // ---------------------------------------------------------------------------
 class P2pLoopbackTest : public P2pAdaptorTest {
 protected:
-  void SetUp() override { skipIfNoIb(); }
+  void SetUp() override { P2pAdaptorTest::SetUp(); }
 };
 
 TEST_F(P2pLoopbackTest, ListenConnectAcceptClose) {

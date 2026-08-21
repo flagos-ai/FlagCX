@@ -350,7 +350,7 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
 
   // Run AllReduce
   flagcxResult_t result =
-      flagcxIntraAllReduce(devMem, count, flagcxFloat, devComm, stream);
+      launchKernelIntraAllReduce(devMem, count, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
 
@@ -412,7 +412,7 @@ TEST_F(FlagCXKernelTest, InterTwoSidedAlltoAll) {
             flagcxSuccess);
 
   // Launch AlltoAll kernel
-  flagcxResult_t result = flagcxInterTwoSidedAlltoAll(
+  flagcxResult_t result = launchKernelNetTwoSidedAlltoAll(
       sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);
@@ -490,7 +490,7 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
             flagcxSuccess);
 
   // Launch one-sided AlltoAll
-  flagcxResult_t result = flagcxInterOneSidedAlltoAll(
+  flagcxResult_t result = launchKernelNetOneSidedAlltoAll(
       sendMem, recvMem, countPerPeer, flagcxFloat, devComm, stream);
   devHandle->streamSynchronize(stream);
   EXPECT_EQ(result, flagcxSuccess);

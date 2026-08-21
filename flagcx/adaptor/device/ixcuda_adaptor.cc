@@ -443,5 +443,6 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorSymMulticastSupported, ixcudaAdaptorSymMulticastCreate,
       ixcudaAdaptorSymMulticastBind, ixcudaAdaptorSymMulticastTeardown,
       ixcudaAdaptorSymMulticastFree,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 #endif // USE_ILUVATAR_COREX_ADAPTOR

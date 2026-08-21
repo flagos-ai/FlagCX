@@ -1,4 +1,17 @@
 ## Release History
+- **[2026/06]** Released [v0.13](https://github.com/flagos-ai/FlagCX/releases/tag/v0.13.0):
+
+  - Extends the Device API with symmetric memory, multicast, IR bindings, and an intra-node P2P transport based on the window API.
+  - Improves the P2P engine with multi-transfer flow control, noncontiguous KV transfers, registration-pool optimizations, and more robust connection cleanup.
+  - Expands hardware and framework support through the Sunrise Torch plugin, runtime vendor detection, an updated DCU adaptor, and a NIXL v1.1.0 integration patch.
+  - Adds one-sided and KV transfer benchmarks, symmetric-memory CI coverage, and RPM packaging for RHEL, Rocky Linux, and OpenEuler.
+
+- **[2026/05]** Released [v0.12](https://github.com/flagos-ai/FlagCX/releases/tag/v0.12.0):
+
+  - Collaborates with FlagOS (vLLM-plugin-FL) to provide a unified connector for both homogeneous and heterogeneous prefill-decode disaggregation scenarios.
+  - Migrates customAllReduce to the FlagCX Device API, leveraging symmetric memory and multicast capabilities for improved communication performance.
+  - Introduces Sunrise support, including ptpuAdaptor and pcclAdaptor integrations.
+
 - **[2026/03]** Released [v0.11](https://github.com/flagos-ai/FlagCX/releases/tag/v0.11.0):
 
   - Enables kernel-based communication on heterogeneous platforms, including NVIDIA and Hygon.

@@ -423,5 +423,6 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       // DMA buffer
       ptpuAdaptorDmaSupport, ptpuAdaptorGetHandleForAddressRange,
       ptpuAdaptorHostRegister, ptpuAdaptorHostUnregister,
+      NULL, // flagcxResult_t (*getLastError)();
 };
 #endif // USE_SUNRISE_ADAPTOR

@@ -1,137 +1,54 @@
-name: Unit Tests in Container
+name: Unit Tests
 
 on:
   push:
     branches:
       - main
+      - dev
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform config name, all, or comma-separated names"
+        required: true
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  unit-test:
-    runs-on: [self-hosted, cx-build]
-    container:
-      image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
-      options:  --gpus all  --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864
+  load_platforms:
+    name: Load platform configurations
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          ssh-strict: true
-          ssh-user: git
-          persist-credentials: true
-          clean: true
-          sparse-checkout-cone-mode: true
-          fetch-tags: false
-          show-progress: true
-          lfs: false
-          submodules: true
-          set-safe-directory: true
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          persist-credentials: false
 
-      - name: Set up Python and Install Dependencies
-        run: |
-          apt update -y
-          apt-get install -y python3 python3-pip python3-venv git rdma-core ibverbs-utils perftest infiniband-diags libibverbs-dev librdmacm-dev
-          python3 -m venv venv
-          cd /__w/FlagCX/FlagCX
-          . venv/bin/activate
-          git config --global --add safe.directory /__w/FlagCX/FlagCX
-          git status
-          pip install setuptools pre-commit
-          pre-commit install
+      - name: Build platform matrix
+        id: config
+        env:
+          FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}
+        run: ruby .github/scripts/ci/load_platform_matrix.rb .github/configs "$FLAGCX_CI_PLATFORM"
 
-      - name: Run Code Format Check with pre-commit
-        run: |
-          cd /__w/FlagCX/FlagCX
-          . venv/bin/activate
-          apt update -y
-          apt-get install clang-format -y
-          git fetch --all
-          if [ -n "$GITHUB_HEAD_REF" ] && [ -n "$GITHUB_BASE_REF" ]; then
-            from_ref="origin/$GITHUB_HEAD_REF"
-            to_ref="origin/$GITHUB_BASE_REF"
-            echo "From reference: $from_ref; To reference: $to_ref"
-            pre-commit run --from-ref "$from_ref" --to-ref "$to_ref"
-          fi
-        continue-on-error: false
-
-      - name: Build Google Test
-        run: |
-          cd /__w/FlagCX/FlagCX/third-party/googletest
-          mkdir -p build
-          cd build
-          cmake ..
-          make -j$(nproc)
-
-      # FORCE_DEFAULT_PATH only affects kernel object compilation (comm traits);
-      # host-side library and vendor API dispatch are unchanged.
-      - name: Run `make` to build the project
-        run: |
-          cd /__w/FlagCX/FlagCX
-          export MPI_HOME=/usr/local/mpi
-          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
-
-      - name: Build unit tests
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest
-          export MPI_HOME=/usr/local/mpi
-          make -j$(nproc) COMPILE_KERNEL=1 USE_NVIDIA=1 FORCE_DEFAULT_PATH=1
-
-      - name: Run single-cluster tests with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/runner
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root ./build/bin/runner_mpi_tests
-
-      - name: Run multi-cluster tests using P2P transport with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/runner
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 ./build/bin/runner_mpi_tests
-
-      - name: Run multi-cluster tests using NET transport with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/runner
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_VMM_ENABLE=0 ./build/bin/runner_mpi_tests
-
-      #- name: Run kernel tests with mpirun
-      #  run: |
-      #    cd /__w/FlagCX/FlagCX/test/unittest/kernel
-      #    export MPI_HOME=/usr/local/mpi
-      #    export PATH=$MPI_HOME/bin:$PATH
-      #    mpirun -np 8 --allow-run-as-root -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL ./build/bin/kernel_mpi_tests
-
-      - name: Run intra-node device_api tests with mpirun
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/device_api
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
-          COMMON_ENV="-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 -x LD_LIBRARY_PATH"
-          FLAGS="-b 1M -e 4M -f 2 -R 2"
-          mpirun -np 8 --allow-run-as-root ${COMMON_ENV} build/bin/test_device_api ${FLAGS}
-          mpirun -np 8 --allow-run-as-root ${COMMON_ENV} build/bin/test_device_ir_intra ${FLAGS}
-
-      - name: Run inter-node device_api tests with mpirun (simulate 2 nodes)
-        run: |
-          cd /__w/FlagCX/FlagCX/test/unittest/device_api
-          export MPI_HOME=/usr/local/mpi
-          export PATH=$MPI_HOME/bin:$PATH
-          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
-          COMMON_ENV="-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 -x LD_LIBRARY_PATH"
-          FLAGS="-b 1M -e 4M -f 2 -R 2"
-          NODE1_FLAG="-x CUDA_VISIBLE_DEVICES=0,1,2,3 -x FLAGCX_HOSTID=node0 -x FLAGCX_IB_HCA=mlx5_0,mlx5_1,mlx5_2,mlx5_3"
-          NODE2_FLAG="-x CUDA_VISIBLE_DEVICES=4,5,6,7 -x FLAGCX_HOSTID=node1 -x FLAGCX_IB_HCA=mlx5_4,mlx5_5,mlx5_6,mlx5_7"
-          mpirun --allow-run-as-root \
-            -np 4 ${COMMON_ENV} ${NODE1_FLAG} build/bin/test_device_api ${FLAGS} \
-            : -np 4 ${COMMON_ENV} ${NODE2_FLAG} build/bin/test_device_api ${FLAGS}
-          mpirun --allow-run-as-root \
-            -np 4 ${COMMON_ENV} ${NODE1_FLAG} build/bin/test_device_ir_inter ${FLAGS} \
-            : -np 4 ${COMMON_ENV} ${NODE2_FLAG} build/bin/test_device_ir_inter ${FLAGS}
+  unit_tests:
+    name: ${{ matrix.display_name }} unit tests
+    needs: load_platforms
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.load_platforms.outputs.matrix) }}
+    uses: ./.github/workflows/unit_tests_platform_common.yml
+    with:
+      platform: ${{ matrix.platform }}

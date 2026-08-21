@@ -6,6 +6,7 @@
 #define FLAGCX_CCL_ADAPTOR_H_
 
 #include "flagcx.h"
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,8 +16,17 @@ extern "C" {
 // (flagcxStream_t, flagcxWindow_t are already typedef'd in flagcx.h)
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
-struct flagcxDevCommRequirements;
+typedef struct flagcxDevCommRequirements flagcxDevCommRequirements;
 struct bootstrapState;
+
+// Private storage for native communicator identifiers. This accommodates
+// CANN 9.0's 4108-byte HcclRootInfo without changing the public FlagCX ABI.
+#define FLAGCX_INNER_UNIQUE_ID_BYTES 4120
+typedef union {
+  char internal[FLAGCX_INNER_UNIQUE_ID_BYTES];
+  uint64_t alignment;
+} flagcxInnerUniqueId;
+typedef flagcxInnerUniqueId *flagcxInnerUniqueId_t;
 
 // Version history:
 //   v1 — 34 function pointers: getVersion, getUniqueId, getErrorString,
@@ -33,7 +43,7 @@ struct flagcxCCLAdaptor_v1 {
   const char *name;
   // Basic functions
   flagcxResult_t (*getVersion)(int *version);
-  flagcxResult_t (*getUniqueId)(flagcxUniqueId_t *uniqueId);
+  flagcxResult_t (*getUniqueId)(flagcxInnerUniqueId_t *uniqueId);
   const char *(*getErrorString)(flagcxResult_t result);
   const char *(*getLastError)(flagcxInnerComm_t comm);
   flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
@@ -41,7 +51,7 @@ struct flagcxCCLAdaptor_v1 {
 
   // Communicator functions
   flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
-                                 flagcxUniqueId *commId, int rank,
+                                 flagcxInnerUniqueId *commId, int rank,
                                  struct bootstrapState *bootstrap);
   flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
   flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);
@@ -117,7 +127,7 @@ struct flagcxCCLAdaptor_latest {
   const char *name;
   // Basic functions
   flagcxResult_t (*getVersion)(int *version);
-  flagcxResult_t (*getUniqueId)(flagcxUniqueId_t *uniqueId);
+  flagcxResult_t (*getUniqueId)(flagcxInnerUniqueId_t *uniqueId);
   const char *(*getErrorString)(flagcxResult_t result);
   const char *(*getLastError)(flagcxInnerComm_t comm);
   flagcxResult_t (*getStagedBuffer)(const flagcxInnerComm_t comm, void **buff,
@@ -125,7 +135,7 @@ struct flagcxCCLAdaptor_latest {
 
   // Communicator functions
   flagcxResult_t (*commInitRank)(flagcxInnerComm_t *comm, int nranks,
-                                 flagcxUniqueId *commId, int rank,
+                                 flagcxInnerUniqueId *commId, int rank,
                                  struct bootstrapState *bootstrap);
   flagcxResult_t (*commFinalize)(flagcxInnerComm_t comm);
   flagcxResult_t (*commDestroy)(flagcxInnerComm_t comm);

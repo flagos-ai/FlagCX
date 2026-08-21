@@ -27,7 +27,7 @@ flagcxResult_t mpiAdaptorGetVersion(int *version) {
   return (result == MPI_SUCCESS) ? flagcxSuccess : flagcxInternalError;
 }
 
-flagcxResult_t mpiAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t mpiAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   return flagcxSuccess;
 }
 
@@ -90,7 +90,8 @@ const char *mpiAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t mpiAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                      flagcxUniqueId_t /*commId*/, int rank,
+                                      flagcxInnerUniqueId_t /*commId*/,
+                                      int rank,
                                       struct bootstrapState *bootstrap) {
   int initialized;
   MPI_Initialized(&initialized);

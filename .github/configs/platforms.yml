@@ -1,0 +1,10 @@
+# Unit-test platform registry.
+#
+# The per-platform files keep detailed runner/image settings. This registry
+# controls which platforms are included when the workflow runs with
+# platform=all.
+platforms:
+  cuda:
+    enabled: true
+  metax:
+    enabled: true

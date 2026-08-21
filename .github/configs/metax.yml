@@ -1,0 +1,35 @@
+# MetaX Hardware Configuration
+hardware_name: metax
+display_name: MetaX Tests
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
+
+runner_labels:
+  - mx-8g-cicd-flagcx
+
+container_volumes: []
+
+container_options: >-
+  --hostname=te-cicd
+  --ipc=host
+  --privileged=true
+  --shm-size=100gb
+  --ulimit memlock=-1
+  --user root
+  --ulimit nofile=65535:65535
+  --group-add video
+  -e PLATFORM=metax
+  -e TORCH_DISTRIBUTED_BACKEND=mccl
+  -e FLAGCX_IB_GID_INDEX=0
+  -e LD_LIBRARY_PATH=/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
+
+set_env: .github/scripts/set_env/metax.sh
+
+unit_test_suites:
+  - adaptor
+  - core
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem

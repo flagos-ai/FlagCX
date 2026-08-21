@@ -98,14 +98,14 @@ int main(int argc, char *argv[]) {
 
   // Warm-up
   for (int i = 0; i < numWarmupIters; i++) {
-    FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(
+    FLAGCXCHECK(launchKernelNetTwoSidedAlltoAll(
         sendMem, recvMem,
         std::max((size_t)1, maxBytes / sizeof(float) / totalProcs), DATATYPE,
         devComm, stream));
   }
   FLAGCXCHECK(devHandle->streamSynchronize(stream));
   for (int i = 0; i < numWarmupIters; i++) {
-    FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(
+    FLAGCXCHECK(launchKernelNetTwoSidedAlltoAll(
         sendMem, recvMem,
         std::max((size_t)1, minBytes / sizeof(float) / totalProcs), DATATYPE,
         devComm, stream));
@@ -143,8 +143,8 @@ int main(int argc, char *argv[]) {
 
     tim.reset();
     for (int i = 0; i < numIters; i++) {
-      FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(sendMem, recvMem, count, DATATYPE,
-                                              devComm, stream));
+      FLAGCXCHECK(launchKernelNetTwoSidedAlltoAll(sendMem, recvMem, count,
+                                                  DATATYPE, devComm, stream));
     }
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     double elapsedTime = tim.elapsed() / numIters;
@@ -243,8 +243,8 @@ int main(int argc, char *argv[]) {
 
       tim.reset();
       for (int i = 0; i < numIters; i++) {
-        FLAGCXCHECK(flagcxInterTwoSidedAlltoAll(a2aSendMem, a2aRecvMem, count,
-                                                DATATYPE, a2aDevComm, stream));
+        FLAGCXCHECK(launchKernelNetTwoSidedAlltoAll(
+            a2aSendMem, a2aRecvMem, count, DATATYPE, a2aDevComm, stream));
       }
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
       double elapsedTime = tim.elapsed() / numIters;

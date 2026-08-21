@@ -10,11 +10,14 @@
 #include "alloc.h"
 #include "comm.h"
 
+static_assert(sizeof(ecclUniqueId) <= sizeof(flagcxInnerUniqueId),
+              "ecclUniqueId does not fit inside flagcxInnerUniqueId");
+
 flagcxResult_t ecclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ecclGetVersion(version);
 }
 
-flagcxResult_t ecclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t ecclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -36,7 +39,7 @@ flagcxResult_t ecclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ecclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);

@@ -9,6 +9,9 @@
 #include <cstring>
 #include <map>
 
+static_assert(sizeof(tcclUniqueId) <= sizeof(flagcxInnerUniqueId),
+              "tcclUniqueId does not fit inside flagcxInnerUniqueId");
+
 static const std::map<tcclResult_t, flagcxResult_t> tcclToFlagcxResultMap = {
     {tcclSuccess, flagcxSuccess},
     {tcclUnhandledDeviceError, flagcxUnhandledDeviceError},
@@ -71,7 +74,7 @@ flagcxResult_t tcclAdaptorGetVersion(int *version) {
   return fromTcclResult(result);
 }
 
-flagcxResult_t tcclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t tcclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -98,7 +101,7 @@ const char *tcclAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t tcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     flagcxCalloc(comm, 1);

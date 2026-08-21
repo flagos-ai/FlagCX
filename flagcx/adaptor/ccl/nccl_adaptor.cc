@@ -6,6 +6,9 @@
 #include "alloc.h"
 #include "comm.h"
 
+static_assert(sizeof(ncclUniqueId) <= sizeof(flagcxInnerUniqueId),
+              "ncclUniqueId does not fit inside flagcxInnerUniqueId");
+
 static bool checkIsAllCudaP2p(ncclComm_t comm) {
   int gpuCount;
   if (cudaGetDeviceCount(&gpuCount) != cudaSuccess) {
@@ -41,7 +44,7 @@ flagcxResult_t ncclAdaptorGetVersion(int *version) {
   return (flagcxResult_t)ncclGetVersion(version);
 }
 
-flagcxResult_t ncclAdaptorGetUniqueId(flagcxUniqueId_t *uniqueId) {
+flagcxResult_t ncclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
   if (*uniqueId == NULL) {
     flagcxCalloc(uniqueId, 1);
   }
@@ -105,7 +108,7 @@ const char *ncclAdaptorGetLastError(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
-                                       flagcxUniqueId_t commId, int rank,
+                                       flagcxInnerUniqueId_t commId, int rank,
                                        struct bootstrapState * /*bootstrap*/) {
   if (*comm == NULL) {
     void *p = malloc(sizeof(struct flagcxInnerComm));
@@ -416,9 +419,26 @@ flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
   ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
   ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
   ncclReqs.ginSignalCount = reqs->interSignalCount;
-  ncclReqs.ginForceEnable = reqs->interForceEnable;
   ncclReqs.ginContextCount = reqs->interContextCount;
   ncclReqs.ginCounterCount = reqs->interCounterCount;
+
+  const bool needsFullGin = reqs->interForceEnable ||
+                            reqs->interSignalCount > 0 ||
+                            reqs->interCounterCount > 0;
+  const bool needsRailGin =
+      reqs->barrierCount > 0 || reqs->interBarrierCount > 0;
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 7)
+  // GIN resources require an explicit connection type starting with 2.29.7.
+  ncclReqs.ginForceEnable = reqs->interForceEnable;
+  ncclReqs.ginConnectionType = needsFullGin   ? NCCL_GIN_CONNECTION_FULL
+                               : needsRailGin ? NCCL_GIN_CONNECTION_RAIL
+                                              : NCCL_GIN_CONNECTION_NONE;
+#else
+  // Older NCCL versions only expose a binary GIN enable.  Any requested GIN
+  // resource therefore requires the full connection to be enabled.
+  ncclReqs.ginForceEnable = needsFullGin || needsRailGin;
+#endif
 
   flagcxResult_t ret =
       ncclDevCommCreateHelper(comm->base, &ncclReqs, &inner->base);
