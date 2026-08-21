@@ -9,7 +9,19 @@
 #include "mccl.h"
 #include <map>
 #include <mcr/mc_runtime.h>
+#if MCCL_VERSION_CODE >= MCCL_VERSION(2, 30, 4)
+#include "mccl/mccl_device.h"
+
+struct flagcxInnerDevComm {
+  mcclDevComm base;
+};
+struct flagcxInnerWindow {
+  mcclWindow_t base;
+  int winFlags;
+};
+#else
 struct flagcxInnerDevComm {};
+#endif
 
 struct flagcxInnerComm {
   mcclComm_t base;
