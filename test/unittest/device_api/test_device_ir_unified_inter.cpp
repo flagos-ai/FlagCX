@@ -88,6 +88,7 @@ int main(int argc, char *argv[]) {
   // Inter suite uses 6 combinations (INTER + WORLD) for most tests
   // S18 uses 8 signal slots (includes extra BLOCK single-leader patterns)
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.barrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interSignalCount =

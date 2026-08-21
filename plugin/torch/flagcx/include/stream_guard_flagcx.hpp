@@ -7,7 +7,12 @@
 
 #include "flagcx.h"
 
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+#if !defined(USE_ASCEND_ADAPTOR) && !defined(USE_ENFLAME_ADAPTOR)
+#error "The FlagOS torch backend supports only Ascend and Enflame"
+#endif
+#include <flagos.h>
+#elif USE_NVIDIA_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/impl/CUDAGuardImpl.h>
@@ -53,15 +58,10 @@
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <tx_runtime.h>
 #elif USE_ENFLAME_ADAPTOR
-#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
-#include <flagos.h>
-#include <tops/tops_runtime_api.h>
-#else
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <gcu/gcu_guard.h>
 #include <gcu/gcu_stream.h>
 #include <tops/tops_runtime_api.h>
-#endif
 #elif USE_SUNRISE_ADAPTOR
 #include <torch_ptpu/core/Stream.h>
 #endif
@@ -74,7 +74,10 @@ public:
   explicit flagcxStreamGuard() = delete;
   explicit flagcxStreamGuard(flagcxStream_t stream, const int deviceId)
       : originalStream_(stream), currentStream_(nullptr), deviceId_(deviceId),
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+        guard_(*reinterpret_cast<Stream_t *>(stream)),
+        previous_(GetCurrentStreamForDevice(deviceId)), previousDevice_(0)
+#elif USE_NVIDIA_ADAPTOR
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
 #elif USE_ILUVATAR_COREX_ADAPTOR
@@ -103,15 +106,8 @@ public:
         guard_(
             torch_txda::getStreamFromExternal(*(txStream_t *)stream, deviceId))
 #elif USE_ENFLAME_ADAPTOR
-#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
-        guard_(*reinterpret_cast<topsStream_t *>(stream)),
-        previous_(reinterpret_cast<topsStream_t>(
-            GetCurrentStreamForDevice(deviceId))),
-        previousDevice_(0)
-#else
         guard_(
             torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId))
-#endif
 // torch_ptpu intentionally does not expose a getStreamFromExternal-style API.
 // Instead we pick a stream from the pool, run torch ops on it, and rely on
 // flagcxBackend::syncStream() / flagcxPtpuEvent for cross-stream
@@ -124,7 +120,7 @@ public:
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
     GetDevice(&previousDevice_);
     SetDevice(deviceId_);
-    SetCurrentStreamForDevice(deviceId_, reinterpret_cast<Stream_t>(guard_));
+    SetCurrentStreamForDevice(deviceId_, guard_);
 #endif
 #ifdef USE_SUNRISE_ADAPTOR
     torchpt::set_current_stream(guard_.unwrap());
@@ -132,7 +128,7 @@ public:
   }
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
   ~flagcxStreamGuard() {
-    SetCurrentStreamForDevice(deviceId_, reinterpret_cast<Stream_t>(previous_));
+    SetCurrentStreamForDevice(deviceId_, previous_);
     SetDevice(previousDevice_);
   }
 #elif USE_SUNRISE_ADAPTOR
@@ -154,7 +150,10 @@ public:
   flagcxStreamGuard &operator=(flagcxStreamGuard &&) = delete;
 
   void reset_stream(flagcxStream_t stream) {
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    guard_ = *reinterpret_cast<Stream_t *>(stream);
+    SetCurrentStreamForDevice(deviceId_, guard_);
+#elif USE_NVIDIA_ADAPTOR
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
 #elif USE_ILUVATAR_COREX_ADAPTOR
@@ -184,13 +183,8 @@ public:
     guard_.reset_stream(
         torch_txda::getStreamFromExternal(*(txStream_t *)stream, deviceId_));
 #elif USE_ENFLAME_ADAPTOR
-#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
-    guard_ = *reinterpret_cast<topsStream_t *>(stream);
-    SetCurrentStreamForDevice(deviceId_, reinterpret_cast<Stream_t>(guard_));
-#else
     guard_.reset_stream(
         torch_gcu::getStreamFromExternal(*(topsStream_t *)stream, deviceId_));
-#endif
 #elif USE_SUNRISE_ADAPTOR
     guard_ = torchpt::get_stream_from_pool(deviceId_, /*prio=*/0);
     torchpt::set_current_stream(guard_.unwrap());
@@ -206,7 +200,11 @@ private:
   flagcxStream_t originalStream_;
   flagcxStream_t currentStream_;
   int deviceId_;
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  Stream_t guard_;
+  Stream_t previous_;
+  int previousDevice_;
+#elif USE_NVIDIA_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
 #elif USE_ILUVATAR_COREX_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
@@ -227,13 +225,7 @@ private:
 #elif USE_TSM_ADAPTOR
   torch_txda::TXDAStreamGuard guard_;
 #elif USE_ENFLAME_ADAPTOR
-#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
-  topsStream_t guard_;
-  topsStream_t previous_;
-  int previousDevice_;
-#else
   torch_gcu::GCUStreamGuard guard_;
-#endif
 #elif USE_SUNRISE_ADAPTOR
   torchpt::PTPUStream sunrisePrevStream_;
   torchpt::PTPUStream guard_;

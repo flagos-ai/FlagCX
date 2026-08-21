@@ -416,9 +416,26 @@ flagcxResult_t ncclAdaptorDevCommCreate(flagcxInnerComm_t comm,
   ncclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
   ncclReqs.railGinBarrierCount = reqs->interBarrierCount;
   ncclReqs.ginSignalCount = reqs->interSignalCount;
-  ncclReqs.ginForceEnable = reqs->interForceEnable;
   ncclReqs.ginContextCount = reqs->interContextCount;
   ncclReqs.ginCounterCount = reqs->interCounterCount;
+
+  const bool needsFullGin = reqs->interForceEnable ||
+                            reqs->interSignalCount > 0 ||
+                            reqs->interCounterCount > 0;
+  const bool needsRailGin =
+      reqs->barrierCount > 0 || reqs->interBarrierCount > 0;
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 7)
+  // GIN resources require an explicit connection type starting with 2.29.7.
+  ncclReqs.ginForceEnable = reqs->interForceEnable;
+  ncclReqs.ginConnectionType = needsFullGin   ? NCCL_GIN_CONNECTION_FULL
+                               : needsRailGin ? NCCL_GIN_CONNECTION_RAIL
+                                              : NCCL_GIN_CONNECTION_NONE;
+#else
+  // Older NCCL versions only expose a binary GIN enable.  Any requested GIN
+  // resource therefore requires the full connection to be enabled.
+  ncclReqs.ginForceEnable = needsFullGin || needsRailGin;
+#endif
 
   flagcxResult_t ret =
       ncclDevCommCreateHelper(comm->base, &ncclReqs, &inner->base);

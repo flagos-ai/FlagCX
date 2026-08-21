@@ -44,7 +44,7 @@ __global__ void kernel_test_wait_signal(DC::Net *net,
                                         flagcxDevSignal_t sigId,
                                         uint64_t expected) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcqRel);
+  net->waitSignal(coop, sigId, expected, 64, flagcxDeviceMemoryOrderAcquire);
 }
 
 __global__ void kernel_test_flush_quiet(DC::Net *net) {
@@ -65,7 +65,8 @@ __global__ void kernel_wait_counter(DC::Net *net,
                                     flagcxDevCounter_t counterId,
                                     uint64_t least) {
   typename PlatformTraits<NvidiaPlatform>::CoopBlock coop;
-  net->waitCounter(coop, counterId, least, 64, flagcxDeviceMemoryOrderAcqRel);
+  net->waitCounter(coop, counterId, least, 64,
+                   flagcxDeviceMemoryOrderAcquire);
 }
 
 __global__ void kernel_test_barrier_world(DC::Comm *devDc, uint32_t ctaIdx) {

@@ -27,6 +27,7 @@ from _build_config import (
     get_device_config,
     get_device_rpath_dirs,
     get_ext_classes,
+    resolve_torch_backend,
 )
 
 # ---------------------------------------------------------------------------
@@ -39,10 +40,9 @@ print(f"[flagcx] Using {adaptor} adaptor")
 adaptor_flag = ADAPTOR_MAP[adaptor]
 adaptor_make_flag = ADAPTOR_TO_MAKE_FLAG[adaptor]
 torch_flag = detect_torch_flag()
-torch_backend_flags = []
-if adaptor == "enflame" and os.environ.get("FLAGCX_TORCH_BACKEND", "").strip().lower() == "flagos":
-    # Compile the Enflame plugin against torch_fl's C ABI instead of torch_gcu.
-    torch_backend_flags.append("-DFLAGCX_TORCH_BACKEND_FLAGOS")
+torch_backend = resolve_torch_backend(adaptor)
+torch_backend_flags = list(torch_backend.compile_flags)
+print(f"[flagcx] Using {torch_backend.name} torch backend")
 
 # ---------------------------------------------------------------------------
 # Extension sources and include dirs
@@ -69,7 +69,9 @@ library_dirs = []
 libs = ["flagcx"]
 
 # Add device-specific paths
-dev_includes, dev_libdirs, dev_libs = get_device_config(adaptor_flag)
+dev_includes, dev_libdirs, dev_libs = get_device_config(
+    adaptor_flag, torch_backend
+)
 include_dirs += dev_includes
 library_dirs += dev_libdirs
 libs += dev_libs
@@ -140,7 +142,9 @@ if BuildExtension is not None:
                 origin_rpath = "-Wl,-rpath,$ORIGIN"
                 dev_rpaths = [
                     "-Wl,-rpath," + d
-                    for d in get_device_rpath_dirs(adaptor_flag, dev_libdirs)
+                    for d in get_device_rpath_dirs(
+                        adaptor_flag, dev_libdirs, torch_backend
+                    )
                 ]
                 ext.extra_link_args = [
                     arg for arg in ext.extra_link_args

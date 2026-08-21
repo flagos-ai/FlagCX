@@ -9,6 +9,7 @@ class selection logic.
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 
 from packaging.version import Version, parse as vparse
 
@@ -50,6 +51,56 @@ ADAPTOR_TO_MAKE_FLAG = {
 }
 
 VALID_ADAPTORS = list(ADAPTOR_MAP.keys())
+ADAPTOR_BY_FLAG = {flag: name for name, flag in ADAPTOR_MAP.items()}
+
+TORCH_BACKEND_VENDOR = "vendor"
+TORCH_BACKEND_FLAGOS = "flagos"
+VALID_TORCH_BACKENDS = (TORCH_BACKEND_VENDOR, TORCH_BACKEND_FLAGOS)
+FLAGOS_ADAPTORS = ("ascend", "enflame")
+
+
+@dataclass(frozen=True)
+class TorchBackendConfig:
+    name: str
+    python_package: str
+    device_name: str
+    compile_flags: tuple
+
+
+def resolve_torch_backend(adaptor):
+    """Resolve and validate the Torch integration for an adaptor."""
+    backend = os.environ.get("FLAGCX_TORCH_BACKEND", TORCH_BACKEND_VENDOR)
+    backend = backend.strip().lower() or TORCH_BACKEND_VENDOR
+    if backend not in VALID_TORCH_BACKENDS:
+        raise RuntimeError(
+            f"Invalid FLAGCX_TORCH_BACKEND={backend!r}. "
+            f"Valid values: {', '.join(VALID_TORCH_BACKENDS)}"
+        )
+    if backend == TORCH_BACKEND_FLAGOS and adaptor not in FLAGOS_ADAPTORS:
+        raise RuntimeError(
+            "FLAGCX_TORCH_BACKEND=flagos currently supports only the "
+            f"ascend and enflame adaptors, not {adaptor!r}"
+        )
+
+    if backend == TORCH_BACKEND_FLAGOS:
+        return TorchBackendConfig(
+            name=backend,
+            python_package="torch_fl",
+            device_name="flagos",
+            compile_flags=("-DFLAGCX_TORCH_BACKEND_FLAGOS",),
+        )
+
+    vendor_packages = {
+        "ascend": ("torch_npu", "npu"),
+        "enflame": ("torch_gcu", "gcu"),
+    }
+    python_package, device_name = vendor_packages.get(adaptor, ("", ""))
+    return TorchBackendConfig(
+        name=backend,
+        python_package=python_package,
+        device_name=device_name,
+        compile_flags=(),
+    )
 
 # Platform detection: command -> adaptor name
 # Order matters: nvidia-smi and rocm-smi last (some platforms are CUDA/ROCm compatible)
@@ -135,12 +186,64 @@ def detect_torch_flag():
     return torch_flag
 
 
-def get_device_config(adaptor_flag):
+def _get_flagos_config():
+    """Return include and library paths for the torch-fl runtime."""
+    install_path = os.environ.get("FLAGOS_INSTALL_PATH", "").strip()
+    include_dir = os.environ.get("FLAGOS_INCLUDE_DIR", "").strip()
+    library_dir = os.environ.get("FLAGOS_LIBRARY_DIR", "").strip()
+
+    if install_path:
+        include_dir = include_dir or os.path.join(install_path, "include")
+        library_dir = library_dir or os.path.join(install_path, "lib")
+
+    if not include_dir or not library_dir:
+        try:
+            import torch_fl
+        except ImportError as error:
+            raise RuntimeError(
+                "FLAGCX_TORCH_BACKEND=flagos requires torch-fl or explicit "
+                "FLAGOS_INCLUDE_DIR and FLAGOS_LIBRARY_DIR"
+            ) from error
+
+        torch_fl_path = os.path.dirname(os.path.abspath(torch_fl.__file__))
+        if not include_dir:
+            include_candidates = [
+                os.path.join(torch_fl_path, "include"),
+                os.path.join(os.path.dirname(torch_fl_path), "csrc", "include"),
+            ]
+            include_dir = next(
+                (
+                    path
+                    for path in include_candidates
+                    if os.path.isfile(os.path.join(path, "flagos.h"))
+                ),
+                include_candidates[0],
+            )
+        library_dir = library_dir or os.path.join(torch_fl_path, "lib")
+
+    header_path = os.path.join(include_dir, "flagos.h")
+    library_path = os.path.join(library_dir, "libflagos.so")
+    if not os.path.isfile(header_path):
+        raise RuntimeError(
+            f"FLAGCX_TORCH_BACKEND=flagos requires flagos.h; not found at {header_path}. "
+            "Set FLAGOS_INSTALL_PATH or FLAGOS_INCLUDE_DIR."
+        )
+    if not os.path.isfile(library_path):
+        raise RuntimeError(
+            "FLAGCX_TORCH_BACKEND=flagos requires libflagos.so; not found at "
+            f"{library_path}. Set FLAGOS_INSTALL_PATH or FLAGOS_LIBRARY_DIR."
+        )
+    return [include_dir], [library_dir], ["flagos"]
+
+
+def get_device_config(adaptor_flag, torch_backend=None):
     """Return (extra_include_dirs, extra_library_dirs, extra_libs) for the
     given adaptor define flag."""
     include_dirs = []
     library_dirs = []
     libs = []
+    adaptor = ADAPTOR_BY_FLAG[adaptor_flag]
+    torch_backend = torch_backend or resolve_torch_backend(adaptor)
 
     if adaptor_flag == "-DUSE_NVIDIA_ADAPTOR":
         include_dirs += ["/usr/local/cuda/include"]
@@ -179,24 +282,46 @@ def get_device_config(adaptor_flag):
         library_dirs += ["/opt/kunlun/lib"]
         libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
     elif adaptor_flag == "-DUSE_ASCEND_ADAPTOR":
-        import torch_npu
-        pytorch_npu_install_path = os.path.dirname(os.path.abspath(torch_npu.__file__))
-        pytorch_library_path = os.path.join(pytorch_npu_install_path, "lib")
-        # CANN toolkit headers must come BEFORE torch_npu bundled third_party
-        # ACL headers (torch_npu 2.11.0 bundles newer ACL headers incompatible
-        # with CANN 8.5.1).  We also symlink torch_npu's third_party/acl/inc/acl
-        # to CANN's acl/ directory (see install.sh), but adding the CANN include
-        # path here is a belt-and-suspenders fix for hccl.h etc.
-        cann_home = os.environ.get("ASCEND_HOME_PATH", "")
-        if cann_home:
-            import platform as _pf
-            _arch = "aarch64-linux" if _pf.machine().startswith("aarch") else "x86_64-linux"
-            _cann_inc = os.path.join(cann_home, _arch, "include")
-            if os.path.isdir(_cann_inc):
-                include_dirs += [_cann_inc]
-        include_dirs += [os.path.join(pytorch_npu_install_path, "include")]
-        library_dirs += [pytorch_library_path]
-        libs += ["torch_npu"]
+        if torch_backend.name == TORCH_BACKEND_FLAGOS:
+            cann_home = (
+                os.environ.get("ASCEND_HOME_PATH")
+                or os.environ.get("DEVICE_HOME")
+                or "/usr/local/Ascend/ascend-toolkit/latest"
+            )
+            include_dirs += [os.path.join(cann_home, "include")]
+            library_dirs += [os.path.join(cann_home, "lib64")]
+            libs += ["ascendcl"]
+            flagos_includes, flagos_libdirs, flagos_libs = _get_flagos_config()
+            include_dirs += flagos_includes
+            library_dirs += flagos_libdirs
+            libs += flagos_libs
+        else:
+            import torch_npu
+
+            pytorch_npu_install_path = os.path.dirname(
+                os.path.abspath(torch_npu.__file__)
+            )
+            pytorch_library_path = os.path.join(pytorch_npu_install_path, "lib")
+            # CANN toolkit headers must come BEFORE torch_npu bundled third_party
+            # ACL headers (torch_npu 2.11.0 bundles newer ACL headers incompatible
+            # with CANN 8.5.1). We also symlink torch_npu's third_party/acl/inc/acl
+            # to CANN's acl/ directory (see install.sh), but adding the CANN include
+            # path here is a belt-and-suspenders fix for hccl.h etc.
+            cann_home = os.environ.get("ASCEND_HOME_PATH", "")
+            if cann_home:
+                import platform as _pf
+
+                arch = (
+                    "aarch64-linux"
+                    if _pf.machine().startswith("aarch")
+                    else "x86_64-linux"
+                )
+                cann_include = os.path.join(cann_home, arch, "include")
+                if os.path.isdir(cann_include):
+                    include_dirs += [cann_include]
+            include_dirs += [os.path.join(pytorch_npu_install_path, "include")]
+            library_dirs += [pytorch_library_path]
+            libs += ["torch_npu"]
     elif adaptor_flag == "-DUSE_AMD_ADAPTOR":
         include_dirs += ["/opt/rocm/include"]
         library_dirs += ["/opt/rocm/lib"]
@@ -212,47 +337,14 @@ def get_device_config(adaptor_flag):
         include_dirs += ["/opt/tops/include"]
         library_dirs += ["/opt/tops/lib"]
         libs += ["topsrt"]
-        if os.environ.get("FLAGCX_TORCH_BACKEND", "torch_gcu").strip().lower() == "flagos":
-            # torch_fl owns the PrivateUse1 stream/event implementation. Keep
-            # this mode independent of the vendor torch_gcu package.
-            flagos_install_path = os.environ.get("FLAGOS_INSTALL_PATH", "")
-            flagos_include_dir = os.environ.get("FLAGOS_INCLUDE_DIR", "")
-            flagos_library_dir = os.environ.get("FLAGOS_LIBRARY_DIR", "")
-            if flagos_install_path:
-                flagos_include_dir = flagos_include_dir or os.path.join(
-                    flagos_install_path, "include"
-                )
-                flagos_library_dir = flagos_library_dir or os.path.join(
-                    flagos_install_path, "lib"
-                )
-            if not flagos_include_dir or not flagos_library_dir:
-                import torch_fl
-
-                torch_fl_path = os.path.dirname(os.path.abspath(torch_fl.__file__))
-                flagos_include_dir = flagos_include_dir or os.path.join(
-                    torch_fl_path, "include"
-                )
-                flagos_library_dir = flagos_library_dir or os.path.join(
-                    torch_fl_path, "lib"
-                )
-                if not os.path.isfile(os.path.join(flagos_include_dir, "flagos.h")):
-                    source_root = os.path.dirname(torch_fl_path)
-                    flagos_include_dir = os.path.join(source_root, "csrc", "include")
-            if not os.path.isfile(os.path.join(flagos_include_dir, "flagos.h")):
-                raise RuntimeError(
-                    "FLAGCX_TORCH_BACKEND=flagos requires flagos.h; set "
-                    "FLAGOS_INSTALL_PATH or FLAGOS_INCLUDE_DIR"
-                )
-            if not os.path.isfile(os.path.join(flagos_library_dir, "libflagos.so")):
-                raise RuntimeError(
-                    "FLAGCX_TORCH_BACKEND=flagos requires libflagos.so; set "
-                    "FLAGOS_INSTALL_PATH or FLAGOS_LIBRARY_DIR"
-                )
-            include_dirs += [flagos_include_dir]
-            library_dirs += [flagos_library_dir]
-            libs += ["flagos"]
+        if torch_backend.name == TORCH_BACKEND_FLAGOS:
+            flagos_includes, flagos_libdirs, flagos_libs = _get_flagos_config()
+            include_dirs += flagos_includes
+            library_dirs += flagos_libdirs
+            libs += flagos_libs
         else:
             import torch_gcu
+
             pytorch_gcu_install_path = os.path.dirname(os.path.abspath(torch_gcu.__file__))
             pytorch_library_path = os.path.join(pytorch_gcu_install_path, "lib")
             include_dirs += [os.path.join(pytorch_gcu_install_path, "include")]
@@ -282,26 +374,8 @@ def get_device_config(adaptor_flag):
     return include_dirs, library_dirs, libs
 
 
-def get_device_rpath_dirs(adaptor_flag, library_dirs):
+def get_device_rpath_dirs(adaptor_flag, library_dirs, torch_backend=None):
     """Return runtime library paths that belong in the extension artifact."""
-    if (
-        adaptor_flag == "-DUSE_ENFLAME_ADAPTOR"
-        and os.environ.get("FLAGCX_TORCH_BACKEND", "").strip().lower() == "flagos"
-    ):
-        flagos_library_dir = os.environ.get("FLAGOS_LIBRARY_DIR", "")
-        flagos_install_path = os.environ.get("FLAGOS_INSTALL_PATH", "")
-        if not flagos_library_dir and flagos_install_path:
-            flagos_library_dir = os.path.join(flagos_install_path, "lib")
-        if not flagos_library_dir:
-            try:
-                import torch_fl
-
-                flagos_library_dir = os.path.join(
-                    os.path.dirname(os.path.abspath(torch_fl.__file__)), "lib"
-                )
-            except ImportError:
-                pass
-        return [path for path in library_dirs if path != flagos_library_dir]
     return list(library_dirs)
 
 

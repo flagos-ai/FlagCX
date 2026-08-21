@@ -83,34 +83,40 @@ nvshmemAdaptorDevCommCreate(flagcxComm_t comm,
 
   sc->signalCount = reqs->interSignalCount;
   sc->counterCount = reqs->interCounterCount;
+  int contextCount =
+      (reqs->interContextCount > 0) ? reqs->interContextCount : 1;
 
-  // Signal buffer (symmetric heap, remote-writable)
+  // Signal buffer (symmetric heap, remote-writable), partitioned by logical
+  // context as [contextCount][signalCount].
   if (sc->signalCount > 0) {
-    sc->signalBuffer =
-        (uint64_t *)nvshmem_malloc(sc->signalCount * sizeof(uint64_t));
+    size_t signalEntries = (size_t)contextCount * (size_t)sc->signalCount;
+    size_t signalBytes = signalEntries * sizeof(uint64_t);
+    sc->signalBuffer = (uint64_t *)nvshmem_malloc(signalBytes);
     if (!sc->signalBuffer) {
       delete sc;
       return flagcxSystemError;
     }
-    cudaMemset(sc->signalBuffer, 0, sc->signalCount * sizeof(uint64_t));
+    cudaMemset(sc->signalBuffer, 0, signalBytes);
   }
 
-  // Counter buffer (local device memory)
+  // Counter buffer (local device memory), partitioned by logical context.
   if (sc->counterCount > 0) {
-    if (cudaMalloc(&sc->counterBuffer, sc->counterCount * sizeof(uint64_t)) !=
-        cudaSuccess) {
+    size_t counterEntries = (size_t)contextCount * (size_t)sc->counterCount;
+    size_t counterBytes = counterEntries * sizeof(uint64_t);
+    if (cudaMalloc(&sc->counterBuffer, counterBytes) != cudaSuccess) {
       goto fail;
     }
-    cudaMemset(sc->counterBuffer, 0, sc->counterCount * sizeof(uint64_t));
+    cudaMemset(sc->counterBuffer, 0, counterBytes);
   }
 
-  // Shadow buffer (local device memory)
+  // Shadow buffer (local device memory), partitioned by logical context.
   if (sc->signalCount > 0) {
-    if (cudaMalloc(&sc->shadowBuffer, sc->signalCount * sizeof(uint64_t)) !=
-        cudaSuccess) {
+    size_t shadowEntries = (size_t)contextCount * (size_t)sc->signalCount;
+    size_t shadowBytes = shadowEntries * sizeof(uint64_t);
+    if (cudaMalloc(&sc->shadowBuffer, shadowBytes) != cudaSuccess) {
       goto fail;
     }
-    cudaMemset(sc->shadowBuffer, 0, sc->signalCount * sizeof(uint64_t));
+    cudaMemset(sc->shadowBuffer, 0, shadowBytes);
   }
 
   // Validate topology

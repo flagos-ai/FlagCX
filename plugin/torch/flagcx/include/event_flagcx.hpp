@@ -7,7 +7,16 @@
 
 #include "flagcx.h"
 
-#ifdef USE_NVIDIA_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+#if defined(USE_ASCEND_ADAPTOR)
+#include <acl/acl.h>
+#elif defined(USE_ENFLAME_ADAPTOR)
+#include <tops/tops_runtime_api.h>
+#else
+#error "The FlagOS torch backend supports only Ascend and Enflame"
+#endif
+#include <flagos.h>
+#elif USE_NVIDIA_ADAPTOR
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
 #elif USE_ASCEND_ADAPTOR
@@ -125,6 +134,48 @@ private:
 #elif USE_ASCEND_ADAPTOR
 class flagcxCannEvent : public flagcxEvent {
 public:
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  flagcxCannEvent() {
+    TORCH_CHECK(aclrtCreateEventWithFlag(&event_, ACL_EVENT_TIME_LINE) ==
+                    ACL_SUCCESS,
+                "aclrtCreateEventWithFlag failed");
+  }
+
+  ~flagcxCannEvent() override {
+    if (event_ != nullptr) {
+      aclrtDestroyEvent(event_);
+    }
+  }
+
+  void record(const int deviceId) override {
+    auto stream =
+        reinterpret_cast<aclrtStream>(GetCurrentStreamForDevice(deviceId));
+    TORCH_CHECK(aclrtRecordEvent(event_, stream) == ACL_SUCCESS,
+                "aclrtRecordEvent failed");
+  }
+
+  void record(const flagcxStream_t &stream, const int /*deviceId*/) override {
+    TORCH_CHECK(aclrtRecordEvent(event_, *reinterpret_cast<aclrtStream *>(
+                                             stream)) == ACL_SUCCESS,
+                "aclrtRecordEvent failed");
+  }
+
+  void block(const int deviceId) override {
+    auto stream =
+        reinterpret_cast<aclrtStream>(GetCurrentStreamForDevice(deviceId));
+    TORCH_CHECK(aclrtStreamWaitEvent(stream, event_) == ACL_SUCCESS,
+                "aclrtStreamWaitEvent failed");
+  }
+
+  void block(const flagcxStream_t &stream, const int /*deviceId*/) override {
+    TORCH_CHECK(aclrtStreamWaitEvent(*reinterpret_cast<aclrtStream *>(stream),
+                                     event_) == ACL_SUCCESS,
+                "aclrtStreamWaitEvent failed");
+  }
+
+private:
+  aclrtEvent event_ = nullptr;
+#else
   flagcxCannEvent() { npu_event = c10_npu::NPUEvent(); }
 
   void record(const int device_id) override {
@@ -145,6 +196,7 @@ public:
 
 private:
   c10_npu::NPUEvent npu_event;
+#endif
 };
 #elif USE_CAMBRICON_ADAPTOR
 class flagcxMluEvent : public flagcxEvent {

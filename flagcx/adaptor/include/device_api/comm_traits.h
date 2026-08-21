@@ -29,7 +29,14 @@
 #include <cstddef>
 #include <cstdint>
 
-// Primary template — each backend provides a specialization
+// Primary template — each backend provides a specialization.  Unified IR uses
+// only this backend-neutral contract:
+//   Comm: getRank(), getIntraRank(), getIntraSize(),
+//         usesDirectP2pSignals(), isOneSidedTransportReady(),
+//         supportsDirectCounterAccess().
+//   Net:  getContextId(), getSignalPtr(), getPeerSignalPtr(),
+//         getSignalShadowPtr(), getCounterPtr().
+// The IR layer must not inspect backend storage fields or derive slot offsets.
 template <typename Impl>
 struct CommTraits;
 
