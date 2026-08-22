@@ -20,14 +20,16 @@
 #include "framework/core/MLUEvent.h"
 #include "framework/core/MLUStream.h"
 #elif USE_METAX_ADAPTOR
-#include <ATen/cuda/CUDAEvent.h>
-#include <cuda_runtime.h>
+#include <c10/core/Event.h>
+#include <cstdint>
+#include <cstring>
 #elif USE_MUSA_ADAPTOR
 #include "torch_musa/csrc/core/MUSAEvent.h"
 #include "torch_musa/csrc/core/MUSAStream.h"
 #elif USE_DU_ADAPTOR
-#include <ATen/cuda/CUDAEvent.h>
-#include <cuda_runtime.h>
+#include <ATen/hip/HIPEvent.h>
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
+#include <hip/hip_runtime.h>
 #elif USE_KUNLUNXIN_ADAPTOR
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
@@ -49,6 +51,27 @@
 #endif
 
 namespace c10d {
+
+#ifdef USE_METAX_ADAPTOR
+#ifndef FLAGCX_TORCH_METAX_STREAM_HELPERS
+#define FLAGCX_TORCH_METAX_STREAM_HELPERS
+inline c10::StreamId flagcxStreamIdFromFlagcxStream(flagcxStream_t stream) {
+  static_assert(sizeof(c10::StreamId) >= sizeof(uintptr_t),
+                "stream handle does not fit in c10::StreamId");
+  uintptr_t stream_handle = 0;
+  std::memcpy(&stream_handle, stream, sizeof(stream_handle));
+  c10::StreamId stream_id = 0;
+  std::memcpy(&stream_id, &stream_handle, sizeof(stream_handle));
+  return stream_id;
+}
+
+inline c10::Stream flagcxToC10Stream(flagcxStream_t stream, int device_id) {
+  return c10::Stream(c10::Stream::UNSAFE,
+                     c10::Device(c10::DeviceType::CUDA, device_id),
+                     flagcxStreamIdFromFlagcxStream(stream));
+}
+#endif
+#endif
 
 class flagcxEvent {
 public:
@@ -170,30 +193,32 @@ private:
 #elif USE_METAX_ADAPTOR
 class flagcxMacaEvent : public flagcxEvent {
 public:
-  flagcxMacaEvent() {
-    maca_event = at::cuda::CUDAEvent(cudaEventDisableTiming);
-  }
+  flagcxMacaEvent() : maca_event(c10::DeviceType::CUDA) {}
 
   void record(const int device_id) override {
-    maca_event.record(at::cuda::getCurrentCUDAStream(device_id));
+    auto guard_impl = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA);
+    auto stream =
+        guard_impl->getStream(c10::Device(c10::DeviceType::CUDA, device_id));
+    maca_event.record(stream);
   }
 
   void record(const flagcxStream_t &stream, const int device_id) override {
-    maca_event.record(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, device_id));
+    maca_event.record(flagcxToC10Stream(stream, device_id));
   }
 
   void block(const int device_id) override {
-    maca_event.block(at::cuda::getCurrentCUDAStream(device_id));
+    auto guard_impl = c10::impl::getDeviceGuardImpl(c10::DeviceType::CUDA);
+    auto stream =
+        guard_impl->getStream(c10::Device(c10::DeviceType::CUDA, device_id));
+    maca_event.block(stream);
   }
 
   void block(const flagcxStream_t &stream, const int device_id) override {
-    maca_event.block(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, device_id));
+    maca_event.block(flagcxToC10Stream(stream, device_id));
   }
 
 private:
-  at::cuda::CUDAEvent maca_event;
+  c10::Event maca_event;
 };
 #elif USE_MUSA_ADAPTOR
 class flagcxMusaEvent : public flagcxEvent {
@@ -226,28 +251,28 @@ private:
 #elif USE_DU_ADAPTOR
 class flagcxDuEvent : public flagcxEvent {
 public:
-  flagcxDuEvent() { cudaEvent_ = at::cuda::CUDAEvent(cudaEventDisableTiming); }
+  flagcxDuEvent() { hipEvent_ = at::cuda::CUDAEvent(hipEventDisableTiming); }
 
   void record(const int deviceId) override {
-    cudaEvent_.record(at::cuda::getCurrentCUDAStream(deviceId));
+    hipEvent_.record(at::hip::getCurrentHIPStreamMasqueradingAsCUDA(deviceId));
   }
 
   void record(const flagcxStream_t &stream, const int deviceId) override {
-    cudaEvent_.record(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId));
+    hipEvent_.record(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+        *(hipStream_t *)stream, deviceId));
   }
 
   void block(const int deviceId) override {
-    cudaEvent_.block(at::cuda::getCurrentCUDAStream(deviceId));
+    hipEvent_.block(at::hip::getCurrentHIPStreamMasqueradingAsCUDA(deviceId));
   }
 
   void block(const flagcxStream_t &stream, const int deviceId) override {
-    cudaEvent_.block(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId));
+    hipEvent_.block(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+        *(hipStream_t *)stream, deviceId));
   }
 
 private:
-  at::cuda::CUDAEvent cudaEvent_;
+  at::cuda::CUDAEvent hipEvent_;
 };
 #elif USE_KUNLUNXIN_ADAPTOR
 class flagcxXpuEvent : public flagcxEvent {

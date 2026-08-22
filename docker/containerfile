@@ -1,5 +1,5 @@
-ARG BASE_IMAGE_VERSION=latest
-ARG BASE_IMAGE=harbor.baai.ac.cn/flagbase/flagbase-nvidia
+ARG BASE_IMAGE_VERSION=55c5c6f-cuda-dev
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-dev/flagcx
 FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
 # 
 ARG VENDOR=USE_NVIDIA

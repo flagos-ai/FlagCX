@@ -8,7 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
 BACKEND="${1:-}"
-BASE_IMAGE_VERSION="${2:-latest}"
+BASE_IMAGE_VERSION="${2:-}"
 
 # Colors
 RED='\033[0;31m'
@@ -33,7 +33,7 @@ if [ -z "$BACKEND" ]; then
     echo "  metax   - Build packages for MetaX accelerators"
     echo ""
     echo "Optional arguments:"
-    echo "  base_image_version - Base image version tag (default: latest)"
+    echo "  base_image_version - Optional base image tag override"
     echo ""
     echo "Examples:"
     echo "  $0 nvidia"
@@ -45,11 +45,13 @@ fi
 # Validate backend and set base image
 case "$BACKEND" in
     nvidia)
-        BASE_IMAGE="harbor.baai.ac.cn/flagbase/flagbase-nvidia"
+        BASE_IMAGE="harbor.baai.ac.cn/flagos-dev/flagcx"
+        BASE_IMAGE_VERSION="${BASE_IMAGE_VERSION:-55c5c6f-cuda-dev}"
         VENDOR="nvidia"
         ;;
     metax)
-        BASE_IMAGE="harbor.baai.ac.cn/flagbase/flagbase-metax"
+        BASE_IMAGE="harbor.baai.ac.cn/flagos-base/flagos-base-metax-maca3.8.1.3"
+        BASE_IMAGE_VERSION="${BASE_IMAGE_VERSION:-2.1.2}"
         VENDOR="metax"
         ;;
     *)

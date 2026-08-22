@@ -63,18 +63,18 @@ Use the unified build script to build packages for any vendor/backend:
 
 **Specify custom base image version:**
 ```bash
-./packaging/debian/build-helpers/build-flagcx.sh nvidia v1.2.3
-./packaging/debian/build-helpers/build-flagcx.sh metax latest
+./packaging/debian/build-helpers/build-flagcx.sh nvidia 55c5c6f-cuda-dev
+./packaging/debian/build-helpers/build-flagcx.sh metax 2.1.2
 ```
 
 ### Base Images
 
-The build script uses upstream base images from `harbor.baai.ac.cn/flagbase/`:
-- NVIDIA: `flagbase-nvidia:<version>`
-- MetaX: `flagbase-metax:<version>`
+The build script uses these upstream base images:
+- NVIDIA: `harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev`
+- MetaX: `flagos-base-metax-maca3.8.1.3:<version>`
 
 To add support for a new vendor, ensure a corresponding base image exists at:
-`harbor.baai.ac.cn/flagbase/flagbase-<vendor>:<version>`
+`harbor.baai.ac.cn/flagos-base/flagos-base-<vendor>-<runtime>:<version>`
 
 ### Quality Checks
 
@@ -152,13 +152,13 @@ The `debian/control` file defines build profiles to support multiple backends:
 ### Unified Dockerfile
 
 A single `Dockerfile.deb` builds packages for all backends using build arguments:
-- `BASE_IMAGE` - Upstream base image (e.g., `flagbase-nvidia`, `flagbase-metax`)
-- `BASE_IMAGE_VERSION` - Image version tag (default: `latest`)
+- `BASE_IMAGE` - Upstream base image (e.g., `flagcx:55c5c6f-cuda-dev`, `flagos-base-metax-maca3.8.1.3`)
+- `BASE_IMAGE_VERSION` - Image tag (defaults: NVIDIA `55c5c6f-cuda-dev`, MetaX `2.1.2`)
 - `VENDOR` - Backend vendor name (used for build profile selection)
 
 ### Build Stages
 
-1. **Builder stage**: Based on upstream flagbase images
+1. **Builder stage**: Based on upstream flagos-base images
    - Contains all necessary build dependencies (CUDA/NCCL or MACA SDK)
    - Installs Debian packaging tools (`debhelper`, `dpkg-dev`, etc.)
    - Runs `dpkg-buildpackage` with `DEB_BUILD_PROFILES=pkg.flagcx.${VENDOR}-only`

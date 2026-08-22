@@ -24,10 +24,10 @@
 #include "framework/core/MLUStream.h"
 #include "framework/core/stream_guard.h"
 #elif USE_METAX_ADAPTOR
-#include <c10/core/impl/InlineStreamGuard.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/impl/CUDAGuardImpl.h>
-#include <cuda_runtime.h>
+#include <c10/core/Stream.h>
+#include <c10/core/StreamGuard.h>
+#include <cstdint>
+#include <cstring>
 #elif USE_MUSA_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <musa_runtime.h>
@@ -35,10 +35,11 @@
 #include <torch_musa/csrc/core/MUSAGuard.h>
 #include <torch_musa/csrc/core/MUSAStream.h>
 #elif USE_DU_ADAPTOR
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
 #include <c10/core/impl/InlineStreamGuard.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <c10/cuda/impl/CUDAGuardImpl.h>
-#include <cuda_runtime.h>
+#include <c10/hip/HIPGuard.h>
+#include <c10/hip/impl/HIPGuardImpl.h>
+#include <hip/hip_runtime.h>
 #elif USE_KUNLUNXIN_ADAPTOR
 #include <c10/core/impl/InlineStreamGuard.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -63,6 +64,27 @@
 
 namespace c10d {
 
+#ifdef USE_METAX_ADAPTOR
+#ifndef FLAGCX_TORCH_METAX_STREAM_HELPERS
+#define FLAGCX_TORCH_METAX_STREAM_HELPERS
+inline c10::StreamId flagcxStreamIdFromFlagcxStream(flagcxStream_t stream) {
+  static_assert(sizeof(c10::StreamId) >= sizeof(uintptr_t),
+                "stream handle does not fit in c10::StreamId");
+  uintptr_t stream_handle = 0;
+  std::memcpy(&stream_handle, stream, sizeof(stream_handle));
+  c10::StreamId stream_id = 0;
+  std::memcpy(&stream_id, &stream_handle, sizeof(stream_handle));
+  return stream_id;
+}
+
+inline c10::Stream flagcxToC10Stream(flagcxStream_t stream, int device_id) {
+  return c10::Stream(c10::Stream::UNSAFE,
+                     c10::Device(c10::DeviceType::CUDA, device_id),
+                     flagcxStreamIdFromFlagcxStream(stream));
+}
+#endif
+#endif
+
 class flagcxStreamGuard {
 public:
   // No default constructor
@@ -79,14 +101,14 @@ public:
         guard_(
             torch_mlu::getStreamFromExternal(*(cnrtQueue_t *)stream, deviceId))
 #elif USE_METAX_ADAPTOR
-        guard_(
-            at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
+        guard_(flagcxToC10Stream(stream, deviceId))
 #elif USE_MUSA_ADAPTOR
         guard_(
             at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId))
 #elif USE_DU_ADAPTOR
-        guard_(
-            at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
+        guard_(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+                   *(hipStream_t *)stream, deviceId)
+                   .hip_stream())
 #elif USE_KUNLUNXIN_ADAPTOR
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
@@ -142,14 +164,14 @@ public:
     guard_.reset_stream(
         torch_mlu::getStreamFromExternal(*(cnrtQueue_t *)stream, deviceId_));
 #elif USE_METAX_ADAPTOR
-    guard_.reset_stream(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
+    guard_.reset_stream(flagcxToC10Stream(stream, deviceId_));
 #elif USE_MUSA_ADAPTOR
     guard_.reset_stream(
         at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId_));
 #elif USE_DU_ADAPTOR
-    guard_.reset_stream(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
+    guard_.reset_stream(at::hip::getStreamFromExternalMasqueradingAsCUDA(
+                            *(hipStream_t *)stream, deviceId_)
+                            .hip_stream());
 #elif USE_KUNLUNXIN_ADAPTOR
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
@@ -186,11 +208,11 @@ private:
 #elif USE_CAMBRICON_ADAPTOR
   torch_mlu::mlu::MLUStreamGuard guard_;
 #elif USE_METAX_ADAPTOR
-  c10::cuda::CUDAStreamGuard guard_;
+  c10::StreamGuard guard_;
 #elif USE_MUSA_ADAPTOR
   c10::musa::MUSAStreamGuard guard_;
 #elif USE_DU_ADAPTOR
-  c10::cuda::CUDAStreamGuard guard_;
+  c10::hip::HIPStreamGuard guard_;
 #elif USE_KUNLUNXIN_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
 #elif USE_ASCEND_ADAPTOR

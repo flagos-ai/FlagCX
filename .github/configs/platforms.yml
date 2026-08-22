@@ -6,5 +6,7 @@
 platforms:
   cuda:
     enabled: true
+  hygon:
+    enabled: true
   metax:
     enabled: true

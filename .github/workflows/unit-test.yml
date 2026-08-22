@@ -49,6 +49,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.load_platforms.outputs.matrix) }}
-    uses: ./.github/workflows/unit_tests_platform_common.yml
+    uses: ./.github/workflows/unit_tests_common.yml
     with:
       platform: ${{ matrix.platform }}

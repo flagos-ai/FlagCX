@@ -1,0 +1,33 @@
+# Hygon DCU Hardware Configuration
+hardware_name: hygon
+display_name: Hygon DCU Tests
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
+
+runner_labels:
+  - hg-8g-cicd-flagcx
+
+container_volumes:
+  - /usr/local/hyhal:/opt/hyhal:ro
+
+container_options: >-
+  --ipc=host
+  --privileged=true
+  --shm-size=100gb
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --device=/dev/kfd
+  --device=/dev/dri
+  --group-add video
+  -e PLATFORM=hygon
+  -e FLAGCX_ADAPTOR=du
+set_env: .github/scripts/set_env/hygon.sh
+
+unit_test_suites:
+  - adaptor
+  - core
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem

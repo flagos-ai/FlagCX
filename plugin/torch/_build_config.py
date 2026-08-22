@@ -81,17 +81,19 @@ def _detect_platform():
 def detect_adaptor():
     """Detect the adaptor from FLAGCX_ADAPTOR env var, --adaptor CLI arg, or
     USE_* env vars. Returns the adaptor name string. Defaults to 'nvidia'."""
-    adaptor = os.environ.get("FLAGCX_ADAPTOR", "").strip()
-
-    # Check --adaptor CLI argument (consumed from sys.argv)
-    if not adaptor and "--adaptor" in sys.argv:
+    # Always consume the custom option before setuptools parses sys.argv.
+    # Otherwise it is reported as an unknown setuptools command option when
+    # an adaptor is already selected through the environment.
+    cli_adaptor = ""
+    if "--adaptor" in sys.argv:
         arg_index = sys.argv.index("--adaptor")
-        sys.argv.remove("--adaptor")
+        del sys.argv[arg_index]
         if arg_index < len(sys.argv):
-            adaptor = sys.argv[arg_index]
-            sys.argv.remove(adaptor)
+            cli_adaptor = sys.argv.pop(arg_index)
         else:
             print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
+
+    adaptor = os.environ.get("FLAGCX_ADAPTOR", "").strip() or cli_adaptor
 
     # Check USE_* env vars
     if not adaptor:
@@ -163,7 +165,13 @@ def get_device_config(adaptor_flag):
     elif adaptor_flag == "-DUSE_METAX_ADAPTOR":
         include_dirs += ["/opt/maca/include"]
         library_dirs += ["/opt/maca/lib64"]
-        libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        try:
+            import torch
+            torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+            library_dirs += [torch_lib_dir]
+            libs += ["c10_cuda", "torch_cuda"]
+        except ImportError:
+            libs += ["c10_cuda", "torch_cuda"]
     elif adaptor_flag == "-DUSE_MUSA_ADAPTOR":
         import torch_musa
         pytorch_musa_install_path = os.path.dirname(os.path.abspath(torch_musa.__file__))
@@ -171,9 +179,24 @@ def get_device_config(adaptor_flag):
         library_dirs += ["/usr/local/musa/lib/", pytorch_library_path]
         libs += ["musa", "musart"]
     elif adaptor_flag == "-DUSE_DU_ADAPTOR":
-        include_dirs += ["${CUDA_PATH}/include"]
-        library_dirs += ["${CUDA_PATH}/lib64"]
-        libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        cuda_home = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+        if not cuda_home:
+            cuda_home = "/usr/local/cuda"
+        include_dirs += [os.path.join(cuda_home, "include")]
+        library_dirs += [os.path.join(cuda_home, "lib64")]
+
+        # Hygon's PyTorch distribution uses the HIP library names while
+        # exposing the CUDA-compatible runtime headers and libraries.
+        try:
+            import torch
+            torch_lib_dir = os.path.join(os.path.dirname(torch.__file__), "lib")
+            library_dirs += [torch_lib_dir]
+            if os.path.exists(os.path.join(torch_lib_dir, "libtorch_hip.so")):
+                libs += ["cuda", "cudart", "c10_hip", "torch_hip"]
+            else:
+                libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        except ImportError:
+            libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
     elif adaptor_flag == "-DUSE_KUNLUNXIN_ADAPTOR":
         include_dirs += ["/opt/kunlun/include"]
         library_dirs += ["/opt/kunlun/lib"]
