@@ -1,14 +1,17 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # FlagCX RPM package build script
 # Usage: ./build-flagcx-rpm.sh <backend> [base_image_version]
-# Supported backends: nvidia, metax, ascend
+# Set RPM_DISTRO=openeuler2403 to build NVIDIA packages on openEuler.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 BACKEND="${1:-}"
 BASE_IMAGE_VERSION="${2:-}"
+BASE_IMAGE="${BASE_IMAGE:-}"
+RPM_DISTRO="${RPM_DISTRO:-}"
+OUTPUT_TARGET="${BACKEND}"
 
 # Colors
 RED='\033[0;31m'
@@ -28,13 +31,11 @@ if [ -z "$BACKEND" ]; then
     echo ""
     echo "Usage: $0 <backend> [base_image_version]"
     echo ""
-    echo "Supported backends:"
-    echo "  nvidia  - Build RPM packages for NVIDIA GPUs"
-    echo "  metax   - Build RPM packages for MetaX accelerators"
-    echo "  ascend  - Build RPM packages for Ascend NPUs"
+    echo "Supported backends: nvidia, metax, ascend"
     echo ""
     echo "Examples:"
     echo "  $0 nvidia"
+    echo "  RPM_DISTRO=openeuler2403 $0 nvidia"
     echo "  $0 ascend 8.5.0-910-openeuler24.03-py3.11"
     exit 1
 fi
@@ -42,18 +43,35 @@ fi
 # Validate backend and set base image
 case "$BACKEND" in
     nvidia)
-        BASE_IMAGE="nvcr.io/nvidia/cuda"
-        [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="12.4.1-devel-rockylinux8"
         DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.nvidia"
+        [ -z "$RPM_DISTRO" ] && RPM_DISTRO="rocky8"
+        case "$RPM_DISTRO" in
+            rocky8)
+                [ -z "$BASE_IMAGE" ] && BASE_IMAGE="nvcr.io/nvidia/cuda"
+                [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="12.4.1-devel-rockylinux8"
+                ;;
+            openeuler2403)
+                [ -z "$BASE_IMAGE" ] && BASE_IMAGE="openeuler/cuda"
+                [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="13.0.0-oe2403lts"
+                OUTPUT_TARGET="nvidia-openeuler2403"
+                ;;
+            *)
+                log_error "Unsupported NVIDIA RPM distro: $RPM_DISTRO"
+                echo "Supported NVIDIA distros: rocky8, openeuler2403"
+                exit 1
+                ;;
+        esac
         ;;
     metax)
-        BASE_IMAGE="rockylinux"
+        [ -z "$BASE_IMAGE" ] && BASE_IMAGE="rockylinux"
         [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="8"
+        [ -z "$RPM_DISTRO" ] && RPM_DISTRO="rocky8"
         DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.metax"
         ;;
     ascend)
-        BASE_IMAGE="ascendai/cann"
+        [ -z "$BASE_IMAGE" ] && BASE_IMAGE="ascendai/cann"
         [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="8.5.0-910-openeuler24.03-py3.11"
+        [ -z "$RPM_DISTRO" ] && RPM_DISTRO="openeuler2403"
         DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.ascend"
         ;;
     *)
@@ -63,7 +81,7 @@ case "$BACKEND" in
         ;;
 esac
 
-log_info "Building FlagCX RPM packages for $BACKEND backend"
+log_info "Building FlagCX RPM packages for ${BACKEND} on ${RPM_DISTRO}"
 log_info "Using base image: ${BASE_IMAGE}:${BASE_IMAGE_VERSION}"
 
 # Sync changelog from CHANGELOG.md
@@ -76,19 +94,23 @@ fi
 
 # Build Docker image using backend-specific Dockerfile with shared RPM logic.
 log_step "Building Docker image..."
+IMAGE_TAG_VERSION="${BASE_IMAGE_VERSION//\//-}"
 docker build \
     --network=host \
+    --build-arg BASE_IMAGE="${BASE_IMAGE}" \
     --build-arg BASE_IMAGE_VERSION="${BASE_IMAGE_VERSION}" \
+    --build-arg RPM_DISTRO="${RPM_DISTRO}" \
+    --build-arg CUDA_PIP_INDEX_URL="${CUDA_PIP_INDEX_URL:-https://pypi.org/simple}" \
     -f "${DOCKERFILE}" \
-    -t "flagcx-rpm-${BACKEND}:${BASE_IMAGE_VERSION}" \
+    -t "flagcx-rpm-${OUTPUT_TARGET}:${IMAGE_TAG_VERSION}" \
     "${PROJECT_DIR}"
 
 # Extract RPM packages
 log_step "Extracting RPM packages..."
-OUTPUT_DIR="${PROJECT_DIR}/rpm-packages/${BACKEND}"
+OUTPUT_DIR="${PROJECT_DIR}/rpm-packages/${OUTPUT_TARGET}"
 mkdir -p "${OUTPUT_DIR}"
 
-CONTAINER_ID=$(docker create "flagcx-rpm-${BACKEND}:${BASE_IMAGE_VERSION}")
+CONTAINER_ID=$(docker create "flagcx-rpm-${OUTPUT_TARGET}:${IMAGE_TAG_VERSION}")
 docker cp "${CONTAINER_ID}:/root/rpmbuild/RPMS/" "${OUTPUT_DIR}/"
 docker cp "${CONTAINER_ID}:/root/rpmbuild/SRPMS/" "${OUTPUT_DIR}/"
 docker rm "${CONTAINER_ID}"
@@ -99,7 +121,7 @@ if ! find "${OUTPUT_DIR}" -name '*.rpm' | grep -q .; then
     exit 1
 fi
 
-log_info "✓ Packages built successfully for ${BACKEND}:"
+log_info "✓ Packages built successfully for ${BACKEND} on ${RPM_DISTRO}:"
 echo ""
 find "${OUTPUT_DIR}" -name "*.rpm" -exec ls -lh {} \;
 

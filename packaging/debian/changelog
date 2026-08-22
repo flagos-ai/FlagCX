@@ -1,9 +1,167 @@
+flagcx (0.13.0-rc0.1-1) unstable; urgency=medium
+
+  * New upstream release v0.13.0-rc0.1
+
+ -- FlagOS Contributors <contact@flagos.io>  Fri, 22 May 2026 10:00:00 +0800
+
+flagcx (0.13.0-1) unstable; urgency=medium
+
+  * Add P2P engine perf benchmark (one-sided read/write)
+  * Replace C++17 features with C++11 equivalents for RPM packaging
+  * Bootstrap extension
+  * Replace #ifdef USE_SUNRISE_ADAPTOR with runtime vendor detection
+  * Fix fep
+  * Fix triton LSA test library loading and allocator robustness
+  * [UIL&PAL] FlagCX P2P Engine optimization
+  * Store winFlags in flagcxWindow to fix non-NVIDIA build failure
+  * Support pool-only registration and optimize regpool containers
+  * Deprecate flagcxHandlerGroup, separate device handle/uniqueId/comm lifecycle
+  * Add torch plugin support for Sunrise
+  * Support Device API IR Bindings
+  * Add patch file for flagcx integration into nixl v1.1.0
+  * Add CI workflow for symmetric memory tests
+  * KV transfer benchmark
+
+ -- FlagOS Contributors <contact@flagos.io>  Wed, 24 Jun 2026 10:00:00 +0800
+
+flagcx (0.13.0-rc2.post1-1) unstable; urgency=medium
+
+  * Support Device API IR Bindings
+
+ -- FlagOS Contributors <contact@flagos.io>  Mon, 01 Jun 2026 10:00:00 +0800
+
+flagcx (0.12.0-1) unstable; urgency=medium
+
+  * Add Device API symmem and multicast support
+  * Support allgather with different message size in torch flagcx backend
+  * Add & implement P2P interface for integration with nixl
+  * Make flagcxP2pAccept blocking
+  * Reuse closed connection slots to fix proxy destroy hang
+  * Add changelog sync and installation test scripts
+  * Optimize rmaProxyProgress and Adds batched one-sided PUT operations to improve RDMA throughput
+  * Rename container directory to docker
+  * [Docs] Add instructions for executing torch API test
+  * [Docs] Update README for PCCL
+  * Using Device API for customAllreduce implementation
+  * [Docs] add CODEOWNERS
+  * add CONTRIBUTING.md
+  * Add Sunrise device and pccl support
+  * Fix musa stream
+  * Fix segfault when FLAGCX_P2P_DISABLE=1 by passing proxyConn to PollProxyResponse
+  * Refactor One-Sided Memory Registration with Global Handle Indexing and HeteroComm Isolation
+  * P2P topo manager
+  * Refactor P2P zerocopy
+  * IBRC p2p adaptor for flagcx p2p engine
+  * Add Device API multi-FIFO support
+  * Support RMA Proxy
+  * Support Device API Transport
+  * Refactor unittest
+  * Add Device API DU support
+  * Introduce traits abstraction and DeviceAPI for unified vendor/fallback support
+  * Fix enflame torch api test
+  * Add workflow for syncing code to other sites
+  * Update social media links
+
+ -- FlagOS Contributors <contact@flagos.io>  Wed, 13 May 2026 10:00:00 +0800
+
+flagcx (0.11.0-1) unstable; urgency=medium
+
+  * Enables kernel-based communication on heterogeneous platforms, including NVIDIA and Hygon.
+  * Adds support for both host-side and device-side one-sided communication semantics.
+  * Introduces adaptor plugin support, enabling dynamic loading of user-defined Device, CCL, and Net adaptor implementations.
+
+ -- FlagOS Contributors <contact@flagos.io>  Sun, 01 Mar 2026 10:00:00 +0800
+
+flagcx (0.10.0-1) unstable; urgency=medium
+
+  * Implements 11 chip-decoupled collective communication algorithms in uniRunner mode.
+  * Refactors Device Intra-/Inter-node API and integrates NCCL Device API support on NVIDIA platforms.
+  * Enhances usability with pip install support for FlagCX and an NCCL wrapper plugin for seamless adoption on NVIDIA platforms.
+
+ -- FlagOS Contributors <contact@flagos.io>  Sun, 01 Feb 2026 10:00:00 +0800
+
+flagcx (0.9.0-1) unstable; urgency=medium
+
+  * Adds support for Enflame, including topsAdaptor and ecclAdaptor.
+  * Extends flagcxCCLAdaptor to support symmetric operations.
+  * Introduces the NCCL Device API in ncclAdaptor to enable customized AllReduce operations.
+  * Refactors glooAdaptor to support both TCP and IB transports, with automatic NIC detection.
+
+ -- FlagOS Contributors <contact@flagos.io>  Thu, 01 Jan 2026 10:00:00 +0800
+
 flagcx (0.8.0-1) unstable; urgency=medium
 
-  * New upstream release 0.8.0
-  * Support for MetaX and NVIDIA hardware backends
-  * Split packages for runtime and development files
-  * Improved build process with APT-based MetaX SDK
+  * Enables intra-node zero-copy to improve data transfer efficiency for small messages.
+  * Supports a naive AllReduce implementation in uniRunner mode using a CPU-centric, device-assisted algorithm.
+  * Adds one-sided communication primitives via the new APIs flagcxHeteroPut and flagcxHeteroPutSignal.
+  * *[Unreleased]* Test infrastructure restructure and bug fixes (PR #413):
+  * Fixed NCCL group imbalance in ncclAdaptorGather/ncclAdaptorScatter: errors inside ncclGroupStart()/ncclGroupEnd() no longer skip ncclGroupEnd(), preventing deadlocks.
+  * Reduced unit-test buffer allocation from 1GB to 4MB per buffer, cutting memory from 32GB to 128MB for 8-rank runs.
+  * Improved collective test correctness by using rank-dependent data patterns, catching rank-ordering and single-rank-copy bugs.
+  * Added infinite-loop guard in perfBenchmarkLoop for stepFactor <= 1.
+  * Wired PERFCOMMONSRC into test/perf/host_api/Makefile build.
+  * Removed TRACE-level debug logging from CI workflow.
 
- -- FlagOS Contributors <contact@flagos.io>  Sat, 17 Jan 2026 17:00:00 +0800
+ -- FlagOS Contributors <contact@flagos.io>  Mon, 01 Dec 2025 10:00:00 +0800
 
+flagcx (0.7.0-1) unstable; urgency=medium
+
+  * Added support to TsingMicro, including device adaptor tsmicroAdaptor and CCL adaptor tcclAdaptor.
+  * Implemented an experimental kernel-free non-reduce collective communication (SendRecv, AlltoAll, AlltoAllv, Broadcast, Gather, Scatter, AllGather) using device-buffer IPC/RDMA.
+  * Enabled auto-tuning on NVIDIA, MetaX, and Hygon platforms, achieving 1.02×–1.26× speedups for AllReduce, AllGather, ReduceScatter, and AlltoAll.
+  * Enhanced flagcxNetAdaptor with one-sided primitives (put, putSignal, waitValue) and added retransmission support for reliability improvement.
+
+ -- FlagOS Contributors <contact@flagos.io>  Sat, 01 Nov 2025 10:00:00 +0800
+
+flagcx (0.6.0-1) unstable; urgency=medium
+
+  * Implemented device-buffer IPC communication to support intra-node SendRecv operations.
+  * Introduced device-initiated, host-launched device-side primitives, enabling kernel-based communication directly from devices.
+  * Enhanced auto-tuning with 50% performance improvement on MetaX platforms for the AllReduce operations.
+
+ -- FlagOS Contributors <contact@flagos.io>  Wed, 01 Oct 2025 10:00:00 +0800
+
+flagcx (0.5.0-1) unstable; urgency=medium
+
+  * Added support for AMD GPUs, including a device adaptor hipAdaptor and a CCL adaptor rcclAdaptor.
+  * Introduced flagcxNetAdaptor to unify network backends, currently supporting socket, IBRC, UCX and IBUC (experimental).
+  * Enabled zero-copy device-buffer RDMA (user-buffer RDMA) to boost performance for small messages.
+  * Supported auto-tuning in homogeneous scenarios via flagcxTuner.
+  * Added test automation in CI/CD for PyTorch APIs.
+
+ -- FlagOS Contributors <contact@flagos.io>  Mon, 01 Sep 2025 10:00:00 +0800
+
+flagcx (0.4.0-1) unstable; urgency=medium
+
+  * Supported heterogeneous training of ERNIE4.5 (Baidu) on NVIDIA and Iluvatar GPUs with Paddle + FlagCX.
+  * Improved heterogeneous communication across arbitrary NIC configurations, with more robust and flexible deployments.
+  * Introduced an experimental network plugin interface with extended supports for IBRC and SOCKET. Device buffer registration now can be done via DMA-BUF.
+  * Added an InterOp-level DSL to enable customized C2C algorithm design.
+  * Provided user documentation under docs/.
+
+ -- FlagOS Contributors <contact@flagos.io>  Fri, 01 Aug 2025 10:00:00 +0800
+
+flagcx (0.3.0-1) unstable; urgency=medium
+
+  * Integrated three additional native communication libraries: HCCL (Huawei), MUSACCL (Moore Threads) and MPI.
+  * Enhanced heterogeneous collective communication operations with pipeline optimizations.
+  * Introduced device-side functions to enable device-buffer RDMA, complementing the existing host-side functions.
+  * Delivered a full-stack open-source solution, FlagScale + FlagCX, for efficient heterogeneous prefilling-decoding disaggregation.
+
+ -- FlagOS Contributors <contact@flagos.io>  Tue, 01 Jul 2025 10:00:00 +0800
+
+flagcx (0.2.0-1) unstable; urgency=medium
+
+  * Integrated 3 additional native communications libraries, including MCCL (Moore Threads), XCCL (Mellanox) and DUCCL (BAAI).
+  * Improved 11 heterogeneous collective communication operations with automatic topology detection and full support to single-NIC and multi-NIC environments.
+
+ -- FlagOS Contributors <contact@flagos.io>  Thu, 01 May 2025 10:00:00 +0800
+
+flagcx (0.1.0-1) unstable; urgency=medium
+
+  * Added 5 native communications libraries including CCL adaptors for NCCL (NVIDIA), IXCCL (Iluvatar), and CNCL (Cambricon), and Host CCL adaptors GLOO and Bootstrap.
+  * Supported 11 heterogeneous collective communication operations using the C2C (Cluster-to-Cluster) algorithm.
+  * Provided a full-stack open-source solution, FlagScale + FlagCX, for efficient heterogeneous training.
+  * Natively integrated into PaddlePaddle [v3.0.0](https://github.com/PaddlePaddle/Paddle/tree/v3.0.0), with support for both dynamic and static graphs.
+
+ -- FlagOS Contributors <contact@flagos.io>  Tue, 01 Apr 2025 10:00:00 +0800

@@ -51,8 +51,25 @@ tar czf "/root/rpmbuild/SOURCES/flagcx-${SPEC_VERSION}.tar.gz" \
     --exclude='rpm-packages' \
     .
 
-rpmbuild -ba \
-    --define "backend ${BACKEND}" \
+RPMBUILD_ARGS=(
+    -ba
+    --define "backend ${BACKEND}"
+)
+
+if [ -n "${RPM_DIST_TAG:-}" ]; then
+    RPMBUILD_ARGS+=(--define "dist ${RPM_DIST_TAG}")
+fi
+if [ "${RPM_EXTERNAL_VENDOR_RUNTIME:-0}" = "1" ]; then
+    RPMBUILD_ARGS+=(--define "external_vendor_runtime 1")
+fi
+if [ -n "${DEVICE_HOME:-}" ]; then
+    RPMBUILD_ARGS+=(--define "device_home ${DEVICE_HOME}")
+fi
+if [ -n "${CCL_HOME:-}" ]; then
+    RPMBUILD_ARGS+=(--define "ccl_home ${CCL_HOME}")
+fi
+
+rpmbuild "${RPMBUILD_ARGS[@]}" \
     /workspace/packaging/rpm/specs/flagcx.spec
 
 ls -lh /root/rpmbuild/RPMS/*/*.rpm
