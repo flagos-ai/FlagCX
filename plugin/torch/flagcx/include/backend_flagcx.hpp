@@ -78,6 +78,7 @@ private:
   flagcxStream_t stream_;
   flagcxDeviceHandle_t devHandle_;
   c10::intrusive_ptr<c10::ivalue::Future> future_;
+  std::vector<at::Tensor> stashedTensors_;
   int deviceId_;
   bool isBarrierOp_;
   std::unique_ptr<flagcxEvent> event_;
@@ -247,7 +248,11 @@ public:
 #elif USE_TSM_ADAPTOR
     devName = "txda";
 #elif USE_ENFLAME_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    devName = "flagos";
+#else
     devName = "gcu";
+#endif
 #elif USE_SUNRISE_ADAPTOR
     devName = "ptpu";
 #endif
