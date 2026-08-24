@@ -45,13 +45,47 @@ class BackendSourceRegressionTest(unittest.TestCase):
         helper = function_body(
             SOURCE,
             "at::Tensor newLikeFlatOnStream",
-            "void check_device",
+            "void copyTensorOnStream",
         )
 
         self.assertIn("#ifdef FLAGCX_TORCH_BACKEND_FLAGOS", helper)
         self.assertIn("flagcxStreamGuard guard(stream, deviceId)", helper)
-        self.assertEqual(SOURCE.count("newLikeFlatOnStream("), 7)
+        self.assertEqual(SOURCE.count("newLikeFlatOnStream("), 9)
         self.assertEqual(SOURCE.count("newLikeFlat("), 1)
+
+    def test_flagos_intermediate_copies_use_device_memcpy(self):
+        helper = function_body(
+            SOURCE,
+            "void copyTensorOnStream",
+            "void check_device",
+        )
+
+        self.assertIn("#ifdef FLAGCX_TORCH_BACKEND_FLAGOS", helper)
+        self.assertIn("devHandle->deviceMemcpy", helper)
+        self.assertIn("flagcxMemcpyDeviceToDevice", helper)
+        self.assertEqual(SOURCE.count("copyTensorOnStream("), 8)
+
+    def test_enflame_gather_and_scatter_avoid_broken_eccl_primitives(self):
+        gather = function_body(
+            SOURCE,
+            "flagcxBackend::gather",
+            "c10::intrusive_ptr<Work> flagcxBackend::reduce",
+        )
+        scatter = function_body(
+            SOURCE,
+            "flagcxBackend::scatter",
+            "c10::intrusive_ptr<Work> flagcxBackend::send",
+        )
+
+        for body in (gather, scatter):
+            self.assertIn(
+                "defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)",
+                body,
+            )
+        self.assertIn("flagcxAllGather", gather)
+        self.assertIn("flagcxGather", gather)
+        self.assertIn("flagcxBroadcast", scatter)
+        self.assertIn("flagcxScatter", scatter)
 
 
 if __name__ == "__main__":

@@ -112,6 +112,27 @@ at::Tensor newLikeFlatOnStream(std::vector<at::Tensor> &tensors,
   return newLikeFlat(tensors);
 }
 
+void copyTensorOnStream(at::Tensor dst, const at::Tensor &src,
+                        flagcxStream_t stream,
+                        flagcxDeviceHandle_t devHandle, int deviceId) {
+  TORCH_CHECK(dst.numel() == src.numel(),
+              "FlagCX tensor copy requires equal element counts");
+  TORCH_CHECK(dst.scalar_type() == src.scalar_type(),
+              "FlagCX tensor copy requires equal data types");
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  TORCH_CHECK(dst.is_contiguous() && src.is_contiguous(),
+              "FlagOS collective intermediates must be contiguous");
+  C10D_FLAGCX_CHECK(
+      devHandle->deviceMemcpy(dst.data_ptr(), src.data_ptr(),
+                              dst.numel() * dst.element_size(),
+                              flagcxMemcpyDeviceToDevice, stream),
+      std::nullopt);
+#else
+  flagcxStreamGuard guard(stream, deviceId);
+  dst.copy_(src, true);
+#endif
+}
+
 void check_device(at::Device dev1, at::Device dev2) {
 #ifdef USE_CAMBRICON_ADAPTOR
   if (dev1.is_privateuseone() && dev2.is_privateuseone() && dev1 != dev2) {
@@ -278,14 +299,30 @@ bool flagcxWork::isCompleted() { return future_->completed(); }
 bool flagcxWork::isSuccess() const { return future_->hasValue(); }
 
 bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  int previousDevice = 0;
+  C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  try {
+    C10D_FLAGCX_CHECK(devHandle_->streamSynchronize(stream_), std::nullopt);
+  } catch (...) {
+    devHandle_->setDevice(previousDevice);
+    throw;
+  }
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(previousDevice), std::nullopt);
+#else
   event_->block(deviceId_);
   if (isBarrierOp_) {
     C10D_FLAGCX_CHECK(devHandle_->streamSynchronize(stream_), std::nullopt);
   }
+#endif
   return true;
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  wait();
+#endif
   return future_;
 }
 
@@ -713,7 +750,8 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
     {
       flagcxStreamGuard guard(stream, device.index());
       for (const auto j : c10::irange(outputTensorsTmp.size())) {
-        outputTensorsTmp[j].copy_(outputFlattened[j], true);
+        copyTensorOnStream(outputTensorsTmp[j], outputFlattened[j], stream,
+                         devHandle_, device.index());
       }
     }
   }
@@ -902,7 +940,8 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
   {
     flagcxStreamGuard guard(stream, device.index());
     for (const auto j : c10::irange(inputTensors.size())) {
-      inputFlattened[j].copy_(inputTensors[j], true);
+      copyTensorOnStream(inputFlattened[j], inputTensors[j], stream,
+                         devHandle_, device.index());
     }
   }
 
@@ -924,7 +963,8 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
   {
     flagcxStreamGuard guard(stream, device.index());
     for (const auto j : c10::irange(outputTensors.size())) {
-      outputTensors[j].copy_(outputFlattened[j], true);
+      copyTensorOnStream(outputTensors[j], outputFlattened[j], stream,
+                         devHandle_, device.index());
     }
   }
 
@@ -1083,8 +1123,17 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
   }
 
   // Flatten a vector of tensors into a single, stacked tensor.
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  auto outputTemplates = outputTensorsTmp;
+  if (rank_ != root) {
+    outputTemplates.resize(size_, inputTensor);
+  }
+  at::Tensor outputFlattened =
+      newLikeFlatOnStream(outputTemplates, stream, device.index());
+#else
   at::Tensor outputFlattened =
       newLikeFlatOnStream(outputTensorsTmp, stream, device.index());
+#endif
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
@@ -1093,17 +1142,27 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
   }
 
 #endif
-  // Perform the gather operation
+  // Perform the gather operation. The tested ECCL runtime does not populate
+  // the root receive buffer for gather, so use its working all-gather primitive
+  // and expose the result only on the root, preserving PyTorch semantics.
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  C10D_FLAGCX_CHECK(
+      flagcxAllGather(inputTensor.data_ptr(), outputFlattened.data_ptr(),
+                      inputTensor.numel(), flagcxDataType, comm_, stream),
+      std::nullopt);
+#else
   C10D_FLAGCX_CHECK(
       flagcxGather(inputTensor.data_ptr(), outputFlattened.data_ptr(),
                    inputTensor.numel(), flagcxDataType, root, comm_, stream),
       std::nullopt);
+#endif
 
   // Unflatten the flattened tensor back into a vector of tensors.
   if (rank_ == root) {
     flagcxStreamGuard guard(stream, device.index());
     for (const auto j : c10::irange(outputTensorsTmp.size())) {
-      outputTensorsTmp[j].copy_(outputFlattened[j], true);
+      copyTensorOnStream(outputTensorsTmp[j], outputFlattened[j], stream,
+                         devHandle_, device.index());
     }
   }
 
@@ -1183,7 +1242,8 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
     {
       flagcxStreamGuard guard(stream, device.index());
       for (const auto j : c10::irange(inputTensorsTmp.size())) {
-        inputFlattened[j].copy_(inputTensorsTmp[j], true);
+        copyTensorOnStream(inputFlattened[j], inputTensorsTmp[j], stream,
+                           devHandle_, device.index());
       }
     }
 
@@ -1313,14 +1373,24 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
   }
 
   // Flatten a vector of tensors into a single, stacked tensor.
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  auto inputTemplates = inputTensorsTmp;
+  if (rank_ != root) {
+    inputTemplates.resize(size_, outputTensor);
+  }
+  at::Tensor inputFlattened =
+      newLikeFlatOnStream(inputTemplates, stream, device.index());
+#else
   at::Tensor inputFlattened =
       newLikeFlatOnStream(inputTensorsTmp, stream, device.index());
+#endif
 
   // Copy the input tensors to the flattened tensor.
   if (rank_ == root) {
     flagcxStreamGuard guard(stream, device.index());
     for (const auto j : c10::irange(inputTensorsTmp.size())) {
-      inputFlattened[j].copy_(inputTensorsTmp[j], true);
+      copyTensorOnStream(inputFlattened[j], inputTensorsTmp[j], stream,
+                         devHandle_, device.index());
     }
   }
 
@@ -1332,11 +1402,24 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
 
 #endif
 
-  // Perform the scatter operation
+  // Perform the scatter operation. The tested ECCL runtime does not populate
+  // scatter outputs, so broadcast each root input and retain this rank's slot.
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  for (const auto peer : c10::irange(size_)) {
+    C10D_FLAGCX_CHECK(
+        flagcxBroadcast(inputFlattened[peer].data_ptr(),
+                        inputFlattened[peer].data_ptr(), outputTensor.numel(),
+                        flagcxDataType, root, comm_, stream),
+        std::nullopt);
+  }
+  copyTensorOnStream(outputTensor, inputFlattened[rank_], stream, devHandle_,
+                     device.index());
+#else
   C10D_FLAGCX_CHECK(flagcxScatter(inputFlattened.data_ptr(),
                                   outputTensor.data_ptr(), outputTensor.numel(),
                                   flagcxDataType, root, comm_, stream),
                     std::nullopt);
+#endif
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
