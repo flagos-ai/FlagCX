@@ -113,8 +113,8 @@ at::Tensor newLikeFlatOnStream(std::vector<at::Tensor> &tensors,
 }
 
 void copyTensorOnStream(at::Tensor dst, const at::Tensor &src,
-                        flagcxStream_t stream,
-                        flagcxDeviceHandle_t devHandle, int deviceId) {
+                        flagcxStream_t stream, flagcxDeviceHandle_t devHandle,
+                        int deviceId) {
   TORCH_CHECK(dst.numel() == src.numel(),
               "FlagCX tensor copy requires equal element counts");
   TORCH_CHECK(dst.scalar_type() == src.scalar_type(),
@@ -122,11 +122,10 @@ void copyTensorOnStream(at::Tensor dst, const at::Tensor &src,
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
   TORCH_CHECK(dst.is_contiguous() && src.is_contiguous(),
               "FlagOS collective intermediates must be contiguous");
-  C10D_FLAGCX_CHECK(
-      devHandle->deviceMemcpy(dst.data_ptr(), src.data_ptr(),
-                              dst.numel() * dst.element_size(),
-                              flagcxMemcpyDeviceToDevice, stream),
-      std::nullopt);
+  C10D_FLAGCX_CHECK(devHandle->deviceMemcpy(dst.data_ptr(), src.data_ptr(),
+                                            dst.numel() * dst.element_size(),
+                                            flagcxMemcpyDeviceToDevice, stream),
+                    std::nullopt);
 #else
   flagcxStreamGuard guard(stream, deviceId);
   dst.copy_(src, true);
@@ -751,7 +750,7 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
       flagcxStreamGuard guard(stream, device.index());
       for (const auto j : c10::irange(outputTensorsTmp.size())) {
         copyTensorOnStream(outputTensorsTmp[j], outputFlattened[j], stream,
-                         devHandle_, device.index());
+                           devHandle_, device.index());
       }
     }
   }
@@ -940,8 +939,8 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
   {
     flagcxStreamGuard guard(stream, device.index());
     for (const auto j : c10::irange(inputTensors.size())) {
-      copyTensorOnStream(inputFlattened[j], inputTensors[j], stream,
-                         devHandle_, device.index());
+      copyTensorOnStream(inputFlattened[j], inputTensors[j], stream, devHandle_,
+                         device.index());
     }
   }
 
@@ -1406,11 +1405,11 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
   // scatter outputs, so broadcast each root input and retain this rank's slot.
 #if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
   for (const auto peer : c10::irange(size_)) {
-    C10D_FLAGCX_CHECK(
-        flagcxBroadcast(inputFlattened[peer].data_ptr(),
-                        inputFlattened[peer].data_ptr(), outputTensor.numel(),
-                        flagcxDataType, root, comm_, stream),
-        std::nullopt);
+    C10D_FLAGCX_CHECK(flagcxBroadcast(inputFlattened[peer].data_ptr(),
+                                      inputFlattened[peer].data_ptr(),
+                                      outputTensor.numel(), flagcxDataType,
+                                      root, comm_, stream),
+                      std::nullopt);
   }
   copyTensorOnStream(outputTensor, inputFlattened[rank_], stream, devHandle_,
                      device.index());
