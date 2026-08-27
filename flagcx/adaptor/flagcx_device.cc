@@ -68,6 +68,11 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
     if (ret != flagcxSuccess) {
       WARN("flagcxDevCommCreate: %s backend failed (%d)", devApiBackend->name,
            ret);
+      flagcxResult_t cleanupRet = devApiBackend->devCommDestroy(comm, handle);
+      if (cleanupRet != flagcxSuccess) {
+        WARN("flagcxDevCommCreate: %s backend rollback failed (%d)",
+             devApiBackend->name, cleanupRet);
+      }
       pthread_mutex_destroy(&handle->cachedPtrMutex);
       free(handle);
       return ret;

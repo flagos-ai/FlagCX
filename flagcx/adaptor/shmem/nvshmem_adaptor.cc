@@ -27,11 +27,13 @@
 // ============================================================
 static int shmemInitRefCount = 0;
 
-static flagcxResult_t nvshmemAdaptorInit(int rank, int nRanks) {
+static flagcxResult_t nvshmemAdaptorInit(int rank, int nranks, void *handle) {
+  // NVSHMEM is initialized by its launcher and needs no external context.
+  (void)handle;
   nvshmem_init();
   if (nvshmemx_init_status() == NVSHMEM_STATUS_NOT_INITIALIZED)
     return flagcxInternalError;
-  if (nvshmem_my_pe() != rank || nvshmem_n_pes() != nRanks) {
+  if (nvshmem_my_pe() != rank || nvshmem_n_pes() != nranks) {
     nvshmem_finalize();
     return flagcxInternalError;
   }

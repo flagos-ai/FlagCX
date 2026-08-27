@@ -15,7 +15,7 @@ packaging/
 │       ├── build-flagcx.sh          # Unified build script
 │       ├── Dockerfile.deb           # Unified build configuration
 │       └── test-nexus-upload.sh     # Local Nexus upload test script
-└── rpm/                # Future: RPM packaging for RHEL/Fedora/etc.
+└── rpm/                # RPM packaging for RHEL/Rocky/openEuler
 ```
 
 ## Why `packaging/` Instead of Top-Level `/debian`?
@@ -63,18 +63,18 @@ Use the unified build script to build packages for any vendor/backend:
 
 **Specify custom base image version:**
 ```bash
-./packaging/debian/build-helpers/build-flagcx.sh nvidia v1.2.3
-./packaging/debian/build-helpers/build-flagcx.sh metax latest
+./packaging/debian/build-helpers/build-flagcx.sh nvidia 55c5c6f-cuda-dev
+./packaging/debian/build-helpers/build-flagcx.sh metax 2.1.2
 ```
 
 ### Base Images
 
-The build script uses upstream base images from `harbor.baai.ac.cn/flagbase/`:
-- NVIDIA: `flagbase-nvidia:<version>`
-- MetaX: `flagbase-metax:<version>`
+The build script uses these upstream base images:
+- NVIDIA: `harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev`
+- MetaX: `flagos-base-metax-maca3.8.1.3:<version>`
 
 To add support for a new vendor, ensure a corresponding base image exists at:
-`harbor.baai.ac.cn/flagbase/flagbase-<vendor>:<version>`
+`harbor.baai.ac.cn/flagos-base/flagos-base-<vendor>-<runtime>:<version>`
 
 ### Quality Checks
 
@@ -104,6 +104,29 @@ sudo dpkg -i debian-packages/nvidia/*.deb
 # Example: MetaX
 sudo dpkg -i debian-packages/metax/*.deb
 ```
+
+## Building RPM Packages
+
+Use the RPM build target that matches the backend and distribution:
+
+```bash
+# NVIDIA CUDA 12 on Rocky Linux 8
+./packaging/rpm/build-flagcx-rpm.sh nvidia
+
+# NVIDIA CUDA 12 on openEuler 24.03 LTS
+RPM_DISTRO=openeuler2403 ./packaging/rpm/build-flagcx-rpm.sh nvidia
+
+# Other supported backends
+./packaging/rpm/build-flagcx-rpm.sh metax
+./packaging/rpm/build-flagcx-rpm.sh ascend
+```
+
+The openEuler target assembles its build-time CUDA 12 and NCCL prefixes from
+NVIDIA's PyPI wheels. Set `CUDA_PIP_INDEX_URL` to use a reachable mirror. The
+resulting `.oe2403` RPM intentionally does not claim RPM dependencies on
+`libcuda.so.1`, `libcudart.so.12`, or `libnccl.so.2`, because openEuler has no
+RPM provider for them; those ABI-compatible libraries must be present in the
+deployment environment.
 
 ## CI/CD
 
@@ -152,13 +175,13 @@ The `debian/control` file defines build profiles to support multiple backends:
 ### Unified Dockerfile
 
 A single `Dockerfile.deb` builds packages for all backends using build arguments:
-- `BASE_IMAGE` - Upstream base image (e.g., `flagbase-nvidia`, `flagbase-metax`)
-- `BASE_IMAGE_VERSION` - Image version tag (default: `latest`)
+- `BASE_IMAGE` - Upstream base image (e.g., `flagcx:55c5c6f-cuda-dev`, `flagos-base-metax-maca3.8.1.3`)
+- `BASE_IMAGE_VERSION` - Image tag (defaults: NVIDIA `55c5c6f-cuda-dev`, MetaX `2.1.2`)
 - `VENDOR` - Backend vendor name (used for build profile selection)
 
 ### Build Stages
 
-1. **Builder stage**: Based on upstream flagbase images
+1. **Builder stage**: Based on upstream flagos-base images
    - Contains all necessary build dependencies (CUDA/NCCL or MACA SDK)
    - Installs Debian packaging tools (`debhelper`, `dpkg-dev`, etc.)
    - Runs `dpkg-buildpackage` with `DEB_BUILD_PROFILES=pkg.flagcx.${VENDOR}-only`

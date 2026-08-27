@@ -209,6 +209,50 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_DEVICE_ADAPTOR_PLUGIN` | None | Path to device adaptor plugin shared library |
 | `FLAGCX_NET_ADAPTOR_PLUGIN` | None | Path to network adaptor plugin shared library |
 | `FLAGCX_CCL_ADAPTOR_PLUGIN` | None | Path to CCL adaptor plugin shared library |
+| `FLAGCX_TORCH_BACKEND` | `vendor` | Torch plugin backend. `vendor` uses the adaptor's native Torch package; `flagos` uses torch-fl and currently supports only Ascend and Enflame |
+| `FLAGOS_INSTALL_PATH` | None | torch-fl package root containing `include/flagos.h` and `lib/libflagos.so` for `FLAGCX_TORCH_BACKEND=flagos` builds |
+| `FLAGOS_INCLUDE_DIR` | None | Explicit directory containing `flagos.h`; overrides the include path derived from `FLAGOS_INSTALL_PATH` |
+| `FLAGOS_LIBRARY_DIR` | None | Explicit directory containing `libflagos.so`; overrides the library path derived from `FLAGOS_INSTALL_PATH` |
+
+### Torch Plugin Backends
+
+The Torch plugin supports the following backend matrix:
+
+| Adaptor | `vendor` | `flagos` |
+|---------|----------|----------|
+| `ascend` | `torch_npu`, device type `npu` | `torch_fl`, device type `flagos` |
+| `enflame` | `torch_gcu`, device type `gcu` | `torch_fl`, device type `flagos` |
+
+The default `vendor` mode preserves the existing Torch integration. Select the
+same backend when building and running the plugin. For example:
+
+```bash
+# Existing vendor integration
+FLAGCX_ADAPTOR=ascend FLAGCX_TORCH_BACKEND=vendor \
+  pip install . --no-build-isolation
+
+# FlagOS integration
+FLAGCX_ADAPTOR=ascend FLAGCX_TORCH_BACKEND=flagos \
+  pip install . --no-build-isolation
+FLAGCX_TORCH_BACKEND=flagos python your_application.py
+```
+
+For a FlagOS build, install `torch_fl` or set `FLAGOS_INSTALL_PATH`. The
+`FLAGOS_INCLUDE_DIR` and `FLAGOS_LIBRARY_DIR` variables can override its
+individual include and library directories. Selecting `flagos` for another
+adaptor fails during configuration instead of falling back to a vendor package.
+
+After building, run the same two-rank smoke test in either mode:
+
+```bash
+FLAGCX_TORCH_BACKEND=vendor torchrun --nproc_per_node=2 \
+  plugin/torch/tests/distributed_smoke.py --adaptor ascend
+
+FLAGCX_TORCH_BACKEND=flagos torchrun --nproc_per_node=2 \
+  plugin/torch/tests/distributed_smoke.py --adaptor ascend
+```
+
+Replace `ascend` with `enflame` to test GCU hardware.
 
 ---
 

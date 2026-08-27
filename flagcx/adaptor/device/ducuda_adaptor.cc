@@ -97,6 +97,9 @@ flagcxResult_t ducudaAdaptorGetVendor(char *vendor) {
 }
 
 flagcxResult_t ducudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  if (pDevice == NULL || pHost == NULL) {
+    return flagcxInvalidArgument;
+  }
   DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
   return flagcxSuccess;
 }
@@ -382,11 +385,17 @@ flagcxResult_t ducudaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
 }
 
 flagcxResult_t ducudaAdaptorHostRegister(void *ptr, size_t size) {
+  if (ptr == NULL || size == 0) {
+    return flagcxInvalidArgument;
+  }
   DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
   return flagcxSuccess;
 }
 
 flagcxResult_t ducudaAdaptorHostUnregister(void *ptr) {
+  if (ptr == NULL) {
+    return flagcxInvalidArgument;
+  }
   DEVCHECK(cudaHostUnregister(ptr));
   return flagcxSuccess;
 }

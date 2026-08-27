@@ -7,7 +7,7 @@
 #include "eccl.h"
 #include "flagcx.h"
 #include <map>
-#include <tops/tops_runtime_api.h>
+#include <tops/tops_runtime.h>
 
 struct flagcxInnerDevComm {};
 

@@ -13,6 +13,6 @@ concurrency:
 jobs:
   metax_unit_tests:
     name: MetaX unit tests
-    uses: ./.github/workflows/unit_tests_platform_common.yml
+    uses: ./.github/workflows/unit_tests_common.yml
     with:
       platform: metax

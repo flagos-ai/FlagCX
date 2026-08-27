@@ -21,6 +21,7 @@
 // Forward declaration for typed vendor device comm handle
 struct flagcxInnerDevComm;
 typedef struct flagcxInnerDevComm *flagcxInnerDevComm_t;
+struct flagcxOneSideHandleInfo;
 
 // ============================================================
 // Section 1: flagcxDevCommInternal — Host-Side Opaque Handle
@@ -50,15 +51,19 @@ struct flagcxDevCommInternal {
                           // epochs]
   int nBarriers;          // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
+  bool localBarrierFlagsDeviceAllocated; // true only when localBarrierFlags is
+                                         // owned device memory, not an SHM
+                                         // device-visible alias
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
   // flagcxShm barrier path (non-null when FLAGCX_SIGNAL_HOST_ENABLE=1)
-  void *localBarrierShmPtr;  // CPU VA of own shm mapping (hostUnregister +
-                             // flagcxShmClose)
+  void *localBarrierShmPtr;  // non-owning alias of this rank's entry in
+                             // peerBarrierShmPtrs
   void **peerBarrierShmPtrs; // CPU VA array [nLocalRanks] for each peer's shm
-                             // mapping (hostUnregister + flagcxShmClose)
-  size_t barrierShmSize;     // size in bytes (for hostUnregister)
+                             // mapping; owns each successful host registration
+  int registeredBarrierShmCount;     // registered prefix of peerBarrierShmPtrs
+  size_t barrierShmSize;             // size in bytes (for hostUnregister)
   uint64_t **barrierDevPeerPtrsRaw;  // standalone device array (deviceFree; shm
                                      // path only)
   flagcxShmHandle_t myShmHandle;     // own shm handle (flagcxShmClose)
@@ -83,11 +88,12 @@ struct flagcxDevCommInternal {
   int signalCount;
   int counterCount;
   int contextCount; // = reqs.interContextCount (default 4)
-  // Host-only: MR handles + staging for cleanup
-  void *signalBufferMr;        // MR handle for signalBuffer
-  void *counterBufferMr;       // MR handle for counterBuffer
+  // Host-only: communicator registrations installed for these buffers.
+  // Non-null only when this DevComm created the registration and therefore
+  // must deregister it before freeing the backing allocation.
+  struct flagcxOneSideHandleInfo *ownedSignalRegistration;
   void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
-  void *putValueStagingMr;     // MR handle for staging buffer
+  struct flagcxOneSideHandleInfo *ownedStagingRegistration;
 
   // One-sided transport readiness.  Signal send/wait must use the same
   // communicator-wide path because waits do not identify a sender.

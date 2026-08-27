@@ -53,6 +53,18 @@ static void shmHostUnregister(void *ptr) {
     deviceAdaptor->hostUnregister(ptr);
 }
 
+static bool
+registrationMatchesBuffer(flagcxComm_t comm,
+                          const struct flagcxOneSideHandleInfo *registration,
+                          const void *buffer) {
+  if (comm == nullptr || comm->heteroComm == nullptr ||
+      registration == nullptr || registration->baseVas == nullptr ||
+      comm->rank < 0 || comm->rank >= comm->heteroComm->nRanks) {
+    return false;
+  }
+  return registration->baseVas[comm->rank] == (uintptr_t)buffer;
+}
+
 // ==========================================================================
 // Inter-node signal relay setup
 // ==========================================================================
@@ -161,19 +173,21 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   if (flagcxParamSignalHostEnable() == 0) {
     // ── IPC device memory path (default) ─────────────────────────────────
-    void *barrierFlags = nullptr;
-    FLAGCXCHECK(deviceAdaptor->deviceMalloc(&barrierFlags, barrierSize,
-                                            flagcxMemDevice, NULL));
-    FLAGCXCHECK(deviceAdaptor->deviceMemset(barrierFlags, 0, barrierSize,
-                                            flagcxMemDevice, NULL));
-    devComm->localBarrierFlags = (uint64_t *)barrierFlags;
+    flagcxResult_t res =
+        deviceAdaptor->deviceMalloc((void **)&devComm->localBarrierFlags,
+                                    barrierSize, flagcxMemDevice, NULL);
+    if (res != flagcxSuccess)
+      return res;
+    devComm->localBarrierFlagsDeviceAllocated = true;
+    res = deviceAdaptor->deviceMemset(devComm->localBarrierFlags, 0,
+                                      barrierSize, flagcxMemDevice, NULL);
+    if (res != flagcxSuccess)
+      return res;
 
-    int slot = buildIpcPeerPointers(comm, barrierFlags, barrierSize);
-    if (slot < 0) {
-      deviceAdaptor->deviceFree(barrierFlags, flagcxMemDevice, NULL);
-      devComm->localBarrierFlags = nullptr;
+    int slot =
+        buildIpcPeerPointers(comm, devComm->localBarrierFlags, barrierSize);
+    if (slot < 0)
       return flagcxSystemError;
-    }
 
     devComm->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
     devComm->barrierIpcIndex = slot;
@@ -186,8 +200,8 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     INFO(FLAGCX_INIT,
          "setupIpcBarriers(IPC): rank %d slot %d localBarrierFlags=%p "
          "barrierPeers=%p nBarriers=%d",
-         myRank, slot, barrierFlags, (void *)devComm->barrierPeers,
-         devComm->nBarriers);
+         myRank, slot, (void *)devComm->localBarrierFlags,
+         (void *)devComm->barrierPeers, devComm->nBarriers);
 
   } else {
     // ── flagcxShm + hipHostRegister path (FLAGCX_SIGNAL_HOST_ENABLE=1) ──
@@ -197,6 +211,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     void **devPeerPtrs = nullptr;
     void *myDevPtr = nullptr;
     void **hostDevPtrs = nullptr;
+    int registeredPeerCount = 0;
 
     char myShmPath[SHM_PATH_MAX];
     snprintf(myShmPath, sizeof(myShmPath), "/dev/shm/flagcx_barrier_%016llx_%d",
@@ -215,15 +230,13 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
         res, fail_own_shm);
 
     // Step 3: Map peer shm segments.
-    peerCpuPtrs = (void **)malloc(localRanks * sizeof(void *));
+    peerCpuPtrs = (void **)calloc(localRanks, sizeof(void *));
     peerShmHandles =
-        (flagcxShmHandle_t *)malloc(localRanks * sizeof(flagcxShmHandle_t));
+        (flagcxShmHandle_t *)calloc(localRanks, sizeof(flagcxShmHandle_t));
     if (!peerCpuPtrs || !peerShmHandles) {
       res = flagcxSystemError;
       goto fail_peer_shm;
     }
-    memset(peerCpuPtrs, 0, localRanks * sizeof(void *));
-    memset(peerShmHandles, 0, localRanks * sizeof(flagcxShmHandle_t));
 
     for (int lr = 0; lr < localRanks; lr++) {
       int globalR = comm->localRankToRank[lr];
@@ -254,6 +267,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     for (int lr = 0; lr < localRanks; lr++) {
       FLAGCXCHECKGOTO(shmHostRegister(peerCpuPtrs[lr], barrierSize), res,
                       fail_peer_shm);
+      registeredPeerCount++;
       FLAGCXCHECKGOTO(deviceAdaptor->hostGetDevicePointer(&hostDevPtrs[lr],
                                                           peerCpuPtrs[lr]),
                       res, fail_peer_shm);
@@ -277,6 +291,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     devComm->barrierIpcIndex = -1;
     devComm->localBarrierShmPtr = myCpuPtr;
     devComm->peerBarrierShmPtrs = peerCpuPtrs;
+    devComm->registeredBarrierShmCount = registeredPeerCount;
     devComm->barrierShmSize = barrierSize;
     devComm->barrierDevPeerPtrsRaw = (uint64_t **)devPeerPtrs;
     devComm->myShmHandle = myShmHandle;
@@ -293,12 +308,9 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     return flagcxSuccess;
 
   fail_peer_shm:
-    if (hostDevPtrs) {
-      for (int lr = 0; lr < localRanks; lr++)
-        if (peerCpuPtrs && peerCpuPtrs[lr])
-          shmHostUnregister(peerCpuPtrs[lr]);
-      free(hostDevPtrs);
-    }
+    for (int lr = 0; lr < registeredPeerCount; lr++)
+      shmHostUnregister(peerCpuPtrs[lr]);
+    free(hostDevPtrs);
     if (devPeerPtrs)
       deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
     if (peerShmHandles) {
@@ -519,6 +531,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
       // Register signal buffer for RDMA one-sided access
       if (devComm->signalBuffer) {
+        struct flagcxOneSideHandleInfo *previousRegistration =
+            comm->heteroComm->signalHandle;
         int sigPtrType =
             flagcxParamSignalHostEnable() ? FLAGCX_PTR_HOST : FLAGCX_PTR_CUDA;
         INFO(FLAGCX_INIT,
@@ -528,11 +542,18 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                                           (size_t)devComm->signalCount *
                                               bufCtxCount * sizeof(uint64_t),
                                           sigPtrType);
-        if (res != flagcxSuccess || comm->heteroComm->signalHandle == nullptr) {
+        struct flagcxOneSideHandleInfo *registration =
+            comm->heteroComm->signalHandle;
+        if (res != flagcxSuccess ||
+            !registrationMatchesBuffer(comm, registration,
+                                       devComm->signalBuffer)) {
           WARN("defaultDevApiCommCreate: flagcxOneSideSignalRegister failed "
-               "(%d, handle=%p)",
-               res, (void *)comm->heteroComm->signalHandle);
+               "or returned a registration for another buffer "
+               "(%d, handle=%p, buffer=%p)",
+               res, (void *)registration, (void *)devComm->signalBuffer);
         } else {
+          if (previousRegistration == nullptr)
+            devComm->ownedSignalRegistration = registration;
           devComm->netSignalReady = 1;
           INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
         }
@@ -540,15 +561,24 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
       // Register staging buffer for PutValue RDMA source
       if (devComm->putValueStagingBuffer) {
+        struct flagcxOneSideHandleInfo *previousRegistration =
+            comm->heteroComm->stagingHandle;
         INFO(FLAGCX_INIT, "defaultDevApiCommCreate: registering stagingBuffer");
         res = flagcxOneSideStagingRegister(comm, devComm->putValueStagingBuffer,
                                            stagingSize);
+        struct flagcxOneSideHandleInfo *registration =
+            comm->heteroComm->stagingHandle;
         if (res != flagcxSuccess ||
-            comm->heteroComm->stagingHandle == nullptr) {
+            !registrationMatchesBuffer(comm, registration,
+                                       devComm->putValueStagingBuffer)) {
           WARN("defaultDevApiCommCreate: flagcxOneSideStagingRegister failed "
-               "(%d, handle=%p)",
-               res, (void *)comm->heteroComm->stagingHandle);
+               "or returned a registration for another buffer "
+               "(%d, handle=%p, buffer=%p)",
+               res, (void *)registration,
+               (void *)devComm->putValueStagingBuffer);
         } else {
+          if (previousRegistration == nullptr)
+            devComm->ownedStagingRegistration = registration;
           devComm->netPutValueReady = 1;
           INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingRegister OK");
         }
@@ -639,6 +669,24 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
+  // Deregister communicator-level MRs before freeing their backing buffers.
+  // Check handle identity so rollback cannot remove a registration owned by
+  // another DevComm.
+  if (devComm->ownedStagingRegistration) {
+    if (comm != nullptr && comm->heteroComm != nullptr &&
+        comm->heteroComm->stagingHandle == devComm->ownedStagingRegistration) {
+      flagcxOneSideStagingDeregister(comm);
+    }
+    devComm->ownedStagingRegistration = nullptr;
+  }
+  if (devComm->ownedSignalRegistration) {
+    if (comm != nullptr && comm->heteroComm != nullptr &&
+        comm->heteroComm->signalHandle == devComm->ownedSignalRegistration) {
+      flagcxOneSideSignalDeregister(comm);
+    }
+    devComm->ownedSignalRegistration = nullptr;
+  }
+
   // ── IPC slot: immediate full cleanup ──────────────────────────────────
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&
       devComm->barrierIpcIndex < FLAGCX_MAX_IPC_ENTRIES) {
@@ -657,6 +705,7 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     }
     e->inUse = false;
   }
+  devComm->barrierIpcIndex = -1;
 
   // ── P2P signal/counter IPC slot cleanup ─────────────────────────────────
   auto cleanupIpcSlot = [&](int slot) {
@@ -678,46 +727,51 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     e->inUse = false;
   };
   cleanupIpcSlot(devComm->signalIpcSlot);
+  devComm->signalIpcSlot = -1;
 
   // ── Shm path cleanup (FLAGCX_SIGNAL_HOST_ENABLE=1 only) ──────────────
   if (devComm->peerBarrierShmPtrs) {
-    for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
+    for (int lr = 0; lr < devComm->registeredBarrierShmCount; lr++) {
       if (devComm->peerBarrierShmPtrs[lr])
         shmHostUnregister(devComm->peerBarrierShmPtrs[lr]);
     }
     free(devComm->peerBarrierShmPtrs);
     devComm->peerBarrierShmPtrs = nullptr;
   }
-  if (devComm->localBarrierShmPtr) {
-    shmHostUnregister(devComm->localBarrierShmPtr);
-    // Close peer shm handles (skip own slot which equals myShmHandle)
-    if (devComm->peerShmHandles) {
-      for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
-        if (devComm->peerShmHandles[lr] &&
-            devComm->peerShmHandles[lr] != devComm->myShmHandle)
-          flagcxShmClose(devComm->peerShmHandles[lr]);
+  devComm->registeredBarrierShmCount = 0;
+  // Close peer shm handles (skip own slot which aliases myShmHandle).
+  if (devComm->peerShmHandles) {
+    for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
+      if (devComm->peerShmHandles[lr] &&
+          devComm->peerShmHandles[lr] != devComm->myShmHandle) {
+        flagcxShmClose(devComm->peerShmHandles[lr]);
       }
-      free(devComm->peerShmHandles);
-      devComm->peerShmHandles = nullptr;
     }
-    flagcxShmClose(devComm->myShmHandle);
-    devComm->localBarrierShmPtr = nullptr;
+    free(devComm->peerShmHandles);
+    devComm->peerShmHandles = nullptr;
   }
+  if (devComm->myShmHandle) {
+    flagcxShmClose(devComm->myShmHandle);
+    devComm->myShmHandle = nullptr;
+  }
+  devComm->localBarrierShmPtr = nullptr;
+  devComm->barrierShmSize = 0;
   if (devComm->barrierDevPeerPtrsRaw) {
     deviceAdaptor->deviceFree(devComm->barrierDevPeerPtrsRaw, flagcxMemDevice,
                               NULL);
     devComm->barrierDevPeerPtrsRaw = nullptr;
   }
-
-  // ── MR deregistration ────────────────────────────────────────────────
-  // (signal and staging MR are deregistered at comm level in commCleanup)
+  devComm->barrierPeers = nullptr;
 
   // ── Free one-sided buffers immediately ────────────────────────────────
   if (devComm->localBarrierFlags) {
-    deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
-                              NULL);
+    if (devComm->localBarrierFlagsDeviceAllocated) {
+      deviceAdaptor->deviceFree(devComm->localBarrierFlags, flagcxMemDevice,
+                                NULL);
+    }
     devComm->localBarrierFlags = nullptr;
   }
+  devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
     deviceAdaptor->deviceFree(devComm->epochBuffer, flagcxMemDevice, NULL);
     devComm->epochBuffer = nullptr;

@@ -28,8 +28,16 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: true
+          submodules: false
           set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       - name: Set up Install Dependencies
         run: |
@@ -66,13 +74,266 @@ jobs:
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
           pip uninstall -y setuptools && pip install setuptools==77.0.1 --extra-index-url https://pypi.org/simple 
           cd /__w/FlagCX/FlagCX/plugin/torch
-          python setup.py develop --adaptor nvidia
+          export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          export FLAGCX_ADAPTOR=nvidia
+          python3 setup.py build_ext --inplace
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
         run: |
           export PATH=/root/miniconda3/bin:$PATH
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
           cd /__w/FlagCX/FlagCX/test/script/
+          export FLAGCX_DEBUG=TRACE
+          export FLAGCX_DEBUG_SUBSYS=ALL
+          bash torch_api_test.sh
+
+  torch-api-test-hygon:
+    name: torch-api-test (hygon)
+    runs-on: [hg-8g-cicd-flagcx]
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
+      volumes:
+        - /usr/local/hyhal:/opt/hyhal:ro
+      options: >-
+        --ipc=host
+        --privileged=true
+        --shm-size=100gb
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --ulimit nofile=65535:65535
+        --device=/dev/kfd
+        --device=/dev/dri
+        --group-add video
+        --user root
+    env:
+      FLAGCX_ADAPTOR: du
+      USE_DU: "1"
+      CUDA_PATH: /opt/dtk/cuda/cuda-12
+      CUDA_HOME: /opt/dtk/cuda/cuda-12
+      MPI_HOME: /opt/mpi
+      FLAGCX_SKIP_HETERO: "1"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Prepare Hygon environment
+        shell: bash
+        run: |
+          source /opt/dtk/env.sh
+          echo "PATH=/opt/mpi/bin:$PATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mpi/lib:/opt/dtk/lib:$CUDA_PATH/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          hy-smi --showproductname
+          python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
+
+      - name: Run `make` to build the project
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          source /opt/dtk/env.sh
+          make USE_DU=1 -j$(nproc) PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
+
+      - name: Install FlagCX PyTorch Plugin
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX/plugin/torch
+          source /opt/dtk/env.sh
+          export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          python3 setup.py build_ext --inplace
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+
+      - name: Run PyTorch API Tests
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX/test/script
+          source /opt/dtk/env.sh
+          export FLAGCX_ADAPTOR=du
+          export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+          export FLAGCX_DEBUG=TRACE
+          export FLAGCX_DEBUG_SUBSYS=ALL
+          bash torch_api_test.sh
+
+  torch-api-test-cuda:
+    name: torch-api-test (cuda)
+    runs-on: [nv-8g-cicd-flagcx]
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
+      options: >-
+        --gpus all
+        --shm-size=500g
+        --privileged
+        --ipc=host
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --ulimit nofile=65535:65535
+        --user root
+    env:
+      FLAGCX_ADAPTOR: nvidia
+      USE_NVIDIA: "1"
+      MPI_HOME: /usr/local/mpi
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Prepare CUDA environment
+        shell: bash
+        run: |
+          source /__w/FlagCX/FlagCX/.github/scripts/set_env/cuda.sh
+          echo "PATH=$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
+          echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          nvidia-smi
+
+      - name: Build FlagCX
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make USE_NVIDIA=1 -j$(nproc)
+
+      - name: Install FlagCX PyTorch Plugin
+        run: |
+          export PATH=/root/miniconda3/bin:$PATH
+          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train
+          export PYTHON_BIN=/root/miniconda3/envs/flagscale-train/bin/python
+          cd /__w/FlagCX/FlagCX/plugin/torch
+          export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          export FLAGCX_ADAPTOR=nvidia
+          "$PYTHON_BIN" setup.py build_ext --inplace
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+
+      - name: Run PyTorch API Tests
+        run: |
+          export PATH=/root/miniconda3/bin:$PATH
+          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train
+          export PYTHON_BIN=/root/miniconda3/envs/flagscale-train/bin/python
+          cd /__w/FlagCX/FlagCX/test/script
+          export FLAGCX_ADAPTOR=nvidia
+          export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+          export FLAGCX_DEBUG=TRACE
+          export FLAGCX_DEBUG_SUBSYS=ALL
+          bash torch_api_test.sh
+
+  torch-api-test-metax:
+    name: torch-api-test (metax)
+    runs-on: [mx-8g-cicd-flagcx]
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
+      options: >-
+        --hostname=te-cicd
+        --volume /opt/mxdriver:/opt/mxdriver:ro
+        --shm-size=500g
+        --ipc=host
+        --privileged=true
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --ulimit nofile=65535:65535
+        --user root
+        --group-add video
+        -e PLATFORM=metax
+        -e TORCH_DISTRIBUTED_BACKEND=mccl
+        -e FLAGCX_IB_GID_INDEX=0
+        -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
+    env:
+      FLAGCX_ADAPTOR: metax
+      USE_METAX: "1"
+      MPI_HOME: /usr/local/mpi
+      TORCH_DISTRIBUTED_BACKEND: mccl
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Prepare MetaX environment
+        shell: bash
+        run: |
+          source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
+          echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
+          echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          mx-smi 2>/dev/null || true
+
+      - name: Build FlagCX
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make USE_METAX=1 -j$(nproc)
+
+      - name: Install FlagCX PyTorch Plugin
+        run: |
+          cd /__w/FlagCX/FlagCX/plugin/torch
+          export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+          export FLAGCX_ADAPTOR=metax
+          python3 setup.py build_ext --inplace
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+
+      - name: Run PyTorch API Tests
+        run: |
+          cd /__w/FlagCX/FlagCX/test/script
+          export FLAGCX_ADAPTOR=metax
+          export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
           export FLAGCX_DEBUG=TRACE
           export FLAGCX_DEBUG_SUBSYS=ALL
           bash torch_api_test.sh

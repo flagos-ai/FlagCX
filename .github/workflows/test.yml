@@ -34,8 +34,16 @@ jobs:
           fetch-tags: false
           show-progress: true
           lfs: false
-          submodules: true
+          submodules: false
           set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
 
       # FORCE_DEFAULT_PATH only affects kernel object compilation (comm traits);
       # host-side library and vendor API dispatch are unchanged.
@@ -144,3 +152,267 @@ jobs:
           export PATH=$MPI_HOME/bin:$PATH
           export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$LD_LIBRARY_PATH
           mpirun -np 2 --allow-run-as-root $PERF_BIN/perf_p2p_engine -b 4K -e 64M -f 2 -n 10
+
+  perf-test-hygon:
+    name: perf-test (hygon)
+    runs-on: [hg-8g-cicd-flagcx]
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
+      volumes:
+        - /usr/local/hyhal:/opt/hyhal:ro
+      options: >-
+        --ipc=host
+        --privileged=true
+        --shm-size=100gb
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+        --device=/dev/kfd
+        --device=/dev/dri
+        --group-add video
+    env:
+      MPI_HOME: /opt/mpi
+      PERF_BIN: /__w/FlagCX/FlagCX/test/perf/host_api/build/bin
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Prepare Hygon environment
+        shell: bash
+        run: |
+          source /opt/dtk/env.sh
+          export CUDA_PATH=/opt/dtk/cuda/cuda-12
+          export CUDA_HOME=$CUDA_PATH
+          echo "CUDA_PATH=$CUDA_PATH" >> "$GITHUB_ENV"
+          echo "CUDA_HOME=$CUDA_HOME" >> "$GITHUB_ENV"
+          echo "PATH=/opt/mpi/bin:$PATH" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/opt/mpi/lib:/opt/dtk/lib:$CUDA_PATH/lib64:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          hy-smi --showproductname
+          python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
+
+      - name: Build FlagCX
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          source /opt/dtk/env.sh
+          make -j$(nproc) USE_DU=1 PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
+
+      - name: Build perf tests
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX/test/perf
+          source /opt/dtk/env.sh
+          make -j$(nproc) USE_DU=1 MPI_HOME=/opt/mpi CCL_HOME=/opt/dtk/cuda/cuda-12
+
+      # Hygon currently supports the homogeneous single-node path here.
+      # Heterogeneous, RMA, and device-API paths are covered only where the
+      # backend advertises support; unsupported cases self-skip in the tests.
+      - name: Perf tests (Hygon homogeneous 8-chip)
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          source /opt/dtk/env.sh
+          export PATH=/opt/mpi/bin:$PATH
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mpi/lib:/opt/dtk/lib:/opt/dtk/cuda/cuda-12/lib64:$LD_LIBRARY_PATH
+          set -e
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoallv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allreduce -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allgather -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reducescatter -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_gather -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_scatter -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reduce -b 128M -e 1G -f 2 -r 0 -p 1
+
+  perf-test-cuda:
+    name: perf-test (cuda)
+    runs-on: [nv-8g-cicd-flagcx]
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
+      options: >-
+        --gpus all
+        --privileged
+        --ipc=host
+        --ulimit memlock=-1
+        --ulimit stack=67108864
+    env:
+      MPI_HOME: /usr/local/mpi
+      PERF_BIN: /__w/FlagCX/FlagCX/test/perf/host_api/build/bin
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Prepare CUDA environment
+        shell: bash
+        run: |
+          source /__w/FlagCX/FlagCX/.github/scripts/set_env/cuda.sh
+          echo "PATH=$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
+          echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          nvidia-smi
+
+      - name: Build FlagCX
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
+
+      - name: Build perf tests
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX/test/perf
+          make -j$(nproc) USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
+
+      - name: Perf tests (CUDA homogeneous 8-GPU)
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          source .github/scripts/set_env/cuda.sh
+          export PATH=$MPI_HOME/bin:$PATH
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH
+          set -e
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoallv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allreduce -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allgather -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reducescatter -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_gather -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_scatter -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reduce -b 128M -e 1G -f 2 -r 0 -p 1
+
+  perf-test-metax:
+    name: perf-test (metax)
+    runs-on: [mx-8g-cicd-flagcx]
+    container:
+      image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
+      options: >-
+        --hostname=te-cicd
+        --volume /opt/mxdriver:/opt/mxdriver:ro
+        --ipc=host
+        --privileged=true
+        --shm-size=100gb
+        --ulimit memlock=-1
+        --user root
+        --ulimit nofile=65535:65535
+        --group-add video
+        -e PLATFORM=metax
+        -e TORCH_DISTRIBUTED_BACKEND=mccl
+        -e FLAGCX_IB_GID_INDEX=0
+        -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
+    env:
+      MPI_HOME: /usr/local/mpi
+      PERF_BIN: /__w/FlagCX/FlagCX/test/perf/host_api/build/bin
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
+          ssh-strict: true
+          ssh-user: git
+          persist-credentials: true
+          clean: true
+          sparse-checkout-cone-mode: true
+          fetch-tags: false
+          show-progress: true
+          lfs: false
+          submodules: false
+          set-safe-directory: true
+
+      - name: Checkout submodules
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Prepare MetaX environment
+        shell: bash
+        run: |
+          source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
+          echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
+          echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          mx-smi 2>/dev/null || true
+
+      - name: Build FlagCX
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          make -j$(nproc) USE_METAX=1
+
+      - name: Build perf tests
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX/test/perf
+          make -j$(nproc) USE_METAX=1 MPI_HOME=/usr/local/mpi CCL_HOME=/opt/maca
+
+      - name: Perf tests (MetaX homogeneous 8-chip)
+        shell: bash
+        run: |
+          cd /__w/FlagCX/FlagCX
+          source .github/scripts/set_env/metax.sh
+          export PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH
+          export LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH
+          export MCCL_DEBUG=TRACE
+          export MCCL_DEBUG_SUBSYS=ALL
+          set -e
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoall -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_alltoallv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_sendrecv -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allreduce -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_allgather -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reducescatter -b 128M -e 1G -f 2 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_broadcast -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_gather -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_scatter -b 128M -e 1G -f 2 -r 0 -p 1
+          mpirun -np 8 --allow-run-as-root $PERF_BIN/perf_reduce -b 128M -e 1G -f 2 -r 0 -p 1

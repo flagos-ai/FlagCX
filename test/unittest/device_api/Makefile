@@ -45,6 +45,13 @@ ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 CXXFLAGS += -DCOMPILE_KERNEL
 
 # Test targets
+UNIT_SRC := test_dev_comm_cleanup.cpp
+UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
+UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
+UNIT_CXXFLAGS := $(filter-out -DCOMPILE_KERNEL,$(CXXFLAGS))
+UNIT_INCLUDES := $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) \
+                 -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
+
 MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_inter \
                $(BINDIR)/test_device_ir_unified_intra \
@@ -52,10 +59,14 @@ MPI_TARGETS := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_api_intra \
                $(BINDIR)/test_device_api_inter
 
-.PHONY: all clean run-unit run-mpi run-mpi-intra run-mpi-inter \
+.PHONY: all unit mpi clean run-unit run-mpi run-mpi-intra run-mpi-inter \
         run-mpi-unified-intra run-mpi-unified-inter run
 
-all: $(MPI_TARGETS)
+all: unit mpi
+
+unit: $(UNIT_TARGET)
+
+mpi: $(MPI_TARGETS)
 
 # Build device kernel objects via dispatcher
 KERNEL_API_TARGETS := device_api.o
@@ -75,6 +86,16 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ALL_INCLUDES)
+
+$(UNIT_OBJ): $(UNIT_SRC)
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
+
+$(UNIT_TARGET): $(UNIT_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
 
 $(BINDIR)/test_device_ir_intra: test_device_ir_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
@@ -109,9 +130,8 @@ $(BINDIR)/test_device_api_inter: test_device_api_inter.cpp $(DEVICE_API_OBJ) $(D
 clean:
 	@rm -rf $(BUILDDIR)
 
-# No pure unit tests here — these all require MPI + GPU
-run-unit:
-	@echo "device_api: no unit tests (all require MPI + GPU)"
+run-unit: unit
+	@$(UNIT_TARGET)
 
 # Env vars for inter-node testing on single node
 HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \
@@ -169,4 +189,4 @@ run-mpi-unified-inter: $(BINDIR)/test_device_ir_unified_inter
 
 run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra run-mpi-unified-inter
 
-run: run-mpi
+run: run-unit run-mpi

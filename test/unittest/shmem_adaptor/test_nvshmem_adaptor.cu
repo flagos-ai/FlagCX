@@ -327,8 +327,8 @@ static void test_barrier_world() {
 // ============================================================
 static void test_host_adaptor_lifecycle() {
   // Test init (idempotent/ref-counted)
-  flagcxResult_t r1 = shmemAdaptor->init(g_pe, g_npes);
-  flagcxResult_t r2 = shmemAdaptor->init(g_pe, g_npes);
+  flagcxResult_t r1 = shmemAdaptor->init(g_pe, g_npes, nullptr);
+  flagcxResult_t r2 = shmemAdaptor->init(g_pe, g_npes, nullptr);
   bool initOk = (r1 == flagcxSuccess && r2 == flagcxSuccess);
 
   // Test malloc/free

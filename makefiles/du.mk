@@ -19,4 +19,4 @@ ADAPTOR_FLAG := -DUSE_DU_ADAPTOR
 
 PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/du
 PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
-PLATFORM_EXTRA_SRCS  :=
+PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc

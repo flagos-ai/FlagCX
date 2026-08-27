@@ -4,51 +4,49 @@ on:
   workflow_call:
     inputs:
       platform:
-        description: Platform identifier used only for display and artifacts
-        required: true
-        type: string
-      display_name:
-        description: Human-readable platform name
-        required: true
-        type: string
-      runs_on:
-        description: JSON array of runner labels
-        required: true
-        type: string
-      image:
-        description: CI container image
-        required: true
-        type: string
-      container_volumes:
-        description: JSON array of container volume mounts
-        required: true
-        type: string
-      container_options:
-        description: Options passed to the job container
-        required: true
-        type: string
-      set_env:
-        description: Platform-owned environment script
-        required: true
-        type: string
-      suites:
-        description: JSON array of unit-test suite names
+        description: Platform configuration name
         required: true
         type: string
 
 jobs:
+  load_config:
+    name: Load platform configuration
+    runs-on: ubuntu-latest
+    outputs:
+      display_name: ${{ steps.config.outputs.display_name }}
+      ci_image: ${{ steps.config.outputs.ci_image }}
+      runs_on: ${{ steps.config.outputs.runs_on }}
+      container_volumes: ${{ steps.config.outputs.container_volumes }}
+      container_options: ${{ steps.config.outputs.container_options }}
+      set_env: ${{ steps.config.outputs.set_env }}
+      unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Load platform configuration
+        id: config
+        env:
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
+        run: ruby .github/scripts/ci/load_platform_config.rb "$FLAGCX_CI_PLATFORM"
+
   unit_test:
-    name: ${{ inputs.display_name }} / ${{ matrix.suite }}
+    name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
+    needs: load_config
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(inputs.suites) }}
-    runs-on: ${{ fromJSON(inputs.runs_on) }}
+        suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
+    runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
     container:
-      image: ${{ inputs.image }}
-      volumes: ${{ fromJSON(inputs.container_volumes) }}
-      options: ${{ inputs.container_options }}
+      image: ${{ needs.load_config.outputs.ci_image }}
+      volumes: ${{ fromJSON(needs.load_config.outputs.container_volumes) }}
+      options: ${{ needs.load_config.outputs.container_options }}
     defaults:
       run:
         shell: bash
@@ -72,6 +70,6 @@ jobs:
 
       - name: Run unit-test suite
         env:
-          FLAGCX_CI_SET_ENV: ${{ inputs.set_env }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
           FLAGCX_CI_SUITE: ${{ matrix.suite }}
         run: bash .github/scripts/ci/run_unit_test.sh "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"

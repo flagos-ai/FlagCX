@@ -18,6 +18,7 @@ else
 fi
 
 export PATH="/opt/maca/mxgpu_llvm/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
@@ -69,6 +70,24 @@ flagcx_ci_prepare() {
     ibv_devinfo 2>/dev/null || true
     ip -o addr show 2>/dev/null || true
   fi
+}
+
+flagcx_ci_build_suite_override() {
+  local suite=$1
+  local suite_dir=$2
+  shift 2
+  local -a args=("$@")
+
+  if [[ "$suite" == "symmem" ]]; then
+    FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1
+    cmake -S "$PROJECT_ROOT/third-party/googletest" \
+      -B "$PROJECT_ROOT/third-party/googletest/build"
+    cmake --build "$PROJECT_ROOT/third-party/googletest/build" --parallel "$(nproc)"
+    make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
+    return
+  fi
+
+  FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
 }
 
 flagcx_ci_run_suite_override() {

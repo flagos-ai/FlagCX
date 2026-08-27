@@ -56,7 +56,8 @@ build_project() {
 
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
-  if [[ "$SUITE" == device_api_unified_ir ]]; then
+  if [[ "$SUITE" == device_api_host ||
+        "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
@@ -69,7 +70,20 @@ build_suite() {
     fi
   fi
 
-  make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
+  if [[ "$SUITE" == device_api_host ]]; then
+    make -C "$suite_dir" --jobs="$(nproc)" unit "${args[@]}"
+  elif [[ "$SUITE" == device_api ||
+          "$SUITE" == device_api_unified_ir ]]; then
+    make -C "$suite_dir" --jobs="$(nproc)" mpi "${args[@]}"
+  else
+    make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
+  fi
+}
+
+run_device_api_host() {
+  local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+  make -C "$suite_dir" run-unit "${args[@]}"
 }
 
 run_device_api() {
@@ -190,6 +204,10 @@ run_device_api_unified_ir() {
 
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  if [[ "$SUITE" == device_api_host ||
+        "$SUITE" == device_api_unified_ir ]]; then
+    suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
   if declare -F flagcx_ci_run_suite_override >/dev/null; then
@@ -234,6 +252,9 @@ run_suite() {
     device_api)
       run_device_api
       ;;
+    device_api_host)
+      run_device_api_host
+      ;;
     device_api_unified_ir)
       run_device_api_unified_ir
       ;;
@@ -245,10 +266,10 @@ run_suite() {
 }
 
 case "$SUITE" in
-  device_api|device_api_unified_ir)
-    ;;
-  adaptor|core|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api_host|p2p|rma|runner|service|symmem)
     build_googletest
+    ;;
+  device_api|device_api_unified_ir)
     ;;
   *)
     echo "Unsupported unit test suite: $SUITE" >&2

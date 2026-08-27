@@ -7,7 +7,8 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
 runner_labels:
   - mx-8g-cicd-flagcx
 
-container_volumes: []
+container_volumes:
+  - /opt/mxdriver:/opt/mxdriver:ro
 
 container_options: >-
   --hostname=te-cicd
@@ -21,7 +22,7 @@ container_options: >-
   -e PLATFORM=metax
   -e TORCH_DISTRIBUTED_BACKEND=mccl
   -e FLAGCX_IB_GID_INDEX=0
-  -e LD_LIBRARY_PATH=/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
+  -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
 
 set_env: .github/scripts/set_env/metax.sh
 

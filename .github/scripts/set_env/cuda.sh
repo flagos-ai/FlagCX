@@ -49,9 +49,9 @@ flagcx_ci_configure_suite() {
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    device_api|device_api_unified_ir)
+    device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
-      FLAGCX_CI_TEST_MAKE_ARGS+=(FORCE_DEFAULT_PATH=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;
   esac
 }

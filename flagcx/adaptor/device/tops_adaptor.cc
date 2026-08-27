@@ -304,7 +304,7 @@ flagcxResult_t topsAdaptorGetDeviceProperties(struct flagcxDevProps *props,
     return flagcxInvalidArgument;
   }
 
-  topsDeviceProp_t devProp;
+  topsDeviceProp devProp;
   DEVCHECK(topsGetDeviceProperties(&devProp, dev));
   strncpy(props->name, devProp.name, sizeof(props->name) - 1);
   props->name[sizeof(props->name) - 1] = '\0';
@@ -320,7 +320,7 @@ flagcxResult_t topsAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev) {
     return flagcxInvalidArgument;
   }
   // TOPS uses topsGetDeviceProperties to get PCI bus ID
-  topsDeviceProp_t devProp;
+  topsDeviceProp devProp;
   DEVCHECK(topsGetDeviceProperties(&devProp, dev));
   snprintf(pciBusId, len, "%04x:%02x:%02x.%01x", devProp.pciDomainID,
            devProp.pciBusID, devProp.pciDeviceID, devProp.pciFunctionID);
@@ -385,10 +385,21 @@ flagcxResult_t topsAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
   return flagcxNotSupported;
 }
 
-flagcxResult_t topsAdaptorHostRegister(void *, size_t) {
-  return flagcxNotSupported;
+flagcxResult_t topsAdaptorHostRegister(void *ptr, size_t size) {
+  if (ptr == NULL || size == 0) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(topsHostRegister(ptr, size, topsHostRegisterMapped));
+  return flagcxSuccess;
 }
-flagcxResult_t topsAdaptorHostUnregister(void *) { return flagcxNotSupported; }
+
+flagcxResult_t topsAdaptorHostUnregister(void *ptr) {
+  if (ptr == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(topsHostUnregister(ptr));
+  return flagcxSuccess;
+}
 
 // Symmetric memory VMM stubs (not supported)
 flagcxResult_t topsAdaptorSymPhysAlloc(void *, size_t, void **, void *,
