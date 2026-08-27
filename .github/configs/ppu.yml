@@ -2,7 +2,7 @@
 hardware_name: ppu
 display_name: T-Head PPU Tests
 
-ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260811-ppu-dev
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:manual-20260827-ppu-dev
 
 runner_labels:
   - flagcicd-810e
