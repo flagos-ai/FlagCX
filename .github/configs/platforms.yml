@@ -10,3 +10,5 @@ platforms:
     enabled: true
   metax:
     enabled: true
+  ppu:
+    enabled: true

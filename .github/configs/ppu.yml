@@ -1,0 +1,59 @@
+# T-Head PPU hardware configuration
+hardware_name: ppu
+display_name: T-Head PPU Tests
+
+ci_image: harbor.baai.ac.cn/flagos-dev/pytorch-plugin-fl:manual-20260811-ppu-dev
+
+runner_labels:
+  - flagcicd-810e
+
+container_volumes: []
+
+container_options: >-
+  --network=host
+  --ipc=host
+  --privileged=true
+  --shm-size=100gb
+  --ulimit memlock=-1
+  --ulimit stack=67108864
+  --cap-add=SYS_PTRACE
+  --security-opt seccomp=unconfined
+  --device=/dev/alixpu
+  --device=/dev/alixpu_ctl
+  --device=/dev/alixpu_ppu0
+  --device=/dev/alixpu_ppu1
+  --device=/dev/alixpu_ppu2
+  --device=/dev/alixpu_ppu3
+  --device=/dev/alixpu_ppu4
+  --device=/dev/alixpu_ppu5
+  --device=/dev/alixpu_ppu6
+  --device=/dev/alixpu_ppu7
+  --device=/dev/alixpu_ppu8
+  --device=/dev/alixpu_ppu9
+  --device=/dev/alixpu_ppu10
+  --device=/dev/alixpu_ppu11
+  --device=/dev/alixpu_ppu12
+  --device=/dev/alixpu_ppu13
+  --device=/dev/alixpu_ppu14
+  --device=/dev/alixpu_ppu15
+  --device=/dev/infiniband/rdma_cm
+  --device=/dev/infiniband/uverbs0
+  --device=/dev/infiniband/uverbs1
+  --device=/dev/infiniband/uverbs2
+  --device=/dev/infiniband/uverbs3
+  --device=/dev/infiniband/fic2_soe_ucmd0
+  --device=/dev/infiniband/fic2_soe_ucmd1
+  --device=/dev/infiniband/fic2_soe_ucmd2
+  --device=/dev/infiniband/fic2_soe_ucmd3
+
+set_env: .github/scripts/set_env/ppu.sh
+
+# PPU currently validates the ACCL transport. IBRC/RMA and device-kernel
+# suites remain excluded until their PPU support is available in CI.
+unit_test_suites:
+  - adaptor
+  - core
+  - p2p
+  - runner
+  - service
+  - symmem
