@@ -11,13 +11,9 @@ container_volumes: []
 
 container_options: >-
   --network=host
-  --ipc=host
-  --privileged=true
   --shm-size=100gb
   --ulimit memlock=-1
   --ulimit stack=67108864
-  --cap-add=SYS_PTRACE
-  --security-opt seccomp=unconfined
   --device=/dev/alixpu
   --device=/dev/alixpu_ctl
   --device=/dev/alixpu_ppu0
