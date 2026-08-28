@@ -31,15 +31,6 @@ container_options: >-
   --device=/dev/alixpu_ppu13
   --device=/dev/alixpu_ppu14
   --device=/dev/alixpu_ppu15
-  --device=/dev/infiniband/rdma_cm
-  --device=/dev/infiniband/uverbs0
-  --device=/dev/infiniband/uverbs1
-  --device=/dev/infiniband/uverbs2
-  --device=/dev/infiniband/uverbs3
-  --device=/dev/infiniband/fic2_soe_ucmd0
-  --device=/dev/infiniband/fic2_soe_ucmd1
-  --device=/dev/infiniband/fic2_soe_ucmd2
-  --device=/dev/infiniband/fic2_soe_ucmd3
 
 set_env: .github/scripts/set_env/ppu.sh
 
