@@ -10,7 +10,6 @@ runner_labels:
 container_volumes: []
 
 container_options: >-
-  --network=host
   --shm-size=100gb
   --ulimit memlock=-1
   --ulimit stack=67108864
