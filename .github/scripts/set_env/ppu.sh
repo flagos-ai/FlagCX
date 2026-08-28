@@ -21,8 +21,8 @@ else
   export MPI_HOME=$FLAGCX_CI_MPI_BASE_HOME
 fi
 
-# PPU uses the BAREX ACCL transport for P2P. IBRC/RMA is intentionally not
-# selected by this platform configuration.
+# PPU uses BAREX ACCL for both P2P and RMA. The RMA suite remains enabled so
+# ACCL one-sided support is exercised as it is completed.
 export FLAGCX_P2P_TRANSPORT=accl
 export FLAGCX_USE_HETERO_COMM=1
 export FLAGCX_MEM_ENABLE=1
@@ -60,6 +60,9 @@ flagcx_ci_configure_suite() {
       # These suites call the IBRC vtable directly. The Engine tests use the
       # runtime transport selector and are retained for ACCL coverage.
       export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pBatchStruct.*:P2pBatchTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
+      export FLAGCX_P2P_TRANSPORT=accl
+      ;;
+    rma)
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
   esac
