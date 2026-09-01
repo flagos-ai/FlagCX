@@ -116,6 +116,9 @@ Use the RPM build target that matches the backend and distribution:
 # NVIDIA CUDA 12 on openEuler 24.03 LTS
 RPM_DISTRO=openeuler2403 ./packaging/rpm/build-flagcx-rpm.sh nvidia
 
+# NVIDIA CUDA 13 on Fedora 43
+RPM_DISTRO=fedora43 ./packaging/rpm/build-flagcx-rpm.sh nvidia
+
 # Other supported backends
 ./packaging/rpm/build-flagcx-rpm.sh metax
 ./packaging/rpm/build-flagcx-rpm.sh ascend
@@ -127,6 +130,13 @@ resulting `.oe2403` RPM intentionally does not claim RPM dependencies on
 `libcuda.so.1`, `libcudart.so.12`, or `libnccl.so.2`, because openEuler has no
 RPM provider for them; those ABI-compatible libraries must be present in the
 deployment environment.
+
+The Fedora target installs CUDA 13 from NVIDIA's native fedora43 repository,
+so the resulting `.fc43` RPM keeps normal dependencies on the CUDA libraries
+(satisfiable from that same repository). NCCL has no Fedora RPM and comes
+from the CUDA 13 pip wheel at build time; only `libnccl.so.2` is excluded
+from the generated dependencies and must be provided by the deployment
+environment (for example `pip install nvidia-nccl-cu13`).
 
 ## CI/CD
 
