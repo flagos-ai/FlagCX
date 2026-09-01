@@ -62,6 +62,9 @@ fi
 if [ "${RPM_EXTERNAL_VENDOR_RUNTIME:-0}" = "1" ]; then
     RPMBUILD_ARGS+=(--define "external_vendor_runtime 1")
 fi
+if [ "${RPM_EXTERNAL_CCL_RUNTIME:-0}" = "1" ]; then
+    RPMBUILD_ARGS+=(--define "external_ccl_runtime 1")
+fi
 if [ -n "${DEVICE_HOME:-}" ]; then
     RPMBUILD_ARGS+=(--define "device_home ${DEVICE_HOME}")
 fi

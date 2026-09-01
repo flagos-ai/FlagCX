@@ -9,9 +9,15 @@
 # container can still provide CUDA/NCCL from another source, while deployment
 # supplies ABI-compatible libraries through the site runtime. Keep normal RPM
 # dependency generation by default; the openEuler CUDA 12 target opts out only
-# for the three vendor libraries that have no RPM provider there.
+# for the three vendor libraries that have no RPM provider there. Fedora has
+# native RPM providers for the CUDA libraries (NVIDIA's fedora repository)
+# but none for NCCL, so it opts out for NCCL alone.
 %if 0%{?external_vendor_runtime}
 %global __requires_exclude ^lib(cuda|cudart|nccl)\\.so\\..*
+%else
+%if 0%{?external_ccl_runtime}
+%global __requires_exclude ^libnccl\\.so\\..*
+%endif
 %endif
 
 # Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
@@ -64,7 +70,7 @@ Summary:        FlagCX library for %{backend}
 # Group-call API arrived in NCCL 2.10; ncclConfig appeared in 2.14.
 # 2.10 is the practical minimum for FlagCX's adaptor today; bump to 2.14
 # once we confirm ncclConfig is actually exercised.
-%if 0%{?external_vendor_runtime} == 0
+%if 0%{?external_vendor_runtime} == 0 && 0%{?external_ccl_runtime} == 0
 Requires:       libnccl >= 2.10
 %endif
 %endif

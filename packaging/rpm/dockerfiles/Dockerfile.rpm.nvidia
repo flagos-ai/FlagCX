@@ -1,5 +1,6 @@
-# Build FlagCX NVIDIA RPM packages. The same definition covers Rocky Linux
-# and openEuler; RPM_DISTRO selects only the build environment preparation.
+# Build FlagCX NVIDIA RPM packages. The same definition covers Rocky Linux,
+# openEuler and Fedora; RPM_DISTRO selects only the build environment
+# preparation.
 
 ARG BASE_IMAGE=nvcr.io/nvidia/cuda
 ARG BASE_IMAGE_VERSION=12.4.1-devel-rockylinux8
@@ -26,6 +27,28 @@ RUN case "${RPM_DISTRO}" in \
                 nvidia-nccl-cu12 && \
             bash /tmp/prepare-cuda12-pip.sh \
             ;; \
+        fedora43) \
+            # CUDA comes from NVIDIA's native Fedora repository, so the
+            # toolkit, the libcuda link stub (cuda-driver-devel) and the
+            # runtime RPM dependencies all resolve natively. NCCL has no
+            # Fedora RPM, so it is taken from the CUDA 13 pip wheel instead.
+            curl -fsSL -o /etc/yum.repos.d/cuda-fedora43.repo \
+                https://developer.download.nvidia.com/compute/cuda/repos/fedora43/x86_64/cuda-fedora43.repo && \
+            dnf install -y \
+                cuda-nvcc-13-2 \
+                cuda-cudart-devel-13-2 \
+                cuda-driver-devel-13-2 \
+                cuda-cccl-13-2 \
+                python3-pip && \
+            dnf clean all && \
+            python3 -m pip install --no-cache-dir \
+                --index-url "${CUDA_PIP_INDEX_URL}" \
+                --only-binary=:all: \
+                nvidia-nccl-cu13 && \
+            NCCL_ROOT="$(python3 -c 'import pathlib, site; print(next(p for c in site.getsitepackages() for p in [pathlib.Path(c) / "nvidia" / "nccl"] if p.is_dir()))')" && \
+            ln -sfn libnccl.so.2 "${NCCL_ROOT}/lib/libnccl.so" && \
+            ln -sfn "${NCCL_ROOT}" /opt/nccl13 \
+            ;; \
         *) \
             echo "ERROR: unsupported NVIDIA RPM distro: ${RPM_DISTRO}" >&2; \
             exit 1 \
@@ -39,6 +62,15 @@ RUN if [ "${RPM_DISTRO}" = "openeuler2403" ]; then \
         CCL_HOME=/opt/nccl12 \
         RPM_DIST_TAG=.oe2403 \
         RPM_EXTERNAL_VENDOR_RUNTIME=1 \
+        bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia; \
+    elif [ "${RPM_DISTRO}" = "fedora43" ]; then \
+        # %{?dist} expands to .fc43 natively inside the Fedora container, so
+        # no RPM_DIST_TAG is needed. LIBRARY_PATH lets -lcuda resolve against
+        # the link stub, the same mechanism NVIDIA's own CUDA images use.
+        DEVICE_HOME=/usr/local/cuda-13.2 \
+        CCL_HOME=/opt/nccl13 \
+        RPM_EXTERNAL_CCL_RUNTIME=1 \
+        LIBRARY_PATH=/usr/local/cuda-13.2/lib64/stubs \
         bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia; \
     else \
         bash packaging/rpm/dockerfiles/build-rpm-common.sh nvidia; \
