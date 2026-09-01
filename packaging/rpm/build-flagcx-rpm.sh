@@ -3,7 +3,8 @@ set -euo pipefail
 
 # FlagCX RPM package build script
 # Usage: ./build-flagcx-rpm.sh <backend> [base_image_version]
-# Set RPM_DISTRO=openeuler2403 to build NVIDIA packages on openEuler.
+# Set RPM_DISTRO=openeuler2403 or RPM_DISTRO=fedora43 to build NVIDIA
+# packages on openEuler or Fedora.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -55,9 +56,14 @@ case "$BACKEND" in
                 [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="13.0.0-oe2403lts"
                 OUTPUT_TARGET="nvidia-openeuler2403"
                 ;;
+            fedora43)
+                [ -z "$BASE_IMAGE" ] && BASE_IMAGE="fedora"
+                [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="43"
+                OUTPUT_TARGET="nvidia-fedora43"
+                ;;
             *)
                 log_error "Unsupported NVIDIA RPM distro: $RPM_DISTRO"
-                echo "Supported NVIDIA distros: rocky8, openeuler2403"
+                echo "Supported NVIDIA distros: rocky8, openeuler2403, fedora43"
                 exit 1
                 ;;
         esac

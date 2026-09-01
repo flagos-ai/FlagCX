@@ -38,6 +38,12 @@ jobs:
             base_image: openeuler/cuda
             base_image_version: 13.0.0-oe2403lts
             runner: ubuntu-latest
+          - target: nvidia-fedora43
+            backend: nvidia
+            distro: fedora43
+            base_image: fedora
+            base_image_version: '43'
+            runner: ubuntu-latest
           - target: metax
             backend: metax
             distro: rocky8
