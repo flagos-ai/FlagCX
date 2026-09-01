@@ -61,11 +61,16 @@ can collaborate on various projects.
 %package -n libflagcx-%{backend}
 Summary:        FlagCX library for %{backend}
 %if "%{backend}" == "nvidia"
-# Group-call API arrived in NCCL 2.10; ncclConfig appeared in 2.14.
-# 2.10 is the practical minimum for FlagCX's adaptor today; bump to 2.14
-# once we confirm ncclConfig is actually exercised.
+# The nccl adaptor compiles its symmetric-window support whenever the
+# build-time NCCL headers are newer than 2.27.0 (NCCL_VERSION_CODE guard in
+# nccl_adaptor.cc), and the built library then carries undefined references
+# to ncclCommWindowRegister/Deregister. The RPM build containers install
+# current NCCL releases, so the packaged library requires a runtime NCCL
+# that provides the window API (introduced in 2.27): with an older libnccl,
+# linking a consumer executable fails outright, and lazy binding aborts at
+# runtime once the symmetric-memory path is exercised.
 %if 0%{?external_vendor_runtime} == 0
-Requires:       libnccl >= 2.10
+Requires:       libnccl >= 2.27
 %endif
 %endif
 
