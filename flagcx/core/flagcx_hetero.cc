@@ -377,8 +377,6 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     }
 
     bool canBatch = desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
-                    comm->netAdaptor->name != NULL &&
-                    strcmp(comm->netAdaptor->name, "IB") == 0 &&
                     comm->netAdaptor->iputBatch != NULL;
     if (canBatch) {
       int64_t paramBatchMax = flagcxParamRmaBatchMax();

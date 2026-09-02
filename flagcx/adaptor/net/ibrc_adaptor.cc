@@ -1666,7 +1666,9 @@ flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
   assert(size > 0);
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
   struct flagcxIbMrHandle *mhandleWrapper =
-      (struct flagcxIbMrHandle *)malloc(sizeof(struct flagcxIbMrHandle));
+      (struct flagcxIbMrHandle *)calloc(1, sizeof(struct flagcxIbMrHandle));
+  if (mhandleWrapper == NULL)
+    return flagcxSystemError;
   for (int i = 0; i < base->ndevs; i++) {
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
@@ -1725,6 +1727,22 @@ flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
   }
   free(mhandleWrapper);
   return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
+                                        struct flagcxNetMrInfo *info) {
+  if (mhandle == NULL || info == NULL)
+    return flagcxInvalidArgument;
+  memset(info, 0, sizeof(*info));
+  struct flagcxIbMrHandle *wrapper = (struct flagcxIbMrHandle *)mhandle;
+  for (int i = 0; i < FLAGCX_IB_MAX_DEVS_PER_NIC; i++) {
+    if (wrapper->mrs[i] == NULL)
+      continue;
+    info->lkeys[i] = wrapper->mrs[i]->lkey;
+    info->rkeys[i] = wrapper->mrs[i]->rkey;
+    info->nKeys = i + 1;
+  }
+  return info->nKeys == 0 ? flagcxInternalError : flagcxSuccess;
 }
 
 FLAGCX_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
@@ -2752,5 +2770,5 @@ struct flagcxNetAdaptor flagcxNetIb = {
     // Device name lookup
     flagcxIbGetDevFromName,
 
-    // Optional one-sided batch WRITE
-    flagcxIbIputBatch};
+    // Optional one-sided batch helpers and MR metadata
+    flagcxIbIputBatch, NULL, NULL, flagcxIbGetMrInfo};
