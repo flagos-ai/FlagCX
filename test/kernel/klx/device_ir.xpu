@@ -1,0 +1,909 @@
+/*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
+ * Device IR kernels for Kunlunxin (P800), exercising the transport-transparent
+ * one-sided IR (flagcxDev*) on top of the xSHMEM CommTraits.
+ *
+ * Only the unified INTRA suite (S16-S25) of test/kernel/include/device_ir.h is
+ * provided. S19 (DevGet) is absent on purpose: P800 cannot read a peer's
+ * memory, so no correct implementation exists (see
+ * docs/device_ir_klx_adaptation.md).
+ *
+ * Two P800 properties shape every kernel here:
+ *   - Kernel pointer parameters live in address space 1. The IR entry points
+ *     take generic (const void *) handles, so each kernel copies the
+ *     flagcxDevComm / flagcxDevMem descriptors into local memory first and
+ *     passes the local objects in.
+ *   - FLAGCX_COOP_WARP maps to CoopTile<FLAGCX_SIMT_WIDTH> == CoopTile<16>,
+ *     which is the whole cluster at 16 cores. Launching with exactly 16 cores
+ *     is therefore what makes WARP a legal (cluster-wide) barrier scope.
+ ************************************************************************/
+
+#include "bkcl.h"
+#include "xpu/kernel/xtdk.h"
+#include "xpu/kernel/xtdk_io.h"
+#include "xpu/runtime.h"
+#include "xshmem/xshmem.h"
+#include "xshmem/xshmemx.h"
+
+#include <stdio.h>
+
+#include "flagcx.h"
+#include "flagcx_kernel.h"
+
+#include "device_api/flagcx_device.h"
+
+// IR declarations + inline implementations.
+#include "flagcx_device_wrapper.h"
+#include "flagcx_device_wrapper_impl.h" // also pulls in scalar/unified IR impls
+
+#include "device_ir.h"
+
+// The suites check result[0..3], one slot per CTA, so the grid width is part of
+// the contract. It must also stay constant for every launch on one DevComm:
+// the xshmem grid barrier keeps a per-cluster generation counter in the
+// symmetric heap.
+#define FLAGCX_IR_CLUSTERS 4
+// 16 cores == one full cluster == CoopWarp, see the file header.
+#define FLAGCX_IR_CORES FLAGCX_SIMT_WIDTH
+
+
+namespace {
+
+// FLAGCX_COOP_WARP and FLAGCX_COOP_BLOCK both span the whole cluster on P800,
+// so only THREAD narrows the participating cores. Mirrors
+// flagcxUnifiedIrTestCoopActive in the CUDA kernels.
+static __device__ inline bool irCoopActive(flagcxDevCoopKind_t coopKind) {
+  return coopKind != FLAGCX_COOP_THREAD || core_id() == 0;
+}
+
+// P800 has no atomic AND, and none is needed: only zero is ever published, so
+// a plain store from each failing core is equivalent to the CUDA kernels'
+// atomicAnd(result, ok).
+static __device__ inline void irPublish(_global_ptr_ int *result, bool ok) {
+  if (!ok && core_id() == 0)
+    result[0] = 0;
+}
+
+} // namespace
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+namespace {
+static flagcxResult_t irWait(XPUStream cs, const char *where) {
+  int ret = xpu_wait(cs);
+  if (ret != XPU_SUCCESS) {
+    fprintf(stderr, "FlagCX KLX device_ir: xpu_wait failed at %s, code=%d\n",
+            where, ret);
+    return flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
+}
+} // namespace
+#endif
+
+// Every kernel opens the same way: stage the descriptors the test passes as
+// device pointers into local memory, bring up the xshmem device state, and pick
+// this cluster's net context (one context per cluster, so per-context signal
+// slots never collide).
+#define FLAGCX_IR_PROLOGUE(gComm)                                              \
+  flagcxDevComm comm;                                                          \
+  GM2LM(gComm, &comm, sizeof(comm));                                           \
+  XSHMEM_DEVICE_INIT(comm._commBase.devStateHandle);                           \
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());                     \
+  const int nContexts = comm.getContextCount();                                \
+  const flagcxDevContext_t contextId =                                         \
+      nContexts > 0 ? (flagcxDevContext_t)(cluster_id() % nContexts) : 0
+
+// ---------------------------------------------------------------------------
+// S16: flagcxDevBarrierSync — INTRA then WORLD
+// ---------------------------------------------------------------------------
+__global__ void kernelDevBarrierIntraWorldS(const flagcxDevComm *gComm,
+                                            int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevBarrierSync(&comm, FLAGCX_TEAM_INTRA, cluster_id(), contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+  flagcxDevBarrierSync(&comm, FLAGCX_TEAM_WORLD, cluster_id(), contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+
+  if (core_id() == 0)
+    result[cluster_id()] = 1;
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult,
+                                       flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevBarrierIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES, cs>>>(
+      (const flagcxDevComm *)devCommPtr, devResult);
+  irWait(cs, "S16 DevBarrierSync");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S16 sub-block: flagcxDevBarrierArrive + flagcxDevBarrierWait
+// ---------------------------------------------------------------------------
+__global__ void kernelDevBarrierArriveWaitIntraWorldS(
+    const flagcxDevComm *gComm, int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+
+  flagcxDevBarrierArrive(&comm, FLAGCX_TEAM_INTRA, cluster_id(), contextId,
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelease,
+                         flagcxDeviceScopeSystem);
+  flagcxDevBarrierWait(&comm, FLAGCX_TEAM_INTRA, cluster_id(), contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire,
+                       flagcxDeviceScopeSystem);
+
+  flagcxCoopSyncS(FLAGCX_COOP_BLOCK);
+
+  flagcxDevBarrierArrive(&comm, FLAGCX_TEAM_WORLD, cluster_id(), contextId,
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelease,
+                         flagcxDeviceScopeSystem);
+  flagcxDevBarrierWait(&comm, FLAGCX_TEAM_WORLD, cluster_id(), contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcquire,
+                       flagcxDeviceScopeSystem);
+
+  if (core_id() == 0)
+    result[cluster_id()] = 1;
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
+                                                 int *devResult,
+                                                 flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevBarrierArriveWaitIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES,
+                                          cs>>>(
+      (const flagcxDevComm *)devCommPtr, devResult);
+  irWait(cs, "S16 DevBarrierArriveWait");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S17: flagcxDevPut with team-resolved peers — INTRA + WORLD
+// Each combo writes one float into the peer's slot for this rank:
+//   dstOffset = combo * maxRanks * sizeof(float) + rankInTeam * sizeof(float)
+// ---------------------------------------------------------------------------
+__global__ void kernelDevTeamResolutionIntraWorldS(const flagcxDevComm *gComm,
+                                                   const flagcxDevMem *gDst,
+                                                   const flagcxDevMem *gSrc,
+                                                   int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst, src;
+  GM2LM(gDst, &dst, sizeof(dst));
+  GM2LM(gSrc, &src, sizeof(src));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  int maxRanks = intraSize > nRanks ? intraSize : nRanks;
+
+#define S17_COMBO(combo, teamKind, peer, rankInTeam, coopKind)                 \
+  do {                                                                         \
+    if (cluster_id() == 0 && irCoopActive(coopKind)) {                         \
+      size_t dstOff = ((size_t)(combo) * (size_t)maxRanks +                    \
+                       (size_t)(rankInTeam)) *                                 \
+                      sizeof(float);                                           \
+      flagcxDevPut(&comm, &dst, dstOff, &src, 0, sizeof(float), teamKind,      \
+                   peer, contextId, coopKind, flagcxDeviceScopeSystem,         \
+                   flagcxDeviceMemoryOrderRelease);                            \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+  S17_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, intraRank,
+            FLAGCX_COOP_THREAD);
+  S17_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, worldRank,
+            FLAGCX_COOP_THREAD);
+  S17_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, intraRank,
+            FLAGCX_COOP_WARP);
+  S17_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, worldRank,
+            FLAGCX_COOP_WARP);
+  S17_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, intraRank,
+            FLAGCX_COOP_BLOCK);
+  S17_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, worldRank,
+            FLAGCX_COOP_BLOCK);
+
+#undef S17_COMBO
+
+  // Push the stores out, then make every rank wait for its peer's stores.
+  flagcxDevFlush(&comm, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+  flagcxDevBarrierSync(&comm, FLAGCX_TEAM_INTRA, cluster_id(), contextId,
+                       FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,
+                       flagcxDeviceScopeSystem);
+  flagcxDevFlush(&comm, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
+  if (cluster_id() == 0 && core_id() == 0)
+    result[0] = 1;
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevTeamResolutionIntraWorldS(const void *devCommPtr,
+                                              const void *dstMemPtr,
+                                              const void *srcMemPtr,
+                                              int *devResult,
+                                              flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevTeamResolutionIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES,
+                                       cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      (const flagcxDevMem *)srcMemPtr, devResult);
+  irWait(cs, "S17 DevTeamResolution");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S18 sub-block A: flagcxDevPut — INTRA + WORLD, 6 combos of `bytes` each
+// Region layout: combo `c` owns [c * bytes, (c + 1) * bytes).
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutIntraWorldS(const flagcxDevComm *gComm,
+                                        const flagcxDevMem *gDst,
+                                        const flagcxDevMem *gSrc, int *result,
+                                        int bytes) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst, src;
+  GM2LM(gDst, &dst, sizeof(dst));
+  GM2LM(gSrc, &src, sizeof(src));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+
+  // Combos 0-3 are issued by cluster 0 alone; combos 4-5 split the payload
+  // across clusters. The split is in float units so every fragment stays
+  // 4-byte aligned, which keeps the peer stores on the word path.
+  const size_t words = (size_t)bytes / sizeof(float);
+  const size_t wordsPerCluster =
+      (words + (size_t)cluster_num() - 1) / (size_t)cluster_num();
+  const size_t myFirstWord = (size_t)cluster_id() * wordsPerCluster;
+  const size_t myWords =
+      myFirstWord < words
+          ? (wordsPerCluster < words - myFirstWord ? wordsPerCluster
+                                                  : words - myFirstWord)
+          : 0;
+
+#define S18_LEAD_COMBO(combo, teamKind, peer, coopKind)                        \
+  do {                                                                         \
+    if (cluster_id() == 0 && irCoopActive(coopKind)) {                         \
+      size_t off = (size_t)(combo) * (size_t)bytes;                            \
+      flagcxDevPut(&comm, &dst, off, &src, off, (size_t)bytes, teamKind, peer,  \
+                   contextId, coopKind, flagcxDeviceScopeSystem,               \
+                   flagcxDeviceMemoryOrderRelease);                            \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+#define S18_SPLIT_COMBO(combo, teamKind, peer)                                 \
+  do {                                                                         \
+    if (myWords > 0) {                                                         \
+      size_t off = (size_t)(combo) * (size_t)bytes +                           \
+                   myFirstWord * sizeof(float);                                \
+      flagcxDevPut(&comm, &dst, off, &src, off, myWords * sizeof(float),        \
+                   teamKind, peer, contextId, FLAGCX_COOP_BLOCK,               \
+                   flagcxDeviceScopeSystem, flagcxDeviceMemoryOrderRelease);   \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+  S18_LEAD_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                 FLAGCX_COOP_THREAD);
+  S18_LEAD_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                 FLAGCX_COOP_THREAD);
+  S18_LEAD_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                 FLAGCX_COOP_WARP);
+  S18_LEAD_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                 FLAGCX_COOP_WARP);
+  S18_SPLIT_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S18_SPLIT_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+
+#undef S18_LEAD_COMBO
+#undef S18_SPLIT_COMBO
+
+  flagcxDevFlush(&comm, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
+  if (cluster_id() == 0 && core_id() == 0)
+    result[0] = 1;
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevPutIntraWorldS(const void *devCommPtr,
+                                   const void *dstMemPtr,
+                                   const void *srcMemPtr, int *devResult,
+                                   size_t bytes, flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevPutIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES, cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      (const flagcxDevMem *)srcMemPtr, devResult, (int)bytes);
+  irWait(cs, "S18 DevPut");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S18 sub-block B: flagcxDevPutValue — one uint64 per combo slot
+// Expected value at slot c on the receiver: senderRank * 100 + c.
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutValueIntraWorldS(const flagcxDevComm *gComm,
+                                             const flagcxDevMem *gDst,
+                                             int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst;
+  GM2LM(gDst, &dst, sizeof(dst));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+
+#define S18_VALUE_COMBO(combo, teamKind, peer, coopKind)                        \
+  do {                                                                         \
+    if (cluster_id() == 0 && irCoopActive(coopKind)) {                         \
+      flagcxDevPutValue(&comm, &dst, (size_t)(combo) * sizeof(uint64_t),       \
+                        (uint64_t)(worldRank * 100 + (combo)), teamKind, peer,  \
+                        contextId, coopKind, flagcxDeviceScopeSystem,          \
+                        flagcxDeviceMemoryOrderRelease);                       \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+  S18_VALUE_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                  FLAGCX_COOP_THREAD);
+  S18_VALUE_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                  FLAGCX_COOP_THREAD);
+  S18_VALUE_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                  FLAGCX_COOP_WARP);
+  S18_VALUE_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                  FLAGCX_COOP_WARP);
+  S18_VALUE_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+                  FLAGCX_COOP_BLOCK);
+  S18_VALUE_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+                  FLAGCX_COOP_BLOCK);
+
+#undef S18_VALUE_COMBO
+
+  flagcxDevFlush(&comm, contextId, FLAGCX_COOP_BLOCK,
+                 flagcxDeviceMemoryOrderRelaxed);
+
+  if (cluster_id() == 0 && core_id() == 0)
+    result[0] = 1;
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevPutValueIntraWorldS(const void *devCommPtr,
+                                        const void *dstMemPtr, int *devResult,
+                                        size_t bytes, flagcxStream_t stream) {
+  (void)bytes; // every combo writes a single uint64_t
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevPutValueIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES, cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      devResult);
+  irWait(cs, "S18 DevPutValue");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S20: signal-only round trip (Reset/Inc/Add/Wait/Read) — INTRA + WORLD
+// One increment per cluster and per context, so each slot ends at 1 (leg A)
+// and 5 (leg B).
+// ---------------------------------------------------------------------------
+__global__ void kernelDevSignalStandaloneIntraWorldS(
+    const flagcxDevComm *gComm, int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  bool ok = true;
+
+#define S20_RESET_AND_CHECK(slot)                                              \
+  do {                                                                         \
+    if (core_id() == 0)                                                        \
+      flagcxDevResetSignal(&comm, contextId, (flagcxDevSignal_t)(slot));       \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId,   \
+                            flagcxDeviceMemoryOrderAcquire) != 0)              \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevBarrierSync(&comm, FLAGCX_TEAM_INTRA, cluster_id(), contextId,    \
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
+                         flagcxDeviceScopeSystem);                             \
+  } while (0)
+
+#define S20_EXPECT(slot, expected, coopKind, waitOrder)                        \
+  do {                                                                         \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    if (irCoopActive(coopKind))                                                \
+      flagcxDevWaitSignal(&comm, (flagcxDevSignal_t)(slot), expected, 64,      \
+                          contextId, coopKind, waitOrder);                     \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId,   \
+                            flagcxDeviceMemoryOrderAcquire) != (expected))     \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+#define S20_COMBO(slot, teamKind, peer, coopKind, waitOrder)                   \
+  do {                                                                         \
+    S20_RESET_AND_CHECK(slot);                                                 \
+    if (irCoopActive(coopKind))                                                \
+      flagcxDevSignalInc(&comm, teamKind, peer, (flagcxDevSignal_t)(slot),     \
+                         contextId, coopKind, flagcxDeviceScopeSystem);        \
+    S20_EXPECT(slot, (uint64_t)1, coopKind, waitOrder);                        \
+    S20_RESET_AND_CHECK(slot);                                                 \
+    if (irCoopActive(coopKind))                                                \
+      flagcxDevSignalAdd(&comm, teamKind, peer, (flagcxDevSignal_t)(slot),     \
+                         (uint64_t)5, contextId, coopKind,                     \
+                         flagcxDeviceScopeSystem);                             \
+    S20_EXPECT(slot, (uint64_t)5, coopKind, waitOrder);                        \
+  } while (0)
+
+  S20_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_THREAD, flagcxDeviceMemoryOrderRelaxed);
+  S20_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_THREAD, flagcxDeviceMemoryOrderAcquire);
+  S20_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_WARP, flagcxDeviceMemoryOrderSeqCst);
+  S20_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, FLAGCX_COOP_WARP,
+            flagcxDeviceMemoryOrderRelaxed);
+  S20_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderSeqCst);
+  S20_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, FLAGCX_COOP_BLOCK,
+            flagcxDeviceMemoryOrderAcquire);
+
+#undef S20_COMBO
+#undef S20_EXPECT
+#undef S20_RESET_AND_CHECK
+
+  irPublish(result, ok);
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
+                                                int *devResult,
+                                                flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevSignalStandaloneIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES,
+                                         cs>>>(
+      (const flagcxDevComm *)devCommPtr, devResult);
+  irWait(cs, "S20 DevSignalStandalone");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S21: flagcxDevPut followed by a separate signal — INTRA + WORLD
+// Even slots use SignalInc (expect 1), odd slots SignalAdd(3) (expect 3).
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutSignalWaitIntraWorldS(const flagcxDevComm *gComm,
+                                                  const flagcxDevMem *gDst,
+                                                  const flagcxDevMem *gSrc,
+                                                  int *result, int bytes) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst, src;
+  GM2LM(gDst, &dst, sizeof(dst));
+  GM2LM(gSrc, &src, sizeof(src));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  bool ok = true;
+
+#define S21_COMBO(slot, teamKind, peer, expected)                              \
+  do {                                                                         \
+    if (core_id() == 0)                                                        \
+      flagcxDevResetSignal(&comm, contextId, (flagcxDevSignal_t)(slot));       \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevBarrierSync(&comm, teamKind, cluster_id(), contextId,             \
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
+                         flagcxDeviceScopeSystem);                             \
+    if (core_id() == 0) {                                                      \
+      size_t off = (size_t)(slot) * (size_t)bytes;                             \
+      flagcxDevPut(&comm, &dst, off, &src, off, (size_t)bytes, teamKind, peer,  \
+                   contextId, FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem,     \
+                   flagcxDeviceMemoryOrderRelease);                            \
+      if ((slot) % 2 == 0)                                                     \
+        flagcxDevSignalInc(&comm, teamKind, peer, (flagcxDevSignal_t)(slot),   \
+                           contextId, FLAGCX_COOP_THREAD,                      \
+                           flagcxDeviceScopeSystem);                           \
+      else                                                                     \
+        flagcxDevSignalAdd(&comm, teamKind, peer, (flagcxDevSignal_t)(slot),   \
+                           (uint64_t)3, contextId, FLAGCX_COOP_THREAD,         \
+                           flagcxDeviceScopeSystem);                           \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevWaitSignal(&comm, (flagcxDevSignal_t)(slot), expected, 64,        \
+                        contextId, FLAGCX_COOP_BLOCK,                          \
+                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId,   \
+                            flagcxDeviceMemoryOrderAcquire) != (expected))     \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+  S21_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, (uint64_t)1);
+  S21_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, (uint64_t)3);
+  S21_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, (uint64_t)1);
+  S21_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, (uint64_t)3);
+  S21_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, (uint64_t)1);
+  S21_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, (uint64_t)3);
+
+#undef S21_COMBO
+
+  irPublish(result, ok);
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
+                                             const void *dstMemPtr,
+                                             const void *srcMemPtr,
+                                             int *devResult, size_t bytes,
+                                             flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevPutSignalWaitIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES,
+                                      cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      (const flagcxDevMem *)srcMemPtr, devResult, (int)bytes);
+  irWait(cs, "S21 DevPutSignalWait");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S22: flagcxDevPut_RSigInc / _RSigAdd — signal fused into the put
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutRSigIntraWorldS(const flagcxDevComm *gComm,
+                                            const flagcxDevMem *gDst,
+                                            const flagcxDevMem *gSrc,
+                                            int *result, int bytes) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst, src;
+  GM2LM(gDst, &dst, sizeof(dst));
+  GM2LM(gSrc, &src, sizeof(src));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  bool ok = true;
+
+#define S22_COMBO(slot, teamKind, peer, expected)                              \
+  do {                                                                         \
+    if (core_id() == 0) {                                                      \
+      flagcxDevResetSignal(&comm, contextId, (flagcxDevSignal_t)(slot));       \
+      if (flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId, \
+                              flagcxDeviceMemoryOrderAcquire) != 0)            \
+        ok = false;                                                            \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevBarrierSync(&comm, teamKind, cluster_id(), contextId,             \
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
+                         flagcxDeviceScopeSystem);                             \
+    if (core_id() == 0) {                                                      \
+      size_t off = (size_t)(slot) * (size_t)bytes;                             \
+      if ((slot) % 2 == 0)                                                     \
+        flagcxDevPut_RSigInc(&comm, &dst, off, &src, off, (size_t)bytes,        \
+                             teamKind, peer, contextId, FLAGCX_COOP_THREAD,    \
+                             flagcxDeviceScopeSystem,                          \
+                             flagcxDeviceMemoryOrderRelease,                   \
+                             (flagcxDevSignal_t)(slot));                       \
+      else                                                                     \
+        flagcxDevPut_RSigAdd(&comm, &dst, off, &src, off, (size_t)bytes,        \
+                             teamKind, peer, contextId, FLAGCX_COOP_THREAD,    \
+                             flagcxDeviceScopeSystem,                          \
+                             flagcxDeviceMemoryOrderRelease,                   \
+                             (flagcxDevSignal_t)(slot), (uint64_t)3);          \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevWaitSignal(&comm, (flagcxDevSignal_t)(slot), expected, 64,        \
+                        contextId, FLAGCX_COOP_BLOCK,                          \
+                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId,   \
+                            flagcxDeviceMemoryOrderAcquire) != (expected))     \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+  S22_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, (uint64_t)1);
+  S22_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, (uint64_t)3);
+  S22_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, (uint64_t)1);
+  S22_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, (uint64_t)3);
+  S22_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize, (uint64_t)1);
+  S22_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, (uint64_t)3);
+
+#undef S22_COMBO
+
+  irPublish(result, ok);
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevPutRSigIntraWorldS(const void *devCommPtr,
+                                       const void *dstMemPtr,
+                                       const void *srcMemPtr, int *devResult,
+                                       size_t bytes, flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevPutRSigIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES, cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      (const flagcxDevMem *)srcMemPtr, devResult, (int)bytes);
+  irWait(cs, "S22 DevPut_RSig");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S23: put variants with a sender-side counter — INTRA + WORLD
+// variant 0: LCtrInc only, 1: RSigInc + LCtrInc, 2: RSigAdd(3) + LCtrInc.
+// The counter is local, so it must reach exactly 1 per (context, counter).
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutCounterIntraWorldS(const flagcxDevComm *gComm,
+                                               const flagcxDevMem *gDst,
+                                               const flagcxDevMem *gSrc,
+                                               int *result, int bytes) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst, src;
+  GM2LM(gDst, &dst, sizeof(dst));
+  GM2LM(gSrc, &src, sizeof(src));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  bool ok = true;
+
+#define S23_COMBO(slot, teamKind, peer)                                        \
+  do {                                                                         \
+    const flagcxDevCounter_t ctr = (flagcxDevCounter_t)(slot);                 \
+    const flagcxDevSignal_t sig = (flagcxDevSignal_t)(slot);                   \
+    const int variant = (slot) % 3;                                            \
+    if (core_id() == 0) {                                                      \
+      flagcxDevResetCounter(&comm, contextId, ctr);                            \
+      flagcxDevResetSignal(&comm, contextId, sig);                             \
+      if (flagcxDevReadCounter(&comm, ctr, 64, contextId,                      \
+                               flagcxDeviceMemoryOrderAcquire) != 0 ||         \
+          flagcxDevReadSignal(&comm, sig, 64, contextId,                       \
+                              flagcxDeviceMemoryOrderAcquire) != 0)            \
+        ok = false;                                                            \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevBarrierSync(&comm, teamKind, cluster_id(), contextId,             \
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
+                         flagcxDeviceScopeSystem);                             \
+    if (core_id() == 0) {                                                      \
+      size_t off = (size_t)(slot) * (size_t)bytes;                             \
+      if (variant == 0)                                                        \
+        flagcxDevPut_LCtrInc(&comm, &dst, off, &src, off, (size_t)bytes,        \
+                             teamKind, peer, contextId, FLAGCX_COOP_THREAD,    \
+                             flagcxDeviceScopeSystem,                          \
+                             flagcxDeviceMemoryOrderRelease, ctr);             \
+      else if (variant == 1)                                                   \
+        flagcxDevPut_RSigInc_LCtrInc(&comm, &dst, off, &src, off,               \
+                                     (size_t)bytes, teamKind, peer, contextId, \
+                                     FLAGCX_COOP_THREAD,                       \
+                                     flagcxDeviceScopeSystem,                  \
+                                     flagcxDeviceMemoryOrderRelease, sig, ctr);\
+      else                                                                     \
+        flagcxDevPut_RSigAdd_LCtrInc(&comm, &dst, off, &src, off,               \
+                                     (size_t)bytes, teamKind, peer, contextId, \
+                                     FLAGCX_COOP_THREAD,                       \
+                                     flagcxDeviceScopeSystem,                  \
+                                     flagcxDeviceMemoryOrderRelease, sig,      \
+                                     (uint64_t)3, ctr);                        \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevWaitCounter(&comm, ctr, 1, 64, contextId, FLAGCX_COOP_BLOCK,      \
+                         flagcxDeviceMemoryOrderAcquire);                      \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadCounter(&comm, ctr, 64, contextId,                        \
+                             flagcxDeviceMemoryOrderAcquire) != 1)             \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    if (variant != 0) {                                                        \
+      const uint64_t expectedSig = (variant == 1) ? 1 : 3;                     \
+      flagcxDevWaitSignal(&comm, sig, expectedSig, 64, contextId,              \
+                          FLAGCX_COOP_BLOCK,                                   \
+                          flagcxDeviceMemoryOrderAcquire);                     \
+      if (core_id() == 0 &&                                                    \
+          flagcxDevReadSignal(&comm, sig, 64, contextId,                       \
+                              flagcxDeviceMemoryOrderAcquire) != expectedSig)  \
+        ok = false;                                                            \
+      flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                      \
+    }                                                                          \
+  } while (0)
+
+  S23_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S23_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+  S23_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S23_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+  S23_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize);
+  S23_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks);
+
+#undef S23_COMBO
+
+  irPublish(result, ok);
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
+                                          const void *dstMemPtr,
+                                          const void *srcMemPtr,
+                                          int *devResult, size_t bytes,
+                                          flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevPutCounterIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES, cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      (const flagcxDevMem *)srcMemPtr, devResult, (int)bytes);
+  irWait(cs, "S23 DevPutCounter");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S24: flagcxDevPutValue_RSigInc / _RSigAdd — scalar write plus fused signal
+// ---------------------------------------------------------------------------
+__global__ void kernelDevPutValueRSigIntraWorldS(const flagcxDevComm *gComm,
+                                                 const flagcxDevMem *gDst,
+                                                 int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+  flagcxDevMem dst;
+  GM2LM(gDst, &dst, sizeof(dst));
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  bool ok = true;
+
+#define S24_COMBO(slot, teamKind, peer, coopKind, expected)                    \
+  do {                                                                         \
+    if (core_id() == 0) {                                                      \
+      flagcxDevResetSignal(&comm, contextId, (flagcxDevSignal_t)(slot));       \
+      if (flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId, \
+                              flagcxDeviceMemoryOrderAcquire) != 0)            \
+        ok = false;                                                            \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevBarrierSync(&comm, teamKind, cluster_id(), contextId,             \
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
+                         flagcxDeviceScopeSystem);                             \
+    if (irCoopActive(coopKind)) {                                              \
+      size_t off = (size_t)(slot) * sizeof(uint64_t);                          \
+      uint64_t val = (uint64_t)(worldRank * 100 + (slot));                     \
+      if ((slot) % 2 == 0)                                                     \
+        flagcxDevPutValue_RSigInc(&comm, &dst, off, val, teamKind, peer,       \
+                                  contextId, coopKind,                        \
+                                  flagcxDeviceScopeSystem,                    \
+                                  flagcxDeviceMemoryOrderRelease,             \
+                                  (flagcxDevSignal_t)(slot));                 \
+      else                                                                     \
+        flagcxDevPutValue_RSigAdd(&comm, &dst, off, val, teamKind, peer,       \
+                                  contextId, coopKind,                        \
+                                  flagcxDeviceScopeSystem,                    \
+                                  flagcxDeviceMemoryOrderRelease,             \
+                                  (flagcxDevSignal_t)(slot), (uint64_t)3);    \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevWaitSignal(&comm, (flagcxDevSignal_t)(slot), expected, 64,        \
+                        contextId, FLAGCX_COOP_BLOCK,                          \
+                        flagcxDeviceMemoryOrderAcquire);                       \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId,   \
+                            flagcxDeviceMemoryOrderAcquire) != (expected))     \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+  } while (0)
+
+  S24_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_THREAD, (uint64_t)1);
+  S24_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_THREAD, (uint64_t)3);
+  S24_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_WARP, (uint64_t)1);
+  S24_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, FLAGCX_COOP_WARP,
+            (uint64_t)3);
+  S24_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_BLOCK, (uint64_t)1);
+  S24_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, FLAGCX_COOP_BLOCK,
+            (uint64_t)3);
+
+#undef S24_COMBO
+
+  irPublish(result, ok);
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
+                                            const void *dstMemPtr,
+                                            int *devResult, size_t bytes,
+                                            flagcxStream_t stream) {
+  (void)bytes; // every combo writes a single uint64_t
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevPutValueRSigIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES,
+                                     cs>>>(
+      (const flagcxDevComm *)devCommPtr, (const flagcxDevMem *)dstMemPtr,
+      devResult);
+  irWait(cs, "S24 DevPutValue_RSig");
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// S25: signal shadow + flush — INTRA + WORLD
+// The shadow is local: raise it by 5, send 5 increments to the ring peer, then
+// wait until the received total meets the shadow.
+// ---------------------------------------------------------------------------
+__global__ void kernelDevSignalShadowFlushIntraWorldS(
+    const flagcxDevComm *gComm, int *result) {
+  FLAGCX_IR_PROLOGUE(gComm);
+
+  const int worldRank = comm.getRank();
+  const int nRanks = comm.getSize();
+  const int intraRank = comm.getIntraRank();
+  const int intraSize = comm.getIntraSize();
+  bool ok = true;
+
+#define S25_COMBO(slot, teamKind, peer, coopKind)                              \
+  do {                                                                         \
+    if (core_id() == 0) {                                                      \
+      flagcxDevResetSignal(&comm, contextId, (flagcxDevSignal_t)(slot));       \
+      if (flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId, \
+                              flagcxDeviceMemoryOrderAcquire) != 0)            \
+        ok = false;                                                            \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevBarrierSync(&comm, teamKind, cluster_id(), contextId,             \
+                         FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderAcqRel,     \
+                         flagcxDeviceScopeSystem);                             \
+    if (core_id() == 0) {                                                      \
+      flagcxDevIncreaseSignalShadow(&comm, contextId,                          \
+                                    (flagcxDevSignal_t)(slot), (uint64_t)5);   \
+      for (int i = 0; i < 5; i++)                                              \
+        flagcxDevSignalInc(&comm, teamKind, peer, (flagcxDevSignal_t)(slot),   \
+                           contextId, FLAGCX_COOP_THREAD,                      \
+                           flagcxDeviceScopeSystem);                           \
+    }                                                                          \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    if (irCoopActive(coopKind))                                                \
+      flagcxDevWaitSignalMeetShadow(&comm, contextId,                          \
+                                    (flagcxDevSignal_t)(slot), 64, coopKind,   \
+                                    flagcxDeviceMemoryOrderAcquire);           \
+    if (core_id() == 0 &&                                                      \
+        flagcxDevReadSignal(&comm, (flagcxDevSignal_t)(slot), 64, contextId,   \
+                            flagcxDeviceMemoryOrderAcquire) != 5)              \
+      ok = false;                                                              \
+    flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
+    flagcxDevFlush(&comm, contextId, FLAGCX_COOP_BLOCK,                        \
+                   flagcxDeviceMemoryOrderAcquire);                            \
+  } while (0)
+
+  S25_COMBO(0, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_THREAD);
+  S25_COMBO(1, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks,
+            FLAGCX_COOP_THREAD);
+  S25_COMBO(2, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_WARP);
+  S25_COMBO(3, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, FLAGCX_COOP_WARP);
+  S25_COMBO(4, FLAGCX_TEAM_INTRA, (intraRank + 1) % intraSize,
+            FLAGCX_COOP_BLOCK);
+  S25_COMBO(5, FLAGCX_TEAM_WORLD, (worldRank + 1) % nRanks, FLAGCX_COOP_BLOCK);
+
+#undef S25_COMBO
+
+  irPublish(result, ok);
+}
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
+void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
+                                                 int *devResult,
+                                                 flagcxStream_t stream) {
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  kernelDevSignalShadowFlushIntraWorldS<<<FLAGCX_IR_CLUSTERS, FLAGCX_IR_CORES,
+                                          cs>>>(
+      (const flagcxDevComm *)devCommPtr, devResult);
+  irWait(cs, "S25 DevSignalShadowFlush");
+}
+#endif

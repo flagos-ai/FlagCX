@@ -2,9 +2,10 @@
 # Kunlunxin (P800) test kernel compilation.
 #
 # device_api.xpu exercises FlagCX's xSHMEM CommTraits through the public Device
-# API. It is compiled by the XTDK clang in a single relocatable object that
-# device-links libxshmem_device.a inline (-xpu-l xshmem_device), so the
-# resulting device_api.o is host-linkable by g++ into test binaries.
+# API; device_ir.xpu does the same through the transport-transparent Device IR
+# (bindings/ir). Each is compiled by the XTDK clang into a single relocatable
+# object that device-links libxshmem_device.a inline (-xpu-l xshmem_device), so
+# the resulting object is host-linkable by g++ into test binaries.
 
 include ../../make.inc
 
@@ -33,24 +34,37 @@ ifneq ($(USE_SHMEM),1)
 device_api.o:
 	@echo "KLX: device_api.xpu is the XSHMEM Device API implementation and requires USE_SHMEM=1." >&2
 	@false
+device_ir.o:
+	@echo "KLX: device_ir.xpu drives the Device IR through XSHMEM and requires USE_SHMEM=1." >&2
+	@false
 else
 XPU_CFLAGS += -DFLAGCX_COMM_TRAITS_SHMEM
-all: $(OBJDIR)/device_api.o
+all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
+device_ir.o: $(OBJDIR)/device_ir.o
 
 $(OBJDIR)/device_api.o: device_api.xpu
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_api.xpu (KLX / FlagCX xshmem Device API)"
 	@$(XPU_CLANG) $(XPU_CFLAGS) $(EXTRA_XPU_FLAGS) $(ALL_INCLUDES) $(XPU_DEVLINK) -c -o $@ $<
+
+# The IR entry points are inline in bindings/ir, and several of them are marked
+# deprecated in favour of the unified spelling while still being the layer the
+# unified implementation calls. Silence only that diagnostic.
+$(OBJDIR)/device_ir.o: device_ir.xpu
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling device_ir.xpu (KLX / FlagCX Device IR over xshmem)"
+	@$(XPU_CLANG) $(XPU_CFLAGS) -Wno-deprecated-declarations $(EXTRA_XPU_FLAGS) $(ALL_INCLUDES) $(XPU_DEVLINK) -c -o $@ $<
 endif
 
-# The xshmem Device API path device-links inline (above), so there is no separate
-# device-link object here. Fail LOUDLY instead of pretending to succeed: a
-# silent no-op used to leave the caller linking a file that was never created.
-# Consumers must filter these targets out on KLX (see test/unittest/device_api).
-device_ir.o dlink.o dlink_api.o dlink_ir.o:
-	@echo "KLX: '$@' is not available (device_ir has no .xpu counterpart; xshmem is device-linked into device_api.o). Filter this target out for KLX." >&2
+# The xshmem device library is device-linked inline into each object above, so
+# there is no separate device-link object here. Fail LOUDLY instead of
+# pretending to succeed: a silent no-op used to leave the caller linking a file
+# that was never created. Consumers must filter these targets out on KLX (see
+# test/unittest/device_api).
+dlink.o dlink_api.o dlink_ir.o:
+	@echo "KLX: '$@' is not available (xshmem is device-linked into device_api.o / device_ir.o). Filter this target out for KLX." >&2
 	@false
 
 clean:

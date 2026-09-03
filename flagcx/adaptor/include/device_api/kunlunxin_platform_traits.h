@@ -7,6 +7,19 @@
 #ifndef FLAGCX_KUNLUNXIN_PLATFORM_TRAITS_H_
 #define FLAGCX_KUNLUNXIN_PLATFORM_TRAITS_H_
 
+#if defined(__xpu__)
+#include <cstddef>
+// XTDK ships no usable non-allocating placement new: in both compilation passes
+// `::new (p) T(...)` fails with "no matching 'operator new' function for
+// non-allocating placement new expression", and #include <new> does not help --
+// libstdc++'s inline definition is never a candidate under this driver. A
+// __device__-qualified declaration is (an unqualified one still is not), so
+// declare it here and let the shared device code keep the ordinary spelling.
+__device__ inline void *operator new(std::size_t, void *place) noexcept {
+  return place;
+}
+#endif
+
 struct KunlunxinPlatform {};
 
 template <>
@@ -67,57 +80,114 @@ struct PlatformTraits<KunlunxinPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR static void threadfenceSystem() {
       FLAGCX_DEVICE_THREAD_FENCE();
     }
+
+    // xpu3 has a single fence instruction; there is no weaker device-scope
+    // form to map this onto, so it is the same mfence.
+    FLAGCX_DEVICE_INLINE_DECORATOR static void threadfenceDevice() {
+      FLAGCX_DEVICE_THREAD_FENCE();
+    }
+
+    // Cooperative strided copy between two device-memory buffers.
+    //
+    // A device-memory pointer cannot be converted to an integer on the xpu3
+    // device pass, so the chunk width is chosen from the byte count alone
+    // rather than from the address alignment. Both operands come from the
+    // symmetric heap and are therefore at least 64B aligned.
+    template <typename DstPtr, typename SrcPtr>
+    FLAGCX_DEVICE_INLINE_DECORATOR static void
+    coopCopyBytes(DstPtr dst, SrcPtr src, size_t bytes, int rank, int size) {
+      if ((bytes & 3u) == 0) {
+        auto dw = (FLAGCX_DEV_VALUE_PTR uint32_t *)dst;
+        auto sw = (FLAGCX_DEV_VALUE_PTR const uint32_t *)src;
+        size_t nwords = bytes / 4;
+        for (size_t i = (size_t)rank; i < nwords; i += (size_t)size)
+          dw[i] = sw[i];
+        return;
+      }
+      auto db = (FLAGCX_DEV_VALUE_PTR char *)dst;
+      auto sb = (FLAGCX_DEV_VALUE_PTR const char *)src;
+      for (size_t i = (size_t)rank; i < bytes; i += (size_t)size)
+        db[i] = sb[i];
+    }
+
+    // Volatile 64-bit store to device memory. Kept here because the cast needs
+    // the platform's address-space qualifier, which the shared IR code cannot
+    // spell.
+    template <typename Ptr>
+    FLAGCX_DEVICE_INLINE_DECORATOR static void storeVolatile64(Ptr ptr,
+                                                               uint64_t value) {
+      *(volatile FLAGCX_DEV_VALUE_PTR uint64_t *)ptr = value;
+    }
   };
 
+  // P800 has no atomic read-modify-write on global memory, and the pointers
+  // reaching these entry points are device-memory pointers (address space 1 on
+  // the xpu3 device pass), which the __atomic_* builtins cannot take at all.
+  //
+  // Aligned 64-bit loads and stores are single instructions and are what the
+  // single-writer signal/counter schemes already rely on, so they are provided.
+  // Every read-modify-write traps instead of emulating atomicity: a
+  // load-modify-store pair would look like it worked and silently lose
+  // increments. Callers must probe the capability (Comm::usesDirectP2pSignals,
+  // Comm::supportsDirectCounterAccess) and take a single-writer path instead.
   struct Atomic {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    FLAGCX_DEVICE_INLINE_DECORATOR static T load(T *ptr,
-                                                 flagcxDeviceMemoryOrder_t) {
-      return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
+    FLAGCX_DEVICE_INLINE_DECORATOR static T
+    load(FLAGCX_DEV_VALUE_PTR T *ptr, flagcxDeviceMemoryOrder_t) {
+      T value = *(volatile FLAGCX_DEV_VALUE_PTR T *)ptr;
+      FLAGCX_DEVICE_THREAD_FENCE();
+      return value;
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static void
-    store(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
-      __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
+    store(FLAGCX_DEV_VALUE_PTR T *ptr, const T &value,
+          flagcxDeviceMemoryOrder_t) {
+      FLAGCX_DEVICE_THREAD_FENCE();
+      *(volatile FLAGCX_DEV_VALUE_PTR T *)ptr = value;
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchAdd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
-      return __atomic_fetch_add(ptr, value, __ATOMIC_ACQ_REL);
+    fetchAdd(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+      __builtin_trap();
+      return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchSub(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
-      return __atomic_fetch_sub(ptr, value, __ATOMIC_ACQ_REL);
-    }
-
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    FLAGCX_DEVICE_INLINE_DECORATOR static T fetchOr(T *ptr, const T &value,
-                                                    flagcxDeviceMemoryOrder_t) {
-      return __atomic_fetch_or(ptr, value, __ATOMIC_ACQ_REL);
+    fetchSub(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+      __builtin_trap();
+      return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    fetchAnd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
-      return __atomic_fetch_and(ptr, value, __ATOMIC_ACQ_REL);
+    fetchOr(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+      __builtin_trap();
+      return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
-    exchange(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
-      return __atomic_exchange_n(ptr, value, __ATOMIC_ACQ_REL);
+    fetchAnd(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+      __builtin_trap();
+      return T();
+    }
+
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    FLAGCX_DEVICE_INLINE_DECORATOR static T
+    exchange(FLAGCX_DEV_VALUE_PTR T *, const T &, flagcxDeviceMemoryOrder_t) {
+      __builtin_trap();
+      return T();
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static bool
-    compareExchange(T *ptr, T &expected, const T &desired,
+    compareExchange(FLAGCX_DEV_VALUE_PTR T *, T &, const T &,
                     flagcxDeviceMemoryOrder_t) {
-      return __atomic_compare_exchange_n(ptr, &expected, desired, false,
-                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+      __builtin_trap();
+      return false;
     }
   };
 
@@ -172,9 +242,12 @@ struct PlatformTraits<KunlunxinPlatform> {
       return count * FLAGCX_SIMT_WIDTH;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() const {
-      if (size() >= FLAGCX_BLOCK_DIM_X)
+      // this-> : xpu-clang drops const on member calls from const members of
+      // classes nested in templates (here CoopTileSpan lives inside
+      // PlatformTraits<KunlunxinPlatform>).
+      if (this->size() >= FLAGCX_BLOCK_DIM_X)
         FLAGCX_DEVICE_SYNC_THREADS();
-      else if (size() > 1)
+      else if (this->size() > 1)
         __builtin_trap();
     }
   };
@@ -194,7 +267,48 @@ struct PlatformTraits<KunlunxinPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() const { Intrin::syncwarp(mask); }
   };
 
-  using CoopAny = PlatformCoop;
+  // Type-erased cooperative group.
+  //
+  // The shared PlatformCoop erases the type behind a vtable of function
+  // pointers. That cannot work on xpu3: the vtable is constant-memory data and
+  // the pointer to it is held in a generic pointer, which is 32-bit on the
+  // device pass, so any call that survives inlining jumps through a truncated
+  // address and the kernel faults (XPUERR_KEXCEPTION). Every XPU coop type is
+  // fully described by (threadRank, size, how to synchronize), and all of them
+  // synchronize the same way — the whole cluster or nothing, since P800 has no
+  // partial-core barrier — so resolve those three properties at construction
+  // and dispatch with a switch.
+  struct CoopAny {
+    enum SyncKind : int {
+      SyncNone = 0,        // single core: nothing to synchronize
+      SyncCluster = 1,     // group spans the cluster: sync_cluster()
+      SyncUnsupported = 2, // proper subset of the cluster: no such barrier
+    };
+
+    int _rank;
+    int _size;
+    int _sync;
+
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopAny()
+        : _rank(0), _size(1), _sync(SyncNone) {}
+    CoopAny(CoopAny const &) = default;
+
+    template <typename Impl>
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopAny(Impl impl)
+        : _rank(impl.threadRank()), _size(impl.size()),
+          _sync(impl.size() >= FLAGCX_BLOCK_DIM_X
+                    ? SyncCluster
+                    : (impl.size() > 1 ? SyncUnsupported : SyncNone)) {}
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return _rank; }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _size; }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() const {
+      if (_sync == SyncCluster)
+        FLAGCX_DEVICE_SYNC_THREADS();
+      else if (_sync == SyncUnsupported)
+        __builtin_trap();
+    }
+  };
 };
 
 #endif // FLAGCX_KUNLUNXIN_PLATFORM_TRAITS_H_

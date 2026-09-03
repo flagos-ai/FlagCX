@@ -265,12 +265,18 @@ struct flagcxWorkElem {
   };
 };
 
+// Work-queue layout sanity checks below assume 64-bit size_t and plain
+// pointers. The xpu3 device pass has a 32-bit size_t plus __global_ptr__
+// address-space pointers, so these structs have different sizes there; the
+// checks are host-side invariants and must not fire on that pass.
 #define FLAGCX_MAX_WORK_ELEMENTS                                               \
   ((FLAGCX_WORK_SIZE -                                                         \
     alignUp(sizeof(flagcxWorkHeader), alignof(flagcxWorkElem))) /              \
    sizeof(flagcxWorkElem))
+#if !defined(__xpu__) || defined(__xpu_on_host__)
 static_assert(FLAGCX_MAX_WORK_ELEMENTS == 9,
               "Sanity check: FLAGCX_MAX_WORK_ELEMENTS == 9");
+#endif
 
 struct flagcxWorkElemP2p {
   int peer : 30;
@@ -291,10 +297,12 @@ struct flagcxWorkElemP2p {
   int chunkSize;
 };
 
+#if !defined(__xpu__) || defined(__xpu_on_host__)
 static_assert(((FLAGCX_WORK_SIZE -
                 alignUp(sizeof(flagcxWorkHeader), alignof(flagcxWorkElemP2p))) /
                sizeof(flagcxWorkElemP2p)) >= 16,
               "Sanity check: FLAGCX_MAX_WORK_ELEMENTS_P2P == 16");
+#endif
 #define FLAGCX_MAX_WORK_ELEMENTS_P2P 16
 
 struct flagcxWorkElemReg {
@@ -308,8 +316,10 @@ struct flagcxWorkElemReg {
   ((FLAGCX_WORK_SIZE -                                                         \
     alignUp(sizeof(flagcxWorkHeader), alignof(flagcxWorkElemReg))) /           \
    sizeof(flagcxWorkElemReg))
+#if !defined(__xpu__) || defined(__xpu_on_host__)
 static_assert(FLAGCX_MAX_WORK_ELEMENTS_REG == 2,
               "Sanity check: FLAGCX_MAX_WORK_ELEMENTS_REG == 2");
+#endif
 
 // Number of named barriers supported by CUDA
 #define FLAGCX_MAX_GROUPS 16
@@ -323,10 +333,12 @@ struct flagcxWork {
     struct flagcxWorkElemReg regElems[FLAGCX_MAX_WORK_ELEMENTS_REG];
   };
 };
+#if !defined(__xpu__) || defined(__xpu_on_host__)
 static_assert(sizeof(struct flagcxWork) == FLAGCX_WORK_SIZE,
               "Sanity check: sizeof(struct flagcxWork) == FLAGCX_WORK_SIZE");
 static_assert(sizeof(struct flagcxWork) % 16 == 0,
               "Sanity check: sizeof(struct flagcxWork)%16 == 0");
+#endif
 
 struct flagcxDevChannelPeer {
   // Stripped version of flagcxChannelPeer where we only keep the flagcxConnInfo

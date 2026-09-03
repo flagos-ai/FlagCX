@@ -53,6 +53,12 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
+// flagcxDevComm / flagcxDevMem are passed to kernels BY VALUE, so their layout
+// must be identical in the host and the device compilation pass. Every pointer
+// member is tagged with FLAGCX_DEV_VALUE_PTR (defined in device_utils.h) so the
+// two passes agree on its width; on non-XPU platforms the tag expands to
+// nothing.
+
 // ============================================================
 // Section 3: flagcxDevComm — Device Communicator (kernel-facing)
 //
@@ -74,17 +80,22 @@ struct flagcxDevComm {
   // Pre-allocated net contexts (one per _contextCount, device memory).
   // Set by flagcxDevCommGetDevicePtr; nullptr when contextCount == 0.
   // Actually flagcxDevNet[] but kept as void* for C/opaque linkage.
-  void *_netContexts;
+  FLAGCX_DEV_VALUE_PTR void *_netContexts;
 
   // Grid-wide barrier state for NCCL destructor ordering.
   // [0] = arrive counter, [1] = sense. Allocated by NCCL backend only.
-  unsigned int *_gridBarrierState;
+  FLAGCX_DEV_VALUE_PTR unsigned int *_gridBarrierState;
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm()
       : _commBase(), _signalCount(0), _counterCount(0), _contextCount(0),
         _nInterPeers(0), _netContexts(nullptr), _gridBarrierState(nullptr) {}
 
-#ifndef __clang_llvm_bitcode_lib__
+// The host-side internal constructor reads flagcxDevCommInternal, whose plain
+// pointers are not address-space 1. Only the host pass ever builds a value
+// object from a handle (the launcher does it before the launch), so keep this
+// out of the xpu3 device pass and out of LLVM bitcode mode.
+#if !defined(__clang_llvm_bitcode_lib__) &&                                    \
+    (!defined(__xpu__) || defined(__xpu_on_host__))
   FLAGCX_HOST_DEVICE_INLINE flagcxDevComm(const flagcxDevCommInternal &di)
       : _signalCount(di.signalCount), _counterCount(di.counterCount),
         _contextCount(di.contextCount), _nInterPeers(di.nInterPeers),
@@ -136,11 +147,14 @@ struct flagcxDevComm {
 // ============================================================
 struct flagcxDevMem {
   typename DeviceAPI::Window _winBase;
-  void *_rawPtr;
+  FLAGCX_DEV_VALUE_PTR void *_rawPtr;
 
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem() : _winBase(), _rawPtr(nullptr) {}
 
-#ifndef __clang_llvm_bitcode_lib__
+// Host-side internal constructor — see flagcxDevComm for why it is excluded
+// from the xpu3 device pass.
+#if !defined(__clang_llvm_bitcode_lib__) &&                                    \
+    (!defined(__xpu__) || defined(__xpu_on_host__))
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem(const flagcxDevMemInternal &di)
       : _rawPtr(di.rawPtr) {
     if (di.window)
@@ -151,7 +165,7 @@ struct flagcxDevMem {
   FLAGCX_HOST_DEVICE_INLINE bool hasWindow() const {
     return _winBase.hasAccess();
   }
-  FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const { return _rawPtr; }
+  FLAGCX_HOST_DEVICE_INLINE auto getRawPtr() const { return _rawPtr; }
   FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
     return _winBase.getDevPeerPtrs();
   }
@@ -549,19 +563,25 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
 // All functions delegate to _winBase member functions — no #ifdef branches.
 // On Vendor: forwards to vendor pointer functions via _winBase.
 // On default: uses IPC peerPtrs / rawPtr fallback.
+//
+// Return type is deduced so the xpu3 device pass keeps the vendor's
+// __global_ptr__ (address-space 1) pointer type instead of forcing a
+// lossy conversion into a generic void* (which is 32-bit on that pass).
 // ============================================================
-FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam team,
-                     int peer) {
-  return mem._winBase.getPeerPointer(offset, team._teamBase, peer);
+                     int peer,
+                     flagcxDevPeerAccess_t access =
+                         flagcxDevPeerAccessReadWrite) {
+  return mem._winBase.getPeerPointer(offset, team._teamBase, peer, access);
 }
 
-FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
   return mem._winBase.getLocalPointer(offset);
 }
 
-FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
                           const flagcxDevComm &devComm) {
   return mem._winBase.getMulticastPointer(offset, devComm.getMulticastHandle());
@@ -570,20 +590,22 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 // ---- Additional pointer functions ----
 
 // Peer pointer without team parameter.
-FLAGCX_DEVICE_INLINE_DECORATOR void *
-flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer) {
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer,
+                     flagcxDevPeerAccess_t access =
+                         flagcxDevPeerAccessReadWrite) {
   // Without team, treat as intra-node access
-  return mem._winBase.getIntraPointer(offset, peer);
+  return mem._winBase.getIntraPointer(offset, peer, access);
 }
 
 // Intra-node rank pointer.
-FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetIntraPointer(const flagcxDevMem &mem, size_t offset, int peer) {
   return mem._winBase.getIntraPointer(offset, peer);
 }
 
 // Multicast pointer with explicit MulticastHandle.
-FLAGCX_DEVICE_INLINE_DECORATOR void *
+FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
                           flagcxMulticastHandle_t mmHandle) {
   return mem._winBase.getMulticastPointer(offset, mmHandle._multimemBase);
@@ -748,7 +770,7 @@ FLAGCX_HOST_DEVICE_INLINE bool operator!=(flagcxSymPtr<T> a,
 // ============================================================
 struct flagcxDevNet : DeviceAPI::Net {
   int _nInterPeers;
-  unsigned int *_gridBarrierState;
+  FLAGCX_DEV_VALUE_PTR unsigned int *_gridBarrierState;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
   flagcxDevNet(const flagcxDevComm &devComm, int idx)
@@ -891,6 +913,22 @@ struct flagcxDevNet : DeviceAPI::Net {
                         dst._winBase, dstOffset, bytes, coop._base);
   }
 };
+
+// Typed view of the comm-owned array of pre-built contexts. The array lives in
+// device memory, so its element pointer needs the platform's address-space tag;
+// keeping the cast here lets callers write `auto nets = ...` and stay free of
+// platform spellings. Defined after flagcxDevNet because it names it.
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxDevCommNetContexts(const flagcxDevComm &comm) {
+  return (FLAGCX_DEV_VALUE_PTR const flagcxDevNet *)comm._netContexts;
+}
+
+// Whether the comm actually carries pre-built contexts. Same condition
+// flagcxDevNetGetFromCommS uses to decide it has nothing to hand out.
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+flagcxDevCommHasNetContexts(const flagcxDevComm &comm) {
+  return comm._contextCount > 0 && comm._netContexts != nullptr;
+}
 
 // ============================================================
 // Section 11: flagcxDevBarrier<flagcxTeamTagInter> — Inter-Node Barrier

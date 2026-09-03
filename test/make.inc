@@ -28,10 +28,11 @@ FLAGCX_INCLUDES := \
 FLAGCX_LIB  := $(PROJECT_ROOT)/build/lib
 FLAGCX_LINK := -L$(FLAGCX_LIB) -Wl,--no-as-needed -Wl,-rpath,$(FLAGCX_LIB) -lflagcx
 
-# GoogleTest. Prefer the vendored copy, fall back to distro packages in the
-# Docker image when submodules are not checked out.
+# GoogleTest. Prefer the vendored copy when its static lib is actually built
+# (submodule checked out AND compiled), fall back to distro packages in the
+# Docker image when only the headers (or nothing) are present.
 GTEST_DIR ?= $(PROJECT_ROOT)/third-party/googletest
-ifneq ($(wildcard $(GTEST_DIR)/googletest/include/gtest/gtest.h),)
+ifneq ($(wildcard $(GTEST_DIR)/build/lib/libgtest.a),)
 GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
 GTEST_LIB     := $(GTEST_DIR)/build/lib
 GTEST_SRC_ROOT := $(GTEST_DIR)/googletest

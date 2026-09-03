@@ -134,6 +134,14 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
   sc->intraRank = comm->localRank;
   sc->intraSize = comm->localRanks;
 
+  // Declared before any goto so error paths never jump over its
+  // initialization.
+  int contextCount = reqs->interContextCount > 0 ? reqs->interContextCount : 1;
+  // P800 has no remote atomic, so each (context, signal) is fanned out into
+  // one receive slot per source PE, one sent-ticket per destination, and one
+  // local-action slot. See xshmem_state_layout.h.
+  int slotsPerSignal = FLAGCX_XSHMEM_SIGNAL_SLOTS(sc->nRanks);
+
   // FlagCX communicator ranks are not required to be grouped by host. Keep
   // the exact local-rank -> XSHMEM PE mapping in device memory rather than
   // deriving peers from rank-localRank.
@@ -147,25 +155,24 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
       goto fail;
   }
 
-  int contextCount = reqs->interContextCount > 0 ? reqs->interContextCount : 1;
   sc->signalCount = reqs->interSignalCount;
   sc->counterCount = reqs->interCounterCount;
 
   // Signal buffer (symmetric heap, remote-writable)
   if (sc->signalCount > 0) {
-    sc->signalBuffer = (uint64_t *)xshmem_malloc(
-        (size_t)contextCount * sc->signalCount * sizeof(uint64_t));
+    size_t bytes = (size_t)contextCount * sc->signalCount *
+                   (size_t)slotsPerSignal * sizeof(uint64_t);
+    sc->signalBuffer = (uint64_t *)xshmem_malloc(bytes);
     if (!sc->signalBuffer)
       goto fail;
-    if (cudaMemset(sc->signalBuffer, 0,
-                   (size_t)contextCount * sc->signalCount * sizeof(uint64_t)) !=
-        cudaSuccess)
+    if (cudaMemset(sc->signalBuffer, 0, bytes) != cudaSuccess)
       goto fail;
   }
 
   // Counter buffer is symmetric because CounterInc can be a remote action.
   if (sc->counterCount > 0) {
-    size_t bytes = (size_t)contextCount * sc->counterCount * sizeof(uint64_t);
+    size_t bytes = (size_t)contextCount * sc->counterCount *
+                   (size_t)slotsPerSignal * sizeof(uint64_t);
     sc->counterBuffer = (uint64_t *)xshmem_malloc(bytes);
     if (sc->counterBuffer == nullptr)
       goto fail;
@@ -173,7 +180,7 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
       goto fail;
   }
 
-  // Shadow buffer (local device memory)
+  // Shadow buffer (local device memory, one aggregate per context/signal)
   if (sc->signalCount > 0) {
     size_t bytes = (size_t)contextCount * sc->signalCount * sizeof(uint64_t);
     if (cudaMalloc(&sc->shadowBuffer, bytes) != cudaSuccess) {
@@ -203,10 +210,26 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
     if (cudaMemset(sc->gridSyncState, 0, gridSyncSize) != cudaSuccess)
       goto fail;
 
+    // Staging area for push-based collectives: P800 cannot read a peer's
+    // memory, so a reduction receives its inputs here through put.
+    if (reqs->intraScratchBytes > 0) {
+      sc->scratchBuffer = (uint64_t *)xshmem_malloc(reqs->intraScratchBytes);
+      if (sc->scratchBuffer == nullptr) {
+        WARN("xshmem devCommCreate: cannot allocate %zu bytes of symmetric "
+             "scratch",
+             reqs->intraScratchBytes);
+        goto fail;
+      }
+      if (cudaMemset(sc->scratchBuffer, 0, reqs->intraScratchBytes) !=
+          cudaSuccess)
+        goto fail;
+      sc->scratchBytes = reqs->intraScratchBytes;
+    }
+
     (void)interSize;
     sc->intraTeam = XSHMEMX_TEAM_NODE;
-
     sc->interTeam = XSHMEM_TEAM_INVALID;
+
 
     sc->worldTeam = XSHMEM_TEAM_WORLD;
     sc->devStateHandle = xshmem_get_xshmemi_device_state_h();
@@ -232,6 +255,8 @@ static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
     return flagcxSuccess;
 
   // Symmetric allocations are released in reverse allocation order.
+  if (shmemComm->scratchBuffer)
+    xshmem_free(shmemComm->scratchBuffer);
   if (shmemComm->gridSyncState)
     xshmem_free(shmemComm->gridSyncState);
   if (shmemComm->counterBuffer)

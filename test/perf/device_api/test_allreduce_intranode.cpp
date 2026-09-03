@@ -98,6 +98,17 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  // Push-based backends (XSHMEM on P800 cannot read peer memory) stage each
+  // PEER's contribution in symmetric scratch: scratch[nRanks-1][maxBytes]. A
+  // rank never writes its own slot — its local addend is read straight from its
+  // own buffer at reduce time — so 4 ranks only need 3 slots. One net context
+  // per cluster keeps their signals in separate slots.
+  reqs.interContextCount = 12;
+  reqs.interSignalCount = 1;
+  reqs.intraScratchBytes =
+      (size_t)(totalProcs > 1 ? totalProcs - 1 : 1) * maxBytes;
+#endif
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   flagcxStream_t stream;

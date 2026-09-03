@@ -49,9 +49,13 @@ ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 # that live in libbkcl, and the XRE runtime libs. libflagcx.so imports (not
 # exports) these, so the executable must link them explicitly. Add rpaths so the
 # binary finds libbkcl / libxpurt* at runtime.
+UNIT_RPATH :=
 ifeq ($(USE_KUNLUNXIN), 1)
 ALL_LINK += -L$(CCL_LIB) -Wl,-rpath,$(CCL_LIB) $(CCL_LINK) \
             -Wl,-rpath,$(DEVICE_LIB)
+# The host-only lifecycle test links no kernel object, but it still loads
+# libflagcx.so, which pulls in the XRE runtime at process start.
+UNIT_RPATH := -Wl,-rpath,$(DEVICE_LIB) -Wl,-rpath,$(CCL_LIB)
 endif
 
 # Kernel flag
@@ -69,8 +73,9 @@ UNIT_INCLUDES := $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) \
                  -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 
 # Device API tests link test/kernel/<platform>/device_api.o. IR tests need a
-# device_ir.<ext> kernel, which KLX does not currently provide, so only the IR
-# targets are skipped there. NVIDIA/DU retain both regular and unified suites.
+# device_ir.<ext> kernel. KLX provides one, but only for the unified INTRA
+# suite, so the remaining IR targets stay skipped there. NVIDIA/DU retain both
+# regular and unified suites.
 IR_TARGETS  := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_inter \
                $(BINDIR)/test_device_ir_unified_intra \
@@ -80,8 +85,14 @@ API_TARGETS := $(BINDIR)/test_device_api_intra \
 
 SKIPPED_TARGETS :=
 ifeq ($(KERNEL_PLATFORM), klx)
-  SKIPPED_TARGETS := $(notdir $(IR_TARGETS))
-  IR_TARGETS :=
+  # The other suites need operations P800 cannot serve (remote reads) or a real
+  # second node; see docs/device_ir_klx_adaptation.md.
+  KLX_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra
+  SKIPPED_TARGETS := $(notdir $(filter-out $(KLX_IR_TARGETS),$(IR_TARGETS)))
+  IR_TARGETS      := $(KLX_IR_TARGETS)
+  # S19 (DevGet) is compiled out of the unified intra suite: reading a peer's
+  # memory traps on P800, so there is no implementation to exercise.
+  CXXFLAGS += -DFLAGCX_TEST_NO_REMOTE_READ
 endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
@@ -91,7 +102,7 @@ MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
 all: unit mpi
 ifneq ($(SKIPPED_TARGETS),)
-	@echo "Skipped on $(KERNEL_PLATFORM) (no device_ir.$(DEVICE_FILE_EXTENSION) kernel in test/kernel/$(KERNEL_PLATFORM)): $(SKIPPED_TARGETS)"
+	@echo "Skipped on $(KERNEL_PLATFORM) (unsupported by test/kernel/$(KERNEL_PLATFORM)/device_ir.$(DEVICE_FILE_EXTENSION)): $(SKIPPED_TARGETS)"
 endif
 
 unit: $(UNIT_TARGET)
@@ -125,7 +136,7 @@ $(UNIT_OBJ): $(UNIT_SRC)
 $(UNIT_TARGET): $(UNIT_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
 
 $(BINDIR)/test_device_ir_intra: test_device_ir_intra.cpp $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)

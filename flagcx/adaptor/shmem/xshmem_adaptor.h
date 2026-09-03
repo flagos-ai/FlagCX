@@ -32,6 +32,12 @@ struct flagcxShmemCommInternal {
   uint64_t *gridSyncState;
 
   void *devStateHandle;
+
+  // Symmetric scratch requested through flagcxDevCommRequirements. Kernels use
+  // it as the staging area of push-based reductions, since P800 cannot read a
+  // peer's memory.
+  uint64_t *scratchBuffer;
+  uint64_t scratchBytes;
 };
 
 #endif

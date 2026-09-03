@@ -2,7 +2,17 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * XPU-compiled ABI checks and size queries for host/device materialization.
+ *
+ * Host-only: the layout checks compare the host-compiled flagcxShmemCommInternal
+ * against the host-compiled Comm (where __global_ptr__ is empty, so pointer
+ * widths match). The xpu3 device pass has a 32-bit size_t and __global_ptr__
+ * address-space pointers, which changes sizeof/offsetof and makes these checks
+ * meaningless — the same reason device_async_kernel.xpu is excluded from the
+ * library build. Guard the whole body to the host pass so the device pass is an
+ * empty TU.
  ************************************************************************/
+
+#if defined(__xpu_on_host__) || !defined(__xpu__)
 
 #include <cstddef>
 
@@ -35,3 +45,18 @@ extern "C" size_t flagcxXshmemDevCommSizeOf() { return sizeof(flagcxDevComm); }
 extern "C" size_t flagcxXshmemDevMemSizeOf() { return sizeof(flagcxDevMem); }
 
 extern "C" size_t flagcxXshmemDevNetSizeOf() { return sizeof(flagcxDevNet); }
+
+// KLX stub for the collective-kernel launcher. On P800 there is no
+// flagcxCollectiveKernel device implementation (only nvidia/du provide one), so
+// runUniRunner's COMPILE_KERNEL_HOST call would leave an undefined reference in
+// libflagcx.so. KLX runs its collectives through the host scheduling loop, so a
+// no-op satisfies the link.
+void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
+                                  size_t nblocks, flagcxStream_t stream) {
+  (void)fifoBuffer;
+  (void)nthreads;
+  (void)nblocks;
+  (void)stream;
+}
+
+#endif

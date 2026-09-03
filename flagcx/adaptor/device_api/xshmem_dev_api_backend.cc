@@ -46,6 +46,12 @@ static_assert(offsetof(flagcxShmemCommInternal, gridSyncState) ==
               "xSHMEM communicator grid-state offset mismatch");
 static_assert(offsetof(flagcxShmemCommInternal, devStateHandle) ==
                   offsetof(XshmemComm, devStateHandle),
+              "xSHMEM communicator device-state offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, scratchBuffer) ==
+                  offsetof(XshmemComm, scratchBuffer),
+              "xSHMEM communicator scratch offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, scratchBytes) ==
+                  offsetof(XshmemComm, scratchBytes),
               "xSHMEM communicator final-field offset mismatch");
 
 // ==========================================================================
@@ -94,6 +100,9 @@ xshmemDevApiCommCreate(flagcxComm_t comm,
   devComm->counterBuffer = shmemComm->counterBuffer;
   devComm->signalCount = shmemComm->signalCount;
   devComm->counterCount = shmemComm->counterCount;
+  // The symmetric scratch is deliberately not mirrored here: shmemComm owns it
+  // and the trait Comm reaches it by layout identity (see the static_asserts
+  // above), so a second copy would only be a non-owning alias with no reader.
   int interSize = (shmemComm->intraSize > 0 &&
                    shmemComm->nRanks % shmemComm->intraSize == 0)
                       ? shmemComm->nRanks / shmemComm->intraSize
