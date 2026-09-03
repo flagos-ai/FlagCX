@@ -20,7 +20,7 @@ using DeviceAPI = CommTraits<XshmemBackend>;
 
 #else
 #include "default_comm_traits.h"
-using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;
+using DeviceAPI = CommTraits<DefaultBackend<KunlunxinPlatform>>;
 
 #endif
 

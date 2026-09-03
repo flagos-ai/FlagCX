@@ -15,6 +15,7 @@
 #define FLAGCX_DEVICE_API_INTERNAL_H_
 
 #include "flagcx_kernel.h"
+#include "mem_alloc_provenance.h"
 #include "shmutils.h"
 #include <pthread.h>
 
@@ -132,7 +133,14 @@ struct flagcxDevCommInternal {
 // ============================================================
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
-  void *rawPtr;   // = buff parameter
+  void *rawPtr; // = buff parameter
+  // Exact allocation provenance when rawPtr belongs to a flagcxMemAlloc
+  // allocation. External CCL user buffers remain valid and untracked.
+  bool allocationTracked;
+  void *allocationBase;
+  size_t allocationSize;
+  flagcxMemAllocator_t allocator;
+  flagcxMemAllocBackend allocBackend;
   bool hasWindow; // true if any window layer is available (basic or symmetric)
   bool isSymmetric; // true only for FLAGCX_WIN_COLL_SYMMETRIC (enables
                     // one-sided)

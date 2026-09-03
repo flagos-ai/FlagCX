@@ -322,6 +322,10 @@ TEST_F(FlagCXTopoTest, TopoDetection) {
 // Intra-node AllReduce: each rank fills with (rank+1), verify sum
 // ---------------------------------------------------------------------------
 TEST_F(FlagCXKernelTest, IntraAllReduce) {
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  GTEST_SKIP() << "raw deviceMalloc Device API memory is a default-backend "
+                  "test; SHMEM requires flagcxMemSHMEM";
+#endif
 
   // Allocate a separate buffer for the kernel (aligned with
   // test_kernel_intranode -R 0)
@@ -383,6 +387,10 @@ TEST_F(FlagCXKernelTest, IntraAllReduce) {
 // Inter-node AlltoAll: two-sided send/recv via FIFO
 // ---------------------------------------------------------------------------
 TEST_F(FlagCXKernelTest, InterTwoSidedAlltoAll) {
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  GTEST_SKIP() << "raw deviceMalloc Device API memory is a default-backend "
+                  "test; SHMEM requires flagcxMemSHMEM";
+#endif
 
   // count per peer
   size_t countPerPeer = count / nranks;
@@ -454,17 +462,33 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
 
   size_t countPerPeer = count / nranks;
 
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  const flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  const flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
+
+  // DevComm initializes the selected SHMEM runtime before symmetric memory is
+  // allocated and keeps it alive until those allocations are freed.
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interSignalCount = 1;
+  flagcxDevComm_t devComm = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
+
   // One-sided needs VMM memory + RDMA registration.
   // Allocate separate buffers (fixture's sendbuff/recvbuff stay untouched).
   void *osSend = nullptr, *osRecv = nullptr;
-  ASSERT_EQ(flagcxMemAlloc(&osSend, size), flagcxSuccess);
-  ASSERT_EQ(flagcxMemAlloc(&osRecv, size), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&osSend, size, memAllocator), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&osRecv, size, memAllocator), flagcxSuccess);
 
   void *sendRegHandle = nullptr, *recvRegHandle = nullptr;
-  ASSERT_EQ(flagcxCommRegister(comm, osSend, size, &sendRegHandle),
-            flagcxSuccess);
-  ASSERT_EQ(flagcxCommRegister(comm, osRecv, size, &recvRegHandle),
-            flagcxSuccess);
+  ASSERT_EQ(
+      flagcxCommRegister(comm, osSend, size, &sendRegHandle, memAllocator),
+      flagcxSuccess);
+  ASSERT_EQ(
+      flagcxCommRegister(comm, osRecv, size, &recvRegHandle, memAllocator),
+      flagcxSuccess);
 
   // Initialize sendbuff: all elements = rank
   for (size_t i = 0; i < count; i++) {
@@ -474,13 +498,6 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
                           NULL);
 
   MPI_Barrier(MPI_COMM_WORLD);
-
-  // Create device communicator with inter-node barrier + signal
-  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 1;
-  flagcxDevComm_t devComm = nullptr;
-  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
 
   // Create device memory handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -498,9 +515,6 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   // Destroy device memory handles
   flagcxDevMemDestroy(comm, sendMem);
   flagcxDevMemDestroy(comm, recvMem);
-
-  // Destroy device communicator
-  flagcxDevCommDestroy(comm, devComm);
 
   // Copy results back from osRecv
   devHandle->deviceMemcpy(hostrecvbuff, osRecv, size, flagcxMemcpyDeviceToHost,
@@ -525,10 +539,11 @@ TEST_F(FlagCXKernelTest, InterOneSidedAlltoAll) {
   EXPECT_TRUE(success);
 
   // Cleanup one-sided buffers
-  flagcxCommDeregister(comm, sendRegHandle);
-  flagcxCommDeregister(comm, recvRegHandle);
-  flagcxMemFree(osSend);
-  flagcxMemFree(osRecv);
+  flagcxCommDeregister(comm, sendRegHandle, memAllocator);
+  flagcxCommDeregister(comm, recvRegHandle, memAllocator);
+  flagcxMemFree(osSend, memAllocator);
+  flagcxMemFree(osRecv, memAllocator);
+  flagcxDevCommDestroy(comm, devComm);
 }
 
 int main(int argc, char *argv[]) {

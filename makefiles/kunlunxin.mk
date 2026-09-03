@@ -47,23 +47,20 @@ PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENS
 # to the host semaphore (cpuAsyncKernel) whenever that function pointer is NULL,
 # which is the default on every platform.
 KLX_UNSUPPORTED_KERNEL_SRCS := $(PLATFORM_KERNEL_DIR)/device_async_kernel.$(DEVICE_FILE_EXTENSION)
-PLATFORM_KERNEL_SRCS := $(filter-out $(KLX_UNSUPPORTED_KERNEL_SRCS),$(PLATFORM_KERNEL_SRCS))
+KLX_SHMEM_KERNEL_SRCS := $(PLATFORM_KERNEL_DIR)/device_api_host_helpers.$(DEVICE_FILE_EXTENSION)
+PLATFORM_KERNEL_SRCS := $(filter-out $(KLX_UNSUPPORTED_KERNEL_SRCS) $(KLX_SHMEM_KERNEL_SRCS),$(PLATFORM_KERNEL_SRCS))
 
 # --- Device API backend selection ---
-# USE_SHMEM is the repository-wide one-sided selector (root Makefile defines it,
-# test/make.inc turns it into -DFLAGCX_COMM_TRAITS_SHMEM); on KunlunXin it
-# selects xccl's xshmem, not NVSHMEM.
+# USE_SHMEM is the repository-wide one-sided selector; on KunlunXin it selects
+# xccl's XSHMEM and the corresponding CommTraits, just as it selects NVSHMEM
+# and NvshmemBackend on NVIDIA.
 # xshmem host symbols (xshmem_init/malloc/free/my_pe/n_pes) live in libbkcl
 # (already linked via CCL_LINK); its headers sit under $(CCL_HOME)/include/xshmem,
 # already on the include path via CCL_INCLUDE.
 ifeq ($(USE_SHMEM), 1)
   SHMEM_HOME := $(CCL_HOME)
-  # NOTE: unlike nvidia.mk we must NOT add -DFLAGCX_COMM_TRAITS_SHMEM here.
-  # libflagcx.so is built with g++, and every TU that includes flagcx_device.h
-  # would then pull xshmem_comm_traits.h, which #errors unless it is parsed by
-  # xpu-clang (it needs xpu/kernel/xtdk.h and __xpu__). The library therefore
-  # keeps the DEFAULT comm_traits; the SHMEM traits are a device-side concern and
-  # are selected inside the test kernel, which xpu-clang compiles.
+  ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
+  PLATFORM_KERNEL_SRCS += $(KLX_SHMEM_KERNEL_SRCS)
   # Compile ONLY the xshmem host adaptor — do NOT use the shmem/*.cc wildcard
   # the way nvidia.mk does, since that would also pull in nvshmem_adaptor.cc
   # (needs nvshmem.h and would define a duplicate shmemAdaptor).

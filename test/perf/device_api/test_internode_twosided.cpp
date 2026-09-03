@@ -10,6 +10,11 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
+extern "C" void flagcxNvshmemSyncDeviceState();
+extern "C" void flagcxNvshmemFinalizeDeviceState();
+#endif
+
 #define DATATYPE flagcxFloat
 
 int main(int argc, char *argv[]) {
@@ -35,6 +40,15 @@ int main(int argc, char *argv[]) {
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
 
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  if (proc == 0)
+    printf("Two-sided Device API operations are unavailable on SHMEM backends. "
+           "Skipping.\n");
+  FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
+  MPI_Finalize();
+  return 0;
+#endif
+
   int nGpu;
   FLAGCXCHECK(devHandle->getDeviceCount(&nGpu));
   FLAGCXCHECK(devHandle->setDevice(worldRank % nGpu));
@@ -46,8 +60,20 @@ int main(int argc, char *argv[]) {
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
+  const flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
+
+  // Device communicator creation initializes the selected SHMEM runtime
+  // before any symmetric allocation is attempted.
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  flagcxDevComm_t devComm = nullptr;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
+  flagcxNvshmemSyncDeviceState();
+#endif
 
   void *sendBuff = nullptr, *recvBuff = nullptr, *hello;
   void *sendHandle = nullptr, *recvHandle = nullptr;
@@ -57,18 +83,22 @@ int main(int argc, char *argv[]) {
 
   if (localRegister == 2) {
     // Window mode: VMM alloc with comm (for flagcxCommWindowRegister later)
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
   } else if (localRegister == 1) {
     // Zero-copy: alloc + register for NIC RDMA access
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle));
+    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
+    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
+                                   memAllocator));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle,
+                                   memAllocator));
   } else {
     // Unregistered
     FLAGCXCHECK(
@@ -78,13 +108,6 @@ int main(int argc, char *argv[]) {
   }
   hello = malloc(maxBytes);
   memset(hello, 0, maxBytes);
-
-  // Create device communicator for AlltoAll demo
-  // Inter-only barrier needs inter barrier resources (GIN/FIFO Signal)
-  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  flagcxDevComm_t devComm = nullptr;
-  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   // Create device memory handles for send/recv buffers
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -302,29 +325,29 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
 
-  // Destroy device communicator (before comm destroy)
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-
-  // Deregister buffer (before comm destroy)
+  // Deregister and free user buffers while the SHMEM runtime owned by DevComm
+  // is still active.
   if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
+    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
   }
 
-  // Destroy comm to stop kernel proxy thread BEFORE freeing device memory
-  FLAGCXCHECK(flagcxCommDestroy(comm));
-
-  // Free buffer
   if (localRegister >= 1) {
-    FLAGCXCHECK(flagcxMemFree(sendBuff));
-    FLAGCXCHECK(flagcxMemFree(recvBuff));
+    FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+    FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   } else if (localRegister == 0) {
     FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
     FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
   }
+
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
+  flagcxNvshmemFinalizeDeviceState();
+#endif
+  FLAGCXCHECK(flagcxCommDestroy(comm));
   free(hello);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

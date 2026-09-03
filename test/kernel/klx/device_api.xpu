@@ -1,5 +1,3 @@
-#define FLAGCX_COMM_TRAITS_SHMEM
-
 #include "bkcl.h"
 #include "xpu/kernel/xtdk.h"
 #include "xpu/kernel/xtdk_io.h"
@@ -13,33 +11,7 @@
 
 #include "flagcx.h"
 
-#include "device_api/comm_traits.h"
-
-__global__ void flagcxXshmemRendezvousKernel(void *xshmemi_device_state_h) {
-  XSHMEM_DEVICE_INIT(xshmemi_device_state_h);
-  xshmem_barrier_all();
-}
-
-typedef struct flagcxDevCommInternal *flagcxDevComm_t;
-typedef struct flagcxDevMemInternal *flagcxDevMem_t;
-
-struct flagcxDevMemInternal {
-  void *rawPtr;
-};
-struct flagcxDevCommInternal {
-  int rank, nRanks;
-  int intraRank, intraSize;
-};
-
-flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
-                                          flagcxDataType_t datatype,
-                                          flagcxDevComm_t devComm,
-                                          flagcxStream_t stream);
-
-flagcxResult_t
-launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
-                                size_t count, flagcxDataType_t datatype,
-                                flagcxDevComm_t devComm, flagcxStream_t stream);
+#include "device_api/flagcx_device.h"
 
 namespace {
 
@@ -62,524 +34,478 @@ static flagcxResult_t klxWait(XPUStream cs, const char *where) {
   return flagcxSuccess;
 }
 
-static long xshmemTileElems(int npes) {
-  const long PUT_WIN_BYTES = 2L * 1024 * 1024 * 1024;
-  long t =
-      (PUT_WIN_BYTES / 2) / ((long)npes * (long)sizeof(float)) - (16L << 20);
-  if (t < (1L << 20))
-    t = (1L << 20);
-  return t;
-}
-
-static long xshmemTileElems1launch(int npes) {
-  const long PUT_WIN_ELEMS = (2L * 1024 * 1024 * 1024) / sizeof(float);
-  long t = (PUT_WIN_ELEMS / 2) / npes - (16L << 20);
-  if (t < (1L << 20))
-    t = (1L << 20);
-  return t;
-}
-
 } // namespace
 
-extern "C" {
-int flagcxXshmemAcquireArScratch(flagcxDevComm_t devComm, void *stream,
-                                 int npes, int clusternum, long slotElems,
-                                 float **workPing, float **workPong,
-                                 uint64_t **signal, long *seqBase,
-                                 int *needRendezvous);
-int flagcxXshmemCommitArScratch(flagcxDevComm_t devComm, void *stream,
-                                long ntiles);
-int flagcxXshmemAcquireA2AScratch(flagcxDevComm_t devComm, void *stream,
-                                  int npes, int clusternum, long tileElems,
-                                  float **stage, uint64_t **signal,
-                                  long *seqBase, int *needRendezvous);
-int flagcxXshmemCommitA2AScratch(flagcxDevComm_t devComm, void *stream,
-                                 long ntiles);
-}
-
-static __device__ inline void tile_range(int id, int num, int stride, int tlen,
-                                         int *start, int *end) {
-  partition(id, num, stride, 1024 / (int)sizeof(float), start, end);
-  if (*start > tlen)
-    *start = tlen;
-  if (*end > tlen)
-    *end = tlen;
-}
-
-static __device__ inline void
-issueSegPuts(DeviceAPI::Net net, DeviceAPI::Team world,
-             DeviceAPI::Window workWin, DeviceAPI::Window dataWin, int tlen,
-             int stride, int rank, int nRanks, int clusterid, int clusternum,
-             DeviceAPI::CoopBlock coop) {
-  int start, end;
-  tile_range(clusterid, clusternum, stride, tlen, &start, &end);
-  if (end <= start)
-    return;
-  for (int p = 0; p < nRanks; ++p) {
-    net.put(world, p, workWin, ((size_t)rank * stride + start) * sizeof(float),
-            dataWin, (size_t)start * sizeof(float),
-            (size_t)(end - start) * sizeof(float), flagcxDevNet_None{},
-            flagcxDevNet_None{}, coop, flagcxDevNet_None{},
-            flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
-  }
-}
-
-static __device__ inline void finishSegPuts(DeviceAPI::Net net,
-                                            DeviceAPI::Team world, int seq,
-                                            int rank, int nRanks, int clusterid,
-                                            int clusternum,
-                                            DeviceAPI::CoopBlock coop) {
-  net.flush(coop, flagcxDeviceMemoryOrderAcqRel);
-
-  uint64_t stamp = (uint64_t)seq + 1;
-  int sigBase = (seq & 1) * clusternum * nRanks + clusterid * nRanks;
-
-  for (int p = 0; p < nRanks; ++p) {
-    flagcxDevNet_SignalAdd arrive;
-    arrive.signal = (flagcxDevNetSignal_t)(sigBase + rank);
-    arrive.value = stamp;
-    net.signal(world, p, arrive, coop, flagcxDevNet_None{},
-               flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
-  }
-  coop.sync();
-
-  for (int s = 0; s < nRanks; ++s) {
-    net.waitSignal(coop, (flagcxDevNetSignal_t)(sigBase + s), stamp, 64,
-                   flagcxDeviceMemoryOrderRelaxed);
-  }
-  coop.sync();
-}
-
-static __device__ inline void
-reduceSeg(__global_ptr__ float *io_tile, __global_ptr__ float *work_buf,
-          int tlen, int stride, int nRanks, int clusterid, int clusternum,
-          int cid, int corenum, float *local_buf, int local_buf_bytes) {
-  int start, end;
-  tile_range(clusterid, clusternum, stride, tlen, &start, &end);
-  if (end <= start)
+template <typename T>
+__global__ void flagcxXshmemIntraAllReduceKernel(flagcxDevMem *devMem,
+                                                 flagcxDevComm *devComm,
+                                                 size_t count) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  if (!devMem->hasWindow())
     return;
 
-  int local_buf_len = local_buf_bytes / 2 / (int)sizeof(float);
-  int half_buf_len = local_buf_bytes / 4 / (int)sizeof(float);
-  float *data = local_buf;
-  float *combined_values = local_buf + local_buf_len;
+  flagcxTeam intra = flagcxTeamIntra(*devComm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar(
+      flagcxCoopBlock{}, *devComm, intra, cluster_id());
 
-  int r_core_start, r_core_end;
-  partition(cid, corenum, end - start, 64, &r_core_start, &r_core_end);
-  r_core_start += start;
-  r_core_end += start;
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
 
-  for (int i = r_core_start; i < r_core_end; i += half_buf_len) {
-    int ping = 0, pong = half_buf_len;
-    int cur_data_len = min(half_buf_len, r_core_end - i);
-    if (nRanks >= 1)
-      GM2LM_ASYNC(work_buf + 0 * stride + i, combined_values,
-                  cur_data_len * sizeof(float));
-    if (nRanks >= 2)
-      GM2LM_ASYNC(work_buf + 1 * stride + i, data + ping,
-                  cur_data_len * sizeof(float));
-    mfence();
-    for (int p = 1; p < nRanks; p++) {
-      if (p + 1 < nRanks)
-        GM2LM_ASYNC(work_buf + (p + 1) * stride + i, data + pong,
-                    cur_data_len * sizeof(float));
-      float *src = data + ping;
-      int vec_len = cur_data_len & ~31;
-      for (int j = 0; j < vec_len; j += 32) {
-        float32x16_t a_l = vload_lm_float32x16(src + j);
-        float32x16_t a_h = vload_lm_float32x16(src + j + 16);
-        float32x16_t b_l = vload_lm_float32x16(combined_values + j);
-        float32x16_t b_h = vload_lm_float32x16(combined_values + j + 16);
-        b_l = vvadd_float32x16(a_l, b_l);
-        b_h = vvadd_float32x16(a_h, b_h);
-        vstore_lm_float32x16(combined_values + j, b_l);
-        vstore_lm_float32x16(combined_values + j + 16, b_h);
-      }
-      mfence_lm();
-      for (int j = vec_len; j < cur_data_len; j++)
-        combined_values[j] = src[j] + combined_values[j];
-      mfence();
-      ping = half_buf_len - ping;
-      pong = half_buf_len - pong;
-    }
-    LM2GM(combined_values, io_tile + i, cur_data_len * sizeof(float));
-  }
-}
+  int rank = devComm->getIntraRank();
+  int nRanks = devComm->getIntraSize();
+  size_t globalTid =
+      (size_t)core_id() +
+      (size_t)core_num() *
+          ((size_t)rank + (size_t)cluster_id() * (size_t)nRanks);
+  size_t globalNthreads = (size_t)core_num() * (size_t)cluster_num() *
+                          (size_t)nRanks;
 
-__global__ void flagcxXshmemInplace1kKernel(float *io_data, float *work_ping,
-                                            float *work_pong, uint64_t *signal,
-                                            void *state_h, int num_elems,
-                                            int tile_elems, int seq_base) {
-  int clusterid = cluster_id();
-  int clusternum = cluster_num();
-  int cid = core_id();
-  int corenum = core_num();
-
-  XSHMEM_DEVICE_INIT(state_h);
-  int rank = xshmem_my_pe();
-  int nRanks = xshmem_n_pes();
-
-  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(clusternum);
-
-  __local__ __simd__ char reduce_lm[XSHMEMI_LOCAL_BUF_LEN];
-
-  DeviceAPI::Comm comm;
-  comm.rank = rank;
-  comm.nRanks = nRanks;
-  comm.intraRank = 0;
-  comm.intraSize = 1;
-  comm.intraTeam = -1;
-  comm.interTeam = -1;
-  comm.worldTeam = -1;
-  comm.signalBuffer = signal;
-  comm.signalCount = 2 * clusternum * nRanks;
-  comm.counterBuffer = nullptr;
-  comm.counterCount = 0;
-  comm.shadowBuffer = nullptr;
-  comm.gridSyncState = nullptr;
-  comm.devStateHandle = state_h;
-  DeviceAPI::Net net(comm, 0);
-  DeviceAPI::CoopBlock coop;
-  DeviceAPI::Team world;
-  world.nRanks = nRanks;
-  world.rank = rank;
-  world.stride = 1;
-
-  int stride = tile_elems < num_elems ? tile_elems : num_elems;
-
-  DeviceAPI::Window pingWin, pongWin;
-  pingWin.symBase = work_ping;
-  pingWin.rawPtr = work_ping;
-  pingWin.allocSize = (size_t)nRanks * (size_t)stride * sizeof(float);
-  pongWin.symBase = work_pong;
-  pongWin.rawPtr = work_pong;
-  pongWin.allocSize = (size_t)nRanks * (size_t)stride * sizeof(float);
-
-  {
-    DeviceAPI::Window dataWin;
-    dataWin.symBase = io_data;
-    dataWin.rawPtr = io_data;
-    dataWin.allocSize = (size_t)stride * sizeof(float);
-    issueSegPuts(net, world, (seq_base & 1) ? pongWin : pingWin, dataWin,
-                 stride, stride, rank, nRanks, clusterid, clusternum, coop);
+  for (size_t offset = globalTid; offset < count;
+       offset += globalNthreads) {
+    T value = T(0);
+    for (int peer = 0; peer < nRanks; ++peer)
+      value += *(T *)flagcxGetIntraPointer(*devMem, offset * sizeof(T), peer);
+    for (int peer = 0; peer < nRanks; ++peer)
+      *(T *)flagcxGetIntraPointer(*devMem, offset * sizeof(T), peer) = value;
   }
 
-  int ti = 0;
-  for (long t0 = 0; t0 < num_elems; t0 += tile_elems, ++ti) {
-    int tlen =
-        (int)((num_elems - t0 < tile_elems) ? (num_elems - t0) : tile_elems);
-    int seq = seq_base + ti;
-    __global_ptr__ float *cur_buf = (seq & 1) ? work_pong : work_ping;
-
-    finishSegPuts(net, world, seq, rank, nRanks, clusterid, clusternum, coop);
-
-    long nt0 = t0 + tile_elems;
-    if (nt0 < num_elems) {
-      int ntlen = (int)((num_elems - nt0 < tile_elems) ? (num_elems - nt0)
-                                                       : tile_elems);
-      DeviceAPI::Window nextData;
-      nextData.symBase = io_data + nt0;
-      nextData.rawPtr = io_data + nt0;
-      nextData.allocSize = (size_t)ntlen * sizeof(float);
-      issueSegPuts(net, world, ((seq + 1) & 1) ? pongWin : pingWin, nextData,
-                   ntlen, stride, rank, nRanks, clusterid, clusternum, coop);
-    }
-
-    reduceSeg(io_data + t0, cur_buf, tlen, stride, nRanks, clusterid,
-              clusternum, cid, corenum, (float *)reduce_lm,
-              (int)XSHMEMI_LOCAL_BUF_LEN);
-  }
-  return;
+  bar.sync(flagcxDeviceMemoryOrderRelease);
 }
 
 flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxDataType_t datatype,
                                           flagcxDevComm_t devComm,
                                           flagcxStream_t stream) {
-  if (devComm == nullptr || devMem == nullptr)
+  if (devComm == nullptr || devMem == nullptr || stream == nullptr)
     return flagcxInternalError;
-
   if (datatype != flagcxFloat32)
     return flagcxInvalidArgument;
   if (count == 0)
     return flagcxSuccess;
-
-  float *buf = (float *)devMem->rawPtr;
-  if (buf == nullptr)
+  if (devMem->rawPtr == nullptr)
     return flagcxInternalError;
-
-  int npes = devComm->nRanks;
-  if (npes <= 0)
-    return flagcxInternalError;
-
-  int clusternum = 12;
-  int corenum = klxCorenum();
+  if (!devMem->hasWindow || !devMem->isSymmetric)
+    return flagcxInvalidArgument;
+  if (devComm->intraSize < 1)
+    return flagcxInvalidArgument;
 
   XPUStream cs = (XPUStream)(*(void **)stream);
-  void *state = xshmem_get_xshmemi_device_state_h();
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result != flagcxSuccess)
+    return result;
 
-  long tileElems = xshmemTileElems(npes);
-  long slotElems = ((long)count < tileElems) ? (long)count : tileElems;
-
-  float *workPing = nullptr;
-  float *workPong = nullptr;
-  uint64_t *signal = nullptr;
-  long seqBase = 0;
-  int needRendezvous = 0;
-  if (flagcxXshmemAcquireArScratch(devComm, (void *)cs, npes, clusternum,
-                                   slotElems, &workPing, &workPong, &signal,
-                                   &seqBase, &needRendezvous) != 0)
-    return flagcxSystemError;
-
-  if (needRendezvous) {
-
-    flagcxXshmemRendezvousKernel<<<1, 1, cs>>>(state);
-    flagcxResult_t r = klxWait(cs, "all_reduce rendezvous");
-    if (r != flagcxSuccess)
-      return r;
-  }
-
-  {
-    const unsigned long long C2C_WIN = 2ULL * 1024 * 1024 * 1024;
-    char *base = (char *)buf;
-    if ((char *)workPing < base)
-      base = (char *)workPing;
-    if ((char *)workPong < base)
-      base = (char *)workPong;
-    if ((char *)signal < base)
-      base = (char *)signal;
-    unsigned long long workBytes =
-        (unsigned long long)slotElems * npes * sizeof(float);
-    unsigned long long endPing =
-        (unsigned long long)((char *)workPing - base) + workBytes;
-    unsigned long long endPong =
-        (unsigned long long)((char *)workPong - base) + workBytes;
-    unsigned long long endSig =
-        (unsigned long long)((char *)signal - base) +
-        (unsigned long long)2 * clusternum * npes * sizeof(uint64_t);
-    if (endPing > C2C_WIN || endPong > C2C_WIN || endSig > C2C_WIN)
-      return flagcxSystemError;
-  }
-
-  long seq = seqBase;
-  long totalTiles = 0;
-  long maxPerLaunch = (0x7fffffffL / tileElems) * tileElems;
-  for (long off = 0; off < (long)count; off += maxPerLaunch) {
-    long n = (long)count - off;
-    if (n > maxPerLaunch)
-      n = maxPerLaunch;
-    long ntiles = (n + tileElems - 1) / tileElems;
-    int tileArg = (int)((n < tileElems) ? n : tileElems);
-    flagcxXshmemInplace1kKernel<<<clusternum, corenum, cs>>>(
-        buf + off, workPing, workPong, signal, state, (int)n, tileArg,
-        (int)seq);
-    seq += ntiles;
-    totalTiles += ntiles;
-  }
-
-  if (flagcxXshmemCommitArScratch(devComm, (void *)cs, totalTiles) != 0)
-    return flagcxUnhandledDeviceError;
-
+  flagcxXshmemIntraAllReduceKernel<float><<<12, klxCorenum(), cs>>>(
+      deviceMem, deviceComm, count);
   return klxWait(cs, "all_reduce kernel");
 }
 
-__global__ void flagcxXshmemAlltoall1launchKernel(
-    float *send_data, float *recv_data, float *recv_stage, uint64_t *signal,
-    int count, int tile_elems, int seq_base, void *xshmemi_device_state_h) {
-  int clusterid = cluster_id();
-  int clusternum = cluster_num();
-  int cid = core_id();
-  int corenum = core_num();
+__global__ void flagcxXshmemOneSidedAlltoAllKernel(flagcxDevMem *sendMem,
+                                                   flagcxDevMem *recvMem,
+                                                   size_t count,
+                                                   flagcxDevComm *devComm) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(cluster_num());
 
-  XSHMEM_DEVICE_INIT(xshmemi_device_state_h);
-  int rank = xshmem_my_pe();
-  int nRanks = xshmem_n_pes();
+  flagcxCoopBlock coop;
+  flagcxDevNet net(*devComm, 0);
+  flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
+      coop, flagcxTeamTagWorld{}, net, cluster_id());
 
-  int sub_clusternum = clusternum / nRanks;
-  int sub_clusterid = clusterid % sub_clusternum;
-  int dst_pe = clusterid / sub_clusternum;
+  int rank = devComm->getRank();
+  int nRanks = devComm->getSize();
+  size_t bytes = count * sizeof(float);
+  uint64_t baseline = net.readSignal(0);
 
-  XSHMEM_DEVICE_SET_FLOW_CONTROL_THRESHOLD(sub_clusternum);
+  bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
-  DeviceAPI::Comm comm;
-  comm.rank = rank;
-  comm.nRanks = nRanks;
-  comm.intraRank = 0;
-  comm.intraSize = 1;
-  comm.intraTeam = -1;
-  comm.interTeam = -1;
-  comm.worldTeam = -1;
-  comm.signalBuffer = signal;
-  comm.signalCount = 2 * clusternum * nRanks;
-  comm.counterBuffer = nullptr;
-  comm.counterCount = 0;
-  comm.shadowBuffer = nullptr;
-  comm.gridSyncState = nullptr;
-  comm.devStateHandle = xshmemi_device_state_h;
-  DeviceAPI::Net net(comm, 0);
-  DeviceAPI::CoopBlock coop;
-  DeviceAPI::Team world;
-  world.nRanks = nRanks;
-  world.rank = rank;
-  world.stride = 1;
-
-  __local__ __simd__ char copy_lm[XSHMEMI_LOCAL_BUF_LEN];
-
-  int stride = min(tile_elems, count);
-
-  __global_ptr__ float *stage_ping = recv_stage;
-  __global_ptr__ float *stage_pong = recv_stage + (long)stride * nRanks;
-
-  DeviceAPI::Window dstWin, srcWin;
-  srcWin.symBase = send_data;
-  srcWin.rawPtr = send_data;
-  srcWin.allocSize = (size_t)nRanks * (size_t)count * sizeof(float);
-  dstWin.allocSize = (size_t)nRanks * (size_t)stride * sizeof(float);
-
-  {
-    int tlen0 = min(tile_elems, count);
-    int s0, e0;
-    tile_range(sub_clusterid, sub_clusternum, stride, tlen0, &s0, &e0);
-    __global_ptr__ float *first_stage =
-        (seq_base & 1) ? stage_pong : stage_ping;
-    dstWin.symBase = first_stage;
-    dstWin.rawPtr = first_stage;
-    if (e0 > s0) {
-      net.put(world, dst_pe, dstWin,
-              ((size_t)rank * stride + s0) * sizeof(float), srcWin,
-              ((size_t)dst_pe * count + s0) * sizeof(float),
-              (size_t)(e0 - s0) * sizeof(float), flagcxDevNet_None{},
-              flagcxDevNet_None{}, coop, flagcxDevNet_None{},
-              flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
-    }
+  // XSHMEM's aligned put is a cluster collective. Assign whole peers to
+  // clusters so every core in a cluster enters each put uniformly.
+  for (int peer = cluster_id(); peer < nRanks; peer += cluster_num()) {
+    net.put(flagcxTeamWorld(*devComm), peer, *recvMem, (size_t)rank * bytes,
+            *sendMem, (size_t)peer * bytes, bytes,
+            flagcxDevNet_SignalInc{0}, flagcxDevNet_None{}, coop);
   }
 
-  int ti = 0;
-  for (int t0 = 0; t0 < count; t0 += tile_elems, ++ti) {
-    int tlen = min(tile_elems, count - t0);
-    int seq = seq_base + ti;
-    __global_ptr__ float *cur_stage = (seq & 1) ? stage_pong : stage_ping;
+  net.waitSignal(coop, 0, baseline + (uint64_t)nRanks);
+  net.flush(coop);
 
-    net.flush(coop, flagcxDeviceMemoryOrderAcqRel);
-
-    int sigBase = (seq & 1) * sub_clusternum * nRanks + sub_clusterid * nRanks;
-    uint64_t stamp = (uint64_t)seq + 1;
-    flagcxDevNet_SignalAdd arrive;
-    arrive.signal = (flagcxDevNetSignal_t)(sigBase + rank);
-    arrive.value = stamp;
-    net.signal(world, dst_pe, arrive, coop, flagcxDevNet_None{},
-               flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
-    coop.sync();
-    net.waitSignal(coop, (flagcxDevNetSignal_t)(sigBase + dst_pe), stamp, 64,
-                   flagcxDeviceMemoryOrderRelaxed);
-    coop.sync();
-
-    int nt0 = t0 + tile_elems;
-    if (nt0 < count) {
-      int ntlen = min(tile_elems, count - nt0);
-      int ns, ne;
-      tile_range(sub_clusterid, sub_clusternum, stride, ntlen, &ns, &ne);
-      __global_ptr__ float *next_stage =
-          ((seq + 1) & 1) ? stage_pong : stage_ping;
-      dstWin.symBase = next_stage;
-      dstWin.rawPtr = next_stage;
-      if (ne > ns) {
-        net.put(world, dst_pe, dstWin,
-                ((size_t)rank * stride + ns) * sizeof(float), srcWin,
-                ((size_t)dst_pe * count + nt0 + ns) * sizeof(float),
-                (size_t)(ne - ns) * sizeof(float), flagcxDevNet_None{},
-                flagcxDevNet_None{}, coop, flagcxDevNet_None{},
-                flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
-      }
-    }
-
-    int start, end;
-    tile_range(sub_clusterid, sub_clusternum, stride, tlen, &start, &end);
-    if (end > start) {
-      int buf_len = XSHMEMI_LOCAL_BUF_LEN / 2 / (int)sizeof(float);
-      int r_core_start, r_core_end;
-      partition(cid, corenum, end - start, 64, &r_core_start, &r_core_end);
-      r_core_start += start;
-      r_core_end += start;
-      for (int i = r_core_start; i < r_core_end; i += buf_len) {
-        int len = min(buf_len, r_core_end - i);
-        GM2LM(cur_stage + dst_pe * stride + i, (float *)copy_lm,
-              len * sizeof(float));
-        LM2GM((float *)copy_lm, recv_data + (long)dst_pe * count + t0 + i,
-              len * sizeof(float));
-      }
-    }
-  }
-  return;
+  bar.sync(flagcxDeviceMemoryOrderRelaxed);
 }
 
 flagcxResult_t launchKernelNetOneSidedAlltoAll(
     flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
     flagcxDataType_t datatype, flagcxDevComm_t devComm, flagcxStream_t stream) {
-  if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr)
+  if (devComm == nullptr || sendMem == nullptr || recvMem == nullptr ||
+      stream == nullptr)
     return flagcxInternalError;
   if (datatype != flagcxFloat32)
     return flagcxInvalidArgument;
   if (count == 0)
     return flagcxSuccess;
-
-  float *send = (float *)sendMem->rawPtr;
-  float *recv = (float *)recvMem->rawPtr;
-  if (send == nullptr || recv == nullptr)
+  if (sendMem->rawPtr == nullptr || recvMem->rawPtr == nullptr)
     return flagcxInternalError;
-
-  int npes = devComm->nRanks;
-  if (npes <= 0)
-    return flagcxInternalError;
-
-  const long INT_MAX_L = 0x7fffffffL;
-  if (count > (size_t)INT_MAX_L)
+  if (!sendMem->hasWindow || !recvMem->hasWindow ||
+      !sendMem->isSymmetric || !recvMem->isSymmetric)
     return flagcxInvalidArgument;
-  if ((size_t)npes * count > (size_t)(INT_MAX_L / (long)sizeof(float)))
+  if (devComm->contextCount < 1 || devComm->signalCount < 1)
     return flagcxInvalidArgument;
-
-  int sub = 12 / npes;
-  if (sub < 1)
-    sub = 1;
-  int clusternum = sub * npes;
-  int corenum = klxCorenum();
+  if (devComm->nRanks < 1)
+    return flagcxInvalidArgument;
+  if (count > (size_t)-1 / sizeof(float) ||
+      (size_t)devComm->nRanks > (size_t)-1 / (count * sizeof(float)))
+    return flagcxInvalidArgument;
 
   XPUStream cs = (XPUStream)(*(void **)stream);
-  void *state = xshmem_get_xshmemi_device_state_h();
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxDevMem *deviceSendMem = nullptr;
+  flagcxDevMem *deviceRecvMem = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevMemGetDevicePtr(sendMem, (void **)&deviceSendMem);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecvMem);
+  if (result != flagcxSuccess)
+    return result;
 
-  long tileElems = xshmemTileElems1launch(npes);
-  if (tileElems > INT_MAX_L)
+  int clusternum = devComm->nRanks < 12 ? devComm->nRanks : 12;
+  if (clusternum < 1)
     return flagcxInvalidArgument;
-  long firstTile = ((long)count < tileElems) ? (long)count : tileElems;
-
-  float *stage = nullptr;
-  uint64_t *signal = nullptr;
-  long seqBase = 0;
-  int needRendezvous = 0;
-  if (flagcxXshmemAcquireA2AScratch(devComm, (void *)cs, npes, clusternum,
-                                    firstTile, &stage, &signal, &seqBase,
-                                    &needRendezvous) != 0)
-    return flagcxSystemError;
-
-  if (needRendezvous) {
-
-    flagcxXshmemRendezvousKernel<<<1, 1, cs>>>(state);
-    flagcxResult_t r = klxWait(cs, "all_to_all rendezvous");
-    if (r != flagcxSuccess)
-      return r;
-  }
-
-  long ntiles = ((long)count + tileElems - 1) / tileElems;
-  flagcxXshmemAlltoall1launchKernel<<<clusternum, corenum, cs>>>(
-      send, recv, stage, signal, (int)count, (int)tileElems, (int)seqBase,
-      state);
-
-  if (flagcxXshmemCommitA2AScratch(devComm, (void *)cs, ntiles) != 0)
-    return flagcxUnhandledDeviceError;
-  return flagcxSuccess;
+  flagcxXshmemOneSidedAlltoAllKernel<<<clusternum, klxCorenum(), cs>>>(
+      deviceSendMem, deviceRecvMem, count, deviceComm);
+  return klxWait(cs, "all_to_all kernel");
 }
 
 #define STUB_UNUSED(x) ((void)(x))
+
+__global__ void flagcxXshmemLocalPointerKernel(flagcxDevMem *devMem,
+                                               void *rawPtr, int *results) {
+  if (cluster_id() == 0 && core_id() == 0) {
+    void *local = flagcxGetLocalPointer(*devMem, 0);
+    results[0] = local != nullptr &&
+                         *(volatile float *)local == *(volatile float *)rawPtr
+                     ? 1
+                     : 0;
+  }
+}
+
+__global__ void flagcxXshmemCommQueriesKernel(flagcxDevMem *devMem,
+                                              flagcxDevComm *devComm,
+                                              int *results) {
+  if (cluster_id() == 0 && core_id() == 0) {
+    results[0] = devMem->hasWindow() ? 1 : 0;
+    results[1] = devComm->getIntraRank();
+    results[2] = devComm->getIntraSize();
+    results[3] = devComm->getRank();
+    results[4] = devComm->getSize();
+    results[5] = devMem->getDevPeerPtrs() != nullptr ? 1 : 0;
+  }
+}
+
+__global__ void flagcxXshmemCoopGroupsKernel(int *results) {
+  flagcxCoopBlock block;
+  if (cluster_id() == 0 && core_id() == 0)
+    results[0] = block.size() == core_num() ? 1 : 0;
+  block.sync();
+
+  flagcxCoopWarp warp;
+  if (cluster_id() == 0 && core_id() == 0)
+    results[1] = warp.size() == FLAGCX_SIMT_WIDTH && warp.threadRank() == 0;
+  warp.sync();
+
+  flagcxCoopThread thread;
+  if (cluster_id() == 0 && core_id() == 0)
+    results[2] = thread.size() == 1 && thread.threadRank() == 0;
+
+  flagcxCoopTile<8> tile;
+  if (cluster_id() == 0 && core_id() == 0)
+    results[3] = tile.size() == 8 && tile.threadRank() == 0;
+
+  flagcxCoopLanes lanes((1u << FLAGCX_SIMT_WIDTH) - 1u);
+  if (cluster_id() == 0 && core_id() == 0)
+    results[4] = lanes.size() == FLAGCX_SIMT_WIDTH && lanes.threadRank() == 0;
+  lanes.sync();
+}
+
+__global__ void flagcxXshmemTeamKernel(flagcxDevComm *devComm, int *results) {
+  if (cluster_id() == 0 && core_id() == 0) {
+    int rank = devComm->getIntraRank();
+    flagcxTeam intra = flagcxTeamIntra(*devComm);
+    results[0] = intra.nRanks() == devComm->getIntraSize();
+    results[1] =
+        flagcxTeamRankToWorld(*devComm, intra, rank) == devComm->getRank();
+    results[2] = flagcxTeamRankToIntra(*devComm, intra, rank) == rank;
+    results[3] = flagcxTeamRankIsMember(intra, intra, rank) ? 1 : 0;
+  }
+}
+
+__global__ void flagcxXshmemNetGetFromCommKernel(flagcxDevComm *devComm,
+                                                 int *results) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  if (cluster_id() == 0 && core_id() == 0) {
+    flagcxDevNet net(*devComm, 0);
+    results[0] = devComm->getContextCount() > 0 && net.isValid() ? 1 : 0;
+    results[1] = devComm->getIntraSize();
+  }
+}
+
+static __device__ inline void xshmemPeBarrier(DeviceAPI::CoopBlock coop) {
+  coop.sync();
+  if (coop.threadRank() == 0)
+    xshmem_barrier_all();
+  coop.sync();
+}
+
+__global__ void flagcxXshmemPutSignalKernel(flagcxDevMem *sendMem,
+                                            flagcxDevMem *recvMem,
+                                            flagcxDevComm *devComm,
+                                            size_t count,
+                                            int decoupledSignalDelta) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  DeviceAPI::CoopBlock coop;
+  flagcxDevNet net(*devComm, 0);
+  flagcxTeam world = flagcxTeamWorld(*devComm);
+  int rank = devComm->getRank();
+  int nRanks = devComm->getSize();
+  size_t bytes = count * sizeof(float);
+  uint64_t initial = net.readSignal(0);
+
+  xshmemPeBarrier(coop);
+  for (int peer = 0; peer < nRanks; ++peer) {
+    size_t dstOffset = (size_t)rank * bytes;
+    size_t srcOffset = (size_t)peer * bytes;
+    if (decoupledSignalDelta != 0) {
+      net.put(world, peer, *recvMem, dstOffset, *sendMem, srcOffset, bytes,
+              flagcxDevNet_None{}, flagcxDevNet_None{}, flagcxCoopBlock{});
+      net.flush(flagcxCoopBlock{}, flagcxDeviceMemoryOrderAcqRel);
+      net.signal(world, peer,
+                 flagcxDevNet_SignalAdd{0, (uint64_t)decoupledSignalDelta},
+                 flagcxCoopBlock{});
+    } else {
+      net.put(world, peer, *recvMem, dstOffset, *sendMem, srcOffset, bytes,
+              flagcxDevNet_SignalInc{0}, flagcxDevNet_None{},
+              flagcxCoopBlock{});
+    }
+  }
+
+  net.waitSignal(flagcxCoopBlock{}, 0,
+                 initial +
+                     (uint64_t)nRanks * (uint64_t)(decoupledSignalDelta != 0
+                                                       ? decoupledSignalDelta
+                                                       : 1));
+  net.flush(flagcxCoopBlock{}, flagcxDeviceMemoryOrderAcqRel);
+  xshmemPeBarrier(coop);
+}
+
+__global__ void flagcxXshmemCounterPipelineKernel(flagcxDevMem *sendMem,
+                                                  flagcxDevMem *recvMem,
+                                                  flagcxDevComm *devComm,
+                                                  size_t count,
+                                                  uint64_t *results) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  DeviceAPI::CoopBlock coop;
+  flagcxDevNet net(*devComm, 0);
+  flagcxTeam world = flagcxTeamWorld(*devComm);
+  int rank = devComm->getRank();
+  int nRanks = devComm->getSize();
+  size_t bytes = count * sizeof(float);
+  uint64_t initialSignal = net.readSignal(0);
+  uint64_t initialCounter = net.readCounter(0);
+
+  xshmemPeBarrier(coop);
+
+  // Round 1 exercises a remote counter action and a local signal action.
+  for (int peer = 0; peer < nRanks; ++peer) {
+    net.put(world, peer, *recvMem, (size_t)rank * bytes, *sendMem,
+            (size_t)peer * bytes, bytes, flagcxDevNet_CounterInc{0},
+            flagcxDevNet_SignalInc{0}, flagcxCoopBlock{});
+  }
+  net.waitCounter(flagcxCoopBlock{}, 0, initialCounter + (uint64_t)nRanks);
+
+  for (int peer = core_id(); peer < nRanks; peer += core_num()) {
+    float *slot =
+        (float *)flagcxGetLocalPointer(*sendMem, (size_t)peer * bytes);
+    *slot = 999.0f;
+  }
+  mfence();
+  xshmemPeBarrier(coop);
+
+  for (int peer = 0; peer < nRanks; ++peer) {
+    net.put(world, peer, *recvMem, (size_t)rank * bytes, *sendMem,
+            (size_t)peer * bytes, bytes, flagcxDevNet_SignalInc{0},
+            flagcxDevNet_CounterInc{0}, flagcxCoopBlock{});
+  }
+  net.waitCounter(flagcxCoopBlock{}, 0, initialCounter + 2 * (uint64_t)nRanks);
+  net.waitSignal(flagcxCoopBlock{}, 0, initialSignal + 2 * (uint64_t)nRanks);
+  net.flush(flagcxCoopBlock{}, flagcxDeviceMemoryOrderAcqRel);
+
+  if (cluster_id() == 0 && core_id() == 0) {
+    results[0] = net.readCounter(0) - initialCounter;
+    results[1] = (uint64_t)nRanks;
+  }
+  xshmemPeBarrier(coop);
+}
+
+__global__ void flagcxXshmemSignalKernel(flagcxDevComm *devComm) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  DeviceAPI::CoopBlock coop;
+  flagcxDevNet net(*devComm, 0);
+  flagcxTeam world = flagcxTeamWorld(*devComm);
+  int rank = devComm->getRank();
+  int nRanks = devComm->getSize();
+  uint64_t initial = net.readSignal(1);
+
+  xshmemPeBarrier(coop);
+  for (int peer = 0; peer < nRanks; ++peer) {
+    if (peer != rank)
+      net.signal(world, peer, flagcxDevNet_SignalInc{1}, flagcxCoopBlock{});
+  }
+  net.waitSignal(flagcxCoopBlock{}, 1, initial + (uint64_t)(nRanks - 1));
+  net.flush(flagcxCoopBlock{}, flagcxDeviceMemoryOrderAcqRel);
+  xshmemPeBarrier(coop);
+}
+
+__global__ void flagcxXshmemPutValueKernel(flagcxDevMem *recvMem,
+                                           flagcxDevComm *devComm,
+                                           size_t putValBase) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  DeviceAPI::CoopBlock coop;
+  flagcxDevNet net(*devComm, 0);
+  flagcxTeam world = flagcxTeamWorld(*devComm);
+  int rank = devComm->getRank();
+  int nRanks = devComm->getSize();
+  uint64_t initial = net.readSignal(1);
+  xshmemPeBarrier(coop);
+  for (int peer = 0; peer < nRanks; ++peer) {
+    uint64_t value = (uint64_t)rank * 1000u + (uint64_t)peer;
+    net.putValue(world, peer, *recvMem,
+                 putValBase + (size_t)rank * sizeof(uint64_t), value,
+                 flagcxDevNet_SignalInc{1}, flagcxCoopBlock{});
+  }
+  net.waitSignal(flagcxCoopBlock{}, 1, initial + (uint64_t)nRanks);
+  xshmemPeBarrier(coop);
+}
+
+__global__ void flagcxXshmemResetKernel(flagcxDevComm *devComm,
+                                        uint64_t *results) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  flagcxDevNet net(*devComm, 0);
+  if (cluster_id() == 0 && core_id() == 0) {
+    net.resetSignal(0);
+    net.resetSignal(1);
+    net.resetSignal(2);
+    net.resetCounter(0);
+    results[0] = net.readSignal(0);
+    results[1] = net.readSignal(1);
+    results[2] = net.readSignal(2);
+    results[3] = net.readCounter(0);
+  }
+}
+
+__global__ void flagcxXshmemGetKernel(flagcxDevMem *sendMem,
+                                      flagcxDevMem *recvMem,
+                                      flagcxDevComm *devComm, size_t count) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  DeviceAPI::CoopBlock coop;
+  flagcxDevNet net(*devComm, 0);
+  flagcxTeam world = flagcxTeamWorld(*devComm);
+  int rank = devComm->getRank();
+  int nRanks = devComm->getSize();
+  size_t bytes = count * sizeof(float);
+  xshmemPeBarrier(coop);
+  for (int peer = 0; peer < nRanks; ++peer) {
+    net.get(world, peer, *sendMem, (size_t)rank * bytes, *recvMem,
+            (size_t)peer * bytes, bytes, flagcxCoopBlock{});
+  }
+  xshmemPeBarrier(coop);
+}
+
+template <bool SplitBarrier>
+__global__ void flagcxXshmemIntraPointerKernel(flagcxDevMem *devMem,
+                                               flagcxDevComm *devComm,
+                                               float *output, size_t count) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  int rank = devComm->getIntraRank();
+  int peer = (rank + 1) % devComm->getIntraSize();
+  flagcxTeam intra = flagcxTeamIntra(*devComm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> barrier{
+      flagcxCoopBlock{}, *devComm, intra, 0};
+  if (SplitBarrier) {
+    barrier.arrive(flagcxDeviceMemoryOrderRelease);
+    barrier.wait(flagcxDeviceMemoryOrderAcquire);
+  } else {
+    barrier.sync(flagcxDeviceMemoryOrderAcquire);
+  }
+
+  for (size_t i = (size_t)core_id(); i < count; i += (size_t)core_num()) {
+    float *remote =
+        (float *)flagcxGetIntraPointer(*devMem, i * sizeof(float), peer);
+    if (remote)
+      output[i] = *remote;
+  }
+  barrier.sync(flagcxDeviceMemoryOrderRelease);
+}
+
+__global__ void flagcxXshmemPeerPointerKernel(flagcxDevMem *devMem,
+                                              flagcxDevComm *devComm,
+                                              float *output, size_t count) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  int rank = devComm->getIntraRank();
+  int peer = (rank + 1) % devComm->getIntraSize();
+  flagcxTeam intra = flagcxTeamIntra(*devComm);
+  for (size_t i = (size_t)core_id(); i < count; i += (size_t)core_num()) {
+    float *remote =
+        (float *)flagcxGetPeerPointer(*devMem, i * sizeof(float), intra, peer);
+    if (remote)
+      output[i] = *remote;
+  }
+}
+
+__global__ void flagcxXshmemSymPtrKernel(flagcxDevMem *devMem,
+                                         flagcxDevComm *devComm, int *results) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  if (cluster_id() == 0 && core_id() == 0) {
+    int peer = (devComm->getIntraRank() + 1) % devComm->getIntraSize();
+    flagcxSymPtr<float> ptr(*devMem, 0);
+    flagcxSymPtr<float> advanced = ptr + 10;
+    results[0] = ptr.localPtr() != nullptr && ptr.intraPtr(peer) != nullptr &&
+                         advanced.offset - ptr.offset == 10 * sizeof(float) &&
+                         advanced - ptr == 10
+                     ? 1
+                     : 0;
+  }
+}
+
+__global__ void flagcxXshmemInterBarrierKernel(flagcxDevComm *devComm,
+                                               int *results, int nIters) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  flagcxDevNet net(*devComm, 0);
+  flagcxTeam inter = flagcxTeamInter(*devComm);
+  flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopBlock> barrier(
+      flagcxCoopBlock{}, net, inter, 0);
+  for (int i = 0; i < nIters; ++i)
+    barrier.sync(flagcxDeviceMemoryOrderAcqRel);
+  if (cluster_id() == 0 && core_id() == 0)
+    results[0] = 1;
+}
+
+__global__ void flagcxXshmemWorldBarrierKernel(flagcxDevComm *devComm,
+                                               int *results) {
+  XSHMEM_DEVICE_INIT(devComm->_commBase.devStateHandle);
+  flagcxDevNet net(*devComm, 0);
+  flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> barrier(
+      flagcxCoopBlock{}, flagcxTeamTagWorld{}, net, 0);
+  barrier.sync(flagcxDeviceMemoryOrderAcqRel);
+  if (cluster_id() == 0 && core_id() == 0)
+    results[0] = 1;
+}
 
 flagcxResult_t launchKernelNetTwoSidedAlltoAll(
     flagcxDevMem_t sendMem, flagcxDevMem_t recvMem, size_t count,
@@ -598,13 +524,23 @@ flagcxResult_t launchKernelNetPutSignalInc(flagcxDevMem_t sendMem,
                                            flagcxDataType_t datatype,
                                            flagcxDevComm_t devComm,
                                            flagcxStream_t stream) {
-  STUB_UNUSED(sendMem);
-  STUB_UNUSED(recvMem);
-  STUB_UNUSED(count);
-  STUB_UNUSED(datatype);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!sendMem || !recvMem || !devComm || datatype != flagcxFloat32)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceSend = nullptr;
+  flagcxDevMem *deviceRecv = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevMemGetDevicePtr(sendMem, (void **)&deviceSend);
+  if (result == flagcxSuccess)
+    result = flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecv);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemPutSignalKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(
+      deviceSend, deviceRecv, deviceComm, count, 0);
+  return klxWait(cs, "put signal-inc kernel");
 }
 
 flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
@@ -612,13 +548,23 @@ flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
                                            flagcxDataType_t datatype,
                                            flagcxDevComm_t devComm,
                                            flagcxStream_t stream) {
-  STUB_UNUSED(sendMem);
-  STUB_UNUSED(recvMem);
-  STUB_UNUSED(count);
-  STUB_UNUSED(datatype);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!sendMem || !recvMem || !devComm || datatype != flagcxFloat32)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceSend = nullptr;
+  flagcxDevMem *deviceRecv = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevMemGetDevicePtr(sendMem, (void **)&deviceSend);
+  if (result == flagcxSuccess)
+    result = flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecv);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemPutSignalKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(
+      deviceSend, deviceRecv, deviceComm, count, 2);
+  return klxWait(cs, "put signal-add kernel");
 }
 
 flagcxResult_t
@@ -626,45 +572,81 @@ launchKernelNetCounterPipeline(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
                                size_t count, flagcxDataType_t datatype,
                                flagcxDevComm_t devComm, flagcxStream_t stream,
                                uint64_t *resultBuf) {
-  STUB_UNUSED(sendMem);
-  STUB_UNUSED(recvMem);
-  STUB_UNUSED(count);
-  STUB_UNUSED(datatype);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  STUB_UNUSED(resultBuf);
-  return flagcxNotSupported;
+  if (!sendMem || !recvMem || !devComm || !stream || !resultBuf ||
+      datatype != flagcxFloat32)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceSend = nullptr;
+  flagcxDevMem *deviceRecv = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevMemGetDevicePtr(sendMem, (void **)&deviceSend);
+  if (result == flagcxSuccess)
+    result = flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecv);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemCounterPipelineKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(
+      deviceSend, deviceRecv, deviceComm, count, resultBuf);
+  return klxWait(cs, "counter-pipeline kernel");
 }
 
 flagcxResult_t launchKernelNetPutValue(flagcxDevMem_t recvMem,
                                        flagcxDevComm_t devComm,
                                        flagcxStream_t stream,
                                        size_t putValBase) {
-  STUB_UNUSED(recvMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  STUB_UNUSED(putValBase);
-  return flagcxNotSupported;
+  if (!recvMem || !devComm)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceRecv = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecv);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemPutValueKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(
+      deviceRecv, deviceComm, putValBase);
+  return klxWait(cs, "put-value kernel");
 }
 
 flagcxResult_t launchKernelNetSignal(flagcxDevComm_t devComm,
                                      flagcxStream_t stream) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devComm)
+    return flagcxInvalidArgument;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemSignalKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceComm);
+  return klxWait(cs, "signal kernel");
 }
 
 flagcxResult_t
 launchKernelNetFlushDecouple(flagcxDevMem_t sendMem, flagcxDevMem_t recvMem,
                              size_t count, flagcxDataType_t datatype,
                              flagcxDevComm_t devComm, flagcxStream_t stream) {
-  STUB_UNUSED(sendMem);
-  STUB_UNUSED(recvMem);
-  STUB_UNUSED(count);
-  STUB_UNUSED(datatype);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!sendMem || !recvMem || !devComm || datatype != flagcxFloat32)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceSend = nullptr;
+  flagcxDevMem *deviceRecv = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevMemGetDevicePtr(sendMem, (void **)&deviceSend);
+  if (result == flagcxSuccess)
+    result = flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecv);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemPutSignalKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(
+      deviceSend, deviceRecv, deviceComm, count, 1);
+  return klxWait(cs, "flush-decouple kernel");
 }
 
 flagcxResult_t launchKernelNetFollowShadow(flagcxDevComm_t devComm,
@@ -684,10 +666,16 @@ flagcxResult_t launchKernelNetMeetShadow(flagcxDevComm_t devComm,
 flagcxResult_t launchKernelNetReset(flagcxDevComm_t devComm,
                                     flagcxStream_t stream,
                                     uint64_t *resultBuf) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  STUB_UNUSED(resultBuf);
-  return flagcxNotSupported;
+  if (!devComm || !resultBuf)
+    return flagcxInvalidArgument;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemResetKernel<<<1, 1, cs>>>(deviceComm, resultBuf);
+  return klxWait(cs, "reset kernel");
 }
 
 flagcxResult_t launchKernelNetGet(flagcxDevMem_t sendMem,
@@ -695,134 +683,216 @@ flagcxResult_t launchKernelNetGet(flagcxDevMem_t sendMem,
                                   flagcxDataType_t datatype,
                                   flagcxDevComm_t devComm,
                                   flagcxStream_t stream) {
-  STUB_UNUSED(sendMem);
-  STUB_UNUSED(recvMem);
-  STUB_UNUSED(count);
-  STUB_UNUSED(datatype);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!sendMem || !recvMem || !devComm || datatype != flagcxFloat32)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceSend = nullptr;
+  flagcxDevMem *deviceRecv = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevMemGetDevicePtr(sendMem, (void **)&deviceSend);
+  if (result == flagcxSuccess)
+    result = flagcxDevMemGetDevicePtr(recvMem, (void **)&deviceRecv);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemGetKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceSend, deviceRecv,
+                                                      deviceComm, count);
+  return klxWait(cs, "get kernel");
 }
 
 flagcxResult_t launchKernelLocalPointer(flagcxDevMem_t devMem, void *rawPtr,
                                         int *results, flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(rawPtr);
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !rawPtr || !results)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemLocalPointerKernel<<<1, 1, cs>>>(deviceMem, rawPtr, results);
+  return klxWait(cs, "local pointer kernel");
 }
 
 flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
                                         flagcxDevComm_t devComm, float *output,
                                         size_t count, flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(output);
-  STUB_UNUSED(count);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !devComm || !output)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemIntraPointerKernel<false>
+      <<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceMem, deviceComm, output, count);
+  return klxWait(cs, "intra pointer kernel");
 }
 
 flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,
                                        flagcxDevComm_t devComm, float *output,
                                        size_t count, flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(output);
-  STUB_UNUSED(count);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !devComm || !output)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemPeerPointerKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(
+      deviceMem, deviceComm, output, count);
+  return klxWait(cs, "peer pointer kernel");
 }
 
 flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,
                                             flagcxDevComm_t devComm,
                                             float *output, size_t count,
                                             flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(output);
-  STUB_UNUSED(count);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !devComm || !output)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemIntraPointerKernel<false>
+      <<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceMem, deviceComm, output, count);
+  return klxWait(cs, "intra barrier kernel");
 }
 
 flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
                                                   flagcxDevComm_t devComm,
                                                   float *output, size_t count,
                                                   flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(output);
-  STUB_UNUSED(count);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !devComm || !output)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemIntraPointerKernel<true>
+      <<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceMem, deviceComm, output, count);
+  return klxWait(cs, "split intra barrier kernel");
 }
 
 flagcxResult_t launchKernelIntraSymPtr(flagcxDevMem_t devMem,
                                        flagcxDevComm_t devComm, int *results,
                                        flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !devComm || !results)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result == flagcxSuccess)
+    result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemSymPtrKernel<<<1, 1, cs>>>(deviceMem, deviceComm, results);
+  return klxWait(cs, "symmetric pointer kernel");
 }
 
 flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
                                        flagcxDevComm_t devComm, int *results,
                                        flagcxStream_t stream) {
-  STUB_UNUSED(devMem);
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devMem || !devComm || !results)
+    return flagcxInvalidArgument;
+  flagcxDevMem *deviceMem = nullptr;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result = flagcxDevMemGetDevicePtr(devMem, (void **)&deviceMem);
+  if (result != flagcxSuccess)
+    return result;
+  result = flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemCommQueriesKernel<<<1, 1, cs>>>(deviceMem, deviceComm, results);
+  return klxWait(cs, "comm query kernel");
 }
 
 flagcxResult_t launchKernelCoopGroups(int *results, flagcxStream_t stream) {
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!results)
+    return flagcxInvalidArgument;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemCoopGroupsKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(results);
+  return klxWait(cs, "cooperative group kernel");
 }
 
 flagcxResult_t launchKernelTeam(flagcxDevComm_t devComm, int *results,
                                 flagcxStream_t stream) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devComm || !results)
+    return flagcxInvalidArgument;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemTeamKernel<<<1, 1, cs>>>(deviceComm, results);
+  return klxWait(cs, "team kernel");
 }
 
 flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,
                                           flagcxStream_t stream) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devComm || !results || !stream)
+    return flagcxInvalidArgument;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemNetGetFromCommKernel<<<1, 1, cs>>>(deviceComm, results);
+  return klxWait(cs, "net-from-comm kernel");
 }
 
 flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
                                               flagcxStream_t stream) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  return launchKernelNetSignal(devComm, stream);
 }
 
 flagcxResult_t launchKernelInterBarrier(flagcxDevComm_t devComm, int *results,
                                         int nIters, flagcxStream_t stream) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(results);
-  STUB_UNUSED(nIters);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devComm || !results || nIters < 0)
+    return flagcxInvalidArgument;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemInterBarrierKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceComm,
+                                                               results, nIters);
+  return klxWait(cs, "inter barrier kernel");
 }
 
 flagcxResult_t launchKernelWorldBarrier(flagcxDevComm_t devComm, int *results,
                                         flagcxStream_t stream) {
-  STUB_UNUSED(devComm);
-  STUB_UNUSED(results);
-  STUB_UNUSED(stream);
-  return flagcxNotSupported;
+  if (!devComm || !results)
+    return flagcxInvalidArgument;
+  flagcxDevComm *deviceComm = nullptr;
+  flagcxResult_t result =
+      flagcxDevCommGetDevicePtr(devComm, (void **)&deviceComm);
+  if (result != flagcxSuccess)
+    return result;
+  XPUStream cs = (XPUStream)(*(void **)stream);
+  flagcxXshmemWorldBarrierKernel<<<1, FLAGCX_SIMT_WIDTH, cs>>>(deviceComm,
+                                                               results);
+  return klxWait(cs, "world barrier kernel");
 }
 
 #undef STUB_UNUSED

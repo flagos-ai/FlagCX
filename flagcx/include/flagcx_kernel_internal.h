@@ -140,6 +140,10 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 // Registration is the caller's responsibility (Decision 7.16):
 //   - IPC mode (win=NULL): caller calls flagcxCommRegister first.
 //   - Window mode (win!=NULL): caller calls flagcxCommWindowRegister first.
+//   - SHMEM backend: the complete range must come from
+//     flagcxMemAlloc(..., flagcxMemSHMEM). Registration is provenance
+//     validation only; native SHMEM addressing needs no additional window.
+// External CCL user buffers remain supported on the default backend.
 // This function exchanges IPC handles to build peer pointer tables (both modes)
 // and stores the window handle (window mode only).
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,

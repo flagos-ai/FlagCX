@@ -10,6 +10,7 @@ void *SymMemTest::devBuff2 = nullptr;
 void *SymMemTest::hostBuff = nullptr;
 size_t SymMemTest::size = 0;
 size_t SymMemTest::count = 0;
+flagcxMemAllocator_t SymMemTest::memAllocator = flagcxMemCCL;
 
 void SymMemTest::SetUpTestSuite() {
   int rank, nranks;
@@ -36,8 +37,16 @@ void SymMemTest::SetUpTestSuite() {
 
   devHandle->streamCreate(&stream);
 
-  flagcxMemAlloc(&devBuff, size);
-  flagcxMemAlloc(&devBuff2, size);
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  // This suite validates the default CCL/VMM symmetric-window implementation
+  // and its internal flatBase/defaultBase fields. SHMEM builds use native
+  // symmetric heaps and are covered by the Device API suites instead.
+  memAllocator = flagcxMemSHMEM;
+#else
+  memAllocator = flagcxMemCCL;
+  flagcxMemAlloc(&devBuff, size, memAllocator);
+  flagcxMemAlloc(&devBuff2, size, memAllocator);
+#endif
 
   hostBuff = malloc(size);
   memset(hostBuff, 0, size);
@@ -49,11 +58,12 @@ void SymMemTest::TearDownTestSuite() {
 
   devHandle->streamDestroy(stream);
 
+  if (devBuff)
+    flagcxMemFree(devBuff, memAllocator);
+  if (devBuff2)
+    flagcxMemFree(devBuff2, memAllocator);
   if (comm)
     flagcxCommDestroy(comm);
-
-  flagcxMemFree(devBuff);
-  flagcxMemFree(devBuff2);
   free(hostBuff);
 
   flagcxDeviceHandleFree(devHandle);
@@ -68,6 +78,9 @@ void SymMemTest::TearDownTestSuite() {
 
 void SymMemTest::SetUp() {
   FlagCXTest::SetUp();
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  GTEST_SKIP() << "default CCL/VMM symmem tests are not applicable to SHMEM";
+#endif
   if (comm == nullptr) {
     GTEST_SKIP() << "SetUpTestSuite failed";
   }

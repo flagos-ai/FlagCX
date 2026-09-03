@@ -18,4 +18,6 @@ protected:
   static flagcxStream_t stream;
   static void *devBuff;
   static size_t size;
+  static flagcxMemAllocator_t memAllocator;
+  static flagcxDevComm_t shmemLifetimeComm;
 };

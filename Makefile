@@ -19,6 +19,7 @@ USE_TSM ?= 0
 USE_MPI ?= 0
 USE_UCX ?= 0
 USE_IBUC ?= 0
+USE_ACCL_BAREX ?= 0
 USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
 USE_PPU ?= 0
@@ -144,6 +145,8 @@ NET_ADAPTOR_FLAG =
 COMPILE_KERNEL_HOST_FLAG=
 COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
+HOST_CXX_STANDARD ?= -std=c++17
+HOST_CXXFLAGS ?=
 ifeq ($(USE_NVIDIA), 1)
   include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
@@ -215,6 +218,21 @@ ifeq ($(USE_IBUC), 1)
 	NET_ADAPTOR_FLAG += -DUSE_IBUC
 endif
 
+# ACCL (accl::barex) transport for PPU + vsolar hosts lacking peer-mem/DMA-BUF.
+# Devel package installs under /usr; select at runtime with FLAGCX_P2P_TRANSPORT=accl.
+ifeq ($(USE_ACCL_BAREX), 1)
+	ACCL_BAREX_HOME ?= /usr
+	ACCL_BAREX_INCLUDE_FLAG = -I$(ACCL_BAREX_HOME)/include
+	ACCL_BAREX_LINK_FLAG = -L$(ACCL_BAREX_HOME)/lib \
+		-Wl,-rpath,$(ACCL_BAREX_HOME)/lib
+	ACCL_BAREX_LINK = -laccl_barex
+	NET_ADAPTOR_FLAG += -DUSE_ACCL_BAREX -DCMAKE_INCLUDE=1
+else
+	ACCL_BAREX_INCLUDE_FLAG =
+	ACCL_BAREX_LINK_FLAG =
+	ACCL_BAREX_LINK =
+endif
+
 ifeq ($(COMPILE_KERNEL), 1)
 	COMPILE_KERNEL_FLAG = -DCOMPILE_KERNEL
 	COMPILE_KERNEL_HOST_FLAG = -DCOMPILE_KERNEL_HOST
@@ -226,6 +244,8 @@ BUILD_INCDIR := $(BUILDDIR)/include
 PREFIX ?= /usr/local
 DESTDIR  ?= $(PREFIX)/lib
 INC_DESTDIR ?= $(PREFIX)/include
+# Source builds use the submodule; distro builds override this with /usr/include.
+JSON_INCLUDE_DIR ?= $(abspath third-party/json/single_include)
 
 # Public headers exported alongside libflagcx.so
 PUBLIC_HEADERS := \
@@ -242,7 +262,7 @@ INCLUDEDIR := \
 	$(abspath flagcx/runner/include) \
 	$(abspath flagcx/core/include) \
 	$(abspath flagcx/service/include) \
-	$(abspath third-party/json/single_include)
+	$(JSON_INCLUDE_DIR)
 
 # Append NVSHMEM include path (must come after INCLUDEDIR := assignment)
 ifeq ($(USE_SHMEM), 1)
@@ -331,7 +351,7 @@ endif
 $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
 	@mkdir -p `dirname $@`
 	@echo "Linking   $@"
-	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) -g
+	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) -g
 
 # Copy public headers from flagcx/include/ into the build output tree so they
 # sit next to the shared libraries (build/include + build/lib).
@@ -343,7 +363,7 @@ $(BUILD_INCDIR)/%.h: flagcx/include/%.h
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@$(HOST_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 $(OBJDIR)/kernel_dlink.o: $(DEVOBJ)

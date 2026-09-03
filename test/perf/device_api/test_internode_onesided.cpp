@@ -24,7 +24,7 @@
 #include <cstring>
 #include <unistd.h>
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
 extern "C" void flagcxNvshmemSyncDeviceState();
 extern "C" void flagcxNvshmemFinalizeDeviceState();
 #endif
@@ -75,18 +75,12 @@ int main(int argc, char *argv[]) {
   }
 
   if (localRegister == 0) {
-#ifdef USE_KUNLUNXIN_ADAPTOR
-    if (proc == 0)
-      printf("Kunlunxin xshmem: running one-sided AlltoAll in raw (-R 0) mode "
-             "(kernel stages via its own symmetric heap).\n");
-#else
     if (proc == 0)
       printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
     return 0;
-#endif
   }
 
   // Create device communicator first — this triggers nvshmem_init()
@@ -97,7 +91,7 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
   flagcxNvshmemSyncDeviceState();
 #endif
 
@@ -105,7 +99,7 @@ int main(int argc, char *argv[]) {
   // Each chunk has countPerPeer elements (= maxBytes / nRanks / sizeof(float))
   // Total buffer size = maxBytes (contains data for all peers)
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
@@ -290,7 +284,7 @@ int main(int argc, char *argv[]) {
   // Destroy device communicator (before comm destroy)
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
   flagcxNvshmemFinalizeDeviceState();
 #endif
 

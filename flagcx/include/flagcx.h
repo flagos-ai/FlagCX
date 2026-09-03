@@ -216,7 +216,9 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 typedef enum {
   flagcxMemCCL =
       0, /* CCL-managed (ncclMemAlloc in homo, gdrMemAlloc in hetero) */
-  flagcxMemSHMEM = 1, /* NVSHMEM symmetric heap (nvshmem_malloc) */
+  flagcxMemSHMEM = 1, /* SHMEM symmetric heap (NVSHMEM or XSHMEM). The selected
+                         SHMEM runtime must already be initialized; Device API
+                         users normally keep a flagcxDevComm alive. */
 } flagcxMemAllocator_t;
 
 #ifdef __cplusplus

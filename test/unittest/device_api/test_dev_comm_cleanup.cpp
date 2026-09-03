@@ -9,6 +9,7 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_net_adaptor.h"
 #include "global_comm.h"
+#include "mem_alloc_registry.h"
 #include "onesided.h"
 
 #include <cstdint>
@@ -383,5 +384,138 @@ TEST(DevCommCreateTest, PreservesCreateErrorWhenRollbackFails) {
   EXPECT_EQ(rollbackCallCount, 1);
   EXPECT_EQ(devComm, nullptr);
 }
+
+int devMemCreateCalls = 0;
+flagcxMemAllocationInfo capturedAllocation = {};
+bool capturedTracked = false;
+
+flagcxResult_t captureDevMemCreate(flagcxComm_t, void *, size_t, flagcxWindow_t,
+                                   flagcxDevMem_t devMem) {
+  devMemCreateCalls++;
+  capturedTracked = devMem->allocationTracked;
+  if (capturedTracked) {
+    capturedAllocation = {devMem->allocationBase, devMem->allocationSize,
+                          devMem->allocator, devMem->allocBackend};
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t captureDevMemDestroy(flagcxComm_t, flagcxDevMem_t) {
+  return flagcxSuccess;
+}
+
+class DevApiBackendGuard {
+public:
+  explicit DevApiBackendGuard(flagcxDevApiBackend *replacement)
+      : saved_(devApiBackend) {
+    devApiBackend = replacement;
+  }
+  ~DevApiBackendGuard() { devApiBackend = saved_; }
+
+private:
+  flagcxDevApiBackend *saved_;
+};
+
+class TrackedAllocationGuard {
+public:
+  explicit TrackedAllocationGuard(const flagcxMemAllocationInfo &info)
+      : base_(info.base) {
+    EXPECT_EQ(globalMemAllocRegistry.insert(info), flagcxSuccess);
+  }
+  ~TrackedAllocationGuard() { globalMemAllocRegistry.erase(base_); }
+
+private:
+  void *base_;
+};
+
+TEST(DevMemProvenanceTest, PropagatesCompileTimeSelectedAllocatorAndBackend) {
+  void *allocation = malloc(256);
+  ASSERT_NE(allocation, nullptr);
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  const flagcxMemAllocator_t allocator = flagcxMemSHMEM;
+  const flagcxMemAllocBackend backend = flagcxMemAllocBackendSHMEM;
+#else
+  const flagcxMemAllocator_t allocator = flagcxMemCCL;
+  const flagcxMemAllocBackend backend = flagcxMemAllocBackendGDR;
+#endif
+  TrackedAllocationGuard allocationGuard({allocation, 256, allocator, backend});
+
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-provenance";
+  captureBackend.devMemCreate = captureDevMemCreate;
+  captureBackend.devMemDestroy = captureDevMemDestroy;
+  DevApiBackendGuard backendGuard(&captureBackend);
+  devMemCreateCalls = 0;
+  capturedTracked = false;
+
+  flagcxComm comm = {};
+  flagcxDevMem_t devMem = nullptr;
+  EXPECT_EQ(flagcxDevMemCreate(&comm, static_cast<char *>(allocation) + 32, 64,
+                               nullptr, &devMem),
+            flagcxSuccess);
+  ASSERT_NE(devMem, nullptr);
+  EXPECT_EQ(devMemCreateCalls, 1);
+  EXPECT_TRUE(capturedTracked);
+  EXPECT_EQ(capturedAllocation.base, allocation);
+  EXPECT_EQ(capturedAllocation.size, 256u);
+  EXPECT_EQ(capturedAllocation.allocator, allocator);
+  EXPECT_EQ(capturedAllocation.backend, backend);
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
+  free(allocation);
+}
+
+TEST(DevMemProvenanceTest, RejectsRangeBeyondTrackedAllocation) {
+  void *allocation = malloc(256);
+  ASSERT_NE(allocation, nullptr);
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  const flagcxMemAllocationInfo info = {allocation, 256, flagcxMemSHMEM,
+                                        flagcxMemAllocBackendSHMEM};
+#else
+  const flagcxMemAllocationInfo info = {allocation, 256, flagcxMemCCL,
+                                        flagcxMemAllocBackendCCL};
+#endif
+  TrackedAllocationGuard allocationGuard(info);
+
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-provenance";
+  captureBackend.devMemCreate = captureDevMemCreate;
+  captureBackend.devMemDestroy = captureDevMemDestroy;
+  DevApiBackendGuard backendGuard(&captureBackend);
+  devMemCreateCalls = 0;
+
+  flagcxComm comm = {};
+  flagcxDevMem_t devMem = nullptr;
+  EXPECT_EQ(flagcxDevMemCreate(&comm, static_cast<char *>(allocation) + 192, 65,
+                               nullptr, &devMem),
+            flagcxInvalidUsage);
+  EXPECT_EQ(devMem, nullptr);
+  EXPECT_EQ(devMemCreateCalls, 0);
+  free(allocation);
+}
+
+#ifndef FLAGCX_TEST_ALLOCATOR_SHMEM
+TEST(DevMemProvenanceTest, DefaultBackendAllowsExternalCclUserBuffer) {
+  void *allocation = malloc(64);
+  ASSERT_NE(allocation, nullptr);
+
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-provenance";
+  captureBackend.devMemCreate = captureDevMemCreate;
+  captureBackend.devMemDestroy = captureDevMemDestroy;
+  DevApiBackendGuard backendGuard(&captureBackend);
+  devMemCreateCalls = 0;
+  capturedTracked = true;
+
+  flagcxComm comm = {};
+  flagcxDevMem_t devMem = nullptr;
+  EXPECT_EQ(flagcxDevMemCreate(&comm, allocation, 64, nullptr, &devMem),
+            flagcxSuccess);
+  ASSERT_NE(devMem, nullptr);
+  EXPECT_EQ(devMemCreateCalls, 1);
+  EXPECT_FALSE(capturedTracked);
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
+  free(allocation);
+}
+#endif
 
 } // namespace

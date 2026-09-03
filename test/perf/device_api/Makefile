@@ -29,7 +29,7 @@ endif
 # Includes
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(PERF_INCLUDE) $(MPI_INCLUDE) \
     -I$(PROJECT_ROOT)/flagcx/core -I$(PROJECT_ROOT)/flagcx/service \
-    $(KERNEL_INCLUDE) $(DEVICE_INCLUDE)
+    $(KERNEL_INCLUDE) $(DEVICE_INCLUDE) $(SHMEM_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
@@ -57,8 +57,9 @@ endif
 $(DEVICE_API_OBJ) $(DLINK_OBJ):
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_TARGETS)
 
-# Build nvshmem_state_sync.o locally from shmem_adaptor source
-ifeq ($(USE_SHMEM), 1)
+# Build nvshmem_state_sync.o only for NVSHMEM. XSHMEM passes its device state
+# through the DevComm value and has no consumer-binary constant to synchronize.
+ifneq ($(SHMEM_SYNC_OBJ),)
 $(SHMEM_SYNC_OBJ): $(SHMEM_ADAPTOR_DIR)/nvshmem_state_sync.cc
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling nvshmem_state_sync.cc"
@@ -70,7 +71,7 @@ endif
 $(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS) $(DEVICE_API_OBJ) $(DLINK_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Compiling $@"
-	@$(CXX) $(CXXFLAGS) $(ADAPTOR_DEFINE) -o $@ $< $(COMMON_SRCS) $(DEVICE_API_OBJ) $(SHMEM_SYNC_OBJ) $(DLINK_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -o $@ $< $(COMMON_SRCS) $(DEVICE_API_OBJ) $(SHMEM_SYNC_OBJ) $(DLINK_OBJ) $(ALL_INCLUDES) $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)

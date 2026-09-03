@@ -13,12 +13,12 @@
 TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
   // Allocate buffer with flagcxMemAlloc for symmetric window
   void *regBuff = nullptr;
-  ASSERT_EQ(flagcxMemAlloc(&regBuff, size), flagcxSuccess);
+  ASSERT_EQ(flagcxMemAlloc(&regBuff, size, memAllocator), flagcxSuccess);
 
   // Register symmetric window
   flagcxWindow_t win = nullptr;
   ASSERT_EQ(flagcxCommWindowRegister(comm, regBuff, size, &win,
-                                     FLAGCX_WIN_COLL_SYMMETRIC),
+                                     FLAGCX_WIN_COLL_SYMMETRIC, memAllocator),
             flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -89,6 +89,6 @@ TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
   flagcxDevCommFreeDevicePtr(devComm);
   flagcxDevMemDestroy(comm, devMem);
   flagcxDevCommDestroy(comm, devComm);
-  flagcxCommWindowDeregister(comm, win);
-  flagcxMemFree(regBuff);
+  flagcxCommWindowDeregister(comm, win, memAllocator);
+  flagcxMemFree(regBuff, memAllocator);
 }

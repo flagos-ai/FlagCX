@@ -14,6 +14,11 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
+extern "C" void flagcxNvshmemSyncDeviceState();
+extern "C" void flagcxNvshmemFinalizeDeviceState();
+#endif
+
 #define DATATYPE flagcxFloat
 
 static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
@@ -171,6 +176,22 @@ int main(int argc, char *argv[]) {
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
+  // SHMEM allocations require an initialized runtime. Keep one lightweight
+  // DevComm alive while the benchmark recreates DevComms for each context
+  // count.
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  flagcxDevComm_t shmemLifetimeComm = nullptr;
+  flagcxDevCommRequirements lifetimeReqs =
+      FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &lifetimeReqs, &shmemLifetimeComm));
+#if defined(USE_NVIDIA_ADAPTOR)
+  flagcxNvshmemSyncDeviceState();
+#endif
+  const flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  const flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
+
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
@@ -178,17 +199,21 @@ int main(int argc, char *argv[]) {
   void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes));
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
 
   if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
   } else {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle));
+    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
+                                   memAllocator));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle,
+                                   memAllocator));
   }
 
   void *hello = malloc(maxBytes);
@@ -239,15 +264,21 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->streamDestroy(stream));
 
   if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   } else {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
+    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
   }
 
-  FLAGCXCHECK(flagcxMemFree(sendBuff));
-  FLAGCXCHECK(flagcxMemFree(recvBuff));
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, shmemLifetimeComm));
+#if defined(USE_NVIDIA_ADAPTOR)
+  flagcxNvshmemFinalizeDeviceState();
+#endif
+#endif
   free(hello);
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));

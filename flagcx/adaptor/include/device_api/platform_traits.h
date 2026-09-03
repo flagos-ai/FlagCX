@@ -100,6 +100,8 @@ private:
 #include "nvidia_platform_traits.h"
 #elif defined(USE_DU_ADAPTOR)
 #include "du_platform_traits.h"
+#elif defined(USE_KUNLUNXIN_ADAPTOR)
+#include "kunlunxin_platform_traits.h"
 #else
 #include "default_platform_traits.h"
 #endif

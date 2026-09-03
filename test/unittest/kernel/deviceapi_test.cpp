@@ -7,6 +7,8 @@ flagcxComm_t DeviceApiTest::comm = nullptr;
 flagcxStream_t DeviceApiTest::stream = nullptr;
 void *DeviceApiTest::devBuff = nullptr;
 size_t DeviceApiTest::size = 0;
+flagcxMemAllocator_t DeviceApiTest::memAllocator = flagcxMemCCL;
+flagcxDevComm_t DeviceApiTest::shmemLifetimeComm = nullptr;
 
 void DeviceApiTest::SetUpTestSuite() {
   int rank, nranks;
@@ -32,7 +34,15 @@ void DeviceApiTest::SetUpTestSuite() {
   ASSERT_EQ(flagcxCommInitRank(&comm, nranks, &uniqueId, rank), flagcxSuccess);
 
   ASSERT_EQ(devHandle->streamCreate(&stream), flagcxSuccess);
-  ASSERT_EQ(flagcxMemAlloc(&devBuff, size), flagcxSuccess);
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  memAllocator = flagcxMemSHMEM;
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &shmemLifetimeComm),
+            flagcxSuccess);
+#else
+  memAllocator = flagcxMemCCL;
+#endif
+  ASSERT_EQ(flagcxMemAlloc(&devBuff, size, memAllocator), flagcxSuccess);
 }
 
 void DeviceApiTest::TearDownTestSuite() {
@@ -41,10 +51,13 @@ void DeviceApiTest::TearDownTestSuite() {
 
   devHandle->streamDestroy(stream);
 
+  flagcxMemFree(devBuff, memAllocator);
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  if (shmemLifetimeComm)
+    flagcxDevCommDestroy(comm, shmemLifetimeComm);
+#endif
   if (comm)
     flagcxCommDestroy(comm);
-
-  flagcxMemFree(devBuff);
 
   flagcxDeviceHandleFree(devHandle);
 
@@ -52,6 +65,7 @@ void DeviceApiTest::TearDownTestSuite() {
   comm = nullptr;
   stream = nullptr;
   devBuff = nullptr;
+  shmemLifetimeComm = nullptr;
 }
 
 void DeviceApiTest::SetUp() {

@@ -1,0 +1,37 @@
+/*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
+ * XPU-compiled ABI checks and size queries for host/device materialization.
+ ************************************************************************/
+
+#include <cstddef>
+
+#include "device_api/flagcx_device.h"
+#include "xshmem_adaptor.h"
+
+using XshmemComm = CommTraits<XshmemBackend>::Comm;
+
+static_assert(sizeof(flagcxShmemCommInternal) == sizeof(XshmemComm),
+              "xSHMEM communicator host/device layout mismatch");
+static_assert(alignof(flagcxShmemCommInternal) == alignof(XshmemComm),
+              "xSHMEM communicator host/device alignment mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, rank) ==
+                  offsetof(XshmemComm, rank),
+              "xSHMEM communicator rank offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, signalBuffer) ==
+                  offsetof(XshmemComm, signalBuffer),
+              "xSHMEM communicator signal offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, counterBuffer) ==
+                  offsetof(XshmemComm, counterBuffer),
+              "xSHMEM communicator counter offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, gridSyncState) ==
+                  offsetof(XshmemComm, gridSyncState),
+              "xSHMEM communicator grid-state offset mismatch");
+static_assert(offsetof(flagcxShmemCommInternal, devStateHandle) ==
+                  offsetof(XshmemComm, devStateHandle),
+              "xSHMEM communicator final-field offset mismatch");
+extern "C" size_t flagcxXshmemDevCommSizeOf() { return sizeof(flagcxDevComm); }
+
+extern "C" size_t flagcxXshmemDevMemSizeOf() { return sizeof(flagcxDevMem); }
+
+extern "C" size_t flagcxXshmemDevNetSizeOf() { return sizeof(flagcxDevNet); }

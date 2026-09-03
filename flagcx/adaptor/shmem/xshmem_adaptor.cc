@@ -9,6 +9,7 @@
 #include "xshmem_adaptor.h"
 #include "shmem_adaptor.h"
 
+#include "device_api/xshmem_state_layout.h"
 #include "flagcx_kernel_internal.h"
 #include "global_comm.h"
 #include "kunlunxin_adaptor.h"
@@ -17,6 +18,7 @@
 #include <cstring>
 #include <cuda_runtime.h>
 #include <mutex>
+#include <new>
 #include <xshmem/xshmem.h>
 #include <xshmem/xshmemx.h>
 
@@ -89,10 +91,16 @@ static flagcxResult_t xshmemAdaptorFinalize() {
 // Symmetric memory management
 // ============================================================
 static flagcxResult_t xshmemAdaptorMalloc(void **ptr, size_t size) {
+  if (ptr == nullptr || size == 0)
+    return flagcxInvalidArgument;
   *ptr = xshmem_malloc(size);
   if (*ptr == nullptr)
     return flagcxSystemError;
-  cudaMemset(*ptr, 0, size);
+  if (cudaMemset(*ptr, 0, size) != cudaSuccess) {
+    xshmem_free(*ptr);
+    *ptr = nullptr;
+    return flagcxUnhandledDeviceError;
+  }
   return flagcxSuccess;
 }
 
@@ -110,46 +118,69 @@ static flagcxResult_t
 xshmemAdaptorDevCommCreate(flagcxComm_t comm,
                            const struct flagcxDevCommRequirements *reqs,
                            flagcxShmemComm_t *shmemComm) {
-  auto *sc = new flagcxShmemCommInternal();
+  if (comm == nullptr || reqs == nullptr || shmemComm == nullptr)
+    return flagcxInvalidArgument;
+  *shmemComm = nullptr;
+
+  auto *sc = new (std::nothrow) flagcxShmemCommInternal();
+  if (sc == nullptr)
+    return flagcxSystemError;
   memset(sc, 0, sizeof(*sc));
   sc->intraTeam = XSHMEM_TEAM_INVALID;
   sc->interTeam = XSHMEM_TEAM_INVALID;
 
-  sc->rank = comm->rank;
-  sc->nRanks = comm->nranks;
+  sc->rank = comm->homoRank;
+  sc->nRanks = comm->homoRanks;
   sc->intraRank = comm->localRank;
   sc->intraSize = comm->localRanks;
 
+  // FlagCX communicator ranks are not required to be grouped by host. Keep
+  // the exact local-rank -> XSHMEM PE mapping in device memory rather than
+  // deriving peers from rank-localRank.
+  if (sc->intraSize > 0) {
+    size_t bytes = (size_t)sc->intraSize * sizeof(int);
+    if (comm->localRankToRank == nullptr ||
+        cudaMalloc(&sc->intraPeMap, bytes) != cudaSuccess)
+      goto fail;
+    if (cudaMemcpy(sc->intraPeMap, comm->localRankToRank, bytes,
+                   cudaMemcpyHostToDevice) != cudaSuccess)
+      goto fail;
+  }
+
+  int contextCount = reqs->interContextCount > 0 ? reqs->interContextCount : 1;
   sc->signalCount = reqs->interSignalCount;
   sc->counterCount = reqs->interCounterCount;
 
   // Signal buffer (symmetric heap, remote-writable)
   if (sc->signalCount > 0) {
-    sc->signalBuffer =
-        (uint64_t *)xshmem_malloc(sc->signalCount * sizeof(uint64_t));
-    if (!sc->signalBuffer) {
-      delete sc;
-      return flagcxSystemError;
-    }
-    cudaMemset(sc->signalBuffer, 0, sc->signalCount * sizeof(uint64_t));
+    sc->signalBuffer = (uint64_t *)xshmem_malloc(
+        (size_t)contextCount * sc->signalCount * sizeof(uint64_t));
+    if (!sc->signalBuffer)
+      goto fail;
+    if (cudaMemset(sc->signalBuffer, 0,
+                   (size_t)contextCount * sc->signalCount * sizeof(uint64_t)) !=
+        cudaSuccess)
+      goto fail;
   }
 
-  // Counter buffer (local device memory)
+  // Counter buffer is symmetric because CounterInc can be a remote action.
   if (sc->counterCount > 0) {
-    if (cudaMalloc(&sc->counterBuffer, sc->counterCount * sizeof(uint64_t)) !=
-        cudaSuccess) {
+    size_t bytes = (size_t)contextCount * sc->counterCount * sizeof(uint64_t);
+    sc->counterBuffer = (uint64_t *)xshmem_malloc(bytes);
+    if (sc->counterBuffer == nullptr)
       goto fail;
-    }
-    cudaMemset(sc->counterBuffer, 0, sc->counterCount * sizeof(uint64_t));
+    if (cudaMemset(sc->counterBuffer, 0, bytes) != cudaSuccess)
+      goto fail;
   }
 
   // Shadow buffer (local device memory)
   if (sc->signalCount > 0) {
-    if (cudaMalloc(&sc->shadowBuffer, sc->signalCount * sizeof(uint64_t)) !=
-        cudaSuccess) {
+    size_t bytes = (size_t)contextCount * sc->signalCount * sizeof(uint64_t);
+    if (cudaMalloc(&sc->shadowBuffer, bytes) != cudaSuccess) {
       goto fail;
     }
-    cudaMemset(sc->shadowBuffer, 0, sc->signalCount * sizeof(uint64_t));
+    if (cudaMemset(sc->shadowBuffer, 0, bytes) != cudaSuccess)
+      goto fail;
   }
 
   // Validate topology
@@ -162,11 +193,15 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
     }
     int interSize = (sc->intraSize > 0) ? sc->nRanks / sc->intraSize : 1;
 
-    size_t gridSyncSize = 6 * FLAGCX_DEVICE_CTA_COUNT * sizeof(uint64_t);
-    if (cudaMalloc(&sc->gridSyncState, gridSyncSize) != cudaSuccess) {
+    // Symmetric state lets each team implement a scoped barrier with remote
+    // signal increments instead of over-synchronizing XSHMEM_TEAM_WORLD.
+    size_t gridSyncSize = FLAGCX_XSHMEM_BARRIER_STATE_WORDS * sizeof(uint64_t);
+    sc->gridSyncState = (uint64_t *)xshmem_malloc(gridSyncSize);
+    if (sc->gridSyncState == nullptr) {
       goto fail;
     }
-    cudaMemset(sc->gridSyncState, 0, gridSyncSize);
+    if (cudaMemset(sc->gridSyncState, 0, gridSyncSize) != cudaSuccess)
+      goto fail;
 
     (void)interSize;
     sc->intraTeam = XSHMEMX_TEAM_NODE;
@@ -174,6 +209,11 @@ xshmemAdaptorDevCommCreate(flagcxComm_t comm,
     sc->interTeam = XSHMEM_TEAM_INVALID;
 
     sc->worldTeam = XSHMEM_TEAM_WORLD;
+    sc->devStateHandle = xshmem_get_xshmemi_device_state_h();
+    if (sc->devStateHandle == nullptr) {
+      WARN("xshmem devCommCreate: device state handle is null after init");
+      goto fail;
+    }
   }
 
   *shmemComm = sc;
@@ -191,15 +231,18 @@ static flagcxResult_t xshmemAdaptorDevCommDestroy(flagcxShmemComm_t shmemComm) {
   if (shmemComm == nullptr)
     return flagcxSuccess;
 
+  // Symmetric allocations are released in reverse allocation order.
+  if (shmemComm->gridSyncState)
+    xshmem_free(shmemComm->gridSyncState);
+  if (shmemComm->counterBuffer)
+    xshmem_free(shmemComm->counterBuffer);
   if (shmemComm->signalBuffer)
     xshmem_free(shmemComm->signalBuffer);
 
-  if (shmemComm->counterBuffer)
-    cudaFree(shmemComm->counterBuffer);
   if (shmemComm->shadowBuffer)
     cudaFree(shmemComm->shadowBuffer);
-  if (shmemComm->gridSyncState)
-    cudaFree(shmemComm->gridSyncState);
+  if (shmemComm->intraPeMap)
+    cudaFree(shmemComm->intraPeMap);
 
   delete shmemComm;
   return flagcxSuccess;
