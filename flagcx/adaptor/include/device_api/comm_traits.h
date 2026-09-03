@@ -94,6 +94,8 @@ struct Barrier;
 #include "du_comm_traits.h"
 #elif defined(USE_SUNRISE_ADAPTOR)
 #include "sunrise_comm_traits.h"
+#elif defined(USE_KUNLUNXIN_ADAPTOR)
+#include "kunlunxin_comm_traits.h"
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;

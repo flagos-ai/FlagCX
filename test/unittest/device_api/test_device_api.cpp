@@ -156,6 +156,22 @@ int main(int argc, char *argv[]) {
     return 0;
   }
 
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  const flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
+#else
+  const flagcxMemAllocator_t memAllocator = flagcxMemCCL;
+#endif
+
+  // SHMEM allocation requires the Device API communicator to initialize the
+  // selected SHMEM runtime first.
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs.interSignalCount = 3;
+  reqs.interCounterCount = 1;
+  flagcxDevComm_t devComm = nullptr;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+
   // Buffer layout:
   //   sendBuff [0, maxBytes): float alltoall chunks
   //   recvBuff [0, maxBytes): float alltoall chunks
@@ -167,17 +183,21 @@ int main(int argc, char *argv[]) {
   void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
-  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes));
-  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, recvBuffSize));
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, recvBuffSize, memAllocator));
 
   if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, recvBuffSize, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC));
+                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         memAllocator));
   } else {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, recvBuffSize, &recvHandle));
+    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
+                                   memAllocator));
+    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, recvBuffSize, &recvHandle,
+                                   memAllocator));
   }
 
   flagcxStream_t stream;
@@ -192,15 +212,6 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->deviceMalloc(
       (void **)&dResultBuf, 4 * sizeof(uint64_t), flagcxMemDevice, NULL));
   uint64_t hResultBuf[4] = {};
-
-  // Create device communicator
-  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
-  reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount = 3;
-  reqs.interCounterCount = 1;
-  flagcxDevComm_t devComm = nullptr;
-  FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   // Create device memory handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -367,24 +378,23 @@ int main(int argc, char *argv[]) {
   }
 
   // Cleanup
-  // order matters: stream → devMem → devComm → deregister → comm → buff
+  // order matters: stream → devMem → deregister → buffer → DevComm → comm
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(devHandle->deviceFree(dResultBuf, flagcxMemDevice, NULL));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
   FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-
   if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
+    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
   } else {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle));
+    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
+    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
   }
 
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(flagcxCommDestroy(comm));
-  FLAGCXCHECK(flagcxMemFree(sendBuff));
-  FLAGCXCHECK(flagcxMemFree(recvBuff));
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

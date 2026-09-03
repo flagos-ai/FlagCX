@@ -129,18 +129,22 @@ flagcxTeamRankToIntraC(const void *comm, const void *team, int rank);
  * @param comm    Opaque pointer to flagcxDevComm (for multicast).
  * ================================================================ */
 
-/** @brief Get pointer to peer's memory region (team-relative). */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+/** @brief Get pointer to peer's memory region (team-relative). Pass
+ * flagcxDevPeerAccessWriteOnly for store-only paths; that is the only form
+ * backends without remote read (P800 C2C) can translate. */
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetPeerPointerC(const void *mem, size_t offset, const void *team,
-                      int peer);
+                      int peer,
+                      flagcxDevPeerAccess_t access =
+                          flagcxDevPeerAccessReadWrite);
 /** @brief Get pointer to local memory at offset. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetLocalPointerC(const void *mem, size_t offset);
 /** @brief Get pointer to intra-node peer's memory. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetIntraPointerC(const void *mem, size_t offset, int peer);
 /** @brief Get multicast pointer spanning all comm ranks. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void *
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_DEV_VALUE_PTR void *
 flagcxGetMulticastPointerC(const void *mem, size_t offset, const void *comm);
 
 /* ================================================================

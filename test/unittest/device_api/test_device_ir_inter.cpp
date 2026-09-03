@@ -96,7 +96,7 @@ int main(int argc, char *argv[]) {
   size_t bufSize = maxBytes + (size_t)totalProcs * sizeof(uint64_t);
   size_t putValBase = maxBytes;
   void *sendBuff = nullptr, *recvBuff = nullptr;
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;

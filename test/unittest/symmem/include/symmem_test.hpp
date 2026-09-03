@@ -27,4 +27,5 @@ protected:
   static void *hostBuff;
   static size_t size;
   static size_t count;
+  static flagcxMemAllocator_t memAllocator;
 };

@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
-  // Create DevComm (initializes NVSHMEM — must precede nvshmem_malloc)
+  // Create DevComm (initializes the selected SHMEM runtime before allocation)
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = 4;
   reqs.interBarrierCount = 4;
@@ -92,7 +92,7 @@ int main(int argc, char *argv[]) {
   // Allocate test buffer sized to maxBytes
   size_t bufSize = maxBytes;
   void *regBuff = nullptr;
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;

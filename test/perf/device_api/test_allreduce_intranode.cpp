@@ -22,7 +22,7 @@
 #include <cstring>
 #include <iostream>
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
 extern "C" void flagcxNvshmemSyncDeviceState();
 extern "C" void flagcxNvshmemFinalizeDeviceState();
 #endif
@@ -55,6 +55,16 @@ int main(int argc, char *argv[]) {
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
 
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  if (localRegister == 0) {
+    if (proc == 0)
+      printf("SHMEM Device API memory requires -R 1 or -R 2. Skipping.\n");
+    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
+    MPI_Finalize();
+    return 0;
+  }
+#endif
+
   int nGpu;
   FLAGCXCHECK(devHandle->getDeviceCount(&nGpu));
   FLAGCXCHECK(devHandle->setDevice(worldRank % nGpu));
@@ -66,7 +76,19 @@ int main(int argc, char *argv[]) {
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  if (localRegister == 0) {
+    if (proc == 0)
+      printf("SHMEM peer-pointer AllReduce requires -R 1 or -R 2. "
+             "Skipping.\n");
+    FLAGCXCHECK(flagcxCommDestroy(comm));
+    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
+    MPI_Finalize();
+    return 0;
+  }
+#endif
+
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
   // Sync NVSHMEM device state into this binary's __constant__ symbol.
   // Must happen after flagcxCommInitRank (which calls nvshmem_init internally).
   flagcxNvshmemSyncDeviceState();
@@ -76,6 +98,17 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  // Push-based backends (XSHMEM on P800 cannot read peer memory) stage each
+  // PEER's contribution in symmetric scratch: scratch[nRanks-1][maxBytes]. A
+  // rank never writes its own slot — its local addend is read straight from its
+  // own buffer at reduce time — so 4 ranks only need 3 slots. One net context
+  // per cluster keeps their signals in separate slots.
+  reqs.interContextCount = 12;
+  reqs.interSignalCount = 1;
+  reqs.intraScratchBytes =
+      (size_t)(totalProcs > 1 ? totalProcs - 1 : 1) * maxBytes;
+#endif
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
   flagcxStream_t stream;
@@ -98,7 +131,7 @@ int main(int argc, char *argv[]) {
   flagcxDevMem_t devMem = nullptr;
   // -R 0 uses cudaMalloc (IPC-compatible).
   // -R 1/-R 2 use flagcxMemAlloc with comm.
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
@@ -240,7 +273,7 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
   }
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
   flagcxNvshmemFinalizeDeviceState();
 #endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));

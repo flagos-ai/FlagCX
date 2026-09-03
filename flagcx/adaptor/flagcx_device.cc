@@ -8,6 +8,7 @@
 #include "device_api/flagcx_device.h"
 #include "comm.h"
 #include "flagcx_kernel.h"
+#include "mem_alloc_registry.h"
 #include "p2p.h"
 #include "proxy.h"
 #include "reg_pool.h"
@@ -28,6 +29,7 @@ flagcxDevCommCreate(flagcxComm_t comm, const flagcxDevCommRequirements *reqs,
   if (comm == nullptr || reqs == nullptr || devComm == nullptr) {
     return flagcxInvalidArgument;
   }
+  *devComm = nullptr;
 
   flagcxDevComm_t handle =
       (flagcxDevComm_t)malloc(sizeof(struct flagcxDevCommInternal));
@@ -96,6 +98,13 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
+  // The proxy owns no reference to DevComm. Stop publishing this handle before
+  // backend resources are released instead of leaving a stale pointer behind.
+  if (comm != nullptr && comm->heteroComm != nullptr &&
+      comm->heteroComm->devCommHandle == devComm) {
+    comm->heteroComm->devCommHandle = nullptr;
+  }
+
   devApiBackend->devCommDestroy(comm, devComm);
 
   // Free cached device pointers (thin-layer responsibility)
@@ -121,6 +130,7 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
   if (comm == nullptr || buff == nullptr || size == 0 || devMem == nullptr) {
     return flagcxInvalidArgument;
   }
+  *devMem = nullptr;
 
   flagcxDevMem_t handle =
       (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
@@ -133,6 +143,30 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
   // Baseline: always
   handle->rawPtr = buff;
   handle->ipcIndex = -1;
+
+  // A subrange is valid only when its complete byte range lies inside the
+  // exact flagcxMemAlloc allocation that contains its first byte. Unknown
+  // pointers remain supported for the default/CCL backend.
+  flagcxMemAllocationInfo allocation;
+  flagcxResult_t allocationRes =
+      globalMemAllocRegistry.findRange(buff, 1, &allocation);
+  if (allocationRes == flagcxSuccess) {
+    if (globalMemAllocRegistry.findRange(buff, size, &allocation) !=
+        flagcxSuccess) {
+      pthread_mutex_destroy(&handle->cachedPtrMutex);
+      free(handle);
+      return flagcxInvalidUsage;
+    }
+    handle->allocationTracked = true;
+    handle->allocationBase = allocation.base;
+    handle->allocationSize = allocation.size;
+    handle->allocator = allocation.allocator;
+    handle->allocBackend = allocation.backend;
+  } else if (allocationRes != flagcxInvalidUsage) {
+    pthread_mutex_destroy(&handle->cachedPtrMutex);
+    free(handle);
+    return allocationRes;
+  }
 
   // Backend-specific creation
   {

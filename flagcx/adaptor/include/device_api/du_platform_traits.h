@@ -72,6 +72,85 @@ struct PlatformTraits<DuPlatform> {
       __threadfence_system();
     }
 
+    // Device-level fence: ordering within this GPU only. Maps to membar.gl.
+    static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceDevice() {
+      __threadfence();
+    }
+
+    // Cooperative strided copy between two device-memory buffers. Cascades
+    // from 16B vectors (int4) down to byte level.
+    template <typename DstPtr, typename SrcPtr>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void
+    coopCopyBytes(DstPtr dstIn, SrcPtr srcIn, size_t bytes, int rank,
+                  int size) {
+      void *dst = (void *)dstIn;
+      const void *src = (const void *)srcIn;
+
+      if (((uintptr_t)dst % 16 == 0) && ((uintptr_t)src % 16 == 0)) {
+        int4 *d = (int4 *)dst;
+        const int4 *s = (const int4 *)src;
+        size_t nelems = bytes / 16;
+        for (size_t i = (size_t)rank; i < nelems; i += (size_t)size)
+          d[i] = s[i];
+        bytes -= nelems * 16;
+        if (bytes == 0)
+          return;
+        dst = (void *)(d + nelems);
+        src = (const void *)(s + nelems);
+      }
+
+      if (((uintptr_t)dst % 8 == 0) && ((uintptr_t)src % 8 == 0)) {
+        uint64_t *d = (uint64_t *)dst;
+        const uint64_t *s = (const uint64_t *)src;
+        size_t nelems = bytes / 8;
+        for (size_t i = (size_t)rank; i < nelems; i += (size_t)size)
+          d[i] = s[i];
+        bytes -= nelems * 8;
+        if (bytes == 0)
+          return;
+        dst = (void *)(d + nelems);
+        src = (const void *)(s + nelems);
+      }
+
+      if (((uintptr_t)dst % 4 == 0) && ((uintptr_t)src % 4 == 0)) {
+        uint32_t *d = (uint32_t *)dst;
+        const uint32_t *s = (const uint32_t *)src;
+        size_t nelems = bytes / 4;
+        for (size_t i = (size_t)rank; i < nelems; i += (size_t)size)
+          d[i] = s[i];
+        bytes -= nelems * 4;
+        if (bytes == 0)
+          return;
+        dst = (void *)(d + nelems);
+        src = (const void *)(s + nelems);
+      }
+
+      if (((uintptr_t)dst % 2 == 0) && ((uintptr_t)src % 2 == 0)) {
+        uint16_t *d = (uint16_t *)dst;
+        const uint16_t *s = (const uint16_t *)src;
+        size_t nelems = bytes / 2;
+        for (size_t i = (size_t)rank; i < nelems; i += (size_t)size)
+          d[i] = s[i];
+        bytes -= nelems * 2;
+        if (bytes == 0)
+          return;
+        dst = (void *)(d + nelems);
+        src = (const void *)(s + nelems);
+      }
+
+      unsigned char *d = (unsigned char *)dst;
+      const unsigned char *s = (const unsigned char *)src;
+      for (size_t i = (size_t)rank; i < bytes; i += (size_t)size)
+        d[i] = s[i];
+    }
+
+    // Volatile 64-bit store to device memory.
+    template <typename Ptr>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void storeVolatile64(Ptr ptr,
+                                                              uint64_t value) {
+      *(volatile uint64_t *)ptr = value;
+    }
+
 #else
     // Host-compiler stubs (allow template instantiation, never called at
     // runtime)
@@ -107,6 +186,17 @@ struct PlatformTraits<DuPlatform> {
     }
     static inline void threadfenceSystem() {
       assert(false && "threadfenceSystem() called on host");
+    }
+    static inline void threadfenceDevice() {
+      assert(false && "threadfenceDevice() called on host");
+    }
+    template <typename DstPtr, typename SrcPtr>
+    static inline void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
+      assert(false && "coopCopyBytes() called on host");
+    }
+    template <typename Ptr>
+    static inline void storeVolatile64(Ptr, uint64_t) {
+      assert(false && "storeVolatile64() called on host");
     }
 #endif // __CUDACC__
   };

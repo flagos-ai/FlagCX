@@ -52,6 +52,7 @@ class flagcxDevCommRequirements(ctypes.Structure):
         ("interContextCount", ctypes.c_int),
         ("interSignalCount", ctypes.c_int),
         ("interCounterCount", ctypes.c_int),
+        ("intraScratchBytes", ctypes.c_size_t),
     ]
 
 FLAGCX_UNIQUE_ID_BYTES = 256

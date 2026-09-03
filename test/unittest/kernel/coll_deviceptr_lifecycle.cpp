@@ -116,7 +116,7 @@ TEST_F(DeviceApiTest, DevMemGetDevicePtrIPC) {
 TEST_F(DeviceApiTest, DevMemGetDevicePtrWindow) {
   flagcxWindow_t win = nullptr;
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                     FLAGCX_WIN_COLL_SYMMETRIC),
+                                     FLAGCX_WIN_COLL_SYMMETRIC, memAllocator),
             flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);
@@ -136,7 +136,7 @@ TEST_F(DeviceApiTest, DevMemGetDevicePtrWindow) {
 
   flagcxDevMemFreeDevicePtr(devMem);
   flagcxDevMemDestroy(comm, devMem);
-  flagcxCommWindowDeregister(comm, win);
+  flagcxCommWindowDeregister(comm, win, memAllocator);
 }
 
 // ---------------------------------------------------------------------------

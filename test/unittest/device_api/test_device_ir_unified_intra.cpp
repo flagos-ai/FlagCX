@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
   // Allocate send/recv buffers (8x for S18's 8-combination regions)
   size_t bufSize = maxBytes * 8;
   void *sendBuff = nullptr, *recvBuff = nullptr;
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
@@ -338,6 +338,12 @@ int main(int argc, char *argv[]) {
     }
 
     // S19: DevGet — INTRA + WORLD
+    // Skipped where the device API cannot read a peer's memory at all (P800:
+    // every remote-read path traps), so there is no implementation to check.
+#ifdef FLAGCX_TEST_NO_REMOTE_READ
+    RPRINTF("S19 DevGet(INTRA+WORLD): SKIP (no remote read on this device)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
     {
       for (size_t i = 0; i < 6 * count; i++)
         hostSend[i] = (float)(proc * 2000 + i);
@@ -383,6 +389,7 @@ int main(int argc, char *argv[]) {
       allPass &= s19Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     // =======================================================================
     // S20: DevSignalStandalone (signal-only: Inc+Add+Wait+Read+Reset)

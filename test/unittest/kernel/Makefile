@@ -7,8 +7,11 @@ LOCAL_INCLUDE := -I$(abspath include)
 DEVICE_API_OBJ := $(KERNEL_OBJ_DIR)/device_api.o
 DEVICE_API_INCLUDE := $(KERNEL_INCLUDE)
 
-# Device-link object (only needed for NVSHMEM)
-ifeq ($(USE_SHMEM), 1)
+# Device-link object (only needed for NVSHMEM). KLX XSHMEM device code is
+# linked directly into device_api.o.
+ifeq ($(USE_SHMEM)$(KERNEL_PLATFORM), 1klx)
+DLINK_OBJ :=
+else ifeq ($(USE_SHMEM), 1)
 DLINK_OBJ := $(KERNEL_OBJ_DIR)/dlink_api.o
 else
 DLINK_OBJ :=
@@ -44,7 +47,7 @@ all: $(ALL_TARGETS)
 
 # Build device_api.o (and dlink_api.o if USE_SHMEM) from test/kernel/
 DEVICE_API_TARGETS := device_api.o
-ifeq ($(USE_SHMEM), 1)
+ifneq ($(DLINK_OBJ),)
 DEVICE_API_TARGETS += dlink_api.o
 endif
 

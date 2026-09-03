@@ -98,6 +98,12 @@ static flagcxResult_t nvshmemDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              flagcxDevMem_t devMem) {
   (void)comm;
   (void)win;
+  if (!devMem->allocationTracked || devMem->allocator != flagcxMemSHMEM ||
+      devMem->allocBackend != flagcxMemAllocBackendSHMEM) {
+    WARN("nvshmem Device API memory must be allocated with "
+         "flagcxMemAlloc(..., flagcxMemSHMEM)");
+    return flagcxInvalidUsage;
+  }
   using Window = CommTraits<NvshmemBackend>::Window;
   auto *w = new (std::nothrow) Window();
   if (w == nullptr)

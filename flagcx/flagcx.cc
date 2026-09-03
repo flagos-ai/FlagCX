@@ -12,6 +12,7 @@
 #include "flagcx_net.h"
 #include "ib_common.h"
 #include "launch_kernel.h"
+#include "mem_alloc_registry.h"
 #include "net.h"
 #include "onesided.h"
 #include "param.h"
@@ -218,30 +219,100 @@ flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler) {
   return flagcxSuccess;
 }
 
+static flagcxResult_t flagcxMemFreeByBackend(void *ptr,
+                                             flagcxMemAllocBackend backend) {
+  switch (backend) {
+    case flagcxMemAllocBackendGDR:
+      if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemFree == nullptr) {
+        WARN("flagcxMemFree: GDR allocator is not available");
+        return flagcxInternalError;
+      }
+      return deviceAdaptor->gdrMemFree(ptr, nullptr);
+    case flagcxMemAllocBackendCCL:
+      if (cclAdaptors[flagcxCCLAdaptorDevice] == nullptr ||
+          cclAdaptors[flagcxCCLAdaptorDevice]->memFree == nullptr) {
+        WARN("flagcxMemFree: CCL allocator is not available");
+        return flagcxInternalError;
+      }
+      return cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr);
+    case flagcxMemAllocBackendSHMEM:
+      if (shmemAdaptor == nullptr || shmemAdaptor->free == nullptr) {
+        WARN("flagcxMemFree: SHMEM allocator is not available");
+        return flagcxInternalError;
+      }
+      return shmemAdaptor->free(ptr);
+    default:
+      WARN("flagcxMemFree: unknown allocation backend %d", (int)backend);
+      return flagcxInvalidArgument;
+  }
+}
+
 flagcxResult_t flagcxMemAlloc(void **ptr, size_t size,
                               flagcxMemAllocator_t allocator) {
   if (ptr == NULL || size == 0) {
     WARN("Invalid ptr(NULL) or size(0) for allocation.");
     return flagcxInvalidArgument;
   }
-  if (allocator == flagcxMemSHMEM) {
-    if (shmemAdaptor == nullptr) {
-      WARN("flagcxMemAlloc: flagcxMemSHMEM but shmemAdaptor not loaded");
-      return flagcxInternalError;
-    }
-    FLAGCXCHECK(shmemAdaptor->malloc(ptr, size));
-  } else {
-    // flagcxMemCCL: dispatch based on homo/hetero
-    if (useHeteroComm()) {
-      FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(ptr, size, NULL));
-      if (*ptr == NULL) {
-        WARN("flagcxMemAlloc: GDR allocation failed");
-        return flagcxUnhandledDeviceError;
+  *ptr = nullptr;
+
+  flagcxResult_t res = flagcxSuccess;
+  flagcxMemAllocBackend backend = flagcxMemAllocBackendGDR;
+  switch (allocator) {
+    case flagcxMemCCL:
+      if (useHeteroComm()) {
+        backend = flagcxMemAllocBackendGDR;
+        if (deviceAdaptor == nullptr || deviceAdaptor->gdrMemAlloc == nullptr) {
+          WARN("flagcxMemAlloc: GDR allocator is not available");
+          return flagcxInternalError;
+        }
+        res = deviceAdaptor->gdrMemAlloc(ptr, size, nullptr);
+      } else {
+        backend = flagcxMemAllocBackendCCL;
+        if (cclAdaptors[flagcxCCLAdaptorDevice] == nullptr ||
+            cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc == nullptr) {
+          WARN("flagcxMemAlloc: CCL allocator is not available");
+          return flagcxInternalError;
+        }
+        res = cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size);
       }
-    } else {
-      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(ptr, size));
-    }
+      break;
+    case flagcxMemSHMEM:
+      backend = flagcxMemAllocBackendSHMEM;
+      if (shmemAdaptor == nullptr || shmemAdaptor->malloc == nullptr) {
+        WARN("flagcxMemAlloc: SHMEM allocator is not available");
+        return flagcxInternalError;
+      }
+      res = shmemAdaptor->malloc(ptr, size);
+      break;
+    default:
+      WARN("flagcxMemAlloc: unknown allocator %d", (int)allocator);
+      return flagcxInvalidArgument;
   }
+
+  if (res != flagcxSuccess) {
+    if (*ptr != nullptr) {
+      flagcxResult_t freeRes = flagcxMemFreeByBackend(*ptr, backend);
+      if (freeRes != flagcxSuccess)
+        WARN("flagcxMemAlloc: failed to roll back partial allocation");
+      *ptr = nullptr;
+    }
+    return res;
+  }
+  if (*ptr == nullptr) {
+    WARN("flagcxMemAlloc: backend %d returned a null pointer", (int)backend);
+    return flagcxUnhandledDeviceError;
+  }
+
+  flagcxMemAllocationInfo info{*ptr, size, allocator, backend};
+  res = globalMemAllocRegistry.insert(info);
+  if (res != flagcxSuccess) {
+    flagcxResult_t freeRes = flagcxMemFreeByBackend(*ptr, backend);
+    if (freeRes != flagcxSuccess)
+      WARN("flagcxMemAlloc: failed to roll back untracked allocation");
+    *ptr = nullptr;
+    return res;
+  }
+
   return flagcxSuccess;
 }
 
@@ -250,21 +321,32 @@ flagcxResult_t flagcxMemFree(void *ptr, flagcxMemAllocator_t allocator) {
     WARN("Invalid pointer(=NULL) for de-allocation.");
     return flagcxSuccess;
   }
-  if (allocator == flagcxMemSHMEM) {
-    if (shmemAdaptor == nullptr) {
-      WARN("flagcxMemFree: flagcxMemSHMEM but shmemAdaptor not loaded");
-      return flagcxInternalError;
-    }
-    FLAGCXCHECK(shmemAdaptor->free(ptr));
-    INFO(FLAGCX_REG, "flagcxMemFree: SHMEM memory deallocated");
-  } else {
-    if (useHeteroComm()) {
-      FLAGCXCHECK(deviceAdaptor->gdrMemFree(ptr, NULL));
-      INFO(FLAGCX_REG, "flagcxMemFree: GDR memory deallocated");
-    } else {
-      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->memFree(ptr));
-    }
+
+  flagcxMemAllocationInfo info;
+  flagcxResult_t res = globalMemAllocRegistry.findExact(ptr, &info);
+  if (res != flagcxSuccess) {
+    WARN("flagcxMemFree: pointer was not allocated by flagcxMemAlloc");
+    return flagcxInvalidUsage;
   }
+  if (allocator != info.allocator) {
+    WARN("flagcxMemFree: allocator mismatch (requested %d, recorded %d)",
+         (int)allocator, (int)info.allocator);
+    return flagcxInvalidUsage;
+  }
+
+  // Remove ownership before calling the backend so concurrent frees cannot
+  // both release the same allocation. Restore it if the backend rejects the
+  // free and still owns the memory.
+  FLAGCXCHECK(globalMemAllocRegistry.erase(ptr));
+  res = flagcxMemFreeByBackend(ptr, info.backend);
+  if (res != flagcxSuccess) {
+    flagcxResult_t restoreRes = globalMemAllocRegistry.insert(info);
+    if (restoreRes != flagcxSuccess)
+      WARN("flagcxMemFree: failed to restore allocation provenance");
+    return res;
+  }
+  INFO(FLAGCX_REG, "flagcxMemFree: backend %d memory deallocated",
+       (int)info.backend);
   return flagcxSuccess;
 }
 
@@ -1264,6 +1346,46 @@ flagcxOneSideBarrierDeregister(const flagcxComm_t comm,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+flagcxValidateMemoryRange(void *buff, size_t size,
+                          flagcxMemAllocator_t allocator) {
+  if (allocator != flagcxMemCCL && allocator != flagcxMemSHMEM) {
+    WARN("Invalid allocator %d for buffer registration.", (int)allocator);
+    return flagcxInvalidArgument;
+  }
+
+  flagcxMemAllocationInfo info;
+  flagcxResult_t res = globalMemAllocRegistry.findRange(buff, 1, &info);
+  if (res == flagcxSuccess) {
+    if (globalMemAllocRegistry.findRange(buff, size, &info) != flagcxSuccess) {
+      WARN("Registration range exceeds its flagcxMemAlloc allocation.");
+      return flagcxInvalidUsage;
+    }
+    if (info.allocator != allocator) {
+      WARN("Registration allocator mismatch (requested %d, recorded %d).",
+           (int)allocator, (int)info.allocator);
+      return flagcxInvalidUsage;
+    }
+    if (allocator == flagcxMemSHMEM &&
+        info.backend != flagcxMemAllocBackendSHMEM) {
+      WARN("SHMEM registration requires a SHMEM-backed allocation.");
+      return flagcxInvalidUsage;
+    }
+    return flagcxSuccess;
+  }
+  if (res != flagcxInvalidUsage)
+    return res;
+
+  // CCL registration also accepts external user buffers. SHMEM Device API
+  // memory must come from flagcxMemAlloc so symmetric-heap provenance and
+  // exact bounds are known.
+  if (allocator == flagcxMemSHMEM) {
+    WARN("SHMEM registration requires flagcxMemAlloc(..., flagcxMemSHMEM).");
+    return flagcxInvalidUsage;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle,
                                   flagcxMemAllocator_t allocator) {
@@ -1271,10 +1393,12 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     FLAGCXCHECK(flagcxEnsureCommReady(comm));
   }
 
-  if (buff == NULL || size == 0) {
-    WARN("Invalid buffer or size for buffer registration.");
+  if (buff == NULL || size == 0 || handle == nullptr) {
+    WARN("Invalid buffer, size, or handle for buffer registration.");
     return flagcxInvalidArgument;
   }
+  *handle = nullptr;
+  FLAGCXCHECK(flagcxValidateMemoryRange(buff, size, allocator));
 
   // Step 1: Register in globalRegPool (both paths)
   // Key: heteroComm if available (p2p/net downstream use it), else homoComm
@@ -1284,8 +1408,12 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     regKey =
         comm->heteroComm ? (void *)comm->heteroComm : (void *)comm->homoComm;
   }
-  globalRegPool.registerBuffer(regKey, buff, size);
+  FLAGCXCHECK(globalRegPool.registerBuffer(regKey, buff, size));
   flagcxRegItem *regItem = globalRegPool.getItem(regKey, buff);
+  if (regItem == nullptr) {
+    WARN("flagcxCommRegister: globalRegPool did not return a registration");
+    return flagcxInternalError;
+  }
 
   *handle = reinterpret_cast<void *>(regItem);
 
@@ -1294,7 +1422,7 @@ flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
     return flagcxSuccess;
   }
 
-  // SHMEM path: buffer is in the NVSHMEM symmetric heap,
+  // SHMEM path: buffer is in the SHMEM symmetric heap,
   // no IPC handles or MR registration needed.
   if (allocator == flagcxMemSHMEM) {
     return flagcxSuccess;
@@ -1448,12 +1576,13 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags,
                                         flagcxMemAllocator_t allocator) {
-  if (win == nullptr || *win != nullptr) {
+  if (buff == nullptr || size == 0 || win == nullptr || *win != nullptr) {
     return flagcxInvalidArgument;
   }
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  // SHMEM path: buffer is already in the NVSHMEM symmetric heap,
-  // globally accessible via nvshmem_ptr — no registration needed.
+  FLAGCXCHECK(flagcxValidateMemoryRange(buff, size, allocator));
+  // SHMEM path: buffer is already in the SHMEM symmetric heap, so no
+  // additional communicator window registration is needed.
   if (allocator == flagcxMemSHMEM) {
     *win = nullptr;
     return flagcxSuccess;

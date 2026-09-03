@@ -101,7 +101,7 @@ int main(int argc, char *argv[]) {
   // Allocate send/recv buffers (8x for S18's 8-combination regions)
   size_t bufSize = maxBytes * 8;
   void *sendBuff = nullptr, *recvBuff = nullptr;
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;

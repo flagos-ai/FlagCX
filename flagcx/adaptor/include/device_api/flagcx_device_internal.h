@@ -15,6 +15,7 @@
 #define FLAGCX_DEVICE_API_INTERNAL_H_
 
 #include "flagcx_kernel.h"
+#include "mem_alloc_provenance.h"
 #include "shmutils.h"
 #include <pthread.h>
 
@@ -88,6 +89,12 @@ struct flagcxDevCommInternal {
   int signalCount;
   int counterCount;
   int contextCount; // = reqs.interContextCount (default 4)
+  // Symmetric scratch requested through reqs.intraScratchBytes is not mirrored
+  // here. The only backend that needs one (XSHMEM) allocates it from its
+  // symmetric heap, owns it in flagcxShmemCommInternal, and reaches the device
+  // through the trait Comm that record is layout-identical to. A copy in this
+  // struct had no reader and would invite the generic teardown path to free
+  // symmetric-heap memory with the wrong allocator.
   // Host-only: communicator registrations installed for these buffers.
   // Non-null only when this DevComm created the registration and therefore
   // must deregister it before freeing the backing allocation.
@@ -132,7 +139,14 @@ struct flagcxDevCommInternal {
 // ============================================================
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
-  void *rawPtr;   // = buff parameter
+  void *rawPtr; // = buff parameter
+  // Exact allocation provenance when rawPtr belongs to a flagcxMemAlloc
+  // allocation. External CCL user buffers remain valid and untracked.
+  bool allocationTracked;
+  void *allocationBase;
+  size_t allocationSize;
+  flagcxMemAllocator_t allocator;
+  flagcxMemAllocBackend allocBackend;
   bool hasWindow; // true if any window layer is available (basic or symmetric)
   bool isSymmetric; // true only for FLAGCX_WIN_COLL_SYMMETRIC (enables
                     // one-sided)

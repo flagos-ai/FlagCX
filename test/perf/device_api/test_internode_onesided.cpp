@@ -24,7 +24,7 @@
 #include <cstring>
 #include <unistd.h>
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
 extern "C" void flagcxNvshmemSyncDeviceState();
 extern "C" void flagcxNvshmemFinalizeDeviceState();
 #endif
@@ -91,7 +91,7 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
   flagcxNvshmemSyncDeviceState();
 #endif
 
@@ -99,7 +99,7 @@ int main(int argc, char *argv[]) {
   // Each chunk has countPerPeer elements (= maxBytes / nRanks / sizeof(float))
   // Total buffer size = maxBytes (contains data for all peers)
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
 #else
   flagcxMemAllocator_t memAllocator = flagcxMemCCL;
@@ -284,7 +284,7 @@ int main(int argc, char *argv[]) {
   // Destroy device communicator (before comm destroy)
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 
-#ifdef FLAGCX_COMM_TRAITS_SHMEM
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)
   flagcxNvshmemFinalizeDeviceState();
 #endif
 

@@ -5,6 +5,8 @@
 #include "adaptor.h"
 #include "alloc.h"
 
+#include "xpu/runtime.h"
+
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
     {flagcxMemcpyDeviceToHost, cudaMemcpyDeviceToHost},
@@ -84,6 +86,15 @@ flagcxResult_t kunlunAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
 
 flagcxResult_t kunlunAdaptorSetDevice(int dev) {
   DEVCHECK(cudaSetDevice(dev));
+  // The CUDA compat layer's cudaSetDevice does not always bind the XRE-native
+  // device context that xshmem / xpu_* APIs use. Set it explicitly so the
+  // native xshmem device state is created on the intended card.
+  int xret = xpu_set_device(dev);
+  if (xret != 0) {
+    WARN("kunlunAdaptorSetDevice: xpu_set_device(%d) failed with %d", dev,
+         xret);
+    return flagcxUnhandledDeviceError;
+  }
   return flagcxSuccess;
 }
 

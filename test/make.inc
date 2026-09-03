@@ -28,10 +28,11 @@ FLAGCX_INCLUDES := \
 FLAGCX_LIB  := $(PROJECT_ROOT)/build/lib
 FLAGCX_LINK := -L$(FLAGCX_LIB) -Wl,--no-as-needed -Wl,-rpath,$(FLAGCX_LIB) -lflagcx
 
-# GoogleTest. Prefer the vendored copy, fall back to distro packages in the
-# Docker image when submodules are not checked out.
+# GoogleTest. Prefer the vendored copy when its static lib is actually built
+# (submodule checked out AND compiled), fall back to distro packages in the
+# Docker image when only the headers (or nothing) are present.
 GTEST_DIR ?= $(PROJECT_ROOT)/third-party/googletest
-ifneq ($(wildcard $(GTEST_DIR)/googletest/include/gtest/gtest.h),)
+ifneq ($(wildcard $(GTEST_DIR)/build/lib/libgtest.a),)
 GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
 GTEST_LIB     := $(GTEST_DIR)/build/lib
 GTEST_SRC_ROOT := $(GTEST_DIR)/googletest
@@ -64,10 +65,6 @@ else
   MPI_INCLUDE := -I$(MPI_HOME)/include
   MPI_LINK := -L$(MPI_HOME)/lib -lmpi
 endif
-
-# CCL (vendor collective library)
-CCL_HOME    ?= /usr/local
-CCL_INCLUDE := -I$(CCL_HOME)/include
 
 # Perf test common infrastructure
 PERF_INCLUDE := -I$(PROJECT_ROOT)/test/include
@@ -116,16 +113,23 @@ DEVICE_INCLUDE := $(addprefix -I,$(DEVICE_INCLUDE))
 CCL_INCLUDE    := -I$(CCL_INCLUDE)
 DEVICE_LINK    := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs $(DEVICE_LINK)
 ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
+# Host-only test translation units must not select SHMEM CommTraits.  In
+# particular, a normal g++ compilation cannot consume the XPU implementation;
+# the platform device compiler selects those traits for the kernel object.
+HOST_ADAPTOR_DEFINE := $(filter-out -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_DEFINE))
 ifeq ($(DEVICE_PLATFORM), CUDA)
   PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/nvidia
 else
   PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
 endif
 
-# SHMEM include path (used when USE_SHMEM=1)
+# SHMEM include path and host-test allocator selection. Device CommTraits are
+# selected separately by each platform's ADAPTOR_DEFINE/device compiler flags;
+# host launchers use HOST_ADAPTOR_DEFINE.
+# This keeps generic g++ test translation units backend-neutral.
 ifeq ($(USE_SHMEM), 1)
 SHMEM_INCLUDE := -I$(SHMEM_HOME)/include
-CXXFLAGS += -DFLAGCX_COMM_TRAITS_SHMEM
+CXXFLAGS += -DFLAGCX_TEST_ALLOCATOR_SHMEM
 else
 SHMEM_INCLUDE :=
 endif

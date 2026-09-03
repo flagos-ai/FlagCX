@@ -16,7 +16,12 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(PERF_INCLUDE) $(MPI_INCLUDE) \
     -I$(PROJECT_ROOT)/flagcx/core -I$(PROJECT_ROOT)/flagcx/service \
     -I$(PROJECT_ROOT)
 
-ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK)
+ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
+
+ifeq ($(USE_KUNLUNXIN), 1)
+ALL_LINK += -L$(CCL_LIB) -Wl,-rpath,$(CCL_LIB) $(CCL_LINK) \
+            -Wl,-rpath,$(DEVICE_LIB)
+endif
 
 .PHONY: all clean
 
