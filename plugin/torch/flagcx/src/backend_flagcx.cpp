@@ -12,10 +12,38 @@
 #include <iostream>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <stdexcept>
 
 namespace c10d {
 namespace {
+
+bool heteroP2pRequested() {
+  const char *useHeteroComm = std::getenv("FLAGCX_USE_HETERO_COMM");
+  if (useHeteroComm != nullptr && std::stoi(useHeteroComm) == 1) {
+    return true;
+  }
+
+  const char *clusterSplitInfo = std::getenv("FLAGCX_CLUSTER_SPLIT_LIST");
+  if (clusterSplitInfo == nullptr) {
+    return false;
+  }
+
+  std::stringstream ss(clusterSplitInfo);
+  std::string token;
+  int totalClusters = 0;
+  try {
+    while (std::getline(ss, token, ',')) {
+      totalClusters += std::stoi(token);
+    }
+  } catch (const std::exception &) {
+    // Let FlagCX core report the malformed split configuration. Avoid
+    // constructing a pair communicator from a configuration intended for the
+    // process-group communicator.
+    return true;
+  }
+  return totalClusters > 1;
+}
 
 // FlagCX op mapping
 const std::map<ReduceOp::RedOpType, flagcxRedOp_t> flagcxOp = {
@@ -339,6 +367,13 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   activeGroupCounter_ = 0;
   C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
+  usePairComm_ = !heteroP2pRequested();
+  if (!usePairComm_) {
+    // A heterogeneous communicator is initialized collectively. Do it while
+    // every process-group rank is constructing the backend instead of lazily
+    // from send/recv, where only the two P2P peers may participate.
+    initComm();
+  }
 }
 #else
 flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
@@ -349,6 +384,12 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
   activeGroupCounter_ = 0;
   C10D_FLAGCX_CHECK(flagcxDeviceHandleInit(&devHandle_), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->getDeviceCount(&nDevs_), std::nullopt);
+  usePairComm_ = !heteroP2pRequested();
+  if (!usePairComm_) {
+    // See the extended-API constructor above. The caller must bind its local
+    // accelerator before creating the process group.
+    initComm();
+  }
 }
 #endif
 
@@ -566,34 +607,49 @@ void flagcxBackend::groupEnd() {
 }
 
 void flagcxBackend::startCoalescing() {
-  // P2P operations use dedicated communicators and are submitted at
-  // endCoalescing instead of using a communicator group.
-  TORCH_CHECK(!pairCoalesce_.active,
-              "Nested coalescing is not supported for P2P operations");
-  initComm();
-  pairCoalesce_.active = true;
-  pairCoalesce_.pendingOps.clear();
+  if (usePairComm_) {
+    // Pair communicators are initialized lazily by the participating peers.
+    // Initializing comm_ here would reintroduce the subgroup P2P deadlock that
+    // pair communicators are intended to avoid.
+    TORCH_CHECK(!pairCoalesce_.active,
+                "Nested coalescing is not supported for pair P2P operations");
+    pairCoalesce_.active = true;
+    pairCoalesce_.pendingOps.clear();
+  } else {
+    TORCH_CHECK(status_ == 1,
+                "Heterogeneous P2P communicator was not eagerly initialized");
+    groupStart();
+  }
 }
 
 c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
-  TORCH_CHECK(pairCoalesce_.active,
-              "endCoalescing called without matching startCoalescing");
+  if (usePairComm_) {
+    TORCH_CHECK(pairCoalesce_.active,
+                "endCoalescing called without matching startCoalescing");
 
-  // Sort by peer ascending: canonical (min,max) order avoids deadlock.
-  std::stable_sort(
-      pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
-      [](const auto &a, const auto &b) { return a.first < b.first; });
-  for (auto &kv : pairCoalesce_.pendingOps) {
-    kv.second();
+    // Sort by peer ascending: canonical (min,max) order avoids deadlock.
+    std::stable_sort(
+        pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
+        [](const auto &a, const auto &b) { return a.first < b.first; });
+    for (auto &kv : pairCoalesce_.pendingOps) {
+      kv.second();
+    }
+    pairCoalesce_.pendingOps.clear();
+    pairCoalesce_.active = false;
+  } else {
+    groupEnd();
   }
-  pairCoalesce_.pendingOps.clear();
-  pairCoalesce_.active = false;
 
   auto stream = getStreamByIndex(0);
   auto work =
       c10::make_intrusive<flagcxWork>(OpType::COALESCED, stream, devHandle_);
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
+  if (!usePairComm_) {
+    // This path uses the heterogeneous P2P runner even when all ranks happen
+    // to use the same vendor (for example, FLAGCX_USE_HETERO_COMM=1).
+    work->isBarrierOp_ = true;
+  }
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()));
   work->future_->markCompleted(c10::IValue(0));
@@ -1407,10 +1463,15 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
   auto flagcxDataType = getFlagcxDataType(tensor.scalar_type());
   auto stream = getStreamByIndex(0);
   auto work = c10::make_intrusive<flagcxWork>(OpType::SEND, stream, devHandle_);
-  // Do not initialize the process-group communicator for P2P. Only the
-  // sender and receiver participate in the dedicated communicator.
-  deviceId_ = tensor.device().index();
-  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  if (usePairComm_) {
+    // Only the sender and receiver participate in pair-comm initialization.
+    deviceId_ = tensor.device().index();
+    C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  } else {
+    // Eager initialization is already complete, so this call is non-
+    // collective and only validates that the tensor uses the same device.
+    initComm(tensor.device());
+  }
   syncStream(tensor.device());
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1421,18 +1482,27 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
 
 #endif
 
-  auto doSend = [this, tensor, flagcxDataType, stream, dstRank]() {
-    flagcxComm_t p2pComm = getOrCreatePairComm(dstRank);
-    int peerRank = (rank_ < dstRank) ? 1 : 0;
+  if (usePairComm_) {
+    auto doSend = [this, tensor, flagcxDataType, stream, dstRank]() {
+      flagcxComm_t p2pComm = getOrCreatePairComm(dstRank);
+      int peerRank = (rank_ < dstRank) ? 1 : 0;
+      C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
+                                   flagcxDataType, peerRank, p2pComm, stream),
+                        std::nullopt);
+    };
+    if (pairCoalesce_.active) {
+      pairCoalesce_.pendingOps.emplace_back(dstRank, std::move(doSend));
+      return nullptr;
+    }
+    doSend();
+  } else {
     C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
-                                 flagcxDataType, peerRank, p2pComm, stream),
+                                 flagcxDataType, dstRank, comm_, stream),
                       std::nullopt);
-  };
-  if (pairCoalesce_.active) {
-    pairCoalesce_.pendingOps.emplace_back(dstRank, std::move(doSend));
-    return nullptr;
+    if (activeGroupCounter_ > 0) {
+      return nullptr;
+    }
   }
-  doSend();
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;
@@ -1450,9 +1520,12 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
   auto flagcxDataType = getFlagcxDataType(tensor.scalar_type());
   auto stream = getStreamByIndex(0);
   auto work = c10::make_intrusive<flagcxWork>(OpType::RECV, stream, devHandle_);
-  // See send(): create/reuse only the communicator for this rank pair.
-  deviceId_ = tensor.device().index();
-  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  if (usePairComm_) {
+    deviceId_ = tensor.device().index();
+    C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  } else {
+    initComm(tensor.device());
+  }
   syncStream(tensor.device());
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1463,18 +1536,27 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
 
 #endif
 
-  auto doRecv = [this, tensor, flagcxDataType, stream, srcRank]() {
-    flagcxComm_t p2pComm = getOrCreatePairComm(srcRank);
-    int peerRank = (rank_ < srcRank) ? 1 : 0;
+  if (usePairComm_) {
+    auto doRecv = [this, tensor, flagcxDataType, stream, srcRank]() {
+      flagcxComm_t p2pComm = getOrCreatePairComm(srcRank);
+      int peerRank = (rank_ < srcRank) ? 1 : 0;
+      C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
+                                   flagcxDataType, peerRank, p2pComm, stream),
+                        std::nullopt);
+    };
+    if (pairCoalesce_.active) {
+      pairCoalesce_.pendingOps.emplace_back(srcRank, std::move(doRecv));
+      return nullptr;
+    }
+    doRecv();
+  } else {
     C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
-                                 flagcxDataType, peerRank, p2pComm, stream),
+                                 flagcxDataType, srcRank, comm_, stream),
                       std::nullopt);
-  };
-  if (pairCoalesce_.active) {
-    pairCoalesce_.pendingOps.emplace_back(srcRank, std::move(doRecv));
-    return nullptr;
+    if (activeGroupCounter_ > 0) {
+      return nullptr;
+    }
   }
-  doRecv();
 
   work->event_->record(stream, deviceId_);
   work->deviceId_ = deviceId_;

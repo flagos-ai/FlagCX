@@ -39,6 +39,7 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
 
   std::map<std::string, int> clusterMap;
   clusterMap[allData[0].internal] = 1;
+  std::vector<std::string> clusterOrder{allData[0].internal};
   int numClusters = 1;
   int currCluster = 0;
   int aggRanks = 1;
@@ -51,6 +52,7 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
       it->second = it->second + 1;
     } else {
       clusterMap[cls] = 1;
+      clusterOrder.push_back(cls);
       numClusters += 1;
       if (myCls == cls) {
         *homoRank = *homoRank - aggRanks;
@@ -79,20 +81,28 @@ flagcxResult_t flagcxCollectClusterInfos(const flagcxVendor *allData,
   }
 
   // split and obtain sub-clusters
-  // Splitting a communicator into sub-clusters only makes sense for collective
-  // communicators that span the full heterogeneous topology. Dedicated P2P
-  // pair communicators (nranks <= 2) must never be split: splitting a 2-rank
-  // comm into two single-rank sub-clusters would force every send/recv through
-  // inter-cluster RMA and deadlock ring-shaped P2P patterns. Collective comms
-  // (group sizes >= 3) are unaffected and keep being split as before.
   const char *clusterSplitInfo = flagcxGetEnv("FLAGCX_CLUSTER_SPLIT_LIST");
-  if (clusterSplitInfo != NULL && nranks > 2) {
+  if (clusterSplitInfo != NULL) {
     std::vector<int> clusterSplitList;
     FLAGCXCHECK(parseClusterSplitList(clusterSplitInfo, clusterSplitList));
     if (*ncluster != int(clusterSplitList.size())) {
       WARN("Invalid cluster split info, its length should be equal to the "
            "number of homogeneous cluster");
       return flagcxSystemError;
+    }
+
+    // Every rank has the complete vendor list, so validate the entire split
+    // configuration before any rank starts calculating its local sub-cluster.
+    // This keeps configuration failures consistent across the communicator.
+    for (int i = 0; i < *ncluster; ++i) {
+      const int splitCount = clusterSplitList[i];
+      const int clusterSize = clusterMap[clusterOrder[i]];
+      if (splitCount <= 0 || splitCount > clusterSize) {
+        WARN("Invalid cluster split count %d for homogeneous cluster %d with "
+             "%d ranks; expected a value in [1, %d]",
+             splitCount, i, clusterSize, clusterSize);
+        return flagcxSystemError;
+      }
     }
 
     int subClusterId = 0;
