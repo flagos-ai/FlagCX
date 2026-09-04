@@ -1,0 +1,127 @@
+name: ptd
+
+services:
+  prepare:
+    image: python:3.12-slim
+    working_dir: /ptd
+    command: python3 src/prepare.py
+    volumes:
+      - ../..:/ptd
+    environment:
+      DASH: ${DASH:-}
+      HOST_PTD_ROOT: ${PWD},${PWD}/../..
+      PREFILL: ${PREFILL:-}
+      DECODE: ${DECODE:-}
+      OPENMETRICS: ${OPENMETRICS:-}
+      KV_BYTES: ${KV_BYTES:-167772160}
+      GF_PORT: ${GF_PORT:-3000}
+      PROM_PORT: ${PROM_PORT:-9090}
+
+  tsdb:
+    image: prom/prometheus:latest
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        if [ -f /build/rebuild-tsdb ]; then
+          promtool tsdb create-blocks-from openmetrics /build/om.txt /build/tsdb
+          rm -f /build/rebuild-tsdb
+        else
+          echo 'Reusing existing TSDB.'
+        fi
+    volumes:
+      - ../../build:/build
+
+  prometheus:
+    image: prom/prometheus:latest
+    depends_on:
+      tsdb:
+        condition: service_completed_successfully
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        while true; do
+          while [ -f /build/rebuild-tsdb ]; do sleep 0.2; done
+          prometheus \
+            --config.file=/etc/prometheus/prometheus.yml \
+            --storage.tsdb.path=/prometheus \
+            --storage.tsdb.retention.time=10y \
+            --web.enable-lifecycle || true
+          sleep 0.2
+        done
+    ports:
+      - "${PROM_PORT:-9090}:9090"
+    volumes:
+      - ./offline.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../build/tsdb:/prometheus
+      - ../../build:/build:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    ports:
+      - "${GF_PORT:-3000}:3000"
+    volumes:
+      - ../../build/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../build/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment: &grafana_env
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/current.json
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: browser
+
+  prepare-online:
+    profiles: [online]
+    image: python:3.12-slim
+    working_dir: /ptd
+    command: python3 src/prepare.py
+    volumes:
+      - ../..:/ptd
+    environment:
+      DASH: ${DASH:-ptd-sglang}
+      TARGETS: ${TARGETS:-}
+      KV_BYTES: ${KV_BYTES:-167772160}
+      GF_PORT: ${GF_PORT:-3000}
+      PROM_PORT: ${PROM_PORT:-9090}
+
+  prometheus-online:
+    profiles: [online]
+    image: prom/prometheus:latest
+    network_mode: host
+    depends_on:
+      prepare-online:
+        condition: service_completed_successfully
+    volumes:
+      - ../../build:/etc/ptd:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/ptd/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.listen-address=:${PROM_PORT:-9090}
+
+  grafana-online:
+    profiles: [online]
+    image: grafana/grafana:latest
+    network_mode: host
+    depends_on:
+      - prometheus-online
+    volumes:
+      - ../../build/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../../build/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      <<: *grafana_env
+      GF_SERVER_HTTP_PORT: ${GF_PORT:-3000}
+
+volumes:
+  prometheus_data:
+  grafana_data:

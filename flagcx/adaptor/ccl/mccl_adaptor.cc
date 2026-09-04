@@ -134,14 +134,12 @@ flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
   free(win);
   return res;
 }
-#else  //MCCL_VERSION_CODE < MCCL_VERSION(2, 30, 4)
+#else  // MCCL_VERSION_CODE < MCCL_VERSION(2, 30, 4)
 flagcxResult_t mcclAdaptorMemAlloc(void **ptr, size_t size) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t mcclAdaptorMemFree(void *ptr) {
-  return flagcxNotSupported;
-}
+flagcxResult_t mcclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
 
 flagcxResult_t mcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
                                        size_t size, void **handle) {
@@ -163,7 +161,7 @@ flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
   return flagcxNotSupported;
 }
-#endif  // MCCL_VERSION_CODE >= MCCL_VERSION(2, 30, 4)
+#endif // MCCL_VERSION_CODE >= MCCL_VERSION(2, 30, 4)
 
 flagcxResult_t mcclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                  size_t count, flagcxDataType_t datatype,
