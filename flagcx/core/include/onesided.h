@@ -14,13 +14,16 @@
 #include "comm.h" // for flagcxHeteroComm_t
 
 struct flagcxSymWindow; // forward declaration
+struct flagcxNetMrInfo;
 
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
-  size_t regionSize; // size of the registered memory region (bytes)
+  size_t regionSize;   // local rank's registered region size (bytes)
+  size_t *regionSizes; // [nRanks], registered region size for each rank
   uint32_t *rkeys;
   uint32_t *lkeys;
-  void *localMrHandle; // local rank's MR handle for deregMr
+  struct flagcxNetMrInfo *mrInfos; // [nRanks], including per-NIC keys
+  void *localMrHandle;             // local rank's MR handle for deregMr
   void *localRecvComm; // recvComm used for MR registration (PD match)
   // Full-mesh IB connections (including self loopback, aligned with NCCL GIN)
   void **fullSendComms; // [nRanks] per-peer sendComm — alias for

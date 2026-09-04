@@ -344,7 +344,7 @@ jobs:
         --group-add video
         -e PLATFORM=metax
         -e TORCH_DISTRIBUTED_BACKEND=mccl
-        -e FLAGCX_IB_GID_INDEX=0
+        -e FLAGCX_IB_GID_INDEX=3
         -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
     env:
       MPI_HOME: /usr/local/mpi
@@ -379,9 +379,16 @@ jobs:
         shell: bash
         run: |
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
+          flagcx_ci_prepare perf
           echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
           echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          if [[ -n "${FLAGCX_IB_HCA:-}" ]]; then
+            echo "FLAGCX_IB_HCA=$FLAGCX_IB_HCA" >> "$GITHUB_ENV"
+          fi
+          if [[ -n "${FLAGCX_SOCKET_IFNAME:-}" ]]; then
+            echo "FLAGCX_SOCKET_IFNAME=$FLAGCX_SOCKET_IFNAME" >> "$GITHUB_ENV"
+          fi
           mx-smi 2>/dev/null || true
 
       - name: Build FlagCX

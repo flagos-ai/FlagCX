@@ -1,6 +1,6 @@
 include ../../make.inc
 
-# [unit] tests: test_*.cpp — single GPU, no MPI required
+# [unit] tests: test_*.cpp — no MPI; some require accelerators and RDMA
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/adaptor_unit_tests
@@ -49,6 +49,8 @@ clean:
 
 run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
+	@FLAGCX_P2P_MAX_WR_PER_POST=2 $(UNIT_TARGET) \
+		--gtest_filter=P2pBatchTest.IputBatchTransfersMultipleRegions
 
 run-mpi: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np $(MPI_NP) $(MPI_TARGET)

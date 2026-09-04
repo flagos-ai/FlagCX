@@ -7,13 +7,13 @@
 #ifndef FLAGCX_BOOTSTRAP_H_
 #define FLAGCX_BOOTSTRAP_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "flagcx.h"
 #include "flagcx_net.h"
 #include "socket.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct flagcxBootstrapHandle {
   uint64_t magic;

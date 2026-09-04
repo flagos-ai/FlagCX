@@ -39,9 +39,36 @@ declare -p FLAGCX_CI_TEST_MAKE_ARGS >/dev/null 2>&1 || {
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
 
+flagcx_ci_require_rdma() {
+  local suite=$1
+  local platform_name
+
+  platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+  case "$platform_name" in
+    cuda|metax|hygon) ;;
+    *) return 0 ;;
+  esac
+
+  case "$suite" in
+    adaptor|p2p) ;;
+    *) return 0 ;;
+  esac
+
+  echo "Running $platform_name RDMA preflight for unit-test suite: $suite"
+
+  if ! compgen -G "/sys/class/infiniband/*" >/dev/null ||
+    ! compgen -G "/dev/infiniband/uverbs*" >/dev/null; then
+    echo "$platform_name $suite tests require RDMA devices, but the runner did not expose /sys/class/infiniband and /dev/infiniband/uverbs* to the test container." >&2
+    return 1
+  fi
+
+  echo "RDMA preflight passed: kernel HCA sysfs entries and uverbs device nodes are visible"
+}
+
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
+flagcx_ci_require_rdma "$SUITE"
 
 build_googletest() {
   cmake -S "$PROJECT_ROOT/third-party/googletest" \

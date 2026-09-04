@@ -9,85 +9,6 @@ on:
       - main
 
 jobs:
-  torch-api-test:
-    runs-on: [self-hosted, cx-build]
-    container:
-      image: localhost:5000/flagscale:cuda12.8.1-cudnn9.7.1-python3.12-torch2.7.0-time2507111538
-      options:  --gpus all --shm-size=500g --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --ulimit nofile=65535:65535 --user root
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.ref }}
-          ssh-strict: true
-          ssh-user: git
-          persist-credentials: true
-          clean: true
-          sparse-checkout-cone-mode: true
-          fetch-tags: false
-          show-progress: true
-          lfs: false
-          submodules: false
-          set-safe-directory: true
-
-      - name: Checkout submodules
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-          git submodule sync --recursive
-          git submodule update --init --force --recursive
-
-      - name: Set up Install Dependencies
-        run: |
-          export PATH=/root/miniconda3/bin:$PATH
-          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
-          apt update -y && apt-get install -y git rdma-core ibverbs-utils perftest infiniband-diags libibverbs-dev librdmacm-dev clang-format
-          pip list | grep torch && which python
-          pip install pre-commit
-          cd /__w/FlagCX/FlagCX
-          git config --global --add safe.directory /__w/FlagCX/FlagCX && git status
-          pre-commit install
-
-      - name: Run Code Format Check with pre-commit
-        run: |
-          cd /__w/FlagCX/FlagCX
-          git fetch --all
-          if [ -n "$GITHUB_HEAD_REF" ] && [ -n "$GITHUB_BASE_REF" ]; then
-            from_ref="origin/$GITHUB_HEAD_REF"
-            to_ref="origin/$GITHUB_BASE_REF"
-            echo "From reference: $from_ref; To reference: $to_ref"
-            pre-commit run --from-ref "$from_ref" --to-ref "$to_ref"
-          fi
-        continue-on-error: false
-
-      - name: Run `make` to build the project
-        run: |
-          cd /__w/FlagCX/FlagCX
-          export MPI_HOME=/usr/local/mpi
-          make USE_NVIDIA=1 -j$(nproc)
-
-      - name: Install FlagCX PyTorch Plugin
-        run: |
-          export PATH=/root/miniconda3/bin:$PATH
-          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
-          pip uninstall -y setuptools && pip install setuptools==77.0.1 --extra-index-url https://pypi.org/simple 
-          cd /__w/FlagCX/FlagCX/plugin/torch
-          export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-          export FLAGCX_ADAPTOR=nvidia
-          python3 setup.py build_ext --inplace
-          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
-
-      - name: Run PyTorch API Tests
-        run: |
-          export PATH=/root/miniconda3/bin:$PATH
-          eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
-          cd /__w/FlagCX/FlagCX/test/script/
-          export FLAGCX_DEBUG=TRACE
-          export FLAGCX_DEBUG_SUBSYS=ALL
-          bash torch_api_test.sh
-
   torch-api-test-hygon:
     name: torch-api-test (hygon)
     runs-on: [hg-8g-cicd-flagcx]
@@ -274,7 +195,7 @@ jobs:
         --group-add video
         -e PLATFORM=metax
         -e TORCH_DISTRIBUTED_BACKEND=mccl
-        -e FLAGCX_IB_GID_INDEX=0
+        -e FLAGCX_IB_GID_INDEX=3
         -e LD_LIBRARY_PATH=/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$LD_LIBRARY_PATH
     env:
       FLAGCX_ADAPTOR: metax
@@ -311,9 +232,16 @@ jobs:
         shell: bash
         run: |
           source /__w/FlagCX/FlagCX/.github/scripts/set_env/metax.sh
+          flagcx_ci_prepare torch-api
           echo "PATH=/opt/maca/mxgpu_llvm/bin:$MPI_HOME/bin:$PATH" >> "$GITHUB_ENV"
           echo "MPI_HOME=$MPI_HOME" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=/__w/FlagCX/FlagCX/build/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:$MPI_HOME/lib:$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+          if [[ -n "${FLAGCX_IB_HCA:-}" ]]; then
+            echo "FLAGCX_IB_HCA=$FLAGCX_IB_HCA" >> "$GITHUB_ENV"
+          fi
+          if [[ -n "${FLAGCX_SOCKET_IFNAME:-}" ]]; then
+            echo "FLAGCX_SOCKET_IFNAME=$FLAGCX_SOCKET_IFNAME" >> "$GITHUB_ENV"
+          fi
           mx-smi 2>/dev/null || true
 
       - name: Build FlagCX

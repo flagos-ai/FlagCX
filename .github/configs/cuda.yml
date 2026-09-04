@@ -7,14 +7,15 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev
 runner_labels:
   - nv-8g-cicd-flagcx
 
-container_volumes: []
+docker_volumes: []
 
-container_options: >-
-  --gpus all
-  --privileged
-  --ipc=host
-  --ulimit memlock=-1
-  --ulimit stack=67108864
+docker_options:
+  - --network=host
+  - --gpus=all
+  - --privileged
+  - --ipc=host
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
 
 set_env: .github/scripts/set_env/cuda.sh
 

@@ -165,8 +165,23 @@ flagcxResult_t cudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   INFO(FLAGCX_INIT,
        "[gdrMemAlloc] memGran=%zu handleSize=%zu gpuDirectRDMACapable=%d",
        memGran, handleSize, (int)memprop.allocFlags.gpuDirectRDMACapable);
-  /* Allocate the physical memory on the device */
-  DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+  /* Fabric handles may be advertised even when the process has no IMEX
+     channel. Retry with the POSIX file-descriptor handle required by DMA-BUF
+     instead of rejecting an otherwise valid GDR allocation. */
+  if (requestedHandleTypes & CU_MEM_HANDLE_TYPE_FABRIC) {
+    cuRes = cuMemCreate(&handle, handleSize, &memprop, 0);
+    if (cuRes == CUDA_ERROR_NOT_PERMITTED ||
+        cuRes == CUDA_ERROR_NOT_SUPPORTED) {
+      requestedHandleTypes &= ~CU_MEM_HANDLE_TYPE_FABRIC;
+      memprop.requestedHandleTypes =
+          (CUmemAllocationHandleType)requestedHandleTypes;
+      DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+    } else if (cuRes != CUDA_SUCCESS) {
+      DEVCHECK(cuRes);
+    }
+  } else {
+    DEVCHECK(cuMemCreate(&handle, handleSize, &memprop, 0));
+  }
   /* Reserve a virtual address range */
   cuRes = cuMemAddressReserve((CUdeviceptr *)ptr, handleSize, memGran, 0, 0);
   if (cuRes != CUDA_SUCCESS) {
@@ -935,6 +950,28 @@ flagcxResult_t cudaAdaptorGetLastError() {
   return err == cudaSuccess ? flagcxSuccess : flagcxSystemError;
 }
 
+flagcxResult_t cudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+  cudaPointerAttributes attrs;
+  cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+  if (err != cudaSuccess) {
+    cudaGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+#if CUDART_VERSION >= 10000
+  *ptrType = (attrs.type == cudaMemoryTypeDevice ||
+              attrs.type == cudaMemoryTypeManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = attrs.memoryType == cudaMemoryTypeDevice ? FLAGCX_PTR_CUDA
+                                                      : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -1001,7 +1038,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymFlatUnmap, cudaAdaptorSymMulticastSupported,
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
       cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
-      cudaAdaptorGetLastError,
+      cudaAdaptorGetLastError, cudaAdaptorGetPointerType,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

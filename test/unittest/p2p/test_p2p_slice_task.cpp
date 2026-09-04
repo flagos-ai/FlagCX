@@ -8,6 +8,36 @@
 #include <vector>
 
 #include "flagcx_p2p.h"
+#include "p2p_transport.h"
+
+// ---------------------------------------------------------------------------
+// Test the transport-neutral slice cut policy
+// ---------------------------------------------------------------------------
+TEST(P2pSlicePlannerTest, UsesConfiguredSliceSize) {
+  EXPECT_EQ(flagcxP2pPlanSliceLength(4096, 4096, 4096, 1024, 0), 1024u);
+}
+
+TEST(P2pSlicePlannerTest, StopsAtEitherMrBoundary) {
+  EXPECT_EQ(flagcxP2pPlanSliceLength(4096, 768, 2048, 1024, 0), 768u);
+  EXPECT_EQ(flagcxP2pPlanSliceLength(4096, 2048, 640, 1024, 0), 640u);
+}
+
+TEST(P2pSlicePlannerTest, MergesSmallTailWithoutCrossingMrBoundary) {
+  EXPECT_EQ(flagcxP2pPlanSliceLength(1088, 1088, 1088, 1024, 64), 1088u);
+  EXPECT_EQ(flagcxP2pPlanSliceLength(1089, 1089, 1089, 1024, 64), 1024u);
+  EXPECT_EQ(flagcxP2pPlanSliceLength(1088, 900, 1088, 1024, 64), 900u);
+}
+
+TEST(P2pSlicePlannerTest, EnforcesTransportLengthLimit) {
+  const size_t huge = static_cast<size_t>(UINT32_MAX) + 4096;
+  EXPECT_EQ(flagcxP2pPlanSliceLength(huge, huge, huge, 0, 0), UINT32_MAX);
+}
+
+TEST(P2pSlicePlannerTest, RejectsEmptyOrExhaustedRange) {
+  EXPECT_EQ(flagcxP2pPlanSliceLength(0, 1024, 1024, 1024, 0), 0u);
+  EXPECT_EQ(flagcxP2pPlanSliceLength(1024, 0, 1024, 1024, 0), 0u);
+  EXPECT_EQ(flagcxP2pPlanSliceLength(1024, 1024, 0, 1024, 0), 0u);
+}
 
 // ---------------------------------------------------------------------------
 // Test FlagcxTransferTask basic lifecycle

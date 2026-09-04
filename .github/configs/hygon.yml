@@ -7,20 +7,27 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
 runner_labels:
   - hg-8g-cicd-flagcx
 
-container_volumes:
+docker_volumes:
   - /usr/local/hyhal:/opt/hyhal:ro
+  - /var/log/shca:/var/log/shca
 
-container_options: >-
-  --ipc=host
-  --privileged=true
-  --shm-size=100gb
-  --ulimit memlock=-1
-  --ulimit stack=67108864
-  --device=/dev/kfd
-  --device=/dev/dri
-  --group-add video
-  -e PLATFORM=hygon
-  -e FLAGCX_ADAPTOR=du
+docker_options:
+  - --network=host
+  - --ipc=host
+  - --privileged=true
+  - --shm-size=100gb
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
+  - --device=/dev/kfd
+  - --device=/dev/dri
+  - --device=/dev/shca-ioctl
+  - --mount=type=bind,src=/dev/infiniband,dst=/dev/infiniband
+  - --mount=type=bind,src=/sys/class/infiniband,dst=/sys/class/infiniband,readonly
+  - --mount=type=bind,src=/sys/class/infiniband_verbs,dst=/sys/class/infiniband_verbs,readonly
+  - --group-add=video
+  - --env=PLATFORM=hygon
+  - --env=FLAGCX_ADAPTOR=du
+
 set_env: .github/scripts/set_env/hygon.sh
 
 unit_test_suites:

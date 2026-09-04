@@ -2,20 +2,19 @@
 // Tests engine lifecycle, metadata exchange, connect/accept handshake,
 // RPC server, and descriptor table exchange.
 //
-// Hardware-dependent tests skip gracefully via GTEST_SKIP().
+// Hardware-dependent tests fail when their required devices are unavailable.
 
 #include <chrono>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
-#include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
-
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 namespace {
 
@@ -75,7 +74,7 @@ protected:
         flagcxP2pEngineDestroy(clientEngine);
         clientEngine = nullptr;
       }
-      GTEST_SKIP() << "Unable to create P2P engines (no IB hardware)";
+      FAIL() << "Unable to create P2P engines (no IB hardware)";
     }
   }
 
@@ -99,7 +98,7 @@ protected:
   }
 
   // Helper: connect client to server via bootstrap port
-  ::testing::AssertionResult connectViaBsPort() {
+  ::testing::AssertionResult connectViaBsPort(bool sameProcess = false) {
     if (serverEngine == nullptr)
       return ::testing::AssertionFailure() << "serverEngine is null";
     if (clientEngine == nullptr)
@@ -134,8 +133,9 @@ protected:
     });
 
     // Connect from client to server's bootstrap port
-    clientConn = flagcxP2pEngineConnect(clientEngine, parsed.ip.c_str(),
-                                        parsed.gpuIdx, serverRpcPort, false);
+    clientConn =
+        flagcxP2pEngineConnect(clientEngine, parsed.ip.c_str(), parsed.gpuIdx,
+                               serverRpcPort, sameProcess);
     if (clientConn == nullptr) {
       flagcxP2pEngineStopAccept(serverEngine);
       if (acceptFuture.wait_for(std::chrono::seconds(1)) ==
@@ -166,23 +166,25 @@ protected:
   FlagcxP2pConn *clientConn = nullptr;
   std::string acceptedIp;
   int acceptedRemoteGpuIdx = -1;
-
-  static bool hasIbDevices() {
-    int nDevs = 0;
-    return flagcxNetIbP2p.init() == flagcxSuccess &&
-           flagcxNetIbP2p.devices(&nDevs) == flagcxSuccess && nDevs > 0;
-  }
 };
 
 class P2pEngineRpcIbTest : public P2pEngineRpcTest {
 protected:
-  void SetUp() override {
-    P2pEngineRpcTest::SetUp();
-    if (!hasIbDevices()) {
-      GTEST_SKIP()
-          << "No IB devices available, skipping P2P RPC connection test";
-    }
-  }
+  void SetUp() override { P2pEngineRpcTest::SetUp(); }
+};
+
+class ScopedRpcEngine {
+public:
+  ScopedRpcEngine() : engine(flagcxP2pRpcEngineCreate()) {}
+  ~ScopedRpcEngine() { flagcxP2pRpcEngineDestroy(engine); }
+
+  ScopedRpcEngine(const ScopedRpcEngine &) = delete;
+  ScopedRpcEngine &operator=(const ScopedRpcEngine &) = delete;
+
+  void *get() const { return engine; }
+
+private:
+  void *engine = nullptr;
 };
 
 // ============================================================================
@@ -271,7 +273,8 @@ TEST_F(P2pEngineRpcIbTest, ConnectAcceptExchangesGpuIdx) {
 
 TEST_F(P2pEngineRpcIbTest, ConnectAcceptIsLocalSameHost) {
   ASSERT_TRUE(connectViaBsPort());
-  // Single-host test — both sides should detect local connection
+  // Locality is established by the common bootstrap handshake and is
+  // independent of the selected network adaptor.
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(serverConn));
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(clientConn));
 }
@@ -398,6 +401,167 @@ TEST_F(P2pEngineRpcTest, StopAcceptThenDestroy) {
   flagcxP2pEngineDestroy(serverEngine);
   serverEngine = nullptr;
   // Should not deadlock or crash
+}
+
+TEST(P2pRdmaDesc, SerializationRoundTripPreservesEveryField) {
+  FlagcxP2pRdmaDesc expected = {};
+  expected.addr = 0x0123456789abcdefULL;
+  expected.size = 0x10203040u;
+  expected.rkey = 0x50607080u;
+  expected.nmsgs = 0x11223344u;
+  expected.rid = 0x55667788u;
+  expected.idx = 0xfedcba9876543210ULL;
+  for (size_t i = 0; i < sizeof(expected.padding); ++i)
+    expected.padding[i] = static_cast<char>(i + 1);
+
+  char serialized[FLAGCX_P2P_DESC_SIZE] = {};
+  flagcxP2pSerializeRdmaDesc(expected, serialized);
+  FlagcxP2pRdmaDesc actual = {};
+  flagcxP2pDeserializeRdmaDesc(serialized, &actual);
+  EXPECT_EQ(std::memcmp(&actual, &expected, sizeof(expected)), 0);
+}
+
+TEST(P2pGlobalConfig, ReturnsStableValidConfiguration) {
+  const FlagcxP2pGlobalConfig &first = flagcxP2pGlobalConfig();
+  const FlagcxP2pGlobalConfig &second = flagcxP2pGlobalConfig();
+  EXPECT_EQ(&first, &second);
+  EXPECT_GT(first.qpsPerConn, 0);
+  EXPECT_GT(first.workersPerPool, 0);
+  EXPECT_GT(first.sharedCqDepth, 0u);
+  EXPECT_GT(first.maxWrPerPost, 0u);
+  EXPECT_GT(first.maxRequests, 0u);
+  flagcxP2pDumpGlobalConfig();
+}
+
+TEST(P2pEngineUnsupportedTwoSided, ReturnsErrorWithoutSubmittingTransfer) {
+  uint64_t transferId = 123;
+  EXPECT_EQ(flagcxP2pEngineSend(nullptr, 0, nullptr, 0, &transferId), -1);
+  EXPECT_EQ(flagcxP2pEngineSendVector(nullptr, {}, {}, {}, 0, &transferId), -1);
+  EXPECT_EQ(flagcxP2pEngineRecv(nullptr, 0, nullptr, 0), -1);
+  EXPECT_EQ(transferId, 123u);
+}
+
+TEST(P2pEngineTransferStatus, InvalidConnectionCannotRemainPending) {
+  EXPECT_TRUE(flagcxP2pEngineXferStatus(nullptr, 1));
+}
+
+TEST_F(P2pEngineRpcIbTest, StartListenerIsIdempotentCompatibilityCall) {
+  ASSERT_TRUE(connectViaBsPort());
+  EXPECT_EQ(flagcxP2pEngineStartListener(clientConn), 0);
+  EXPECT_EQ(flagcxP2pEngineStartListener(clientConn), 0);
+}
+
+TEST_F(P2pEngineRpcIbTest, SameProcessNotificationIsDeliveredAndConsumed) {
+  ASSERT_TRUE(connectViaBsPort(true));
+  EXPECT_TRUE(flagcxP2pEngineConnIsLocal(clientConn));
+  flagcxP2pEngineGetNotifs();
+
+  FlagcxP2pNotifyMsg sent = {};
+  std::strncpy(sent.name, "p2p-engine-test", sizeof(sent.name) - 1);
+  std::strncpy(sent.msg, "notification-payload", sizeof(sent.msg) - 1);
+  EXPECT_EQ(flagcxP2pEngineSendNotif(clientConn, &sent),
+            static_cast<int>(sizeof(sent)));
+
+  std::vector<FlagcxP2pNotifyMsg> received = flagcxP2pEngineGetNotifs();
+  ASSERT_EQ(received.size(), 1u);
+  EXPECT_STREQ(received[0].name, sent.name);
+  EXPECT_STREQ(received[0].msg, sent.msg);
+  EXPECT_TRUE(flagcxP2pEngineGetNotifs().empty());
+}
+
+TEST_F(P2pEngineRpcTest, HostRegistrationHasNoGpuIpcHandle) {
+  std::vector<char> hostBuffer(4096);
+  FlagcxP2pMr mr = 0;
+  ASSERT_EQ(flagcxP2pRpcRegisterHost(
+                serverEngine, reinterpret_cast<uint64_t>(hostBuffer.data()),
+                hostBuffer.size(), &mr),
+            0);
+
+  char ipcBuf[FLAGCX_P2P_IPC_INFO_SIZE] = {};
+  bool hasIpc = true;
+  EXPECT_EQ(flagcxP2pEngineGetIpcInfo(
+                serverEngine, reinterpret_cast<uintptr_t>(hostBuffer.data()),
+                ipcBuf, &hasIpc),
+            0);
+  EXPECT_FALSE(hasIpc);
+  EXPECT_EQ(flagcxP2pEngineGetIpcInfo(serverEngine, 0, ipcBuf, &hasIpc), -1);
+  EXPECT_EQ(flagcxP2pEngineUpdateIpcInfo(nullptr, 0x2000, 0x1000, 16), -1);
+  EXPECT_EQ(flagcxP2pEngineUpdateIpcInfo(ipcBuf, 0x0fff, 0x1000, 16), -1);
+  EXPECT_EQ(flagcxP2pEngineUpdateIpcInfo(ipcBuf, 0x1010, 0x1000, 16), 0);
+
+  flagcxP2pEngineMrDestroy(serverEngine, mr);
+}
+
+TEST(P2pRpcCAbi, BatchedHostWriteCoversFacadeEndToEnd) {
+  ScopedRpcEngine server;
+  ScopedRpcEngine client;
+  ASSERT_NE(server.get(), nullptr);
+  ASSERT_NE(client.get(), nullptr);
+
+  constexpr size_t kBufferSize = 256;
+  std::vector<uint8_t> source(kBufferSize);
+  std::vector<uint8_t> destination(kBufferSize, 0xA5);
+  std::vector<uint8_t> expected(destination);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>(i ^ 0x5A);
+
+  uint64_t sourceMr = 0;
+  uint64_t destinationMr = 0;
+  uint64_t autoDetectedMr = 0;
+  ASSERT_EQ(flagcxP2pRpcRegisterHost(client.get(),
+                                     reinterpret_cast<uint64_t>(source.data()),
+                                     source.size(), &sourceMr),
+            0);
+  ASSERT_EQ(flagcxP2pRpcRegisterHost(
+                server.get(), reinterpret_cast<uint64_t>(destination.data()),
+                destination.size(), &destinationMr),
+            0);
+  std::vector<uint8_t> autoDetectedHostBuffer(64);
+  ASSERT_EQ(flagcxP2pRpcRegister(
+                client.get(),
+                reinterpret_cast<uint64_t>(autoDetectedHostBuffer.data()),
+                autoDetectedHostBuffer.size(), &autoDetectedMr),
+            0);
+  EXPECT_NE(sourceMr, 0u);
+  EXPECT_NE(destinationMr, 0u);
+  EXPECT_NE(autoDetectedMr, 0u);
+
+  ASSERT_EQ(flagcxP2pRpcStartServer(server.get()), 0);
+  const int port = flagcxP2pRpcGetPort(server.get());
+  ASSERT_GT(port, 0);
+  char *metadataRaw = nullptr;
+  ASSERT_EQ(
+      flagcxP2pEngineGetMetadata(
+          reinterpret_cast<FlagcxP2pEngine *>(server.get()), &metadataRaw),
+      0);
+  std::unique_ptr<char[]> metadata(metadataRaw);
+  ParsedMetadata parsed;
+  ASSERT_TRUE(parseMetadata(metadata.get(), &parsed));
+  const std::string session = parsed.ip + ":" + std::to_string(port);
+  void *conn = flagcxP2pRpcGetConn(client.get(), session.c_str());
+  ASSERT_NE(conn, nullptr);
+
+  constexpr int kCount = 3;
+  const size_t srcOffsets[kCount] = {3, 71, 151};
+  const size_t dstOffsets[kCount] = {17, 93, 189};
+  const size_t lengths[kCount] = {11, 23, 31};
+  uint64_t srcVa[kCount];
+  uint64_t dstVa[kCount];
+  uint64_t sizes[kCount];
+  for (int i = 0; i < kCount; ++i) {
+    srcVa[i] = reinterpret_cast<uint64_t>(source.data() + srcOffsets[i]);
+    dstVa[i] = reinterpret_cast<uint64_t>(destination.data() + dstOffsets[i]);
+    sizes[i] = lengths[i];
+    std::memcpy(expected.data() + dstOffsets[i], source.data() + srcOffsets[i],
+                lengths[i]);
+  }
+  ASSERT_EQ(flagcxP2pRpcBatchWriteSync(conn, kCount, srcVa, dstVa, sizes), 0);
+  EXPECT_EQ(destination, expected);
+
+  EXPECT_EQ(flagcxP2pRpcBatchWriteSync(conn, 0, nullptr, nullptr, nullptr), 0);
+  EXPECT_EQ(flagcxP2pRpcBatchWriteSync(conn, -1, nullptr, nullptr, nullptr),
+            -1);
+  EXPECT_EQ(flagcxP2pRpcRegister(client.get(), 0, 0, nullptr), -1);
 }
 
 } // namespace

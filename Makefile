@@ -217,7 +217,8 @@ ifeq ($(USE_IBUC), 1)
 endif
 
 # ACCL (accl::barex) transport for PPU + vsolar hosts lacking peer-mem/DMA-BUF.
-# Devel package installs under /usr; select at runtime with FLAGCX_P2P_TRANSPORT=accl.
+# Devel package installs under /usr. This build option selects BAREX through
+# the common net-adaptor path; the P2P engine itself remains transport-neutral.
 ifeq ($(USE_ACCL_BAREX), 1)
 	ACCL_BAREX_HOME ?= /usr
 	ACCL_BAREX_INCLUDE = $(ACCL_BAREX_HOME)/include

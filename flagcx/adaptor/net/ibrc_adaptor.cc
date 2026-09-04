@@ -449,6 +449,16 @@ flagcxResult_t flagcxIbInit() {
           }
           continue;
         }
+        TRACE(FLAGCX_INIT | FLAGCX_NET,
+              "NET/IB: %s capabilities maxQp=%d maxQpWr=%d maxSge=%d "
+              "maxCq=%d maxCqe=%d maxMr=%d maxPd=%d maxQpRdAtom=%d "
+              "maxQpInitRdAtom=%d atomicCap=%d maxPkeys=%u physPorts=%u",
+              devices[d]->name, devAttr.max_qp, devAttr.max_qp_wr,
+              devAttr.max_sge, devAttr.max_cq, devAttr.max_cqe, devAttr.max_mr,
+              devAttr.max_pd, devAttr.max_qp_rd_atom,
+              devAttr.max_qp_init_rd_atom, (int)devAttr.atomic_cap,
+              (unsigned int)devAttr.max_pkeys,
+              (unsigned int)devAttr.phys_port_cnt);
         for (int port_num = 1; port_num <= devAttr.phys_port_cnt; port_num++) {
           struct ibv_port_attr portAttr;
           if (flagcxSuccess !=
@@ -458,6 +468,12 @@ flagcxResult_t flagcxIbInit() {
           }
           if (portAttr.state != IBV_PORT_ACTIVE)
             continue;
+          if (portAttr.link_layer == IBV_LINK_LAYER_UNSPECIFIED) {
+            WARN("NET/IB : %s port %d reports an unspecified link layer",
+                 devices[d]->name, port_num);
+            ret = flagcxInternalError;
+            goto fail;
+          }
           if (portAttr.link_layer != IBV_LINK_LAYER_INFINIBAND &&
               portAttr.link_layer != IBV_LINK_LAYER_ETHERNET)
             continue;
@@ -700,9 +716,15 @@ flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
   qpAttr.pkey_index = flagcxParamIbPkey();
   qpAttr.port_num = ib_port;
   qpAttr.qp_access_flags = accessFlags;
-  FLAGCXCHECK(flagcxWrapIbvModifyQp(qp->qp, &qpAttr,
-                                    IBV_QP_STATE | IBV_QP_PKEY_INDEX |
-                                        IBV_QP_PORT | IBV_QP_ACCESS_FLAGS));
+  const int attrMask =
+      IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
+  TRACE(FLAGCX_INIT | FLAGCX_NET,
+        "NET/IB: QP %u INIT parameters port=%u pkeyIndex=%u "
+        "accessFlags=0x%x attrMask=0x%x",
+        qp->qp->qp_num, (unsigned int)qpAttr.port_num,
+        (unsigned int)qpAttr.pkey_index, (unsigned int)qpAttr.qp_access_flags,
+        (unsigned int)attrMask);
+  FLAGCXCHECK(flagcxWrapIbvModifyQp(qp->qp, &qpAttr, attrMask));
   return flagcxSuccess;
 }
 
@@ -1186,6 +1208,10 @@ flagcxResult_t flagcxIbAccept(void *listenComm, void **recvComm) {
   *recvComm = NULL;
   // Pre-declare variables because of goto
   struct ibv_srq *srq = NULL;
+  bool deviceDmaBufSupported = false;
+  bool gdrSupported = false;
+  bool dmaBufSupported = false;
+  flagcxResult_t dmaSupportResult = flagcxSuccess;
 
   if (stage->state == flagcxIbCommStateAccept)
     goto ib_accept_check;
@@ -1342,7 +1368,16 @@ ib_recv:
     FLAGCXCHECK(flagcxIbRtsQp(qp->qp));
   }
 
-  rComm->flushEnabled = 1;
+  if (deviceAdaptor != NULL && deviceAdaptor->dmaSupport != NULL) {
+    dmaSupportResult = deviceAdaptor->dmaSupport(&deviceDmaBufSupported);
+    if (dmaSupportResult != flagcxSuccess)
+      deviceDmaBufSupported = false;
+  }
+  gdrSupported = flagcxIbGdrSupport() == flagcxSuccess;
+  dmaBufSupported = deviceDmaBufSupported &&
+                    flagcxIbDmaBufSupport(lComm->dev) == flagcxSuccess;
+  rComm->flushEnabled =
+      (gdrSupported || dmaBufSupported) && flagcxParamIbGdrFlushDisable() == 0;
 
   for (int i = 0; i < mergedDev->ndevs; i++) {
     rCommDev = rComm->devs + i;
@@ -1659,21 +1694,45 @@ flagcxIbGetNetCommDevBase(flagcxIbNetCommBase *base, int devIndex) {
   }
 }
 
+flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
+                                       ibv_mr *mhandle);
+
 /* DMA-BUF support */
 flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
                                    int type, uint64_t offset, int fd,
                                    int mrFlags, void **mhandle) {
-  assert(size > 0);
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
+  if (comm == NULL || data == NULL || size == 0)
+    return flagcxInvalidArgument;
+
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
   struct flagcxIbMrHandle *mhandleWrapper =
-      (struct flagcxIbMrHandle *)malloc(sizeof(struct flagcxIbMrHandle));
+      (struct flagcxIbMrHandle *)calloc(1, sizeof(struct flagcxIbMrHandle));
+  if (mhandleWrapper == NULL)
+    return flagcxSystemError;
   for (int i = 0; i < base->ndevs; i++) {
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    FLAGCXCHECK(flagcxIbRegMrDmaBufInternal(devComm, data, size, type, offset,
-                                            fd, mrFlags,
-                                            mhandleWrapper->mrs + i));
+    flagcxResult_t result =
+        flagcxIbRegMrDmaBufInternal(devComm, data, size, type, offset, fd,
+                                    mrFlags, mhandleWrapper->mrs + i);
+    if (result != flagcxSuccess) {
+      for (int j = i - 1; j >= 0; --j) {
+        struct flagcxIbNetCommDevBase *registeredDev =
+            flagcxIbGetNetCommDevBase(base, j);
+        flagcxResult_t cleanupResult =
+            flagcxIbDeregMrInternal(registeredDev, mhandleWrapper->mrs[j]);
+        if (cleanupResult != flagcxSuccess) {
+          WARN("NET/IB: failed to roll back MR registration on device %d: %d",
+               j, cleanupResult);
+        }
+      }
+      free(mhandleWrapper);
+      return result;
+    }
   }
   *mhandle = (void *)mhandleWrapper;
   return flagcxSuccess;
@@ -1715,16 +1774,42 @@ returning:
 }
 
 flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
+  if (comm == NULL || mhandle == NULL)
+    return flagcxInvalidArgument;
+
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
+  flagcxResult_t result = flagcxSuccess;
   for (int i = 0; i < base->ndevs; i++) {
+    if (mhandleWrapper->mrs[i] == NULL)
+      continue;
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    FLAGCXCHECK(flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]));
+    flagcxResult_t current =
+        flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]);
+    if (result == flagcxSuccess && current != flagcxSuccess)
+      result = current;
+    mhandleWrapper->mrs[i] = NULL;
   }
   free(mhandleWrapper);
-  return flagcxSuccess;
+  return result;
+}
+
+static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
+                                        struct flagcxNetMrInfo *info) {
+  if (mhandle == NULL || info == NULL)
+    return flagcxInvalidArgument;
+  memset(info, 0, sizeof(*info));
+  struct flagcxIbMrHandle *wrapper = (struct flagcxIbMrHandle *)mhandle;
+  for (int i = 0; i < FLAGCX_IB_MAX_DEVS_PER_NIC; i++) {
+    if (wrapper->mrs[i] == NULL)
+      continue;
+    info->lkeys[i] = wrapper->mrs[i]->lkey;
+    info->rkeys[i] = wrapper->mrs[i]->rkey;
+    info->nKeys = i + 1;
+  }
+  return info->nKeys == 0 ? flagcxInternalError : flagcxSuccess;
 }
 
 FLAGCX_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
@@ -2422,15 +2507,40 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
   properties->netDeviceVersion = FLAGCX_NET_DEVICE_INVALID_VERSION;
   return flagcxSuccess;
 }
+
+static flagcxResult_t
+flagcxIbValidateOneSidedRegion(const struct flagcxOneSideHandleInfo *info,
+                               int rank, uint64_t offset, size_t size,
+                               bool useLocalKey) {
+  if (info == NULL || info->baseVas == NULL || info->regionSizes == NULL ||
+      (useLocalKey ? info->lkeys == NULL : info->rkeys == NULL) || rank < 0 ||
+      rank >= info->nRanks)
+    return flagcxInvalidArgument;
+
+  const size_t regionSize = info->regionSizes[rank];
+  if (size > UINT32_MAX || offset > regionSize || size > regionSize - offset)
+    return flagcxInvalidArgument;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
                             void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOff, size, true));
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOff, size, false));
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
@@ -2443,6 +2553,10 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   req->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++) {
     req->devBases[i] = &comm->devs[i].base;
+  }
+  if (size == 0) {
+    *request = req;
+    return flagcxSuccess;
   }
 
   struct ibv_send_wr wr;
@@ -2485,10 +2599,12 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
   if (posted == NULL || requests == NULL)
     return flagcxInvalidArgument;
   *posted = 0;
-  if (count <= 0)
-    return flagcxSuccess;
-  if (count > MAX_REQUESTS)
+  if (count < 0 || count > MAX_REQUESTS)
     return flagcxInvalidArgument;
+  for (int i = 0; i < count; i++)
+    requests[i] = NULL;
+  if (count == 0)
+    return flagcxSuccess;
 
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
@@ -2498,6 +2614,14 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
   if (comm == NULL || srcInfo == NULL || dstInfo == NULL || srcOffs == NULL ||
       dstOffs == NULL || sizes == NULL) {
     return flagcxInvalidArgument;
+  }
+  for (int i = 0; i < count; i++) {
+    FLAGCXCHECK(flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOffs[i],
+                                               sizes[i], true));
+    FLAGCXCHECK(flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOffs[i],
+                                               sizes[i], false));
+    if (sizes[i] > UINT32_MAX)
+      return flagcxInvalidArgument;
   }
 
   int qpIdx = comm->base.qpIndex;
@@ -2590,11 +2714,20 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
                             void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOff, size, false));
+  FLAGCXCHECK(
+      flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOff, size, true));
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   // For RDMA READ: remote_addr is the source (remote peer), sge is the local
@@ -2609,6 +2742,10 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   req->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++) {
     req->devBases[i] = &comm->devs[i].base;
+  }
+  if (size == 0) {
+    *request = req;
+    return flagcxSuccess;
   }
 
   struct ibv_send_wr wr;
@@ -2648,6 +2785,9 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
                                   void **dstHandles, uint64_t signalOff,
                                   void **signalHandles, uint64_t signalValue,
                                   void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
@@ -2655,10 +2795,16 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
       (struct flagcxOneSideHandleInfo *)dstHandles;
   struct flagcxOneSideHandleInfo *signalInfo =
       (struct flagcxOneSideHandleInfo *)signalHandles;
-  if (signalInfo == NULL || signalInfo->baseVas == NULL) {
-    WARN("flagcxIbIputSignal: signalHandles is NULL or uninitialized");
-    return flagcxInternalError;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (size > 0) {
+    FLAGCXCHECK(
+        flagcxIbValidateOneSidedRegion(srcInfo, srcRank, srcOff, size, true));
+    FLAGCXCHECK(
+        flagcxIbValidateOneSidedRegion(dstInfo, dstRank, dstOff, size, false));
   }
+  FLAGCXCHECK(flagcxIbValidateOneSidedRegion(signalInfo, dstRank, signalOff,
+                                             sizeof(uint64_t), false));
 
   struct flagcxIbQp *qp = &comm->base.qps[0];
   int devIndex = qp->devIndex;
@@ -2752,5 +2898,5 @@ struct flagcxNetAdaptor flagcxNetIb = {
     // Device name lookup
     flagcxIbGetDevFromName,
 
-    // Optional one-sided batch WRITE
-    flagcxIbIputBatch};
+    // Optional one-sided batch helpers and MR metadata
+    flagcxIbIputBatch, NULL, NULL, flagcxIbGetMrInfo};
