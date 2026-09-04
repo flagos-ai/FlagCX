@@ -306,10 +306,10 @@ protected:
   aclrtStream acl_stream;
 #endif
 
-  // Pair-comm support for backends that require dedicated 2-rank sub-comms
-  // for p2p operations (e.g. PCCL/sunrise). Detected at runtime via
-  // devHandle_->getVendor().
-  bool needsPairComm_ = false;
+  // Heterogeneous P2P uses the process-group communicator. Homogeneous P2P
+  // uses dedicated pair communicators so that only the two peers need to
+  // participate in communicator initialization.
+  bool usePairComm_ = true;
   std::unordered_map<std::string, flagcxComm_t> pairComms_;
   struct pairCoalesceCtx {
     bool active = false;

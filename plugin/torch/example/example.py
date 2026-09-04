@@ -68,6 +68,11 @@ def init_pg():
     WORLD_SIZE = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
 
+    if torch.cuda.is_available():
+        # Heterogeneous FlagCX communicators are initialized eagerly while the
+        # process group is constructed, so bind the local device first.
+        torch.cuda.set_device(local_rank)
+
     # Initialize the default flagcx process group
     dist.init_process_group(f"cpu:gloo,{dev_name}:flagcx", rank=MY_RANK, world_size=WORLD_SIZE)
     print(f"ddp backend config is {dist.get_backend_config()}")
@@ -89,10 +94,6 @@ def init_pg():
     PREV_RANK = (MY_RANK - 1 + WORLD_SIZE) % WORLD_SIZE
     NEXT_RANK = (MY_RANK + 1) % WORLD_SIZE
     print(f"rank: {MY_RANK}, world_size = {WORLD_SIZE}, prev_rank: {PREV_RANK}, next_rank: {NEXT_RANK}")
-
-    if torch.cuda.is_available():
-        # Set device
-        torch.cuda.set_device(local_rank)
 
 def destroy_pg():
     dist.destroy_process_group()
