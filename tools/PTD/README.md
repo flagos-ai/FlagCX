@@ -26,16 +26,15 @@ DASH=ptd-sglang \
 docker compose up -d
 ```
 
-Run all commands from `tools/PTD`. Grafana: <http://localhost:3000>. Prometheus: <http://localhost:9090>.
+Run all commands from `Flagcx/tools/PTD`. 
+
+Grafana: <http://localhost:3000>. Prometheus: <http://localhost:9090>.
 
 Captures must include timestamp headers and the servers must expose `/metrics`:
 
 ```text
 # ==== 1787818207 2026-08-27T16:10:07+08:00 ====
 ```
-
-> Sample logs are not vendored here. Grab `log/logs-0827.tar.gz` from the upstream
-> repo <https://github.com/leoda1/PTD> if you want the reference dataset.
 
 ### Convert logs to OpenMetrics(option)
 
