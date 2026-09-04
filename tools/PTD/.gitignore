@@ -1,0 +1,13 @@
+# Everything generated: OpenMetrics, TSDB, rendered dashboards
+build/
+
+# Editors / tooling
+.vscode/
+__pycache__/
+.DS_Store
+
+# Captured logs are large and one-off; keep log/README.md
+log/*.log
+log/*.txt
+log/**/*.log
+log/**/*.txt

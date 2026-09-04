@@ -1,0 +1,664 @@
+{
+ "uid": "vllm-pd-offline",
+ "title": "vLLM P/D Offline Replay",
+ "tags": [
+  "vllm",
+  "pd",
+  "offline"
+ ],
+ "timezone": "browser",
+ "editable": true,
+ "schemaVersion": 39,
+ "version": 5,
+ "refresh": "1s",
+ "time": {
+  "from": "now-5m",
+  "to": "now"
+ },
+ "templating": {
+  "list": [
+   {
+    "name": "kv_bytes_per_request",
+    "label": "KV bytes/request (0 = unconfigured)",
+    "type": "textbox",
+    "query": "167772160",
+    "current": {
+     "selected": true,
+     "text": "167772160",
+     "value": "167772160"
+    },
+    "options": [
+     {
+      "selected": true,
+      "text": "167772160",
+      "value": "167772160"
+     }
+    ],
+    "hide": 0,
+    "skipUrlSync": false
+   }
+  ]
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "timeseries",
+   "title": "Decode Token Throughput (tok/s)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 24
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (rate(vllm:generation_tokens_total{instance=~\"decode.*\"}[30s]))",
+     "legendFormat": "Decode {{instance}} output tok/s",
+     "interval": "1s"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "type": "timeseries",
+   "title": "Prefill Token Throughput (tok/s)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 24
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (rate(vllm:prompt_tokens_total{instance=~\"prefill.*\"}[30s]))",
+     "legendFormat": "Prefill {{instance}} input tok/s",
+     "interval": "1s"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "type": "timeseries",
+   "title": "P/D Pipeline Occupancy and Queue Depth (requests, not req/s)",
+   "gridPos": {
+    "h": 8,
+    "w": 24,
+    "x": 0,
+    "y": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (vllm:num_requests_running)",
+     "legendFormat": "running {{instance}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (instance) (vllm:num_requests_waiting)",
+     "legendFormat": "waiting {{instance}}"
+    }
+   ],
+   "description": "Instantaneous gauges for requests in the Prefill and Decode running batches and waiting queues. These values explain concurrency and backpressure; they are not req/s."
+  },
+  {
+   "id": 4,
+   "type": "timeseries",
+   "title": "Current KV Cache Usage by Instance",
+   "gridPos": {
+    "h": 8,
+    "w": 24,
+    "x": 0,
+    "y": 48
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max by (instance) (vllm:kv_cache_usage_perc)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "TTFT Quantiles (prefill)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 32
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(vllm:time_to_first_token_seconds_bucket{instance=~\"prefill.*\"}[30s])))",
+     "legendFormat": "p99 {{instance}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le, instance) (rate(vllm:time_to_first_token_seconds_bucket{instance=~\"prefill.*\"}[30s])))",
+     "legendFormat": "p95 {{instance}}"
+    },
+    {
+     "refId": "C",
+     "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(vllm:time_to_first_token_seconds_bucket{instance=~\"prefill.*\"}[30s])))",
+     "legendFormat": "p50 {{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "ITL Quantiles (decode)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 32
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(vllm:inter_token_latency_seconds_bucket{instance=~\"decode.*\"}[30s])))",
+     "legendFormat": "p99 {{instance}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.95, sum by (le, instance) (rate(vllm:inter_token_latency_seconds_bucket{instance=~\"decode.*\"}[30s])))",
+     "legendFormat": "p95 {{instance}}"
+    },
+    {
+     "refId": "C",
+     "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(vllm:inter_token_latency_seconds_bucket{instance=~\"decode.*\"}[30s])))",
+     "legendFormat": "p50 {{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "E2E Request Latency Quantiles",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 40
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.99, sum by (le, instance) (rate(vllm:e2e_request_latency_seconds_bucket[30s])))",
+     "legendFormat": "p99 {{instance}}"
+    },
+    {
+     "refId": "B",
+     "expr": "histogram_quantile(0.50, sum by (le, instance) (rate(vllm:e2e_request_latency_seconds_bucket[30s])))",
+     "legendFormat": "p50 {{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "type": "timeseries",
+   "title": "Prefix Cache Hit Rate",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 40
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (rate(vllm:prefix_cache_hits_total[30s])) / sum by (instance) (rate(vllm:prefix_cache_queries_total[30s]))",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 9,
+   "type": "timeseries",
+   "title": "Mean Request Time per Stage",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 56
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (rate(vllm:request_prefill_time_seconds_sum[30s])) / sum by (instance) (rate(vllm:request_prefill_time_seconds_count[30s]))",
+     "legendFormat": "prefill {{instance}}"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (instance) (rate(vllm:request_decode_time_seconds_sum[30s])) / sum by (instance) (rate(vllm:request_decode_time_seconds_count[30s]))",
+     "legendFormat": "decode {{instance}}"
+    },
+    {
+     "refId": "C",
+     "expr": "sum by (instance) (rate(vllm:request_queue_time_seconds_sum[30s])) / sum by (instance) (rate(vllm:request_queue_time_seconds_count[30s]))",
+     "legendFormat": "queue {{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Cumulative Preemptions",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 56
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (instance) (vllm:num_preemptions_total)",
+     "legendFormat": "{{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 11,
+   "type": "timeseries",
+   "title": "KV Cache Transfer Throughput (total + per engine)",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 16
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(irate(vllm:flagcx_total_bytes_transferred_total{instance=~\"prefill.*\"}[15s]))",
+     "legendFormat": "KV payload total bytes/s",
+     "interval": "1s"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (instance, engine) (irate(vllm:flagcx_total_bytes_transferred_total{instance=~\"prefill.*\"}[15s]))",
+     "legendFormat": "{{instance}} engine={{engine}}",
+     "interval": "1s"
+    }
+   ],
+   "description": "Current KV payload throughput from the monotonic transferred-bytes Counter using irate over 15 seconds. irate still uses only the last two samples; the wider range safely accommodates 5-second captures. The total is summed across all Prefill instances and logical engines."
+  },
+  {
+   "id": 12,
+   "type": "timeseries",
+   "title": "KV Cache Cumulative Bytes Transferred",
+   "gridPos": {
+    "h": 8,
+    "w": 24,
+    "x": 0,
+    "y": 64
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(vllm:flagcx_total_bytes_transferred_total{instance=~\"prefill.*\"})",
+     "legendFormat": "KV payload total"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (instance) (vllm:flagcx_total_bytes_transferred_total{instance=~\"prefill.*\"})",
+     "legendFormat": "KV payload {{instance}}"
+    }
+   ]
+  },
+  {
+   "id": 13,
+   "type": "timeseries",
+   "title": "Prefill / Decode Completion Throughput (req/s)",
+   "gridPos": {
+    "h": 8,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(irate(vllm:request_success_total{instance=~\"prefill.*\",finished_reason!~\"abort|error\"}[15s]))",
+     "legendFormat": "Prefill total req/s",
+     "interval": "1s"
+    },
+    {
+     "refId": "B",
+     "expr": "sum by (instance) (irate(vllm:request_success_total{instance=~\"prefill.*\",finished_reason!~\"abort|error\"}[15s]))",
+     "legendFormat": "Prefill {{instance}} req/s",
+     "interval": "1s"
+    },
+    {
+     "refId": "C",
+     "expr": "sum(irate(vllm:request_success_total{instance=~\"decode.*\",finished_reason!~\"abort|error\"}[15s]))",
+     "legendFormat": "Decode total req/s",
+     "interval": "1s"
+    },
+    {
+     "refId": "D",
+     "expr": "sum by (instance) (irate(vllm:request_success_total{instance=~\"decode.*\",finished_reason!~\"abort|error\"}[15s]))",
+     "legendFormat": "Decode {{instance}} req/s",
+     "interval": "1s"
+    }
+   ],
+   "description": "Current completion rates from monotonic successful-request Counters using irate over 15 seconds. The panel shows Prefill/Decode totals plus one curve per instance, so multi-P/multi-D load distribution remains visible."
+  },
+  {
+   "id": 14,
+   "type": "timeseries",
+   "title": "KV Cache Equivalent Throughput (req/s)",
+   "description": "Current KV payload bytes/s divided by the configured KV bytes/request, directly comparable with Prefill and Decode req/s. Set KV bytes/request at the top; when it is 0 this panel intentionally returns no data.",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 16
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "promoffline"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull",
+      "max",
+      "mean"
+     ]
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "(sum(irate(vllm:flagcx_total_bytes_transferred_total{instance=~\"prefill.*\"}[15s])) / ${kv_bytes_per_request:raw}) and on() (vector(${kv_bytes_per_request:raw}) > 0)",
+     "legendFormat": "KV total equivalent req/s",
+     "interval": "1s"
+    },
+    {
+     "refId": "B",
+     "expr": "(sum by (instance) (irate(vllm:flagcx_total_bytes_transferred_total{instance=~\"prefill.*\"}[15s])) / ${kv_bytes_per_request:raw}) and on() (vector(${kv_bytes_per_request:raw}) > 0)",
+     "legendFormat": "KV {{instance}} equivalent req/s",
+     "interval": "1s"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,79 @@
+diff --git a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+index 9e1f28cef0..95cc9bf5f6 100644
+--- a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
++++ b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+@@ -679,6 +679,9 @@ class SchedulerMetricsReporter:
+                 self.stats.num_prefill_inflight_queue_reqs = QueueCount.from_reqs(
+                     self.scheduler.disagg_prefill_inflight_queue, priority_enabled
+                 )
++                self.stats.num_prefill_pending_chunk_reqs = len(
++                    self.scheduler.disagg_prefill_pending_chunk_rids
++                )
+                 self.stats.kv_transfer_speed_gb_s = self.kv_transfer_speed_gb_s
+                 self.stats.kv_transfer_latency_ms = self.kv_transfer_latency_ms
+             elif self.scheduler.disaggregation_mode == DisaggregationMode.DECODE:
+@@ -906,6 +909,9 @@ class SchedulerMetricsReporter:
+                 self.stats.num_prefill_inflight_queue_reqs = QueueCount.from_reqs(
+                     self.scheduler.disagg_prefill_inflight_queue, priority_enabled
+                 )
++                self.stats.num_prefill_pending_chunk_reqs = len(
++                    self.scheduler.disagg_prefill_pending_chunk_rids
++                )
+             elif self.scheduler.disaggregation_mode == DisaggregationMode.DECODE:
+                 self.stats.num_decode_prealloc_queue_reqs = QueueCount.from_reqs(
+                     self.scheduler.disagg_decode_prealloc_queue.queue, priority_enabled
+@@ -1154,6 +1160,9 @@ class SchedulerMetricsReporter:
+             self.stats.num_prefill_inflight_queue_reqs = QueueCount.from_reqs(
+                 self.scheduler.disagg_prefill_inflight_queue, priority_enabled
+             )
++            self.stats.num_prefill_pending_chunk_reqs = len(
++                self.scheduler.disagg_prefill_pending_chunk_rids
++            )
+         if self.scheduler.disaggregation_mode == DisaggregationMode.DECODE:
+             self.stats.num_decode_prealloc_queue_reqs = QueueCount.from_reqs(
+                 self.scheduler.disagg_decode_prealloc_queue.queue, priority_enabled
+diff --git a/python/sglang/srt/observability/metrics_collector.py b/python/sglang/srt/observability/metrics_collector.py
+index a5976c1205..d69b7b37b9 100644
+--- a/python/sglang/srt/observability/metrics_collector.py
++++ b/python/sglang/srt/observability/metrics_collector.py
+@@ -122,6 +122,8 @@ class SchedulerStats:
+     # PD disaggregation
+     num_prefill_bootstrap_queue_reqs: QueueCount = field(default_factory=QueueCount)
+     num_prefill_inflight_queue_reqs: QueueCount = field(default_factory=QueueCount)
++    num_prefill_pending_chunk_reqs: int = 0
++    num_prefill_queue_reqs: QueueCount = field(default_factory=QueueCount)
+     num_decode_prealloc_queue_reqs: QueueCount = field(default_factory=QueueCount)
+     num_decode_transfer_queue_reqs: QueueCount = field(default_factory=QueueCount)
+     kv_transfer_speed_gb_s: float = 0.0
+@@ -236,7 +238,6 @@ class SchedulerMetricsCollectorContext:
+ 
+ 
+ class SchedulerMetricsCollector(_StatLoggerDIMixin):
+-
+     def __init__(
+         self,
+         labels: Dict[str, str],
+@@ -496,6 +497,12 @@ class SchedulerMetricsCollector(_StatLoggerDIMixin):
+             labelnames=labels.keys(),
+             multiprocess_mode="mostrecent",
+         )
++        self.num_prefill_pending_chunk_reqs = Gauge(
++            name="sglang:num_prefill_pending_chunk_reqs",
++            documentation="The number of prefill requests with pending KV chunks.",
++            labelnames=labels.keys(),
++            multiprocess_mode="mostrecent",
++        )
+         self.num_decode_prealloc_queue_reqs = Gauge(
+             name="sglang:num_decode_prealloc_queue_reqs",
+             documentation="The number of requests in the decode prealloc queue.",
+@@ -1362,6 +1369,10 @@ class SchedulerMetricsCollector(_StatLoggerDIMixin):
+         self._log_gauge_queue_count(
+             self.num_prefill_inflight_queue_reqs, stats.num_prefill_inflight_queue_reqs
+         )
++        self._log_gauge(
++            self.num_prefill_pending_chunk_reqs,
++            stats.num_prefill_pending_chunk_reqs,
++        )
+         self._log_gauge_queue_count(
+             self.num_decode_prealloc_queue_reqs, stats.num_decode_prealloc_queue_reqs
+         )

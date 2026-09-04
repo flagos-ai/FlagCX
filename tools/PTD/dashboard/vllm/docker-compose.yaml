@@ -1,0 +1,26 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"     # allow a direct connection from container to the local machine
+    ports:
+      - "9090:9090"   # the default port used by Prometheus
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml # relative to this compose file
+
+  grafana:
+    image: grafana/grafana:latest
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000" # the default port used by Grafana
+    volumes:
+      - ./grafana.json:/var/lib/grafana/dashboards/vllm-dashboard.json:ro
+      - ./dashboard.yaml:/etc/grafana/provisioning/dashboards/dashboard.yaml:ro
+      - ./datasource.yaml:/etc/grafana/provisioning/datasources/prometheus.yaml:ro
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/vllm-dashboard.json
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
