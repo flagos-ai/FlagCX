@@ -19,13 +19,22 @@ typedef enum {
       (1 << 0), // Force strong ordering (disable relaxed ordering)
 } flagcxNetMrFlag_t;
 
+// Transport-neutral memory registration metadata used by the one-sided
+// layer. A registered region may have a different key for each NIC.
+#define FLAGCX_NET_MAX_MR_KEYS 8
+struct flagcxNetMrInfo {
+  uint32_t nKeys;
+  uint32_t lkeys[FLAGCX_NET_MAX_MR_KEYS];
+  uint32_t rkeys[FLAGCX_NET_MAX_MR_KEYS];
+};
+
 // Version history:
 //   v1 — 22 function pointers: name, init, devices, getProperties,
 //         listen, connect, accept, closeSend, closeRecv, closeListen,
 //         regMr, regMrDmaBuf, deregMr, isend, irecv, iflush, test,
 //         iput, iget, iputSignal, getDevFromName
 //   v2 — adds iputBatch (optional one-sided batch WRITE)
-//   latest — adds optional batch helpers for one-sided transfers
+//   latest — adds optional batch helpers and transport-neutral MR metadata
 
 struct flagcxNetAdaptor_v1 {
   // Basic functions
@@ -130,7 +139,10 @@ struct flagcxNetAdaptor_latest {
 
   // Device name lookup
   flagcxResult_t (*getDevFromName)(char *name, int *dev);
-  // Optional one-side batch WRITE.
+  // Optional one-side batch WRITE. An implementation may submit only the
+  // contiguous input prefix [0, posted); requests in that range must be valid,
+  // and the caller retains and retries [posted, count). A transient inability
+  // to submit anything is reported as posted == 0 with flagcxInProgress.
   flagcxResult_t (*iputBatch)(void *sendComm, int count,
                               const uint64_t *srcOffs, const uint64_t *dstOffs,
                               const size_t *sizes, int srcRank, int dstRank,
@@ -147,6 +159,10 @@ struct flagcxNetAdaptor_latest {
                               const size_t *sizes, int srcRank, int dstRank,
                               void *const *srcHandles, void *const *dstHandles,
                               void **request);
+
+  // Export transport-neutral keys from an opaque regMr handle. Required by
+  // adaptors that implement one-sided operations; optional for legacy plugins.
+  flagcxResult_t (*getMrInfo)(void *mhandle, struct flagcxNetMrInfo *info);
 };
 
 #define flagcxNetAdaptor flagcxNetAdaptor_latest

@@ -29,6 +29,11 @@ protected:
   static flagcxWindow_t dataWin;
   static size_t size;
   static size_t signalSize;
-  static bool oneSidedAvailable;
-  static const char *oneSidedSkipReason;
+  // Data RMA and signal RMA are separate capabilities. In particular, a
+  // backend may support registered windows and RDMA reads without supporting
+  // GPU signal-buffer registration or stream wait/write-value operations.
+  static bool dataRmaAvailable;
+  static const char *dataRmaSkipReason;
+  static bool signalRmaAvailable;
+  static const char *signalRmaSkipReason;
 };

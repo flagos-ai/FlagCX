@@ -1,5 +1,7 @@
 include ../../make.inc
 
+MPIRUN ?= mpirun
+
 # Local include directory for RMA test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
@@ -8,8 +10,10 @@ MPI_SRCS   := $(wildcard coll_*.cpp) rma_test.cpp main_mpi.cpp
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/rma_mpi_tests
 
-# Environment variables to force hetero mode on single node
-HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0
+# Exercise the network-backed RMA implementation even on a single node.  This
+# makes window registration fail immediately when a usable network MR/full
+# mesh is unavailable instead of silently falling back to IPC/VMM access.
+HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1
 
 .PHONY: all clean run-unit run-mpi run
 
@@ -47,6 +51,6 @@ run-unit:
 	@echo "No non-MPI unit tests for rma."
 
 run-mpi: $(MPI_TARGET)
-	@mpirun --allow-run-as-root -np 2 $(HETERO_ENV) $(MPI_TARGET)
+	@$(MPIRUN) --allow-run-as-root -np 2 $(HETERO_ENV) $(MPI_TARGET)
 
 run: run-unit run-mpi

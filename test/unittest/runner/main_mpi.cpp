@@ -2,8 +2,11 @@
 // Provides main(), MPIEnvironment, and all fixture implementations
 // for the coll_*.cpp test files.
 
+#include "adaptor.h"
 #include "runner_fixtures.hpp"
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 
 // ---------- MPIEnvironment ----------
 
@@ -34,12 +37,11 @@ void FlagCXCollTest::SetUp() {
   FlagCXTest::SetUp();
 
   flagcxDeviceHandleInit(&devHandle);
-  sendbuff = nullptr;
-  recvbuff = nullptr;
-  hostsendbuff = nullptr;
-  hostrecvbuff = nullptr;
   size = 4ULL * 1024 * 1024; // 4MB
   count = size / sizeof(float);
+  const char *registerEnv = std::getenv("FLAGCX_TEST_REGISTER_BUFFERS");
+  useRegisteredBuffers =
+      registerEnv != nullptr && std::strcmp(registerEnv, "0") != 0;
 
   int numDevices;
   devHandle->getDeviceCount(&numDevices);
@@ -55,24 +57,90 @@ void FlagCXCollTest::SetUp() {
   flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
   devHandle->streamCreate(&stream);
 
-  devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, NULL);
-  devHandle->deviceMalloc(&recvbuff, size, flagcxMemDevice, NULL);
-  devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, NULL);
-  devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, NULL);
-  devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, NULL);
-  devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, NULL);
+  if (useRegisteredBuffers) {
+    ASSERT_NE(deviceAdaptor, nullptr);
+    ASSERT_NE(deviceAdaptor->gdrMemAlloc, nullptr);
+    ASSERT_NE(deviceAdaptor->gdrMemFree, nullptr);
+    ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&sendbuff, size, nullptr),
+              flagcxSuccess);
+    ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&recvbuff, size, nullptr),
+              flagcxSuccess);
+    // These tests need global registration-pool entries for the P2P/NET
+    // transports. A communicator-bound registration also creates optional
+    // one-sided full-mesh state, which is unrelated to runner collectives and
+    // can block during fixture setup.
+    ASSERT_EQ(flagcxCommRegister(nullptr, sendbuff, size, &sendRegHandle),
+              flagcxSuccess);
+    ASSERT_EQ(flagcxCommRegister(nullptr, recvbuff, size, &recvRegHandle),
+              flagcxSuccess);
+  } else {
+    ASSERT_EQ(devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, NULL),
+              flagcxSuccess);
+    ASSERT_EQ(devHandle->deviceMalloc(&recvbuff, size, flagcxMemDevice, NULL),
+              flagcxSuccess);
+  }
+  ASSERT_EQ(devHandle->deviceMalloc(&hostsendbuff, size, flagcxMemHost, NULL),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemset(hostsendbuff, 0, size, flagcxMemHost, NULL),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMalloc(&hostrecvbuff, size, flagcxMemHost, NULL),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemset(hostrecvbuff, 0, size, flagcxMemHost, NULL),
+            flagcxSuccess);
+
+  if (rank == 0) {
+    std::cout << "Runner buffer mode: "
+              << (useRegisteredBuffers ? "registered" : "unregistered")
+              << std::endl;
+  }
 }
 
 void FlagCXCollTest::TearDown() {
-  flagcxCommDestroy(comm);
+  if (devHandle != nullptr && stream != nullptr)
+    devHandle->streamSynchronize(stream);
 
-  devHandle->streamDestroy(stream);
-  devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL);
-  devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
+  if (comm != nullptr) {
+    // Communicator teardown releases its transport-specific MR handles while
+    // the proxy is alive. The global registration entries are removed below.
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+    comm = nullptr;
+  }
 
-  flagcxDeviceHandleFree(devHandle);
+  if (useRegisteredBuffers) {
+    if (sendRegHandle != nullptr) {
+      EXPECT_EQ(flagcxCommDeregister(nullptr, sendRegHandle), flagcxSuccess);
+      sendRegHandle = nullptr;
+    }
+    if (recvRegHandle != nullptr) {
+      EXPECT_EQ(flagcxCommDeregister(nullptr, recvRegHandle), flagcxSuccess);
+      recvRegHandle = nullptr;
+    }
+  }
+
+  // Transport registrations may retain these allocations until communicator
+  // teardown, so free the underlying memory only after flagcxCommDestroy.
+  if (useRegisteredBuffers && deviceAdaptor != nullptr &&
+      deviceAdaptor->gdrMemFree != nullptr) {
+    if (sendbuff != nullptr)
+      EXPECT_EQ(deviceAdaptor->gdrMemFree(sendbuff, nullptr), flagcxSuccess);
+    if (recvbuff != nullptr)
+      EXPECT_EQ(deviceAdaptor->gdrMemFree(recvbuff, nullptr), flagcxSuccess);
+  } else if (devHandle != nullptr) {
+    if (sendbuff != nullptr)
+      devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
+    if (recvbuff != nullptr)
+      devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
+  }
+
+  if (devHandle != nullptr) {
+    if (stream != nullptr)
+      devHandle->streamDestroy(stream);
+    if (hostsendbuff != nullptr)
+      devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL);
+    if (hostrecvbuff != nullptr)
+      devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
+    flagcxDeviceHandleFree(devHandle);
+  }
   FlagCXTest::TearDown();
 
   // Synchronize all ranks before the next test to prevent bootstrap hangs

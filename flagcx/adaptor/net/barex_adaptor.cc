@@ -13,7 +13,7 @@
  * (write-with-imm orders payload before the imm). Shared state is mutex-
  * or atomic-guarded (callbacks run on ACCL IO threads).
  *
- * Built with USE_ACCL_BAREX=1 (IBRC registry slot, like USE_UCX) or
+ * Built with USE_ACCL_BAREX=1 (RDMA registry slot, like USE_UCX) or
  * loaded as a plugin .so (preferred; see the export note below).
  * FLAGCX_BAREX_DISABLE=1 opts out at runtime.
  ************************************************************************/
@@ -26,6 +26,8 @@
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 #include "net.h"
+#include "onesided.h"
+#include "p2p_transport.h"
 #include "param.h"
 #include "socket.h"
 
@@ -61,7 +63,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
@@ -69,13 +73,12 @@
 #include <unordered_map>
 #include <vector>
 
-namespace barexnet {
-
 using accl::barex::BarexResult;
 using accl::barex::BarexResultStrings;
 using accl::barex::ContextConfig;
 using accl::barex::DoneCallback;
 using accl::barex::memp_t;
+using accl::barex::rw_memp_t;
 using accl::barex::Status;
 using accl::barex::TimerTick;
 using accl::barex::x_msg_header;
@@ -96,10 +99,22 @@ FLAGCX_PARAM(BarexSpeed, "BAREX_SPEED", 100000); /* Mbps, for topo costing */
 constexpr int kMaxNics = 8;       /* matches ACCL per-NIC rkey fan-out */
 constexpr int kMaxRequests = 256; /* proxy keeps <=16 in flight; roomy */
 constexpr uint32_t kImmSlotMask = 0x00FFFFFFu; /* imm_data carries 24 bits */
+constexpr uintptr_t kCompletedRequest = 1;
 
 static const char *bxstr(BarexResult r) {
   auto it = BarexResultStrings.find(r);
   return it == BarexResultStrings.end() ? "UNKNOWN" : it->second;
+}
+
+static flagcxResult_t barexResult(BarexResult r) {
+  if (r == accl::barex::BAREX_SUCCESS)
+    return flagcxSuccess;
+  if (r == accl::barex::BAREX_ERR_ARG || r == accl::barex::BAREX_ERR_NPE)
+    return flagcxInvalidArgument;
+  if (r == accl::barex::BAREX_ERR_QUEUE_FULL ||
+      r == accl::barex::BAREX_ERR_RATE_LIMITED)
+    return flagcxInProgress;
+  return flagcxInternalError;
 }
 
 static void addrSetPort(union flagcxSocketAddress *addr, int port) {
@@ -178,10 +193,22 @@ struct BarexMr {
   uintptr_t base = 0;
   size_t size = 0;
   accl::barex::device_type dtype = accl::barex::CPU;
+  int devId = 0;
   uint32_t nKeys = 0;
   uint32_t lkeys[kMaxNics] = {0};
   uint32_t rkeys[kMaxNics] = {0};
   int refCount = 0;
+};
+
+struct BarexMrKey {
+  uintptr_t base;
+  accl::barex::device_type dtype;
+
+  bool operator<(const BarexMrKey &other) const {
+    if (base != other.base)
+      return base < other.base;
+    return dtype < other.dtype;
+  }
 };
 
 struct BarexComm {
@@ -230,7 +257,10 @@ struct BarexConnectState {
 };
 
 struct PendingAccept {
-  XChannel *channel = nullptr; /* set once HELLO with commId arrives */
+  /* A FlagCX listen handle is reusable. Multiple connectors can therefore
+     complete their HELLO before the engine drains accept(), and must retain
+     FIFO association with that handle. */
+  std::deque<XChannel *> channels;
 };
 
 class BarexNetCallback; /* fwd */
@@ -251,7 +281,7 @@ struct BarexEngine {
   std::mutex mu; /* guards the three maps below */
   std::unordered_map<uint64_t, PendingAccept> pendingAccepts;
   std::unordered_map<XChannel *, BarexComm *> channelComm;
-  std::map<uintptr_t, BarexMr *> mrByBase;
+  std::map<BarexMrKey, BarexMr *> mrs;
 
   std::mt19937_64 rng{std::random_device{}()};
 };
@@ -274,14 +304,20 @@ public:
     if (type == BAREX_MSG_HELLO && len >= sizeof(BarexHelloMsg)) {
       BarexHelloMsg hello;
       memcpy(&hello, buf, sizeof(hello));
-      std::lock_guard<std::mutex> lk(engine_->mu);
-      auto it = engine_->pendingAccepts.find(hello.commId);
-      if (it == engine_->pendingAccepts.end()) {
+      bool rejectChannel = false;
+      {
+        std::lock_guard<std::mutex> lk(engine_->mu);
+        auto it = engine_->pendingAccepts.find(hello.commId);
+        if (it == engine_->pendingAccepts.end())
+          rejectChannel = true;
+        else
+          it->second.channels.push_back(channel);
+      }
+      if (rejectChannel) {
         WARN("NET/BAREX : HELLO for unknown commId 0x%llx",
              (unsigned long long)hello.commId);
-        return;
+        channel->Destroy();
       }
-      it->second.channel = channel;
       return;
     }
 
@@ -453,7 +489,7 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexInit() {
+static flagcxResult_t flagcxBarexInit() {
   if (flagcxParamBarexDisable()) {
     INFO(FLAGCX_INIT | FLAGCX_NET,
          "NET/BAREX : disabled by FLAGCX_BAREX_DISABLE");
@@ -462,11 +498,17 @@ static flagcxResult_t barexInit() {
   return barexProbeDevices(nullptr);
 }
 
-static flagcxResult_t barexDevices(int *ndev) {
+static flagcxResult_t flagcxBarexDevices(int *ndev) {
   return barexProbeDevices(ndev);
 }
 
-static flagcxResult_t barexGetProperties(int dev, void *props) {
+static flagcxResult_t flagcxBarexGetProperties(int dev, void *props) {
+  if (props == nullptr)
+    return flagcxInvalidArgument;
+  int ndev = 0;
+  FLAGCXCHECK(barexProbeDevices(&ndev));
+  if (dev < 0 || dev >= ndev)
+    return flagcxInvalidArgument;
   auto *p = static_cast<flagcxNetProperties_v1_t *>(props);
   memset(p, 0, sizeof(*p));
 
@@ -498,8 +540,8 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexListen(int dev, void *opaqueHandle,
-                                  void **listenComm) {
+static flagcxResult_t flagcxBarexListen(int dev, void *opaqueHandle,
+                                        void **listenComm) {
   BarexEngine *e = nullptr;
   FLAGCXCHECK(barexEngineStart(&e));
 
@@ -528,8 +570,8 @@ static flagcxResult_t barexListen(int dev, void *opaqueHandle,
 
 /* Non-blocking, resumable: *sendComm stays NULL until the channel is up
    and HELLO delivered; state lives in the handle across retries. */
-static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
-                                   void **sendComm) {
+static flagcxResult_t flagcxBarexConnect(int dev, void *opaqueHandle,
+                                         void **sendComm) {
   *sendComm = nullptr;
   BarexEngine *e = nullptr;
   FLAGCXCHECK(barexEngineStart(&e));
@@ -667,7 +709,9 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
 }
 
 /* Non-blocking: ready once the connector's HELLO bound a channel. */
-static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
+static flagcxResult_t flagcxBarexAccept(void *listenComm, void **recvComm) {
+  if (recvComm == nullptr)
+    return flagcxInvalidArgument;
   *recvComm = nullptr;
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
@@ -680,7 +724,10 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
     auto it = e->pendingAccepts.find(lc->commId);
     if (it == e->pendingAccepts.end())
       return flagcxInternalError;
-    ch = it->second.channel;
+    if (!it->second.channels.empty()) {
+      ch = it->second.channels.front();
+      it->second.channels.pop_front();
+    }
   }
   if (ch == nullptr)
     return flagcxSuccess; /* no HELLO yet — call again */
@@ -693,7 +740,6 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
   {
     std::lock_guard<std::mutex> lk(e->mu);
     e->channelComm[ch] = comm;
-    e->pendingAccepts.erase(lc->commId);
   }
   *recvComm = comm;
   INFO(FLAGCX_NET, "NET/BAREX : recvComm up (commId 0x%llx)",
@@ -722,57 +768,83 @@ static flagcxResult_t barexCloseComm(BarexComm *comm) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexCloseSend(void *sendComm) {
+static flagcxResult_t flagcxBarexCloseSend(void *sendComm) {
   return barexCloseComm(static_cast<BarexComm *>(sendComm));
 }
 
-static flagcxResult_t barexCloseRecv(void *recvComm) {
+static flagcxResult_t flagcxBarexCloseRecv(void *recvComm) {
   return barexCloseComm(static_cast<BarexComm *>(recvComm));
 }
 
-static flagcxResult_t barexCloseListen(void *listenComm) {
+static flagcxResult_t flagcxBarexCloseListen(void *listenComm) {
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
     return flagcxSuccess;
+  std::deque<XChannel *> pendingChannels;
   {
     std::lock_guard<std::mutex> lk(lc->engine->mu);
-    lc->engine->pendingAccepts.erase(lc->commId);
+    auto it = lc->engine->pendingAccepts.find(lc->commId);
+    if (it != lc->engine->pendingAccepts.end()) {
+      pendingChannels.swap(it->second.channels);
+      lc->engine->pendingAccepts.erase(it);
+    }
   }
+  for (XChannel *channel : pendingChannels)
+    if (channel != nullptr)
+      channel->Destroy();
   delete lc;
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
-                                 int mrFlags, void **mhandle) {
+static flagcxResult_t flagcxBarexRegMr(void *comm, void *data, size_t size,
+                                       int type, int mrFlags, void **mhandle) {
   (void)comm;
   (void)mrFlags;
-  if (data == nullptr || size == 0 || mhandle == nullptr)
-    return flagcxInternalError;
+  if (mhandle == nullptr)
+    return flagcxInvalidArgument;
+  *mhandle = nullptr;
+  if (data == nullptr || size == 0 ||
+      (type != FLAGCX_PTR_HOST && type != FLAGCX_PTR_CUDA))
+    return flagcxInvalidArgument;
   BarexEngine *e = nullptr;
   FLAGCXCHECK(barexEngineStart(&e));
 
   const uintptr_t base = (uintptr_t)data;
-  {
-    std::lock_guard<std::mutex> lk(e->mu);
-    auto it = e->mrByBase.find(base);
-    if (it != e->mrByBase.end()) {
-      if (it->second->size != size) {
-        WARN("NET/BAREX : re-register %p with different size (%zu vs %zu)",
-             data, it->second->size, size);
-        return flagcxInternalError;
-      }
-      it->second->refCount++;
-      *mhandle = it->second;
-      return flagcxSuccess;
-    }
-  }
-
   const accl::barex::device_type dtype =
       (type == FLAGCX_PTR_CUDA) ? accl::barex::GPU : accl::barex::CPU;
   int devId = 0;
   if (dtype == accl::barex::GPU && deviceAdaptor != nullptr &&
       deviceAdaptor->getDevice != nullptr) {
     deviceAdaptor->getDevice(&devId);
+  }
+  /* DeregUserMr only identifies an MR by (base, dtype), so never publish two
+     physical registrations with the same key. */
+  const BarexMrKey key = {base, dtype};
+  std::unique_lock<std::mutex> lk(e->mu);
+  auto exact = e->mrs.find(key);
+  if (exact != e->mrs.end()) {
+    BarexMr *existing = exact->second;
+    if (existing->devId != devId || size > existing->size) {
+      WARN("NET/BAREX : incompatible duplicate MR for %p (%zu bytes, dev%d); "
+           "existing registration is %zu bytes on dev%d",
+           data, size, devId, existing->size, existing->devId);
+      return flagcxInvalidArgument;
+    }
+    existing->refCount++;
+    *mhandle = existing;
+    return flagcxSuccess;
+  }
+  for (const auto &entry : e->mrs) {
+    BarexMr *existing = entry.second;
+    if (existing->dtype != dtype || existing->devId != devId ||
+        base < existing->base)
+      continue;
+    const size_t offset = (size_t)(base - existing->base);
+    if (offset <= existing->size && size <= existing->size - offset) {
+      existing->refCount++;
+      *mhandle = existing;
+      return flagcxSuccess;
+    }
   }
 
   auto *mr = new BarexMr();
@@ -788,6 +860,7 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
   mr->base = base;
   mr->size = size;
   mr->dtype = dtype;
+  mr->devId = devId;
   mr->refCount = 1;
   for (auto &kv : mr->mem.mrs) {
     const int nic = kv.first;
@@ -804,32 +877,12 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
     return flagcxInternalError;
   }
 
-  std::lock_guard<std::mutex> lk(e->mu);
-  auto raced = e->mrByBase.find(base);
-  if (raced != e->mrByBase.end()) {
-    /* a concurrent regMr of the same base won between our dedup check
-       and this insert; keep theirs, drop our duplicate registration */
-    e->mempool->DeregUserMr(data, dtype);
-    delete mr;
-    raced->second->refCount++;
-    *mhandle = raced->second;
-    return flagcxSuccess;
-  }
-  e->mrByBase[base] = mr;
+  e->mrs[key] = mr;
   *mhandle = mr;
   return flagcxSuccess;
 }
 
-/* PPU has no dmabuf; ignore the fd and pin through RegUserMr like regMr. */
-static flagcxResult_t barexRegMrDmaBuf(void *comm, void *data, size_t size,
-                                       int type, uint64_t offset, int fd,
-                                       int mrFlags, void **mhandle) {
-  (void)offset;
-  (void)fd;
-  return barexRegMr(comm, data, size, type, mrFlags, mhandle);
-}
-
-static flagcxResult_t barexDeregMr(void *comm, void *mhandle) {
+static flagcxResult_t flagcxBarexDeregMr(void *comm, void *mhandle) {
   (void)comm;
   auto *mr = static_cast<BarexMr *>(mhandle);
   if (mr == nullptr)
@@ -843,25 +896,43 @@ static flagcxResult_t barexDeregMr(void *comm, void *mhandle) {
     std::lock_guard<std::mutex> lk(e->mu);
     if (--mr->refCount > 0)
       return flagcxSuccess;
-    e->mrByBase.erase(mr->base);
+    e->mrs.erase(BarexMrKey{mr->base, mr->dtype});
     base = (void *)mr->base;
     dtype = mr->dtype;
+    /* Keep registration and deregistration serialized. Otherwise a new
+       RegUserMr for this key could race before the old physical MR is gone. */
+    e->mempool->DeregUserMr(base, dtype);
   }
-  e->mempool->DeregUserMr(base, dtype);
   delete mr;
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
-                                 int tag, void *mhandle, void *phandle,
-                                 void **request) {
+static flagcxResult_t flagcxBarexGetMrInfo(void *mhandle,
+                                           struct flagcxNetMrInfo *info) {
+  if (mhandle == nullptr || info == nullptr)
+    return flagcxInvalidArgument;
+  auto *mr = static_cast<BarexMr *>(mhandle);
+  if (mr->nKeys == 0 || mr->nKeys > FLAGCX_NET_MAX_MR_KEYS)
+    return flagcxInternalError;
+  memset(info, 0, sizeof(*info));
+  info->nKeys = mr->nKeys;
+  memcpy(info->lkeys, mr->lkeys, mr->nKeys * sizeof(uint32_t));
+  memcpy(info->rkeys, mr->rkeys, mr->nKeys * sizeof(uint32_t));
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexIsend(void *sendComm, void *data, size_t size,
+                                       int tag, void *mhandle, void *phandle,
+                                       void **request) {
   (void)tag; /* always 0 on the proxy path */
   (void)phandle;
+  if (request == nullptr)
+    return flagcxInvalidArgument;
   *request = nullptr;
   auto *comm = static_cast<BarexComm *>(sendComm);
   auto *mr = static_cast<BarexMr *>(mhandle);
-  if (comm == nullptr || mr == nullptr)
-    return flagcxInternalError;
+  if (comm == nullptr || (data == nullptr && size != 0) || mr == nullptr)
+    return flagcxInvalidArgument;
   if (comm->dead.load(std::memory_order_acquire))
     return flagcxInternalError;
 
@@ -917,19 +988,22 @@ static flagcxResult_t barexIsend(void *sendComm, void *data, size_t size,
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
-                                 size_t *sizes, int *tags, void **mhandles,
-                                 void **phandles, void **request) {
+static flagcxResult_t flagcxBarexIrecv(void *recvComm, int n, void **data,
+                                       size_t *sizes, int *tags,
+                                       void **mhandles, void **phandles,
+                                       void **request) {
   (void)tags;
   (void)phandles;
+  if (request == nullptr)
+    return flagcxInvalidArgument;
   *request = nullptr;
   auto *comm = static_cast<BarexComm *>(recvComm);
   if (comm == nullptr || n != 1 || data == nullptr || sizes == nullptr ||
-      mhandles == nullptr)
-    return flagcxInternalError;
+      mhandles == nullptr || (data[0] == nullptr && sizes[0] != 0))
+    return flagcxInvalidArgument;
   auto *mr = static_cast<BarexMr *>(mhandles[0]);
   if (mr == nullptr)
-    return flagcxInternalError;
+    return flagcxInvalidArgument;
   if (comm->dead.load(std::memory_order_acquire))
     return flagcxInternalError;
   BarexEngine *e = comm->engine;
@@ -990,26 +1064,34 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
 }
 
 /* Nothing to flush: write-with-imm orders payload before the completing
-   imm. Return the (void*)0x1 sentinel because the IBRC-slot consumer
+   imm. Return the (void*)0x1 sentinel because the RDMA-slot consumer
    (net.cc flagcxProxyRecv) only advances its flush stage on a request. */
-static flagcxResult_t barexIflush(void *recvComm, int n, void **data,
-                                  int *sizes, void **mhandles, void **request) {
+static flagcxResult_t flagcxBarexIflush(void *recvComm, int n, void **data,
+                                        int *sizes, void **mhandles,
+                                        void **request) {
   (void)recvComm;
   (void)n;
   (void)data;
   (void)sizes;
   (void)mhandles;
-  *request = (void *)0x1;
+  if (request == nullptr)
+    return flagcxInvalidArgument;
+  *request = reinterpret_cast<void *>(kCompletedRequest);
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
+static flagcxResult_t flagcxBarexTest(void *request, int *done, int *sizes) {
+  if (done == nullptr)
+    return flagcxInvalidArgument;
   *done = 0;
-  auto *req = static_cast<BarexRequest *>(request);
-  if (req == nullptr) {
+  if (request == nullptr ||
+      reinterpret_cast<uintptr_t>(request) == kCompletedRequest) {
+    if (sizes != nullptr)
+      sizes[0] = 0;
     *done = 1;
     return flagcxSuccess;
   }
+  auto *req = static_cast<BarexRequest *>(request);
   const int st = req->state.load(std::memory_order_acquire);
   if (st == BAREX_REQ_PENDING)
     return flagcxSuccess;
@@ -1025,9 +1107,310 @@ static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
-  if (name == nullptr || dev == nullptr)
+static flagcxResult_t barexPrepareOneSided(
+    BarexComm *comm, const struct flagcxOneSideHandleInfo *localInfo,
+    int localRank, uint64_t localOff,
+    const struct flagcxOneSideHandleInfo *remoteInfo, int remoteRank,
+    uint64_t remoteOff, size_t size, memp_t *localMem, uint64_t *remoteAddr,
+    uint32_t *remoteRkey) {
+  if (comm == nullptr || localInfo == nullptr || remoteInfo == nullptr ||
+      localMem == nullptr || remoteAddr == nullptr || remoteRkey == nullptr ||
+      localInfo->baseVas == nullptr || remoteInfo->baseVas == nullptr ||
+      localInfo->regionSizes == nullptr || remoteInfo->regionSizes == nullptr ||
+      localInfo->mrInfos == nullptr || remoteInfo->mrInfos == nullptr ||
+      localInfo->localMrHandle == nullptr || localRank < 0 || remoteRank < 0 ||
+      localRank >= localInfo->nRanks || remoteRank >= remoteInfo->nRanks)
+    return flagcxInvalidArgument;
+  const size_t localSize = localInfo->regionSizes[localRank];
+  const size_t remoteSize = remoteInfo->regionSizes[remoteRank];
+  if (localOff > localSize || size > localSize - localOff ||
+      remoteOff > remoteSize || size > remoteSize - remoteOff)
+    return flagcxInvalidArgument;
+  if (comm->dead.load(std::memory_order_acquire) || comm->channel == nullptr)
     return flagcxInternalError;
+
+  const int localNic = comm->channel->GetLocalNicId();
+  const int peerNic = comm->channel->GetPeerNicId();
+  const struct flagcxNetMrInfo &peerMr = remoteInfo->mrInfos[remoteRank];
+  if (localNic < 0 || localNic >= kMaxNics || peerNic < 0 ||
+      peerNic >= kMaxNics || (uint32_t)peerNic >= peerMr.nKeys)
+    return flagcxInvalidArgument;
+
+  auto *mr = static_cast<BarexMr *>(localInfo->localMrHandle);
+  auto mrIt = mr->mem.mrs.find(localNic);
+  if (mrIt == mr->mem.mrs.end() || mrIt->second == nullptr)
+    return flagcxInvalidArgument;
+
+  *localMem = mr->mem;
+  localMem->buf =
+      reinterpret_cast<char *>(localInfo->baseVas[localRank] + localOff);
+  localMem->buf_len = size;
+  localMem->mr = mrIt->second;
+  *remoteAddr = remoteInfo->baseVas[remoteRank] + remoteOff;
+  *remoteRkey = peerMr.rkeys[peerNic];
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexIput(void *sendComm, uint64_t srcOff,
+                                      uint64_t dstOff, size_t size, int srcRank,
+                                      int dstRank, void **srcHandles,
+                                      void **dstHandles, void **request) {
+  if (request == nullptr)
+    return flagcxInvalidArgument;
+  *request = nullptr;
+  auto *comm = static_cast<BarexComm *>(sendComm);
+  auto *srcInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
+  auto *dstInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  memp_t localMem;
+  uint64_t remoteAddr = 0;
+  uint32_t remoteRkey = 0;
+  FLAGCXCHECK(barexPrepareOneSided(comm, srcInfo, srcRank, srcOff, dstInfo,
+                                   dstRank, dstOff, size, &localMem,
+                                   &remoteAddr, &remoteRkey));
+
+  BarexRequest *req = comm->allocRequest();
+  if (req == nullptr)
+    return flagcxInternalError;
+  req->size = size;
+  if (size == 0) {
+    req->state.store(BAREX_REQ_DONE, std::memory_order_release);
+    *request = req;
+    return flagcxSuccess;
+  }
+
+  BarexResult r = comm->channel->WriteSingle(
+      localMem, remoteAddr, remoteRkey, /*signal_peer=*/false, 0,
+      [req](Status s) {
+        req->state.store(s.IsOk() ? BAREX_REQ_DONE : BAREX_REQ_ERROR,
+                         std::memory_order_release);
+      },
+      /*done_inline=*/true, UINT64_MAX);
+  if (r != accl::barex::BAREX_SUCCESS) {
+    req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+    return barexResult(r);
+  }
+  *request = req;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexIget(void *sendComm, uint64_t srcOff,
+                                      uint64_t dstOff, size_t size, int srcRank,
+                                      int dstRank, void **srcHandles,
+                                      void **dstHandles, void **request) {
+  if (request == nullptr)
+    return flagcxInvalidArgument;
+  *request = nullptr;
+  auto *comm = static_cast<BarexComm *>(sendComm);
+  auto *srcInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
+  auto *dstInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  memp_t localMem;
+  uint64_t remoteAddr = 0;
+  uint32_t remoteRkey = 0;
+  FLAGCXCHECK(barexPrepareOneSided(comm, dstInfo, dstRank, dstOff, srcInfo,
+                                   srcRank, srcOff, size, &localMem,
+                                   &remoteAddr, &remoteRkey));
+
+  BarexRequest *req = comm->allocRequest();
+  if (req == nullptr)
+    return flagcxInternalError;
+  req->size = size;
+  if (size == 0) {
+    req->state.store(BAREX_REQ_DONE, std::memory_order_release);
+    *request = req;
+    return flagcxSuccess;
+  }
+
+  BarexResult r = comm->channel->ReadSingle(
+      localMem, remoteAddr, remoteRkey,
+      [req](Status s) {
+        req->state.store(s.IsOk() ? BAREX_REQ_DONE : BAREX_REQ_ERROR,
+                         std::memory_order_release);
+      },
+      /*done_inline=*/true, UINT64_MAX);
+  if (r != accl::barex::BAREX_SUCCESS) {
+    req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+    return barexResult(r);
+  }
+  *request = req;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxBarexIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
+                     const uint64_t *dstOffs, const size_t *sizes, int srcRank,
+                     int dstRank, void **srcHandles, void **dstHandles,
+                     void **requests, int *posted) {
+  if (posted == nullptr || requests == nullptr)
+    return flagcxInvalidArgument;
+  *posted = 0;
+  if (count < 0 || count > kMaxRequests)
+    return flagcxInvalidArgument;
+  for (int i = 0; i < count; i++)
+    requests[i] = nullptr;
+  if (count == 0)
+    return flagcxSuccess;
+  if (srcOffs == nullptr || dstOffs == nullptr || sizes == nullptr)
+    return flagcxInvalidArgument;
+
+  auto *comm = static_cast<BarexComm *>(sendComm);
+  auto *srcInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
+  auto *dstInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  auto data = std::make_shared<std::vector<rw_memp_t>>();
+  auto reqs = std::make_shared<std::vector<BarexRequest *>>();
+  data->reserve(count);
+  reqs->reserve(count);
+
+  for (int i = 0; i < count; i++) {
+    memp_t localMem;
+    uint64_t remoteAddr = 0;
+    uint32_t remoteRkey = 0;
+    flagcxResult_t prep = barexPrepareOneSided(
+        comm, srcInfo, srcRank, srcOffs[i], dstInfo, dstRank, dstOffs[i],
+        sizes[i], &localMem, &remoteAddr, &remoteRkey);
+    if (prep != flagcxSuccess) {
+      for (BarexRequest *req : *reqs)
+        req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+      return prep;
+    }
+    BarexRequest *req = comm->allocRequest();
+    if (req == nullptr) {
+      for (BarexRequest *allocated : *reqs)
+        allocated->state.store(BAREX_REQ_FREE, std::memory_order_release);
+      return flagcxSuccess;
+    }
+    req->size = sizes[i];
+    reqs->push_back(req);
+
+    rw_memp_t rw;
+    rw.data = localMem;
+    rw.r_addr = remoteAddr;
+    rw.r_key = remoteRkey;
+    rw.r_ttl_ms = UINT64_MAX;
+    rw.sg.addr = reinterpret_cast<uint64_t>(localMem.buf);
+    rw.sg.length = static_cast<uint32_t>(sizes[i]);
+    if (static_cast<size_t>(rw.sg.length) != sizes[i]) {
+      for (BarexRequest *allocated : *reqs)
+        allocated->state.store(BAREX_REQ_FREE, std::memory_order_release);
+      return flagcxInvalidArgument;
+    }
+    rw.sg.lkey = localMem.mr->lkey;
+    data->push_back(rw);
+  }
+
+  BarexResult r = comm->channel->WriteBatch(
+      data,
+      [reqs](Status s) {
+        const int state = s.IsOk() ? BAREX_REQ_DONE : BAREX_REQ_ERROR;
+        for (BarexRequest *req : *reqs)
+          req->state.store(state, std::memory_order_release);
+      },
+      /*done_inline=*/true);
+  if (r != accl::barex::BAREX_SUCCESS) {
+    for (BarexRequest *req : *reqs)
+      req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+    return barexResult(r);
+  }
+  for (int i = 0; i < count; i++)
+    requests[i] = (*reqs)[i];
+  *posted = count;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexTestBatch(void **requests, int nRequests,
+                                           int *doneFlags, int *doneCount) {
+  if (nRequests < 0 || doneCount == nullptr ||
+      (nRequests > 0 && (requests == nullptr || doneFlags == nullptr)))
+    return flagcxInvalidArgument;
+  *doneCount = 0;
+  for (int i = 0; i < nRequests; i++) {
+    int done = 0;
+    FLAGCXCHECK(flagcxBarexTest(requests[i], &done, nullptr));
+    doneFlags[i] = done;
+    *doneCount += done;
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxBarexIgetBatch(void *sendComm, int count, const uint64_t *srcOffs,
+                     const uint64_t *dstOffs, const size_t *sizes, int srcRank,
+                     int dstRank, void *const *srcHandles,
+                     void *const *dstHandles, void **request) {
+  if (request == nullptr)
+    return flagcxInvalidArgument;
+  *request = nullptr;
+  if (count < 0 || count > kMaxRequests ||
+      (count > 0 &&
+       (srcOffs == nullptr || dstOffs == nullptr || sizes == nullptr)))
+    return flagcxInvalidArgument;
+  auto *comm = static_cast<BarexComm *>(sendComm);
+  if (count == 0) {
+    if (comm == nullptr)
+      return flagcxInvalidArgument;
+    BarexRequest *req = comm->allocRequest();
+    if (req == nullptr)
+      return flagcxInternalError;
+    req->state.store(BAREX_REQ_DONE, std::memory_order_release);
+    *request = req;
+    return flagcxSuccess;
+  }
+
+  auto *srcInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
+  auto *dstInfo =
+      reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  auto data = std::make_shared<std::vector<rw_memp_t>>();
+  data->reserve(count);
+  size_t totalSize = 0;
+  for (int i = 0; i < count; i++) {
+    memp_t localMem;
+    uint64_t remoteAddr = 0;
+    uint32_t remoteRkey = 0;
+    FLAGCXCHECK(barexPrepareOneSided(comm, dstInfo, dstRank, dstOffs[i],
+                                     srcInfo, srcRank, srcOffs[i], sizes[i],
+                                     &localMem, &remoteAddr, &remoteRkey));
+    rw_memp_t rw;
+    rw.data = localMem;
+    rw.r_addr = remoteAddr;
+    rw.r_key = remoteRkey;
+    rw.r_ttl_ms = UINT64_MAX;
+    rw.sg.addr = reinterpret_cast<uint64_t>(localMem.buf);
+    rw.sg.length = static_cast<uint32_t>(sizes[i]);
+    if (static_cast<size_t>(rw.sg.length) != sizes[i])
+      return flagcxInvalidArgument;
+    rw.sg.lkey = localMem.mr->lkey;
+    data->push_back(rw);
+    totalSize += sizes[i];
+  }
+
+  BarexRequest *req = comm->allocRequest();
+  if (req == nullptr)
+    return flagcxInternalError;
+  req->size = totalSize;
+  BarexResult r = comm->channel->ReadBatch(
+      data,
+      [req](Status s) {
+        req->state.store(s.IsOk() ? BAREX_REQ_DONE : BAREX_REQ_ERROR,
+                         std::memory_order_release);
+      },
+      /*done_inline=*/true);
+  if (r != accl::barex::BAREX_SUCCESS) {
+    req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+    return barexResult(r);
+  }
+  *request = req;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexGetDevFromName(char *name, int *dev) {
+  if (name == nullptr || dev == nullptr)
+    return flagcxInvalidArgument;
   XDeviceManager *mgr = nullptr;
   if (XDeviceManager::Singleton(mgr) != accl::barex::BAREX_SUCCESS ||
       mgr == nullptr)
@@ -1042,39 +1425,227 @@ static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
   return flagcxSystemError;
 }
 
-} // namespace barexnet
+/* ------------------------------------------------------------------ */
+/*  P2P Engine transport submission interface                         */
+/* ------------------------------------------------------------------ */
 
-/* One-sided iput/iget/iputSignal serve the P2P engine, not the proxy
-   collective path — left NULL like the UCX adaptor. */
+static flagcxResult_t flagcxBarexGetRegistrationDevice(int netDev,
+                                                       int *registrationDev) {
+  if (registrationDev == nullptr || netDev < 0)
+    return flagcxInvalidArgument;
+  // BAREX registration is process-global and ignores the comm/device context.
+  *registrationDev = 0;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxBarexGetTransportCaps(void *, struct flagcxP2pTransportCaps *caps) {
+  if (caps == nullptr)
+    return flagcxInvalidArgument;
+  caps->maxBatchSize = kMaxRequests;
+  caps->maxInflightBatches = kMaxRequests;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxBarexSubmitTransportBatch(void *sendComm,
+                                const struct flagcxP2pTransportSlice *slices,
+                                int count, void **request) {
+  auto *comm = static_cast<BarexComm *>(sendComm);
+  if (comm == nullptr || slices == nullptr || request == nullptr ||
+      count <= 0 || count > kMaxRequests || comm->channel == nullptr ||
+      comm->dead.load(std::memory_order_acquire))
+    return flagcxInvalidArgument;
+  *request = nullptr;
+
+  const uint8_t opcode = slices[0].opcode;
+  if (opcode != FLAGCX_P2P_TRANSPORT_WRITE &&
+      opcode != FLAGCX_P2P_TRANSPORT_READ)
+    return flagcxInvalidArgument;
+
+  const int localNic = comm->channel->GetLocalNicId();
+  const int peerNic = comm->channel->GetPeerNicId();
+  if (localNic < 0 || localNic >= kMaxNics || peerNic < 0 ||
+      peerNic >= kMaxNics)
+    return flagcxInvalidArgument;
+
+  auto data = std::make_shared<std::vector<rw_memp_t>>();
+  data->reserve(count);
+  size_t totalSize = 0;
+  for (int i = 0; i < count; i++) {
+    const struct flagcxP2pTransportSlice &planned = slices[i];
+    if (planned.opcode != opcode || planned.length == 0 ||
+        planned.localMrHandle == nullptr ||
+        (uint32_t)peerNic >= planned.remoteMrInfo.nKeys) {
+      return flagcxInvalidArgument;
+    }
+
+    auto *mr = static_cast<BarexMr *>(planned.localMrHandle);
+    auto mrIt = mr->mem.mrs.find(localNic);
+    if (mrIt == mr->mem.mrs.end() || mrIt->second == nullptr)
+      return flagcxInvalidArgument;
+
+    memp_t localMem = mr->mem;
+    localMem.buf = reinterpret_cast<char *>(planned.localVa);
+    localMem.buf_len = planned.length;
+    localMem.mr = mrIt->second;
+
+    rw_memp_t rw;
+    rw.data = localMem;
+    rw.r_addr = planned.remoteVa;
+    rw.r_key = planned.remoteMrInfo.rkeys[peerNic];
+    rw.r_ttl_ms = UINT64_MAX;
+    rw.sg.addr = planned.localVa;
+    rw.sg.length = planned.length;
+    rw.sg.lkey = localMem.mr->lkey;
+    data->push_back(rw);
+    totalSize += planned.length;
+  }
+
+  BarexRequest *req = comm->allocRequest();
+  if (req == nullptr)
+    return flagcxInProgress;
+  req->size = totalSize;
+
+  auto completion = [req, data](Status status) {
+    (void)data;
+    req->state.store(status.IsOk() ? BAREX_REQ_DONE : BAREX_REQ_ERROR,
+                     std::memory_order_release);
+  };
+  BarexResult result =
+      opcode == FLAGCX_P2P_TRANSPORT_WRITE
+          ? comm->channel->WriteBatch(data, completion, /*done_inline=*/true)
+          : comm->channel->ReadBatch(data, completion, /*done_inline=*/true);
+  if (result != accl::barex::BAREX_SUCCESS) {
+    req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+    return barexResult(result);
+  }
+
+  *request = req;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexProgressTransport(void *) {
+  // ACCL drives completions from its own callback threads.
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxBarexTestTransport(void *request, int *done,
+                                               int *failed) {
+  if (done == nullptr || failed == nullptr)
+    return flagcxInvalidArgument;
+  *done = 0;
+  *failed = 0;
+  if (request == nullptr) {
+    *done = 1;
+    return flagcxSuccess;
+  }
+
+  auto *req = static_cast<BarexRequest *>(request);
+  const int state = req->state.load(std::memory_order_acquire);
+  if (state == BAREX_REQ_PENDING)
+    return flagcxSuccess;
+  if (state != BAREX_REQ_DONE && state != BAREX_REQ_ERROR)
+    return flagcxInternalError;
+
+  *done = 1;
+  *failed = state == BAREX_REQ_ERROR ? 1 : 0;
+  req->state.store(BAREX_REQ_FREE, std::memory_order_release);
+  return flagcxSuccess;
+}
+
+const struct flagcxP2pTransportOps flagcxP2pBarexTransportOps = {
+    "BAREX",
+    flagcxBarexGetRegistrationDevice,
+    flagcxBarexGetTransportCaps,
+    flagcxBarexSubmitTransportBatch,
+    flagcxBarexProgressTransport,
+    flagcxBarexTestTransport};
+
 struct flagcxNetAdaptor flagcxNetBarex = {
     // Basic functions
-    "BAREX", barexnet::barexInit, barexnet::barexDevices,
-    barexnet::barexGetProperties,
+    "BAREX",
+    flagcxBarexInit,
+    flagcxBarexDevices,
+    flagcxBarexGetProperties,
 
     // Setup functions
-    barexnet::barexListen, barexnet::barexConnect, barexnet::barexAccept,
-    barexnet::barexCloseSend, barexnet::barexCloseRecv,
-    barexnet::barexCloseListen,
+    flagcxBarexListen,
+    flagcxBarexConnect,
+    flagcxBarexAccept,
+    flagcxBarexCloseSend,
+    flagcxBarexCloseRecv,
+    flagcxBarexCloseListen,
 
     // Memory region functions
-    barexnet::barexRegMr, barexnet::barexRegMrDmaBuf, barexnet::barexDeregMr,
+    flagcxBarexRegMr,
+    nullptr, // regMrDmaBuf: ACCL/BAREX does not support DMA-BUF registration
+    flagcxBarexDeregMr,
 
     // Two-sided functions
-    barexnet::barexIsend, barexnet::barexIrecv, barexnet::barexIflush,
-    barexnet::barexTest,
+    flagcxBarexIsend,
+    flagcxBarexIrecv,
+    flagcxBarexIflush,
+    flagcxBarexTest,
 
     // One-sided functions
-    NULL, // iput
-    NULL, // iget
-    NULL, // iputSignal
+    flagcxBarexIput,
+    flagcxBarexIget,
+    nullptr, // iputSignal: ACCL/BAREX does not expose remote atomic add
 
     // Device name lookup
-    barexnet::barexGetDevFromName,
+    flagcxBarexGetDevFromName,
 
     // Optional batch helpers
-    NULL, // iputBatch
-    NULL, // testBatch
-    NULL, // igetBatch
+    flagcxBarexIputBatch,
+    flagcxBarexTestBatch,
+    flagcxBarexIgetBatch,
+
+    // MR metadata
+    flagcxBarexGetMrInfo,
+};
+
+struct flagcxNetAdaptor flagcxP2pNetBarex = {
+    // Basic functions
+    "BAREX_P2P",
+    flagcxBarexInit,
+    flagcxBarexDevices,
+    flagcxBarexGetProperties,
+
+    // Setup functions
+    flagcxBarexListen,
+    flagcxBarexConnect,
+    flagcxBarexAccept,
+    flagcxBarexCloseSend,
+    flagcxBarexCloseRecv,
+    flagcxBarexCloseListen,
+
+    // Memory region functions
+    flagcxBarexRegMr,
+    nullptr, // regMrDmaBuf: ACCL/BAREX does not support DMA-BUF registration
+    flagcxBarexDeregMr,
+
+    // Two-sided functions
+    flagcxBarexIsend,
+    flagcxBarexIrecv,
+    flagcxBarexIflush,
+    flagcxBarexTest,
+
+    // One-sided functions
+    flagcxBarexIput,
+    flagcxBarexIget,
+    nullptr, // iputSignal: ACCL/BAREX does not expose remote atomic add
+
+    // Device name lookup
+    flagcxBarexGetDevFromName,
+
+    // Optional batch helpers
+    flagcxBarexIputBatch,
+    flagcxBarexTestBatch,
+    flagcxBarexIgetBatch,
+
+    // MR metadata
+    flagcxBarexGetMrInfo,
 };
 
 /* Plugin export (FLAGCX_NET_ADAPTOR_PLUGIN, v1 vtable). Prefer this over
@@ -1084,26 +1655,26 @@ struct flagcxNetAdaptor flagcxNetBarex = {
 extern "C" __attribute__((visibility(
     "default"))) struct flagcxNetAdaptor_v1 flagcxNetAdaptorPlugin_v1 = {
     "BAREX",
-    barexnet::barexInit,
-    barexnet::barexDevices,
-    barexnet::barexGetProperties,
-    barexnet::barexListen,
-    barexnet::barexConnect,
-    barexnet::barexAccept,
-    barexnet::barexCloseSend,
-    barexnet::barexCloseRecv,
-    barexnet::barexCloseListen,
-    barexnet::barexRegMr,
-    barexnet::barexRegMrDmaBuf,
-    barexnet::barexDeregMr,
-    barexnet::barexIsend,
-    barexnet::barexIrecv,
-    barexnet::barexIflush,
-    barexnet::barexTest,
+    flagcxBarexInit,
+    flagcxBarexDevices,
+    flagcxBarexGetProperties,
+    flagcxBarexListen,
+    flagcxBarexConnect,
+    flagcxBarexAccept,
+    flagcxBarexCloseSend,
+    flagcxBarexCloseRecv,
+    flagcxBarexCloseListen,
+    flagcxBarexRegMr,
+    NULL, // regMrDmaBuf
+    flagcxBarexDeregMr,
+    flagcxBarexIsend,
+    flagcxBarexIrecv,
+    flagcxBarexIflush,
+    flagcxBarexTest,
     NULL, // iput
     NULL, // iget
     NULL, // iputSignal
-    barexnet::barexGetDevFromName,
+    flagcxBarexGetDevFromName,
 };
 
 #endif // USE_ACCL_BAREX

@@ -13,7 +13,7 @@
 #include "flagcx.h"
 #include "p2p_topo.h"
 
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
+extern struct flagcxNetAdaptor flagcxP2pNetIb;
 
 class P2pTopoTest : public ::testing::Test {
 protected:
@@ -21,7 +21,7 @@ protected:
     // Initialize device adaptor (sets global deviceAdaptor)
     flagcxDeviceHandleInit(&devHandle);
 
-    netAdaptor = &flagcxNetIbP2p;
+    netAdaptor = &flagcxP2pNetIb;
     ASSERT_EQ(netAdaptor->init(), flagcxSuccess)
         << "IB P2P net adaptor init failed";
 

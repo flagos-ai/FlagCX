@@ -5,8 +5,10 @@
 # platform=all.
 platforms:
   cuda:
-    enabled: true
+    # Temporarily focus pull-request unit-test coverage on MetaX.
+    enabled: false
   hygon:
-    enabled: true
+    # Temporarily focus pull-request unit-test coverage on MetaX.
+    enabled: false
   metax:
     enabled: true

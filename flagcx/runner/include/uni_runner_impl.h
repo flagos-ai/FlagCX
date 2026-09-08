@@ -139,6 +139,12 @@ typedef struct {
   void resetEvent(int idx);
 } flagcxUniRunnerState;
 
+// Convert a device event query result into the runner's completion state.
+// Only flagcxInProgress means that the event should remain in the inflight
+// queue; every other non-success result must be propagated to the caller.
+flagcxResult_t flagcxUniRunnerClassifyEventQuery(flagcxResult_t queryResult,
+                                                 bool *complete);
+
 flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
 flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,

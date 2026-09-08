@@ -5,32 +5,6 @@
 #include <cstring>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Helper: establish connection between all ranks via dummy send/recv
-// ---------------------------------------------------------------------------
-static void establishConnection(flagcxComm_t comm,
-                                flagcxDeviceHandle_t devHandle, int rank,
-                                int nranks) {
-  flagcxStream_t s;
-  devHandle->streamCreate(&s);
-  void *dummy = nullptr;
-  devHandle->deviceMalloc(&dummy, 1, flagcxMemDevice, nullptr);
-
-  flagcxGroupStart(comm);
-  for (int peer = 0; peer < nranks; ++peer) {
-    if (peer == rank)
-      continue;
-    flagcxSend(dummy, 1, flagcxChar, peer, comm, s);
-    flagcxRecv(dummy, 1, flagcxChar, peer, comm, s);
-  }
-  flagcxGroupEnd(comm);
-
-  devHandle->streamSynchronize(s);
-  devHandle->deviceFree(dummy, flagcxMemDevice, nullptr);
-  devHandle->streamDestroy(s);
-  MPI_Barrier(MPI_COMM_WORLD);
-}
-
 static int collectiveOpStatus(flagcxResult_t res) {
   int localStatus =
       (res == flagcxSuccess) ? 0 : (res == flagcxNotSupported ? 1 : 2);
@@ -46,8 +20,8 @@ static int collectiveOpStatus(flagcxResult_t res) {
 TEST_F(RmaTest, SignalOnlyNoData) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-
-  establishConnection(comm, devHandle, rank, nranks);
+  if (!signalRmaAvailable)
+    GTEST_SKIP() << signalRmaSkipReason;
 
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -67,14 +41,22 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   }
   ASSERT_EQ(globalStatus, 0);
 
+  flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     flagcxWaitSignalDesc_t desc = {1, 0};
-    flagcxResult_t res = flagcxWaitSignal(1, &desc, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
-    devHandle->streamSynchronize(s);
+    waitRes = flagcxWaitSignal(1, &desc, comm, s);
+    if (waitRes == flagcxSuccess)
+      devHandle->streamSynchronize(s);
   }
+
+  int globalWaitStatus = collectiveOpStatus(waitRes);
+  if (globalWaitStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalWaitStatus, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);
   devHandle->streamDestroy(s);
@@ -86,8 +68,8 @@ TEST_F(RmaTest, SignalOnlyNoData) {
 TEST_F(RmaTest, MultipleSignals) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-
-  establishConnection(comm, devHandle, rank, nranks);
+  if (!signalRmaAvailable)
+    GTEST_SKIP() << signalRmaSkipReason;
 
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -114,15 +96,23 @@ TEST_F(RmaTest, MultipleSignals) {
   }
   ASSERT_EQ(globalStatus, 0);
 
+  flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     // Wait for all 4 signals from rank 0
     flagcxWaitSignalDesc_t desc = {(uint64_t)numSignals, 0};
-    flagcxResult_t res = flagcxWaitSignal(1, &desc, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
-    devHandle->streamSynchronize(s);
+    waitRes = flagcxWaitSignal(1, &desc, comm, s);
+    if (waitRes == flagcxSuccess)
+      devHandle->streamSynchronize(s);
   }
+
+  int globalWaitStatus = collectiveOpStatus(waitRes);
+  if (globalWaitStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalWaitStatus, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);
   devHandle->streamDestroy(s);

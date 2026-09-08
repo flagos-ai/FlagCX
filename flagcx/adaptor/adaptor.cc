@@ -181,21 +181,20 @@ extern struct flagcxNetAdaptor flagcxNetUcx;
 #ifdef USE_ACCL_BAREX
 extern struct flagcxNetAdaptor flagcxNetBarex;
 #endif
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
-// Unified network adaptor entry point
-struct flagcxNetAdaptor *getUnifiedNetAdaptor(int netType) {
+// Build-selected network adaptor entry point
+struct flagcxNetAdaptor *getNetAdaptor(int netType) {
   switch (netType) {
-    case IBRC:
+    case RDMA:
 #ifdef USE_UCX
-      // When UCX is enabled, use UCX instead of IBRC
+      // UCX is the build-selected RDMA-class adaptor.
       return &flagcxNetUcx;
 #elif USE_IBUC
-      // When IBUC is enabled, use IBUC instead of IBRC
+      // IBUC is the build-selected RDMA-class adaptor.
       return &flagcxNetIbuc;
 #elif USE_ACCL_BAREX
-      // When ACCL barex is enabled (PPU + vsolar hosts), use it instead
-      // of IBRC; FLAGCX_BAREX_DISABLE=1 falls back to socket at runtime.
+      // BAREX is the build-selected RDMA-class adaptor on PPU/vSolar hosts;
+      // FLAGCX_BAREX_DISABLE=1 falls back to socket at runtime.
       return &flagcxNetBarex;
 #else
       return &flagcxNetIb;

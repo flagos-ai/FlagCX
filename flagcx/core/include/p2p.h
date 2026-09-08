@@ -55,9 +55,26 @@ struct flagcxP2pSyncSlot {
   int peerDone;    // 1 = slot is free, 0 = slot is in use
 };
 
+enum flagcxP2pRegistrationState {
+  flagcxP2pRegistrationUnknown = 0,
+  flagcxP2pRegistrationDisabled = 1,
+  flagcxP2pRegistrationEnabled = 2,
+};
+
+enum flagcxP2pTransferMode {
+  flagcxP2pTransferUnknown = 0,
+  flagcxP2pTransferFifo = 1,
+  flagcxP2pTransferWrite = 2,
+  flagcxP2pTransferRead = 3,
+};
+
 struct p2pRegInfo {
   int copyDone;    // Indicates if the copy operation is complete
   int copyStarted; // Indicates if the copy operation has started
+  // Each endpoint publishes whether its local operation buffer is registered.
+  // Both sides wait for these fields before selecting the same transfer mode.
+  int sendRegState;
+  int recvRegState;
   // WRITE mode: recv publishes into sender's slot
   int ipcRecvRegReady;      // 1 = ipcRecvRmtAddr valid; recv sets
   uintptr_t ipcRecvRmtAddr; // Recv's buffer mapped in sender's address space
@@ -113,6 +130,9 @@ flagcxResult_t flagcxP2pProxySelfCopy(struct flagcxP2pResources *resources,
                                       void *sendData, void *recvData,
                                       size_t size,
                                       struct flagcxProxyArgs *args);
+
+flagcxResult_t flagcxP2pSelectTransferMode(int sendRegState, int recvRegState,
+                                           int *mode);
 
 flagcxResult_t flagcxP2pSendProxySetup(struct flagcxProxyConnection *connection,
                                        struct flagcxProxyState *proxyState,

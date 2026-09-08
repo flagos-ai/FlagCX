@@ -2351,11 +2351,22 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
       (commOp_ == flagcxCommOpGather &&
        ((eachNicPerRank_ && isRootCluster_) ||
         (!eachNicPerRank_ && rank_ != rootRank_)))) {
-    deviceAdaptor->deviceMalloc(&scratchBuffer_,
-                                totalCount_ * getFlagcxDataTypeSize(datatype),
-                                flagcxMemDevice, stream);
+    FLAGCXCHECK(deviceAdaptor->deviceMalloc(
+        &scratchBuffer_, totalCount_ * getFlagcxDataTypeSize(datatype),
+        flagcxMemDevice, stream));
   } else {
     scratchBuffer_ = nullptr;
+  }
+
+  // In general multi-NIC scatter, the root sends the full input to the other
+  // inter-ranks before the local post-scatter. If the root is itself inter-rank
+  // 0, that send intentionally skips self, so seed its scratch buffer here.
+  if (commOp_ == flagcxCommOpScatter && !eachNicPerRank_ &&
+      rank_ == rootRank_ && homoInterMyRank_ == 0) {
+    FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+        scratchBuffer_, const_cast<void *>(sendbuff),
+        totalCount_ * getFlagcxDataTypeSize(datatype),
+        flagcxMemcpyDeviceToDevice, stream, nullptr));
   }
 
   void *recvTmpBuff = (scratchBuffer_ == nullptr) ? recvbuff : scratchBuffer_;

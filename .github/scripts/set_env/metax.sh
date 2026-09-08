@@ -24,98 +24,102 @@ FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_INTRA_NP=8
 FLAGCX_CI_RUNNER_NP=8
+# MetaX heterogeneous runner currently faults when a progress thread writes to
+# an IPC mapping imported by another thread. Keep the runner build and its
+# non-MPI unit tests enabled, but skip MPI coverage until that runtime path is
+# fixed and validated by the focused cross-thread IPC adaptor test.
+FLAGCX_CI_RUNNER_MPI_SUPPORTED=0
+FLAGCX_CI_RUNNER_MPI_SKIP_REASON="cross-thread IPC mappings are not yet writable on MetaX"
+# Symmetric-memory MPI coverage currently hangs in
+# SymMemTest.DevMemCreateWithWindow. Keep its build and non-MPI unit tests
+# enabled while avoiding the full invocation timeout on every CI run.
+export FLAGCX_CI_SYMMEM_MPI_SUPPORTED=0
+export FLAGCX_CI_SYMMEM_MPI_SKIP_REASON="DevMemCreateWithWindow currently hangs on MetaX"
 export NP=8
 
 flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
-    p2p)
-      # The MetaX CI RoCE environment cannot establish IB_P2P QPs reliably yet.
-      # Keep structure/bootstrap/slice tests enabled and skip real IB_P2P paths.
-      export GTEST_FILTER="-FlagcxP2pEngineReadTest.*:P2pLoopbackTest.*:P2pBatchTest.*:P2pEngineRpcIbTest.*"
+    adaptor|p2p|rma)
+      export FLAGCX_DEBUG=TRACE
+      export FLAGCX_DEBUG_SUBSYS=ALL
       ;;
-    rma)
-      FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
-      )
+  esac
+
+  case "$suite" in
+    adaptor|p2p|rma)
+      # bnxt_roce2 is attached to the PCIe/NUMA side containing physical GPUs
+      # 4 and 5 on the MetaX CI runner. Use both CUDA- and MACA-compatible
+      # visibility controls so the runtime consistently exposes that pair as
+      # logical devices 0 and 1 to all focused two-GPU network suites.
+      export CUDA_VISIBLE_DEVICES=4,5
+      export MACA_VISIBLE_DEVICES=4,5
       ;;
   esac
 }
 
 flagcx_ci_prepare() {
   local suite=$1
-  echo "Preparing MetaX environment for unit-test suite: $suite"
+  local require_roce=0
+  echo "Preparing MetaX environment for test suite: $suite"
   command -v mpirun
   command -v mxcc
 
-  if [[ "$suite" == "p2p" ]]; then
-    if compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
-      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-bnxt_re_bond}
+  case "$suite" in
+    adaptor|p2p|rma|symmem) require_roce=1 ;;
+  esac
+
+  if compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null; then
+    local detected_hcas
+    detected_hcas=$(printf '%s\n' /sys/class/infiniband/bnxt_roce* | xargs -n1 basename | paste -sd, -)
+    if [[ "$suite" == "rma" ]]; then
+      if [[ ! -d /sys/class/infiniband/bnxt_roce2 ]]; then
+        echo "MetaX RMA tests require bnxt_roce2, but it was not found." >&2
+        echo "Detected RoCE HCAs: $detected_hcas" >&2
+        return 1
+      fi
+      # bnxt_roce3 timed out while creating a CQ on the RMA runner. Restrict
+      # this focused suite to bnxt_roce2 instead of allowing topology
+      # selection to route one rank through the unhealthy HCA.
+      export FLAGCX_IB_HCA=bnxt_roce2
+    elif [[ "$require_roce" == "1" ]]; then
+      # Network-sensitive suites must use the validated MetaX RoCE HCAs even
+      # when the runner or container supplies a different FLAGCX_IB_HCA.
+      export FLAGCX_IB_HCA=$detected_hcas
+    else
+      export FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-$detected_hcas}
     fi
+  elif [[ "$require_roce" == "1" ]]; then
+    echo "MetaX $suite tests require bnxt_roce*, but none was found." >&2
+    echo "RDMA devices visible in /sys/class/infiniband:" >&2
+    ls -la /sys/class/infiniband >&2 || true
+    return 1
+  fi
 
-    if [[ -d /sys/class/net/bond0 ]]; then
-      export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
+  if [[ -d /sys/class/net/bond0 ]]; then
+    export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-bond0}
+  elif [[ -d /sys/class/net/eth0 ]]; then
+    export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-eth0}
+  else
+    local fallback_ifname
+    fallback_ifname=$(ip -o link show 2>/dev/null | awk -F': ' '$2 != "lo" {print $2; exit}')
+    if [[ -n "$fallback_ifname" ]]; then
+      export FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-$fallback_ifname}
     fi
-
-    export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
-    export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-INIT,NET,P2P,ENV}
-
-    echo "MetaX P2P diagnostics:"
-    echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
-    echo "FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-<unset>}"
-    echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
-    ls /dev/infiniband 2>/dev/null || true
-    ibv_devices 2>/dev/null || true
-    ibv_devinfo 2>/dev/null || true
-    ip -o addr show 2>/dev/null || true
-  fi
-}
-
-flagcx_ci_build_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-  local -a args=("$@")
-
-  if [[ "$suite" == "symmem" ]]; then
-    FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1
-    cmake -S "$PROJECT_ROOT/third-party/googletest" \
-      -B "$PROJECT_ROOT/third-party/googletest/build"
-    cmake --build "$PROJECT_ROOT/third-party/googletest/build" --parallel "$(nproc)"
-    make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
-    return
   fi
 
-  FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
-}
-
-flagcx_ci_run_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-  local -a args=("$@")
-
-  if [[ "$suite" == "runner" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    make -C "$suite_dir" run-unit "${args[@]}"
-    echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
-    return
-  fi
-
-  if [[ "$suite" == "rma" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    make -C "$suite_dir" run-unit "${args[@]}"
-    echo "Skipping MetaX RMA MPI tests: one-sided RMA is not supported by the current MetaX backend."
-    return
-  fi
-
-  if [[ "$suite" == "symmem" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    "$suite_dir/build/bin/symmem_unit_tests"
-    echo "Skipping MetaX symmem MPI tests: symmetric windows are not supported by the current MetaX backend."
-    return
-  fi
-
-  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
+  echo "MetaX network diagnostics:"
+  echo "FLAGCX_IB_HCA=${FLAGCX_IB_HCA:-<unset>}"
+  echo "FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-<unset>}"
+  echo "FLAGCX_SOCKET_IFNAME=${FLAGCX_SOCKET_IFNAME:-<unset>}"
+  echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+  echo "MACA_VISIBLE_DEVICES=${MACA_VISIBLE_DEVICES:-<unset>}"
+  echo "net interfaces:"
+  ls /sys/class/net 2>/dev/null || true
+  echo "infiniband devices:"
+  ls /dev/infiniband 2>/dev/null || true
+  ibv_devices 2>/dev/null || true
+  ibv_devinfo 2>/dev/null || true
+  ip -o addr show 2>/dev/null || true
 }

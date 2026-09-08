@@ -2,10 +2,36 @@
 // Verifies that the flat VA mapping allows direct peer reads/writes.
 // Requires MPI + GPUs with P2P support.
 
+#include "adaptor.h"
+#include "param.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
 #include <cstring>
 #include <vector>
+
+namespace {
+
+bool allRanksHaveConfiguredVmm(flagcxComm_t comm) {
+  int localReady = comm != nullptr && comm->heteroComm != nullptr &&
+                           flagcxParamVmmEnable() && deviceAdaptor != nullptr &&
+                           deviceAdaptor->symPhysAlloc != nullptr &&
+                           deviceAdaptor->symFlatMap != nullptr
+                       ? 1
+                       : 0;
+  int allReady = 0;
+  MPI_Allreduce(&localReady, &allReady, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  return allReady != 0;
+}
+
+bool allRanksMappedVmm(flagcxSymWindow_t window) {
+  int localMapped =
+      window != nullptr && window->isVMM && window->flatBase != nullptr ? 1 : 0;
+  int allMapped = 0;
+  MPI_Allreduce(&localMapped, &allMapped, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  return allMapped != 0;
+}
+
+} // namespace
 
 // ---------------------------------------------------------------------------
 // Each rank writes a pattern, then reads from the next peer's region
@@ -13,6 +39,9 @@
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
+  if (!allRanksHaveConfiguredVmm(comm))
+    GTEST_SKIP() << "VMM is disabled or unavailable on at least one rank";
+
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -22,9 +51,9 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   ASSERT_NE(win->defaultBase, nullptr);
 
   flagcxSymWindow_t d = win->defaultBase;
-  if (!d->isVMM || d->flatBase == nullptr) {
+  if (!allRanksMappedVmm(d)) {
     flagcxCommWindowDeregister(comm, win);
-    GTEST_SKIP() << "VMM not available, cannot test flat VA access";
+    GTEST_SKIP() << "VMM mapping is unavailable on at least one rank";
   }
   if (!hasHeteroComm()) {
     flagcxCommWindowDeregister(comm, win);
@@ -83,6 +112,9 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
+  if (!allRanksHaveConfiguredVmm(comm))
+    GTEST_SKIP() << "VMM is disabled or unavailable on at least one rank";
+
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
@@ -92,9 +124,9 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   ASSERT_NE(win->defaultBase, nullptr);
 
   flagcxSymWindow_t d = win->defaultBase;
-  if (!d->isVMM || d->flatBase == nullptr) {
+  if (!allRanksMappedVmm(d)) {
     flagcxCommWindowDeregister(comm, win);
-    GTEST_SKIP() << "VMM not available, cannot test flat VA access";
+    GTEST_SKIP() << "VMM mapping is unavailable on at least one rank";
   }
   if (!hasHeteroComm()) {
     flagcxCommWindowDeregister(comm, win);

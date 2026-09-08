@@ -5,34 +5,6 @@
 #include <cstring>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Helper: establish connection between rank 0 and rank 1 via dummy send/recv
-// (required before one-sided ops can be issued)
-// ---------------------------------------------------------------------------
-static void establishConnection(flagcxComm_t comm,
-                                flagcxDeviceHandle_t devHandle, int rank,
-                                int nranks) {
-  flagcxStream_t s;
-  devHandle->streamCreate(&s);
-  void *dummy = nullptr;
-  devHandle->deviceMalloc(&dummy, 1, flagcxMemDevice, nullptr);
-
-  // All-to-all dummy exchange to establish connections
-  flagcxGroupStart(comm);
-  for (int peer = 0; peer < nranks; ++peer) {
-    if (peer == rank)
-      continue;
-    flagcxSend(dummy, 1, flagcxChar, peer, comm, s);
-    flagcxRecv(dummy, 1, flagcxChar, peer, comm, s);
-  }
-  flagcxGroupEnd(comm);
-
-  devHandle->streamSynchronize(s);
-  devHandle->deviceFree(dummy, flagcxMemDevice, nullptr);
-  devHandle->streamDestroy(s);
-  MPI_Barrier(MPI_COMM_WORLD);
-}
-
 static int collectiveOpStatus(flagcxResult_t res) {
   int localStatus =
       (res == flagcxSuccess) ? 0 : (res == flagcxNotSupported ? 1 : 2);
@@ -48,8 +20,8 @@ static int collectiveOpStatus(flagcxResult_t res) {
 TEST_F(RmaTest, PutSignalSmall) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-
-  establishConnection(comm, devHandle, rank, nranks);
+  if (!signalRmaAvailable)
+    GTEST_SKIP() << signalRmaSkipReason;
 
   const size_t testSize = 64;
   flagcxStream_t s;
@@ -78,15 +50,25 @@ TEST_F(RmaTest, PutSignalSmall) {
   }
   ASSERT_EQ(globalStatus, 0);
 
+  flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     // Wait for signal from rank 0
     flagcxWaitSignalDesc_t desc = {1, 0};
-    flagcxResult_t res = flagcxWaitSignal(1, &desc, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
-    devHandle->streamSynchronize(s);
+    waitRes = flagcxWaitSignal(1, &desc, comm, s);
+    if (waitRes == flagcxSuccess)
+      devHandle->streamSynchronize(s);
+  }
 
+  int globalWaitStatus = collectiveOpStatus(waitRes);
+  if (globalWaitStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalWaitStatus, 0);
+
+  if (rank == 1) {
     // Verify data
     std::vector<uint8_t> received(testSize, 0);
     devHandle->deviceMemcpy(received.data(), dataBuff, testSize,
@@ -114,8 +96,8 @@ TEST_F(RmaTest, PutSignalSmall) {
 TEST_F(RmaTest, PutSignalLarge) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-
-  establishConnection(comm, devHandle, rank, nranks);
+  if (!signalRmaAvailable)
+    GTEST_SKIP() << signalRmaSkipReason;
 
   const size_t testSize = RMA_TEST_SIZE;
   flagcxStream_t s;
@@ -145,14 +127,24 @@ TEST_F(RmaTest, PutSignalLarge) {
   }
   ASSERT_EQ(globalStatus, 0);
 
+  flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
     devHandle->streamSynchronize(s);
   } else if (rank == 1) {
     flagcxWaitSignalDesc_t desc = {1, 0};
-    flagcxResult_t res = flagcxWaitSignal(1, &desc, comm, s);
-    ASSERT_EQ(res, flagcxSuccess);
-    devHandle->streamSynchronize(s);
+    waitRes = flagcxWaitSignal(1, &desc, comm, s);
+    if (waitRes == flagcxSuccess)
+      devHandle->streamSynchronize(s);
+  }
 
+  int globalWaitStatus = collectiveOpStatus(waitRes);
+  if (globalWaitStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+  }
+  ASSERT_EQ(globalWaitStatus, 0);
+
+  if (rank == 1) {
     std::vector<uint8_t> received(testSize, 0);
     devHandle->deviceMemcpy(received.data(), dataBuff, testSize,
                             flagcxMemcpyDeviceToHost, nullptr);

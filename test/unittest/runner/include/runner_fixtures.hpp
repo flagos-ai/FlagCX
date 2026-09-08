@@ -25,11 +25,14 @@ protected:
 
   flagcxDeviceHandle_t devHandle = nullptr;
   flagcxComm_t comm = nullptr;
-  flagcxStream_t stream;
-  void *sendbuff;
-  void *recvbuff;
-  void *hostsendbuff;
-  void *hostrecvbuff;
+  flagcxStream_t stream = nullptr;
+  void *sendbuff = nullptr;
+  void *recvbuff = nullptr;
+  void *hostsendbuff = nullptr;
+  void *hostrecvbuff = nullptr;
+  void *sendRegHandle = nullptr;
+  void *recvRegHandle = nullptr;
+  bool useRegisteredBuffers = false;
   size_t size;
   size_t count;
 };

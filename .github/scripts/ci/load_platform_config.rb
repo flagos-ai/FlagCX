@@ -26,8 +26,8 @@ required_keys = %w[
   display_name
   ci_image
   runner_labels
-  container_volumes
-  container_options
+  docker_volumes
+  docker_options
   set_env
   unit_test_suites
 ]
@@ -40,8 +40,22 @@ abort "#{config_path}: hardware_name must be #{platform}" unless hardware_name =
 runner_labels = config.fetch("runner_labels")
 abort "#{config_path}: runner_labels must be a non-empty array" unless runner_labels.is_a?(Array) && !runner_labels.empty?
 
-container_volumes = config.fetch("container_volumes")
-abort "#{config_path}: container_volumes must be an array" unless container_volumes.is_a?(Array)
+docker_volumes = config.fetch("docker_volumes")
+abort "#{config_path}: docker_volumes must be an array" unless docker_volumes.is_a?(Array)
+
+docker_options = config.fetch("docker_options")
+abort "#{config_path}: docker_options must be a non-empty array" unless docker_options.is_a?(Array) && !docker_options.empty?
+
+validate_argument = lambda do |argument, field|
+  unless argument.is_a?(String) && !argument.empty? && !argument.match?(/[\r\n\0]/)
+    abort "#{config_path}: #{field} entries must be non-empty, single-line strings"
+  end
+end
+
+docker_options.each { |option| validate_argument.call(option, "docker_options") }
+docker_volumes.each { |volume| validate_argument.call(volume, "docker_volumes") }
+
+docker_args = docker_options + docker_volumes.map { |volume| "--volume=#{volume}" }
 
 suites = config.fetch("unit_test_suites")
 abort "#{config_path}: unit_test_suites must be a non-empty array" unless suites.is_a?(Array) && !suites.empty?
@@ -53,8 +67,7 @@ outputs = {
   "display_name" => config.fetch("display_name"),
   "ci_image" => config.fetch("ci_image"),
   "runs_on" => JSON.generate(runner_labels),
-  "container_volumes" => JSON.generate(container_volumes),
-  "container_options" => config.fetch("container_options"),
+  "docker_args" => docker_args.join("\n"),
   "set_env" => set_env,
   "unit_test_suites" => JSON.generate(suites)
 }

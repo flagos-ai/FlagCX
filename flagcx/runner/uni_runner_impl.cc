@@ -75,6 +75,21 @@ void flagcxUniRunnerState::resetEvent(int idx) {
         p2pEventMap.bits[0]);
 }
 
+flagcxResult_t flagcxUniRunnerClassifyEventQuery(flagcxResult_t queryResult,
+                                                 bool *complete) {
+  if (complete == nullptr)
+    return flagcxInvalidArgument;
+
+  if (queryResult == flagcxSuccess) {
+    *complete = true;
+    return flagcxSuccess;
+  }
+  *complete = false;
+  if (queryResult == flagcxInProgress)
+    return flagcxSuccess;
+  return queryResult;
+}
+
 flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState) {
   return flagcxNotSupported;
 }
@@ -1730,9 +1745,11 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
   uniRunnerDagNode *curr = flagcxIntruQueueHead(&runnerState->p2pInflightQueue);
   while (curr) {
     if (curr->nodeType == uniRunnerDagNodeTypeP2p) {
-      if (deviceAdaptor->eventQuery(
-              runnerState->p2pEvents[curr->nodeData.p2p.eventIdx]) ==
-          flagcxSuccess) {
+      flagcxResult_t queryResult = deviceAdaptor->eventQuery(
+          runnerState->p2pEvents[curr->nodeData.p2p.eventIdx]);
+      bool complete = false;
+      FLAGCXCHECK(flagcxUniRunnerClassifyEventQuery(queryResult, &complete));
+      if (complete) {
         runnerState->resetEvent(curr->nodeData.p2p.eventIdx);
         curr->nodeData.p2p.eventIdx = -1;
         for (int i = 0; i < curr->numChildren; i++) {
@@ -1747,9 +1764,11 @@ static flagcxResult_t processInflightQueue(flagcxUniRunnerState *runnerState) {
         curr = curr->next;
       }
     } else if (curr->nodeType == uniRunnerDagNodeTypeCpy) {
-      if (deviceAdaptor->eventQuery(
-              runnerState->p2pEvents[curr->nodeData.cpy.eventIdx]) ==
-          flagcxSuccess) {
+      flagcxResult_t queryResult = deviceAdaptor->eventQuery(
+          runnerState->p2pEvents[curr->nodeData.cpy.eventIdx]);
+      bool complete = false;
+      FLAGCXCHECK(flagcxUniRunnerClassifyEventQuery(queryResult, &complete));
+      if (complete) {
         runnerState->resetEvent(curr->nodeData.cpy.eventIdx);
         curr->nodeData.cpy.eventIdx = -1;
         for (int i = 0; i < curr->numChildren; i++) {

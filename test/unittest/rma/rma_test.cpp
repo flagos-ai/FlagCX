@@ -1,5 +1,6 @@
 #include "rma_test.hpp"
 #include "comm.h"
+#include "sym_heap.h"
 #include <cstring>
 
 // Static member definitions
@@ -11,8 +12,10 @@ void *RmaTest::signalBuff = nullptr;
 flagcxWindow_t RmaTest::dataWin = nullptr;
 size_t RmaTest::size = 0;
 size_t RmaTest::signalSize = 0;
-bool RmaTest::oneSidedAvailable = false;
-const char *RmaTest::oneSidedSkipReason = "RMA one-sided setup not completed";
+bool RmaTest::dataRmaAvailable = false;
+const char *RmaTest::dataRmaSkipReason = "Data RMA setup not completed";
+bool RmaTest::signalRmaAvailable = false;
+const char *RmaTest::signalRmaSkipReason = "Signal RMA setup not completed";
 
 void RmaTest::SetUpTestSuite() {
   int rank, nranks;
@@ -21,8 +24,10 @@ void RmaTest::SetUpTestSuite() {
 
   size = RMA_TEST_SIZE;
   signalSize = sizeof(uint64_t) * nranks;
-  oneSidedAvailable = false;
-  oneSidedSkipReason = "RMA one-sided setup not completed";
+  dataRmaAvailable = false;
+  dataRmaSkipReason = "Data RMA setup not completed";
+  signalRmaAvailable = false;
+  signalRmaSkipReason = "Signal RMA setup not completed";
 
   flagcxDeviceHandleInit(&devHandle);
 
@@ -40,26 +45,25 @@ void RmaTest::SetUpTestSuite() {
   flagcxResult_t res = flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
   if (res != flagcxSuccess) {
     comm = nullptr;
-    oneSidedSkipReason = "Communicator initialization failed";
+    dataRmaSkipReason = "Communicator initialization failed";
     return;
   }
 
   // Skip setup if hetero comm not available
   if (comm == nullptr || comm->heteroComm == nullptr) {
-    oneSidedSkipReason = "Hetero communicator not available";
+    dataRmaSkipReason = "Hetero communicator not available";
     return;
   }
 
   if (comm->heteroComm->rmaProxy == nullptr) {
-    oneSidedSkipReason = "RMA proxy not available";
+    dataRmaSkipReason = "RMA proxy not available";
     return;
   }
 
   if (comm->heteroComm->netAdaptor == nullptr ||
       comm->heteroComm->netAdaptor->iput == nullptr ||
-      comm->heteroComm->netAdaptor->iget == nullptr ||
-      comm->heteroComm->netAdaptor->iputSignal == nullptr) {
-    oneSidedSkipReason = "Net adaptor does not support one-sided RMA";
+      comm->heteroComm->netAdaptor->iget == nullptr) {
+    dataRmaSkipReason = "Net adaptor does not support data RMA";
     return;
   }
 
@@ -71,9 +75,31 @@ void RmaTest::SetUpTestSuite() {
 
   res = flagcxCommWindowRegister(comm, dataBuff, size, &dataWin,
                                  FLAGCX_WIN_COLL_SYMMETRIC);
-  if (res != flagcxSuccess || dataWin == nullptr) {
-    // Net adaptor doesn't support one-sided, tests will skip
-    oneSidedSkipReason = "Net adaptor does not support one-sided ops";
+  const int localNetworkMrReady = res == flagcxSuccess && dataWin != nullptr &&
+                                  dataWin->isSymmetricDefault &&
+                                  dataWin->defaultBase != nullptr &&
+                                  dataWin->defaultBase->mrIndex >= 0;
+  int allNetworkMrsReady = 0;
+  MPI_Allreduce(&localNetworkMrReady, &allNetworkMrsReady, 1, MPI_INT, MPI_MIN,
+                MPI_COMM_WORLD);
+  if (!allNetworkMrsReady) {
+    dataRmaSkipReason = "Symmetric window has no registered network MR";
+    FAIL() << "RMA setup requires a network-registered symmetric window on "
+              "every rank (result="
+           << res << ", window=" << dataWin << ", mrIndex="
+           << ((dataWin != nullptr && dataWin->defaultBase != nullptr)
+                   ? dataWin->defaultBase->mrIndex
+                   : -1)
+           << ")";
+  }
+
+  // A network-registered data window is sufficient for flagcxGet tests. Do
+  // not make those tests depend on the optional signal-buffer path below.
+  dataRmaAvailable = true;
+  dataRmaSkipReason = nullptr;
+
+  if (comm->heteroComm->netAdaptor->iputSignal == nullptr) {
+    signalRmaSkipReason = "Net adaptor does not support one-sided signals";
     return;
   }
 
@@ -81,7 +107,7 @@ void RmaTest::SetUpTestSuite() {
   res = flagcxMemAlloc(&signalBuff, signalSize);
   if (res != flagcxSuccess || signalBuff == nullptr) {
     signalBuff = nullptr;
-    oneSidedSkipReason = "Signal buffer allocation is not supported";
+    signalRmaSkipReason = "Signal buffer allocation is not supported";
     return;
   }
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
@@ -90,12 +116,12 @@ void RmaTest::SetUpTestSuite() {
   if (res != flagcxSuccess) {
     flagcxMemFree(signalBuff);
     signalBuff = nullptr;
-    oneSidedSkipReason = "Signal buffer registration is not supported";
+    signalRmaSkipReason = "Signal buffer registration is not supported";
     return;
   }
 
-  oneSidedAvailable = true;
-  oneSidedSkipReason = nullptr;
+  signalRmaAvailable = true;
+  signalRmaSkipReason = nullptr;
 }
 
 void RmaTest::TearDownTestSuite() {
@@ -136,8 +162,8 @@ void RmaTest::TearDownTestSuite() {
 
 void RmaTest::SetUp() {
   FlagCXTest::SetUp();
-  if (!oneSidedAvailable) {
-    GTEST_SKIP() << oneSidedSkipReason;
+  if (!dataRmaAvailable) {
+    GTEST_SKIP() << dataRmaSkipReason;
   }
   if (dataWin == nullptr) {
     GTEST_SKIP() << "Net adaptor does not support one-sided ops (iput/iget)";

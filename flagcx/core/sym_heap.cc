@@ -20,6 +20,24 @@
 #include <cstring>
 #include <unistd.h>
 
+static void flagcxSymWindowRelease(flagcxSymWindow_t d) {
+  if (d == nullptr)
+    return;
+
+  if (d->isVMM) {
+    if (d->mcBase != nullptr && deviceAdaptor->symMulticastTeardown)
+      deviceAdaptor->symMulticastTeardown(d->mcBase, d->mcMapSize);
+    if (d->mcHandle != nullptr && deviceAdaptor->symMulticastFree)
+      deviceAdaptor->symMulticastFree(d->mcHandle);
+    if (d->flatBase != nullptr && deviceAdaptor->symFlatUnmap)
+      deviceAdaptor->symFlatUnmap(d->flatBase, d->allocSize, d->localRanks);
+    if (d->physHandle != nullptr && deviceAdaptor->symPhysFree)
+      deviceAdaptor->symPhysFree(d->physHandle);
+  }
+
+  free(d);
+}
+
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
                                        size_t size, flagcxWindow_t *win,
                                        int winFlags) {
@@ -297,6 +315,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
         }
         free(allFds);
         allFds = nullptr;
+        shareableFd = -1;
       } else if (localAllocOk) {
         // Local alloc succeeded but a peer failed — free local resources
         if (shareableFd >= 0) {
@@ -324,10 +343,22 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
   // ---- Inter-node MR registration ----
   {
+    const bool netRequired =
+        comm->nNodes > 1 || flagcxParamDeviceOneSidedForceNet();
     INFO(FLAGCX_INIT,
          "[symWindowRegister] vmmOk=%d, registering MR for buff=%p size=%zu",
          (int)d->isVMM, buff, size);
     flagcxResult_t regRes = flagcxOneSideRegisterInternal(comm, buff, size);
+    if (regRes != flagcxSuccess) {
+      if (netRequired) {
+        res = regRes;
+        goto fail;
+      }
+      INFO(FLAGCX_INIT,
+           "[symWindowRegister] optional MR registration failed (%d); "
+           "continuing with single-node VMM/IPC access",
+           (int)regRes);
+    }
     if (regRes == flagcxSuccess) {
       for (int i = 0; i < comm->oneSideHandleCount; i++) {
         struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[i];
@@ -371,7 +402,7 @@ fail:
     close(mcFd);
   if (mcHandle != nullptr && deviceAdaptor->symMulticastFree)
     deviceAdaptor->symMulticastFree(mcHandle);
-  free(d);
+  flagcxSymWindowRelease(d);
   free(w);
   return res;
 }
@@ -382,27 +413,7 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     return flagcxSuccess;
 
   flagcxSymWindow_t d = win->defaultBase;
-  if (d != nullptr) {
-    if (d->isVMM) {
-      // Teardown multicast
-      if (d->mcBase != nullptr && deviceAdaptor->symMulticastTeardown)
-        deviceAdaptor->symMulticastTeardown(d->mcBase, d->mcMapSize);
-
-      // Release multicast handle (rank 0 only allocated it)
-      if (d->mcHandle != nullptr && deviceAdaptor->symMulticastFree)
-        deviceAdaptor->symMulticastFree(d->mcHandle);
-
-      // Unmap flat VA
-      if (d->flatBase != nullptr && deviceAdaptor->symFlatUnmap)
-        deviceAdaptor->symFlatUnmap(d->flatBase, d->allocSize, d->localRanks);
-
-      // Free physical handle
-      if (d->physHandle != nullptr && deviceAdaptor->symPhysFree)
-        deviceAdaptor->symPhysFree(d->physHandle);
-    }
-
-    free(d);
-  }
+  flagcxSymWindowRelease(d);
 
   free(win);
   return flagcxSuccess;

@@ -16,8 +16,7 @@ jobs:
       display_name: ${{ steps.config.outputs.display_name }}
       ci_image: ${{ steps.config.outputs.ci_image }}
       runs_on: ${{ steps.config.outputs.runs_on }}
-      container_volumes: ${{ steps.config.outputs.container_volumes }}
-      container_options: ${{ steps.config.outputs.container_options }}
+      docker_args: ${{ steps.config.outputs.docker_args }}
       set_env: ${{ steps.config.outputs.set_env }}
       unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
     steps:
@@ -43,10 +42,6 @@ jobs:
       matrix:
         suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
-    container:
-      image: ${{ needs.load_config.outputs.ci_image }}
-      volumes: ${{ fromJSON(needs.load_config.outputs.container_volumes) }}
-      options: ${{ needs.load_config.outputs.container_options }}
     defaults:
       run:
         shell: bash
@@ -56,20 +51,65 @@ jobs:
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
-          submodules: false
+          submodules: recursive
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Checkout submodules
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
-          git submodule sync --recursive
-          git submodule update --init --force --recursive
+      - name: Check Docker
+        run: docker version
 
-      - name: Run unit-test suite
+      - name: Run unit-test suite in container
         env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_config.outputs.docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load_config.outputs.ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
           FLAGCX_CI_SUITE: ${{ matrix.suite }}
-        run: bash .github/scripts/ci/run_unit_test.sh "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"
+        run: |
+          set -euo pipefail
+
+          docker_args=()
+          while IFS= read -r argument; do
+            if [[ -n "$argument" ]]; then
+              docker_args+=("$argument")
+            fi
+          done <<< "$FLAGCX_CI_DOCKER_ARGS"
+
+          for proxy_var in HTTP_PROXY HTTPS_PROXY NO_PROXY \
+                           http_proxy https_proxy no_proxy; do
+            if [[ -n "${!proxy_var:-}" ]]; then
+              docker_args+=(--env "$proxy_var")
+            fi
+          done
+
+          docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+          docker pull "$FLAGCX_CI_IMAGE"
+          docker run --rm \
+            --name "$FLAGCX_CI_CONTAINER_NAME" \
+            "${docker_args[@]}" \
+            --user=root \
+            --volume "$GITHUB_WORKSPACE:/workspace-src:ro" \
+            --workdir /workspace \
+            --env HOME=/tmp/flagcx-ci-home \
+            --env GITHUB_WORKSPACE=/workspace \
+            --env GITHUB_ACTIONS=true \
+            --env CI=true \
+            --env FLAGCX_CI_SET_ENV \
+            --env FLAGCX_CI_SUITE \
+            --entrypoint=/bin/bash \
+            "$FLAGCX_CI_IMAGE" -lc '
+              set -euo pipefail
+              mkdir -p "$HOME" /workspace
+              cp -a /workspace-src/. /workspace/
+              git config --global --add safe.directory /workspace
+              git config --global --add safe.directory /workspace/third-party/googletest
+              git config --global --add safe.directory /workspace/third-party/json
+              bash .github/scripts/ci/run_unit_test.sh \
+                "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"
+            '
+
+      - name: Clean up unit-test container
+        if: ${{ always() }}
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true

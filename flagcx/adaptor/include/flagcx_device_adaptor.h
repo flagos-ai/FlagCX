@@ -245,6 +245,11 @@ struct flagcxDeviceAdaptor_latest {
   flagcxResult_t (*symMulticastFree)(void *mcHandle);
 
   flagcxResult_t (*getLastError)();
+
+  // Classify an address independently from IPC-export capability. Managed
+  // and device allocations report FLAGCX_PTR_CUDA; ordinary/pinned host
+  // allocations report FLAGCX_PTR_HOST. Optional for v1 plugins.
+  flagcxResult_t (*getPointerType)(const void *ptr, int *ptrType);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

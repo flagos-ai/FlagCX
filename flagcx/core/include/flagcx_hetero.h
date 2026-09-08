@@ -86,6 +86,9 @@ struct flagcxRmaProxyState {
   // Set to 1 by the progress thread when an IB op fails (test error, post
   // error, or missing sendComm). Wait functions check this and return an error.
   volatile int rmaError;
+  // Suppress repeated diagnostics when queued work has no published sendComm.
+  // rmaError prevents subsequent enqueue attempts after the first failure.
+  volatile int missingSendCommReported;
 
   void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;

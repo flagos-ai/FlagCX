@@ -409,6 +409,10 @@ typedef flagcxResult_t (*threadFunc_t)(struct flagcxProxyArgs *);
 enum proxyMode { proxyRing = 0, proxyFrom = 1, proxyTo = 2 };
 
 void *flagcxProxyService(void *args);
+// Record the first hard progress error and notify abort-aware waiters. Success
+// and transient in-progress results leave the proxy state unchanged.
+flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
+                                           flagcxResult_t res);
 flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);

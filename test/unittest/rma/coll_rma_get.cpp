@@ -6,39 +6,11 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// Helper: establish connection between all ranks via dummy send/recv
-// ---------------------------------------------------------------------------
-static void establishConnection(flagcxComm_t comm,
-                                flagcxDeviceHandle_t devHandle, int rank,
-                                int nranks) {
-  flagcxStream_t s;
-  devHandle->streamCreate(&s);
-  void *dummy = nullptr;
-  devHandle->deviceMalloc(&dummy, 1, flagcxMemDevice, nullptr);
-
-  flagcxGroupStart(comm);
-  for (int peer = 0; peer < nranks; ++peer) {
-    if (peer == rank)
-      continue;
-    flagcxSend(dummy, 1, flagcxChar, peer, comm, s);
-    flagcxRecv(dummy, 1, flagcxChar, peer, comm, s);
-  }
-  flagcxGroupEnd(comm);
-
-  devHandle->streamSynchronize(s);
-  devHandle->deviceFree(dummy, flagcxMemDevice, nullptr);
-  devHandle->streamDestroy(s);
-  MPI_Barrier(MPI_COMM_WORLD);
-}
-
-// ---------------------------------------------------------------------------
 // GetSmall: rank 1 reads 64 bytes from rank 0's buffer
 // ---------------------------------------------------------------------------
 TEST_F(RmaTest, GetSmall) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-
-  establishConnection(comm, devHandle, rank, nranks);
 
   const size_t testSize = 64;
   flagcxStream_t s;
@@ -54,17 +26,27 @@ TEST_F(RmaTest, GetSmall) {
   }
   MPI_Barrier(MPI_COMM_WORLD);
 
+  flagcxResult_t opRes = flagcxSuccess;
   if (rank == 1) {
     uint64_t cntBefore;
-    flagcxResult_t res = flagcxReadCounter(comm, &cntBefore);
-    ASSERT_EQ(res, flagcxSuccess);
+    opRes = flagcxReadCounter(comm, &cntBefore);
+    if (opRes == flagcxSuccess)
+      opRes = flagcxGet(comm, 0, 0, 0, testSize, 0, 0);
+    if (opRes == flagcxSuccess)
+      opRes = flagcxWaitCounter(comm, cntBefore + 1);
+  }
 
-    res = flagcxGet(comm, 0, 0, 0, testSize, 0, 0);
-    ASSERT_EQ(res, flagcxSuccess);
+  int localFailed = opRes != flagcxSuccess;
+  int anyFailed = 0;
+  MPI_Allreduce(&localFailed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  if (opRes != flagcxSuccess)
+    ADD_FAILURE() << "GetSmall RMA operation failed with result " << opRes;
+  if (anyFailed) {
+    devHandle->streamDestroy(s);
+    return;
+  }
 
-    res = flagcxWaitCounter(comm, cntBefore + 1);
-    ASSERT_EQ(res, flagcxSuccess);
-
+  if (rank == 1) {
     // Verify
     std::vector<uint8_t> received(testSize, 0);
     devHandle->deviceMemcpy(received.data(), dataBuff, testSize,
@@ -93,8 +75,6 @@ TEST_F(RmaTest, GetLarge) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
 
-  establishConnection(comm, devHandle, rank, nranks);
-
   const size_t testSize = RMA_TEST_SIZE;
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -110,17 +90,27 @@ TEST_F(RmaTest, GetLarge) {
   }
   MPI_Barrier(MPI_COMM_WORLD);
 
+  flagcxResult_t opRes = flagcxSuccess;
   if (rank == 1) {
     uint64_t cntBefore;
-    flagcxResult_t res = flagcxReadCounter(comm, &cntBefore);
-    ASSERT_EQ(res, flagcxSuccess);
+    opRes = flagcxReadCounter(comm, &cntBefore);
+    if (opRes == flagcxSuccess)
+      opRes = flagcxGet(comm, 0, 0, 0, testSize, 0, 0);
+    if (opRes == flagcxSuccess)
+      opRes = flagcxWaitCounter(comm, cntBefore + 1);
+  }
 
-    res = flagcxGet(comm, 0, 0, 0, testSize, 0, 0);
-    ASSERT_EQ(res, flagcxSuccess);
+  int localFailed = opRes != flagcxSuccess;
+  int anyFailed = 0;
+  MPI_Allreduce(&localFailed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  if (opRes != flagcxSuccess)
+    ADD_FAILURE() << "GetLarge RMA operation failed with result " << opRes;
+  if (anyFailed) {
+    devHandle->streamDestroy(s);
+    return;
+  }
 
-    res = flagcxWaitCounter(comm, cntBefore + 1);
-    ASSERT_EQ(res, flagcxSuccess);
-
+  if (rank == 1) {
     // Verify
     std::vector<uint8_t> received(testSize, 0);
     devHandle->deviceMemcpy(received.data(), dataBuff, testSize,
@@ -150,8 +140,6 @@ TEST_F(RmaTest, GetBidirectional) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
 
-  establishConnection(comm, devHandle, rank, nranks);
-
   const size_t testSize = 4096;
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -172,9 +160,22 @@ TEST_F(RmaTest, GetBidirectional) {
   size_t dstOffset = testSize; // read into second half of buffer
 
   uint64_t cntBefore;
-  ASSERT_EQ(flagcxReadCounter(comm, &cntBefore), flagcxSuccess);
-  ASSERT_EQ(flagcxGet(comm, peer, 0, dstOffset, testSize, 0, 0), flagcxSuccess);
-  ASSERT_EQ(flagcxWaitCounter(comm, cntBefore + 1), flagcxSuccess);
+  flagcxResult_t opRes = flagcxReadCounter(comm, &cntBefore);
+  if (opRes == flagcxSuccess)
+    opRes = flagcxGet(comm, peer, 0, dstOffset, testSize, 0, 0);
+  if (opRes == flagcxSuccess)
+    opRes = flagcxWaitCounter(comm, cntBefore + 1);
+
+  int localFailed = opRes != flagcxSuccess;
+  int anyFailed = 0;
+  MPI_Allreduce(&localFailed, &anyFailed, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  if (opRes != flagcxSuccess)
+    ADD_FAILURE() << "GetBidirectional RMA operation failed with result "
+                  << opRes;
+  if (anyFailed) {
+    devHandle->streamDestroy(s);
+    return;
+  }
 
   // Verify peer's data at dstOffset
   std::vector<uint8_t> received(testSize, 0);
