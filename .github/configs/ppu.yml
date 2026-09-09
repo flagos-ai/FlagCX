@@ -7,30 +7,30 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:manual-20260827-ppu-dev
 runner_labels:
   - flagcicd-810e
 
-container_volumes: []
+docker_volumes: []
 
-container_options: >-
-  --shm-size=100gb
-  --ulimit memlock=-1
-  --ulimit stack=67108864
-  --device=/dev/alixpu
-  --device=/dev/alixpu_ctl
-  --device=/dev/alixpu_ppu0
-  --device=/dev/alixpu_ppu1
-  --device=/dev/alixpu_ppu2
-  --device=/dev/alixpu_ppu3
-  --device=/dev/alixpu_ppu4
-  --device=/dev/alixpu_ppu5
-  --device=/dev/alixpu_ppu6
-  --device=/dev/alixpu_ppu7
-  --device=/dev/alixpu_ppu8
-  --device=/dev/alixpu_ppu9
-  --device=/dev/alixpu_ppu10
-  --device=/dev/alixpu_ppu11
-  --device=/dev/alixpu_ppu12
-  --device=/dev/alixpu_ppu13
-  --device=/dev/alixpu_ppu14
-  --device=/dev/alixpu_ppu15
+docker_options:
+  - --shm-size=100gb
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
+  - --device=/dev/alixpu
+  - --device=/dev/alixpu_ctl
+  - --device=/dev/alixpu_ppu0
+  - --device=/dev/alixpu_ppu1
+  - --device=/dev/alixpu_ppu2
+  - --device=/dev/alixpu_ppu3
+  - --device=/dev/alixpu_ppu4
+  - --device=/dev/alixpu_ppu5
+  - --device=/dev/alixpu_ppu6
+  - --device=/dev/alixpu_ppu7
+  - --device=/dev/alixpu_ppu8
+  - --device=/dev/alixpu_ppu9
+  - --device=/dev/alixpu_ppu10
+  - --device=/dev/alixpu_ppu11
+  - --device=/dev/alixpu_ppu12
+  - --device=/dev/alixpu_ppu13
+  - --device=/dev/alixpu_ppu14
+  - --device=/dev/alixpu_ppu15
 
 set_env: .github/scripts/set_env/ppu.sh
 
