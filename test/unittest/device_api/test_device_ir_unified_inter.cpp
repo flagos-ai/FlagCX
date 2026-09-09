@@ -34,6 +34,8 @@
 #include <cstring>
 #include <iostream>
 
+constexpr int kUnifiedIrS23ComboCount = 18;
+
 // ===========================================================================
 // Main test driver
 // ===========================================================================
@@ -85,21 +87,20 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
   // Create DevComm with signal/counter/barrier slots
-  // Inter suite uses 6 combinations (INTER + WORLD) for most tests
-  // S18 uses 8 signal slots (includes extra BLOCK single-leader patterns)
+  // Inter suite uses 6 combinations (INTER + WORLD) for most tests.
+  // S23 uses 18 slots for 3 put variants × 3 coop kinds × 2 teams.
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.barrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
   reqs.interBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
-  reqs.interSignalCount =
-      8; // 8 slots for S18 (6 standard + 2 BLOCK single-leader)
-  reqs.interCounterCount = 6; // 6 slots for S23 per-combo counter tracking
+  reqs.interSignalCount = kUnifiedIrS23ComboCount;
+  reqs.interCounterCount = kUnifiedIrS23ComboCount;
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
 
-  // Allocate send/recv buffers (8x for S18's 8-combination regions)
-  size_t bufSize = maxBytes * 8;
+  // Allocate send/recv buffers for S23, the largest combination matrix.
+  size_t bufSize = maxBytes * kUnifiedIrS23ComboCount;
   void *sendBuff = nullptr, *recvBuff = nullptr;
 #ifdef FLAGCX_COMM_TRAITS_SHMEM
   flagcxMemAllocator_t memAllocator = flagcxMemSHMEM;
@@ -560,11 +561,13 @@ int main(int argc, char *argv[]) {
     // assert ReadSignal==expected
     // =======================================================================
     {
-      for (size_t i = 0; i < 6 * count; i++)
+      for (size_t i = 0; i < kUnifiedIrS23ComboCount * count; i++)
         hostSend[i] = (float)(proc * 5000 + i);
-      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(sendBuff, hostSend,
+                                          kUnifiedIrS23ComboCount * bytes,
                                           flagcxMemcpyHostToDevice, stream));
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0,
+                                          kUnifiedIrS23ComboCount * bytes,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemcpy(devResults, &passResult, sizeof(int),
                                           flagcxMemcpyHostToDevice, stream));
@@ -580,7 +583,8 @@ int main(int argc, char *argv[]) {
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
 
-      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff, 6 * bytes,
+      FLAGCXCHECK(devHandle->deviceMemcpy(hostRecv, recvBuff,
+                                          kUnifiedIrS23ComboCount * bytes,
                                           flagcxMemcpyDeviceToHost, stream));
 
       bool s23Pass = (hostRes == 1);
@@ -588,7 +592,7 @@ int main(int argc, char *argv[]) {
       int prevWorld = (proc + totalProcs - 1) % totalProcs;
       int prevNodeBase = prevNode * intraSize + intraRank;
 
-      for (int combo = 0; combo < 6 && s23Pass; combo++) {
+      for (int combo = 0; combo < kUnifiedIrS23ComboCount && s23Pass; combo++) {
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
