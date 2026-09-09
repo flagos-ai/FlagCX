@@ -4,6 +4,10 @@
 
 export PATH="/usr/local/PPU_SDK/bin:${PATH}"
 export LD_LIBRARY_PATH="/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+FLAGCX_CI_PPU_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+FLAGCX_CI_PPU_DLOPEN_SHIM_SOURCE="$FLAGCX_CI_PPU_ENV_DIR/../ci/ppu_pccl_dlopen_shim.c"
+FLAGCX_CI_PPU_DLOPEN_SHIM_DIR="${RUNNER_TEMP:-/tmp}/flagcx-ci-ppu"
+FLAGCX_CI_PPU_DLOPEN_SHIM="$FLAGCX_CI_PPU_DLOPEN_SHIM_DIR/libflagcx-ppu-pccl-deepbind.so"
 
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 
@@ -65,12 +69,53 @@ flagcx_ci_configure_suite() {
     rma)
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
+    runner)
+      # PCCL on PPU currently hangs in the heterogeneous runner variants.
+      # Keep the regular collective runner coverage enabled.
+      unset FLAGCX_USE_HETERO_COMM FLAGCX_CLUSTER_SPLIT_LIST FLAGCX_MEM_ENABLE FLAGCX_VMM_ENABLE
+      export NCCL_P2P_DISABLE=1
+      export NCCL_SHM_DISABLE=1
+      ;;
   esac
 }
+
+flagcx_ci_run_suite_override() {
+  local suite=$1
+  local suite_dir=$2
+  shift 2
+  local -a args=("$@")
+
+  if [[ "$suite" == "runner" ]]; then
+    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
+    FLAGCX_CI_TEST_LABEL="runner unit tests" \
+      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+    cd "$suite_dir"
+    FLAGCX_CI_MPI_LABEL="runner default" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      ./build/bin/runner_mpi_tests
+    echo "Skipping PPU runner heterogeneous MPI variants: PCCL ACCL backend currently hangs in FLAGCX_CLUSTER_SPLIT_LIST mode."
+    return
+  fi
+
+  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
+}
+
 
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing T-Head PPU environment for unit-test suite: $suite"
+
+  # BAREX exposes libu2mm symbols globally. PCCL uses the same names for
+  # function-pointer objects, so deep-bind PCCL to prevent a startup crash.
+  mkdir -p "$FLAGCX_CI_PPU_DLOPEN_SHIM_DIR"
+  "${CC:-cc}" -shared -fPIC -O2 -Wall -Wextra \
+    "$FLAGCX_CI_PPU_DLOPEN_SHIM_SOURCE" \
+    -o "$FLAGCX_CI_PPU_DLOPEN_SHIM" -ldl
+  case ":${LD_PRELOAD:-}:" in
+    *":$FLAGCX_CI_PPU_DLOPEN_SHIM:"*) ;;
+    *) export LD_PRELOAD="$FLAGCX_CI_PPU_DLOPEN_SHIM${LD_PRELOAD:+:$LD_PRELOAD}" ;;
+  esac
+  echo "PCCL deep-bind shim: $FLAGCX_CI_PPU_DLOPEN_SHIM"
   command -v mpirun
   mpirun --version
 
