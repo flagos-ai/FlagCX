@@ -56,6 +56,9 @@ struct flagcxIbDev flagcxIbDevs[MAX_IB_DEVS];
 pthread_mutex_t flagcxIbLock = PTHREAD_MUTEX_INITIALIZER;
 int flagcxIbRelaxedOrderingEnabled = 0;
 
+static_assert(FLAGCX_IB_MAX_DEVS_PER_NIC <= FLAGCX_NET_MAX_MR_KEYS,
+              "public MR metadata must hold every merged IB device key");
+
 pthread_t flagcxIbAsyncThread;
 void *flagcxIbAsyncThreadMain(void *args) {
   struct flagcxIbDev *dev = (struct flagcxIbDev *)args;
@@ -1659,21 +1662,48 @@ flagcxIbGetNetCommDevBase(flagcxIbNetCommBase *base, int devIndex) {
   }
 }
 
+flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
+                                       ibv_mr *mhandle);
+
 /* DMA-BUF support */
 flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
                                    int type, uint64_t offset, int fd,
                                    int mrFlags, void **mhandle) {
-  assert(size > 0);
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
+  if (comm == NULL || data == NULL || size == 0 ||
+      size > UINTPTR_MAX - (uintptr_t)data)
+    return flagcxInvalidArgument;
+
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
+  if (base->ndevs <= 0 || base->ndevs > FLAGCX_IB_MAX_DEVS_PER_NIC)
+    return flagcxInternalError;
   struct flagcxIbMrHandle *mhandleWrapper =
-      (struct flagcxIbMrHandle *)malloc(sizeof(struct flagcxIbMrHandle));
+      (struct flagcxIbMrHandle *)calloc(1, sizeof(struct flagcxIbMrHandle));
+  if (mhandleWrapper == NULL)
+    return flagcxSystemError;
   for (int i = 0; i < base->ndevs; i++) {
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    FLAGCXCHECK(flagcxIbRegMrDmaBufInternal(devComm, data, size, type, offset,
-                                            fd, mrFlags,
-                                            mhandleWrapper->mrs + i));
+    flagcxResult_t result =
+        flagcxIbRegMrDmaBufInternal(devComm, data, size, type, offset, fd,
+                                    mrFlags, mhandleWrapper->mrs + i);
+    if (result != flagcxSuccess) {
+      for (int j = i - 1; j >= 0; j--) {
+        struct flagcxIbNetCommDevBase *registeredDev =
+            flagcxIbGetNetCommDevBase(base, j);
+        flagcxResult_t cleanupResult =
+            flagcxIbDeregMrInternal(registeredDev, mhandleWrapper->mrs[j]);
+        if (cleanupResult != flagcxSuccess) {
+          WARN("NET/IB: failed to roll back MR registration on device %d: %d",
+               j, cleanupResult);
+        }
+      }
+      free(mhandleWrapper);
+      return result;
+    }
   }
   *mhandle = (void *)mhandleWrapper;
   return flagcxSuccess;
@@ -1692,15 +1722,25 @@ flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
   pthread_mutex_lock(&flagcxIbDevs[base->ibDevN].lock);
   for (int i = 0; i < cache->population; i++) {
     if (mhandle == cache->slots[i].mr) {
-      if (0 == --cache->slots[i].refs) {
-        memmove(&cache->slots[i], &cache->slots[--cache->population],
-                sizeof(struct flagcxIbMr));
-        if (cache->population == 0) {
-          free(cache->slots);
-          cache->slots = NULL;
-          cache->capacity = 0;
-        }
-        FLAGCXCHECKGOTO(flagcxWrapIbvDeregMr(mhandle), res, returning);
+      if (cache->slots[i].refs > 1) {
+        cache->slots[i].refs--;
+        res = flagcxSuccess;
+        goto returning;
+      }
+
+      // Keep the cache entry intact if verbs deregistration fails so cleanup
+      // can be retried and the MR never becomes an untracked live resource.
+      FLAGCXCHECKGOTO(flagcxWrapIbvDeregMr(mhandle), res, returning);
+      cache->population--;
+      if (i < cache->population) {
+        // Registration lookup assumes address-sorted cache entries.
+        memmove(&cache->slots[i], &cache->slots[i + 1],
+                (cache->population - i) * sizeof(struct flagcxIbMr));
+      }
+      if (cache->population == 0) {
+        free(cache->slots);
+        cache->slots = NULL;
+        cache->capacity = 0;
       }
       res = flagcxSuccess;
       goto returning;
@@ -1715,16 +1755,51 @@ returning:
 }
 
 flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
+  if (mhandle == NULL)
+    return flagcxSuccess;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
   struct flagcxIbNetCommBase *base = (struct flagcxIbNetCommBase *)comm;
+  if (base->ndevs <= 0 || base->ndevs > FLAGCX_IB_MAX_DEVS_PER_NIC)
+    return flagcxInternalError;
+  flagcxResult_t result = flagcxSuccess;
   for (int i = 0; i < base->ndevs; i++) {
+    if (mhandleWrapper->mrs[i] == NULL)
+      continue;
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    FLAGCXCHECK(flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]));
+    flagcxResult_t current =
+        flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]);
+    if (current == flagcxSuccess) {
+      mhandleWrapper->mrs[i] = NULL;
+    } else if (result == flagcxSuccess) {
+      result = current;
+    }
   }
-  free(mhandleWrapper);
-  return flagcxSuccess;
+  // Retain a partially cleaned wrapper so callers can retry the failed NICs.
+  if (result == flagcxSuccess)
+    free(mhandleWrapper);
+  return result;
+}
+
+static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
+                                        struct flagcxNetMrInfo *info) {
+  if (mhandle == NULL || info == NULL)
+    return flagcxInvalidArgument;
+
+  memset(info, 0, sizeof(*info));
+  struct flagcxIbMrHandle *wrapper = (struct flagcxIbMrHandle *)mhandle;
+  for (int i = 0; i < FLAGCX_IB_MAX_DEVS_PER_NIC; i++) {
+    if (wrapper->mrs[i] == NULL)
+      continue;
+    info->lkeys[i] = wrapper->mrs[i]->lkey;
+    info->rkeys[i] = wrapper->mrs[i]->rkey;
+    info->nKeys = i + 1;
+  }
+  return info->nKeys == 0 ? flagcxInternalError : flagcxSuccess;
 }
 
 FLAGCX_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
@@ -2422,27 +2497,86 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
   properties->netDeviceVersion = FLAGCX_NET_DEVICE_INVALID_VERSION;
   return flagcxSuccess;
 }
+
+static flagcxResult_t
+flagcxIbGetOneSidedKey(const struct flagcxOneSideHandleInfo *info, int rank,
+                       uint64_t offset, size_t size, int keyIndex,
+                       bool localKey, uint32_t *key) {
+  if (info == NULL || key == NULL || info->baseVas == NULL ||
+      info->regionSizes == NULL || info->mrInfos == NULL || rank < 0 ||
+      rank >= info->nRanks || keyIndex < 0)
+    return flagcxInvalidArgument;
+
+  const size_t regionSize = info->regionSizes[rank];
+  if (size > UINT32_MAX || offset > regionSize || size > regionSize - offset ||
+      offset > UINTPTR_MAX - info->baseVas[rank] ||
+      size > UINTPTR_MAX - info->baseVas[rank] - offset)
+    return flagcxInvalidArgument;
+
+  const struct flagcxNetMrInfo *mrInfo = &info->mrInfos[rank];
+  if ((uint32_t)keyIndex >= mrInfo->nKeys ||
+      mrInfo->nKeys > FLAGCX_NET_MAX_MR_KEYS)
+    return flagcxInvalidArgument;
+  *key = localKey ? mrInfo->lkeys[keyIndex] : mrInfo->rkeys[keyIndex];
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxIbSelectOneSidedQp(struct flagcxIbSendComm *comm,
+                                               struct flagcxIbQp **qp) {
+  if (comm == NULL || qp == NULL || comm->base.ready == 0 ||
+      comm->base.nqps <= 0)
+    return flagcxInvalidArgument;
+
+  int qpIndex = comm->base.qpIndex;
+  if (qpIndex < 0 || qpIndex >= comm->base.nqps)
+    qpIndex = 0;
+  *qp = &comm->base.qps[qpIndex];
+  comm->base.qpIndex = (qpIndex + 1) % comm->base.nqps;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxIbInitOneSidedRequest(struct flagcxIbSendComm *comm, int type,
+                            struct flagcxIbRequest **request) {
+  if (comm == NULL || request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
+  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, request));
+  (*request)->type = type;
+  (*request)->sock = &comm->base.sock;
+  for (int i = 0; i < comm->base.ndevs; i++)
+    (*request)->devBases[i] = &comm->devs[i].base;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
                             void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
-  struct flagcxIbQp *qp = &comm->base.qps[0];
+  struct flagcxIbQp *qp = NULL;
+  FLAGCXCHECK(flagcxIbSelectOneSidedQp(comm, &qp));
+  uint32_t lkey = 0;
+  uint32_t rkey = 0;
+  FLAGCXCHECK(flagcxIbGetOneSidedKey(srcInfo, srcRank, srcOff, size,
+                                     qp->devIndex, true, &lkey));
+  FLAGCXCHECK(flagcxIbGetOneSidedKey(dstInfo, dstRank, dstOff, size,
+                                     qp->remDevIdx, false, &rkey));
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
   void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
-  int lkey = srcInfo->lkeys[srcRank];
-  int rkey = dstInfo->rkeys[dstRank];
-  struct flagcxIbRequest *req;
-  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
-  req->type = FLAGCX_NET_IB_REQ_IPUT;
-  req->sock = &comm->base.sock;
-  for (int i = 0; i < comm->base.ndevs; i++) {
-    req->devBases[i] = &comm->devs[i].base;
+  struct flagcxIbRequest *req = NULL;
+  FLAGCXCHECK(flagcxIbInitOneSidedRequest(comm, FLAGCX_NET_IB_REQ_IPUT, &req));
+  if (size == 0) {
+    *request = req;
+    return flagcxSuccess;
   }
 
   struct ibv_send_wr wr;
@@ -2460,16 +2594,15 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   wr.num_sge = 1;
 
   sge.addr = (uintptr_t)srcPtr; // Local buffer address
-  sge.length = (uint32_t)size;  // ibv_sge::length is 32-bit
-  if ((size_t)sge.length != size) {
-    WARN("flagcxIbIput: transfer size %zu exceeds ibv_sge 32-bit limit", size);
-    flagcxIbFreeRequest(req);
-    return flagcxInternalError;
-  }
-  sge.lkey = lkey; // Local key
+  sge.length = (uint32_t)size;  // checked by flagcxIbGetOneSidedKey
+  sge.lkey = lkey;              // Local key
 
   struct ibv_send_wr *bad_wr;
-  FLAGCXCHECK(flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr));
+  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr);
+  if (res != flagcxSuccess) {
+    flagcxIbFreeRequest(req);
+    return res;
+  }
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;
@@ -2482,13 +2615,17 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
                                  int srcRank, int dstRank, void **srcHandles,
                                  void **dstHandles, void **requests,
                                  int *posted) {
-  if (posted == NULL || requests == NULL)
+  if (posted == NULL)
     return flagcxInvalidArgument;
   *posted = 0;
-  if (count <= 0)
-    return flagcxSuccess;
-  if (count > MAX_REQUESTS)
+  if (count < 0 || count > MAX_REQUESTS)
     return flagcxInvalidArgument;
+  if (count > 0 && requests == NULL)
+    return flagcxInvalidArgument;
+  for (int i = 0; i < count; i++)
+    requests[i] = NULL;
+  if (count == 0)
+    return flagcxSuccess;
 
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
@@ -2500,12 +2637,18 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
     return flagcxInvalidArgument;
   }
 
-  int qpIdx = comm->base.qpIndex;
-  comm->base.qpIndex = (qpIdx + 1) % comm->base.nqps;
-  struct flagcxIbQp *qp = &comm->base.qps[qpIdx];
+  struct flagcxIbQp *qp = NULL;
+  FLAGCXCHECK(flagcxIbSelectOneSidedQp(comm, &qp));
   int devIndex = qp->devIndex;
-  int lkey = srcInfo->lkeys[srcRank];
-  int rkey = dstInfo->rkeys[dstRank];
+
+  uint32_t lkeys[MAX_REQUESTS];
+  uint32_t rkeys[MAX_REQUESTS];
+  for (int i = 0; i < count; i++) {
+    FLAGCXCHECK(flagcxIbGetOneSidedKey(srcInfo, srcRank, srcOffs[i], sizes[i],
+                                       qp->devIndex, true, &lkeys[i]));
+    FLAGCXCHECK(flagcxIbGetOneSidedKey(dstInfo, dstRank, dstOffs[i], sizes[i],
+                                       qp->remDevIdx, false, &rkeys[i]));
+  }
 
   struct ibv_send_wr wrs[MAX_REQUESTS];
   struct ibv_sge sges[MAX_REQUESTS];
@@ -2520,6 +2663,9 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
     struct flagcxIbRequest *req = NULL;
     res = flagcxIbGetRequest(&comm->base, &req);
     if (res != flagcxSuccess) {
+      // Exhausting the fixed request pool is transient backpressure. The
+      // caller must poll outstanding requests and retry this batch.
+      res = flagcxInProgress;
       goto fail_before_post;
     }
     reqs[i] = req;
@@ -2537,19 +2683,13 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
     wrs[i].wr_id = req - comm->base.reqs;
     wrs[i].next = (i + 1 == count) ? NULL : &wrs[i + 1];
     wrs[i].wr.rdma.remote_addr = (uint64_t)dstPtr;
-    wrs[i].wr.rdma.rkey = rkey;
+    wrs[i].wr.rdma.rkey = rkeys[i];
     wrs[i].sg_list = &sges[i];
     wrs[i].num_sge = 1;
 
     sges[i].addr = (uintptr_t)srcPtr;
     sges[i].length = (uint32_t)sizes[i];
-    if ((size_t)sges[i].length != sizes[i]) {
-      WARN("flagcxIbIputBatch: transfer size %zu exceeds ibv_sge 32-bit limit",
-           sizes[i]);
-      res = flagcxInvalidArgument;
-      goto fail_before_post;
-    }
-    sges[i].lkey = lkey;
+    sges[i].lkey = lkeys[i];
   }
 
   res = flagcxWrapIbvPostSend(qp->qp, wrs, &bad_wr);
@@ -2586,29 +2726,59 @@ fail_before_post:
   return res;
 }
 
+flagcxResult_t flagcxIbTestBatch(void **requests, int nRequests, int *doneFlags,
+                                 int *doneCount) {
+  if (doneCount == NULL || nRequests < 0 || nRequests > MAX_REQUESTS ||
+      (nRequests > 0 && (requests == NULL || doneFlags == NULL)))
+    return flagcxInvalidArgument;
+
+  *doneCount = 0;
+  for (int i = 0; i < nRequests; i++) {
+    doneFlags[i] = 0;
+    if (requests[i] == NULL) {
+      doneFlags[i] = 1;
+      (*doneCount)++;
+      continue;
+    }
+    FLAGCXCHECK(flagcxIbTest(requests[i], &doneFlags[i], NULL));
+    if (doneFlags[i]) {
+      requests[i] = NULL;
+      (*doneCount)++;
+    }
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
                             void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
   struct flagcxOneSideHandleInfo *dstInfo =
       (struct flagcxOneSideHandleInfo *)dstHandles;
 
-  struct flagcxIbQp *qp = &comm->base.qps[0];
+  struct flagcxIbQp *qp = NULL;
+  FLAGCXCHECK(flagcxIbSelectOneSidedQp(comm, &qp));
+  uint32_t rkey = 0;
+  uint32_t lkey = 0;
+  FLAGCXCHECK(flagcxIbGetOneSidedKey(srcInfo, srcRank, srcOff, size,
+                                     qp->remDevIdx, false, &rkey));
+  FLAGCXCHECK(flagcxIbGetOneSidedKey(dstInfo, dstRank, dstOff, size,
+                                     qp->devIndex, true, &lkey));
   // For RDMA READ: remote_addr is the source (remote peer), sge is the local
   // destination
   void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
   void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
-  int rkey = srcInfo->rkeys[srcRank]; // remote key for the source buffer
-  int lkey = dstInfo->lkeys[dstRank]; // local key for the destination buffer
-  struct flagcxIbRequest *req;
-  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
-  req->type = FLAGCX_NET_IB_REQ_IGET;
-  req->sock = &comm->base.sock;
-  for (int i = 0; i < comm->base.ndevs; i++) {
-    req->devBases[i] = &comm->devs[i].base;
+  struct flagcxIbRequest *req = NULL;
+  FLAGCXCHECK(flagcxIbInitOneSidedRequest(comm, FLAGCX_NET_IB_REQ_IGET, &req));
+  if (size == 0) {
+    *request = req;
+    return flagcxSuccess;
   }
 
   struct ibv_send_wr wr;
@@ -2626,20 +2796,94 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   wr.num_sge = 1;
 
   sge.addr = (uintptr_t)dstPtr; // local destination address
-  sge.length = (uint32_t)size;
-  if ((size_t)sge.length != size) {
-    WARN("flagcxIbIget: transfer size %zu exceeds ibv_sge 32-bit limit", size);
-    flagcxIbFreeRequest(req);
-    return flagcxInternalError;
-  }
+  sge.length = (uint32_t)size;  // checked by flagcxIbGetOneSidedKey
   sge.lkey = lkey;
 
   struct ibv_send_wr *bad_wr;
-  FLAGCXCHECK(flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr));
+  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr);
+  if (res != flagcxSuccess) {
+    flagcxIbFreeRequest(req);
+    return res;
+  }
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;
   return flagcxSuccess;
+}
+
+flagcxResult_t flagcxIbIgetBatch(void *sendComm, int count,
+                                 const uint64_t *srcOffs,
+                                 const uint64_t *dstOffs, const size_t *sizes,
+                                 int srcRank, int dstRank,
+                                 void *const *srcHandles,
+                                 void *const *dstHandles, void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
+  if (count <= 0 || count > MAX_REQUESTS || sendComm == NULL ||
+      srcHandles == NULL || dstHandles == NULL || srcOffs == NULL ||
+      dstOffs == NULL || sizes == NULL)
+    return flagcxInvalidArgument;
+
+  struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
+  struct flagcxOneSideHandleInfo *srcInfo =
+      (struct flagcxOneSideHandleInfo *)srcHandles;
+  struct flagcxOneSideHandleInfo *dstInfo =
+      (struct flagcxOneSideHandleInfo *)dstHandles;
+  struct flagcxIbQp *qp = NULL;
+  FLAGCXCHECK(flagcxIbSelectOneSidedQp(comm, &qp));
+
+  uint32_t rkeys[MAX_REQUESTS];
+  uint32_t lkeys[MAX_REQUESTS];
+  for (int i = 0; i < count; i++) {
+    FLAGCXCHECK(flagcxIbGetOneSidedKey(srcInfo, srcRank, srcOffs[i], sizes[i],
+                                       qp->remDevIdx, false, &rkeys[i]));
+    FLAGCXCHECK(flagcxIbGetOneSidedKey(dstInfo, dstRank, dstOffs[i], sizes[i],
+                                       qp->devIndex, true, &lkeys[i]));
+  }
+
+  struct flagcxIbRequest *req = NULL;
+  FLAGCXCHECK(flagcxIbInitOneSidedRequest(comm, FLAGCX_NET_IB_REQ_IGET, &req));
+
+  struct ibv_send_wr wrs[MAX_REQUESTS];
+  struct ibv_sge sges[MAX_REQUESTS];
+  memset(wrs, 0, count * sizeof(struct ibv_send_wr));
+  memset(sges, 0, count * sizeof(struct ibv_sge));
+  for (int i = 0; i < count; i++) {
+    wrs[i].opcode = IBV_WR_RDMA_READ;
+    wrs[i].send_flags = IBV_SEND_SIGNALED;
+    wrs[i].wr_id = req - comm->base.reqs;
+    wrs[i].next = (i + 1 == count) ? NULL : &wrs[i + 1];
+    wrs[i].wr.rdma.remote_addr = srcInfo->baseVas[srcRank] + srcOffs[i];
+    wrs[i].wr.rdma.rkey = rkeys[i];
+    wrs[i].sg_list = &sges[i];
+    wrs[i].num_sge = 1;
+
+    sges[i].addr = dstInfo->baseVas[dstRank] + dstOffs[i];
+    sges[i].length = (uint32_t)sizes[i];
+    sges[i].lkey = lkeys[i];
+  }
+
+  struct ibv_send_wr *badWr = NULL;
+  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, wrs, &badWr);
+  int accepted = count;
+  if (res != flagcxSuccess) {
+    accepted = badWr == NULL ? 0 : (int)(badWr - wrs);
+    if (accepted < 0 || accepted > count)
+      accepted = 0;
+  }
+  if (accepted == 0) {
+    flagcxIbFreeRequest(req);
+    return res;
+  }
+
+  // Stack WRs/SGEs are safe after ibv_post_send returns. Keep the request
+  // alive whenever a prefix was accepted so the caller can drain its CQEs,
+  // even when the batch call reports a partial-post error.
+  for (int i = 0; i < accepted; i++)
+    flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
+  *request = req;
+  return res;
 }
 
 flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
@@ -2648,6 +2892,9 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
                                   void **dstHandles, uint64_t signalOff,
                                   void **signalHandles, uint64_t signalValue,
                                   void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   struct flagcxOneSideHandleInfo *srcInfo =
       (struct flagcxOneSideHandleInfo *)srcHandles;
@@ -2655,20 +2902,27 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
       (struct flagcxOneSideHandleInfo *)dstHandles;
   struct flagcxOneSideHandleInfo *signalInfo =
       (struct flagcxOneSideHandleInfo *)signalHandles;
-  if (signalInfo == NULL || signalInfo->baseVas == NULL) {
-    WARN("flagcxIbIputSignal: signalHandles is NULL or uninitialized");
-    return flagcxInternalError;
+  struct flagcxIbQp *qp = NULL;
+  FLAGCXCHECK(flagcxIbSelectOneSidedQp(comm, &qp));
+  int devIndex = qp->devIndex;
+  uint32_t signalRkey = 0;
+  if ((signalOff & (sizeof(uint64_t) - 1)) != 0)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxIbGetOneSidedKey(signalInfo, dstRank, signalOff,
+                                     sizeof(uint64_t), qp->remDevIdx, false,
+                                     &signalRkey));
+
+  uint32_t dataLkey = 0;
+  uint32_t dataRkey = 0;
+  if (size > 0) {
+    FLAGCXCHECK(flagcxIbGetOneSidedKey(srcInfo, srcRank, srcOff, size,
+                                       qp->devIndex, true, &dataLkey));
+    FLAGCXCHECK(flagcxIbGetOneSidedKey(dstInfo, dstRank, dstOff, size,
+                                       qp->remDevIdx, false, &dataRkey));
   }
 
-  struct flagcxIbQp *qp = &comm->base.qps[0];
-  int devIndex = qp->devIndex;
-  struct flagcxIbRequest *req;
-  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
-  req->type = FLAGCX_NET_IB_REQ_IPUT;
-  req->sock = &comm->base.sock;
-  for (int i = 0; i < comm->base.ndevs; i++) {
-    req->devBases[i] = &comm->devs[i].base;
-  }
+  struct flagcxIbRequest *req = NULL;
+  FLAGCXCHECK(flagcxIbInitOneSidedRequest(comm, FLAGCX_NET_IB_REQ_IPUT, &req));
 
   struct ibv_send_wr wr[2];
   memset(&wr, 0, sizeof(wr));
@@ -2679,31 +2933,22 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   if (size > 0 && srcInfo != NULL && dstInfo != NULL) {
     void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
     void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
-    uint32_t lkey = srcInfo->lkeys[srcRank];
-    uint32_t rkey = dstInfo->rkeys[dstRank];
     wr[0].opcode = IBV_WR_RDMA_WRITE;
     wr[0].send_flags = 0; // No CQE — only signal gets CQE
     wr[0].wr_id = req - comm->base.reqs;
     wr[0].next = &wr[1]; // Chain to signal
     wr[0].wr.rdma.remote_addr = (uint64_t)dstPtr;
-    wr[0].wr.rdma.rkey = rkey;
+    wr[0].wr.rdma.rkey = dataRkey;
     wr[0].sg_list = &sge[0];
     wr[0].num_sge = 1;
 
     sge[0].addr = (uintptr_t)srcPtr;
     sge[0].length = (uint32_t)size;
-    if ((size_t)sge[0].length != size) {
-      WARN("flagcxIbIputSignal: transfer size %zu exceeds ibv_sge 32-bit limit",
-           size);
-      flagcxIbFreeRequest(req);
-      return flagcxInternalError;
-    }
-    sge[0].lkey = lkey;
+    sge[0].lkey = dataLkey;
   }
 
   // wr[1]: ATOMIC FETCH_AND_ADD (signal) — IBV_SEND_SIGNALED
   void *signalPtr = (void *)(signalInfo->baseVas[dstRank] + signalOff);
-  uint32_t signalRkey = signalInfo->rkeys[dstRank];
 
   wr[1].opcode = IBV_WR_ATOMIC_FETCH_AND_ADD;
   wr[1].send_flags = IBV_SEND_SIGNALED;
@@ -2722,8 +2967,12 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   // Post chained (data+signal) or signal-only
   struct ibv_send_wr *bad_wr;
   bool chainData = (size > 0 && srcInfo != NULL && dstInfo != NULL);
-  FLAGCXCHECK(
-      flagcxWrapIbvPostSend(qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr));
+  flagcxResult_t res =
+      flagcxWrapIbvPostSend(qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr);
+  if (res != flagcxSuccess) {
+    flagcxIbFreeRequest(req);
+    return res;
+  }
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;
@@ -2752,5 +3001,5 @@ struct flagcxNetAdaptor flagcxNetIb = {
     // Device name lookup
     flagcxIbGetDevFromName,
 
-    // Optional one-sided batch WRITE
-    flagcxIbIputBatch};
+    // Optional one-sided batch helpers and MR metadata
+    flagcxIbIputBatch, flagcxIbTestBatch, flagcxIbIgetBatch, flagcxIbGetMrInfo};

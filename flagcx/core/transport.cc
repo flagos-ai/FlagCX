@@ -77,12 +77,12 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                                        flagcxEventDisableTiming);
           }
           resources->buffSizes[0] = flagcxNetBufferSize;
-          if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+          if (comm->netAdaptor == getNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {
               return flagcxSystemError;
             }
-          } else if (comm->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+          } else if (comm->netAdaptor == getNetAdaptor(RDMA)) {
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
           } else {
@@ -161,12 +161,12 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                                        flagcxEventDisableTiming);
           }
           resources->buffSizes[0] = flagcxNetBufferSize;
-          if (comm->netAdaptor == getUnifiedNetAdaptor(SOCKET)) {
+          if (comm->netAdaptor == getNetAdaptor(SOCKET)) {
             resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
             if (!resources->buffers[0]) {
               return flagcxSystemError;
             }
-          } else if (comm->netAdaptor == getUnifiedNetAdaptor(IBRC)) {
+          } else if (comm->netAdaptor == getNetAdaptor(RDMA)) {
             deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                        resources->buffSizes[0], NULL);
           } else {

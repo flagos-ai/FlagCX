@@ -1040,4 +1040,5 @@ struct flagcxNetAdaptor flagcxNetIbP2p = {
     nullptr,            // iputBatch
     flagcxP2pTestBatch, // testBatch
     flagcxP2pIgetBatch, // igetBatch
+    NULL,               // getMrInfo
 };

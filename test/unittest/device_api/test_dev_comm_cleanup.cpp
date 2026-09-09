@@ -89,16 +89,20 @@ flagcxOneSideHandleInfo *makeRegistration(void *buffer, void *mrHandle) {
     return nullptr;
   registration->baseVas =
       static_cast<uintptr_t *>(calloc(1, sizeof(uintptr_t)));
-  registration->rkeys = static_cast<uint32_t *>(calloc(1, sizeof(uint32_t)));
-  registration->lkeys = static_cast<uint32_t *>(calloc(1, sizeof(uint32_t)));
-  if (!registration->baseVas || !registration->rkeys || !registration->lkeys) {
-    free(registration->lkeys);
-    free(registration->rkeys);
+  registration->regionSizes = static_cast<size_t *>(calloc(1, sizeof(size_t)));
+  registration->mrInfos =
+      static_cast<flagcxNetMrInfo *>(calloc(1, sizeof(flagcxNetMrInfo)));
+  if (!registration->baseVas || !registration->regionSizes ||
+      !registration->mrInfos) {
+    free(registration->mrInfos);
+    free(registration->regionSizes);
     free(registration->baseVas);
     free(registration);
     return nullptr;
   }
   registration->baseVas[0] = reinterpret_cast<uintptr_t>(buffer);
+  registration->regionSizes[0] = 1;
+  registration->nRanks = 1;
   registration->localMrHandle = mrHandle;
   registration->localRecvComm = reinterpret_cast<void *>(0x9000);
   registration->signalIpcSlot = -1;
@@ -108,8 +112,8 @@ flagcxOneSideHandleInfo *makeRegistration(void *buffer, void *mrHandle) {
 void freeRegistration(flagcxOneSideHandleInfo *registration) {
   if (!registration)
     return;
-  free(registration->lkeys);
-  free(registration->rkeys);
+  free(registration->mrInfos);
+  free(registration->regionSizes);
   free(registration->baseVas);
   free(registration);
 }
