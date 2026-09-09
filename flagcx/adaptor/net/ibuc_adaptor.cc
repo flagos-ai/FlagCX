@@ -2269,6 +2269,13 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     NULL, // iputSignal - not supported on IBUC
 
     // Device name lookup
-    flagcxIbucGetDevFromName};
+    flagcxIbucGetDevFromName,
+
+    // Optional one-sided batch helpers and MR metadata
+    NULL, // iputBatch
+    NULL, // testBatch
+    NULL, // igetBatch
+    NULL, // getMrInfo
+};
 
 #endif // USE_IBUC

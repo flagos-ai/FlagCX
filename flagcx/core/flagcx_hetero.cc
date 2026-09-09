@@ -355,6 +355,7 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
                                              int peer, void *sendComm) {
   struct flagcxHeteroComm *comm = proxy->comm;
   bool did = false;
+
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
     uint32_t inFlight =
         __atomic_load_n(&proxy->inFlights[peer], __ATOMIC_RELAXED);
@@ -364,6 +365,17 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     uint32_t idx = ci & proxy->queueMask;
     struct flagcxRmaDesc *desc =
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
+
+    bool hasInFlight = !flagcxIntruQueueEmpty(&proxy->inProgressQueues[peer]);
+    bool releaseBarrierInFlight = false;
+    if (hasInFlight) {
+      struct flagcxRmaDesc *head =
+          flagcxIntruQueueHead(&proxy->inProgressQueues[peer]);
+      releaseBarrierInFlight = flagcxRmaDescIsReleaseBarrier(head->type);
+    }
+    if (!flagcxRmaProxyCanPostDesc(desc->type, hasInFlight,
+                                   releaseBarrierInFlight))
+      break;
 
     // Poll readySeq: wait for GPU stream to signal source data is committed.
     // Both STREAM_OPS (streamWriteValue64) and HOST_FUNC (callback) write here.
@@ -377,8 +389,6 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     }
 
     bool canBatch = desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
-                    comm->netAdaptor->name != NULL &&
-                    strcmp(comm->netAdaptor->name, "IB") == 0 &&
                     comm->netAdaptor->iputBatch != NULL;
     if (canBatch) {
       int64_t paramBatchMax = flagcxParamRmaBatchMax();
@@ -414,8 +424,8 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
         flagcxResult_t res = flagcxRmaProxyPostPutBatch(
             comm, descs, batchCount, sendComm, requests, &posted);
         if (posted == 0) {
-          if (res != flagcxSuccess && res != flagcxSystemError &&
-              res != flagcxInternalError) {
+          if (res != flagcxSuccess && res != flagcxInProgress &&
+              res != flagcxSystemError && res != flagcxInternalError) {
             WARN("flagcxRmaProxyPollNonPersistDesc: batch op failed peer=%d "
                  "res=%d",
                  peer, (int)res);
@@ -458,6 +468,10 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     flagcxIntruQueueEnqueue(&proxy->inProgressQueues[peer], desc);
     __atomic_fetch_add(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
     did = true;
+
+    // Do not issue the next epoch until this release boundary completes.
+    if (flagcxRmaDescIsReleaseBarrier(desc->type))
+      break;
   }
   return did;
 }

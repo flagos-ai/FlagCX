@@ -17,6 +17,21 @@ enum flagcxRmaDescType {
   FLAGCX_RMA_PUT_VALUE = 3,
 };
 
+static inline bool flagcxRmaDescIsReleaseBarrier(enum flagcxRmaDescType type) {
+  return type == FLAGCX_RMA_PUT_SIGNAL;
+}
+
+// Ordinary descriptors may be posted concurrently across QPs. A release
+// barrier waits for the preceding epoch to drain, and no following descriptor
+// may pass a release barrier that is still in flight.
+static inline bool flagcxRmaProxyCanPostDesc(enum flagcxRmaDescType type,
+                                             bool hasInFlight,
+                                             bool releaseBarrierInFlight) {
+  if (releaseBarrierInFlight)
+    return false;
+  return !flagcxRmaDescIsReleaseBarrier(type) || !hasInFlight;
+}
+
 struct flagcxRmaDesc {
   int peer;
   enum flagcxRmaDescType type;
