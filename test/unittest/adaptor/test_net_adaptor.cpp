@@ -19,6 +19,7 @@
 #include "flagcx.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "ib_common.h"
 #include "onesided.h"
 
 namespace {
@@ -518,6 +519,49 @@ TEST_F(NetAdaptorLoopback, RequestPoolBackpressureAndRecovery) {
             flagcxSuccess);
   ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
   EXPECT_EQ(remote[0], source[0]);
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
+  EXPECT_DEREGISTER_MR(recvComm_, remoteMr);
+}
+
+TEST_F(NetAdaptorLoopback, OneSidedRequestsRotateAcrossConfiguredQps) {
+  SKIP_IF_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_CALLBACK_NULL(net_, iput);
+  SKIP_IF_CALLBACK_NULL(net_, test);
+  auto *sendComm = static_cast<flagcxIbSendComm *>(sendComm_);
+  if (sendComm->base.nqps < 2)
+    GTEST_SKIP() << "Set FLAGCX_IB_QPS_PER_CONNECTION=2 to exercise rotation";
+
+  std::vector<uint8_t> source(2, 0);
+  std::vector<uint8_t> remote(2, 0);
+  source[0] = 0x35;
+  source[1] = 0x7a;
+  void *sourceMr = nullptr;
+  void *remoteMr = nullptr;
+  ASSERT_REGISTER_MR(sendComm_, source.data(), source.size(), FLAGCX_PTR_HOST,
+                     sourceMr);
+  ASSERT_REGISTER_MR(recvComm_, remote.data(), remote.size(), FLAGCX_PTR_HOST,
+                     remoteMr);
+  TestWindow sourceWindow, remoteWindow;
+  ASSERT_EQ(sourceWindow.init(net_, source.data(), source.size(), kLocalRank,
+                              sourceMr),
+            flagcxSuccess);
+  ASSERT_EQ(remoteWindow.init(net_, remote.data(), remote.size(), kRemoteRank,
+                              remoteMr),
+            flagcxSuccess);
+
+  int firstQp = sendComm->base.qpIndex;
+  for (uint64_t offset = 0; offset < source.size(); ++offset) {
+    void *request = nullptr;
+    ASSERT_EQ(net_->iput(sendComm_, offset, offset, 1, kLocalRank, kRemoteRank,
+                         sourceWindow.opaque(), remoteWindow.opaque(),
+                         &request),
+              flagcxSuccess);
+    ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+    EXPECT_EQ(sendComm->base.qpIndex,
+              (firstQp + static_cast<int>(offset) + 1) % sendComm->base.nqps);
+  }
+  EXPECT_EQ(remote, source);
+
   EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
   EXPECT_DEREGISTER_MR(recvComm_, remoteMr);
 }

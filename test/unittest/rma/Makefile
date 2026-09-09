@@ -11,7 +11,9 @@ MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/rma_mpi_tests
 
 # Environment variables to force hetero mode on single node
-HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0
+# Force more than one RC QP so ordering tests exercise the adaptor's dynamic
+# QP selection instead of passing accidentally on a single in-order queue.
+HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_IB_QPS_PER_CONNECTION=2
 
 .PHONY: all clean run-unit run-mpi run
 

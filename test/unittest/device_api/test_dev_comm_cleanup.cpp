@@ -31,6 +31,7 @@ struct CleanupEvent {
 };
 
 std::vector<CleanupEvent> cleanupEvents;
+int deregisterFailuresRemaining = 0;
 
 flagcxResult_t recordHostUnregister(void *ptr) {
   unregisteredPtrs.push_back(ptr);
@@ -51,6 +52,10 @@ flagcxResult_t recordGdrFree(void *ptr, void *) {
 
 flagcxResult_t recordMrDeregister(void *, void *mrHandle) {
   cleanupEvents.push_back({CleanupEventKind::Deregister, mrHandle});
+  if (deregisterFailuresRemaining > 0) {
+    deregisterFailuresRemaining--;
+    return flagcxSystemError;
+  }
   return flagcxSuccess;
 }
 
@@ -134,6 +139,7 @@ protected:
     deviceFreedPtrs.clear();
     allocatedPtrs.clear();
     cleanupEvents.clear();
+    deregisterFailuresRemaining = 0;
   }
 
   void TearDown() override {
@@ -295,6 +301,98 @@ TEST_F(DefaultDevCommCleanupTest,
   heteroComm.stagingHandle = nullptr;
   freeRegistration(existingSignal);
   freeRegistration(existingStaging);
+}
+
+TEST_F(DefaultDevCommCleanupTest,
+       FailedDeregistrationRetainsOwnershipUntilRetrySucceeds) {
+  flagcxNetAdaptor netAdaptor = {};
+  netAdaptor.name = "test";
+  netAdaptor.deregMr = recordMrDeregister;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.rank = 0;
+  heteroComm.nRanks = 1;
+  heteroComm.netAdaptor = &netAdaptor;
+
+  flagcxComm comm = {};
+  comm.rank = 0;
+  comm.nranks = 1;
+  comm.heteroComm = &heteroComm;
+
+  void *signalBuffer = reinterpret_cast<void *>(0x8600);
+  void *stagingBuffer = reinterpret_cast<void *>(0x8700);
+  void *signalMr = reinterpret_cast<void *>(0x8610);
+  void *stagingMr = reinterpret_cast<void *>(0x8710);
+  heteroComm.signalHandle = makeRegistration(signalBuffer, signalMr);
+  heteroComm.stagingHandle = makeRegistration(stagingBuffer, stagingMr);
+  ASSERT_NE(heteroComm.signalHandle, nullptr);
+  ASSERT_NE(heteroComm.stagingHandle, nullptr);
+
+  flagcxDevCommInternal devComm = {};
+  devComm.barrierIpcIndex = -1;
+  devComm.signalIpcSlot = -1;
+  devComm.signalBuffer = static_cast<uint64_t *>(signalBuffer);
+  devComm.putValueStagingBuffer = stagingBuffer;
+  devComm.ownedSignalRegistration = heteroComm.signalHandle;
+  devComm.ownedStagingRegistration = heteroComm.stagingHandle;
+
+  deregisterFailuresRemaining = 1;
+  EXPECT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSystemError);
+  EXPECT_NE(heteroComm.stagingHandle, nullptr);
+  EXPECT_EQ(heteroComm.stagingHandle->localMrHandle, stagingMr);
+  EXPECT_EQ(heteroComm.signalHandle, nullptr);
+  EXPECT_EQ(devComm.ownedStagingRegistration, heteroComm.stagingHandle);
+  EXPECT_EQ(devComm.ownedSignalRegistration, nullptr);
+  EXPECT_EQ(devComm.signalBuffer, signalBuffer);
+  EXPECT_EQ(devComm.putValueStagingBuffer, stagingBuffer);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+
+  ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
+  EXPECT_EQ(heteroComm.stagingHandle, nullptr);
+  EXPECT_EQ(devComm.ownedStagingRegistration, nullptr);
+  ASSERT_EQ(cleanupEvents.size(), 5u);
+  EXPECT_EQ(cleanupEvents[0].kind, CleanupEventKind::Deregister);
+  EXPECT_EQ(cleanupEvents[0].ptr, stagingMr);
+  EXPECT_EQ(cleanupEvents[1].kind, CleanupEventKind::Deregister);
+  EXPECT_EQ(cleanupEvents[1].ptr, signalMr);
+  EXPECT_EQ(cleanupEvents[2].kind, CleanupEventKind::Deregister);
+  EXPECT_EQ(cleanupEvents[2].ptr, stagingMr);
+  EXPECT_EQ(cleanupEvents[3].kind, CleanupEventKind::BufferFree);
+  EXPECT_EQ(cleanupEvents[4].kind, CleanupEventKind::BufferFree);
+}
+
+TEST_F(DefaultDevCommCleanupTest,
+       DataMrDeregistrationConsumesOnlySuccessfulHandles) {
+  flagcxNetAdaptor netAdaptor = {};
+  netAdaptor.name = "test";
+  netAdaptor.deregMr = recordMrDeregister;
+
+  flagcxHeteroComm heteroComm = {};
+  heteroComm.rank = 0;
+  heteroComm.nRanks = 1;
+  heteroComm.netAdaptor = &netAdaptor;
+  heteroComm.oneSideHandles = static_cast<flagcxOneSideHandleInfo **>(
+      calloc(1, sizeof(flagcxOneSideHandleInfo *)));
+  ASSERT_NE(heteroComm.oneSideHandles, nullptr);
+  void *mrHandle = reinterpret_cast<void *>(0x8810);
+  heteroComm.oneSideHandles[0] =
+      makeRegistration(reinterpret_cast<void *>(0x8800), mrHandle);
+  ASSERT_NE(heteroComm.oneSideHandles[0], nullptr);
+  heteroComm.oneSideHandleCount = 1;
+  heteroComm.oneSideHandleCapacity = 1;
+
+  deregisterFailuresRemaining = 1;
+  EXPECT_EQ(flagcxOneSideDeregister(&heteroComm), flagcxSystemError);
+  ASSERT_NE(heteroComm.oneSideHandles, nullptr);
+  ASSERT_NE(heteroComm.oneSideHandles[0], nullptr);
+  EXPECT_EQ(heteroComm.oneSideHandles[0]->localMrHandle, mrHandle);
+
+  EXPECT_EQ(flagcxOneSideDeregister(&heteroComm), flagcxSuccess);
+  EXPECT_EQ(heteroComm.oneSideHandles, nullptr);
+  EXPECT_EQ(heteroComm.oneSideHandleCount, 0);
+  ASSERT_EQ(cleanupEvents.size(), 2u);
+  EXPECT_EQ(cleanupEvents[0].ptr, mrHandle);
+  EXPECT_EQ(cleanupEvents[1].ptr, mrHandle);
 }
 
 TEST_F(DefaultDevCommCleanupTest,

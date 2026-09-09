@@ -166,6 +166,7 @@ struct flagcxIpcTableEntry; // forward declaration; defined in global_comm.h
 #define FLAGCX_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
 
 struct flagcxOneSideHandleInfo;
+struct flagcxOneSideDeferredMr;
 
 struct flagcxHeteroComm {
   uint64_t startMagic;
@@ -379,6 +380,9 @@ struct flagcxHeteroComm {
   struct flagcxOneSideHandleInfo **oneSideHandles;
   int oneSideHandleCount;
   int oneSideHandleCapacity;
+  // MRs whose registration succeeded but rollback deregistration failed.
+  // They retain the registration comm until teardown can retry safely.
+  struct flagcxOneSideDeferredMr *deferredOneSideMrs;
 
   // IPC table pointer — owned by outer flagcxComm, shared for intra-node D2D
   struct flagcxIpcTableEntry *ipcTable;

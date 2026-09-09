@@ -1478,7 +1478,7 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
         if (res != flagcxSuccess) {
           WARN("flagcxKernelProxyPoll: test failed peer=%d res=%d", p,
                (int)res);
-          __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+          flagcxRmaProxyRecordError(proxy, p, res);
           done = 1;
         }
       } else {
@@ -1515,6 +1515,13 @@ static flagcxResult_t flagcxKernelProxyPost(
     WARN("flagcxKernelProxyPost: rmaProxy or netAdaptor not initialized");
     return flagcxInternalError;
   }
+  flagcxResult_t asyncError = flagcxRmaProxyAsyncError(proxy);
+  int peerState =
+      peer >= 0 && peer < proxy->nRanks
+          ? __atomic_load_n(&proxy->peerStates[peer], __ATOMIC_ACQUIRE)
+          : FLAGCX_RMA_PEER_FAILED;
+  if (!flagcxRmaProxyCanEnqueue(asyncError, peerState))
+    return asyncError == flagcxSuccess ? flagcxRemoteError : asyncError;
 
   // Validate MR indices (mirrors flagcxHeteroPut/PutValue validation)
   if (comm->oneSideHandleCount < 1 || comm->oneSideHandles[0] == NULL) {
@@ -1546,7 +1553,7 @@ static flagcxResult_t flagcxKernelProxyPost(
           (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
         WARN("flagcxKernelProxyPost: back-pressure timeout (%lds) peer=%d",
              (long)timeoutSec, peer);
-        __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy, peer, flagcxInternalError);
         return flagcxInternalError;
       }
       sched_yield();
@@ -1582,7 +1589,8 @@ static flagcxResult_t flagcxKernelProxyPost(
   }
 
   // Kernel proxy threads use their own per-context QPs and do not participate
-  // in the RMA proxy's opSeqs/doneSeqs tracking. Completion is signaled to the
+  // in the RMA proxy's sequence/retirement tracking. Completion is signaled to
+  // the
   // GPU via the signal/counter mechanism (WaitSignal).
 
   void *request = NULL;
@@ -1642,7 +1650,7 @@ static flagcxResult_t flagcxKernelProxyPost(
             WARN(
                 "flagcxKernelProxyPost: PUT_VALUE drain timeout (%lds) peer=%d",
                 (long)timeoutSec, peer);
-            __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+            flagcxRmaProxyRecordError(proxy, peer, flagcxInternalError);
             return flagcxInternalError;
           }
           sched_yield();
@@ -1690,7 +1698,7 @@ static flagcxResult_t flagcxKernelProxyPost(
         while (!done) {
           res = net->test(request, &done, NULL);
           if (res != flagcxSuccess) {
-            __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+            flagcxRmaProxyRecordError(proxy, peer, res);
             break;
           }
         }
@@ -1701,7 +1709,7 @@ static flagcxResult_t flagcxKernelProxyPost(
       if (res != flagcxSuccess) {
         WARN("flagcxKernelProxyPost: PUT_VALUE failed peer=%d res=%d", peer,
              (int)res);
-        __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy, peer, res);
       }
       return res;
     }
@@ -1713,7 +1721,7 @@ static flagcxResult_t flagcxKernelProxyPost(
   if (res != flagcxSuccess) {
     WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d", peer,
          type, (int)res);
-    __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+    flagcxRmaProxyRecordError(proxy, peer, res);
     request = NULL; // will be retired as failed
   }
 
@@ -1747,7 +1755,7 @@ static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
           if (res != flagcxSuccess) {
             WARN("flagcxKernelProxyDrain: test failed peer=%d res=%d", p,
                  (int)res);
-            __atomic_store_n((int *)&proxy->rmaError, 1, __ATOMIC_RELEASE);
+            flagcxRmaProxyRecordError(proxy, p, res);
             done = 1;
             break;
           }
@@ -1797,6 +1805,7 @@ void *flagcxProxyKernelService(void *args) {
   int contextId = arg->contextId;
   delete arg;
   flagcxResult_t res = flagcxSuccess;
+  flagcxResult_t terminalRes = flagcxSuccess;
 
   int ctx = contextId + 1; // kernel proxy context index
 
@@ -1867,6 +1876,23 @@ init_done:
       sched_yield();
       continue;
     }
+    // Once a terminal error poisons this service, consume subsequent FIFO
+    // entries without executing them. The GPU may already have produced those
+    // entries and fifoFlush waits for every one to retire; exiting the service
+    // here would leave the stream spinning forever. In particular, never
+    // execute a release signal after the data epoch has failed.
+    if (terminalRes != flagcxSuccess) {
+      uint64_t nextCons = __atomic_load_n(&fifo->buffer[flagcxFifoIdxConsumed],
+                                          __ATOMIC_RELAXED) +
+                          1;
+      __atomic_store_n(&fifo->buffer[flagcxFifoIdxConsumed], nextCons,
+                       __ATOMIC_RELEASE);
+      __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
+                         __ATOMIC_RELEASE);
+      continue;
+    }
+
+    res = flagcxSuccess;
     bool postedIB = false; // set true if entry posts async IB op
     switch (ptr->getPrim()) {
       case flagcxDevicePrimSend:
@@ -1983,8 +2009,8 @@ init_done:
                    now.tv_nsec >= deadline.tv_nsec)) {
                 WARN("rank=%d counter completion timeout (%lds) context=%d",
                      comm->rank, (long)timeoutSec, contextId);
-                __atomic_store_n((int *)&comm->rmaProxy->rmaError, 1,
-                                 __ATOMIC_RELEASE);
+                flagcxRmaProxyRecordError(comm->rmaProxy, -1,
+                                          flagcxInternalError);
                 res = flagcxInternalError;
                 break;
               }
@@ -2131,13 +2157,15 @@ init_done:
       __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
                          __ATOMIC_RELEASE);
     }
-    if (res != flagcxSuccess)
-      break;
+    if (res != flagcxSuccess) {
+      terminalRes = res;
+      flagcxRmaProxyRecordError(comm->rmaProxy, -1, res);
+    }
   }
 
   INFO(FLAGCX_PROXY,
        "rank=%d Proxy loop exited: stop=%d res=%d produced=%lu completed=%lu",
-       comm->rank, comm->proxyState->kernelState.stop, (int)res,
+       comm->rank, comm->proxyState->kernelState.stop, (int)terminalRes,
        (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxProduced],
                                       __ATOMIC_ACQUIRE),
        (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],

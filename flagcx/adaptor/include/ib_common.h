@@ -123,6 +123,7 @@ struct flagcxIbGidInfo {
 
 struct flagcxIbMrHandle {
   ibv_mr *mrs[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  struct flagcxIbMrHandle *nextDeferred;
 };
 
 #define FLAGCX_NET_IB_REQ_UNUSED 0
@@ -327,6 +328,9 @@ struct alignas(32) flagcxIbNetCommBase {
   // Track necessary remDevInfo here
   int nRemDevs;
   struct flagcxIbDevInfo remDevs[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  // Registration rollback can itself fail. Retain those partially cleaned
+  // wrappers until close retries them before destroying QPs/PDs.
+  struct flagcxIbMrHandle *deferredMrHandles;
 };
 
 struct flagcxIbSendComm {

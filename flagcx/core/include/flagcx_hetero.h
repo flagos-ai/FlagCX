@@ -17,6 +17,15 @@ enum flagcxRmaDescType {
   FLAGCX_RMA_PUT_VALUE = 3,
 };
 
+enum flagcxRmaPeerState {
+  FLAGCX_RMA_PEER_ACTIVE = 0,
+  FLAGCX_RMA_PEER_FAILED = 1,
+};
+
+static inline bool flagcxRmaResultIsRetryable(flagcxResult_t result) {
+  return result == flagcxInProgress;
+}
+
 static inline bool flagcxRmaDescIsReleaseBarrier(enum flagcxRmaDescType type) {
   return type == FLAGCX_RMA_PUT_SIGNAL;
 }
@@ -30,6 +39,27 @@ static inline bool flagcxRmaProxyCanPostDesc(enum flagcxRmaDescType type,
   if (releaseBarrierInFlight)
     return false;
   return !flagcxRmaDescIsReleaseBarrier(type) || !hasInFlight;
+}
+
+static inline bool flagcxRmaProxyCanEnqueue(flagcxResult_t asyncError,
+                                            int peerState) {
+  return asyncError == flagcxSuccess && peerState == FLAGCX_RMA_PEER_ACTIVE;
+}
+
+// IPC may bypass the network proxy only when the peer has no queued or
+// submitted network work. The caller must evaluate this while holding the
+// peer producer mutex so an enqueue cannot race the decision.
+static inline bool flagcxRmaProxyCanUseIpc(flagcxResult_t asyncError,
+                                           int peerState, bool hasQueued,
+                                           bool hasInFlight) {
+  return flagcxRmaProxyCanEnqueue(asyncError, peerState) && !hasQueued &&
+         !hasInFlight;
+}
+
+static inline uint64_t flagcxRmaNextCompletedSeq(uint64_t completed,
+                                                 uint64_t retired,
+                                                 bool succeeded) {
+  return succeeded && completed + 1 == retired ? retired : completed;
 }
 
 struct flagcxRmaDesc {
@@ -72,17 +102,24 @@ struct flagcxRmaProxyState {
 
   pthread_mutex_t *peerProducerMutexes; // [nRanks]
   struct flagcxIntruQueue<struct flagcxRmaDesc, &flagcxRmaDesc::next>
-      *inProgressQueues;        // [nRanks]
-  volatile uint64_t *opSeqs;    // [nRanks]
-  volatile uint64_t *doneSeqs;  // [nRanks]
-  volatile uint32_t *inFlights; // [nRanks]
+      *inProgressQueues;     // [nRanks]
+  volatile uint64_t *opSeqs; // [nRanks]
+  // Highest contiguous operation sequence that completed successfully.
+  volatile uint64_t *completedSeqs; // [nRanks]
+  // Highest contiguous operation sequence that no longer owns transport
+  // resources. This advances for both successful and failed/cancelled ops so
+  // local waiters can exit without releasing buffers while RDMA is in flight.
+  volatile uint64_t *retiredSeqs; // [nRanks]
+  volatile uint32_t *inFlights;   // [nRanks]
+  volatile int *peerStates;       // [nRanks], enum flagcxRmaPeerState
 
-  // GPU-visible done sequence counters for STREAM_OPS mode.
-  // GPU stream waits on doneSeqsDev via streamWaitValue64.
-  uint64_t *doneSeqsDev; // [nRanks] device pointer (GPU-visible)
-  // CPU-side done sequence counters for HOST_FUNC mode.
-  // Written by proxy thread, polled by host-func callback.
-  volatile uint64_t *doneSeqsCpu; // [nRanks] host memory
+  // GPU-visible retirement sequence counters for STREAM_OPS mode.
+  // GPU stream waits on retiredSeqsDev via streamWaitValue64.
+  uint64_t *retiredSeqsDev; // [nRanks] device pointer (GPU-visible)
+  // CPU-side retirement counters. In STREAM_OPS mode this is the CPU mapping
+  // of retiredSeqsDev; in HOST_FUNC mode it is ordinary host memory.
+  volatile uint64_t *retiredSeqsCpu; // [nRanks]
+  bool retiredSeqsMapped;
 
   // GPU-visible ready sequence counters for STREAM_OPS mode.
   // GPU stream writes readySeqsDev via streamWriteValue64 to signal data ready.
@@ -90,6 +127,7 @@ struct flagcxRmaProxyState {
   // CPU-side ready sequence counters for HOST_FUNC mode.
   // Written by host-func callback, polled by proxy thread.
   volatile uint64_t *readySeqsCpu; // [nRanks] host memory
+  bool readySeqsMapped;
 
   // Synchronization method: HOST_FUNC (default) or STREAM_OPS (opt-in via env)
   int useStreamOps; // 0 = HOST_FUNC (default), 1 = STREAM_OPS
@@ -98,8 +136,8 @@ struct flagcxRmaProxyState {
   // Callers record the value before issuing ops, then poll until it advances.
   volatile uint64_t completionCount;
 
-  // Set to 1 by the progress thread when an IB op fails (test error, post
-  // error, or missing sendComm). Wait functions check this and return an error.
+  // First terminal asynchronous RMA error, or flagcxSuccess. Peer state is
+  // poisoned before this is published, and later errors do not overwrite it.
   volatile int rmaError;
 
   void *const *fullSendComms; // [nRanks] or NULL until published
@@ -113,13 +151,32 @@ struct flagcxRmaProxyState {
                       // retries)
 
   // Condition variable for HOST_FUNC done-wait: proxy thread broadcasts
-  // after updating doneSeqsCpu so host-func callbacks wake without spinning.
+  // after updating retiredSeqsCpu so host-func callbacks wake without spinning.
   pthread_mutex_t doneMutex;
   pthread_cond_t doneCond;
 
   pthread_t thread;
   volatile int stop;
 };
+
+static inline flagcxResult_t
+flagcxRmaProxyAsyncError(const struct flagcxRmaProxyState *proxy) {
+  int result = __atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE);
+  return result == flagcxSuccess ? flagcxSuccess : (flagcxResult_t)result;
+}
+
+static inline void flagcxRmaProxyRecordError(struct flagcxRmaProxyState *proxy,
+                                             int peer, flagcxResult_t result) {
+  if (result == flagcxSuccess || result == flagcxInProgress)
+    result = flagcxRemoteError;
+  if (peer >= 0 && peer < proxy->nRanks && proxy->peerStates != NULL) {
+    __atomic_store_n(&proxy->peerStates[peer], FLAGCX_RMA_PEER_FAILED,
+                     __ATOMIC_RELEASE);
+  }
+  int expected = flagcxSuccess;
+  __atomic_compare_exchange_n(&proxy->rmaError, &expected, (int)result, false,
+                              __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+}
 
 typedef struct flagcxHeteroComm *flagcxHeteroComm_t;
 
@@ -196,8 +253,8 @@ flagcxResult_t flagcxHeteroRmaProxyPublishSendComms(flagcxHeteroComm_t comm,
 flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
                                     uint64_t seq);
 
-// Stream-based flush: enqueue a GPU-side wait on doneSeqsDev[peer] >= seq.
-// Returns immediately; the stream will stall until the condition is met.
+// Stream-based flush: enqueue a GPU-side wait on retiredSeqsDev[peer] >= seq.
+// Returns immediately; failures are reported through comm async error state.
 flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
                                           uint64_t seq, flagcxStream_t stream);
 

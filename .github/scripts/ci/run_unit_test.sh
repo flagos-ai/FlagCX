@@ -255,7 +255,15 @@ run_suite() {
   fi
 
   case "$SUITE" in
-    adaptor|core|service)
+    adaptor)
+      # Exercise one-sided round-robin selection and per-QP NIC key mapping
+      # in every RDMA adaptor job instead of leaving multi-QP coverage to a
+      # best-effort environment setting.
+      FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      ;;
+    core|service)
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;

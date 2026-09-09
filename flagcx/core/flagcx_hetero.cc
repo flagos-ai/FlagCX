@@ -49,11 +49,10 @@ static void flagcxRmaReadyHostFunc(void *arg) {
 
 // Context for launchHostFunc done-wait callbacks (HOST_FUNC path).
 struct flagcxRmaDoneWaitCtx {
-  volatile uint64_t *doneSeqsCpu; // pointer to proxy's doneSeqsCpu[peer]
-  uint64_t opSeq;                 // sequence to wait for
-  volatile int *rmaError;         // proxy error flag
-  pthread_mutex_t *doneMutex;     // proxy done condvar mutex
-  pthread_cond_t *doneCond;       // proxy done condvar
+  volatile uint64_t *retiredSeqsCpu; // proxy's retiredSeqsCpu[peer]
+  uint64_t opSeq;                    // sequence to wait for
+  pthread_mutex_t *doneMutex;        // proxy done condvar mutex
+  pthread_cond_t *doneCond;          // proxy done condvar
 };
 
 // Host-func callback: blocks stream until proxy signals completion.
@@ -61,10 +60,7 @@ struct flagcxRmaDoneWaitCtx {
 static void flagcxRmaDoneWaitHostFunc(void *arg) {
   struct flagcxRmaDoneWaitCtx *ctx = (struct flagcxRmaDoneWaitCtx *)arg;
   pthread_mutex_lock(ctx->doneMutex);
-  while (__atomic_load_n(ctx->doneSeqsCpu, __ATOMIC_ACQUIRE) < ctx->opSeq) {
-    if (__atomic_load_n(ctx->rmaError, __ATOMIC_ACQUIRE)) {
-      break;
-    }
+  while (__atomic_load_n(ctx->retiredSeqsCpu, __ATOMIC_ACQUIRE) < ctx->opSeq) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_nsec += 1000000; // 1ms timeout as safety net
@@ -105,18 +101,18 @@ static flagcxResult_t flagcxRmaWaitDone(struct flagcxRmaProxyState *proxy,
                                         int peer, uint64_t opSeq,
                                         flagcxStream_t stream) {
   if (proxy->useStreamOps) {
-    // STREAM_OPS: GPU waits on doneSeqsDev (hardware poll, no CPU involvement)
-    return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
-                                            opSeq, 0);
+    // STREAM_OPS: GPU waits until the op is retired. The caller observes a
+    // failed retirement through flagcxCommGetAsyncError().
+    return deviceAdaptor->streamWaitValue64(
+        stream, &proxy->retiredSeqsDev[peer], opSeq, 0);
   } else {
     // HOST_FUNC: launch callback that waits on doneCond until done
     struct flagcxRmaDoneWaitCtx *ctx =
         (struct flagcxRmaDoneWaitCtx *)malloc(sizeof(*ctx));
     if (ctx == NULL)
       return flagcxSystemError;
-    ctx->doneSeqsCpu = &proxy->doneSeqsCpu[peer];
+    ctx->retiredSeqsCpu = &proxy->retiredSeqsCpu[peer];
     ctx->opSeq = opSeq;
-    ctx->rmaError = &proxy->rmaError;
     ctx->doneMutex = &proxy->doneMutex;
     ctx->doneCond = &proxy->doneCond;
     return deviceAdaptor->launchHostFunc(stream, flagcxRmaDoneWaitHostFunc,
@@ -144,10 +140,20 @@ static flagcxResult_t flagcxRmaProxyEnqueueDesc(
     struct flagcxRmaProxyState *proxy, int peer, struct flagcxRmaDesc *desc,
     bool streamSyncReady = false, uint64_t *assignedSeq = NULL) {
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+  flagcxResult_t asyncError = flagcxRmaProxyAsyncError(proxy);
+  if (!flagcxRmaProxyCanEnqueue(
+          asyncError,
+          __atomic_load_n(&proxy->peerStates[peer], __ATOMIC_ACQUIRE))) {
+    pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+    return asyncError == flagcxSuccess ? flagcxRemoteError : asyncError;
+  }
   while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
-    if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+    asyncError = flagcxRmaProxyAsyncError(proxy);
+    if (!flagcxRmaProxyCanEnqueue(
+            asyncError,
+            __atomic_load_n(&proxy->peerStates[peer], __ATOMIC_ACQUIRE))) {
       pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
-      return flagcxRemoteError;
+      return asyncError == flagcxSuccess ? flagcxRemoteError : asyncError;
     }
     pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
     sched_yield();
@@ -184,10 +190,20 @@ flagcxRmaProxyEnqueueDescBatch(struct flagcxRmaProxyState *proxy, int peer,
 
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
   for (size_t i = 0; i < count; i++) {
+    flagcxResult_t asyncError = flagcxRmaProxyAsyncError(proxy);
+    if (!flagcxRmaProxyCanEnqueue(
+            asyncError,
+            __atomic_load_n(&proxy->peerStates[peer], __ATOMIC_ACQUIRE))) {
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+      return asyncError == flagcxSuccess ? flagcxRemoteError : asyncError;
+    }
     while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
-      if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+      asyncError = flagcxRmaProxyAsyncError(proxy);
+      if (!flagcxRmaProxyCanEnqueue(
+              asyncError,
+              __atomic_load_n(&proxy->peerStates[peer], __ATOMIC_ACQUIRE))) {
         pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
-        return flagcxRemoteError;
+        return asyncError == flagcxSuccess ? flagcxRemoteError : asyncError;
       }
       pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
       sched_yield();
@@ -291,6 +307,39 @@ static flagcxResult_t flagcxRmaProxyPostPutBatch(struct flagcxHeteroComm *comm,
                                      requests, posted);
 }
 
+static void flagcxRmaProxyPublishRetirement(struct flagcxRmaProxyState *proxy,
+                                            int peer,
+                                            struct flagcxRmaDesc *desc,
+                                            bool succeeded) {
+  if (succeeded) {
+    // Preserve the "highest contiguous successful sequence" contract. A
+    // later accepted request may complete after an earlier request failed;
+    // that success must not bridge the failed sequence.
+    uint64_t completed =
+        __atomic_load_n(&proxy->completedSeqs[peer], __ATOMIC_ACQUIRE);
+    uint64_t nextCompleted =
+        flagcxRmaNextCompletedSeq(completed, desc->opSeq, true);
+    if (nextCompleted != completed)
+      __atomic_store_n(&proxy->completedSeqs[peer], nextCompleted,
+                       __ATOMIC_RELEASE);
+    __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
+  }
+
+  // Retirement, unlike successful completion, also covers failed and
+  // cancelled descriptors. Publish it only after all earlier submitted work
+  // has released its transport request so buffer-owning waiters remain safe.
+  __atomic_store_n(&proxy->retiredSeqs[peer], desc->opSeq, __ATOMIC_RELEASE);
+  if (proxy->retiredSeqsCpu != NULL)
+    __atomic_store_n(&proxy->retiredSeqsCpu[peer], desc->opSeq,
+                     __ATOMIC_RELEASE);
+
+  if (!proxy->useStreamOps) {
+    pthread_mutex_lock(&proxy->doneMutex);
+    pthread_cond_broadcast(&proxy->doneCond);
+    pthread_mutex_unlock(&proxy->doneMutex);
+  }
+}
+
 // Poll and retire completed descs at the head of inProgressQueues[peer].
 // Returns after the head desc is not yet complete (enforces per-peer FIFO).
 static bool
@@ -309,9 +358,9 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
         WARN("flagcxRmaProxyPollNonPersistCompletion: test failed peer=%d "
              "res=%d",
              peer, (int)res);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy, peer, res);
         done = 1;
-        failed = true; // retire without advancing counters
+        failed = true;
       }
     } else {
       // Issuance already failed; drain without advancing counters.
@@ -322,24 +371,9 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
       break;
     flagcxIntruQueueDequeue(&proxy->inProgressQueues[peer]);
     __atomic_fetch_sub(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
-    if (!failed) {
-      // Publish completion: doneSeqs with RELEASE so waiters acquire-see it.
-      __atomic_store_n(&proxy->doneSeqs[peer], desc->opSeq, __ATOMIC_RELEASE);
-      // Also write doneSeqsCpu for stream/host-func waiters.
-      // In STREAM_OPS mode: this is a CPU mapping of doneSeqsDev (GPU-visible).
-      // In HOST_FUNC mode: this is host memory polled by launchHostFunc
-      // callback.
-      if (proxy->doneSeqsCpu != NULL)
-        __atomic_store_n(&proxy->doneSeqsCpu[peer], desc->opSeq,
-                         __ATOMIC_RELEASE);
-      __atomic_fetch_add(&proxy->completionCount, 1ULL, __ATOMIC_RELEASE);
-      // Wake HOST_FUNC waiters sleeping on doneCond
-      if (!proxy->useStreamOps) {
-        pthread_mutex_lock(&proxy->doneMutex);
-        pthread_cond_broadcast(&proxy->doneCond);
-        pthread_mutex_unlock(&proxy->doneMutex);
-      }
-    }
+    // A successfully completed prefix remains successful even if a later
+    // descriptor has already poisoned this peer's epoch.
+    flagcxRmaProxyPublishRetirement(proxy, peer, desc, !failed);
     free(desc);
     did = true;
   }
@@ -348,9 +382,9 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
 
 // Poll pending descs from the ring and issue them. On success advance
 // cis[peer] and move the desc to inProgressQueues[peer]. On
-// request-pool-full (flagcxInternalError) leave cis untouched and retry
-// next round. On other errors mark rmaError and push to inProgress with
-// NULL request so PollNonPersistCompletion retires it.
+// transient backpressure (flagcxInProgress) leaves cis untouched and retries
+// next round. A terminal failure poisons the peer; accepted work is drained,
+// while the unsubmitted suffix is retired without publication.
 static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
                                              int peer, void *sendComm) {
   struct flagcxHeteroComm *comm = proxy->comm;
@@ -424,12 +458,11 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
         flagcxResult_t res = flagcxRmaProxyPostPutBatch(
             comm, descs, batchCount, sendComm, requests, &posted);
         if (posted == 0) {
-          if (res != flagcxSuccess && res != flagcxInProgress &&
-              res != flagcxSystemError && res != flagcxInternalError) {
+          if (res != flagcxSuccess && !flagcxRmaResultIsRetryable(res)) {
             WARN("flagcxRmaProxyPollNonPersistDesc: batch op failed peer=%d "
                  "res=%d",
                  peer, (int)res);
-            __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+            flagcxRmaProxyRecordError(proxy, peer, res);
           }
           break;
         }
@@ -444,21 +477,28 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
         __atomic_fetch_add(&proxy->inFlights[peer], (uint32_t)posted,
                            __ATOMIC_RELAXED);
         did = true;
+        if (res != flagcxSuccess && !flagcxRmaResultIsRetryable(res)) {
+          WARN("flagcxRmaProxyPollNonPersistDesc: partial batch failed peer=%d "
+               "posted=%d res=%d",
+               peer, posted, (int)res);
+          flagcxRmaProxyRecordError(proxy, peer, res);
+          break;
+        }
         continue;
       }
     }
 
     desc->request = NULL;
     flagcxResult_t res = flagcxRmaProxyPostOp(comm, desc, sendComm);
-    if (res == flagcxInternalError) {
-      // Request pool exhausted; retry this slot next round (cis unchanged).
+    if (flagcxRmaResultIsRetryable(res)) {
+      // Request pool/SQ backpressure; retry this slot next round.
       break;
     }
     if (res != flagcxSuccess) {
       WARN("flagcxRmaProxyPollNonPersistDesc: op failed peer=%d type=%d "
            "res=%d",
            peer, (int)desc->type, (int)res);
-      __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+      flagcxRmaProxyRecordError(proxy, peer, res);
       desc->request = NULL; // completion path will treat as done.
     }
     // RELEASE so the producer sees the slot freed.
@@ -476,19 +516,23 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
   return did;
 }
 
-// Drain the peer's ring without posting: dequeue, advance cis, free each
-// desc without bumping doneSeqs/completionCount. Called at shutdown when
-// no sendComm is available and we cannot actually issue the ops.
-static void flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
+// Retire the peer's unsubmitted ring without posting. This is called only
+// after the peer's in-flight queue is empty, so publishing the final retired
+// sequence cannot let a waiter release memory still owned by the NIC.
+static bool flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
                                     int peer) {
+  bool did = false;
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
     uint32_t ci = __atomic_load_n(&proxy->cis[peer], __ATOMIC_RELAXED);
     uint32_t idx = ci & proxy->queueMask;
     struct flagcxRmaDesc *desc =
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
     __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
+    flagcxRmaProxyPublishRetirement(proxy, peer, desc, false);
     free(desc);
+    did = true;
   }
+  return did;
 }
 
 // One pass over all peers: poll completions and issue pending descs.
@@ -506,6 +550,20 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
     if (flagcxRmaProxyPollNonPersistCompletion(proxy, p))
       did = true;
 
+    bool peerFailed =
+        __atomic_load_n(&proxy->peerStates[p], __ATOMIC_ACQUIRE) ==
+        FLAGCX_RMA_PEER_FAILED;
+    if (peerFailed) {
+      if (flagcxIntruQueueEmpty(&proxy->inProgressQueues[p]) &&
+          flagcxRmaProxyDrainRing(proxy, p)) {
+        did = true;
+      }
+      if (!flagcxRmaProxyCircularBufEmpty(proxy, p) ||
+          !flagcxIntruQueueEmpty(&proxy->inProgressQueues[p]))
+        *anyOutstanding = true;
+      continue;
+    }
+
     void *sendComm = (fullSendComms != NULL) ? fullSendComms[p] : NULL;
     if (sendComm != NULL) {
       if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
@@ -517,14 +575,13 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
         WARN("flagcxRmaProxyProgress: stop with queued descs but no "
              "sendComm peer=%d; draining",
              p);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
-        flagcxRmaProxyDrainRing(proxy, p);
+        flagcxRmaProxyRecordError(proxy, p, flagcxInternalError);
         did = true;
       } else {
         // Pre-registration: caller enqueued an op before the full mesh
         // is ready. Surface as an error rather than spin forever.
         WARN("flagcxRmaProxyProgress: no sendComm for peer %d", p);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy, p, flagcxInternalError);
       }
     }
 
@@ -585,13 +642,16 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   proxy->peerProducerMutexes =
       (pthread_mutex_t *)calloc(nRanks, sizeof(pthread_mutex_t));
   proxy->opSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
-  proxy->doneSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
+  proxy->completedSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
+  proxy->retiredSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
   proxy->inFlights = (volatile uint32_t *)calloc(nRanks, sizeof(uint32_t));
+  proxy->peerStates = (volatile int *)calloc(nRanks, sizeof(int));
 
   if (proxy->circularBuffers == NULL || proxy->pis == NULL ||
       proxy->cis == NULL || proxy->inProgressQueues == NULL ||
       proxy->peerProducerMutexes == NULL || proxy->opSeqs == NULL ||
-      proxy->doneSeqs == NULL || proxy->inFlights == NULL) {
+      proxy->completedSeqs == NULL || proxy->retiredSeqs == NULL ||
+      proxy->inFlights == NULL || proxy->peerStates == NULL) {
     WARN("flagcxHeteroRmaProxyStart: failed to allocate ring buffers");
     free(proxy->circularBuffers);
     free((void *)proxy->pis);
@@ -599,8 +659,10 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free(proxy->inProgressQueues);
     free(proxy->peerProducerMutexes);
     free((void *)proxy->opSeqs);
-    free((void *)proxy->doneSeqs);
+    free((void *)proxy->completedSeqs);
+    free((void *)proxy->retiredSeqs);
     free((void *)proxy->inFlights);
+    free((void *)proxy->peerStates);
     free(proxy);
     return flagcxSystemError;
   }
@@ -614,15 +676,17 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   pthread_cond_init(&proxy->doneCond, NULL);
 
   // Allocate device memory for stream-based synchronization.
-  proxy->doneSeqsDev = NULL;
-  proxy->doneSeqsCpu = NULL;
+  proxy->retiredSeqsDev = NULL;
+  proxy->retiredSeqsCpu = NULL;
+  proxy->retiredSeqsMapped = false;
   proxy->readySeqsDev = NULL;
   proxy->readySeqsCpu = NULL;
+  proxy->readySeqsMapped = false;
   if (deviceAdaptor->gdrMemAlloc != NULL) {
     flagcxResult_t memRes = deviceAdaptor->gdrMemAlloc(
-        (void **)&proxy->doneSeqsDev, nRanks * sizeof(uint64_t), NULL);
+        (void **)&proxy->retiredSeqsDev, nRanks * sizeof(uint64_t), NULL);
     if (memRes != flagcxSuccess)
-      proxy->doneSeqsDev = NULL;
+      proxy->retiredSeqsDev = NULL;
     memRes = deviceAdaptor->gdrMemAlloc((void **)&proxy->readySeqsDev,
                                         nRanks * sizeof(uint64_t), NULL);
     if (memRes != flagcxSuccess)
@@ -633,33 +697,38 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   // This gives the proxy thread direct CPU access to the device buffers.
   bool mmapDone = false, mmapReady = false;
   if (deviceAdaptor->gdrPtrMmap != NULL) {
-    if (proxy->doneSeqsDev != NULL) {
-      if (deviceAdaptor->gdrPtrMmap((void **)&proxy->doneSeqsCpu,
-                                    proxy->doneSeqsDev,
-                                    nRanks * sizeof(uint64_t)) == flagcxSuccess)
+    if (proxy->retiredSeqsDev != NULL) {
+      if (deviceAdaptor->gdrPtrMmap(
+              (void **)&proxy->retiredSeqsCpu, proxy->retiredSeqsDev,
+              nRanks * sizeof(uint64_t)) == flagcxSuccess) {
         mmapDone = true;
-      else
-        proxy->doneSeqsCpu = NULL;
+        proxy->retiredSeqsMapped = true;
+      } else {
+        proxy->retiredSeqsCpu = NULL;
+      }
     }
     if (proxy->readySeqsDev != NULL) {
-      if (deviceAdaptor->gdrPtrMmap((void **)&proxy->readySeqsCpu,
-                                    proxy->readySeqsDev,
-                                    nRanks * sizeof(uint64_t)) == flagcxSuccess)
+      if (deviceAdaptor->gdrPtrMmap(
+              (void **)&proxy->readySeqsCpu, proxy->readySeqsDev,
+              nRanks * sizeof(uint64_t)) == flagcxSuccess) {
         mmapReady = true;
-      else
+        proxy->readySeqsMapped = true;
+      } else {
         proxy->readySeqsCpu = NULL;
+      }
     }
   }
 
   // If no CPU mapping available, allocate separate host memory for HOST_FUNC.
-  if (proxy->doneSeqsCpu == NULL)
-    proxy->doneSeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
+  if (proxy->retiredSeqsCpu == NULL)
+    proxy->retiredSeqsCpu =
+        (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
   if (proxy->readySeqsCpu == NULL)
     proxy->readySeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
 
   // Zero-init device buffers
-  if (proxy->doneSeqsDev != NULL)
-    deviceAdaptor->deviceMemset(proxy->doneSeqsDev, 0,
+  if (proxy->retiredSeqsDev != NULL)
+    deviceAdaptor->deviceMemset(proxy->retiredSeqsDev, 0,
                                 nRanks * sizeof(uint64_t), flagcxMemDevice,
                                 NULL);
   if (proxy->readySeqsDev != NULL)
@@ -668,11 +737,11 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
                                 NULL);
 
   // STREAM_OPS requires: device buffers AND successful CPU mmap of both
-  // (so proxy thread can write doneSeqsDev from CPU via the mmap'd pointer).
-  // If mmap failed, doneSeqsCpu/readySeqsCpu are separate host allocations
+  // (so proxy can write retiredSeqsDev from CPU via the mmap'd pointer).
+  // If mmap failed, retiredSeqsCpu/readySeqsCpu are separate host allocations
   // and STREAM_OPS would hang (GPU waits on device memory proxy never updates).
   proxy->useStreamOps =
-      (flagcxParamRmaStreamOps() == 1 && proxy->doneSeqsDev != NULL &&
+      (flagcxParamRmaStreamOps() == 1 && proxy->retiredSeqsDev != NULL &&
        proxy->readySeqsDev != NULL && mmapDone && mmapReady)
           ? 1
           : 0;
@@ -685,19 +754,22 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   if (pthread_create(&proxy->thread, NULL, flagcxRmaProxyProgressThread,
                      proxy) != 0) {
     WARN("flagcxHeteroRmaProxyStart: pthread_create failed");
-    if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-      if (proxy->doneSeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+    if (proxy->retiredSeqsMapped) {
+      if (deviceAdaptor->gdrPtrMunmap != NULL)
+        deviceAdaptor->gdrPtrMunmap((void *)proxy->retiredSeqsCpu,
                                     nRanks * sizeof(uint64_t));
-      if (proxy->readySeqsCpu != NULL)
+    } else {
+      free((void *)proxy->retiredSeqsCpu);
+    }
+    if (proxy->readySeqsMapped) {
+      if (deviceAdaptor->gdrPtrMunmap != NULL)
         deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
                                     nRanks * sizeof(uint64_t));
     } else {
-      free((void *)proxy->doneSeqsCpu);
       free((void *)proxy->readySeqsCpu);
     }
-    if (proxy->doneSeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
+    if (proxy->retiredSeqsDev != NULL)
+      deviceAdaptor->gdrMemFree(proxy->retiredSeqsDev, NULL);
     if (proxy->readySeqsDev != NULL)
       deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
     for (int p = 0; p < nRanks; p++)
@@ -710,8 +782,10 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free(proxy->inProgressQueues);
     free(proxy->peerProducerMutexes);
     free((void *)proxy->opSeqs);
-    free((void *)proxy->doneSeqs);
+    free((void *)proxy->completedSeqs);
+    free((void *)proxy->retiredSeqs);
     free((void *)proxy->inFlights);
+    free((void *)proxy->peerStates);
     free(proxy);
     comm->rmaProxy = NULL;
     return flagcxSystemError;
@@ -740,21 +814,24 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   pthread_mutex_destroy(&proxy->doneMutex);
 
   // Free CPU mappings / host memory
-  if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-    if (proxy->doneSeqsCpu != NULL)
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+  if (proxy->retiredSeqsMapped) {
+    if (deviceAdaptor->gdrPtrMunmap != NULL)
+      deviceAdaptor->gdrPtrMunmap((void *)proxy->retiredSeqsCpu,
                                   proxy->nRanks * sizeof(uint64_t));
-    if (proxy->readySeqsCpu != NULL)
+  } else {
+    free((void *)proxy->retiredSeqsCpu);
+  }
+  if (proxy->readySeqsMapped) {
+    if (deviceAdaptor->gdrPtrMunmap != NULL)
       deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
                                   proxy->nRanks * sizeof(uint64_t));
   } else {
-    free((void *)proxy->doneSeqsCpu);
     free((void *)proxy->readySeqsCpu);
   }
 
   // Free device memory
-  if (proxy->doneSeqsDev != NULL)
-    deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
+  if (proxy->retiredSeqsDev != NULL)
+    deviceAdaptor->gdrMemFree(proxy->retiredSeqsDev, NULL);
   if (proxy->readySeqsDev != NULL)
     deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
 
@@ -764,8 +841,10 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   free(proxy->inProgressQueues);
   free(proxy->peerProducerMutexes);
   free((void *)proxy->opSeqs);
-  free((void *)proxy->doneSeqs);
+  free((void *)proxy->completedSeqs);
+  free((void *)proxy->retiredSeqs);
   free((void *)proxy->inFlights);
+  free((void *)proxy->peerStates);
   free(proxy);
   comm->rmaProxy = NULL;
   return flagcxSuccess;
@@ -798,16 +877,10 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
          proxy->nRanks);
     return flagcxInvalidArgument;
   }
-  while (__atomic_load_n(&proxy->doneSeqs[peer], __ATOMIC_ACQUIRE) < seq) {
-    if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
-      return flagcxRemoteError;
+  while (__atomic_load_n(&proxy->retiredSeqs[peer], __ATOMIC_ACQUIRE) < seq) {
     usleep(100);
   }
-  // Final rmaError check: kernel proxy or network failures set rmaError;
-  // catch errors that occurred after doneSeqs reached the target.
-  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
-    return flagcxRemoteError;
-  return flagcxSuccess;
+  return flagcxRmaProxyAsyncError(proxy);
 }
 
 flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
@@ -820,14 +893,15 @@ flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
          proxy->nRanks);
     return flagcxInvalidArgument;
   }
-  if (stream == NULL || !proxy->useStreamOps || proxy->doneSeqsDev == NULL) {
+  if (stream == NULL || !proxy->useStreamOps || proxy->retiredSeqsDev == NULL) {
     // Fallback to host-side spin if stream or STREAM_OPS not available.
-    // In HOST_FUNC mode, proxy writes doneSeqsCpu (host memory), so GPU-side
-    // streamWaitValue64 on doneSeqsDev would stall forever.
+    // In HOST_FUNC mode, proxy writes retiredSeqsCpu (host memory), so a
+    // GPU-side wait on retiredSeqsDev would stall forever.
     return flagcxHeteroFlushRma(comm, peer, seq);
   }
-  // GPU-side wait: stream stalls until doneSeqsDev[peer] >= seq
-  return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
+  // GPU-side wait: stream stalls until all transport ownership through seq is
+  // retired. A failed operation is reported through flagcxCommGetAsyncError.
+  return deviceAdaptor->streamWaitValue64(stream, &proxy->retiredSeqsDev[peer],
                                           seq, 0 /*GEQ*/);
 }
 
@@ -839,17 +913,11 @@ flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
     uint64_t target = __atomic_load_n(&proxy->opSeqs[p], __ATOMIC_RELAXED);
     if (target == 0)
       continue;
-    while (__atomic_load_n(&proxy->doneSeqs[p], __ATOMIC_ACQUIRE) < target) {
-      if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
-        return flagcxRemoteError;
+    while (__atomic_load_n(&proxy->retiredSeqs[p], __ATOMIC_ACQUIRE) < target) {
       usleep(100);
     }
   }
-  // Final rmaError check: kernel proxy or network failures set rmaError;
-  // catch errors that occurred after doneSeqs reached the target.
-  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE))
-    return flagcxRemoteError;
-  return flagcxSuccess;
+  return flagcxRmaProxyAsyncError(proxy);
 }
 
 flagcxResult_t flagcxHeteroReadCounter(flagcxHeteroComm_t comm,
@@ -866,8 +934,9 @@ flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
     return flagcxInvalidArgument;
   while (__atomic_load_n(&comm->rmaProxy->completionCount, __ATOMIC_ACQUIRE) <
          target) {
-    if (__atomic_load_n(&comm->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
-      return flagcxRemoteError;
+    flagcxResult_t asyncError = flagcxRmaProxyAsyncError(comm->rmaProxy);
+    if (asyncError != flagcxSuccess)
+      return asyncError;
     sched_yield();
   }
   return flagcxSuccess;
@@ -1439,13 +1508,26 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
   if (proxy == NULL)
     return flagcxInternalError;
 
-  // Try intra-node D2D path (lazy init if not yet built)
+  // Signal publication may bypass the proxy only while this peer is idle;
+  // otherwise it must join the proxy epoch behind earlier network work.
   if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
     if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
       if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
         proxy->ipcInitFailed = true;
     }
     if (proxy->ipcState != NULL) {
+      pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+      flagcxResult_t asyncError = flagcxRmaProxyAsyncError(proxy);
+      int peerState =
+          __atomic_load_n(&proxy->peerStates[peer], __ATOMIC_ACQUIRE);
+      bool useIpc = flagcxRmaProxyCanUseIpc(
+          asyncError, peerState, !flagcxRmaProxyCircularBufEmpty(proxy, peer),
+          __atomic_load_n(&proxy->inFlights[peer], __ATOMIC_ACQUIRE) != 0);
+      if (asyncError != flagcxSuccess) {
+        pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+        return asyncError;
+      }
+
       struct flagcxRmaIpcState *ipc = proxy->ipcState;
       void *srcBuf = NULL;
       void *dstBuf = NULL;
@@ -1470,15 +1552,17 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
             (void *)((uintptr_t)ipc->peerSignalBufs[peer] + signalOffset);
       }
 
-      if ((size == 0 || (srcBuf != NULL && dstBuf != NULL)) &&
+      if (useIpc && (size == 0 || (srcBuf != NULL && dstBuf != NULL)) &&
           signalAddr != NULL) {
         flagcxResult_t res = flagcxSuccess;
         // Data transfer (if any)
         if (size > 0) {
           res = deviceAdaptor->deviceMemcpy(
               dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
-          if (res != flagcxSuccess)
+          if (res != flagcxSuccess) {
+            pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
             return res;
+          }
         }
         // Signal write via D2D: accumulate monotonic counter so that
         // streamWaitValue64(GEQ) on the receiver side works correctly
@@ -1489,8 +1573,10 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
         res = deviceAdaptor->streamWriteValue64(stream, signalAddr, newSeq, 0);
         if (opSeq != NULL)
           *opSeq = 0; // D2D path
+        pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
         return res;
       }
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
       // Fall through to proxy path
     }
   }

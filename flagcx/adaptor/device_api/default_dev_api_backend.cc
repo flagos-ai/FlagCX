@@ -669,23 +669,39 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
+  flagcxResult_t firstError = flagcxSuccess;
+
   // Deregister communicator-level MRs before freeing their backing buffers.
   // Check handle identity so rollback cannot remove a registration owned by
   // another DevComm.
   if (devComm->ownedStagingRegistration) {
     if (comm != nullptr && comm->heteroComm != nullptr &&
         comm->heteroComm->stagingHandle == devComm->ownedStagingRegistration) {
-      flagcxOneSideStagingDeregister(comm);
+      flagcxResult_t res = flagcxOneSideStagingDeregister(comm);
+      if (res != flagcxSuccess)
+        firstError = res;
     }
-    devComm->ownedStagingRegistration = nullptr;
+    if (comm == nullptr || comm->heteroComm == nullptr ||
+        comm->heteroComm->stagingHandle != devComm->ownedStagingRegistration)
+      devComm->ownedStagingRegistration = nullptr;
   }
   if (devComm->ownedSignalRegistration) {
     if (comm != nullptr && comm->heteroComm != nullptr &&
         comm->heteroComm->signalHandle == devComm->ownedSignalRegistration) {
-      flagcxOneSideSignalDeregister(comm);
+      flagcxResult_t res = flagcxOneSideSignalDeregister(comm);
+      if (firstError == flagcxSuccess && res != flagcxSuccess)
+        firstError = res;
     }
-    devComm->ownedSignalRegistration = nullptr;
+    if (comm == nullptr || comm->heteroComm == nullptr ||
+        comm->heteroComm->signalHandle != devComm->ownedSignalRegistration)
+      devComm->ownedSignalRegistration = nullptr;
   }
+
+  // Do not release any backing buffer while one of its MRs is still live.
+  // Successfully deregistered handles remain consumed, so a later destroy
+  // retries only the failed registration.
+  if (firstError != flagcxSuccess)
+    return firstError;
 
   // ── IPC slot: immediate full cleanup ──────────────────────────────────
   if (comm != nullptr && devComm->barrierIpcIndex >= 0 &&

@@ -1699,9 +1699,19 @@ flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
         if (cleanupResult != flagcxSuccess) {
           WARN("NET/IB: failed to roll back MR registration on device %d: %d",
                j, cleanupResult);
+        } else {
+          mhandleWrapper->mrs[j] = NULL;
         }
       }
-      free(mhandleWrapper);
+      bool cleanupDeferred = false;
+      for (int j = 0; j < i; j++)
+        cleanupDeferred |= mhandleWrapper->mrs[j] != NULL;
+      if (cleanupDeferred) {
+        mhandleWrapper->nextDeferred = base->deferredMrHandles;
+        base->deferredMrHandles = mhandleWrapper;
+      } else {
+        free(mhandleWrapper);
+      }
       return result;
     }
   }
@@ -1783,6 +1793,22 @@ flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
   if (result == flagcxSuccess)
     free(mhandleWrapper);
   return result;
+}
+
+static flagcxResult_t
+flagcxIbDrainDeferredMrs(struct flagcxIbNetCommBase *base) {
+  while (base->deferredMrHandles != NULL) {
+    struct flagcxIbMrHandle *handle = base->deferredMrHandles;
+    base->deferredMrHandles = handle->nextDeferred;
+    handle->nextDeferred = NULL;
+    flagcxResult_t res = flagcxIbDeregMr(base, handle);
+    if (res != flagcxSuccess) {
+      handle->nextDeferred = base->deferredMrHandles;
+      base->deferredMrHandles = handle;
+      return res;
+    }
+  }
+  return flagcxSuccess;
 }
 
 static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
@@ -2268,6 +2294,7 @@ flagcxResult_t flagcxIbTest(void *request, int *done, int *sizes) {
 flagcxResult_t flagcxIbCloseSend(void *sendComm) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   if (comm) {
+    FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
     FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
 
     // First, poll all CQs to drain completions before destroying QPs
@@ -2328,6 +2355,7 @@ flagcxResult_t flagcxIbCloseSend(void *sendComm) {
 flagcxResult_t flagcxIbCloseRecv(void *recvComm) {
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
   if (comm) {
+    FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
     FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
 
     // First, poll all CQs to drain completions before destroying QPs
@@ -2541,7 +2569,10 @@ flagcxIbInitOneSidedRequest(struct flagcxIbSendComm *comm, int type,
   if (comm == NULL || request == NULL)
     return flagcxInvalidArgument;
   *request = NULL;
-  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, request));
+  flagcxResult_t result = flagcxIbGetRequest(&comm->base, request);
+  if (result == flagcxInternalError)
+    return flagcxInProgress;
+  FLAGCXCHECK(result);
   (*request)->type = type;
   (*request)->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++)
@@ -2598,7 +2629,7 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   sge.lkey = lkey;              // Local key
 
   struct ibv_send_wr *bad_wr;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(qp->qp, &wr, &bad_wr);
   if (res != flagcxSuccess) {
     flagcxIbFreeRequest(req);
     return res;
@@ -2692,7 +2723,7 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
     sges[i].lkey = lkeys[i];
   }
 
-  res = flagcxWrapIbvPostSend(qp->qp, wrs, &bad_wr);
+  res = flagcxWrapIbvPostSendOneSided(qp->qp, wrs, &bad_wr);
   if (res != flagcxSuccess) {
     int first_failed = bad_wr ? (int)(bad_wr - wrs) : 0;
     if (first_failed < 0 || first_failed > count)
@@ -2800,7 +2831,7 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   sge.lkey = lkey;
 
   struct ibv_send_wr *bad_wr;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(qp->qp, &wr, &bad_wr);
   if (res != flagcxSuccess) {
     flagcxIbFreeRequest(req);
     return res;
@@ -2865,7 +2896,7 @@ flagcxResult_t flagcxIbIgetBatch(void *sendComm, int count,
   }
 
   struct ibv_send_wr *badWr = NULL;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, wrs, &badWr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(qp->qp, wrs, &badWr);
   int accepted = count;
   if (res != flagcxSuccess) {
     accepted = badWr == NULL ? 0 : (int)(badWr - wrs);
@@ -2967,8 +2998,8 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   // Post chained (data+signal) or signal-only
   struct ibv_send_wr *bad_wr;
   bool chainData = (size > 0 && srcInfo != NULL && dstInfo != NULL);
-  flagcxResult_t res =
-      flagcxWrapIbvPostSend(qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(
+      qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr);
   if (res != flagcxSuccess) {
     flagcxIbFreeRequest(req);
     return res;

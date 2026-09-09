@@ -185,7 +185,7 @@ TEST_F(RmaTest, PutThenSignalOrdersPayload) {
 
   establishConnection(comm, devHandle, rank, nranks);
 
-  constexpr int iterations = 8;
+  constexpr int iterations = 32;
   const size_t testSize = RMA_TEST_SIZE;
   flagcxStream_t waitStream;
   devHandle->streamCreate(&waitStream);
@@ -270,51 +270,55 @@ TEST_F(RmaTest, BatchPutThenSignalOrdersPayload) {
   devHandle->streamCreate(&waitStream);
   devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice, nullptr);
 
-  std::vector<uint8_t> expected(RMA_TEST_SIZE);
-  for (size_t i = 0; i < expected.size(); ++i)
-    expected[i] = static_cast<uint8_t>((i * 13 + 7) & 0xff);
-  if (rank == 0) {
-    devHandle->deviceMemcpy(dataBuff, expected.data(), expected.size(),
-                            flagcxMemcpyHostToDevice, nullptr);
-  } else if (rank == 1) {
-    devHandle->deviceMemset(dataBuff, 0, expected.size(), flagcxMemDevice,
-                            nullptr);
-  }
-  MPI_Barrier(MPI_COMM_WORLD);
-
-  uint64_t counterBefore = 0;
-  flagcxResult_t opRes = flagcxSuccess;
-  if (rank == 0) {
-    opRes = flagcxReadCounter(comm, &counterBefore);
-    if (opRes == flagcxSuccess) {
-      opRes = flagcxBatchPut(comm, 1, srcOffsets, dstOffsets, sizes, srcMrIdxs,
-                             dstMrIdxs, batchCount);
+  constexpr int iterations = 32;
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    std::vector<uint8_t> expected(RMA_TEST_SIZE);
+    for (size_t i = 0; i < expected.size(); ++i) {
+      expected[i] = static_cast<uint8_t>((i * 13 + 7 + iteration) & 0xff);
     }
-    if (opRes == flagcxSuccess)
-      opRes = flagcxSignal(1, 0, comm, nullptr);
+    if (rank == 0) {
+      devHandle->deviceMemcpy(dataBuff, expected.data(), expected.size(),
+                              flagcxMemcpyHostToDevice, nullptr);
+    } else if (rank == 1) {
+      devHandle->deviceMemset(dataBuff, 0, expected.size(), flagcxMemDevice,
+                              nullptr);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    uint64_t counterBefore = 0;
+    flagcxResult_t opRes = flagcxSuccess;
+    if (rank == 0) {
+      opRes = flagcxReadCounter(comm, &counterBefore);
+      if (opRes == flagcxSuccess) {
+        opRes = flagcxBatchPut(comm, 1, srcOffsets, dstOffsets, sizes,
+                               srcMrIdxs, dstMrIdxs, batchCount);
+      }
+      if (opRes == flagcxSuccess)
+        opRes = flagcxSignal(1, 0, comm, nullptr);
+    }
+
+    int globalStatus = collectiveOpStatus(opRes);
+    if (globalStatus == 1) {
+      devHandle->streamDestroy(waitStream);
+      GTEST_SKIP() << "Batch PUT + signal is not supported by this backend";
+    }
+    ASSERT_EQ(globalStatus, 0);
+
+    if (rank == 1) {
+      flagcxWaitSignalDesc_t desc = {static_cast<uint64_t>(iteration + 1), 0};
+      ASSERT_EQ(flagcxWaitSignal(1, &desc, comm, waitStream), flagcxSuccess);
+      ASSERT_EQ(devHandle->streamSynchronize(waitStream), flagcxSuccess);
+
+      std::vector<uint8_t> received(expected.size(), 0);
+      devHandle->deviceMemcpy(received.data(), dataBuff, received.size(),
+                              flagcxMemcpyDeviceToHost, nullptr);
+      EXPECT_EQ(received, expected);
+    } else if (rank == 0) {
+      ASSERT_EQ(flagcxWaitCounter(comm, counterBefore + batchCount + 1),
+                flagcxSuccess);
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
   }
-
-  int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus == 1) {
-    devHandle->streamDestroy(waitStream);
-    GTEST_SKIP() << "Batch PUT + signal is not supported by this backend";
-  }
-  ASSERT_EQ(globalStatus, 0);
-
-  if (rank == 1) {
-    flagcxWaitSignalDesc_t desc = {1, 0};
-    ASSERT_EQ(flagcxWaitSignal(1, &desc, comm, waitStream), flagcxSuccess);
-    ASSERT_EQ(devHandle->streamSynchronize(waitStream), flagcxSuccess);
-
-    std::vector<uint8_t> received(expected.size(), 0);
-    devHandle->deviceMemcpy(received.data(), dataBuff, received.size(),
-                            flagcxMemcpyDeviceToHost, nullptr);
-    EXPECT_EQ(received, expected);
-  } else if (rank == 0) {
-    ASSERT_EQ(flagcxWaitCounter(comm, counterBefore + batchCount + 1),
-              flagcxSuccess);
-  }
-
-  MPI_Barrier(MPI_COMM_WORLD);
   devHandle->streamDestroy(waitStream);
 }

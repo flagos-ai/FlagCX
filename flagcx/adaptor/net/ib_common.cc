@@ -76,6 +76,19 @@ flagcxIbCommonComponent(const struct flagcxIbCommonTestOps *ops) {
   return (ops && ops->component) ? ops->component : "NET/IB";
 }
 
+// A terminal completion consumes the request just like a successful
+// completion. The caller must not retry a request after test() reports an
+// error; retaining its pool slot would otherwise permanently reduce request
+// capacity while the failed QP is being drained and torn down.
+static flagcxResult_t flagcxIbCommonReleaseRequest(struct flagcxIbRequest *r) {
+  if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend) {
+    struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
+    if (sComm->outstandingSends > 0)
+      sComm->outstandingSends--;
+  }
+  return flagcxIbFreeRequest(r);
+}
+
 flagcxResult_t
 flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                          const struct flagcxIbCommonTestOps *ops) {
@@ -98,12 +111,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
       if (sizes && r->type == FLAGCX_NET_IB_REQ_SEND) {
         sizes[0] = r->send.size;
       }
-      if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend) {
-        struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
-        if (sComm->outstandingSends > 0)
-          sComm->outstandingSends--;
-      }
-      FLAGCXCHECK(flagcxIbFreeRequest(r));
+      FLAGCXCHECK(flagcxIbCommonReleaseRequest(r));
       return flagcxSuccess;
     }
 
@@ -164,6 +172,10 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                  wc->byte_len, wc->vendor_err, reqTypeStr[r->type],
                  localGidStr ? " localGid " : "", localGidString,
                  remoteGidStr ? " remoteGid " : "", remoteGidString);
+            // Completion errors are terminal for this request. Consume its
+            // pool slot before propagating the error so accepted batch
+            // prefixes can be fully retired during fail-closed teardown.
+            FLAGCXCHECK(flagcxIbCommonReleaseRequest(r));
             return flagcxRemoteError;
           }
 

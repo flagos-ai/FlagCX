@@ -96,7 +96,9 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return flagcxSuccess;
   }
 
-  devApiBackend->devCommDestroy(comm, devComm);
+  flagcxResult_t res = devApiBackend->devCommDestroy(comm, devComm);
+  if (res != flagcxSuccess)
+    return res;
 
   // Free cached device pointers (thin-layer responsibility)
   if (devComm->cachedNetContextsPtr) {
