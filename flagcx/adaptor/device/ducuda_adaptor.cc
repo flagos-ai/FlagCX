@@ -355,9 +355,14 @@ flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
   if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
     return flagcxInvalidArgument;
 
-  unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
+  // The current DU driver supports ordinary stream memory waits but not the
+  // acquire/flush guarantee required after a NIC or peer device publishes the
+  // waited-on value. Report the missing capability without invoking a driver
+  // flag that can surface as a generic error on this CUDA-compatible runtime.
   if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
-    waitFlags |= CU_STREAM_WAIT_VALUE_FLUSH;
+    return flagcxNotSupported;
+
+  unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
 
   CUstream cuStream = (CUstream)(stream->base);
   CUresult err =

@@ -62,6 +62,11 @@ flagcx_ci_require_rdma() {
     echo "$platform_name $suite tests require RDMA devices, but the runner did not expose /sys/class/infiniband and /dev/infiniband/uverbs* to the test container." >&2
     return 1
   fi
+
+  if declare -F flagcx_ci_validate_rdma >/dev/null; then
+    flagcx_ci_validate_rdma "$suite"
+  fi
+
   echo "RDMA preflight passed"
 }
 
