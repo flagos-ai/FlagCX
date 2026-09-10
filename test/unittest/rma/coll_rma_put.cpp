@@ -4,6 +4,7 @@
 
 #include "flagcx_hetero.h"
 #include "rma_test.hpp"
+#include "sym_heap.h"
 #include <cstring>
 #include <vector>
 
