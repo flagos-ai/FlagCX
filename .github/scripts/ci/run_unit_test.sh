@@ -271,6 +271,12 @@ run_suite() {
       FLAGCX_IB_QPS_PER_CONNECTION=2 \
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      # Exercise device IPC handles across processes and physical devices. Use
+      # exactly two ranks so rank 0 exports from GPU 0 and rank 1 imports on
+      # GPU 1, with an independent timeout from the adaptor unit tests.
+      FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
+        make -C "$suite_dir" run-mpi "${args[@]}" \
+        MPIRUN="$MPI_RUNNER" MPI_NP=2
       ;;
     core|service)
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \

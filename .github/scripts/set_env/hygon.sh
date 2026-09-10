@@ -80,21 +80,31 @@ flagcx_ci_prepare() {
 
 flagcx_ci_validate_rdma() {
   local suite=$1
-  local link_layer_file link_layer
+  local link_layer_file link_layer state_file state
   local found_link_layer=0
   local found_supported_link_layer=0
+  local found_active_port=0
 
-  # FlagCX obtains link_layer from the verbs HCA ports (shca_*), rather than
-  # from their ib0..ib3 network interfaces. Reject the runner before building
-  # when the provider reports only values that IBRC deliberately cannot use.
+  # FlagCX obtains link_layer and state from the verbs HCA ports (shca_*),
+  # rather than from their ib0..ib3 network interfaces. Reject the runner
+  # before building unless at least one port meets IBRC's selection criteria.
   while IFS= read -r link_layer_file; do
     [[ -n "$link_layer_file" ]] || continue
     found_link_layer=1
     link_layer=$(<"$link_layer_file")
-    echo "Hygon RDMA link layer: $link_layer_file=$link_layer"
+    state_file=${link_layer_file%/link_layer}/state
+    if [[ -r "$state_file" ]]; then
+      state=$(<"$state_file")
+    else
+      state="<missing>"
+    fi
+    echo "Hygon RDMA port: $link_layer_file=$link_layer, $state_file=$state"
     case "${link_layer,,}" in
       ethernet|infiniband)
         found_supported_link_layer=1
+        if [[ "$state" == 4:* ]]; then
+          found_active_port=1
+        fi
         ;;
     esac
   done < <(compgen -G "/sys/class/infiniband/shca_*/ports/*/link_layer" || true)
@@ -105,6 +115,10 @@ flagcx_ci_validate_rdma() {
   fi
   if [[ "$found_supported_link_layer" != 1 ]]; then
     echo "Hygon $suite tests require an SHCA port whose link_layer is Ethernet (RoCE) or InfiniBand; the runner reported only unsupported values such as Unspecified." >&2
+    return 1
+  fi
+  if [[ "$found_active_port" != 1 ]]; then
+    echo "Hygon $suite tests require an SHCA port whose link_layer is Ethernet (RoCE) or InfiniBand and whose state is 4: ACTIVE." >&2
     return 1
   fi
 }
