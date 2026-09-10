@@ -29,8 +29,12 @@ protected:
   static flagcxWindow_t dataWin;
   static size_t size;
   static size_t signalSize;
-  // Data RMA and signal RMA are separate capabilities. A backend may support
-  // registered windows and RDMA reads without stream-ordered signal ops.
+  // The same binary runs in two explicit modes. Network mode requires a valid
+  // network MR; IPC mode requires resolved peer data and signal mappings.
+  static bool requireIpc;
+  static bool windowAvailable;
+  static bool networkRmaAvailable;
+  static bool ipcRmaAvailable;
   static bool dataRmaAvailable;
   static const char *dataRmaSkipReason;
   static bool signalRmaAvailable;

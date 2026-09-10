@@ -52,6 +52,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
   d->mrIndex = -1;
   d->mrBase = 0;
+  d->ipcSlot = -1;
 
   int localRanks;
   localRanks = comm->localRanks;

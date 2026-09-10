@@ -335,17 +335,19 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
       res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
       if (res != flagcxSuccess) {
         WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
-        return -1;
-      }
-      res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
-      if (res != flagcxSuccess) {
-        WARN("buildIpcPeerPointers: ipcMemHandleGet failed for buff %p", buff);
+        if (handlePtr != NULL)
+          deviceAdaptor->ipcMemHandleFree(handlePtr);
+      } else {
+        res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
+        if (res != flagcxSuccess) {
+          WARN("buildIpcPeerPointers: ipcMemHandleGet failed for buff %p",
+               buff);
+        } else {
+          memcpy(&myIpcDesc.handleData, handlePtr, sizeof(flagcxIpcHandleData));
+          myIpcDesc.size = size;
+        }
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-        return -1;
       }
-      memcpy(&myIpcDesc.handleData, handlePtr, sizeof(flagcxIpcHandleData));
-      myIpcDesc.size = size;
-      deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
 
@@ -360,6 +362,22 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap, allDescs,
                                          sizeof(struct flagcxP2pIpcDesc)),
                   res, fail);
+
+  // IPC export is optional, but every local rank must make the same decision
+  // before any peer starts opening handles. In particular, do not return
+  // before the all-gather when one rank cannot export its allocation; that
+  // would leave its local peers blocked in this collective.
+  for (int lr = 0; lr < localRanks; lr++) {
+    int globalR = localRankToRank[lr];
+    if (allDescs[globalR].size == 0) {
+      INFO(FLAGCX_INIT,
+           "buildIpcPeerPointers: rank %d has no exportable IPC handle; "
+           "disabling IPC for this local group",
+           globalR);
+      res = flagcxNotSupported;
+      goto fail;
+    }
+  }
 
   // Step 3: Open peer IPC handles
   hostPeerPtrs = (void **)malloc(localRanks * sizeof(void *));

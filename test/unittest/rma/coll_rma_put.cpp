@@ -20,8 +20,7 @@ static int collectiveOpStatus(flagcxResult_t res) {
 TEST_F(RmaTest, PutSignalSmall) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-  if (!signalRmaAvailable)
-    GTEST_SKIP() << signalRmaSkipReason;
+  ASSERT_TRUE(signalRmaAvailable) << signalRmaSkipReason;
 
   const size_t testSize = 64;
   flagcxStream_t s;
@@ -44,11 +43,11 @@ TEST_F(RmaTest, PutSignalSmall) {
   }
 
   int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus == 1) {
+  if (globalStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxPutSignal is not supported by this backend";
+    FAIL() << "flagcxPutSignal failed collectively with status "
+           << globalStatus;
   }
-  ASSERT_EQ(globalStatus, 0);
 
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
@@ -62,11 +61,11 @@ TEST_F(RmaTest, PutSignalSmall) {
   }
 
   int globalWaitStatus = collectiveOpStatus(waitRes);
-  if (globalWaitStatus == 1) {
+  if (globalWaitStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+    FAIL() << "flagcxWaitSignal failed collectively with status "
+           << globalWaitStatus;
   }
-  ASSERT_EQ(globalWaitStatus, 0);
 
   if (rank == 1) {
     // Verify data
@@ -96,8 +95,7 @@ TEST_F(RmaTest, PutSignalSmall) {
 TEST_F(RmaTest, PutSignalLarge) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-  if (!signalRmaAvailable)
-    GTEST_SKIP() << signalRmaSkipReason;
+  ASSERT_TRUE(signalRmaAvailable) << signalRmaSkipReason;
 
   const size_t testSize = RMA_TEST_SIZE;
   flagcxStream_t s;
@@ -121,11 +119,11 @@ TEST_F(RmaTest, PutSignalLarge) {
   }
 
   int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus == 1) {
+  if (globalStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxPutSignal is not supported by this backend";
+    FAIL() << "flagcxPutSignal failed collectively with status "
+           << globalStatus;
   }
-  ASSERT_EQ(globalStatus, 0);
 
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
@@ -138,11 +136,11 @@ TEST_F(RmaTest, PutSignalLarge) {
   }
 
   int globalWaitStatus = collectiveOpStatus(waitRes);
-  if (globalWaitStatus == 1) {
+  if (globalWaitStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+    FAIL() << "flagcxWaitSignal failed collectively with status "
+           << globalWaitStatus;
   }
-  ASSERT_EQ(globalWaitStatus, 0);
 
   if (rank == 1) {
     std::vector<uint8_t> received(testSize, 0);

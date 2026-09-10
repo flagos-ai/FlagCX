@@ -20,8 +20,7 @@ static int collectiveOpStatus(flagcxResult_t res) {
 TEST_F(RmaTest, SignalOnlyNoData) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-  if (!signalRmaAvailable)
-    GTEST_SKIP() << signalRmaSkipReason;
+  ASSERT_TRUE(signalRmaAvailable) << signalRmaSkipReason;
 
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -35,11 +34,10 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   }
 
   int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus == 1) {
+  if (globalStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxSignal is not supported by this backend";
+    FAIL() << "flagcxSignal failed collectively with status " << globalStatus;
   }
-  ASSERT_EQ(globalStatus, 0);
 
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
@@ -52,11 +50,11 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   }
 
   int globalWaitStatus = collectiveOpStatus(waitRes);
-  if (globalWaitStatus == 1) {
+  if (globalWaitStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+    FAIL() << "flagcxWaitSignal failed collectively with status "
+           << globalWaitStatus;
   }
-  ASSERT_EQ(globalWaitStatus, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);
   devHandle->streamDestroy(s);
@@ -68,8 +66,7 @@ TEST_F(RmaTest, SignalOnlyNoData) {
 TEST_F(RmaTest, MultipleSignals) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-  if (!signalRmaAvailable)
-    GTEST_SKIP() << signalRmaSkipReason;
+  ASSERT_TRUE(signalRmaAvailable) << signalRmaSkipReason;
 
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -90,11 +87,10 @@ TEST_F(RmaTest, MultipleSignals) {
   }
 
   int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus == 1) {
+  if (globalStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxSignal is not supported by this backend";
+    FAIL() << "flagcxSignal failed collectively with status " << globalStatus;
   }
-  ASSERT_EQ(globalStatus, 0);
 
   flagcxResult_t waitRes = flagcxSuccess;
   if (rank == 0) {
@@ -108,11 +104,11 @@ TEST_F(RmaTest, MultipleSignals) {
   }
 
   int globalWaitStatus = collectiveOpStatus(waitRes);
-  if (globalWaitStatus == 1) {
+  if (globalWaitStatus != 0) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "flagcxWaitSignal is not supported by this backend";
+    FAIL() << "flagcxWaitSignal failed collectively with status "
+           << globalWaitStatus;
   }
-  ASSERT_EQ(globalWaitStatus, 0);
 
   MPI_Barrier(MPI_COMM_WORLD);
   devHandle->streamDestroy(s);

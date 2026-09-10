@@ -1422,12 +1422,20 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     flagcxResult_t res =
         flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
 
-    // Initialize D2D bypass if this is the first successful symmetric window
-    // and RMA proxy is running but IPC not yet initialized.
+    // Non-VMM windows need an explicit IPC mapping. VMM windows already expose
+    // peer memory through their flat VA mapping. Failure is non-fatal because
+    // the network MR remains a valid fallback in automatic transport mode.
     if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
-        (*win)->defaultBase->flatBase != NULL) {
-      // D2D IPC init deferred to first stream-path use (when both data
-      // windows and signal buffer are registered).
+        !(*win)->defaultBase->isVMM) {
+      int ipcSlot = buildIpcPeerPointers(comm, buff, size);
+      if (ipcSlot >= 0) {
+        (*win)->defaultBase->ipcSlot = ipcSlot;
+      } else {
+        INFO(FLAGCX_REG,
+             "flagcxCommWindowRegister: IPC mapping unavailable for %p; "
+             "network fallback remains enabled",
+             buff);
+      }
     }
 
     return res;
@@ -1461,6 +1469,10 @@ flagcxResult_t flagcxCommWindowDeregister(flagcxComm_t comm, flagcxWindow_t win,
     if (hetero->rmaProxy != NULL && hetero->rmaProxy->ipcState != NULL) {
       flagcxHeteroRmaIpcDestroy(hetero);
       // Will be lazily re-initialized on next D2D attempt
+    }
+    if (win->defaultBase->ipcSlot >= 0) {
+      releaseIpcTableSlot(comm, win->defaultBase->ipcSlot);
+      win->defaultBase->ipcSlot = -1;
     }
   }
 

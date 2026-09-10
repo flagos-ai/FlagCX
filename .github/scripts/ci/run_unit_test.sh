@@ -275,8 +275,12 @@ run_suite() {
     rma)
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-      FLAGCX_CI_MPI_LABEL="rma MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" MPIRUN="$MPI_RUNNER"
+      # Keep these as separate invocations so each transport has its own
+      # timeout and a hang in one path cannot hide coverage of the other.
+      FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
+        make -C "$suite_dir" run-mpi-ipc "${args[@]}" MPIRUN="$MPI_RUNNER"
+      FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
+        make -C "$suite_dir" run-mpi-net "${args[@]}" MPIRUN="$MPI_RUNNER"
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"

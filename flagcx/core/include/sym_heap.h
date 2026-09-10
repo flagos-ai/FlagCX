@@ -33,6 +33,7 @@ struct flagcxSymWindow {
   size_t allocSize; // actual physical allocation size per peer
                     // (granularity-aligned)
   int localRanks;   // number of intra-node peers
+  int ipcSlot;      // IPC table slot for non-VMM peer mappings (-1 if none)
   void *physHandle; // for cleanup (symPhysFree)
   void *mcHandle;   // multicast handle (for cleanup)
   bool isVMM;       // true if VMM path (false = IPC fallback)

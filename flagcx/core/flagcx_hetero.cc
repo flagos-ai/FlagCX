@@ -8,7 +8,6 @@
 #include "sym_heap.h"
 #include "transport.h"
 #include "type.h"
-#include "utils.h"
 
 #include <climits>
 #include <pthread.h>
@@ -28,6 +27,7 @@
 
 FLAGCX_PARAM(RmaQueueSize, "RMA_QUEUE_SIZE", FLAGCX_RMA_QUEUE_SIZE);
 FLAGCX_PARAM(RmaBatchMax, "RMA_BATCH_MAX", FLAGCX_RMA_BATCH_MAX);
+FLAGCX_PARAM(RmaForceNet, "RMA_FORCE_NET", 0);
 FLAGCX_PARAM(RmaStreamOps, "RMA_STREAM_OPS",
              0); // 0 = HOST_FUNC (default), 1 = STREAM_OPS
 
@@ -1349,7 +1349,7 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
     return flagcxInternalError;
 
   // Try intra-node D2D path (lazy init if not yet built)
-  if (stream != NULL && !flagcxParamDeviceOneSidedForceNet() &&
+  if (stream != NULL && !flagcxParamRmaForceNet() &&
       flagcxIsIntraNode(comm, peer)) {
     if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
       if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
@@ -1431,7 +1431,7 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
     return flagcxInternalError;
 
   // Try intra-node D2D path (lazy init if not yet built)
-  if (stream != NULL && !flagcxParamDeviceOneSidedForceNet() &&
+  if (stream != NULL && !flagcxParamRmaForceNet() &&
       flagcxIsIntraNode(comm, peer)) {
     if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
       if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
