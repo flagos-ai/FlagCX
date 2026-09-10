@@ -73,7 +73,11 @@ flagcx_ci_require_rdma() {
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
-flagcx_ci_require_rdma "$SUITE"
+# RMA has separate IPC and network invocations. Its RDMA preflight runs only
+# before the network invocation so missing RDMA cannot hide IPC regressions.
+if [[ "$SUITE" != rma ]]; then
+  flagcx_ci_require_rdma "$SUITE"
+fi
 
 build_googletest() {
   cmake -S "$PROJECT_ROOT/third-party/googletest" \
@@ -288,9 +292,13 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" || ipc_status=$?
-      FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
-        make -C "$suite_dir" run-mpi-net "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" || network_status=$?
+      if flagcx_ci_require_rdma "$SUITE"; then
+        FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
+          make -C "$suite_dir" run-mpi-net "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" || network_status=$?
+      else
+        network_status=$?
+      fi
       if ((ipc_status != 0 || network_status != 0)); then
         echo "RMA MPI failures: IPC=$ipc_status network=$network_status" >&2
         return 1

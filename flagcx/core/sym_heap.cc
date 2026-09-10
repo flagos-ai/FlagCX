@@ -11,6 +11,7 @@
 #include "bootstrap.h"
 #include "check.h"
 #include "comm.h"
+#include "global_comm.h"
 #include "ipcsocket.h"
 #include "onesided.h"
 #include "param.h"
@@ -53,6 +54,7 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
   d->mrIndex = -1;
   d->mrBase = 0;
   d->ipcSlot = -1;
+  d->localBase = buff;
 
   int localRanks;
   localRanks = comm->localRanks;
@@ -348,6 +350,8 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
     }
   }
 
+  d->next = comm->symWindows;
+  comm->symWindows = d;
   *win = w;
   return flagcxSuccess;
 
@@ -384,6 +388,12 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
 
   flagcxSymWindow_t d = win->defaultBase;
   if (d != nullptr) {
+    flagcxSymWindow_t *link = &comm->symWindows;
+    while (*link != nullptr && *link != d)
+      link = &(*link)->next;
+    if (*link == d)
+      *link = d->next;
+
     if (d->isVMM) {
       // Teardown multicast
       if (d->mcBase != nullptr && deviceAdaptor->symMulticastTeardown)
@@ -406,5 +416,68 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
   }
 
   free(win);
+  return flagcxSuccess;
+}
+
+flagcxSymWindow_t flagcxSymWindowFind(flagcxHeteroComm_t comm, const void *ptr,
+                                      size_t size, size_t *offset) {
+  if (comm == nullptr || ptr == nullptr)
+    return nullptr;
+
+  uintptr_t address = (uintptr_t)ptr;
+  for (flagcxSymWindow_t window = comm->symWindows; window != nullptr;
+       window = window->next) {
+    uintptr_t base = (uintptr_t)window->localBase;
+    if (address < base)
+      continue;
+    size_t localOffset = (size_t)(address - base);
+    if (localOffset > window->heapSize || size > window->heapSize - localOffset)
+      continue;
+    if (offset != nullptr)
+      *offset = localOffset;
+    return window;
+  }
+  return nullptr;
+}
+
+flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
+                                                flagcxSymWindow_t window,
+                                                int peer, size_t offset,
+                                                size_t size, void **ptr) {
+  if (comm == nullptr || window == nullptr || ptr == nullptr || peer < 0 ||
+      peer >= comm->nRanks)
+    return flagcxInvalidArgument;
+  *ptr = nullptr;
+  if (offset > window->heapSize || size > window->heapSize - offset)
+    return flagcxInvalidArgument;
+  if (comm->rankToNode == nullptr || comm->rankToLocalRank == nullptr ||
+      comm->rankToNode[peer] != comm->node)
+    return flagcxNotSupported;
+
+  int peerLocalRank = comm->rankToLocalRank[peer];
+  if (peerLocalRank < 0 || peerLocalRank >= window->localRanks)
+    return flagcxInternalError;
+
+  if (peer == comm->rank) {
+    *ptr = (void *)((uintptr_t)window->localBase + offset);
+    return flagcxSuccess;
+  }
+
+  if (window->isVMM && window->flatBase != nullptr) {
+    *ptr = (void *)((uintptr_t)window->flatBase +
+                    (size_t)peerLocalRank * window->allocSize + offset);
+    return flagcxSuccess;
+  }
+
+  int slot = window->ipcSlot;
+  if (slot < 0 || comm->ipcTable == nullptr || slot >= comm->ipcTableSize)
+    return flagcxNotSupported;
+  struct flagcxIpcTableEntry *entry = &comm->ipcTable[slot];
+  if (!entry->inUse || entry->hostPeerPtrs == nullptr ||
+      peerLocalRank >= entry->nPeers ||
+      entry->hostPeerPtrs[peerLocalRank] == nullptr)
+    return flagcxNotSupported;
+
+  *ptr = (void *)((uintptr_t)entry->hostPeerPtrs[peerLocalRank] + offset);
   return flagcxSuccess;
 }

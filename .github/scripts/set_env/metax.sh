@@ -65,16 +65,22 @@ flagcx_ci_prepare() {
     shopt -u nullglob
 
     if [[ ${#hca_paths[@]} -eq 0 ]]; then
-      echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
-      return 1
-    fi
-
-    for hca_path in "${hca_paths[@]}"; do
-      hca_names+=("${hca_path##*/}")
-    done
-    if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
-      local IFS=,
-      export FLAGCX_IB_HCA="${hca_names[*]}"
+      if [[ "$suite" != "rma" ]]; then
+        echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+        return 1
+      fi
+      # The RMA suite runs an explicit IPC invocation before its RDMA
+      # preflight. Leave HCA selection unset here so missing RDMA does not hide
+      # IPC regressions; flagcx_ci_validate_rdma will reject the NET phase.
+      echo "MetaX RMA IPC phase will run without a detected Broadcom RDMA HCA."
+    else
+      for hca_path in "${hca_paths[@]}"; do
+        hca_names+=("${hca_path##*/}")
+      done
+      if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
+        local IFS=,
+        export FLAGCX_IB_HCA="${hca_names[*]}"
+      fi
     fi
 
     if [[ -d /sys/class/net/bond0 ]]; then
@@ -94,6 +100,16 @@ flagcx_ci_prepare() {
     ls /sys/class/infiniband 2>/dev/null || true
     ls /dev/infiniband 2>/dev/null || true
     ip -o addr show 2>/dev/null || true
+  fi
+}
+
+flagcx_ci_validate_rdma() {
+  local suite=$1
+
+  if ! compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null &&
+    ! compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
+    echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+    return 1
   fi
 }
 

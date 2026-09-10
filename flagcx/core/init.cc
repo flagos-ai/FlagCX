@@ -407,6 +407,7 @@ static flagcxResult_t flagcxCommInitRankDev(flagcxHeteroComm_t *newcomm,
   comm->nRanks = nranks;
   comm->rank = myrank;
   comm->cudaDev = cudaDev;
+  comm->rmaSignalIpcSlot = -1;
   *newcomm = comm;
 
   FLAGCXCHECKGOTO(flagcxCalloc(&job, 1), res, fail);

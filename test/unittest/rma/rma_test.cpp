@@ -168,6 +168,25 @@ void RmaTest::SetUpTestSuite() {
     }
     dataRmaAvailable = true;
     dataRmaSkipReason = nullptr;
+  } else {
+    int peer = nranks == 2 ? 1 - rank : -1;
+    bool peerIsLocal =
+        peer >= 0 && comm->heteroComm->rankToNode != nullptr &&
+        comm->heteroComm->rankToNode[peer] == comm->heteroComm->node;
+    void *peerData = nullptr;
+    bool localDataIpcReady =
+        peerIsLocal && dataWin->defaultBase->ipcSlot >= 0 &&
+        flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm, dataWin->defaultBase,
+                                         peer, 0, size,
+                                         &peerData) == flagcxSuccess &&
+        peerData != nullptr;
+    ipcRmaAvailable = allRanksReady(localDataIpcReady);
+    if (!ipcRmaAvailable) {
+      dataRmaSkipReason = "RMA IPC mode requires a resolved peer data mapping";
+      return;
+    }
+    dataRmaAvailable = true;
+    dataRmaSkipReason = nullptr;
   }
 
   bool localSignalCapable =
@@ -256,30 +275,19 @@ void RmaTest::SetUpTestSuite() {
     signalRmaSkipReason = nullptr;
   }
 
-  if (requireIpc) {
+  if (requireIpc && signalRmaAvailable) {
     res = flagcxHeteroRmaIpcInit(comm->heteroComm);
     int peer = nranks == 2 ? 1 - rank : -1;
-    int mrIndex = dataWin->defaultBase->mrIndex;
     struct flagcxRmaIpcState *ipc = comm->heteroComm->rmaProxy->ipcState;
-    bool peerIsLocal =
-        peer >= 0 && comm->heteroComm->rankToNode != nullptr &&
-        comm->heteroComm->rankToNode[peer] == comm->heteroComm->node;
-    bool localIpcReady =
-        peerIsLocal && res == flagcxSuccess && ipc != nullptr && mrIndex >= 0 &&
-        mrIndex < ipc->dataHandleCount && ipc->peerDataBufs != nullptr &&
-        ipc->peerDataBufs[peer] != nullptr &&
-        ipc->peerDataBufs[peer][mrIndex] != nullptr &&
-        ipc->peerSignalBufs != nullptr && ipc->peerSignalBufs[peer] != nullptr;
-    ipcRmaAvailable = allRanksReady(localIpcReady);
-    if (!ipcRmaAvailable) {
-      dataRmaSkipReason =
-          "RMA IPC mode requires resolved peer data and signal mappings";
-      return;
+    bool localSignalIpcReady = res == flagcxSuccess && ipc != nullptr &&
+                               ipc->peerSignalBufs != nullptr &&
+                               ipc->peerSignalBufs[peer] != nullptr;
+    if (!allRanksReady(localSignalIpcReady)) {
+      signalRmaAvailable = false;
+      signalRmaSkipReason =
+          "RMA IPC mode requires a resolved peer signal mapping";
     }
   }
-
-  dataRmaAvailable = requireIpc ? ipcRmaAvailable : networkRmaAvailable;
-  dataRmaSkipReason = nullptr;
 }
 
 void RmaTest::TearDownTestSuite() {

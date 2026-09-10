@@ -41,9 +41,6 @@ struct flagcxOneSideHandleInfo {
   // NULL if VMM not available or window not registered with
   // FLAGCX_WIN_COLL_SYMMETRIC.
   struct flagcxSymWindow *symWin;
-
-  // IPC table slot index for signal buffer D2D bypass (-1 if none).
-  int signalIpcSlot;
 };
 
 // Internal implementation used by sym_heap and flagcxCommRegister

@@ -531,6 +531,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
       // Register signal buffer for RDMA one-sided access
       if (devComm->signalBuffer) {
+        void *previousSignalBase = comm->heteroComm->rmaSignalBase;
         struct flagcxOneSideHandleInfo *previousRegistration =
             comm->heteroComm->signalHandle;
         int sigPtrType =
@@ -544,18 +545,26 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                                           sigPtrType);
         struct flagcxOneSideHandleInfo *registration =
             comm->heteroComm->signalHandle;
-        if (res != flagcxSuccess ||
-            !registrationMatchesBuffer(comm, registration,
-                                       devComm->signalBuffer)) {
+        bool signalRegistered =
+            res == flagcxSuccess &&
+            comm->heteroComm->rmaSignalBase == devComm->signalBuffer;
+        bool networkSignalRegistered = registrationMatchesBuffer(
+            comm, registration, devComm->signalBuffer);
+        if (!signalRegistered) {
           WARN("defaultDevApiCommCreate: flagcxOneSideSignalRegister failed "
-               "or returned a registration for another buffer "
-               "(%d, handle=%p, buffer=%p)",
+               "or retained another buffer (%d, handle=%p, buffer=%p)",
                res, (void *)registration, (void *)devComm->signalBuffer);
         } else {
-          if (previousRegistration == nullptr)
+          if (previousSignalBase == nullptr)
+            devComm->ownedSignalBuffer = devComm->signalBuffer;
+          if (networkSignalRegistered && previousRegistration == nullptr)
             devComm->ownedSignalRegistration = registration;
-          devComm->netSignalReady = 1;
-          INFO(FLAGCX_INIT, "defaultDevApiCommCreate: signalRegister OK");
+          devComm->netSignalReady = networkSignalRegistered ? 1 : 0;
+          INFO(FLAGCX_INIT,
+               "defaultDevApiCommCreate: signalRegister OK (ipcSlot=%d, "
+               "network=%d)",
+               comm->heteroComm->rmaSignalIpcSlot,
+               networkSignalRegistered ? 1 : 0);
         }
       }
 
@@ -679,11 +688,12 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     }
     devComm->ownedStagingRegistration = nullptr;
   }
-  if (devComm->ownedSignalRegistration) {
+  if (devComm->ownedSignalBuffer) {
     if (comm != nullptr && comm->heteroComm != nullptr &&
-        comm->heteroComm->signalHandle == devComm->ownedSignalRegistration) {
+        comm->heteroComm->rmaSignalBase == devComm->ownedSignalBuffer) {
       flagcxOneSideSignalDeregister(comm);
     }
+    devComm->ownedSignalBuffer = nullptr;
     devComm->ownedSignalRegistration = nullptr;
   }
 

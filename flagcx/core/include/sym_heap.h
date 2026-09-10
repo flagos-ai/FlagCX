@@ -24,6 +24,7 @@ struct flagcxWindow {
 
 /* Symmetric window state for the default (non-vendor) path */
 struct flagcxSymWindow {
+  void *localBase;  // local user allocation backing this window
   void *flatBase;   // flat VA base (NULL if IPC fallback)
   void *mcBase;     // multicast base (NULL if no NVLS)
   size_t mcMapSize; // multicast VA mapped size (for teardown)
@@ -37,6 +38,7 @@ struct flagcxSymWindow {
   void *physHandle; // for cleanup (symPhysFree)
   void *mcHandle;   // multicast handle (for cleanup)
   bool isVMM;       // true if VMM path (false = IPC fallback)
+  struct flagcxSymWindow *next; // intrusive link in comm->symWindows
 };
 
 flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
@@ -45,5 +47,17 @@ flagcxResult_t flagcxSymWindowRegister(flagcxHeteroComm_t comm, void *buff,
 
 flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
                                          flagcxWindow_t win);
+
+// Find the symmetric window containing [ptr, ptr + size) on the local rank.
+// Returns NULL when the range is not owned by an active window.
+flagcxSymWindow_t flagcxSymWindowFind(flagcxHeteroComm_t comm, const void *ptr,
+                                      size_t size, size_t *offset);
+
+// Resolve an intra-node peer pointer using only the window's IPC locator.
+// Network MR registration is deliberately not consulted.
+flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
+                                                flagcxSymWindow_t window,
+                                                int peer, size_t offset,
+                                                size_t size, void **ptr);
 
 #endif // FLAGCX_SYM_HEAP_H_

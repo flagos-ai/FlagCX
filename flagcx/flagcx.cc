@@ -804,12 +804,28 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
+  if (comm == NULL || buff == NULL || size == 0)
+    return flagcxInvalidArgument;
   if (useHomoComm(comm) && !useHeteroComm()) {
     return flagcxSuccess;
   }
 
-  // Per-heteroComm dedup: skip if already registered
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
+  if (heteroComm == NULL)
+    return flagcxNotSupported;
+
+  // Per-heteroComm dedup: signal IPC and network state share this local base,
+  // but either transport may be absent.
+  if (heteroComm->rmaSignalBase != NULL) {
+    if (heteroComm->rmaSignalBase != buff) {
+      WARN("flagcxOneSideSignalRegister: comm %p already registered with a "
+           "different buffer",
+           (void *)comm);
+      return flagcxInvalidUsage;
+    }
+    return flagcxSuccess;
+  }
+
   struct flagcxOneSideHandleInfo *existing = heteroComm->signalHandle;
   if (existing != NULL) {
     if (existing->baseVas != NULL &&
@@ -817,6 +833,7 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
       WARN("flagcxOneSideSignalRegister: comm %p already registered with a "
            "different buffer",
            (void *)comm);
+      return flagcxInvalidUsage;
     }
     return flagcxSuccess;
   }
@@ -828,15 +845,34 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     return flagcxInvalidArgument;
   }
 
-  if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
+  // Build the local IPC mapping before attempting any network setup. This is
+  // collective and remains valid when the RDMA provider is unavailable.
+  int ipcSlot = -1;
+  if (ptrType == FLAGCX_PTR_CUDA && !flagcxParamVmmEnable())
+    ipcSlot = buildIpcPeerPointers(comm, buff, size);
+  heteroComm->rmaSignalBase = buff;
+  heteroComm->rmaSignalSize = size;
+  heteroComm->rmaSignalIpcSlot = ipcSlot;
+  if (heteroComm->rmaProxy != NULL && heteroComm->rmaProxy->ipcState != NULL)
+    flagcxHeteroRmaIpcDestroy(heteroComm);
+
+  if (heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iputSignal == NULL ||
       heteroComm->netAdaptor->regMr == NULL ||
       heteroComm->netAdaptor->getMrInfo == NULL) {
-    return flagcxSuccess;
+    if (ipcSlot >= 0)
+      return flagcxSuccess;
+    heteroComm->rmaSignalBase = NULL;
+    heteroComm->rmaSignalSize = 0;
+    return flagcxNotSupported;
   }
 
   if (heteroComm->bootstrap == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: bootstrap is NULL");
+    if (ipcSlot >= 0)
+      return flagcxSuccess;
+    heteroComm->rmaSignalBase = NULL;
+    heteroComm->rmaSignalSize = 0;
     return flagcxNotSupported;
   }
 
@@ -848,6 +884,10 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
       INFO(FLAGCX_REG,
            "flagcxOneSideSignalRegister: failed to ensure full-mesh (%d)",
            (int)meshRes);
+      if (ipcSlot >= 0)
+        return flagcxSuccess;
+      heteroComm->rmaSignalBase = NULL;
+      heteroComm->rmaSignalSize = 0;
       return meshRes;
     }
   }
@@ -916,7 +956,6 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                     res, fail_mr);
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
-    info->signalIpcSlot = -1;
     heteroComm->signalHandle = info;
     INFO(FLAGCX_REG, "Signal register allgather results (rank %d, nranks %d):",
          heteroComm->rank, nranks);
@@ -926,17 +965,9 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     }
   }
 
-  // Register signal buffer in IPC table for intra-node D2D bypass.
-  // Skip when VMM is enabled: VMM buffers don't support cudaIpcGetMemHandle,
-  // and flagcxDevMemCreate uses flat VA peer access (Priority 1) instead.
-  if (ptrType == FLAGCX_PTR_CUDA && !flagcxParamVmmEnable()) {
-    int idx = buildIpcPeerPointers(comm, buff, size);
-    if (idx >= 0) {
-      info->signalIpcSlot = idx;
-      INFO(FLAGCX_REG, "Signal buffer IPC registered (slot %d) for D2D bypass",
-           idx);
-    }
-  }
+  if (ipcSlot >= 0)
+    INFO(FLAGCX_REG, "Signal buffer IPC registered (slot %d) for D2D bypass",
+         ipcSlot);
 
   return flagcxSuccess;
 
@@ -947,6 +978,11 @@ fail_mr:
   }
   if (regComm != NULL && mrHandle != NULL)
     heteroComm->netAdaptor->deregMr(regComm, mrHandle);
+  if (ipcSlot >= 0)
+    return flagcxSuccess;
+  heteroComm->rmaSignalBase = NULL;
+  heteroComm->rmaSignalSize = 0;
+  heteroComm->rmaSignalIpcSlot = -1;
   return res;
 }
 
@@ -956,24 +992,31 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
   }
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   struct flagcxOneSideHandleInfo *info = heteroComm->signalHandle;
-  if (info == NULL) {
+  if (info == NULL && heteroComm->rmaSignalBase == NULL) {
     return flagcxSuccess;
   }
 
-  if (heteroComm->netAdaptor != NULL) {
+  if (info != NULL && heteroComm->netAdaptor != NULL) {
     if (info->localMrHandle != NULL && info->localRecvComm != NULL) {
       void *regComm = info->localRecvComm;
       heteroComm->netAdaptor->deregMr(regComm, info->localMrHandle);
     }
   }
 
-  // Release IPC table slot (resources deferred to comm destroy).
-  if (info->signalIpcSlot >= 0) {
-    releaseIpcTableSlot(comm, info->signalIpcSlot);
-  }
+  if (heteroComm->rmaProxy != NULL && heteroComm->rmaProxy->ipcState != NULL)
+    flagcxHeteroRmaIpcDestroy(heteroComm);
 
-  flagcxOneSideFreeMrInfo(info);
-  free(info);
+  // Release IPC and network state independently.
+  if (heteroComm->rmaSignalIpcSlot >= 0)
+    releaseIpcTableSlot(comm, heteroComm->rmaSignalIpcSlot);
+  heteroComm->rmaSignalIpcSlot = -1;
+  heteroComm->rmaSignalBase = NULL;
+  heteroComm->rmaSignalSize = 0;
+
+  if (info != NULL) {
+    flagcxOneSideFreeMrInfo(info);
+    free(info);
+  }
   heteroComm->signalHandle = NULL;
   return flagcxSuccess;
 }
@@ -2827,46 +2870,45 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
     return flagcxInvalidArgument;
   }
 
-  // Resolve window to MR index and compute byte size
-  size_t byteSize = count * getFlagcxDataTypeSize(datatype);
-  int dstMrIdx = -1;
-  if (peerWin->isSymmetricDefault && peerWin->defaultBase != NULL) {
-    dstMrIdx = peerWin->defaultBase->mrIndex;
-  }
-  if (dstMrIdx < 0)
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  if (!peerWin->isSymmetricDefault || peerWin->defaultBase == NULL)
     return flagcxInvalidArgument;
 
-  // Source is localbuff — find which MR it belongs to by VA range lookup
-  flagcxHeteroComm_t hetero = comm->heteroComm;
-  int srcMrIdx = -1;
+  size_t elementSize = getFlagcxDataTypeSize(datatype);
+  if (elementSize == 0 || count > SIZE_MAX / elementSize)
+    return flagcxInvalidArgument;
+  size_t byteSize = count * elementSize;
+  if (byteSize > 0 && localbuff == NULL)
+    return flagcxInvalidArgument;
+  if (peerWinOffset > peerWin->defaultBase->heapSize ||
+      byteSize > peerWin->defaultBase->heapSize - peerWinOffset)
+    return flagcxInvalidArgument;
+
+  // Resolve the source through the transport-neutral symmetric-window
+  // registry. A window may be IPC-capable even if network MR registration
+  // failed and mrIndex remains -1.
   size_t srcOffset = 0;
-  for (int h = 0; h < hetero->oneSideHandleCount; h++) {
-    struct flagcxOneSideHandleInfo *info = hetero->oneSideHandles[h];
-    if (info == NULL)
-      continue;
-    if (info->baseVas == NULL || info->regionSizes == NULL)
-      continue;
-    uintptr_t base = info->baseVas[hetero->rank];
-    uintptr_t address = (uintptr_t)localbuff;
-    if (address >= base && address - base < info->regionSizes[hetero->rank]) {
-      srcMrIdx = h;
-      srcOffset = (uintptr_t)localbuff - base;
-      break;
-    }
-  }
-  if (srcMrIdx < 0) {
-    WARN("flagcxPutSignal: localbuff %p not in any registered MR", localbuff);
+  flagcxSymWindow_t srcWindow =
+      byteSize > 0
+          ? flagcxSymWindowFind(hetero, localbuff, byteSize, &srcOffset)
+          : NULL;
+  if (byteSize > 0 && srcWindow == NULL) {
+    WARN("flagcxPutSignal: localbuff %p is not in an active symmetric window",
+         localbuff);
     return flagcxInvalidArgument;
   }
+  flagcxSymWindow_t dstWindow = peerWin->defaultBase;
+  int srcMrIdx = srcWindow != NULL ? srcWindow->mrIndex : -1;
+  int dstMrIdx = dstWindow->mrIndex;
 
   // Signal offset: sender writes to its own slot in receiver's signal buffer,
   // so receiver can identify which peer sent the signal.
   size_t signalOffset = (size_t)hetero->rank * sizeof(uint64_t);
 
   uint64_t opSeq = 0;
-  return flagcxHeteroPutSignalStream(hetero, peer, srcOffset, peerWinOffset,
-                                     byteSize, signalOffset, srcMrIdx, dstMrIdx,
-                                     1 /*signalValue*/, stream, &opSeq);
+  return flagcxHeteroPutSignalStream(
+      hetero, peer, srcOffset, peerWinOffset, byteSize, signalOffset, srcMrIdx,
+      dstMrIdx, 1 /*signalValue*/, srcWindow, dstWindow, stream, &opSeq);
 }
 
 flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
@@ -2884,8 +2926,8 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
   size_t signalOffset = (size_t)comm->heteroComm->rank * sizeof(uint64_t);
   uint64_t opSeq = 0;
   return flagcxHeteroPutSignalStream(comm->heteroComm, peer, 0, 0, 0,
-                                     signalOffset, -1, 0, 1 /*signalValue*/,
-                                     stream, &opSeq);
+                                     signalOffset, -1, -1, 1 /*signalValue*/,
+                                     NULL, NULL, stream, &opSeq);
 }
 
 flagcxResult_t flagcxWaitSignal(int nDesc,

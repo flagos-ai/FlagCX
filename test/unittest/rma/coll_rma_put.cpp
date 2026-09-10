@@ -1,6 +1,8 @@
 // MPI correctness tests for flagcxPut / flagcxPutSignal.
-// Requires 2 ranks with hetero communicator and RDMA-capable net adaptor.
+// Requires 2 local ranks with a hetero communicator; individual invocations
+// select either IPC or RDMA explicitly.
 
+#include "flagcx_hetero.h"
 #include "rma_test.hpp"
 #include <cstring>
 #include <vector>
@@ -12,6 +14,66 @@ static int collectiveOpStatus(flagcxResult_t res) {
   MPI_Allreduce(&localStatus, &globalStatus, 1, MPI_INT, MPI_MAX,
                 MPI_COMM_WORLD);
   return globalStatus;
+}
+
+// The IPC data path must use the symmetric window's IPC locator directly. It
+// must not require a network MR index or an initialized RDMA sendComm.
+TEST_F(RmaTest, IpcPutWithoutNetworkMr) {
+  if (!requireIpc)
+    GTEST_SKIP() << "Runs only in the explicit IPC invocation";
+  int localMrAbsent = dataWin->defaultBase->mrIndex < 0 ? 1 : 0;
+  int allMrsAbsent = 0;
+  MPI_Allreduce(&localMrAbsent, &allMrsAbsent, 1, MPI_INT, MPI_MIN,
+                MPI_COMM_WORLD);
+  ASSERT_EQ(allMrsAbsent, 1)
+      << "IPC invocation unexpectedly registered a network MR";
+
+  const size_t testSize = 64;
+  flagcxStream_t s = nullptr;
+  flagcxResult_t setupRes = devHandle->streamCreate(&s);
+  if (setupRes == flagcxSuccess && s == nullptr)
+    setupRes = flagcxInternalError;
+  ASSERT_EQ(collectiveOpStatus(setupRes), 0);
+
+  setupRes =
+      devHandle->deviceMemset(dataBuff, 0, size, flagcxMemDevice, nullptr);
+  ASSERT_EQ(collectiveOpStatus(setupRes), 0);
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  flagcxResult_t opRes = flagcxSuccess;
+  if (rank == 0) {
+    std::vector<uint8_t> pattern(testSize, 0x5A);
+    opRes = devHandle->deviceMemcpy(dataBuff, pattern.data(), testSize,
+                                    flagcxMemcpyHostToDevice, nullptr);
+    if (opRes == flagcxSuccess) {
+      uint64_t opSeq = 0;
+      opRes = flagcxHeteroPutStream(comm->heteroComm, 1, 0, 0, testSize, -1, -1,
+                                    dataWin->defaultBase, dataWin->defaultBase,
+                                    s, &opSeq);
+    }
+    if (opRes == flagcxSuccess)
+      opRes = devHandle->streamSynchronize(s);
+  }
+
+  int globalOpStatus = collectiveOpStatus(opRes);
+  ASSERT_EQ(globalOpStatus, 0) << "IPC PUT failed without network MR state";
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  bool localDataValid = true;
+  if (rank == 1) {
+    std::vector<uint8_t> received(testSize, 0);
+    flagcxResult_t copyRes = devHandle->deviceMemcpy(
+        received.data(), dataBuff, testSize, flagcxMemcpyDeviceToHost, nullptr);
+    localDataValid = copyRes == flagcxSuccess &&
+                     received == std::vector<uint8_t>(testSize, 0x5A);
+  }
+
+  int localValid = localDataValid ? 1 : 0;
+  int allDataValid = 0;
+  MPI_Allreduce(&localValid, &allDataValid, 1, MPI_INT, MPI_MIN,
+                MPI_COMM_WORLD);
+  EXPECT_EQ(allDataValid, 1);
+  EXPECT_EQ(devHandle->streamDestroy(s), flagcxSuccess);
 }
 
 // ---------------------------------------------------------------------------
