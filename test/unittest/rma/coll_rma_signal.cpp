@@ -34,7 +34,11 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   }
 
   int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus != 0) {
+  if (globalStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "RMA signal operations are not supported";
+  }
+  if (globalStatus == 2) {
     devHandle->streamDestroy(s);
     FAIL() << "flagcxSignal failed collectively with status " << globalStatus;
   }
@@ -50,7 +54,11 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   }
 
   int globalWaitStatus = collectiveOpStatus(waitRes);
-  if (globalWaitStatus != 0) {
+  if (globalWaitStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "remote-write visibility flush is not supported";
+  }
+  if (globalWaitStatus == 2) {
     devHandle->streamDestroy(s);
     FAIL() << "flagcxWaitSignal failed collectively with status "
            << globalWaitStatus;
@@ -87,7 +95,11 @@ TEST_F(RmaTest, MultipleSignals) {
   }
 
   int globalStatus = collectiveOpStatus(opRes);
-  if (globalStatus != 0) {
+  if (globalStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "RMA signal operations are not supported";
+  }
+  if (globalStatus == 2) {
     devHandle->streamDestroy(s);
     FAIL() << "flagcxSignal failed collectively with status " << globalStatus;
   }
@@ -104,7 +116,11 @@ TEST_F(RmaTest, MultipleSignals) {
   }
 
   int globalWaitStatus = collectiveOpStatus(waitRes);
-  if (globalWaitStatus != 0) {
+  if (globalWaitStatus == 1) {
+    devHandle->streamDestroy(s);
+    GTEST_SKIP() << "remote-write visibility flush is not supported";
+  }
+  if (globalWaitStatus == 2) {
     devHandle->streamDestroy(s);
     FAIL() << "flagcxWaitSignal failed collectively with status "
            << globalWaitStatus;

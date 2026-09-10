@@ -323,7 +323,8 @@ TEST_F(DeviceAdaptorTest, StreamWaitEvent) {
   devHandle->streamDestroy(stream2);
 }
 
-// Test stream-ordered 64-bit signal operations used by the RMA data plane.
+// Test the baseline stream-ordered 64-bit signal operations. A local stream
+// write does not require the remote-write visibility guarantee.
 TEST_F(DeviceAdaptorTest, StreamWaitWriteValue64) {
   ASSERT_NE(deviceAdaptor->streamWriteValue64, nullptr);
   ASSERT_NE(deviceAdaptor->streamWaitValue64, nullptr);
@@ -346,8 +347,66 @@ TEST_F(DeviceAdaptorTest, StreamWaitWriteValue64) {
     GTEST_SKIP() << "64-bit stream memory operations are not supported";
   }
   ASSERT_EQ(result, flagcxSuccess);
-  ASSERT_EQ(deviceAdaptor->streamWaitValue64(stream, deviceValue, expected, 0),
+  result = deviceAdaptor->streamWaitValue64(stream, deviceValue, expected,
+                                            FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+    EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),
+              flagcxSuccess);
+    GTEST_SKIP() << "64-bit stream memory waits are not supported";
+  }
+  ASSERT_EQ(result, flagcxSuccess);
+  ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+  EXPECT_EQ(
+      deviceAdaptor->streamWaitValue64(stream, deviceValue, expected, 1 << 30),
+      flagcxInvalidArgument);
+
+  uint64_t actual = 0;
+  EXPECT_EQ(devHandle->deviceMemcpy(&actual, deviceValue, sizeof(actual),
+                                    flagcxMemcpyDeviceToHost, nullptr),
             flagcxSuccess);
+  EXPECT_EQ(actual, expected);
+  EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+}
+
+// Test whether the adaptor can turn a stream wait into an acquire operation
+// for payload writes published by a remote GPU, NIC, or host proxy. Platforms
+// that cannot provide this guarantee must report flagcxNotSupported instead
+// of silently performing a weaker wait.
+TEST_F(DeviceAdaptorTest, StreamWaitValue64RemoteFlushCapability) {
+  ASSERT_NE(deviceAdaptor->streamWriteValue64, nullptr);
+  ASSERT_NE(deviceAdaptor->streamWaitValue64, nullptr);
+
+  void *deviceValue = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&deviceValue, sizeof(uint64_t),
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(deviceValue, nullptr);
+  ASSERT_EQ(devHandle->deviceMemset(deviceValue, 0, sizeof(uint64_t),
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
+
+  constexpr uint64_t expected = 0x1020304050607080ULL;
+  flagcxResult_t result = deviceAdaptor->streamWriteValue64(
+      stream, deviceValue, expected, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),
+              flagcxSuccess);
+    GTEST_SKIP() << "64-bit stream memory operations are not supported";
+  }
+  ASSERT_EQ(result, flagcxSuccess);
+
+  result = deviceAdaptor->streamWaitValue64(
+      stream, deviceValue, expected,
+      FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+    EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),
+              flagcxSuccess);
+    GTEST_SKIP() << "remote-write visibility flush is not supported";
+  }
+  ASSERT_EQ(result, flagcxSuccess);
   ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
 
   uint64_t actual = 0;

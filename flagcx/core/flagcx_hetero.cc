@@ -106,9 +106,11 @@ static flagcxResult_t flagcxRmaWaitDone(struct flagcxRmaProxyState *proxy,
                                         int peer, uint64_t opSeq,
                                         flagcxStream_t stream) {
   if (proxy->useStreamOps) {
-    // STREAM_OPS: GPU waits on doneSeqsDev (hardware poll, no CPU involvement)
+    // STREAM_OPS: the host proxy publishes completion in doneSeqsDev. This is
+    // a local completion counter, not a remote payload-publishing signal.
     return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
-                                            opSeq, 0);
+                                            opSeq,
+                                            FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
   } else {
     // HOST_FUNC: launch callback that waits on doneCond until done
     struct flagcxRmaDoneWaitCtx *ctx =
@@ -871,9 +873,9 @@ flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
     // streamWaitValue64 on doneSeqsDev would stall forever.
     return flagcxHeteroFlushRma(comm, peer, seq);
   }
-  // GPU-side wait: stream stalls until doneSeqsDev[peer] >= seq
-  return deviceAdaptor->streamWaitValue64(stream, &proxy->doneSeqsDev[peer],
-                                          seq, 0 /*GEQ*/);
+  // GPU-side wait on the local proxy completion counter.
+  return deviceAdaptor->streamWaitValue64(
+      stream, &proxy->doneSeqsDev[peer], seq, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
 }
 
 flagcxResult_t flagcxHeteroFlushAllRma(flagcxHeteroComm_t comm) {
@@ -1175,13 +1177,15 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
   // Device-side wait (streamWaitValue64) for GPU signal buffer.
   // RMA signal buffers are GPU memory (flagcxMemAlloc) — host-side volatile
   // polling would segfault. Non-CUDA platforms return flagcxNotSupported.
-  // The adaptor maps flags=0 to its monotonic-counter wait semantics and may
-  // add the platform-specific remote-write visibility flush required after an
-  // RDMA signal.
+  // The signal is published by a peer GPU or NIC after its payload writes.
+  // Request an acquire-style remote-write flush explicitly; adaptors that
+  // cannot provide this guarantee must return flagcxNotSupported.
   if (stream == NULL)
     return flagcxInternalError;
 
-  return deviceAdaptor->streamWaitValue64(stream, signalAddr, expected, 0);
+  return deviceAdaptor->streamWaitValue64(
+      stream, signalAddr, expected,
+      FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
 }
 
 flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,

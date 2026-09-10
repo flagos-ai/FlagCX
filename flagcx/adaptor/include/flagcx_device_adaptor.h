@@ -22,6 +22,16 @@ struct flagcxDevProps {
 // C-compatible typedef matching the C++ using alias in dlsymbols.h.
 typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
 
+// streamWaitValue64 always waits for *addr >= value. Callers add
+// FLUSH_REMOTE_WRITES when the counter publishes completion of payload writes
+// issued by another GPU, the network, or a host proxy. Adaptors must not
+// silently ignore this flag: return flagcxNotSupported when the backend cannot
+// provide the requested visibility guarantee.
+typedef enum {
+  FLAGCX_STREAM_WAIT_VALUE_DEFAULT = 0,
+  FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES = 1 << 0,
+} flagcxStreamWaitValueFlags_t;
+
 // Version history:
 //   v1 — Initial version with basic device functions, GDR functions,
 //         stream/event/IPC functions, kernel launch, device properties,
