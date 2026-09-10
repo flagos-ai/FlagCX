@@ -615,32 +615,54 @@ static void flagcxIbAddEvent(struct flagcxIbRequest *req, int devIndex,
 
 flagcxResult_t flagcxIbInitCommDevBase(int ibDevN,
                                        struct flagcxIbNetCommDevBase *base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+
   base->ibDevN = ibDevN;
+  base->pd = NULL;
+  base->cq = NULL;
   flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
   pthread_mutex_lock(&ibDev->lock);
-  if (0 == ibDev->pdRefs++) {
-    flagcxResult_t res;
-    FLAGCXCHECKGOTO(flagcxWrapIbvAllocPd(&ibDev->pd, ibDev->context), res,
-                    failure);
-    if (0) {
-    failure:
+  if (ibDev->pdRefs == 0) {
+    flagcxResult_t res = flagcxWrapIbvAllocPd(&ibDev->pd, ibDev->context);
+    if (res != flagcxSuccess) {
       pthread_mutex_unlock(&ibDev->lock);
       return res;
     }
   }
+  ibDev->pdRefs++;
   base->pd = ibDev->pd;
   pthread_mutex_unlock(&ibDev->lock);
 
   // Recv requests can generate 2 completions (one for the post FIFO, one for
   // the Recv).
-  FLAGCXCHECK(flagcxWrapIbvCreateCq(
+  flagcxResult_t res = flagcxWrapIbvCreateCq(
       &base->cq, ibDev->context, 2 * MAX_REQUESTS * flagcxParamIbQpsPerConn(),
-      NULL, NULL, 0));
+      NULL, NULL, 0);
+  if (res != flagcxSuccess) {
+    pthread_mutex_lock(&ibDev->lock);
+    if (--ibDev->pdRefs == 0) {
+      flagcxResult_t cleanupRes = flagcxWrapIbvDeallocPd(ibDev->pd);
+      if (cleanupRes == flagcxSuccess) {
+        ibDev->pd = NULL;
+      } else if (flagcxDebugNoWarn == 0) {
+        INFO(FLAGCX_ALL,
+             "Failed to deallocate PD while rolling back CQ creation: %d",
+             cleanupRes);
+      }
+    }
+    pthread_mutex_unlock(&ibDev->lock);
+    base->pd = NULL;
+    return res;
+  }
 
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+
   flagcxResult_t res;
 
   // Poll any remaining completions before destroying CQ
@@ -655,7 +677,14 @@ flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
     }
   }
 
-  FLAGCXCHECK(flagcxWrapIbvDestroyCq(base->cq));
+  if (base->cq != NULL) {
+    FLAGCXCHECK(flagcxWrapIbvDestroyCq(base->cq));
+    base->cq = NULL;
+  }
+
+  // A failed initialization already rolled its PD reference back.
+  if (base->pd == NULL)
+    return flagcxSuccess;
 
   pthread_mutex_lock(&flagcxIbDevs[base->ibDevN].lock);
   if (0 == --flagcxIbDevs[base->ibDevN].pdRefs) {
@@ -672,12 +701,14 @@ flagcxResult_t flagcxIbDestroyBase(struct flagcxIbNetCommDevBase *base) {
              pd_result);
       res = flagcxSuccess; // Continue cleanup even if PD deallocation fails
     } else {
+      flagcxIbDevs[base->ibDevN].pd = NULL;
       res = flagcxSuccess;
     }
   } else {
     res = flagcxSuccess;
   }
   pthread_mutex_unlock(&flagcxIbDevs[base->ibDevN].lock);
+  base->pd = NULL;
   return res;
 }
 

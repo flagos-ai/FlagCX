@@ -1,4 +1,5 @@
 #include "rma_test.hpp"
+#include "adaptor.h"
 #include "comm.h"
 #include "flagcx_hetero.h"
 #include "sym_heap.h"
@@ -169,10 +170,11 @@ void RmaTest::SetUpTestSuite() {
     dataRmaSkipReason = nullptr;
   }
 
-  bool localSignalCapable = devHandle->streamWaitValue64 != nullptr;
+  bool localSignalCapable =
+      deviceAdaptor != nullptr && deviceAdaptor->streamWaitValue64 != nullptr;
   if (requireIpc) {
     localSignalCapable =
-        localSignalCapable && devHandle->streamWriteValue64 != nullptr;
+        localSignalCapable && deviceAdaptor->streamWriteValue64 != nullptr;
   } else {
     localSignalCapable = localSignalCapable &&
                          comm->heteroComm->netAdaptor != nullptr &&
@@ -213,7 +215,7 @@ void RmaTest::SetUpTestSuite() {
     res = devHandle->deviceMemcpy(signalBuff, &probeValue, sizeof(probeValue),
                                   flagcxMemcpyHostToDevice, nullptr);
     if (res == flagcxSuccess) {
-      res = devHandle->streamWaitValue64(
+      res = deviceAdaptor->streamWaitValue64(
           stream, signalBuff, probeValue,
           FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
     }
