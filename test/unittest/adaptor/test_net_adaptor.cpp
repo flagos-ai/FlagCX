@@ -3,6 +3,7 @@
  ************************************************************************/
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unistd.h>
@@ -19,6 +21,7 @@
 #include "flagcx.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
+#include "ib_common.h"
 #include "onesided.h"
 
 namespace {
@@ -152,6 +155,50 @@ struct TestWindow {
   void **opaque() { return reinterpret_cast<void **>(&info); }
 };
 
+std::vector<ibv_mr *> deregisterCalls;
+ibv_mr *deregisterFailure = nullptr;
+int deregisterFailuresRemaining = 0;
+int batchPostResult = IBV_SUCCESS;
+int batchRejectedIndex = -1;
+int batchPostCalls = 0;
+
+flagcxResult_t fakeDeregisterMr(flagcxIbNetCommDevBase *, ibv_mr *mr) {
+  deregisterCalls.push_back(mr);
+  if (mr == deregisterFailure && deregisterFailuresRemaining > 0) {
+    --deregisterFailuresRemaining;
+    return flagcxSystemError;
+  }
+  return flagcxSuccess;
+}
+
+int fakeBatchPostSend(ibv_qp *, ibv_send_wr *wr, ibv_send_wr **badWr) {
+  ++batchPostCalls;
+  ibv_send_wr *rejected = wr;
+  for (int i = 0; i < batchRejectedIndex && rejected != nullptr; ++i)
+    rejected = rejected->next;
+  if (badWr != nullptr)
+    *badWr = rejected;
+  return batchPostResult;
+}
+
+class IbMrCleanupTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    deregisterCalls.clear();
+    deregisterFailure = nullptr;
+    deregisterFailuresRemaining = 0;
+    comm_ = static_cast<flagcxIbSendComm *>(
+        calloc(1, sizeof(struct flagcxIbSendComm)));
+    ASSERT_NE(comm_, nullptr);
+    comm_->base.isSend = true;
+    comm_->base.ndevs = 2;
+  }
+
+  void TearDown() override { free(comm_); }
+
+  flagcxIbSendComm *comm_ = nullptr;
+};
+
 class NetAdaptorLoopback : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -261,6 +308,193 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
   EXPECT_NE(net->igetBatch, nullptr);
 }
 
+TEST_F(IbMrCleanupTest, FailedDeregisterRetainsOnlyUnconsumedNicHandles) {
+  auto *wrapper = static_cast<flagcxIbMrHandle *>(
+      calloc(1, sizeof(struct flagcxIbMrHandle)));
+  ASSERT_NE(wrapper, nullptr);
+  auto *first = reinterpret_cast<ibv_mr *>(0x1000);
+  auto *second = reinterpret_cast<ibv_mr *>(0x2000);
+  wrapper->mrs[0] = first;
+  wrapper->mrs[1] = second;
+  deregisterFailure = second;
+  deregisterFailuresRemaining = 1;
+
+  EXPECT_EQ(
+      flagcxIbDeregMrWithCallback(&comm_->base, wrapper, fakeDeregisterMr),
+      flagcxSystemError);
+  ASSERT_EQ(deregisterCalls.size(), 2u);
+  EXPECT_EQ(deregisterCalls[0], first);
+  EXPECT_EQ(deregisterCalls[1], second);
+  EXPECT_EQ(wrapper->mrs[0], nullptr);
+  EXPECT_EQ(wrapper->mrs[1], second);
+
+  deregisterCalls.clear();
+  EXPECT_EQ(
+      flagcxIbDeregMrWithCallback(&comm_->base, wrapper, fakeDeregisterMr),
+      flagcxSuccess);
+  ASSERT_EQ(deregisterCalls.size(), 1u);
+  EXPECT_EQ(deregisterCalls[0], second);
+}
+
+TEST_F(IbMrCleanupTest, DeferredRollbackRemainsQueuedUntilRetrySucceeds) {
+  auto *wrapper = static_cast<flagcxIbMrHandle *>(
+      calloc(1, sizeof(struct flagcxIbMrHandle)));
+  ASSERT_NE(wrapper, nullptr);
+  auto *mr = reinterpret_cast<ibv_mr *>(0x3000);
+  wrapper->mrs[0] = mr;
+  comm_->base.deferredMrHandles = wrapper;
+  deregisterFailure = mr;
+  deregisterFailuresRemaining = 1;
+
+  EXPECT_EQ(
+      flagcxIbDrainDeferredMrsWithCallback(&comm_->base, fakeDeregisterMr),
+      flagcxSystemError);
+  EXPECT_EQ(comm_->base.deferredMrHandles, wrapper);
+  EXPECT_EQ(wrapper->mrs[0], mr);
+
+  EXPECT_EQ(
+      flagcxIbDrainDeferredMrsWithCallback(&comm_->base, fakeDeregisterMr),
+      flagcxSuccess);
+  EXPECT_EQ(comm_->base.deferredMrHandles, nullptr);
+}
+
+TEST_F(IbMrCleanupTest, FailedPublicCleanupIsDeferredAndRemainsRetryable) {
+  auto *wrapper = static_cast<flagcxIbMrHandle *>(
+      calloc(1, sizeof(struct flagcxIbMrHandle)));
+  ASSERT_NE(wrapper, nullptr);
+  auto *mr = reinterpret_cast<ibv_mr *>(0x4000);
+  wrapper->mrs[0] = mr;
+  deregisterFailure = mr;
+  deregisterFailuresRemaining = 1;
+
+  EXPECT_EQ(flagcxIbDeregMrOrDeferWithCallback(&comm_->base, wrapper,
+                                               fakeDeregisterMr),
+            flagcxSystemError);
+  EXPECT_EQ(comm_->base.deferredMrHandles, wrapper);
+  EXPECT_EQ(wrapper->mrs[0], mr);
+
+  deregisterCalls.clear();
+  EXPECT_EQ(flagcxIbDeregMrOrDeferWithCallback(&comm_->base, wrapper,
+                                               fakeDeregisterMr),
+            flagcxSuccess);
+  EXPECT_EQ(comm_->base.deferredMrHandles, nullptr);
+  ASSERT_EQ(deregisterCalls.size(), 1u);
+  EXPECT_EQ(deregisterCalls[0], mr);
+}
+
+TEST(IbRequestCompletionTest, SharedCqUpdatesTheWrIdRequestAndDrainsBatch) {
+  auto base = std::make_unique<flagcxIbNetCommBase>();
+  auto *polled = &base->reqs[0];
+  auto *completed = &base->reqs[1];
+  polled->type = FLAGCX_NET_IB_REQ_IPUT;
+  polled->result = flagcxSuccess;
+  polled->events[0] = 1;
+  completed->type = FLAGCX_NET_IB_REQ_IGET;
+  completed->result = flagcxSuccess;
+  completed->events[0] = 2;
+
+  EXPECT_EQ(
+      flagcxIbCommonRecordDataCompletion(base.get(), 1, 0, flagcxRemoteError),
+      flagcxSuccess);
+  EXPECT_EQ(polled->events[0], 1);
+  EXPECT_EQ(polled->result, flagcxSuccess);
+  EXPECT_EQ(completed->events[0], 1);
+  EXPECT_EQ(completed->result, flagcxRemoteError);
+
+  EXPECT_EQ(flagcxIbCommonRecordDataCompletion(base.get(), 1, 0, flagcxSuccess),
+            flagcxSuccess);
+  EXPECT_EQ(completed->events[0], 0);
+  EXPECT_EQ(completed->result, flagcxRemoteError);
+}
+
+TEST(IbRequestCompletionTest,
+     UnsignaledErrorIsRecordedWithoutConsumingTailEvent) {
+  auto base = std::make_unique<flagcxIbNetCommBase>();
+  auto *request = &base->reqs[7];
+  request->type = FLAGCX_NET_IB_REQ_IPUT;
+  request->result = flagcxSuccess;
+  request->events[0] = 1;
+
+  uint64_t wrId = flagcxIbUnsignaledWrId(7);
+  ASSERT_TRUE(flagcxIbIsUnsignaledWrId(wrId));
+  EXPECT_EQ(flagcxIbCommonRecordUnsignaledCompletion(base.get(), wrId,
+                                                     flagcxRemoteError),
+            flagcxSuccess);
+  EXPECT_EQ(request->events[0], 1);
+  EXPECT_EQ(request->result, flagcxRemoteError);
+
+  EXPECT_EQ(flagcxIbCommonRecordDataCompletion(base.get(), 7, 0, flagcxSuccess),
+            flagcxSuccess);
+  EXPECT_EQ(request->events[0], 0);
+  EXPECT_EQ(request->result, flagcxRemoteError);
+}
+
+TEST(IbOneSidedBatchContractTest,
+     PermanentPartialPostRetainsOnlyAcceptedPrefix) {
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
+  ASSERT_NE(net, nullptr);
+  if (net->name == nullptr || strcmp(net->name, "IB") != 0)
+    GTEST_SKIP() << "Partial-post injection is specific to IBRC";
+  ASSERT_NE(net->iputBatch, nullptr);
+
+  auto comm = std::make_unique<flagcxIbSendComm>();
+  ibv_context context = {};
+  ibv_qp qp = {};
+  context.ops.post_send = fakeBatchPostSend;
+  qp.context = &context;
+  comm->base.isSend = true;
+  comm->base.ready = 1;
+  comm->base.ndevs = 1;
+  comm->base.nqps = 1;
+  comm->base.qps[0].qp = &qp;
+  comm->base.qps[0].devIndex = 0;
+  comm->base.qps[0].remDevIdx = 0;
+
+  uint8_t source[3] = {1, 2, 3};
+  uint8_t destination[3] = {};
+  TestWindow sourceWindow, destinationWindow;
+  sourceWindow.baseVas[kLocalRank] = reinterpret_cast<uintptr_t>(source);
+  sourceWindow.regionSizes[kLocalRank] = sizeof(source);
+  sourceWindow.mrInfos[kLocalRank].nKeys = 1;
+  sourceWindow.mrInfos[kLocalRank].lkeys[0] = 11;
+  sourceWindow.info.baseVas = sourceWindow.baseVas;
+  sourceWindow.info.regionSizes = sourceWindow.regionSizes;
+  sourceWindow.info.mrInfos = sourceWindow.mrInfos;
+  sourceWindow.info.nRanks = 2;
+  destinationWindow.baseVas[kRemoteRank] =
+      reinterpret_cast<uintptr_t>(destination);
+  destinationWindow.regionSizes[kRemoteRank] = sizeof(destination);
+  destinationWindow.mrInfos[kRemoteRank].nKeys = 1;
+  destinationWindow.mrInfos[kRemoteRank].rkeys[0] = 22;
+  destinationWindow.info.baseVas = destinationWindow.baseVas;
+  destinationWindow.info.regionSizes = destinationWindow.regionSizes;
+  destinationWindow.info.mrInfos = destinationWindow.mrInfos;
+  destinationWindow.info.nRanks = 2;
+
+  const uint64_t offsets[3] = {0, 1, 2};
+  const size_t sizes[3] = {1, 1, 1};
+  void *requests[3] = {};
+  int posted = -1;
+  batchPostResult = EINVAL;
+  batchRejectedIndex = 1;
+  batchPostCalls = 0;
+
+  EXPECT_EQ(net->iputBatch(&comm->base, 3, offsets, offsets, sizes, kLocalRank,
+                           kRemoteRank, sourceWindow.opaque(),
+                           destinationWindow.opaque(), requests, &posted),
+            flagcxSystemError);
+  EXPECT_EQ(batchPostCalls, 1);
+  EXPECT_EQ(posted, 1);
+  ASSERT_NE(requests[0], nullptr);
+  EXPECT_EQ(requests[1], nullptr);
+  EXPECT_EQ(requests[2], nullptr);
+  auto *accepted = static_cast<flagcxIbRequest *>(requests[0]);
+  EXPECT_EQ(accepted->events[0], 1);
+  EXPECT_EQ(comm->base.reqs[1].type, FLAGCX_NET_IB_REQ_UNUSED);
+  EXPECT_EQ(comm->base.reqs[2].type, FLAGCX_NET_IB_REQ_UNUSED);
+  EXPECT_EQ(flagcxIbFreeRequest(accepted), flagcxSuccess);
+}
+
 TEST_F(NetAdaptorLoopback, RegisterHostMrAndExportMetadata) {
   SKIP_IF_CALLBACK_NULL(net_, regMr);
   SKIP_IF_CALLBACK_NULL(net_, deregMr);
@@ -273,6 +507,16 @@ TEST_F(NetAdaptorLoopback, RegisterHostMrAndExportMetadata) {
   ASSERT_EQ(net_->getMrInfo(mr, &info), flagcxSuccess);
   EXPECT_GT(info.nKeys, 0u);
   EXPECT_LE(info.nKeys, static_cast<uint32_t>(FLAGCX_NET_MAX_MR_KEYS));
+  if (net_->name != nullptr && strcmp(net_->name, "IB") == 0) {
+    auto *comm = static_cast<flagcxIbSendComm *>(sendComm_);
+    auto *wrapper = static_cast<flagcxIbMrHandle *>(mr);
+    ASSERT_EQ(info.nKeys, static_cast<uint32_t>(comm->base.ndevs));
+    for (uint32_t i = 0; i < info.nKeys; ++i) {
+      ASSERT_NE(wrapper->mrs[i], nullptr);
+      EXPECT_EQ(info.lkeys[i], wrapper->mrs[i]->lkey);
+      EXPECT_EQ(info.rkeys[i], wrapper->mrs[i]->rkey);
+    }
+  }
   EXPECT_DEREGISTER_MR(sendComm_, mr);
   EXPECT_EQ(net_->deregMr(sendComm_, nullptr), flagcxSuccess);
 }
@@ -518,6 +762,51 @@ TEST_F(NetAdaptorLoopback, RequestPoolBackpressureAndRecovery) {
             flagcxSuccess);
   ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
   EXPECT_EQ(remote[0], source[0]);
+  EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
+  EXPECT_DEREGISTER_MR(recvComm_, remoteMr);
+}
+
+TEST_F(NetAdaptorLoopback, OneSidedRequestsStayOnOrderedQp) {
+  SKIP_IF_CALLBACK_NULL(net_, getMrInfo);
+  SKIP_IF_CALLBACK_NULL(net_, iput);
+  SKIP_IF_CALLBACK_NULL(net_, test);
+  if (net_->name == nullptr || strcmp(net_->name, "IB") != 0)
+    GTEST_SKIP() << "QP selection introspection is specific to IBRC";
+  auto *sendComm = static_cast<flagcxIbSendComm *>(sendComm_);
+  if (sendComm->base.nqps < 2)
+    GTEST_SKIP()
+        << "Set FLAGCX_IB_QPS_PER_CONNECTION=2 to verify stable QP use";
+
+  std::vector<uint8_t> source(2, 0);
+  std::vector<uint8_t> remote(2, 0);
+  source[0] = 0x35;
+  source[1] = 0x7a;
+  void *sourceMr = nullptr;
+  void *remoteMr = nullptr;
+  ASSERT_REGISTER_MR(sendComm_, source.data(), source.size(), FLAGCX_PTR_HOST,
+                     sourceMr);
+  ASSERT_REGISTER_MR(recvComm_, remote.data(), remote.size(), FLAGCX_PTR_HOST,
+                     remoteMr);
+  TestWindow sourceWindow, remoteWindow;
+  ASSERT_EQ(sourceWindow.init(net_, source.data(), source.size(), kLocalRank,
+                              sourceMr),
+            flagcxSuccess);
+  ASSERT_EQ(remoteWindow.init(net_, remote.data(), remote.size(), kRemoteRank,
+                              remoteMr),
+            flagcxSuccess);
+
+  int firstQp = sendComm->base.qpIndex;
+  for (uint64_t offset = 0; offset < source.size(); ++offset) {
+    void *request = nullptr;
+    ASSERT_EQ(net_->iput(sendComm_, offset, offset, 1, kLocalRank, kRemoteRank,
+                         sourceWindow.opaque(), remoteWindow.opaque(),
+                         &request),
+              flagcxSuccess);
+    ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+    EXPECT_EQ(sendComm->base.qpIndex, firstQp);
+  }
+  EXPECT_EQ(remote, source);
+
   EXPECT_DEREGISTER_MR(sendComm_, sourceMr);
   EXPECT_DEREGISTER_MR(recvComm_, remoteMr);
 }

@@ -8,6 +8,7 @@
 #include "sym_heap.h"
 #include "transport.h"
 #include "type.h"
+#include "utils.h"
 
 #include <climits>
 #include <pthread.h>
@@ -348,14 +349,14 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
 
 // Poll pending descs from the ring and issue them. On success advance
 // cis[peer] and move the desc to inProgressQueues[peer]. On
-// request-pool-full (flagcxInternalError) leave cis untouched and retry
-// next round. On other errors mark rmaError and push to inProgress with
-// NULL request so PollNonPersistCompletion retires it.
+// transient adaptor backpressure (flagcxInProgress, plus the legacy
+// flagcxInternalError result) leaves cis untouched and retries next round. On
+// other errors mark rmaError and push to inProgress with NULL request so
+// PollNonPersistCompletion retires it.
 static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
                                              int peer, void *sendComm) {
   struct flagcxHeteroComm *comm = proxy->comm;
   bool did = false;
-
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
     uint32_t inFlight =
         __atomic_load_n(&proxy->inFlights[peer], __ATOMIC_RELAXED);
@@ -365,17 +366,6 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     uint32_t idx = ci & proxy->queueMask;
     struct flagcxRmaDesc *desc =
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
-
-    bool hasInFlight = !flagcxIntruQueueEmpty(&proxy->inProgressQueues[peer]);
-    bool releaseBarrierInFlight = false;
-    if (hasInFlight) {
-      struct flagcxRmaDesc *head =
-          flagcxIntruQueueHead(&proxy->inProgressQueues[peer]);
-      releaseBarrierInFlight = flagcxRmaDescIsReleaseBarrier(head->type);
-    }
-    if (!flagcxRmaProxyCanPostDesc(desc->type, hasInFlight,
-                                   releaseBarrierInFlight))
-      break;
 
     // Poll readySeq: wait for GPU stream to signal source data is committed.
     // Both STREAM_OPS (streamWriteValue64) and HOST_FUNC (callback) write here.
@@ -389,6 +379,8 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     }
 
     bool canBatch = desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
+                    comm->netAdaptor->name != NULL &&
+                    strcmp(comm->netAdaptor->name, "IB") == 0 &&
                     comm->netAdaptor->iputBatch != NULL;
     if (canBatch) {
       int64_t paramBatchMax = flagcxParamRmaBatchMax();
@@ -450,8 +442,8 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
 
     desc->request = NULL;
     flagcxResult_t res = flagcxRmaProxyPostOp(comm, desc, sendComm);
-    if (res == flagcxInternalError) {
-      // Request pool exhausted; retry this slot next round (cis unchanged).
+    if (flagcxRmaPostResultIsRetryable(res)) {
+      // Transient backpressure; retry this slot next round (cis unchanged).
       break;
     }
     if (res != flagcxSuccess) {
@@ -468,10 +460,6 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     flagcxIntruQueueEnqueue(&proxy->inProgressQueues[peer], desc);
     __atomic_fetch_add(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
     did = true;
-
-    // Do not issue the next epoch until this release boundary completes.
-    if (flagcxRmaDescIsReleaseBarrier(desc->type))
-      break;
   }
   return did;
 }
@@ -1130,7 +1118,9 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
   // Device-side wait (streamWaitValue64) for GPU signal buffer.
   // RMA signal buffers are GPU memory (flagcxMemAlloc) — host-side volatile
   // polling would segfault. Non-CUDA platforms return flagcxNotSupported.
-  // No flush needed: FORCE_SO on signal MR guarantees PCIe ordering.
+  // The adaptor maps flags=0 to its monotonic-counter wait semantics and may
+  // add the platform-specific remote-write visibility flush required after an
+  // RDMA signal.
   if (stream == NULL)
     return flagcxInternalError;
 
@@ -1359,7 +1349,8 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
     return flagcxInternalError;
 
   // Try intra-node D2D path (lazy init if not yet built)
-  if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
+  if (stream != NULL && !flagcxParamDeviceOneSidedForceNet() &&
+      flagcxIsIntraNode(comm, peer)) {
     if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
       if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
         proxy->ipcInitFailed = true;
@@ -1440,7 +1431,8 @@ flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
     return flagcxInternalError;
 
   // Try intra-node D2D path (lazy init if not yet built)
-  if (stream != NULL && flagcxIsIntraNode(comm, peer)) {
+  if (stream != NULL && !flagcxParamDeviceOneSidedForceNet() &&
+      flagcxIsIntraNode(comm, peer)) {
     if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
       if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
         proxy->ipcInitFailed = true;

@@ -323,6 +323,39 @@ TEST_F(DeviceAdaptorTest, StreamWaitEvent) {
   devHandle->streamDestroy(stream2);
 }
 
+// Test stream-ordered 64-bit signal operations used by the RMA data plane.
+TEST_F(DeviceAdaptorTest, StreamWaitWriteValue64) {
+  void *deviceValue = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&deviceValue, sizeof(uint64_t),
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_NE(deviceValue, nullptr);
+  ASSERT_EQ(devHandle->deviceMemset(deviceValue, 0, sizeof(uint64_t),
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
+
+  constexpr uint64_t expected = 0x123456789abcdef0ULL;
+  flagcxResult_t result =
+      devHandle->streamWriteValue64(stream, deviceValue, expected, 0);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),
+              flagcxSuccess);
+    GTEST_SKIP() << "64-bit stream memory operations are not supported";
+  }
+  ASSERT_EQ(result, flagcxSuccess);
+  ASSERT_EQ(devHandle->streamWaitValue64(stream, deviceValue, expected, 0),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+
+  uint64_t actual = 0;
+  EXPECT_EQ(devHandle->deviceMemcpy(&actual, deviceValue, sizeof(actual),
+                                    flagcxMemcpyDeviceToHost, nullptr),
+            flagcxSuccess);
+  EXPECT_EQ(actual, expected);
+  EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+}
+
 // Test: Device synchronize
 TEST_F(DeviceAdaptorTest, DeviceSynchronize) {
   auto result = devHandle->deviceSynchronize();

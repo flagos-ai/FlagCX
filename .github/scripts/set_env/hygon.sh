@@ -57,7 +57,7 @@ flagcx_ci_configure_suite() {
       ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0"
+        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1"
       )
       ;;
   esac

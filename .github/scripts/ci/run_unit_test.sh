@@ -52,7 +52,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p) ;;
+    adaptor|p2p|rma) ;;
     *) return 0 ;;
   esac
 
@@ -255,7 +255,15 @@ run_suite() {
   fi
 
   case "$SUITE" in
-    adaptor|core|service)
+    adaptor)
+      # Build more than one RC QP in every RDMA adaptor job. The current
+      # one-sided API intentionally stays on one ordered QP until the transport
+      # layer can express QP selection together with ordering boundaries.
+      FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      ;;
+    core|service)
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;
@@ -265,6 +273,8 @@ run_suite() {
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;
     rma)
+      FLAGCX_CI_TEST_LABEL="rma unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       FLAGCX_CI_MPI_LABEL="rma MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" MPIRUN="$MPI_RUNNER"
       ;;

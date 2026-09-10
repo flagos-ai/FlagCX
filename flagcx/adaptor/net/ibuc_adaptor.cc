@@ -118,7 +118,14 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
 
   if (r->type == FLAGCX_NET_IB_REQ_RECV && !r->base->isSend) {
     struct flagcxIbRecvComm *rComm = (struct flagcxIbRecvComm *)r->base;
-    if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL) {
+    // Only receive CQEs carry an SRQ buffer index in wr_id.  A failed
+    // signaled send/FIFO WR can be polled from the same CQ, but its wr_id is a
+    // request index and must fall through to the common request completion
+    // path below.
+    const bool isSrqCompletion =
+        wc->opcode == IBV_WC_RECV || wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM;
+    if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL &&
+        isSrqCompletion) {
       const int kPostThreshold = 16;
       if (rComm->srqMgr.postSrqCount >= kPostThreshold) {
         FLAGCXCHECK(
@@ -136,14 +143,12 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
   if (!r || !wc || !handled)
     return flagcxInternalError;
   *handled = false;
-  if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend &&
-      wc->wr_id != FLAGCX_RETRANS_WR_ID) {
-  }
 
   if (wc->wr_id == FLAGCX_RETRANS_WR_ID) {
     if (r->base->isSend) {
       struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
-      sComm->outstandingRetrans--;
+      if (sComm->outstandingRetrans > 0)
+        sComm->outstandingRetrans--;
       TRACE(FLAGCX_NET, "SEND retrans completed, outstanding_retrans=%d",
             sComm->outstandingRetrans);
     }
@@ -160,6 +165,26 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
       if (bufIdx < 0 || bufIdx >= rComm->srqMgr.bufCount) {
         WARN("SRQ completion with invalid buffer index: %d (max=%d)", bufIdx,
              rComm->srqMgr.bufCount);
+        *handled = true;
+        return flagcxSuccess;
+      }
+
+      // SRQ WR IDs identify shared receive buffers, not request slots. On a
+      // terminal CQ error, retire one event from the request currently making
+      // progress and recycle the SRQ buffer without inspecting its payload.
+      if (wc->status != IBV_WC_SUCCESS) {
+        if (r->events[devIndex] <= 0)
+          return flagcxInternalError;
+        r->events[devIndex]--;
+        if (r->result == flagcxSuccess)
+          r->result = flagcxRemoteError;
+        rComm->srqMgr.bufs[bufIdx].inUse = 0;
+        rComm->srqMgr.freeBufIndices[rComm->srqMgr.freeBufCount] = bufIdx;
+        rComm->srqMgr.freeBufCount++;
+        rComm->srqMgr.postSrqCount++;
+        WARN("NET/IBUC: SRQ completion failed with status=%d opcode=%d "
+             "vendor_err=%d buffer=%d",
+             wc->status, wc->opcode, wc->vendor_err, bufIdx);
         *handled = true;
         return flagcxSuccess;
       }
@@ -1475,10 +1500,12 @@ flagcxResult_t flagcxIbucGetRequest(struct flagcxIbNetCommBase *base,
     struct flagcxIbRequest *r = base->reqs + i;
     if (r->type == FLAGCX_NET_IB_REQ_UNUSED) {
       r->base = base;
+      r->result = flagcxSuccess;
       r->sock = NULL;
       r->devBases[0] = NULL;
       r->devBases[1] = NULL;
       r->events[0] = r->events[1] = 0;
+      r->nreqs = 0;
       *req = r;
       return flagcxSuccess;
     }
@@ -1670,6 +1697,7 @@ flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
     sge->addr = (uintptr_t)reqs[r]->send.data;
     wr->opcode = IBV_WR_RDMA_WRITE;
     wr->send_flags = 0;
+    wr->wr_id = flagcxIbUnsignaledWrId(reqs[r] - comm->base.reqs);
     wr->wr.rdma.remote_addr = slots[r].addr;
     wr->next = wr + 1;
     wr_id += (reqs[r] - comm->base.reqs) << (r * 8);

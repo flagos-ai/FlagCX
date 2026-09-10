@@ -37,7 +37,7 @@ flagcx_ci_configure_suite() {
       ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
+        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1"
       )
       ;;
   esac
@@ -49,7 +49,8 @@ flagcx_ci_prepare() {
   command -v mpirun
   command -v mxcc
 
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
+        "$suite" == "rma" ]]; then
     local -a hca_paths=()
     local -a hca_names=()
     local hca_path
@@ -125,14 +126,6 @@ flagcx_ci_run_suite_override() {
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
     echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
-    return
-  fi
-
-  if [[ "$suite" == "rma" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    FLAGCX_CI_TEST_LABEL="rma unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-    echo "Skipping MetaX RMA MPI tests: one-sided RMA is not supported by the current MetaX backend."
     return
   fi
 

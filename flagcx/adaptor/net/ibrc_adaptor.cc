@@ -1543,10 +1543,12 @@ flagcxResult_t flagcxIbGetRequest(struct flagcxIbNetCommBase *base,
     struct flagcxIbRequest *r = base->reqs + i;
     if (r->type == FLAGCX_NET_IB_REQ_UNUSED) {
       r->base = base;
+      r->result = flagcxSuccess;
       r->sock = NULL;
       r->devBases[0] = NULL;
       r->devBases[1] = NULL;
       r->events[0] = r->events[1] = 0;
+      r->nreqs = 0;
       *req = r;
       return flagcxSuccess;
     }
@@ -1699,9 +1701,19 @@ flagcxResult_t flagcxIbRegMrDmaBuf(void *comm, void *data, size_t size,
         if (cleanupResult != flagcxSuccess) {
           WARN("NET/IB: failed to roll back MR registration on device %d: %d",
                j, cleanupResult);
+        } else {
+          mhandleWrapper->mrs[j] = NULL;
         }
       }
-      free(mhandleWrapper);
+      bool cleanupDeferred = false;
+      for (int j = 0; j < i; j++)
+        cleanupDeferred |= mhandleWrapper->mrs[j] != NULL;
+      if (cleanupDeferred) {
+        mhandleWrapper->nextDeferred = base->deferredMrHandles;
+        base->deferredMrHandles = mhandleWrapper;
+      } else {
+        free(mhandleWrapper);
+      }
       return result;
     }
   }
@@ -1754,10 +1766,11 @@ returning:
   return res;
 }
 
-flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
+flagcxResult_t flagcxIbDeregMrWithCallback(void *comm, void *mhandle,
+                                           flagcxIbDeregMrCallback callback) {
   if (mhandle == NULL)
     return flagcxSuccess;
-  if (comm == NULL)
+  if (comm == NULL || callback == NULL)
     return flagcxInvalidArgument;
 
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
@@ -1771,8 +1784,7 @@ flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
     // Each flagcxIbNetCommDevBase is at different offset in send and recv
     // netComms
     struct flagcxIbNetCommDevBase *devComm = flagcxIbGetNetCommDevBase(base, i);
-    flagcxResult_t current =
-        flagcxIbDeregMrInternal(devComm, mhandleWrapper->mrs[i]);
+    flagcxResult_t current = callback(devComm, mhandleWrapper->mrs[i]);
     if (current == flagcxSuccess) {
       mhandleWrapper->mrs[i] = NULL;
     } else if (result == flagcxSuccess) {
@@ -1783,6 +1795,72 @@ flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
   if (result == flagcxSuccess)
     free(mhandleWrapper);
   return result;
+}
+
+static void flagcxIbRemoveDeferredMr(struct flagcxIbNetCommBase *base,
+                                     struct flagcxIbMrHandle *handle) {
+  struct flagcxIbMrHandle **current = &base->deferredMrHandles;
+  while (*current != NULL) {
+    if (*current == handle) {
+      *current = handle->nextDeferred;
+      handle->nextDeferred = NULL;
+      return;
+    }
+    current = &(*current)->nextDeferred;
+  }
+}
+
+flagcxResult_t
+flagcxIbDeregMrOrDeferWithCallback(struct flagcxIbNetCommBase *base,
+                                   void *mhandle,
+                                   flagcxIbDeregMrCallback callback) {
+  if (mhandle == NULL)
+    return flagcxSuccess;
+  if (base == NULL || callback == NULL)
+    return flagcxInvalidArgument;
+
+  // A caller that observes an error may retry the same handle. Remove any
+  // prior deferred entry before doing so, then put the still-live wrapper back
+  // on the comm-owned list if a NIC remains registered. Callers that ignore a
+  // cleanup error therefore cannot orphan the handle; closeSend/closeRecv will
+  // make one final attempt before destroying the PD.
+  struct flagcxIbMrHandle *handle = (struct flagcxIbMrHandle *)mhandle;
+  flagcxIbRemoveDeferredMr(base, handle);
+  flagcxResult_t result = flagcxIbDeregMrWithCallback(base, handle, callback);
+  if (result != flagcxSuccess) {
+    handle->nextDeferred = base->deferredMrHandles;
+    base->deferredMrHandles = handle;
+  }
+  return result;
+}
+
+flagcxResult_t flagcxIbDeregMr(void *comm, void *mhandle) {
+  return flagcxIbDeregMrOrDeferWithCallback((struct flagcxIbNetCommBase *)comm,
+                                            mhandle, flagcxIbDeregMrInternal);
+}
+
+flagcxResult_t
+flagcxIbDrainDeferredMrsWithCallback(struct flagcxIbNetCommBase *base,
+                                     flagcxIbDeregMrCallback callback) {
+  if (base == NULL || callback == NULL)
+    return flagcxInvalidArgument;
+  while (base->deferredMrHandles != NULL) {
+    struct flagcxIbMrHandle *handle = base->deferredMrHandles;
+    base->deferredMrHandles = handle->nextDeferred;
+    handle->nextDeferred = NULL;
+    flagcxResult_t result = flagcxIbDeregMrWithCallback(base, handle, callback);
+    if (result != flagcxSuccess) {
+      handle->nextDeferred = base->deferredMrHandles;
+      base->deferredMrHandles = handle;
+      return result;
+    }
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxIbDrainDeferredMrs(struct flagcxIbNetCommBase *base) {
+  return flagcxIbDrainDeferredMrsWithCallback(base, flagcxIbDeregMrInternal);
 }
 
 static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
@@ -1820,6 +1898,7 @@ flagcxResult_t flagcxIbMultiSend(struct flagcxIbSendComm *comm, int slot) {
     sge->addr = (uintptr_t)reqs[r]->send.data;
     wr->opcode = IBV_WR_RDMA_WRITE;
     wr->send_flags = 0;
+    wr->wr_id = flagcxIbUnsignaledWrId(reqs[r] - comm->base.reqs);
     wr->wr.rdma.remote_addr = slots[r].addr;
     wr->next = wr + 1;
     wr_id += (reqs[r] - comm->base.reqs) << (r * 8);
@@ -2219,6 +2298,25 @@ static flagcxResult_t flagcxIbrcProcessWc(struct flagcxIbRequest *r,
 
   *handled = false;
 
+  // Retransmission WRs use a reserved identifier rather than a request-slot
+  // index. Their completion is terminal for the auxiliary retransmit WR but
+  // does not complete the original user request.
+  if (wc->wr_id == FLAGCX_RETRANS_WR_ID) {
+    if (r->base->isSend) {
+      struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
+      if (sComm->outstandingRetrans > 0)
+        sComm->outstandingRetrans--;
+    }
+    *handled = true;
+    return flagcxSuccess;
+  }
+
+  // Failed data completions are attributed to the request encoded in wr_id by
+  // the common completion path. Do not decode payload metadata from a failed
+  // receive completion.
+  if (wc->status != IBV_WC_SUCCESS)
+    return flagcxSuccess;
+
   if (r->type == FLAGCX_NET_IB_REQ_RECV && !r->base->isSend) {
     struct flagcxIbRecvComm *rComm = (struct flagcxIbRecvComm *)r->base;
 
@@ -2268,6 +2366,7 @@ flagcxResult_t flagcxIbTest(void *request, int *done, int *sizes) {
 flagcxResult_t flagcxIbCloseSend(void *sendComm) {
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
   if (comm) {
+    FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
     FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
 
     // First, poll all CQs to drain completions before destroying QPs
@@ -2328,6 +2427,7 @@ flagcxResult_t flagcxIbCloseSend(void *sendComm) {
 flagcxResult_t flagcxIbCloseRecv(void *recvComm) {
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
   if (comm) {
+    FLAGCXCHECK(flagcxIbDrainDeferredMrs(&comm->base));
     FLAGCXCHECK(flagcxSocketClose(&comm->base.sock));
 
     // First, poll all CQs to drain completions before destroying QPs
@@ -2527,11 +2627,11 @@ static flagcxResult_t flagcxIbSelectOneSidedQp(struct flagcxIbSendComm *comm,
       comm->base.nqps <= 0)
     return flagcxInvalidArgument;
 
-  int qpIndex = comm->base.qpIndex;
-  if (qpIndex < 0 || qpIndex >= comm->base.nqps)
-    qpIndex = 0;
-  *qp = &comm->base.qps[qpIndex];
-  comm->base.qpIndex = (qpIndex + 1) % comm->base.nqps;
+  // The current one-sided API has no ordering-domain or QP-selection input.
+  // Keep legacy RMA operations on one RC QP so a later signal cannot overtake
+  // a preceding write. Explicit multi-QP scheduling belongs in the transport
+  // layer, where the caller can also express the required ordering boundary.
+  *qp = &comm->base.qps[0];
   return flagcxSuccess;
 }
 
@@ -2541,7 +2641,10 @@ flagcxIbInitOneSidedRequest(struct flagcxIbSendComm *comm, int type,
   if (comm == NULL || request == NULL)
     return flagcxInvalidArgument;
   *request = NULL;
-  FLAGCXCHECK(flagcxIbGetRequest(&comm->base, request));
+  flagcxResult_t result = flagcxIbGetRequest(&comm->base, request);
+  if (result == flagcxInternalError)
+    return flagcxInProgress;
+  FLAGCXCHECK(result);
   (*request)->type = type;
   (*request)->sock = &comm->base.sock;
   for (int i = 0; i < comm->base.ndevs; i++)
@@ -2597,8 +2700,8 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   sge.length = (uint32_t)size;  // checked by flagcxIbGetOneSidedKey
   sge.lkey = lkey;              // Local key
 
-  struct ibv_send_wr *bad_wr;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr);
+  struct ibv_send_wr *bad_wr = NULL;
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(qp->qp, &wr, &bad_wr);
   if (res != flagcxSuccess) {
     flagcxIbFreeRequest(req);
     return res;
@@ -2692,7 +2795,7 @@ flagcxResult_t flagcxIbIputBatch(void *sendComm, int count,
     sges[i].lkey = lkeys[i];
   }
 
-  res = flagcxWrapIbvPostSend(qp->qp, wrs, &bad_wr);
+  res = flagcxWrapIbvPostSendOneSided(qp->qp, wrs, &bad_wr);
   if (res != flagcxSuccess) {
     int first_failed = bad_wr ? (int)(bad_wr - wrs) : 0;
     if (first_failed < 0 || first_failed > count)
@@ -2740,11 +2843,12 @@ flagcxResult_t flagcxIbTestBatch(void **requests, int nRequests, int *doneFlags,
       (*doneCount)++;
       continue;
     }
-    FLAGCXCHECK(flagcxIbTest(requests[i], &doneFlags[i], NULL));
+    flagcxResult_t result = flagcxIbTest(requests[i], &doneFlags[i], NULL);
     if (doneFlags[i]) {
       requests[i] = NULL;
       (*doneCount)++;
     }
+    FLAGCXCHECK(result);
   }
   return flagcxSuccess;
 }
@@ -2800,7 +2904,7 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
   sge.lkey = lkey;
 
   struct ibv_send_wr *bad_wr;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, &wr, &bad_wr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(qp->qp, &wr, &bad_wr);
   if (res != flagcxSuccess) {
     flagcxIbFreeRequest(req);
     return res;
@@ -2865,7 +2969,7 @@ flagcxResult_t flagcxIbIgetBatch(void *sendComm, int count,
   }
 
   struct ibv_send_wr *badWr = NULL;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp->qp, wrs, &badWr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(qp->qp, wrs, &badWr);
   int accepted = count;
   if (res != flagcxSuccess) {
     accepted = badWr == NULL ? 0 : (int)(badWr - wrs);
@@ -2929,12 +3033,14 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   struct ibv_sge sge[2];
   memset(&sge, 0, sizeof(sge));
 
-  // wr[0]: RDMA WRITE (data) — no CQE, chained to signal
+  // wr[0]: RDMA WRITE (data), chained to signal. Keep it signaled so a rare
+  // partial post (data accepted, signal rejected) can be drained before this
+  // function returns an error and the caller is allowed to reuse its source.
   if (size > 0 && srcInfo != NULL && dstInfo != NULL) {
     void *srcPtr = (void *)(srcInfo->baseVas[srcRank] + srcOff);
     void *dstPtr = (void *)(dstInfo->baseVas[dstRank] + dstOff);
     wr[0].opcode = IBV_WR_RDMA_WRITE;
-    wr[0].send_flags = 0; // No CQE — only signal gets CQE
+    wr[0].send_flags = IBV_SEND_SIGNALED;
     wr[0].wr_id = req - comm->base.reqs;
     wr[0].next = &wr[1]; // Chain to signal
     wr[0].wr.rdma.remote_addr = (uint64_t)dstPtr;
@@ -2965,15 +3071,32 @@ flagcxResult_t flagcxIbIputSignal(void *sendComm, uint64_t srcOff,
   sge[1].lkey = comm->devs[devIndex].putSignalScratchpadMr->lkey;
 
   // Post chained (data+signal) or signal-only
-  struct ibv_send_wr *bad_wr;
+  struct ibv_send_wr *bad_wr = NULL;
   bool chainData = (size > 0 && srcInfo != NULL && dstInfo != NULL);
-  flagcxResult_t res =
-      flagcxWrapIbvPostSend(qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr);
+  flagcxResult_t res = flagcxWrapIbvPostSendOneSided(
+      qp->qp, chainData ? &wr[0] : &wr[1], &bad_wr);
   if (res != flagcxSuccess) {
+    // ibv_post_send may accept a prefix before reporting the first rejected
+    // WR. If the data WR was accepted but the signal was not, synchronously
+    // drain that signaled prefix before returning the post error. This keeps
+    // the request slot and source-buffer lifetime valid without publishing a
+    // remote signal for a failed PutSignal operation.
+    if (chainData && bad_wr == &wr[1]) {
+      flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
+      int done = 0;
+      while (!done) {
+        flagcxResult_t drainRes = flagcxIbTest(req, &done, NULL);
+        if (drainRes != flagcxSuccess)
+          break;
+      }
+      return res;
+    }
     flagcxIbFreeRequest(req);
     return res;
   }
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
+  if (chainData)
+    flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;
   return flagcxSuccess;

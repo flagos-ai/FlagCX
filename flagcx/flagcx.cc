@@ -518,25 +518,6 @@ static flagcxResult_t flagcxOneSideGetMrInfo(struct flagcxNetAdaptor *net,
 }
 
 static flagcxResult_t
-flagcxOneSideAgreeRegistration(struct bootstrapState *bootstrap, int rank,
-                               int nranks, flagcxResult_t localResult) {
-  if (bootstrap == NULL || rank < 0 || rank >= nranks)
-    return flagcxInvalidArgument;
-
-  std::vector<int> results(nranks, (int)flagcxSuccess);
-  results[rank] = (int)localResult;
-  FLAGCXCHECK(bootstrapCollAllGather(bootstrap, results.data(), sizeof(int)));
-  for (int i = 0; i < nranks; i++) {
-    if (results[i] != (int)flagcxSuccess) {
-      INFO(FLAGCX_REG, "rank %d failed local MR registration with result %d", i,
-           results[i]);
-      return (flagcxResult_t)results[i];
-    }
-  }
-  return flagcxSuccess;
-}
-
-static flagcxResult_t
 flagcxOneSideExchangeMrInfo(struct bootstrapState *bootstrap, int rank,
                             int nranks, void *buffer, size_t size,
                             const struct flagcxNetMrInfo *localMrInfo,
@@ -591,7 +572,8 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
                                              void *buff, size_t size) {
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
-      heteroComm->netAdaptor->regMr == NULL) {
+      heteroComm->netAdaptor->regMr == NULL ||
+      heteroComm->netAdaptor->getMrInfo == NULL) {
     return flagcxNotSupported;
   }
 
@@ -614,7 +596,6 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
 
   flagcxResult_t res = flagcxSuccess;
   void *mrHandle = NULL;
-  flagcxResult_t localRegRes = flagcxSuccess;
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
   struct flagcxOneSideHandleInfo *info = NULL;
@@ -687,25 +668,23 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
     }
 
     if (dmaBufFd >= 0) {
-      localRegRes = heteroComm->netAdaptor->regMrDmaBuf(
+      res = heteroComm->netAdaptor->regMrDmaBuf(
           regComm, buff, size, type, 0ULL, dmaBufFd, FLAGCX_NET_MR_FLAG_NONE,
           &mrHandle);
       close(dmaBufFd);
     } else {
-      localRegRes = heteroComm->netAdaptor->regMr(
-          regComm, buff, size, type, FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
+      res = heteroComm->netAdaptor->regMr(regComm, buff, size, type,
+                                          FLAGCX_NET_MR_FLAG_NONE, &mrHandle);
     }
   }
-  if (localRegRes == flagcxSuccess && mrHandle == NULL)
-    localRegRes = flagcxNotSupported;
-  if (localRegRes == flagcxSuccess)
-    localRegRes =
-        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
-
-  res = flagcxOneSideAgreeRegistration(heteroComm->bootstrap, heteroComm->rank,
-                                       heteroComm->nRanks, localRegRes);
-  if (res != flagcxSuccess)
+  if (res != flagcxSuccess || mrHandle == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
+    res = flagcxNotSupported;
     goto fail_mr;
+  }
+  FLAGCXCHECKGOTO(
+      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
+      res, fail_mr);
 
   // Allgather MR info
   {
@@ -851,7 +830,8 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
 
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iputSignal == NULL ||
-      heteroComm->netAdaptor->regMr == NULL) {
+      heteroComm->netAdaptor->regMr == NULL ||
+      heteroComm->netAdaptor->getMrInfo == NULL) {
     return flagcxSuccess;
   }
 
@@ -875,7 +855,6 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
       heteroComm->oneSideHandles[0];
 
   flagcxResult_t res = flagcxSuccess;
-  flagcxResult_t localRegRes = flagcxSuccess;
   void *mrHandle = NULL;
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
@@ -910,24 +889,23 @@ flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
     }
 
     if (dmaBufFd >= 0) {
-      localRegRes = heteroComm->netAdaptor->regMrDmaBuf(
+      res = heteroComm->netAdaptor->regMrDmaBuf(
           regComm, buff, size, ptrType, 0ULL, dmaBufFd,
           FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
       close(dmaBufFd);
     } else {
-      localRegRes = heteroComm->netAdaptor->regMr(
+      res = heteroComm->netAdaptor->regMr(
           regComm, buff, size, ptrType, FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
     }
   }
-  if (localRegRes == flagcxSuccess && mrHandle == NULL)
-    localRegRes = flagcxNotSupported;
-  if (localRegRes == flagcxSuccess)
-    localRegRes =
-        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
-  res = flagcxOneSideAgreeRegistration(heteroComm->bootstrap, heteroComm->rank,
-                                       heteroComm->nRanks, localRegRes);
-  if (res != flagcxSuccess)
+  if (res != flagcxSuccess || mrHandle == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: regMr failed, res=%d", res);
+    res = flagcxNotSupported;
     goto fail_mr;
+  }
+  FLAGCXCHECKGOTO(
+      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
+      res, fail_mr);
 
   {
     int nranks = heteroComm->nRanks;
@@ -1021,7 +999,8 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
       heteroComm->netAdaptor->iput == NULL ||
-      heteroComm->netAdaptor->regMr == NULL) {
+      heteroComm->netAdaptor->regMr == NULL ||
+      heteroComm->netAdaptor->getMrInfo == NULL) {
     INFO(FLAGCX_REG, "flagcxOneSideStagingRegister: heteroComm is NULL");
     return flagcxSuccess;
   }
@@ -1046,7 +1025,6 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
       heteroComm->oneSideHandles[0];
 
   flagcxResult_t res = flagcxSuccess;
-  flagcxResult_t localRegRes = flagcxSuccess;
   void *mrHandle = NULL;
   struct flagcxNetMrInfo localMrInfo = {};
   void *regComm = NULL;
@@ -1059,18 +1037,17 @@ flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
 
   {
     int type = FLAGCX_PTR_HOST;
-    localRegRes =
+    res =
         heteroComm->netAdaptor->regMr(regComm, buff, size, type, 0, &mrHandle);
   }
-  if (localRegRes == flagcxSuccess && mrHandle == NULL)
-    localRegRes = flagcxNotSupported;
-  if (localRegRes == flagcxSuccess)
-    localRegRes =
-        flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);
-  res = flagcxOneSideAgreeRegistration(heteroComm->bootstrap, heteroComm->rank,
-                                       heteroComm->nRanks, localRegRes);
-  if (res != flagcxSuccess)
+  if (res != flagcxSuccess || mrHandle == NULL) {
+    INFO(FLAGCX_REG, "flagcxOneSideStagingRegister: regMr failed, res=%d", res);
+    res = flagcxNotSupported;
     goto fail_mr;
+  }
+  FLAGCXCHECKGOTO(
+      flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo),
+      res, fail_mr);
 
   {
     int nranks = heteroComm->nRanks;
@@ -1133,7 +1110,8 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
 
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm == NULL || heteroComm->netAdaptor == NULL ||
-      heteroComm->netAdaptor->regMr == NULL)
+      heteroComm->netAdaptor->regMr == NULL ||
+      heteroComm->netAdaptor->getMrInfo == NULL)
     return flagcxNotSupported;
 
   if (comm->bootstrap == NULL)
@@ -1141,7 +1119,6 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
 
   struct flagcxNetAdaptor *net = heteroComm->netAdaptor;
   flagcxResult_t res = flagcxSuccess;
-  flagcxResult_t localRegRes = flagcxSuccess;
   void *mrHandle = NULL;
   struct flagcxNetMrInfo localMrInfo = {};
   struct flagcxOneSideHandleInfo *info = NULL;
@@ -1149,18 +1126,17 @@ flagcxOneSideBarrierRegister(const flagcxComm_t comm, void *recvComm,
   // Leaders (recvComm != NULL): register MR and extract keys
   if (recvComm != NULL && buff != NULL && size > 0) {
     void *regComm = recvComm;
-    localRegRes = net->regMr(regComm, buff, size, FLAGCX_PTR_HOST,
-                             FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
-    if (localRegRes == flagcxSuccess && mrHandle == NULL)
-      localRegRes = flagcxNotSupported;
-    if (localRegRes == flagcxSuccess)
-      localRegRes = flagcxOneSideGetMrInfo(net, mrHandle, &localMrInfo);
+    res = net->regMr(regComm, buff, size, FLAGCX_PTR_HOST,
+                     FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle);
+    if (res != flagcxSuccess || mrHandle == NULL) {
+      INFO(FLAGCX_REG, "flagcxOneSideBarrierRegister: regMr failed, res=%d",
+           res);
+      res = flagcxNotSupported;
+      goto fail_mr;
+    }
+    FLAGCXCHECKGOTO(flagcxOneSideGetMrInfo(net, mrHandle, &localMrInfo), res,
+                    fail_mr);
   }
-
-  res = flagcxOneSideAgreeRegistration(comm->bootstrap, comm->rank,
-                                       comm->nranks, localRegRes);
-  if (res != flagcxSuccess)
-    goto fail_mr;
 
   // ALL ranks: allocate info, populate own entry, AllGather
   {

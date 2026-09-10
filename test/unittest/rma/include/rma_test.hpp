@@ -29,6 +29,10 @@ protected:
   static flagcxWindow_t dataWin;
   static size_t size;
   static size_t signalSize;
-  static bool oneSidedAvailable;
-  static const char *oneSidedSkipReason;
+  // Data RMA and signal RMA are separate capabilities. A backend may support
+  // registered windows and RDMA reads without stream-ordered signal ops.
+  static bool dataRmaAvailable;
+  static const char *dataRmaSkipReason;
+  static bool signalRmaAvailable;
+  static const char *signalRmaSkipReason;
 };

@@ -17,19 +17,11 @@ enum flagcxRmaDescType {
   FLAGCX_RMA_PUT_VALUE = 3,
 };
 
-static inline bool flagcxRmaDescIsReleaseBarrier(enum flagcxRmaDescType type) {
-  return type == FLAGCX_RMA_PUT_SIGNAL;
-}
-
-// Ordinary descriptors may be posted concurrently across QPs. A release
-// barrier waits for the preceding epoch to drain, and no following descriptor
-// may pass a release barrier that is still in flight.
-static inline bool flagcxRmaProxyCanPostDesc(enum flagcxRmaDescType type,
-                                             bool hasInFlight,
-                                             bool releaseBarrierInFlight) {
-  if (releaseBarrierInFlight)
-    return false;
-  return !flagcxRmaDescIsReleaseBarrier(type) || !hasInFlight;
+// Compatibility boundary while the RMA proxy still consumes the net adaptor
+// directly. New one-sided implementations report request/SQ pressure as
+// flagcxInProgress; flagcxInternalError remains retryable for older adaptors.
+static inline bool flagcxRmaPostResultIsRetryable(flagcxResult_t result) {
+  return result == flagcxInProgress || result == flagcxInternalError;
 }
 
 struct flagcxRmaDesc {

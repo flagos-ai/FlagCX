@@ -76,6 +76,82 @@ flagcxIbCommonComponent(const struct flagcxIbCommonTestOps *ops) {
   return (ops && ops->component) ? ops->component : "NET/IB";
 }
 
+// A terminal completion consumes the request just like a successful one.
+// Callers must not retry a request after test() reports a completion error;
+// retaining its slot would permanently reduce the fixed request pool.
+static flagcxResult_t flagcxIbCommonReleaseRequest(struct flagcxIbRequest *r) {
+  if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend) {
+    struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
+    if (sComm->outstandingSends > 0)
+      sComm->outstandingSends--;
+  }
+  return flagcxIbFreeRequest(r);
+}
+
+static flagcxResult_t
+flagcxIbCommonRecordRequestEvent(struct flagcxIbRequest *req, int devIndex,
+                                 flagcxResult_t result) {
+  if (req == NULL || devIndex < 0 || devIndex >= FLAGCX_IB_MAX_DEVS_PER_NIC ||
+      req->events[devIndex] <= 0) {
+    return flagcxInternalError;
+  }
+  req->events[devIndex]--;
+  if (req->result == flagcxSuccess && result != flagcxSuccess)
+    req->result = result;
+  return flagcxSuccess;
+}
+
+// Record a CQE against the request encoded in wr_id, not the request whose
+// test() call happened to poll the shared CQ. A batched read reuses one wr_id
+// for several WRs, so every CQE consumes exactly one event and the request is
+// retired only after the complete accepted prefix has been drained.
+flagcxResult_t
+flagcxIbCommonRecordDataCompletion(struct flagcxIbNetCommBase *base,
+                                   uint64_t wrId, int devIndex,
+                                   flagcxResult_t result) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  uint8_t reqIndex = wrId & 0xff;
+  if (reqIndex >= MAX_REQUESTS)
+    return flagcxInternalError;
+
+  struct flagcxIbRequest *req = base->reqs + reqIndex;
+  if (req->type == FLAGCX_NET_IB_REQ_UNUSED)
+    return flagcxInternalError;
+
+  if (req->type == FLAGCX_NET_IB_REQ_SEND) {
+    if (req->nreqs <= 0 || req->nreqs > FLAGCX_NET_IB_MAX_RECVS)
+      return flagcxInternalError;
+    for (int j = 0; j < req->nreqs; j++) {
+      uint8_t sendReqIndex = (wrId >> (j * 8)) & 0xff;
+      if (sendReqIndex >= MAX_REQUESTS)
+        return flagcxInternalError;
+      struct flagcxIbRequest *sendReq = base->reqs + sendReqIndex;
+      FLAGCXCHECK(flagcxIbCommonRecordRequestEvent(sendReq, devIndex, result));
+    }
+  } else {
+    FLAGCXCHECK(flagcxIbCommonRecordRequestEvent(req, devIndex, result));
+  }
+  return flagcxSuccess;
+}
+
+// Error CQEs may be generated for unsignaled WRs. Record the error on the
+// owning request, but leave its event count for the signaled tail WR that
+// retires the chain.
+flagcxResult_t
+flagcxIbCommonRecordUnsignaledCompletion(struct flagcxIbNetCommBase *base,
+                                         uint64_t wrId, flagcxResult_t result) {
+  if (base == NULL || !flagcxIbIsUnsignaledWrId(wrId))
+    return flagcxInvalidArgument;
+  uint8_t reqIndex = wrId & 0xff;
+  struct flagcxIbRequest *req = base->reqs + reqIndex;
+  if (req->type == FLAGCX_NET_IB_REQ_UNUSED)
+    return flagcxInternalError;
+  if (req->result == flagcxSuccess && result != flagcxSuccess)
+    req->result = result;
+  return flagcxSuccess;
+}
+
 flagcxResult_t
 flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                          const struct flagcxIbCommonTestOps *ops) {
@@ -91,6 +167,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
     if (r->events[0] == 0 && r->events[1] == 0) {
       TRACE(FLAGCX_NET, "r=%p done", r);
       *done = 1;
+      flagcxResult_t result = r->result;
       if (sizes && r->type == FLAGCX_NET_IB_REQ_RECV) {
         for (int i = 0; i < r->nreqs; i++)
           sizes[i] = r->recv.sizes[i];
@@ -98,13 +175,8 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
       if (sizes && r->type == FLAGCX_NET_IB_REQ_SEND) {
         sizes[0] = r->send.size;
       }
-      if (r->type == FLAGCX_NET_IB_REQ_SEND && r->base->isSend) {
-        struct flagcxIbSendComm *sComm = (struct flagcxIbSendComm *)r->base;
-        if (sComm->outstandingSends > 0)
-          sComm->outstandingSends--;
-      }
-      FLAGCXCHECK(flagcxIbFreeRequest(r));
-      return flagcxSuccess;
+      FLAGCXCHECK(flagcxIbCommonReleaseRequest(r));
+      return result;
     }
 
     int totalWrDone = 0;
@@ -133,10 +205,24 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
         for (int w = 0; w < wrDone; w++) {
           struct ibv_wc *wc = wcs + w;
 
-          bool isRetransCompletion = (wc->wr_id == FLAGCX_RETRANS_WR_ID);
+          if (flagcxIbIsUnsignaledWrId(wc->wr_id)) {
+            if (wc->status != IBV_WC_SUCCESS) {
+              FLAGCXCHECK(flagcxIbCommonRecordUnsignaledCompletion(
+                  r->base, wc->wr_id, flagcxRemoteError));
+              WARN("%s: unsignaled WR failed with status=%d opcode=%d "
+                   "vendor_err=%d wr_id=%llu",
+                   flagcxIbCommonComponent(ops), wc->status, wc->opcode,
+                   wc->vendor_err, (unsigned long long)wc->wr_id);
+            }
+            continue;
+          }
 
           bool handled = false;
-          if (isRetransCompletion && ops && ops->process_wc) {
+          // Let the transport consume special completion identifiers before
+          // the common path interprets wr_id as a request index. In
+          // particular, IBUC SRQ receives encode a shared buffer index rather
+          // than a flagcxIbRequest index, including on failed completions.
+          if (ops && ops->process_wc) {
             FLAGCXCHECK(ops->process_wc(r, wc, i, &handled));
             if (handled)
               continue;
@@ -164,14 +250,10 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                  wc->byte_len, wc->vendor_err, reqTypeStr[r->type],
                  localGidStr ? " localGid " : "", localGidString,
                  remoteGidStr ? " remoteGid " : "", remoteGidString);
-            return flagcxRemoteError;
-          }
-
-          if (ops && ops->process_wc) {
-            FLAGCXCHECK(ops->process_wc(r, wc, i, &handled));
-          }
-          if (handled)
+            FLAGCXCHECK(flagcxIbCommonRecordDataCompletion(
+                r->base, wc->wr_id, i, flagcxRemoteError));
             continue;
+          }
 
           uint8_t req_idx = wc->wr_id & 0xff;
           if (req_idx >= MAX_REQUESTS)
@@ -191,19 +273,7 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                 req->events[1], i);
 #endif
 
-          if (req->type == FLAGCX_NET_IB_REQ_SEND) {
-            for (int j = 0; j < req->nreqs; j++) {
-              struct flagcxIbRequest *sendReq =
-                  r->base->reqs + ((wc->wr_id >> (j * 8)) & 0xff);
-              if (sendReq->events[i] <= 0) {
-                WARN("%s: sendReq(%p)->events={%d,%d}, i=%d, j=%d <= 0",
-                     flagcxIbCommonComponent(ops), sendReq, sendReq->events[0],
-                     sendReq->events[1], i, j);
-                return flagcxInternalError;
-              }
-              sendReq->events[i]--;
-            }
-          } else {
+          if (req->type != FLAGCX_NET_IB_REQ_SEND) {
             if (req && wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
               if (req->type != FLAGCX_NET_IB_REQ_RECV) {
                 static __thread int type_mismatch_count = 0;
@@ -219,8 +289,9 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                 req->recv.sizes[0] = wc->imm_data;
               }
             }
-            req->events[i]--;
           }
+          FLAGCXCHECK(flagcxIbCommonRecordDataCompletion(r->base, wc->wr_id, i,
+                                                         flagcxSuccess));
         }
       } else {
         TIME_CANCEL(3);

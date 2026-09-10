@@ -350,13 +350,32 @@ flagcxResult_t macaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
-                                            int) {
-  return flagcxNotSupported;
+flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
+                                            uint64_t value, int flags) {
+  (void)flags;
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+
+  // Signal counters are monotonic, so wait for a value greater than or equal
+  // to the requested sequence. FLUSH makes payload writes issued before an
+  // RDMA signal visible to subsequent work on this stream.
+  const auto waitFlags = static_cast<mcStreamWaitValue_flags>(
+      static_cast<int>(mcStreamWaitValue_flags::MC_STREAM_WAIT_VALUE_GEQ) |
+      static_cast<int>(mcStreamWaitValue_flags::MC_STREAM_WAIT_VALUE_FLUSH));
+  mcError_t error = mcStreamWaitValue64(stream->base, addr, value, waitFlags);
+  return error == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
-flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
-                                             int) {
-  return flagcxNotSupported;
+
+flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
+                                             uint64_t value, int flags) {
+  (void)flags;
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+
+  mcError_t error = mcStreamWriteValue64(
+      stream->base, addr, value,
+      mcStreamWriteValue_flags::MC_STREAM_WRITE_VALUE_DEFAULT);
+  return error == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t
