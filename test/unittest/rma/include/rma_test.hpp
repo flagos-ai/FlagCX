@@ -38,5 +38,6 @@ protected:
   static bool dataRmaAvailable;
   static const char *dataRmaSkipReason;
   static bool signalRmaAvailable;
+  static bool signalRmaSetupFailed;
   static const char *signalRmaSkipReason;
 };

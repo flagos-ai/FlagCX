@@ -20,7 +20,9 @@ static int collectiveOpStatus(flagcxResult_t res) {
 TEST_F(RmaTest, SignalOnlyNoData) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-  ASSERT_TRUE(signalRmaAvailable) << signalRmaSkipReason;
+  ASSERT_FALSE(signalRmaSetupFailed) << signalRmaSkipReason;
+  if (!signalRmaAvailable)
+    GTEST_SKIP() << signalRmaSkipReason;
 
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -56,7 +58,8 @@ TEST_F(RmaTest, SignalOnlyNoData) {
   int globalWaitStatus = collectiveOpStatus(waitRes);
   if (globalWaitStatus == 1) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "remote-write visibility flush is not supported";
+    FAIL() << "Remote-write visibility flush became unavailable after the "
+              "suite capability check";
   }
   if (globalWaitStatus == 2) {
     devHandle->streamDestroy(s);
@@ -74,7 +77,9 @@ TEST_F(RmaTest, SignalOnlyNoData) {
 TEST_F(RmaTest, MultipleSignals) {
   if (nranks < 2)
     GTEST_SKIP() << "Requires at least 2 ranks";
-  ASSERT_TRUE(signalRmaAvailable) << signalRmaSkipReason;
+  ASSERT_FALSE(signalRmaSetupFailed) << signalRmaSkipReason;
+  if (!signalRmaAvailable)
+    GTEST_SKIP() << signalRmaSkipReason;
 
   flagcxStream_t s;
   devHandle->streamCreate(&s);
@@ -118,7 +123,8 @@ TEST_F(RmaTest, MultipleSignals) {
   int globalWaitStatus = collectiveOpStatus(waitRes);
   if (globalWaitStatus == 1) {
     devHandle->streamDestroy(s);
-    GTEST_SKIP() << "remote-write visibility flush is not supported";
+    FAIL() << "Remote-write visibility flush became unavailable after the "
+              "suite capability check";
   }
   if (globalWaitStatus == 2) {
     devHandle->streamDestroy(s);

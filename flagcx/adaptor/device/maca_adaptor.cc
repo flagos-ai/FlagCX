@@ -357,14 +357,17 @@ flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
   if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
     return flagcxInvalidArgument;
 
-  int rawWaitFlags =
-      static_cast<int>(mcStreamWaitValue_flags::MC_STREAM_WAIT_VALUE_GEQ);
-  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES) {
-    rawWaitFlags |=
-        static_cast<int>(mcStreamWaitValue_flags::MC_STREAM_WAIT_VALUE_FLUSH);
-  }
-  const auto waitFlags = static_cast<mcStreamWaitValue_flags>(rawWaitFlags);
-  mcError_t error = mcStreamWaitValue64(stream->base, addr, value, waitFlags);
+  // The current MACA runtime does not implement the acquire/flush semantics
+  // required after a NIC or peer device writes the waited-on value.  Reject
+  // the stronger contract before calling mcStreamWaitValue64 so callers can
+  // select another path without causing a runtime error or poisoning the
+  // device context.
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxNotSupported;
+
+  mcError_t error =
+      mcStreamWaitValue64(stream->base, addr, value,
+                          mcStreamWaitValue_flags::MC_STREAM_WAIT_VALUE_GEQ);
   if (error == mcSuccess)
     return flagcxSuccess;
   if (error == mcErrorNotSupported)

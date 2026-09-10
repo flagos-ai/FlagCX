@@ -33,6 +33,7 @@ bool RmaTest::ipcRmaAvailable = false;
 bool RmaTest::dataRmaAvailable = false;
 const char *RmaTest::dataRmaSkipReason = "Data RMA setup not completed";
 bool RmaTest::signalRmaAvailable = false;
+bool RmaTest::signalRmaSetupFailed = false;
 const char *RmaTest::signalRmaSkipReason = "Signal RMA setup not completed";
 
 void RmaTest::SetUpTestSuite() {
@@ -52,6 +53,7 @@ void RmaTest::SetUpTestSuite() {
   dataRmaAvailable = false;
   dataRmaSkipReason = "Data RMA setup not completed";
   signalRmaAvailable = false;
+  signalRmaSetupFailed = false;
   signalRmaSkipReason = "Signal RMA setup not completed";
 
   int localMode = requireIpc == forceNet ? 0 : (requireIpc ? 1 : 2);
@@ -167,13 +169,16 @@ void RmaTest::SetUpTestSuite() {
     dataRmaSkipReason = nullptr;
   }
 
-  bool localSignalCapable = comm->heteroComm->netAdaptor != nullptr &&
-                            comm->heteroComm->netAdaptor->iputSignal != nullptr;
-  if (!allRanksReady(localSignalCapable)) {
-    signalRmaSkipReason =
-        "One-sided signals are unavailable on at least one rank";
-    return;
+  bool localSignalCapable = devHandle->streamWaitValue64 != nullptr;
+  if (requireIpc) {
+    localSignalCapable =
+        localSignalCapable && devHandle->streamWriteValue64 != nullptr;
+  } else {
+    localSignalCapable = localSignalCapable &&
+                         comm->heteroComm->netAdaptor != nullptr &&
+                         comm->heteroComm->netAdaptor->iputSignal != nullptr;
   }
+  const bool allSignalsCapable = allRanksReady(localSignalCapable);
 
   // Allocate signal buffers before entering collective registration so every
   // rank either participates or exits at the same phase.
@@ -185,6 +190,7 @@ void RmaTest::SetUpTestSuite() {
     localSignalBufferReady = res == flagcxSuccess;
   }
   if (!allRanksReady(localSignalBufferReady)) {
+    signalRmaSetupFailed = true;
     signalRmaSkipReason = "Signal buffer setup failed on at least one rank";
     return;
   }
@@ -192,13 +198,61 @@ void RmaTest::SetUpTestSuite() {
   res = flagcxOneSideSignalRegister(comm, signalBuff, signalSize,
                                     FLAGCX_PTR_CUDA);
   if (!allRanksReady(res == flagcxSuccess)) {
+    signalRmaSetupFailed = true;
     signalRmaSkipReason =
         "Signal buffer registration failed on at least one rank";
     return;
   }
 
-  signalRmaAvailable = true;
-  signalRmaSkipReason = nullptr;
+  // Verify the exact acquire semantics required by flagcxWaitSignal before a
+  // test can submit a network PUT/signal.  The probe waits on a value already
+  // stored in local device memory, so it cannot depend on remote progress.
+  int localSignalStatus = allSignalsCapable ? 0 : 1;
+  if (localSignalStatus == 0) {
+    uint64_t probeValue = 1;
+    res = devHandle->deviceMemcpy(signalBuff, &probeValue, sizeof(probeValue),
+                                  flagcxMemcpyHostToDevice, nullptr);
+    if (res == flagcxSuccess) {
+      res = devHandle->streamWaitValue64(
+          stream, signalBuff, probeValue,
+          FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
+    }
+    if (res == flagcxSuccess)
+      res = devHandle->streamSynchronize(stream);
+
+    localSignalStatus =
+        res == flagcxSuccess ? 0 : (res == flagcxNotSupported ? 1 : 2);
+  }
+
+  int globalSignalStatus = 0;
+  MPI_Allreduce(&localSignalStatus, &globalSignalStatus, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  if (globalSignalStatus == 2) {
+    signalRmaSetupFailed = true;
+    signalRmaSkipReason =
+        "Signal stream capability probe failed on at least one rank";
+    return;
+  }
+
+  res = devHandle->deviceMemset(signalBuff, 0, signalSize, flagcxMemDevice,
+                                nullptr);
+  if (!allRanksReady(res == flagcxSuccess)) {
+    signalRmaSetupFailed = true;
+    signalRmaSkipReason =
+        "Signal buffer reset failed after the capability probe";
+    return;
+  }
+
+  if (!allSignalsCapable) {
+    signalRmaSkipReason =
+        "One-sided signal operations are unavailable on at least one rank";
+  } else if (globalSignalStatus == 1) {
+    signalRmaSkipReason =
+        "Remote-write visibility flush is unavailable on at least one rank";
+  } else {
+    signalRmaAvailable = true;
+    signalRmaSkipReason = nullptr;
+  }
 
   if (requireIpc) {
     res = flagcxHeteroRmaIpcInit(comm->heteroComm);
