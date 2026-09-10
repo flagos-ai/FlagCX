@@ -118,14 +118,7 @@ static flagcxResult_t flagcxIbucTestPreCheck(struct flagcxIbRequest *r) {
 
   if (r->type == FLAGCX_NET_IB_REQ_RECV && !r->base->isSend) {
     struct flagcxIbRecvComm *rComm = (struct flagcxIbRecvComm *)r->base;
-    // Only receive CQEs carry an SRQ buffer index in wr_id.  A failed
-    // signaled send/FIFO WR can be polled from the same CQ, but its wr_id is a
-    // request index and must fall through to the common request completion
-    // path below.
-    const bool isSrqCompletion =
-        wc->opcode == IBV_WC_RECV || wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM;
-    if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL &&
-        isSrqCompletion) {
+    if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL) {
       const int kPostThreshold = 16;
       if (rComm->srqMgr.postSrqCount >= kPostThreshold) {
         FLAGCXCHECK(
@@ -158,8 +151,14 @@ static flagcxResult_t flagcxIbucProcessWc(struct flagcxIbRequest *r,
 
   if (!r->base->isSend) {
     struct flagcxIbRecvComm *rComm = (struct flagcxIbRecvComm *)r->base;
+    // Only receive CQEs carry an SRQ buffer index in wr_id. A failed signaled
+    // send/FIFO WR can be polled from the same CQ, but its wr_id is a request
+    // index and must fall through to the common request completion path.
+    const bool isSrqCompletion =
+        wc->opcode == IBV_WC_RECV || wc->opcode == IBV_WC_RECV_RDMA_WITH_IMM;
 
-    if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL) {
+    if (rComm->retrans.enabled && rComm->srqMgr.srq != NULL &&
+        isSrqCompletion) {
       int bufIdx = (int)wc->wr_id;
 
       if (bufIdx < 0 || bufIdx >= rComm->srqMgr.bufCount) {

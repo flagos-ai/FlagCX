@@ -17,11 +17,19 @@ enum flagcxRmaDescType {
   FLAGCX_RMA_PUT_VALUE = 3,
 };
 
-// Compatibility boundary while the RMA proxy still consumes the net adaptor
-// directly. New one-sided implementations report request/SQ pressure as
-// flagcxInProgress; flagcxInternalError remains retryable for older adaptors.
+// One-sided adaptors report request-pool or send-queue pressure exclusively as
+// flagcxInProgress. All other errors are permanent for the current RMA epoch.
 static inline bool flagcxRmaPostResultIsRetryable(flagcxResult_t result) {
-  return result == flagcxInProgress || result == flagcxInternalError;
+  return result == flagcxInProgress;
+}
+
+static inline bool flagcxRmaBatchPostResultIsFatal(flagcxResult_t result,
+                                                   int posted, int count) {
+  if (posted < 0 || posted > count)
+    return true;
+  if (result == flagcxSuccess)
+    return posted != count;
+  return result != flagcxInProgress;
 }
 
 struct flagcxRmaDesc {

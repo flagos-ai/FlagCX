@@ -145,6 +145,10 @@ static flagcxResult_t flagcxRmaProxyEnqueueDesc(
     struct flagcxRmaProxyState *proxy, int peer, struct flagcxRmaDesc *desc,
     bool streamSyncReady = false, uint64_t *assignedSeq = NULL) {
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+  if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+    pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+    return flagcxRemoteError;
+  }
   while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
     if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
       pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
@@ -185,6 +189,10 @@ flagcxRmaProxyEnqueueDescBatch(struct flagcxRmaProxyState *proxy, int peer,
 
   pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
   for (size_t i = 0; i < count; i++) {
+    if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+      return flagcxRemoteError;
+    }
     while (flagcxRmaProxyCircularBufFull(proxy, peer)) {
       if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
         pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
@@ -292,6 +300,18 @@ static flagcxResult_t flagcxRmaProxyPostPutBatch(struct flagcxHeteroComm *comm,
                                      requests, posted);
 }
 
+static void flagcxRmaProxyRecordError(struct flagcxRmaProxyState *proxy) {
+  int previous = __atomic_exchange_n(&proxy->rmaError, 1, __ATOMIC_ACQ_REL);
+  if (previous == 0) {
+    pthread_mutex_lock(&proxy->doneMutex);
+    pthread_cond_broadcast(&proxy->doneCond);
+    pthread_mutex_unlock(&proxy->doneMutex);
+  }
+}
+
+static bool flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
+                                    int peer);
+
 // Poll and retire completed descs at the head of inProgressQueues[peer].
 // Returns after the head desc is not yet complete (enforces per-peer FIFO).
 static bool
@@ -310,7 +330,7 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
         WARN("flagcxRmaProxyPollNonPersistCompletion: test failed peer=%d "
              "res=%d",
              peer, (int)res);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy);
         done = 1;
         failed = true; // retire without advancing counters
       }
@@ -349,10 +369,10 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
 
 // Poll pending descs from the ring and issue them. On success advance
 // cis[peer] and move the desc to inProgressQueues[peer]. On
-// transient adaptor backpressure (flagcxInProgress, plus the legacy
-// flagcxInternalError result) leaves cis untouched and retries next round. On
-// other errors mark rmaError and push to inProgress with NULL request so
-// PollNonPersistCompletion retires it.
+// transient adaptor backpressure (flagcxInProgress) leaves cis untouched and
+// retries next round. Permanent errors poison the proxy; already-posted work is
+// still polled while unsubmitted descriptors are drained without being marked
+// successful.
 static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
                                              int peer, void *sendComm) {
   struct flagcxHeteroComm *comm = proxy->comm;
@@ -415,13 +435,21 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
         int posted = 0;
         flagcxResult_t res = flagcxRmaProxyPostPutBatch(
             comm, descs, batchCount, sendComm, requests, &posted);
+        if (posted < 0 || posted > batchCount) {
+          WARN("flagcxRmaProxyPollNonPersistDesc: adaptor returned invalid "
+               "posted count peer=%d posted=%d count=%d",
+               peer, posted, batchCount);
+          posted = 0;
+          res = flagcxInternalError;
+        }
+        bool fatal = flagcxRmaBatchPostResultIsFatal(res, posted, batchCount);
         if (posted == 0) {
-          if (res != flagcxSuccess && res != flagcxInProgress &&
-              res != flagcxSystemError && res != flagcxInternalError) {
+          if (fatal) {
             WARN("flagcxRmaProxyPollNonPersistDesc: batch op failed peer=%d "
                  "res=%d",
                  peer, (int)res);
-            __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+            flagcxRmaProxyRecordError(proxy);
+            did = true;
           }
           break;
         }
@@ -436,6 +464,13 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
         __atomic_fetch_add(&proxy->inFlights[peer], (uint32_t)posted,
                            __ATOMIC_RELAXED);
         did = true;
+        if (fatal) {
+          WARN("flagcxRmaProxyPollNonPersistDesc: partial batch op failed "
+               "peer=%d posted=%d count=%d res=%d",
+               peer, posted, batchCount, (int)res);
+          flagcxRmaProxyRecordError(proxy);
+          break;
+        }
         continue;
       }
     }
@@ -446,11 +481,12 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
       // Transient backpressure; retry this slot next round (cis unchanged).
       break;
     }
-    if (res != flagcxSuccess) {
+    bool fatal = res != flagcxSuccess;
+    if (fatal) {
       WARN("flagcxRmaProxyPollNonPersistDesc: op failed peer=%d type=%d "
            "res=%d",
            peer, (int)desc->type, (int)res);
-      __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+      flagcxRmaProxyRecordError(proxy);
       desc->request = NULL; // completion path will treat as done.
     }
     // RELEASE so the producer sees the slot freed.
@@ -460,6 +496,8 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     flagcxIntruQueueEnqueue(&proxy->inProgressQueues[peer], desc);
     __atomic_fetch_add(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
     did = true;
+    if (fatal)
+      break;
   }
   return did;
 }
@@ -467,8 +505,9 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
 // Drain the peer's ring without posting: dequeue, advance cis, free each
 // desc without bumping doneSeqs/completionCount. Called at shutdown when
 // no sendComm is available and we cannot actually issue the ops.
-static void flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
+static bool flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
                                     int peer) {
+  bool drained = false;
   while (!flagcxRmaProxyCircularBufEmpty(proxy, peer)) {
     uint32_t ci = __atomic_load_n(&proxy->cis[peer], __ATOMIC_RELAXED);
     uint32_t idx = ci & proxy->queueMask;
@@ -476,7 +515,9 @@ static void flagcxRmaProxyDrainRing(struct flagcxRmaProxyState *proxy,
         proxy->circularBuffers[(size_t)peer * proxy->queueSize + idx];
     __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
     free(desc);
+    drained = true;
   }
+  return drained;
 }
 
 // One pass over all peers: poll completions and issue pending descs.
@@ -494,6 +535,20 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
     if (flagcxRmaProxyPollNonPersistCompletion(proxy, p))
       did = true;
 
+    // A permanent transport error poisons the proxy globally. Prevent any
+    // additional submissions, but continue polling already posted requests so
+    // their CQ resources are reclaimed. The producer mutex closes the race
+    // with a caller that was publishing a descriptor when the error occurred.
+    if (__atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+      pthread_mutex_lock(&proxy->peerProducerMutexes[p]);
+      if (flagcxRmaProxyDrainRing(proxy, p))
+        did = true;
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[p]);
+      if (!flagcxIntruQueueEmpty(&proxy->inProgressQueues[p]))
+        *anyOutstanding = true;
+      continue;
+    }
+
     void *sendComm = (fullSendComms != NULL) ? fullSendComms[p] : NULL;
     if (sendComm != NULL) {
       if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
@@ -505,14 +560,16 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
         WARN("flagcxRmaProxyProgress: stop with queued descs but no "
              "sendComm peer=%d; draining",
              p);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy);
+        pthread_mutex_lock(&proxy->peerProducerMutexes[p]);
         flagcxRmaProxyDrainRing(proxy, p);
+        pthread_mutex_unlock(&proxy->peerProducerMutexes[p]);
         did = true;
       } else {
         // Pre-registration: caller enqueued an op before the full mesh
         // is ready. Surface as an error rather than spin forever.
         WARN("flagcxRmaProxyProgress: no sendComm for peer %d", p);
-        __atomic_store_n(&proxy->rmaError, 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyRecordError(proxy);
       }
     }
 
