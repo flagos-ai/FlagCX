@@ -1,5 +1,6 @@
 #include "rma_test.hpp"
 #include "comm.h"
+#include "global_comm.h"
 #include <cstring>
 
 // Static member definitions

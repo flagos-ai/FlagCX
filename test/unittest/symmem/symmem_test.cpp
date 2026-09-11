@@ -1,4 +1,5 @@
 #include "symmem_test.hpp"
+#include "global_comm.h"
 #include <cstring>
 
 // Static member definitions

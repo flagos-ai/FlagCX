@@ -2,6 +2,7 @@
 // Verifies that the flat VA mapping allows direct peer reads/writes.
 // Requires MPI + GPUs with P2P support.
 
+#include "global_comm.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
 #include <cstring>
