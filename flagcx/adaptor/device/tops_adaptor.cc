@@ -304,7 +304,7 @@ flagcxResult_t topsAdaptorGetDeviceProperties(struct flagcxDevProps *props,
     return flagcxInvalidArgument;
   }
 
-  topsDeviceProp devProp;
+  topsDeviceProp_t devProp;
   DEVCHECK(topsGetDeviceProperties(&devProp, dev));
   strncpy(props->name, devProp.name, sizeof(props->name) - 1);
   props->name[sizeof(props->name) - 1] = '\0';
@@ -320,7 +320,7 @@ flagcxResult_t topsAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev) {
     return flagcxInvalidArgument;
   }
   // TOPS uses topsGetDeviceProperties to get PCI bus ID
-  topsDeviceProp devProp;
+  topsDeviceProp_t devProp;
   DEVCHECK(topsGetDeviceProperties(&devProp, dev));
   snprintf(pciBusId, len, "%04x:%02x:%02x.%01x", devProp.pciDomainID,
            devProp.pciBusID, devProp.pciDeviceID, devProp.pciFunctionID);
