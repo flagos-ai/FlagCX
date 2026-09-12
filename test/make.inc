@@ -51,19 +51,26 @@ FIXTURE_INCLUDE := -I$(PROJECT_ROOT)/test/fixtures
 UNITTEST_INCLUDE := -I$(PROJECT_ROOT)/test/unittest/include
 
 # MPI (used by _mpi_tests targets)
+#
+# ld validates the undefined symbols of the shared libraries an executable links
+# against. A prebuilt MPI may depend on vendor libraries kept outside the
+# linker's search path, which would fail the link even though the loader finds
+# them at run time, so demote those to warnings.
+MPI_LINK_FLAGS := -Wl,--allow-shlib-undefined
+
 MPI_HOME ?= /usr/local/mpi
 ifeq ($(wildcard $(MPI_HOME)/include/mpi.h),)
   ifneq ($(wildcard /usr/include/x86_64-linux-gnu/mpi/mpi.h),)
     MPI_HOME := /usr
     MPI_INCLUDE := -I/usr/include/x86_64-linux-gnu/mpi
-    MPI_LINK := -L/usr/lib/x86_64-linux-gnu/openmpi/lib -lmpi
+    MPI_LINK := -L/usr/lib/x86_64-linux-gnu/openmpi/lib -lmpi $(MPI_LINK_FLAGS)
   else
     MPI_INCLUDE := -I$(MPI_HOME)/include
-    MPI_LINK := -L$(MPI_HOME)/lib -lmpi
+    MPI_LINK := -L$(MPI_HOME)/lib -lmpi $(MPI_LINK_FLAGS)
   endif
 else
   MPI_INCLUDE := -I$(MPI_HOME)/include
-  MPI_LINK := -L$(MPI_HOME)/lib -lmpi
+  MPI_LINK := -L$(MPI_HOME)/lib -lmpi $(MPI_LINK_FLAGS)
 endif
 
 # Perf test common infrastructure
