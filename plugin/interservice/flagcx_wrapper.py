@@ -451,40 +451,58 @@ class FLAGCXLibrary:
 
     @staticmethod
     def _find_default_library() -> str:
+        import ctypes.util
         import os
-        # 1. Check FLAGCX_PATH env var
+
+        searched = []
+
+        def first_existing(paths):
+            for path in paths:
+                searched.append(path)
+                if os.path.isfile(path):
+                    return path
+            return None
+
+        # 1. Check FLAGCX_PATH env var. A source tree installs into lib/ or
+        #    build/lib/, a packaged (deb/rpm) install ships the versioned
+        #    soname only.
         flagcx_path = os.environ.get("FLAGCX_PATH")
         if flagcx_path:
-            so_path = os.path.join(flagcx_path, "lib", "libflagcx.so")
-            if os.path.isfile(so_path):
-                return so_path
-            build_so_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
-            if os.path.isfile(build_so_path):
-                return build_so_path
-            raise FileNotFoundError(
-                f"FLAGCX_PATH is set to '{flagcx_path}' but neither "
-                f"'{so_path}' nor '{build_so_path}' exists. "
-                f"Please build FlagCX or check FLAGCX_PATH."
-            )
+            found = first_existing([
+                os.path.join(flagcx_path, "lib", "libflagcx.so"),
+                os.path.join(flagcx_path, "build", "lib", "libflagcx.so"),
+                os.path.join(flagcx_path, "lib", "libflagcx.so.0"),
+            ])
+            if found:
+                return found
+        # An unusable FLAGCX_PATH is not fatal: keep looking, and only report
+        # it if nothing anywhere resolves.
         # 2. Check alongside the installed flagcx Python package
         #    (build.sh copies libflagcx.so into the package directory)
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
-        pkg_so = os.path.join(pkg_dir, "libflagcx.so")
-        if os.path.isfile(pkg_so):
-            return pkg_so
+        found = first_existing([os.path.join(pkg_dir, "libflagcx.so")])
+        if found:
+            return found
         # 3. Fall back to <repo_root>/build/lib/libflagcx.so
         repo_root = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "..")
         )
-        so_path = os.path.join(repo_root, "build", "lib", "libflagcx.so")
-        if os.path.isfile(so_path):
-            return so_path
+        found = first_existing(
+            [os.path.join(repo_root, "build", "lib", "libflagcx.so")]
+        )
+        if found:
+            return found
+        # 4. Fall back to a system-wide install, resolved the way the dynamic
+        #    loader would resolve it (find_library consults ldconfig).
+        system_so = ctypes.util.find_library("flagcx")
+        if system_so:
+            return system_so
         raise FileNotFoundError(
-            f"Cannot find libflagcx.so. Searched:\n"
-            f"  - $FLAGCX_PATH/lib/libflagcx.so (FLAGCX_PATH not set)\n"
-            f"  - {pkg_so} (not in package)\n"
-            f"  - {so_path} (not in source tree)\n"
-            f"Please set FLAGCX_PATH or reinstall flagcx."
+            "Cannot find libflagcx.so. Searched:\n"
+            + "".join(f"  - {path}\n" for path in searched)
+            + "  - system library lookup for 'flagcx' (not found)\n"
+            + "Set FLAGCX_PATH to a FlagCX build tree or install "
+            + "the FlagCX runtime package."
         )
 
     def __init__(self, so_file: Optional[str] = None):
