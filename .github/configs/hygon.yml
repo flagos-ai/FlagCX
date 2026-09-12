@@ -2,7 +2,12 @@
 hardware_name: hygon
 display_name: Hygon DCU Tests
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
+# Pinned by digest, not by the b079886-hygon-dev tag: the rebake pushed under that
+# tag on 2026-09-11 runs an MLX->SHCA conversion that removes the hcoll package,
+# while the Open MPI in the image still has libhcoll.so.1 in libmpi.so's DT_NEEDED
+# and RUNPATH. Every MPI link then fails on undefined hcoll symbols. Drop the pin
+# when the image carries a working HCOLL (or an Open MPI rebuilt without it) again.
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx@sha256:00db17623d118e5c9c7788799c67c36a430d4d43550fc0f42476001e353a4140
 
 runner_labels:
   - hg-8g-cicd-flagcx

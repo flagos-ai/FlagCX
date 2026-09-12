@@ -78,7 +78,8 @@ jobs:
     name: torch-api-test (hygon)
     runs-on: [hg-8g-cicd-flagcx]
     container:
-      image: harbor.baai.ac.cn/flagos-dev/flagcx:b079886-hygon-dev
+      # Same digest as .github/configs/hygon.yml; see the comment there.
+      image: harbor.baai.ac.cn/flagos-dev/flagcx@sha256:00db17623d118e5c9c7788799c67c36a430d4d43550fc0f42476001e353a4140
       volumes:
         - /usr/local/hyhal:/opt/hyhal:ro
       options: >-
