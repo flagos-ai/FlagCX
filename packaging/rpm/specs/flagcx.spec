@@ -20,6 +20,14 @@
 # Derive uppercase backend name for make flag (USE_NVIDIA=1, etc.)
 %global backend_upper %(echo %{backend} | tr a-z A-Z)
 
+# The backend is an adaptor family name, which is not always a legal package
+# name: Debian allows [a-z0-9][a-z0-9+.-]* only, so a family carrying an
+# underscore (iluvatar_corex) is sanitized on its way into the name. RPM would
+# accept it, but the two formats should not disagree on what the package is
+# called. %%{backend} itself stays the family name — it selects the make flag
+# above and the ExclusiveArch test below.
+%global backend_pkg %(echo %{backend} | tr '_' '-')
+
 # Pin build/install arch by backend. Ascend CANN images are available for
 # both x86_64 development hosts and aarch64 deployment hosts; NVIDIA and
 # MetaX RPM builds currently target x86_64. ExclusiveArch makes rpmbuild
@@ -58,7 +66,7 @@ It serves as a platform where developers, researchers, and AI engineers
 can collaborate on various projects.
 
 # Only the target backend's subpackages are defined
-%package -n libflagcx-%{backend}
+%package -n libflagcx-%{backend_pkg}
 Summary:        FlagCX library for %{backend}
 %if "%{backend}" == "nvidia"
 # Group-call API arrived in NCCL 2.10; ncclConfig appeared in 2.14.
@@ -69,15 +77,15 @@ Requires:       libnccl >= 2.10
 %endif
 %endif
 
-%description -n libflagcx-%{backend}
+%description -n libflagcx-%{backend_pkg}
 FlagCX communication library built for %{backend} hardware.
 
-%package -n libflagcx-%{backend}-devel
-Summary:        Development files for libflagcx-%{backend}
-Requires:       libflagcx-%{backend} = %{version}-%{release}
+%package -n libflagcx-%{backend_pkg}-devel
+Summary:        Development files for libflagcx-%{backend_pkg}
+Requires:       libflagcx-%{backend_pkg} = %{version}-%{release}
 
-%description -n libflagcx-%{backend}-devel
-Development files (headers and libraries) for libflagcx-%{backend}.
+%description -n libflagcx-%{backend_pkg}-devel
+Development files (headers and libraries) for libflagcx-%{backend_pkg}.
 
 %prep
 %setup -q
@@ -104,11 +112,11 @@ cp -r flagcx/include/* %{buildroot}%{_includedir}/flagcx/
 patchelf --remove-rpath %{buildroot}%{_libdir}/libflagcx.so.0
 patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 
-%files -n libflagcx-%{backend}
+%files -n libflagcx-%{backend_pkg}
 %license LICENSE
 %{_libdir}/libflagcx.so.0
 
-%files -n libflagcx-%{backend}-devel
+%files -n libflagcx-%{backend_pkg}-devel
 %{_includedir}/flagcx/
 %{_libdir}/libflagcx.so
 

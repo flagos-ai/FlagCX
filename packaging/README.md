@@ -162,6 +162,13 @@ sudo apt-get install libflagcx-nvidia libflagcx-nvidia-dev
 sudo apt-get install libflagcx-metax libflagcx-metax-dev
 ```
 
+`<vendor>` is the adaptor family name with any `_` replaced by `-`: Debian package
+names allow `[a-z0-9][a-z0-9+.-]*` only, so the `iluvatar_corex` family installs as
+`libflagcx-iluvatar-corex` / `libflagcx-iluvatar-corex-dev`. The RPM subpackages
+use the same sanitized name, so both formats agree on what the package is called.
+The family name itself is unchanged everywhere it selects the build — the make
+flag, the adaptor sources and `ADAPTOR_MAP` still say `iluvatar_corex`.
+
 ## Architecture
 
 The build process uses a **unified multi-stage Dockerfile** with build profiles:

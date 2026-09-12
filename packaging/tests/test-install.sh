@@ -8,6 +8,12 @@ PKG_TYPE="${1:?Usage: test-install.sh <deb|rpm> <backend> <package-dir>}"
 BACKEND="${2:?Missing backend (nvidia|metax|ascend)}"
 PKG_DIR="${3:?Missing package directory}"
 
+# BACKEND names the adaptor family, which is not always a legal package name:
+# Debian allows [a-z0-9][a-z0-9+.-]* only, so a family carrying an underscore
+# (iluvatar_corex) is sanitized on its way into the name. RPM would accept it,
+# but the two formats should not disagree on what the package is called.
+PKG_BACKEND="${BACKEND//_/-}"
+
 PASS=0
 FAIL=0
 
@@ -33,8 +39,8 @@ echo ""
 echo "--- Installing packages ---"
 if [ "$PKG_TYPE" = "deb" ]; then
     # Pick the newest version of each package (avoid multi-version conflicts)
-    RT_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${BACKEND}"_*.deb 2>/dev/null | tail -1)
-    DEV_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${BACKEND}"-dev_*.deb 2>/dev/null | tail -1)
+    RT_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${PKG_BACKEND}"_*.deb 2>/dev/null | tail -1)
+    DEV_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${PKG_BACKEND}"-dev_*.deb 2>/dev/null | tail -1)
     echo "  Runtime: $(basename "$RT_PKG")"
     echo "  Dev:     $(basename "$DEV_PKG")"
     apt-get update -qq
@@ -52,8 +58,8 @@ elif [ "$PKG_TYPE" = "rpm" ]; then
         exit 1
     fi
     # Pick newest runtime + devel RPMs
-    RT_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${BACKEND}"-[0-9]*.rpm 2>/dev/null | tail -1)
-    DEV_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${BACKEND}"-devel-*.rpm 2>/dev/null | tail -1)
+    RT_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${PKG_BACKEND}"-[0-9]*.rpm 2>/dev/null | tail -1)
+    DEV_PKG=$(ls -v "${PKG_DIR}"/libflagcx-"${PKG_BACKEND}"-devel-*.rpm 2>/dev/null | tail -1)
     echo "  Runtime: $(basename "$RT_PKG")"
     echo "  Devel:   $(basename "$DEV_PKG")"
     # Use --nodeps: vendor libs are not available in plain distro containers
@@ -67,7 +73,7 @@ echo ""
 echo "--- Verifying installation ---"
 
 # --- Runtime package checks ---
-echo "[Runtime: libflagcx-${BACKEND}]"
+echo "[Runtime: libflagcx-${PKG_BACKEND}]"
 
 check "libflagcx.so.0 exists" test -f /usr/lib/libflagcx.so.0 -o -f /usr/lib64/libflagcx.so.0
 
@@ -93,7 +99,7 @@ else
 fi
 
 # --- Development package checks ---
-echo "[Development: libflagcx-${BACKEND}-dev(el)]"
+echo "[Development: libflagcx-${PKG_BACKEND}-dev(el)]"
 
 check "include dir exists" test -d /usr/include/flagcx
 check "flagcx.h header exists" bash -c "find /usr/include/flagcx -name flagcx.h 2>/dev/null | grep -q flagcx.h"
@@ -106,19 +112,19 @@ check "headers installed (found: ${HEADER_COUNT})" test "$HEADER_COUNT" -gt 0
 echo "[Package metadata]"
 
 if [ "$PKG_TYPE" = "deb" ]; then
-    check "runtime pkg is installed" bash -c "dpkg -s 'libflagcx-${BACKEND}' 2>/dev/null | grep -q 'Status: install ok installed'"
-    check "dev pkg is installed" bash -c "dpkg -s 'libflagcx-${BACKEND}-dev' 2>/dev/null | grep -q 'Status: install ok installed'"
+    check "runtime pkg is installed" bash -c "dpkg -s 'libflagcx-${PKG_BACKEND}' 2>/dev/null | grep -q 'Status: install ok installed'"
+    check "dev pkg is installed" bash -c "dpkg -s 'libflagcx-${PKG_BACKEND}-dev' 2>/dev/null | grep -q 'Status: install ok installed'"
 elif [ "$PKG_TYPE" = "rpm" ]; then
-    check "runtime pkg is installed" rpm -q "libflagcx-${BACKEND}"
-    check "devel pkg is installed" rpm -q "libflagcx-${BACKEND}-devel"
+    check "runtime pkg is installed" rpm -q "libflagcx-${PKG_BACKEND}"
+    check "devel pkg is installed" rpm -q "libflagcx-${PKG_BACKEND}-devel"
 fi
 
 # --- License check ---
 echo "[License]"
 if [ "$PKG_TYPE" = "deb" ]; then
-    check "copyright file exists" test -f "/usr/share/doc/libflagcx-${BACKEND}/copyright" -o -f "/usr/share/doc/libflagcx-${BACKEND}/changelog.Debian.gz"
+    check "copyright file exists" test -f "/usr/share/doc/libflagcx-${PKG_BACKEND}/copyright" -o -f "/usr/share/doc/libflagcx-${PKG_BACKEND}/changelog.Debian.gz"
 elif [ "$PKG_TYPE" = "rpm" ]; then
-    check "LICENSE file exists" test -f "/usr/share/licenses/libflagcx-${BACKEND}/LICENSE"
+    check "LICENSE file exists" test -f "/usr/share/licenses/libflagcx-${PKG_BACKEND}/LICENSE"
 fi
 
 # --- Summary ---
