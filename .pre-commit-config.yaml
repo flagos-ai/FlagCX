@@ -5,7 +5,8 @@ repos:
         name: clang-format-dry-run
         entry: clang-format --dry-run --Werror
         files: \.(cpp|cc|h|hpp)$
-        language: system
+        language: python
+        additional_dependencies: [clang-format==14.0.6]
 
 -   repo: local
     hooks:
@@ -13,7 +14,8 @@ repos:
         name: clang-format
         entry: clang-format -i --style=file
         files: \.(cpp|cc|h|hpp)$
-        language: system
+        language: python
+        additional_dependencies: [clang-format==14.0.6]
 
 # -   repo: local
 #     hooks:
