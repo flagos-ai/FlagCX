@@ -19,4 +19,6 @@ ADAPTOR_FLAG := -DUSE_ILUVATAR_COREX_ADAPTOR
 
 PLATFORM_KERNEL_DIR  :=
 PLATFORM_KERNEL_SRCS :=
-PLATFORM_EXTRA_SRCS  :=
+# device_api/ is not globbed by the Makefile and -shared without --no-undefined
+# hides that: flagcx_device.cc's devApiBackend would stay unresolved.
+PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc
