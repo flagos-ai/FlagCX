@@ -1,4 +1,4 @@
-# makefiles/platforms/iluvatar_corex.mk
+# makefiles/platforms/iluvatar.mk
 # Iluvatar CoreX platform configuration.
 
 DEVICE_HOME  ?= /usr/local/corex
@@ -15,7 +15,7 @@ CCL_HOME    ?= /usr/local/corex
 CCL_LIB     := $(CCL_HOME)/lib
 CCL_INCLUDE := $(CCL_HOME)/include
 CCL_LINK    := -lnccl
-ADAPTOR_FLAG := -DUSE_ILUVATAR_COREX_ADAPTOR
+ADAPTOR_FLAG := -DUSE_ILUVATAR_ADAPTOR
 
 PLATFORM_KERNEL_DIR  :=
 PLATFORM_KERNEL_SRCS :=

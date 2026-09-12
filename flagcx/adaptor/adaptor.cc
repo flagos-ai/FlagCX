@@ -33,7 +33,7 @@ struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor,
                                                       &hcclAdaptor};
 #endif
 struct flagcxDeviceAdaptor *deviceAdaptor = &cannAdaptor;
-#elif USE_ILUVATAR_COREX_ADAPTOR
+#elif USE_ILUVATAR_ADAPTOR
 #ifdef USE_BOOTSTRAP_ADAPTOR
 struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor,
                                                       &ixncclAdaptor};

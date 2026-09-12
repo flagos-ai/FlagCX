@@ -14,7 +14,7 @@ if [[ "$TYPE" == "nvidia" ]]; then
     USE_NVIDIA=1 make -j$(nproc)
 
 elif [[ "$TYPE" == "bi150" ]]; then
-    USE_ILUVATAR_COREX=1 make -j$(nproc)
+    USE_ILUVATAR=1 make -j$(nproc)
 
 else
     echo "Invalid compilation type: $TYPE"
@@ -34,7 +34,7 @@ if [[ "$TYPE" == "nvidia" ]]; then
 
 elif [[ "$TYPE" == "bi150" ]]; then
     echo "Compiling test programs for Bi150 configuration"
-    make -j$(nproc) USE_ILUVATAR_COREX=1
+    make -j$(nproc) USE_ILUVATAR=1
 
 else
     echo "Invalid test type: $TYPE"

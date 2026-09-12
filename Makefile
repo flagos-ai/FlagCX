@@ -3,10 +3,20 @@
 # Modified by 2025 DU. All Rights Reserved.
 BUILDDIR ?= $(abspath ./build)
 
+# USE_ILUVATAR_COREX is the pre-0.13 spelling of USE_ILUVATAR. It is honored
+# only when it comes from the command line or the environment, so the defaults
+# below cannot mask it, and it never overrides an explicit USE_ILUVATAR.
+ifneq ($(origin USE_ILUVATAR_COREX), undefined)
+  ifeq ($(origin USE_ILUVATAR), undefined)
+    USE_ILUVATAR := $(USE_ILUVATAR_COREX)
+  endif
+  $(warning USE_ILUVATAR_COREX is deprecated, use USE_ILUVATAR instead)
+endif
+
 # set to 0 if not provided
 USE_NVIDIA ?= 0
 USE_ASCEND ?= 0
-USE_ILUVATAR_COREX ?= 0
+USE_ILUVATAR ?= 0
 USE_CAMBRICON ?= 0
 USE_GLOO ?= 0
 USE_BOOTSTRAP ?= 0
@@ -41,7 +51,7 @@ ifeq ($(strip $(DEVICE_HOME)),)
 		DEVICE_HOME = /usr/local/cuda
 	else ifeq ($(USE_ASCEND), 1)
 		DEVICE_HOME = /usr/local/Ascend/ascend-toolkit/latest
-	else ifeq ($(USE_ILUVATAR_COREX), 1)
+	else ifeq ($(USE_ILUVATAR), 1)
 		DEVICE_HOME = /usr/local/corex
 	else ifeq ($(USE_CAMBRICON), 1)
 		DEVICE_HOME = $(NEUWARE_HOME)
@@ -73,7 +83,7 @@ ifeq ($(strip $(CCL_HOME)),)
 		CCL_HOME = /usr/local/nccl/build
 	else ifeq ($(USE_ASCEND), 1)
 		CCL_HOME = /usr/local/Ascend/ascend-toolkit/latest
-	else ifeq ($(USE_ILUVATAR_COREX), 1)
+	else ifeq ($(USE_ILUVATAR), 1)
 		CCL_HOME = /usr/local/corex
 	else ifeq ($(USE_CAMBRICON), 1)
 		CCL_HOME = $(NEUWARE_HOME)
@@ -151,8 +161,8 @@ ifeq ($(USE_NVIDIA), 1)
   include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
   include makefiles/ascend.mk
-else ifeq ($(USE_ILUVATAR_COREX), 1)
-  include makefiles/iluvatar_corex.mk
+else ifeq ($(USE_ILUVATAR), 1)
+  include makefiles/iluvatar.mk
 else ifeq ($(USE_CAMBRICON), 1)
   include makefiles/cambricon.mk
 else ifeq ($(USE_METAX), 1)
@@ -303,7 +313,7 @@ print_var:
 	@echo "MPI_HOME: $(MPI_HOME)"
 	@echo "USE_NVIDIA: $(USE_NVIDIA)"
 	@echo "USE_ASCEND: $(USE_ASCEND)"
-	@echo "USE_ILUVATAR_COREX: $(USE_ILUVATAR_COREX)"
+	@echo "USE_ILUVATAR: $(USE_ILUVATAR)"
 	@echo "USE_CAMBRICON: $(USE_CAMBRICON)"
 	@echo "USE_KUNLUNXIN: $(USE_KUNLUNXIN)"
 	@echo "USE_GLOO: $(USE_GLOO)"

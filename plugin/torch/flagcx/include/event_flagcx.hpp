@@ -22,7 +22,7 @@
 #elif USE_ASCEND_ADAPTOR
 #include "torch_npu/csrc/core/npu/NPUEvent.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
-#elif USE_ILUVATAR_COREX_ADAPTOR
+#elif USE_ILUVATAR_ADAPTOR
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
 #elif USE_CAMBRICON_ADAPTOR
@@ -126,7 +126,7 @@ public:
 private:
   at::cuda::CUDAEvent cudaEvent_;
 };
-#elif USE_ILUVATAR_COREX_ADAPTOR
+#elif USE_ILUVATAR_ADAPTOR
 class flagcxIxcudaEvent : public flagcxEvent {
 public:
   flagcxIxcudaEvent() {

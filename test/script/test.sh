@@ -11,7 +11,7 @@ if [[ "$TYPE" == "nvidia" ]]; then
     USE_NVIDIA=1 make -j$(nproc)
 
 elif [[ "$TYPE" == "bi150" ]]; then
-    USE_ILUVATAR_COREX=1 make -j$(nproc)
+    USE_ILUVATAR=1 make -j$(nproc)
 
 else
     echo "无效的编译类型: $TYPE"
@@ -29,7 +29,7 @@ if [[ "$TYPE" == "nvidia" ]]; then
     make -j$(nproc) USE_NVIDIA=1
 
 elif [[ "$TYPE" == "bi150"  ]]; then
-    make -j$(nproc) USE_ILUVATAR_COREX=1
+    make -j$(nproc) USE_ILUVATAR=1
 else
     echo "无效的编译类型: $TYPE"
     exit 1

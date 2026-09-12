@@ -443,7 +443,7 @@ std::unique_ptr<flagcxEvent> &flagcxBackend::getEventByIndex(int eventId) {
     flagcxEvents_[eventId] = std::make_unique<flagcxCudaEvent>();
 #elif USE_ASCEND_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxCannEvent>();
-#elif USE_ILUVATAR_COREX_ADAPTOR
+#elif USE_ILUVATAR_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxIxcudaEvent>();
 #elif USE_CAMBRICON_ADAPTOR
     flagcxEvents_[eventId] = std::make_unique<flagcxMluEvent>();
@@ -510,7 +510,7 @@ void flagcxBackend::initComm(at::Device dev) {
 }
 
 void flagcxBackend::initComm() {
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_COREX_ADAPTOR) ||      \
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR) ||      \
     defined(USE_METAX_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                   \
     defined(USE_KUNLUNXIN_ADAPTOR) || defined(USE_AMD_ADAPTOR)
   initComm(c10::impl::getDeviceGuardImpl(at::DeviceType::CUDA)->getDevice());

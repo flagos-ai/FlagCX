@@ -25,7 +25,7 @@ make <backend>=1 -j$(nproc)
 ```
 where `<backend>` is one of:
 - `USE_NVIDIA`: NVIDIA GPU support
-- `USE_ILUVATAR_COREX`: Iluvatar Corex support
+- `USE_ILUVATAR`: Iluvatar Corex support
 - `USE_CAMBRICON`: Cambricon support
 - `USE_METAX`: MetaX support
 - `USE_MUSA`: Moore Threads support
@@ -55,7 +55,7 @@ Performance tests are maintained in `test/perf/`, organized by API level:
 
 ```shell
 cd test/perf/host_api
-make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_AMD | USE_TSM | USE_ENFLAME | USE_SUNRISE | USE_PPU]=1
+make [USE_NVIDIA | USE_ILUVATAR | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_AMD | USE_TSM | USE_ENFLAME | USE_SUNRISE | USE_PPU]=1
 cd build/bin
 mpirun --allow-run-as-root -np 8 ./perf_allreduce -b 128K -e 4G -f 2
 ```

@@ -2,7 +2,7 @@
 # 2025 - Modified by DU. All Rights Reserved.
 USE_NVIDIA ?= 0
 USE_ASCEND ?= 0
-USE_ILUVATAR_COREX ?= 0
+USE_ILUVATAR ?= 0
 USE_CAMBRICON ?= 0
 USE_METAX ?= 0
 USE_MUSA ?= 0
@@ -151,7 +151,7 @@ print_var:
 	@echo "INCLUDEDIR: $(INCLUDEDIR)"
 	@echo "USE_NVIDIA: $(USE_NVIDIA)"
     @echo "USE_ASCEND: $(USE_ASCEND)"
-	@echo "USE_ILUVATAR_COREX: $(USE_ILUVATAR_COREX)"
+	@echo "USE_ILUVATAR: $(USE_ILUVATAR)"
 	@echo "USE_CAMBRICON: $(USE_CAMBRICON)"
 	@echo "USE_DU: $(USE_DU)"
 	@echo "USE_MUSA: $(USE_MUSA)"

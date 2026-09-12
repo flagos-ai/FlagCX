@@ -47,7 +47,7 @@ public:
     event_ = std::make_unique<flagcxCudaEvent>();
 #elif USE_ASCEND_ADAPTOR
     event_ = std::make_unique<flagcxCannEvent>();
-#elif USE_ILUVATAR_COREX_ADAPTOR
+#elif USE_ILUVATAR_ADAPTOR
     event_ = std::make_unique<flagcxIxcudaEvent>();
 #elif USE_CAMBRICON_ADAPTOR
     event_ = std::make_unique<flagcxMluEvent>();
@@ -237,7 +237,7 @@ public:
 #else
     devName = "npu";
 #endif
-#elif USE_ILUVATAR_COREX_ADAPTOR
+#elif USE_ILUVATAR_ADAPTOR
     devName = "cuda";
 #elif USE_CAMBRICON_ADAPTOR
     devName = "mlu";

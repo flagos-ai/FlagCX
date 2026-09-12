@@ -72,7 +72,7 @@ PERF_INCLUDE := -I$(PROJECT_ROOT)/test/include
 # Vendor flags (pass through from environment)
 USE_NVIDIA         ?= 0
 USE_ASCEND         ?= 0
-USE_ILUVATAR_COREX ?= 0
+USE_ILUVATAR ?= 0
 USE_CAMBRICON      ?= 0
 USE_METAX          ?= 0
 USE_MUSA           ?= 0

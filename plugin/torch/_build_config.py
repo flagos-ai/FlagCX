@@ -19,7 +19,7 @@ from packaging.version import Version, parse as vparse
 
 ADAPTOR_MAP = {
     "nvidia": "-DUSE_NVIDIA_ADAPTOR",
-    "iluvatar_corex": "-DUSE_ILUVATAR_COREX_ADAPTOR",
+    "iluvatar": "-DUSE_ILUVATAR_ADAPTOR",
     "cambricon": "-DUSE_CAMBRICON_ADAPTOR",
     "metax": "-DUSE_METAX_ADAPTOR",
     "musa": "-DUSE_MUSA_ADAPTOR",
@@ -37,7 +37,7 @@ ADAPTOR_MAP = {
 ADAPTOR_TO_MAKE_FLAG = {
     "nvidia": "USE_NVIDIA",
     "ascend": "USE_ASCEND",
-    "iluvatar_corex": "USE_ILUVATAR_COREX",
+    "iluvatar": "USE_ILUVATAR",
     "cambricon": "USE_CAMBRICON",
     "metax": "USE_METAX",
     "musa": "USE_MUSA",
@@ -52,6 +52,25 @@ ADAPTOR_TO_MAKE_FLAG = {
 
 VALID_ADAPTORS = list(ADAPTOR_MAP.keys())
 ADAPTOR_BY_FLAG = {flag: name for name, flag in ADAPTOR_MAP.items()}
+
+# Pre-0.13 spellings, kept working for one release. Deliberately absent from
+# VALID_ADAPTORS so they stay out of the user-facing adaptor lists.
+DEPRECATED_ADAPTORS = {"iluvatar_corex": "iluvatar"}
+# The USE_* environment variables that selected a deprecated spelling.
+DEPRECATED_MAKE_FLAGS = {"USE_ILUVATAR_COREX": "iluvatar_corex"}
+
+
+def _canonical_adaptor(name):
+    """Map a deprecated adaptor spelling onto its current name."""
+    canonical = DEPRECATED_ADAPTORS.get(name)
+    if canonical is None:
+        return name
+    print(
+        f"[flagcx] WARNING: adaptor {name!r} is deprecated, "
+        f"use {canonical!r} instead"
+    )
+    return canonical
+
 
 TORCH_BACKEND_VENDOR = "vendor"
 TORCH_BACKEND_FLAGOS = "flagos"
@@ -105,7 +124,7 @@ def resolve_torch_backend(adaptor):
 # Platform detection: command -> adaptor name
 # Order matters: nvidia-smi and rocm-smi last (some platforms are CUDA/ROCm compatible)
 _PLATFORM_COMMANDS = [
-    ("ixsmi", "iluvatar_corex"),
+    ("ixsmi", "iluvatar"),
     ("cnmon", "cambricon"),
     ("mx-smi", "metax"),
     ("hy-smi", "du"),
@@ -144,13 +163,22 @@ def detect_adaptor():
         else:
             print("No adaptor provided after '--adaptor'. Using default nvidia adaptor")
 
-    adaptor = os.environ.get("FLAGCX_ADAPTOR", "").strip() or cli_adaptor
+    adaptor = _canonical_adaptor(
+        os.environ.get("FLAGCX_ADAPTOR", "").strip() or cli_adaptor
+    )
 
     # Check USE_* env vars
     if not adaptor:
         for name, make_flag in ADAPTOR_TO_MAKE_FLAG.items():
             if os.environ.get(make_flag, "0") == "1":
                 adaptor = name
+                break
+
+    # Check the USE_* env vars for a deprecated spelling
+    if not adaptor:
+        for make_flag, name in DEPRECATED_MAKE_FLAGS.items():
+            if os.environ.get(make_flag, "0") == "1":
+                adaptor = _canonical_adaptor(name)
                 break
 
     # Auto-detect platform
@@ -251,7 +279,7 @@ def get_device_config(adaptor_flag, torch_backend=None):
         include_dirs += ["/usr/local/cuda/include"]
         library_dirs += ["/usr/local/cuda/lib64"]
         libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
-    elif adaptor_flag == "-DUSE_ILUVATAR_COREX_ADAPTOR":
+    elif adaptor_flag == "-DUSE_ILUVATAR_ADAPTOR":
         include_dirs += ["/usr/local/corex/include"]
         library_dirs += ["/usr/local/corex/lib64"]
         libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]

@@ -1,6 +1,6 @@
-#include "iluvatar_corex_adaptor.h"
+#include "iluvatar_adaptor.h"
 
-#ifdef USE_ILUVATAR_COREX_ADAPTOR
+#ifdef USE_ILUVATAR_ADAPTOR
 
 #include "adaptor.h"
 #include "alloc.h"
@@ -342,4 +342,4 @@ struct flagcxCCLAdaptor ixncclAdaptor = {
     ixncclAdaptorDevCommReqsInit, ixncclAdaptorDevCommCreate,
     ixncclAdaptorDevCommDestroy};
 
-#endif // USE_ILUVATAR_COREX_ADAPTOR
+#endif // USE_ILUVATAR_ADAPTOR

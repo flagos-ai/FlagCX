@@ -1,4 +1,4 @@
-#ifdef USE_ILUVATAR_COREX_ADAPTOR
+#ifdef USE_ILUVATAR_ADAPTOR
 
 #include "flagcx.h"
 #include "nccl.h"
@@ -30,4 +30,4 @@ struct flagcxIpcMemHandle {
       return flagcxUnhandledDeviceError;                                       \
   }
 
-#endif // USE_ILUVATAR_COREX_ADAPTOR
+#endif // USE_ILUVATAR_ADAPTOR
