@@ -35,6 +35,8 @@ where `<backend>` is one of:
 - `USE_AMD`: AMD support
 - `USE_TSM`: TsingMicro support
 - `USE_ENFLAME`: Enflame support
+- `USE_SUNRISE`: Sunrise support
+- `USE_PPU`: PPU support
 - `USE_GLOO`: GLOO support
 - `USE_MPI`: MPI support
 
@@ -53,7 +55,7 @@ Performance tests are maintained in `test/perf/`, organized by API level:
 
 ```shell
 cd test/perf/host_api
-make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_TSM | USE_ENFLAME]=1
+make [USE_NVIDIA | USE_ILUVATAR_COREX | USE_CAMBRICON | USE_METAX | USE_MUSA | USE_KUNLUNXIN | USE_DU | USE_ASCEND | USE_AMD | USE_TSM | USE_ENFLAME | USE_SUNRISE | USE_PPU]=1
 cd build/bin
 mpirun --allow-run-as-root -np 8 ./perf_allreduce -b 128K -e 4G -f 2
 ```
