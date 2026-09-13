@@ -59,11 +59,11 @@ jobs:
           export PATH=/root/miniconda3/bin:$PATH
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train && conda env list
           pip uninstall -y setuptools && pip install setuptools==77.0.1 --extra-index-url https://pypi.org/simple 
-          cd /__w/FlagCX/FlagCX/plugin/torch
+          cd /__w/FlagCX/FlagCX
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           export FLAGCX_ADAPTOR=nvidia
           python3 setup.py build_ext --inplace
-          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/src:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
         run: |
@@ -145,11 +145,11 @@ jobs:
       - name: Install FlagCX PyTorch Plugin
         shell: bash
         run: |
-          cd /__w/FlagCX/FlagCX/plugin/torch
+          cd /__w/FlagCX/FlagCX
           source /opt/dtk/env.sh
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           python3 setup.py build_ext --inplace
-          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/src:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
         shell: bash
@@ -225,11 +225,11 @@ jobs:
           export PATH=/root/miniconda3/bin:$PATH
           eval "$(/root/miniconda3/bin/conda shell.bash hook)" && conda activate flagscale-train
           export PYTHON_BIN=/root/miniconda3/envs/flagscale-train/bin/python
-          cd /__w/FlagCX/FlagCX/plugin/torch
+          cd /__w/FlagCX/FlagCX
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           export FLAGCX_ADAPTOR=nvidia
           "$PYTHON_BIN" setup.py build_ext --inplace
-          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/src:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
         run: |
@@ -310,11 +310,11 @@ jobs:
 
       - name: Install FlagCX PyTorch Plugin
         run: |
-          cd /__w/FlagCX/FlagCX/plugin/torch
+          cd /__w/FlagCX/FlagCX
           export TORCH_DEVICE_BACKEND_AUTOLOAD=0
           export FLAGCX_ADAPTOR=metax
           python3 setup.py build_ext --inplace
-          echo "PYTHONPATH=/__w/FlagCX/FlagCX/plugin/torch:$PYTHONPATH" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=/__w/FlagCX/FlagCX/src:$PYTHONPATH" >> "$GITHUB_ENV"
 
       - name: Run PyTorch API Tests
         run: |

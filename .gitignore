@@ -9,6 +9,8 @@ rpm-packages
 plugin/*/*.so
 plugin/*/*/*.so
 adaptor_plugin/*/*/*.so
+src/flagcx/*.so
+src/flagcx/lib/
 __pycache__/
 **/__pycache__/
 plugin/torch/flagcx/lib/
