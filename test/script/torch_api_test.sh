@@ -7,7 +7,7 @@ export FLAGCX_DEBUG_SUBSYS=INIT
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
-export PYTHONPATH="$REPO_ROOT/plugin/torch${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 hash -r
 
