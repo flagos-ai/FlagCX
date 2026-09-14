@@ -10,6 +10,9 @@ runner_labels:
 docker_volumes: []
 
 docker_options:
+  - --network=host
+  - --ipc=host
+  - --privileged=true
   - --shm-size=100gb
   - --ulimit=memlock=-1
   - --ulimit=stack=67108864
@@ -31,6 +34,9 @@ docker_options:
   - --device=/dev/alixpu_ppu13
   - --device=/dev/alixpu_ppu14
   - --device=/dev/alixpu_ppu15
+  - --mount=type=bind,src=/dev/infiniband,dst=/dev/infiniband
+  - --mount=type=bind,src=/sys/class/infiniband,dst=/sys/class/infiniband,readonly
+  - --mount=type=bind,src=/sys/class/infiniband_verbs,dst=/sys/class/infiniband_verbs,readonly
 
 set_env: .github/scripts/set_env/ppu.sh
 
