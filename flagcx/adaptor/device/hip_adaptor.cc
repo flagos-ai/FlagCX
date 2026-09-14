@@ -434,6 +434,7 @@ struct flagcxDeviceAdaptor hipAdaptor {
       hipAdaptorSymMulticastTeardown, hipAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      flagcxDeviceAdaptorGetAddressRangeNotSupported,
 };
 
 #endif // USE_AMD_ADAPTOR

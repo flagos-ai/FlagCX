@@ -226,14 +226,124 @@ TEST_F(RegPoolTest, AddP2pHandle_StoresOwnerComm) {
   flagcxRegItem *item = pool->getItem(commA, data);
   ASSERT_NE(item, nullptr);
 
-  void *fakeHandle = reinterpret_cast<void *>(0xCAFE);
+  flagcxIpcRegInfo fakeHandle = {};
+  fakeHandle.peerRank = 1;
+  fakeHandle.allocationBase = reinterpret_cast<void *>(0xCAFE0000);
   auto *proxy = fakeProxy(0xFACE);
-  ASSERT_EQ(pool->addP2pHandle(commA, item, fakeHandle, proxy), flagcxSuccess);
+  ASSERT_EQ(pool->addP2pHandle(commA, item, &fakeHandle, proxy), flagcxSuccess);
 
   ASSERT_EQ(item->handles.size(), 1u);
-  EXPECT_EQ(item->handles[0].second.handle, fakeHandle);
+  EXPECT_EQ(item->handles[0].second.handle, &fakeHandle);
   EXPECT_EQ(item->handles[0].second.proxyConn, proxy);
   EXPECT_EQ(item->handles[0].second.ownerComm, commA);
+}
+
+TEST_F(RegPoolTest, AddP2pHandle_SameProxyDifferentAllocationKeepsBoth) {
+  void *data = alignedAddr(82);
+  void *commA = fakeComm(0x8000);
+  ASSERT_EQ(pool->registerBuffer(commA, data, pageSize), flagcxSuccess);
+  flagcxRegItem *item = pool->getItem(commA, data);
+  ASSERT_NE(item, nullptr);
+
+  auto *proxy = fakeProxy(0xAAAA);
+  flagcxIpcRegInfo first = {};
+  first.peerRank = 1;
+  first.allocationBase = reinterpret_cast<void *>(0x100000);
+  flagcxIpcRegInfo second = {};
+  second.peerRank = 1;
+  second.allocationBase = reinterpret_cast<void *>(0x200000);
+
+  ASSERT_EQ(pool->addP2pHandle(commA, item, &first, proxy), flagcxSuccess);
+  ASSERT_EQ(pool->addP2pHandle(commA, item, &second, proxy), flagcxSuccess);
+
+  ASSERT_EQ(item->handles.size(), 2u);
+  EXPECT_EQ(item->handles[0].second.handle, &first);
+  EXPECT_EQ(item->handles[1].second.handle, &second);
+}
+
+TEST_F(RegPoolTest, AddP2pHandle_DuplicateMappingIsRejected) {
+  void *data = alignedAddr(83);
+  void *commA = fakeComm(0x9000);
+  ASSERT_EQ(pool->registerBuffer(commA, data, pageSize), flagcxSuccess);
+  flagcxRegItem *item = pool->getItem(commA, data);
+  ASSERT_NE(item, nullptr);
+
+  auto *proxy = fakeProxy(0xBBBB);
+  flagcxIpcRegInfo first = {};
+  first.peerRank = 2;
+  first.allocationBase = reinterpret_cast<void *>(0x300000);
+  flagcxIpcRegInfo duplicate = first;
+
+  ASSERT_EQ(pool->addP2pHandle(commA, item, &first, proxy), flagcxSuccess);
+  EXPECT_EQ(pool->addP2pHandle(commA, item, &duplicate, proxy),
+            flagcxInvalidUsage);
+  ASSERT_EQ(item->handles.size(), 1u);
+  EXPECT_EQ(item->handles[0].second.handle, &first);
+}
+
+TEST_F(RegPoolTest, AddP2pHandle_SharesAllocationMappingAcrossRegistrations) {
+  void *commA = fakeComm(0xA000);
+  void *firstData = alignedAddr(84);
+  void *secondData = alignedAddr(86);
+  ASSERT_EQ(pool->registerBuffer(commA, firstData, pageSize), flagcxSuccess);
+  ASSERT_EQ(pool->registerBuffer(commA, secondData, pageSize), flagcxSuccess);
+  flagcxRegItem *firstItem = pool->getItem(commA, firstData);
+  flagcxRegItem *secondItem = pool->getItem(commA, secondData);
+  ASSERT_NE(firstItem, nullptr);
+  ASSERT_NE(secondItem, nullptr);
+  ASSERT_NE(firstItem, secondItem);
+
+  auto *proxy = fakeProxy(0xCCCC);
+  flagcxIpcRegInfo mapping = {};
+  mapping.peerRank = 3;
+  mapping.allocationBase = reinterpret_cast<void *>(0x400000);
+
+  ASSERT_EQ(pool->addP2pHandle(commA, firstItem, &mapping, proxy),
+            flagcxSuccess);
+  EXPECT_EQ(mapping.refCount, 1);
+  ASSERT_EQ(pool->addP2pHandle(commA, firstItem, &mapping, proxy),
+            flagcxSuccess);
+  EXPECT_EQ(mapping.refCount, 1);
+  ASSERT_EQ(pool->addP2pHandle(commA, secondItem, &mapping, proxy),
+            flagcxSuccess);
+  EXPECT_EQ(mapping.refCount, 2);
+  EXPECT_EQ(pool->findP2pHandle(commA, 3, mapping.allocationBase), &mapping);
+}
+
+TEST_F(RegPoolTest, DeregisterP2pHandle_ReleasesSharedMappingAfterLastUse) {
+  void *commA = fakeComm(0xB000);
+  void *firstData = alignedAddr(88);
+  void *secondData = alignedAddr(90);
+  ASSERT_EQ(pool->registerBuffer(commA, firstData, pageSize), flagcxSuccess);
+  ASSERT_EQ(pool->registerBuffer(commA, secondData, pageSize), flagcxSuccess);
+  flagcxRegItem *firstItem = pool->getItem(commA, firstData);
+  flagcxRegItem *secondItem = pool->getItem(commA, secondData);
+  ASSERT_NE(firstItem, nullptr);
+  ASSERT_NE(secondItem, nullptr);
+
+  auto *mapping =
+      static_cast<flagcxIpcRegInfo *>(calloc(1, sizeof(flagcxIpcRegInfo)));
+  ASSERT_NE(mapping, nullptr);
+  mapping->peerRank = 4;
+  mapping->allocationBase = reinterpret_cast<void *>(0x500000);
+  mapping->sameProcess = true;
+  mapping->impInfo.importedBase = mapping->allocationBase;
+  mapping->impInfo.legacyIpcCap = true;
+  auto *proxy = fakeProxy(0xDDDD);
+
+  ASSERT_EQ(pool->addP2pHandle(commA, firstItem, mapping, proxy),
+            flagcxSuccess);
+  ASSERT_EQ(pool->addP2pHandle(commA, secondItem, mapping, proxy),
+            flagcxSuccess);
+  ASSERT_EQ(mapping->refCount, 2);
+
+  ASSERT_EQ(pool->deregisterBuffer(commA, firstItem), flagcxSuccess);
+  ASSERT_EQ(mapping->refCount, 1);
+  EXPECT_EQ(pool->findP2pHandle(commA, 4, mapping->allocationBase), mapping);
+
+  void *allocationBase = mapping->allocationBase;
+  ASSERT_EQ(pool->deregisterBuffer(commA, secondItem), flagcxSuccess);
+  EXPECT_EQ(pool->findP2pHandle(commA, 4, allocationBase), nullptr);
 }
 
 TEST_F(RegPoolTest, AddNetHandle_DuplicateProxyConn_Updates) {
@@ -342,43 +452,6 @@ TEST_F(RegPoolTest, HomoRegHandles_EraseOneComm_OtherRemains) {
   EXPECT_EQ(item->homoRegHandles.count(commKeyA), 0u);
   EXPECT_EQ(item->homoRegHandles.count(commKeyB), 1u);
   EXPECT_EQ(item->homoRegHandles[commKeyB], reinterpret_cast<void *>(0x2));
-}
-
-// =============================================================================
-// localIpcHandleData (write-once semantics)
-// =============================================================================
-
-TEST_F(RegPoolTest, LocalIpcHandleData_InitiallyZero) {
-  void *data = alignedAddr(102);
-  ASSERT_EQ(pool->registerBuffer(nullptr, data, pageSize), flagcxSuccess);
-  flagcxRegItem *item = pool->getItem(nullptr, data);
-  ASSERT_NE(item, nullptr);
-
-  char zeros[sizeof(flagcxIpcHandleData)] = {};
-  EXPECT_EQ(
-      memcmp(&item->localIpcHandleData, zeros, sizeof(flagcxIpcHandleData)), 0);
-}
-
-TEST_F(RegPoolTest, LocalIpcHandleData_WriteOnce) {
-  void *data = alignedAddr(103);
-  ASSERT_EQ(pool->registerBuffer(nullptr, data, pageSize), flagcxSuccess);
-  flagcxRegItem *item = pool->getItem(nullptr, data);
-  ASSERT_NE(item, nullptr);
-
-  // Simulate writing IPC handle data
-  char fakeIpc[sizeof(flagcxIpcHandleData)];
-  memset(fakeIpc, 0xAB, sizeof(fakeIpc));
-  memcpy(&item->localIpcHandleData, fakeIpc, sizeof(flagcxIpcHandleData));
-
-  // Verify it's non-zero now
-  char zeros[sizeof(flagcxIpcHandleData)] = {};
-  EXPECT_NE(
-      memcmp(&item->localIpcHandleData, zeros, sizeof(flagcxIpcHandleData)), 0);
-
-  // Verify content matches what we wrote
-  EXPECT_EQ(
-      memcmp(&item->localIpcHandleData, fakeIpc, sizeof(flagcxIpcHandleData)),
-      0);
 }
 
 // =============================================================================

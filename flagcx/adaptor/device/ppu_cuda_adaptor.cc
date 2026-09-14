@@ -268,13 +268,23 @@ flagcxResult_t ppucudaAdaptorStreamWaitEvent(flagcxStream_t stream,
 flagcxResult_t ppucudaAdaptorStreamWaitValue64(flagcxStream_t stream,
                                                void *addr, uint64_t value,
                                                int flags) {
-  (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
+  if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxInvalidArgument;
+
+  unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    waitFlags |= CU_STREAM_WAIT_VALUE_FLUSH;
+
   CUstream cuStream = (CUstream)(stream->base);
-  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
-                                     CU_STREAM_WAIT_VALUE_GEQ);
-  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  CUresult err =
+      cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value, waitFlags);
+  if (err == CUDA_SUCCESS)
+    return flagcxSuccess;
+  if (err == CUDA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t ppucudaAdaptorStreamWriteValue64(flagcxStream_t stream,
@@ -667,6 +677,20 @@ flagcxResult_t ppucudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ppucudaAdaptorGetAddressRange(const void *ptr, void **base,
+                                             size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  CUdeviceptr allocationBase = 0;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, size, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = (void *)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor ppucudaAdaptor {
   "PPU_CUDA",
       // Basic functions
@@ -715,7 +739,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       ppucudaAdaptorSymMulticastBind, ppucudaAdaptorSymMulticastTeardown,
       ppucudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      ppucudaAdaptorGetPointerType,
+      ppucudaAdaptorGetPointerType, ppucudaAdaptorGetAddressRange,
 };
 
 #endif // USE_PPU_ADAPTOR

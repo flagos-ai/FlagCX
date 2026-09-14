@@ -52,7 +52,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p) ;;
+    adaptor|p2p|rma) ;;
     *) return 0 ;;
   esac
 
@@ -62,13 +62,22 @@ flagcx_ci_require_rdma() {
     echo "$platform_name $suite tests require RDMA devices, but the runner did not expose /sys/class/infiniband and /dev/infiniband/uverbs* to the test container." >&2
     return 1
   fi
+
+  if declare -F flagcx_ci_validate_rdma >/dev/null; then
+    flagcx_ci_validate_rdma "$suite"
+  fi
+
   echo "RDMA preflight passed"
 }
 
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
-flagcx_ci_require_rdma "$SUITE"
+# RMA has separate IPC and network invocations. Its RDMA preflight runs only
+# before the network invocation so missing RDMA cannot hide IPC regressions.
+if [[ "$SUITE" != rma ]]; then
+  flagcx_ci_require_rdma "$SUITE"
+fi
 
 build_googletest() {
   cmake -S "$PROJECT_ROOT/third-party/googletest" \
@@ -255,7 +264,33 @@ run_suite() {
   fi
 
   case "$SUITE" in
-    adaptor|core|service)
+    adaptor)
+      local unit_status=0
+      local ipc_status=0
+      # Build more than one RC QP in every RDMA adaptor job. The current
+      # one-sided API intentionally stays on one ordered QP until the transport
+      # layer can express QP selection together with ordering boundaries.
+      FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+        unit_status=$?
+      # Exercise device IPC handles across processes and physical devices. Use
+      # exactly two ranks so GPU 0 and GPU 1 exercise both exporter/importer
+      # directions and the full-mesh mapping setup used by RMA, with an
+      # independent timeout from the adaptor unit tests. Always run this
+      # invocation even when the RDMA loopback tests fail so an RDMA environment
+      # problem cannot hide device IPC coverage. Disable VMM to exercise the
+      # same IPC-exportable GDR allocation used by the RMA suite.
+      FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
+        make -C "$suite_dir" run-mpi "${args[@]}" \
+        MPIRUN="$MPI_RUNNER" MPI_NP=2 \
+        MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
+      if ((unit_status != 0 || ipc_status != 0)); then
+        echo "Adaptor failures: unit=$unit_status IPC=$ipc_status" >&2
+        return 1
+      fi
+      ;;
+    core|service)
       FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;
@@ -265,8 +300,27 @@ run_suite() {
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;
     rma)
-      FLAGCX_CI_MPI_LABEL="rma MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" MPIRUN="$MPI_RUNNER"
+      local ipc_status=0
+      local network_status=0
+      FLAGCX_CI_TEST_LABEL="rma unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      # Keep these as separate invocations so each transport has its own
+      # timeout. Collect both statuses so a failure in one path cannot prevent
+      # the other path from running and producing a useful result.
+      FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
+        make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
+        MPIRUN="$MPI_RUNNER" || ipc_status=$?
+      if flagcx_ci_require_rdma "$SUITE"; then
+        FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
+          make -C "$suite_dir" run-mpi-net "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" || network_status=$?
+      else
+        network_status=$?
+      fi
+      if ((ipc_status != 0 || network_status != 0)); then
+        echo "RMA MPI failures: IPC=$ipc_status network=$network_status" >&2
+        return 1
+      fi
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"

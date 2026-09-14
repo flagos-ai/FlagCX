@@ -167,6 +167,7 @@ struct flagcxIpcTableEntry; // forward declaration; defined in global_comm.h
 #define FLAGCX_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
 
 struct flagcxOneSideHandleInfo;
+struct flagcxSymWindow;
 
 struct flagcxHeteroComm {
   uint64_t startMagic;
@@ -380,6 +381,17 @@ struct flagcxHeteroComm {
   struct flagcxOneSideHandleInfo **oneSideHandles;
   int oneSideHandleCount;
   int oneSideHandleCapacity;
+
+  // Active symmetric windows. Each window owns independent IPC and network
+  // locators; the list is used to resolve a local source address without
+  // requiring a network MR registration.
+  struct flagcxSymWindow *symWindows;
+
+  // RMA signal memory has an IPC mapping independent of signalHandle, which
+  // represents only the optional network MR registration.
+  void *rmaSignalBase;
+  size_t rmaSignalSize;
+  int rmaSignalIpcSlot;
 
   // IPC table pointer — owned by outer flagcxComm, shared for intra-node D2D
   struct flagcxIpcTableEntry *ipcTable;

@@ -22,6 +22,16 @@ struct flagcxDevProps {
 // C-compatible typedef matching the C++ using alias in dlsymbols.h.
 typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
 
+// streamWaitValue64 always waits for *addr >= value. Callers add
+// FLUSH_REMOTE_WRITES when the counter publishes completion of payload writes
+// issued by another GPU, the network, or a host proxy. Adaptors must not
+// silently ignore this flag: return flagcxNotSupported when the backend cannot
+// provide the requested visibility guarantee.
+typedef enum {
+  FLAGCX_STREAM_WAIT_VALUE_DEFAULT = 0,
+  FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES = 1 << 0,
+} flagcxStreamWaitValueFlags_t;
+
 // Version history:
 //   v1 — Initial version with basic device functions, GDR functions,
 //         stream/event/IPC functions, kernel launch, device properties,
@@ -115,8 +125,8 @@ struct flagcxDeviceAdaptor_v1 {
                                              unsigned long long flags);
 };
 
-// Latest version — extends v1 with host memory registration hooks used by
-// the shm barrier path (FLAGCX_BARRIER_IPC_DISABLE=1).
+// Latest version — extends v1 with host registration, symmetric-memory,
+// error-query, and pointer-introspection capabilities.
 struct flagcxDeviceAdaptor_latest {
   // All v1 fields (must stay layout-compatible with flagcxDeviceAdaptor_v1)
   char name[32];
@@ -251,6 +261,11 @@ struct flagcxDeviceAdaptor_latest {
   // allocations report FLAGCX_PTR_HOST. Unsupported backends return
   // flagcxNotSupported.
   flagcxResult_t (*getPointerType)(const void *ptr, int *ptrType);
+
+  // Return the allocation containing ptr. IPC runtimes may export the whole
+  // allocation and map its base even when ptr refers to an interior address.
+  // This optional callback lets common IPC code preserve that user offset.
+  flagcxResult_t (*getAddressRange)(const void *ptr, void **base, size_t *size);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest
@@ -262,14 +277,23 @@ flagcxDeviceAdaptorGetPointerTypeNotSupported(const void *ptr, int *ptrType) {
   return flagcxNotSupported;
 }
 
+static inline flagcxResult_t
+flagcxDeviceAdaptorGetAddressRangeNotSupported(const void *ptr, void **base,
+                                               size_t *size) {
+  (void)ptr;
+  (void)base;
+  (void)size;
+  return flagcxNotSupported;
+}
+
 // Upgrade a v1 plugin struct to latest in-place into dst.
-// Fields added beyond v1 are zeroed unless a safe compatibility stub exists.
+// Fields added beyond v1 are zeroed. Callers must capability-check optional
+// callbacks before invoking them.
 static inline void
 flagcxDeviceAdaptorUpgradeV1(const struct flagcxDeviceAdaptor_v1 *src,
                              struct flagcxDeviceAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxDeviceAdaptor_v1));
-  dst->getPointerType = flagcxDeviceAdaptorGetPointerTypeNotSupported;
 }
 
 // Device adaptor plugin API version (independent of CCL/Net versions)

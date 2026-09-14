@@ -435,5 +435,6 @@ struct flagcxDeviceAdaptor ptpuAdaptor {
       NULL, // flagcxResult_t (*symMulticastFree)(...);
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      flagcxDeviceAdaptorGetAddressRangeNotSupported,
 };
 #endif // USE_SUNRISE_ADAPTOR

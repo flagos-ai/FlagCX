@@ -19,11 +19,12 @@ typedef struct flagcxInnerComm *flagcxInnerComm_t;
 #define FLAGCX_MAX_IPC_ENTRIES 16
 
 struct flagcxIpcTableEntry {
-  void **hostPeerPtrs; // host array: peer buffer ptrs (for ipcMemHandleClose)
-  void **devPeerPtrs;  // device array: peer buffer ptrs (for cudaFree)
-  int nPeers;          // number of local peers
-  void *basePtr;       // own buffer ptr (skip in ipcMemHandleClose loop)
-  bool inUse;          // true while a devMem references this entry
+  void **hostPeerPtrs;     // host array: peer user-buffer pointers
+  void **hostPeerBasePtrs; // raw mappings returned by ipcMemHandleOpen
+  void **devPeerPtrs;      // device array: peer buffer ptrs (for cudaFree)
+  int nPeers;              // number of local peers
+  void *basePtr;           // own user-buffer pointer
+  bool inUse;              // true while a devMem references this entry
 };
 
 // Deferred device/host-pinned memory free — collected during cleanup,
@@ -39,6 +40,7 @@ struct flagcxDeferredFree {
 // Actual ipcMemHandleClose + deviceFree happens at comm destroy.
 struct flagcxDeferredIpcEntry {
   void **hostPeerPtrs;
+  void **hostPeerBasePtrs;
   void **devPeerPtrs;
   int nPeers;
   void *basePtr;

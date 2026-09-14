@@ -55,10 +55,11 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    rma)
-      FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0"
-      )
+    adaptor|p2p|rma)
+      # Surface the libibverbs device/port selection path when the kernel
+      # sysfs preflight succeeds but IBRC still reports zero usable devices.
+      export FLAGCX_DEBUG="${FLAGCX_DEBUG:-INFO}"
+      export FLAGCX_DEBUG_SUBSYS="${FLAGCX_DEBUG_SUBSYS:-INIT,NET,ENV}"
       ;;
   esac
 }
@@ -72,13 +73,59 @@ flagcx_ci_prepare() {
   nvcc --version
   hy-smi --showproductname || true
 
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
+        "$suite" == "rma" ]]; then
     echo "Network interfaces visible inside the CI container:"
     ls /sys/class/net 2>/dev/null || true
     echo "RDMA devices visible inside the CI container:"
     ls /sys/class/infiniband 2>/dev/null || true
     ls /sys/class/infiniband_verbs 2>/dev/null || true
     ls /dev/infiniband 2>/dev/null || true
+  fi
+}
+
+flagcx_ci_validate_rdma() {
+  local suite=$1
+  local link_layer_file link_layer state_file state
+  local found_link_layer=0
+  local found_supported_link_layer=0
+  local found_active_port=0
+
+  # FlagCX obtains link_layer and state from the verbs HCA ports (shca_*),
+  # rather than from their ib0..ib3 network interfaces. Reject the runner
+  # before building unless at least one port meets IBRC's selection criteria.
+  while IFS= read -r link_layer_file; do
+    [[ -n "$link_layer_file" ]] || continue
+    found_link_layer=1
+    link_layer=$(<"$link_layer_file")
+    state_file=${link_layer_file%/link_layer}/state
+    if [[ -r "$state_file" ]]; then
+      state=$(<"$state_file")
+    else
+      state="<missing>"
+    fi
+    echo "Hygon RDMA port: $link_layer_file=$link_layer, $state_file=$state"
+    case "${link_layer,,}" in
+      ethernet|infiniband)
+        found_supported_link_layer=1
+        if [[ "$state" == 4:* ]]; then
+          found_active_port=1
+        fi
+        ;;
+    esac
+  done < <(compgen -G "/sys/class/infiniband/shca_*/ports/*/link_layer" || true)
+
+  if [[ "$found_link_layer" != 1 ]]; then
+    echo "Hygon $suite tests require RDMA, but no SHCA port link_layer file is visible in sysfs." >&2
+    return 1
+  fi
+  if [[ "$found_supported_link_layer" != 1 ]]; then
+    echo "Hygon $suite tests require an SHCA port whose link_layer is Ethernet (RoCE) or InfiniBand; the runner reported only unsupported values such as Unspecified." >&2
+    return 1
+  fi
+  if [[ "$found_active_port" != 1 ]]; then
+    echo "Hygon $suite tests require an SHCA port whose link_layer is Ethernet (RoCE) or InfiniBand and whose state is 4: ACTIVE." >&2
+    return 1
   fi
 }
 

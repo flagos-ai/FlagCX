@@ -312,13 +312,23 @@ flagcxResult_t cudaAdaptorStreamWaitEvent(flagcxStream_t stream,
 
 flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
                                             uint64_t value, int flags) {
-  (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
+  if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxInvalidArgument;
+
+  unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    waitFlags |= CU_STREAM_WAIT_VALUE_FLUSH;
+
   CUstream cuStream = (CUstream)(stream->base);
-  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
-                                     CU_STREAM_WAIT_VALUE_GEQ);
-  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  CUresult err =
+      cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value, waitFlags);
+  if (err == CUDA_SUCCESS)
+    return flagcxSuccess;
+  if (err == CUDA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t cudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
@@ -967,6 +977,20 @@ flagcxResult_t cudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorGetAddressRange(const void *ptr, void **base,
+                                          size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  CUdeviceptr allocationBase = 0;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, size, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = (void *)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor cudaAdaptor {
   "CUDA",
       // Basic functions
@@ -1034,6 +1058,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       cudaAdaptorSymMulticastCreate, cudaAdaptorSymMulticastBind,
       cudaAdaptorSymMulticastTeardown, cudaAdaptorSymMulticastFree,
       cudaAdaptorGetLastError, cudaAdaptorGetPointerType,
+      cudaAdaptorGetAddressRange,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

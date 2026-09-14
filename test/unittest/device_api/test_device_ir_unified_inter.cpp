@@ -516,6 +516,8 @@ int main(int argc, char *argv[]) {
 
       for (int combo = 0; combo < kUnifiedIrSignalComboCount && s21Pass;
            combo++) {
+        if ((expectedPutCoopMask & (uint32_t{1} << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -573,6 +575,8 @@ int main(int argc, char *argv[]) {
 
       for (int combo = 0; combo < kUnifiedIrSignalComboCount && s22Pass;
            combo++) {
+        if ((expectedPutCoopMask & (uint32_t{1} << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;
@@ -630,6 +634,8 @@ int main(int argc, char *argv[]) {
       int prevNodeBase = prevNode * intraSize + intraRank;
 
       for (int combo = 0; combo < kUnifiedIrS23ComboCount && s23Pass; combo++) {
+        if ((expectedPutCounterMask & (uint32_t{1} << combo)) == 0)
+          continue;
         int teamIdx = combo % 2;
         size_t off = combo * count;
         int senderRank = (teamIdx == 0) ? prevNodeBase : prevWorld;

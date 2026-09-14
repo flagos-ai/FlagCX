@@ -350,13 +350,28 @@ flagcxResult_t ducudaAdaptorGetDeviceByPciBusId(int *dev,
 
 flagcxResult_t ducudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
                                               uint64_t value, int flags) {
-  (void)flags;
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
+  if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxInvalidArgument;
+
+  // The current DU driver supports ordinary stream memory waits but not the
+  // acquire/flush guarantee required after a NIC or peer device publishes the
+  // waited-on value. Report the missing capability without invoking a driver
+  // flag that can surface as a generic error on this CUDA-compatible runtime.
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxNotSupported;
+
+  unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
+
   CUstream cuStream = (CUstream)(stream->base);
-  CUresult err = cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value,
-                                     CU_STREAM_WAIT_VALUE_GEQ);
-  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  CUresult err =
+      cuStreamWaitValue64(cuStream, (CUdeviceptr)addr, value, waitFlags);
+  if (err == CUDA_SUCCESS)
+    return flagcxSuccess;
+  if (err == CUDA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
 flagcxResult_t ducudaAdaptorStreamWriteValue64(flagcxStream_t stream,
                                                void *addr, uint64_t value,
@@ -546,6 +561,20 @@ flagcxResult_t ducudaAdaptorSymMulticastFree(void *mcHandle) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ducudaAdaptorGetAddressRange(const void *ptr, void **base,
+                                            size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  CUdeviceptr allocationBase = 0;
+  CUresult result =
+      cuMemGetAddressRange(&allocationBase, size, (CUdeviceptr)ptr);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *base = (void *)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor ducudaAdaptor {
   "DUCUDA",
       // Basic functions
@@ -619,6 +648,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      ducudaAdaptorGetAddressRange,
 };
 
 #endif // USE_DU_ADAPTOR

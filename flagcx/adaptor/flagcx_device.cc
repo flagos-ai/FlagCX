@@ -12,13 +12,13 @@
 #include "mem_alloc_registry.h"
 #include "p2p.h"
 #include "proxy.h"
-#include "reg_pool.h"
 #include <cstdio>
 #include <cstring>
 #include <pthread.h>
 #include <sched.h>
 
 #include "dev_api_backend.h"
+#include <cstdint>
 
 // ==========================================================================
 // DevComm lifecycle
@@ -274,7 +274,8 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
 
   for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
     struct flagcxIpcTableEntry *e = &comm->ipcTable[k];
-    if (e->hostPeerPtrs == nullptr && e->devPeerPtrs == nullptr) {
+    if (e->hostPeerPtrs == nullptr && e->hostPeerBasePtrs == nullptr &&
+        e->devPeerPtrs == nullptr) {
       continue; // empty slot
     }
 
@@ -285,12 +286,15 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
     }
 
     // Close IPC handles
-    if (e->hostPeerPtrs) {
+    if (e->hostPeerBasePtrs) {
       for (int i = 0; i < e->nPeers; i++) {
-        if (e->hostPeerPtrs[i] && e->hostPeerPtrs[i] != e->basePtr) {
-          deviceAdaptor->ipcMemHandleClose(e->hostPeerPtrs[i]);
-        }
+        if (e->hostPeerBasePtrs[i])
+          deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
       }
+      free(e->hostPeerBasePtrs);
+      e->hostPeerBasePtrs = nullptr;
+    }
+    if (e->hostPeerPtrs) {
       free(e->hostPeerPtrs);
       e->hostPeerPtrs = nullptr;
     }
@@ -315,7 +319,8 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
     return;
   }
   struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
-  if (e->hostPeerPtrs == nullptr && e->devPeerPtrs == nullptr) {
+  if (e->hostPeerPtrs == nullptr && e->hostPeerBasePtrs == nullptr &&
+      e->devPeerPtrs == nullptr) {
     e->inUse = false;
     return;
   }
@@ -333,6 +338,7 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
     return;
   }
   d->hostPeerPtrs = e->hostPeerPtrs;
+  d->hostPeerBasePtrs = e->hostPeerBasePtrs;
   d->devPeerPtrs = e->devPeerPtrs;
   d->nPeers = e->nPeers;
   d->basePtr = e->basePtr;
@@ -341,6 +347,7 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
 
   // Clear slot — now reusable by buildIpcPeerPointers
   e->hostPeerPtrs = nullptr;
+  e->hostPeerBasePtrs = nullptr;
   e->devPeerPtrs = nullptr;
   e->nPeers = 0;
   e->basePtr = nullptr;
@@ -351,10 +358,88 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
 // IPC peer pointer exchange
 // ==========================================================================
 
+struct flagcxIpcPeerDesc {
+  flagcxIpcHandleData handleData;
+  size_t handleSize;
+  size_t allocationSize;
+  size_t userOffset;
+  size_t userSize;
+  bool valid;
+};
+
+flagcxResult_t flagcxGetIpcExportRange(const void *buff, size_t size,
+                                       void **exportBase,
+                                       size_t *allocationSize,
+                                       size_t *userOffset) {
+  if (buff == nullptr || size == 0 || exportBase == nullptr ||
+      allocationSize == nullptr || userOffset == nullptr)
+    return flagcxInvalidArgument;
+
+  *exportBase = const_cast<void *>(buff);
+  *allocationSize = size;
+  *userOffset = 0;
+  if (deviceAdaptor->getAddressRange == nullptr)
+    return flagcxSuccess;
+
+  void *allocationBase = nullptr;
+  size_t queriedSize = 0;
+  flagcxResult_t res =
+      deviceAdaptor->getAddressRange(buff, &allocationBase, &queriedSize);
+  if (res == flagcxNotSupported)
+    return flagcxSuccess;
+  if (res != flagcxSuccess)
+    return res;
+
+  uintptr_t userAddress = reinterpret_cast<uintptr_t>(buff);
+  uintptr_t baseAddress = reinterpret_cast<uintptr_t>(allocationBase);
+  if (allocationBase == nullptr || userAddress < baseAddress) {
+    WARN("IPC allocation range does not contain buffer %p (base %p)", buff,
+         allocationBase);
+    return flagcxInvalidUsage;
+  }
+  size_t offset = userAddress - baseAddress;
+  if (offset > queriedSize || size > queriedSize - offset) {
+    WARN("IPC buffer %p size %zu exceeds allocation %p size %zu", buff, size,
+         allocationBase, queriedSize);
+    return flagcxInvalidUsage;
+  }
+
+  *exportBase = allocationBase;
+  *allocationSize = queriedSize;
+  *userOffset = offset;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
+                                           size_t allocationSize,
+                                           size_t userOffset, size_t userSize,
+                                           void **peerPtr) {
+  if (importedBase == nullptr || allocationSize == 0 || userSize == 0 ||
+      peerPtr == nullptr)
+    return flagcxInvalidArgument;
+  *peerPtr = nullptr;
+
+  if (userOffset > allocationSize || userSize > allocationSize - userOffset) {
+    WARN("IPC user range offset %zu size %zu exceeds allocation size %zu",
+         userOffset, userSize, allocationSize);
+    return flagcxInvalidUsage;
+  }
+  uintptr_t mappingBase = reinterpret_cast<uintptr_t>(importedBase);
+  if (userOffset > UINTPTR_MAX - mappingBase) {
+    WARN("IPC peer mapping address overflow for base %p offset %zu",
+         importedBase, userOffset);
+    return flagcxInvalidUsage;
+  }
+
+  *peerPtr = reinterpret_cast<void *>(mappingBase + userOffset);
+  return flagcxSuccess;
+}
+
 int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   int slot = -1;
   for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
     if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
+        comm->ipcTable[k].hostPeerBasePtrs == nullptr &&
         comm->ipcTable[k].devPeerPtrs == nullptr) {
       slot = k;
       break;
@@ -372,53 +457,105 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   int *localRankToRank = comm->localRankToRank;
 
   flagcxResult_t res = flagcxSuccess;
-  struct flagcxP2pIpcDesc *allDescs = nullptr;
+  struct flagcxIpcPeerDesc *allDescs = nullptr;
   void **hostPeerPtrs = nullptr;
+  void **hostPeerBasePtrs = nullptr;
   void **devPeerPtrs = nullptr;
 
   // Step 1: Get IPC handle for existing user buffer.
-  struct flagcxP2pIpcDesc myIpcDesc;
+  struct flagcxIpcPeerDesc myIpcDesc;
   memset(&myIpcDesc, 0, sizeof(myIpcDesc));
+  void *exportBase = buff;
+  res =
+      flagcxGetIpcExportRange(buff, size, &exportBase,
+                              &myIpcDesc.allocationSize, &myIpcDesc.userOffset);
+  if (res != flagcxSuccess) {
+    WARN("buildIpcPeerPointers: cannot resolve allocation range for buff %p",
+         buff);
+  } else {
+    INFO(FLAGCX_INIT,
+         "buildIpcPeerPointers: buff=%p size=%zu exportBase=%p "
+         "allocationSize=%zu userOffset=%zu",
+         buff, size, exportBase, myIpcDesc.allocationSize,
+         myIpcDesc.userOffset);
+  }
 
-  // Check globalRegPool for pre-registered handle
-  {
-    flagcxRegItem *item = globalRegPool.getItem(nullptr, buff);
-    if (item && item->localIpcHandleData.reserved[0] != 0) {
-      memcpy(&myIpcDesc.handleData, &item->localIpcHandleData,
-             sizeof(myIpcDesc.handleData));
-      myIpcDesc.size = size;
-    } else {
-      // Create IPC handle directly on the existing buffer (do NOT allocate new)
-      size_t ipcSize = 0;
-      flagcxIpcMemHandle_t handlePtr = NULL;
-      res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
-      if (res != flagcxSuccess) {
-        WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
-        return -1;
-      }
-      res = deviceAdaptor->ipcMemHandleGet(handlePtr, buff);
-      if (res != flagcxSuccess) {
-        WARN("buildIpcPeerPointers: ipcMemHandleGet failed for buff %p", buff);
+  // Export lazily from the allocation base. globalRegPool entries describe
+  // page-aligned registration ranges and may span more than one allocation,
+  // so they cannot safely cache a single IPC handle.
+  if (res == flagcxSuccess) {
+    size_t ipcSize = 0;
+    flagcxIpcMemHandle_t handlePtr = NULL;
+    res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+    if (res != flagcxSuccess) {
+      WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
+      if (handlePtr != NULL)
         deviceAdaptor->ipcMemHandleFree(handlePtr);
-        return -1;
+    } else if (handlePtr == NULL || ipcSize == 0 ||
+               ipcSize > sizeof(myIpcDesc.handleData)) {
+      WARN("buildIpcPeerPointers: IPC handle size %zu exceeds storage %zu",
+           ipcSize, sizeof(myIpcDesc.handleData));
+      if (handlePtr != NULL)
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+      res = flagcxNotSupported;
+    } else {
+      res = deviceAdaptor->ipcMemHandleGet(handlePtr, exportBase);
+      if (res != flagcxSuccess) {
+        WARN("buildIpcPeerPointers: ipcMemHandleGet failed for allocation %p",
+             exportBase);
+      } else {
+        res = flagcxStoreIpcHandle(&myIpcDesc.handleData, handlePtr, ipcSize);
+        if (res != flagcxSuccess) {
+          WARN("buildIpcPeerPointers: cannot store IPC handle of size %zu",
+               ipcSize);
+        } else {
+          myIpcDesc.handleSize = ipcSize;
+          myIpcDesc.userSize = size;
+          myIpcDesc.valid = true;
+        }
       }
-      memcpy(&myIpcDesc.handleData, handlePtr, sizeof(flagcxIpcHandleData));
-      myIpcDesc.size = size;
       deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
 
   // Step 2: All-gather IPC descriptors across local ranks
-  allDescs = (struct flagcxP2pIpcDesc *)malloc(nRanks *
-                                               sizeof(struct flagcxP2pIpcDesc));
+  allDescs = (struct flagcxIpcPeerDesc *)malloc(
+      nRanks * sizeof(struct flagcxIpcPeerDesc));
   if (!allDescs)
     return -1;
-  memset(allDescs, 0, nRanks * sizeof(struct flagcxP2pIpcDesc));
+  memset(allDescs, 0, nRanks * sizeof(struct flagcxIpcPeerDesc));
   allDescs[myRank] = myIpcDesc;
 
   FLAGCXCHECKGOTO(bootstrapCollAllGather(comm->bootstrap, allDescs,
-                                         sizeof(struct flagcxP2pIpcDesc)),
+                                         sizeof(struct flagcxIpcPeerDesc)),
                   res, fail);
+
+  // IPC export is optional, but every local rank must make the same decision
+  // before any peer starts opening handles. In particular, do not return
+  // before the all-gather when one rank cannot export its allocation; that
+  // would leave its local peers blocked in this collective.
+  for (int lr = 0; lr < localRanks; lr++) {
+    int globalR = localRankToRank[lr];
+    struct flagcxIpcPeerDesc *pd = &allDescs[globalR];
+    if (!pd->valid) {
+      INFO(FLAGCX_INIT,
+           "buildIpcPeerPointers: rank %d has no exportable IPC handle; "
+           "disabling IPC for this local group",
+           globalR);
+      res = flagcxNotSupported;
+      goto fail;
+    }
+    if (pd->handleSize == 0 || pd->handleSize > sizeof(pd->handleData) ||
+        pd->userOffset > pd->allocationSize ||
+        pd->userSize > pd->allocationSize - pd->userOffset) {
+      WARN("buildIpcPeerPointers: rank %d reported an invalid IPC range "
+           "(handleSize=%zu allocationSize=%zu userOffset=%zu userSize=%zu)",
+           globalR, pd->handleSize, pd->allocationSize, pd->userOffset,
+           pd->userSize);
+      res = flagcxInvalidUsage;
+      goto fail;
+    }
+  }
 
   // Step 3: Open peer IPC handles
   hostPeerPtrs = (void **)malloc(localRanks * sizeof(void *));
@@ -427,14 +564,20 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
     goto fail;
   }
   memset(hostPeerPtrs, 0, localRanks * sizeof(void *));
+  hostPeerBasePtrs = (void **)malloc(localRanks * sizeof(void *));
+  if (!hostPeerBasePtrs) {
+    res = flagcxSystemError;
+    goto fail;
+  }
+  memset(hostPeerBasePtrs, 0, localRanks * sizeof(void *));
 
   for (int lr = 0; lr < localRanks; lr++) {
     int globalR = localRankToRank[lr];
     if (globalR == myRank) {
       hostPeerPtrs[lr] = buff;
     } else {
-      struct flagcxP2pIpcDesc *pd = &allDescs[globalR];
-      if (pd->size > 0 && deviceAdaptor->ipcMemHandleOpen) {
+      struct flagcxIpcPeerDesc *pd = &allDescs[globalR];
+      if (pd->valid && deviceAdaptor->ipcMemHandleOpen) {
         void *peerPtr = nullptr;
         flagcxIpcMemHandle_t handlePtr = (flagcxIpcMemHandle_t)&pd->handleData;
         res = deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerPtr);
@@ -443,7 +586,11 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
                globalR);
           goto fail;
         }
-        hostPeerPtrs[lr] = peerPtr;
+        hostPeerBasePtrs[lr] = peerPtr;
+        FLAGCXCHECKGOTO(flagcxResolveIpcPeerAddress(
+                            peerPtr, pd->allocationSize, pd->userOffset,
+                            pd->userSize, &hostPeerPtrs[lr]),
+                        res, fail);
       } else {
         hostPeerPtrs[lr] = nullptr;
       }
@@ -465,6 +612,7 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
 
   // Store in comm->ipcTable
   comm->ipcTable[slot].hostPeerPtrs = hostPeerPtrs;
+  comm->ipcTable[slot].hostPeerBasePtrs = hostPeerBasePtrs;
   comm->ipcTable[slot].devPeerPtrs = devPeerPtrs;
   comm->ipcTable[slot].nPeers = localRanks;
   comm->ipcTable[slot].basePtr = buff;
@@ -474,19 +622,22 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
        "buildIpcPeerPointers: rank %d slot %d buff=%p devPeerPtrs=%p", myRank,
        slot, buff, (void *)devPeerPtrs);
   for (int lr = 0; lr < localRanks; lr++) {
-    INFO(FLAGCX_INIT, "buildIpcPeerPointers:   hostPeerPtrs[%d]=%p", lr,
-         hostPeerPtrs[lr]);
+    INFO(FLAGCX_INIT,
+         "buildIpcPeerPointers:   hostPeerPtrs[%d]=%p mappingBase=%p", lr,
+         hostPeerPtrs[lr], hostPeerBasePtrs[lr]);
   }
   return slot;
 
 fail:
   free(allDescs);
-  if (hostPeerPtrs) {
+  if (hostPeerBasePtrs) {
     for (int i = 0; i < localRanks; i++) {
-      if (hostPeerPtrs[i] && hostPeerPtrs[i] != buff) {
-        deviceAdaptor->ipcMemHandleClose(hostPeerPtrs[i]);
-      }
+      if (hostPeerBasePtrs[i])
+        deviceAdaptor->ipcMemHandleClose(hostPeerBasePtrs[i]);
     }
+    free(hostPeerBasePtrs);
+  }
+  if (hostPeerPtrs) {
     free(hostPeerPtrs);
   }
   if (devPeerPtrs) {
@@ -501,11 +652,14 @@ flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm) {
   while (!flagcxIntruQueueEmpty(&comm->deferredIpcQueue)) {
     struct flagcxDeferredIpcEntry *d =
         flagcxIntruQueueDequeue(&comm->deferredIpcQueue);
-    if (d->hostPeerPtrs) {
+    if (d->hostPeerBasePtrs) {
       for (int j = 0; j < d->nPeers; j++) {
-        if (d->hostPeerPtrs[j] && d->hostPeerPtrs[j] != d->basePtr)
-          deviceAdaptor->ipcMemHandleClose(d->hostPeerPtrs[j]);
+        if (d->hostPeerBasePtrs[j])
+          deviceAdaptor->ipcMemHandleClose(d->hostPeerBasePtrs[j]);
       }
+      free(d->hostPeerBasePtrs);
+    }
+    if (d->hostPeerPtrs) {
       free(d->hostPeerPtrs);
     }
     if (d->devPeerPtrs)

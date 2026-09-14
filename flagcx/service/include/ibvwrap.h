@@ -139,6 +139,28 @@ flagcxWrapIbvPostSend(struct ibv_qp *qp, struct ibv_send_wr *wr,
   return flagcxSuccess;
 }
 
+static inline flagcxResult_t flagcxIbOneSidedPostResult(int ret) {
+  if (ret == IBV_SUCCESS)
+    return flagcxSuccess;
+  if (ret == ENOMEM)
+    return flagcxInProgress;
+  return flagcxSystemError;
+}
+
+// One-sided callers must distinguish temporary send-queue pressure from a
+// permanent verbs failure. Keep the legacy two-sided behavior unchanged.
+static inline flagcxResult_t
+flagcxWrapIbvPostSendOneSided(struct ibv_qp *qp, struct ibv_send_wr *wr,
+                              struct ibv_send_wr **bad_wr) {
+  int ret = qp->context->ops.post_send(qp, wr, bad_wr);
+  flagcxResult_t result = flagcxIbOneSidedPostResult(ret);
+  if (result == flagcxSystemError) {
+    WARN("ibv_post_send() failed with error %s, Bad WR %p, First WR %p",
+         strerror(ret), bad_wr == NULL ? NULL : *bad_wr, wr);
+  }
+  return result;
+}
+
 static inline flagcxResult_t
 flagcxWrapIbvPostRecv(struct ibv_qp *qp, struct ibv_recv_wr *wr,
                       struct ibv_recv_wr **bad_wr) {

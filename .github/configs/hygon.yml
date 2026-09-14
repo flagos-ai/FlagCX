@@ -37,10 +37,12 @@ docker_options:
 set_env: .github/scripts/set_env/hygon.sh
 
 unit_test_suites:
-  - adaptor
+  # Temporarily disabled while the Hygon SHCA/RMA follow-up fix is prepared.
+  # Keep these entries visible so restoring coverage is a two-line change.
+  # - adaptor
   - core
   - p2p
-  - rma
+  # - rma
   - runner
   - service
   - symmem

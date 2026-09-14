@@ -13,7 +13,7 @@
  * (write-with-imm orders payload before the imm). Shared state is mutex-
  * or atomic-guarded (callbacks run on ACCL IO threads).
  *
- * Built with USE_ACCL_BAREX=1 (IBRC registry slot, like USE_UCX) or
+ * Built with USE_ACCL_BAREX=1 (RDMA registry slot, like USE_UCX) or
  * loaded as a plugin .so (preferred; see the export note below).
  * FLAGCX_BAREX_DISABLE=1 opts out at runtime.
  ************************************************************************/
@@ -1071,10 +1071,11 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     // Device name lookup
     barexnet::barexGetDevFromName,
 
-    // Optional batch helpers
+    // Optional batch helpers and MR metadata
     NULL, // iputBatch
     NULL, // testBatch
     NULL, // igetBatch
+    NULL, // getMrInfo
 };
 
 /* Plugin export (FLAGCX_NET_ADAPTOR_PLUGIN, v1 vtable). Prefer this over

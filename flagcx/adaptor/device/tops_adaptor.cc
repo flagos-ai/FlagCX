@@ -502,6 +502,7 @@ struct flagcxDeviceAdaptor topsAdaptor {
       topsAdaptorSymMulticastTeardown, topsAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      flagcxDeviceAdaptorGetAddressRangeNotSupported,
 };
 
 #endif // USE_ENFLAME_ADAPTOR

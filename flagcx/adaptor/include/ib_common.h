@@ -123,9 +123,20 @@ struct flagcxIbGidInfo {
 
 struct flagcxIbMrHandle {
   ibv_mr *mrs[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  struct flagcxIbMrHandle *nextDeferred;
 };
 
 #define FLAGCX_NET_IB_REQ_UNUSED 0
+#define FLAGCX_IB_UNSIGNALED_WR_ID_PREFIX 0xffffffffffffff00ULL
+
+static inline uint64_t flagcxIbUnsignaledWrId(uint8_t reqIndex) {
+  return FLAGCX_IB_UNSIGNALED_WR_ID_PREFIX | reqIndex;
+}
+
+static inline bool flagcxIbIsUnsignaledWrId(uint64_t wrId) {
+  return (wrId & FLAGCX_IB_UNSIGNALED_WR_ID_PREFIX) ==
+         FLAGCX_IB_UNSIGNALED_WR_ID_PREFIX;
+}
 #define FLAGCX_NET_IB_REQ_SEND 1
 #define FLAGCX_NET_IB_REQ_RECV 2
 #define FLAGCX_NET_IB_REQ_FLUSH 3
@@ -250,6 +261,10 @@ struct flagcxIbSendFifo {
 struct flagcxIbRequest {
   struct flagcxIbNetCommBase *base;
   int type;
+  // Completion errors are recorded on the request identified by wr_id. Data
+  // CQs are shared, so the request being polled is not necessarily the one
+  // whose completion was returned.
+  flagcxResult_t result;
   struct flagcxSocket *sock;
   int events[FLAGCX_IB_MAX_DEVS_PER_NIC];
   struct flagcxIbNetCommDevBase *devBases[FLAGCX_IB_MAX_DEVS_PER_NIC];
@@ -327,6 +342,9 @@ struct alignas(32) flagcxIbNetCommBase {
   // Track necessary remDevInfo here
   int nRemDevs;
   struct flagcxIbDevInfo remDevs[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  // A registration rollback can itself fail. Retain partially cleaned
+  // wrappers until close retries them before destroying their QPs and PDs.
+  struct flagcxIbMrHandle *deferredMrHandles;
 };
 
 struct flagcxIbSendComm {
@@ -478,6 +496,13 @@ flagcxIbCommonPostFifo(struct flagcxIbRecvComm *comm, int n, void **data,
 flagcxResult_t
 flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
                          const struct flagcxIbCommonTestOps *ops);
+flagcxResult_t
+flagcxIbCommonRecordDataCompletion(struct flagcxIbNetCommBase *base,
+                                   uint64_t wrId, int devIndex,
+                                   flagcxResult_t result);
+flagcxResult_t
+flagcxIbCommonRecordUnsignaledCompletion(struct flagcxIbNetCommBase *base,
+                                         uint64_t wrId, flagcxResult_t result);
 
 static_assert((sizeof(struct flagcxIbNetCommBase) % 32) == 0,
               "flagcxIbNetCommBase size must be 32-byte multiple to ensure "
@@ -515,5 +540,16 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                            ibv_mr **mhandle);
 flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
                                        ibv_mr *mhandle);
+typedef flagcxResult_t (*flagcxIbDeregMrCallback)(flagcxIbNetCommDevBase *base,
+                                                  ibv_mr *mhandle);
+flagcxResult_t flagcxIbDeregMrWithCallback(void *comm, void *mhandle,
+                                           flagcxIbDeregMrCallback callback);
+flagcxResult_t
+flagcxIbDeregMrOrDeferWithCallback(struct flagcxIbNetCommBase *base,
+                                   void *mhandle,
+                                   flagcxIbDeregMrCallback callback);
+flagcxResult_t
+flagcxIbDrainDeferredMrsWithCallback(struct flagcxIbNetCommBase *base,
+                                     flagcxIbDeregMrCallback callback);
 
 #endif // FLAGCX_IB_COMMON_H_

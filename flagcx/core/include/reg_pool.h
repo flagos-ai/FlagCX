@@ -6,7 +6,9 @@
 #include "flagcx.h"
 #include "net.h"
 #include "register.h"
+#include <map>
 #include <memory>
+#include <tuple>
 #include <unistd.h>
 #include <unordered_map>
 
@@ -22,8 +24,11 @@ public:
   flagcxResult_t addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
                               struct flagcxProxyConnector *proxyConn);
   flagcxResult_t removeRegItemNetHandles(void *comm, flagcxRegItem *reg);
-  flagcxResult_t addP2pHandle(void *comm, flagcxRegItem *reg, void *handle,
+  flagcxResult_t addP2pHandle(void *comm, flagcxRegItem *reg,
+                              struct flagcxIpcRegInfo *handle,
                               struct flagcxProxyConnector *proxyConn);
+  struct flagcxIpcRegInfo *findP2pHandle(void *comm, int peerRank,
+                                         void *allocationBase);
   flagcxResult_t removeRegItemP2pHandles(void *comm, flagcxRegItem *reg);
   flagcxResult_t removeAllP2pHandles(void *comm);
   flagcxResult_t removeAllNetHandles(void *comm);
@@ -42,6 +47,8 @@ private:
       uintptr_t, std::unordered_map<uintptr_t, std::unique_ptr<flagcxRegItem>>>
       regPool; // <commPtr, <beginAddr, regItem>> (only GLOBAL_POOL_KEY owns
                // data)
+  using P2pIpcCacheKey = std::tuple<uintptr_t, int, uintptr_t>;
+  std::map<P2pIpcCacheKey, struct flagcxIpcRegInfo *> p2pIpcCache;
   uintptr_t pageSize;
 };
 

@@ -22,13 +22,23 @@ protected:
   static flagcxDeviceHandle_t devHandle;
   static flagcxComm_t comm;
   static flagcxStream_t stream;
-  // Data window buffer (registered for RMA)
+  // Data window buffer with independent IPC and optional network locators.
   static void *dataBuff;
   // Signal buffer (registered for one-sided signals)
   static void *signalBuff;
   static flagcxWindow_t dataWin;
   static size_t size;
   static size_t signalSize;
-  static bool oneSidedAvailable;
-  static const char *oneSidedSkipReason;
+  // The same binary runs in two explicit modes. Network mode requires a valid
+  // network MR; IPC mode requires a resolved peer data mapping. Signal
+  // capability is tracked separately for platforms without stream signals.
+  static bool requireIpc;
+  static bool windowAvailable;
+  static bool networkRmaAvailable;
+  static bool ipcRmaAvailable;
+  static bool dataRmaAvailable;
+  static const char *dataRmaSkipReason;
+  static bool signalRmaAvailable;
+  static bool signalRmaSetupFailed;
+  static const char *signalRmaSkipReason;
 };

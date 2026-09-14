@@ -427,6 +427,7 @@ struct flagcxDeviceAdaptor musaAdaptor {
       musaAdaptorSymMulticastTeardown, musaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      flagcxDeviceAdaptorGetAddressRangeNotSupported,
 };
 
 #endif // USE_MUSA_ADAPTOR

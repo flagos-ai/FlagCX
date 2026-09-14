@@ -701,4 +701,10 @@ flagcxNetAdaptor flagcxNetSocket = {
 
     // Device name lookup
     NULL, // getDevFromName
+
+    // Optional one-sided batch helpers and MR metadata
+    NULL, // iputBatch
+    NULL, // testBatch
+    NULL, // igetBatch
+    NULL, // getMrInfo
 };

@@ -30,6 +30,7 @@ struct flagcxP2pRequest {
 
 struct flagcxP2pIpcDesc {
   flagcxIpcHandleData handleData; // Actual IPC handle data
+  size_t handleSize;              // Valid bytes in handleData
   size_t size;
 };
 

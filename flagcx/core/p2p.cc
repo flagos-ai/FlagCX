@@ -2,6 +2,7 @@
 #include "adaptor.h"
 #include "comm.h"
 #include "info.h"
+#include "onesided.h"
 #include "proxy.h"
 #include "reg_pool.h"
 #include <algorithm>
@@ -41,11 +42,8 @@ size_t computeP2pChunkSize(size_t nbytes) {
 struct p2pIpcExpInfo {
   flagcxP2pIpcDesc ipcDesc;
   bool legacyIpcCap;
-  int impFd;
-  size_t size;
-  uintptr_t offset; // page gap: regAddr - baseAddr (constant per registration)
-  uintptr_t
-      userOffset; // recv-side local offset: userbuff - regAddr (fresh per call)
+  size_t handleSize;
+  size_t allocationSize;
 };
 
 static std::map<uint64_t, std::pair<int, int>>
@@ -648,6 +646,10 @@ flagcxP2pRecvProxyConnect(struct flagcxProxyConnection *connection,
 flagcxResult_t
 flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
                                  struct flagcxP2pIpcDesc *ipcDesc, void **ptr) {
+  if (ipcDesc == NULL || ptr == NULL)
+    return flagcxInvalidArgument;
+
+  memset(ipcDesc, 0, sizeof(*ipcDesc));
   // 'directMap' parameter is reserved for future cuMem (direct mapping)
   FLAGCXCHECK(deviceAdaptor->deviceMalloc(ptr, size, flagcxMemDevice, NULL));
   size_t ipcSize = 0;
@@ -658,6 +660,16 @@ flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
     deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
     *ptr = NULL;
     return res;
+  }
+  if (handlePtr == NULL || ipcSize == 0 ||
+      ipcSize > sizeof(ipcDesc->handleData)) {
+    WARN("Unsupported IPC handle size %zu (capacity %zu)", ipcSize,
+         sizeof(ipcDesc->handleData));
+    if (handlePtr != NULL)
+      deviceAdaptor->ipcMemHandleFree(handlePtr);
+    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
+    *ptr = NULL;
+    return flagcxNotSupported;
   }
 
   // Get the actual IPC handle data
@@ -670,7 +682,14 @@ flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
     *ptr = NULL;
     return res;
   }
-  memcpy(&ipcDesc->handleData, handlePtr, sizeof(flagcxIpcHandleData));
+  res = flagcxStoreIpcHandle(&ipcDesc->handleData, handlePtr, ipcSize);
+  if (res != flagcxSuccess) {
+    deviceAdaptor->ipcMemHandleFree(handlePtr);
+    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
+    *ptr = NULL;
+    return res;
+  }
+  ipcDesc->handleSize = ipcSize;
   ipcDesc->size = size;
 
   // Free the temporary handle wrapper
@@ -682,6 +701,10 @@ flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               int peer, size_t size,
                                               struct flagcxP2pIpcDesc *ipcDesc,
                                               void **devMemPtr) {
+  if (ipcDesc == NULL || devMemPtr == NULL || ipcDesc->handleSize == 0 ||
+      ipcDesc->handleSize > sizeof(ipcDesc->handleData))
+    return flagcxInvalidArgument;
+
   *devMemPtr = NULL;
 
   // CRITICAL: Set device context before opening IPC handle
@@ -714,9 +737,6 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
   *regBufFlag = 0;
   *offsetOut = 0;
   *peerRmtAddrsOut = NULL;
-  int legacyIpcCap = 0;
-  uintptr_t baseAddr = 0;
-  uintptr_t baseSize = 0;
 
   flagcxRegItem *regItem =
       globalRegPool.getItem(comm, const_cast<void *>(userbuff));
@@ -732,65 +752,47 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
        comm ? comm->rank : -1, userbuff, buffsize, (void *)regRecord->addr,
        regItem->handles.size(), nPeers);
 
-  // Compute base address range (once, shared across peers)
-  {
-    uintptr_t beginAddr = 0;
-    uintptr_t endAddr = 0;
-    if (regRecord->baseAddr && regRecord->baseSize) {
-      beginAddr = regRecord->baseAddr;
-      endAddr = regRecord->baseAddr + regRecord->baseSize;
-    } else {
-      globalRegPool.getPagedAddr(const_cast<void *>(userbuff), buffsize,
-                                 &beginAddr, &endAddr);
-    }
-    baseAddr = beginAddr;
-    baseSize = endAddr - beginAddr;
-    legacyIpcCap = 1;
+  void *allocationBase = nullptr;
+  size_t allocationSize = 0;
+  size_t userOffset = 0;
+  ret = flagcxGetIpcExportRange(userbuff, buffsize, &allocationBase,
+                                &allocationSize, &userOffset);
+  if (ret != flagcxSuccess) {
     INFO(FLAGCX_REG,
-         "rank %d - computed register range base=%p size=%zu user=%p "
-         "regAddr=%p",
-         comm->rank, (void *)baseAddr, (size_t)baseSize, userbuff,
-         (void *)regRecord->addr);
+         "rank %d - cannot resolve IPC allocation for buffer %p size %zu "
+         "(error %d); falling back to FIFO",
+         comm->rank, userbuff, buffsize, ret);
+    return flagcxSuccess;
   }
-
-  // Compute offsets:
-  // pageGap: constant per registration (base-addr to registered-buffer-start)
-  // userOffset: per-call (registered-buffer-start to this call's userbuff)
-  assert((uintptr_t)regRecord->addr >= baseAddr);
-  uintptr_t pageGap = regRecord->addr - baseAddr;
-  assert((uintptr_t)userbuff >= regRecord->addr);
-  uintptr_t userOffset = (uintptr_t)userbuff - regRecord->addr;
+  INFO(FLAGCX_REG,
+       "rank %d - resolved IPC allocation base=%p size=%zu user=%p "
+       "userOffset=%zu",
+       comm->rank, allocationBase, allocationSize, userbuff, userOffset);
 
   for (int p = 0; p < nPeers; p++) {
     int peerRank = peerRanks[p];
 
-    // Check cache: existing info with handleReady for this peer (this comm
-    // only)
-    flagcxIpcRegInfo *existingInfo = NULL;
-    for (auto &handlePair : regItem->handles) {
-      if (handlePair.second.handle && handlePair.second.ownerComm == comm) {
-        flagcxIpcRegInfo *info = (flagcxIpcRegInfo *)handlePair.second.handle;
-        if (info->peerRank == peerRank) {
-          existingInfo = info;
-          break;
-        }
-      }
+    // An imported mapping is reusable only for the same communicator, peer,
+    // and allocation. A page registration item may cover multiple allocations.
+    flagcxIpcRegInfo *existingInfo =
+        globalRegPool.findP2pHandle(comm, peerRank, allocationBase);
+    if (existingInfo != nullptr) {
+      FLAGCXCHECK(globalRegPool.addP2pHandle(comm, regItem, existingInfo,
+                                             existingInfo->ipcProxyconn));
     }
 
     if (existingInfo && existingInfo->handleReady) {
-      // Cache hit: reuse rmtRegAddr + new userOffset. No exchange needed.
-      // rmtRegAddr already includes pageGap (applied in
-      // flagcxP2pProxyRegister), so only add userOffset here.
+      void *peerAddress = nullptr;
+      FLAGCXCHECK(flagcxResolveIpcPeerAddress(
+          existingInfo->impInfo.importedBase, existingInfo->allocationSize,
+          userOffset, buffsize, &peerAddress));
       *regBufFlag = 1;
-      *peerRmtAddrsOut =
-          (uintptr_t *)((uintptr_t)existingInfo->impInfo.rmtRegAddr +
-                        userOffset);
+      *peerRmtAddrsOut = static_cast<uintptr_t *>(peerAddress);
       *offsetOut = 0;
       INFO(FLAGCX_REG,
-           "rank %d - IPC cache HIT: buff %p peer %d rmtAddr=%p + "
-           "userOffset=%zu = "
-           "%p",
-           comm->rank, userbuff, peerRank, existingInfo->impInfo.rmtRegAddr,
+           "rank %d - IPC cache HIT: buff %p peer %d importedBase=%p + "
+           "userOffset=%zu = %p",
+           comm->rank, userbuff, peerRank, existingInfo->impInfo.importedBase,
            userOffset, *peerRmtAddrsOut);
     } else {
       // Cache miss: get IPC handle for OWN (recv) buffer, send to SENDER's
@@ -801,7 +803,6 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
           comm->proxyState->peerAddresses == NULL) {
         return flagcxSuccess; // fall back to FIFO
       }
-      flagcxIpcHandleData handleData = {};
       struct flagcxProxyConnector *proxyConn = &comm->gproxyConn[peerRank];
 
       // Determine sameProcess
@@ -812,36 +813,52 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
                             ? 1
                             : 0;
 
+      flagcxIpcHandleData handleData = {};
+      size_t handleSize = 0;
       if (sameProcess) {
-        // Same process: store raw baseAddr pointer in handleData
-        memcpy(&handleData, &baseAddr, sizeof(void *));
-      } else if (legacyIpcCap) {
-        // Different process: get IPC handle for our own buffer
-        char zeros[sizeof(flagcxIpcHandleData)] = {};
-        if (memcmp(&regItem->localIpcHandleData, zeros,
-                   sizeof(flagcxIpcHandleData)) != 0) {
-          memcpy(&handleData, &regItem->localIpcHandleData,
-                 sizeof(flagcxIpcHandleData));
-        } else {
-          flagcxIpcMemHandle_t ipcHandle = NULL;
-          size_t handleSize = 0;
-          FLAGCXCHECKGOTO(
-              deviceAdaptor->ipcMemHandleCreate(&ipcHandle, &handleSize), ret,
-              fail);
-          FLAGCXCHECKGOTO(
-              deviceAdaptor->ipcMemHandleGet(ipcHandle, (void *)baseAddr), ret,
-              fail);
-          if (handleSize <= sizeof(flagcxIpcHandleData)) {
-            memcpy(&handleData, ipcHandle, handleSize);
-            memcpy(&regItem->localIpcHandleData, ipcHandle, handleSize);
-          }
-          deviceAdaptor->ipcMemHandleFree(ipcHandle);
-        }
+        // The peer proxy shares this address space, so exchange the raw
+        // allocation base instead of opening an IPC handle.
+        handleSize = sizeof(void *);
+        FLAGCXCHECKGOTO(
+            flagcxStoreIpcHandle(&handleData, &allocationBase, handleSize), ret,
+            fail);
       } else {
-        WARN("rank %d - Non-legacy IPC not implemented for peer %d", comm->rank,
-             peerRank);
-        ret = flagcxInternalError;
-        goto fail;
+        flagcxIpcMemHandle_t ipcHandle = NULL;
+        ret = deviceAdaptor->ipcMemHandleCreate(&ipcHandle, &handleSize);
+        if (ret != flagcxSuccess) {
+          INFO(FLAGCX_REG,
+               "rank %d - cannot create IPC handle for allocation %p; "
+               "falling back to FIFO",
+               comm->rank, allocationBase);
+          if (ipcHandle != NULL)
+            deviceAdaptor->ipcMemHandleFree(ipcHandle);
+          return flagcxSuccess;
+        }
+        if (ipcHandle == NULL || handleSize == 0 ||
+            handleSize > sizeof(handleData)) {
+          INFO(FLAGCX_REG,
+               "rank %d - IPC handle size %zu is unsupported; falling back "
+               "to FIFO",
+               comm->rank, handleSize);
+          if (ipcHandle != NULL)
+            deviceAdaptor->ipcMemHandleFree(ipcHandle);
+          return flagcxSuccess;
+        }
+        ret = deviceAdaptor->ipcMemHandleGet(ipcHandle, allocationBase);
+        if (ret != flagcxSuccess) {
+          INFO(FLAGCX_REG,
+               "rank %d - cannot export IPC allocation %p; falling back to "
+               "FIFO",
+               comm->rank, allocationBase);
+          deviceAdaptor->ipcMemHandleFree(ipcHandle);
+          return flagcxSuccess;
+        }
+        ret = flagcxStoreIpcHandle(&handleData, ipcHandle, handleSize);
+        flagcxResult_t freeRes = deviceAdaptor->ipcMemHandleFree(ipcHandle);
+        if (ret != flagcxSuccess)
+          return ret;
+        if (freeRes != flagcxSuccess)
+          return freeRes;
       }
 
       // Connect to peer's proxy if not already connected
@@ -854,58 +871,68 @@ static flagcxResult_t p2pRegisterBuffer(flagcxHeteroComm *comm,
       // Build IPC export info and send to peer's proxy
       struct p2pIpcExpInfo ipcExpInfo;
       memset(&ipcExpInfo, 0, sizeof(ipcExpInfo));
-      memcpy(&ipcExpInfo.ipcDesc.handleData, &handleData,
-             sizeof(flagcxIpcHandleData));
+      FLAGCXCHECKGOTO(flagcxStoreIpcHandle(&ipcExpInfo.ipcDesc.handleData,
+                                           &handleData, handleSize),
+                      ret, fail);
+      ipcExpInfo.ipcDesc.handleSize = handleSize;
       ipcExpInfo.legacyIpcCap = true;
-      ipcExpInfo.size = baseSize;
-      ipcExpInfo.offset = pageGap;
-      ipcExpInfo.userOffset = userOffset;
+      ipcExpInfo.handleSize = handleSize;
+      ipcExpInfo.allocationSize = allocationSize;
 
-      void *rmtRegAddr = NULL;
+      void *importedBase = NULL;
       INFO(FLAGCX_REG,
-           "rank %d - proxy register to peer %d pageGap=%zu userOffset=%zu",
-           comm->rank, peerRank, pageGap, userOffset);
+           "rank %d - proxy register allocation %p size=%zu to peer %d",
+           comm->rank, allocationBase, allocationSize, peerRank);
       FLAGCXCHECKGOTO(flagcxProxyCallBlocking((flagcxHeteroComm *)comm,
                                               proxyConn, flagcxProxyMsgRegister,
                                               &ipcExpInfo,
                                               sizeof(struct p2pIpcExpInfo),
-                                              &rmtRegAddr, sizeof(void *)),
+                                              &importedBase, sizeof(void *)),
                       ret, fail);
 
-      // Create cache entry
-      if (!existingInfo) {
+      if (importedBase) {
         struct flagcxIpcRegInfo *newInfo =
             (flagcxIpcRegInfo *)calloc(1, sizeof(flagcxIpcRegInfo));
         if (newInfo == NULL) {
           WARN("Failed to allocate IPC registration info");
           ret = flagcxSystemError;
+          struct flagcxIpcImpInfo impInfo = {importedBase, true};
+          if (!sameProcess)
+            flagcxProxyCallBlocking(comm, proxyConn, flagcxProxyMsgDeregister,
+                                    &impInfo, sizeof(impInfo), NULL, 0);
           goto fail;
         }
         newInfo->peerRank = peerRank;
-        newInfo->baseAddr = (void *)baseAddr;
+        newInfo->allocationBase = allocationBase;
+        newInfo->allocationSize = allocationSize;
         newInfo->ipcProxyconn = proxyConn;
         newInfo->sameProcess = sameProcess;
-        FLAGCXCHECKGOTO(
-            globalRegPool.addP2pHandle(comm, regItem, newInfo, proxyConn), ret,
-            fail);
+        newInfo->impInfo.importedBase = importedBase;
+        newInfo->impInfo.legacyIpcCap = true;
+        newInfo->handleReady = true;
+        ret = globalRegPool.addP2pHandle(comm, regItem, newInfo, proxyConn);
+        if (ret != flagcxSuccess) {
+          struct flagcxIpcImpInfo impInfo = {importedBase, true};
+          if (!sameProcess)
+            flagcxProxyCallBlocking(comm, proxyConn, flagcxProxyMsgDeregister,
+                                    &impInfo, sizeof(impInfo), NULL, 0);
+          free(newInfo);
+          goto fail;
+        }
         existingInfo = newInfo;
-      }
-
-      if (rmtRegAddr) {
-        existingInfo->impInfo.rmtRegAddr = rmtRegAddr;
-        existingInfo->impInfo.offset = pageGap;
-        existingInfo->impInfo.legacyIpcCap = true;
-        existingInfo->handleReady = true;
         regRecord->state |= IPC_REG_COMPLETE;
+        void *peerAddress = nullptr;
+        FLAGCXCHECKGOTO(flagcxResolveIpcPeerAddress(importedBase,
+                                                    allocationSize, userOffset,
+                                                    buffsize, &peerAddress),
+                        ret, fail);
         *regBufFlag = 1;
-        // rmtRegAddr already includes pageGap (applied in
-        // flagcxP2pProxyRegister), so only add userOffset here.
-        *peerRmtAddrsOut = (uintptr_t *)((uintptr_t)rmtRegAddr + userOffset);
+        *peerRmtAddrsOut = static_cast<uintptr_t *>(peerAddress);
         *offsetOut = 0;
         INFO(FLAGCX_REG,
              "rank %d - proxy register got IPC for peer %d "
-             "rmtAddr=%p + userOffset=%zu = %p",
-             comm->rank, peerRank, rmtRegAddr, userOffset, *peerRmtAddrsOut);
+             "importedBase=%p + userOffset=%zu = %p",
+             comm->rank, peerRank, importedBase, userOffset, *peerRmtAddrsOut);
       }
     }
   }
@@ -921,12 +948,19 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
                                        int *peerRanks, int nPeers,
                                        int *regBufFlag, uintptr_t *offsetOut,
                                        uintptr_t **peerRmtAddrsOut) {
+  if (regBufFlag == nullptr || offsetOut == nullptr ||
+      peerRmtAddrsOut == nullptr)
+    return flagcxInvalidArgument;
   flagcxReg tempReg = {};
   struct flagcxReg *regRecord = NULL;
   *regBufFlag = 0;
   *offsetOut = 0;
   *peerRmtAddrsOut = NULL;
-  if (comm && userbuff && buffSize > 0 && nPeers > 0) {
+  if (nPeers != 1 || peerRanks == nullptr) {
+    WARN("flagcxP2pRegisterBuffer requires exactly one peer, got %d", nPeers);
+    return flagcxInvalidArgument;
+  }
+  if (comm && userbuff && buffSize > 0) {
     INFO(FLAGCX_REG,
          "flagcxP2pRegisterBuffer enter: comm=%p rank=%d buff=%p size=%zu "
          "nPeers=%d",
@@ -934,6 +968,16 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
     flagcxRegItem *regItem =
         globalRegPool.getItem(comm, const_cast<void *>(userbuff));
     if (regItem != NULL) {
+      uintptr_t userAddress = reinterpret_cast<uintptr_t>(userbuff);
+      if (userAddress < regItem->beginAddr || userAddress > regItem->endAddr ||
+          buffSize > regItem->endAddr - userAddress) {
+        INFO(FLAGCX_REG,
+             "flagcxP2pRegisterBuffer: range %p size %zu is outside "
+             "registration [%p, %p); falling back to FIFO",
+             userbuff, buffSize, reinterpret_cast<void *>(regItem->beginAddr),
+             reinterpret_cast<void *>(regItem->endAddr));
+        return flagcxSuccess;
+      }
       tempReg.addr = regItem->beginAddr;
       tempReg.baseAddr = regItem->beginAddr;
       tempReg.baseSize = regItem->endAddr - regItem->beginAddr;
@@ -966,14 +1010,14 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
     return flagcxSuccess;
   }
   INFO(FLAGCX_REG,
-       "P2P deregister buffer: comm=%p peerRank=%d rmtRegAddr=%p offset=%zu "
-       "legacyIpcCap=%d",
-       comm, info->peerRank, info->impInfo.rmtRegAddr, info->impInfo.offset,
+       "P2P deregister buffer: comm=%p peerRank=%d allocationBase=%p "
+       "importedBase=%p legacyIpcCap=%d",
+       comm, info->peerRank, info->allocationBase, info->impInfo.importedBase,
        info->impInfo.legacyIpcCap);
 
   // Close IPC handle via proxy if it was opened by proxy (send side),
   // or directly if opened inline (legacy path).
-  if (info->impInfo.rmtRegAddr && info->impInfo.legacyIpcCap) {
+  if (info->impInfo.importedBase && info->impInfo.legacyIpcCap) {
     if (info->ipcProxyconn && !info->sameProcess) {
       // Only call proxy if the peer socket is still alive.
       // Primary guarantee: flagcxHeteroCommDestroy calls
@@ -992,16 +1036,12 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
             comm, info->ipcProxyconn, flagcxProxyMsgDeregister, &info->impInfo,
             sizeof(struct flagcxIpcImpInfo), NULL, 0));
       }
-    } else if (!info->ipcProxyconn) {
+    } else if (!info->ipcProxyconn && !info->sameProcess) {
       // Legacy inline open — close directly
-      void *baseAddr =
-          (void *)((uintptr_t)info->impInfo.rmtRegAddr - info->impInfo.offset);
-      deviceAdaptor->ipcMemHandleClose(baseAddr);
+      deviceAdaptor->ipcMemHandleClose(info->impInfo.importedBase);
     }
     // sameProcess: no handle to close
   }
-  free(info);
-
   return flagcxSuccess;
 }
 
@@ -1030,17 +1070,29 @@ flagcxResult_t flagcxP2pProxyRegister(struct flagcxProxyConnection *connection,
   }
 
   INFO(FLAGCX_REG,
-       "P2P proxy register: size=%zu offset=%zu legacyIpcCap=%d sameProcess=%d",
-       ipcExpInfo->size, ipcExpInfo->offset, (int)ipcExpInfo->legacyIpcCap,
-       connection->sameProcess);
+       "P2P proxy register: allocationSize=%zu handleSize=%zu "
+       "legacyIpcCap=%d sameProcess=%d",
+       ipcExpInfo->allocationSize, ipcExpInfo->handleSize,
+       (int)ipcExpInfo->legacyIpcCap, connection->sameProcess);
 
-  if (ipcExpInfo->legacyIpcCap) {
+  if (ipcExpInfo->legacyIpcCap && ipcExpInfo->allocationSize > 0) {
     if (connection->sameProcess) {
       // Same process: handleData stores the raw pointer
-      void *baseAddr = NULL;
-      memcpy(&baseAddr, &ipcExpInfo->ipcDesc.handleData, sizeof(void *));
-      regAddr = (void *)((uintptr_t)baseAddr + ipcExpInfo->offset);
+      if (ipcExpInfo->handleSize != sizeof(void *)) {
+        WARN("P2P proxy register: invalid same-process handle size %zu",
+             ipcExpInfo->handleSize);
+        ret = flagcxInvalidArgument;
+        goto fail;
+      }
+      memcpy(&regAddr, &ipcExpInfo->ipcDesc.handleData, sizeof(void *));
     } else {
+      if (ipcExpInfo->handleSize == 0 ||
+          ipcExpInfo->handleSize > sizeof(ipcExpInfo->ipcDesc.handleData)) {
+        WARN("P2P proxy register: invalid IPC handle size %zu",
+             ipcExpInfo->handleSize);
+        ret = flagcxInvalidArgument;
+        goto fail;
+      }
       FLAGCXCHECKGOTO(deviceAdaptor->setDevice(connection->cudaDev), ret, fail);
       flagcxIpcMemHandle_t ipcHandle =
           (flagcxIpcMemHandle_t)&ipcExpInfo->ipcDesc.handleData;
@@ -1049,7 +1101,7 @@ flagcxResult_t flagcxP2pProxyRegister(struct flagcxProxyConnection *connection,
         const unsigned char *hb =
             (const unsigned char *)&ipcExpInfo->ipcDesc.handleData;
         bool allZero = true;
-        for (size_t i = 0; i < sizeof(flagcxIpcHandleData); i++) {
+        for (size_t i = 0; i < ipcExpInfo->handleSize; i++) {
           if (hb[i] != 0) {
             allZero = false;
             break;
@@ -1065,12 +1117,13 @@ flagcxResult_t flagcxP2pProxyRegister(struct flagcxProxyConnection *connection,
                       fail);
       if (regAddr == NULL) {
         WARN("P2P proxy register: ipcMemHandleOpen returned NULL");
+        ret = flagcxInternalError;
         goto fail;
       }
-      regAddr = (void *)((uintptr_t)regAddr + ipcExpInfo->offset);
     }
   } else {
-    WARN("P2P proxy register: non-legacy IPC not implemented");
+    WARN("P2P proxy register: invalid IPC export metadata");
+    ret = flagcxInvalidArgument;
     goto fail;
   }
 
@@ -1100,8 +1153,8 @@ flagcxP2pProxyDeregister(struct flagcxProxyConnection *connection,
 
   if (ipcInfo->legacyIpcCap && !connection->sameProcess) {
     FLAGCXCHECKGOTO(deviceAdaptor->setDevice(connection->cudaDev), ret, exit);
-    void *baseAddr = (void *)((uintptr_t)ipcInfo->rmtRegAddr - ipcInfo->offset);
-    FLAGCXCHECKGOTO(deviceAdaptor->ipcMemHandleClose(baseAddr), ret, exit);
+    FLAGCXCHECKGOTO(deviceAdaptor->ipcMemHandleClose(ipcInfo->importedBase),
+                    ret, exit);
   }
 exit:
   *done = 1;

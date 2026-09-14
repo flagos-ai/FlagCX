@@ -14,15 +14,15 @@
 #include "comm.h" // for flagcxHeteroComm_t
 
 struct flagcxSymWindow; // forward declaration
+struct flagcxNetMrInfo;
 
 struct flagcxOneSideHandleInfo {
   uintptr_t *baseVas;
-  size_t regionSize; // size of the registered memory region (bytes)
-  uint32_t *rkeys;
-  uint32_t *lkeys;
-  void *localMrHandle; // local rank's MR handle for deregMr
+  size_t *regionSizes;             // [nRanks]
+  struct flagcxNetMrInfo *mrInfos; // [nRanks], including per-NIC keys
+  void *localMrHandle;             // local rank's MR handle for deregMr
   void *localRecvComm; // recvComm used for MR registration (PD match)
-  // Full-mesh IB connections (including self loopback, aligned with NCCL GIN)
+  // Full-mesh RDMA connections (including self loopback, aligned with NCCL GIN)
   void **fullSendComms; // [nRanks] per-peer sendComm — alias for
                         // contextSendComms[0]
   void **fullRecvComms; // [nRanks] per-peer recvComm — alias for
@@ -41,9 +41,6 @@ struct flagcxOneSideHandleInfo {
   // NULL if VMM not available or window not registered with
   // FLAGCX_WIN_COLL_SYMMETRIC.
   struct flagcxSymWindow *symWin;
-
-  // IPC table slot index for signal buffer D2D bypass (-1 if none).
-  int signalIpcSlot;
 };
 
 // Internal implementation used by sym_heap and flagcxCommRegister
@@ -54,6 +51,17 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
 // Stores results in comm->ipcTable and returns the table index.
 // Returns -1 on failure (IPC not available for this buffer).
 struct flagcxComm;
+// Resolve the allocation exported by an IPC handle and the offset of the user
+// buffer within it. Backends without allocation-range introspection retain the
+// legacy exact-pointer behavior.
+flagcxResult_t flagcxGetIpcExportRange(const void *buff, size_t size,
+                                       void **exportBase,
+                                       size_t *allocationSize,
+                                       size_t *userOffset);
+flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
+                                           size_t allocationSize,
+                                           size_t userOffset, size_t userSize,
+                                           void **peerPtr);
 int buildIpcPeerPointers(struct flagcxComm *comm, void *buff, size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

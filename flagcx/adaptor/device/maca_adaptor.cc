@@ -350,13 +350,41 @@ flagcxResult_t macaAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
   }
 }
 
-flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
-                                            int) {
-  return flagcxNotSupported;
+flagcxResult_t macaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
+                                            uint64_t value, int flags) {
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+  if (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxInvalidArgument;
+
+  // The current MACA runtime does not implement the acquire/flush semantics
+  // required after a NIC or peer device writes the waited-on value.  Reject
+  // the stronger contract before calling mcStreamWaitValue64 so callers can
+  // select another path without causing a runtime error or poisoning the
+  // device context.
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxNotSupported;
+
+  mcError_t error =
+      mcStreamWaitValue64(stream->base, addr, value,
+                          mcStreamWaitValue_flags::MC_STREAM_WAIT_VALUE_GEQ);
+  if (error == mcSuccess)
+    return flagcxSuccess;
+  if (error == mcErrorNotSupported)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
-flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
-                                             int) {
-  return flagcxNotSupported;
+
+flagcxResult_t macaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
+                                             uint64_t value, int flags) {
+  (void)flags;
+  if (stream == NULL || addr == NULL)
+    return flagcxInvalidArgument;
+
+  mcError_t error = mcStreamWriteValue64(
+      stream->base, addr, value,
+      mcStreamWriteValue_flags::MC_STREAM_WRITE_VALUE_DEFAULT);
+  return error == mcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t
@@ -722,6 +750,17 @@ flagcxResult_t macaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorGetAddressRange(const void *ptr, void **base,
+                                          size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+
+  mcDeviceptr_t allocationBase = 0;
+  DEVCHECK(mcMemGetAddressRange(&allocationBase, size, (mcDeviceptr_t)ptr));
+  *base = (void *)(uintptr_t)allocationBase;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor macaAdaptor {
   "MACA",
       // Basic functions
@@ -787,7 +826,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       macaAdaptorSymMulticastCreate, macaAdaptorSymMulticastBind,
       macaAdaptorSymMulticastTeardown, macaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      macaAdaptorGetPointerType,
+      macaAdaptorGetPointerType, macaAdaptorGetAddressRange,
 };
 
 #endif // USE_METAX_ADAPTOR

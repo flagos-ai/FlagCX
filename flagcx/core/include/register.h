@@ -3,14 +3,34 @@
 
 #include "core.h"
 #include "device.h"
+#include <cstring>
 #include <unordered_map>
 #include <vector>
 
-#define FLAGCX_IPC_HANDLE_SIZE 64
+#define FLAGCX_IPC_HANDLE_SIZE 128
 
 typedef union {
-  char reserved[FLAGCX_IPC_HANDLE_SIZE];
+  alignas(8) char reserved[FLAGCX_IPC_HANDLE_SIZE];
 } flagcxIpcHandleData;
+
+static_assert(sizeof(flagcxIpcHandleData) == FLAGCX_IPC_HANDLE_SIZE,
+              "IPC handle storage must keep its fixed wire size");
+
+// The adaptor reports the actual vendor handle length at runtime. Keep wire
+// storage fixed-size for bootstrap/proxy messages, but never copy the storage
+// capacity from a smaller vendor allocation.
+static inline flagcxResult_t flagcxStoreIpcHandle(flagcxIpcHandleData *dst,
+                                                  const void *src,
+                                                  size_t handleSize) {
+  if (dst == nullptr || src == nullptr)
+    return flagcxInvalidArgument;
+  if (handleSize == 0 || handleSize > sizeof(*dst))
+    return flagcxNotSupported;
+
+  memset(dst, 0, sizeof(*dst));
+  memcpy(dst, src, handleSize);
+  return flagcxSuccess;
+}
 
 enum {
   NET_REG_COMPLETE = 0x01,
@@ -39,10 +59,8 @@ struct flagcxRegP2pHandle {
 };
 
 struct flagcxIpcImpInfo {
-  void *rmtRegAddr;
+  void *importedBase;
   bool legacyIpcCap;
-  uintptr_t offset;
-  // userOffset removed — sent fresh via SHM each call, never cached
 };
 
 struct flagcxPeerRegIpcAddr {
@@ -52,7 +70,9 @@ struct flagcxPeerRegIpcAddr {
 
 struct flagcxIpcRegInfo {
   int peerRank;
-  void *baseAddr;
+  void *allocationBase;
+  size_t allocationSize;
+  int refCount;
   struct flagcxProxyConnector *ipcProxyconn;
   struct flagcxIpcImpInfo impInfo;
   bool handleReady;
@@ -64,8 +84,6 @@ struct flagcxRegItem {
   uintptr_t endAddr = 0;
   int refCount = 1;
   std::vector<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
-  flagcxIpcHandleData localIpcHandleData =
-      {}; // sender's IPC handle bytes (hetero path)
   std::unordered_map<uintptr_t, void *>
       homoRegHandles; // commKey → backend CCL handle
 };

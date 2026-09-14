@@ -37,7 +37,7 @@ flagcx_ci_configure_suite() {
       ;;
     rma)
       FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "HETERO_ENV=-x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
+        "RMA_PLATFORM_ENV=-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1 -x FLAGCX_P2P_DISABLE=1"
       )
       ;;
   esac
@@ -49,7 +49,8 @@ flagcx_ci_prepare() {
   command -v mpirun
   command -v mxcc
 
-  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ]]; then
+  if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
+        "$suite" == "rma" ]]; then
     local -a hca_paths=()
     local -a hca_names=()
     local hca_path
@@ -64,16 +65,22 @@ flagcx_ci_prepare() {
     shopt -u nullglob
 
     if [[ ${#hca_paths[@]} -eq 0 ]]; then
-      echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
-      return 1
-    fi
-
-    for hca_path in "${hca_paths[@]}"; do
-      hca_names+=("${hca_path##*/}")
-    done
-    if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
-      local IFS=,
-      export FLAGCX_IB_HCA="${hca_names[*]}"
+      if [[ "$suite" != "rma" ]]; then
+        echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+        return 1
+      fi
+      # The RMA suite runs an explicit IPC invocation before its RDMA
+      # preflight. Leave HCA selection unset here so missing RDMA does not hide
+      # IPC regressions; flagcx_ci_validate_rdma will reject the NET phase.
+      echo "MetaX RMA IPC phase will run without a detected Broadcom RDMA HCA."
+    else
+      for hca_path in "${hca_paths[@]}"; do
+        hca_names+=("${hca_path##*/}")
+      done
+      if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
+        local IFS=,
+        export FLAGCX_IB_HCA="${hca_names[*]}"
+      fi
     fi
 
     if [[ -d /sys/class/net/bond0 ]]; then
@@ -93,6 +100,16 @@ flagcx_ci_prepare() {
     ls /sys/class/infiniband 2>/dev/null || true
     ls /dev/infiniband 2>/dev/null || true
     ip -o addr show 2>/dev/null || true
+  fi
+}
+
+flagcx_ci_validate_rdma() {
+  local suite=$1
+
+  if ! compgen -G "/sys/class/infiniband/bnxt_roce*" >/dev/null &&
+    ! compgen -G "/sys/class/infiniband/bnxt_re_bond*" >/dev/null; then
+    echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+    return 1
   fi
 }
 
@@ -125,14 +142,6 @@ flagcx_ci_run_suite_override() {
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
     echo "Skipping MetaX runner MPI tests: mcclAllGather segfaults in the current MCCL backend."
-    return
-  fi
-
-  if [[ "$suite" == "rma" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    FLAGCX_CI_TEST_LABEL="rma unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-    echo "Skipping MetaX RMA MPI tests: one-sided RMA is not supported by the current MetaX backend."
     return
   fi
 

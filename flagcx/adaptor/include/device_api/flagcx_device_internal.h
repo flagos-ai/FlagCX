@@ -96,8 +96,10 @@ struct flagcxDevCommInternal {
   // struct had no reader and would invite the generic teardown path to free
   // symmetric-heap memory with the wrong allocator.
   // Host-only: communicator registrations installed for these buffers.
-  // Non-null only when this DevComm created the registration and therefore
-  // must deregister it before freeing the backing allocation.
+  // Signal ownership is tracked by backing-buffer identity because an IPC-only
+  // registration is valid even when no network MR handle exists.
+  void *ownedSignalBuffer;
+  // Network registration installed together with ownedSignalBuffer, if any.
   struct flagcxOneSideHandleInfo *ownedSignalRegistration;
   void *putValueStagingBuffer; // 8 bytes host-pinned, MR registered
   struct flagcxOneSideHandleInfo *ownedStagingRegistration;

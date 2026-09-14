@@ -7,6 +7,16 @@ static int groupDepth = 0;
 static std::vector<stagedBuffer_t> sendStagedBufferList;
 static std::vector<stagedBuffer_t> recvStagedBufferList;
 
+static void
+bootstrapAdaptorFreeStagedBuffers(std::vector<stagedBuffer_t> &buffers) {
+  while (!buffers.empty()) {
+    stagedBuffer *buff = buffers.back();
+    buffers.pop_back();
+    free(buff->buffer);
+    free(buff);
+  }
+}
+
 // TODO: unsupported
 flagcxResult_t bootstrapAdaptorGetVersion(int *version) {
   return flagcxNotSupported;
@@ -83,50 +93,20 @@ flagcxResult_t bootstrapAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 flagcxResult_t bootstrapAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
+  bootstrapAdaptorFreeStagedBuffers(sendStagedBufferList);
+  bootstrapAdaptorFreeStagedBuffers(recvStagedBufferList);
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
+  bootstrapAdaptorFreeStagedBuffers(sendStagedBufferList);
+  bootstrapAdaptorFreeStagedBuffers(recvStagedBufferList);
   return flagcxSuccess;
 }
 
 flagcxResult_t bootstrapAdaptorCommAbort(flagcxInnerComm_t comm) {
-  for (size_t i = sendStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = sendStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  for (size_t i = recvStagedBufferList.size() - 1; i >= 0; --i) {
-    stagedBuffer *buff = recvStagedBufferList[i];
-    free(buff->buffer);
-    free(buff);
-  }
-  sendStagedBufferList.clear();
-  recvStagedBufferList.clear();
+  bootstrapAdaptorFreeStagedBuffers(sendStagedBufferList);
+  bootstrapAdaptorFreeStagedBuffers(recvStagedBufferList);
   return flagcxSuccess;
 }
 

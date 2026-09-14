@@ -1513,7 +1513,13 @@ struct flagcxNetAdaptor flagcxNetUcx = {
     NULL, // iputSignal - not supported on UCX
 
     // Device name lookup
-    flagcxUcxGetDevFromName // getDevFromName
+    flagcxUcxGetDevFromName, // getDevFromName
+
+    // Optional one-sided batch helpers and MR metadata
+    NULL, // iputBatch
+    NULL, // testBatch
+    NULL, // igetBatch
+    NULL, // getMrInfo
 };
 
 #endif // USE_UCX

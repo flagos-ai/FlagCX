@@ -473,6 +473,7 @@ struct flagcxDeviceAdaptor tsmicroAdaptor {
       tsmicroAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      flagcxDeviceAdaptorGetAddressRangeNotSupported,
 };
 
 #endif // USE_TSM_ADAPTOR

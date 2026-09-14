@@ -173,27 +173,30 @@ flagcxOneSideHandleInfo *makeRegistration(void *buffer, void *mrHandle) {
     return nullptr;
   registration->baseVas =
       static_cast<uintptr_t *>(calloc(1, sizeof(uintptr_t)));
-  registration->rkeys = static_cast<uint32_t *>(calloc(1, sizeof(uint32_t)));
-  registration->lkeys = static_cast<uint32_t *>(calloc(1, sizeof(uint32_t)));
-  if (!registration->baseVas || !registration->rkeys || !registration->lkeys) {
-    free(registration->lkeys);
-    free(registration->rkeys);
+  registration->regionSizes = static_cast<size_t *>(calloc(1, sizeof(size_t)));
+  registration->mrInfos =
+      static_cast<flagcxNetMrInfo *>(calloc(1, sizeof(flagcxNetMrInfo)));
+  if (!registration->baseVas || !registration->regionSizes ||
+      !registration->mrInfos) {
+    free(registration->mrInfos);
+    free(registration->regionSizes);
     free(registration->baseVas);
     free(registration);
     return nullptr;
   }
   registration->baseVas[0] = reinterpret_cast<uintptr_t>(buffer);
+  registration->regionSizes[0] = 1;
+  registration->nRanks = 1;
   registration->localMrHandle = mrHandle;
   registration->localRecvComm = reinterpret_cast<void *>(0x9000);
-  registration->signalIpcSlot = -1;
   return registration;
 }
 
 void freeRegistration(flagcxOneSideHandleInfo *registration) {
   if (!registration)
     return;
-  free(registration->lkeys);
-  free(registration->rkeys);
+  free(registration->mrInfos);
+  free(registration->regionSizes);
   free(registration->baseVas);
   free(registration);
 }
@@ -432,19 +435,25 @@ TEST_F(DefaultDevCommCleanupTest,
   heteroComm.stagingHandle = makeRegistration(stagingBuffer, stagingMr);
   ASSERT_NE(heteroComm.signalHandle, nullptr);
   ASSERT_NE(heteroComm.stagingHandle, nullptr);
+  heteroComm.rmaSignalBase = signalBuffer;
+  heteroComm.rmaSignalSize = 1;
+  heteroComm.rmaSignalIpcSlot = -1;
 
   flagcxDevCommInternal devComm = {};
   devComm.barrierIpcIndex = -1;
   devComm.signalIpcSlot = -1;
   devComm.signalBuffer = static_cast<uint64_t *>(signalBuffer);
   devComm.putValueStagingBuffer = stagingBuffer;
+  devComm.ownedSignalBuffer = signalBuffer;
   devComm.ownedSignalRegistration = heteroComm.signalHandle;
   devComm.ownedStagingRegistration = heteroComm.stagingHandle;
 
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, nullptr);
+  EXPECT_EQ(heteroComm.rmaSignalBase, nullptr);
   EXPECT_EQ(heteroComm.stagingHandle, nullptr);
+  EXPECT_EQ(devComm.ownedSignalBuffer, nullptr);
   EXPECT_EQ(devComm.ownedSignalRegistration, nullptr);
   EXPECT_EQ(devComm.ownedStagingRegistration, nullptr);
   ASSERT_EQ(cleanupEvents.size(), 4u);

@@ -46,6 +46,12 @@ FLAGCX_CI_NODE2_MPI_ARGS=(
 flagcx_ci_configure_suite() {
   local suite=$1
   case "$suite" in
+    adaptor)
+      # Keep the allocation-range unit test on the cudaMalloc-backed GDR path,
+      # matching the adaptor IPC MPI invocation. CUDA VMM/FABRIC allocation
+      # requires separate coverage on an IMEX-enabled container.
+      export FLAGCX_VMM_ENABLE=0
+      ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;

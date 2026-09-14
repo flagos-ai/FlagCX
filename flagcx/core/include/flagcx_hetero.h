@@ -17,6 +17,21 @@ enum flagcxRmaDescType {
   FLAGCX_RMA_PUT_VALUE = 3,
 };
 
+// One-sided adaptors report request-pool or send-queue pressure exclusively as
+// flagcxInProgress. All other errors are permanent for the current RMA epoch.
+static inline bool flagcxRmaPostResultIsRetryable(flagcxResult_t result) {
+  return result == flagcxInProgress;
+}
+
+static inline bool flagcxRmaBatchPostResultIsFatal(flagcxResult_t result,
+                                                   int posted, int count) {
+  if (posted < 0 || posted > count)
+    return true;
+  if (result == flagcxSuccess)
+    return posted != count;
+  return result != flagcxInProgress;
+}
+
 struct flagcxRmaDesc {
   int peer;
   enum flagcxRmaDescType type;
@@ -33,14 +48,11 @@ struct flagcxRmaDesc {
   struct flagcxRmaDesc *next; // intrusive link for inProgressQueues
 };
 
-// Intra-node IPC state for direct D2D bypass (per-comm RMA proxy).
-// Initialized once at RMA proxy start, holds IPC-mapped peer buffer pointers.
+// Intra-node IPC signal state for direct D2D bypass. Symmetric data windows
+// resolve peer pointers directly from their own IPC locators.
 struct flagcxRmaIpcState {
   int nRanks;
-  int *peerNodeIds;      // [nRanks] node ID of each peer
-  void ***peerDataBufs;  // [nRanks][oneSideHandleCount] IPC-mapped data buffers
   void **peerSignalBufs; // [nRanks] IPC-mapped signal buffers
-  int dataHandleCount;   // number of registered data windows
   uint64_t *signalSeqs; // [nRanks] per-peer accumulated signal counter (for D2D
                         // signal writes)
 };
@@ -216,18 +228,21 @@ flagcxResult_t flagcxHeteroWaitCounter(flagcxHeteroComm_t comm,
 flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
                                      size_t srcOffset, size_t dstOffset,
                                      size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
                                      flagcxStream_t stream, uint64_t *opSeq);
 
 // Stream-based PutSignal (with intra-node D2D bypass).
-flagcxResult_t
-flagcxHeteroPutSignalStream(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
-                            size_t dstOffset, size_t size, size_t signalOffset,
-                            int srcMrIdx, int dstMrIdx, uint64_t signalValue,
-                            flagcxStream_t stream, uint64_t *opSeq);
+flagcxResult_t flagcxHeteroPutSignalStream(
+    flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
+    size_t size, size_t signalOffset, int srcMrIdx, int dstMrIdx,
+    uint64_t signalValue, flagcxSymWindow_t srcWindow,
+    flagcxSymWindow_t dstWindow, flagcxStream_t stream, uint64_t *opSeq);
 
 // Initialize IPC state for intra-node D2D bypass.
-// Must be called after one-sided handles are registered
-// (flagcxOneSideRegister). Collective: ALL intra-node ranks must call.
+// Must be called after symmetric windows and signal IPC mappings are created.
+// It does not require network one-sided handles. Collective: ALL intra-node
+// ranks must call.
 flagcxResult_t flagcxHeteroRmaIpcInit(flagcxHeteroComm_t comm);
 
 // Cleanup IPC state.

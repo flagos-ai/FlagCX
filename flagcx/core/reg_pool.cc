@@ -7,6 +7,7 @@
 flagcxRegPool::flagcxRegPool() { pageSize = sysconf(_SC_PAGESIZE); }
 
 flagcxRegPool::~flagcxRegPool() {
+  p2pIpcCache.clear();
   regMap.clear();
   regPool.clear();
 }
@@ -40,23 +41,44 @@ flagcxRegPool::addNetHandle(void *comm, flagcxRegItem *reg, void *handle,
 }
 
 flagcxResult_t
-flagcxRegPool::addP2pHandle(void *comm, flagcxRegItem *reg, void *handle,
+flagcxRegPool::addP2pHandle(void *comm, flagcxRegItem *reg,
+                            flagcxIpcRegInfo *handle,
                             struct flagcxProxyConnector *proxyConn) {
-  if (reg == nullptr || comm == nullptr) {
+  if (reg == nullptr || comm == nullptr || handle == nullptr) {
     return flagcxSuccess;
   }
   for (auto &handlePair : reg->handles) {
-    if (handlePair.second.proxyConn == proxyConn) {
-      handlePair.second.handle = handle;
-      handlePair.second.ownerComm = comm;
+    if (handlePair.second.handle == handle &&
+        handlePair.second.ownerComm == comm)
       return flagcxSuccess;
-    }
+  }
+
+  P2pIpcCacheKey key{reinterpret_cast<uintptr_t>(comm), handle->peerRank,
+                     reinterpret_cast<uintptr_t>(handle->allocationBase)};
+  auto cached = p2pIpcCache.find(key);
+  if (cached == p2pIpcCache.end()) {
+    handle->refCount = 1;
+    p2pIpcCache.emplace(key, handle);
+  } else if (cached->second == handle) {
+    handle->refCount++;
+  } else {
+    return flagcxInvalidUsage;
   }
   flagcxRegNetHandle netHandle{nullptr, nullptr, nullptr};
   flagcxRegP2pHandle p2pHandle{handle, proxyConn, comm};
   reg->handles.push_back(std::make_pair(netHandle, p2pHandle));
 
   return flagcxSuccess;
+}
+
+flagcxIpcRegInfo *flagcxRegPool::findP2pHandle(void *comm, int peerRank,
+                                               void *allocationBase) {
+  if (comm == nullptr || allocationBase == nullptr)
+    return nullptr;
+  P2pIpcCacheKey key{reinterpret_cast<uintptr_t>(comm), peerRank,
+                     reinterpret_cast<uintptr_t>(allocationBase)};
+  auto it = p2pIpcCache.find(key);
+  return it == p2pIpcCache.end() ? nullptr : it->second;
 }
 
 flagcxResult_t flagcxRegPool::removeRegItemNetHandles(void *comm,
@@ -98,9 +120,29 @@ flagcxResult_t flagcxRegPool::removeRegItemP2pHandles(void *comm,
     if (entry.second.handle &&
         (comm == nullptr || entry.second.ownerComm == comm)) {
       flagcxIpcRegInfo *ipcInfo = (flagcxIpcRegInfo *)entry.second.handle;
-      FLAGCXCHECK(flagcxP2pDeregisterBuffer(
-          reinterpret_cast<flagcxHeteroComm *>(entry.second.ownerComm),
-          ipcInfo));
+      if (ipcInfo->refCount <= 0) {
+        WARN("removeRegItemP2pHandles: invalid IPC mapping refcount %d",
+             ipcInfo->refCount);
+        return flagcxInternalError;
+      }
+      if (ipcInfo->refCount == 1) {
+        P2pIpcCacheKey key{
+            reinterpret_cast<uintptr_t>(entry.second.ownerComm),
+            ipcInfo->peerRank,
+            reinterpret_cast<uintptr_t>(ipcInfo->allocationBase)};
+        auto cached = p2pIpcCache.find(key);
+        if (cached == p2pIpcCache.end() || cached->second != ipcInfo) {
+          WARN("removeRegItemP2pHandles: IPC mapping cache mismatch");
+          return flagcxInternalError;
+        }
+        FLAGCXCHECK(flagcxP2pDeregisterBuffer(
+            reinterpret_cast<flagcxHeteroComm *>(entry.second.ownerComm),
+            ipcInfo));
+        p2pIpcCache.erase(cached);
+        free(ipcInfo);
+      } else {
+        ipcInfo->refCount--;
+      }
       entry.second.handle = nullptr;
       entry.second.proxyConn = nullptr;
       entry.second.ownerComm = nullptr;
