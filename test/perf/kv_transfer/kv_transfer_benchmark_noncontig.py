@@ -345,15 +345,12 @@ class FlagCXTransport(Transport):
 
     def __init__(self, args):
         super().__init__(args)
-        import os
-        path = args.flagcx_path or os.getenv("FLAGCX_PATH") or os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        wrapper = os.path.join(path, "plugin", "interservice")
-        if wrapper not in sys.path:
-            sys.path.insert(0, wrapper)
-        from flagcx_wrapper import FLAGCXLibrary
-        lib = args.flagcx_lib_path or os.path.join(path, "build", "lib", "libflagcx.so")
-        self.flagcx = FLAGCXLibrary(lib)
+        # flagcx must be importable (pip-installed, or PYTHONPATH pointing at
+        # the repo's src/). libflagcx.so then resolves the same way for every
+        # consumer: $FLAGCX_PATH, the installed package's lib/ directory, or
+        # the system.
+        from flagcx.api import FLAGCXLibrary
+        self.flagcx = FLAGCXLibrary(args.flagcx_lib_path)
         self.engine = None
         self.conn = None
         self.sock = None
@@ -457,7 +454,6 @@ def main() -> None:
     p.add_argument("--nixl-backend", default="UCX")
     p.add_argument("--mooncake-protocol", default="rdma")
     p.add_argument("--flagcx-lib-path", default=None)
-    p.add_argument("--flagcx-path", default=None)
     args = p.parse_args()
 
     t = {"nixl": NixlTransport, "mooncake": MooncakeTransport,

@@ -430,26 +430,15 @@ class FlagCXBenchmark(TransportBenchmark):
 
     def __init__(self, args: argparse.Namespace):
         super().__init__(args)
-        import os
-        flagcx_path = args.flagcx_wrapper_path or os.getenv("FLAGCX_PATH", "")
-        if not flagcx_path:
-            # Default to repo-relative path (script is at test/perf/kv_transfer/)
-            flagcx_path = os.path.abspath(
-                os.path.join(os.path.dirname(__file__), "..", "..", "..")
-            )
-
-        wrapper_dir = os.path.join(flagcx_path, "plugin", "interservice")
-        if wrapper_dir not in sys.path:
-            sys.path.insert(0, wrapper_dir)
-
-        from flagcx_wrapper import FLAGCXLibrary, flagcxUniqueId
+        # flagcx must be importable (pip-installed, or PYTHONPATH pointing at
+        # the repo's src/). libflagcx.so then resolves the same way for every
+        # consumer: $FLAGCX_PATH, the installed package's lib/ directory, or
+        # the system.
+        from flagcx.api import FLAGCXLibrary, flagcxUniqueId
         self._FLAGCXLibrary = FLAGCXLibrary
         self._flagcxUniqueId = flagcxUniqueId
 
-        lib_path = args.flagcx_lib_path
-        if not lib_path:
-            lib_path = os.path.join(flagcx_path, "build", "lib", "libflagcx.so")
-        self.flagcx = FLAGCXLibrary(lib_path)
+        self.flagcx = FLAGCXLibrary(args.flagcx_lib_path)
 
         self.comm = None
         self.buffer: torch.Tensor = None
@@ -709,11 +698,8 @@ def main() -> None:
     )
     p.add_argument(
         "--flagcx-lib-path", default=None,
-        help="Path to libflagcx.so (default: $FLAGCX_PATH/build/lib/libflagcx.so)"
-    )
-    p.add_argument(
-        "--flagcx-wrapper-path", default=None,
-        help="Path to FlagCX wrapper directory (default: $FLAGCX_PATH)"
+        help="Path to libflagcx.so (default: resolved by flagcx itself, "
+             "from $FLAGCX_PATH, the installed package, or the system)"
     )
     args = p.parse_args()
 
@@ -741,7 +727,7 @@ def main() -> None:
     elif args.connector == "mooncake":
         print(f"  protocol={args.mooncake_protocol}")
     elif args.connector == "flagcx":
-        lib = args.flagcx_lib_path or "$FLAGCX_PATH/build/lib/libflagcx.so"
+        lib = args.flagcx_lib_path or "resolved by flagcx"
         print(f"  lib={lib}")
     print(f"  sizes: {', '.join(_pretty_size(s) for s in args.sizes)}")
     print("-" * 72)
