@@ -16,6 +16,10 @@ git submodule update --init --recursive
 pip install . -v --no-build-isolation
 ```
 
+The version comes from this checkout's git tags, so `setuptools_scm` (>=8)
+must be installed: `--no-build-isolation` skips the build requirements. Drop
+the flag and pip installs it for you.
+
 ![flagcx_pip_install.png](images/flagcx_pip_install.png)
 
 **Option B — C++ library (make):**
