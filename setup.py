@@ -30,6 +30,16 @@ from _build_config import (
     resolve_torch_backend,
 )
 
+try:
+    from _version_scheme import version_scheme
+except ImportError as exc:
+    # --no-build-isolation (the documented install path) skips [build-system]
+    # requires, and setuptools would then silently build a 0.0.0 artifact.
+    raise SystemExit(
+        "setuptools_scm is required to build FlagCX from a git checkout; "
+        "install it with: pip install 'setuptools_scm>=8'"
+    ) from exc
+
 # ---------------------------------------------------------------------------
 # Adaptor & torch detection
 # ---------------------------------------------------------------------------
@@ -207,7 +217,10 @@ os.makedirs(os.path.join(ROOT_DIR, "build"), exist_ok=True)
 
 setup(
     name="flagcx",
-    version="0.13.0",
+    use_scm_version={
+        "version_scheme": version_scheme,
+        "local_scheme": "no-local-version",
+    },
     description="FlagCX: A unified collective communication library",
     package_dir={"": "src"},
     packages=["flagcx"],
