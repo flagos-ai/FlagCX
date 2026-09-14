@@ -9,9 +9,24 @@
 # container can still provide CUDA/NCCL from another source, while deployment
 # supplies ABI-compatible libraries through the site runtime. Keep normal RPM
 # dependency generation by default; the openEuler CUDA 12 target opts out only
-# for the three vendor libraries that have no RPM provider there.
+# for the three vendor libraries that have no RPM provider there. Fedora has
+# native RPM providers for the CUDA libraries (NVIDIA's fedora repository)
+# but none for NCCL, so it opts out for NCCL alone.
 %if 0%{?external_vendor_runtime}
 %global __requires_exclude ^lib(cuda|cudart|nccl)\\.so\\..*
+%else
+%if 0%{?external_ccl_runtime}
+%global __requires_exclude ^libnccl\\.so\\..*
+%endif
+%endif
+%if "%{backend}" == "ascend"
+# CANN is distributed as a .run installer, not as RPMs, so no repository can
+# ever provide libascendcl.so / libhccl.so. Without this filter the built
+# libflagcx-ascend carries auto-generated requires on those SONAMEs and dnf
+# refuses the install ("nothing provides libascendcl.so") even though the
+# target host has CANN deployed. Deployment supplies CANN, the same contract
+# external_vendor_runtime expresses for the NVIDIA libraries.
+%global __requires_exclude ^lib(ascendcl|hccl)\\.so\\..*
 %endif
 
 # Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
@@ -64,7 +79,7 @@ Summary:        FlagCX library for %{backend}
 # Group-call API arrived in NCCL 2.10; ncclConfig appeared in 2.14.
 # 2.10 is the practical minimum for FlagCX's adaptor today; bump to 2.14
 # once we confirm ncclConfig is actually exercised.
-%if 0%{?external_vendor_runtime} == 0
+%if 0%{?external_vendor_runtime} == 0 && 0%{?external_ccl_runtime} == 0
 Requires:       libnccl >= 2.10
 %endif
 %endif
@@ -113,6 +128,13 @@ patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 %{_libdir}/libflagcx.so
 
 %changelog
+* Mon Sep 14 2026 FlagOS Contributors <contact@flagos.io> - 0.8.0-2
+- Filter the auto-generated libascendcl/libhccl requires for the ascend
+  backend: CANN is deployed by the host (.run installer), never satisfiable
+  by an RPM repository.
+- Tag the ascend RPM with the build distro (RPM_DIST_TAG), matching the
+  NVIDIA openEuler line.
+
 * Wed Jun 24 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-1
 - Add P2P engine perf benchmark (one-sided read/write)
 - Replace C++17 features with C++11 equivalents for RPM packaging
@@ -123,6 +145,9 @@ patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 - [UIL&PAL] FlagCX P2P Engine optimization
 - Store winFlags in flagcxWindow to fix non-NVIDIA build failure
 
+* Mon Jun 01 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-rc2.post1-1
+- Support Device API IR Bindings
+
 * Fri May 22 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-rc0.1-1
 - New upstream release v0.13.0-rc0.1
 - Support pool-only registration and optimize regpool containers
@@ -132,9 +157,6 @@ patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 - Add patch file for flagcx integration into nixl v1.1.0
 - Add CI workflow for symmetric memory tests
 - KV transfer benchmark
-
-* Mon Jun 01 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-rc2.post1-1
-- Support Device API IR Bindings
 
 * Wed May 13 2026 FlagOS Contributors <contact@flagos.io> - 0.12.0-1
 - Add Device API symmem and multicast support
