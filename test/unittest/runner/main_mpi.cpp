@@ -2,8 +2,13 @@
 // Provides main(), MPIEnvironment, and all fixture implementations
 // for the coll_*.cpp test files.
 
+#include "comm.h"
+#include "global_comm.h"
 #include "runner_fixtures.hpp"
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <thread>
 
 // ---------- MPIEnvironment ----------
 
@@ -38,6 +43,7 @@ void FlagCXCollTest::SetUp() {
   recvbuff = nullptr;
   hostsendbuff = nullptr;
   hostrecvbuff = nullptr;
+  stream = nullptr;
   size = 4ULL * 1024 * 1024; // 4MB
   count = size / sizeof(float);
 
@@ -52,7 +58,40 @@ void FlagCXCollTest::SetUp() {
             MPI_COMM_WORLD);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
+  flagcxResult_t commInitResult =
+      flagcxCommInitRank(&comm, nranks, &uniqueId, rank);
+  int localCommReady = commInitResult == flagcxSuccess && comm != nullptr;
+  int allCommsReady = 0;
+  MPI_Allreduce(&localCommReady, &allCommsReady, 1, MPI_INT, MPI_MIN,
+                MPI_COMM_WORLD);
+  ASSERT_EQ(allCommsReady, 1)
+      << "flagcxCommInitRank failed on at least one rank; local result="
+      << commInitResult;
+
+  // Forced-NET CI invocations must prove that they selected the intended
+  // hardware adaptor. FLAGCX_P2P_DISABLE only disables the IPC transport; it
+  // does not prevent flagcxNetInit() from falling back to Socket when RDMA is
+  // unavailable. Converge this check across ranks before any collective so a
+  // mixed or unexpected selection fails quickly instead of hanging later.
+  const char *expectedNetAdaptor = std::getenv("FLAGCX_CI_EXPECT_NET_ADAPTOR");
+  if (expectedNetAdaptor != nullptr && expectedNetAdaptor[0] != '\0') {
+    const char *actualNetAdaptor = nullptr;
+    if (comm->heteroComm != nullptr &&
+        comm->heteroComm->netAdaptor != nullptr) {
+      actualNetAdaptor = comm->heteroComm->netAdaptor->name;
+    }
+    int localAdaptorMatches =
+        actualNetAdaptor != nullptr &&
+        std::strcmp(actualNetAdaptor, expectedNetAdaptor) == 0;
+    int allAdaptorsMatch = 0;
+    MPI_Allreduce(&localAdaptorMatches, &allAdaptorsMatch, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allAdaptorsMatch, 1)
+        << "Forced-NET runner expected adaptor " << expectedNetAdaptor
+        << " on every rank, but rank " << rank << " selected "
+        << (actualNetAdaptor != nullptr ? actualNetAdaptor : "<none>");
+  }
+
   devHandle->streamCreate(&stream);
 
   devHandle->deviceMalloc(&sendbuff, size, flagcxMemDevice, NULL);
@@ -64,15 +103,38 @@ void FlagCXCollTest::SetUp() {
 }
 
 void FlagCXCollTest::TearDown() {
-  flagcxCommDestroy(comm);
+  if (teardownDelayMs > 0)
+    std::this_thread::sleep_for(std::chrono::milliseconds(teardownDelayMs));
 
-  devHandle->streamDestroy(stream);
-  devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL);
-  devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL);
-  devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL);
+  // Collective work is asynchronous with respect to the host.  Drain the
+  // stream before communicator teardown so no runtime callback can retain an
+  // IPC mapping after the communicator starts releasing transport resources.
+  if (devHandle != nullptr && stream != nullptr)
+    EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
 
-  flagcxDeviceHandleFree(devHandle);
+  if (comm != nullptr) {
+    EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+    comm = nullptr;
+  }
+
+  if (devHandle != nullptr) {
+    if (stream != nullptr)
+      EXPECT_EQ(devHandle->streamDestroy(stream), flagcxSuccess);
+    if (sendbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(sendbuff, flagcxMemDevice, NULL),
+                flagcxSuccess);
+    if (recvbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(recvbuff, flagcxMemDevice, NULL),
+                flagcxSuccess);
+    if (hostsendbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(hostsendbuff, flagcxMemHost, NULL),
+                flagcxSuccess);
+    if (hostrecvbuff != nullptr)
+      EXPECT_EQ(devHandle->deviceFree(hostrecvbuff, flagcxMemHost, NULL),
+                flagcxSuccess);
+
+    EXPECT_EQ(flagcxDeviceHandleFree(devHandle), flagcxSuccess);
+  }
   FlagCXTest::TearDown();
 
   // Synchronize all ranks before the next test to prevent bootstrap hangs

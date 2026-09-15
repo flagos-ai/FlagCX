@@ -22,6 +22,7 @@
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 #include "ib_common.h"
+#include "net.h"
 #include "net_test_utils.h"
 #include "onesided.h"
 
@@ -220,7 +221,9 @@ protected:
     SKIP_IF_CALLBACK_NULL(net_, closeListen);
     ASSERT_EQ(net_->init(), flagcxSuccess);
     ASSERT_EQ(net_->devices(&nDevs_), flagcxSuccess);
-    ASSERT_GT(nDevs_, 0);
+    ASSERT_GT(nDevs_, 0)
+        << "The net adaptor integration suite requires at least one usable "
+           "network device";
     ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_),
               flagcxSuccess);
     ASSERT_EQ(net_->listen(netDev_, handle_, &listenComm_), flagcxSuccess);
@@ -325,6 +328,56 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
     EXPECT_EQ(net->iputSignal, nullptr);
     EXPECT_EQ(net->regMrDmaBuf, nullptr);
   }
+}
+
+TEST(IbDefensiveContractTest, RejectsNullAndUnreadyCommunicators) {
+  struct flagcxNetAdaptor *net = &flagcxNetIb;
+  ASSERT_NE(net, nullptr);
+  ASSERT_NE(net->isend, nullptr);
+  ASSERT_NE(net->irecv, nullptr);
+  ASSERT_NE(net->iflush, nullptr);
+  ASSERT_NE(net->test, nullptr);
+
+  char byte = 0;
+  size_t recvSize = sizeof(byte);
+  int recvSizeInt = sizeof(byte);
+  int tag = 0;
+  void *data = &byte;
+  void *mhandle = nullptr;
+  void *request = reinterpret_cast<void *>(1);
+
+  EXPECT_EQ(
+      net->isend(nullptr, &byte, sizeof(byte), tag, nullptr, nullptr, &request),
+      flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net->irecv(nullptr, 1, &data, &recvSize, &tag, &mhandle, nullptr,
+                       &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net->iflush(nullptr, 1, &data, &recvSizeInt, &mhandle, &request),
+            flagcxInvalidArgument);
+  EXPECT_EQ(request, nullptr);
+
+  int done = 0;
+  EXPECT_EQ(net->test(nullptr, &done, nullptr), flagcxInvalidArgument);
+
+  struct flagcxIbSendComm sendComm = {};
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net->isend(&sendComm, &byte, sizeof(byte), tag, nullptr, nullptr,
+                       &request),
+            flagcxInternalError);
+  EXPECT_EQ(request, nullptr);
+
+  struct flagcxIbRecvComm recvComm = {};
+  request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net->irecv(&recvComm, 1, &data, &recvSize, &tag, &mhandle, nullptr,
+                       &request),
+            flagcxInternalError);
+  EXPECT_EQ(request, nullptr);
 }
 
 TEST_F(IbMrCleanupTest, FailedDeregisterRetainsOnlyUnconsumedNicHandles) {

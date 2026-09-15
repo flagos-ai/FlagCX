@@ -1555,19 +1555,86 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     flagcxResult_t res =
         flagcxSymWindowRegister(comm->heteroComm, buff, size, win, winFlags);
 
+    // Window construction is collective.  Converge the local outcomes before
+    // any rank attempts the next IPC collective so a partial VMM/MR failure
+    // cannot leave successful ranks waiting in a different control-flow path.
+    std::vector<int> windowStatus(comm->nranks, flagcxSuccess);
+    windowStatus[comm->rank] = static_cast<int>(res);
+    flagcxResult_t statusGatherRes = bootstrapCollAllGather(
+        comm->bootstrap, windowStatus.data(), sizeof(int));
+    flagcxResult_t commonWindowRes = statusGatherRes;
+    if (statusGatherRes == flagcxSuccess) {
+      commonWindowRes = flagcxSuccess;
+      for (int peer = 0; peer < comm->nranks; peer++) {
+        flagcxResult_t peerRes =
+            static_cast<flagcxResult_t>(windowStatus[peer]);
+        if (peerRes != flagcxSuccess) {
+          commonWindowRes = peerRes;
+          break;
+        }
+      }
+    }
+    if (commonWindowRes != flagcxSuccess) {
+      if (res == flagcxSuccess && *win != nullptr) {
+        flagcxWindow_t failedWin = *win;
+        *win = nullptr;
+        flagcxResult_t cleanupRes =
+            flagcxCommWindowDeregister(comm, failedWin, allocator);
+        if (cleanupRes != flagcxSuccess)
+          WARN("flagcxCommWindowRegister: window rollback after collective "
+               "registration failure returned %d",
+               cleanupRes);
+      }
+      return commonWindowRes;
+    }
+
     // Non-VMM windows need an explicit IPC mapping. VMM windows already expose
     // peer memory through their flat VA mapping. Failure is non-fatal because
     // the network MR remains a valid fallback in automatic transport mode.
     if (res == flagcxSuccess && *win != NULL && (*win)->defaultBase != NULL &&
         !(*win)->defaultBase->isVMM) {
       int ipcSlot = buildIpcPeerPointers(comm, buff, size);
-      if (ipcSlot >= 0) {
+      std::vector<int> ipcReady(comm->nranks, 0);
+      ipcReady[comm->rank] = ipcSlot >= 0 ? 1 : 0;
+      flagcxResult_t gatherRes =
+          bootstrapCollAllGather(comm->bootstrap, ipcReady.data(), sizeof(int));
+      bool allIpcReady = gatherRes == flagcxSuccess;
+      if (allIpcReady) {
+        for (int peer = 0; peer < comm->nranks; peer++)
+          allIpcReady = allIpcReady && ipcReady[peer] != 0;
+      }
+
+      if (allIpcReady) {
         (*win)->defaultBase->ipcSlot = ipcSlot;
       } else {
+        if (ipcSlot >= 0)
+          releaseIpcTableSlot(comm, ipcSlot);
         INFO(FLAGCX_REG,
-             "flagcxCommWindowRegister: IPC mapping unavailable for %p; "
-             "network fallback remains enabled",
+             "flagcxCommWindowRegister: IPC mapping unavailable on at least "
+             "one rank for %p; network fallback remains enabled",
              buff);
+        if (gatherRes != flagcxSuccess) {
+          flagcxWindow_t failedWin = *win;
+          *win = nullptr;
+          flagcxResult_t cleanupRes =
+              flagcxCommWindowDeregister(comm, failedWin, allocator);
+          if (cleanupRes != flagcxSuccess)
+            WARN("flagcxCommWindowRegister: window rollback after IPC "
+                 "collective failure returned %d",
+                 cleanupRes);
+          return gatherRes;
+        }
+
+        // When the network transport is explicitly disabled, IPC is not an
+        // optional optimization: it is the only possible data path.  Roll the
+        // partially published window back collectively instead of returning
+        // success with no usable locator.
+        if (flagcxParamIbDisable()) {
+          flagcxWindow_t failedWin = *win;
+          *win = nullptr;
+          FLAGCXCHECK(flagcxCommWindowDeregister(comm, failedWin, allocator));
+          return flagcxNotSupported;
+        }
       }
     }
 
@@ -2448,6 +2515,7 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  flagcxResult_t destroyResult = flagcxSuccess;
 
   // Destroy cluster info
   free(comm->clusterIds);
@@ -2485,7 +2553,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     flagcxOneSideDeregister(comm->heteroComm);
 
     // Destroy hetero comm
-    FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
+    destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
     // Destroy host comm
     if (useHostComm()) {
       FLAGCXCHECK(
@@ -2522,7 +2590,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   flagcxDeviceAdaptorPluginFinalize();
 
   free(comm);
-  return flagcxSuccess;
+  return destroyResult;
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
@@ -2610,11 +2678,43 @@ flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
 flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
                                        flagcxResult_t *asyncError) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (asyncError == nullptr)
+    return flagcxInvalidArgument;
+
+  if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
+    flagcxResult_t result = flagcxSuccess;
+
+    // Hybrid collectives also execute intra-cluster work on the device CCL.
+    // A healthy heterogeneous proxy must not hide an asynchronous CCL error.
+    flagcxInnerComm_t cclComms[] = {
+        comm->homoComm,
+        comm->homoInterComm != comm->homoComm ? comm->homoInterComm : nullptr};
+    for (flagcxInnerComm_t cclComm : cclComms) {
+      if (result != flagcxSuccess || cclComm == nullptr)
+        continue;
+      flagcxResult_t cclAsync = flagcxSuccess;
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commGetAsyncError(
+          cclComm, &cclAsync));
+      result = cclAsync;
+    }
+    if (result == flagcxSuccess && comm->heteroComm->proxyState != nullptr) {
+      result = __atomic_load_n(&comm->heteroComm->proxyState->asyncResult,
+                               __ATOMIC_ACQUIRE);
+    }
+    if (result == flagcxSuccess && comm->heteroComm->rmaProxy != nullptr &&
+        __atomic_load_n(&comm->heteroComm->rmaProxy->rmaError,
+                        __ATOMIC_ACQUIRE) != 0) {
+      result = flagcxInternalError;
+    }
+    *asyncError = result;
+    return flagcxSuccess;
+  }
+
   if (useHomoComm(comm)) {
     return cclAdaptors[flagcxCCLAdaptorDevice]->commGetAsyncError(
         comm->homoComm, asyncError);
   }
-  // TODO: to be implemented.
+
   return flagcxNotSupported;
 }
 

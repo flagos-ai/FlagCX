@@ -184,8 +184,8 @@ HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \
               $(MPI_ENV_FLAG) FLAGCX_MEM_ENABLE=1 \
               $(MPI_ENV_FLAG) FLAGCX_VMM_ENABLE=0 \
               $(MPI_ENV_FLAG) FLAGCX_P2P_DISABLE=1 \
-              $(MPI_ENV_FLAG) FLAGCX_DEBUG=Version \
-              $(MPI_ENV_FLAG) FLAGCX_DEBUG_SUBSYS= \
+              $(MPI_ENV_FLAG) FLAGCX_DEBUG=TRACE \
+              $(MPI_ENV_FLAG) FLAGCX_DEBUG_SUBSYS=ALL \
               $(MPI_ENV_FLAG) LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)
 
 # Unified IR keeps P2P enabled. Inter-node runs create two logical nodes with

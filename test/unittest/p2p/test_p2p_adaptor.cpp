@@ -1,6 +1,7 @@
 // Unit tests for the IB P2P net adaptor.
-// Tests that don't require IB hardware always run.
-// Tests that need real IB devices skip gracefully via GTEST_SKIP().
+// Tests that don't require IB hardware always run. The device requirement test
+// fails when the adaptor exposes no usable IB device; individual data-path
+// tests may still skip to avoid repeating the same environment failure.
 // Links against libflagcx.
 
 #include <cstring>
@@ -24,12 +25,6 @@ protected:
     initResult = flagcxNetIbP2p.init();
     if (initResult == flagcxSuccess) {
       flagcxNetIbP2p.devices(&nDevs);
-    }
-  }
-
-  void SetUp() override {
-    if (!hasIbDevices()) {
-      GTEST_SKIP() << "No IB devices available, skipping";
     }
   }
 
@@ -103,7 +98,12 @@ TEST(P2pAdaptorStruct, TwoSidedStubsReturnError) {
 // ---------------------------------------------------------------------------
 TEST_F(P2pAdaptorTest, InitSucceeds) { EXPECT_EQ(initResult, flagcxSuccess); }
 
-TEST_F(P2pAdaptorTest, DevicesReturnsPositive) { EXPECT_GT(nDevs, 0); }
+TEST_F(P2pAdaptorTest, DevicesReturnsPositive) {
+  ASSERT_EQ(initResult, flagcxSuccess);
+  EXPECT_GT(nDevs, 0)
+      << "The IB P2P integration suite requires at least one usable RDMA "
+         "device";
+}
 
 TEST_F(P2pAdaptorTest, InitIsIdempotent) {
   // Calling init again should succeed without side effects
@@ -117,6 +117,9 @@ TEST_F(P2pAdaptorTest, InitIsIdempotent) {
 // 3. GetProperties — requires IB hardware
 // ---------------------------------------------------------------------------
 TEST_F(P2pAdaptorTest, GetPropertiesForEachDevice) {
+  if (!hasIbDevices())
+    GTEST_SKIP() << "No IB devices available after the requirement failed";
+
   for (int d = 0; d < nDevs; d++) {
     flagcxNetProperties_t props;
     memset(&props, 0, sizeof(props));
@@ -131,7 +134,10 @@ TEST_F(P2pAdaptorTest, GetPropertiesForEachDevice) {
 // ---------------------------------------------------------------------------
 class P2pLoopbackTest : public P2pAdaptorTest {
 protected:
-  void SetUp() override { P2pAdaptorTest::SetUp(); }
+  void SetUp() override {
+    if (!hasIbDevices())
+      GTEST_SKIP() << "No IB devices available after the requirement failed";
+  }
 };
 
 TEST_F(P2pLoopbackTest, ListenConnectAcceptClose) {

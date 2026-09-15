@@ -2130,14 +2130,18 @@ flagcxResult_t flagcxIbMultiSend(struct flagcxIbSendComm *comm, int slot) {
 
 flagcxResult_t flagcxIbIsend(void *sendComm, void *data, size_t size, int tag,
                              void *mhandle, void *phandle, void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
+
   struct flagcxIbSendComm *comm = (struct flagcxIbSendComm *)sendComm;
-  if (comm->base.ready == 0) {
-    WARN("NET/IB: flagcxIbIsend() called when comm->base.ready == 0");
-    return flagcxInternalError;
+  if (comm == NULL) {
+    WARN("NET/IB: flagcxIbIsend() called with a null send communicator");
+    return flagcxInvalidArgument;
   }
-  if (comm->base.ready == 0) {
-    *request = NULL;
-    return flagcxSuccess;
+  if (comm->base.ready != 1) {
+    WARN("NET/IB: flagcxIbIsend() called before the communicator is ready");
+    return flagcxInternalError;
   }
 
   struct flagcxIbMrHandle *mhandleWrapper = (struct flagcxIbMrHandle *)mhandle;
@@ -2245,17 +2249,22 @@ flagcxResult_t flagcxIbPostFifo(struct flagcxIbRecvComm *comm, int n,
 flagcxResult_t flagcxIbIrecv(void *recvComm, int n, void **data, size_t *sizes,
                              int *tags, void **mhandles, void **phandles,
                              void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
+
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
-  if (comm->base.ready == 0) {
-    WARN("NET/IB: flagcxIbIrecv() called when comm->base.ready == 0");
+  if (comm == NULL) {
+    WARN("NET/IB: flagcxIbIrecv() called with a null receive communicator");
+    return flagcxInvalidArgument;
+  }
+  if (comm->base.ready != 1) {
+    WARN("NET/IB: flagcxIbIrecv() called before the communicator is ready");
     return flagcxInternalError;
   }
-  if (comm->base.ready == 0) {
-    *request = NULL;
-    return flagcxSuccess;
-  }
-  if (n > FLAGCX_NET_IB_MAX_RECVS)
-    return flagcxInternalError;
+  if (n <= 0 || n > FLAGCX_NET_IB_MAX_RECVS || data == NULL || sizes == NULL ||
+      tags == NULL || mhandles == NULL)
+    return flagcxInvalidArgument;
 
   struct flagcxIbRequest *req;
   FLAGCXCHECK(flagcxIbGetRequest(&comm->base, &req));
@@ -2300,7 +2309,15 @@ flagcxResult_t flagcxIbIrecv(void *recvComm, int n, void **data, size_t *sizes,
 
 flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
                               void **mhandles, void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
+
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
+  if (comm == NULL || comm->base.ready != 1)
+    return comm == NULL ? flagcxInvalidArgument : flagcxInternalError;
+  if (n < 0 || (n > 0 && (data == NULL || sizes == NULL || mhandles == NULL)))
+    return flagcxInvalidArgument;
   int last = -1;
   for (int i = 0; i < n; i++)
     if (sizes[i])
@@ -2470,6 +2487,8 @@ static flagcxResult_t flagcxIbrcProcessWc(struct flagcxIbRequest *r,
 }
 
 flagcxResult_t flagcxIbTest(void *request, int *done, int *sizes) {
+  if (request == NULL || done == NULL)
+    return flagcxInvalidArgument;
   static const struct flagcxIbCommonTestOps kIbrcTestOps = {
       .component = "NET/IBRC",
       .pre_check = flagcxIbrcTestPreCheck,

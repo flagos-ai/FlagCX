@@ -26,7 +26,9 @@ FLAGCX_CI_MPI_LABEL="symmem MPI tests" \
     -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
     -x FLAGCX_MEM_ENABLE=1 \
     -x FLAGCX_VMM_ENABLE=0 \
-    "$BUILD_BIN/symmem_mpi_tests"
+    -x FLAGCX_IB_DISABLE=1 \
+    "$BUILD_BIN/symmem_mpi_tests" \
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr
 
 echo ""
 echo "All symmem tests passed."

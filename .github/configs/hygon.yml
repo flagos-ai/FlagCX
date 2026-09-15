@@ -25,6 +25,7 @@ docker_options:
   - --shm-size=100gb
   - --ulimit=memlock=-1
   - --ulimit=stack=67108864
+  - --ulimit=nofile=65535:65535
   - --device=/dev/kfd
   - --device=/dev/dri
   - --device=/dev/shca-ioctl
@@ -37,12 +38,10 @@ docker_options:
 set_env: .github/scripts/set_env/hygon.sh
 
 unit_test_suites:
-  # Temporarily disabled while the Hygon SHCA/RMA follow-up fix is prepared.
-  # Keep these entries visible so restoring coverage is a two-line change.
-  # - adaptor
+  - adaptor
   - core
   - p2p
-  # - rma
+  - rma
   - runner
   - service
   - symmem
