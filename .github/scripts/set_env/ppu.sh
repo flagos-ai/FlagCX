@@ -60,9 +60,9 @@ flagcx_ci_configure_suite() {
       export FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX
       ;;
     p2p)
-      # These suites call the IBRC vtable directly. The Engine tests use the
-      # runtime transport selector and are retained for ACCL coverage.
-      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pBatchStruct.*:P2pBatchTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
+      # Keep ACCL engine coverage, but skip the same-host GPU READ tests until
+      # ACCL supports this PPU self-loopback path; RMA remains enabled separately.
+      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pBatchStruct.*:P2pBatchTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost:FlagcxP2pEngineReadTest.*"
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     rma)

@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "shellwords"
 require "yaml"
 
 platform = ARGV.fetch(0) { abort "Usage: #{$PROGRAM_NAME} <platform>" }
@@ -26,13 +27,19 @@ required_keys = %w[
   display_name
   ci_image
   runner_labels
-  docker_volumes
-  docker_options
   set_env
   unit_test_suites
 ]
 missing = required_keys.reject { |key| config.key?(key) }
 abort "#{config_path}: missing required keys: #{missing.join(', ')}" unless missing.empty?
+
+unless config.key?("docker_volumes") || config.key?("container_volumes")
+  abort "#{config_path}: missing required keys: docker_volumes (or container_volumes)"
+end
+
+unless config.key?("docker_options") || config.key?("container_options")
+  abort "#{config_path}: missing required keys: docker_options (or container_options)"
+end
 
 hardware_name = config.fetch("hardware_name")
 abort "#{config_path}: hardware_name must be #{platform}" unless hardware_name == platform
@@ -40,10 +47,20 @@ abort "#{config_path}: hardware_name must be #{platform}" unless hardware_name =
 runner_labels = config.fetch("runner_labels")
 abort "#{config_path}: runner_labels must be a non-empty array" unless runner_labels.is_a?(Array) && !runner_labels.empty?
 
-docker_volumes = config.fetch("docker_volumes")
+docker_volumes = if config.key?("docker_volumes")
+                   config.fetch("docker_volumes")
+                 else
+                   config.fetch("container_volumes")
+                 end
 abort "#{config_path}: docker_volumes must be an array" unless docker_volumes.is_a?(Array)
 
-docker_options = config.fetch("docker_options")
+docker_options = if config.key?("docker_options")
+                   config.fetch("docker_options")
+                 else
+                   # Older platform files stored one Docker argument per line
+                   # in a folded scalar instead of an array.
+                   Shellwords.split(config.fetch("container_options"))
+                 end
 abort "#{config_path}: docker_options must be a non-empty array" unless docker_options.is_a?(Array) && !docker_options.empty?
 
 validate_argument = lambda do |argument, field|
