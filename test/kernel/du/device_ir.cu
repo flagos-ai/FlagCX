@@ -663,7 +663,7 @@ void launchKernelCoopTileSpanS(int *devResults, int nBlocks, int nThreads,
 
 __global__ void kernelCoopLanesS(int *results) {
   // Full warp mask — equivalent to COOP_WARP
-  uint32_t laneMask = 0xFFFFFFFF;
+  flagcxLaneMask_t laneMask = 0xffffffffull;
 
   int rank =
       flagcxCoopThreadRankExS(FLAGCX_COOP_LANES, laneMask, 0, 0);

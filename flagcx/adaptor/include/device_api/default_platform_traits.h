@@ -27,22 +27,23 @@ struct PlatformTraits<DefaultPlatform> {
   // ==============================================================
   struct Intrin {
     static constexpr int simtWidth = 1;
+    static constexpr flagcxLaneMask_t fullMask() { return 1ull; }
     static inline int lane() {
       assert(false && "lane() on DefaultPlatform");
       return 0;
     }
-    static inline uint32_t lanemaskLt() {
+    static inline flagcxLaneMask_t lanemaskLt() {
       assert(false && "lanemaskLt() on DefaultPlatform");
       return 0;
     }
-    static inline uint32_t activemask() {
+    static inline flagcxLaneMask_t activemask() {
       assert(false && "activemask() on DefaultPlatform");
       return 1;
     }
-    static inline void syncwarp(uint32_t = 0xffffffffu) {
+    static inline void syncwarp(flagcxLaneMask_t = fullMask()) {
       assert(false && "syncwarp() on DefaultPlatform");
     }
-    static inline int popc(uint32_t x) {
+    static inline int popc(flagcxLaneMask_t x) {
       (void)x;
       assert(false && "popc() on DefaultPlatform");
       return 0;
@@ -117,6 +118,7 @@ struct PlatformTraits<DefaultPlatform> {
   struct CoopTile {
     int threadRank() const { return 0; }
     int size() const { return N; }
+    flagcxLaneMask_t laneMask() const { return Intrin::fullMask(); }
     void sync() {}
   };
   using CoopThread = CoopTile<1>;
@@ -128,10 +130,11 @@ struct PlatformTraits<DefaultPlatform> {
     void sync() {}
   };
   struct CoopLanes {
-    CoopLanes(uint32_t = 1u) {}
+    CoopLanes(flagcxLaneMask_t = Intrin::fullMask()) {}
     int threadRank() const { return 0; }
     int size() const { return 1; }
     void sync() {}
+    flagcxLaneMask_t getLmask() const { return Intrin::fullMask(); }
   };
   using CoopAny = PlatformCoop;
 };

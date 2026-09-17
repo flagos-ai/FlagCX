@@ -23,6 +23,9 @@ struct PlatformTraits<DuPlatform> {
   // ==============================================================
   struct Intrin {
     static constexpr int simtWidth = 32;
+    static FLAGCX_HOST_DEVICE_INLINE constexpr flagcxLaneMask_t fullMask() {
+      return 0xffffffffull;
+    }
 
 #if defined(__CUDACC__)
     static FLAGCX_DEVICE_INLINE_DECORATOR int lane() {
@@ -31,23 +34,31 @@ struct PlatformTraits<DuPlatform> {
       return l;
     }
 
-    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t lanemaskLt() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t lanemaskLt() {
       uint32_t m;
       asm("mov.u32 %0, %%lanemask_lt;" : "=r"(m));
-      return m;
+      return static_cast<flagcxLaneMask_t>(m);
     }
 
-    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t activemask() {
-      return __activemask();
+    static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t activemask() {
+      return static_cast<flagcxLaneMask_t>(__activemask());
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR void
-    syncwarp(uint32_t mask = 0xffffffffu) {
-      __syncwarp(mask);
+    validateMask(flagcxLaneMask_t mask) {
+      if ((mask & ~fullMask()) != 0)
+        __trap();
     }
 
-    static FLAGCX_DEVICE_INLINE_DECORATOR int popc(uint32_t x) {
-      return __popc(x);
+    static FLAGCX_DEVICE_INLINE_DECORATOR void
+    syncwarp(flagcxLaneMask_t mask = fullMask()) {
+      validateMask(mask);
+      __syncwarp(static_cast<uint32_t>(mask));
+    }
+
+    static FLAGCX_DEVICE_INLINE_DECORATOR int popc(flagcxLaneMask_t x) {
+      validateMask(x);
+      return __popc(static_cast<uint32_t>(x));
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR void namedBarrierSync(int id,
@@ -151,19 +162,22 @@ struct PlatformTraits<DuPlatform> {
       assert(false && "lane() called on host");
       return 0;
     }
-    static inline uint32_t lanemaskLt() {
+    static inline flagcxLaneMask_t lanemaskLt() {
       assert(false && "lanemaskLt() called on host");
       return 0;
     }
-    static inline uint32_t activemask() {
+    static inline flagcxLaneMask_t activemask() {
       assert(false && "activemask() called on host");
       return 1;
     }
-    static inline void syncwarp(uint32_t mask = 0xffffffffu) {
+    static inline void validateMask(flagcxLaneMask_t mask) {
+      assert((mask & ~fullMask()) == 0 && "lane mask exceeds DU SIMT width");
+    }
+    static inline void syncwarp(flagcxLaneMask_t mask = fullMask()) {
       (void)mask;
       assert(false && "syncwarp() called on host");
     }
-    static inline int popc(uint32_t x) {
+    static inline int popc(flagcxLaneMask_t x) {
       (void)x;
       assert(false && "popc() called on host");
       return 0;
@@ -328,8 +342,9 @@ struct PlatformTraits<DuPlatform> {
       return Intrin::lane() % N;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
-      return (0xffffffffu >> (32 - N)) << (Intrin::lane() & -N);
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
+      return (Intrin::fullMask() >> (Intrin::simtWidth - N))
+             << (Intrin::lane() & -N);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
       if (N > 1)
@@ -356,9 +371,11 @@ struct PlatformTraits<DuPlatform> {
   };
 
   struct CoopLanes {
-    uint32_t lmask;
-    FLAGCX_DEVICE_INLINE_DECORATOR CoopLanes(uint32_t lmask = 0xffffffffu)
-        : lmask(lmask) {}
+    flagcxLaneMask_t lmask;
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    CoopLanes(flagcxLaneMask_t lmask = Intrin::fullMask()) : lmask(lmask) {
+      Intrin::validateMask(lmask);
+    }
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
       return Intrin::popc(lmask & Intrin::lanemaskLt());
     }
@@ -366,7 +383,9 @@ struct PlatformTraits<DuPlatform> {
       return Intrin::popc(lmask);
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { Intrin::syncwarp(lmask); }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const { return lmask; }
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
+      return lmask;
+    }
   };
 
   using CoopAny = PlatformCoop;

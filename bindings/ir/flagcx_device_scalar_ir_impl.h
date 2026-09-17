@@ -37,7 +37,7 @@ flagcxMakeCoopFromKind(flagcxCoopKind_t kind) {
 }
 
 static FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny flagcxMakeCoopFromKindEx(
-    flagcxCoopKind_t kind, uint32_t param0, uint32_t param1, uint32_t param2) {
+    flagcxCoopKind_t kind, uint64_t param0, uint32_t param1, uint32_t param2) {
   switch (kind) {
     case FLAGCX_COOP_BLOCK:
       return flagcxCoopAny(flagcxCoopBlock());
@@ -136,21 +136,21 @@ flagcxCoopSyncS(flagcxCoopKind_t kind) {
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
-flagcxCoopThreadRankExS(flagcxCoopKind_t kind, uint32_t param0, uint32_t param1,
+flagcxCoopThreadRankExS(flagcxCoopKind_t kind, uint64_t param0, uint32_t param1,
                         uint32_t param2) {
   flagcxCoopAny coop = flagcxMakeCoopFromKindEx(kind, param0, param1, param2);
   return coop.threadRank();
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
-flagcxCoopSizeExS(flagcxCoopKind_t kind, uint32_t param0, uint32_t param1,
+flagcxCoopSizeExS(flagcxCoopKind_t kind, uint64_t param0, uint32_t param1,
                   uint32_t param2) {
   flagcxCoopAny coop = flagcxMakeCoopFromKindEx(kind, param0, param1, param2);
   return coop.size();
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxCoopSyncExS(flagcxCoopKind_t kind, uint32_t param0, uint32_t param1,
+flagcxCoopSyncExS(flagcxCoopKind_t kind, uint64_t param0, uint32_t param1,
                   uint32_t param2) {
   flagcxCoopAny coop = flagcxMakeCoopFromKindEx(kind, param0, param1, param2);
   coop.sync();

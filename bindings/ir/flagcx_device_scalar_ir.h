@@ -67,7 +67,8 @@ flagcxDevCommGetIntraSize(const void *comm);
  *
  * @param kind    Cooperation kind: THREAD/WARP/BLOCK (basic) or
  *                TILE_SPAN/LANES (extended).
- * @param param0  For TILE_SPAN: t0 (first tile). For LANES: laneMask.
+ * @param param0  64-bit ABI slot. For TILE_SPAN: t0 (first tile). For LANES:
+ *                laneMask.
  * @param param1  For TILE_SPAN: nTiles. Unused for LANES.
  * @param param2  For TILE_SPAN: id. Unused for LANES.
  * ================================================================ */
@@ -86,17 +87,17 @@ flagcxCoopSyncS(flagcxCoopKind_t kind);
 
 /** @brief Thread rank within the cooperative group (extended kinds). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int
-flagcxCoopThreadRankExS(flagcxCoopKind_t kind, uint32_t param0, uint32_t param1,
+flagcxCoopThreadRankExS(flagcxCoopKind_t kind, uint64_t param0, uint32_t param1,
                         uint32_t param2);
 
 /** @brief Group size for extended kinds. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int
-flagcxCoopSizeExS(flagcxCoopKind_t kind, uint32_t param0, uint32_t param1,
+flagcxCoopSizeExS(flagcxCoopKind_t kind, uint64_t param0, uint32_t param1,
                   uint32_t param2);
 
 /** @brief Synchronize the cooperative group (extended kinds). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxCoopSyncExS(flagcxCoopKind_t kind, uint32_t param0, uint32_t param1,
+flagcxCoopSyncExS(flagcxCoopKind_t kind, uint64_t param0, uint32_t param1,
                   uint32_t param2);
 
 /* ================================================================

@@ -72,7 +72,7 @@ flagcxCoopAnyInitTileSpan(void *coopOpaque, int t0, int nTiles, int id) {
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxCoopAnyInitLanes(void *coopOpaque, uint32_t laneMask) {
+flagcxCoopAnyInitLanes(void *coopOpaque, flagcxLaneMask_t laneMask) {
   flagcxCoopAny *coop = (flagcxCoopAny *)coopOpaque;
   ::new (coop) flagcxCoopAny(flagcxCoopLanes(laneMask));
 }

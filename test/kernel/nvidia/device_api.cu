@@ -1276,7 +1276,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
 
   // Lanes (full warp mask)
   {
-    flagcxCoopLanes lanes(0xffffffffu);
+    flagcxCoopLanes lanes(0xffffffffull);
     int rank = lanes.threadRank();
     int size = lanes.size();
     if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {

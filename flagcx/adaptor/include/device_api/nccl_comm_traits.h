@@ -230,8 +230,8 @@ struct CommTraits<NcclBackend> {
       return _impl.thread_rank();
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
-      return _impl.laneMask();
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
+      return static_cast<flagcxLaneMask_t>(_impl.laneMask());
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
   };
@@ -257,16 +257,23 @@ struct CommTraits<NcclBackend> {
   struct CoopLanes {
     ncclCoopLanes _impl;
 
-    FLAGCX_DEVICE_INLINE_DECORATOR CoopLanes(uint32_t lmask = 0xffffffffu)
-        : _impl{lmask} {}
+    FLAGCX_DEVICE_INLINE_DECORATOR static uint32_t
+    nativeMask(flagcxLaneMask_t lmask) {
+      Intrin::validateMask(lmask);
+      return static_cast<uint32_t>(lmask);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    CoopLanes(flagcxLaneMask_t lmask = Intrin::fullMask())
+        : _impl{nativeMask(lmask)} {}
 
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
       return _impl.thread_rank();
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _impl.size(); }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _impl.sync(); }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const {
-      return _impl.lmask;
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
+      return static_cast<flagcxLaneMask_t>(_impl.lmask);
     }
   };
 

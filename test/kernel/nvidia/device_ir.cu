@@ -86,7 +86,7 @@ __global__ void kernelCoopGroupsS_tileSpan(int *results) {
 
 // Sub-kernel: lanes coop check (1 block, 32 threads, full warp mask)
 __global__ void kernelCoopGroupsS_lanes(int *results) {
-  uint32_t laneMask = 0xFFFFFFFF;
+  flagcxLaneMask_t laneMask = 0xffffffffull;
 
   int rank = flagcxCoopThreadRankExS(FLAGCX_COOP_LANES, laneMask, 0, 0);
   int size = flagcxCoopSizeExS(FLAGCX_COOP_LANES, laneMask, 0, 0);

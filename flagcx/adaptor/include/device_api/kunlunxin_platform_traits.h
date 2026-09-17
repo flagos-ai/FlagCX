@@ -27,25 +27,31 @@ struct PlatformTraits<KunlunxinPlatform> {
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
 
-    FLAGCX_DEVICE_INLINE_DECORATOR static uint32_t fullMask() {
+    FLAGCX_DEVICE_INLINE_DECORATOR static flagcxLaneMask_t fullMask() {
       int n = FLAGCX_BLOCK_DIM_X;
-      return n >= 32 ? 0xffffffffu : ((1u << n) - 1u);
+      return n >= 64 ? ~flagcxLaneMask_t{0} : ((flagcxLaneMask_t{1} << n) - 1);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static void
+    validateMask(flagcxLaneMask_t mask) {
+      if ((mask & ~fullMask()) != 0)
+        __builtin_trap();
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR static int lane() {
       return FLAGCX_THREAD_IDX_X;
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR static uint32_t lanemaskLt() {
+    FLAGCX_DEVICE_INLINE_DECORATOR static flagcxLaneMask_t lanemaskLt() {
       int id = FLAGCX_THREAD_IDX_X;
       if (id <= 0)
         return 0;
-      if (id >= 32)
-        return 0xffffffffu;
-      return (1u << id) - 1u;
+      if (id >= 64)
+        return ~flagcxLaneMask_t{0};
+      return (flagcxLaneMask_t{1} << id) - 1;
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR static uint32_t activemask() {
+    FLAGCX_DEVICE_INLINE_DECORATOR static flagcxLaneMask_t activemask() {
       // XTDK does not provide a reliable divergent-control-flow active mask.
       // Callers such as flagcxCoopCoalesced must fail explicitly instead of
       // manufacturing a full mask that can deadlock at a cluster barrier.
@@ -56,16 +62,18 @@ struct PlatformTraits<KunlunxinPlatform> {
     // XSHMEM exposes cluster synchronization, but no partial-core named
     // barrier. Never silently weaken a requested subgroup barrier.
     FLAGCX_DEVICE_INLINE_DECORATOR static void
-    syncwarp(uint32_t mask = 0xffffffffu) {
-      uint32_t active = fullMask();
+    syncwarp(flagcxLaneMask_t mask = fullMask()) {
+      validateMask(mask);
+      flagcxLaneMask_t active = fullMask();
       if ((mask & active) == active)
         FLAGCX_DEVICE_SYNC_THREADS();
       else if (popc(mask & active) > 1)
         __builtin_trap();
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR static int popc(uint32_t x) {
-      return __builtin_popcount(x);
+    FLAGCX_DEVICE_INLINE_DECORATOR static int popc(flagcxLaneMask_t x) {
+      validateMask(x);
+      return __builtin_popcountll(x);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR static void namedBarrierSync(int, int n) {
@@ -194,7 +202,7 @@ struct PlatformTraits<KunlunxinPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
       return FLAGCX_BLOCK_DIM_X;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
       return Intrin::fullMask();
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() const {
@@ -208,10 +216,11 @@ struct PlatformTraits<KunlunxinPlatform> {
       return FLAGCX_THREAD_IDX_X % N;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
       int base = (FLAGCX_THREAD_IDX_X / N) * N;
-      uint32_t bits = N >= 32 ? 0xffffffffu : ((1u << N) - 1u);
-      return base >= 32 ? 0u : (bits << base) & Intrin::fullMask();
+      flagcxLaneMask_t bits =
+          N >= 64 ? ~flagcxLaneMask_t{0} : ((flagcxLaneMask_t{1} << N) - 1);
+      return base >= 64 ? 0ull : (bits << base) & Intrin::fullMask();
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() const {
       if (N >= FLAGCX_BLOCK_DIM_X)
@@ -249,17 +258,22 @@ struct PlatformTraits<KunlunxinPlatform> {
   };
 
   struct CoopLanes {
-    uint32_t mask;
+    flagcxLaneMask_t mask;
 
-    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopLanes(uint32_t m = 1u)
-        : mask(m & Intrin::fullMask()) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopLanes(
+        flagcxLaneMask_t m = Intrin::fullMask())
+        : mask(m) {
+      Intrin::validateMask(mask);
+    }
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
       return Intrin::popc(mask & Intrin::lanemaskLt());
     }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
       return Intrin::popc(mask);
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const { return mask; }
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
+      return mask;
+    }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() const { Intrin::syncwarp(mask); }
   };
 

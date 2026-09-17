@@ -84,7 +84,7 @@ flagcxCoopAnyInitTileSpan(void *coop, int t0, int nTiles, int id);
 /** @brief Initialize coop as lane-masked cooperation.
  *  @param laneMask  Bitmask of active lanes. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxCoopAnyInitLanes(void *coop, uint32_t laneMask);
+flagcxCoopAnyInitLanes(void *coop, flagcxLaneMask_t laneMask);
 
 /** @brief Get thread rank within coop. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR int

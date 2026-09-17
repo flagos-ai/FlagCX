@@ -428,7 +428,7 @@ struct flagcxCoopTile {
     return _base.threadRank();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
-  FLAGCX_DEVICE_INLINE_DECORATOR uint32_t laneMask() const {
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
     return _base.laneMask();
   }
   FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
@@ -458,7 +458,8 @@ struct flagcxCoopTileSpan {
 struct flagcxCoopLanes {
   typename DeviceAPI::CoopLanes _base;
 
-  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopLanes(uint32_t lmask = 0xffffffffu)
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  flagcxCoopLanes(flagcxLaneMask_t lmask = DeviceAPI::Intrin::fullMask())
       : _base(lmask) {}
 
   FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
@@ -466,7 +467,7 @@ struct flagcxCoopLanes {
   }
   FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _base.size(); }
   FLAGCX_DEVICE_INLINE_DECORATOR void sync() { _base.sync(); }
-  FLAGCX_DEVICE_INLINE_DECORATOR uint32_t getLmask() const {
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
     return _base.getLmask();
   }
 };
@@ -499,20 +500,21 @@ struct flagcxCoopAny {
 
 // flagcxCoopGetLaneMask: get the active lane bitmask for a cooperative group
 template <int N>
-FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t
 flagcxCoopGetLaneMask(flagcxCoopTile<N> coop) {
   return coop.laneMask();
 }
-FLAGCX_DEVICE_INLINE_DECORATOR uint32_t flagcxCoopGetLaneMask(flagcxCoopBlock) {
-  return 0xffffffffu;
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t
+flagcxCoopGetLaneMask(flagcxCoopBlock) {
+  return DeviceAPI::Intrin::fullMask();
 }
-FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t
 flagcxCoopGetLaneMask(flagcxCoopLanes coop) {
   return coop.getLmask();
 }
-FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t
 flagcxCoopGetLaneMask(flagcxCoopTileSpan) {
-  return 0xffffffffu;
+  return DeviceAPI::Intrin::fullMask();
 }
 
 // flagcxCoopIsThread: compile-time check if group is a single thread

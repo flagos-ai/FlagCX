@@ -16,6 +16,20 @@
 #include <stdint.h>
 
 /* ================================================================
+ * Device IR ABI
+ *
+ * Lane masks are part of the public C++ and LLVM IR interfaces. Keep a
+ * fixed-width type so platforms with up to 64 hardware lanes share one ABI.
+ * ================================================================ */
+#define FLAGCX_DEVICE_IR_ABI_VERSION 2
+typedef uint64_t flagcxLaneMask_t;
+
+#if defined(__cplusplus)
+static_assert(sizeof(flagcxLaneMask_t) == 8,
+              "flagcxLaneMask_t must be a 64-bit ABI type");
+#endif
+
+/* ================================================================
  * Cooperative Group Kind
  *
  * Identifies the cooperation scope for collective device operations.
