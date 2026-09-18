@@ -28,6 +28,14 @@ if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
 
+# Keep every hardware backend on the same diagnostic and allocation baseline.
+# Individual invocations may add transport selectors, but must not silently
+# change the device-memory allocator or reduce the information available when a
+# hardware-only failure needs to be diagnosed.
+export FLAGCX_DEBUG=INFO
+export FLAGCX_DEBUG_SUBSYS=ALL
+export FLAGCX_VMM_ENABLE=0
+
 : "${MPI_HOME:?The platform set_env script must define MPI_HOME}"
 declare -p FLAGCX_CI_PROJECT_MAKE_ARGS >/dev/null 2>&1 || {
   echo "The platform set_env script must define FLAGCX_CI_PROJECT_MAKE_ARGS" >&2
@@ -51,23 +59,21 @@ flagcx_ci_require_rdma() {
     *) return 0 ;;
   esac
 
+  # Symmem currently runs its explicit IPC-fallback invocation with the RDMA
+  # class disabled, so it must not be gated by an RDMA preflight.
   case "$suite" in
-    adaptor|p2p|rma) ;;
+    adaptor|p2p|rma|runner) ;;
     *) return 0 ;;
   esac
 
-  echo "Running $platform_name RDMA preflight for unit-test suite: $suite"
-  if ! compgen -G "/sys/class/infiniband/*" >/dev/null ||
-    ! compgen -G "/dev/infiniband/uverbs*" >/dev/null; then
-    echo "$platform_name $suite tests require RDMA devices, but the runner did not expose /sys/class/infiniband and /dev/infiniband/uverbs* to the test container." >&2
+  echo "Running $platform_name static RDMA preflight for unit-test suite: $suite"
+  if ! declare -F flagcx_ci_validate_rdma >/dev/null; then
+    echo "$platform_name does not provide the required static RDMA validator." >&2
     return 1
   fi
+  flagcx_ci_validate_rdma "$suite"
 
-  if declare -F flagcx_ci_validate_rdma >/dev/null; then
-    flagcx_ci_validate_rdma "$suite"
-  fi
-
-  echo "RDMA preflight passed"
+  echo "Static RDMA preflight passed"
 }
 
 if declare -F flagcx_ci_prepare >/dev/null; then
@@ -181,13 +187,13 @@ run_device_api_unified_ir() {
   )
   local -a intra_env=(
     "${common_env[@]}"
-    -x FLAGCX_DEBUG=TRACE
+    -x FLAGCX_DEBUG=INFO
     -x FLAGCX_DEBUG_SUBSYS=ALL
   )
   local -a inter_env=(
     "${common_env[@]}"
     -x FLAGCX_DEBUG=INFO
-    -x FLAGCX_DEBUG_SUBSYS=PROXY
+    -x FLAGCX_DEBUG_SUBSYS=ALL
   )
   local -a intra_fallback_env=(
     "${intra_env[@]}"
@@ -295,9 +301,37 @@ run_suite() {
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;
     p2p)
+      local default_status=0
+      local single_qp_status=0
+      local mtu_2048_status=0
+      local read_diagnostic_filter="FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake:FlagcxP2pEngineReadTest.TwoIndependent2KiBReadsCover4KiBBuffer:FlagcxP2pEngineReadTest.ReadsWholeRegisteredHostBuffer"
       FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+        default_status=$?
+
+      # The IB_P2P configuration is loaded once per process. Run the QP and
+      # MTU diagnostics as independent invocations so each one receives a
+      # fresh configuration. ACCL/BAREX does not consume these IB settings.
+      if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" != "accl" ]]; then
+        GTEST_FILTER="$read_diagnostic_filter" \
+          FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=4096 \
+          FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+          FLAGCX_CI_TEST_LABEL="p2p READ single-QP diagnostics" \
+          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+          single_qp_status=$?
+        GTEST_FILTER="$read_diagnostic_filter" \
+          FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048 \
+          FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+          FLAGCX_CI_TEST_LABEL="p2p READ MTU-2048 diagnostics" \
+          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
+          mtu_2048_status=$?
+      fi
+      if ((default_status != 0 || single_qp_status != 0 ||
+           mtu_2048_status != 0)); then
+        echo "P2P failures: default=$default_status single-QP=$single_qp_status MTU-2048=$mtu_2048_status" >&2
+        return 1
+      fi
       ;;
     rma)
       local ipc_status=0
@@ -341,6 +375,7 @@ run_suite() {
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
         ./build/bin/runner_mpi_tests
       ;;
     symmem)

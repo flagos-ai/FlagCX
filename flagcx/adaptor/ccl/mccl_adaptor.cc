@@ -54,7 +54,16 @@ flagcxResult_t mcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)mcclCommDestroy(comm->base);
+  if (comm == NULL) {
+    return flagcxInvalidArgument;
+  }
+  mcclComm_t base = comm->base;
+  TRACE(FLAGCX_INIT, "MCCL commDestroy begin wrapper=%p base=%p", (void *)comm,
+        (void *)base);
+  flagcxResult_t result = (flagcxResult_t)mcclCommDestroy(base);
+  TRACE(FLAGCX_INIT, "MCCL commDestroy end wrapper=%p base=%p result=%d",
+        (void *)comm, (void *)base, result);
+  return result;
 }
 
 flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {

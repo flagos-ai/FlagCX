@@ -273,6 +273,12 @@ flagcxResult_t macaAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   }
   DEVCHECK(
       mcIpcOpenMemHandle(devPtr, handle->base, mcIpcMemLazyEnablePeerAccess));
+  int device = -1;
+  mcError_t getDeviceResult = mcGetDevice(&device);
+  TRACE(FLAGCX_INIT,
+        "MetaX IPC open source=device-adaptor device=%d getDeviceResult=%d "
+        "rawImportedBase=%p",
+        device, (int)getDeviceResult, *devPtr);
   return flagcxSuccess;
 }
 
@@ -280,6 +286,12 @@ flagcxResult_t macaAdaptorIpcMemHandleClose(void *devPtr) {
   if (devPtr == NULL) {
     return flagcxInvalidArgument;
   }
+  int device = -1;
+  mcError_t getDeviceResult = mcGetDevice(&device);
+  TRACE(FLAGCX_INIT,
+        "MetaX IPC close source=device-adaptor device=%d getDeviceResult=%d "
+        "rawImportedBase=%p",
+        device, (int)getDeviceResult, devPtr);
   DEVCHECK(mcIpcCloseMemHandle(devPtr));
   return flagcxSuccess;
 }

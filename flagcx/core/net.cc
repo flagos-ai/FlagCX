@@ -194,22 +194,26 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
       int step = args->posted & stepMask;
       int done = 0;
       if (!args->regBufFlag) {
-        if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
-            flagcxSuccess) {
+        flagcxResult_t queryRes =
+            deviceAdaptor->eventQuery(resources->cpEvents[step]);
+        if (queryRes == flagcxSuccess) {
           args->copied++;
           done = 1;
-        }
+        } else if (queryRes != flagcxInProgress)
+          return queryRes;
       } else {
         done = 1;
       }
       if (done) {
         void *req = NULL;
-        resources->netAdaptor->isend(
+        flagcxResult_t sendRes = resources->netAdaptor->isend(
             resources->netSendComm,
             args->subs[args->posted & stepMask].stepBuff,
             args->subs[args->posted & stepMask].stepSize, 0,
             args->regBufFlag ? args->regHandle : resources->mhandles[0], NULL,
             &req);
+        if (sendRes != flagcxSuccess && sendRes != flagcxInProgress)
+          return sendRes;
         if (req) {
           args->subs[args->posted++ & stepMask].requests[0] = req;
         }
@@ -219,7 +223,9 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
     if (args->transmitted < args->posted) {
       void *req = args->subs[args->transmitted & stepMask].requests[0];
       int done = 0, sizes;
-      resources->netAdaptor->test(req, &done, &sizes);
+      flagcxResult_t testRes = resources->netAdaptor->test(req, &done, &sizes);
+      if (testRes != flagcxSuccess && testRes != flagcxInProgress)
+        return testRes;
       if (done) {
         args->transmitted++;
       }
@@ -257,12 +263,14 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         args->subs[args->posted & stepMask].stepBuff =
             (void *)((char *)data + flagcxNetChunkSize * args->posted);
       }
-      resources->netAdaptor->irecv(
+      flagcxResult_t recvRes = resources->netAdaptor->irecv(
           resources->netRecvComm, 1,
           &args->subs[args->posted & stepMask].stepBuff,
           (size_t *)&args->subs[args->posted & stepMask].stepSize, tags,
           args->regBufFlag ? &args->regHandle : resources->mhandles, NULL,
           &req);
+      if (recvRes != flagcxSuccess && recvRes != flagcxInProgress)
+        return recvRes;
       if (req) {
         args->subs[args->posted & stepMask].requests[0] = req;
         args->totalPostSize += args->subs[args->posted++ & stepMask].stepSize;
@@ -273,15 +281,19 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     if (args->postFlush < args->posted) {
       void *req = args->subs[args->postFlush & stepMask].requests[0];
       int done = 0, sizes;
-      resources->netAdaptor->test(req, &done, &sizes);
+      flagcxResult_t testRes = resources->netAdaptor->test(req, &done, &sizes);
+      if (testRes != flagcxSuccess && testRes != flagcxInProgress)
+        return testRes;
       if (done) {
         if (resources->netAdaptor == getNetAdaptor(RDMA)) {
           void *req = NULL;
-          resources->netAdaptor->iflush(
+          flagcxResult_t flushRes = resources->netAdaptor->iflush(
               resources->netRecvComm, 1,
               &args->subs[args->postFlush & stepMask].stepBuff,
               &args->subs[args->postFlush & stepMask].stepSize,
               args->regBufFlag ? &args->regHandle : resources->mhandles, &req);
+          if (flushRes != flagcxSuccess && flushRes != flagcxInProgress)
+            return flushRes;
           if (req) {
             args->subs[args->postFlush++ & stepMask].requests[0] = req;
           }
@@ -291,12 +303,14 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
           if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
             // RDMA-style: flush
             void *req = NULL;
-            resources->netAdaptor->iflush(
+            flagcxResult_t flushRes = resources->netAdaptor->iflush(
                 resources->netRecvComm, 1,
                 &args->subs[args->postFlush & stepMask].stepBuff,
                 &args->subs[args->postFlush & stepMask].stepSize,
                 args->regBufFlag ? &args->regHandle : resources->mhandles,
                 &req);
+            if (flushRes != flagcxSuccess && flushRes != flagcxInProgress)
+              return flushRes;
             if (req) {
               args->subs[args->postFlush++ & stepMask].requests[0] = req;
             }
@@ -317,7 +331,10 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         done = 1;
         sizes = 0;
       } else {
-        resources->netAdaptor->test(req, &done, &sizes);
+        flagcxResult_t testRes =
+            resources->netAdaptor->test(req, &done, &sizes);
+        if (testRes != flagcxSuccess && testRes != flagcxInProgress)
+          return testRes;
       }
       if (done) {
         if (!args->regBufFlag) {
@@ -352,10 +369,12 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
     if (args->copied < args->waitCopy) {
       int step = args->copied & stepMask;
       if (!args->regBufFlag) {
-        if (deviceAdaptor->eventQuery(resources->cpEvents[step]) ==
-            flagcxSuccess) {
+        flagcxResult_t queryRes =
+            deviceAdaptor->eventQuery(resources->cpEvents[step]);
+        if (queryRes == flagcxSuccess) {
           args->copied++;
-        }
+        } else if (queryRes != flagcxInProgress)
+          return queryRes;
       } else {
         args->copied++;
       }
@@ -369,49 +388,112 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
   return flagcxSuccess;
 }
 
+static void flagcxProxyCleanupResult(flagcxResult_t cleanupResult,
+                                     flagcxResult_t *firstResult) {
+  if (cleanupResult != flagcxSuccess && cleanupResult != flagcxInProgress &&
+      *firstResult == flagcxSuccess)
+    *firstResult = cleanupResult;
+}
+
 flagcxResult_t flagcxSendProxyFree(sendNetResources *resources) {
+  if (resources == NULL)
+    return flagcxSuccess;
+
+  flagcxResult_t result = flagcxSuccess;
   for (int s = 0; s < flagcxNetChunks; s++) {
-    FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
-  }
-  FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
-  resources->netAdaptor->deregMr(resources->netSendComm,
-                                 resources->mhandles[0]);
-  resources->netAdaptor->closeSend(resources->netSendComm);
-  if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
-    free(resources->buffers[0]);
-  } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
-    FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
-  } else {
-    if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
-      FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
-    } else {
-      free(resources->buffers[0]);
+    if (resources->cpEvents[s] != NULL) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
+      resources->cpEvents[s] = NULL;
     }
   }
-  return flagcxSuccess;
+  if (resources->cpStream != NULL) {
+    flagcxProxyCleanupResult(deviceAdaptor->streamDestroy(resources->cpStream),
+                             &result);
+    resources->cpStream = NULL;
+  }
+  if (resources->netSendComm != NULL && resources->mhandles[0] != NULL) {
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->deregMr(resources->netSendComm,
+                                       resources->mhandles[0]),
+        &result);
+    resources->mhandles[0] = NULL;
+  }
+  if (resources->netSendComm != NULL) {
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->closeSend(resources->netSendComm), &result);
+    resources->netSendComm = NULL;
+  }
+  if (resources->buffers[0] != NULL) {
+    if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
+      free(resources->buffers[0]);
+    } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
+    } else {
+      if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+        flagcxProxyCleanupResult(
+            deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
+      } else {
+        free(resources->buffers[0]);
+      }
+    }
+    resources->buffers[0] = NULL;
+  }
+  return result;
 }
 
 flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
+  if (resources == NULL)
+    return flagcxSuccess;
+
+  flagcxResult_t result = flagcxSuccess;
   for (int s = 0; s < flagcxNetChunks; s++) {
-    FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->cpEvents[s]));
-  }
-  FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->cpStream));
-  resources->netAdaptor->deregMr(resources->netRecvComm,
-                                 resources->mhandles[0]);
-  resources->netAdaptor->closeRecv(resources->netRecvComm);
-  resources->netAdaptor->closeListen(resources->netListenComm);
-  if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
-    free(resources->buffers[0]);
-  } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
-    FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
-  } else {
-    if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
-      FLAGCXCHECK(deviceAdaptor->gdrMemFree(resources->buffers[0], NULL));
-    } else {
-      free(resources->buffers[0]);
+    if (resources->cpEvents[s] != NULL) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
+      resources->cpEvents[s] = NULL;
     }
   }
-  return flagcxSuccess;
+  if (resources->cpStream != NULL) {
+    flagcxProxyCleanupResult(deviceAdaptor->streamDestroy(resources->cpStream),
+                             &result);
+    resources->cpStream = NULL;
+  }
+  if (resources->netRecvComm != NULL && resources->mhandles[0] != NULL) {
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->deregMr(resources->netRecvComm,
+                                       resources->mhandles[0]),
+        &result);
+    resources->mhandles[0] = NULL;
+  }
+  if (resources->netRecvComm != NULL) {
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->closeRecv(resources->netRecvComm), &result);
+    resources->netRecvComm = NULL;
+  }
+  if (resources->netListenComm != NULL) {
+    flagcxProxyCleanupResult(
+        resources->netAdaptor->closeListen(resources->netListenComm), &result);
+    resources->netListenComm = NULL;
+  }
+  if (resources->buffers[0] != NULL) {
+    if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
+      free(resources->buffers[0]);
+    } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
+      flagcxProxyCleanupResult(
+          deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
+    } else {
+      if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
+        flagcxProxyCleanupResult(
+            deviceAdaptor->gdrMemFree(resources->buffers[0], NULL), &result);
+      } else {
+        free(resources->buffers[0]);
+      }
+    }
+    resources->buffers[0] = NULL;
+  }
+  return result;
 }
 
 static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,

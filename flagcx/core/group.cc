@@ -16,7 +16,9 @@
 #include "type.h"
 #include <pthread.h>
 #include <queue>
+#include <sched.h>
 #include <stdio.h>
+#include <string.h>
 #include <vector>
 
 __thread int flagcxGroupDepth = 0;
@@ -125,7 +127,15 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
       job->base.abortFlag = comm->abortFlag;
       job->comm = job->base.comm = comm;
       flagcxIntruQueueEnqueue(asyncJobsMain, &job->base);
+      comm = comm->preconnectNext;
+    } while (comm != nullptr);
 
+    // Job allocation is the only fallible part of materializing the
+    // preconnect list. Transfer the head only after every job exists, so an
+    // allocation failure leaves the original list intact for groupCleanup().
+    *gjob->groupCommPreconnectHeadPtr = nullptr;
+    comm = groupCommPreconnectHeadMain;
+    do {
       struct flagcxHeteroComm *next = comm->preconnectNext;
       comm->preconnectNext = reinterpret_cast<struct flagcxHeteroComm *>(0x1);
       comm = next;
@@ -134,22 +144,40 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 
   if (!flagcxIntruQueueEmpty(asyncJobsMain)) {
     struct flagcxAsyncJob *job = flagcxIntruQueueHead(asyncJobsMain);
-    do {
-      SYSCHECKGOTO(
-          pthread_create(&job->thread, nullptr, flagcxAsyncJobMain, job), ret,
-          fail);
+    size_t startedJobs = 0;
+    while (job != nullptr) {
+      int error =
+          pthread_create(&job->thread, nullptr, flagcxAsyncJobMain, job);
+      if (error != 0) {
+        WARN("Failed to create async group thread: %s", strerror(error));
+        ret = flagcxSystemError;
+        break;
+      }
+      startedJobs++;
       job = job->next;
-    } while (job != nullptr);
+    }
 
     job = flagcxIntruQueueHead(asyncJobsMain);
-    do {
-      pthread_join(job->thread, nullptr);
-      if (job->result != flagcxSuccess) {
+    for (size_t i = 0; i < startedJobs; i++) {
+      int error = pthread_join(job->thread, nullptr);
+      if (error != 0) {
+        WARN("Failed to join async group thread: %s", strerror(error));
+        if (ret == flagcxSuccess)
+          ret = flagcxSystemError;
+        // The job object cannot be released while its worker may still use
+        // it. A successfully created worker always publishes Done before
+        // returning, so wait for that publication if pthread_join itself
+        // unexpectedly fails.
+        while (__atomic_load_n(&job->state, __ATOMIC_ACQUIRE) ==
+               flagcxGroupJobRunning)
+          sched_yield();
+      }
+      if (job->result != flagcxSuccess && ret == flagcxSuccess) {
         WARN("Async job failed with result %d", job->result);
         ret = job->result;
       }
       job = job->next;
-    } while (job != nullptr);
+    }
 
     if (ret != flagcxSuccess)
       goto fail;

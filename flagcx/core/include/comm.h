@@ -258,10 +258,6 @@ struct flagcxHeteroComm {
   float ringbdw[FLAGCX_NUM_FUNCTIONS][FLAGCX_NUM_PROTOCOLS];
   int maxThreads[FLAGCX_NUM_ALGORITHMS][FLAGCX_NUM_PROTOCOLS];
 
-  /* This attribute can indicate the states of communicators and return code of
-   * asynchronous FLAGCX operations. */
-  flagcxResult_t asyncResult;
-
   // Flag to ask FLAGCX kernels to abort
   volatile uint32_t *abortFlag;
   volatile uint32_t *childAbortFlag;
@@ -489,7 +485,5 @@ static inline flagcxRedOp_t flagcxUserRedOpMangle(flagcxHeteroComm *comm,
 }
 
 flagcxResult_t flagcxCommEnsureReady(flagcxHeteroComm_t comm);
-flagcxResult_t flagcxCommSetAsyncError(flagcxHeteroComm_t comm,
-                                       flagcxResult_t nextState);
 
 #endif

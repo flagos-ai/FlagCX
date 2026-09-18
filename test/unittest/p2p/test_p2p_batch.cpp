@@ -8,6 +8,7 @@
 #include <infiniband/verbs.h>
 #include <thread>
 
+#include "../adaptor/net_test_utils.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 
@@ -20,16 +21,25 @@ class P2pBatchTest : public ::testing::Test {
 protected:
   static void SetUpTestSuite() {
     initResult_ = flagcxNetIbP2p.init();
-    if (initResult_ == flagcxSuccess)
+    if (initResult_ == flagcxSuccess) {
       flagcxNetIbP2p.devices(&nDevs_);
+      if (nDevs_ > 0) {
+        selectionResult_ =
+            flagcx_test::getLocalNetDevice(&flagcxNetIbP2p, nDevs_, &netDev_);
+      }
+    }
   }
 
   void SetUp() override {
     if (initResult_ != flagcxSuccess || nDevs_ <= 0)
       GTEST_SKIP() << "No IB devices available, skipping batch tests";
+    ASSERT_EQ(selectionResult_, flagcxSuccess)
+        << "Failed to select a topology-local RDMA device";
 
     // Establish loopback connection
-    ASSERT_EQ(flagcxNetIbP2p.listen(0, handle_, &listenComm_), flagcxSuccess);
+    ASSERT_EQ(flagcxNetIbP2p.listen(netDev_, handle_, &listenComm_),
+              flagcxSuccess)
+        << "topology-selected netDev=" << netDev_;
 
     auto acceptFut = std::async(std::launch::async, [this]() {
       void *comm = nullptr;
@@ -38,7 +48,7 @@ protected:
     });
     auto connectFut = std::async(std::launch::async, [this]() {
       void *comm = nullptr;
-      flagcxNetIbP2p.connect(0, handle_, &comm);
+      flagcxNetIbP2p.connect(netDev_, handle_, &comm);
       return comm;
     });
 
@@ -49,8 +59,8 @@ protected:
     ASSERT_EQ(acceptFut.wait_for(timeout), std::future_status::ready)
         << "accept() timed out";
     recvComm_ = acceptFut.get();
-    ASSERT_NE(sendComm_, nullptr);
-    ASSERT_NE(recvComm_, nullptr);
+    ASSERT_NE(sendComm_, nullptr) << "topology-selected netDev=" << netDev_;
+    ASSERT_NE(recvComm_, nullptr) << "topology-selected netDev=" << netDev_;
   }
 
   void TearDown() override {
@@ -63,7 +73,9 @@ protected:
   }
 
   static flagcxResult_t initResult_;
+  static flagcxResult_t selectionResult_;
   static int nDevs_;
+  static int netDev_;
 
   char handle_[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   void *listenComm_ = nullptr;
@@ -72,7 +84,9 @@ protected:
 };
 
 flagcxResult_t P2pBatchTest::initResult_ = flagcxInternalError;
+flagcxResult_t P2pBatchTest::selectionResult_ = flagcxInternalError;
 int P2pBatchTest::nDevs_ = 0;
+int P2pBatchTest::netDev_ = -1;
 
 // ---------------------------------------------------------------------------
 // testBatch function pointer exists

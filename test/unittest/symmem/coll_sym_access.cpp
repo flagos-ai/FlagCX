@@ -5,8 +5,129 @@
 #include "global_comm.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
+#include <algorithm>
 #include <cstring>
 #include <vector>
+
+namespace {
+
+bool allRanksReady(bool localReady) {
+  int local = localReady ? 1 : 0;
+  int global = 0;
+  MPI_Allreduce(&local, &global, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  return global != 0;
+}
+
+bool allRanksSucceeded(flagcxResult_t localResult) {
+  return allRanksReady(localResult == flagcxSuccess);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// IPC-fallback coverage.  Unlike the VMM tests below, these tests resolve the
+// peer pointer through the window's IPC table and require no network MR.
+// ---------------------------------------------------------------------------
+
+TEST_F(SymMemTest, CrossGpuReadViaIpcPeerPtr) {
+  flagcxWindow_t win = nullptr;
+  flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
+                                                FLAGCX_WIN_COLL_SYMMETRIC);
+  ASSERT_TRUE(allRanksSucceeded(res));
+
+  bool localReady = win != nullptr && win->defaultBase != nullptr &&
+                    !win->defaultBase->isVMM &&
+                    win->defaultBase->localRanks >= 2 &&
+                    win->defaultBase->ipcSlot >= 0 &&
+                    win->defaultBase->mrIndex < 0 && hasHeteroComm();
+  ASSERT_TRUE(allRanksReady(localReady))
+      << "IPC fallback requires ipcSlot >= 0 and mrIndex < 0 on every rank";
+
+  flagcxSymWindow_t window = win->defaultBase;
+  int localRank = comm->heteroComm->localRank;
+  int peerLocalRank = (localRank + 1) % window->localRanks;
+  int peerGlobalRank = comm->localRankToRank[peerLocalRank];
+
+  std::vector<float> pattern(count, static_cast<float>(localRank + 1));
+  res = devHandle->deviceMemcpy(devBuff, pattern.data(), size,
+                                flagcxMemcpyHostToDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  void *peerPtr = nullptr;
+  res = flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm, window,
+                                         peerGlobalRank, 0, size, &peerPtr);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksReady(peerPtr != nullptr));
+
+  res = devHandle->deviceMemcpy(devBuff2, peerPtr, size,
+                                flagcxMemcpyDeviceToDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  std::vector<float> readBack(count, 0.0f);
+  res = devHandle->deviceMemcpy(readBack.data(), devBuff2, size,
+                                flagcxMemcpyDeviceToHost, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
+
+  const float expected = static_cast<float>(peerLocalRank + 1);
+  EXPECT_EQ(std::count(readBack.begin(), readBack.end(), expected), count);
+  MPI_Barrier(MPI_COMM_WORLD);
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, CrossGpuWriteViaIpcPeerPtr) {
+  flagcxWindow_t win = nullptr;
+  flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
+                                                FLAGCX_WIN_COLL_SYMMETRIC);
+  ASSERT_TRUE(allRanksSucceeded(res));
+
+  bool localReady = win != nullptr && win->defaultBase != nullptr &&
+                    !win->defaultBase->isVMM &&
+                    win->defaultBase->localRanks >= 2 &&
+                    win->defaultBase->ipcSlot >= 0 &&
+                    win->defaultBase->mrIndex < 0 && hasHeteroComm();
+  ASSERT_TRUE(allRanksReady(localReady))
+      << "IPC fallback requires ipcSlot >= 0 and mrIndex < 0 on every rank";
+
+  flagcxSymWindow_t window = win->defaultBase;
+  int localRank = comm->heteroComm->localRank;
+  int targetLocalRank = (localRank + 1) % window->localRanks;
+  int targetGlobalRank = comm->localRankToRank[targetLocalRank];
+
+  res = devHandle->deviceMemset(devBuff, 0, size, flagcxMemDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  std::vector<float> pattern(count, static_cast<float>(localRank + 100));
+  res = devHandle->deviceMemcpy(devBuff2, pattern.data(), size,
+                                flagcxMemcpyHostToDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  void *peerPtr = nullptr;
+  res = flagcxSymWindowResolveIpcPeerPtr(comm->heteroComm, window,
+                                         targetGlobalRank, 0, size, &peerPtr);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksReady(peerPtr != nullptr));
+  res = devHandle->deviceMemcpy(peerPtr, devBuff2, size,
+                                flagcxMemcpyDeviceToDevice, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  int writerLocalRank =
+      (localRank + window->localRanks - 1) % window->localRanks;
+  const float expected = static_cast<float>(writerLocalRank + 100);
+  std::vector<float> readBack(count, 0.0f);
+  res = devHandle->deviceMemcpy(readBack.data(), devBuff, size,
+                                flagcxMemcpyDeviceToHost, stream);
+  ASSERT_TRUE(allRanksSucceeded(res));
+  ASSERT_TRUE(allRanksSucceeded(devHandle->streamSynchronize(stream)));
+  EXPECT_EQ(std::count(readBack.begin(), readBack.end(), expected), count);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+}
 
 // ---------------------------------------------------------------------------
 // Each rank writes a pattern, then reads from the next peer's region

@@ -2,6 +2,10 @@
 
 # T-Head PPU-specific unit-test environment setup.
 
+FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=/dev/null
+source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
+
 export PATH="/usr/local/PPU_SDK/bin:${PATH}"
 export LD_LIBRARY_PATH="/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 FLAGCX_CI_PPU_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -62,7 +66,7 @@ flagcx_ci_configure_suite() {
     p2p)
       # These suites call the IBRC vtable directly. The Engine tests use the
       # runtime transport selector and are retained for ACCL coverage.
-      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pBatchStruct.*:P2pBatchTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
+      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pBatchStruct.*:P2pBatchTest.*:*P2pGpuReadTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     rma)
@@ -85,8 +89,7 @@ flagcx_ci_run_suite_override() {
     FLAGCX_CI_MPI_LABEL="runner default" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       -u FLAGCX_CLUSTER_SPLIT_LIST -u FLAGCX_MEM_ENABLE \
-      -u FLAGCX_VMM_ENABLE -u FLAGCX_P2P_TRANSPORT \
-      -u FLAGCX_P2P_DISABLE \
+      -u FLAGCX_P2P_TRANSPORT -u FLAGCX_P2P_DISABLE \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
       ./build/bin/runner_mpi_tests
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous SendRecv smoke" \
@@ -114,6 +117,7 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
       -x FLAGCX_P2P_DISABLE=1 \
+      -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
       ./build/bin/runner_mpi_tests
     return
   fi
@@ -125,7 +129,7 @@ flagcx_ci_run_suite_override() {
 flagcx_ci_prepare() {
   local suite=$1
   local project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
-  echo "Preparing T-Head PPU environment for unit-test suite: $suite"
+  echo "Preparing T-Head PPU environment for CI workload: $suite"
 
   # Self-hosted PPU runners may reuse a workspace previously mounted at a
   # different container path. Remove only generated build trees so stale CMake
@@ -166,22 +170,8 @@ flagcx_ci_validate_rdma() {
   # vendor command nodes. Check only kernel/sysfs visibility here; provider
   # diagnostics remain informational and do not depend on ibv_devices or
   # ibv_devinfo being installed in the image.
-  if ! compgen -G "/sys/class/infiniband/vsolar_*" >/dev/null; then
-    echo "PPU $suite tests require a vsolar_* RDMA HCA in /sys/class/infiniband." >&2
-    return 1
-  fi
-  if ! compgen -G "/sys/class/infiniband_verbs/uverbs*" >/dev/null; then
-    echo "PPU $suite tests require uverbs entries in /sys/class/infiniband_verbs." >&2
-    return 1
-  fi
-  if ! compgen -G "/dev/infiniband/uverbs*" >/dev/null; then
-    echo "PPU $suite tests require /dev/infiniband/uverbs* device nodes." >&2
-    return 1
-  fi
-  if [[ ! -e /dev/infiniband/rdma_cm ]]; then
-    echo "PPU $suite tests require /dev/infiniband/rdma_cm." >&2
-    return 1
-  fi
+  flagcx_ci_validate_rdma_static PPU "$suite" \
+    "/sys/class/infiniband/vsolar_*" || return
   if ! compgen -G "/dev/infiniband/fic2_soe_ucmd*" >/dev/null; then
     echo "PPU $suite tests require /dev/infiniband/fic2_soe_ucmd* control nodes." >&2
     return 1

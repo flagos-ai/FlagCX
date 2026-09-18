@@ -95,6 +95,7 @@ struct flagcxP2pSendComm {
   std::atomic<uint32_t> nextChannel{0};
   int numQps{
       0}; // resolved from flagcxP2pGlobalConfig().qpsPerConn at connect/accept
+  enum ibv_mtu effectiveMtu { IBV_MTU_4096 };
 };
 
 struct flagcxP2pRecvComm {
@@ -105,6 +106,7 @@ struct flagcxP2pRecvComm {
   std::atomic<uint32_t> nextChannel{0};
   int numQps{
       0}; // resolved from flagcxP2pGlobalConfig().qpsPerConn at connect/accept
+  enum ibv_mtu effectiveMtu { IBV_MTU_4096 };
 };
 
 /* ------------------------------------------------------------------ */
@@ -327,6 +329,41 @@ setup_fail:
 }
 
 // Helper: build local connection metadata
+static enum ibv_mtu flagcxP2pMtuFromLength(int mtuLength) {
+  switch (mtuLength) {
+    case 512:
+      return IBV_MTU_512;
+    case 1024:
+      return IBV_MTU_1024;
+    case 2048:
+      return IBV_MTU_2048;
+    case 4096:
+    default:
+      return IBV_MTU_4096;
+  }
+}
+
+static int flagcxP2pMtuToLength(enum ibv_mtu mtu) {
+  switch (mtu) {
+    case IBV_MTU_256:
+      return 256;
+    case IBV_MTU_512:
+      return 512;
+    case IBV_MTU_1024:
+      return 1024;
+    case IBV_MTU_2048:
+      return 2048;
+    case IBV_MTU_4096:
+      return 4096;
+    default:
+      return -1;
+  }
+}
+
+static enum ibv_mtu flagcxP2pConfiguredMtuCap() {
+  return flagcxP2pMtuFromLength(flagcxP2pGlobalConfig().mtuLength);
+}
+
 static void flagcxP2pBuildConnMeta(struct flagcxP2pConnMeta *meta,
                                    struct flagcxIbNetCommDevBase *base,
                                    struct flagcxIbQp *qp, int ibDevN) {
@@ -337,19 +374,24 @@ static void flagcxP2pBuildConnMeta(struct flagcxP2pConnMeta *meta,
   meta->ibPort = ibDev->portNum;
   meta->linkLayer = ibDev->link;
   meta->lid = ibDev->portAttr.lid;
-  meta->mtu = ibDev->portAttr.active_mtu;
+  meta->mtu = (enum ibv_mtu)std::min((int)ibDev->portAttr.active_mtu,
+                                     (int)flagcxP2pConfiguredMtuCap());
 }
 
 // Helper: transition QP to RTR+RTS using remote metadata
 static flagcxResult_t
 flagcxP2pTransitionQp(struct flagcxIbQp *qp,
                       struct flagcxIbNetCommDevBase *base,
-                      struct flagcxP2pConnMeta *remoteMeta, int ibDevN) {
+                      struct flagcxP2pConnMeta *remoteMeta, int ibDevN,
+                      enum ibv_mtu *effectiveMtu) {
   struct flagcxIbDev *ibDev = flagcxIbDevs + ibDevN;
 
   // Clamp MTU to min(remote, local) — same as IBRC accept path
-  enum ibv_mtu mtu = (enum ibv_mtu)std::min((int)remoteMeta->mtu,
-                                            (int)ibDev->portAttr.active_mtu);
+  enum ibv_mtu mtu = (enum ibv_mtu)std::min(
+      std::min((int)remoteMeta->mtu, (int)ibDev->portAttr.active_mtu),
+      (int)flagcxP2pConfiguredMtuCap());
+  if (effectiveMtu != NULL)
+    *effectiveMtu = mtu;
 
   struct flagcxIbDevInfo remoteInfo;
   memset(&remoteInfo, 0, sizeof(remoteInfo));
@@ -465,7 +507,8 @@ static flagcxResult_t flagcxP2pConnect(int dev, void *opaqueHandle,
   // Transition each matched QP to RTR then RTS.
   for (int i = 0; i < comm->numQps; i++)
     FLAGCXCHECKGOTO(flagcxP2pTransitionQp(&comm->qp_list_[i], &comm->base,
-                                          &remoteMeta[i], comm->ibDevN),
+                                          &remoteMeta[i], comm->ibDevN,
+                                          &comm->effectiveMtu),
                     res, connect_fail);
 
   // Exchange ready
@@ -574,7 +617,8 @@ static flagcxResult_t flagcxP2pAccept(void *listenComm, void **recvComm) {
   // Transition each matched QP to RTR then RTS.
   for (int i = 0; i < comm->numQps; i++)
     FLAGCXCHECKGOTO(flagcxP2pTransitionQp(&comm->qp_list_[i], &comm->base,
-                                          &remoteMeta[i], comm->ibDevN),
+                                          &remoteMeta[i], comm->ibDevN,
+                                          &comm->effectiveMtu),
                     res, accept_cleanup);
 
   // Exchange ready
@@ -783,6 +827,14 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
   struct ibv_sge *sges = sgeScratch.data();
   memset(wrs, 0, sizeof(*wrs) * count);
 
+  int qpIndex = -1;
+  for (int i = 0; i < comm->numQps; i++) {
+    if (comm->qp_list_[i].qp == qp) {
+      qpIndex = i;
+      break;
+    }
+  }
+
   for (int i = 0; i < count; i++) {
     FlagcxSlice *s = slices[i];
     if (s == NULL) {
@@ -816,6 +868,14 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
     wrs[i].sg_list = &sges[i];
     wrs[i].num_sge = 1;
     wrs[i].next = (i + 1 < count) ? &wrs[i + 1] : NULL;
+
+    TRACE(FLAGCX_NET | FLAGCX_P2P,
+          "NET/IB_P2P WR op=%s ibDev=%d qpIndex=%d qpn=%u localVa=%p "
+          "remoteVa=%p length=%u lkey=0x%x rkey=0x%x mtu=%d slice=%p",
+          s->opcode == FLAGCX_SLICE_OP_READ ? "READ" : "WRITE", comm->ibDevN,
+          qpIndex, qp->qp_num, reinterpret_cast<void *>(s->srcVa),
+          reinterpret_cast<void *>(s->dstVa), s->length, s->lkey, s->rkey,
+          flagcxP2pMtuToLength(comm->effectiveMtu), s);
   }
 
   struct ibv_send_wr *bad_wr = NULL;
@@ -873,6 +933,15 @@ static flagcxResult_t flagcxP2pTest(void *request, int *done, int *sizes) {
   if (req->task.isAllDone()) {
     *done = 1;
     bool failed = req->task.hasErrors();
+    for (auto *slice : req->task.sliceList) {
+      TRACE(FLAGCX_NET | FLAGCX_P2P,
+            "NET/IB_P2P completion op=%s localVa=%p remoteVa=%p length=%u "
+            "status=%s gpuVisibilityFlush=not-performed",
+            slice->opcode == FLAGCX_SLICE_OP_READ ? "READ" : "WRITE",
+            reinterpret_cast<void *>(slice->srcVa),
+            reinterpret_cast<void *>(slice->dstVa), slice->length,
+            failed ? "failed" : "success");
+    }
     if (sizes && !failed) {
       uint64_t total = 0;
       for (auto *s : req->task.sliceList)

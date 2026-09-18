@@ -475,6 +475,7 @@ extern int firstBitSet(int val, int max);
 
 extern flagcxResult_t flagcxIbDevices(int *ndev);
 extern flagcxResult_t flagcxIbGdrSupport(void);
+extern flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, bool *supported);
 extern flagcxResult_t flagcxIbDmaBufSupport(int dev);
 extern flagcxResult_t flagcxIbFreeRequest(struct flagcxIbRequest *r);
 

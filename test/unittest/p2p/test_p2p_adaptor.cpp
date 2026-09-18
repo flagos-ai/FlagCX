@@ -1,6 +1,7 @@
 // Unit tests for the IB P2P net adaptor.
-// Tests that don't require IB hardware always run.
-// Tests that need real IB devices skip gracefully via GTEST_SKIP().
+// Tests that don't require IB hardware always run. The device requirement test
+// fails when the adaptor exposes no usable IB device; individual data-path
+// tests may still skip to avoid repeating the same environment failure.
 // Links against libflagcx.
 
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <infiniband/verbs.h>
 #include <thread>
 
+#include "../adaptor/net_test_utils.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 
@@ -24,12 +26,10 @@ protected:
     initResult = flagcxNetIbP2p.init();
     if (initResult == flagcxSuccess) {
       flagcxNetIbP2p.devices(&nDevs);
-    }
-  }
-
-  void SetUp() override {
-    if (!hasIbDevices()) {
-      GTEST_SKIP() << "No IB devices available, skipping";
+      if (nDevs > 0) {
+        selectionResult =
+            flagcx_test::getLocalNetDevice(&flagcxNetIbP2p, nDevs, &netDev);
+      }
     }
   }
 
@@ -38,11 +38,15 @@ protected:
   }
 
   static flagcxResult_t initResult;
+  static flagcxResult_t selectionResult;
   static int nDevs;
+  static int netDev;
 };
 
 flagcxResult_t P2pAdaptorTest::initResult = flagcxInternalError;
+flagcxResult_t P2pAdaptorTest::selectionResult = flagcxInternalError;
 int P2pAdaptorTest::nDevs = 0;
+int P2pAdaptorTest::netDev = -1;
 
 // ---------------------------------------------------------------------------
 // 1. Adaptor struct completeness — always runs, no hardware needed
@@ -103,7 +107,16 @@ TEST(P2pAdaptorStruct, TwoSidedStubsReturnError) {
 // ---------------------------------------------------------------------------
 TEST_F(P2pAdaptorTest, InitSucceeds) { EXPECT_EQ(initResult, flagcxSuccess); }
 
-TEST_F(P2pAdaptorTest, DevicesReturnsPositive) { EXPECT_GT(nDevs, 0); }
+TEST_F(P2pAdaptorTest, DevicesReturnsPositive) {
+  ASSERT_EQ(initResult, flagcxSuccess);
+  ASSERT_GT(nDevs, 0)
+      << "The IB P2P integration suite requires at least one usable RDMA "
+         "device";
+  EXPECT_EQ(selectionResult, flagcxSuccess)
+      << "Failed to select an RDMA device using the current GPU topology";
+  EXPECT_GE(netDev, 0);
+  EXPECT_LT(netDev, nDevs);
+}
 
 TEST_F(P2pAdaptorTest, InitIsIdempotent) {
   // Calling init again should succeed without side effects
@@ -117,6 +130,9 @@ TEST_F(P2pAdaptorTest, InitIsIdempotent) {
 // 3. GetProperties — requires IB hardware
 // ---------------------------------------------------------------------------
 TEST_F(P2pAdaptorTest, GetPropertiesForEachDevice) {
+  if (!hasIbDevices())
+    GTEST_SKIP() << "No IB devices available after the requirement failed";
+
   for (int d = 0; d < nDevs; d++) {
     flagcxNetProperties_t props;
     memset(&props, 0, sizeof(props));
@@ -131,49 +147,68 @@ TEST_F(P2pAdaptorTest, GetPropertiesForEachDevice) {
 // ---------------------------------------------------------------------------
 class P2pLoopbackTest : public P2pAdaptorTest {
 protected:
-  void SetUp() override { P2pAdaptorTest::SetUp(); }
+  void SetUp() override {
+    if (!hasIbDevices())
+      GTEST_SKIP() << "No IB devices available after the requirement failed";
+    ASSERT_EQ(selectionResult, flagcxSuccess)
+        << "Failed to select a topology-local RDMA device";
+  }
 };
 
-TEST_F(P2pLoopbackTest, ListenConnectAcceptClose) {
-  // Listen
-  char handle[FLAGCX_NET_HANDLE_MAXSIZE];
-  void *listenComm = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.listen(0, handle, &listenComm), flagcxSuccess);
-  ASSERT_NE(listenComm, nullptr);
+TEST_F(P2pAdaptorTest, ListenConnectAcceptCloseForEachDevice) {
+  if (!hasIbDevices())
+    GTEST_SKIP() << "No IB devices available after the requirement failed";
 
-  // Connect + Accept in parallel using std::async with timeout
-  auto acceptFuture = std::async(std::launch::async, [&]() {
-    void *comm = nullptr;
-    flagcxResult_t r = flagcxNetIbP2p.accept(listenComm, &comm);
-    return std::make_pair(r, comm);
-  });
+  for (int dev = 0; dev < nDevs; ++dev) {
+    flagcxNetProperties_t props = {};
+    ASSERT_EQ(flagcxNetIbP2p.getProperties(dev, &props), flagcxSuccess);
+    SCOPED_TRACE(::testing::Message()
+                 << "netDev=" << dev << " name="
+                 << (props.name != nullptr ? props.name : "<unnamed>")
+                 << " pciPath="
+                 << (props.pciPath != nullptr ? props.pciPath : "<unknown>")
+                 << " port=" << props.port << " speed=" << props.speed);
 
-  auto connectFuture = std::async(std::launch::async, [&]() {
-    void *comm = nullptr;
-    flagcxResult_t r = flagcxNetIbP2p.connect(0, handle, &comm);
-    return std::make_pair(r, comm);
-  });
+    // Listen
+    char handle[FLAGCX_NET_HANDLE_MAXSIZE];
+    void *listenComm = nullptr;
+    ASSERT_EQ(flagcxNetIbP2p.listen(dev, handle, &listenComm), flagcxSuccess);
+    ASSERT_NE(listenComm, nullptr);
 
-  // Wait with timeout to avoid hanging forever
-  auto timeout = std::chrono::seconds(10);
+    // Connect + Accept in parallel using std::async with timeout
+    auto acceptFuture = std::async(std::launch::async, [&]() {
+      void *comm = nullptr;
+      flagcxResult_t r = flagcxNetIbP2p.accept(listenComm, &comm);
+      return std::make_pair(r, comm);
+    });
 
-  ASSERT_EQ(connectFuture.wait_for(timeout), std::future_status::ready)
-      << "connect() timed out after 10s";
-  auto [connectResult, sendComm] = connectFuture.get();
+    auto connectFuture = std::async(std::launch::async, [&]() {
+      void *comm = nullptr;
+      flagcxResult_t r = flagcxNetIbP2p.connect(dev, handle, &comm);
+      return std::make_pair(r, comm);
+    });
 
-  ASSERT_EQ(acceptFuture.wait_for(timeout), std::future_status::ready)
-      << "accept() timed out after 10s";
-  auto [acceptResult, recvComm] = acceptFuture.get();
+    // Wait with timeout to avoid hanging forever
+    auto timeout = std::chrono::seconds(10);
 
-  ASSERT_EQ(connectResult, flagcxSuccess) << "connect() failed";
-  ASSERT_EQ(acceptResult, flagcxSuccess) << "accept() failed";
-  ASSERT_NE(sendComm, nullptr);
-  ASSERT_NE(recvComm, nullptr);
+    ASSERT_EQ(connectFuture.wait_for(timeout), std::future_status::ready)
+        << "connect() timed out after 10s";
+    auto [connectResult, sendComm] = connectFuture.get();
 
-  // Close
-  EXPECT_EQ(flagcxNetIbP2p.closeSend(sendComm), flagcxSuccess);
-  EXPECT_EQ(flagcxNetIbP2p.closeRecv(recvComm), flagcxSuccess);
-  EXPECT_EQ(flagcxNetIbP2p.closeListen(listenComm), flagcxSuccess);
+    ASSERT_EQ(acceptFuture.wait_for(timeout), std::future_status::ready)
+        << "accept() timed out after 10s";
+    auto [acceptResult, recvComm] = acceptFuture.get();
+
+    ASSERT_EQ(connectResult, flagcxSuccess) << "connect() failed";
+    ASSERT_EQ(acceptResult, flagcxSuccess) << "accept() failed";
+    ASSERT_NE(sendComm, nullptr);
+    ASSERT_NE(recvComm, nullptr);
+
+    // Close
+    EXPECT_EQ(flagcxNetIbP2p.closeSend(sendComm), flagcxSuccess);
+    EXPECT_EQ(flagcxNetIbP2p.closeRecv(recvComm), flagcxSuccess);
+    EXPECT_EQ(flagcxNetIbP2p.closeListen(listenComm), flagcxSuccess);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +218,8 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
   // Set up loopback connection
   char handle[FLAGCX_NET_HANDLE_MAXSIZE];
   void *listenComm = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.listen(0, handle, &listenComm), flagcxSuccess);
+  ASSERT_EQ(flagcxNetIbP2p.listen(netDev, handle, &listenComm), flagcxSuccess)
+      << "topology-selected netDev=" << netDev;
 
   auto acceptFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
@@ -192,7 +228,7 @@ TEST_F(P2pLoopbackTest, RegMrDeregMr) {
   });
   auto connectFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
-    flagcxNetIbP2p.connect(0, handle, &comm);
+    flagcxNetIbP2p.connect(netDev, handle, &comm);
     return comm;
   });
 
@@ -243,7 +279,8 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   // Set up loopback connection
   char handle[FLAGCX_NET_HANDLE_MAXSIZE];
   void *listenComm = nullptr;
-  ASSERT_EQ(flagcxNetIbP2p.listen(0, handle, &listenComm), flagcxSuccess);
+  ASSERT_EQ(flagcxNetIbP2p.listen(netDev, handle, &listenComm), flagcxSuccess)
+      << "topology-selected netDev=" << netDev;
 
   auto acceptFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
@@ -252,7 +289,7 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   });
   auto connectFuture = std::async(std::launch::async, [&]() {
     void *comm = nullptr;
-    flagcxNetIbP2p.connect(0, handle, &comm);
+    flagcxNetIbP2p.connect(netDev, handle, &comm);
     return comm;
   });
 
@@ -263,8 +300,8 @@ TEST_F(P2pLoopbackTest, IputAndTest) {
   ASSERT_EQ(acceptFuture.wait_for(timeout), std::future_status::ready)
       << "accept() timed out";
   void *recvComm = acceptFuture.get();
-  ASSERT_NE(sendComm, nullptr);
-  ASSERT_NE(recvComm, nullptr);
+  ASSERT_NE(sendComm, nullptr) << "topology-selected netDev=" << netDev;
+  ASSERT_NE(recvComm, nullptr) << "topology-selected netDev=" << netDev;
 
   // Allocate and register src + dst buffers
   const size_t bufSize = 4096;

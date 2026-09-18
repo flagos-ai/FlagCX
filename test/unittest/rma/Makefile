@@ -20,8 +20,8 @@ MPI_TARGET := $(BINDIR)/rma_mpi_tests
 # selection out of this list so CI can exercise IPC and RDMA independently.
 RMA_PLATFORM_ENV ?=
 HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=0 $(RMA_PLATFORM_ENV)
-IPC_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=1 -x FLAGCX_RMA_FORCE_NET=0 -x FLAGCX_RMA_TEST_REQUIRE_IPC=1
-NET_ENV := $(HETERO_ENV) -x FLAGCX_RMA_FORCE_NET=1 -x FLAGCX_RMA_TEST_REQUIRE_IPC=0
+IPC_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=1 -x FLAGCX_P2P_DISABLE=0
+NET_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1
 IPC_FILTER := RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals
 
 .PHONY: all clean run-unit run-mpi-ipc run-mpi-net run-mpi run

@@ -121,6 +121,8 @@ struct flagcxProxyConnector {
   int tpLocalRank;
   int sameProcess;
   bool initialized;
+  // Handle owned by the target proxy service. It may refer to another process;
+  // generic RPC code must treat it as opaque and only forward its value.
   struct flagcxProxyConnection *connection;
   flagcxResult_t (*proxyProgress)(
       struct flagcxProxyState *proxyState,

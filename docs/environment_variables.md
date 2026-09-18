@@ -73,12 +73,11 @@ This document provides a comprehensive reference for all environment variables u
 |----------|---------|-------------|
 | `FLAGCX_RUNTIME_PROXY` | 0 | When set to 1, enables runtime proxy mode |
 | `FLAGCX_PROGRESS_APPENDOP_FREQ` | 8 | Frequency of append operation in progress loop |
-| `FLAGCX_P2P_DISABLE` | 0 | When set to 1, disables P2P transport |
+| `FLAGCX_P2P_DISABLE` | 0 | When set to 1, disables intra-node peer transports, including traditional P2P and the RMA IPC fast path |
 | `FLAGCX_P2P_SCHEDULE_DISABLE` | 0 | When set to 1, disables P2P scheduling optimization |
 | `FLAGCX_DEVICE_FUNC_PATH` | None | Path to device function library for async kernel loading |
 | `FLAGCX_RMA_QUEUE_SIZE` | 256 | Per-peer circular buffer depth for the RMA proxy thread. Must be a power of two. Increasing this allows more in-flight RDMA descriptors per peer before the producer blocks |
 | `FLAGCX_RMA_BATCH_MAX` | 256 | Maximum number of RDMA PUT descriptors batched into a single `iputBatch` call by the RMA proxy thread. Capped internally at 256. Set to 1 to disable batching and fall back to one-at-a-time `iput` |
-| `FLAGCX_RMA_FORCE_NET` | 0 | Force traditional RMA put/signal operations to bypass the intra-node IPC fast path and use the network adaptor. Intended for path validation and debugging |
 
 ---
 

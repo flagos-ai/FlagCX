@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "flagcx.h"
+#include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
 #include "p2p_topo.h"
 

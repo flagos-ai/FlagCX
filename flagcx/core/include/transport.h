@@ -25,6 +25,11 @@ extern struct flagcxTransport collNetTransport;
 
 extern struct flagcxTransport *flagcxTransports[];
 
+// Defined by FLAGCX_PARAM(P2pDisable, ...) in transport.cc. The accessor is
+// shared with RMA so the same internal switch disables every intra-node peer
+// transport; it is not part of the public API.
+int64_t flagcxParamP2pDisable(void);
+
 // Forward declarations
 struct flagcxRing;
 struct flagcxConnector;

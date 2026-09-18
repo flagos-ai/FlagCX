@@ -45,10 +45,14 @@ void RmaTest::SetUpTestSuite() {
 
   size = RMA_TEST_SIZE;
   signalSize = sizeof(uint64_t) * nranks;
-  const char *requireIpcEnv = std::getenv("FLAGCX_RMA_TEST_REQUIRE_IPC");
-  requireIpc = requireIpcEnv != nullptr && std::strcmp(requireIpcEnv, "0") != 0;
-  const char *forceNetEnv = std::getenv("FLAGCX_RMA_FORCE_NET");
-  bool forceNet = forceNetEnv != nullptr && std::strcmp(forceNetEnv, "0") != 0;
+  const char *ibDisableEnv = std::getenv("FLAGCX_IB_DISABLE");
+  const bool ibDisabled =
+      ibDisableEnv != nullptr && std::strcmp(ibDisableEnv, "0") != 0;
+  const char *p2pDisableEnv = std::getenv("FLAGCX_P2P_DISABLE");
+  const bool p2pDisabled =
+      p2pDisableEnv != nullptr && std::strcmp(p2pDisableEnv, "0") != 0;
+  requireIpc = ibDisabled && !p2pDisabled;
+  const bool requireNet = !ibDisabled && p2pDisabled;
   windowAvailable = false;
   networkRmaAvailable = false;
   ipcRmaAvailable = false;
@@ -58,7 +62,7 @@ void RmaTest::SetUpTestSuite() {
   signalRmaSetupFailed = false;
   signalRmaSkipReason = "Signal RMA setup not completed";
 
-  int localMode = requireIpc == forceNet ? 0 : (requireIpc ? 1 : 2);
+  int localMode = requireIpc ? 1 : (requireNet ? 2 : 0);
   int minMode = 0;
   int maxMode = 0;
   MPI_Allreduce(&localMode, &minMode, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);

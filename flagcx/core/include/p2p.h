@@ -68,11 +68,20 @@ struct p2pRegInfo {
       ipcSendRmtAddr; // Sender's buffer mapped in receiver's address space
 };
 
+enum flagcxP2pFifoTeardownState {
+  flagcxP2pFifoImportOpen = 0,
+  flagcxP2pFifoImportClosed = 1,
+};
+
 struct flagcxP2pShm {
   // Array of synchronization slots for multiple concurrent operations
   struct flagcxP2pSyncSlot slots[FLAGCX_P2P_MAX_OPS];
   // Array of registration info for multiple concurrent operations
   struct p2pRegInfo regInfos[FLAGCX_P2P_MAX_OPS];
+  // The FIFO importer publishes this only after its device stream is drained
+  // and the raw IPC mapping has been closed. The exporting peer must observe
+  // it before releasing the backing allocation.
+  volatile uint32_t fifoImportClosed;
 };
 
 // need to make sure this matches flagcxP2pShmProxyInfo in p2p.cc
@@ -94,6 +103,14 @@ struct flagcxP2pResources {
 
   // Proxy info for async operations
   struct flagcxP2pShmProxyInfo proxyInfo;
+
+  // FIFO ownership is intentionally separate from proxyInfo.recvFifo, which
+  // is only the adjusted pointer consumed by the copy path.  The receiver
+  // owns a local allocation; the sender owns the raw base returned by
+  // ipcMemHandleOpen.  Only these owner fields may be released at teardown.
+  void *localRecvFifo;
+  void *importedRecvFifoBase;
+  int cudaDev;
 };
 
 // Bootstrap tag for one-sided IPC registration (first call only).
@@ -166,6 +183,13 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
 flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources);
 
 flagcxResult_t flagcxP2pRecvProxyFree(struct flagcxP2pResources *resources);
+
+// Teardown helpers are exposed internally so the close-before-free contract
+// can be unit-tested without constructing proxy service threads.
+flagcxResult_t flagcxP2pCloseImportedFifo(struct flagcxP2pResources *resources);
+
+flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
+                                         int64_t timeoutMs);
 
 void setP2pSlotInfo(int rank, int peerRank, size_t size, flagcxDataType_t dtype,
                     int isRecv, uint64_t *opHash, size_t *slotIdx);

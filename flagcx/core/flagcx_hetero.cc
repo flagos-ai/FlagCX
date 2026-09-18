@@ -27,7 +27,6 @@
 
 FLAGCX_PARAM(RmaQueueSize, "RMA_QUEUE_SIZE", FLAGCX_RMA_QUEUE_SIZE);
 FLAGCX_PARAM(RmaBatchMax, "RMA_BATCH_MAX", FLAGCX_RMA_BATCH_MAX);
-FLAGCX_PARAM(RmaForceNet, "RMA_FORCE_NET", 0);
 FLAGCX_PARAM(RmaStreamOps, "RMA_STREAM_OPS",
              0); // 0 = HOST_FUNC (default), 1 = STREAM_OPS
 
@@ -987,10 +986,18 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
   return flagcxSuccess;
 }
 
+static inline bool flagcxRmaMrIndexIsValid(flagcxHeteroComm_t comm,
+                                           int mrIndex) {
+  return comm != NULL && mrIndex >= 0 && mrIndex < comm->oneSideHandleCount &&
+         comm->oneSideHandles != NULL && comm->oneSideHandles[mrIndex] != NULL;
+}
+
 flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx, bool streamSyncReady,
                                uint64_t *assignedSeq) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iput == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -998,6 +1005,9 @@ flagcxResult_t flagcxHeteroPut(flagcxHeteroComm_t comm, int peer,
          comm->nRanks);
     return flagcxInvalidArgument;
   }
+  if (!flagcxRmaMrIndexIsValid(comm, srcMrIdx) ||
+      !flagcxRmaMrIndexIsValid(comm, dstMrIdx))
+    return flagcxNotSupported;
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroPut: rmaProxy not initialized");
     return flagcxInternalError;
@@ -1034,6 +1044,11 @@ flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
     WARN("flagcxHeteroBatchPut: peer %d out of range (nRanks=%d)", peer,
          comm->nRanks);
     return flagcxInvalidArgument;
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (!flagcxRmaMrIndexIsValid(comm, srcMrIdxs[i]) ||
+        !flagcxRmaMrIndexIsValid(comm, dstMrIdxs[i]))
+      return flagcxNotSupported;
   }
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroBatchPut: rmaProxy not initialized");
@@ -1077,6 +1092,8 @@ flagcxResult_t flagcxHeteroBatchPut(flagcxHeteroComm_t comm, int peer,
 flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iget == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -1084,6 +1101,9 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
          comm->nRanks);
     return flagcxInvalidArgument;
   }
+  if (!flagcxRmaMrIndexIsValid(comm, srcMrIdx) ||
+      !flagcxRmaMrIndexIsValid(comm, dstMrIdx))
+    return flagcxNotSupported;
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroGet: rmaProxy not initialized");
     return flagcxInternalError;
@@ -1109,6 +1129,8 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
                                      int srcMrIdx, int dstMrIdx,
                                      uint64_t signalValue, bool streamSyncReady,
                                      uint64_t *assignedSeq) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   if (comm->netAdaptor == NULL || comm->netAdaptor->iputSignal == NULL)
     return flagcxNotSupported;
   if (peer < 0 || peer >= comm->nRanks) {
@@ -1116,6 +1138,10 @@ flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
          comm->nRanks);
     return flagcxInvalidArgument;
   }
+  if ((size > 0 && (!flagcxRmaMrIndexIsValid(comm, srcMrIdx) ||
+                    !flagcxRmaMrIndexIsValid(comm, dstMrIdx))) ||
+      comm->signalHandle == NULL)
+    return flagcxNotSupported;
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroPutSignal: rmaProxy not initialized");
     return flagcxInternalError;
@@ -1332,7 +1358,7 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
     return flagcxInternalError;
 
   // Try intra-node D2D path (lazy init if not yet built)
-  if (stream != NULL && !flagcxParamRmaForceNet() &&
+  if (stream != NULL && !flagcxParamP2pDisable() &&
       flagcxIsIntraNode(comm, peer)) {
     if (srcWindow != NULL && srcWindow->localBase != NULL &&
         dstWindow != NULL && srcOffset <= srcWindow->heapSize &&
@@ -1354,10 +1380,8 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
     }
   }
 
-  if (srcMrIdx < 0 || srcMrIdx >= comm->oneSideHandleCount || dstMrIdx < 0 ||
-      dstMrIdx >= comm->oneSideHandleCount ||
-      comm->oneSideHandles[srcMrIdx] == NULL ||
-      comm->oneSideHandles[dstMrIdx] == NULL)
+  if (!flagcxRmaMrIndexIsValid(comm, srcMrIdx) ||
+      !flagcxRmaMrIndexIsValid(comm, dstMrIdx))
     return flagcxNotSupported;
 
   // Fallback: enqueue to proxy thread (inter-node or no IPC)
@@ -1414,7 +1438,7 @@ flagcxResult_t flagcxHeteroPutSignalStream(
     return flagcxInternalError;
 
   // Try intra-node D2D path (lazy init if not yet built)
-  if (stream != NULL && !flagcxParamRmaForceNet() &&
+  if (stream != NULL && !flagcxParamP2pDisable() &&
       flagcxIsIntraNode(comm, peer)) {
     if (proxy->ipcState == NULL && !proxy->ipcInitFailed) {
       if (flagcxHeteroRmaIpcInit(comm) != flagcxSuccess)
@@ -1472,10 +1496,8 @@ flagcxResult_t flagcxHeteroPutSignalStream(
   // The network fallback requires registered data and signal MRs. Keep this
   // check after the IPC attempt so an IPC-capable window does not depend on
   // network registration state.
-  if ((size > 0 && (srcMrIdx < 0 || srcMrIdx >= comm->oneSideHandleCount ||
-                    dstMrIdx < 0 || dstMrIdx >= comm->oneSideHandleCount ||
-                    comm->oneSideHandles[srcMrIdx] == NULL ||
-                    comm->oneSideHandles[dstMrIdx] == NULL)) ||
+  if ((size > 0 && (!flagcxRmaMrIndexIsValid(comm, srcMrIdx) ||
+                    !flagcxRmaMrIndexIsValid(comm, dstMrIdx))) ||
       comm->signalHandle == NULL)
     return flagcxNotSupported;
 

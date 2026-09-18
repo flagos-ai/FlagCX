@@ -1344,6 +1344,14 @@ static bool memRegContains(const FlagcxP2pMemRegEntry &entry, uintptr_t addr,
   return offset <= entry.size && size <= entry.size - offset;
 }
 
+static bool remoteDescContains(const FlagcxP2pRdmaDesc &desc, size_t size) {
+  if (size > desc.size)
+    return false;
+  if (size != 0 && desc.addr == 0)
+    return false;
+  return desc.addr <= UINT64_MAX - size;
+}
+
 static int resolveIbDevN(int netDev) {
   if (netDev < 0 || netDev >= flagcxNMergedIbDevs)
     return 0;
@@ -1454,6 +1462,44 @@ static flagcxResult_t setEngineDevice(FlagcxP2pEngine *engine) {
     return deviceAdaptor->setDevice(engine->localGpuIdx);
   }
   return flagcxSuccess;
+}
+
+static void traceP2pAddressRange(const char *stage, FlagcxP2pEngine *engine,
+                                 uintptr_t addr, size_t size, FlagcxP2pMr mrId,
+                                 int netDev, int ibDevN, int ptrType,
+                                 void *mhandle) {
+  if (flagcxDebugLevel < FLAGCX_LOG_TRACE ||
+      (flagcxDebugMask & FLAGCX_P2P) == 0) {
+    return;
+  }
+  void *allocationBase = NULL;
+  size_t allocationSize = 0;
+  flagcxResult_t rangeResult = flagcxNotSupported;
+  if (deviceAdaptor != NULL && deviceAdaptor->getAddressRange != NULL) {
+    rangeResult = deviceAdaptor->getAddressRange(
+        reinterpret_cast<const void *>(addr), &allocationBase, &allocationSize);
+  }
+
+  uintptr_t allocationOffset = 0;
+  if (rangeResult == flagcxSuccess &&
+      addr >= reinterpret_cast<uintptr_t>(allocationBase)) {
+    allocationOffset = addr - reinterpret_cast<uintptr_t>(allocationBase);
+  }
+
+  uintptr_t handleBase = 0;
+  if (mhandle != NULL) {
+    handleBase = reinterpret_cast<FlagcxP2pMrHandleView *>(mhandle)->baseVa;
+  }
+  TRACE(FLAGCX_P2P,
+        "P2P address trace stage=%s engine=%p gpu=%d mr=%llu addr=%p "
+        "size=%zu allocationBase=%p allocationSize=%zu "
+        "allocationOffset=%zu rangeResult=%d netDev=%d ibDev=%d ptrType=%d "
+        "mhandle=%p handleBase=%p",
+        stage, engine, engine != NULL ? engine->localGpuIdx : -1,
+        (unsigned long long)mrId, reinterpret_cast<void *>(addr), size,
+        allocationBase, allocationSize, (size_t)allocationOffset,
+        (int)rangeResult, netDev, ibDevN, ptrType, mhandle,
+        reinterpret_cast<void *>(handleBase));
 }
 
 static int detectPtrTypeAndMaybeCacheIpc(void *ptr, char *ipcHandleBuf,
@@ -1837,6 +1883,13 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
   if (conn == NULL || transferId == NULL || numIovs <= 0)
     return -1;
 
+  TRACE(FLAGCX_P2P,
+        "P2P local transfer begin conn=%p engine=%p gpu=%d sameProcess=%d "
+        "isLocal=%d isWrite=%d numIovs=%d",
+        conn, conn->engine,
+        conn->engine != NULL ? conn->engine->localGpuIdx : -1,
+        (int)conn->sameProcess, (int)conn->isLocal, (int)isWrite, numIovs);
+
   std::vector<FlagcxP2pMemRegEntry> localEntries(numIovs);
   std::vector<FlagcxP2pMemRegEntry> remoteEntries(numIovs);
   std::vector<bool> haveRemoteEntry(numIovs, false);
@@ -1906,6 +1959,30 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
     const bool srcIsCuda =
         isWrite ? localEntries[i].ptrType == FLAGCX_PTR_CUDA : remoteIsCuda;
 
+    const long long localOffset =
+        (long long)((intptr_t)(uintptr_t)localVec[i] -
+                    (intptr_t)localEntries[i].baseAddr);
+    const long long remoteOffset =
+        haveRemoteEntry[i] ? (long long)((intptr_t)(uintptr_t)remotePtr -
+                                         (intptr_t)remoteEntries[i].baseAddr)
+                           : 0;
+    TRACE(FLAGCX_P2P,
+          "P2P local transfer iov=%d local=%p localMr=%llu "
+          "localBase=%p localSize=%zu localOffset=%lld descAddr=%p "
+          "descSize=%u remote=%p remoteMr=%llu remoteBase=%p "
+          "remoteSize=%zu remoteOffset=%lld src=%p dst=%p bytes=%zu "
+          "srcCuda=%d dstCuda=%d",
+          i, localVec[i], (unsigned long long)localEntries[i].mrId,
+          reinterpret_cast<void *>(localEntries[i].baseAddr),
+          localEntries[i].size, localOffset,
+          reinterpret_cast<void *>((uintptr_t)descs[i].addr), descs[i].size,
+          remotePtr,
+          (unsigned long long)(haveRemoteEntry[i] ? remoteEntries[i].mrId : 0),
+          reinterpret_cast<void *>(
+              haveRemoteEntry[i] ? remoteEntries[i].baseAddr : 0),
+          haveRemoteEntry[i] ? remoteEntries[i].size : 0, remoteOffset, src,
+          dst, sizeVec[i], (int)srcIsCuda, (int)dstIsCuda);
+
     if (!srcIsCuda && !dstIsCuda) {
       memcpy(dst, src, sizeVec[i]);
       continue;
@@ -1917,6 +1994,11 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
     }
 
     const flagcxMemcpyType_t copyType = chooseMemcpyType(srcIsCuda, dstIsCuda);
+    TRACE(FLAGCX_P2P,
+          "P2P local memcpy iov=%d gpu=%d src=%p dst=%p bytes=%zu "
+          "copyType=%d stream=%p",
+          i, conn->engine != NULL ? conn->engine->localGpuIdx : -1, src, dst,
+          sizeVec[i], (int)copyType, xfer.stream);
     if (deviceAdaptor == NULL || deviceAdaptor->deviceMemcpy == NULL ||
         deviceAdaptor->deviceMemcpy(dst, src, sizeVec[i], copyType, xfer.stream,
                                     NULL) != flagcxSuccess) {
@@ -1942,6 +2024,11 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
   const uint64_t xferId = gNextXferId++;
   gXferMap[xferId] = std::move(xfer);
   *transferId = xferId;
+  TRACE(FLAGCX_P2P,
+        "P2P local transfer submitted conn=%p transferId=%llu stream=%p "
+        "event=%p",
+        conn, (unsigned long long)xferId, gXferMap[xferId].stream,
+        gXferMap[xferId].event);
   return 0;
 }
 
@@ -2725,6 +2812,9 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
       return -1;
     }
 
+    traceP2pAddressRange("register-legacy", engine, data, size, entry.mrId,
+                         netDev, ibDevN, entry.ptrType, entry.mhandle);
+
     gMemRegInfo[data] = entry;
     gMrToBaseAddr[entry.mrId] = data;
     mrId = entry.mrId;
@@ -2809,6 +2899,8 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   }
 
   mrId = assignedId;
+  traceP2pAddressRange("register", engine, data, size, mrId, netDev, ibDevN,
+                       ptrType, mhandle);
   pthread_mutex_unlock(&gMrLifecycleMutex);
   return 0;
 }
@@ -2902,6 +2994,15 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
     desc.addr = (uint64_t)(uintptr_t)data;
     desc.size = (uint32_t)size;
     desc.rkey = mrView->rkey;
+    TRACE(FLAGCX_P2P,
+          "P2P descriptor trace path=legacy engine=%p gpu=%d mr=%llu "
+          "registryBase=%p registrySize=%zu data=%p dataOffset=%zu size=%zu "
+          "descAddr=%p descSize=%u rkey=0x%x handleBase=%p",
+          engine, engine->localGpuIdx, (unsigned long long)mr,
+          reinterpret_cast<void *>(entry->baseAddr), entry->size, data,
+          (size_t)((uintptr_t)data - entry->baseAddr), size,
+          reinterpret_cast<void *>((uintptr_t)desc.addr), desc.size, desc.rkey,
+          reinterpret_cast<void *>(mrView->baseVa));
     flagcxP2pSerializeRdmaDesc(desc, descBuf);
     memcpy(entry->descBuf, descBuf, FLAGCX_P2P_DESC_SIZE);
     return 0;
@@ -2975,6 +3076,15 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
   desc.size = (uint32_t)size;
   desc.rkey = mrView->rkey;
 
+  TRACE(FLAGCX_P2P,
+        "P2P descriptor trace path=registry engine=%p gpu=%d mr=%llu "
+        "registryBase=%p registrySize=%zu data=%p dataOffset=%zu size=%zu "
+        "descAddr=%p descSize=%u rkey=0x%x handleBase=%p",
+        engine, engine->localGpuIdx, (unsigned long long)mr,
+        reinterpret_cast<void *>(entries[idx].baseAddr), entries[idx].size,
+        data, offset, size, reinterpret_cast<void *>((uintptr_t)desc.addr),
+        desc.size, desc.rkey, reinterpret_cast<void *>(mrView->baseVa));
+
   flagcxP2pSerializeRdmaDesc(desc, descBuf);
   flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
   return 0;
@@ -2990,11 +3100,27 @@ int flagcxP2pEngineUpdateDesc(FlagcxP2pRdmaDesc &desc, uint64_t remoteAddr,
 int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                         size_t size, FlagcxP2pRdmaDesc desc,
                         uint64_t *transferId) {
-  if (conn != NULL && flagcxP2pIsAccl(conn))
-    return flagcxAcclEngineRead(conn, mr, data, size, desc, transferId);
-  (void)mr;
   if (conn == NULL || data == NULL || transferId == NULL)
     return -1;
+  *transferId = 0;
+  if (!remoteDescContains(desc, size)) {
+    WARN("P2P read remote descriptor bounds check failed: addr=%p "
+         "descSize=%u requestSize=%zu",
+         reinterpret_cast<void *>((uintptr_t)desc.addr), desc.size, size);
+    return -1;
+  }
+  if (flagcxP2pIsAccl(conn))
+    return flagcxAcclEngineRead(conn, mr, data, size, desc, transferId);
+
+  TRACE(FLAGCX_P2P,
+        "P2P read trace conn=%p engine=%p gpu=%d mr=%llu local=%p size=%zu "
+        "descAddr=%p descSize=%u rkey=0x%x sameProcess=%d isLocal=%d path=%s",
+        conn, conn->engine,
+        conn->engine != NULL ? conn->engine->localGpuIdx : -1,
+        (unsigned long long)mr, data, size,
+        reinterpret_cast<void *>((uintptr_t)desc.addr), desc.size, desc.rkey,
+        (int)conn->sameProcess, (int)conn->isLocal,
+        conn->sameProcess && conn->isLocal ? "same-process-d2d" : "rdma");
 
   if (conn->sameProcess && conn->isLocal) {
     std::vector<void *> localVec(1, const_cast<void *>(data));
@@ -3006,8 +3132,12 @@ int flagcxP2pEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
   }
 
   FlagcxP2pMemRegEntry localEntry;
-  if (!findMemReg((uintptr_t)data, &localEntry))
+  if (!findMemRegByMr(mr, &localEntry) ||
+      !memRegContains(localEntry, reinterpret_cast<uintptr_t>(data), size)) {
+    WARN("P2P read local MR bounds check failed: mr=%llu addr=%p size=%zu",
+         (unsigned long long)mr, data, size);
     return -1;
+  }
 
   if (getCommView(conn->sendComm)->ibDevN != localEntry.ibDevN)
     return -1;
@@ -3052,9 +3182,6 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
                               std::vector<FlagcxP2pRdmaDesc> descs, int numIovs,
                               uint64_t *transferId,
                               std::vector<char *> ipcBufs) {
-  if (conn != NULL && flagcxP2pIsAccl(conn))
-    return flagcxAcclEngineReadVector(conn, mrIds, dstVec, sizeVec, descs,
-                                      numIovs, transferId);
   if (conn == NULL || numIovs <= 0 || transferId == NULL) {
     fprintf(stderr,
             "[FlagCX P2P] ReadVector early exit: invalid args (conn=%p, "
@@ -3062,6 +3189,7 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
             conn, numIovs, (void *)transferId);
     return -1;
   }
+  *transferId = 0;
 
   if (dstVec.size() < static_cast<size_t>(numIovs) ||
       sizeVec.size() < static_cast<size_t>(numIovs) ||
@@ -3072,6 +3200,18 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
             numIovs);
     return -1;
   }
+  for (int i = 0; i < numIovs; i++) {
+    if (!remoteDescContains(descs[i], sizeVec[i])) {
+      WARN("P2P ReadVector remote descriptor bounds check failed: iov=%d "
+           "addr=%p descSize=%u requestSize=%zu",
+           i, reinterpret_cast<void *>((uintptr_t)descs[i].addr), descs[i].size,
+           sizeVec[i]);
+      return -1;
+    }
+  }
+  if (flagcxP2pIsAccl(conn))
+    return flagcxAcclEngineReadVector(conn, mrIds, dstVec, sizeVec, descs,
+                                      numIovs, transferId);
 
   if (conn->isLocal && (conn->sameProcess || !ipcBufs.empty())) {
     fprintf(stderr,
@@ -3308,11 +3448,17 @@ bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
 
     const flagcxResult_t queryRes = deviceAdaptor->eventQuery(xfer.event);
     if (queryRes == flagcxSuccess) {
+      TRACE(FLAGCX_P2P,
+            "P2P local transfer completed conn=%p transferId=%llu result=%d",
+            conn, (unsigned long long)transferId, (int)queryRes);
       cleanupIpcXfer(&xfer);
       gXferMap.erase(it);
       return true;
     }
     if (queryRes != flagcxInProgress) {
+      TRACE(FLAGCX_P2P,
+            "P2P local transfer failed conn=%p transferId=%llu result=%d", conn,
+            (unsigned long long)transferId, (int)queryRes);
       cleanupIpcXfer(&xfer);
       gXferMap.erase(it);
       return true;

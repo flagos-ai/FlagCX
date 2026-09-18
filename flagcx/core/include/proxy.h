@@ -347,6 +347,10 @@ struct flagcxProxyState {
   // Set by flagcxProxyStop, checked by service thread as backup
   volatile int stop;
   flagcxResult_t asyncResult;
+  // First teardown error recorded after the service thread has stopped
+  // accepting work. Kept separate from asyncResult so cleanup failures do not
+  // masquerade as data-plane completion failures.
+  flagcxResult_t cleanupResult;
   int nRanks;
 
   // Used by main thread
@@ -386,7 +390,8 @@ enum proxyConnectState {
   connSharedInitialized = 2,
   connSetupDone = 3,
   connConnected = 4,
-  numConnStates = 5
+  connFailed = 5,
+  numConnStates = 6
 };
 
 struct flagcxProxyConnection {
@@ -401,6 +406,8 @@ struct flagcxProxyConnection {
   flagcxNetDeviceHandle_t *netDeviceHandle;
   void *mhandles[FLAGCX_NUM_PROTOCOLS];
   proxyConnectState state;
+  // First terminal control-plane error for this connection.
+  flagcxResult_t result;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -413,6 +420,13 @@ void *flagcxProxyService(void *args);
 flagcxResult_t flagcxProxySaveOp(struct flagcxHeteroComm *comm,
                                  struct flagcxProxyOp *proxyOp,
                                  bool *justInquire = NULL);
+flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
+                                           flagcxResult_t result);
+flagcxResult_t
+flagcxProxyRecordConnectionError(struct flagcxProxyConnection *connection,
+                                 flagcxResult_t result);
+flagcxResult_t
+flagcxProxyGetConnectionError(struct flagcxProxyConnection *connection);
 flagcxResult_t flagcxProxyComputeP2p(struct flagcxInfo *info,
                                      struct flagcxProxyOp *proxyOp, int reg);
 flagcxResult_t flagcxProxyStart(struct flagcxHeteroComm *comm);
