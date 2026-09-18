@@ -19,6 +19,15 @@
 %global __requires_exclude ^libnccl\\.so\\..*
 %endif
 %endif
+%if "%{backend}" == "ascend"
+# CANN is distributed as a .run installer, not as RPMs, so no repository can
+# ever provide libascendcl.so / libhccl.so. Without this filter the built
+# libflagcx-ascend carries auto-generated requires on those SONAMEs and dnf
+# refuses the install ("nothing provides libascendcl.so") even though the
+# target host has CANN deployed. Deployment supplies CANN, the same contract
+# external_vendor_runtime expresses for the NVIDIA libraries.
+%global __requires_exclude ^lib(ascendcl|hccl)\\.so\\..*
+%endif
 
 # Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
 %{!?backend: %{error: backend must be defined (nvidia, metax, or ascend)}}
@@ -124,6 +133,13 @@ patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 %{_libdir}/libflagcx.so
 
 %changelog
+* Mon Sep 14 2026 FlagOS Contributors <contact@flagos.io> - 0.8.0-2
+- Filter the auto-generated libascendcl/libhccl requires for the ascend
+  backend: CANN is deployed by the host (.run installer), never satisfiable
+  by an RPM repository.
+- Tag the ascend RPM with the build distro (RPM_DIST_TAG), matching the
+  NVIDIA openEuler line.
+
 * Wed Jun 24 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-1
 - Add P2P engine perf benchmark (one-sided read/write)
 - Replace C++17 features with C++11 equivalents for RPM packaging
@@ -134,6 +150,9 @@ patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 - [UIL&PAL] FlagCX P2P Engine optimization
 - Store winFlags in flagcxWindow to fix non-NVIDIA build failure
 
+* Mon Jun 01 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-rc2.post1-1
+- Support Device API IR Bindings
+
 * Fri May 22 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-rc0.1-1
 - New upstream release v0.13.0-rc0.1
 - Support pool-only registration and optimize regpool containers
@@ -143,9 +162,6 @@ patchelf --set-soname libflagcx.so.0 %{buildroot}%{_libdir}/libflagcx.so.0
 - Add patch file for flagcx integration into nixl v1.1.0
 - Add CI workflow for symmetric memory tests
 - KV transfer benchmark
-
-* Mon Jun 01 2026 FlagOS Contributors <contact@flagos.io> - 0.13.0-rc2.post1-1
-- Support Device API IR Bindings
 
 * Wed May 13 2026 FlagOS Contributors <contact@flagos.io> - 0.12.0-1
 - Add Device API symmem and multicast support

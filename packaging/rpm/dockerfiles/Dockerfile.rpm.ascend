@@ -6,6 +6,13 @@ FROM ascendai/cann:${BASE_IMAGE_VERSION}
 WORKDIR /workspace
 COPY . /workspace/
 
-RUN bash packaging/rpm/dockerfiles/build-rpm-common.sh ascend
+# The CANN base images are openEuler but define %dist as empty (official
+# .oe* tags come from EulerMaker); reconstruct it so local/CI builds get
+# distro-tagged Release fields, same as the NVIDIA openEuler line.
+RUN . /etc/os-release \
+    && case "${ID}" in \
+           openEuler) export RPM_DIST_TAG=".oe$(echo "${VERSION_ID}" | tr -d '.')" ;; \
+       esac \
+    && bash packaging/rpm/dockerfiles/build-rpm-common.sh ascend
 
 CMD ["/bin/bash"]
