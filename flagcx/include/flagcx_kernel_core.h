@@ -38,7 +38,10 @@ typedef enum {
       7, // Legacy: no-op in proxy (GPU polls signal buffer directly)
   flagcxDevicePrimPutValue = 8,
   flagcxDevicePrimPutSignal = 9,
-  flagcxDevicePrimGet = 10
+  flagcxDevicePrimGet = 10,
+  // Standalone signal whose complete uint64_t value is carried in snd.
+  // The original PrimSignal encoding remains unchanged for compact values.
+  flagcxDevicePrimSignalValue = 11
 } flagcxDevicePrim;
 
 // Unified buffer index enumeration for fifo
@@ -131,7 +134,8 @@ constexpr unsigned int flagcxDeviceTriggerBitsSize = 32;
 //   fst = 0|dstOffset(32) (fst[31:0], same position as Put/PutSignal)
 //   snd = value(64)
 
-// Signal/WaitSignal: all in trd prim-specific
+// Signal/WaitSignal: all in trd prim-specific.  PrimSignalValue uses the
+// same bufferType/signalIdx fields and stores its full value in snd.
 //   trd[35:34] = bufferType(2), trd[33:22] = signalIdx(12),
 //   trd[21:6] = signalValue/expectedValue(16), trd[5:0] = unused
 //   fst = 0, snd = 0

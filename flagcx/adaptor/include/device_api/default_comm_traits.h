@@ -17,9 +17,10 @@
 #ifndef FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 #define FLAGCX_FALLBACK_DEVICE_TRAITS_H_
 
+#include "default_completion.h"
 #include "flagcx_kernel_core.h"
 #include <cassert>
-#ifndef __CUDACC__
+#ifndef FLAGCX_DEVICE_COMPILE
 #include "sym_heap.h"
 #endif
 
@@ -28,6 +29,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   // Platform capabilities (resolved via PlatformTag)
   using Intrin = typename PlatformTraits<PlatformTag>::Intrin;
   using Atomic = typename PlatformTraits<PlatformTag>::Atomic;
+  using CompletionWord = typename PlatformCompletionWord<PlatformTag>::type;
+  using CompletionStorage = DefaultCompletionStorage<CompletionWord>;
+  static_assert(sizeof(CompletionWord) == sizeof(uint32_t) ||
+                    sizeof(CompletionWord) == sizeof(uint64_t),
+                "DefaultBackend completion word must be 32 or 64 bits");
+  static constexpr int completionBits = sizeof(CompletionWord) * 8;
+  static constexpr int defaultCounterBits =
+      completionBits < 56 ? completionBits : 56;
 
   // ---- Team: Pure arithmetic ----
   struct Team {
@@ -142,7 +151,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return !(*this == o);
     }
 
-#ifndef __CUDACC__
+#ifndef FLAGCX_DEVICE_COMPILE
     // Host-side population from flagcxWindow_t (sym heap or IPC).
     void populateFromHost(flagcxWindow_t win, void *rawPtr_, int intraRank_,
                           int intraSize_, int mrIndex_, uintptr_t mrBase_,
@@ -170,11 +179,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         ipcBasePtrs = (ipcIndex_ >= 0) ? ipcDevPeerPtrs_ : nullptr;
       }
     }
-#endif // __CUDACC__
+#endif // FLAGCX_DEVICE_COMPILE
   };
 
   // ---- Comm: All fallback layers ----
-  struct Comm {
+  struct Comm : CompletionStorage {
     // Baseline
     int rank, nRanks;
     int intraRank, intraSize;
@@ -237,6 +246,21 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return signalPeerPtrs ? signalPeerPtrs[peer] : nullptr;
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
+    getCompletionSignalPeerPtr(int peer) const {
+      return this->getDirectSignalPeerPtr(*this, peer);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
+    getCompletionSignalBuffer() const {
+      return this->getDirectSignalBuffer(*this);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
+    getCompletionCounterBuffer() const {
+      return this->getDirectCounterBuffer(*this);
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR bool usesDirectP2pSignals() const {
       return useP2pSignals != 0;
     }
@@ -246,7 +270,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool supportsDirectCounterAccess() const {
-      return counterBuffer != nullptr;
+      return getCompletionCounterBuffer() != nullptr;
     }
 
     // Populate from host-side handle (deferred template avoids forward-decl)
@@ -269,6 +293,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.signalBuffer = di.signalBuffer;
       dc.shadowBuffer = di.shadowBuffer;
       dc.counterBuffer = di.counterBuffer;
+      dc.populateCompletion(di);
       dc.signalCount = di.signalCount;
       dc.counterCount = di.counterCount;
       dc.contextCount = di.contextCount;
@@ -321,6 +346,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
            primSpecific;
   }
 
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  fifoWordBefore(CompletionWord lhs, CompletionWord rhs) {
+    return CompletionStorage::before(lhs, rhs);
+  }
+
   // Enqueue a trigger into the device FIFO buffer.
   // Atomically reserves a slot, waits for space, writes 3 words.
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -331,20 +361,24 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                                      flagcxDeviceMemoryOrderRelaxed);
 
     // 1. Atomically reserve a slot
-    uint64_t mySlot =
-        Atomic::fetchAdd(&buffer[flagcxFifoIdxProduced], (uint64_t)1,
-                         flagcxDeviceMemoryOrderAcqRel);
+    CompletionWord *produced =
+        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
+    CompletionWord *consumed =
+        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxConsumed]);
+    CompletionWord mySlot = Atomic::fetchAdd(produced, CompletionWord{1},
+                                             flagcxDeviceMemoryOrderAcqRel);
 
     // 2. Wait until there's space (mySlot - consumed < capacity)
     int iter = 0;
-    while ((int64_t)(mySlot - Atomic::load(&buffer[flagcxFifoIdxConsumed],
-                                           flagcxDeviceMemoryOrderAcquire)) >=
-           (int64_t)capacity) {
+    while ((CompletionWord)(mySlot -
+                            Atomic::load(consumed,
+                                         flagcxDeviceMemoryOrderAcquire)) >=
+           (CompletionWord)capacity) {
       Intrin::spinBackoff(iter++);
     }
 
     // 3. Compute slot index and get pointers to slot's 3 uint64_t fields
-    uint64_t idx = mySlot % capacity;
+    uint64_t idx = (uint64_t)mySlot % capacity;
     uint64_t *slotFst = buffer + flagcxFifoIdxData +
                         idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
     uint64_t *slotSnd = slotFst + 1;
@@ -369,11 +403,15 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   static flagcxResult_t fifoFlush(void *fifoBuffer) {
     uint64_t *buffer = (uint64_t *)fifoBuffer;
-    uint64_t snapshot = Atomic::load(&buffer[flagcxFifoIdxProduced],
-                                     flagcxDeviceMemoryOrderAcquire);
+    CompletionWord *produced =
+        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
+    CompletionWord *completed =
+        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxCompleted]);
+    CompletionWord snapshot =
+        Atomic::load(produced, flagcxDeviceMemoryOrderAcquire);
     int iter = 0;
-    while (Atomic::load(&buffer[flagcxFifoIdxCompleted],
-                        flagcxDeviceMemoryOrderAcquire) < snapshot) {
+    while (fifoWordBefore(
+        Atomic::load(completed, flagcxDeviceMemoryOrderAcquire), snapshot)) {
       Intrin::spinBackoff(iter++);
     }
     return flagcxSuccess;
@@ -421,21 +459,23 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return _contextId;
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
     getSignalPtr(flagcxDevSignal_t signalId) const {
-      return &signalBuffer[_contextId * signalCount + (int)signalId];
+      return &_dc.getCompletionSignalBuffer()[_contextId * signalCount +
+                                              (int)signalId];
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
     getPeerSignalPtr(int localPeer, flagcxDevSignal_t signalId) const {
-      uint64_t *peerBuffer = _dc.getSignalPeerPtr(localPeer);
+      CompletionWord *peerBuffer = _dc.getCompletionSignalPeerPtr(localPeer);
       return peerBuffer ? &peerBuffer[_contextId * signalCount + (int)signalId]
                         : nullptr;
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t *
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
     getCounterPtr(flagcxDevCounter_t counterId) const {
-      return &counterBuffer[_contextId * counterCount + (int)counterId];
+      return &_dc.getCompletionCounterBuffer()[_contextId * counterCount +
+                                               (int)counterId];
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isIntraPeer(int peer) const {
@@ -444,8 +484,40 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
-      return signalBuffer != nullptr && counterBuffer != nullptr &&
+      return _dc.getCompletionSignalBuffer() != nullptr &&
+             _dc.getCompletionCounterBuffer() != nullptr &&
              fifoBuffer != nullptr;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord
+    loadSignalValue(int idx, flagcxDeviceMemoryOrder_t order) const {
+      return CompletionStorage::template loadCompletion<Atomic>(
+          _dc.getCompletionSignalBuffer(), signalBuffer, idx, order);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord
+    loadCounterValue(int idx, flagcxDeviceMemoryOrder_t order) const {
+      return CompletionStorage::template loadCompletion<Atomic>(
+          _dc.getCompletionCounterBuffer(), counterBuffer, idx, order);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    completeCounter(flagcxDevCounter_t counterId, uint64_t delta) const {
+      CompletionWord *ptr = getCounterPtr(counterId);
+      Atomic::fetchAdd(ptr, CompletionStorage::completionValue(delta),
+                       flagcxDeviceMemoryOrderRelease);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static void
+    validateCompletionValue(uint64_t value) {
+      // The public ABI stays uint64_t. A 32-bit completion specialization
+      // rejects values it cannot represent instead of truncating them.
+      CompletionStorage::validate(value);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static void
+    validateCompletionBits(int bits) {
+      CompletionStorage::validateBits(bits);
     }
 
     // ---- Two-sided FIFO encoders ----
@@ -571,6 +643,19 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                          buildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoSignalValue(
+        int signalIdx, uint64_t value, int peer, uint64_t bufferType) const {
+      int combinedIdx = (bufferType == 0)
+                            ? (_contextId * signalCount + signalIdx)
+                            : (_contextId * counterCount + signalIdx);
+      uint64_t trdSpecific =
+          ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
+          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig);
+      return fifoEnqueue(
+          fifoBuffer, 0, value,
+          buildTrd(flagcxDevicePrimSignalValue, peer, trdSpecific));
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoPutValue(
         size_t dstOffset, uint64_t value, int peer, int dstMrIdx) const {
       uint64_t fstValue = (uint64_t)dstOffset &
@@ -637,16 +722,27 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     template <typename T>
-    FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint32_t getSignalValue(T) const {
+    FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint64_t getSignalValue(T) const {
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint32_t
+    FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint64_t
     getSignalValue(flagcxDevNet_SignalInc) const {
       return 1;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint32_t
+    FLAGCX_DEVICE_INLINE_DECORATOR constexpr uint64_t
     getSignalValue(flagcxDevNet_SignalAdd a) const {
-      return (uint32_t)a.value;
+      return a.value;
+    }
+
+    template <typename T>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    enqueueFifoSignalAction(T action, int peer, uint64_t bufferType) const {
+      uint64_t value = getSignalValue(action);
+      if (value <= flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue))
+        enqueueFifoSignal(getSignalIdx(action), (uint32_t)value, peer,
+                          bufferType);
+      else
+        enqueueFifoSignalValue(getSignalIdx(action), value, peer, bufferType);
     }
 
     template <typename T>
@@ -658,8 +754,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return true;
     }
     FLAGCX_DEVICE_INLINE_DECORATOR constexpr bool
-    canFuseSignal(flagcxDevNet_SignalAdd) const {
-      return true;
+    canFuseSignal(flagcxDevNet_SignalAdd a) const {
+      return a.value <=
+             flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValuePut);
     }
 
     template <typename T>
@@ -702,14 +799,15 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         size_t dstDataOff = toDataOffset(dst, dstOff);
         if (canFuseSignal(ra)) {
           enqueueFifoPutSignal(srcDataOff, dstDataOff, bytes, getSignalIdx(ra),
-                               getSignalValue(ra), worldPeer, src.getMrIndex(),
-                               dst.getMrIndex());
+                               (uint32_t)getSignalValue(ra), worldPeer,
+                               src.getMrIndex(), dst.getMrIndex());
         } else {
           enqueueFifoPut(srcDataOff, dstDataOff, bytes, worldPeer,
                          src.getMrIndex(), dst.getMrIndex());
-          if (isSignal(ra))
-            enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), worldPeer,
-                              0);
+          if (isSignal(ra)) {
+            validateCompletionValue(getSignalValue(ra));
+            enqueueFifoSignalAction(ra, worldPeer, 0);
+          }
         }
         if (isCounter(la))
           enqueueFifoSignal(getCounterIdx(la), 1, 0, 1);
@@ -748,8 +846,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         size_t dstDataOff = toDataOffset(dst, dstOff);
         enqueueFifoPutValue(dstDataOff, (uint64_t)value, worldPeer,
                             dst.getMrIndex());
-        if (isSignal(ra))
-          enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), worldPeer, 0);
+        if (isSignal(ra)) {
+          validateCompletionValue(getSignalValue(ra));
+          enqueueFifoSignalAction(ra, worldPeer, 0);
+        }
       }
       coop.sync();
     }
@@ -765,8 +865,24 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       int worldPeer = teamRankToWorld(team, peer);
       coop.sync();
       if (coop.threadRank() == 0) {
-        if (isSignal(ra))
-          enqueueFifoSignal(getSignalIdx(ra), getSignalValue(ra), worldPeer, 0);
+        if (isSignal(ra)) {
+          validateCompletionValue(getSignalValue(ra));
+          int localPeer = worldPeer - (_dc.rank - _dc.intraRank);
+          CompletionWord *peerSignal =
+              (localPeer >= 0 && localPeer < _dc.intraSize)
+                  ? getPeerSignalPtr(localPeer,
+                                     (flagcxDevSignal_t)getSignalIdx(ra))
+                  : nullptr;
+          bool useDirect = CompletionStorage::useDirectSignal(
+              peerSignal != nullptr, _dc.usesDirectP2pSignals());
+          if (useDirect)
+            Atomic::fetchAdd(
+                peerSignal,
+                CompletionStorage::completionValue(getSignalValue(ra)),
+                flagcxDeviceMemoryOrderRelease);
+          else
+            enqueueFifoSignalAction(ra, worldPeer, 0);
+        }
       }
       coop.sync();
     }
@@ -788,13 +904,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
                flagcxDeviceMemoryOrder_t order) const {
-      (void)bits;
+      validateCompletionBits(bits);
+      CompletionWord target = CompletionStorage::completionValue(least);
       coop.sync();
       if (coop.threadRank() == 0) {
         int idx = _contextId * signalCount + (int)signalId;
         int iter = 0;
-        uint64_t cur;
-        while ((cur = Atomic::load(&signalBuffer[idx], order)) < least) {
+        while (CompletionStorage::waitBefore(loadSignalValue(idx, order),
+                                             target)) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -817,9 +934,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                            flagcxDeviceMemoryOrder_t order) const {
       int idx = _contextId * signalCount + (int)signalId;
       uint64_t shadow = ((volatile uint64_t *)shadowBuffer)[idx];
-      uint64_t target = shadow + (uint64_t)delta;
-      waitSignal(coop, signalId, target, bits, order);
-      shadowBuffer[idx] = target;
+      CompletionWord target =
+          CompletionStorage::advance(shadow, static_cast<uint64_t>(delta));
+      waitSignal(coop, signalId, static_cast<uint64_t>(target), bits, order);
+      shadowBuffer[idx] = static_cast<uint64_t>(target);
       if (outSignalValue)
         *outSignalValue = (Uint)target;
       if (outShadowValue)
@@ -834,22 +952,27 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     increaseSignalShadow(flagcxDevSignal_t signalId, uint64_t delta) const {
-      shadowBuffer[_contextId * signalCount + (int)signalId] += delta;
+      int idx = _contextId * signalCount + (int)signalId;
+      CompletionWord next =
+          CompletionStorage::advance(shadowBuffer[idx], delta);
+      shadowBuffer[idx] = static_cast<uint64_t>(next);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
     readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
-      (void)bits;
+      validateCompletionBits(bits);
       int idx = _contextId * signalCount + (int)signalId;
-      return Atomic::load(&signalBuffer[idx], order);
+      return static_cast<uint64_t>(loadSignalValue(idx, order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetSignal(flagcxDevSignal_t signalId) const {
       int idx = _contextId * signalCount + (int)signalId;
-      Atomic::store(&signalBuffer[idx], (uint64_t)0,
+      Atomic::store(&_dc.getCompletionSignalBuffer()[idx], CompletionWord{0},
                     flagcxDeviceMemoryOrderRelease);
+      CompletionStorage::template resetProxy<Atomic>(
+          signalBuffer, idx, flagcxDeviceMemoryOrderRelease);
       Atomic::store(&shadowBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
     }
@@ -859,12 +982,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
-      (void)bits;
+      validateCompletionBits(bits);
+      CompletionWord target = CompletionStorage::completionValue(least);
       coop.sync();
       if (coop.threadRank() == 0) {
         int idx = _contextId * counterCount + (int)counterId;
         int iter = 0;
-        while (Atomic::load(&counterBuffer[idx], order) < least) {
+        while (CompletionStorage::waitBefore(loadCounterValue(idx, order),
+                                             target)) {
           Intrin::spinBackoff(iter++);
         }
       }
@@ -874,16 +999,18 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
     readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
-      (void)bits;
+      validateCompletionBits(bits);
       int idx = _contextId * counterCount + (int)counterId;
-      return Atomic::load(&counterBuffer[idx], order);
+      return static_cast<uint64_t>(loadCounterValue(idx, order));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetCounter(flagcxDevCounter_t counterId) const {
       int idx = _contextId * counterCount + (int)counterId;
-      Atomic::store(&counterBuffer[idx], (uint64_t)0,
+      Atomic::store(&_dc.getCompletionCounterBuffer()[idx], CompletionWord{0},
                     flagcxDeviceMemoryOrderRelease);
+      CompletionStorage::template resetProxy<Atomic>(
+          counterBuffer, idx, flagcxDeviceMemoryOrderRelease);
     }
   };
 };

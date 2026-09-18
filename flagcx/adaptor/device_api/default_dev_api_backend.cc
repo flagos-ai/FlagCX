@@ -12,6 +12,7 @@
 #include "adaptor.h"
 #include "bootstrap.h"
 #include "dev_api_backend.h"
+#include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel_internal.h"
 #include "net.h"
@@ -26,6 +27,8 @@
 #include <cstddef>
 #include <new>
 #include <sched.h>
+
+using DefaultCompletionWord = typename DeviceAPI::CompletionWord;
 
 // Host-visible helpers from device_api_host_helpers.cu
 #ifdef COMPILE_KERNEL_HOST
@@ -495,6 +498,25 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         return res;
       }
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: shadowBuffer OK");
+
+      if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
+        size_t directSigSize = (size_t)devComm->signalCount * bufCtxCount *
+                               sizeof(DefaultCompletionWord);
+        res = deviceAdaptor->deviceMalloc(&devComm->completionSignalBuffer,
+                                          directSigSize, flagcxMemDevice, NULL);
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: 32-bit completion signal allocation "
+               "failed (%d)",
+               res);
+          return res;
+        }
+        res = deviceAdaptor->deviceMemset(devComm->completionSignalBuffer, 0,
+                                          directSigSize, flagcxMemDevice, NULL);
+        if (res != flagcxSuccess)
+          return res;
+      } else {
+        devComm->completionSignalBuffer = devComm->signalBuffer;
+      }
     }
 
     // Counter buffer (host-pinned)
@@ -512,6 +534,24 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       }
       memset(devComm->counterBuffer, 0, cntSize);
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer OK");
+      if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
+        size_t directCntSize = (size_t)devComm->counterCount * bufCtxCount *
+                               sizeof(DefaultCompletionWord);
+        res = deviceAdaptor->deviceMalloc(&devComm->completionCounterBuffer,
+                                          directCntSize, flagcxMemDevice, NULL);
+        if (res != flagcxSuccess) {
+          WARN("defaultDevApiCommCreate: 32-bit completion counter allocation "
+               "failed (%d)",
+               res);
+          return res;
+        }
+        res = deviceAdaptor->deviceMemset(devComm->completionCounterBuffer, 0,
+                                          directCntSize, flagcxMemDevice, NULL);
+        if (res != flagcxSuccess)
+          return res;
+      } else {
+        devComm->completionCounterBuffer = devComm->counterBuffer;
+      }
     }
 
     // Prepare the Net fallback even on a single node.  IPC setup can fail for
@@ -605,29 +645,45 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
   // ==========================================================================
   // P2P signal/counter IPC setup (intra-node direct atomic fast path)
-  // Only for GDR device memory path (IPC requires device memory).
+  // The direct completion plane is ordinary device memory so it can be
+  // exported through the platform IPC mechanism.
   // ==========================================================================
-  if (devComm->signalBuffer && !flagcxParamSignalHostEnable() &&
-      !forceOneSidedNet) {
-    size_t sigSize =
-        (size_t)devComm->signalCount * devComm->contextCount * sizeof(uint64_t);
-    int slot = buildIpcPeerPointers(comm, devComm->signalBuffer, sigSize);
+  if (devComm->completionSignalBuffer && !forceOneSidedNet &&
+      (sizeof(DefaultCompletionWord) == sizeof(uint32_t) ||
+       !flagcxParamSignalHostEnable())) {
+    size_t sigSize = (size_t)devComm->signalCount * devComm->contextCount *
+                     sizeof(DefaultCompletionWord);
+    int slot =
+        buildIpcPeerPointers(comm, devComm->completionSignalBuffer, sigSize);
     if (slot >= 0) {
-      devComm->signalPeerPtrs = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
+      devComm->completionSignalPeerPtrs = comm->ipcTable[slot].devPeerPtrs;
       devComm->signalIpcSlot = slot;
+      if (sizeof(DefaultCompletionWord) == sizeof(uint64_t))
+        devComm->signalPeerPtrs =
+            (uint64_t **)devComm->completionSignalPeerPtrs;
       INFO(FLAGCX_INIT,
-           "defaultDevApiCommCreate: signalPeerPtrs IPC slot=%d ptr=%p", slot,
-           (void *)devComm->signalPeerPtrs);
+           "defaultDevApiCommCreate: completionSignalPeerPtrs IPC slot=%d "
+           "ptr=%p wordBytes=%zu",
+           slot, (void *)devComm->completionSignalPeerPtrs,
+           sizeof(DefaultCompletionWord));
     } else {
       WARN("defaultDevApiCommCreate: signalPeerPtrs IPC exchange failed");
       // Non-fatal: falls back to Net FIFO path
     }
   }
 
-  devComm->useP2pSignals =
-      (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0) ? 1 : 0;
+  if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
+    // The direct and proxy planes are independent, so local IPC and remote
+    // Net signals may coexist in one communicator.
+    devComm->useP2pSignals = (devComm->signalIpcSlot >= 0) ? 1 : 0;
+  } else {
+    // Preserve the existing 64-bit DefaultBackend transport choice.
+    devComm->useP2pSignals =
+        (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0) ? 1 : 0;
+  }
 
-  if (devComm->signalBuffer && !devComm->useP2pSignals &&
+  if (devComm->signalBuffer &&
+      (devComm->nInterPeers > 0 || devComm->signalIpcSlot < 0) &&
       !devComm->netSignalReady) {
     WARN("defaultDevApiCommCreate: neither signal IPC nor Net fallback is "
          "available");
@@ -749,6 +805,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   };
   cleanupIpcSlot(devComm->signalIpcSlot);
   devComm->signalIpcSlot = -1;
+  devComm->completionSignalPeerPtrs = nullptr;
+  devComm->signalPeerPtrs = nullptr;
 
   // ── Shm path cleanup (FLAGCX_SIGNAL_HOST_ENABLE=1 only) ──────────────
   if (devComm->peerBarrierShmPtrs) {
@@ -804,6 +862,15 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
       deviceAdaptor->gdrMemFree(devComm->signalBuffer, NULL);
     devComm->signalBuffer = nullptr;
   }
+  if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
+    if (devComm->completionSignalBuffer) {
+      deviceAdaptor->deviceFree(devComm->completionSignalBuffer,
+                                flagcxMemDevice, NULL);
+      devComm->completionSignalBuffer = nullptr;
+    }
+  } else {
+    devComm->completionSignalBuffer = nullptr;
+  }
   if (devComm->shadowBuffer) {
     deviceAdaptor->deviceFree(devComm->shadowBuffer, flagcxMemDevice, NULL);
     devComm->shadowBuffer = nullptr;
@@ -811,6 +878,15 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   if (devComm->counterBuffer) {
     deviceAdaptor->deviceFree(devComm->counterBuffer, flagcxMemHost, NULL);
     devComm->counterBuffer = nullptr;
+  }
+  if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
+    if (devComm->completionCounterBuffer) {
+      deviceAdaptor->deviceFree(devComm->completionCounterBuffer,
+                                flagcxMemDevice, NULL);
+      devComm->completionCounterBuffer = nullptr;
+    }
+  } else {
+    devComm->completionCounterBuffer = nullptr;
   }
   if (devComm->putValueStagingBuffer) {
     deviceAdaptor->deviceFree(devComm->putValueStagingBuffer, flagcxMemHost,
@@ -1202,7 +1278,8 @@ static flagcxResult_t defaultCommCleanup(flagcxComm_t comm) {
               (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
                   ->buffer;
           if (buf) {
-            while (buf[flagcxFifoIdxConsumed] < buf[flagcxFifoIdxProduced])
+            while (*flagcxFifoControlPtr(buf, flagcxFifoIdxConsumed) !=
+                   *flagcxFifoControlPtr(buf, flagcxFifoIdxProduced))
               sched_yield();
           }
         }

@@ -43,7 +43,7 @@ flagcxScopedFence(flagcxDevMemoryScope_t scope) {
 template <typename Ptr>
 static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxStoreVolatile64Internal(Ptr ptr, uint64_t value) {
-  auto dst = FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile uint64_t, ptr);
+  auto dst = FLAGCX_IR_GLOBAL_PTR_CAST(volatile uint64_t, ptr);
   *dst = value;
 }
 
@@ -57,13 +57,13 @@ flagcxCoopCopyBytesInternal(DstPtr dst, SrcPtr src, size_t bytes, int rank,
 }
 
 // A correct byte-copy baseline for platforms without an optimized method.
-// Address-space spelling is centralized in FLAGCX_DEVICE_GLOBAL_PTR_CAST.
+// Address-space spelling is centralized in FLAGCX_IR_GLOBAL_PTR_CAST.
 template <typename Intrin, typename DstPtr, typename SrcPtr>
 static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopCopyBytesInternal(DstPtr dstIn, SrcPtr srcIn, size_t bytes, int rank,
                             int size, long) {
-  auto dst = FLAGCX_DEVICE_GLOBAL_PTR_CAST(unsigned char, dstIn);
-  auto src = FLAGCX_DEVICE_GLOBAL_PTR_CAST(const unsigned char, srcIn);
+  auto dst = FLAGCX_IR_GLOBAL_PTR_CAST(unsigned char, dstIn);
+  auto src = FLAGCX_IR_GLOBAL_PTR_CAST(const unsigned char, srcIn);
   for (size_t i = (size_t)rank; i < bytes; i += (size_t)size)
     dst[i] = src[i];
 }
@@ -77,6 +77,24 @@ flagcxCoopMemcpy(flagcxDevCoopKind_t coopKind, DstPtr dst, SrcPtr src,
       dst, src, bytes, coop.threadRank(), coop.size(), 0);
 }
 
+// DefaultBackend owns the completion-word width.  Other backends retain their
+// existing uint64_t counter operation through the fallback overload.
+template <typename Net>
+static FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxCompleteCounterInternal(const Net &net, flagcxDevCounter_t counter,
+                              uint64_t delta, int)
+    -> decltype(net.completeCounter(counter, delta), void()) {
+  net.completeCounter(counter, delta);
+}
+
+template <typename Net>
+static FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxCompleteCounterInternal(const Net &net, flagcxDevCounter_t counter,
+                              uint64_t delta, long) {
+  DeviceAPI::Atomic::fetchAdd(net.getCounterPtr(counter), delta,
+                              flagcxDeviceMemoryOrderRelease);
+}
+
 /* ================================================================
  * Category U4: Unified Signal (2)
  *
@@ -84,70 +102,26 @@ flagcxCoopMemcpy(flagcxDevCoopKind_t coopKind, DstPtr dst, SrcPtr src,
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevSignalInc(const void *commOpaque, flagcxDevTeamKind_t teamKind,
-                   int peer, flagcxDevSignal_t signal,
-                   flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
-                   flagcxDevMemoryScope_t scope) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-  // Resolve team-scoped peer to local rank for P2P indexing
-  flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
-
-  int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
-  int localPeer =
-      worldPeer - (comm->_commBase.getRank() - comm->_commBase.getIntraRank());
-  if (comm->_commBase.usesDirectP2pSignals() && localPeer >= 0 &&
-      localPeer < comm->_commBase.getIntraSize()) {
-    // P2P fast path: one atomic per cooperative group.
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      auto peerSignal =
-          FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
-      DeviceAPI::Atomic::fetchAdd(peerSignal, (uint64_t)1,
-                                  flagcxDeviceMemoryOrderRelease);
-    }
-    coop.sync();
-  } else {
-    // Net FIFO fallback (inter-node or P2P not available)
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetSignalSigIncS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind,
-                              peer, coopKind, signal);
-  }
+flagcxDevSignalInc(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                   flagcxDevTeamKind_t teamKind, int peer,
+                   flagcxDevSignal_t signal, flagcxDevContext_t contextId,
+                   flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope) {
+  (void)scope;
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetSignalSigIncS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind, peer,
+                            coopKind, signal);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
-                   int peer, flagcxDevSignal_t signal, uint64_t value,
+flagcxDevSignalAdd(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                   flagcxDevTeamKind_t teamKind, int peer,
+                   flagcxDevSignal_t signal, uint64_t value,
                    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                    flagcxDevMemoryScope_t scope) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-  // Resolve team-scoped peer to local rank for P2P indexing
-  flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
-
-  int worldPeer = flagcxTeamRankToWorld(*comm, team, peer);
-  int localPeer =
-      worldPeer - (comm->_commBase.getRank() - comm->_commBase.getIntraRank());
-  if (comm->_commBase.usesDirectP2pSignals() && localPeer >= 0 &&
-      localPeer < comm->_commBase.getIntraSize()) {
-    // P2P fast path: one atomic per cooperative group.
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      auto peerSignal =
-          FLAGCX_IR_NET_REF(net).getPeerSignalPtr(localPeer, signal);
-
-      DeviceAPI::Atomic::fetchAdd(peerSignal, value,
-                                  flagcxDeviceMemoryOrderRelease);
-    }
-    coop.sync();
-  } else {
-    // Net FIFO fallback (inter-node or P2P not available)
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetSignalSigAddS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind,
-                              peer, coopKind, signal, value);
-  }
+  (void)scope;
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetSignalSigAddS(FLAGCX_IR_NET_ARG(net), commOpaque, teamKind, peer,
+                            coopKind, signal, value);
 }
 
 /* ================================================================
@@ -155,38 +129,19 @@ flagcxDevSignalAdd(const void *commOpaque, flagcxDevTeamKind_t teamKind,
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevWaitSignal(const void *commOpaque, flagcxDevSignal_t signal,
-                    uint64_t least, int bits, flagcxDevContext_t contextId,
-                    flagcxDevCoopKind_t coopKind,
+flagcxDevWaitSignal(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                    flagcxDevSignal_t signal, uint64_t least, int bits,
+                    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                     flagcxDevMemoryOrder_t order) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-
-  // Send and wait share one communicator-wide signal transport decision.
-  if (comm->_commBase.usesDirectP2pSignals()) {
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    auto localSignal = FLAGCX_IR_NET_REF(net).getSignalPtr(signal);
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      int iter = 0;
-      while (DeviceAPI::Atomic::load(localSignal, order) < least) {
-        DeviceAPI::Intrin::spinBackoff(iter++);
-      }
-    }
-    coop.sync();
-  } else {
-    // Net FIFO path for multi-node
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least,
-                            bits, order);
-  }
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least, bits,
+                          order);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevWaitCounter(const void *commOpaque, flagcxDevCounter_t counter,
-                     uint64_t least, int bits, flagcxDevContext_t contextId,
-                     flagcxDevCoopKind_t coopKind,
+flagcxDevWaitCounter(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                     flagcxDevCounter_t counter, uint64_t least, int bits,
+                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   flagcxDevNetWaitCounterS(FLAGCX_IR_NET_ARG(net), coopKind, counter, least,
@@ -198,15 +153,15 @@ flagcxDevWaitCounter(const void *commOpaque, flagcxDevCounter_t counter,
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxDevReadSignal(
-    const void *commOpaque, flagcxDevSignal_t signal, int bits,
-    flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order) {
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevSignal_t signal,
+    int bits, flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   return flagcxDevNetReadSignalS(FLAGCX_IR_NET_ARG(net), signal, bits, order);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxDevReadCounter(
-    const void *commOpaque, flagcxDevCounter_t counter, int bits,
-    flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order) {
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevCounter_t counter,
+    int bits, flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   return flagcxDevNetReadCounterS(FLAGCX_IR_NET_ARG(net), counter, bits, order);
 }
@@ -216,8 +171,9 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxDevReadCounter(
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
-               flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order) {
+flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+               flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+               flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
   // A communicator may use IPC for one memory object and Net fallback for
@@ -231,21 +187,21 @@ flagcxDevFlush(const void *commOpaque, flagcxDevContext_t contextId,
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevResetSignal(const void *commOpaque, flagcxDevContext_t contextId,
-                     flagcxDevSignal_t slot) {
+flagcxDevResetSignal(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                     flagcxDevContext_t contextId, flagcxDevSignal_t slot) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   flagcxDevNetResetSignal(FLAGCX_IR_NET_ARG(net), slot);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevResetCounter(const void *commOpaque, flagcxDevContext_t contextId,
-                      flagcxDevCounter_t slot) {
+flagcxDevResetCounter(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                      flagcxDevContext_t contextId, flagcxDevCounter_t slot) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
   flagcxDevNetResetCounter(FLAGCX_IR_NET_ARG(net), slot);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevIncreaseSignalShadow(const void *commOpaque,
+flagcxDevIncreaseSignalShadow(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                               flagcxDevContext_t contextId,
                               flagcxDevSignal_t slot, uint64_t delta) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
@@ -253,34 +209,14 @@ flagcxDevIncreaseSignalShadow(const void *commOpaque,
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevWaitSignalMeetShadow(const void *commOpaque,
+flagcxDevWaitSignalMeetShadow(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                               flagcxDevContext_t contextId,
                               flagcxDevSignal_t slot, int bits,
                               flagcxDevCoopKind_t coopKind,
                               flagcxDevMemoryOrder_t order) {
-  const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
-
-  if (comm->_commBase.usesDirectP2pSignals()) {
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    auto signalPtr = FLAGCX_IR_NET_REF(net).getSignalPtr(slot);
-    auto shadowPtr = FLAGCX_IR_NET_REF(net).getSignalShadowPtr(slot);
-    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
-
-    coop.sync();
-    if (coop.threadRank() == 0) {
-      uint64_t expectedVal = DeviceAPI::Atomic::load(shadowPtr, order);
-      int iter = 0;
-      while (DeviceAPI::Atomic::load(signalPtr, order) < expectedVal) {
-        DeviceAPI::Intrin::spinBackoff(iter++);
-      }
-    }
-    coop.sync();
-  } else {
-    // Net FIFO path for multi-node
-    FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetWaitSignalMeetShadowS(FLAGCX_IR_NET_ARG(net), coopKind, slot,
-                                      bits, order);
-  }
+  FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
+  flagcxDevNetWaitSignalMeetShadowS(FLAGCX_IR_NET_ARG(net), coopKind, slot,
+                                    bits, order);
 }
 
 /* ================================================================
@@ -288,8 +224,8 @@ flagcxDevWaitSignalMeetShadow(const void *commOpaque,
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierArrive(
-    const void *commOpaque, flagcxDevTeamKind_t teamKind, uint32_t index,
-    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevTeamKind_t teamKind,
+    uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope) {
   switch (teamKind) {
     case FLAGCX_TEAM_INTRA:
@@ -312,11 +248,10 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierArrive(
   }
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevBarrierWait(const void *commOpaque, flagcxDevTeamKind_t teamKind,
-                     uint32_t index, flagcxDevContext_t contextId,
-                     flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order,
-                     flagcxDevMemoryScope_t scope) {
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierWait(
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevTeamKind_t teamKind,
+    uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope) {
   switch (teamKind) {
     case FLAGCX_TEAM_INTRA:
       flagcxIntraBarrierWaitS(commOpaque, coopKind, index,
@@ -338,11 +273,10 @@ flagcxDevBarrierWait(const void *commOpaque, flagcxDevTeamKind_t teamKind,
   }
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevBarrierSync(const void *commOpaque, flagcxDevTeamKind_t teamKind,
-                     uint32_t index, flagcxDevContext_t contextId,
-                     flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order,
-                     flagcxDevMemoryScope_t scope) {
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierSync(
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevTeamKind_t teamKind,
+    uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope) {
   switch (teamKind) {
     case FLAGCX_TEAM_INTRA:
       flagcxIntraBarrierSyncS(commOpaque, coopKind, index,
@@ -414,9 +348,10 @@ flagcxValidateAndDispatch(const flagcxDevComm &comm, const flagcxTeam &team,
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevPut(const void *commOpaque, const void *dstOpaque, size_t dstOffset,
-             const void *srcOpaque, size_t srcOffset, size_t bytes,
-             flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+             const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+             const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset,
+             size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
              flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
              flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
@@ -450,13 +385,13 @@ flagcxDevPut(const void *commOpaque, const void *dstOpaque, size_t dstOffset,
   }
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
-                     size_t dstOffset, const void *srcOpaque, size_t srcOffset,
-                     size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
-                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
-                     flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
-                     flagcxDevSignal_t remoteSignal) {
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigInc(
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+    const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+    const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset, size_t bytes,
+    flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
+    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
+    flagcxDevMemoryOrder_t order, flagcxDevSignal_t remoteSignal) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
   const flagcxDevMem *src = (const flagcxDevMem *)srcOpaque;
@@ -498,13 +433,14 @@ flagcxDevPut_RSigInc(const void *commOpaque, const void *dstOpaque,
   }
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
-                     size_t dstOffset, const void *srcOpaque, size_t srcOffset,
-                     size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
-                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
-                     flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
-                     flagcxDevSignal_t remoteSignal, uint64_t signalValue) {
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigAdd(
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+    const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+    const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset, size_t bytes,
+    flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
+    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
+    flagcxDevMemoryOrder_t order, flagcxDevSignal_t remoteSignal,
+    uint64_t signalValue) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
   const flagcxDevMem *src = (const flagcxDevMem *)srcOpaque;
@@ -547,13 +483,13 @@ flagcxDevPut_RSigAdd(const void *commOpaque, const void *dstOpaque,
   }
 }
 
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
-                     size_t dstOffset, const void *srcOpaque, size_t srcOffset,
-                     size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
-                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
-                     flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
-                     flagcxDevCounter_t localCounter) {
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_LCtrInc(
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+    const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+    const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset, size_t bytes,
+    flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
+    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
+    flagcxDevMemoryOrder_t order, flagcxDevCounter_t localCounter) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxDevMem *dst = (const flagcxDevMem *)dstOpaque;
   const flagcxDevMem *src = (const flagcxDevMem *)srcOpaque;
@@ -584,9 +520,8 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
     coop.sync();
     if (coop.threadRank() == 0) {
       // Counter is local to sender.
-      DeviceAPI::Atomic::fetchAdd(
-          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-          flagcxDeviceMemoryOrderRelease);
+      flagcxCompleteCounterInternal(FLAGCX_IR_NET_REF(net), localCounter,
+                                    (uint64_t)1, 0);
     }
     coop.sync();
   } else {
@@ -599,8 +534,9 @@ flagcxDevPut_LCtrInc(const void *commOpaque, const void *dstOpaque,
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevPut_RSigInc_LCtrInc(
-    const void *commOpaque, const void *dstOpaque, size_t dstOffset,
-    const void *srcOpaque, size_t srcOffset, size_t bytes,
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+    const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+    const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset, size_t bytes,
     flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
     flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
     flagcxDevMemoryOrder_t order, flagcxDevSignal_t remoteSignal,
@@ -637,9 +573,8 @@ flagcxDevPut_RSigInc_LCtrInc(
       flagcxDevSignalInc(commOpaque, teamKind, peer, remoteSignal, contextId,
                          FLAGCX_COOP_THREAD, flagcxDeviceScopeSystem);
       // Local counter increment
-      DeviceAPI::Atomic::fetchAdd(
-          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-          flagcxDeviceMemoryOrderRelease);
+      flagcxCompleteCounterInternal(FLAGCX_IR_NET_REF(net), localCounter,
+                                    (uint64_t)1, 0);
     }
     coop.sync();
   } else {
@@ -652,8 +587,9 @@ flagcxDevPut_RSigInc_LCtrInc(
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevPut_RSigAdd_LCtrInc(
-    const void *commOpaque, const void *dstOpaque, size_t dstOffset,
-    const void *srcOpaque, size_t srcOffset, size_t bytes,
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+    const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+    const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset, size_t bytes,
     flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
     flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
     flagcxDevMemoryOrder_t order, flagcxDevSignal_t remoteSignal,
@@ -691,9 +627,8 @@ flagcxDevPut_RSigAdd_LCtrInc(
                          contextId, FLAGCX_COOP_THREAD,
                          flagcxDeviceScopeSystem);
       // Local counter increment
-      DeviceAPI::Atomic::fetchAdd(
-          FLAGCX_IR_NET_REF(net).getCounterPtr(localCounter), (uint64_t)1,
-          flagcxDeviceMemoryOrderRelease);
+      flagcxCompleteCounterInternal(FLAGCX_IR_NET_REF(net), localCounter,
+                                    (uint64_t)1, 0);
     }
     coop.sync();
   } else {
@@ -710,9 +645,10 @@ flagcxDevPut_RSigAdd_LCtrInc(
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevGet(const void *commOpaque, const void *srcOpaque, size_t srcOffset,
-             const void *dstOpaque, size_t dstOffset, size_t bytes,
-             flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+             const void FLAGCX_IR_GLOBAL_PTR *srcOpaque, size_t srcOffset,
+             const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+             size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
              flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
              flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
@@ -750,9 +686,9 @@ flagcxDevGet(const void *commOpaque, const void *srcOpaque, size_t srcOffset,
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
-                  size_t dstOffset, uint64_t value,
-                  flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                  const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
+                  uint64_t value, flagcxDevTeamKind_t teamKind, int peer,
                   flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                   flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
@@ -789,7 +725,8 @@ flagcxDevPutValue(const void *commOpaque, const void *dstOpaque,
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
-flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
+flagcxDevPutValue_RSigInc(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+                          const void FLAGCX_IR_GLOBAL_PTR *dstOpaque,
                           size_t dstOffset, uint64_t value,
                           flagcxDevTeamKind_t teamKind, int peer,
                           flagcxDevContext_t contextId,
@@ -835,7 +772,8 @@ flagcxDevPutValue_RSigInc(const void *commOpaque, const void *dstOpaque,
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevPutValue_RSigAdd(
-    const void *commOpaque, const void *dstOpaque, size_t dstOffset,
+    const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
+    const void FLAGCX_IR_GLOBAL_PTR *dstOpaque, size_t dstOffset,
     uint64_t value, flagcxDevTeamKind_t teamKind, int peer,
     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,

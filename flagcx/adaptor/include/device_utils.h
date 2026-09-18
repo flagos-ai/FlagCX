@@ -7,13 +7,15 @@
 
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__)
+#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
+    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
-#if defined(__CUDACC__) || defined(__xpu__)
+#if defined(__CUDACC__) || defined(__xpu__) ||                                 \
+    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
 #define FLAGCX_CHECK_DEVICE_CC 0
@@ -38,6 +40,23 @@
 #define FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)                               \
   ((FLAGCX_DEVICE_GLOBAL_PTR type *)(ptr))
 
+// Pointer qualifier used only at the exported Device IR boundary. CoreX
+// lowers persistent device objects (comm/window/net descriptors and remote
+// pointers) in global address space 1. Keep this separate from
+// FLAGCX_DEVICE_GLOBAL_PTR: the latter is also used by by-value C++ layouts,
+// where changing the pointer type would alter the shared host/device ABI.
+#if defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+#define FLAGCX_IR_GLOBAL_PTR __attribute__((address_space(1)))
+#define FLAGCX_IR_GLOBAL_RETURN_PTR __attribute__((address_space(1)))
+#define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
+  ((FLAGCX_IR_GLOBAL_PTR type *)(ptr))
+#else
+#define FLAGCX_IR_GLOBAL_PTR
+#define FLAGCX_IR_GLOBAL_RETURN_PTR FLAGCX_DEVICE_GLOBAL_PTR
+#define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
+  FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)
+#endif
+
 // How an IR entry point gets hold of its flagcxDevNet.
 //
 // Everywhere a generic pointer can name device memory, the pre-built context
@@ -56,13 +75,13 @@
 #define FLAGCX_IR_NET_DECL(var, commOpaque, contextId)                         \
   flagcxDevNet var(*(const flagcxDevComm *)(commOpaque), (int)(contextId))
 #define FLAGCX_IR_NET_REF(var) (var)
-#define FLAGCX_IR_NET_ARG(var) ((const void *)&(var))
+#define FLAGCX_IR_NET_ARG(var) ((const void FLAGCX_IR_GLOBAL_PTR *)&(var))
 #else
 #define FLAGCX_IR_NET_DECL(var, commOpaque, contextId)                         \
   const flagcxDevNet *var = (const flagcxDevNet *)flagcxDevNetGetFromCommS(    \
       (commOpaque), (int)(contextId))
 #define FLAGCX_IR_NET_REF(var) (*(var))
-#define FLAGCX_IR_NET_ARG(var) ((const void *)(var))
+#define FLAGCX_IR_NET_ARG(var) ((const void FLAGCX_IR_GLOBAL_PTR *)(var))
 #endif
 
 // IR extern "C" linkage — active only when building LLVM bitcode with clang
@@ -143,6 +162,51 @@
 #define FLAGCX_SHARED static
 #define FLAGCX_DEVICE_STREAM_PTR void **
 #endif // __xpu__
+
+#elif defined(USE_ILUVATAR_ADAPTOR)
+#include <cuda.h>
+#include <cuda_runtime.h>
+
+#if defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+// clang -x ivcore does not guarantee __CUDACC__. Use the explicit
+// device-compiler marker supplied by the native and Device IR build rules.
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+// ivcore11 cannot select llvm.nvvm.membar.sys. The device-wide fence lowers
+// to the CoreX cache writeback/invalidate operation used by peer-visible P2P
+// synchronization in IXCCL and in FlagTree PR 1184.
+#define FLAGCX_DEVICE_THREAD_FENCE __threadfence
+#define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
+#define FLAGCX_THREAD_IDX_X threadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X blockDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SIMT_WIDTH 64
+#define FLAGCX_SHARED __shared__
+#else
+// Host pass: retain layout constants and erase device-only qualifiers.
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 64
+#define FLAGCX_SHARED static
+#endif // FLAGCX_ILUVATAR_DEVICE_COMPILE
+
+#define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
 
 #elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
 #include <cuda.h>

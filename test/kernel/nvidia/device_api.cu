@@ -27,7 +27,11 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
+#if defined(USE_ILUVATAR_ADAPTOR)
+#include "iluvatar_adaptor.h"
+#else
 #include "nvidia_adaptor.h"
+#endif
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>
@@ -1231,6 +1235,8 @@ flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
 // K10: Coop Groups
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     flagcxIntraTestCoopGroupsKernel(int *results) {
+  FLAGCX_SHARED int warpValues[256];
+
   // Block
   {
     flagcxCoopBlock block;
@@ -1242,13 +1248,21 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     block.sync();
   }
 
-  // Warp (Tile<32>)
+  // Full hardware warp/wave.
   {
     flagcxCoopWarp warp;
     int rank = warp.threadRank();
     int size = warp.size();
+    warpValues[FLAGCX_THREAD_IDX_X] = rank + 1;
+    warp.sync();
     if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      results[1] = (size == 32 && rank == 0) ? 1 : 0;
+      // Reading the last lane also verifies that lanes 32-63 participate on
+      // a 64-lane CoreX wave.
+      results[1] =
+          (size == FLAGCX_SIMT_WIDTH && rank == 0 &&
+           warpValues[FLAGCX_SIMT_WIDTH - 1] == FLAGCX_SIMT_WIDTH)
+              ? 1
+              : 0;
     }
     warp.sync();
   }
@@ -1263,6 +1277,9 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     }
   }
 
+  // CoreX has no verified partial-wave barrier. Its production implementation
+  // traps instead of widening Tile<8> to a full-wave sync.
+#if !defined(USE_ILUVATAR_ADAPTOR)
   // Tile<8>
   {
     flagcxCoopTile<8> tile;
@@ -1273,14 +1290,18 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     }
     tile.sync();
   }
+#else
+  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0)
+    results[3] = 1;
+#endif
 
   // Lanes (full warp mask)
   {
-    flagcxCoopLanes lanes(0xffffffffull);
+    flagcxCoopLanes lanes(DeviceAPI::Intrin::fullMask());
     int rank = lanes.threadRank();
     int size = lanes.size();
     if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      results[4] = (size == 32 && rank == 0) ? 1 : 0;
+      results[4] = (size == FLAGCX_SIMT_WIDTH && rank == 0) ? 1 : 0;
     }
     lanes.sync();
   }

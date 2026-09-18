@@ -1,6 +1,7 @@
 #include "uni_runner_impl.h"
 #include "adaptor.h"
 #include "comm.h"
+#include "device_api/completion_word.h"
 #include "flagcx_hetero.h"
 #include "info.h"
 #include "net.h"
@@ -1885,8 +1886,9 @@ flagcxResult_t runUniRunner(flagcxComm_t comm) {
       TRACE(FLAGCX_UNIRUNNER,
             "runUniRunner: all queues empty, terminating runner loop");
       // set terminate flag
-      __atomic_store_n(fifo->buffer + flagcxFifoIdxTerminate, 1,
-                       __ATOMIC_RELEASE);
+      __atomic_store_n(
+          flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxTerminate),
+          flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
       break;
     }
 

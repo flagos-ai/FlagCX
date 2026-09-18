@@ -36,6 +36,71 @@ static_assert(offsetof(flagcxDevCommRequirements, intraScratchBytes) == 40,
 
 namespace {
 
+struct CompletionDefaultsOnly {};
+struct Completion32Defaults {
+  static constexpr int completionBits = 32;
+  static constexpr int defaultCounterBits = 32;
+};
+
+struct CompletionTestAtomic {
+  template <typename T>
+  static T load(T *ptr, flagcxDeviceMemoryOrder_t) {
+    return *ptr;
+  }
+};
+
+static_assert(flagcxBackendCompletionBits<CompletionDefaultsOnly>::value == 64,
+              "vendor signal default changed");
+static_assert(flagcxBackendDefaultCounterBits<CompletionDefaultsOnly>::value ==
+                  56,
+              "vendor counter default changed");
+static_assert(flagcxBackendCompletionBits<Completion32Defaults>::value == 32,
+              "32-bit completion default not selected");
+static_assert(flagcxBackendDefaultCounterBits<Completion32Defaults>::value ==
+                  32,
+              "32-bit counter default not selected");
+
+TEST(CompletionDomainTest, ThirtyTwoBitArithmeticWrapsExplicitly) {
+  using Storage = DefaultCompletionStorage<uint32_t>;
+
+  Storage::validateBits(32);
+  EXPECT_EQ(Storage::completionValue(UINT32_MAX), UINT32_MAX);
+  EXPECT_EQ(Storage::advance(UINT32_MAX, 1), 0u);
+  EXPECT_EQ(Storage::advance(UINT32_MAX - 1, 1), UINT32_MAX);
+}
+
+TEST(CompletionDomainTest, ThirtyTwoBitDomainRejectsSixtyFourBitRequests) {
+  using Storage = DefaultCompletionStorage<uint32_t>;
+
+  EXPECT_DEATH_IF_SUPPORTED(Storage::validateBits(64), "");
+}
+
+TEST(CompletionDomainTest, ThirtyTwoBitDirectAndProxySumInDomain) {
+  using Storage = DefaultCompletionStorage<uint32_t>;
+  uint32_t direct[] = {UINT32_C(0x80000000)};
+  uint64_t proxy[] = {UINT64_C(0x80000000)};
+
+  EXPECT_EQ(Storage::loadCompletion<CompletionTestAtomic>(
+                direct, proxy, 0, flagcxDeviceMemoryOrderAcquire),
+            0u);
+}
+
+TEST(CompletionDomainTest, ThirtyTwoBitWaitComparisonHandlesWrap) {
+  using Storage = DefaultCompletionStorage<uint32_t>;
+
+  EXPECT_TRUE(Storage::waitBefore(UINT32_MAX, 0u));
+  EXPECT_FALSE(Storage::waitBefore(0u, UINT32_MAX));
+  EXPECT_FALSE(Storage::waitBefore(7u, 7u));
+}
+
+TEST(CompletionDomainTest, SixtyFourBitComparisonKeepsNumericOrdering) {
+  using Storage = DefaultCompletionStorage<uint64_t>;
+
+  EXPECT_TRUE(Storage::waitBefore(7u, 8u));
+  EXPECT_FALSE(Storage::waitBefore(8u, 7u));
+  EXPECT_EQ(Storage::advance(UINT32_MAX, 1), UINT64_C(0x100000000));
+}
+
 struct LegacyWindowTeam {};
 
 struct LegacyWindow {
