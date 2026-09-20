@@ -106,8 +106,7 @@ python3 test/perf/kv_transfer/kv_transfer_benchmark.py --connector=flagcx --role
 ```bash
 python3 test/perf/kv_transfer/kv_transfer_benchmark.py --connector=flagcx --role=server \
     --remote-ip=10.8.2.169 --device=gpu \
-    --flagcx-lib-path=/custom/path/libflagcx.so \
-    --flagcx-wrapper-path=/custom/path/FlagCX
+    --flagcx-lib-path=/custom/path/libflagcx.so
 ```
 
 ## Command-Line Arguments
@@ -127,7 +126,6 @@ python3 test/perf/kv_transfer/kv_transfer_benchmark.py --connector=flagcx --role
 | `--zmq-port` | ZMQ coordination port | `9000` |
 | `--mooncake-protocol` | Mooncake protocol: `rdma` or `tcp` | `rdma` |
 | `--flagcx-lib-path` | Path to `libflagcx.so` | `$FLAGCX_PATH/build/lib/libflagcx.so` |
-| `--flagcx-wrapper-path` | Path to FlagCX root directory | `$FLAGCX_PATH` |
 
 **Note**: Operation type (read/write) is automatically determined by the connector:
 - **NIXL**: Uses `read` (client reads from server)
@@ -239,9 +237,10 @@ Failed to import Mooncake.
 
 ### FlagCX Import Error
 ```
-FLAGCX_PATH not set and --flagcx-wrapper-path not provided.
+ModuleNotFoundError: No module named 'flagcx'
 ```
-**Solution**: Set `FLAGCX_PATH` environment variable or use `--flagcx-wrapper-path` to point to the FlagCX root directory.
+**Solution**: Install the FlagCX Python package, or point `PYTHONPATH` at the repository's `src/`
+directory.
 
 ### FlagCX Library Not Found
 ```

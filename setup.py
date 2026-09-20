@@ -30,6 +30,16 @@ from _build_config import (
     resolve_torch_backend,
 )
 
+try:
+    from _version_scheme import version_scheme
+except ImportError as exc:
+    # --no-build-isolation (the documented install path) skips [build-system]
+    # requires, and setuptools would then silently build a 0.0.0 artifact.
+    raise SystemExit(
+        "setuptools_scm is required to build FlagCX from a git checkout; "
+        "install it with: pip install 'setuptools_scm>=8'"
+    ) from exc
+
 # ---------------------------------------------------------------------------
 # Adaptor & torch detection
 # ---------------------------------------------------------------------------
@@ -137,9 +147,10 @@ if BuildExtension is not None:
             for ext in self.extensions:
                 if lib_dir not in ext.library_dirs:
                     ext.library_dirs.insert(0, lib_dir)
-                # Set $ORIGIN rpath so _C.so finds libflagcx.so in the same directory
+                # Set $ORIGIN/lib rpath so _C.so finds libflagcx.so in the
+                # package's lib/ directory
                 # Preserve device-specific rpaths so runtime linker can find device libs
-                origin_rpath = "-Wl,-rpath,$ORIGIN"
+                origin_rpath = "-Wl,-rpath,$ORIGIN/lib"
                 dev_rpaths = [
                     "-Wl,-rpath," + d
                     for d in get_device_rpath_dirs(
@@ -158,15 +169,16 @@ if BuildExtension is not None:
 
             # -- Step 4: Copy libflagcx.so to where it's needed --
             # Into the build output dir (for wheels / regular installs)
-            build_pkg_dir = os.path.join(self.build_lib, "flagcx")
+            build_pkg_dir = os.path.join(self.build_lib, "flagcx", "lib")
             os.makedirs(build_pkg_dir, exist_ok=True)
             dst_build_so = os.path.join(build_pkg_dir, "libflagcx.so")
             print(f"[flagcx] Copying {src_so} -> {dst_build_so}")
             shutil.copy2(src_so, dst_build_so)
 
             # Into the source package dir (for editable installs, where
-            # _C.so lives in-tree and uses $ORIGIN rpath to find it)
-            src_pkg_dir = os.path.join(ROOT_DIR, "plugin", "torch", "flagcx")
+            # _C.so lives in-tree and uses $ORIGIN/lib rpath to find it)
+            src_pkg_dir = os.path.join(ROOT_DIR, "src", "flagcx", "lib")
+            os.makedirs(src_pkg_dir, exist_ok=True)
             dst_src_so = os.path.join(src_pkg_dir, "libflagcx.so")
             print(f"[flagcx] Copying {src_so} -> {dst_src_so}")
             shutil.copy2(src_so, dst_src_so)
@@ -205,11 +217,14 @@ os.makedirs(os.path.join(ROOT_DIR, "build"), exist_ok=True)
 
 setup(
     name="flagcx",
-    version="0.13.0",
+    use_scm_version={
+        "version_scheme": version_scheme,
+        "local_scheme": "no-local-version",
+    },
     description="FlagCX: A unified collective communication library",
-    package_dir={"flagcx": "plugin/torch/flagcx"},
+    package_dir={"": "src"},
     packages=["flagcx"],
-    package_data={"flagcx": ["*.so"]},
+    package_data={"flagcx": ["lib/*.so"]},
     ext_modules=ext_modules,
     cmdclass=cmdclass,
     entry_points={"torch.backends": ["flagcx = flagcx:init"]},

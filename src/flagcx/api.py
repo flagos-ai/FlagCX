@@ -478,9 +478,9 @@ class FLAGCXLibrary:
         # An unusable FLAGCX_PATH is not fatal: keep looking, and only report
         # it if nothing anywhere resolves.
         # 2. Check alongside the installed flagcx Python package
-        #    (build.sh copies libflagcx.so into the package directory)
+        #    (setup.py copies libflagcx.so into the package's lib/ directory)
         pkg_dir = os.path.dirname(os.path.abspath(__file__))
-        found = first_existing([os.path.join(pkg_dir, "libflagcx.so")])
+        found = first_existing([os.path.join(pkg_dir, "lib", "libflagcx.so")])
         if found:
             return found
         # 3. Fall back to <repo_root>/build/lib/libflagcx.so

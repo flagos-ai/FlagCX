@@ -8,7 +8,7 @@ export FLAGCX_DEBUG_SUBSYS="${FLAGCX_DEBUG_SUBSYS:-INIT}"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 TEST_RUNNER=${FLAGCX_TORCH_TEST_RUNNER:-$REPO_ROOT/.github/scripts/ci/run_with_timeout.sh}
-export PYTHONPATH="$REPO_ROOT/plugin/torch${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
 hash -r
 

@@ -1,14 +1,9 @@
 import os
-import sys
 import unittest
-from pathlib import Path
 from unittest import mock
 
 
-PACKAGE_DIR = Path(__file__).resolve().parents[1] / "flagcx"
-sys.path.insert(0, str(PACKAGE_DIR))
-
-import _backend_loader as backend_loader
+from flagcx import _backend_loader as backend_loader
 
 
 class BackendLoaderTest(unittest.TestCase):

@@ -4,8 +4,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-import plugin.interservice.flagcx_wrapper as flagcx_wrapper
-from plugin.interservice.flagcx_wrapper import (
+
+import flagcx.api as flagcx_api
+from flagcx.api import (
     FLAGCX_UNIQUE_ID_BYTES,
     FLAGCXLibrary,
     flagcxUniqueId,
@@ -39,6 +40,12 @@ class FlagcxDefaultLibraryTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = tmp.name
+        # A second, distinct root for the module itself: the resolver's
+        # repo-root fallback must land outside FLAGCX_PATH, or its path is
+        # indistinguishable from the FLAGCX_PATH candidates.
+        pkg = tempfile.TemporaryDirectory()
+        self.addCleanup(pkg.cleanup)
+        self.pkg_root = pkg.name
         env = mock.patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
@@ -46,10 +53,10 @@ class FlagcxDefaultLibraryTest(unittest.TestCase):
         # Move the package directory out of the source tree so the search is
         # not satisfied by this checkout's own build/ directory.
         self.module_file = os.path.join(
-            self.root, "src", "plugin", "interservice", "flagcx_wrapper.py"
+            self.pkg_root, "src", "flagcx", "api.py"
         )
         module_file = mock.patch.object(
-            flagcx_wrapper, "__file__", self.module_file
+            flagcx_api, "__file__", self.module_file
         )
         module_file.start()
         self.addCleanup(module_file.stop)
@@ -81,7 +88,7 @@ class FlagcxDefaultLibraryTest(unittest.TestCase):
         barren = self._touch(os.path.join(self.root, "keep", "file"))
         os.environ["FLAGCX_PATH"] = os.path.dirname(barren)
         expected = self._touch(
-            os.path.join(os.path.dirname(self.module_file), "libflagcx.so")
+            os.path.join(os.path.dirname(self.module_file), "lib", "libflagcx.so")
         )
 
         self.assertEqual(FLAGCXLibrary._find_default_library(), expected)
@@ -107,9 +114,9 @@ class FlagcxDefaultLibraryTest(unittest.TestCase):
             os.path.join(self.root, "build", "lib", "libflagcx.so"),
             os.path.join(self.root, "lib", "libflagcx.so.0"),
             os.path.join(
-                os.path.dirname(self.module_file), "libflagcx.so"
+                os.path.dirname(self.module_file), "lib", "libflagcx.so"
             ),
-            os.path.join(self.root, "src", "build", "lib", "libflagcx.so"),
+            os.path.join(self.pkg_root, "build", "lib", "libflagcx.so"),
         ):
             self.assertIn(path, message)
         self.assertIn("system library lookup", message)
