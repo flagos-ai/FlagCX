@@ -11,7 +11,8 @@ This test demonstrates the full workflow:
   6. Launch a Triton kernel that uses FlagCX Device API IR bitcode
      to perform intra-node peer pointer access (LSA read)
 
-Usage (single-node, 2 GPUs):
+Usage (single-node, 2 GPUs), with flagcx importable (PYTHONPATH=<repo>/src, or an
+installed wheel):
   torchrun --nproc_per_node=2 test_triton_lsa.py
 """
 
@@ -25,7 +26,7 @@ import triton.language as tl
 from torch.cuda.memory import CUDAPluggableAllocator
 from torch.utils.cpp_extension import load_inline
 
-from flagcx_wrapper import (
+from flagcx.api import (
     FLAGCX_UNIQUE_ID_BYTES,
     FLAGCXLibrary,
     flagcxDevCommRequirements,

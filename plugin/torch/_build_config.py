@@ -1,9 +1,8 @@
 """
 Shared build configuration for the flagcx torch plugin.
 
-Used by both the root setup.py and plugin/torch/setup.py to avoid
-duplicating adaptor detection, device-specific paths, and extension
-class selection logic.
+Used by the root setup.py to avoid duplicating adaptor detection,
+device-specific paths, and extension class selection logic.
 """
 
 import os

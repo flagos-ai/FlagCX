@@ -102,7 +102,9 @@ case "$workload" in
     python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
     build_flagcx
     (
-      cd "$project_root/plugin/torch"
+      # The build script is the repo root's; plugin/torch holds only the native
+      # backend sources now, and the Python package lives in src/.
+      cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
       export FLAGCX_ADAPTOR=ppu
       export USE_PPU=1
@@ -110,6 +112,9 @@ case "$workload" in
     )
 
     export PYTHON_BIN=python3
+    # The package moved out of plugin/torch, so the tests import it from src/ the
+    # same way the other backends' jobs do.
+    export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     export FLAGCX_ADAPTOR=ppu
     unset FLAGCX_USE_HETERO_COMM
     export FLAGCX_CLUSTER_SPLIT_LIST=2
