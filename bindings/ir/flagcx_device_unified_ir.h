@@ -44,26 +44,29 @@
 
 /** @brief Basic put (no completion action). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevPut(const void *comm, const void *dst, size_t dstOffset,
-             const void *src, size_t srcOffset, size_t bytes,
-             flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *comm,
+             const void FLAGCX_IR_GLOBAL_PTR *dst, size_t dstOffset,
+             const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+             size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
              flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
              flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order);
 
 /** @brief Put + remote signal increment on completion. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevPut_RSigInc(const void *comm, const void *dst, size_t dstOffset,
-                     const void *src, size_t srcOffset, size_t bytes,
-                     flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevPut_RSigInc(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                     const void FLAGCX_IR_GLOBAL_PTR *dst, size_t dstOffset,
+                     const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+                     size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
                      flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
                      flagcxDevSignal_t remoteSignal);
 
 /** @brief Put + remote signal add on completion. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevPut_RSigAdd(const void *comm, const void *dst, size_t dstOffset,
-                     const void *src, size_t srcOffset, size_t bytes,
-                     flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevPut_RSigAdd(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                     const void FLAGCX_IR_GLOBAL_PTR *dst, size_t dstOffset,
+                     const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+                     size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
                      flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
                      flagcxDevSignal_t remoteSignal, uint64_t signalValue);
@@ -71,25 +74,28 @@ flagcxDevPut_RSigAdd(const void *comm, const void *dst, size_t dstOffset,
 /** @brief Put + local counter increment on completion (sender-side tracking).
  */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevPut_LCtrInc(const void *comm, const void *dst, size_t dstOffset,
-                     const void *src, size_t srcOffset, size_t bytes,
-                     flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevPut_LCtrInc(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                     const void FLAGCX_IR_GLOBAL_PTR *dst, size_t dstOffset,
+                     const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+                     size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
                      flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
                      flagcxDevCounter_t localCounter);
 
 /** @brief Put + remote signal increment + local counter increment. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPut_RSigInc_LCtrInc(
-    const void *comm, const void *dst, size_t dstOffset, const void *src,
-    size_t srcOffset, size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
+    const void FLAGCX_IR_GLOBAL_PTR *comm, const void FLAGCX_IR_GLOBAL_PTR *dst,
+    size_t dstOffset, const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+    size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
     flagcxDevSignal_t remoteSignal, flagcxDevCounter_t localCounter);
 
 /** @brief Put + remote signal add + local counter increment. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPut_RSigAdd_LCtrInc(
-    const void *comm, const void *dst, size_t dstOffset, const void *src,
-    size_t srcOffset, size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
+    const void FLAGCX_IR_GLOBAL_PTR *comm, const void FLAGCX_IR_GLOBAL_PTR *dst,
+    size_t dstOffset, const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+    size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
     flagcxDevSignal_t remoteSignal, uint64_t signalValue,
@@ -114,9 +120,10 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPut_RSigAdd_LCtrInc(
 
 /** @brief Transport-transparent get from remote peer. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevGet(const void *comm, const void *src, size_t srcOffset,
-             const void *dst, size_t dstOffset, size_t bytes,
-             flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *comm,
+             const void FLAGCX_IR_GLOBAL_PTR *src, size_t srcOffset,
+             const void FLAGCX_IR_GLOBAL_PTR *dst, size_t dstOffset,
+             size_t bytes, flagcxDevTeamKind_t teamKind, int peer,
              flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
              flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order);
 
@@ -139,25 +146,27 @@ flagcxDevGet(const void *comm, const void *src, size_t srcOffset,
 
 /** @brief Write a scalar value to remote peer. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevPutValue(const void *comm, const void *dst, size_t dstOffset,
+flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                  const void FLAGCX_IR_GLOBAL_PTR *dst, size_t dstOffset,
                   uint64_t value, flagcxDevTeamKind_t teamKind, int peer,
                   flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                   flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order);
 
 /** @brief Write a scalar value + remote signal increment. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPutValue_RSigInc(
-    const void *comm, const void *dst, size_t dstOffset, uint64_t value,
-    flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
-    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
-    flagcxDevMemoryOrder_t order, flagcxDevSignal_t remoteSignal);
+    const void FLAGCX_IR_GLOBAL_PTR *comm, const void FLAGCX_IR_GLOBAL_PTR *dst,
+    size_t dstOffset, uint64_t value, flagcxDevTeamKind_t teamKind, int peer,
+    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
+    flagcxDevSignal_t remoteSignal);
 
 /** @brief Write a scalar value + remote signal add. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPutValue_RSigAdd(
-    const void *comm, const void *dst, size_t dstOffset, uint64_t value,
-    flagcxDevTeamKind_t teamKind, int peer, flagcxDevContext_t contextId,
-    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope,
-    flagcxDevMemoryOrder_t order, flagcxDevSignal_t remoteSignal,
-    uint64_t signalValue);
+    const void FLAGCX_IR_GLOBAL_PTR *comm, const void FLAGCX_IR_GLOBAL_PTR *dst,
+    size_t dstOffset, uint64_t value, flagcxDevTeamKind_t teamKind, int peer,
+    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryScope_t scope, flagcxDevMemoryOrder_t order,
+    flagcxDevSignal_t remoteSignal, uint64_t signalValue);
 
 /* ================================================================
  * Category U4: Unified Signal (2)
@@ -176,13 +185,15 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevPutValue_RSigAdd(
 
 /** @brief Increment remote signal by 1. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevSignalInc(const void *comm, flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevSignalInc(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                   flagcxDevTeamKind_t teamKind, int peer,
                    flagcxDevSignal_t signal, flagcxDevContext_t contextId,
                    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope);
 
 /** @brief Add value to remote signal. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevSignalAdd(const void *comm, flagcxDevTeamKind_t teamKind, int peer,
+flagcxDevSignalAdd(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                   flagcxDevTeamKind_t teamKind, int peer,
                    flagcxDevSignal_t signal, uint64_t value,
                    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                    flagcxDevMemoryScope_t scope);
@@ -204,15 +215,16 @@ flagcxDevSignalAdd(const void *comm, flagcxDevTeamKind_t teamKind, int peer,
 
 /** @brief Wait until signal >= least. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevWaitSignal(const void *comm, flagcxDevSignal_t signal, uint64_t least,
-                    int bits, flagcxDevContext_t contextId,
-                    flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order);
+flagcxDevWaitSignal(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                    flagcxDevSignal_t signal, uint64_t least, int bits,
+                    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+                    flagcxDevMemoryOrder_t order);
 
 /** @brief Wait until counter >= least. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevWaitCounter(const void *comm, flagcxDevCounter_t counter,
-                     uint64_t least, int bits, flagcxDevContext_t contextId,
-                     flagcxDevCoopKind_t coopKind,
+flagcxDevWaitCounter(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                     flagcxDevCounter_t counter, uint64_t least, int bits,
+                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryOrder_t order);
 
 /* ================================================================
@@ -230,13 +242,13 @@ flagcxDevWaitCounter(const void *comm, flagcxDevCounter_t counter,
  * ================================================================ */
 
 /** @brief Read signal value (non-blocking). */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t
-flagcxDevReadSignal(const void *comm, flagcxDevSignal_t signal, int bits,
-                    flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order);
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t flagcxDevReadSignal(
+    const void FLAGCX_IR_GLOBAL_PTR *comm, flagcxDevSignal_t signal, int bits,
+    flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order);
 
 /** @brief Read counter value (non-blocking). */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t flagcxDevReadCounter(
-    const void *comm, flagcxDevCounter_t counter, int bits,
+    const void FLAGCX_IR_GLOBAL_PTR *comm, flagcxDevCounter_t counter, int bits,
     flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order);
 
 /* ================================================================
@@ -252,28 +264,31 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR uint64_t flagcxDevReadCounter(
 
 /** @brief Flush pending network writes. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevFlush(const void *comm, flagcxDevContext_t contextId,
-               flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order);
+flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *comm,
+               flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+               flagcxDevMemoryOrder_t order);
 
 /** @brief Reset a signal slot and its local shadow to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevResetSignal(const void *comm, flagcxDevContext_t contextId,
-                     flagcxDevSignal_t slot);
+flagcxDevResetSignal(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                     flagcxDevContext_t contextId, flagcxDevSignal_t slot);
 
 /** @brief Reset a counter slot to zero. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevResetCounter(const void *comm, flagcxDevContext_t contextId,
-                      flagcxDevCounter_t slot);
+flagcxDevResetCounter(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                      flagcxDevContext_t contextId, flagcxDevCounter_t slot);
 
 /** @brief Increase the local shadow for a signal. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevIncreaseSignalShadow(const void *comm, flagcxDevContext_t contextId,
+flagcxDevIncreaseSignalShadow(const void FLAGCX_IR_GLOBAL_PTR *comm,
+                              flagcxDevContext_t contextId,
                               flagcxDevSignal_t slot, uint64_t delta);
 
 /** @brief Spin-wait until signal meets its local shadow value. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevWaitSignalMeetShadow(
-    const void *comm, flagcxDevContext_t contextId, flagcxDevSignal_t slot,
-    int bits, flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order);
+    const void FLAGCX_IR_GLOBAL_PTR *comm, flagcxDevContext_t contextId,
+    flagcxDevSignal_t slot, int bits, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryOrder_t order);
 
 /* ================================================================
  * Category U8: Unified Barrier (3)
@@ -294,22 +309,20 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevWaitSignalMeetShadow(
 
 /** @brief Signal arrival at barrier. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevBarrierArrive(
-    const void *comm, flagcxDevTeamKind_t teamKind, uint32_t index,
-    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    const void FLAGCX_IR_GLOBAL_PTR *comm, flagcxDevTeamKind_t teamKind,
+    uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope);
 
 /** @brief Wait for all peers at barrier. */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevBarrierWait(const void *comm, flagcxDevTeamKind_t teamKind,
-                     uint32_t index, flagcxDevContext_t contextId,
-                     flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order,
-                     flagcxDevMemoryScope_t scope);
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevBarrierWait(
+    const void FLAGCX_IR_GLOBAL_PTR *comm, flagcxDevTeamKind_t teamKind,
+    uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope);
 
 /** @brief Arrive + wait (full synchronization). */
-FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
-flagcxDevBarrierSync(const void *comm, flagcxDevTeamKind_t teamKind,
-                     uint32_t index, flagcxDevContext_t contextId,
-                     flagcxDevCoopKind_t coopKind, flagcxDevMemoryOrder_t order,
-                     flagcxDevMemoryScope_t scope);
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevBarrierSync(
+    const void FLAGCX_IR_GLOBAL_PTR *comm, flagcxDevTeamKind_t teamKind,
+    uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
+    flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope);
 
 #endif // FLAGCX_DEVICE_UNIFIED_IR_H_

@@ -12,7 +12,11 @@
 
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#if defined(USE_ILUVATAR_ADAPTOR)
+#include "iluvatar_adaptor.h"
+#else
 #include "nvidia_adaptor.h"
+#endif
 #include "flagcx_device_internal.h"
 
 // IR wrapper declarations + implementations (needed for nvcc inline compilation)
@@ -20,6 +24,11 @@
 #include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 
 #include "device_ir.h"
+
+// Keep the shared IR tests backend-neutral. Existing backends resolve this to
+// 64; the Iluvatar DefaultBackend resolves it to its 32-bit completion domain.
+static constexpr int kCompletionBits =
+    flagcxBackendCompletionBits<DeviceAPI>::value;
 
 // ===========================================================================
 // Scalar IR (S-suffixed) kernels — Intra-Node (S1–S10)
@@ -29,7 +38,7 @@
 // S1: Comm Queries (Scalar)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelCommQueriesS(const void *devCommPtr, int *results) {
+__global__ void kernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
     results[0] = flagcxDevCommGetRank(devCommPtr);
     results[1] = flagcxDevCommGetSize(devCommPtr);
@@ -38,7 +47,7 @@ __global__ void kernelCommQueriesS(const void *devCommPtr, int *results) {
   }
 }
 
-void launchKernelCommQueriesS(const void *devCommPtr, int *devResults,
+void launchKernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                               flagcxStream_t stream) {
   kernelCommQueriesS<<<1, 1, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -63,57 +72,72 @@ __global__ void kernelCoopGroupsS_block(int *results) {
   if (FLAGCX_THREAD_IDX_X == 0) results[0] = pass;
 }
 
-// Sub-kernel: tile_span coop check (1 block, 128 threads = 4 tiles of 32)
+// Sub-kernel: tile_span coop check.
 __global__ void kernelCoopGroupsS_tileSpan(int *results) {
+#if defined(USE_ILUVATAR_ADAPTOR)
+  // CoreX only supports an exact full-block tile span. This 128-thread block
+  // is two complete 64-lane waves.
+  uint32_t t0 = 0;
+  uint32_t nTiles = FLAGCX_BLOCK_DIM_X / FLAGCX_SIMT_WIDTH;
+#else
   int tileIdx = FLAGCX_THREAD_IDX_X / 32;
   uint32_t t0 = (uint32_t)tileIdx;
   uint32_t nTiles = 1;
+#endif
   uint32_t id = 0;
 
   int rank = flagcxCoopThreadRankExS(FLAGCX_COOP_TILE_SPAN, t0, nTiles, id);
   int size = flagcxCoopSizeExS(FLAGCX_COOP_TILE_SPAN, t0, nTiles, id);
   flagcxCoopSyncExS(FLAGCX_COOP_TILE_SPAN, t0, nTiles, id);
 
-  // Expected: rank = threadIdx % 32, size = 32
+  // Expected group geometry follows the exact supported span.
   __shared__ int pass;
   if (FLAGCX_THREAD_IDX_X == 0) pass = 1;
   __syncthreads();
+#if defined(USE_ILUVATAR_ADAPTOR)
+  if (rank != (int)FLAGCX_THREAD_IDX_X || size != (int)FLAGCX_BLOCK_DIM_X)
+#else
   if (rank != (int)(FLAGCX_THREAD_IDX_X % 32) || size != 32)
+#endif
     atomicExch(&pass, 0);
   __syncthreads();
   if (FLAGCX_THREAD_IDX_X == 0) results[1] = pass;
 }
 
-// Sub-kernel: lanes coop check (1 block, 32 threads, full warp mask)
+// Sub-kernel: lanes coop check (one complete hardware warp/wave).
 __global__ void kernelCoopGroupsS_lanes(int *results) {
-  flagcxLaneMask_t laneMask = 0xffffffffull;
+  flagcxLaneMask_t laneMask = DeviceAPI::Intrin::fullMask();
+  FLAGCX_SHARED int laneValues[FLAGCX_SIMT_WIDTH];
 
   int rank = flagcxCoopThreadRankExS(FLAGCX_COOP_LANES, laneMask, 0, 0);
   int size = flagcxCoopSizeExS(FLAGCX_COOP_LANES, laneMask, 0, 0);
+  laneValues[rank] = rank + 1;
   flagcxCoopSyncExS(FLAGCX_COOP_LANES, laneMask, 0, 0);
 
-  // Expected: rank = lane index, size = 32
+  // Expected: rank = lane index, size = hardware SIMT width.
   __shared__ int pass;
   if (FLAGCX_THREAD_IDX_X == 0) pass = 1;
   __syncthreads();
-  if (rank != (int)FLAGCX_THREAD_IDX_X || size != 32)
+  if (rank != (int)FLAGCX_THREAD_IDX_X || size != FLAGCX_SIMT_WIDTH ||
+      laneValues[FLAGCX_SIMT_WIDTH - 1] != FLAGCX_SIMT_WIDTH)
     atomicExch(&pass, 0);
   __syncthreads();
   if (FLAGCX_THREAD_IDX_X == 0) results[2] = pass;
 }
 
-void launchKernelCoopGroupsS(const void *devCommPtr, int *devResults,
+void launchKernelCoopGroupsS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                              flagcxStream_t stream) {
   kernelCoopGroupsS_block<<<1, 32, 0, stream->base>>>(devResults);
   kernelCoopGroupsS_tileSpan<<<1, 128, 0, stream->base>>>(devResults);
-  kernelCoopGroupsS_lanes<<<1, 32, 0, stream->base>>>(devResults);
+  kernelCoopGroupsS_lanes<<<1, FLAGCX_SIMT_WIDTH, 0, stream->base>>>(
+      devResults);
 }
 
 // ---------------------------------------------------------------------------
 // S3: Team Queries (Scalar)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelTeamQueriesS(const void *devCommPtr, int *results) {
+__global__ void kernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
     int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
     int worldRank =
@@ -124,7 +148,7 @@ __global__ void kernelTeamQueriesS(const void *devCommPtr, int *results) {
   }
 }
 
-void launchKernelTeamQueriesS(const void *devCommPtr, int *devResults,
+void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                                    flagcxStream_t stream) {
   kernelTeamQueriesS<<<1, 1, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -133,7 +157,7 @@ void launchKernelTeamQueriesS(const void *devCommPtr, int *devResults,
 // S4: Local Pointer (Scalar)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelLocalPointerS(const void *devMemPtr, void *rawBuff,
+__global__ void kernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
                                          int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
     void *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
@@ -149,7 +173,7 @@ __global__ void kernelLocalPointerS(const void *devMemPtr, void *rawBuff,
   }
 }
 
-void launchKernelLocalPointerS(const void *devMemPtr, void *rawBuff,
+void launchKernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
                                     int *devResults, flagcxStream_t stream) {
   kernelLocalPointerS<<<1, 1, 0, stream->base>>>(devMemPtr, rawBuff,
                                                        devResults);
@@ -159,8 +183,8 @@ void launchKernelLocalPointerS(const void *devMemPtr, void *rawBuff,
 // S5: Intra Pointer (Scalar)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelIntraPointerS(const void *devCommPtr,
-                                    const void *devMemPtr,
+__global__ void kernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                     float *output, int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
@@ -175,8 +199,8 @@ __global__ void kernelIntraPointerS(const void *devCommPtr,
   }
 }
 
-__global__ void kernelIntraPointerWithAccessS(const void *devCommPtr,
-                                              const void *devMemPtr,
+__global__ void kernelIntraPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                               float *output, int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
@@ -193,8 +217,8 @@ __global__ void kernelIntraPointerWithAccessS(const void *devCommPtr,
   }
 }
 
-void launchKernelIntraPointerS(const void *devCommPtr,
-                                    const void *devMemPtr, float *devOutput,
+void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *devOutput,
                                     int count,
                                     flagcxStream_t stream) {
   kernelIntraPointerS<<<4, 256, 0, stream->base>>>(
@@ -207,8 +231,8 @@ void launchKernelIntraPointerS(const void *devCommPtr,
 // S8: Intra Barrier Sync (Scalar)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelIntraBarrierSyncS(const void *devCommPtr,
-                                        const void *devMemPtr,
+__global__ void kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                         float *buffer, float *output,
                                         int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -231,8 +255,8 @@ __global__ void kernelIntraBarrierSyncS(const void *devCommPtr,
   }
 }
 
-void launchKernelIntraBarrierSyncS(const void *devCommPtr,
-                                        const void *devMemPtr, float *buffer,
+void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream) {
   kernelIntraBarrierSyncS<<<4, 256, 0, stream->base>>>(
@@ -243,8 +267,8 @@ void launchKernelIntraBarrierSyncS(const void *devCommPtr,
 // S9: Intra Barrier Sync Split (Release + read + Acquire)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelIntraBarrierArriveWaitS(const void *devCommPtr,
-                                              const void *devMemPtr,
+__global__ void kernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                               float *buffer, float *output,
                                               int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
@@ -270,8 +294,8 @@ __global__ void kernelIntraBarrierArriveWaitS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderAcquire);
 }
 
-void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
-                                        const void *devMemPtr, float *buffer,
+void launchKernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream) {
   kernelIntraBarrierArriveWaitS<<<4, 256, 0, stream->base>>>(
@@ -282,8 +306,8 @@ void launchKernelIntraBarrierArriveWaitS(const void *devCommPtr,
 // S6: Peer Pointer (Scalar) — team-based peer memory access
 // ---------------------------------------------------------------------------
 
-__global__ void kernelPeerPointerS(const void *devCommPtr,
-                                   const void *devMemPtr,
+__global__ void kernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                    float *output, int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
@@ -299,8 +323,8 @@ __global__ void kernelPeerPointerS(const void *devCommPtr,
   }
 }
 
-__global__ void kernelPeerPointerWithAccessS(const void *devCommPtr,
-                                             const void *devMemPtr,
+__global__ void kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                             const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                              float *output, int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
@@ -318,8 +342,8 @@ __global__ void kernelPeerPointerWithAccessS(const void *devCommPtr,
   }
 }
 
-void launchKernelPeerPointerS(const void *devCommPtr,
-                              const void *devMemPtr, float *devOutput,
+void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *devOutput,
                               int count,
                               flagcxStream_t stream) {
   kernelPeerPointerS<<<4, 256, 0, stream->base>>>(
@@ -332,8 +356,8 @@ void launchKernelPeerPointerS(const void *devCommPtr,
 // S10: Intra AllReduce (Scalar) — composite using barriers + pointers
 // ---------------------------------------------------------------------------
 
-__global__ void kernelIntraAllReduceS(const void *devCommPtr,
-                                           const void *devMemPtr,
+__global__ void kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                            float *buffer, int count) {
   int myRank = flagcxDevCommGetIntraRank(devCommPtr);
   int nRanks = flagcxDevCommGetIntraSize(devCommPtr);
@@ -369,8 +393,8 @@ __global__ void kernelIntraAllReduceS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderRelease);
 }
 
-void launchKernelIntraAllReduceS(const void *devCommPtr,
-                                  const void *devMemPtr, float *buffer,
+void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                   int count, flagcxStream_t stream) {
   kernelIntraAllReduceS<<<4, 256, 0, stream->base>>>(
       devCommPtr, devMemPtr, buffer, count);
@@ -380,8 +404,8 @@ void launchKernelIntraAllReduceS(const void *devCommPtr,
 // S7: Multicast Pointer (Scalar) — NVLS-dependent, commented out
 // ---------------------------------------------------------------------------
 
-// __global__ void kernelScalarMulticastPointer(const void *devCommPtr,
-//                                              const void *devMemPtr,
+// __global__ void kernelScalarMulticastPointer(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+//                                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
 //                                              float *output, int nElems) {
 //   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
 //   if (tid < nElems) {
@@ -392,8 +416,8 @@ void launchKernelIntraAllReduceS(const void *devCommPtr,
 //   }
 // }
 //
-// void launchKernelMulticastPointerS(const void *devCommPtr,
-//                                    const void *devMemPtr, float *devOutput,
+// void launchKernelMulticastPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+//                                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *devOutput,
 //                                    int nBlocks, int nThreads,
 //                                    flagcxStream_t stream) {
 //   int nElems = nBlocks * nThreads;
@@ -409,15 +433,15 @@ void launchKernelIntraAllReduceS(const void *devCommPtr,
 // S1: Transport Handle — GetFromCommS
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetGetFromCommS(const void *devCommPtr, int *results) {
+__global__ void kernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
     results[0] = (net != nullptr) ? 1 : 0;
     results[1] = flagcxDevCommGetIntraSize(devCommPtr);
   }
 }
 
-void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
+void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                                  flagcxStream_t stream) {
   kernelNetGetFromCommS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -426,9 +450,9 @@ void launchKernelNetGetFromCommS(const void *devCommPtr, int *devResults,
 // S2: Signal/Counter Reset
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetResetS(const void *devCommPtr, int *results) {
+__global__ void kernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+    const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
     if (net == nullptr) {
       results[0] = 0;
       return;
@@ -443,26 +467,26 @@ __global__ void kernelNetResetS(const void *devCommPtr, int *results) {
     // Reset signal slot 0
     flagcxDevNetResetSignal(net, (flagcxDevSignal_t)0);
     // Read it — should be 0
-    uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+    uint64_t sig0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                             flagcxDeviceMemoryOrderRelaxed);
     results[0] = (sig0 == 0) ? 1 : 0;
 
     // Increase shadow by 5, read signal (still 0, shadow is separate)
     flagcxDevNetIncreaseSignalShadow(net, (flagcxDevSignal_t)0, 5);
-    uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+    uint64_t sig1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                             flagcxDeviceMemoryOrderRelaxed);
     results[1] = (sig1 == 0) ? 1 : 0;
 
     // Reset counter slot 0
     flagcxDevNetResetCounter(net, (flagcxDevCounter_t)0);
     // Read counter — should be 0
-    uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, 64,
+    uint64_t ctr0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
                                              flagcxDeviceMemoryOrderRelaxed);
     results[2] = (ctr0 == 0) ? 1 : 0;
   }
 }
 
-void launchKernelNetResetS(const void *devCommPtr, int *devResults,
+void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                            flagcxStream_t stream) {
   kernelNetResetS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -481,7 +505,7 @@ void launchKernelNetResetS(const void *devCommPtr, int *devResults,
 // Reset signal, signal all inter peers, wait for signals, then flush.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
+__global__ void kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
@@ -489,7 +513,7 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -504,7 +528,7 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
 
 
   // Read baseline signal (aligned with K11:1411)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -526,7 +550,7 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
   // Wait for signals from all inter peers (aligned with K11:1423-1424)
   if (nInterRanks > 0) {
     flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                            s0 + (uint64_t)nInterRanks, 64,
+                            s0 + (uint64_t)nInterRanks, kCompletionBits,
                             flagcxDeviceMemoryOrderAcquire);
   }
 
@@ -541,7 +565,7 @@ __global__ void kernelNetWaitSignalFlushS(const void *devCommPtr) {
 
 }
 
-void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
+void launchKernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                      flagcxStream_t stream) {
   kernelNetWaitSignalFlushS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
 }
@@ -551,24 +575,24 @@ void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
 // by the GIN protocol. Counter wait is tested in S5 via PutS_RSigInc_LCtrInc.)
 // ---------------------------------------------------------------------------
 
-// __global__ void kernelNetWaitCounterS(const void *devCommPtr) {
+// __global__ void kernelNetWaitCounterS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
 //   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
 //     int myRank = flagcxDevCommGetRank(devCommPtr);
 //     int nRanks = flagcxDevCommGetSize(devCommPtr);
 //     int next = (myRank + 1) % nRanks;
 //
-//     const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+//     const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
 //     if (!net) return;
 //
-//     uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, 64,
+//     uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
 //                                            flagcxDeviceMemoryOrderRelaxed);
 //
 //     flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0,
-//                              c0 + 1, 64, flagcxDeviceMemoryOrderAcquire);
+//                              c0 + 1, kCompletionBits, flagcxDeviceMemoryOrderAcquire);
 //   }
 // }
 //
-// void launchKernelNetWaitCounterS(const void *devCommPtr,
+// void launchKernelNetWaitCounterS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 //                                  flagcxStream_t stream) {
 //   kernelNetWaitCounterS<<<1, 32, 0, stream->base>>>(devCommPtr);
 // }
@@ -578,14 +602,14 @@ void launchKernelNetWaitSignalFlushS(const void *devCommPtr,
 // increaseSignalShadow + signalSigInc to inter peers + waitSignalMeetShadow
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetWaitSignalMeetShadowS(const void *devCommPtr) {
+__global__ void kernelNetWaitSignalMeetShadowS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) return;
 
   int nInterPeers = nRanks - intraSize;
@@ -617,12 +641,12 @@ __global__ void kernelNetWaitSignalMeetShadowS(const void *devCommPtr) {
 
     // Wait until signal meets shadow
     flagcxDevNetWaitSignalMeetShadowS(net, FLAGCX_COOP_THREAD,
-                                      (flagcxDevSignal_t)2, 64,
+                                      (flagcxDevSignal_t)2, kCompletionBits,
                                       flagcxDeviceMemoryOrderAcquire);
   }
 }
 
-void launchKernelNetWaitSignalMeetShadowS(const void *devCommPtr,
+void launchKernelNetWaitSignalMeetShadowS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                           flagcxStream_t stream) {
   kernelNetWaitSignalMeetShadowS<<<1, 32, 0, stream->base>>>(devCommPtr);
 }
@@ -636,12 +660,12 @@ void launchKernelNetWaitSignalMeetShadowS(const void *devCommPtr,
 // Tests inter-node barrier synchronization with multiple iterations.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelInterBarrierStress(const void *devCommPtr,
+__global__ void kernelInterBarrierStress(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                          int *devResults, int nIters) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
       devResults[0] = -1; // no net context
@@ -662,7 +686,7 @@ __global__ void kernelInterBarrierStress(const void *devCommPtr,
   }
 }
 
-void launchKernelInterBarrierS(const void *devCommPtr, int *devResults,
+void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                                int nIters, flagcxStream_t stream) {
   kernelInterBarrierStress<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResults,
                                                          nIters);
@@ -673,9 +697,9 @@ void launchKernelInterBarrierS(const void *devCommPtr, int *devResults,
 // AlltoAll: put with no signal, flush, then signal separately, wait, flush.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
-                                        const void *sendMemPtr,
-                                        const void *recvMemPtr,
+__global__ void kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                         size_t countPerPeer) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -684,7 +708,7 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -694,7 +718,7 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
   int nInterRanks = nRanks - intraSize;
 
   // Read baseline signal (aligned with K6:692)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -731,7 +755,7 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
 
   // WaitSignal (aligned with K6:717)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nInterRanks, 64,
+                          s0 + (uint64_t)nInterRanks, kCompletionBits,
                           flagcxDeviceMemoryOrderAcquire);
 
 
@@ -745,9 +769,9 @@ __global__ void kernelNetFlushDecoupleS(const void *devCommPtr,
 
 }
 
-void launchKernelNetFlushDecoupleS(const void *devCommPtr,
-                                   const void *sendMemPtr,
-                                   const void *recvMemPtr, size_t countPerPeer,
+void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                    flagcxStream_t stream) {
   kernelNetFlushDecoupleS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
                                                         recvMemPtr, countPerPeer);
@@ -758,9 +782,9 @@ void launchKernelNetFlushDecoupleS(const void *devCommPtr,
 // AlltoAll with fused remote signal increment.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetPutSignalIncS(const void *devCommPtr,
-                                       const void *sendMemPtr,
-                                       const void *recvMemPtr,
+__global__ void kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                        size_t countPerPeer) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -768,7 +792,7 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
   int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
   int intraBase = myRank - intraRank;
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -781,7 +805,7 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
                           flagcxDevNetFenceLevel::Relaxed);
 
   // Read baseline signal (aligned with K3:388)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
   // World barrier sync (aligned with K3:395)
@@ -805,7 +829,7 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
   // WaitSignal + Flush (aligned with K3:429-430)
   int nInterRanks = nRanks - intraSize;
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nInterRanks, 64,
+                          s0 + (uint64_t)nInterRanks, kCompletionBits,
                           flagcxDeviceMemoryOrderAcquire);
 
   flagcxDevNetFlushS(net, FLAGCX_COOP_BLOCK, flagcxDeviceMemoryOrderRelaxed);
@@ -815,9 +839,9 @@ __global__ void kernelNetPutSignalIncS(const void *devCommPtr,
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 }
 
-void launchKernelNetPutSignalIncS(const void *devCommPtr,
-                                  const void *sendMemPtr,
-                                  const void *recvMemPtr, size_t countPerPeer,
+void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                   flagcxStream_t stream) {
   kernelNetPutSignalIncS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
                                                        recvMemPtr, countPerPeer);
@@ -828,9 +852,9 @@ void launchKernelNetPutSignalIncS(const void *devCommPtr,
 // AlltoAll with remote signal add (value = 1 per peer).
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetPutSignalAddS(const void *devCommPtr,
-                                       const void *sendMemPtr,
-                                       const void *recvMemPtr,
+__global__ void kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                        size_t countPerPeer) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -839,7 +863,7 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -854,7 +878,7 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
 
 
   // Read baseline signal (aligned with K4:472)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -884,7 +908,7 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
 
   // WaitSignal for s0 + nInterRanks * 2 (aligned with K4:487)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nInterRanks * 2, 64,
+                          s0 + (uint64_t)nInterRanks * 2, kCompletionBits,
                           flagcxDeviceMemoryOrderAcquire);
 
 
@@ -898,9 +922,9 @@ __global__ void kernelNetPutSignalAddS(const void *devCommPtr,
 
 }
 
-void launchKernelNetPutSignalAddS(const void *devCommPtr,
-                                  const void *sendMemPtr,
-                                  const void *recvMemPtr, size_t countPerPeer,
+void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                   flagcxStream_t stream) {
   kernelNetPutSignalAddS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
                                                        recvMemPtr, countPerPeer);
@@ -911,9 +935,9 @@ void launchKernelNetPutSignalAddS(const void *devCommPtr,
 // AlltoAll with both remote signal inc and local counter inc.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetCounterPipelineS(const void *devCommPtr,
-                                          const void *sendMemPtr,
-                                          const void *recvMemPtr,
+__global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                          const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                          const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                           size_t countPerPeer) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -922,7 +946,7 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -940,9 +964,9 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
 
 
   // Read baseline signal and counter (aligned with K5:523-524)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
-  uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, 64,
+  uint64_t c0 = flagcxDevNetReadCounterS(net, (flagcxDevCounter_t)0, kCompletionBits,
                                           flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -966,7 +990,7 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
 
   // WaitCounter (aligned with K5:537)
   flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0,
-                           c0 + (uint64_t)nInterRanks, 64,
+                           c0 + (uint64_t)nInterRanks, kCompletionBits,
                            flagcxDeviceMemoryOrderAcquire);
 
 
@@ -996,13 +1020,13 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
 
   // WaitCounter for c0 + 2*nInterRanks (aligned with K5:554)
   flagcxDevNetWaitCounterS(net, FLAGCX_COOP_BLOCK, (flagcxDevCounter_t)0,
-                           c0 + 2 * (uint64_t)nInterRanks, 64,
+                           c0 + 2 * (uint64_t)nInterRanks, kCompletionBits,
                            flagcxDeviceMemoryOrderAcquire);
 
 
   // WaitSignal for s0 + 2*nInterRanks (aligned with K5:555)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + 2 * (uint64_t)nInterRanks, 64,
+                          s0 + 2 * (uint64_t)nInterRanks, kCompletionBits,
                           flagcxDeviceMemoryOrderAcquire);
 
 
@@ -1016,9 +1040,9 @@ __global__ void kernelNetCounterPipelineS(const void *devCommPtr,
 
 }
 
-void launchKernelNetCounterPipelineS(const void *devCommPtr,
-                                     const void *sendMemPtr,
-                                     const void *recvMemPtr,
+void launchKernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                     const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                     const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                      size_t countPerPeer,
                                      flagcxStream_t stream) {
   kernelNetCounterPipelineS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
@@ -1030,7 +1054,7 @@ void launchKernelNetCounterPipelineS(const void *devCommPtr,
 // Tests both SignalSigIncS and SignalSigAddS + WaitSignalS in sequence.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetSignalS(const void *devCommPtr) {
+__global__ void kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
@@ -1038,7 +1062,7 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -1055,7 +1079,7 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
 
 
   // Read baseline signal on slot 1 (aligned with K9:655)
-  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, 64,
+  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -1077,7 +1101,7 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
   // WaitSignal (aligned with K9:663-664)
   if (nInterRanks > 0) {
     flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)1,
-                            s1 + (uint64_t)nInterRanks, 64,
+                            s1 + (uint64_t)nInterRanks, kCompletionBits,
                             flagcxDeviceMemoryOrderAcquire);
   }
 
@@ -1088,7 +1112,7 @@ __global__ void kernelNetSignalS(const void *devCommPtr) {
 
 }
 
-void launchKernelNetSignalS(const void *devCommPtr, flagcxStream_t stream) {
+void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
   kernelNetSignalS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
 }
 
@@ -1099,8 +1123,8 @@ void launchKernelNetSignalS(const void *devCommPtr, flagcxStream_t stream) {
 // Phase 2: PutValueS_RSigInc + WaitSignalS (fused putValue + signal)
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetPutValueS(const void *devCommPtr,
-                                   const void *recvMemPtr,
+__global__ void kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                    size_t putValBase) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
@@ -1109,7 +1133,7 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -1126,7 +1150,7 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
 
 
   // Read baseline signal on slot 1 (aligned with K7:606)
-  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, 64,
+  uint64_t s1 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)1, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -1149,7 +1173,7 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
   // WaitSignal (aligned with K7:622-623)
   if (nInterRanks > 0) {
     flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)1,
-                            s1 + (uint64_t)nInterRanks, 64,
+                            s1 + (uint64_t)nInterRanks, kCompletionBits,
                             flagcxDeviceMemoryOrderAcquire);
   }
 
@@ -1160,7 +1184,7 @@ __global__ void kernelNetPutValueS(const void *devCommPtr,
 
 }
 
-void launchKernelNetPutValueS(const void *devCommPtr, const void *recvMemPtr,
+void launchKernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                               size_t putValBase, flagcxStream_t stream) {
   kernelNetPutValueS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, recvMemPtr,
                                                   putValBase);
@@ -1171,8 +1195,8 @@ void launchKernelNetPutValueS(const void *devCommPtr, const void *recvMemPtr,
 // AlltoAll via one-sided get: each rank pulls from every inter peer.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
-                              const void *recvMemPtr, size_t countPerPeer) {
+__global__ void kernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
   int intraSize = flagcxDevCommGetIntraSize(devCommPtr);
@@ -1180,7 +1204,7 @@ __global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
   int intraBase = myRank - intraRank;
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -1216,8 +1240,8 @@ __global__ void kernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 
 }
 
-void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
-                         const void *recvMemPtr, size_t countPerPeer,
+void launchKernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                         const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                          flagcxStream_t stream) {
   kernelNetGetS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
                                               recvMemPtr, countPerPeer);
@@ -1226,13 +1250,13 @@ void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 // ---------------------------------------------------------------------------
 // S15: Two-sided (COMMENTED)
 // ---------------------------------------------------------------------------
-// __global__ void kernelNetTwoSidedS(const void *devCommPtr,
-//                                    const void *sendMemPtr,
-//                                    const void *recvMemPtr,
+// __global__ void kernelNetTwoSidedS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+//                                    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+//                                    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
 //                                    size_t countPerPeer) {
 //   int myRank = flagcxDevCommGetRank(devCommPtr);
 //   int nRanks = flagcxDevCommGetSize(devCommPtr);
-//   const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+//   const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
 //   if (!net) return;
 //   size_t chunkBytes = countPerPeer * sizeof(float);
 //   // Post receives from all peers
@@ -1253,8 +1277,8 @@ void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 //   flagcxDevNetWaitS(net, FLAGCX_COOP_BLOCK);
 // }
 //
-// void launchKernelNetTwoSidedS(const void *devCommPtr, const void *sendMemPtr,
-//                               const void *recvMemPtr, size_t countPerPeer,
+// void launchKernelNetTwoSidedS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+//                               const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
 //                               flagcxStream_t stream) {
 //   kernelNetTwoSidedS<<<1, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
 //                                                    recvMemPtr, countPerPeer);
@@ -1269,11 +1293,11 @@ void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
 // Tests world barrier synchronization in both sync and split (arrive/wait) modes.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelWorldBarrierS(const void *devCommPtr) {
+__global__ void kernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -1297,7 +1321,7 @@ __global__ void kernelWorldBarrierS(const void *devCommPtr) {
 
 }
 
-void launchKernelWorldBarrierS(const void *devCommPtr, flagcxStream_t stream) {
+void launchKernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
   kernelWorldBarrierS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
 }
 
@@ -1312,15 +1336,15 @@ void launchKernelWorldBarrierS(const void *devCommPtr, flagcxStream_t stream) {
 // One-sided alltoall pattern using put with signal increment.
 // ---------------------------------------------------------------------------
 
-__global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
-                                           const void *sendMemPtr,
-                                           const void *recvMemPtr,
+__global__ void kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                            size_t countPerPeer) {
   int myRank = flagcxDevCommGetRank(devCommPtr);
   int nRanks = flagcxDevCommGetSize(devCommPtr);
 
 
-  const void *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
+  const void FLAGCX_IR_GLOBAL_PTR *net = flagcxDevNetGetFromCommS(devCommPtr, 0);
   if (!net) {
     return;
   }
@@ -1329,7 +1353,7 @@ __global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
   size_t chunkBytes = countPerPeer * sizeof(float);
 
   // Read signal baseline (aligned with K14:210)
-  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, 64,
+  uint64_t s0 = flagcxDevNetReadSignalS(net, (flagcxDevSignal_t)0, kCompletionBits,
                                         flagcxDeviceMemoryOrderRelaxed);
 
 
@@ -1354,7 +1378,7 @@ __global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
 
   // Wait for all incoming signals (aligned with K14:223)
   flagcxDevNetWaitSignalS(net, FLAGCX_COOP_BLOCK, (flagcxDevSignal_t)0,
-                          s0 + (uint64_t)nRanks, 64,
+                          s0 + (uint64_t)nRanks, kCompletionBits,
                           flagcxDeviceMemoryOrderAcquire);
 
 
@@ -1369,9 +1393,9 @@ __global__ void kernelNetOneSidedAlltoAllS(const void *devCommPtr,
 
 }
 
-void launchKernelNetOneSidedAlltoAllS(const void *devCommPtr,
-                                      const void *sendMemPtr,
-                                      const void *recvMemPtr,
+void launchKernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                      const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                      const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                       size_t countPerPeer,
                                       flagcxStream_t stream) {
   kernelNetOneSidedAlltoAllS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(
@@ -1404,9 +1428,9 @@ enum {
 //   [4*bytes, 5*bytes): BLOCK + INTRA    (idx 4)
 //   [5*bytes, 6*bytes): BLOCK + WORLD    (idx 5)
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutIntraWorldS(const void *devCommPtr,
-                                         const void *dstMemPtr,
-                                         const void *srcMemPtr,
+__global__ void kernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                         const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                         const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                          int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -1506,8 +1530,8 @@ __global__ void kernelDevPutIntraWorldS(const void *devCommPtr,
   }
 }
 
-void launchKernelDevPutIntraWorldS(const void *devCommPtr, const void *dstMemPtr,
-                                    const void *srcMemPtr, int *devResult, size_t bytes,
+void launchKernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
                                     flagcxStream_t stream) {
   kernelDevPutIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -1520,8 +1544,8 @@ void launchKernelDevPutIntraWorldS(const void *devCommPtr, const void *dstMemPtr
 // Buffer layout: slot combo = coopIdx*2 + teamIdx, each holds 1 uint64_t.
 // Expected value at slot combo = (uint64_t)(proc * 100 + combo).
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutValueIntraWorldS(const void *devCommPtr,
-                                              const void *dstMemPtr,
+__global__ void kernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                               int *result, size_t /*bytes*/) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -1603,8 +1627,8 @@ __global__ void kernelDevPutValueIntraWorldS(const void *devCommPtr,
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) result[0] = 1;
 }
 
-void launchKernelDevPutValueIntraWorldS(const void *devCommPtr,
-                                        const void *dstMemPtr, int *devResult,
+void launchKernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
   kernelDevPutValueIntraWorldS<<<4, 128, 0,
                                  stream->base>>>(devCommPtr, dstMemPtr,
@@ -1616,9 +1640,9 @@ void launchKernelDevPutValueIntraWorldS(const void *devCommPtr,
 // Tests 3 cooperation levels × 2 teams = 6 combinations
 // Buffer layout: 6× base size
 // ---------------------------------------------------------------------------
-__global__ void kernelDevGetIntraWorldS(const void *devCommPtr,
-                                         const void *remoteMemPtr,
-                                         const void *localMemPtr,
+__global__ void kernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                         const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+                                         const void FLAGCX_IR_GLOBAL_PTR *localMemPtr,
                                          int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -1715,8 +1739,8 @@ __global__ void kernelDevGetIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-void launchKernelDevGetIntraWorldS(const void *devCommPtr, const void *remoteMemPtr,
-                                    const void *localMemPtr, int *devResult, size_t bytes,
+void launchKernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+                                    const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
                                     flagcxStream_t stream) {
   kernelDevGetIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, remoteMemPtr, localMemPtr, devResult, bytes);
@@ -1727,7 +1751,7 @@ void launchKernelDevGetIntraWorldS(const void *devCommPtr, const void *remoteMem
 // 2 combos: BLOCK cooperation × 2 teams.
 // Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevBarrierIntraWorldS(const void *devCommPtr, int *result) {
+__global__ void kernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
@@ -1747,7 +1771,7 @@ __global__ void kernelDevBarrierIntraWorldS(const void *devCommPtr, int *result)
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult,
+void launchKernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                         flagcxStream_t stream) {
   kernelDevBarrierIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -1758,7 +1782,7 @@ void launchKernelDevBarrierIntraWorldS(const void *devCommPtr, int *devResult,
 // 2 combos: BLOCK cooperation × 2 teams.
 // Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
+__global__ void kernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                       int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
@@ -1788,7 +1812,7 @@ __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-void launchKernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
+void launchKernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevBarrierArriveWaitIntraWorldS<<<4, 128, 0,
@@ -1805,7 +1829,7 @@ void launchKernelDevBarrierArriveWaitIntraWorldS(const void *devCommPtr,
 //   SignalInc or SignalAdd(peer=next) → WaitSignal → assert ReadSignal
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
+__global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                       int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -1833,7 +1857,7 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -1854,11 +1878,11 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind, waitOrder);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -1909,7 +1933,7 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void *devCommPtr,
     atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr, int *devResult,
+void launchKernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevSignalStandaloneIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -1922,9 +1946,9 @@ void launchKernelDevSignalStandaloneIntraWorldS(const void *devCommPtr, int *dev
 // Buffer layout: [i*maxRanks*sizeof(float), (i+1)*maxRanks*sizeof(float)) for
 // combo i. Within each region, rank writes at rankInTeam * sizeof(float).
 // ---------------------------------------------------------------------------
-__global__ void kernelDevTeamResolutionIntraWorldS(const void *devCommPtr,
-                                                    const void *dstMemPtr,
-                                                    const void *srcMemPtr,
+__global__ void kernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                                    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                                     int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2025,9 +2049,9 @@ __global__ void kernelDevTeamResolutionIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-void launchKernelDevTeamResolutionIntraWorldS(const void *devCommPtr,
-                                               const void *dstMemPtr,
-                                               const void *srcMemPtr, int *devResult,
+void launchKernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                                flagcxStream_t stream) {
   kernelDevTeamResolutionIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult);
@@ -2046,9 +2070,9 @@ void launchKernelDevTeamResolutionIntraWorldS(const void *devCommPtr,
 //   Then verify payload.
 // result[0] = 1 iff all signal reads and payload checks pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
-                                                   const void *dstMemPtr,
-                                                   const void *srcMemPtr,
+__global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                                    int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2090,12 +2114,12 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -2138,9 +2162,9 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
-                                              const void *dstMemPtr,
-                                              const void *srcMemPtr, int *devResult,
+void launchKernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                               size_t bytes, flagcxStream_t stream) {
   kernelDevPutSignalWaitIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -2157,9 +2181,9 @@ void launchKernelDevPutSignalWaitIntraWorldS(const void *devCommPtr,
 //   WaitSignal(slot, expected) → assert ReadSignal==expected
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
-                                            const void *dstMemPtr,
-                                            const void *srcMemPtr,
+__global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                             int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2183,7 +2207,7 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -2208,12 +2232,12 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -2256,9 +2280,9 @@ __global__ void kernelDevPutRSigIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutRSigIntraWorldS(const void *devCommPtr,
-                                        const void *dstMemPtr,
-                                        const void *srcMemPtr, int *devResult,
+void launchKernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
   kernelDevPutRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -2285,9 +2309,9 @@ enum {
   FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC = 2,
 };
 
-__global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
-                                                const void *dstMemPtr,
-                                                const void *srcMemPtr,
+__global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                                 int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2313,9 +2337,9 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Assert both are zero */                                                 \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
+      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
                                          flagcxDeviceMemoryOrderAcquire);      \
-      uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,        \
+      uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,        \
                                         flagcxDeviceMemoryOrderAcquire);       \
       if (cv != 0 || sv != 0)                                                  \
         ok = false;                                                            \
@@ -2346,10 +2370,10 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Wait and verify counter */                                              \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitCounter(devCommPtr, ctr, 1, 64, contextId, coopKind,        \
+      flagcxDevWaitCounter(devCommPtr, ctr, 1, kCompletionBits, contextId, coopKind,        \
                            flagcxDeviceMemoryOrderAcquire);                    \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
+      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
                                          flagcxDeviceMemoryOrderAcquire);      \
       if (cv != 1)                                                             \
         ok = false;                                                            \
@@ -2359,10 +2383,10 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
     if (variant != 0) {                                                        \
       uint64_t expectedSig = (variant == 1) ? 1 : 3;                           \
       if (flagcxUnifiedIrTestCoopActive(coopKind))                             \
-        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, 64, contextId,       \
+        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, kCompletionBits, contextId,       \
                             coopKind, flagcxDeviceMemoryOrderAcquire);         \
       if (FLAGCX_THREAD_IDX_X == 0) {                                          \
-        uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,      \
+        uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,      \
                                           flagcxDeviceMemoryOrderAcquire);     \
         if (sv != expectedSig)                                                 \
           ok = false;                                                          \
@@ -2430,9 +2454,9 @@ __global__ void kernelDevPutCounterIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
-                                           const void *dstMemPtr,
-                                           const void *srcMemPtr, int *devResult,
+void launchKernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                            size_t bytes, flagcxStream_t stream) {
   kernelDevPutCounterIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -2450,8 +2474,8 @@ void launchKernelDevPutCounterIntraWorldS(const void *devCommPtr,
 // result[0] = 1 iff all assertions pass.
 // Buffer layout: each combo writes 1 uint64_t at slot offset.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
-                                                  const void *dstMemPtr,
+__global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                                   int *result, size_t /*bytes*/) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2475,7 +2499,7 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -2500,12 +2524,12 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -2548,8 +2572,8 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
-                                             const void *dstMemPtr,
+void launchKernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                              int *devResult, size_t bytes,
                                              flagcxStream_t stream) {
   kernelDevPutValueRSigIntraWorldS<<<4, 128, 0, stream->base>>>(
@@ -2568,7 +2592,7 @@ void launchKernelDevPutValueRSigIntraWorldS(const void *devCommPtr,
 //   Flush(contextId)
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
+__global__ void kernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                        int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2589,7 +2613,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -2614,12 +2638,12 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
     /* Wait for shadow to be met */                                            \
     if (flagcxUnifiedIrTestCoopActive(coopKind)) {                             \
       flagcxDevWaitSignalMeetShadow(devCommPtr, contextId,                     \
-                                    (flagcxDevSignal_t)(slot), 64, coopKind,   \
+                                    (flagcxDevSignal_t)(slot), kCompletionBits, coopKind,   \
                                     flagcxDeviceMemoryOrderAcquire);           \
     }                                                                          \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 5)                                                              \
         ok = false;                                                            \
@@ -2656,7 +2680,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
+void launchKernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                   int *devResult,
                                                   flagcxStream_t stream) {
   kernelDevSignalShadowFlushIntraWorldS<<<4, 128, 0, stream->base>>>(
@@ -2680,9 +2704,9 @@ void launchKernelDevSignalShadowFlushIntraWorldS(const void *devCommPtr,
 //   [4*bytes, 5*bytes): BLOCK + INTER    (idx 4)
 //   [5*bytes, 6*bytes): BLOCK + WORLD    (idx 5)
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutInterWorldS(const void *devCommPtr,
-                                        const void *dstMemPtr,
-                                        const void *srcMemPtr,
+__global__ void kernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                         int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2784,8 +2808,8 @@ __global__ void kernelDevPutInterWorldS(const void *devCommPtr,
   }
 }
 
-void launchKernelDevPutInterWorldS(const void *devCommPtr, const void *dstMemPtr,
-                                   const void *srcMemPtr, int *devResult, size_t bytes,
+void launchKernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
                                    flagcxStream_t stream) {
   kernelDevPutInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -2797,8 +2821,8 @@ void launchKernelDevPutInterWorldS(const void *devCommPtr, const void *dstMemPtr
 // Uses 6 combinations: 3 coop kinds × 2 teams (INTER, WORLD).
 // Expected value at slot combo = (uint64_t)(proc * 100 + combo).
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutValueInterWorldS(const void *devCommPtr,
-                                              const void *dstMemPtr,
+__global__ void kernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                               int *result, size_t /*bytes*/) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2881,8 +2905,8 @@ __global__ void kernelDevPutValueInterWorldS(const void *devCommPtr,
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) result[0] = 1;
 }
 
-void launchKernelDevPutValueInterWorldS(const void *devCommPtr,
-                                        const void *dstMemPtr, int *devResult,
+void launchKernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
   kernelDevPutValueInterWorldS<<<4, 128, 0,
                                  stream->base>>>(devCommPtr, dstMemPtr,
@@ -2894,9 +2918,9 @@ void launchKernelDevPutValueInterWorldS(const void *devCommPtr,
 // Tests 3 cooperation levels × 2 teams = 6 combinations
 // Buffer layout: 6× base size
 // ---------------------------------------------------------------------------
-__global__ void kernelDevGetInterWorldS(const void *devCommPtr,
-                                        const void *remoteMemPtr,
-                                        const void *localMemPtr,
+__global__ void kernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *localMemPtr,
                                         int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -2994,8 +3018,8 @@ __global__ void kernelDevGetInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-void launchKernelDevGetInterWorldS(const void *devCommPtr, const void *remoteMemPtr,
-                                   const void *localMemPtr, int *devResult, size_t bytes,
+void launchKernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
                                    flagcxStream_t stream) {
   kernelDevGetInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, remoteMemPtr, localMemPtr, devResult, bytes);
@@ -3006,7 +3030,7 @@ void launchKernelDevGetInterWorldS(const void *devCommPtr, const void *remoteMem
 // 2 combos: BLOCK cooperation × 2 teams.
 // Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevBarrierInterWorldS(const void *devCommPtr, int *result) {
+__global__ void kernelDevBarrierInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
   flagcxDevContext_t contextId = nContexts > 0 ? FLAGCX_BLOCK_IDX_X % nContexts : 0;
@@ -3026,7 +3050,7 @@ __global__ void kernelDevBarrierInterWorldS(const void *devCommPtr, int *result)
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-void launchKernelDevBarrierInterWorldS(const void *devCommPtr, int *devResult,
+void launchKernelDevBarrierInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                        flagcxStream_t stream) {
   kernelDevBarrierInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -3037,7 +3061,7 @@ void launchKernelDevBarrierInterWorldS(const void *devCommPtr, int *devResult,
 // 2 combos: BLOCK cooperation × 2 teams.
 // Barrier currently supports CTA-scoped cooperation only.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
+__global__ void kernelDevBarrierArriveWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                       int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int nContexts = comm->getContextCount();
@@ -3067,7 +3091,7 @@ __global__ void kernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-void launchKernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
+void launchKernelDevBarrierArriveWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevBarrierArriveWaitInterWorldS<<<4, 128, 0,
@@ -3084,7 +3108,7 @@ void launchKernelDevBarrierArriveWaitInterWorldS(const void *devCommPtr,
 //   SignalInc or SignalAdd(peer=next) → WaitSignal → assert ReadSignal
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
+__global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                       int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3112,7 +3136,7 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -3133,12 +3157,12 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -3176,7 +3200,7 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevSignalStandaloneInterWorldS(const void *devCommPtr, int *devResult,
+void launchKernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevSignalStandaloneInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -3191,9 +3215,9 @@ void launchKernelDevSignalStandaloneInterWorldS(const void *devCommPtr, int *dev
 // Buffer layout: [i*maxRanks*sizeof(float), (i+1)*maxRanks*sizeof(float)) for
 // combo i. Within each region, rank writes at rankInTeam * sizeof(float).
 // ---------------------------------------------------------------------------
-__global__ void kernelDevTeamResolutionInterWorldS(const void *devCommPtr,
-                                                    const void *dstMemPtr,
-                                                    const void *srcMemPtr,
+__global__ void kernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                                    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                                     int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3328,9 +3352,9 @@ __global__ void kernelDevTeamResolutionInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-void launchKernelDevTeamResolutionInterWorldS(const void *devCommPtr,
-                                               const void *dstMemPtr,
-                                               const void *srcMemPtr, int *devResult,
+void launchKernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                                flagcxStream_t stream) {
   kernelDevTeamResolutionInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult);
@@ -3349,9 +3373,9 @@ void launchKernelDevTeamResolutionInterWorldS(const void *devCommPtr,
 //   Then verify payload.
 // result[0] = 1 iff all signal reads and payload checks pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
-                                                   const void *dstMemPtr,
-                                                   const void *srcMemPtr,
+__global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                                    int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3393,12 +3417,12 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -3441,9 +3465,9 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
-                                              const void *dstMemPtr,
-                                              const void *srcMemPtr, int *devResult,
+void launchKernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                              const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                               size_t bytes, flagcxStream_t stream) {
   kernelDevPutSignalWaitInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -3460,9 +3484,9 @@ void launchKernelDevPutSignalWaitInterWorldS(const void *devCommPtr,
 //   WaitSignal(slot, expected) → assert ReadSignal==expected
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
-                                            const void *dstMemPtr,
-                                            const void *srcMemPtr,
+__global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                             int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3487,7 +3511,7 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -3512,12 +3536,12 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -3560,9 +3584,9 @@ __global__ void kernelDevPutRSigInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
-                                        const void *dstMemPtr,
-                                        const void *srcMemPtr, int *devResult,
+void launchKernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
   kernelDevPutRSigInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -3583,9 +3607,9 @@ void launchKernelDevPutRSigInterWorldS(const void *devCommPtr,
 //   If variant!=0: WaitSignal(sig=combo, expected) → assert ReadSignal==expected
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
-                                                const void *dstMemPtr,
-                                                const void *srcMemPtr,
+__global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
                                                 int *result, size_t bytes) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3612,9 +3636,9 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Assert both are zero */                                                 \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
+      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
                                          flagcxDeviceMemoryOrderAcquire);      \
-      uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,        \
+      uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,        \
                                         flagcxDeviceMemoryOrderAcquire);       \
       if (cv != 0 || sv != 0)                                                  \
         ok = false;                                                            \
@@ -3645,10 +3669,10 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     /* Wait and verify counter */                                              \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitCounter(devCommPtr, ctr, 1, 64, contextId, coopKind,        \
+      flagcxDevWaitCounter(devCommPtr, ctr, 1, kCompletionBits, contextId, coopKind,        \
                            flagcxDeviceMemoryOrderAcquire);                    \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
-      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, 64, contextId,       \
+      uint64_t cv = flagcxDevReadCounter(devCommPtr, ctr, kCompletionBits, contextId,       \
                                          flagcxDeviceMemoryOrderAcquire);      \
       if (cv != 1)                                                             \
         ok = false;                                                            \
@@ -3658,10 +3682,10 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
     if (variant != 0) {                                                        \
       uint64_t expectedSig = (variant == 1) ? 1 : 3;                           \
       if (flagcxUnifiedIrTestCoopActive(coopKind))                             \
-        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, 64, contextId,       \
+        flagcxDevWaitSignal(devCommPtr, sig, expectedSig, kCompletionBits, contextId,       \
                             coopKind, flagcxDeviceMemoryOrderAcquire);         \
       if (FLAGCX_THREAD_IDX_X == 0) {                                          \
-        uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, 64, contextId,      \
+        uint64_t sv = flagcxDevReadSignal(devCommPtr, sig, kCompletionBits, contextId,      \
                                           flagcxDeviceMemoryOrderAcquire);     \
         if (sv != expectedSig)                                                 \
           ok = false;                                                          \
@@ -3729,9 +3753,9 @@ __global__ void kernelDevPutCounterInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutCounterInterWorldS(const void *devCommPtr,
-                                           const void *dstMemPtr,
-                                           const void *srcMemPtr, int *devResult,
+void launchKernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                           const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                            size_t bytes, flagcxStream_t stream) {
   kernelDevPutCounterInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, dstMemPtr, srcMemPtr, devResult, bytes);
@@ -3749,8 +3773,8 @@ void launchKernelDevPutCounterInterWorldS(const void *devCommPtr,
 // result[0] = 1 iff all assertions pass.
 // Buffer layout: each combo writes 1 uint64_t at slot offset.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
-                                                  const void *dstMemPtr,
+__global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                                   int *result, size_t /*bytes*/) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3775,7 +3799,7 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -3800,12 +3824,12 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
     }                                                                          \
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
-      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, 64, \
+      flagcxDevWaitSignal(devCommPtr, (flagcxDevSignal_t)(slot), expected, kCompletionBits, \
                           contextId, coopKind,                                 \
                           flagcxDeviceMemoryOrderAcquire);                     \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != expected)                                                       \
         ok = false;                                                            \
@@ -3848,8 +3872,8 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevPutValueRSigInterWorldS(const void *devCommPtr,
-                                             const void *dstMemPtr,
+void launchKernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                              int *devResult, size_t bytes,
                                              flagcxStream_t stream) {
   kernelDevPutValueRSigInterWorldS<<<4, 128, 0, stream->base>>>(
@@ -3868,7 +3892,7 @@ void launchKernelDevPutValueRSigInterWorldS(const void *devCommPtr,
 //   Flush(contextId)
 // result[0] = 1 iff all assertions pass.
 // ---------------------------------------------------------------------------
-__global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
+__global__ void kernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                        int *result) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int worldRank = flagcxDevCommGetRank(devCommPtr);
@@ -3890,7 +3914,7 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
     flagcxCoopSyncS(FLAGCX_COOP_BLOCK);                                        \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 0)                                                              \
         ok = false;                                                            \
@@ -3915,11 +3939,11 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
     /* Wait for shadow to be met */                                            \
     if (flagcxUnifiedIrTestCoopActive(coopKind))                               \
       flagcxDevWaitSignalMeetShadow(devCommPtr, contextId,                     \
-                                    (flagcxDevSignal_t)(slot), 64, coopKind,   \
+                                    (flagcxDevSignal_t)(slot), kCompletionBits, coopKind,   \
                                     flagcxDeviceMemoryOrderAcquire);           \
     if (FLAGCX_THREAD_IDX_X == 0) {                                            \
       uint64_t v =                                                             \
-          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), 64,       \
+          flagcxDevReadSignal(devCommPtr, (flagcxDevSignal_t)(slot), kCompletionBits,       \
                               contextId, flagcxDeviceMemoryOrderAcquire);      \
       if (v != 5)                                                              \
         ok = false;                                                            \
@@ -3956,7 +3980,7 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-void launchKernelDevSignalShadowFlushInterWorldS(const void *devCommPtr,
+void launchKernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                   int *devResult,
                                                   flagcxStream_t stream) {
   kernelDevSignalShadowFlushInterWorldS<<<4, 128, 0, stream->base>>>(

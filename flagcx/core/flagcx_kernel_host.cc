@@ -1,4 +1,5 @@
 #include "comm.h"
+#include "device_api/completion_word.h"
 #include "flagcx.h"
 #include "flagcx_kernel_internal.h"
 
@@ -71,7 +72,8 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getDstOffset() {
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getValue() { return snd; }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalIdx() {
-  // PutSignal uses trd[21:14], Signal/WaitSignal uses trd[33:26]
+  // PutSignal uses its compact field; standalone signal primitives share the
+  // Signal/WaitSignal index field.
   uint64_t prim = getPrim();
   if (prim == flagcxDevicePrimPutSignal) {
     return (trd >> flagcxDeviceTriggerOffSignalIdx) &
@@ -83,12 +85,15 @@ FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalIdx() {
 }
 
 FLAGCX_HOST_DECORATOR uint64_t flagcxDeviceTrigger::getSignalValue() {
-  // PutSignal stores signalValue in snd[15:0], Signal stores in trd[25:10]
+  // PutSignal stores a compact value in snd, PrimSignal stores it in trd,
+  // and PrimSignalValue owns all of snd.
   uint64_t prim = getPrim();
   if (prim == flagcxDevicePrimPutSignal) {
     return (snd >> flagcxDeviceTriggerOffSignalValuePut) &
            flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValuePut);
   }
+  if (prim == flagcxDevicePrimSignalValue)
+    return snd;
   return (trd >> flagcxDeviceTriggerOffSignalValue) &
          flagcxTriggerMask(flagcxDeviceTriggerBitsSignalValue);
 }
@@ -147,12 +152,12 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
   // system-scoped atomics (atom.acq_rel.sys).  A plain volatile read may
   // return stale data on ARM hosts and can be speculatively reordered on x86.
   // __atomic_load_n with ACQUIRE ensures we observe the latest GPU write.
-  uint64_t cons =
-      __atomic_load_n(&buffer[flagcxFifoIdxConsumed], __ATOMIC_RELAXED);
-  uint64_t prod =
-      __atomic_load_n(&buffer[flagcxFifoIdxProduced], __ATOMIC_ACQUIRE);
+  flagcxCompletionWord_t cons = __atomic_load_n(
+      flagcxFifoControlPtr(buffer, flagcxFifoIdxConsumed), __ATOMIC_RELAXED);
+  flagcxCompletionWord_t prod = __atomic_load_n(
+      flagcxFifoControlPtr(buffer, flagcxFifoIdxProduced), __ATOMIC_ACQUIRE);
 
-  if (prod > cons) {
+  if (prod != cons) {
     // Get pointer to slot's raw uint64_t fields (3 words per entry)
     uint64_t idx = cons % capacity;
     uint64_t *slotFst = buffer + flagcxFifoIdxData +
@@ -169,7 +174,8 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
           INFO(FLAGCX_P2P,
                "dequeue: spinning on valid bit prod=%lu cons=%lu idx=%lu "
                "slotTrd=0x%lx validMask=0x%lx",
-               prod, cons, idx, __atomic_load_n(slotTrd, __ATOMIC_RELAXED),
+               (unsigned long)prod, (unsigned long)cons, idx,
+               __atomic_load_n(slotTrd, __ATOMIC_RELAXED),
                flagcxDeviceTriggerValidMask);
         }
         sched_yield();
@@ -186,8 +192,8 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
     TRACE(FLAGCX_P2P,
           "dequeue: got entry prod=%lu cons=%lu prim=%lu peer=%lu "
           "fst=0x%lx snd=0x%lx trd=0x%lx",
-          prod, cons, trigger->getPrim(), trigger->getPeerRank(), trigger->fst,
-          trigger->snd, trigger->trd);
+          (unsigned long)prod, (unsigned long)cons, trigger->getPrim(),
+          trigger->getPeerRank(), trigger->fst, trigger->snd, trigger->trd);
 
     // Clear trd valid bit in slot for reuse
     __atomic_store_n(slotTrd, (uint64_t)0, __ATOMIC_RELAXED);

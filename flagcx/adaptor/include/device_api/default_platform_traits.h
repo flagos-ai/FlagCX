@@ -17,6 +17,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <stddef.h>
 
 struct DefaultPlatform {};
 

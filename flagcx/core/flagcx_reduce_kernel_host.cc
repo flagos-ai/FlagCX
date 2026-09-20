@@ -1,3 +1,4 @@
+#include "device_api/completion_word.h"
 #include "flagcx.h"
 #include "flagcx_kernel_internal.h"
 
@@ -51,14 +52,20 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[flagcxFifoIdxCapacity];
-  int distance = buffer[flagcxFifoIdxProduced] - buffer[flagcxFifoIdxConsumed];
+  flagcxCompletionWord_t *produced =
+      flagcxFifoControlPtr(buffer, flagcxFifoIdxProduced);
+  flagcxCompletionWord_t *consumed =
+      flagcxFifoControlPtr(buffer, flagcxFifoIdxConsumed);
+  flagcxCompletionWord_t prod = __atomic_load_n(produced, __ATOMIC_ACQUIRE);
+  flagcxCompletionWord_t cons = __atomic_load_n(consumed, __ATOMIC_RELAXED);
+  flagcxCompletionWord_t distance = prod - cons;
   // red buffer full, wait for kernel to consume
   if (distance >= capacity) {
     *ret = -1;
     sched_yield();
     return flagcxSuccess;
   }
-  idx = buffer[flagcxFifoIdxProduced] % capacity;
+  idx = prod % capacity;
   flagcxReduceTrigger *trigger =
       ((flagcxReduceTrigger *)(buffer + flagcxFifoIdxData)) + idx;
 
@@ -70,7 +77,7 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
   }
   trigger->setValue(addr1, addr2, addr3, count, nthreads, datatype, redop,
                     flagcxReduceTriggerEnqueued);
-  __atomic_fetch_add(buffer + flagcxFifoIdxProduced, 1ul, __ATOMIC_RELEASE);
+  __atomic_fetch_add(produced, flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
   *ret = idx;
   TRACE(FLAGCX_KERNEL,
         "enqueue red: count=%lu, nthreads=%lu, datatype=%d, redop=%d, idx=%d",

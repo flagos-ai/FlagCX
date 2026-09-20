@@ -855,7 +855,8 @@ struct flagcxDevNet : DeviceAPI::Net {
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readSignal(
-      flagcxDevSignal_t signalId, int bits = 64,
+      flagcxDevSignal_t signalId,
+      int bits = flagcxBackendCompletionBits<DeviceAPI>::value,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     return DeviceAPI::Net::readSignal(signalId, bits, order);
   }
@@ -869,14 +870,16 @@ struct flagcxDevNet : DeviceAPI::Net {
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignal(
-      Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits = 64,
+      Coop coop, flagcxDevSignal_t signalId, uint64_t least,
+      int bits = flagcxBackendCompletionBits<DeviceAPI>::value,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignal(coop._base, signalId, least, bits, order);
   }
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalMeetShadow(
-      Coop coop, flagcxDevSignal_t signalId, int bits = 64,
+      Coop coop, flagcxDevSignal_t signalId,
+      int bits = flagcxBackendCompletionBits<DeviceAPI>::value,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignalMeetShadow(coop._base, signalId, bits, order);
   }
@@ -884,7 +887,7 @@ struct flagcxDevNet : DeviceAPI::Net {
   template <typename Coop, typename Uint>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitSignalFollowShadow(
       Coop coop, flagcxDevSignal_t signalId, Uint leastDelta, Uint *before,
-      Uint *delta, int bits = 64,
+      Uint *delta, int bits = flagcxBackendCompletionBits<DeviceAPI>::value,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitSignalFollowShadow(coop._base, signalId, leastDelta,
                                            before, delta, bits, order);
@@ -892,13 +895,15 @@ struct flagcxDevNet : DeviceAPI::Net {
 
   template <typename Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void waitCounter(
-      Coop coop, flagcxDevCounter_t counterId, uint64_t least, int bits = 56,
+      Coop coop, flagcxDevCounter_t counterId, uint64_t least,
+      int bits = flagcxBackendDefaultCounterBits<DeviceAPI>::value,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     DeviceAPI::Net::waitCounter(coop._base, counterId, least, bits, order);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t readCounter(
-      flagcxDevCounter_t counterId, int bits = 56,
+      flagcxDevCounter_t counterId,
+      int bits = flagcxBackendDefaultCounterBits<DeviceAPI>::value,
       flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcquire) const {
     return DeviceAPI::Net::readCounter(counterId, bits, order);
   }

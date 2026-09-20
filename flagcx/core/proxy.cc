@@ -8,6 +8,7 @@
 #include "adaptor.h"
 #include "bootstrap.h"
 #include "comm.h"
+#include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h" // flagcxDevCommInternal, devComm
 #include "flagcx_hetero.h"
 #include "flagcx_kernel.h" // FLAGCX_DEVICE_CTA_COUNT
@@ -1491,9 +1492,10 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
       state->totalInflight--;
       // Advance FIFO completed counter so GPU's fifoFlush can progress.
       // Each inflight IB op corresponds to exactly one FIFO entry.
-      uint64_t nextCompleted =
-          __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
-                             __ATOMIC_RELEASE) +
+      flagcxCompletionWord_t nextCompleted =
+          __atomic_fetch_add(
+              flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
+              flagcxCompletionWord_t{1}, __ATOMIC_RELEASE) +
           1;
       INFO(FLAGCX_P2P,
            "rank=%d Poll: retired peer=%d completed=%lu inflight=%u",
@@ -1758,8 +1760,9 @@ static void flagcxKernelProxyDrain(struct flagcxKernelProxyState *state,
       ps->head++;
       // Advance FIFO completed counter for each drained entry
       if (fifo != NULL) {
-        __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
-                           __ATOMIC_RELEASE);
+        __atomic_fetch_add(
+            flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
+            flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
       }
     }
   }
@@ -1943,7 +1946,8 @@ init_done:
         postedIB = (res == flagcxSuccess);
         break;
       }
-      case flagcxDevicePrimSignal: {
+      case flagcxDevicePrimSignal:
+      case flagcxDevicePrimSignalValue: {
         uint64_t bufType = ptr->getBufferType();
         int signalIdx = (int)ptr->getSignalIdx();
         uint64_t signalValue = ptr->getSignalValue();
@@ -2119,17 +2123,20 @@ init_done:
     // Mark item as consumed AFTER processing.
     // Release ensures the GPU's fifoEnqueue space-check (acquire load of
     // consumed) observes all prior CPU writes (slot clear, etc.).
-    uint64_t nextCons = __atomic_load_n(&fifo->buffer[flagcxFifoIdxConsumed],
-                                        __ATOMIC_RELAXED) +
-                        1;
-    __atomic_store_n(&fifo->buffer[flagcxFifoIdxConsumed], nextCons,
-                     __ATOMIC_RELEASE);
+    flagcxCompletionWord_t nextCons =
+        __atomic_load_n(
+            flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxConsumed),
+            __ATOMIC_RELAXED) +
+        1;
+    __atomic_store_n(flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxConsumed),
+                     nextCons, __ATOMIC_RELEASE);
     // For entries that did NOT post async IB ops, advance completed
     // immediately. IB-posted entries get their completed counter advanced in
     // flagcxKernelProxyPoll when test() succeeds.
     if (!postedIB) {
-      __atomic_fetch_add(&fifo->buffer[flagcxFifoIdxCompleted], 1,
-                         __ATOMIC_RELEASE);
+      __atomic_fetch_add(
+          flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
+          flagcxCompletionWord_t{1}, __ATOMIC_RELEASE);
     }
     if (res != flagcxSuccess)
       break;
@@ -2138,10 +2145,12 @@ init_done:
   INFO(FLAGCX_PROXY,
        "rank=%d Proxy loop exited: stop=%d res=%d produced=%lu completed=%lu",
        comm->rank, comm->proxyState->kernelState.stop, (int)res,
-       (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxProduced],
-                                      __ATOMIC_ACQUIRE),
-       (unsigned long)__atomic_load_n(&fifo->buffer[flagcxFifoIdxCompleted],
-                                      __ATOMIC_ACQUIRE));
+       (unsigned long)__atomic_load_n(
+           flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxProduced),
+           __ATOMIC_ACQUIRE),
+       (unsigned long)__atomic_load_n(
+           flagcxFifoControlPtr(fifo->buffer, flagcxFifoIdxCompleted),
+           __ATOMIC_ACQUIRE));
 
 out:
   // Drain all in-flight direct IB requests before teardown

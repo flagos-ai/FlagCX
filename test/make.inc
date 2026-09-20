@@ -90,6 +90,8 @@ SHMEM_HOME ?= /usr/local/nvshmem
 
 ifeq ($(USE_NVIDIA), 1)
   include $(PROJECT_ROOT)/makefiles/nvidia.mk
+else ifeq ($(USE_ILUVATAR), 1)
+  include $(PROJECT_ROOT)/makefiles/iluvatar.mk
 else ifeq ($(USE_KUNLUNXIN), 1)
   include $(PROJECT_ROOT)/makefiles/kunlunxin.mk
 else ifeq ($(USE_DU), 1)

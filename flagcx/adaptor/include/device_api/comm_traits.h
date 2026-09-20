@@ -32,13 +32,41 @@
 // Primary template — each backend provides a specialization.  Unified IR uses
 // only this backend-neutral contract:
 //   Comm: getRank(), getIntraRank(), getIntraSize(),
-//         usesDirectP2pSignals(), isOneSidedTransportReady(),
-//         supportsDirectCounterAccess().
-//   Net:  getContextId(), getSignalPtr(), getPeerSignalPtr(),
-//         getSignalShadowPtr(), getCounterPtr().
+//         isOneSidedTransportReady(), supportsDirectCounterAccess().
+//   Net:  signal/wait/read/reset completion semantics plus the transport
+//         operations. Internal completion word width belongs to the backend.
 // The IR layer must not inspect backend storage fields or derive slot offsets.
 template <typename Impl>
 struct CommTraits;
+
+// Backend-neutral defaults for the public C++ wrapper. Vendor backends keep
+// the established 64-bit signal / 56-bit counter defaults. A backend may
+// expose compile-time constants to narrow those defaults without changing the
+// public ABI or adding a runtime capability branch.
+template <typename...>
+using flagcxCommVoidT = void;
+
+template <typename API, typename = void>
+struct flagcxBackendCompletionBits {
+  static constexpr int value = 64;
+};
+
+template <typename API>
+struct flagcxBackendCompletionBits<
+    API, flagcxCommVoidT<decltype(API::completionBits)>> {
+  static constexpr int value = API::completionBits;
+};
+
+template <typename API, typename = void>
+struct flagcxBackendDefaultCounterBits {
+  static constexpr int value = 56;
+};
+
+template <typename API>
+struct flagcxBackendDefaultCounterBits<
+    API, flagcxCommVoidT<decltype(API::defaultCounterBits)>> {
+  static constexpr int value = API::defaultCounterBits;
+};
 
 // DefaultBackend tag — parameterized by platform for the partial specialization
 template <typename PlatformTag>
@@ -96,6 +124,8 @@ struct Barrier;
 #include "sunrise_comm_traits.h"
 #elif defined(USE_KUNLUNXIN_ADAPTOR)
 #include "kunlunxin_comm_traits.h"
+#elif defined(USE_ILUVATAR_ADAPTOR)
+#include "iluvatar_comm_traits.h"
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;
