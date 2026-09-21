@@ -6,9 +6,13 @@ on:
       - 'v*'
   pull_request:
     branches: [ main ]
+    # Only what changes the package. flagcx/** is the library source, so
+    # leaving it here built a full multi-backend matrix for every source PR;
+    # those packages are published nowhere and downloaded by no one. Release
+    # tags above still build, and a build can be requested by hand.
     paths:
-      - 'flagcx/**'
       - 'packaging/debian/**'
+      - 'packaging/sync-changelog.py'
       - '.github/workflows/build-deb.yml'
   workflow_dispatch:
 
