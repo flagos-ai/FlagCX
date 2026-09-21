@@ -235,10 +235,7 @@ if BuildExtension is not None:
             # All of it is data rather than an entry point, so nothing at import
             # time notices any of it is missing. The headers are the six the
             # root make's `all` target exports plus the wrapper the bitcode make
-            # writes beside them; the pool header `flagcx_kernel_internal.h`
-            # that FlagTree also wants is deliberately not in either set — it
-            # includes the adaptor's internal `adaptor.h`, which nothing here
-            # ships.
+            # writes beside them.
             payload = [src_so]
             headers = []
             if bitcode_bc:
