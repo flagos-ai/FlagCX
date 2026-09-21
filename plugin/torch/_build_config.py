@@ -379,9 +379,14 @@ def get_device_config(adaptor_flag, torch_backend=None):
     elif adaptor_flag == "-DUSE_TSM_ADAPTOR":
         import torch_txda
         txda_install_path = os.path.dirname(os.path.abspath(torch_txda.__file__))
+        # torch_txda ships libtorch_txda.so at the package root, not under lib/.
+        # Both are listed: the root is what resolves today, and lib/ is kept for
+        # a layout that may put it there. This is not cosmetic — library_dirs
+        # also becomes the RUNPATH stamped into flagcx._C, so a directory that
+        # does not exist leaves the installed extension searching a dead path.
         txda_library_path = os.path.join(txda_install_path, "lib")
         include_dirs += ["/usr/local/kuiper/include", os.path.join(txda_install_path, "include")]
-        library_dirs += ["/usr/local/kuiper/lib", txda_library_path]
+        library_dirs += ["/usr/local/kuiper/lib", txda_install_path, txda_library_path]
         libs += ["torch_txda", "hpgr"]
     elif adaptor_flag == "-DUSE_ENFLAME_ADAPTOR":
         include_dirs += ["/opt/tops/include"]
