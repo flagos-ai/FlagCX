@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import shutil
+import glob
 import multiprocessing
 
 # Disable auto load flagcx when setup
@@ -143,6 +144,64 @@ if BuildExtension is not None:
 
             src_so = os.path.join(lib_dir, "libflagcx.so")
 
+            # -- Step 1b: Build the device bitcode (opt-in) --
+            # A kernel consumer of the Device API links this bitcode through
+            # `extern_libs`, and it comes from a second make: bindings/ir/nvidia
+            # is not part of the root Makefile, because it produces clang's IR
+            # rather than the library's objects. It shares BUILDDIR with the
+            # make above, so build/lib and build/include end up as the one tree
+            # Step 4 copies out of.
+            #
+            # Opt-in because it needs a clang that targets CUDA, which an
+            # ordinary build environment has neither reason nor way to carry.
+            # FLAGCX_BITCODE_ARCH names the architecture to compile at; with it
+            # unset nothing here runs.
+            bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
+            bitcode_bc = ""
+            if bitcode_arch:
+                if adaptor != "nvidia":
+                    raise RuntimeError(
+                        "FLAGCX_BITCODE_ARCH is set but this build is for the "
+                        f"{adaptor} adaptor, and the device bitcode has an "
+                        "nvidia implementation only"
+                    )
+                # The comm-traits branch is a property of the library: the
+                # nvidia makefile picks it from the NCCL headers it finds. The
+                # bitcode's own Makefile never reads that file, so the branch
+                # reaches it only as a value — and without one it would compile
+                # against its default backend while the library shipped beside
+                # it talks to another.
+                bitcode_adaptor_flags = os.environ.get(
+                    "FLAGCX_BITCODE_ADAPTOR_FLAGS", ""
+                )
+                if not bitcode_adaptor_flags:
+                    raise RuntimeError(
+                        "FLAGCX_BITCODE_ARCH is set but "
+                        "FLAGCX_BITCODE_ADAPTOR_FLAGS is empty, so the bitcode "
+                        "would be compiled for the wrong device API backend"
+                    )
+                bitcode_cmd = [
+                    "make", "-C", os.path.join(ROOT_DIR, "bindings", "ir", "nvidia"),
+                    f"BUILDDIR={build_dir}",
+                    f"BITCODE_LIB_ARCH={bitcode_arch}",
+                    f"ADAPTOR_FLAG={bitcode_adaptor_flags}",
+                    # NCCL's device headers use `typeof`, which clang refuses
+                    # under -std=c++17, the Makefile's default.
+                    "BITCODE_CXX_STD=gnu++17",
+                ]
+                for var in ("DEVICE_HOME", "CCL_HOME"):
+                    val = os.environ.get(var, "")
+                    if val:
+                        bitcode_cmd.append(f"{var}={val}")
+                print(f"[flagcx] Running: {' '.join(bitcode_cmd)}")
+                subprocess.check_call(bitcode_cmd)
+                bitcode_bc = os.path.join(lib_dir, "libflagcx_device.bc")
+                if not os.path.isfile(bitcode_bc):
+                    raise RuntimeError(
+                        "the device bitcode make exited 0 but produced no "
+                        f"{bitcode_bc}"
+                    )
+
             # -- Step 2: Update library_dirs and rpath for the extension --
             for ext in self.extensions:
                 if lib_dir not in ext.library_dirs:
@@ -167,21 +226,44 @@ if BuildExtension is not None:
             # -- Step 3: Build the torch C++ extension --
             super().build_extensions()
 
-            # -- Step 4: Copy libflagcx.so to where it's needed --
-            # Into the build output dir (for wheels / regular installs)
-            build_pkg_dir = os.path.join(self.build_lib, "flagcx", "lib")
-            os.makedirs(build_pkg_dir, exist_ok=True)
-            dst_build_so = os.path.join(build_pkg_dir, "libflagcx.so")
-            print(f"[flagcx] Copying {src_so} -> {dst_build_so}")
-            shutil.copy2(src_so, dst_build_so)
+            # -- Step 4: Copy the built payload into the package --
+            # Both trees, because `package_dir={"": "src"}` has setuptools
+            # collect package_data from the source tree while a wheel is
+            # assembled out of build_lib: a file in only one of them is a file
+            # that ships or a file that imports, never both.
+            #
+            # All of it is data rather than an entry point, so nothing at import
+            # time notices any of it is missing. The headers are the six the
+            # root make's `all` target exports plus the wrapper the bitcode make
+            # writes beside them.
+            payload = [src_so]
+            headers = []
+            if bitcode_bc:
+                payload.append(bitcode_bc)
+                headers = sorted(
+                    glob.glob(os.path.join(build_dir, "include", "*.h"))
+                )
+                if not headers:
+                    raise RuntimeError(
+                        f"{build_dir}/include is empty: the headers a bitcode "
+                        "consumer compiles against did not get exported"
+                    )
 
-            # Into the source package dir (for editable installs, where
-            # _C.so lives in-tree and uses $ORIGIN/lib rpath to find it)
-            src_pkg_dir = os.path.join(ROOT_DIR, "src", "flagcx", "lib")
-            os.makedirs(src_pkg_dir, exist_ok=True)
-            dst_src_so = os.path.join(src_pkg_dir, "libflagcx.so")
-            print(f"[flagcx] Copying {src_so} -> {dst_src_so}")
-            shutil.copy2(src_so, dst_src_so)
+            for base in (self.build_lib, os.path.join(ROOT_DIR, "src")):
+                dst_lib = os.path.join(base, "flagcx", "lib")
+                os.makedirs(dst_lib, exist_ok=True)
+                # Editable installs keep _C.so in-tree and reach the library
+                # through its $ORIGIN/lib rpath, so the source tree is not a
+                # convenience here — it is where the loader looks.
+                for path in payload:
+                    print(f"[flagcx] Copying {path} -> {dst_lib}")
+                    shutil.copy2(path, dst_lib)
+                if headers:
+                    dst_inc = os.path.join(base, "flagcx", "include")
+                    os.makedirs(dst_inc, exist_ok=True)
+                    for path in headers:
+                        print(f"[flagcx] Copying {path} -> {dst_inc}")
+                        shutil.copy2(path, dst_inc)
 else:
     BuildExtWithMake = None
 
@@ -224,7 +306,7 @@ setup(
     description="FlagCX: A unified collective communication library",
     package_dir={"": "src"},
     packages=["flagcx"],
-    package_data={"flagcx": ["lib/*.so"]},
+    package_data={"flagcx": ["lib/*.so", "lib/*.bc", "include/*.h"]},
     ext_modules=ext_modules,
     cmdclass=cmdclass,
     entry_points={"torch.backends": ["flagcx = flagcx:init"]},

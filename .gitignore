@@ -11,6 +11,7 @@ plugin/*/*/*.so
 adaptor_plugin/*/*/*.so
 src/flagcx/*.so
 src/flagcx/lib/
+src/flagcx/include/
 __pycache__/
 **/__pycache__/
 
