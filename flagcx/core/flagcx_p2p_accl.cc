@@ -5,10 +5,10 @@
  * hosts, where GPU memory can only be registered and moved through
  * ACCL (no peer-mem/DMA-BUF; VMM unpinnable — run FLAGCX_VMM_ENABLE=0).
  *
- * Shape mirrors Mooncake's barex_transport: one XSimpleMempool over the
- * selected NICs (RegUserMr returns one MR/rkey per NIC); one server +
- * client XContext on the NIC closest to the local GPU; XListener/XConnector
- * own setup (no QP here);
+ * Shape mirrors Mooncake's barex_transport: one XSimpleMempool over all
+ * selected NICs (RegUserMr returns one MR/rkey per NIC); one server + client
+ * XContext pair on the NIC closest to the local GPU; XListener/XConnector own
+ * setup (no QP here);
  * transfers post via XChannel::WriteBatch/ReadBatch with callback
  * completion (no CQ poll); the per-slice remote key comes from the
  * region's per-NIC rkey vector via channel->GetPeerNicId().
@@ -26,6 +26,8 @@
 #include "adaptor.h"
 #include "bootstrap.h"
 #include "debug.h"
+#include "p2p_control.h"
+#include "p2p_scheduler.h"
 #include "p2p_topo.h"
 #include "param.h"
 #include "socket.h"
@@ -50,6 +52,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -64,6 +67,7 @@
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace accl::barex;
@@ -120,10 +124,7 @@ struct AcclMrEntry {
   uint32_t rkeys[kMaxNics];
 };
 
-struct AcclXfer {
-  std::atomic<int> pending{0};
-  std::atomic<int> failed{0};
-};
+using AcclXfer = flagcxP2pScheduling::CompletionTracker;
 
 enum AcclConnLifecycle : int {
   ACCL_CONN_ACTIVE = 0,
@@ -191,6 +192,7 @@ struct FlagcxAcclEngine {
   /* vsolar caps a single GPU MR at 64MB, so registrations are split into
      chunks of at most this many bytes (FLAGCX_ACCL_MAX_MR_MB, 0 = off). */
   size_t mrChunkBytes = 64ull << 20;
+  std::atomic<uint64_t> runtimeSliceConfig{0};
 
   std::mutex xferMu;
   uint64_t nextXferId = 1;
@@ -249,6 +251,23 @@ const char *bxstr(BarexResult r) {
 
 bool barexRetryable(BarexResult result) {
   return result == BAREX_ERR_QUEUE_FULL || result == BAREX_ERR_RATE_LIMITED;
+}
+
+int acclWorkerCount(const FlagcxP2pGlobalConfig &config) {
+  return std::max(1, config.workersPerPool);
+}
+
+int acclQpsPerConn(const FlagcxP2pGlobalConfig &config) {
+  return std::max(1, config.qpsPerConn);
+}
+
+uint32_t acclSliceSize(const FlagcxP2pGlobalConfig &config) {
+  return static_cast<uint32_t>(config.sliceSize);
+}
+
+uint32_t acclFragmentLimit(const FlagcxP2pGlobalConfig &config,
+                           uint32_t slice) {
+  return std::min<uint32_t>(static_cast<uint32_t>(config.fragmentLimit), slice);
 }
 
 uint16_t addrPort(const union flagcxSocketAddress *addr) {
@@ -494,20 +513,30 @@ uint32_t regionKeyForNic(const AcclRemoteRegion &r, int nic) {
   return r.rkeys[nic];
 }
 
-XChannel *pickChannel(FlagcxAcclConn *conn) {
-  if (conn->state->lifecycle.load(std::memory_order_acquire) !=
-      ACCL_CONN_ACTIVE)
-    return nullptr;
-  const size_t n = conn->channels.size();
-  if (n == 0)
-    return nullptr;
-  uint64_t start = conn->rr.fetch_add(1, std::memory_order_relaxed);
-  for (size_t i = 0; i < n; i++) {
-    XChannel *ch = conn->channels[(start + i) % n];
-    if (ch != nullptr && ch->IsActive())
-      return ch;
+bool peekBootstrapFrame(int fd, void *buffer, size_t size,
+                        const std::atomic<bool> &stop, int timeoutMs = 5000) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (!stop.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    pollfd pfd{fd, POLLIN, 0};
+    const int ready = poll(&pfd, 1, 50);
+    if (ready < 0) {
+      if (errno == EINTR)
+        continue;
+      return false;
+    }
+    if (ready == 0)
+      continue;
+    const ssize_t n = recv(fd, buffer, size, MSG_PEEK | MSG_DONTWAIT);
+    if (n == (ssize_t)size)
+      return true;
+    if (n == 0)
+      return false;
+    if (n < 0 && errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK)
+      return false;
   }
-  return nullptr;
+  return false;
 }
 
 /* Shared submit for single+vector read/write. */
@@ -526,17 +555,55 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
     WARN("NET/ACCL_P2P : v1 supports initiator-side transfers only");
     return -1;
   }
-  XChannel *ch = pickChannel(conn);
-  if (ch == nullptr) {
+
+  struct ChannelGroup {
+    int localNic = -1;
+    int peerNic = -1;
+    std::vector<XChannel *> channels;
+    std::shared_ptr<std::vector<rw_memp_t>> entries =
+        std::make_shared<std::vector<rw_memp_t>>();
+  };
+  std::vector<ChannelGroup> groups;
+  const int expectedNic = engine->devs[engine->selectedNetDev]->GetId();
+  for (XChannel *channel : conn->channels) {
+    if (channel == nullptr || !channel->IsActive())
+      continue;
+    const int localNic = channel->GetContext()->GetXDevice()->GetId();
+    const int peerNic = channel->GetPeerNicId();
+    if (localNic != expectedNic) {
+      WARN("NET/ACCL_P2P : active channel on nic %d, expected GPU-local "
+           "nic %d",
+           localNic, expectedNic);
+      conn->state->fail(-1);
+      return -1;
+    }
+    size_t group = groups.size();
+    for (size_t i = 0; i < groups.size(); i++) {
+      if (groups[i].localNic == localNic && groups[i].peerNic == peerNic) {
+        group = i;
+        break;
+      }
+    }
+    if (group == groups.size()) {
+      groups.push_back(ChannelGroup{});
+      groups.back().localNic = localNic;
+      groups.back().peerNic = peerNic;
+    }
+    groups[group].channels.push_back(channel);
+  }
+  if (groups.empty()) {
     WARN("NET/ACCL_P2P : no active channel");
     conn->state->fail(-1);
     return -1;
   }
-  const int localNic = ch->GetContext()->GetXDevice()->GetId();
-  const int peerNic = ch->GetPeerNicId();
 
-  auto batch = std::make_shared<std::vector<rw_memp_t>>();
-  batch->reserve(numIovs);
+  const uint64_t sliceConfig =
+      engine->runtimeSliceConfig.load(std::memory_order_acquire);
+  const size_t sliceLimit = static_cast<size_t>(sliceConfig >> 32);
+  const size_t fragmentLimit = static_cast<size_t>(uint32_t(sliceConfig));
+  const uint64_t submissionTicket =
+      conn->rr.fetch_add(1, std::memory_order_relaxed);
+  uint64_t groupCursor = submissionTicket;
   for (int i = 0; i < numIovs; i++) {
     if (sizeVec[i] == 0)
       continue;
@@ -545,59 +612,98 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
            sizeVec[i]);
       return -1;
     }
-    /* Registrations are chunked (vsolar 64MB per-MR cap), so one iov may
-       span several local MRs and several remote regions. Split at every
-       chunk boundary on either side; each slice carries the lkey/rkey of
-       the chunks it lands in. */
     uintptr_t lcur = (uintptr_t)localVec[i];
     uint64_t rcur = descs[i].addr;
     size_t remaining = sizeVec[i];
     while (remaining > 0) {
       AcclMrEntry entry;
-      if (!findMrContaining(engine, lcur, 1, &entry)) {
-        WARN("NET/ACCL_P2P : local buffer %p not registered", (void *)lcur);
+      ChannelGroup *selected = nullptr;
+      size_t selectedGroup = 0;
+      for (size_t attempt = 0; attempt < groups.size(); attempt++) {
+        const size_t group =
+            (groupCursor + attempt) % static_cast<uint64_t>(groups.size());
+        AcclMrEntry candidate;
+        if (!findMrContaining(engine, lcur, 1, &candidate)) {
+          WARN("NET/ACCL_P2P : local buffer %p not registered", (void *)lcur);
+          return -1;
+        }
+        if (groups[group].localNic < 0 ||
+            (uint32_t)groups[group].localNic >= candidate.nKeys)
+          continue;
+        entry = candidate;
+        selected = &groups[group];
+        selectedGroup = group;
+        break;
+      }
+      if (selected == nullptr) {
+        WARN("NET/ACCL_P2P : no local lkey for buffer %p on active NICs",
+             (void *)lcur);
         return -1;
       }
-      if (localNic < 0 || (uint32_t)localNic >= entry.nKeys) {
-        WARN("NET/ACCL_P2P : lkey for nic %d missing (nKeys=%u)", localNic,
-             entry.nKeys);
-        return -1;
-      }
+      groupCursor = selectedGroup + 1;
+
       size_t slice = std::min(remaining, entry.baseAddr + entry.size - lcur);
       uint32_t rkey;
       const AcclRemoteRegion *rr = findRemoteRegion(conn, rcur);
       if (rr != nullptr) {
         slice = std::min(slice, (size_t)(rr->baseAddr + rr->size - rcur));
-        rkey = regionKeyForNic(*rr, peerNic);
+        rkey = regionKeyForNic(*rr, selected->peerNic);
       } else {
-        /* no region table entry — trust the caller's desc keys wholesale */
-        rkey = descKeyForNic(descs[i], peerNic);
+        rkey = descKeyForNic(descs[i], selected->peerNic);
       }
+      if (sliceLimit > 0 && slice > sliceLimit &&
+          slice - sliceLimit > fragmentLimit)
+        slice = sliceLimit;
+      if (slice == 0)
+        return -1;
 
       rw_memp_t w{};
       w.sg.addr = (uint64_t)lcur;
       w.sg.length = (uint32_t)slice;
-      w.sg.lkey = entry.lkeys[localNic];
+      w.sg.lkey = entry.lkeys[selected->localNic];
       w.data.d_type = entry.dtype;
       w.data.device_id = entry.deviceId;
       w.r_addr = rcur;
       w.r_key = rkey;
       w.r_ttl_ms = UINT64_MAX;
-      batch->push_back(w);
-
+      selected->entries->push_back(w);
       lcur += slice;
       rcur += slice;
       remaining -= slice;
     }
   }
-  if (batch->empty()) {
-    *transferId = 0; /* nothing to do; XferStatus(0) reports done */
+
+  struct BatchWork {
+    XChannel *channel;
+    std::shared_ptr<std::vector<rw_memp_t>> entries;
+  };
+  std::vector<BatchWork> works;
+  for (auto &group : groups) {
+    if (group.entries->empty())
+      continue;
+    const size_t qpCount =
+        std::min(group.channels.size(), group.entries->size());
+    const size_t batchSize = group.entries->size() / qpCount;
+    const size_t remainder = group.entries->size() % qpCount;
+    size_t begin = 0;
+    for (size_t i = 0; i < qpCount; i++) {
+      const size_t count = batchSize + (i < remainder ? 1 : 0);
+      auto entries = std::make_shared<std::vector<rw_memp_t>>(
+          group.entries->begin() + begin,
+          group.entries->begin() + begin + count);
+      const size_t channelIndex = flagcxP2pScheduling::channelForTicket(
+          submissionTicket, i, group.channels.size());
+      works.push_back({group.channels[channelIndex], std::move(entries)});
+      begin += count;
+    }
+  }
+  if (works.empty()) {
+    *transferId = 0;
     return 0;
   }
 
   auto xfer = std::make_shared<AcclXfer>();
-  xfer->pending.store(1, std::memory_order_release);
-
+  xfer->pending.store((int)works.size(), std::memory_order_release);
   uint64_t id;
   {
     std::lock_guard<std::mutex> lk(engine->xferMu);
@@ -606,26 +712,46 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
   }
 
   std::shared_ptr<AcclConnState> connState = conn->state;
-  DoneCallback done = [connState, xfer, batch](Status s) {
-    if (!s.IsOk()) {
-      WARN("NET/ACCL_P2P : batch failed: %s", s.ErrMsg().c_str());
-      xfer->failed.fetch_add(1, std::memory_order_release);
-      if (!barexRetryable(s.ErrCode()))
-        connState->fail(-1);
+  for (size_t workIndex = 0; workIndex < works.size(); workIndex++) {
+    auto &work = works[workIndex];
+    const int localNic = work.channel->GetContext()->GetXDevice()->GetId();
+    const int peerNic = work.channel->GetPeerNicId();
+    const size_t entryCount = work.entries->size();
+    DoneCallback done = [connState, xfer, entries = work.entries, localNic,
+                         peerNic, entryCount](Status s) {
+      (void)entries;
+      int failed = 0;
+      if (!s.IsOk()) {
+        WARN("NET/ACCL_P2P : batch failed localNic=%d peerNic=%d entries=%zu: "
+             "%s",
+             localNic, peerNic, entryCount, s.ErrMsg().c_str());
+        failed = 1;
+        if (!barexRetryable(s.ErrCode())) {
+          xfer->hardFailed.fetch_add(1, std::memory_order_release);
+          connState->fail(-1);
+        }
+      }
+      xfer->complete(1, failed);
+    };
+    BarexResult r = isRead ? work.channel->ReadBatch(work.entries, done, true)
+                           : work.channel->WriteBatch(work.entries, done, true);
+    if (r != BAREX_SUCCESS) {
+      WARN("NET/ACCL_P2P : %s sync error: %s",
+           isRead ? "ReadBatch" : "WriteBatch", bxstr(r));
+      if (!barexRetryable(r))
+        conn->state->fail(-1);
+      /* The failed work and every work after it were not accepted by ACCL.
+         Complete those slots locally, then drain callbacks for earlier
+         accepted batches before returning.  The caller receives no transfer
+         ID on an error, so returning sooner would allow its buffers to be
+         reused while an accepted batch still references them. */
+      const int unsubmitted = static_cast<int>(works.size() - workIndex);
+      xfer->complete(unsubmitted, unsubmitted);
+      xfer->wait();
+      std::lock_guard<std::mutex> lk(engine->xferMu);
+      engine->xfers.erase(id);
+      return -1;
     }
-    xfer->pending.fetch_sub(1, std::memory_order_release);
-  };
-
-  BarexResult r = isRead ? ch->ReadBatch(batch, done, true)
-                         : ch->WriteBatch(batch, done, true);
-  if (r != BAREX_SUCCESS) {
-    WARN("NET/ACCL_P2P : %s sync error: %s",
-         isRead ? "ReadBatch" : "WriteBatch", bxstr(r));
-    std::lock_guard<std::mutex> lk(engine->xferMu);
-    engine->xfers.erase(id);
-    if (!barexRetryable(r))
-      conn->state->fail(-1);
-    return -1;
   }
   *transferId = id;
   return 0;
@@ -764,6 +890,13 @@ FlagcxP2pEngine *flagcxAcclEngineCreate() {
   engine->localGpuIdx = inferLocalGpuIdxAccl();
   memset(&engine->notifListenSock, 0, sizeof(engine->notifListenSock));
 
+  const auto &p2pConfig = flagcxP2pGlobalConfig();
+  const uint32_t defaultSlice = acclSliceSize(p2pConfig);
+  const uint32_t defaultFragment = acclFragmentLimit(p2pConfig, defaultSlice);
+  engine->runtimeSliceConfig.store(
+      flagcxP2pControl::pack(defaultSlice, defaultFragment),
+      std::memory_order_relaxed);
+
   const char *mrMb = flagcxGetEnv("FLAGCX_ACCL_MAX_MR_MB");
   if (mrMb != nullptr) {
     engine->mrChunkBytes = (size_t)strtoull(mrMb, nullptr, 10) << 20;
@@ -812,9 +945,13 @@ FlagcxP2pEngine *flagcxAcclEngineCreate() {
     flagcxAcclEngineDestroy(EOut(engine));
     return nullptr;
   }
-  r = XThreadpool::NewInstance(engine->tpServer, 4, "flagcx-accl-server");
+  const auto &workerConfig = flagcxP2pGlobalConfig();
+  const int workerCount = acclWorkerCount(workerConfig);
+  r = XThreadpool::NewInstance(engine->tpServer, workerCount,
+                               "flagcx-accl-server");
   if (r == BAREX_SUCCESS)
-    r = XThreadpool::NewInstance(engine->tpClient, 4, "flagcx-accl-client");
+    r = XThreadpool::NewInstance(engine->tpClient, workerCount,
+                                 "flagcx-accl-client");
   if (r != BAREX_SUCCESS) {
     WARN("NET/ACCL_P2P : threadpool create failed: %s", bxstr(r));
     flagcxAcclEngineDestroy(EOut(engine));
@@ -822,8 +959,12 @@ FlagcxP2pEngine *flagcxAcclEngineCreate() {
   }
 
   ContextConfig cfg = XConfigUtil::DefaultContextConfig();
+  /* A P2P engine is scoped to one local GPU. Bind its data endpoint to the
+     topology-selected NIC; exposing every RNIC here bypasses that decision
+     and can create channels on non-local HCAs. */
   XDevice *selectedDev = engine->devs[engine->selectedNetDev];
-  XContext *sctx = nullptr, *cctx = nullptr;
+  XContext *sctx = nullptr;
+  XContext *cctx = nullptr;
   BarexResult contextResult =
       XContext::NewInstance(sctx, cfg, new AcclNullCb(), selectedDev,
                             engine->mempool, engine->tpServer);
@@ -913,10 +1054,12 @@ FlagcxP2pEngine *flagcxAcclEngineCreate() {
   }
 
   INFO(FLAGCX_INIT,
-       "NET/ACCL_P2P : engine up (gpu=%d nics=%d barex=%d bootstrap=%d "
-       "notif=%d)",
-       engine->localGpuIdx, engine->nDevs, engine->barexPort,
-       engine->bsListenPort, engine->notifPort);
+       "NET/ACCL_P2P : engine up (gpu=%d registered_nics=%d data_nic=%d "
+       "barex=%d bootstrap=%d notif=%d workers=%d qps=%d slice=%u "
+       "fragment=%u)",
+       engine->localGpuIdx, engine->nDevs, selectedDev->GetId(),
+       engine->barexPort, engine->bsListenPort, engine->notifPort, workerCount,
+       acclQpsPerConn(p2pConfig), defaultSlice, defaultFragment);
   return EOut(engine);
 }
 
@@ -1068,12 +1211,14 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
   (void)remoteGpuIdx;
   (void)sameProcess; /* v1: no IPC fast path */
 
-  /* data-plane channels: qpsPerCtx per client ctx. Control block shared
-     with callbacks; on timeout a late callback sees `abandoned` and
+  /* All data-plane QPs stay on the GPU-local client context. Control block
+     shared with callbacks; on timeout a late callback sees `abandoned` and
      destroys its own channel instead of touching freed state. */
   const auto &config = flagcxP2pGlobalConfig();
-  const int qps = config.qpsPerConn;
-  const int total = qps * (int)engine->clientCtxs.size();
+  /* Mooncake Barex defaults to two QPs per endpoint. Keep the FlagCX
+     override when explicitly supplied, otherwise use the same default. */
+  const int qps = acclQpsPerConn(config);
+  const int total = qps;
   auto ctl = std::make_shared<AcclConnectCtl>(total);
   for (int i = 0; i < total; i++) {
     BarexResult r = engine->connector->Connect(
@@ -1112,6 +1257,18 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
     flagcxAcclEngineConnDestroy(COut(conn));
     return nullptr;
   }
+  const int expectedNic = engine->devs[engine->selectedNetDev]->GetId();
+  for (XChannel *channel : conn->channels) {
+    XContext *context = channel == nullptr ? nullptr : channel->GetContext();
+    XDevice *device = context == nullptr ? nullptr : context->GetXDevice();
+    const int actualNic = device == nullptr ? -1 : device->GetId();
+    if (actualNic != expectedNic) {
+      WARN("NET/ACCL_P2P : channel on nic %d, expected GPU-local nic %d",
+           actualNic, expectedNic);
+      flagcxAcclEngineConnDestroy(COut(conn));
+      return nullptr;
+    }
+  }
   if (!allUp)
     WARN("NET/ACCL_P2P : %zu/%d channels up (continuing)",
          conn->channels.size(), total);
@@ -1136,6 +1293,41 @@ FlagcxP2pConn *flagcxAcclEngineAccept(FlagcxP2pEngine *e, char *ipAddrBuf,
   if (bootstrapP2pAccept(engine->bsListenState, &bsConn) != flagcxSuccess)
     return nullptr;
   if (engine->stopAccept.load(std::memory_order_acquire)) {
+    bootstrapClose(bsConn);
+    return nullptr;
+  }
+
+  /* Share the same bootstrap RPC control frame as IBRC. Peek the first
+     frame so a normal ACCL hello (tag 4) remains untouched for
+     acclHandshake(). */
+  int controlHeader[2] = {};
+  const int controlFd = bsConn->p2p->sock.fd;
+  if (peekBootstrapFrame(controlFd, controlHeader, sizeof(controlHeader),
+                         engine->stopAccept) &&
+      controlHeader[0] == flagcxP2pControl::kTag) {
+    if (controlHeader[1] <= 0 ||
+        controlHeader[1] > flagcxP2pControl::kMaxRequest ||
+        !flagcxP2pControl::receive(controlFd, controlHeader,
+                                   sizeof(controlHeader), engine->stopAccept)) {
+      bootstrapClose(bsConn);
+      return nullptr;
+    }
+    std::string request(controlHeader[1], '\0');
+    if (flagcxP2pControl::receive(controlFd, &request[0], request.size(),
+                                  engine->stopAccept)) {
+      const char *error =
+          flagcxP2pControl::update(engine->runtimeSliceConfig, request);
+      const uint64_t config =
+          engine->runtimeSliceConfig.load(std::memory_order_acquire);
+      char reply[256];
+      const int length =
+          snprintf(reply, sizeof(reply),
+                   "{\"status\":%d,\"slice_size\":%u,\"fragment_limit\":%u,"
+                   "\"error\":\"%s\"}",
+                   error == nullptr ? 0 : -1, unsigned(config >> 32),
+                   unsigned(uint32_t(config)), error == nullptr ? "" : error);
+      bootstrapSend(bsConn, 0, flagcxP2pControl::kTag, reply, length);
+    }
     bootstrapClose(bsConn);
     return nullptr;
   }
@@ -1247,8 +1439,7 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
       return -1;
     }
 
-    AcclMrEntry entry;
-    memset(&entry, 0, sizeof(entry));
+    AcclMrEntry entry{};
     entry.baseAddr = cbase;
     entry.size = csize;
     entry.regBase = data;
@@ -1420,27 +1611,37 @@ int flagcxAcclEngineWriteVector(FlagcxP2pConn *c,
   return acclSubmit(conn, srcVec, sizeVec, descs, numIovs, false, transferId);
 }
 
-bool flagcxAcclEngineXferStatus(FlagcxP2pConn *c, uint64_t transferId) {
-  FlagcxAcclConn *conn = C(c);
+int acclXferPoll(FlagcxAcclEngine *engine, FlagcxAcclConn *conn,
+                 uint64_t transferId) {
   if (conn == nullptr || transferId == 0)
-    return true;
-  FlagcxAcclEngine *engine = conn->engine;
+    return 1;
   std::shared_ptr<AcclXfer> xfer;
   {
     std::lock_guard<std::mutex> lk(engine->xferMu);
     auto it = engine->xfers.find(transferId);
     if (it == engine->xfers.end())
-      return true;
+      return 1;
     xfer = it->second;
   }
   if (xfer->pending.load(std::memory_order_acquire) > 0)
-    return false;
-  if (xfer->failed.load(std::memory_order_acquire) > 0)
+    return 0;
+  const bool failed = xfer->failed.load(std::memory_order_acquire) > 0;
+  if (failed) {
     WARN("NET/ACCL_P2P : transfer %llu completed with failures",
          (unsigned long long)transferId);
+    if (xfer->hardFailed.load(std::memory_order_acquire) > 0)
+      conn->state->fail(-1);
+  }
   std::lock_guard<std::mutex> lk(engine->xferMu);
   engine->xfers.erase(transferId);
-  return true;
+  return failed ? -1 : 1;
+}
+
+bool flagcxAcclEngineXferStatus(FlagcxP2pConn *c, uint64_t transferId) {
+  FlagcxAcclConn *conn = C(c);
+  if (conn == nullptr)
+    return true;
+  return acclXferPoll(conn->engine, conn, transferId) != 0;
 }
 
 int flagcxAcclEngineWriteVectorSync(
@@ -1455,9 +1656,13 @@ int flagcxAcclEngineWriteVectorSync(
                                              numIovs, &transferId);
   if (rc != 0)
     return rc;
-  while (!flagcxAcclEngineXferStatus(c, transferId))
+  FlagcxAcclConn *conn = C(c);
+  if (conn == nullptr)
+    return -1;
+  int status;
+  while ((status = acclXferPoll(conn->engine, conn, transferId)) == 0)
     std::this_thread::yield();
-  return 0;
+  return status < 0 ? -1 : 0;
 }
 
 int flagcxAcclEngineGetMetadata(FlagcxP2pEngine *e, char **metadataStr) {

@@ -26,8 +26,8 @@
 #include <unistd.h>
 #include <vector>
 
-extern struct ibv_cq *flagcxP2pPoolGetSharedCq(int ibDevN,
-                                               struct ibv_context *ctx);
+extern struct ibv_cq *flagcxP2pPoolGetCq(int ibDevN, struct ibv_context *ctx,
+                                         void *sendComm);
 extern void flagcxP2pPoolRegisterQp(int ibDevN, void *sendComm,
                                     struct ibv_qp *qp);
 extern void flagcxP2pPoolUnregisterQp(int ibDevN, struct ibv_qp *qp);
@@ -275,16 +275,16 @@ static flagcxResult_t flagcxP2pSetupConn(int dev, void *outerComm,
   base->pd = ibDev->pd;
   pthread_mutex_unlock(&ibDev->lock);
 
-  // Step 0: pull the shared CQ from the per-ibDev WorkerPool. The pool is
+  // Step 0: pull the owner CQ from the per-ibDev WorkerPool. The pool is
   // lazily created on first call (and lives for the process lifetime).
-  struct ibv_cq *sharedCq = flagcxP2pPoolGetSharedCq(ibDevN, ibDev->context);
-  if (sharedCq == NULL) {
-    WARN("NET/IB_P2P : pool[%d] returned NULL shared CQ", ibDevN);
+  struct ibv_cq *cq = flagcxP2pPoolGetCq(ibDevN, ibDev->context, outerComm);
+  if (cq == NULL) {
+    WARN("NET/IB_P2P : pool[%d] returned NULL owner CQ", ibDevN);
     flagcxP2pReleasePd(ibDevN);
     base->pd = NULL;
     return flagcxInternalError;
   }
-  base->cq = sharedCq;
+  base->cq = cq;
 
   int accessFlags = IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ |
                     IBV_ACCESS_REMOTE_ATOMIC;
@@ -319,7 +319,7 @@ setup_fail:
       qp_list[i].qp = NULL;
     }
   }
-  // Do not destroy sharedCq — owned by the pool.
+  // Do not destroy the owner CQ — owned by the pool.
   base->cq = NULL;
   flagcxP2pReleasePd(ibDevN);
   base->pd = NULL;

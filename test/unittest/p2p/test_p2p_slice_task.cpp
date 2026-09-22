@@ -2,12 +2,54 @@
 // These are header-only tests (no IB hardware required) that verify
 // the correctness of markSuccess/markFailed, isAllDone, and hasErrors.
 
+#include <chrono>
+#include <future>
 #include <gtest/gtest.h>
 #include <memory>
 #include <thread>
 #include <vector>
 
 #include "flagcx_p2p.h"
+#include "p2p_scheduler.h"
+
+TEST(P2pSchedulingTest, AlignedAddressesUseAllDefaultWorkers) {
+  int counts[4] = {};
+  for (uintptr_t address = 0x100000; address < 0x104000; address += 16) {
+    const int owner = flagcxP2pScheduling::workerForAddress(address, 4);
+    ASSERT_GE(owner, 0);
+    ASSERT_LT(owner, 4);
+    counts[owner]++;
+    EXPECT_EQ(owner, flagcxP2pScheduling::workerForAddress(address, 4));
+  }
+  for (int count : counts)
+    EXPECT_GT(count, 0);
+}
+
+TEST(P2pSchedulingTest, SingleSliceSubmissionsRotateAcrossChannels) {
+  const size_t expected[] = {0, 1, 2, 3, 0, 1, 2, 3};
+  for (uint64_t ticket = 0; ticket < 8; ticket++)
+    EXPECT_EQ(flagcxP2pScheduling::channelForTicket(ticket, 0, 4),
+              expected[ticket]);
+}
+
+TEST(P2pSchedulingTest, CompletionTrackerWaitsForAcceptedWork) {
+  flagcxP2pScheduling::CompletionTracker tracker;
+  tracker.pending.store(3, std::memory_order_release);
+  tracker.complete(2, 2); // failed work plus one work not submitted
+
+  auto waiter = std::async(std::launch::async, [&tracker] {
+    tracker.wait();
+    return true;
+  });
+  EXPECT_EQ(waiter.wait_for(std::chrono::milliseconds(0)),
+            std::future_status::timeout);
+
+  tracker.complete(); // callback for the one accepted work
+  EXPECT_EQ(waiter.wait_for(std::chrono::seconds(1)),
+            std::future_status::ready);
+  EXPECT_TRUE(waiter.get());
+  EXPECT_EQ(tracker.failed.load(std::memory_order_acquire), 2);
+}
 
 // ---------------------------------------------------------------------------
 // Test FlagcxTransferTask basic lifecycle

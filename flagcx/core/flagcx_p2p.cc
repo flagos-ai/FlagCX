@@ -21,6 +21,8 @@
 #include "flagcx_p2p_accl.h"
 #include "ib_common.h"
 #include "ibvwrap.h"
+#include "p2p_control.h"
+#include "p2p_scheduler.h"
 #include "p2p_topo.h"
 #include "param.h"
 #include "socket.h"
@@ -33,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <poll.h>
@@ -297,6 +300,7 @@ struct FlagcxP2pEngine {
   std::thread rpcServerThread;
   std::atomic<bool> rpcServerActive;
   std::atomic<bool> stopRpcServer;
+  std::atomic<uint64_t> runtimeSliceConfig;
   std::unordered_map<std::string, FlagcxP2pConn *> sessionConns;
   std::mutex sessionMutex;
   std::vector<FlagcxP2pConn *> acceptedConns;
@@ -513,6 +517,19 @@ struct PendingSliceQueue {
     slices.insert(slices.end(), src.begin(), src.end());
   }
 
+  void append(FlagcxSlice *const *src, size_t count) {
+    if (src == nullptr || count == 0)
+      return;
+    if (empty()) {
+      slices.clear();
+      head = 0;
+    } else if (head >= 4096 && head * 2 >= slices.size()) {
+      slices.erase(slices.begin(), slices.begin() + head);
+      head = 0;
+    }
+    slices.insert(slices.end(), src, src + count);
+  }
+
   void clear() {
     slices.clear();
     head = 0;
@@ -526,9 +543,8 @@ public:
   FlagcxWorkerPool(const FlagcxWorkerPool &) = delete;
   FlagcxWorkerPool &operator=(const FlagcxWorkerPool &) = delete;
 
-  struct ibv_cq *getSharedCq() const {
-    return shared_cq_;
-  }
+  struct ibv_cq *getCqForConn(void *sendComm) const;
+  bool ready() const { return ready_; }
   int workerCount() const { return numWorkers_; }
   void registerQp(void *sendComm, struct ibv_qp *qp);
   void unregisterQp(struct ibv_qp *qp);
@@ -542,7 +558,11 @@ public:
 private:
   void transferWorkerLoop(int tid);
   void performPostSend(int tid);
-  void performPollCq();
+  void performPollCq(int tid);
+  int ownerForConn(void *sendComm) const {
+    return flagcxP2pScheduling::workerForAddress(
+        reinterpret_cast<uintptr_t>(sendComm), numWorkers_);
+  }
   void notifWorkerLoop();
 
   void pinToNicCpus(const char *role, int id);
@@ -554,12 +574,12 @@ private:
   }
 
   int ibDevN_;
-  struct ibv_cq *shared_cq_ = nullptr;
+  std::vector<struct ibv_cq *> worker_cqs_;
+  bool ready_ = false;
   cpu_set_t cpuAffinity_;
   bool hasCpuAffinity_ = false;
 
   int numWorkers_;
-  int numShards_;
   size_t maxWrPerPost_;
   size_t batchPollSize_;
   int maxWrDepth_ = 0;
@@ -569,12 +589,9 @@ private:
   std::unordered_map<uint32_t, int> qpNumToIdx_;
   std::vector<std::vector<int>> workerQpIdx_;
   std::vector<size_t> workerQpCursor_;
-  std::unordered_map<void *, int> connQpRegCount_;
-  std::vector<std::unordered_map<void *, std::vector<FlagcxSlice *>>>
-      slice_queues_;
-  std::unique_ptr<std::mutex[]> slice_locks_;
-  std::unique_ptr<std::atomic<int>[]> slice_queue_count_;
-  std::atomic<uint64_t> shardRoundRobin_{0};
+  std::vector<std::unordered_map<void *, PendingSliceQueue>>
+      owner_slice_queues_;
+  std::unique_ptr<std::mutex[]> owner_slice_locks_;
   std::vector<std::unordered_map<void *, PendingSliceQueue>>
       collective_slice_queue_;
 
@@ -629,7 +646,6 @@ FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
     : ibDevN_(ibDevN) {
   const auto &C = flagcxP2pGlobalConfig();
   numWorkers_ = C.workersPerPool;
-  numShards_ = C.shardCount;
   maxWrPerPost_ = C.maxWrPerPost;
   batchPollSize_ = C.batchPollSize;
 
@@ -640,23 +656,30 @@ FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
          ibDevN_, C.qpsPerConn, numWorkers_);
   }
 
-  flagcxResult_t res = flagcxWrapIbvCreateCq(
-      &shared_cq_, ctx, (int)C.sharedCqDepth, NULL, NULL, 0);
-  if (res != flagcxSuccess) {
-    WARN("NET/IB_P2P : pool[%d] failed to create shared CQ", ibDevN_);
-    shared_cq_ = nullptr;
-    return;
+  worker_cqs_.resize(numWorkers_, nullptr);
+  for (int t = 0; t < numWorkers_; ++t) {
+    flagcxResult_t res = flagcxWrapIbvCreateCq(
+        &worker_cqs_[t], ctx, (int)C.sharedCqDepth, NULL, NULL, 0);
+    if (res != flagcxSuccess) {
+      WARN("NET/IB_P2P : pool[%d] failed to create CQ for worker %d", ibDevN_,
+           t);
+      for (int i = 0; i < t; ++i) {
+        if (worker_cqs_[i] != nullptr) {
+          flagcxWrapIbvDestroyCq(worker_cqs_[i]);
+          worker_cqs_[i] = nullptr;
+        }
+      }
+      worker_cqs_.clear();
+      return;
+    }
   }
   INFO(FLAGCX_INIT,
-       "NET/IB_P2P : pool[%d] shared CQ created (depth=%zu, workers=%d, "
-       "shards=%d, qpsPerConn=%d)",
-       ibDevN_, C.sharedCqDepth, numWorkers_, numShards_, C.qpsPerConn);
+       "NET/IB_P2P : pool[%d] worker CQs created (depth=%zu, workers=%d, "
+       "qpsPerConn=%d)",
+       ibDevN_, C.sharedCqDepth, numWorkers_, C.qpsPerConn);
 
-  slice_queues_.resize(numShards_);
-  slice_locks_.reset(new std::mutex[numShards_]);
-  slice_queue_count_.reset(new std::atomic<int>[numShards_]);
-  for (int s = 0; s < numShards_; s++)
-    slice_queue_count_[s].store(0, std::memory_order_relaxed);
+  owner_slice_queues_.resize(numWorkers_);
+  owner_slice_locks_.reset(new std::mutex[numWorkers_]);
 
   workerQpIdx_.resize(numWorkers_);
   workerQpCursor_.assign(numWorkers_, 0);
@@ -668,6 +691,7 @@ FlagcxWorkerPool::FlagcxWorkerPool(int ibDevN, struct ibv_context *ctx)
   for (int t = 0; t < numWorkers_; t++) {
     transferThreads_.emplace_back([this, t] { this->transferWorkerLoop(t); });
   }
+  ready_ = true;
 }
 
 FlagcxWorkerPool::~FlagcxWorkerPool() {
@@ -682,7 +706,17 @@ FlagcxWorkerPool::~FlagcxWorkerPool() {
   if (notifThread_.joinable()) {
     notifThread_.join();
   }
-  // CQ destruction skipped: pool is process-lived; OS reclaims.
+  // Worker CQs are process-lived, as was the previous shared CQ. Their QPs
+  // are owned and torn down by the adaptor connection lifecycle; keeping the
+  // CQs alive until process exit avoids destroying a CQ before a late QP
+  // cleanup path has finished with it.
+}
+
+struct ibv_cq *FlagcxWorkerPool::getCqForConn(void *sendComm) const {
+  const int owner = ownerForConn(sendComm);
+  if (owner < 0 || static_cast<size_t>(owner) >= worker_cqs_.size())
+    return nullptr;
+  return worker_cqs_[owner];
 }
 
 void FlagcxWorkerPool::startNotif(FlagcxP2pEngine *engine) {
@@ -780,9 +814,10 @@ void FlagcxWorkerPool::registerQp(void *sendComm, struct ibv_qp *qp) {
   qpEntries_.emplace_back(new PoolQpEntry(qp, sendComm));
   qpNumToIdx_[qp->qp_num] = idx;
 
-  int connIdx = connQpRegCount_[sendComm]++;
-  int slot = connIdx % numWorkers_;
-  workerQpIdx_[slot].push_back(idx);
+  const int owner = ownerForConn(sendComm);
+  if (owner >= 0) {
+    workerQpIdx_[owner].push_back(idx);
+  }
 }
 
 void FlagcxWorkerPool::unregisterQp(struct ibv_qp *qp) {
@@ -795,16 +830,14 @@ void FlagcxWorkerPool::unregisterQp(struct ibv_qp *qp) {
   int idx = it->second;
   qpNumToIdx_.erase(it);
   void *sc = qpEntries_[idx]->sendComm;
-  for (auto &shard : workerQpIdx_) {
-    auto vit = std::find(shard.begin(), shard.end(), idx);
-    if (vit != shard.end()) {
-      shard.erase(vit);
-      break;
+  const int owner = ownerForConn(sc);
+  if (owner >= 0 && owner < numWorkers_) {
+    auto &ownedQps = workerQpIdx_[owner];
+    auto vit = std::find(ownedQps.begin(), ownedQps.end(), idx);
+    if (vit != ownedQps.end()) {
+      ownedQps.erase(vit);
     }
   }
-  auto cit = connQpRegCount_.find(sc);
-  if (cit != connQpRegCount_.end() && --cit->second <= 0)
-    connQpRegCount_.erase(cit);
   // Slot kept alive (NULL'd) so any in-flight slice's qpDepth pointer stays
   // valid.
   qpEntries_[idx]->qp = nullptr;
@@ -826,25 +859,12 @@ flagcxResult_t FlagcxWorkerPool::submitPostSend(void *sendComm,
     std::this_thread::yield();
   }
 
-  const int fanout = std::min(numShards_, count);
-  int shard = 0;
-  if (fanout != numShards_) {
-    shard = static_cast<int>(
-        shardRoundRobin_.fetch_add(fanout, std::memory_order_relaxed) %
-        static_cast<uint64_t>(numShards_));
-  }
-  int offset = 0;
-  for (int i = 0; i < fanout; i++) {
-    const int remaining = count - offset;
-    const int shardsLeft = fanout - i;
-    const int take = (remaining + shardsLeft - 1) / shardsLeft;
-    std::lock_guard<std::mutex> lk(slice_locks_[shard]);
-    auto &vec = slice_queues_[shard][sendComm];
-    vec.insert(vec.end(), slices + offset, slices + offset + take);
-    slice_queue_count_[shard].fetch_add(take, std::memory_order_relaxed);
-    offset += take;
-    if (++shard == numShards_)
-      shard = 0;
+  const int owner = ownerForConn(sendComm);
+  if (owner < 0)
+    return flagcxInternalError;
+  {
+    std::lock_guard<std::mutex> lk(owner_slice_locks_[owner]);
+    owner_slice_queues_[owner][sendComm].append(slices, count);
   }
   submitted_.fetch_add(count, std::memory_order_release);
 
@@ -880,7 +900,7 @@ void FlagcxWorkerPool::transferWorkerLoop(int tid) {
     }
 
     performPostSend(tid);
-    performPollCq();
+    performPollCq(tid);
   }
 }
 
@@ -889,18 +909,17 @@ void FlagcxWorkerPool::performPostSend(int tid) {
     return;
 
   auto &local = collective_slice_queue_[tid];
-  for (int s = tid; s < numShards_; s += numWorkers_) {
-    if (slice_queue_count_[s].load(std::memory_order_relaxed) == 0)
-      continue;
-    std::lock_guard<std::mutex> lk(slice_locks_[s]);
-    for (auto &entry : slice_queues_[s]) {
-      if (entry.second.empty())
-        continue;
-      auto &dst = local[entry.first];
-      dst.append(entry.second);
+  {
+    std::lock_guard<std::mutex> lk(owner_slice_locks_[tid]);
+    for (auto &entry : owner_slice_queues_[tid]) {
+      if (!entry.second.empty()) {
+        auto &pending = entry.second;
+        local[entry.first].append(pending.slices.data() + pending.head,
+                                  pending.slices.size() - pending.head);
+      }
       entry.second.clear();
     }
-    slice_queue_count_[s].store(0, std::memory_order_relaxed);
+    owner_slice_queues_[tid].clear();
   }
 
   std::vector<PoolQpEntry *> myQpEntries;
@@ -986,16 +1005,18 @@ void FlagcxWorkerPool::performPostSend(int tid) {
   }
 }
 
-void FlagcxWorkerPool::performPollCq() {
-  if (shared_cq_ == nullptr)
+void FlagcxWorkerPool::performPollCq(int tid) {
+  if (tid < 0 || static_cast<size_t>(tid) >= worker_cqs_.size() ||
+      worker_cqs_[tid] == nullptr)
     return;
 
   constexpr int kMaxPollBatch = 256;
   struct ibv_wc wcs[kMaxPollBatch];
   int batch = (int)std::min<size_t>(batchPollSize_, kMaxPollBatch);
   int n = 0;
-  if (flagcxWrapIbvPollCq(shared_cq_, batch, wcs, &n) != flagcxSuccess) {
-    WARN("NET/IB_P2P : ibv_poll_cq failed on shared CQ %p", shared_cq_);
+  if (flagcxWrapIbvPollCq(worker_cqs_[tid], batch, wcs, &n) != flagcxSuccess) {
+    WARN("NET/IB_P2P : ibv_poll_cq failed on worker %d CQ %p", tid,
+         worker_cqs_[tid]);
     return;
   }
   if (n == 0)
@@ -1046,8 +1067,13 @@ static FlagcxWorkerPool *getOrCreatePool(int ibDevN, struct ibv_context *ctx) {
   if (ibDevN < 0 || ibDevN >= MAX_IB_DEVS || ctx == NULL)
     return NULL;
   std::lock_guard<std::mutex> lk(gPoolMu);
-  if (!gPools[ibDevN])
+  if (!gPools[ibDevN]) {
     gPools[ibDevN].reset(new FlagcxWorkerPool(ibDevN, ctx));
+    if (!gPools[ibDevN]->ready()) {
+      gPools[ibDevN].reset();
+      return nullptr;
+    }
+  }
   return gPools[ibDevN].get();
 }
 
@@ -1061,9 +1087,10 @@ static FlagcxWorkerPool *lookupPool(int ibDevN) {
 } // namespace
 
 // ---- Hooks consumed by ibrc_p2p_adaptor.cc (forward-declared there). ----
-struct ibv_cq *flagcxP2pPoolGetSharedCq(int ibDevN, struct ibv_context *ctx) {
+struct ibv_cq *flagcxP2pPoolGetCq(int ibDevN, struct ibv_context *ctx,
+                                  void *sendComm) {
   FlagcxWorkerPool *pool = getOrCreatePool(ibDevN, ctx);
-  return pool ? pool->getSharedCq() : NULL;
+  return pool ? pool->getCqForConn(sendComm) : NULL;
 }
 
 void flagcxP2pPoolRegisterQp(int ibDevN, void *sendComm, struct ibv_qp *qp) {
@@ -1135,8 +1162,11 @@ buildAndSubmitToPool(PoolTransferTask *task, const std::vector<void *> &dataVec,
                      const std::vector<FlagcxP2pRdmaDesc> &descs,
                      const std::vector<FlagcxP2pMemRegEntry> &localEntries,
                      int numIovs, void *sendComm, int connIbDevN,
-                     uint8_t opcode) {
-  const auto &sliceCfg = flagcxP2pGlobalConfig();
+                     uint8_t opcode, FlagcxP2pEngine *engine) {
+  const uint64_t sliceCfg =
+      engine->runtimeSliceConfig.load(std::memory_order_acquire);
+  const size_t sliceSize = sliceCfg >> 32;
+  const size_t fragmentLimit = uint32_t(sliceCfg);
   for (int i = 0; i < numIovs; i++) {
     if (localEntries[i].ibDevN != connIbDevN) {
       WARN("NET/IB_P2P : iov[%d] ibDevN mismatch (%d vs conn %d)", i,
@@ -1150,14 +1180,17 @@ buildAndSubmitToPool(PoolTransferTask *task, const std::vector<void *> &dataVec,
     uint64_t localVa = (uintptr_t)dataVec[i];
     uint64_t remoteVa = descs[i].addr;
     flagcxBuildSlicesRuntime(&task->fx, localVa, remoteVa, sizeVec[i],
-                             localMr->lkey, descs[i].rkey, opcode,
-                             sliceCfg.sliceSize, sliceCfg.fragmentLimit);
+                             localMr->lkey, descs[i].rkey, opcode, sliceSize,
+                             fragmentLimit);
   }
 
   if (task->fx.sliceList.empty()) {
     return false;
   }
 
+  TRACE(FLAGCX_P2P,
+        "pool submit iovs=%d slices=%zu sliceSize=%zu fragmentLimit=%zu",
+        numIovs, task->fx.sliceList.size(), sliceSize, fragmentLimit);
   flagcxResult_t rc =
       flagcxP2pPoolSubmit(connIbDevN, sendComm, task->fx.sliceList.data(),
                           (int)task->fx.sliceList.size());
@@ -2063,6 +2096,10 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   }
 
   FlagcxP2pEngine *engine = new FlagcxP2pEngine;
+  const auto &config = flagcxP2pGlobalConfig();
+  engine->runtimeSliceConfig.store(
+      flagcxP2pControl::pack(config.sliceSize, config.fragmentLimit),
+      std::memory_order_relaxed);
   engine->adaptor = &flagcxNetIbP2p;
   engine->topoMgr = NULL;
   engine->nDevs = 0;
@@ -2560,16 +2597,56 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
     return NULL;
   }
 
-  // Step 2: Exchange IB listen handles over bootstrap
+  // The first bootstrap frame distinguishes legacy connect (tag 4) from
+  // runtime control. Do not establish any QP/MR state for a control request.
+  int header[2] = {};
+  const int fd = bsConn->p2p->sock.fd;
+  if (!flagcxP2pControl::receive(fd, header, sizeof(header),
+                                 engine->stopAccept)) {
+    bootstrapClose(bsConn);
+    return NULL;
+  }
+  if (header[0] == flagcxP2pControl::kTag) {
+    if (header[1] <= 0 || header[1] > flagcxP2pControl::kMaxRequest) {
+      bootstrapClose(bsConn);
+      return NULL;
+    }
+    std::string request(header[1], '\0');
+    if (flagcxP2pControl::receive(fd, &request[0], request.size(),
+                                  engine->stopAccept)) {
+      const char *error =
+          flagcxP2pControl::update(engine->runtimeSliceConfig, request);
+      const uint64_t config =
+          engine->runtimeSliceConfig.load(std::memory_order_acquire);
+      char reply[256];
+      const int length =
+          snprintf(reply, sizeof(reply),
+                   "{\"status\":%d,\"slice_size\":%u,\"fragment_limit\":%u,"
+                   "\"error\":\"%s\"}",
+                   error ? -1 : 0, unsigned(config >> 32),
+                   unsigned(uint32_t(config)), error ? error : "");
+      // Failure to deliver the ACK does not undo an applied update. GET lets
+      // the client resolve an uncertain result without retransmitting a SET.
+      bootstrapSend(bsConn, 0, flagcxP2pControl::kTag, reply, length);
+      if (!error && request != "GET")
+        INFO(FLAGCX_INIT,
+             "P2P runtime config engine=%p sliceSize=%u fragmentLimit=%u",
+             engine, unsigned(config >> 32), unsigned(uint32_t(config)));
+    }
+    bootstrapClose(bsConn);
+    return NULL; // RPC accept loop continues; no data connection was created.
+  }
+
+  // Legacy handshake is unchanged on the wire; its header was consumed above.
   char localIbHandle[FLAGCX_NET_HANDLE_MAXSIZE];
   memcpy(localIbHandle, engine->listeners[dev].handle,
          FLAGCX_NET_HANDLE_MAXSIZE);
-
   char remoteIbHandle[FLAGCX_NET_HANDLE_MAXSIZE];
-  memset(remoteIbHandle, 0, sizeof(remoteIbHandle));
-  if (bootstrapExchange(bsConn, 0, 4, localIbHandle, FLAGCX_NET_HANDLE_MAXSIZE,
-                        remoteIbHandle,
-                        FLAGCX_NET_HANDLE_MAXSIZE) != flagcxSuccess) {
+  if (header[0] != 4 || header[1] != FLAGCX_NET_HANDLE_MAXSIZE ||
+      !flagcxP2pControl::receive(fd, remoteIbHandle, sizeof(remoteIbHandle),
+                                 engine->stopAccept) ||
+      bootstrapSend(bsConn, 0, 4, localIbHandle, sizeof(localIbHandle)) !=
+          flagcxSuccess) {
     bootstrapClose(bsConn);
     return NULL;
   }
@@ -3115,7 +3192,8 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
   PoolTransferTask *task = acquirePoolTask();
 
   if (!buildAndSubmitToPool(task, dstVec, sizeVec, descs, localEntries, numIovs,
-                            conn->sendComm, connIbDevN, FLAGCX_SLICE_OP_READ)) {
+                            conn->sendComm, connIbDevN, FLAGCX_SLICE_OP_READ,
+                            conn->engine)) {
     // sentinel so isAllDone() converges (needs total>0)
     auto *sentinel = new FlagcxSlice{
         0, 0, 0, 0, 0, FLAGCX_SLICE_OP_READ, &task->fx, nullptr};
@@ -3227,8 +3305,8 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
   PoolTransferTask *task = acquirePoolTask();
 
   if (!buildAndSubmitToPool(task, dstVec, sizeVec, descs, localEntries, numIovs,
-                            conn->sendComm, connIbDevN,
-                            FLAGCX_SLICE_OP_WRITE)) {
+                            conn->sendComm, connIbDevN, FLAGCX_SLICE_OP_WRITE,
+                            conn->engine)) {
     auto *sentinel = new FlagcxSlice{
         0, 0, 0, 0, 0, FLAGCX_SLICE_OP_WRITE, &task->fx, nullptr};
     task->fx.sliceList.push_back(sentinel);
@@ -3651,8 +3729,8 @@ int flagcxP2pRpcBatchWriteSync(void *connPtr, int count, const uint64_t *srcVa,
   const int connIbDevN = getCommView(conn->sendComm)->ibDevN;
   PoolTransferTask *task = acquirePoolTask();
   if (!buildAndSubmitToPool(task, srcVec, sizeVec, descs, localEntries, count,
-                            conn->sendComm, connIbDevN,
-                            FLAGCX_SLICE_OP_WRITE)) {
+                            conn->sendComm, connIbDevN, FLAGCX_SLICE_OP_WRITE,
+                            conn->engine)) {
     auto *sentinel = new FlagcxSlice{
         0, 0, 0, 0, 0, FLAGCX_SLICE_OP_WRITE, &task->fx, nullptr};
     task->fx.sliceList.push_back(sentinel);
