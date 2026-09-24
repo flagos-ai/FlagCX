@@ -2082,11 +2082,11 @@ flagcxResult_t flagcxC2cPlanner::findStrategy() {
       for (int c = 0; c < comm_->nclusters; ++c) {
         if (c != clusterId_) {
           if (algorithm_ == flagcxAlgoSequential) {
-            preHomoFuncSteps_[0].emplace_back(
+            postHomoFuncSteps_[0].emplace_back(
                 comm_->globalRank2HomoRank[rootRank_], 2, 1, 0,
                 clusterOffset * sendCount_, sendCount_, 2, postHomoFuncCommOp);
           } else {
-            preHomoFuncSteps_[step].emplace_back(
+            postHomoFuncSteps_[step].emplace_back(
                 comm_->globalRank2HomoRank[rootRank_], 2, 1, 0,
                 clusterOffset * sendCount_, sendCount_, 2, postHomoFuncCommOp);
             step++;
