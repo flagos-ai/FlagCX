@@ -26,7 +26,7 @@
 # refuses the install ("nothing provides libascendcl.so") even though the
 # target host has CANN deployed. Deployment supplies CANN, the same contract
 # external_vendor_runtime expresses for the NVIDIA libraries.
-%global __requires_exclude ^lib(ascendcl|hccl)\\.so\\..*
+%global __requires_exclude ^lib(ascendcl|hccl)\\.so
 %endif
 
 # Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
