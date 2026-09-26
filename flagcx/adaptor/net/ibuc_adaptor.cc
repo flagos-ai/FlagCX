@@ -12,6 +12,7 @@
 #include "flagcx_net.h"
 #include "ib_common.h"
 #include "ib_retrans.h"
+#include "ib_transport.h"
 #include "ibvwrap.h"
 #include "net.h"
 #include "param.h"
@@ -2120,8 +2121,10 @@ flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
   int nqps =
       flagcxParamIbucSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
   for (int i = 0; i < nqps; i++) {
-    int qpIndex = comm->base.qpIndex;
-    flagcxIbQp *qp = comm->base.qps + qpIndex;
+    struct flagcxIbLane lane = {};
+    FLAGCXCHECK(
+        flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, 0, &lane));
+    flagcxIbQp *qp = lane.ibQp;
     int devIndex = qp->devIndex;
     for (int r = 0; r < nreqs; r++) {
       comm->wrs[r].wr.rdma.rkey = slots[r].rkeys[qp->remDevIdx];
@@ -2212,8 +2215,8 @@ flagcxResult_t flagcxIbucMultiSend(struct flagcxIbSendComm *comm, int slot) {
       comm->wrs[r].wr.rdma.remote_addr += chunkSize;
     }
 
-    // Select the next qpIndex
-    comm->base.qpIndex = (comm->base.qpIndex + 1) % comm->base.nqps;
+    FLAGCXCHECK(
+        flagcxIbCommitLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, &lane));
   }
 
   if (comm->retrans.enabled)
@@ -2297,10 +2300,16 @@ flagcxResult_t flagcxIbucIsend(void *sendComm, void *data, size_t size, int tag,
     // Populate events
     int nEvents =
         flagcxParamIbucSplitDataOnQps() ? comm->base.nqps : comm->base.ndevs;
-    int qpIndex = comm->base.qpIndex;
+    struct flagcxNetLaneSet previewLanes = {
+        (uint32_t)comm->base.nqps,
+        (uint32_t)comm->base.qpIndex,
+    };
     // Count down
     while (nEvents > 0) {
-      flagcxIbQp *qp = comm->base.qps + qpIndex;
+      uint32_t laneIndex = 0;
+      FLAGCXCHECK(flagcxNetSelectLane(&previewLanes, FLAGCX_NET_LANE_UNORDERED,
+                                      0, &laneIndex));
+      flagcxIbQp *qp = comm->base.qps + laneIndex;
       int devIndex = qp->devIndex;
       flagcxIbucAddEvent(req, devIndex, &comm->devs[devIndex].base);
       // Track the valid lkey for this RDMA_Write
@@ -2308,7 +2317,8 @@ flagcxResult_t flagcxIbucIsend(void *sendComm, void *data, size_t size, int tag,
       nEvents--;
       // Don't update comm->base.qpIndex yet, we need to run through this same
       // set of QPs inside flagcxIbucMultiSend()
-      qpIndex = (qpIndex + 1) % comm->base.nqps;
+      FLAGCXCHECK(flagcxNetCommitLane(&previewLanes, FLAGCX_NET_LANE_UNORDERED,
+                                      laneIndex));
     }
 
     // Store all lkeys
@@ -2408,9 +2418,13 @@ flagcxResult_t flagcxIbucIrecv(void *recvComm, int n, void **data,
   // Associate this logical request with the same QPs the sender will stripe
   // over, without tying receive-WQE ownership to the request slot.
   for (int i = 0; i < nqps; i++) {
-    struct flagcxIbQp *qp = comm->base.qps + comm->base.qpIndex;
+    struct flagcxIbLane lane = {};
+    FLAGCXCHECK(
+        flagcxIbSelectLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, 0, &lane));
+    struct flagcxIbQp *qp = lane.ibQp;
     flagcxIbucAddDataEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
-    comm->base.qpIndex = (comm->base.qpIndex + 1) % comm->base.nqps;
+    FLAGCXCHECK(
+        flagcxIbCommitLane(&comm->base, FLAGCX_NET_LANE_UNORDERED, &lane));
   }
 
   TIME_STOP(1);

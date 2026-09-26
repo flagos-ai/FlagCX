@@ -8,6 +8,7 @@
 #include "comm.h"
 #include "core.h"
 #include "net.h"
+#include "net_transport.h"
 #include "param.h"
 #include "socket.h"
 #include <fcntl.h>
@@ -468,7 +469,16 @@ flagcxResult_t flagcxNetSocketGetRequest(struct flagcxNetSocketComm *comm,
 flagcxResult_t flagcxNetSocketGetTask(struct flagcxNetSocketComm *comm, int op,
                                       void *data, int size,
                                       struct flagcxNetSocketTask **req) {
-  int tid = comm->nextSock % comm->nThreads;
+  if (comm == NULL || req == NULL || comm->nSocks <= 0 || comm->nThreads <= 0)
+    return flagcxInvalidArgument;
+  struct flagcxNetLaneSet lanes = {
+      (uint32_t)comm->nSocks,
+      (uint32_t)comm->nextSock,
+  };
+  uint32_t laneIndex = 0;
+  FLAGCXCHECK(
+      flagcxNetSelectLane(&lanes, FLAGCX_NET_LANE_UNORDERED, 0, &laneIndex));
+  int tid = (int)laneIndex % comm->nThreads;
   struct flagcxNetSocketThreadResources *res = comm->threadResources + tid;
   struct flagcxNetSocketTaskQueue *queue = &res->threadTaskQueue;
   // create helper threads and prepare per-thread task queue
@@ -492,10 +502,12 @@ flagcxResult_t flagcxNetSocketGetTask(struct flagcxNetSocketComm *comm, int op,
     r->op = op;
     r->data = data;
     r->size = size;
-    r->sock = comm->socks + comm->nextSock;
+    r->sock = comm->socks + laneIndex;
     r->offset = 0;
     r->result = flagcxSuccess;
-    comm->nextSock = (comm->nextSock + 1) % comm->nSocks;
+    FLAGCXCHECK(
+        flagcxNetCommitLane(&lanes, FLAGCX_NET_LANE_UNORDERED, laneIndex));
+    comm->nextSock = (int)lanes.unorderedCursor;
     r->used = 1;
     *req = r;
     pthread_mutex_lock(&res->threadLock);

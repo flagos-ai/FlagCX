@@ -11,6 +11,7 @@
 #include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
 #include "ib_common.h"
+#include "ib_transport.h"
 #include "ibvwrap.h"
 #include "socket.h"
 
@@ -847,6 +848,19 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
       break;
     }
   }
+  if (qpIndex < 0) {
+    WARN("NET/IB_P2P : sliceBatch received a QP outside this connection");
+    for (int i = 0; i < count; ++i) {
+      if (slices[i] != NULL) {
+        if (slices[i]->qpDepth != NULL)
+          __sync_fetch_and_sub(slices[i]->qpDepth, 1);
+        slices[i]->markFailed();
+      }
+    }
+    if (failedCount != NULL)
+      *failedCount = count;
+    return flagcxInvalidArgument;
+  }
 
   for (int i = 0; i < count; i++) {
     FlagcxSlice *s = slices[i];
@@ -891,15 +905,18 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
           flagcxP2pMtuToLength(comm->effectiveMtu), s);
   }
 
-  struct ibv_send_wr *bad_wr = NULL;
-  flagcxResult_t res = flagcxWrapIbvPostSend(qp, wrs, &bad_wr);
-  if (res != flagcxSuccess) {
-    int failedFrom = 0;
-    if (bad_wr != NULL) {
-      ptrdiff_t off = bad_wr - wrs;
-      if (off >= 0 && off < count)
-        failedFrom = (int)off;
-    }
+  struct flagcxIbLane lane = {};
+  lane.base.index = (uint32_t)qpIndex;
+  lane.ibQp = &comm->qp_list_[qpIndex];
+  struct flagcxNetPostResult post = {};
+  flagcxResult_t postCallResult =
+      flagcxIbPostSendList(&lane, wrs, count, false, &post);
+  if (postCallResult != flagcxSuccess) {
+    post.result = postCallResult;
+    post.accepted = 0;
+  }
+  if (post.result != flagcxSuccess) {
+    const int failedFrom = post.accepted;
     // Slices in [failedFrom..count) never went on the wire — roll back
     // their share of the pool's qpDepth pre-bump so the gate doesn't leak.
     for (int k = failedFrom; k < count; k++) {
@@ -912,7 +929,7 @@ extern "C" flagcxResult_t flagcxP2pSliceBatch(void *sendComm, struct ibv_qp *qp,
     WARN("NET/IB_P2P : sliceBatch ibv_post_send failed (op=%s, count=%d, "
          "failedFrom=%d)",
          opLabel, count, failedFrom);
-    return res;
+    return post.result;
   }
 
   return flagcxSuccess;

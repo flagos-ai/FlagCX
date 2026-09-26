@@ -12,36 +12,7 @@
 #include <stdint.h>
 
 #include "comm.h" // for flagcxHeteroComm_t
-
-struct flagcxSymWindow; // forward declaration
-struct flagcxNetMrInfo;
-
-struct flagcxOneSideHandleInfo {
-  uintptr_t *baseVas;
-  size_t *regionSizes;             // [nRanks]
-  struct flagcxNetMrInfo *mrInfos; // [nRanks], including per-NIC keys
-  void *localMrHandle;             // local rank's MR handle for deregMr
-  void *localRecvComm; // recvComm used for MR registration (PD match)
-  // Full-mesh RDMA connections (including self loopback, aligned with NCCL GIN)
-  void **fullSendComms; // [nRanks] per-peer sendComm — alias for
-                        // contextSendComms[0]
-  void **fullRecvComms; // [nRanks] per-peer recvComm — alias for
-                        // contextRecvComms[0]
-  int nRanks;           // number of ranks (for cleanup iteration)
-
-  // Per-context QP arrays for thread isolation (NCCL GIN pattern).
-  // Context 0 = RMA proxy; contexts 1..N = kernel proxy threads.
-  // Each context has its own full-mesh of RC QPs so no QP is shared
-  // across threads. All contexts share the same MR handles/rkeys (same PD).
-  void ***contextSendComms; // [nContexts][nRanks]
-  void ***contextRecvComms; // [nContexts][nRanks]
-  int nContexts;            // 1 + nKernelProxies
-
-  // Symmetric memory window for intra-node D2D bypass (CE path).
-  // NULL if VMM not available or window not registered with
-  // FLAGCX_WIN_COLL_SYMMETRIC.
-  struct flagcxSymWindow *symWin;
-};
+#include "onesided_types.h"
 
 // Internal implementation used by sym_heap and flagcxCommRegister
 flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,

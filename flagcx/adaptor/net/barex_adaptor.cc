@@ -27,6 +27,7 @@
 #include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
 #include "net.h"
+#include "net_transport.h"
 #include "onesided.h"
 #include "param.h"
 #include "socket.h"
@@ -1312,18 +1313,14 @@ static flagcxResult_t barexPrepareOneSided(
     uint64_t *remoteAddress, uint32_t *remoteRkey) {
   if (comm == nullptr || localInfo == nullptr || remoteInfo == nullptr ||
       localMem == nullptr || remoteAddress == nullptr ||
-      remoteRkey == nullptr || localInfo->baseVas == nullptr ||
-      remoteInfo->baseVas == nullptr || localInfo->regionSizes == nullptr ||
-      remoteInfo->regionSizes == nullptr || localInfo->mrInfos == nullptr ||
-      remoteInfo->mrInfos == nullptr || localInfo->localMrHandle == nullptr ||
-      localRank < 0 || localRank >= localInfo->nRanks || remoteRank < 0 ||
-      remoteRank >= remoteInfo->nRanks)
+      remoteRkey == nullptr || localInfo->localMrHandle == nullptr)
     return flagcxInvalidArgument;
-  if (localOffset > localInfo->regionSizes[localRank] ||
-      size > localInfo->regionSizes[localRank] - localOffset ||
-      remoteOffset > remoteInfo->regionSizes[remoteRank] ||
-      size > remoteInfo->regionSizes[remoteRank] - remoteOffset)
-    return flagcxInvalidArgument;
+  struct flagcxNetResolvedRange localRange = {};
+  struct flagcxNetResolvedRange remoteRange = {};
+  FLAGCXCHECK(flagcxNetResolveOneSideRange(localInfo, localRank, localOffset,
+                                           size, &localRange));
+  FLAGCXCHECK(flagcxNetResolveOneSideRange(remoteInfo, remoteRank, remoteOffset,
+                                           size, &remoteRange));
   if (size > std::numeric_limits<uint32_t>::max())
     return flagcxInvalidArgument;
   flagcxResult_t submissionStatus = comm->submissionStatus();
@@ -1334,31 +1331,24 @@ static flagcxResult_t barexPrepareOneSided(
 
   const int localNic = comm->channel->GetLocalNicId();
   const int peerNic = comm->channel->GetPeerNicId();
-  const struct flagcxNetMrInfo &remoteMrInfo = remoteInfo->mrInfos[remoteRank];
+  const struct flagcxNetMrInfo &remoteMrInfo = *remoteRange.mrInfo;
   if (localNic < 0 || localNic >= kMaxNics || peerNic < 0 ||
       peerNic >= kMaxNics || (uint32_t)peerNic >= remoteMrInfo.nKeys)
     return flagcxInvalidArgument;
 
   auto *mr = static_cast<BarexMr *>(localInfo->localMrHandle);
-  if (localInfo->baseVas[localRank] >
-      std::numeric_limits<uintptr_t>::max() - localOffset)
-    return flagcxInvalidArgument;
-  const uintptr_t localAddress = localInfo->baseVas[localRank] + localOffset;
+  const uintptr_t localAddress = localRange.address;
   if (localAddress < mr->base || localAddress - mr->base > mr->size ||
       size > mr->size - (localAddress - mr->base))
     return flagcxInvalidArgument;
   auto mrIt = mr->mem.mrs.find(localNic);
   if (mrIt == mr->mem.mrs.end() || mrIt->second == nullptr)
     return flagcxInvalidArgument;
-  if (remoteInfo->baseVas[remoteRank] >
-      std::numeric_limits<uint64_t>::max() - remoteOffset)
-    return flagcxInvalidArgument;
-
   *localMem = mr->mem;
   localMem->buf = reinterpret_cast<char *>(localAddress);
   localMem->buf_len = size;
   localMem->mr = mrIt->second;
-  *remoteAddress = remoteInfo->baseVas[remoteRank] + remoteOffset;
+  *remoteAddress = remoteRange.address;
   *remoteRkey = remoteMrInfo.rkeys[peerNic];
   return flagcxSuccess;
 }
@@ -1548,33 +1538,27 @@ barexIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
       barexReleaseRequest(req);
     /* BAREX does not report a rejected element, so a synchronous failure is
        treated as accepting no work. */
-    return mapped;
+    struct flagcxNetPostResult post = {};
+    FLAGCXCHECK(flagcxNetPostResultInit(&post, count, 0, mapped));
+    return post.result;
   }
 
-  for (int i = 0; i < accepted; ++i)
+  struct flagcxNetPostResult post = {};
+  FLAGCXCHECK(flagcxNetPostResultInit(&post, count, accepted,
+                                      accepted == count ? flagcxSuccess
+                                                        : flagcxInProgress));
+  for (int i = 0; i < post.accepted; ++i)
     requests[i] = (*acceptedRequests)[i];
-  *posted = accepted;
-  return accepted == count ? flagcxSuccess : flagcxInProgress;
+  *posted = post.accepted;
+  return post.result;
 }
 
 static flagcxResult_t barexTestBatch(void **requests, int nRequests,
                                      int *doneFlags, int *doneCount) {
-  if (doneCount == nullptr || nRequests < 0 || nRequests > kMaxRequests ||
-      (nRequests > 0 && (requests == nullptr || doneFlags == nullptr)))
+  if (nRequests > kMaxRequests)
     return flagcxInvalidArgument;
-  *doneCount = 0;
-  flagcxResult_t firstError = flagcxSuccess;
-  for (int i = 0; i < nRequests; ++i) {
-    doneFlags[i] = 0;
-    flagcxResult_t result = barexTest(requests[i], &doneFlags[i], nullptr);
-    if (doneFlags[i]) {
-      requests[i] = nullptr;
-      (*doneCount)++;
-    }
-    if (result != flagcxSuccess && firstError == flagcxSuccess)
-      firstError = result;
-  }
-  return firstError;
+  return flagcxNetTestBatchCommon(requests, nRequests, doneFlags, doneCount,
+                                  barexTest);
 }
 
 static flagcxResult_t barexIgetBatch(void *sendComm, int count,
