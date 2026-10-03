@@ -28,6 +28,14 @@ extern struct flagcxNetAdaptor flagcxNetIbP2p;
 
 namespace {
 
+bool directGpuReadVisibilityUnavailable() {
+  const uint32_t requirements = flagcxResolveGdrFlushRequirements(
+      deviceAdaptor == nullptr ? FLAGCX_GDR_FLUSH_NONE
+                               : deviceAdaptor->gdrFlushRequirements);
+  return (requirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0 &&
+         (flagcxNetIbP2p.gdrFlushCaps & FLAGCX_NET_GDR_FLUSH_READ) == 0;
+}
+
 struct ParsedEngineMetadata {
   std::string ip;
   int rdmaPort = -1;
@@ -427,6 +435,8 @@ private:
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
+  if (directGpuReadVisibilityUnavailable())
+    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   const size_t testSizes[] = {1024, 2048, 2052, 2304, 4096, 8192};
@@ -533,6 +543,8 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
+  if (directGpuReadVisibilityUnavailable())
+    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kChunkBytes = 2048;
@@ -705,6 +717,8 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsReadBeforeSubmission) {
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
+  if (directGpuReadVisibilityUnavailable())
+    GTEST_SKIP() << "Direct P2P has no required post-READ visibility stage";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kSourceElems = 256;

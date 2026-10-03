@@ -30,6 +30,7 @@
 #include "p2p_control.h"
 #include "p2p_scheduler.h"
 #include "p2p_topo.h"
+#include "p2p_visibility.h"
 #include "param.h"
 #include "socket.h"
 
@@ -555,6 +556,35 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
   if (!conn->initiator) {
     WARN("NET/ACCL_P2P : v1 supports initiator-side transfers only");
     return -1;
+  }
+
+  if (isRead) {
+    const uint32_t requirements = flagcxResolveGdrFlushRequirements(
+        deviceAdaptor == nullptr ? FLAGCX_GDR_FLUSH_NONE
+                                 : deviceAdaptor->gdrFlushRequirements);
+    for (int i = 0; i < numIovs; i++) {
+      if (sizeVec[i] == 0)
+        continue;
+      AcclMrEntry entry;
+      if (!findMrContaining(engine, reinterpret_cast<uintptr_t>(localVec[i]), 1,
+                            &entry)) {
+        WARN("NET/ACCL_P2P : local READ buffer %p is not registered",
+             localVec[i]);
+        return -1;
+      }
+      const int ptrType =
+          entry.dtype == GPU ? FLAGCX_PTR_CUDA : FLAGCX_PTR_HOST;
+      // BAREX currently exposes no post-READ visibility primitive. PPU's
+      // default policy is NONE, but an explicit READ requirement must fail
+      // closed rather than silently consume potentially stale GPU data.
+      if (flagcxP2pValidateReadVisibility(requirements,
+                                          FLAGCX_NET_GDR_FLUSH_NONE, ptrType,
+                                          sizeVec[i], 0) != flagcxSuccess) {
+        WARN("NET/ACCL_P2P : GPU READ requires a visibility flush, but BAREX "
+             "has no completion flush stage");
+        return -1;
+      }
+    }
   }
 
   struct ChannelGroup {

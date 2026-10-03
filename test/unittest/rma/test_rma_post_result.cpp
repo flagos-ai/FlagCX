@@ -229,6 +229,7 @@ protected:
     net_.iputSignal = mockPutSignal;
     net_.iflush = mockFlush;
     net_.test = mockTest;
+    net_.gdrFlushCaps = FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE;
 
     flagcxIntruQueueConstruct(&inProgress_);
     pthread_mutex_init(&producerMutex_, nullptr);
@@ -357,7 +358,7 @@ TEST_F(RmaSharedTransportFixture,
   EXPECT_EQ(doneSeqCpu_, 2u);
 }
 
-TEST_F(RmaSharedTransportFixture, GetWithoutCapabilityRetiresAtDataCqe) {
+TEST_F(RmaSharedTransportFixture, GetWithoutRequirementRetiresAtDataCqe) {
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
 
   Progress();
@@ -370,8 +371,19 @@ TEST_F(RmaSharedTransportFixture, GetWithoutCapabilityRetiresAtDataCqe) {
   EXPECT_EQ(proxy_.completionCount, 1u);
 }
 
+TEST_F(RmaSharedTransportFixture,
+       GetVisibilityPolicyIsIndependentOfRegistrationRoute) {
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
+  const uint8_t routes[] = {FLAGCX_VMM_MR_ROUTE_NONE, FLAGCX_VMM_MR_ROUTE_VA,
+                            FLAGCX_VMM_MR_ROUTE_DMABUF};
+  for (uint8_t route : routes) {
+    mrInfo_.registrationRoute = route;
+    EXPECT_TRUE(flagcxOneSideGetCompletionRequiresFlush(&comm_, 0));
+  }
+}
+
 TEST_F(RmaSharedTransportFixture, GetWaitsForRequiredVisibilityFlush) {
-  mrInfo_.getCompletionRequiresFlush = 1;
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
 
   Progress();
@@ -392,7 +404,7 @@ TEST_F(RmaSharedTransportFixture, GetWaitsForRequiredVisibilityFlush) {
 }
 
 TEST_F(RmaSharedTransportFixture, LargeGetSaturatesLegacyFlushSize) {
-  mrInfo_.getCompletionRequiresFlush = 1;
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
   regionSizes_[0] = static_cast<size_t>(UINT32_MAX);
 
   const size_t sizes[] = {static_cast<size_t>(INT_MAX) + 1,
@@ -421,7 +433,7 @@ TEST_F(RmaSharedTransportFixture, LargeGetSaturatesLegacyFlushSize) {
 }
 
 TEST_F(RmaSharedTransportFixture, GetFlushBackpressureRetriesDescriptor) {
-  mrInfo_.getCompletionRequiresFlush = 1;
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
   mockFlushBackpressure = 1;
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
 
@@ -440,7 +452,7 @@ TEST_F(RmaSharedTransportFixture, GetFlushBackpressureRetriesDescriptor) {
 }
 
 TEST_F(RmaSharedTransportFixture, GetFlushFailureIsTerminal) {
-  mrInfo_.getCompletionRequiresFlush = 1;
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
   mockFlushResult = flagcxRemoteError;
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
 
@@ -455,8 +467,61 @@ TEST_F(RmaSharedTransportFixture, GetFlushFailureIsTerminal) {
 }
 
 TEST_F(RmaSharedTransportFixture,
+       RequiredGetFlushWithoutProviderCapabilityIsTerminal) {
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
+  net_.gdrFlushCaps = FLAGCX_NET_GDR_FLUSH_NONE;
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
+
+  Progress();
+  ASSERT_EQ(mockDataPosts, 1);
+  mockRequests[0].done = 1;
+  Progress();
+  Progress();
+
+  EXPECT_EQ(mockFlushPosts, 0);
+  EXPECT_EQ(proxy_.completionCount, 0u);
+  EXPECT_NE(proxy_.rmaError, 0);
+}
+
+TEST_F(RmaSharedTransportFixture, WriteOnlyRequirementDoesNotFlushGet) {
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
+
+  Progress();
+  ASSERT_EQ(mockDataPosts, 1);
+  mockRequests[0].done = 1;
+  Progress();
+
+  EXPECT_EQ(mockFlushPosts, 0);
+  EXPECT_EQ(doneSeq_, 1u);
+  EXPECT_EQ(proxy_.completionCount, 1u);
+}
+
+TEST_F(RmaSharedTransportFixture,
+       ZeroByteGetDoesNotRequireProviderFlushCapability) {
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
+  net_.gdrFlushCaps = FLAGCX_NET_GDR_FLUSH_NONE;
+
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 0, 0, 0), flagcxSuccess);
+  Progress();
+  EXPECT_EQ(mockDataPosts, 1);
+  mockRequests[0].done = 1;
+  Progress();
+
+  EXPECT_EQ(mockFlushPosts, 0);
+  EXPECT_EQ(doneSeq_, 1u);
+  EXPECT_EQ(proxy_.completionCount, 1u);
+
+  void *flushRequest = reinterpret_cast<void *>(0x1);
+  EXPECT_EQ(flagcxOneSidePostGetVisibilityFlush(&comm_, 0, 0, 0, nullptr,
+                                                &flushRequest),
+            flagcxSuccess);
+  EXPECT_EQ(flushRequest, nullptr);
+}
+
+TEST_F(RmaSharedTransportFixture,
        OutOfOrderGetFlushesStillAdvanceContiguousPrefix) {
-  mrInfo_.getCompletionRequiresFlush = 1;
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 8, 8, 8, 0, 0), flagcxSuccess);
 

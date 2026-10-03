@@ -34,6 +34,54 @@
 
 flagcxRegPool globalRegPool;
 
+// -1 keeps the adaptor default, 0 is an expert disable, and 1 forces the
+// requirement. These knobs change policy only; they cannot manufacture a
+// missing transport or device visibility capability.
+FLAGCX_PARAM(GdrReadRequiresFlush, "GDR_READ_REQUIRES_FLUSH", -1);
+FLAGCX_PARAM(GdrWriteRequiresFlush, "GDR_WRITE_REQUIRES_FLUSH", -1);
+
+uint32_t flagcxApplyGdrFlushRequirementOverrides(uint32_t defaults,
+                                                 int64_t readOverride,
+                                                 int64_t writeOverride) {
+  uint32_t requirements = defaults;
+  if (readOverride == 0)
+    requirements &= ~FLAGCX_GDR_READ_REQUIRES_FLUSH;
+  else if (readOverride == 1)
+    requirements |= FLAGCX_GDR_READ_REQUIRES_FLUSH;
+
+  if (writeOverride == 0)
+    requirements &= ~FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+  else if (writeOverride == 1)
+    requirements |= FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+  return requirements;
+}
+
+uint32_t flagcxResolveGdrFlushRequirements(uint32_t defaults) {
+  return flagcxApplyGdrFlushRequirementOverrides(
+      defaults, flagcxParamGdrReadRequiresFlush(),
+      flagcxParamGdrWriteRequiresFlush());
+}
+
+flagcxResult_t flagcxValidateGdrFlushCapability(uint32_t requirements,
+                                                uint32_t capabilities,
+                                                uint32_t direction) {
+  // Requirement and provider-capability bits intentionally use the same READ
+  // and WRITE positions, but keep the two enums separate: needing a visibility
+  // boundary and being able to implement it are different contracts.
+  static_assert(static_cast<uint32_t>(FLAGCX_GDR_READ_REQUIRES_FLUSH) ==
+                    static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_READ),
+                "READ requirement and capability bits must stay aligned");
+  static_assert(static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH) ==
+                    static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_WRITE),
+                "WRITE requirement and capability bits must stay aligned");
+  const uint32_t knownDirections =
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+  if (direction == 0 || (direction & ~knownDirections) != 0)
+    return flagcxInvalidArgument;
+  return (requirements & direction & ~capabilities) == 0 ? flagcxSuccess
+                                                         : flagcxNotSupported;
+}
+
 size_t getFlagcxDataTypeSize(flagcxDataType_t dtype) {
   switch (dtype) {
     // case flagcxInt8:
@@ -1426,10 +1474,11 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
                                 FLAGCX_PTR_CUDA, isVmm, FLAGCX_NET_MR_FLAG_NONE,
                                 &mrHandle, &selectedRoute);
   info->registrationRoute = (uint8_t)selectedRoute;
-  info->getCompletionRequiresFlush =
-      isVmm && selectedRoute != FLAGCX_VMM_MR_ROUTE_NONE &&
-      (deviceAdaptor->rmaSemantics &
-       FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH) != 0;
+  // Visibility is a property of the device/NIC path, not of how this MR was
+  // registered. In particular, an ordinary cudaMalloc-style allocation needs
+  // the same post-READ acquire as a VMM allocation on Hygon.
+  info->gdrFlushRequirements =
+      flagcxResolveGdrFlushRequirements(deviceAdaptor->gdrFlushRequirements);
   if (mrHandle != NULL) {
     info->localMrHandle = mrHandle;
     info->ownsLocalMr = 1;

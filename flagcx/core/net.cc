@@ -13,6 +13,27 @@
 
 namespace {
 
+flagcxResult_t
+flagcxGetCollectiveWriteVisibilityPolicy(struct flagcxNetAdaptor *net,
+                                         bool *required) {
+  if (net == NULL || deviceAdaptor == NULL || required == NULL)
+    return flagcxNotSupported;
+  const uint32_t requirements =
+      flagcxResolveGdrFlushRequirements(deviceAdaptor->gdrFlushRequirements);
+  *required = (requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH) != 0;
+  if (!*required)
+    return flagcxSuccess;
+  const flagcxResult_t capabilityResult = flagcxValidateGdrFlushCapability(
+      requirements, net->gdrFlushCaps, FLAGCX_GDR_WRITE_REQUIRES_FLUSH);
+  if (capabilityResult != flagcxSuccess) {
+    // BAREX intentionally keeps a legacy no-op callback for automatic PPU CI
+    // compatibility. An explicitly forced WRITE requirement cannot use that
+    // callback as proof of device visibility.
+    return capabilityResult;
+  }
+  return flagcxSuccess;
+}
+
 class flagcxCollSubmitScope {
 public:
   explicit flagcxCollSubmitScope(const struct flagcxNetSubmitContext *context) {
@@ -428,6 +449,13 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
       int step = args->postFlush & stepMask;
       if (args->netCompleted[step]) {
         if (resources->netAdaptor == getNetAdaptor(RDMA)) {
+          bool flushRequired = false;
+          FLAGCXCHECK(flagcxGetCollectiveWriteVisibilityPolicy(
+              resources->netAdaptor, &flushRequired));
+          if (!flushRequired) {
+            args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
+            return flagcxSuccess;
+          }
           void *req = NULL;
           flagcxResult_t flushRes = resources->netAdaptor->iflush(
               resources->netRecvComm, 1,
@@ -438,12 +466,24 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
             return flushRes;
           if (req) {
             args->subs[args->postFlush++ & stepMask].requests[0] = req;
+          } else if (flushRes == flagcxSuccess) {
+            // Providers may complete a real flush synchronously. Advance the
+            // pipeline instead of retrying the same completed step forever.
+            args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
           }
         } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
           args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
         } else {
           if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
             // RDMA-style: flush
+            bool flushRequired = false;
+            FLAGCXCHECK(flagcxGetCollectiveWriteVisibilityPolicy(
+                resources->netAdaptor, &flushRequired));
+            if (!flushRequired) {
+              args->subs[args->postFlush++ & stepMask].requests[0] =
+                  (void *)0x1;
+              return flagcxSuccess;
+            }
             void *req = NULL;
             flagcxResult_t flushRes = resources->netAdaptor->iflush(
                 resources->netRecvComm, 1,
@@ -455,6 +495,9 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
               return flushRes;
             if (req) {
               args->subs[args->postFlush++ & stepMask].requests[0] = req;
+            } else if (flushRes == flagcxSuccess) {
+              args->subs[args->postFlush++ & stepMask].requests[0] =
+                  (void *)0x1;
             }
           } else {
             // Host-only: skip flush

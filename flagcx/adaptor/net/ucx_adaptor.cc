@@ -1350,8 +1350,10 @@ flagcxResult_t flagcxUcxIflush(void *recv_comm, int n, void **data, int *sizes,
   for (int i = 0; i < n; i++)
     if (sizes[i])
       last = i;
-  if (comm->gpuFlush.enabled == 0 || last == -1)
+  if (last == -1)
     return flagcxSuccess;
+  if (comm->gpuFlush.enabled == 0)
+    return flagcxNotSupported;
 
   req = flagcxUcxRequestGet(comm);
   if (req == NULL) {
@@ -1527,6 +1529,9 @@ struct flagcxNetAdaptor flagcxNetUcx = {
     // Latest-only VMM MR capabilities and internal metadata
     FLAGCX_VMM_MR_CAP_NONE,
     FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    // UCX iflush performs the receiver-side dummy GET used after incoming
+    // WRITEs; this adaptor does not expose one-sided iget.
+    FLAGCX_NET_GDR_FLUSH_WRITE,
 };
 
 #endif // USE_UCX

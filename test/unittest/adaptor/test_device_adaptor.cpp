@@ -12,7 +12,7 @@
 #include "flagcx.h"
 #include "topo.h"
 
-TEST(DeviceAdaptorCompatibilityTest, V1UpgradeZeroInitializesExtensions) {
+TEST(DeviceAdaptorCompatibilityTest, V1UpgradePreservesSignalAcquire) {
   // The v1 plugin prefix is frozen: 32 bytes of name plus 48 function
   // pointers on every supported 64-bit platform. New fields belong only to
   // the latest in-process representation.
@@ -35,12 +35,79 @@ TEST(DeviceAdaptorCompatibilityTest, V1UpgradeZeroInitializesExtensions) {
   EXPECT_EQ(latest.symFlatVaFree, nullptr);
   EXPECT_EQ(latest.symMulticastMappingUnmap, nullptr);
   EXPECT_EQ(latest.symMulticastVaFree, nullptr);
-  EXPECT_EQ(latest.rmaSemantics, FLAGCX_DEVICE_RMA_SEMANTICS_NONE);
+  EXPECT_EQ(latest.gdrFlushRequirements,
+            static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH));
   EXPECT_EQ(latest.vmmMrCaps, static_cast<uint32_t>(FLAGCX_VMM_MR_CAP_NONE));
   EXPECT_NE(latest.internalFlags & FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1,
             0u);
   EXPECT_TRUE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, true));
   EXPECT_FALSE(flagcxDeviceAdaptorNativeAllocIsVmm(&latest, false));
+}
+
+TEST(GdrFlushPolicyTest, AppliesIndependentTriStateOverrides) {
+  const uint32_t both =
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+
+  EXPECT_EQ(flagcxApplyGdrFlushRequirementOverrides(both, -1, -1), both);
+  EXPECT_EQ(flagcxApplyGdrFlushRequirementOverrides(both, 0, -1),
+            static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH));
+  EXPECT_EQ(flagcxApplyGdrFlushRequirementOverrides(both, -1, 0),
+            static_cast<uint32_t>(FLAGCX_GDR_READ_REQUIRES_FLUSH));
+  EXPECT_EQ(flagcxApplyGdrFlushRequirementOverrides(both, 0, 0),
+            static_cast<uint32_t>(FLAGCX_GDR_FLUSH_NONE));
+  EXPECT_EQ(
+      flagcxApplyGdrFlushRequirementOverrides(FLAGCX_GDR_FLUSH_NONE, 1, 0),
+      static_cast<uint32_t>(FLAGCX_GDR_READ_REQUIRES_FLUSH));
+  EXPECT_EQ(
+      flagcxApplyGdrFlushRequirementOverrides(FLAGCX_GDR_FLUSH_NONE, 0, 1),
+      static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH));
+  EXPECT_EQ(
+      flagcxApplyGdrFlushRequirementOverrides(FLAGCX_GDR_FLUSH_NONE, 1, 1),
+      both);
+  // Values outside {-1, 0, 1} preserve the automatic platform default.
+  EXPECT_EQ(flagcxApplyGdrFlushRequirementOverrides(both, 2, -2), both);
+}
+
+TEST(GdrFlushPolicyTest, RequirementDoesNotImplyProviderCapability) {
+  const uint32_t both =
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+
+  EXPECT_EQ(flagcxValidateGdrFlushCapability(both, FLAGCX_NET_GDR_FLUSH_READ,
+                                             FLAGCX_GDR_READ_REQUIRES_FLUSH),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxValidateGdrFlushCapability(both, FLAGCX_NET_GDR_FLUSH_READ,
+                                             FLAGCX_GDR_WRITE_REQUIRES_FLUSH),
+            flagcxNotSupported);
+  EXPECT_EQ(flagcxValidateGdrFlushCapability(FLAGCX_GDR_FLUSH_NONE,
+                                             FLAGCX_NET_GDR_FLUSH_NONE,
+                                             FLAGCX_GDR_WRITE_REQUIRES_FLUSH),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxValidateGdrFlushCapability(FLAGCX_GDR_READ_REQUIRES_FLUSH,
+                                             FLAGCX_NET_GDR_FLUSH_NONE,
+                                             FLAGCX_GDR_READ_REQUIRES_FLUSH),
+            flagcxNotSupported);
+  EXPECT_EQ(
+      flagcxValidateGdrFlushCapability(both, FLAGCX_NET_GDR_FLUSH_READ, 0),
+      flagcxInvalidArgument);
+}
+
+TEST(GdrFlushPolicyTest, ActivePlatformUsesDocumentedDefault) {
+  ASSERT_NE(deviceAdaptor, nullptr);
+  const uint32_t conservative =
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
+  if (strcmp(deviceAdaptor->name, "CUDA") == 0 ||
+      strcmp(deviceAdaptor->name, "MACA") == 0 ||
+      strcmp(deviceAdaptor->name, "DUCUDA") == 0) {
+    EXPECT_EQ(deviceAdaptor->gdrFlushRequirements, conservative);
+    return;
+  }
+  if (strcmp(deviceAdaptor->name, "PPU_CUDA") == 0) {
+    // Temporary BAREX compatibility exception; not a coherence guarantee.
+    EXPECT_EQ(deviceAdaptor->gdrFlushRequirements,
+              static_cast<uint32_t>(FLAGCX_GDR_FLUSH_NONE));
+    return;
+  }
+  GTEST_SKIP() << "No GDR visibility baseline for " << deviceAdaptor->name;
 }
 
 TEST(DeviceAdaptorCompatibilityTest, LatestUsesExplicitVmmCapabilities) {
@@ -143,6 +210,10 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
   int ptrType = 0;
   flagcxResult_t result = deviceAdaptor->getPointerType(nullptr, &ptrType);
   if (result == flagcxNotSupported) {
+    // DU relies on this query to distinguish mapped host memory from device
+    // memory. Its IPC exporter accepts both and therefore cannot be used as a
+    // pointer-type probe by the P2P registration path.
+    EXPECT_STRNE(deviceAdaptor->name, "DUCUDA");
     EXPECT_EQ(deviceAdaptor->getPointerType(this, nullptr), flagcxNotSupported);
     return;
   }

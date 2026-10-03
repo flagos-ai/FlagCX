@@ -351,8 +351,22 @@ flagcxResult_t cudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
     return flagcxInvalidArgument;
 
   unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
-  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES) {
+    // The symbol being present in the CUDA headers is not a runtime guarantee.
+    // Match NVSHMEM's capability check before requesting the stream acquire.
+    CUdevice device;
+    int canFlushRemoteWrites = 0;
+    CUresult probe = cuCtxGetDevice(&device);
+    if (probe != CUDA_SUCCESS)
+      return probe == CUDA_ERROR_NOT_SUPPORTED ? flagcxNotSupported
+                                               : flagcxUnhandledDeviceError;
+    probe = cuDeviceGetAttribute(&canFlushRemoteWrites,
+                                 CU_DEVICE_ATTRIBUTE_CAN_FLUSH_REMOTE_WRITES,
+                                 device);
+    if (probe != CUDA_SUCCESS || canFlushRemoteWrites == 0)
+      return flagcxNotSupported;
     waitFlags |= CU_STREAM_WAIT_VALUE_FLUSH;
+  }
 
   CUstream cuStream = (CUstream)(stream->base);
   CUresult err =
@@ -1211,7 +1225,10 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, cudaAdaptorSymMulticastImport,
       cudaAdaptorSymFlatMappingUnmap, cudaAdaptorSymFlatVaFree,
       cudaAdaptorSymMulticastMappingUnmap, cudaAdaptorSymMulticastVaFree,
-      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
+      // Conservative default, matching NCCL's explicit GET acquire and its
+      // pre-Hopper receive policy. A future per-topology resolver may clear a
+      // bit only after the device/NIC path is known to be coherent.
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

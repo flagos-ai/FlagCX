@@ -703,7 +703,8 @@ bool flagcxOneSideGetCompletionRequiresFlush(
       comm->oneSideHandles == NULL)
     return false;
   const struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[dstMrIdx];
-  return info != NULL && info->getCompletionRequiresFlush != 0;
+  return info != NULL &&
+         (info->gdrFlushRequirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0;
 }
 
 static int flagcxRmaVisibilityFlushSize(size_t size) {
@@ -722,19 +723,28 @@ flagcxOneSidePostGetVisibilityFlush(struct flagcxHeteroComm *comm, int dstMrIdx,
     return flagcxInternalError;
   struct flagcxOneSideHandleInfo *info = comm->oneSideHandles[dstMrIdx];
   if (info == NULL || info->baseVas == NULL || info->regionSizes == NULL ||
-      info->localMrHandle == NULL || comm->rank < 0 ||
-      comm->rank >= info->nRanks || comm->netAdaptor == NULL ||
-      comm->netAdaptor->iflush == NULL)
-    return flagcxNotSupported;
-  if (recvComm == NULL)
-    recvComm = info->localRecvComm;
-  if (recvComm == NULL)
+      comm->rank < 0 || comm->rank >= info->nRanks)
     return flagcxNotSupported;
   if (dstOff > info->regionSizes[comm->rank] ||
       size > info->regionSizes[comm->rank] - dstOff)
     return flagcxInvalidArgument;
+  // A zero-byte GET is complete once its range has been validated. It needs no
+  // provider capability, MR handle, or visibility operation.
   if (size == 0)
     return flagcxSuccess;
+  if (info->localMrHandle == NULL || comm->netAdaptor == NULL ||
+      comm->netAdaptor->iflush == NULL)
+    return flagcxNotSupported;
+  // A compatibility callback such as BAREX's no-op is not a visibility
+  // capability. Forced READ requirements must fail rather than silently pass
+  // through such a callback.
+  FLAGCXCHECK(flagcxValidateGdrFlushCapability(info->gdrFlushRequirements,
+                                               comm->netAdaptor->gdrFlushCaps,
+                                               FLAGCX_GDR_READ_REQUIRES_FLUSH));
+  if (recvComm == NULL)
+    recvComm = info->localRecvComm;
+  if (recvComm == NULL)
+    return flagcxNotSupported;
 
   void *data[1] = {(void *)(info->baseVas[comm->rank] + (uintptr_t)dstOff)};
   // The legacy iflush ABI uses int sizes only to identify non-empty ranges;
@@ -797,7 +807,7 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     }
     if (completionResult == flagcxSuccess &&
         desc->completionStage == FLAGCX_RMA_COMPLETION_DATA_POSTED &&
-        desc->type == FLAGCX_RMA_GET &&
+        desc->type == FLAGCX_RMA_GET && desc->size != 0 &&
         flagcxOneSideGetCompletionRequiresFlush(comm, desc->dstMrIdx)) {
       // The data CQE only proves NIC completion on providers with this
       // capability. Keep the same descriptor and scoreboard reservation until
@@ -1930,6 +1940,10 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   if (comm->netAdaptor == NULL || comm->netAdaptor->iflush == NULL)
     return flagcxNotSupported;
 
+  // Preserve the explicit flush API's legacy behavior, including BAREX's
+  // transitional no-op. Correctness-sensitive automatic paths separately
+  // validate gdrFlushCaps before treating a callback as a visibility boundary.
+
   void *data_arr[1] = {gpuAddr};
   int sizes_arr[1] = {flagcxRmaVisibilityFlushSize(size)};
   void *mh_arr[1] = {info->localMrHandle};
@@ -1961,16 +1975,22 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
   // RMA signal buffers are GPU memory (flagcxMemAlloc) — host-side volatile
   // polling would segfault. Non-CUDA platforms return flagcxNotSupported.
   // The signal is published by a peer GPU or NIC after its payload writes.
-  // Request an acquire-style remote-write flush explicitly; adaptors that
-  // cannot provide this guarantee must return flagcxNotSupported.
+  // WRITE requirements request an acquire-style remote-write flush; adaptors
+  // that cannot provide it must return flagcxNotSupported. PPU currently uses
+  // a documented transitional NONE policy while BAREX has no real flush API,
+  // so its auto mode deliberately uses a plain wait for CI compatibility.
   if (stream == NULL)
     return flagcxInternalError;
   if (deviceAdaptor == NULL || deviceAdaptor->streamWaitValue64 == NULL)
     return flagcxNotSupported;
 
-  return deviceAdaptor->streamWaitValue64(
-      stream, signalAddr, expected,
-      FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
+  const uint32_t requirements =
+      flagcxResolveGdrFlushRequirements(deviceAdaptor->gdrFlushRequirements);
+  const int waitFlags = (requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH)
+                            ? FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES
+                            : FLAGCX_STREAM_WAIT_VALUE_DEFAULT;
+  return deviceAdaptor->streamWaitValue64(stream, signalAddr, expected,
+                                          waitFlags);
 }
 
 flagcxResult_t flagcxHeteroPutValue(flagcxHeteroComm_t comm, int peer,

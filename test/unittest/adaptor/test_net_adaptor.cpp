@@ -386,9 +386,14 @@ protected:
     (handle) = nullptr;                                                        \
   } while (0)
 
-TEST(NetAdaptorInterface, UpgradeV1ZeroInitializesExtensions) {
+flagcxResult_t legacyFlush(void *, int, void **, int *, void **, void **) {
+  return flagcxSuccess;
+}
+
+TEST(NetAdaptorInterface, UpgradeV1PreservesCollectiveWriteFlush) {
   struct flagcxNetAdaptor_v1 legacy = {};
   legacy.name = "legacy";
+  legacy.iflush = legacyFlush;
   struct flagcxNetAdaptor_latest upgraded;
   memset(&upgraded, 0xff, sizeof(upgraded));
   flagcxNetAdaptorUpgrade(&legacy, &upgraded);
@@ -399,6 +404,19 @@ TEST(NetAdaptorInterface, UpgradeV1ZeroInitializesExtensions) {
   EXPECT_EQ(upgraded.getMrInfo, nullptr);
   EXPECT_EQ(upgraded.vmmMrCaps, FLAGCX_VMM_MR_CAP_NONE);
   EXPECT_EQ(upgraded.internalFlags, FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1);
+  EXPECT_EQ(upgraded.gdrFlushCaps,
+            static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_WRITE));
+
+  legacy.iflush = nullptr;
+  flagcxNetAdaptorUpgrade(&legacy, &upgraded);
+  EXPECT_EQ(upgraded.gdrFlushCaps,
+            static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_NONE));
+
+  legacy.name = "BAREX";
+  legacy.iflush = legacyFlush;
+  flagcxNetAdaptorUpgrade(&legacy, &upgraded);
+  EXPECT_EQ(upgraded.gdrFlushCaps,
+            static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_NONE));
 }
 
 TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
@@ -423,10 +441,21 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
   if (strcmp(net->name, "IB") == 0) {
     EXPECT_NE(net->iputSignal, nullptr);
     EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA);
+    EXPECT_EQ(net->gdrFlushCaps,
+              static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_READ |
+                                    FLAGCX_NET_GDR_FLUSH_WRITE));
   } else {
     EXPECT_EQ(net->iputSignal, nullptr);
     EXPECT_EQ(net->regMrDmaBuf, nullptr);
     EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_NONE);
+    // BAREX keeps a compatibility no-op iflush for current PPU CI, but that
+    // callback must never be advertised as a device-visibility capability.
+    EXPECT_EQ(net->gdrFlushCaps,
+              static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_NONE));
+    void *flushRequest = nullptr;
+    ASSERT_EQ(net->iflush(nullptr, 0, nullptr, nullptr, nullptr, &flushRequest),
+              flagcxSuccess);
+    EXPECT_EQ(flushRequest, reinterpret_cast<void *>(0x1));
   }
   EXPECT_EQ(net->internalFlags, FLAGCX_NET_ADAPTOR_INTERNAL_NONE);
 }
@@ -467,6 +496,9 @@ TEST(NetAdaptorInterface, IbucAdvertisesTwoSidedContract) {
   EXPECT_EQ(net->igetBatch, nullptr);
   EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_NONE);
   EXPECT_EQ(net->internalFlags, FLAGCX_NET_ADAPTOR_INTERNAL_NONE);
+  EXPECT_EQ(net->gdrFlushCaps,
+            static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_READ |
+                                  FLAGCX_NET_GDR_FLUSH_WRITE));
 }
 
 TEST(IbDefensiveContractTest, RejectsNullAndUnreadyCommunicators) {

@@ -398,7 +398,11 @@ struct flagcxDeviceAdaptor mluAdaptor {
       mluAdaptorSymMulticastTeardown, mluAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       flagcxDeviceAdaptorGetPointerTypeNotSupported,
-      flagcxDeviceAdaptorGetAddressRangeNotSupported,
+      flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
+      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
+      // Preserve the legacy collective receive acquire until this platform
+      // explicitly documents a coherent GPUDirect WRITE path.
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_CAMBRICON_ADAPTOR

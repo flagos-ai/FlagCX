@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include "adaptor.h"
 #include "net.h"
 #include "net_transport.h"
 #include "proxy.h"
@@ -94,6 +95,7 @@ struct MockNetState {
   MockRequest requests[4] = {};
   flagcxNetSubmitContext submits[4] = {};
   int postCount = 0;
+  int flushCount = 0;
   MockConcurrencyTracker *tracker = nullptr;
 };
 
@@ -128,6 +130,15 @@ flagcxResult_t mockIrecv(void *, int, void **, size_t *, int *, void **,
   return mockIsend(nullptr, nullptr, 0, 0, nullptr, nullptr, request);
 }
 
+flagcxResult_t mockIflush(void *, int, void **, int *, void **,
+                          void **request) {
+  if (activeNetState == nullptr || request == nullptr)
+    return flagcxInvalidArgument;
+  activeNetState->flushCount++;
+  *request = reinterpret_cast<void *>(0x1);
+  return flagcxSuccess;
+}
+
 flagcxResult_t mockTest(void *request, int *done, int *sizes) {
   if (request == nullptr || done == nullptr)
     return flagcxInvalidArgument;
@@ -157,6 +168,18 @@ struct ScopedNetChunkConfig {
 
   int64_t oldChunks;
   int64_t oldChunkSize;
+};
+
+struct ScopedDeviceAdaptor {
+  explicit ScopedDeviceAdaptor(uint32_t requirements) {
+    saved = deviceAdaptor;
+    adaptor.gdrFlushRequirements = requirements;
+    deviceAdaptor = &adaptor;
+  }
+  ~ScopedDeviceAdaptor() { deviceAdaptor = saved; }
+
+  flagcxDeviceAdaptor_latest adaptor{};
+  flagcxDeviceAdaptor_latest *saved = nullptr;
 };
 
 struct SendProgressFixture {
@@ -385,6 +408,47 @@ TEST(CollProxyProgressTest, OutOfOrderReceiveCqeDoesNotAdvanceCopyStep) {
   }
   EXPECT_EQ(fixture.args.postFlush, 2);
   EXPECT_EQ(fixture.args.copied, 2);
+}
+
+TEST(CollProxyProgressTest, NoWriteRequirementSkipsAutomaticFlush) {
+  ScopedNetChunkConfig chunkConfig;
+  ScopedDeviceAdaptor device(FLAGCX_GDR_FLUSH_NONE);
+  RecvProgressFixture fixture;
+  fixture.resources.ptrSupport = FLAGCX_PTR_CUDA;
+  fixture.adaptor.iflush = mockIflush;
+  fixture.adaptor.gdrFlushCaps = FLAGCX_NET_GDR_FLUSH_NONE;
+  fixture.state.postResults[0] = flagcxSuccess;
+  fixture.state.acceptRequest[0] = 1;
+  fixture.state.requests[0] = {1, flagcxSuccess};
+
+  for (int i = 0; i < 6 && fixture.args.copied != 1; ++i) {
+    ASSERT_EQ(
+        flagcxProxyRecv(&fixture.resources, fixture.data, 1, &fixture.args),
+        flagcxSuccess);
+  }
+
+  EXPECT_EQ(fixture.state.flushCount, 0);
+  EXPECT_EQ(fixture.args.postFlush, 1);
+  EXPECT_EQ(fixture.args.copied, 1);
+}
+
+TEST(CollProxyProgressTest, RequiredWriteWithoutCapabilityFailsClosed) {
+  ScopedNetChunkConfig chunkConfig;
+  ScopedDeviceAdaptor device(FLAGCX_GDR_WRITE_REQUIRES_FLUSH);
+  RecvProgressFixture fixture;
+  fixture.resources.ptrSupport = FLAGCX_PTR_CUDA;
+  fixture.adaptor.iflush = mockIflush;
+  fixture.adaptor.gdrFlushCaps = FLAGCX_NET_GDR_FLUSH_NONE;
+  fixture.state.postResults[0] = flagcxSuccess;
+  fixture.state.acceptRequest[0] = 1;
+  fixture.state.requests[0] = {1, flagcxSuccess};
+
+  ASSERT_EQ(flagcxProxyRecv(&fixture.resources, fixture.data, 1, &fixture.args),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxProxyRecv(&fixture.resources, fixture.data, 1, &fixture.args),
+            flagcxNotSupported);
+  EXPECT_EQ(fixture.state.flushCount, 0);
+  EXPECT_EQ(fixture.args.postFlush, 0);
 }
 
 TEST(CollProxyProgressTest, PermanentErrorWakesEveryQueuedWaiter) {

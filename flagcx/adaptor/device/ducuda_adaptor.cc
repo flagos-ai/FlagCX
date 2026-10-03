@@ -137,6 +137,38 @@ flagcxResult_t ducudaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ducudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+
+  cudaPointerAttributes attrs = {};
+  cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+  if (err == cudaErrorInvalidValue) {
+    // Ordinary host allocations are not tracked by the DU runtime. Clear the
+    // probe error so it cannot affect a later runtime call.
+    cudaGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+  if (err != cudaSuccess) {
+    // Runtime/device errors must not silently turn a GPU pointer into host
+    // memory, which would register it through the wrong transport path.
+    cudaGetLastError();
+    return flagcxUnhandledDeviceError;
+  }
+#if CUDART_VERSION >= 10000
+  *ptrType = (attrs.type == cudaMemoryTypeDevice ||
+              attrs.type == cudaMemoryTypeManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = (attrs.memoryType == cudaMemoryTypeDevice || attrs.isManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 flagcxResult_t ducudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
   if (pDevice == NULL || pHost == NULL) {
     return flagcxInvalidArgument;
@@ -1037,13 +1069,15 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       ducudaAdaptorSymMulticastBind, ducudaAdaptorSymMulticastTeardown,
       ducudaAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      flagcxDeviceAdaptorGetPointerTypeNotSupported,
-      ducudaAdaptorGetAddressRange,
+      ducudaAdaptorGetPointerType, ducudaAdaptorGetAddressRange,
       FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ducudaAdaptorSymMulticastImport,
       ducudaAdaptorSymFlatMappingUnmap, ducudaAdaptorSymFlatVaFree,
       ducudaAdaptorSymMulticastMappingUnmap, ducudaAdaptorSymMulticastVaFree,
-      FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH,
+      // Hygon requires the local post-READ flush for ordinary allocations as
+      // well as VMM. Its current DU runtime cannot provide stream acquire for
+      // incoming WRITEs, so strong WRITE consumers fail safely as unsupported.
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_DU_ADAPTOR

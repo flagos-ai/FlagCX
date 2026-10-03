@@ -6,6 +6,7 @@
 #define FLAGCX_DEVICE_ADAPTOR_H_
 
 #include "flagcx.h"
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,13 +55,16 @@ typedef enum {
   FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1 = 1 << 0,
 } flagcxDeviceAdaptorInternalFlags_t;
 
-// Completion semantics advertised only by the latest in-process adaptor.
-// These flags describe provider-specific visibility requirements without
-// changing the frozen v1 plugin ABI.
+// End-to-end GPUDirect visibility requirements advertised only by the latest
+// in-process adaptor. READ covers an RDMA READ whose local destination is this
+// device; WRITE covers an RDMA WRITE targeting this device. The bits describe
+// when an acquire/flush is required, not which transport performs it, and are
+// deliberately independent of ordinary, DMA-BUF, or VMM registration routes.
 typedef enum {
-  FLAGCX_DEVICE_RMA_SEMANTICS_NONE = 0,
-  FLAGCX_DEVICE_RMA_VMM_GET_REQUIRES_FLUSH = 1 << 0,
-} flagcxDeviceRmaSemantics_t;
+  FLAGCX_GDR_FLUSH_NONE = 0,
+  FLAGCX_GDR_READ_REQUIRES_FLUSH = 1 << 0,
+  FLAGCX_GDR_WRITE_REQUIRES_FLUSH = 1 << 1,
+} flagcxGdrFlushRequirements_t;
 
 // Version history:
 //   v1 — Initial version with basic device functions, GDR functions,
@@ -323,9 +327,11 @@ struct flagcxDeviceAdaptor_latest {
   flagcxResult_t (*symMulticastMappingUnmap)(void *mcBase, size_t mcMapSize);
   flagcxResult_t (*symMulticastVaFree)(void *mcBase, size_t mcMapSize);
 
-  // Visibility requirements for one-sided operations targeting allocations
-  // owned by this device adaptor. v1 plugins are upgraded with zero here.
-  uint32_t rmaSemantics;
+  // Default visibility requirements for GPUDirect operations targeting
+  // allocations owned by this device adaptor. v1 plugins inherit their legacy
+  // WRITE acquire contract; common code may apply explicit environment
+  // overrides.
+  uint32_t gdrFlushRequirements;
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest
@@ -355,15 +361,19 @@ flagcxDeviceAdaptorGetAddressRangeNotSupported(const void *ptr, void **base,
   return flagcxNotSupported;
 }
 
-// Upgrade a v1 plugin struct to latest in-place into dst. Public capability
-// fields added beyond v1 remain zero; only latest-only loader metadata records
-// that the source used the legacy ABI.
+// Upgrade a v1 plugin struct to latest in-place into dst. New optional function
+// pointers and VMM capabilities remain zero; visibility policy preserves the
+// legacy signal-wait contract below.
 static inline void
 flagcxDeviceAdaptorUpgradeV1(const struct flagcxDeviceAdaptor_v1 *src,
                              struct flagcxDeviceAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxDeviceAdaptor_v1));
   dst->internalFlags |= FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1;
+  // Preserve the v1 flagcxWaitSignal contract: before visibility requirements
+  // became explicit, every signal wait requested a remote-write acquire. READ
+  // remains unset because the v1 ABI never promised a post-GET flush.
+  dst->gdrFlushRequirements = FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
 }
 
 // Device adaptor plugin API version (independent of CCL/Net versions)

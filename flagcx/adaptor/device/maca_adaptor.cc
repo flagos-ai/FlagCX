@@ -1083,7 +1083,10 @@ struct flagcxDeviceAdaptor macaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, macaAdaptorSymMulticastImport,
       macaAdaptorSymFlatMappingUnmap, macaAdaptorSymFlatVaFree,
       macaAdaptorSymMulticastMappingUnmap, macaAdaptorSymMulticastVaFree,
-      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
+      // Stay conservative until the MACA runtime and NIC provider document a
+      // coherent path. WRITE-dependent stream waits currently fail safely as
+      // unsupported instead of silently weakening the acquire contract.
+      FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
 };
 
 #endif // USE_METAX_ADAPTOR

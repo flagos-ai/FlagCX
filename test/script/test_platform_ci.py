@@ -388,6 +388,20 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
         self.assertNotIn("FLAGCX_USE_HETERO_COMM", metax_torch)
 
+    def test_default_p2p_perf_runs_only_supported_gpu_write(self):
+        perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        default_perf = perf_workflow[perf_workflow.index("  perf-test:") :]
+        default_perf = default_perf[: default_perf.index("  perf-test-hygon:")]
+
+        step_name = (
+            'P2P Engine perf (GPU WRITE; READ visibility unsupported)'
+        )
+        self.assertIn(step_name, default_perf)
+        p2p_step = default_perf[default_perf.index(step_name) :]
+        self.assertIn("FLAGCX_P2P_PERF_OP=write", p2p_step)
+        self.assertIn("$PERF_BIN/perf_p2p_engine", p2p_step)
+        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", p2p_step)
+
     def test_common_launcher_and_static_rdma_preflight_cover_all_platforms(self):
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit_tests_common.yml"

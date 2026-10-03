@@ -164,6 +164,8 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_IB_SPLIT_DATA_ON_QPS` | 0 | When set to 1, splits data across QPs |
 | `FLAGCX_IB_ADDR_FAMILY` | None | Address family for IB. Values: AF_IB, AF_INET, AF_INET6 |
 | `FLAGCX_IB_ADDR_RANGE` | None | IP address range for IB connections |
+| `FLAGCX_GDR_READ_REQUIRES_FLUSH` | -1 | Overrides the device policy for GPUDirect RDMA READ visibility: `-1` uses the platform default, `0` disables the requirement, and `1` forces it. Forcing the requirement fails closed when the selected transport has no READ flush capability |
+| `FLAGCX_GDR_WRITE_REQUIRES_FLUSH` | -1 | Overrides the device policy for incoming GPUDirect RDMA WRITE visibility: `-1` uses the platform default, `0` disables the requirement, and `1` forces it. Disabling a platform-required flush is an expert-only unsafe override |
 | `FLAGCX_GDR_FLUSH_DISABLE` | 0 | When set to 1, disables GDR flush operations |
 | `FLAGCX_IBUC_SPLIT_DATA_ON_QPS` | 0 | When set to 1, splits data across QPs for IBUC |
 

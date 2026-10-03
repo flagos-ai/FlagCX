@@ -314,6 +314,10 @@ flagcxResult_t ppucudaAdaptorStreamWaitValue64(flagcxStream_t stream,
     return flagcxInvalidArgument;
 
   unsigned int waitFlags = CU_STREAM_WAIT_VALUE_GEQ;
+  // PPU's automatic GDR requirement is intentionally NONE while BAREX lacks a
+  // real visibility operation. Keep the existing direct strong-wait behavior
+  // for compatibility; add a runtime capability probe before enabling PPU's
+  // default WRITE requirement in a follow-up.
   if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
     waitFlags |= CU_STREAM_WAIT_VALUE_FLUSH;
 
@@ -881,7 +885,11 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, ppucudaAdaptorSymMulticastImport,
       ppucudaAdaptorSymFlatMappingUnmap, ppucudaAdaptorSymFlatVaFree,
       ppucudaAdaptorSymMulticastMappingUnmap, ppucudaAdaptorSymMulticastVaFree,
-      FLAGCX_DEVICE_RMA_SEMANTICS_NONE,
+      // Transitional BAREX compatibility policy: NONE preserves the existing
+      // PPU CI behavior while ACCL has no GPU-visibility flush API. This is not
+      // a documented coherence guarantee. Do not enable READ/WRITE requirements
+      // until BAREX advertises a real capability backed by a hardware test.
+      FLAGCX_GDR_FLUSH_NONE,
 };
 
 #endif // USE_PPU_ADAPTOR

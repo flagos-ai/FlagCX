@@ -556,14 +556,19 @@ flagcxResult_t flagcxOneSideStagingDeregister(const flagcxComm_t comm);
 
 /* RDMA READ: pull size bytes from remote peer's buffer at srcOffset into the
  * local buffer at dstOffset. srcMrIdx / dstMrIdx index the per-window MR
- * handle table populated by flagcxOneSideRegister. */
+ * handle table populated by flagcxOneSideRegister. Successful completion means
+ * the local destination is device-visible; providers that require an acquire
+ * complete their visibility flush before publishing completion. */
 flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx);
 
 /* RDMA WRITE: push size bytes from local srcOffset to remote peer's buffer at
  * dstOffset. srcMrIdx / dstMrIdx index the per-window MR handle table
- * populated by flagcxOneSideRegister. */
+ * populated by flagcxOneSideRegister. Completion is local/source transport
+ * completion, not proof that the remote GPU may consume the target. Use the
+ * signal/wait APIs (or a higher-level synchronization boundary) before remote
+ * device consumption. */
 flagcxResult_t flagcxPut(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx);

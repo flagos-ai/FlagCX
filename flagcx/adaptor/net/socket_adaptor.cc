@@ -729,4 +729,5 @@ flagcxNetAdaptor flagcxNetSocket = {
     // Latest-only VMM MR capabilities and internal metadata
     FLAGCX_VMM_MR_CAP_NONE,
     FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    FLAGCX_NET_GDR_FLUSH_NONE,
 };

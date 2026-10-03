@@ -1598,7 +1598,10 @@ ib_recv:
     }
   }
 
-  rComm->flushEnabled = 1;
+  // Keep the provider capability static, but honor the runtime kill switch on
+  // each connection. Required visibility paths will then fail closed through
+  // iflush instead of touching resources that were deliberately not created.
+  rComm->flushEnabled = flagcxParamIbucGdrFlushDisable() == 0;
 
   for (int i = 0; i < mergedDev->ndevs; i++) {
     rCommDev = rComm->devs + i;
@@ -2458,13 +2461,21 @@ flagcxResult_t flagcxIbucIrecv(void *recvComm, int n, void **data,
 
 flagcxResult_t flagcxIbucIflush(void *recvComm, int n, void **data, int *sizes,
                                 void **mhandles, void **request) {
+  if (request == NULL)
+    return flagcxInvalidArgument;
+  *request = NULL;
   struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)recvComm;
+  if (comm == NULL || n < 0 ||
+      (n > 0 && (data == NULL || sizes == NULL || mhandles == NULL)))
+    return flagcxInvalidArgument;
   int last = -1;
   for (int i = 0; i < n; i++)
     if (sizes[i])
       last = i;
-  if (comm->flushEnabled == 0 || last == -1)
+  if (last == -1)
     return flagcxSuccess;
+  if (comm->flushEnabled == 0)
+    return flagcxNotSupported;
 
   // Only flush once using the last non-zero receive
   struct flagcxIbRequest *req;
@@ -3003,6 +3014,9 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     // Latest-only VMM MR capabilities and internal metadata
     FLAGCX_VMM_MR_CAP_NONE,
     FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    // IBUC data uses UC QPs, while iflush deliberately uses a separate RC
+    // loopback RDMA READ to establish the device-visibility boundary.
+    FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE,
 };
 
 #endif // USE_IBUC

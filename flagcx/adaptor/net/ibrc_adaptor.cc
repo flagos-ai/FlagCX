@@ -1689,7 +1689,10 @@ ib_recv:
     FLAGCXCHECK(flagcxIbRtsQp(qp->qp, ibDev, remDevInfo));
   }
 
-  rComm->flushEnabled = 1;
+  // Keep the provider capability static, but honor the runtime kill switch on
+  // each connection. Required visibility paths will then fail closed through
+  // iflush instead of touching resources that were deliberately not created.
+  rComm->flushEnabled = flagcxParamIbGdrFlushDisable() == 0;
 
   for (int i = 0; i < mergedDev->ndevs; i++) {
     rCommDev = rComm->devs + i;
@@ -2590,8 +2593,10 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
   for (int i = 0; i < n; i++)
     if (sizes[i])
       last = i;
-  if (comm->flushEnabled == 0 || last == -1)
+  if (last == -1)
     return flagcxSuccess;
+  if (comm->flushEnabled == 0)
+    return flagcxNotSupported;
 
   // Only flush once using the last non-zero receive
   struct flagcxIbRequest *req;
@@ -3654,4 +3659,7 @@ struct flagcxNetAdaptor flagcxNetIb = {
 
     // Latest-only VMM MR capabilities and internal metadata
     FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
-    FLAGCX_NET_ADAPTOR_INTERNAL_NONE};
+    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    // iflush posts a loopback RDMA READ and completes on its CQE, so the same
+    // primitive can acquire either a local GET destination or received WRITE.
+    FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE};

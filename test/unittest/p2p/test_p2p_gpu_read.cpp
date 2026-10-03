@@ -230,6 +230,14 @@ TEST_P(P2pGpuReadTest, ReadsGpuMrWithAndWithoutVisibilitySync) {
   }
 
   ASSERT_EQ(flagcxNetIbP2p.init(), flagcxSuccess);
+  const uint32_t requirements = flagcxResolveGdrFlushRequirements(
+      deviceAdaptor == nullptr ? FLAGCX_GDR_FLUSH_NONE
+                               : deviceAdaptor->gdrFlushRequirements);
+  if ((requirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0 &&
+      (flagcxNetIbP2p.gdrFlushCaps & FLAGCX_NET_GDR_FLUSH_READ) == 0) {
+    GTEST_SKIP() << "IB_P2P does not provide the post-READ visibility boundary "
+                    "required by this device";
+  }
   int netDeviceCount = 0;
   ASSERT_EQ(flagcxNetIbP2p.devices(&netDeviceCount), flagcxSuccess);
   ASSERT_GT(netDeviceCount, 0);

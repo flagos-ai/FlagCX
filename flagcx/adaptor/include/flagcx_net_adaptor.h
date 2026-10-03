@@ -35,12 +35,22 @@ typedef enum {
   FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1 = 1 << 0,
 } flagcxNetAdaptorInternalFlags_t;
 
+// Visibility operations a net adaptor can actually perform. These capability
+// bits are separate from device requirements: a non-NULL iflush callback may be
+// a compatibility no-op and must not by itself be interpreted as a guarantee.
+typedef enum {
+  FLAGCX_NET_GDR_FLUSH_NONE = 0,
+  FLAGCX_NET_GDR_FLUSH_READ = 1 << 0,
+  FLAGCX_NET_GDR_FLUSH_WRITE = 1 << 1,
+} flagcxNetGdrFlushCaps_t;
+
 // Version history:
 //   v1 — 22 function pointers: name, init, devices, getProperties,
 //         listen, connect, accept, closeSend, closeRecv, closeListen,
 //         regMr, regMrDmaBuf, deregMr, isend, irecv, iflush, test,
 //         iput, iget, iputSignal, getDevFromName
-//   latest — adds optional batch helpers and transport-neutral MR metadata
+//   latest — adds optional batch helpers, transport-neutral MR metadata, and
+//            in-process GDR visibility capabilities
 
 struct flagcxNetAdaptor_v1 {
   // Basic functions
@@ -172,6 +182,12 @@ struct flagcxNetAdaptor_latest {
   // Ordinary FLAGCX_PTR_CUDA support is not sufficient to claim VMM VA MR.
   uint32_t vmmMrCaps;
   uint32_t internalFlags;
+
+  // Latest-only GPUDirect visibility capabilities. Legacy v1 plugins retain
+  // their established collective WRITE flush contract when they implement a
+  // real iflush. Callers must check these bits before relying on iflush for a
+  // required device-visibility boundary.
+  uint32_t gdrFlushCaps;
 };
 
 #define flagcxNetAdaptor flagcxNetAdaptor_latest
@@ -182,6 +198,15 @@ flagcxNetAdaptorUpgrade(const struct flagcxNetAdaptor_v1 *src,
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxNetAdaptor_v1));
   dst->internalFlags = FLAGCX_NET_ADAPTOR_INTERNAL_LEGACY_V1;
+  // v1 plugins could not advertise visibility capabilities, but their iflush
+  // callback was the established collective receive boundary. Preserve that
+  // WRITE behavior for compatibility. Do not infer READ: post-GET visibility
+  // is a new contract and requires a latest/v2 provider declaration.
+  // The shipped BAREX v1 plugin is the known exception: its callback is a
+  // documented compatibility sentinel, not a visibility operation.
+  if (src->iflush != NULL &&
+      (src->name == NULL || strcmp(src->name, "BAREX") != 0))
+    dst->gdrFlushCaps = FLAGCX_NET_GDR_FLUSH_WRITE;
 }
 
 // Versioned export symbol name

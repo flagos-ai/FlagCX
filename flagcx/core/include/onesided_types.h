@@ -21,10 +21,10 @@ struct flagcxOneSideHandleInfo {
   void *localMrHandle;             // local rank's MR handle for deregMr
   void *localRecvComm;       // recvComm used for MR registration (PD match)
   uint8_t registrationRoute; // flagcxVmmMrRoute_t used for this MR
-  // A successful GET data CQE is not publishable until iflush completes.
-  // Set only for VMM registrations whose device adaptor advertises this
-  // provider-specific visibility requirement.
-  uint8_t getCompletionRequiresFlush;
+  // Resolved READ/WRITE device-visibility requirements. This is intentionally
+  // independent of registrationRoute: a native CQE has the same semantics for
+  // ordinary, DMA-BUF, and VMM-backed device memory.
+  uint32_t gdrFlushRequirements;
   // Full-mesh RDMA connections (including self loopback, aligned with NCCL GIN)
   void **fullSendComms; // [nRanks] per-peer sendComm — alias for
                         // contextSendComms[0]

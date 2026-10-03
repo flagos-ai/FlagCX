@@ -78,6 +78,17 @@ struct flagcxNetAdaptor *getNetAdaptor(int netType);
  * disables the build-selected RDMA-class adaptor, not only the IBRC backend. */
 int64_t flagcxParamIbDisable(void);
 
+// Apply the tri-state FLAGCX_GDR_{READ,WRITE}_REQUIRES_FLUSH overrides to a
+// device adaptor's defaults. The explicit-argument form is kept pure for unit
+// tests; the no-argument override values are read by the resolver.
+uint32_t flagcxApplyGdrFlushRequirementOverrides(uint32_t defaults,
+                                                 int64_t readOverride,
+                                                 int64_t writeOverride);
+uint32_t flagcxResolveGdrFlushRequirements(uint32_t defaults);
+flagcxResult_t flagcxValidateGdrFlushCapability(uint32_t requirements,
+                                                uint32_t capabilities,
+                                                uint32_t direction);
+
 inline bool flagcxCCLAdaptorNeedSendrecv(size_t value) { return value != 0; }
 
 const int MAX_VENDOR_LEN = 128;

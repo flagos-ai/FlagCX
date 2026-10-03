@@ -1256,9 +1256,18 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   return flagcxSuccess;
 }
 
-/* Nothing to flush: write-with-imm orders payload before the completing
-   imm. Return the (void*)0x1 sentinel because the IBRC-slot consumer
-   (net.cc flagcxProxyRecv) only advances its flush stage on a request. */
+/* Transitional PPU compatibility behavior.
+
+   BAREX write-with-imm orders the payload before the completing immediate, so
+   this sentinel preserves the existing transport-completion pipeline and PPU
+   CI behavior. That ordering does NOT by itself prove that NIC-written memory
+   is visible to a subsequent PPU kernel. Consequently flagcxNetBarex advertises
+   no GDR flush capability, and a forced visibility requirement must be rejected
+   before reaching this callback.
+
+   TODO: replace this no-op with an ACCL/PPU visibility primitive or an ACCL-
+   owned self-loopback RDMA READ, then advertise capability only after an
+   RDMA-completion -> immediate-kernel-consumer hardware test passes. */
 static flagcxResult_t barexIflush(void *recvComm, int n, void **data,
                                   int *sizes, void **mhandles, void **request) {
   (void)recvComm;
@@ -1685,6 +1694,7 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     // no API that consumes a DMA-BUF fd. Ordinary GPU MR remains supported.
     FLAGCX_VMM_MR_CAP_NONE,
     FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    FLAGCX_NET_GDR_FLUSH_NONE,
 };
 
 /* Keep the external plugin ABI at v1. The complete one-sided and batch
