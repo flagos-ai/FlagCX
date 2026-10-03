@@ -307,7 +307,10 @@ protected:
   bool recordingEnded = false;
 #endif
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-  aclrtStream acl_stream;
+  // One slot per stream id. This used to be a single aclrtStream member while
+  // flagcxStreams_ stored a pointer to it, so different stream ids aliased the
+  // same storage.
+  std::unordered_map<int, aclrtStream> aclStreams_;
 #endif
 
   // Heterogeneous P2P uses the process-group communicator. Homogeneous P2P
