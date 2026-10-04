@@ -172,6 +172,46 @@ flagcxResult_t flagcxNetCompletionScoreboardQuery(
     struct flagcxNetCompletionScoreboard *scoreboard, uint64_t *nextSequence,
     uint32_t *inFlight, flagcxResult_t *firstError);
 
+// Progress-thread-private visibility state for one GET ordering domain.  GET
+// sequence numbers are independent of the transport completion sequence, so
+// intervening PUTs do not prevent one flush from covering multiple GETs.
+// Callers advance dataCompletedGetSequence only over a contiguous prefix.
+struct flagcxNetGetVisibilityDomain {
+  uint64_t orderingKey;
+  uint64_t issuedGetSequence;
+  uint64_t dataCompletedGetSequence;
+  uint64_t flushTargetGetSequence;
+  uint64_t visibleGetSequence;
+  void *flushRequest;
+  flagcxResult_t flushResult;
+  int peer;
+  uint8_t inUse;
+};
+
+flagcxResult_t
+flagcxNetGetVisibilityDomainInit(struct flagcxNetGetVisibilityDomain *domain,
+                                 int peer, uint64_t orderingKey);
+flagcxResult_t
+flagcxNetGetVisibilityIssue(struct flagcxNetGetVisibilityDomain *domain,
+                            uint64_t *getSequence);
+flagcxResult_t
+flagcxNetGetVisibilityCancelIssue(struct flagcxNetGetVisibilityDomain *domain,
+                                  uint64_t getSequence);
+flagcxResult_t
+flagcxNetGetVisibilityRemoveIssue(struct flagcxNetGetVisibilityDomain *domain,
+                                  uint64_t getSequence);
+flagcxResult_t
+flagcxNetGetVisibilityAdvanceData(struct flagcxNetGetVisibilityDomain *domain,
+                                  uint64_t dataCompletedGetSequence);
+flagcxResult_t
+flagcxNetGetVisibilityBeginFlush(struct flagcxNetGetVisibilityDomain *domain,
+                                 uint64_t *flushTarget);
+flagcxResult_t flagcxNetGetVisibilityAdvanceVisible(
+    struct flagcxNetGetVisibilityDomain *domain, uint64_t visibleGetSequence);
+flagcxResult_t
+flagcxNetGetVisibilityCompleteFlush(struct flagcxNetGetVisibilityDomain *domain,
+                                    flagcxResult_t result);
+
 // A bounded credit counter for SQ entries, callback slots, or backend request
 // objects. Exhaustion is transient backpressure and is reported as
 // flagcxInProgress; invalid release is a permanent caller error.

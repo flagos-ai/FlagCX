@@ -249,6 +249,9 @@ protected:
     proxy_.inFlights = &inFlight_;
     proxy_.completionScoreboards = &scoreboard_;
     proxy_.completionEntries = entries_;
+    proxy_.getVisibilityDomains = getVisibilityDomains_;
+    proxy_.activeGetVisibilityDomains = activeGetVisibilityDomains_;
+    proxy_.activeGetVisibilityCounts = activeGetVisibilityCounts_;
     proxy_.groupSeqs = &groupSeq_;
     proxy_.generation = 1;
     proxy_.nRanks = 1;
@@ -299,6 +302,9 @@ protected:
   flagcxIntruQueue<flagcxRmaDesc, &flagcxRmaDesc::next> inProgress_ = {};
   flagcxNetCompletionScoreboard scoreboard_ = {};
   flagcxNetCompletionEntry entries_[8] = {};
+  flagcxNetGetVisibilityDomain getVisibilityDomains_[8] = {};
+  uint32_t activeGetVisibilityDomains_[8] = {};
+  uint32_t activeGetVisibilityCounts_[1] = {};
   void *sendComms_[1] = {};
   uintptr_t baseVas_[1] = {};
   size_t regionSizes_[1] = {};
@@ -369,6 +375,7 @@ TEST_F(RmaSharedTransportFixture, GetWithoutRequirementRetiresAtDataCqe) {
   EXPECT_EQ(mockFlushPosts, 0);
   EXPECT_EQ(doneSeq_, 1u);
   EXPECT_EQ(proxy_.completionCount, 1u);
+  EXPECT_EQ(activeGetVisibilityCounts_[0], 0u);
 }
 
 TEST_F(RmaSharedTransportFixture,
@@ -439,7 +446,6 @@ TEST_F(RmaSharedTransportFixture, GetFlushBackpressureRetriesDescriptor) {
 
   Progress();
   mockRequests[0].done = 1;
-  Progress();
   Progress();
   EXPECT_EQ(mockFlushPosts, 0);
   EXPECT_EQ(doneSeq_, 0u);
@@ -519,27 +525,66 @@ TEST_F(RmaSharedTransportFixture,
   EXPECT_EQ(flushRequest, nullptr);
 }
 
-TEST_F(RmaSharedTransportFixture,
-       OutOfOrderGetFlushesStillAdvanceContiguousPrefix) {
+TEST_F(RmaSharedTransportFixture, CompletedGetPrefixSharesOneVisibilityFlush) {
   mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
   ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 8, 8, 8, 0, 0), flagcxSuccess);
 
   Progress();
   ASSERT_EQ(mockDataPosts, 2);
-  mockRequests[0].done = 1;
   mockRequests[1].done = 1;
   Progress();
-  Progress();
-  ASSERT_EQ(mockFlushPosts, 2);
-
-  mockRequests[3].done = 1;
-  Progress();
+  EXPECT_EQ(mockFlushPosts, 0);
   EXPECT_EQ(doneSeq_, 0u);
+
+  mockRequests[0].done = 1;
+  Progress();
+  ASSERT_EQ(mockFlushPosts, 1);
+
   mockRequests[2].done = 1;
   Progress();
   EXPECT_EQ(doneSeq_, 2u);
   EXPECT_EQ(proxy_.completionCount, 2u);
+  EXPECT_EQ(activeGetVisibilityCounts_[0], 0u);
+}
+
+TEST_F(RmaSharedTransportFixture, PutDoesNotSplitCompletedGetPrefix) {
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0), flagcxSuccess);
+  ASSERT_EQ(flagcxHeteroPut(&comm_, 0, 8, 8, 8, 0, 0), flagcxSuccess);
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 16, 16, 8, 0, 0), flagcxSuccess);
+
+  Progress();
+  ASSERT_EQ(mockDataPosts, 3);
+  mockRequests[0].done = 1;
+  mockRequests[2].done = 1;
+  Progress();
+  ASSERT_EQ(mockFlushPosts, 1);
+
+  mockRequests[3].done = 1;
+  Progress();
+  EXPECT_EQ(doneSeq_, 1u);
+  mockRequests[1].done = 1;
+  Progress();
+  EXPECT_EQ(doneSeq_, 3u);
+}
+
+TEST_F(RmaSharedTransportFixture, IndependentDomainsDoNotShareGetFlush) {
+  mrInfo_.gdrFlushRequirements = FLAGCX_GDR_READ_REQUIRES_FLUSH;
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 0, 0, 8, 0, 0, 11, true), flagcxSuccess);
+  ASSERT_EQ(flagcxHeteroGet(&comm_, 0, 8, 8, 8, 0, 0, 12, true), flagcxSuccess);
+
+  Progress();
+  mockRequests[0].done = 1;
+  mockRequests[1].done = 1;
+  Progress();
+  EXPECT_EQ(mockFlushPosts, 2);
+
+  mockRequests[2].done = 1;
+  mockRequests[3].done = 1;
+  Progress();
+  EXPECT_EQ(doneSeq_, 2u);
+  EXPECT_EQ(activeGetVisibilityCounts_[0], 0u);
 }
 
 TEST_F(RmaSharedTransportFixture,

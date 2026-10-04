@@ -19,6 +19,7 @@ flagcxKernelProxyRequestReset(struct flagcxKernelProxyRequest *request) {
   request->peer = -1;
   request->dstMrIdx = -1;
   request->stagingSlot = -1;
+  request->getVisibilityDomain = UINT32_MAX;
   request->state = FLAGCX_KERNEL_PROXY_REQUEST_FREE;
   request->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED;
 }
@@ -35,10 +36,17 @@ flagcxKernelProxyTransportInit(struct flagcxKernelProxyTransport *transport,
       capacity, sizeof(struct flagcxNetCompletionEntry));
   transport->requests = (struct flagcxKernelProxyRequest *)calloc(
       capacity, sizeof(struct flagcxKernelProxyRequest));
+  transport->getVisibilityDomains =
+      (struct flagcxNetGetVisibilityDomain *)calloc(
+          capacity, sizeof(struct flagcxNetGetVisibilityDomain));
+  transport->getVisibilityDomainReferenced =
+      (uint8_t *)calloc(capacity, sizeof(uint8_t));
   if (stagingSlotCount != 0)
     transport->stagingInUse =
         (uint8_t *)calloc(stagingSlotCount, sizeof(uint8_t));
   if (transport->completionEntries == NULL || transport->requests == NULL ||
+      transport->getVisibilityDomains == NULL ||
+      transport->getVisibilityDomainReferenced == NULL ||
       (stagingSlotCount != 0 && transport->stagingInUse == NULL)) {
     flagcxKernelProxyTransportDestroy(transport);
     return flagcxSystemError;
@@ -67,6 +75,8 @@ void flagcxKernelProxyTransportDestroy(
   if (transport == NULL)
     return;
   free(transport->stagingInUse);
+  free(transport->getVisibilityDomainReferenced);
+  free(transport->getVisibilityDomains);
   free(transport->requests);
   free(transport->completionEntries);
   memset(transport, 0, sizeof(*transport));
@@ -177,6 +187,61 @@ flagcxKernelProxyRequireGetFlush(struct flagcxKernelProxyTransport *transport,
   struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
   if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_RESERVED)
     return flagcxInvalidArgument;
+  struct flagcxNetGetVisibilityDomain *domain = NULL;
+  uint32_t domainIndex = UINT32_MAX;
+  // Matching and unused-domain lookup are independent linear passes. Do not
+  // scan requests inside this loop: that made every GET O(capacity^2).
+  for (uint32_t i = 0; i < transport->capacity; ++i) {
+    struct flagcxNetGetVisibilityDomain *candidate =
+        &transport->getVisibilityDomains[i];
+    if (candidate->inUse != 0 && candidate->peer == entry->peer &&
+        candidate->orderingKey == transport->orderingKey) {
+      domain = candidate;
+      domainIndex = i;
+      break;
+    }
+  }
+  if (domain == NULL) {
+    for (uint32_t i = 0; i < transport->capacity; ++i) {
+      if (transport->getVisibilityDomains[i].inUse == 0) {
+        domain = &transport->getVisibilityDomains[i];
+        domainIndex = i;
+        break;
+      }
+    }
+  }
+  if (domain == NULL) {
+    memset(transport->getVisibilityDomainReferenced, 0, transport->capacity);
+    for (uint32_t requestIndex = 0; requestIndex < transport->capacity;
+         ++requestIndex) {
+      const struct flagcxKernelProxyRequest *request =
+          &transport->requests[requestIndex];
+      if (request->state != FLAGCX_KERNEL_PROXY_REQUEST_FREE &&
+          request->getVisibilityDomain < transport->capacity)
+        transport->getVisibilityDomainReferenced[request->getVisibilityDomain] =
+            1;
+    }
+    for (uint32_t i = 0; i < transport->capacity; ++i) {
+      struct flagcxNetGetVisibilityDomain *candidate =
+          &transport->getVisibilityDomains[i];
+      if (candidate->issuedGetSequence == candidate->visibleGetSequence &&
+          candidate->flushRequest == NULL &&
+          transport->getVisibilityDomainReferenced[i] == 0) {
+        domain = candidate;
+        domainIndex = i;
+        break;
+      }
+    }
+  }
+  if (domain == NULL)
+    return flagcxInProgress;
+  if (domain->inUse == 0 || domain->peer != entry->peer ||
+      domain->orderingKey != transport->orderingKey) {
+    FLAGCXCHECK(flagcxNetGetVisibilityDomainInit(domain, entry->peer,
+                                                 transport->orderingKey));
+  }
+  FLAGCXCHECK(flagcxNetGetVisibilityIssue(domain, &entry->getSequence));
+  entry->getVisibilityDomain = domainIndex;
   entry->dstMrIdx = dstMrIdx;
   entry->dstOff = dstOff;
   entry->size = size;
@@ -196,6 +261,7 @@ flagcxResult_t flagcxKernelProxyPublishGetFlushPending(
   entry->request = NULL;
   entry->completionResult = flagcxSuccess;
   entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING;
+  entry->getDataComplete = 1;
   entry->state = FLAGCX_KERNEL_PROXY_REQUEST_POSTED;
   transport->nativeInflight++;
   return flagcxSuccess;
@@ -216,57 +282,170 @@ flagcxResult_t flagcxKernelProxyProgressRequest(
   *ready = 0;
   *completionResult = entry->completionResult;
   if (entry->completionStage == FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING) {
-    if (postFlush == NULL)
+    // Progress for the whole peer domain is handled below after every data
+    // CQE has had a chance to update the contiguous GET prefix.
+  } else {
+    if (entry->request == NULL || testRequest == NULL)
       return flagcxInvalidArgument;
-    void *flushRequest = NULL;
-    flagcxResult_t result =
-        postFlush(flushContext, entry->flushRecvComm, entry->dstMrIdx,
-                  entry->dstOff, entry->size, &flushRequest);
-    if (result == flagcxInProgress)
-      return flagcxSuccess;
+    int done = 0;
+    flagcxResult_t result = testRequest(entry->request, &done, NULL);
     if (result != flagcxSuccess) {
       entry->completionResult = result;
       *completionResult = result;
+      done = 1;
+    }
+    if (!done)
+      return flagcxSuccess;
+    if (entry->requiresGetFlush == 0) {
       *ready = 1;
       return flagcxSuccess;
     }
-    if (flushRequest == NULL) {
-      *ready = 1;
+    entry->request = NULL;
+    entry->getDataComplete = 1;
+    entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING;
+    // Defer posting until a later progress call. The production poll first
+    // visits all data requests, matching NCCL's snapshot-after-issued model.
+    if (entry->completionResult == flagcxSuccess)
       return flagcxSuccess;
-    }
-    entry->request = flushRequest;
-    entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_POSTED;
-    return flagcxSuccess;
   }
 
-  if (entry->request == NULL || testRequest == NULL)
-    return flagcxInvalidArgument;
-  int done = 0;
-  flagcxResult_t result = testRequest(entry->request, &done, NULL);
-  if (result != flagcxSuccess) {
-    entry->completionResult = result;
-    *completionResult = result;
-    done = 1;
+  if (entry->getVisibilityDomain == UINT32_MAX ||
+      entry->getVisibilityDomain >= transport->capacity)
+    return flagcxInternalError;
+  struct flagcxNetGetVisibilityDomain *domain =
+      &transport->getVisibilityDomains[entry->getVisibilityDomain];
+
+  if (domain->flushRequest != NULL) {
+    if (testRequest == NULL)
+      return flagcxInvalidArgument;
+    int done = 0;
+    flagcxResult_t result = testRequest(domain->flushRequest, &done, NULL);
+    if (result != flagcxSuccess)
+      done = 1;
+    if (done) {
+      const uint64_t previousVisible = domain->visibleGetSequence;
+      FLAGCXCHECK(flagcxNetGetVisibilityCompleteFlush(domain, result));
+      if (result != flagcxSuccess) {
+        for (uint32_t i = 0; i < transport->capacity; ++i) {
+          struct flagcxKernelProxyRequest *covered = &transport->requests[i];
+          if (covered->state == FLAGCX_KERNEL_PROXY_REQUEST_POSTED &&
+              covered->getVisibilityDomain == entry->getVisibilityDomain &&
+              covered->getSequence > previousVisible &&
+              covered->getSequence <= domain->visibleGetSequence &&
+              covered->completionResult == flagcxSuccess)
+            covered->completionResult = result;
+        }
+      }
+    }
   }
-  if (!done)
-    return flagcxSuccess;
-  if (*completionResult == flagcxSuccess && entry->requiresGetFlush != 0 &&
-      entry->completionStage == FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED) {
-    entry->request = NULL;
-    entry->completionStage = FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING;
-    return flagcxSuccess;
+
+  uint64_t completed = domain->dataCompletedGetSequence;
+  while (completed < domain->issuedGetSequence) {
+    struct flagcxKernelProxyRequest *next = NULL;
+    for (uint32_t i = 0; i < transport->capacity; ++i) {
+      struct flagcxKernelProxyRequest *candidate = &transport->requests[i];
+      if (candidate->state == FLAGCX_KERNEL_PROXY_REQUEST_POSTED &&
+          candidate->getVisibilityDomain == entry->getVisibilityDomain &&
+          candidate->getSequence == completed + 1) {
+        next = candidate;
+        break;
+      }
+    }
+    if (next == NULL || next->getDataComplete == 0)
+      break;
+    ++completed;
   }
-  *ready = 1;
+  FLAGCXCHECK(flagcxNetGetVisibilityAdvanceData(domain, completed));
+
+  if (domain->flushRequest == NULL &&
+      domain->dataCompletedGetSequence > domain->visibleGetSequence) {
+    const bool retryFlush =
+        domain->flushTargetGetSequence > domain->visibleGetSequence;
+    const uint64_t target = retryFlush ? domain->flushTargetGetSequence
+                                       : domain->dataCompletedGetSequence;
+    struct flagcxKernelProxyRequest *flushRange = NULL;
+    for (uint32_t i = 0; i < transport->capacity; ++i) {
+      struct flagcxKernelProxyRequest *candidate = &transport->requests[i];
+      if (candidate->state == FLAGCX_KERNEL_PROXY_REQUEST_POSTED &&
+          candidate->getVisibilityDomain == entry->getVisibilityDomain &&
+          candidate->getSequence > domain->visibleGetSequence &&
+          candidate->getSequence <= target &&
+          candidate->completionResult == flagcxSuccess)
+        flushRange = candidate;
+    }
+    if (flushRange == NULL) {
+      FLAGCXCHECK(flagcxNetGetVisibilityAdvanceVisible(
+          domain, domain->dataCompletedGetSequence));
+    } else {
+      uint64_t flushTarget = domain->flushTargetGetSequence;
+      if (!retryFlush)
+        FLAGCXCHECK(flagcxNetGetVisibilityBeginFlush(domain, &flushTarget));
+      if (postFlush == NULL)
+        return flagcxInvalidArgument;
+      flagcxResult_t result = postFlush(
+          flushContext, flushRange->flushRecvComm, flushRange->dstMrIdx,
+          flushRange->dstOff, flushRange->size, &domain->flushRequest);
+      if (result != flagcxInProgress &&
+          (result != flagcxSuccess || domain->flushRequest == NULL)) {
+        const uint64_t previousVisible = domain->visibleGetSequence;
+        FLAGCXCHECK(flagcxNetGetVisibilityCompleteFlush(domain, result));
+        if (result != flagcxSuccess) {
+          for (uint32_t i = 0; i < transport->capacity; ++i) {
+            struct flagcxKernelProxyRequest *covered = &transport->requests[i];
+            if (covered->state == FLAGCX_KERNEL_PROXY_REQUEST_POSTED &&
+                covered->getVisibilityDomain == entry->getVisibilityDomain &&
+                covered->getSequence > previousVisible &&
+                covered->getSequence <= domain->visibleGetSequence &&
+                covered->completionResult == flagcxSuccess)
+              covered->completionResult = result;
+          }
+        }
+      }
+    }
+  }
+
+  *completionResult = entry->completionResult;
+  *ready = entry->getSequence <= domain->visibleGetSequence;
   return flagcxSuccess;
 }
 
-void flagcxKernelProxyCancelRequest(
-    struct flagcxKernelProxyTransport *transport, uint32_t slot) {
+static flagcxResult_t flagcxKernelProxyRemoveGetVisibilitySequence(
+    struct flagcxKernelProxyTransport *transport,
+    struct flagcxKernelProxyRequest *entry) {
+  if (entry->getSequence != 0) {
+    if (entry->getVisibilityDomain >= transport->capacity)
+      return flagcxInternalError;
+    struct flagcxNetGetVisibilityDomain *domain =
+        &transport->getVisibilityDomains[entry->getVisibilityDomain];
+    if (domain->inUse == 0 || entry->getSequence > domain->issuedGetSequence)
+      return flagcxInternalError;
+
+    // Cancellation or terminal abort can remove a non-tail request. Compact
+    // every later live request before adjusting the domain watermarks; leaving
+    // a gap would prevent the contiguous data-completed prefix from advancing.
+    for (uint32_t i = 0; i < transport->capacity; ++i) {
+      struct flagcxKernelProxyRequest *later = &transport->requests[i];
+      if (later->state != FLAGCX_KERNEL_PROXY_REQUEST_FREE &&
+          later->getVisibilityDomain == entry->getVisibilityDomain &&
+          later->getSequence > entry->getSequence)
+        later->getSequence--;
+    }
+    FLAGCXCHECK(flagcxNetGetVisibilityRemoveIssue(domain, entry->getSequence));
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxKernelProxyCancelRequest(struct flagcxKernelProxyTransport *transport,
+                               uint32_t slot) {
   if (transport == NULL || slot >= transport->capacity)
-    return;
+    return flagcxInvalidArgument;
   struct flagcxKernelProxyRequest *entry = &transport->requests[slot];
-  if (entry->state == FLAGCX_KERNEL_PROXY_REQUEST_RESERVED)
-    flagcxKernelProxyRequestReset(entry);
+  if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_RESERVED)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxKernelProxyRemoveGetVisibilitySequence(transport, entry));
+  flagcxKernelProxyRequestReset(entry);
+  return flagcxSuccess;
 }
 
 flagcxResult_t
@@ -279,6 +458,7 @@ flagcxKernelProxyAbortRequest(struct flagcxKernelProxyTransport *transport,
   if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_POSTED ||
       transport->nativeInflight == 0)
     return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxKernelProxyRemoveGetVisibilitySequence(transport, entry));
   *releasedStagingSlot = entry->stagingSlot;
   transport->nativeInflight--;
   flagcxKernelProxyRequestReset(entry);

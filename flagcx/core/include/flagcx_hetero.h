@@ -13,6 +13,7 @@ struct flagcxNetReleaseGroup;
 struct flagcxRmaReleaseGroup;
 struct flagcxNetCompletionScoreboard;
 struct flagcxNetCompletionEntry;
+struct flagcxNetGetVisibilityDomain;
 
 enum flagcxRmaDescType {
   FLAGCX_RMA_PUT = 0,
@@ -35,7 +36,6 @@ enum flagcxRmaSubmitFlags {
 enum flagcxRmaCompletionStage {
   FLAGCX_RMA_COMPLETION_DATA_POSTED = 0,
   FLAGCX_RMA_COMPLETION_FLUSH_PENDING = 1,
-  FLAGCX_RMA_COMPLETION_FLUSH_POSTED = 2,
 };
 
 // One-sided adaptors report request-pool or send-queue pressure exclusively as
@@ -74,6 +74,9 @@ struct flagcxRmaDesc {
   uint32_t submitFlags;
   flagcxResult_t completionResult;
   enum flagcxRmaCompletionStage completionStage;
+  uint64_t getSequence;
+  uint32_t getVisibilityDomain;
+  uint8_t getDataComplete;
   // Every descriptor in a release group holds a reference. The transport
   // scoreboard may retain the embedded completion gate until that descriptor
   // retires, so the release descriptor cannot be its sole owner.
@@ -111,8 +114,18 @@ struct flagcxRmaProxyState {
   // indexed by the descriptor sequence, so the progress loop never allocates.
   struct flagcxNetCompletionScoreboard *completionScoreboards; // [nRanks]
   struct flagcxNetCompletionEntry
-      *completionEntries;       // [nRanks * 2 * queueSize]
-  volatile uint64_t *groupSeqs; // [nRanks]
+      *completionEntries; // [nRanks * 2 * queueSize]
+  // At most queueSize ordering domains can have live GETs for one peer.
+  // Domains own the physical flush request; descriptors only wait for their
+  // GET sequence to become visible.
+  struct flagcxNetGetVisibilityDomain
+      *getVisibilityDomains; // [nRanks * queueSize]
+  // Compact per-peer list of domains that currently own live GET sequences.
+  // This keeps the ordinary PUT/no-flush progress path independent of
+  // queueSize instead of sweeping every preallocated domain on each poll.
+  uint32_t *activeGetVisibilityDomains; // [nRanks * queueSize]
+  uint32_t *activeGetVisibilityCounts;  // [nRanks]
+  volatile uint64_t *groupSeqs;         // [nRanks]
   uint64_t generation;
 
   // GPU-visible done sequence counters for STREAM_OPS mode.

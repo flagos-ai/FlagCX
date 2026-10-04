@@ -1742,6 +1742,26 @@ static void flagcxKernelProxyPoll(struct flagcxKernelProxyState *state,
   struct flagcxNetAdaptor *net = comm->netAdaptor;
   if (net == NULL || net->test == NULL)
     return;
+  // First collect every available GET data CQE. A later pass snapshots each
+  // peer's contiguous completed prefix and can cover it with one flush.
+  for (uint32_t i = 0; i < state->transport.capacity; ++i) {
+    struct flagcxKernelProxyRequest *entry = &state->transport.requests[i];
+    if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_POSTED ||
+        entry->requiresGetFlush == 0 ||
+        entry->completionStage != FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED)
+      continue;
+    int ready = 0;
+    flagcxResult_t completionResult = flagcxSuccess;
+    flagcxResult_t progressResult = flagcxKernelProxyProgressRequest(
+        &state->transport, i, net->test,
+        flagcxKernelProxyPostGetVisibilityFlush, comm, &ready,
+        &completionResult);
+    if (progressResult != flagcxSuccess) {
+      WARN("flagcxKernelProxyPoll: GET data progress failed peer=%d res=%d",
+           entry->peer, (int)progressResult);
+      flagcxKernelProxyPublishTerminal(state, comm, progressResult);
+    }
+  }
   for (uint32_t i = 0; i < state->transport.capacity; ++i) {
     struct flagcxKernelProxyRequest *entry = &state->transport.requests[i];
     if (entry->state != FLAGCX_KERNEL_PROXY_REQUEST_POSTED)
@@ -1893,10 +1913,11 @@ static flagcxResult_t flagcxKernelProxyPost(
     flagcxResult_t configureResult = flagcxKernelProxyRequireGetFlush(
         &state->transport, requestSlot, dstMrIdx, dstOff, size, flushRecvComm);
     if (configureResult != flagcxSuccess) {
-      flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+      flagcxResult_t cancelResult =
+          flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
       if (stagingSlot >= 0)
         flagcxKernelProxyReleaseStagingSlot(&state->transport, stagingSlot);
-      return configureResult;
+      return cancelResult == flagcxSuccess ? configureResult : cancelResult;
     }
   }
 
@@ -1987,7 +2008,10 @@ static flagcxResult_t flagcxKernelProxyPost(
     flagcxResult_t publishResult =
         flagcxKernelProxyPublishGetFlushPending(&state->transport, requestSlot);
     if (publishResult != flagcxSuccess) {
-      flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+      flagcxResult_t cancelResult =
+          flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+      if (cancelResult != flagcxSuccess)
+        publishResult = cancelResult;
       flagcxKernelProxyPublishTerminal(state, comm, publishResult);
       return publishResult;
     }
@@ -1995,7 +2019,10 @@ static flagcxResult_t flagcxKernelProxyPost(
     return flagcxSuccess;
   }
 
-  flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+  flagcxResult_t cancelResult =
+      flagcxKernelProxyCancelRequest(&state->transport, requestSlot);
+  if (cancelResult != flagcxSuccess)
+    res = cancelResult;
   if (stagingSlot >= 0) {
     flagcxResult_t releaseResult =
         flagcxKernelProxyReleaseStagingSlot(&state->transport, stagingSlot);

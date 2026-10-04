@@ -16,6 +16,83 @@
 
 namespace {
 
+TEST(NetGetVisibilityTest, TracksIssuedCompletedTargetAndVisibleSequences) {
+  flagcxNetGetVisibilityDomain domain = {};
+  ASSERT_EQ(flagcxNetGetVisibilityDomainInit(&domain, 3, 17), flagcxSuccess);
+  uint64_t first = 0;
+  uint64_t second = 0;
+  ASSERT_EQ(flagcxNetGetVisibilityIssue(&domain, &first), flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityIssue(&domain, &second), flagcxSuccess);
+  EXPECT_EQ(first, 1u);
+  EXPECT_EQ(second, 2u);
+  EXPECT_EQ(domain.issuedGetSequence, 2u);
+
+  ASSERT_EQ(flagcxNetGetVisibilityAdvanceData(&domain, 2), flagcxSuccess);
+  uint64_t target = 0;
+  ASSERT_EQ(flagcxNetGetVisibilityBeginFlush(&domain, &target), flagcxSuccess);
+  EXPECT_EQ(target, 2u);
+  EXPECT_EQ(domain.flushTargetGetSequence, 2u);
+  ASSERT_EQ(flagcxNetGetVisibilityCompleteFlush(&domain, flagcxSuccess),
+            flagcxSuccess);
+  EXPECT_EQ(domain.visibleGetSequence, 2u);
+}
+
+TEST(NetGetVisibilityTest, CancelOnlyRollsBackUncompletedTail) {
+  flagcxNetGetVisibilityDomain domain = {};
+  ASSERT_EQ(flagcxNetGetVisibilityDomainInit(&domain, 0, 0), flagcxSuccess);
+  uint64_t first = 0;
+  uint64_t second = 0;
+  ASSERT_EQ(flagcxNetGetVisibilityIssue(&domain, &first), flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityIssue(&domain, &second), flagcxSuccess);
+  EXPECT_EQ(flagcxNetGetVisibilityCancelIssue(&domain, first),
+            flagcxInvalidArgument);
+  ASSERT_EQ(flagcxNetGetVisibilityCancelIssue(&domain, second), flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityAdvanceData(&domain, first), flagcxSuccess);
+  EXPECT_EQ(flagcxNetGetVisibilityCancelIssue(&domain, first),
+            flagcxInvalidArgument);
+  ASSERT_EQ(flagcxNetGetVisibilityAdvanceVisible(&domain, first),
+            flagcxSuccess);
+  EXPECT_EQ(domain.visibleGetSequence, first);
+}
+
+TEST(NetGetVisibilityTest, RemoveIssueCompactsEveryWatermark) {
+  flagcxNetGetVisibilityDomain domain = {};
+  ASSERT_EQ(flagcxNetGetVisibilityDomainInit(&domain, 0, 0), flagcxSuccess);
+  uint64_t sequence = 0;
+  for (int i = 0; i < 3; ++i)
+    ASSERT_EQ(flagcxNetGetVisibilityIssue(&domain, &sequence), flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityAdvanceData(&domain, 3), flagcxSuccess);
+  uint64_t target = 0;
+  ASSERT_EQ(flagcxNetGetVisibilityBeginFlush(&domain, &target), flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityCompleteFlush(&domain, flagcxSuccess),
+            flagcxSuccess);
+
+  ASSERT_EQ(flagcxNetGetVisibilityRemoveIssue(&domain, 2), flagcxSuccess);
+  EXPECT_EQ(domain.issuedGetSequence, 2u);
+  EXPECT_EQ(domain.dataCompletedGetSequence, 2u);
+  EXPECT_EQ(domain.flushTargetGetSequence, 2u);
+  EXPECT_EQ(domain.visibleGetSequence, 2u);
+}
+
+TEST(NetGetVisibilityTest, RemovingInflightRangeStillRetiresFlushRequest) {
+  flagcxNetGetVisibilityDomain domain = {};
+  ASSERT_EQ(flagcxNetGetVisibilityDomainInit(&domain, 0, 0), flagcxSuccess);
+  uint64_t sequence = 0;
+  ASSERT_EQ(flagcxNetGetVisibilityIssue(&domain, &sequence), flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityAdvanceData(&domain, sequence),
+            flagcxSuccess);
+  uint64_t target = 0;
+  ASSERT_EQ(flagcxNetGetVisibilityBeginFlush(&domain, &target), flagcxSuccess);
+  domain.flushRequest = reinterpret_cast<void *>(0x1);
+
+  ASSERT_EQ(flagcxNetGetVisibilityRemoveIssue(&domain, sequence),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxNetGetVisibilityCompleteFlush(&domain, flagcxRemoteError),
+            flagcxSuccess);
+  EXPECT_EQ(domain.flushRequest, nullptr);
+  EXPECT_EQ(domain.visibleGetSequence, 0u);
+}
+
 TEST(IbTransportEntryTest, OneSidedOperationsRejectNullCommunicator) {
   ASSERT_NE(flagcxNetIb.iput, nullptr);
   ASSERT_NE(flagcxNetIb.iget, nullptr);

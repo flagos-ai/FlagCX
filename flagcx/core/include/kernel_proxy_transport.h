@@ -19,7 +19,6 @@ enum flagcxKernelProxyRequestState {
 enum flagcxKernelProxyCompletionStage {
   FLAGCX_KERNEL_PROXY_COMPLETION_DATA_POSTED = 0,
   FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_PENDING = 1,
-  FLAGCX_KERNEL_PROXY_COMPLETION_FLUSH_POSTED = 2,
 };
 
 typedef flagcxResult_t (*flagcxKernelProxyTestRequestFn)(void *request,
@@ -34,12 +33,15 @@ struct flagcxKernelProxyRequest {
   struct flagcxNetSubmitContext submit;
   flagcxResult_t completionResult;
   uint64_t dstOff;
+  uint64_t getSequence;
   size_t size;
   int peer;
   int dstMrIdx;
   int stagingSlot;
   uint32_t state;
+  uint32_t getVisibilityDomain;
   uint8_t requiresGetFlush;
+  uint8_t getDataComplete;
   uint8_t completionStage;
 };
 
@@ -49,6 +51,10 @@ struct flagcxKernelProxyTransport {
   struct flagcxNetCompletionScoreboard scoreboard;
   struct flagcxNetCompletionEntry *completionEntries;
   struct flagcxKernelProxyRequest *requests;
+  struct flagcxNetGetVisibilityDomain *getVisibilityDomains;
+  // Progress-thread-private scratch storage used to find recyclable domains
+  // in O(capacity) without allocating on the GET posting path.
+  uint8_t *getVisibilityDomainReferenced;
   uint8_t *stagingInUse;
   uint32_t capacity;
   uint32_t nativeInflight;
@@ -101,8 +107,9 @@ flagcxResult_t flagcxKernelProxyProgressRequest(
     flagcxKernelProxyTestRequestFn testRequest,
     flagcxKernelProxyPostFlushFn postFlush, void *flushContext, int *ready,
     flagcxResult_t *completionResult);
-void flagcxKernelProxyCancelRequest(
-    struct flagcxKernelProxyTransport *transport, uint32_t slot);
+flagcxResult_t
+flagcxKernelProxyCancelRequest(struct flagcxKernelProxyTransport *transport,
+                               uint32_t slot);
 flagcxResult_t
 flagcxKernelProxyAbortRequest(struct flagcxKernelProxyTransport *transport,
                               uint32_t slot, int *releasedStagingSlot);

@@ -244,6 +244,10 @@ flagcxRmaProxyPrepareDesc(struct flagcxRmaProxyState *proxy, int peer,
   desc->next = NULL;
   desc->request = NULL;
   desc->completionResult = flagcxInProgress;
+  desc->completionStage = FLAGCX_RMA_COMPLETION_DATA_POSTED;
+  desc->getSequence = 0;
+  desc->getVisibilityDomain = UINT32_MAX;
+  desc->getDataComplete = 0;
   desc->opSeq = __atomic_add_fetch(&proxy->opSeqs[peer], 1, __ATOMIC_RELAXED);
   desc->generation = proxy->generation == 0 ? 1 : proxy->generation;
   desc->sequence = desc->opSeq;
@@ -756,6 +760,231 @@ flagcxOneSidePostGetVisibilityFlush(struct flagcxHeteroComm *comm, int dstMrIdx,
   return comm->netAdaptor->iflush(recvComm, 1, data, sizes, mhandles, request);
 }
 
+static struct flagcxNetGetVisibilityDomain *
+flagcxRmaProxyGetVisibilityDomain(struct flagcxRmaProxyState *proxy, int peer,
+                                  uint64_t orderingKey, uint32_t *domainIndex) {
+  if (proxy->getVisibilityDomains == NULL ||
+      proxy->activeGetVisibilityDomains == NULL ||
+      proxy->activeGetVisibilityCounts == NULL || peer < 0 ||
+      peer >= proxy->nRanks || domainIndex == NULL)
+    return NULL;
+  const size_t base = (size_t)peer * proxy->queueSize;
+  uint32_t activeCount = proxy->activeGetVisibilityCounts[peer];
+  for (uint32_t i = 0; i < activeCount; ++i) {
+    const uint32_t index = proxy->activeGetVisibilityDomains[base + i];
+    struct flagcxNetGetVisibilityDomain *domain =
+        &proxy->getVisibilityDomains[index];
+    if (domain->peer == peer && domain->orderingKey == orderingKey) {
+      *domainIndex = index;
+      return domain;
+    }
+  }
+  if (activeCount >= proxy->queueSize)
+    return NULL;
+
+  uint32_t freeIndex = UINT32_MAX;
+  for (uint32_t i = 0; i < proxy->queueSize; ++i) {
+    const uint32_t index = (uint32_t)(base + i);
+    struct flagcxNetGetVisibilityDomain *domain =
+        &proxy->getVisibilityDomains[base + i];
+    if (domain->inUse == 0) {
+      freeIndex = index;
+      break;
+    }
+  }
+  if (freeIndex == UINT32_MAX ||
+      flagcxNetGetVisibilityDomainInit(&proxy->getVisibilityDomains[freeIndex],
+                                       peer, orderingKey) != flagcxSuccess)
+    return NULL;
+  proxy->activeGetVisibilityDomains[base + activeCount] = freeIndex;
+  proxy->activeGetVisibilityCounts[peer] = activeCount + 1;
+  *domainIndex = freeIndex;
+  return &proxy->getVisibilityDomains[freeIndex];
+}
+
+static void
+flagcxRmaProxyPruneGetVisibilityDomains(struct flagcxRmaProxyState *proxy,
+                                        int peer) {
+  if (proxy->activeGetVisibilityDomains == NULL ||
+      proxy->activeGetVisibilityCounts == NULL)
+    return;
+  const size_t base = (size_t)peer * proxy->queueSize;
+  uint32_t write = 0;
+  const uint32_t count = proxy->activeGetVisibilityCounts[peer];
+  for (uint32_t read = 0; read < count; ++read) {
+    const uint32_t index = proxy->activeGetVisibilityDomains[base + read];
+    struct flagcxNetGetVisibilityDomain *domain =
+        &proxy->getVisibilityDomains[index];
+    bool referenced = false;
+    struct flagcxRmaDesc *desc =
+        flagcxIntruQueueHead(&proxy->inProgressQueues[peer]);
+    while (desc != NULL) {
+      if (desc->getVisibilityDomain == index) {
+        referenced = true;
+        break;
+      }
+      desc = desc->next;
+    }
+    if (!referenced && domain->flushRequest == NULL &&
+        domain->issuedGetSequence == domain->visibleGetSequence) {
+      memset(domain, 0, sizeof(*domain));
+      domain->peer = -1;
+      continue;
+    }
+    proxy->activeGetVisibilityDomains[base + write++] = index;
+  }
+  proxy->activeGetVisibilityCounts[peer] = write;
+}
+
+static flagcxResult_t
+flagcxRmaProxyTrackGetVisibility(struct flagcxRmaProxyState *proxy, int peer,
+                                 struct flagcxRmaDesc *desc) {
+  if (desc->type != FLAGCX_RMA_GET || desc->size == 0 ||
+      !flagcxOneSideGetCompletionRequiresFlush(proxy->comm, desc->dstMrIdx))
+    return flagcxSuccess;
+  uint32_t domainIndex = UINT32_MAX;
+  struct flagcxNetGetVisibilityDomain *domain =
+      flagcxRmaProxyGetVisibilityDomain(proxy, peer, desc->orderingKey,
+                                        &domainIndex);
+  if (domain == NULL)
+    return flagcxInternalError;
+  FLAGCXCHECK(flagcxNetGetVisibilityIssue(domain, &desc->getSequence));
+  desc->getVisibilityDomain = domainIndex;
+  return flagcxSuccess;
+}
+
+static struct flagcxRmaDesc *
+flagcxRmaProxyFindGet(struct flagcxRmaProxyState *proxy, int peer,
+                      uint32_t domainIndex, uint64_t getSequence) {
+  struct flagcxRmaDesc *desc =
+      flagcxIntruQueueHead(&proxy->inProgressQueues[peer]);
+  while (desc != NULL) {
+    if (desc->getVisibilityDomain == domainIndex &&
+        desc->getSequence == getSequence)
+      return desc;
+    desc = desc->next;
+  }
+  return NULL;
+}
+
+static bool
+flagcxRmaProxyProgressGetVisibilityDomain(struct flagcxRmaProxyState *proxy,
+                                          int peer, uint32_t domainIndex) {
+  struct flagcxNetGetVisibilityDomain *domain =
+      &proxy->getVisibilityDomains[domainIndex];
+  if (domain->inUse == 0 || domain->peer != peer)
+    return false;
+  bool did = false;
+
+  if (domain->flushRequest != NULL) {
+    int done = 0;
+    flagcxResult_t result =
+        proxy->comm->netAdaptor->test(domain->flushRequest, &done, NULL);
+    if (result != flagcxSuccess) {
+      done = 1;
+      WARN("flagcxRmaProxyProgressGetVisibilityDomain: flush test failed "
+           "peer=%d key=%lu res=%d",
+           peer, (unsigned long)domain->orderingKey, (int)result);
+    }
+    if (done) {
+      const uint64_t previousVisible = domain->visibleGetSequence;
+      flagcxResult_t completeResult =
+          flagcxNetGetVisibilityCompleteFlush(domain, result);
+      if (completeResult != flagcxSuccess) {
+        result = completeResult;
+        flagcxRmaProxyRecordPendingError(proxy);
+      }
+      if (result != flagcxSuccess) {
+        for (uint64_t sequence = previousVisible + 1;
+             sequence <= domain->visibleGetSequence; ++sequence) {
+          struct flagcxRmaDesc *covered =
+              flagcxRmaProxyFindGet(proxy, peer, domainIndex, sequence);
+          if (covered != NULL && covered->completionResult == flagcxSuccess)
+            covered->completionResult = result;
+        }
+        flagcxRmaProxyRecordPendingError(proxy);
+      }
+      did = true;
+    }
+  }
+
+  uint64_t completed = domain->dataCompletedGetSequence;
+  while (completed < domain->issuedGetSequence) {
+    struct flagcxRmaDesc *next =
+        flagcxRmaProxyFindGet(proxy, peer, domainIndex, completed + 1);
+    if (next == NULL || next->getDataComplete == 0)
+      break;
+    ++completed;
+  }
+  if (completed != domain->dataCompletedGetSequence) {
+    if (flagcxNetGetVisibilityAdvanceData(domain, completed) != flagcxSuccess)
+      flagcxRmaProxyRecordPendingError(proxy);
+    did = true;
+  }
+
+  if (domain->flushRequest != NULL ||
+      domain->dataCompletedGetSequence <= domain->visibleGetSequence)
+    return did;
+
+  const bool retryFlush =
+      domain->flushTargetGetSequence > domain->visibleGetSequence;
+  const uint64_t targetLimit = retryFlush ? domain->flushTargetGetSequence
+                                          : domain->dataCompletedGetSequence;
+  struct flagcxRmaDesc *flushRange = NULL;
+  for (uint64_t sequence = domain->visibleGetSequence + 1;
+       sequence <= targetLimit; ++sequence) {
+    struct flagcxRmaDesc *candidate =
+        flagcxRmaProxyFindGet(proxy, peer, domainIndex, sequence);
+    if (candidate != NULL && candidate->completionResult == flagcxSuccess)
+      flushRange = candidate;
+  }
+  if (flushRange == NULL) {
+    if (flagcxNetGetVisibilityAdvanceVisible(
+            domain, domain->dataCompletedGetSequence) != flagcxSuccess)
+      flagcxRmaProxyRecordPendingError(proxy);
+    return true;
+  }
+
+  uint64_t flushTarget = domain->flushTargetGetSequence;
+  if (!retryFlush &&
+      flagcxNetGetVisibilityBeginFlush(domain, &flushTarget) != flagcxSuccess) {
+    flagcxRmaProxyRecordPendingError(proxy);
+    return true;
+  }
+  flagcxResult_t result = flagcxOneSidePostGetVisibilityFlush(
+      proxy->comm, flushRange->dstMrIdx, flushRange->dstOff, flushRange->size,
+      NULL, &domain->flushRequest);
+  if (flagcxRmaPostResultIsRetryable(result)) {
+    // Keep the immutable target snapshot and retry posting on the next pass.
+    domain->flushRequest = NULL;
+    return did;
+  }
+  did = true;
+  if (result == flagcxSuccess && domain->flushRequest != NULL)
+    return did;
+
+  const uint64_t previousVisible = domain->visibleGetSequence;
+  flagcxResult_t completeResult =
+      flagcxNetGetVisibilityCompleteFlush(domain, result);
+  if (completeResult != flagcxSuccess)
+    result = completeResult;
+  if (result != flagcxSuccess) {
+    WARN("flagcxRmaProxyProgressGetVisibilityDomain: GET flush failed "
+         "peer=%d key=%lu target=%lu res=%d",
+         peer, (unsigned long)domain->orderingKey, (unsigned long)flushTarget,
+         (int)result);
+    for (uint64_t sequence = previousVisible + 1;
+         sequence <= domain->visibleGetSequence; ++sequence) {
+      struct flagcxRmaDesc *covered =
+          flagcxRmaProxyFindGet(proxy, peer, domainIndex, sequence);
+      if (covered != NULL && covered->completionResult == flagcxSuccess)
+        covered->completionResult = result;
+    }
+    flagcxRmaProxyRecordPendingError(proxy);
+  }
+  return did;
+}
+
 static bool
 flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
                                        int peer) {
@@ -768,27 +997,10 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     int done = 0;
     flagcxResult_t completionResult = desc->completionResult;
     if (desc->completionStage == FLAGCX_RMA_COMPLETION_FLUSH_PENDING) {
-      flagcxResult_t res = flagcxOneSidePostGetVisibilityFlush(
-          comm, desc->dstMrIdx, desc->dstOff, desc->size, NULL, &desc->request);
-      if (flagcxRmaPostResultIsRetryable(res)) {
-        desc = next;
-        continue;
-      }
-      did = true;
-      if (res != flagcxSuccess) {
-        WARN("flagcxRmaProxyPollNonPersistCompletion: GET flush failed "
-             "peer=%d res=%d",
-             peer, (int)res);
-        completionResult = res;
-        done = 1;
-      } else if (desc->request != NULL) {
-        desc->completionStage = FLAGCX_RMA_COMPLETION_FLUSH_POSTED;
-        desc = next;
-        continue;
-      } else {
-        done = 1;
-      }
-    } else if (desc->request != NULL) {
+      desc = next;
+      continue;
+    }
+    if (desc->request != NULL) {
       flagcxResult_t res = comm->netAdaptor->test(desc->request, &done, NULL);
       if (res != flagcxSuccess) {
         WARN("flagcxRmaProxyPollNonPersistCompletion: test failed peer=%d "
@@ -806,15 +1018,15 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
       desc = next;
       continue;
     }
-    if (completionResult == flagcxSuccess &&
-        desc->completionStage == FLAGCX_RMA_COMPLETION_DATA_POSTED &&
-        desc->type == FLAGCX_RMA_GET && desc->size != 0 &&
-        flagcxOneSideGetCompletionRequiresFlush(comm, desc->dstMrIdx)) {
-      // The data CQE only proves NIC completion on providers with this
-      // capability. Keep the same descriptor and scoreboard reservation until
-      // the local visibility flush has completed.
+    if (desc->getSequence != 0) {
+      // Keep the descriptor until its ordering domain's contiguous completed
+      // GET prefix has been made visible by one shared flush.
       desc->request = NULL;
+      desc->completionResult = completionResult;
+      desc->getDataComplete = 1;
       desc->completionStage = FLAGCX_RMA_COMPLETION_FLUSH_PENDING;
+      if (completionResult != flagcxSuccess)
+        flagcxRmaProxyRecordPendingError(proxy);
       did = true;
       desc = next;
       continue;
@@ -831,6 +1043,45 @@ flagcxRmaProxyPollNonPersistCompletion(struct flagcxRmaProxyState *proxy,
     did = true;
     desc = next;
   }
+
+  if (proxy->activeGetVisibilityDomains != NULL &&
+      proxy->activeGetVisibilityCounts != NULL) {
+    const size_t base = (size_t)peer * proxy->queueSize;
+    const uint32_t activeCount = proxy->activeGetVisibilityCounts[peer];
+    for (uint32_t i = 0; i < activeCount; ++i) {
+      if (flagcxRmaProxyProgressGetVisibilityDomain(
+              proxy, peer, proxy->activeGetVisibilityDomains[base + i]))
+        did = true;
+    }
+  }
+
+  desc = flagcxIntruQueueHead(&proxy->inProgressQueues[peer]);
+  while (desc != NULL) {
+    struct flagcxRmaDesc *next = desc->next;
+    if (desc->completionStage != FLAGCX_RMA_COMPLETION_FLUSH_PENDING ||
+        desc->getVisibilityDomain == UINT32_MAX) {
+      desc = next;
+      continue;
+    }
+    struct flagcxNetGetVisibilityDomain *domain =
+        &proxy->getVisibilityDomains[desc->getVisibilityDomain];
+    if (desc->getSequence > domain->visibleGetSequence) {
+      desc = next;
+      continue;
+    }
+    flagcxIntruQueueDelete(&proxy->inProgressQueues[peer], desc);
+    __atomic_fetch_sub(&proxy->inFlights[peer], 1, __ATOMIC_RELAXED);
+    flagcxRmaProxyCompleteDesc(proxy, peer, desc, desc->completionResult);
+    if (!proxy->useStreamOps) {
+      pthread_mutex_lock(&proxy->doneMutex);
+      pthread_cond_broadcast(&proxy->doneCond);
+      pthread_mutex_unlock(&proxy->doneMutex);
+    }
+    flagcxRmaDescDestroy(desc);
+    did = true;
+    desc = next;
+  }
+  flagcxRmaProxyPruneGetVisibilityDomains(proxy, peer);
   return did;
 }
 
@@ -979,6 +1230,17 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
     }
     bool fatal = res != flagcxSuccess;
     desc->completionResult = res;
+    if (!fatal) {
+      flagcxResult_t visibilityResult =
+          flagcxRmaProxyTrackGetVisibility(proxy, peer, desc);
+      if (visibilityResult != flagcxSuccess) {
+        WARN("flagcxRmaProxyPollNonPersistDesc: failed to track GET "
+             "visibility peer=%d res=%d",
+             peer, (int)visibilityResult);
+        desc->completionResult = visibilityResult;
+        flagcxRmaProxyRecordPendingError(proxy);
+      }
+    }
     if (fatal) {
       WARN("flagcxRmaProxyPollNonPersistDesc: op failed peer=%d type=%d "
            "res=%d",
@@ -1131,6 +1393,13 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free(proxy);
     return flagcxInvalidArgument;
   }
+  if (nRanks < 0 || (uint64_t)nRanks * qs > UINT32_MAX) {
+    WARN("flagcxHeteroRmaProxyStart: visibility domain index overflow "
+         "nRanks=%d queueSize=%u",
+         nRanks, qs);
+    free(proxy);
+    return flagcxInvalidArgument;
+  }
   proxy->queueSize = qs;
   proxy->queueMask = qs - 1;
   // Descriptors remain tracked after leaving the producer ring while their
@@ -1156,6 +1425,12 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
   proxy->completionEntries = (struct flagcxNetCompletionEntry *)calloc(
       (size_t)nRanks * scoreboardCapacity,
       sizeof(struct flagcxNetCompletionEntry));
+  proxy->getVisibilityDomains = (struct flagcxNetGetVisibilityDomain *)calloc(
+      (size_t)nRanks * qs, sizeof(struct flagcxNetGetVisibilityDomain));
+  proxy->activeGetVisibilityDomains =
+      (uint32_t *)calloc((size_t)nRanks * qs, sizeof(uint32_t));
+  proxy->activeGetVisibilityCounts =
+      (uint32_t *)calloc(nRanks, sizeof(uint32_t));
   proxy->groupSeqs = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
   proxy->generation = 1;
 
@@ -1164,7 +1439,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
       proxy->peerProducerMutexes == NULL || proxy->opSeqs == NULL ||
       proxy->doneSeqs == NULL || proxy->inFlights == NULL ||
       proxy->completionScoreboards == NULL ||
-      proxy->completionEntries == NULL || proxy->groupSeqs == NULL) {
+      proxy->completionEntries == NULL || proxy->getVisibilityDomains == NULL ||
+      proxy->activeGetVisibilityDomains == NULL ||
+      proxy->activeGetVisibilityCounts == NULL || proxy->groupSeqs == NULL) {
     WARN("flagcxHeteroRmaProxyStart: failed to allocate ring buffers");
     free(proxy->circularBuffers);
     free((void *)proxy->pis);
@@ -1176,6 +1453,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free((void *)proxy->inFlights);
     free(proxy->completionScoreboards);
     free(proxy->completionEntries);
+    free(proxy->getVisibilityDomains);
+    free(proxy->activeGetVisibilityDomains);
+    free(proxy->activeGetVisibilityCounts);
     free((void *)proxy->groupSeqs);
     free(proxy);
     return flagcxSystemError;
@@ -1203,6 +1483,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
       free((void *)proxy->inFlights);
       free(proxy->completionScoreboards);
       free(proxy->completionEntries);
+      free(proxy->getVisibilityDomains);
+      free(proxy->activeGetVisibilityDomains);
+      free(proxy->activeGetVisibilityCounts);
       free((void *)proxy->groupSeqs);
       free(proxy);
       return scoreboardResult;
@@ -1313,6 +1596,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     free((void *)proxy->inFlights);
     free(proxy->completionScoreboards);
     free(proxy->completionEntries);
+    free(proxy->getVisibilityDomains);
+    free(proxy->activeGetVisibilityDomains);
+    free(proxy->activeGetVisibilityCounts);
     free((void *)proxy->groupSeqs);
     free(proxy);
     comm->rmaProxy = NULL;
@@ -1370,6 +1656,9 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   free((void *)proxy->inFlights);
   free(proxy->completionScoreboards);
   free(proxy->completionEntries);
+  free(proxy->getVisibilityDomains);
+  free(proxy->activeGetVisibilityDomains);
+  free(proxy->activeGetVisibilityCounts);
   free((void *)proxy->groupSeqs);
   free(proxy);
   comm->rmaProxy = NULL;

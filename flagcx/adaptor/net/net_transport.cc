@@ -330,6 +330,110 @@ flagcxResult_t flagcxNetCompletionScoreboardReset(
 }
 
 flagcxResult_t
+flagcxNetGetVisibilityDomainInit(struct flagcxNetGetVisibilityDomain *domain,
+                                 int peer, uint64_t orderingKey) {
+  if (domain == NULL || peer < 0)
+    return flagcxInvalidArgument;
+  *domain = {};
+  domain->orderingKey = orderingKey;
+  domain->peer = peer;
+  domain->flushResult = flagcxSuccess;
+  domain->inUse = 1;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetVisibilityIssue(struct flagcxNetGetVisibilityDomain *domain,
+                            uint64_t *getSequence) {
+  if (domain == NULL || getSequence == NULL || domain->inUse == 0 ||
+      domain->issuedGetSequence >= UINT64_MAX - 1)
+    return flagcxInvalidArgument;
+  *getSequence = ++domain->issuedGetSequence;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetVisibilityCancelIssue(struct flagcxNetGetVisibilityDomain *domain,
+                                  uint64_t getSequence) {
+  if (domain == NULL || domain->inUse == 0 || getSequence == 0 ||
+      getSequence != domain->issuedGetSequence ||
+      getSequence <= domain->dataCompletedGetSequence)
+    return flagcxInvalidArgument;
+  domain->issuedGetSequence--;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetVisibilityRemoveIssue(struct flagcxNetGetVisibilityDomain *domain,
+                                  uint64_t getSequence) {
+  if (domain == NULL || domain->inUse == 0 || getSequence == 0 ||
+      getSequence > domain->issuedGetSequence)
+    return flagcxInvalidArgument;
+  domain->issuedGetSequence--;
+  if (domain->dataCompletedGetSequence >= getSequence)
+    domain->dataCompletedGetSequence--;
+  if (domain->flushTargetGetSequence >= getSequence)
+    domain->flushTargetGetSequence--;
+  if (domain->visibleGetSequence >= getSequence)
+    domain->visibleGetSequence--;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetVisibilityAdvanceData(struct flagcxNetGetVisibilityDomain *domain,
+                                  uint64_t dataCompletedGetSequence) {
+  if (domain == NULL || domain->inUse == 0 ||
+      dataCompletedGetSequence < domain->dataCompletedGetSequence ||
+      dataCompletedGetSequence > domain->issuedGetSequence)
+    return flagcxInvalidArgument;
+  domain->dataCompletedGetSequence = dataCompletedGetSequence;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetVisibilityBeginFlush(struct flagcxNetGetVisibilityDomain *domain,
+                                 uint64_t *flushTarget) {
+  if (domain == NULL || flushTarget == NULL || domain->inUse == 0 ||
+      domain->flushRequest != NULL ||
+      domain->flushTargetGetSequence != domain->visibleGetSequence ||
+      domain->dataCompletedGetSequence <= domain->visibleGetSequence)
+    return flagcxInvalidArgument;
+  domain->flushTargetGetSequence = domain->dataCompletedGetSequence;
+  *flushTarget = domain->flushTargetGetSequence;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxNetGetVisibilityAdvanceVisible(
+    struct flagcxNetGetVisibilityDomain *domain, uint64_t visibleGetSequence) {
+  if (domain == NULL || domain->inUse == 0 || domain->flushRequest != NULL ||
+      domain->flushTargetGetSequence != domain->visibleGetSequence ||
+      visibleGetSequence < domain->visibleGetSequence ||
+      visibleGetSequence > domain->dataCompletedGetSequence)
+    return flagcxInvalidArgument;
+  domain->visibleGetSequence = visibleGetSequence;
+  domain->flushTargetGetSequence = visibleGetSequence;
+  domain->flushResult = flagcxSuccess;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxNetGetVisibilityCompleteFlush(struct flagcxNetGetVisibilityDomain *domain,
+                                    flagcxResult_t result) {
+  if (domain == NULL || domain->inUse == 0 ||
+      domain->flushTargetGetSequence < domain->visibleGetSequence ||
+      domain->flushTargetGetSequence > domain->dataCompletedGetSequence ||
+      (domain->flushTargetGetSequence == domain->visibleGetSequence &&
+       domain->flushRequest == NULL))
+    return flagcxInvalidArgument;
+  domain->flushRequest = NULL;
+  domain->flushResult = result;
+  // A failed flush still retires the covered logical range with an error. It
+  // must not leave later shutdown/drain progress permanently blocked.
+  domain->visibleGetSequence = domain->flushTargetGetSequence;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
 flagcxNetTrackSubmit(struct flagcxNetCompletionScoreboard *scoreboard,
                      const struct flagcxNetSubmitContext *context,
                      struct flagcxNetReleaseGroup *releaseGroup) {
