@@ -31,6 +31,7 @@ size_t RmaTest::size = 0;
 size_t RmaTest::signalSize = 0;
 bool RmaTest::requireIpc = false;
 bool RmaTest::windowAvailable = false;
+flagcxResult_t RmaTest::windowRegistrationResult = flagcxInternalError;
 bool RmaTest::networkRmaAvailable = false;
 bool RmaTest::ipcRmaAvailable = false;
 bool RmaTest::dataRmaAvailable = false;
@@ -55,6 +56,7 @@ void RmaTest::SetUpTestSuite() {
   requireIpc = ibDisabled && !p2pDisabled;
   const bool requireNet = !ibDisabled && p2pDisabled;
   windowAvailable = false;
+  windowRegistrationResult = flagcxInternalError;
   networkRmaAvailable = false;
   ipcRmaAvailable = false;
   dataRmaAvailable = false;
@@ -143,6 +145,7 @@ void RmaTest::SetUpTestSuite() {
   // Register the data buffer only after every rank has allocated it.
   res = flagcxCommWindowRegister(comm, dataBuff, size, &dataWin,
                                  FLAGCX_WIN_COLL_SYMMETRIC);
+  windowRegistrationResult = res;
   bool localWindowReady = res == flagcxSuccess && dataWin != nullptr &&
                           dataWin->isSymmetricDefault &&
                           dataWin->defaultBase != nullptr;
@@ -344,6 +347,30 @@ void RmaTest::TearDownTestSuite() {
 
 void RmaTest::SetUp() {
   FlagCXTest::SetUp();
+  const char *setupExpectation =
+      std::getenv("FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP");
+  if (setupExpectation != nullptr && setupExpectation[0] != '\0') {
+    const bool requireUnsupported =
+        std::strcmp(setupExpectation, "unsupported") == 0;
+    const bool allowUnsupported =
+        requireUnsupported ||
+        std::strcmp(setupExpectation, "success_or_unsupported") == 0;
+    ASSERT_TRUE(requireUnsupported ||
+                std::strcmp(setupExpectation, "success") == 0 ||
+                std::strcmp(setupExpectation, "success_or_unsupported") == 0)
+        << "FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP must be success, "
+           "unsupported, or success_or_unsupported";
+    if (requireUnsupported) {
+      ASSERT_EQ(windowRegistrationResult, flagcxNotSupported)
+          << "strict VMM route must fail closed with NotSupported";
+      GTEST_SKIP() << "strict VMM MR route is explicitly unsupported";
+    }
+    if (windowRegistrationResult == flagcxNotSupported && allowUnsupported) {
+      GTEST_SKIP() << "strict VMM MR route is explicitly unsupported";
+    }
+    ASSERT_EQ(windowRegistrationResult, flagcxSuccess)
+        << "strict VMM route failed with a non-capability error";
+  }
   ASSERT_TRUE(windowAvailable) << "RMA data window is unavailable";
   ASSERT_TRUE(dataRmaAvailable) << dataRmaSkipReason;
   ASSERT_NE(dataWin, nullptr);

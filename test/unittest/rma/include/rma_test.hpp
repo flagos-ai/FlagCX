@@ -34,6 +34,9 @@ protected:
   // capability is tracked separately for platforms without stream signals.
   static bool requireIpc;
   static bool windowAvailable;
+  // Exact collective registration result retained so strict VMM route jobs
+  // can distinguish a truthful capability miss from an unrelated setup error.
+  static flagcxResult_t windowRegistrationResult;
   static bool networkRmaAvailable;
   static bool ipcRmaAvailable;
   static bool dataRmaAvailable;

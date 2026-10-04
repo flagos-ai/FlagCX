@@ -457,9 +457,8 @@ run_suite() {
             expected_write_required=1
             ;;
           hygon)
-            # DU has the same split today. Keep VMM out of this stage: SHCA's
-            # accepted VMM VA registration still transfers incorrect data and
-            # is covered by the dedicated follow-up task.
+            # DU has the same READ/WRITE split today. This ordinary-allocation
+            # case stays separate from the strict SHCA VMM route checks below.
             expected_write=unsupported
             expected_write_required=1
             visibility_platform_env+=(
@@ -524,6 +523,40 @@ run_suite() {
               MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
               RMA_VMM_ENABLE=1 \
               RMA_PLATFORM_ENV="$base_rma_platform_env ${cuda_vmm_env[*]}" || \
+              visibility_status=$?
+          done
+        elif [[ "$platform_name" == "hygon" ]]; then
+          # SHCA accepts VMM VA registration but that route produced incorrect
+          # RDMA data, so the provider now advertises it as unsupported. Probe
+          # DMA-BUF independently: if both runtime probes accept it, the same
+          # immediate-consumer test must validate its data; otherwise the route
+          # must fail closed with NotSupported.
+          local route setup_expectation expected_route
+          for route in va dmabuf; do
+            if [[ "$route" == "va" ]]; then
+              setup_expectation=unsupported
+              expected_route=none
+            else
+              setup_expectation=success_or_unsupported
+              expected_route=dmabuf
+            fi
+            local -a hygon_vmm_env=(
+              -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
+              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP="$setup_expectation"
+              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=success
+              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=unsupported
+              -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
+              -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED=1
+              -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE="$expected_route"
+              -x FLAGCX_VMM_MR_MODE="$route"
+              -x FLAGCX_IB_TIMEOUT=14
+              -x FLAGCX_IB_RETRY_CNT=1
+            )
+            FLAGCX_CI_MPI_LABEL="rma GDR visibility Hygon VMM $route" \
+              make -C "$suite_dir" run-mpi-net "${args[@]}" \
+              MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
+              RMA_VMM_ENABLE=1 \
+              RMA_PLATFORM_ENV="$base_rma_platform_env ${hygon_vmm_env[*]}" || \
               visibility_status=$?
           done
         elif [[ "$platform_name" == "ppu" ]]; then
@@ -639,10 +672,10 @@ run_suite() {
         expected_adaptor=BAREX
         symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
       fi
-      # PPU has no VMM-capable BAREX MR route. Hygon's SHCA stack accepts a
-      # VMM VA MR but does not transfer correct RDMA READ data through it.
-      # Keep VMM-local, IPC+NET, and per-route registration probes on both
-      # platforms, but do not treat either route as data-path capable.
+      # PPU has no VMM-capable BAREX MR route. SHCA's unsafe VMM VA route is
+      # disabled and Hygon's DMA-BUF route is independently exercised by the
+      # RMA immediate-consumer job. Keep the broader multi-node symmem VMM data
+      # matrix disabled until that hardware job establishes a supported route.
       if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ]]; then
         symmem_run_vmm_net_data=0
       fi

@@ -423,6 +423,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("for route in va dmabuf", rma_case)
         self.assertIn("FLAGCX_VMM_MR_MODE", rma_case)
         self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="rma GDR visibility Hygon VMM $route"',
+            rma_case,
+        )
+        self.assertIn(
+            "FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=\"$setup_expectation\"",
+            rma_case,
+        )
+        self.assertIn("setup_expectation=unsupported", rma_case)
+        self.assertIn("setup_expectation=success_or_unsupported", rma_case)
+        self.assertIn(
             'FLAGCX_CI_MPI_LABEL="rma GDR visibility forced unsupported READ"',
             rma_case,
         )
@@ -445,6 +455,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "const int useGdr = ptrType != FLAGCX_PTR_HOST;", flagcx_source
         )
+
+        ibrc_source = (
+            REPO_ROOT / "flagcx/adaptor/net/ibrc_adaptor.cc"
+        ).read_text()
+        shca_caps_start = ibrc_source.index("#ifdef USE_SHCA")
+        shca_caps = ibrc_source[
+            shca_caps_start : ibrc_source.index("#else", shca_caps_start)
+        ]
+        self.assertIn(
+            "flagcxIbVmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF", shca_caps
+        )
+        self.assertNotIn("FLAGCX_VMM_MR_CAP_VA", shca_caps)
 
     def test_common_launcher_and_static_rdma_preflight_cover_all_platforms(self):
         unit_workflow = (

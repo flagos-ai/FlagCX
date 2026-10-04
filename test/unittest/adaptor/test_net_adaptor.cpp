@@ -440,7 +440,13 @@ TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
   EXPECT_NE(net->igetBatch, nullptr);
   if (strcmp(net->name, "IB") == 0) {
     EXPECT_NE(net->iputSignal, nullptr);
+#ifdef USE_SHCA
+    // SHCA's VMM VA registration accepts the address but has not produced
+    // correct RDMA data. Only DMA-BUF remains eligible for runtime probing.
+    EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_DMABUF);
+#else
     EXPECT_EQ(net->vmmMrCaps, FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA);
+#endif
     EXPECT_EQ(net->gdrFlushCaps,
               static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_READ |
                                     FLAGCX_NET_GDR_FLUSH_WRITE));

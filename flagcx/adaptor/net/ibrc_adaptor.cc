@@ -55,6 +55,18 @@ FLAGCX_PARAM(IbRdAtomicDepth, "IB_RD_ATOMIC_DEPTH", 16);
 int flagcxNMergedIbDevs = -1;
 int flagcxNIbDevs = -1;
 
+// SHCA accepts ibv_reg_mr on a DU VMM virtual address, but hardware
+// conformance observed incorrect RDMA data through that MR. Registration
+// success is therefore not evidence that the provider has a usable VMM VA
+// route. Keep DMA-BUF available for the existing device-export and provider
+// probes, but fail closed on VA until SHCA supplies a validated implementation.
+#ifdef USE_SHCA
+static constexpr uint32_t flagcxIbVmmMrCaps = FLAGCX_VMM_MR_CAP_DMABUF;
+#else
+static constexpr uint32_t flagcxIbVmmMrCaps =
+    FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA;
+#endif
+
 // Define global arrays
 struct flagcxIbMergedDev flagcxIbMergedDevs[MAX_IB_VDEVS];
 struct flagcxIbDev flagcxIbDevs[MAX_IB_DEVS];
@@ -3658,8 +3670,7 @@ struct flagcxNetAdaptor flagcxNetIb = {
     flagcxIbIputBatch, flagcxIbTestBatch, flagcxIbIgetBatch, flagcxIbGetMrInfo,
 
     // Latest-only VMM MR capabilities and internal metadata
-    FLAGCX_VMM_MR_CAP_DMABUF | FLAGCX_VMM_MR_CAP_VA,
-    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    flagcxIbVmmMrCaps, FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
     // iflush posts a loopback RDMA READ and completes on its CQE, so the same
     // primitive can acquire either a local GET destination or received WRITE.
     FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE};
