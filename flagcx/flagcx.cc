@@ -11,6 +11,7 @@
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
+#include "gdr_visibility.h"
 #include "launch_kernel.h"
 #include "mem_alloc_registry.h"
 #include "net.h"
@@ -33,34 +34,6 @@
 #include <vector>
 
 flagcxRegPool globalRegPool;
-
-// -1 keeps the adaptor default, 0 is an expert disable, and 1 forces the
-// requirement. These knobs change policy only; they cannot manufacture a
-// missing transport or device visibility capability.
-FLAGCX_PARAM(GdrReadRequiresFlush, "GDR_READ_REQUIRES_FLUSH", -1);
-FLAGCX_PARAM(GdrWriteRequiresFlush, "GDR_WRITE_REQUIRES_FLUSH", -1);
-
-uint32_t flagcxApplyGdrFlushRequirementOverrides(uint32_t defaults,
-                                                 int64_t readOverride,
-                                                 int64_t writeOverride) {
-  uint32_t requirements = defaults;
-  if (readOverride == 0)
-    requirements &= ~FLAGCX_GDR_READ_REQUIRES_FLUSH;
-  else if (readOverride == 1)
-    requirements |= FLAGCX_GDR_READ_REQUIRES_FLUSH;
-
-  if (writeOverride == 0)
-    requirements &= ~FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
-  else if (writeOverride == 1)
-    requirements |= FLAGCX_GDR_WRITE_REQUIRES_FLUSH;
-  return requirements;
-}
-
-uint32_t flagcxResolveGdrFlushRequirements(uint32_t defaults) {
-  return flagcxApplyGdrFlushRequirementOverrides(
-      defaults, flagcxParamGdrReadRequiresFlush(),
-      flagcxParamGdrWriteRequiresFlush());
-}
 
 flagcxResult_t flagcxValidateGdrFlushCapability(uint32_t requirements,
                                                 uint32_t capabilities,
@@ -1477,8 +1450,15 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   // Visibility is a property of the device/NIC path, not of how this MR was
   // registered. In particular, an ordinary cudaMalloc-style allocation needs
   // the same post-READ acquire as a VMM allocation on Hygon.
-  info->gdrFlushRequirements =
-      flagcxResolveGdrFlushRequirements(deviceAdaptor->gdrFlushRequirements);
+  if (res == flagcxSuccess) {
+    flagcxGdrVisibilityDecision visibility = {};
+    res = flagcxResolveGdrVisibilityForConnection(
+        heteroComm->topoServer, heteroComm->rank, heteroComm->compCap,
+        heteroComm->netAdaptor, heteroComm->netDev, 1,
+        /*peerGpuMayPublish=*/0, info->registrationRoute, &visibility);
+    if (res == flagcxSuccess)
+      info->gdrFlushRequirements = visibility.requirements;
+  }
   if (mrHandle != NULL) {
     info->localMrHandle = mrHandle;
     info->ownsLocalMr = 1;
@@ -1486,7 +1466,9 @@ flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t heteroComm,
   if (res == flagcxSuccess && mrHandle == NULL)
     res = flagcxInternalError;
   if (res != flagcxSuccess) {
-    INFO(FLAGCX_REG, "flagcxOneSideRegister: regMr failed, res=%d", res);
+    INFO(FLAGCX_REG,
+         "flagcxOneSideRegister: registration/visibility setup failed, res=%d",
+         res);
   } else {
     res =
         flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);

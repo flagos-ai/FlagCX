@@ -91,6 +91,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           struct recvNetResources *resources;
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
           conn->proxyConn.connection->transportResources = (void *)resources;
+          resources->commPtr = comm;
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           FLAGCXCHECK(deviceAdaptor->streamCreate(&resources->cpStream));
@@ -123,6 +124,9 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                 return flagcxSystemError;
             }
           }
+          resources->useGdr = comm->netAdaptor != getNetAdaptor(SOCKET) &&
+                              (comm->netAdaptor == getNetAdaptor(RDMA) ||
+                               (resources->ptrSupport & FLAGCX_PTR_CUDA) != 0);
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));
           FLAGCXCHECK(comm->netAdaptor->listen(
@@ -178,6 +182,7 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           struct sendNetResources *resources;
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
           conn->proxyConn.connection->transportResources = (void *)resources;
+          resources->commPtr = comm;
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           FLAGCXCHECK(deviceAdaptor->streamCreate(&resources->cpStream));
@@ -210,6 +215,9 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                 return flagcxSystemError;
             }
           }
+          resources->useGdr = comm->netAdaptor != getNetAdaptor(SOCKET) &&
+                              (comm->netAdaptor == getNetAdaptor(RDMA) ||
+                               (resources->ptrSupport & FLAGCX_PTR_CUDA) != 0);
           struct flagcxIbHandle *handle = NULL;
           FLAGCXCHECK(flagcxCalloc(&handle, 1));
           FLAGCXCHECK(bootstrapRecv(comm->bootstrap, peer, 1001 + c,

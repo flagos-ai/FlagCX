@@ -889,7 +889,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       // PPU CI behavior while ACCL has no GPU-visibility flush API. This is not
       // a documented coherence guarantee. Do not enable READ/WRITE requirements
       // until BAREX advertises a real capability backed by a hardware test.
-      FLAGCX_GDR_FLUSH_NONE,
+      FLAGCX_GDR_FLUSH_NONE, FLAGCX_GDR_DEVICE_PPU, NULL,
 };
 
 #endif // USE_PPU_ADAPTOR

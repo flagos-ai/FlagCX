@@ -537,6 +537,15 @@ flagcxResult_t cudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorGetDeviceArchitecture(int dev, int *architecture) {
+  if (architecture == NULL)
+    return flagcxInvalidArgument;
+  cudaDeviceProp devProp;
+  DEVCHECK(cudaGetDeviceProperties(&devProp, dev));
+  *architecture = devProp.major * 10 + devProp.minor;
+  return flagcxSuccess;
+}
+
 flagcxResult_t cudaAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev) {
   if (pciBusId == NULL) {
     return flagcxInvalidArgument;
@@ -1229,6 +1238,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       // pre-Hopper receive policy. A future per-topology resolver may clear a
       // bit only after the device/NIC path is known to be coherent.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_DEVICE_CUDA, cudaAdaptorGetDeviceArchitecture,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

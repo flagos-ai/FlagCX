@@ -2,6 +2,7 @@
 #include "adaptor.h"
 #include "adaptor_plugin_load.h"
 #include "device.h"
+#include "gdr_visibility.h"
 #include "net_transport.h"
 #include "proxy.h"
 #include "reg_pool.h"
@@ -14,17 +15,32 @@
 namespace {
 
 flagcxResult_t
-flagcxGetCollectiveWriteVisibilityPolicy(struct flagcxNetAdaptor *net,
+flagcxGetCollectiveWriteVisibilityPolicy(struct recvNetResources *resources,
                                          bool *required) {
-  if (net == NULL || deviceAdaptor == NULL || required == NULL)
+  if (resources == NULL || resources->netAdaptor == NULL || required == NULL)
     return flagcxNotSupported;
-  const uint32_t requirements =
-      flagcxResolveGdrFlushRequirements(deviceAdaptor->gdrFlushRequirements);
-  *required = (requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH) != 0;
+  const uint8_t registrationRoute =
+      resources->useDmaBuf ? static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_DMABUF)
+                           : static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_NONE);
+  // Derive from the concrete buffer path as well as setup metadata. This keeps
+  // upgraded plugins and lightweight proxy fixtures fail-closed if they do not
+  // explicitly populate useGdr.
+  const int useGdr = resources->useGdr ||
+                     resources->netAdaptor == getNetAdaptor(RDMA) ||
+                     (resources->ptrSupport & FLAGCX_PTR_CUDA) != 0;
+  flagcxGdrVisibilityDecision visibility = {};
+  FLAGCXCHECK(flagcxResolveGdrVisibilityForConnection(
+      resources->commPtr == NULL ? NULL : resources->commPtr->topoServer,
+      resources->commPtr == NULL ? -1 : resources->commPtr->rank,
+      resources->commPtr == NULL ? 0 : resources->commPtr->compCap,
+      resources->netAdaptor, resources->netDev, useGdr,
+      /*peerGpuMayPublish=*/0, registrationRoute, &visibility));
+  *required = (visibility.requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH) != 0;
   if (!*required)
     return flagcxSuccess;
   const flagcxResult_t capabilityResult = flagcxValidateGdrFlushCapability(
-      requirements, net->gdrFlushCaps, FLAGCX_GDR_WRITE_REQUIRES_FLUSH);
+      visibility.requirements, resources->netAdaptor->gdrFlushCaps,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH);
   if (capabilityResult != flagcxSuccess) {
     // BAREX intentionally keeps a legacy no-op callback for automatic PPU CI
     // compatibility. An explicitly forced WRITE requirement cannot use that
@@ -450,8 +466,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
       if (args->netCompleted[step]) {
         if (resources->netAdaptor == getNetAdaptor(RDMA)) {
           bool flushRequired = false;
-          FLAGCXCHECK(flagcxGetCollectiveWriteVisibilityPolicy(
-              resources->netAdaptor, &flushRequired));
+          FLAGCXCHECK(flagcxGetCollectiveWriteVisibilityPolicy(resources,
+                                                               &flushRequired));
           if (!flushRequired) {
             args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
             return flagcxSuccess;
@@ -478,7 +494,7 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
             // RDMA-style: flush
             bool flushRequired = false;
             FLAGCXCHECK(flagcxGetCollectiveWriteVisibilityPolicy(
-                resources->netAdaptor, &flushRequired));
+                resources, &flushRequired));
             if (!flushRequired) {
               args->subs[args->postFlush++ & stepMask].requests[0] =
                   (void *)0x1;

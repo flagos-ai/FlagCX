@@ -1078,6 +1078,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       // well as VMM. Its current DU runtime cannot provide stream acquire for
       // incoming WRITEs, so strong WRITE consumers fail safely as unsupported.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_DEVICE_DU, NULL,
 };
 
 #endif // USE_DU_ADAPTOR

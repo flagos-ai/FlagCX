@@ -37,6 +37,8 @@ TEST(DeviceAdaptorCompatibilityTest, V1UpgradePreservesSignalAcquire) {
   EXPECT_EQ(latest.symMulticastVaFree, nullptr);
   EXPECT_EQ(latest.gdrFlushRequirements,
             static_cast<uint32_t>(FLAGCX_GDR_WRITE_REQUIRES_FLUSH));
+  EXPECT_EQ(latest.gdrDeviceFamily, FLAGCX_GDR_DEVICE_UNKNOWN);
+  EXPECT_EQ(latest.getDeviceArchitecture, nullptr);
   EXPECT_EQ(latest.vmmMrCaps, static_cast<uint32_t>(FLAGCX_VMM_MR_CAP_NONE));
   EXPECT_NE(latest.internalFlags & FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1,
             0u);

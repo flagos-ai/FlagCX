@@ -899,6 +899,7 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
   if (connection->send) {
     struct sendNetResources *resources =
         (struct sendNetResources *)connection->transportResources;
+    resources->useDmaBuf = dmaBufferSupport;
     if (resources->netSendComm == NULL) {
       FLAGCXCHECK(resources->netAdaptor->connect(resources->netDev, reqBuff,
                                                  &resources->netSendComm));
@@ -929,6 +930,7 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
   } else {
     struct recvNetResources *resources =
         (struct recvNetResources *)connection->transportResources;
+    resources->useDmaBuf = dmaBufferSupport;
     if (resources->netRecvComm == NULL) {
       FLAGCXCHECK(resources->netAdaptor->accept(resources->netListenComm,
                                                 &resources->netRecvComm));

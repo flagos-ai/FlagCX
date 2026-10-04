@@ -20,6 +20,16 @@ struct flagcxDevProps {
   int pciDomainId;
 };
 
+// CUDA-compatible APIs are implemented by several vendors, but NVIDIA
+// compute-capability policy must only be applied to NVIDIA CUDA devices.
+typedef enum {
+  FLAGCX_GDR_DEVICE_UNKNOWN = 0,
+  FLAGCX_GDR_DEVICE_CUDA = 1,
+  FLAGCX_GDR_DEVICE_METAX = 2,
+  FLAGCX_GDR_DEVICE_DU = 3,
+  FLAGCX_GDR_DEVICE_PPU = 4,
+} flagcxGdrDeviceFamily_t;
+
 // C-compatible typedef matching the C++ using alias in dlsymbols.h.
 typedef void (*flagcxLaunchFunc_t)(flagcxStream_t, void *);
 
@@ -332,6 +342,15 @@ struct flagcxDeviceAdaptor_latest {
   // WRITE acquire contract; common code may apply explicit environment
   // overrides.
   uint32_t gdrFlushRequirements;
+
+  // Device family used by the per-connection visibility resolver. Legacy v1
+  // plugins remain UNKNOWN and therefore never receive CUDA-only exemptions.
+  flagcxGdrDeviceFamily_t gdrDeviceFamily;
+
+  // Latest-only architecture query. CUDA returns major * 10 + minor; other
+  // and legacy adaptors leave this NULL so policy remains conservative. This
+  // must not be added to flagcxDevProps, which is part of the frozen v1 ABI.
+  flagcxResult_t (*getDeviceArchitecture)(int dev, int *architecture);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

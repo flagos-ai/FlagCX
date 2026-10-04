@@ -1087,6 +1087,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       // coherent path. WRITE-dependent stream waits currently fail safely as
       // unsupported instead of silently weakening the acquire contract.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_DEVICE_METAX, NULL,
 };
 
 #endif // USE_METAX_ADAPTOR

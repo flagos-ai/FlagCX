@@ -1,5 +1,6 @@
 #include "flagcx_hetero.h"
 #include "adaptor.h"
+#include "gdr_visibility.h"
 #include "global_comm.h"
 #include "group.h"
 #include "net.h"
@@ -1959,6 +1960,8 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
   return flagcxSuccess;
 }
 
+static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer);
+
 flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
                                       size_t signalOffset, uint64_t expected,
                                       flagcxStream_t stream) {
@@ -1984,11 +1987,24 @@ flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
   if (deviceAdaptor == NULL || deviceAdaptor->streamWaitValue64 == NULL)
     return flagcxNotSupported;
 
-  const uint32_t requirements =
-      flagcxResolveGdrFlushRequirements(deviceAdaptor->gdrFlushRequirements);
-  const int waitFlags = (requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH)
-                            ? FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES
-                            : FLAGCX_STREAM_WAIT_VALUE_DEFAULT;
+  const uint8_t registrationRoute =
+      comm->signalHandle == nullptr
+          ? static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_NONE)
+          : comm->signalHandle->registrationRoute;
+  // An intra-node sender may publish this signal through the IPC/D2D fast
+  // path. Keep the peer-GPU acquire even when Hopper/NIC topology would permit
+  // omitting a network WRITE flush. If the fast path later falls back to the
+  // NIC, the extra acquire is conservative.
+  const int peerGpuMayPublish =
+      !flagcxParamP2pDisable() && flagcxIsIntraNode(comm, peer);
+  flagcxGdrVisibilityDecision visibility = {};
+  FLAGCXCHECK(flagcxResolveGdrVisibilityForConnection(
+      comm->topoServer, comm->rank, comm->compCap, comm->netAdaptor,
+      comm->netDev, 1, peerGpuMayPublish, registrationRoute, &visibility));
+  const int waitFlags =
+      (visibility.requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH)
+          ? FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES
+          : FLAGCX_STREAM_WAIT_VALUE_DEFAULT;
   return deviceAdaptor->streamWaitValue64(stream, signalAddr, expected,
                                           waitFlags);
 }

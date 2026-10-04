@@ -188,6 +188,11 @@ struct flagcxNetAdaptor_latest {
   // real iflush. Callers must check these bits before relying on iflush for a
   // required device-visibility boundary.
   uint32_t gdrFlushCaps;
+
+  // Provider policy, separate from capability. A provider may require a
+  // visibility boundary even when device/topology policy would omit it.
+  // This latest-only field is directional and defaults to NONE.
+  uint32_t gdrFlushForceRequirements;
 };
 
 #define flagcxNetAdaptor flagcxNetAdaptor_latest

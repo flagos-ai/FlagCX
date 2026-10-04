@@ -83,6 +83,7 @@ static flagcxResult_t fillPeerInfo(flagcxHeteroComm_t comm,
   info->pidHash = getPidHash() + commHash;
   info->busId = comm->busId;
   info->comm = comm;
+  info->cudaCompCap = comm->compCap;
 
   return flagcxSuccess;
 }
@@ -358,6 +359,20 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
   INFO(FLAGCX_INIT, "Using network %s", comm->netAdaptor->name);
   INFO(FLAGCX_INIT, "getting busId for cudaDev %d", comm->cudaDev);
   FLAGCXCHECK(getBusId(comm->cudaDev, &comm->busId));
+  comm->compCap = 0;
+  if (deviceAdaptor->getDeviceArchitecture != NULL) {
+    const flagcxResult_t architectureResult =
+        deviceAdaptor->getDeviceArchitecture(comm->cudaDev, &comm->compCap);
+    if (architectureResult == flagcxSuccess) {
+      INFO(FLAGCX_INIT, "device architecture %d", comm->compCap);
+    } else {
+      comm->compCap = 0;
+      INFO(FLAGCX_INIT,
+           "device architecture unavailable (result %d); using conservative "
+           "GDR visibility policy",
+           architectureResult);
+    }
+  }
   INFO(FLAGCX_INIT, "getting commHash for rank %d", comm->rank);
   comm->commHash = getHash(job->commId.internal, FLAGCX_UNIQUE_ID_BYTES);
   INFO(FLAGCX_INIT, "commHash for rank %d is %lu", comm->rank, comm->commHash);
