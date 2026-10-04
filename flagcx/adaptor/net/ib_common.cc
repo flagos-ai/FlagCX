@@ -9,6 +9,49 @@
 #include <inttypes.h>
 #include <sched.h>
 
+flagcxResult_t flagcxIbRunLazyInit(struct flagcxIbLazyInit *control,
+                                   flagcxResult_t (*initialize)(void *),
+                                   flagcxResult_t (*rollback)(void *),
+                                   void *opaque) {
+  if (control == NULL || initialize == NULL || rollback == NULL)
+    return flagcxInvalidArgument;
+
+  for (;;) {
+    int state = __atomic_load_n(&control->state, __ATOMIC_ACQUIRE);
+    if (state == FLAGCX_IB_LAZY_INIT_READY)
+      return flagcxSuccess;
+    if (state == FLAGCX_IB_LAZY_INIT_FAILED)
+      return __atomic_load_n(&control->result, __ATOMIC_RELAXED);
+    if (state == FLAGCX_IB_LAZY_INIT_IN_PROGRESS) {
+      sched_yield();
+      continue;
+    }
+    if (state != FLAGCX_IB_LAZY_INIT_UNINITIALIZED)
+      return flagcxInternalError;
+
+    int expected = FLAGCX_IB_LAZY_INIT_UNINITIALIZED;
+    if (!__atomic_compare_exchange_n(&control->state, &expected,
+                                     FLAGCX_IB_LAZY_INIT_IN_PROGRESS, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      continue;
+
+    flagcxResult_t result = initialize(opaque);
+    if (result != flagcxSuccess) {
+      flagcxResult_t rollbackResult = rollback(opaque);
+      if (rollbackResult != flagcxSuccess)
+        WARN("NET/IB: lazy initialization failed with %d and rollback failed "
+             "with %d; close will retry remaining resources",
+             result, rollbackResult);
+    }
+    __atomic_store_n(&control->result, result, __ATOMIC_RELAXED);
+    __atomic_store_n(&control->state,
+                     result == flagcxSuccess ? FLAGCX_IB_LAZY_INIT_READY
+                                             : FLAGCX_IB_LAZY_INIT_FAILED,
+                     __ATOMIC_RELEASE);
+    return result;
+  }
+}
+
 flagcxResult_t
 flagcxIbCommonPostFifo(struct flagcxIbRecvComm *comm, int n, void **data,
                        size_t *sizes, int *tags, void **mhandles,

@@ -510,6 +510,21 @@ struct flagcxIbGpuFlush {
   struct flagcxIbQp qp;
 };
 
+enum flagcxIbLazyInitState {
+  FLAGCX_IB_LAZY_INIT_UNINITIALIZED = 0,
+  FLAGCX_IB_LAZY_INIT_IN_PROGRESS = 1,
+  FLAGCX_IB_LAZY_INIT_READY = 2,
+  FLAGCX_IB_LAZY_INIT_FAILED = 3,
+};
+
+// Receive communicators are zero-allocated, so this control block starts in
+// UNINITIALIZED without a separate constructor.  The implementation uses
+// acquire/release atomics to let concurrent first users share one initializer.
+struct flagcxIbLazyInit {
+  int state;
+  flagcxResult_t result;
+};
+
 struct alignas(32) flagcxIbRemFifo {
   struct flagcxIbSendFifo elems[MAX_REQUESTS][FLAGCX_NET_IB_MAX_RECVS];
   uint64_t fifoTail;
@@ -541,6 +556,7 @@ struct alignas(32) flagcxIbRecvComm {
   int sizesFifo[MAX_REQUESTS][FLAGCX_NET_IB_MAX_RECVS];
   int gpuFlushHostMem;
   int flushEnabled;
+  struct flagcxIbLazyInit flushInit;
 
   struct flagcxIbRetransState retrans;
   struct flagcxIbSrqMgr srqMgr;
@@ -647,6 +663,10 @@ flagcxResult_t flagcxIbCommonRecordCommError(struct flagcxIbNetCommBase *base,
                                              flagcxResult_t result);
 flagcxResult_t
 flagcxIbCommonGetCommError(const struct flagcxIbNetCommBase *base);
+flagcxResult_t flagcxIbRunLazyInit(struct flagcxIbLazyInit *control,
+                                   flagcxResult_t (*initialize)(void *),
+                                   flagcxResult_t (*rollback)(void *),
+                                   void *opaque);
 
 static_assert((sizeof(struct flagcxIbNetCommBase) % 32) == 0,
               "flagcxIbNetCommBase size must be 32-byte multiple to ensure "

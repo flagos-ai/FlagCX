@@ -189,6 +189,30 @@ int batchPostResult = IBV_SUCCESS;
 int batchRejectedIndex = -1;
 int batchPostCalls = 0;
 
+struct LazyInitTestContext {
+  std::atomic<int> calls{0};
+  std::atomic<int> rollbackCalls{0};
+  std::atomic<bool> release{false};
+  std::atomic<bool> resourceLive{false};
+  flagcxResult_t result = flagcxSuccess;
+};
+
+flagcxResult_t runLazyInitTestCallback(void *opaque) {
+  auto *context = static_cast<LazyInitTestContext *>(opaque);
+  context->calls.fetch_add(1);
+  context->resourceLive.store(true);
+  while (!context->release.load())
+    std::this_thread::yield();
+  return context->result;
+}
+
+flagcxResult_t runLazyInitTestRollback(void *opaque) {
+  auto *context = static_cast<LazyInitTestContext *>(opaque);
+  context->rollbackCalls.fetch_add(1);
+  context->resourceLive.store(false);
+  return flagcxSuccess;
+}
+
 #ifdef USE_IBUC
 int ibucCreateCqCalls = 0;
 int ibucDeregisterCalls = 0;
@@ -417,6 +441,77 @@ TEST(NetAdaptorInterface, UpgradeV1PreservesCollectiveWriteFlush) {
   flagcxNetAdaptorUpgrade(&legacy, &upgraded);
   EXPECT_EQ(upgraded.gdrFlushCaps,
             static_cast<uint32_t>(FLAGCX_NET_GDR_FLUSH_NONE));
+}
+
+TEST(IbLazyInitTest, ConcurrentCallersRunInitializerOnce) {
+  flagcxIbLazyInit control = {};
+  LazyInitTestContext context;
+  constexpr int kThreads = 16;
+  std::vector<flagcxResult_t> results(kThreads, flagcxSystemError);
+  std::vector<std::thread> threads;
+  threads.reserve(kThreads);
+  for (int i = 0; i < kThreads; i++) {
+    threads.emplace_back([&, i]() {
+      results[i] = flagcxIbRunLazyInit(&control, runLazyInitTestCallback,
+                                       runLazyInitTestRollback, &context);
+    });
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (context.calls.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::yield();
+  context.release.store(true);
+  for (std::thread &thread : threads)
+    thread.join();
+
+  EXPECT_EQ(context.calls.load(), 1);
+  EXPECT_EQ(context.rollbackCalls.load(), 0);
+  EXPECT_TRUE(context.resourceLive.load());
+  EXPECT_EQ(control.state, FLAGCX_IB_LAZY_INIT_READY);
+  for (flagcxResult_t result : results)
+    EXPECT_EQ(result, flagcxSuccess);
+}
+
+TEST(IbLazyInitTest, FailureIsPublishedWithoutDuplicateInitialization) {
+  flagcxIbLazyInit control = {};
+  LazyInitTestContext context;
+  context.result = flagcxSystemError;
+  context.release.store(true);
+
+  EXPECT_EQ(flagcxIbRunLazyInit(&control, runLazyInitTestCallback,
+                                runLazyInitTestRollback, &context),
+            flagcxSystemError);
+  EXPECT_EQ(flagcxIbRunLazyInit(&control, runLazyInitTestCallback,
+                                runLazyInitTestRollback, &context),
+            flagcxSystemError);
+  EXPECT_EQ(context.calls.load(), 1);
+  EXPECT_EQ(context.rollbackCalls.load(), 1);
+  EXPECT_FALSE(context.resourceLive.load());
+  EXPECT_EQ(control.state, FLAGCX_IB_LAZY_INIT_FAILED);
+}
+
+TEST(NetAdaptorInterface, DisabledIbFlushDoesNotInitializeResources) {
+  struct flagcxNetAdaptor *net = getNetAdaptor(RDMA);
+  ASSERT_NE(net, nullptr);
+  if (net->name == nullptr ||
+      (strcmp(net->name, "IB") != 0 && strcmp(net->name, "IBUC") != 0))
+    GTEST_SKIP() << "Runs only for IBRC and IBUC";
+
+  flagcxIbRecvComm recv = {};
+  recv.base.ready = 1;
+  recv.flushEnabled = 0;
+  uint8_t byte = 0;
+  void *data[1] = {&byte};
+  int sizes[1] = {sizeof(byte)};
+  void *mhandles[1] = {reinterpret_cast<void *>(1)};
+  void *request = reinterpret_cast<void *>(1);
+  EXPECT_EQ(net->iflush(&recv, 1, data, sizes, mhandles, &request),
+            flagcxNotSupported);
+  EXPECT_EQ(request, nullptr);
+  EXPECT_EQ(recv.flushInit.state, FLAGCX_IB_LAZY_INIT_UNINITIALIZED);
+  EXPECT_EQ(recv.devs[0].gpuFlush.qp.qp, nullptr);
+  EXPECT_EQ(recv.devs[0].gpuFlush.hostMr, nullptr);
 }
 
 TEST(NetAdaptorInterface, RdmaAdaptorAdvertisesOneSidedContract) {
@@ -1252,6 +1347,46 @@ TEST_F(NetAdaptorLoopback, IbucRetransmissionResourcesAreReady) {
     EXPECT_EQ(recv->devs[i].retransRecvBufCount,
               FLAGCX_IBUC_RETRANS_RECV_DEPTH);
   }
+}
+
+TEST_F(NetAdaptorLoopback, IbFlushResourcesAreCreatedOnFirstUseAndDestroyed) {
+  if (net_->name == nullptr ||
+      (strcmp(net_->name, "IB") != 0 && strcmp(net_->name, "IBUC") != 0))
+    GTEST_SKIP() << "Runs only for IBRC and IBUC";
+  SKIP_IF_CALLBACK_NULL(net_, iflush);
+
+  auto *recv = static_cast<flagcxIbRecvComm *>(recvComm_);
+  ASSERT_EQ(recv->flushInit.state, FLAGCX_IB_LAZY_INIT_UNINITIALIZED);
+  ASSERT_NE(recv->flushEnabled, 0);
+  for (int i = 0; i < recv->base.ndevs; i++) {
+    EXPECT_EQ(recv->devs[i].gpuFlush.qp.qp, nullptr);
+    EXPECT_EQ(recv->devs[i].gpuFlush.hostMr, nullptr);
+  }
+
+  uint8_t target = 0x5a;
+  void *targetMr = nullptr;
+  ASSERT_REGISTER_MR(recvComm_, &target, sizeof(target), FLAGCX_PTR_HOST,
+                     targetMr);
+  void *data[1] = {&target};
+  int sizes[1] = {sizeof(target)};
+  void *mhandles[1] = {targetMr};
+  void *request = nullptr;
+  ASSERT_EQ(net_->iflush(recvComm_, 1, data, sizes, mhandles, &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+
+  EXPECT_EQ(recv->flushInit.state, FLAGCX_IB_LAZY_INIT_READY);
+  for (int i = 0; i < recv->base.ndevs; i++) {
+    EXPECT_NE(recv->devs[i].gpuFlush.qp.qp, nullptr);
+    EXPECT_NE(recv->devs[i].gpuFlush.hostMr, nullptr);
+  }
+  EXPECT_DEREGISTER_MR(recvComm_, targetMr);
+
+  // Close explicitly so the test covers destruction of resources that were
+  // absent at connection establishment and materialized by the first flush.
+  ASSERT_EQ(net_->closeRecv(recvComm_), flagcxSuccess);
+  recvComm_ = nullptr;
 }
 
 TEST_F(NetAdaptorLoopback, IbucGpuSendRecvAndFlush) {

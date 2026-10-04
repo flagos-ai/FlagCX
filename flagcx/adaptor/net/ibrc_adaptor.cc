@@ -1526,6 +1526,74 @@ ib_send_ready:
 
 FLAGCX_PARAM(IbGdrFlushDisable, "GDR_FLUSH_DISABLE", 0);
 
+static flagcxResult_t flagcxIbDestroyFlushResources(void *opaque) {
+  struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)opaque;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+
+  flagcxResult_t result = flagcxSuccess;
+  for (int i = comm->base.ndevs - 1; i >= 0; i--) {
+    struct flagcxIbGpuFlush *flush = &comm->devs[i].gpuFlush;
+    if (flush->qp.qp != NULL) {
+      flagcxResult_t current = flagcxWrapIbvDestroyQp(flush->qp.qp);
+      if (current == flagcxSuccess)
+        flush->qp.qp = NULL;
+      else if (result == flagcxSuccess)
+        result = current;
+    }
+    if (flush->qp.qp == NULL && flush->hostMr != NULL) {
+      flagcxResult_t current = flagcxWrapIbvDeregMr(flush->hostMr);
+      if (current == flagcxSuccess)
+        flush->hostMr = NULL;
+      else if (result == flagcxSuccess)
+        result = current;
+    }
+    if (flush->qp.qp == NULL && flush->hostMr == NULL)
+      memset(&flush->sge, 0, sizeof(flush->sge));
+  }
+  return result;
+}
+
+// Match NCCL's first-use lifecycle: connections that never need a visibility
+// flush do not consume an extra QP or register the dummy host buffer.  The
+// shared lazy-init control serializes concurrent first callers.
+static flagcxResult_t flagcxIbCreateFlushResources(void *opaque) {
+  struct flagcxIbRecvComm *comm = (struct flagcxIbRecvComm *)opaque;
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+
+  for (int i = 0; i < comm->base.ndevs; i++) {
+    struct flagcxIbRecvCommDev *commDev = comm->devs + i;
+    struct flagcxIbDev *ibDev = flagcxIbDevs + commDev->base.ibDevN;
+
+    FLAGCXCHECK(
+        flagcxIbCreateQp(ibDev->portNum, &commDev->base,
+                         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ,
+                         &commDev->gpuFlush.qp));
+    struct flagcxIbDevInfo devInfo;
+    memset(&devInfo, 0, sizeof(devInfo));
+    devInfo.lid = ibDev->lid;
+    devInfo.linkLayer = ibDev->portAttr.link_layer;
+    devInfo.ibPort = ibDev->portNum;
+    devInfo.spn = commDev->base.gidInfo.localGid.global.subnet_prefix;
+    devInfo.iid = commDev->base.gidInfo.localGid.global.interface_id;
+    devInfo.mtu = ibDev->portAttr.active_mtu;
+    devInfo.maxDestRdAtomic = flagcxIbResponderAtomicDepth(
+        flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
+    FLAGCXCHECK(flagcxIbRtrQp(commDev->gpuFlush.qp.qp, ibDev,
+                              &commDev->base.gidInfo,
+                              commDev->gpuFlush.qp.qp->qp_num, &devInfo));
+    FLAGCXCHECK(flagcxIbRtsQp(commDev->gpuFlush.qp.qp, ibDev, &devInfo));
+    FLAGCXCHECK(flagcxWrapIbvRegMr(&commDev->gpuFlush.hostMr, commDev->base.pd,
+                                   &comm->gpuFlushHostMem, sizeof(int),
+                                   IBV_ACCESS_LOCAL_WRITE));
+    commDev->gpuFlush.sge.addr = (uint64_t)&comm->gpuFlushHostMem;
+    commDev->gpuFlush.sge.length = 1;
+    commDev->gpuFlush.sge.lkey = commDev->gpuFlush.hostMr->lkey;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbAccept(void *listenComm, void **recvComm) {
   struct flagcxIbListenComm *lComm = (struct flagcxIbListenComm *)listenComm;
   struct flagcxIbCommStage *stage = &lComm->stage;
@@ -1723,34 +1791,6 @@ ib_recv:
     rCommDev->fifoSge.lkey = rCommDev->fifoMr->lkey;
     if (flagcxParamIbUseInline())
       rComm->remFifo.flags = IBV_SEND_INLINE;
-
-    // Allocate Flush dummy buffer for GPU Direct RDMA
-    if (rComm->flushEnabled) {
-      FLAGCXCHECK(flagcxWrapIbvRegMr(&rCommDev->gpuFlush.hostMr,
-                                     rCommDev->base.pd, &rComm->gpuFlushHostMem,
-                                     sizeof(int), IBV_ACCESS_LOCAL_WRITE));
-      rCommDev->gpuFlush.sge.addr = (uint64_t)&rComm->gpuFlushHostMem;
-      rCommDev->gpuFlush.sge.length = 1;
-      rCommDev->gpuFlush.sge.lkey = rCommDev->gpuFlush.hostMr->lkey;
-      FLAGCXCHECK(
-          flagcxIbCreateQp(ibDev->portNum, &rCommDev->base,
-                           IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ,
-                           &rCommDev->gpuFlush.qp));
-      struct flagcxIbDevInfo devInfo;
-      memset(&devInfo, 0, sizeof(devInfo));
-      devInfo.lid = ibDev->lid;
-      devInfo.linkLayer = ibDev->portAttr.link_layer;
-      devInfo.ibPort = ibDev->portNum;
-      devInfo.spn = rCommDev->base.gidInfo.localGid.global.subnet_prefix;
-      devInfo.iid = rCommDev->base.gidInfo.localGid.global.interface_id;
-      devInfo.mtu = ibDev->portAttr.active_mtu;
-      devInfo.maxDestRdAtomic = flagcxIbResponderAtomicDepth(
-          flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
-      FLAGCXCHECK(flagcxIbRtrQp(rCommDev->gpuFlush.qp.qp, ibDev,
-                                &rCommDev->base.gidInfo,
-                                rCommDev->gpuFlush.qp.qp->qp_num, &devInfo));
-      FLAGCXCHECK(flagcxIbRtsQp(rCommDev->gpuFlush.qp.qp, ibDev, &devInfo));
-    }
 
     // Fill Handle
     meta.devs[i].lid = ibDev->lid;
@@ -2609,6 +2649,9 @@ flagcxResult_t flagcxIbIflush(void *recvComm, int n, void **data, int *sizes,
     return flagcxSuccess;
   if (comm->flushEnabled == 0)
     return flagcxNotSupported;
+  FLAGCXCHECK(flagcxIbRunLazyInit(&comm->flushInit,
+                                  flagcxIbCreateFlushResources,
+                                  flagcxIbDestroyFlushResources, comm));
 
   // Only flush once using the last non-zero receive
   struct flagcxIbRequest *req;
@@ -2887,14 +2930,10 @@ flagcxResult_t flagcxIbCloseRecv(void *recvComm) {
       if (comm->base.qps[q].qp != NULL)
         FLAGCXCHECK(flagcxWrapIbvDestroyQp(comm->base.qps[q].qp));
 
+    FLAGCXCHECK(flagcxIbDestroyFlushResources(comm));
+
     for (int i = 0; i < comm->base.ndevs; i++) {
       struct flagcxIbRecvCommDev *commDev = comm->devs + i;
-      if (comm->flushEnabled) {
-        if (commDev->gpuFlush.qp.qp != NULL)
-          FLAGCXCHECK(flagcxWrapIbvDestroyQp(commDev->gpuFlush.qp.qp));
-        if (commDev->gpuFlush.hostMr != NULL)
-          FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->gpuFlush.hostMr));
-      }
       if (commDev->fifoMr != NULL)
         FLAGCXCHECK(flagcxWrapIbvDeregMr(commDev->fifoMr));
       if (commDev->sizesFifoMr != NULL)
