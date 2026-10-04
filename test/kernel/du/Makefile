@@ -20,12 +20,21 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
 
 NVCC_RDC_FLAG := -c
 
-.PHONY: all clean device_api.o device_ir.o
+.PHONY: all clean device_api.o device_ir.o gdr_visibility.o
 
 all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
+gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
+
+$(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
+	../include/gdr_visibility_test.h \
+	../include/gdr_visibility_test_kernel.cuh
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling gdr_visibility.cu (DU)"
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) $(NVCC_RDC_FLAG) -o $@ $< \
+		$(ALL_INCLUDES) $(ADAPTOR_DEFINE)
 
 $(OBJDIR)/device_api.o: device_api.cu
 	@mkdir -p $(OBJDIR)

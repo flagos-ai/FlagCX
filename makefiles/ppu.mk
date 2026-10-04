@@ -10,10 +10,12 @@ DEVICE_LINK  := -lcudart -lcuda
 # this (test/make.inc requires it non-empty). No PPU kernel sources exist,
 # so PLATFORM_KERNEL_* stay empty below.
 DEVICE_PLATFORM := CUDA
-DEVICE_COMPILER :=
-DEVICE_COMPILE_FLAG :=
-DEVICE_LINK_FLAG :=
-DEVICE_FILE_EXTENSION :=
+# The library has no PPU device sources, but visibility conformance links a
+# minimal CUDA-compatible consumer kernel into the RMA test binary.
+DEVICE_COMPILER := $(DEVICE_HOME)/bin/nvcc
+DEVICE_COMPILE_FLAG := -c --cudart=shared -Xcompiler -fPIC -MMD -MP -g
+DEVICE_LINK_FLAG := --cudart=shared -Xcompiler -fPIC
+DEVICE_FILE_EXTENSION := cu
 
 CCL_HOME    ?= /usr/local/nccl/build
 CCL_LIB     := $(CCL_HOME)/lib64

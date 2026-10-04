@@ -425,6 +425,7 @@ run_suite() {
     rma)
       local ipc_status=0
       local network_status=0
+      local visibility_status=0
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       # Keep these as separate invocations so each transport has its own
@@ -437,11 +438,122 @@ run_suite() {
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
           MPIRUN="$MPI_RUNNER" || network_status=$?
+
+        # Visibility conformance is deliberately a separate process from the
+        # general RMA suite: requirement overrides and VMM route selection are
+        # cached once, and each case must exercise one unambiguous policy.
+        local platform_name visibility_filter base_rma_platform_env
+        local expected_read=success expected_write=success
+        local expected_read_required=1 expected_write_required=
+        local -a visibility_platform_env=()
+        platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+        visibility_filter="RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility"
+        base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
+        case "$platform_name" in
+          metax)
+            # MACA can complete GET visibility through the provider flush, but
+            # its stream wait cannot acquire incoming remote WRITEs yet.
+            expected_write=unsupported
+            expected_write_required=1
+            ;;
+          hygon)
+            # DU has the same split today. Keep VMM out of this stage: SHCA's
+            # accepted VMM VA registration still transfers incorrect data and
+            # is covered by the dedicated follow-up task.
+            expected_write=unsupported
+            expected_write_required=1
+            visibility_platform_env+=(
+              -x FLAGCX_IB_TIMEOUT=14
+              -x FLAGCX_IB_RETRY_CNT=1
+            )
+            ;;
+          ppu)
+            # BAREX intentionally retains a temporary no-op/NONE policy. The
+            # success case still runs the immediate consumer kernel, while a
+            # separate forced READ case below verifies fail-close behavior.
+            expected_read_required=0
+            expected_write_required=0
+            ;;
+          cuda)
+            # READ stays required. WRITE is resolved from compute capability
+            # and GPU/NIC/CPU topology, so do not hard-code a pre-Hopper bit.
+            ;;
+          *)
+            echo "Unsupported visibility conformance platform: $platform_name" >&2
+            visibility_status=1
+            ;;
+        esac
+
+        local -a visibility_common_env=(
+          -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
+          -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ="$expected_read"
+          -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE="$expected_write"
+          -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED="$expected_read_required"
+          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=none
+        )
+        if [[ -n "$expected_write_required" ]]; then
+          visibility_common_env+=(
+            -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
+          )
+        fi
+        FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
+          make -C "$suite_dir" run-mpi-net "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
+          RMA_VMM_ENABLE=0 \
+          RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} ${visibility_platform_env[*]}" || \
+          visibility_status=$?
+
+        if [[ "$platform_name" == "cuda" ]]; then
+          # CUDA validates both strict VMM registration routes. A successful
+          # registration is not enough: READ and WRITE must reach the immediate
+          # consumer kernel with the selected route still recorded.
+          local route
+          for route in va dmabuf; do
+            local -a cuda_vmm_env=(
+              -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
+              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=success
+              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=success
+              -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
+              # VMM route does not alter visibility policy; CUDA WRITE remains
+              # topology-derived here just as it is for ordinary allocations.
+              -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE="$route"
+              -x FLAGCX_VMM_MR_MODE="$route"
+            )
+            FLAGCX_CI_MPI_LABEL="rma GDR visibility VMM $route" \
+              make -C "$suite_dir" run-mpi-net "${args[@]}" \
+              MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
+              RMA_VMM_ENABLE=1 \
+              RMA_PLATFORM_ENV="$base_rma_platform_env ${cuda_vmm_env[*]}" || \
+              visibility_status=$?
+          done
+        elif [[ "$platform_name" == "ppu" ]]; then
+          # Forcing READ turns the temporary NONE policy into a hard contract.
+          # BAREX has no real READ flush capability, so completion must fail
+          # closed before a consumer kernel is launched.
+          local -a ppu_forced_read_env=(
+            -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
+            # The unsupported flush is discovered asynchronously by the RMA
+            # proxy, so WaitCounter exposes its terminal flag as RemoteError.
+            -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=remote_error
+            -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=success
+            -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
+            -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED=0
+            -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=none
+            -x FLAGCX_GDR_READ_REQUIRES_FLUSH=1
+          )
+          FLAGCX_CI_MPI_LABEL="rma GDR visibility forced unsupported READ" \
+            make -C "$suite_dir" run-mpi-net "${args[@]}" \
+            MPIRUN="$MPI_RUNNER" \
+            NET_FILTER="RmaTest.DirectConsumerReadVisibility" \
+            RMA_VMM_ENABLE=0 \
+            RMA_PLATFORM_ENV="$base_rma_platform_env ${ppu_forced_read_env[*]}" || \
+            visibility_status=$?
+        fi
       else
         network_status=$?
       fi
-      if ((ipc_status != 0 || network_status != 0)); then
-        echo "RMA MPI failures: IPC=$ipc_status network=$network_status" >&2
+      if ((ipc_status != 0 || network_status != 0 || visibility_status != 0)); then
+        echo "RMA MPI failures: IPC=$ipc_status network=$network_status visibility=$visibility_status" >&2
         return 1
       fi
       ;;

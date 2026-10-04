@@ -44,8 +44,9 @@ docker_options:
 
 set_env: .github/scripts/set_env/ppu.sh
 
-# PPU validates both P2P and RMA through ACCL. Device-kernel suites remain
-# excluded until their PPU support is available in CI.
+# PPU validates both P2P and RMA through ACCL. Full device-kernel suites remain
+# excluded; the RMA suite links only its minimal CUDA-compatible visibility
+# consumer kernel.
 unit_test_suites:
   - adaptor
   - core

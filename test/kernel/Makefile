@@ -7,7 +7,7 @@ KERNEL_PLATFORM_DIR := $(CURDIR)/$(KERNEL_PLATFORM)
 
 # Known targets that consumers request
 FORWARD_TARGETS := device_api.o device_ir.o nvshmem_adaptor_kernel.o \
-    dlink.o dlink_api.o dlink_ir.o dlink_shmem_test.o
+    gdr_visibility.o dlink.o dlink_api.o dlink_ir.o dlink_shmem_test.o
 
 .PHONY: all clean $(FORWARD_TARGETS)
 

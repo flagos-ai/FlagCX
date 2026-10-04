@@ -26,13 +26,22 @@ else
 NVCC_RDC_FLAG := -c
 endif
 
-.PHONY: all clean device_api.o device_ir.o nvshmem_adaptor_kernel.o dlink.o dlink_api.o dlink_ir.o
+.PHONY: all clean device_api.o device_ir.o gdr_visibility.o nvshmem_adaptor_kernel.o dlink.o dlink_api.o dlink_ir.o
 
 all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
+gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
 nvshmem_adaptor_kernel.o: $(OBJDIR)/nvshmem_adaptor_kernel.o
+
+$(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
+	../include/gdr_visibility_test.h \
+	../include/gdr_visibility_test_kernel.cuh
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling gdr_visibility.cu (CUDA-compatible)"
+	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -c -o $@ $< \
+		$(ALL_INCLUDES) $(ADAPTOR_DEFINE)
 
 $(OBJDIR)/device_api.o: device_api.cu
 	@mkdir -p $(OBJDIR)

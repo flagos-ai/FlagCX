@@ -1771,6 +1771,22 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
                                 FLAGCX_NET_MR_FLAG_FORCE_SO, &mrHandle,
                                 &selectedRoute);
   info->registrationRoute = (uint8_t)selectedRoute;
+  // Record the network-path policy on signal MRs as well as data MRs. The
+  // actual wait still resolves per peer (and may conservatively add the D2D
+  // acquire), while registration metadata and capability probes need the
+  // baseline NIC-to-memory contract rather than a zero-initialized NONE value.
+  // Host-pinned signals are not GDR and therefore must not inherit the
+  // device-only READ/WRITE visibility requirements.
+  if (res == flagcxSuccess) {
+    flagcxGdrVisibilityDecision visibility = {};
+    const int useGdr = ptrType != FLAGCX_PTR_HOST;
+    res = flagcxResolveGdrVisibilityForConnection(
+        heteroComm->topoServer, heteroComm->rank, heteroComm->compCap,
+        heteroComm->netAdaptor, heteroComm->netDev, useGdr,
+        /*peerGpuMayPublish=*/0, info->registrationRoute, &visibility);
+    if (res == flagcxSuccess)
+      info->gdrFlushRequirements = visibility.requirements;
+  }
   if (mrHandle != NULL) {
     info->localMrHandle = mrHandle;
     info->localRecvComm = selfRecvComm;
@@ -1779,7 +1795,10 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
   if (res == flagcxSuccess && mrHandle == NULL)
     res = flagcxInternalError;
   if (res != flagcxSuccess) {
-    INFO(FLAGCX_REG, "flagcxOneSideSignalRegister: regMr failed, res=%d", res);
+    INFO(FLAGCX_REG,
+         "flagcxOneSideSignalRegister: registration/visibility setup failed, "
+         "res=%d",
+         res);
   } else {
     res =
         flagcxOneSideGetMrInfo(heteroComm->netAdaptor, mrHandle, &localMrInfo);

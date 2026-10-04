@@ -45,8 +45,9 @@ flagcx_ci_configure_suite() {
 
   case "$suite" in
     rma)
+      export RMA_PLATFORM_ENV="-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1"
       FLAGCX_CI_TEST_MAKE_ARGS+=(
-        "RMA_PLATFORM_ENV=-x FLAGCX_USE_TUNER=1 -x TUNNING_WITH_SINGLE_COMM=1 -x FLAGCX_USE_HOST_COMM=1"
+        "RMA_PLATFORM_ENV=$RMA_PLATFORM_ENV"
       )
       ;;
   esac

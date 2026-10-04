@@ -3,6 +3,7 @@
 #include "comm.h"
 #include "flagcx_hetero.h"
 #include "global_comm.h"
+#include "onesided_types.h"
 #include "sym_heap.h"
 #include <cstdio>
 #include <cstdlib>
@@ -230,18 +231,27 @@ void RmaTest::SetUpTestSuite() {
     return;
   }
 
-  // Verify the exact acquire semantics required by flagcxWaitSignal before a
-  // test can submit a network PUT/signal.  The probe waits on a value already
-  // stored in local device memory, so it cannot depend on remote progress.
+  // Verify the exact policy-selected acquire semantics required by
+  // flagcxWaitSignal before a test can submit a network PUT/signal. The probe
+  // waits on a value already stored in local device memory, so it cannot
+  // depend on remote progress. Platforms with a deliberate NONE policy (PPU's
+  // transitional BAREX path) must not be rejected by an unconditional strong
+  // wait probe.
   int localSignalStatus = allSignalsCapable ? 0 : 1;
   if (localSignalStatus == 0) {
     uint64_t probeValue = 1;
     res = devHandle->deviceMemcpy(signalBuff, &probeValue, sizeof(probeValue),
                                   flagcxMemcpyHostToDevice, nullptr);
     if (res == flagcxSuccess) {
-      res = deviceAdaptor->streamWaitValue64(
-          stream, signalBuff, probeValue,
-          FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES);
+      const uint32_t requirements =
+          comm->heteroComm->signalHandle == nullptr
+              ? FLAGCX_GDR_WRITE_REQUIRES_FLUSH
+              : comm->heteroComm->signalHandle->gdrFlushRequirements;
+      const int waitFlags = (requirements & FLAGCX_GDR_WRITE_REQUIRES_FLUSH)
+                                ? FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES
+                                : FLAGCX_STREAM_WAIT_VALUE_DEFAULT;
+      res = deviceAdaptor->streamWaitValue64(stream, signalBuff, probeValue,
+                                             waitFlags);
     }
     if (res == flagcxSuccess)
       res = devHandle->streamSynchronize(stream);

@@ -402,6 +402,50 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$PERF_BIN/perf_p2p_engine", p2p_step)
         self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", p2p_step)
 
+    def test_rma_visibility_conformance_covers_supported_routes_and_policies(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        rma_makefile = (REPO_ROOT / "test/unittest/rma/Makefile").read_text()
+        rma_case = unit_runner[unit_runner.index("    rma)") :]
+        rma_case = rma_case[: rma_case.index("    runner)")]
+
+        self.assertIn("gdr_visibility.o", rma_makefile)
+        self.assertIn("GDR_VISIBILITY_BUILD_DIR", rma_makefile)
+        self.assertIn("BUILDDIR=$(GDR_VISIBILITY_BUILD_DIR)", rma_makefile)
+        self.assertIn("$(KERNEL_INCLUDE)", rma_makefile)
+        self.assertIn("RMA_VMM_ENABLE ?= 0", rma_makefile)
+        self.assertIn("NET_FILTER ?= *", rma_makefile)
+        for platform in ("metax)", "hygon)", "ppu)", "cuda)"):
+            self.assertIn(platform, rma_case)
+
+        self.assertIn('FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary"', rma_case)
+        self.assertIn("for route in va dmabuf", rma_case)
+        self.assertIn("FLAGCX_VMM_MR_MODE", rma_case)
+        self.assertIn(
+            'FLAGCX_CI_MPI_LABEL="rma GDR visibility forced unsupported READ"',
+            rma_case,
+        )
+        self.assertIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=1", rma_case)
+        self.assertIn(
+            "FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=remote_error", rma_case
+        )
+        self.assertNotIn("FLAGCX_P2P_PERF_OP", rma_case)
+
+        metax_env = METAX_ENV.read_text()
+        self.assertIn('export RMA_PLATFORM_ENV="-x FLAGCX_USE_TUNER=1', metax_env)
+        self.assertIn('"RMA_PLATFORM_ENV=$RMA_PLATFORM_ENV"', metax_env)
+
+        maca_kernel_makefile = (
+            REPO_ROOT / "test/kernel/maca/Makefile"
+        ).read_text()
+        self.assertIn("filter-out -fgpu-rdc", maca_kernel_makefile)
+
+        flagcx_source = (REPO_ROOT / "flagcx/flagcx.cc").read_text()
+        self.assertIn(
+            "const int useGdr = ptrType != FLAGCX_PTR_HOST;", flagcx_source
+        )
+
     def test_common_launcher_and_static_rdma_preflight_cover_all_platforms(self):
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit_tests_common.yml"
