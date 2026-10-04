@@ -23,6 +23,7 @@
 #include "ibvwrap.h"
 #include "p2p.h"
 #include "p2p_control.h"
+#include "p2p_pointer.h"
 #include "p2p_scheduler.h"
 #include "p2p_topo.h"
 #include "p2p_visibility.h"
@@ -207,7 +208,6 @@ struct FlagcxP2pCommView {
 
 enum {
   FLAGCX_P2P_MAX_NOTIF_PEERS = 64,
-  FLAGCX_P2P_IPC_HANDLE_BYTES = 64,
   FLAGCX_P2P_NOTIF_MAGIC = 0xDEADDEADu,
   FLAGCX_P2P_CTRL_FLAG_LOCAL = 1u << 0,
   FLAGCX_P2P_CTRL_FLAG_SAME_PROCESS = 1u << 1,
@@ -1583,69 +1583,6 @@ static void traceP2pAddressRange(const char *stage, FlagcxP2pEngine *engine,
         reinterpret_cast<void *>(handleBase));
 }
 
-static flagcxResult_t detectPtrTypeAndMaybeCacheIpc(void *ptr, int *ptrType,
-                                                    char *ipcHandleBuf,
-                                                    uint32_t *ipcHandleSize) {
-  if (ptr == NULL || ptrType == NULL)
-    return flagcxInvalidArgument;
-
-  if (ipcHandleBuf)
-    memset(ipcHandleBuf, 0, FLAGCX_P2P_IPC_HANDLE_BYTES);
-  if (ipcHandleSize)
-    *ipcHandleSize = 0;
-
-  // Pointer classification and IPC export answer different questions. In
-  // particular, DU can export an IPC handle for mapped host memory. Prefer an
-  // authoritative type query and use IPC only to cache optional sharing data.
-  bool typeKnown = false;
-  if (deviceAdaptor != NULL && deviceAdaptor->getPointerType != NULL) {
-    const flagcxResult_t typeResult =
-        deviceAdaptor->getPointerType(ptr, ptrType);
-    if (typeResult == flagcxSuccess) {
-      if (*ptrType != FLAGCX_PTR_HOST && *ptrType != FLAGCX_PTR_CUDA)
-        return flagcxInternalError;
-      typeKnown = true;
-    } else if (typeResult != flagcxNotSupported) {
-      return typeResult;
-    }
-  }
-
-  if (typeKnown && *ptrType == FLAGCX_PTR_HOST)
-    return flagcxSuccess;
-
-  if (deviceAdaptor == NULL || deviceAdaptor->ipcMemHandleCreate == NULL ||
-      deviceAdaptor->ipcMemHandleGet == NULL ||
-      deviceAdaptor->ipcMemHandleFree == NULL) {
-    *ptrType = typeKnown ? *ptrType : FLAGCX_PTR_HOST;
-    return flagcxSuccess;
-  }
-
-  flagcxIpcMemHandle_t handle = NULL;
-  size_t handleSize = 0;
-  if (deviceAdaptor->ipcMemHandleCreate(&handle, &handleSize) !=
-      flagcxSuccess) {
-    *ptrType = typeKnown ? *ptrType : FLAGCX_PTR_HOST;
-    return flagcxSuccess;
-  }
-
-  const flagcxResult_t getRes = deviceAdaptor->ipcMemHandleGet(handle, ptr);
-  if (getRes == flagcxSuccess) {
-    *ptrType = FLAGCX_PTR_CUDA;
-    if (handleSize <= FLAGCX_P2P_IPC_HANDLE_BYTES) {
-      if (ipcHandleBuf)
-        memcpy(ipcHandleBuf, handle, handleSize);
-      if (ipcHandleSize)
-        *ipcHandleSize = (uint32_t)handleSize;
-    }
-  } else {
-    if (deviceAdaptor->getLastError)
-      deviceAdaptor->getLastError();
-    *ptrType = typeKnown ? *ptrType : FLAGCX_PTR_HOST;
-  }
-  deviceAdaptor->ipcMemHandleFree(handle);
-  return flagcxSuccess;
-}
-
 static void serializeIpcInfo(const FlagcxP2pIpcInfo &info, char *buf) {
   memcpy(buf, &info, sizeof(info));
 }
@@ -2923,8 +2860,8 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
       *ptrType = hintType;
       return flagcxSuccess;
     }
-    return detectPtrTypeAndMaybeCacheIpc(reinterpret_cast<void *>(data),
-                                         ptrType, ipcHandleBuf, ipcHandleSize);
+    return flagcxP2pDetectPointerType(reinterpret_cast<void *>(data), ptrType,
+                                      ipcHandleBuf, ipcHandleSize);
   };
 
   if (!flagcxParamMrSortedLookup()) {

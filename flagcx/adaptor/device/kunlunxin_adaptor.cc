@@ -468,6 +468,34 @@ flagcxResult_t kunlunxinAdaptorSymMulticastFree(void *) {
   return flagcxNotSupported;
 }
 
+flagcxResult_t kunlunAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+
+  cudaPointerAttributes attrs = {};
+  cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+  if (err == cudaErrorInvalidValue) {
+    cudaGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+  if (err != cudaSuccess) {
+    cudaGetLastError();
+    return flagcxUnhandledDeviceError;
+  }
+#if CUDART_VERSION >= 10000
+  *ptrType = (attrs.type == cudaMemoryTypeDevice ||
+              attrs.type == cudaMemoryTypeManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = (attrs.memoryType == cudaMemoryTypeDevice || attrs.isManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor kunlunAdaptor {
   "KUNLUN",
       // Basic functions
@@ -534,7 +562,7 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunxinAdaptorSymMulticastBind, kunlunxinAdaptorSymMulticastTeardown,
       kunlunxinAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      flagcxDeviceAdaptorGetPointerTypeNotSupported,
+      kunlunAdaptorGetPointerType,
       flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform

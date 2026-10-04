@@ -365,6 +365,34 @@ flagcxResult_t hipAdaptorSymMulticastTeardown(void *, size_t) {
 }
 flagcxResult_t hipAdaptorSymMulticastFree(void *) { return flagcxNotSupported; }
 
+flagcxResult_t hipAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+
+  hipPointerAttribute_t attrs = {};
+  hipError_t err = hipPointerGetAttributes(&attrs, ptr);
+  if (err == hipErrorInvalidValue) {
+    // Ordinary host allocations are not tracked by HIP.
+    hipGetLastError();
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+  if (err != hipSuccess) {
+    hipGetLastError();
+    return flagcxUnhandledDeviceError;
+  }
+#if HIP_VERSION_MAJOR >= 6
+  *ptrType = (attrs.type == hipMemoryTypeDevice || attrs.isManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#else
+  *ptrType = (attrs.memoryType == hipMemoryTypeDevice || attrs.isManaged)
+                 ? FLAGCX_PTR_CUDA
+                 : FLAGCX_PTR_HOST;
+#endif
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor hipAdaptor {
   "HIP",
       // Basic functions
@@ -433,9 +461,9 @@ struct flagcxDeviceAdaptor hipAdaptor {
       hipAdaptorSymMulticastCreate, hipAdaptorSymMulticastBind,
       hipAdaptorSymMulticastTeardown, hipAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      flagcxDeviceAdaptorGetPointerTypeNotSupported,
-      flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
-      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
+      hipAdaptorGetPointerType, flagcxDeviceAdaptorGetAddressRangeNotSupported,
+      FLAGCX_VMM_MR_CAP_NONE, FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL,
+      NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
       FLAGCX_GDR_WRITE_REQUIRES_FLUSH,

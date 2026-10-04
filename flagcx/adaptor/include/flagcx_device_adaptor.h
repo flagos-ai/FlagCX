@@ -63,6 +63,10 @@ typedef enum {
 typedef enum {
   FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE = 0,
   FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1 = 1 << 0,
+  // Transitional opt-in for built-in adaptors whose runtime pointer query has
+  // not been wired yet. Remove this bit from each adaptor as it gains an
+  // authoritative getPointerType implementation.
+  FLAGCX_DEVICE_ADAPTOR_INTERNAL_IPC_POINTER_INFERENCE = 1 << 1,
 } flagcxDeviceAdaptorInternalFlags_t;
 
 // End-to-end GPUDirect visibility requirements advertised only by the latest
