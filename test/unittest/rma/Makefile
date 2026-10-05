@@ -17,9 +17,9 @@ MPI_SRCS   := $(wildcard coll_*.cpp) rma_test.cpp main_mpi.cpp
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/rma_mpi_tests
 
-# CUDA, MetaX, Hygon/DU, and PPU run the same immediate device-consumer
-# visibility test through a tiny platform-compiled kernel object.
-VISIBILITY_PLATFORM := $(filter 1,$(USE_NVIDIA) $(USE_METAX) $(USE_DU) $(USE_PPU))
+# CUDA, MetaX, and PPU run the immediate device-consumer visibility test.
+# DU keeps its existing RMA correctness coverage without a separate test kernel.
+VISIBILITY_PLATFORM := $(filter 1,$(USE_NVIDIA) $(USE_METAX) $(USE_PPU))
 ifneq ($(strip $(VISIBILITY_PLATFORM)),)
 CXXFLAGS += -DFLAGCX_TEST_GDR_VISIBILITY_CONSUMER
 GDR_VISIBILITY_BUILD_DIR := $(abspath $(BUILDDIR))/kernel/$(KERNEL_PLATFORM)

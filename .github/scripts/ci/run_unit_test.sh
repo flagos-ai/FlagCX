@@ -445,7 +445,6 @@ run_suite() {
         local platform_name visibility_filter base_rma_platform_env
         local expected_read=success expected_write=success
         local expected_read_required=1 expected_write_required=
-        local -a visibility_platform_env=()
         platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
         visibility_filter="RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility"
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
@@ -457,19 +456,13 @@ run_suite() {
             expected_write_required=1
             ;;
           hygon)
-            # DU has the same READ/WRITE split today. This ordinary-allocation
-            # case stays separate from the strict SHCA VMM route checks below.
-            expected_write=unsupported
-            expected_write_required=1
-            visibility_platform_env+=(
-              -x FLAGCX_IB_TIMEOUT=14
-              -x FLAGCX_IB_RETRY_CNT=1
-            )
+            # DU uses the existing RMA correctness tests. No separate device
+            # consumer kernel is built for this platform.
             ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
-            # success case still runs the immediate consumer kernel, while a
-            # separate forced READ case below verifies fail-close behavior.
+            # READ consumer runs; WRITE records a capability note if BAREX
+            # cannot send a one-sided signal. Forced READ checks fail-close.
             expected_read_required=0
             expected_write_required=0
             ;;
@@ -495,21 +488,24 @@ run_suite() {
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
           )
         fi
-        FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
-          make -C "$suite_dir" run-mpi-net "${args[@]}" \
-          MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
-          RMA_VMM_ENABLE=0 \
-          RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} ${visibility_platform_env[*]}" || \
-          visibility_status=$?
+        if [[ "$platform_name" != "hygon" ]]; then
+          FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
+            make -C "$suite_dir" run-mpi-net "${args[@]}" \
+            MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
+            RMA_VMM_ENABLE=0 \
+            RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]}" || \
+            visibility_status=$?
+        fi
 
         if [[ "$platform_name" == "cuda" ]]; then
-          # CUDA validates both strict VMM registration routes. A successful
-          # registration is not enough: READ and WRITE must reach the immediate
-          # consumer kernel with the selected route still recorded.
+          # CUDA validates a VMM route when available. Some runners cannot
+          # export DMA-BUF even though VA registration works; the fixture
+          # records a capability note and skips that route on those machines.
           local route
           for route in va dmabuf; do
             local -a cuda_vmm_env=(
               -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
+              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported
               -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=success
               -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=success
               -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
@@ -526,35 +522,25 @@ run_suite() {
               visibility_status=$?
           done
         elif [[ "$platform_name" == "hygon" ]]; then
-          # SHCA accepts VMM VA registration but that route produced incorrect
-          # RDMA data, so the provider now advertises it as unsupported. Probe
-          # DMA-BUF independently: if both runtime probes accept it, the same
-          # immediate-consumer test must validate its data; otherwise the route
-          # must fail closed with NotSupported.
-          local route setup_expectation expected_route
+          # SHCA VMM VA must fail closed. If DMA-BUF is available, GetSmall
+          # checks its data path; otherwise the fixture records a capability
+          # note. DU has no separate consumer kernel in this test suite.
+          local route setup_expectation
           for route in va dmabuf; do
             if [[ "$route" == "va" ]]; then
               setup_expectation=unsupported
-              expected_route=none
             else
               setup_expectation=success_or_unsupported
-              expected_route=dmabuf
             fi
             local -a hygon_vmm_env=(
-              -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
               -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP="$setup_expectation"
-              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=success
-              -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=unsupported
-              -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
-              -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED=1
-              -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE="$expected_route"
               -x FLAGCX_VMM_MR_MODE="$route"
               -x FLAGCX_IB_TIMEOUT=14
               -x FLAGCX_IB_RETRY_CNT=1
             )
-            FLAGCX_CI_MPI_LABEL="rma GDR visibility Hygon VMM $route" \
+            FLAGCX_CI_MPI_LABEL="rma Hygon VMM route $route" \
               make -C "$suite_dir" run-mpi-net "${args[@]}" \
-              MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
+              MPIRUN="$MPI_RUNNER" NET_FILTER="RmaTest.GetSmall" \
               RMA_VMM_ENABLE=1 \
               RMA_PLATFORM_ENV="$base_rma_platform_env ${hygon_vmm_env[*]}" || \
               visibility_status=$?

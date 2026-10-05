@@ -419,11 +419,26 @@ class PlatformCiRegressionTest(unittest.TestCase):
         for platform in ("metax)", "hygon)", "ppu)", "cuda)"):
             self.assertIn(platform, rma_case)
 
+        du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
+        visibility_platform = rma_makefile[
+            rma_makefile.index("VISIBILITY_PLATFORM :=") :
+            rma_makefile.index("ifneq ($(strip $(VISIBILITY_PLATFORM))")
+        ]
+        self.assertNotIn("$(USE_DU)", visibility_platform)
+        self.assertNotIn("gdr_visibility.o", du_kernel_makefile)
+        self.assertFalse((REPO_ROOT / "test/kernel/du/gdr_visibility.cu").exists())
+
         self.assertIn('FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary"', rma_case)
         self.assertIn("for route in va dmabuf", rma_case)
         self.assertIn("FLAGCX_VMM_MR_MODE", rma_case)
         self.assertIn(
-            'FLAGCX_CI_MPI_LABEL="rma GDR visibility Hygon VMM $route"',
+            'FLAGCX_CI_MPI_LABEL="rma Hygon VMM route $route"',
+            rma_case,
+        )
+        self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
+        self.assertIn('if [[ "$platform_name" != "hygon" ]]; then', rma_case)
+        self.assertIn(
+            '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
         )
         self.assertIn(

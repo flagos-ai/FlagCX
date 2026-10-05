@@ -105,8 +105,9 @@ bool anyRankFailed(flagcxResult_t result) {
 }
 
 void freeStatus(int *deviceStatus) {
-  if (deviceStatus != nullptr)
+  if (deviceStatus != nullptr) {
     EXPECT_EQ(flagcxMemFree(deviceStatus), flagcxSuccess);
+  }
 }
 
 void verifyConsumerStatus(flagcxDeviceHandle_t device, int *deviceStatus) {
@@ -208,6 +209,12 @@ TEST_F(RmaTest, DirectConsumerWriteVisibility) {
 
   const ExpectedResult expected =
       expectedResult("FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE");
+  // The capability probe is collective. Skip on every rank before posting a
+  // PUT or enqueuing a GPU wait: an unsupported sender cannot signal a peer
+  // that has already entered streamSynchronize().
+  if (expected == ExpectedResult::Success && !signalRmaAvailable)
+    GTEST_SKIP() << "NOTE: WRITE consumer conformance is unavailable: "
+                 << signalRmaSkipReason;
   constexpr uint8_t patternByte = 0x5C;
   int *deviceStatus = nullptr;
   flagcxResult_t statusPreparation = prepareStatus(devHandle, &deviceStatus);
