@@ -36,12 +36,12 @@ case "$workload" in
     export FLAGCX_DEBUG_SUBSYS=ALL
     build_flagcx
     (
-      cd "$project_root/plugin/torch"
+      cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
       python3 setup.py build_ext --inplace
     )
 
-    export PYTHONPATH="$project_root/plugin/torch${PYTHONPATH:+:$PYTHONPATH}"
+    export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
     unset FLAGCX_SKIP_HETERO
     bash "$project_root/test/script/torch_api_test.sh"
