@@ -49,6 +49,7 @@ if ! declare -p FLAGCX_CI_IBUC_ENV >/dev/null 2>&1; then
   FLAGCX_CI_IBUC_ENV=()
 fi
 : "${FLAGCX_CI_ENABLE_IBUC:=0}"
+: "${FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE:=0}"
 
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
@@ -392,20 +393,68 @@ run_suite() {
     p2p)
       local unit_status=0
       local mpi_status=0
+      local shared_status=0
+      local shared_mpi_status=0
       local p2p_mpi_env=""
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
-      FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
+      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0 \
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
         MPI_ENV="$p2p_mpi_env" || mpi_status=$?
-      if ((unit_status != 0 || mpi_status != 0)); then
-        echo "P2P failures: unit=$unit_status MPI_WRITE=$mpi_status" >&2
+      # Keep the production/default artifact on the legacy Engine. Platforms
+      # build the shared implementation in isolated output trees and run the
+      # same unit and WRITE MPI tests against it.
+      if ((FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE != 0)); then
+        local shared_project_build="$PROJECT_ROOT/build-p2p-shared"
+        local shared_test_build="$suite_dir/build-p2p-shared"
+        local -a shared_project_args=(
+          "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+          USE_SHARED_P2P_ENGINE=1
+          BUILDDIR="$shared_project_build"
+        )
+        local -a shared_test_args=(
+          "${args[@]}"
+          USE_SHARED_P2P_ENGINE=1
+          BUILDDIR="$shared_test_build"
+          FLAGCX_LIB="$shared_project_build/lib"
+        )
+
+        make -C "$PROJECT_ROOT" --jobs="$(nproc)" \
+          "${shared_project_args[@]}" || shared_status=$?
+        if ((shared_status == 0)); then
+          make -C "$suite_dir" --jobs="$(nproc)" \
+            "${shared_test_args[@]}" || shared_status=$?
+        fi
+        if ((shared_status == 0)); then
+          LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
+            FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+            FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 \
+            FLAGCX_VMM_ENABLE=0 \
+            FLAGCX_CI_TEST_LABEL="p2p shared-engine unit tests" \
+            "$TEST_RUNNER" make -C "$suite_dir" run-unit \
+              "${shared_test_args[@]}" || shared_status=$?
+        fi
+        if ((shared_status == 0)); then
+          LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
+            FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+            FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
+            make -C "$suite_dir" run-mpi \
+              "${shared_test_args[@]}" MPIRUN="$MPI_RUNNER" \
+              MPI_ENV="$p2p_mpi_env" || shared_mpi_status=$?
+        fi
+      fi
+
+      if ((unit_status != 0 || mpi_status != 0 || shared_status != 0 ||
+           shared_mpi_status != 0)); then
+        echo "P2P failures: unit=$unit_status MPI_WRITE=$mpi_status shared=$shared_status shared_MPI_WRITE=$shared_mpi_status" >&2
         return 1
       fi
       ;;

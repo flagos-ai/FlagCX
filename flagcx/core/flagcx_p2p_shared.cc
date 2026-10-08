@@ -2,7 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * FlagCX shared-transport P2P Engine — implements the flagcx_p2p.h API when
- * built with USE_P2P_SHARED_ENGINE=1.
+ * built with USE_SHARED_P2P_ENGINE=1.
  *
  * Architecture: transport-neutral Engine over the shared net adaptors and
  * P2P topo manager. Mirrors the structure of UCCL's

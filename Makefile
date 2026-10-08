@@ -33,7 +33,7 @@ USE_SHCA ?= 0
 USE_ACCL_BAREX ?= 0
 # Keep the proven P2P IBRC/ACCL engines as the default until the shared Engine
 # has passed end-to-end disaggregated-prefill performance validation.
-USE_P2P_SHARED_ENGINE ?= 0
+USE_SHARED_P2P_ENGINE ?= 0
 USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
 USE_PPU ?= 0
@@ -323,17 +323,17 @@ LIBSRCFILES += $(PLATFORM_EXTRA_SRCS)
 
 # The legacy and shared implementations export the same public flagcx_p2p.h
 # symbols and therefore must never be linked into one library together.
-ifeq ($(USE_P2P_SHARED_ENGINE), 1)
-NET_ADAPTOR_FLAG += -DUSE_P2P_SHARED_ENGINE=1
+ifeq ($(USE_SHARED_P2P_ENGINE), 1)
+NET_ADAPTOR_FLAG += -DUSE_SHARED_P2P_ENGINE=1
 LIBSRCFILES := $(filter-out \
 	flagcx/core/flagcx_p2p.cc \
 	flagcx/core/flagcx_p2p_accl.cc \
 	flagcx/adaptor/net/ibrc_p2p_adaptor.cc,$(LIBSRCFILES))
-else ifeq ($(USE_P2P_SHARED_ENGINE), 0)
+else ifeq ($(USE_SHARED_P2P_ENGINE), 0)
 LIBSRCFILES := $(filter-out \
 	flagcx/core/flagcx_p2p_shared.cc,$(LIBSRCFILES))
 else
-$(error USE_P2P_SHARED_ENGINE must be 0 or 1)
+$(error USE_SHARED_P2P_ENGINE must be 0 or 1)
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)
@@ -378,7 +378,7 @@ print_var:
 	@echo "UCX_INCLUDE: $(UCX_INCLUDE)"
 	@echo "USE_IBUC: $(USE_IBUC)"
 	@echo "USE_SHCA: $(USE_SHCA)"
-	@echo "USE_P2P_SHARED_ENGINE: $(USE_P2P_SHARED_ENGINE)"
+	@echo "USE_SHARED_P2P_ENGINE: $(USE_SHARED_P2P_ENGINE)"
 	@echo "NET_ADAPTOR_FLAG: $(NET_ADAPTOR_FLAG)"
 	@echo "DEVSRCFILES: $(DEVSRCFILES)"
 	@echo "DEVICE_NEEDS_DLINK: $(DEVICE_NEEDS_DLINK)"

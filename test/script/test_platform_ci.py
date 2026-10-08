@@ -1050,6 +1050,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
         p2p_makefile = (
             REPO_ROOT / "test/unittest/p2p/Makefile"
         ).read_text()
+        platform_envs = {
+            platform: (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            for platform in ("cuda", "metax", "hygon", "ppu")
+        }
         p2p_runner = unit_runner[unit_runner.index("    p2p)") :]
         p2p_runner = p2p_runner[: p2p_runner.index("    rma)")]
 
@@ -1060,6 +1066,22 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("test_p2p_gpu_read.cpp", p2p_makefile)
         self.assertIn("test_p2p_visibility_policy.cpp", p2p_makefile)
         self.assertIn("coll_p2p_engine_write.cpp", p2p_makefile)
+        self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", p2p_runner)
+        self.assertIn("FLAGCX_P2P_QPS_PER_CONN=2", p2p_runner)
+        for platform, platform_env in platform_envs.items():
+            with self.subTest(platform=platform):
+                self.assertIn(
+                    "FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", platform_env
+                )
+        self.assertIn("USE_SHARED_P2P_ENGINE=1", p2p_runner)
+        self.assertIn('build-p2p-shared', p2p_runner)
+        self.assertIn('FLAGCX_LIB="$shared_project_build/lib"', p2p_runner)
+        self.assertIn(
+            'LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH"',
+            p2p_runner,
+        )
+        self.assertIn('shared_status != 0', p2p_runner)
+        self.assertIn('shared_mpi_status != 0', p2p_runner)
 
         legacy_engine = (REPO_ROOT / "flagcx/core/flagcx_p2p.cc").read_text()
         self.assertIn('"P2P_QPS_PER_CONN"', legacy_engine)

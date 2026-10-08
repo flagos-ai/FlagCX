@@ -23,6 +23,13 @@ class PpuCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "flagcx/core/flagcx_p2p_shared.cc"
         ).read_text()
         makefile = (REPO_ROOT / "Makefile").read_text()
+        ppu_env = (
+            REPO_ROOT / ".github/scripts/set_env/ppu.sh"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        test_make = (REPO_ROOT / "test/make.inc").read_text()
         read_test = (
             REPO_ROOT / "test/unittest/p2p/test_p2p_engine_read.cpp"
         ).read_text()
@@ -63,11 +70,16 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertTrue(
             (REPO_ROOT / "flagcx/core/include/flagcx_p2p_accl.h").exists()
         )
-        self.assertIn("USE_P2P_SHARED_ENGINE ?= 0", makefile)
-        self.assertIn("ifeq ($(USE_P2P_SHARED_ENGINE), 1)", makefile)
+        self.assertIn("USE_SHARED_P2P_ENGINE ?= 0", makefile)
+        self.assertIn("ifeq ($(USE_SHARED_P2P_ENGINE), 1)", makefile)
         self.assertIn("flagcx/core/flagcx_p2p_shared.cc", makefile)
         self.assertIn("flagcx/adaptor/net/ibrc_p2p_adaptor.cc", makefile)
         self.assertNotIn("flagcxP2pIsAccl", shared_engine)
+        self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", ppu_env)
+        self.assertIn("USE_SHARED_P2P_ENGINE=1", unit_runner)
+        self.assertIn('build-p2p-shared', unit_runner)
+        self.assertIn("USE_ACCL_BAREX     ?= 0", test_make)
+        self.assertIn("CXXFLAGS += -DUSE_ACCL_BAREX", test_make)
 
     def test_ppu_symmem_requires_vmm_local_and_barex_vmm_net(self):
         unit_runner = (
