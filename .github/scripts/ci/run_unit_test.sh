@@ -50,6 +50,7 @@ if ! declare -p FLAGCX_CI_IBUC_ENV >/dev/null 2>&1; then
 fi
 : "${FLAGCX_CI_ENABLE_IBUC:=0}"
 : "${FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE:=0}"
+: "${FLAGCX_CI_VERIFY_P2P_ENGINE_SWITCH:=0}"
 
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"

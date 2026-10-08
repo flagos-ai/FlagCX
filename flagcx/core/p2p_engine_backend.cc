@@ -81,7 +81,18 @@ flagcxResult_t test(void *opaque, void *request, int *done) {
       context->progressMutex == NULL || done == NULL)
     return flagcxInvalidArgument;
   std::lock_guard<std::mutex> lock(*context->progressMutex);
-  return context->adaptor->test(request, done, NULL);
+  const flagcxResult_t result = context->adaptor->test(request, done, NULL);
+  if (result != flagcxSuccess && result != flagcxInProgress &&
+      context->quiesce != NULL) {
+    // A communicator error can make IBRC report done before sibling QPs have
+    // stopped accessing their MRs. Retire only after provider quiescence.
+    if (context->quiesce(context->sendComm) != flagcxSuccess) {
+      *done = 0;
+      return result;
+    }
+    *done = 1;
+  }
+  return result;
 }
 
 } // namespace
@@ -90,7 +101,8 @@ flagcxResult_t
 flagcxP2pNetBackendInit(struct flagcxP2pNetBackendContext *context,
                         struct flagcxNetAdaptor *adaptor, void *sendComm,
                         std::mutex *progressMutex, int write,
-                        struct flagcxP2pTransferBackend *backend) {
+                        struct flagcxP2pTransferBackend *backend,
+                        flagcxResult_t (*quiesce)(void *sendComm)) {
   if (context == NULL || adaptor == NULL || sendComm == NULL ||
       progressMutex == NULL || backend == NULL || (write != 0 && write != 1) ||
       adaptor->test == NULL ||
@@ -100,6 +112,7 @@ flagcxP2pNetBackendInit(struct flagcxP2pNetBackendContext *context,
   context->sendComm = sendComm;
   context->progressMutex = progressMutex;
   context->write = write;
+  context->quiesce = quiesce;
   backend->context = context;
   backend->post = post;
   backend->test = test;

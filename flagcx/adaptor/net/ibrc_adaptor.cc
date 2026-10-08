@@ -2562,6 +2562,22 @@ flagcxResult_t flagcxIbEngineAbortListen(void *listenComm) {
   return flagcxSocketClose(&comm->sock);
 }
 
+flagcxResult_t flagcxIbEngineQuiesceSend(void *sendComm) {
+  auto *comm = static_cast<struct flagcxIbSendComm *>(sendComm);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  flagcxIbCommonRecordCommError(&comm->base, flagcxRemoteError);
+  comm->base.ready = 0;
+  for (int q = 0; q < comm->base.nqps; ++q) {
+    struct ibv_qp *qp = comm->base.qps[q].qp;
+    if (qp == NULL)
+      continue;
+    FLAGCXCHECK(flagcxWrapIbvDestroyQp(qp));
+    comm->base.qps[q].qp = NULL;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxIbEngineResetListenAccept(void *listenComm) {
   if (listenComm == NULL)
     return flagcxInvalidArgument;

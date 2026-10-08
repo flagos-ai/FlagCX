@@ -284,6 +284,35 @@ TEST(P2pEngineCoreTest, PartialFatalPostDrainsAcceptedPrefix) {
   EXPECT_EQ(mock.postCalls, 1);
 }
 
+TEST(P2pEngineCoreTest, PollErrorKeepsAcceptedRequestUntilDone) {
+  MockBackend mock;
+  flagcxP2pTransferBackend backend = makeBackend(&mock);
+  std::vector<flagcxP2pTransferOp> ops = makeOps(2);
+  flagcxP2pTransfer transfer;
+  ASSERT_EQ(flagcxP2pTransferInit(&transfer, &backend, ops.data(), ops.size(),
+                                  1, 1, 15, 0),
+            flagcxSuccess);
+
+  flagcxP2pTransferStatus status;
+  ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
+  ASSERT_EQ(mock.requests.size(), 1u);
+  mock.requests[0].pollResult = flagcxSystemError;
+  ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
+  EXPECT_FALSE(status.done);
+  EXPECT_EQ(status.inFlight, 1u);
+  EXPECT_EQ(status.result, flagcxSystemError);
+  EXPECT_EQ(mock.active, 1);
+  EXPECT_EQ(mock.postCalls, 1);
+  EXPECT_EQ(flagcxP2pTransferReset(&transfer), flagcxInProgress);
+
+  markDone(&mock, 0);
+  ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
+  EXPECT_TRUE(status.done);
+  EXPECT_EQ(status.result, flagcxSystemError);
+  EXPECT_EQ(mock.active, 0);
+  EXPECT_FALSE(status.releaseAllowed);
+}
+
 TEST(P2pEngineCoreTest, FullAcceptedFatalPostSuppressesRelease) {
   MockBackend mock;
   mock.steps.push_back({2, flagcxSystemError});
@@ -371,6 +400,28 @@ TEST(P2pEngineCoreTest, InProgressPollKeepsRequestAndCreditInflight) {
   ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
   EXPECT_TRUE(status.done);
   EXPECT_EQ(status.result, flagcxSuccess);
+}
+
+TEST(P2pEngineCoreTest, CompletedInProgressResultRetiresRecycledRequest) {
+  MockBackend mock;
+  flagcxP2pTransferBackend backend = makeBackend(&mock);
+  std::vector<flagcxP2pTransferOp> ops = makeOps(2);
+  flagcxP2pTransfer transfer;
+  ASSERT_EQ(flagcxP2pTransferInit(&transfer, &backend, ops.data(), ops.size(),
+                                  1, 1, 10, 0),
+            flagcxSuccess);
+
+  flagcxP2pTransferStatus status;
+  ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
+  markDone(&mock, 0, flagcxInProgress);
+  ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
+  EXPECT_TRUE(status.done);
+  EXPECT_EQ(status.completed, 2u);
+  EXPECT_EQ(status.inFlight, 0u);
+  EXPECT_EQ(status.result, flagcxInternalError);
+  EXPECT_FALSE(status.releaseAllowed);
+  EXPECT_EQ(mock.active, 0);
+  EXPECT_EQ(mock.postCalls, 1);
 }
 
 TEST(P2pEngineCoreTest, InvalidProgressOutputHasNoSubmissionSideEffects) {

@@ -2,6 +2,7 @@
 # Modified by 2025 MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved
 # Modified by 2025 DU. All Rights Reserved.
 BUILDDIR ?= $(abspath ./build)
+.DEFAULT_GOAL := all
 
 # USE_ILUVATAR_COREX is the pre-0.13 spelling of USE_ILUVATAR. It is honored
 # only when it comes from the command line or the environment, so the defaults
@@ -341,6 +342,10 @@ DEVSRCFILES := $(PLATFORM_KERNEL_SRCS)
 DEVOBJ := $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
 endif
 LIBOBJ := $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
+P2P_ENGINE_MODE_FILE := $(BUILDDIR)/.p2p-engine-mode
+
+.PHONY: p2p_engine_mode_force
+p2p_engine_mode_force:
 
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
@@ -402,10 +407,15 @@ ifeq ($(COMPILE_KERNEL)$(USE_DU),11)
   LINKER := $(DEVICE_LINKER)
 endif
 
-$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)
+$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) p2p_engine_mode_force
 	@mkdir -p `dirname $@`
-	@echo "Linking   $@"
-	@$(LINKER) $^ -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g
+	@mode=$$(test -f $(P2P_ENGINE_MODE_FILE) && sed -n '1p' $(P2P_ENGINE_MODE_FILE)); \
+	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
+	     [ -n "$(filter-out p2p_engine_mode_force,$?)" ]; then \
+	    echo "Linking   $@"; \
+	    $(LINKER) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
+	    printf '%s\n' '$(USE_SHARED_P2P_ENGINE)' > $(P2P_ENGINE_MODE_FILE); \
+	  fi
 
 # Copy public headers from flagcx/include/ into the build output tree so they
 # sit next to the shared libraries (build/include + build/lib).

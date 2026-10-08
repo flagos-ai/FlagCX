@@ -724,6 +724,9 @@ flagcxResult_t flagcxIbEngineRegMr(int netDev, void *data, size_t size,
 flagcxResult_t flagcxIbEngineDeregMr(void *mhandle);
 flagcxResult_t flagcxIbEngineDrainDeferredMrs(void);
 flagcxResult_t flagcxIbEngineAbortListen(void *listenComm);
+// Stop every data QP before an Engine reports a communicator-wide failure as
+// terminal. The send communicator remains owned by its normal close path.
+flagcxResult_t flagcxIbEngineQuiesceSend(void *sendComm);
 // Discard an incomplete asynchronous accept/connect while preserving the
 // listener (for accept) or the copied wire handle (for connect) for reuse.
 flagcxResult_t flagcxIbEngineResetListenAccept(void *listenComm);

@@ -171,7 +171,8 @@ FlagcxP2pEngine *flagcxP2pEngineCreate();
 void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine);
 
 /**
- * Stop the accept thread for the engine.
+ * Stop accepting new data/RPC connections. Existing connections and their
+ * notification/control traffic remain usable until engine destruction.
  * @param engine        The engine instance.
  */
 void flagcxP2pEngineStopAccept(FlagcxP2pEngine *engine);

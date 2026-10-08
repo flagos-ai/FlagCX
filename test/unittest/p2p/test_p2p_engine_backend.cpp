@@ -35,6 +35,9 @@ struct BackendMock {
   std::atomic<int> activeTests{0};
   std::atomic<int> maxActiveTests{0};
   bool delayTests = false;
+  flagcxResult_t testResult = flagcxSuccess;
+  flagcxResult_t quiesceResult = flagcxSuccess;
+  int quiesceCalls = 0;
 };
 
 BackendMock *gMock = nullptr;
@@ -65,6 +68,11 @@ flagcxResult_t recordPost(bool write, uint64_t srcOff, uint64_t dstOff,
   return flagcxSuccess;
 }
 
+flagcxResult_t mockQuiesce(void *) {
+  ++gMock->quiesceCalls;
+  return gMock->quiesceResult;
+}
+
 flagcxResult_t mockPut(void *, uint64_t srcOff, uint64_t dstOff, size_t size,
                        int, int, void **srcMr, void **dstMr, void **request) {
   return recordPost(true, srcOff, dstOff, size, srcMr, dstMr, request);
@@ -87,7 +95,7 @@ flagcxResult_t mockTest(void *request, int *done, int *) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   *done = static_cast<BackendRequest *>(request)->done;
   gMock->activeTests.fetch_sub(1);
-  return flagcxSuccess;
+  return gMock->testResult;
 }
 
 flagcxNetAdaptor makeAdaptor() {
@@ -111,6 +119,27 @@ struct BackendFixture : public ::testing::Test {
 };
 
 } // namespace
+
+TEST_F(BackendFixture, TerminalIbErrorWaitsForNativeQuiescence) {
+  flagcxP2pNetBackendContext context;
+  flagcxP2pTransferBackend backend;
+  ASSERT_EQ(flagcxP2pNetBackendInit(&context, &adaptor, &comm, &progressMutex,
+                                    0, &backend, mockQuiesce),
+            flagcxSuccess);
+  BackendRequest request{1};
+  mock.testResult = flagcxRemoteError;
+  mock.quiesceResult = flagcxSystemError;
+
+  int done = 0;
+  EXPECT_EQ(backend.test(backend.context, &request, &done), flagcxRemoteError);
+  EXPECT_EQ(done, 0);
+  EXPECT_EQ(mock.quiesceCalls, 1);
+
+  mock.quiesceResult = flagcxSuccess;
+  EXPECT_EQ(backend.test(backend.context, &request, &done), flagcxRemoteError);
+  EXPECT_EQ(done, 1);
+  EXPECT_EQ(mock.quiesceCalls, 2);
+}
 
 TEST_F(BackendFixture, WriteDispatchesOffsetsHandlesAndOrderingContext) {
   flagcxP2pNetBackendContext context;

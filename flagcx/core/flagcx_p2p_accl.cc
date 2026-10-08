@@ -80,7 +80,8 @@ using namespace accl::barex;
 namespace {
 
 constexpr uint64_t kAcclHelloMagic = 0xACC1F1A6C0DE0001ull;
-constexpr uint32_t kAcclNotifMagic = 0xDEADDEADu; /* same wire as ibrc */
+constexpr uint32_t kAcclNotifMagic = 0xDEADDEADu;    /* same wire as ibrc */
+constexpr uint32_t kAcclNotifAckMagic = 0x46584E41u; /* FXNA */
 constexpr uint32_t kAcclMrQueryMagic = 0xACC1A001u;
 constexpr uint32_t kAcclMrReplyMagic = 0xACC1A002u;
 constexpr uint32_t kAcclHelloDynamicMr = 1u << 0;
@@ -225,6 +226,7 @@ struct FlagcxAcclEngine {
 
   struct flagcxSocket notifListenSock;
   bool notifActive = false;
+  std::mutex notifListenMu;
   int notifPort = 0;
   std::thread notifThread;
   std::atomic<bool> stopNotif{false};
@@ -653,7 +655,11 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
   std::vector<NotifPeerFd> peers;
   while (!engine->stopNotif.load(std::memory_order_relaxed)) {
     std::vector<struct pollfd> fds;
-    fds.push_back({engine->notifListenSock.fd, POLLIN, 0});
+    {
+      std::lock_guard<std::mutex> lk(engine->notifListenMu);
+      fds.push_back(
+          {engine->notifActive ? engine->notifListenSock.fd : -1, POLLIN, 0});
+    }
     for (auto &p : peers)
       fds.push_back({p.fd, POLLIN, 0});
 
@@ -669,7 +675,13 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
     if (fds[0].revents & POLLIN) {
       union flagcxSocketAddress remoteAddr;
       socklen_t sockLen = sizeof(remoteAddr);
-      int fd = accept(engine->notifListenSock.fd, &remoteAddr.sa, &sockLen);
+      int fd = -1;
+      {
+        std::lock_guard<std::mutex> lk(engine->notifListenMu);
+        if (engine->notifActive && fds[0].fd == engine->notifListenSock.fd) {
+          fd = accept(engine->notifListenSock.fd, &remoteAddr.sa, &sockLen);
+        }
+      }
       if (fd >= 0) {
         const int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char *)&one, sizeof(one));
@@ -681,12 +693,16 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
         int type = 0;
         if (recvAllFdAccl(fd, &magic, sizeof(magic)) != 0 ||
             recvAllFdAccl(fd, &type, sizeof(type)) != 0 ||
-            magic != FLAGCX_SOCKET_MAGIC) {
+            magic != FLAGCX_SOCKET_MAGIC || type != flagcxSocketTypeProxy) {
           ::close(fd);
         } else {
           tv.tv_sec = 0; /* back to non-timeout; poll() gates reads below */
           setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-          peers.push_back(NotifPeerFd{fd, {}});
+          const uint32_t ack = kAcclNotifAckMagic;
+          if (sendAllFdAccl(fd, &ack, sizeof(ack)) != 0)
+            ::close(fd);
+          else
+            peers.push_back(NotifPeerFd{fd, {}});
         }
       }
     }
@@ -1462,6 +1478,12 @@ int connectNotif(FlagcxAcclConn *conn) {
     flagcxSocketClose(&conn->notifSock);
     return -1;
   }
+  uint32_t ack = 0;
+  if (recvAllFdAcclDeadline(conn->notifSock.fd, &ack, sizeof(ack), 5000) != 0 ||
+      ack != kAcclNotifAckMagic) {
+    flagcxSocketClose(&conn->notifSock);
+    return -1;
+  }
   conn->notifConnected = true;
   return 0;
 }
@@ -1749,6 +1771,16 @@ void flagcxAcclEngineStopAccept(FlagcxP2pEngine *e) {
   engine->stopAccept.store(true, std::memory_order_release);
   engine->stopRpc.store(true, std::memory_order_release);
   __atomic_store_n(&engine->acceptAbortFlag, 1, __ATOMIC_RELEASE);
+  // Existing peers are owned by the notification thread independently of the
+  // listening socket. Refuse new control peers without stopping established
+  // notification/control traffic.
+  {
+    std::lock_guard<std::mutex> lk(engine->notifListenMu);
+    if (engine->notifActive) {
+      flagcxSocketClose(&engine->notifListenSock);
+      engine->notifActive = false;
+    }
+  }
   /* unblock the rpc thread parked in bootstrapP2pAccept (same trick as
      the ibrc engine: closing the listen socket fails the accept) */
   if (engine->bsListenState != nullptr && engine->bsListenState->p2p != nullptr)
@@ -1768,9 +1800,12 @@ void flagcxAcclEngineDestroy(FlagcxP2pEngine *e) {
   engine->stopNotif.store(true, std::memory_order_release);
   if (engine->notifThread.joinable())
     engine->notifThread.join();
-  if (engine->notifActive) {
-    flagcxSocketClose(&engine->notifListenSock);
-    engine->notifActive = false;
+  {
+    std::lock_guard<std::mutex> lk(engine->notifListenMu);
+    if (engine->notifActive) {
+      flagcxSocketClose(&engine->notifListenSock);
+      engine->notifActive = false;
+    }
   }
 
   {
@@ -1957,7 +1992,11 @@ FlagcxP2pConn *flagcxAcclEngineConnect(FlagcxP2pEngine *e, const char *ipAddr,
     return nullptr;
   }
 
-  connectNotif(conn);
+  if (connectNotif(conn) != 0) {
+    WARN("NET/ACCL_P2P : connect notification channel failed");
+    flagcxAcclEngineConnDestroy(COut(conn));
+    return nullptr;
+  }
   return COut(conn);
 }
 
@@ -2040,7 +2079,11 @@ FlagcxP2pConn *flagcxAcclEngineAccept(FlagcxP2pEngine *e, char *ipAddrBuf,
     flagcxAcclEngineConnDestroy(COut(conn));
     return nullptr;
   }
-  connectNotif(conn);
+  if (connectNotif(conn) != 0) {
+    WARN("NET/ACCL_P2P : accept notification channel failed");
+    flagcxAcclEngineConnDestroy(COut(conn));
+    return nullptr;
+  }
   return COut(conn);
 }
 

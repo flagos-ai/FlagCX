@@ -399,7 +399,12 @@ static void barexCompleteRequest(BarexRequest *request, flagcxResult_t result) {
 
 static void barexCompleteCallback(BarexRequest *request, Status status) {
   BarexComm *comm = request->comm;
-  const flagcxResult_t result = barexStatus(status);
+  flagcxResult_t result = barexStatus(status);
+  // Queue-full/rate-limit are retryable only when a submission is rejected
+  // synchronously. Once the provider invokes the completion callback the
+  // request slot is terminal and cannot be returned as InProgress.
+  if (result == flagcxInProgress)
+    result = flagcxInternalError;
   if (result != flagcxSuccess) {
     WARN("NET/BAREX : asynchronous transfer failed: %s",
          status.ErrMsg().c_str());
@@ -999,13 +1004,15 @@ static flagcxResult_t barexResetConnect(void *opaqueHandle) {
 
 /* Non-blocking: ready once the connector's HELLO bound a channel. */
 static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
+  if (recvComm == nullptr)
+    return flagcxInvalidArgument;
   *recvComm = nullptr;
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
     return flagcxInternalError;
   BarexRuntime *e = lc->runtime;
 
-  std::vector<XChannel *> channels;
+  BarexComm *comm = nullptr;
   {
     std::lock_guard<std::mutex> lk(e->mu);
     auto it = e->pendingAccepts.find(lc->commId);
@@ -1013,24 +1020,21 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
       return flagcxInternalError;
     if (it->second.firstError != flagcxSuccess)
       return it->second.firstError;
-    if (std::all_of(it->second.channels.begin(), it->second.channels.end(),
-                    [](XChannel *channel) { return channel != nullptr; }))
-      channels = it->second.channels;
-  }
-  if (channels.empty())
-    return flagcxSuccess; /* complete lane set not here yet */
+    if (!std::all_of(it->second.channels.begin(), it->second.channels.end(),
+                     [](XChannel *channel) { return channel != nullptr; }))
+      return flagcxSuccess; /* complete lane set not here yet */
 
-  auto *comm = new BarexComm();
-  comm->runtime = e;
-  comm->channels = channels;
-  comm->channel = channels.front();
-  comm->commId = lc->commId;
-  comm->isSend = false;
-  {
-    std::lock_guard<std::mutex> lk(e->mu);
-    for (XChannel *channel : channels)
+    comm = new BarexComm();
+    comm->runtime = e;
+    comm->channels = it->second.channels;
+    comm->channel = comm->channels.front();
+    comm->commId = lc->commId;
+    comm->isSend = false;
+    for (XChannel *channel : comm->channels)
       e->channelComm[channel] = comm;
-    e->pendingAccepts.erase(lc->commId);
+    // A listener can accept more than one connection. Keep the demux entry
+    // registered while returning this complete lane set to the caller.
+    std::fill(it->second.channels.begin(), it->second.channels.end(), nullptr);
   }
   *recvComm = comm;
   INFO(FLAGCX_NET, "NET/BAREX : recvComm up (commId 0x%llx)",

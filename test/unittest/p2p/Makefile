@@ -3,6 +3,11 @@ include ../../make.inc
 # Engine READ is not used by the current P2P workload. Keep its source for
 # future work, but exclude READ semantics from the CI binary.
 UNIT_SRCS   := $(filter-out test_p2p_engine_read.cpp test_p2p_gpu_read.cpp test_p2p_visibility_policy.cpp test_p2p_batch.cpp,$(wildcard test_*.cpp))
+# IB_P2P remains the default Engine's private net adaptor. Keep its original
+# direct adaptor tests in the legacy build; the shared build does not link it.
+ifeq ($(USE_SHARED_P2P_ENGINE),1)
+UNIT_SRCS := $(filter-out test_p2p_adaptor.cpp,$(UNIT_SRCS))
+endif
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_SRCS    := coll_p2p_engine_write.cpp
 MPI_OBJS    := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)

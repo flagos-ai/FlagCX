@@ -197,8 +197,9 @@ static_assert(sizeof(FlagcxP2pListenHandleView) <= FLAGCX_NET_HANDLE_MAXSIZE,
 enum {
   FLAGCX_P2P_MAX_NOTIF_PEERS = 64,
   FLAGCX_P2P_NOTIF_MAGIC = 0xDEADDEADu,
-  FLAGCX_P2P_MR_QUERY_MAGIC = 0x46584D51u, // FXMQ
-  FLAGCX_P2P_MR_REPLY_MAGIC = 0x46584D52u, // FXMR
+  FLAGCX_P2P_NOTIF_ACK_MAGIC = 0x46584E41u, // FXNA
+  FLAGCX_P2P_MR_QUERY_MAGIC = 0x46584D51u,  // FXMQ
+  FLAGCX_P2P_MR_REPLY_MAGIC = 0x46584D52u,  // FXMR
   FLAGCX_P2P_CTRL_FLAG_LOCAL = 1u << 0,
   FLAGCX_P2P_CTRL_FLAG_SAME_PROCESS = 1u << 1,
   FLAGCX_P2P_IPC_FLAG_CUDA = 1u << 0,
@@ -295,6 +296,7 @@ struct FlagcxP2pEngine {
 
   struct flagcxSocket notifListenSock;
   bool notifListenActive;
+  std::mutex notifListenMutex;
   int notifListenPort;
 #if defined(__linux__)
   int notifEpollFd;
@@ -404,6 +406,13 @@ struct FlagcxP2pXfer {
   std::vector<uint64_t> laneMasks;
 };
 
+struct FlagcxDeferredIpcCleanup {
+  int device = -1;
+  flagcxStream_t stream = NULL;
+  flagcxEvent_t event = NULL;
+  std::vector<void *> openedIpcPtrs;
+};
+
 static std::vector<FlagcxP2pNotifyMsg> &notifyList() {
   static std::vector<FlagcxP2pNotifyMsg> list;
   return list;
@@ -424,6 +433,16 @@ static std::mutex &xferMutex() {
   return mu;
 }
 
+static std::vector<FlagcxDeferredIpcCleanup> &deferredIpcCleanups() {
+  static std::vector<FlagcxDeferredIpcCleanup> cleanups;
+  return cleanups;
+}
+
+static std::mutex &deferredIpcCleanupMutex() {
+  static std::mutex mu;
+  return mu;
+}
+
 static uint64_t &nextXferId() {
   static uint64_t id = 1;
   return id;
@@ -434,6 +453,8 @@ static uint64_t &nextXferId() {
 #define gXferMap xferMap()
 #define gXferMutex xferMutex()
 #define gNextXferId nextXferId()
+#define gDeferredIpcCleanups deferredIpcCleanups()
+#define gDeferredIpcCleanupMutex deferredIpcCleanupMutex()
 
 static pthread_mutex_t gMrLifecycleMutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -996,9 +1017,11 @@ startNetTransfer(FlagcxP2pConn *conn, const std::vector<void *> &dataVec,
   }
 
   struct flagcxP2pTransferBackend backend = {};
-  if (flagcxP2pNetBackendInit(xfer.netBackend.get(), conn->engine->adaptor,
-                              conn->sendComm, &conn->progressMutex,
-                              write ? 1 : 0, &backend) != flagcxSuccess)
+  if (flagcxP2pNetBackendInit(
+          xfer.netBackend.get(), conn->engine->adaptor, conn->sendComm,
+          &conn->progressMutex, write ? 1 : 0, &backend,
+          conn->engine->isBarex ? NULL : flagcxIbEngineQuiesceSend) !=
+      flagcxSuccess)
     return -1;
   const FlagcxP2pGlobalConfig &config = flagcxP2pGlobalConfig();
   const uint32_t maxInFlight = static_cast<uint32_t>(
@@ -1329,6 +1352,42 @@ static void cleanupIpcXfer(FlagcxP2pXfer *xfer) {
   xfer->stream = NULL;
 }
 
+static void retryDeferredIpcCleanups(int device) {
+  if (deviceAdaptor == NULL || deviceAdaptor->streamSynchronize == NULL)
+    return;
+
+  std::lock_guard<std::mutex> lock(gDeferredIpcCleanupMutex);
+  for (auto it = gDeferredIpcCleanups.begin();
+       it != gDeferredIpcCleanups.end();) {
+    if (it->device != device ||
+        deviceAdaptor->streamSynchronize(it->stream) != flagcxSuccess) {
+      ++it;
+      continue;
+    }
+
+    FlagcxP2pXfer completed = {};
+    completed.stream = it->stream;
+    completed.event = it->event;
+    completed.openedIpcPtrs = std::move(it->openedIpcPtrs);
+    cleanupIpcXfer(&completed);
+    it = gDeferredIpcCleanups.erase(it);
+  }
+}
+
+static void deferIpcXferCleanup(FlagcxP2pXfer *xfer) {
+  FlagcxDeferredIpcCleanup deferred;
+  if (xfer->conn != NULL && xfer->conn->engine != NULL)
+    deferred.device = xfer->conn->engine->localGpuIdx;
+  deferred.stream = xfer->stream;
+  deferred.event = xfer->event;
+  deferred.openedIpcPtrs = std::move(xfer->openedIpcPtrs);
+  xfer->stream = NULL;
+  xfer->event = NULL;
+
+  std::lock_guard<std::mutex> lock(gDeferredIpcCleanupMutex);
+  gDeferredIpcCleanups.push_back(std::move(deferred));
+}
+
 static void drainAndCleanupIpcXfer(FlagcxP2pXfer *xfer) {
   if (xfer == NULL)
     return;
@@ -1339,9 +1398,9 @@ static void drainAndCleanupIpcXfer(FlagcxP2pXfer *xfer) {
   if (xfer->stream != NULL) {
     if (deviceAdaptor == NULL || deviceAdaptor->streamSynchronize == NULL) {
       WARN("P2P IPC rollback cannot synchronize its copy stream");
-      // Preserve the mappings and stream rather than risk unmapping memory
-      // still referenced by provider work. Device plugins normally make
-      // streamSynchronize mandatory, so this is only a defensive leak path.
+      // Preserve ownership outside the completed transfer rather than risk
+      // unmapping memory still referenced by provider work.
+      deferIpcXferCleanup(xfer);
       return;
     } else {
       const flagcxResult_t result =
@@ -1349,9 +1408,10 @@ static void drainAndCleanupIpcXfer(FlagcxP2pXfer *xfer) {
       if (result != flagcxSuccess) {
         WARN("P2P IPC rollback stream synchronization failed: %d",
              static_cast<int>(result));
-        // A failed synchronization does not prove that queued work stopped
-        // referencing the imported mappings. Preserve all provider resources
-        // rather than risking a use-after-unmap.
+        // A failed synchronization does not prove that queued work stopped.
+        // Keep every provider resource quarantined. A later transfer or
+        // Engine teardown retries synchronization on the owning device.
+        deferIpcXferCleanup(xfer);
         return;
       }
     }
@@ -1533,7 +1593,13 @@ static void notifAcceptLoop(FlagcxP2pEngine *engine) {
   while (!engine->stopNotif.load(std::memory_order_relaxed)) {
     union flagcxSocketAddress remoteAddr;
     socklen_t sockLen = sizeof(remoteAddr);
-    const int fd = accept(engine->notifListenSock.fd, &remoteAddr.sa, &sockLen);
+    int fd = -1;
+    {
+      std::lock_guard<std::mutex> listenLock(engine->notifListenMutex);
+      if (!engine->notifListenActive)
+        return;
+      fd = accept(engine->notifListenSock.fd, &remoteAddr.sa, &sockLen);
+    }
     if (fd < 0) {
       if (errno == EINTR)
         continue;
@@ -1559,6 +1625,11 @@ static void notifAcceptLoop(FlagcxP2pEngine *engine) {
         notifRegisterConn(engine, fd, &remoteAddr) != 0) {
       ::close(fd);
       continue;
+    }
+    const uint32_t ack = FLAGCX_P2P_NOTIF_ACK_MAGIC;
+    if (!flagcxP2pControl::send(fd, &ack, sizeof(ack), engine->stopNotif)) {
+      std::lock_guard<std::mutex> lock(engine->notifPeerMutex);
+      notifRemoveConnLocked(engine, fd);
     }
   }
 }
@@ -1611,7 +1682,13 @@ static void notifPollThreadFunc(FlagcxP2pEngine *engine) {
 
     for (int i = 0; i < n; ++i) {
       const int fd = events[i].data.fd;
-      if (fd == engine->notifListenSock.fd) {
+      bool isListener = false;
+      {
+        std::lock_guard<std::mutex> listenLock(engine->notifListenMutex);
+        isListener =
+            engine->notifListenActive && fd == engine->notifListenSock.fd;
+      }
+      if (isListener) {
         notifAcceptLoop(engine);
         continue;
       }
@@ -1636,12 +1713,15 @@ static void notifPollThreadFunc(FlagcxP2pEngine *engine) {
 static void notifPollThreadFunc(FlagcxP2pEngine *engine) {
   while (!engine->stopNotif.load(std::memory_order_relaxed)) {
     std::vector<struct pollfd> pfds;
-    if (engine->notifListenActive) {
-      struct pollfd pfd;
-      memset(&pfd, 0, sizeof(pfd));
-      pfd.fd = engine->notifListenSock.fd;
-      pfd.events = POLLIN;
-      pfds.push_back(pfd);
+    {
+      std::lock_guard<std::mutex> listenLock(engine->notifListenMutex);
+      if (engine->notifListenActive) {
+        struct pollfd pfd;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = engine->notifListenSock.fd;
+        pfd.events = POLLIN;
+        pfds.push_back(pfd);
+      }
     }
 
     {
@@ -1678,8 +1758,13 @@ static void notifPollThreadFunc(FlagcxP2pEngine *engine) {
       }
       if ((pfds[i].revents & POLLIN) == 0)
         continue;
-      if (engine->notifListenActive &&
-          pfds[i].fd == engine->notifListenSock.fd) {
+      bool isListener = false;
+      {
+        std::lock_guard<std::mutex> listenLock(engine->notifListenMutex);
+        isListener = engine->notifListenActive &&
+                     pfds[i].fd == engine->notifListenSock.fd;
+      }
+      if (isListener) {
         notifAcceptLoop(engine);
       } else {
         notifHandleRead(engine, pfds[i].fd);
@@ -1721,6 +1806,14 @@ static int connectNotifSocket(FlagcxP2pConn *conn,
   }
 
   if (!ready) {
+    flagcxSocketClose(&conn->notifSock);
+    return -1;
+  }
+
+  uint32_t ack = 0;
+  if (!flagcxP2pControl::receive(conn->notifSock.fd, &ack, sizeof(ack),
+                                 conn->engine->stopNotif) ||
+      ack != FLAGCX_P2P_NOTIF_ACK_MAGIC) {
     flagcxSocketClose(&conn->notifSock);
     return -1;
   }
@@ -1791,6 +1884,7 @@ static int startLocalTransfer(
 
   if (setEngineDevice(conn->engine) != flagcxSuccess)
     return -1;
+  retryDeferredIpcCleanups(conn->engine->localGpuIdx);
 
   FlagcxP2pXfer xfer;
   xfer.kind = FLAGCX_P2P_XFER_IPC;
@@ -2198,11 +2292,12 @@ static int bootstrapExchangeDescTable(struct bootstrapState *bsState,
 class FlagcxP2pConnectionConfigScope {
 public:
   explicit FlagcxP2pConnectionConfigScope(FlagcxP2pEngine *engine)
-      : engine_(engine), result_(flagcxInvalidArgument), active_(false) {
-    if (engine_ == NULL)
+      : isBarex_(engine != NULL && engine->isBarex),
+        result_(flagcxInvalidArgument), active_(false) {
+    if (engine == NULL)
       return;
     const FlagcxP2pGlobalConfig &config = flagcxP2pGlobalConfig();
-    if (engine_->isBarex) {
+    if (isBarex_) {
 #ifdef USE_ACCL_BAREX
       const struct flagcxBarexRuntimeConnectionConfig barexConfig = {
           static_cast<uint32_t>(config.qpsPerConn)};
@@ -2232,7 +2327,7 @@ public:
   ~FlagcxP2pConnectionConfigScope() {
     if (!active_)
       return;
-    if (engine_->isBarex) {
+    if (isBarex_) {
 #ifdef USE_ACCL_BAREX
       flagcxBarexRuntimeClearConnectionConfig();
 #endif
@@ -2244,7 +2339,7 @@ public:
   flagcxResult_t result() const { return result_; }
 
 private:
-  FlagcxP2pEngine *engine_;
+  bool isBarex_;
   flagcxResult_t result_;
   bool active_;
 };
@@ -2300,6 +2395,8 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   engine->acceptAbortFlag = 0;
   memset(engine->listeners, 0, sizeof(engine->listeners));
   memset(&engine->notifListenSock, 0, sizeof(engine->notifListenSock));
+  engine->notifListenSock.fd = -1;
+  engine->notifListenSock.acceptFd = -1;
 
   if (engine->adaptor->init() != flagcxSuccess) {
     if (flagcxParamMrSortedLookup()) {
@@ -2336,12 +2433,21 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
     delete engine;
     return NULL;
   }
+  bool hasDataListener = false;
   for (int d = 0; d < engine->nDevs; d++) {
     if (engine->adaptor->listen(d, engine->listeners[d].handle,
                                 &engine->listeners[d].listenComm) !=
         flagcxSuccess) {
       engine->listeners[d].listenComm = NULL;
+    } else {
+      hasDataListener = true;
     }
+  }
+  if (!hasDataListener) {
+    WARN("NET/%s_P2P : no data listener could be initialized",
+         engine->adaptor->name);
+    flagcxP2pEngineDestroy(engine);
+    return NULL;
   }
 
   union flagcxSocketAddress notifAddr =
@@ -2381,8 +2487,15 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
 #endif
   }
 
-  if (engine->notifListenActive)
-    engine->notifThread = std::thread(notifPollThreadFunc, engine);
+  if (!engine->notifListenActive || engine->notifListenPort <= 0) {
+    if (engine->notifListenSock.fd >= 0)
+      flagcxSocketClose(&engine->notifListenSock);
+    WARN("NET/%s_P2P : notification listener initialization failed",
+         engine->adaptor->name);
+    flagcxP2pEngineDestroy(engine);
+    return NULL;
+  }
+  engine->notifThread = std::thread(notifPollThreadFunc, engine);
 
   // Set up bootstrap P2P listen for ctrl meta + desc table exchange
   struct bootstrapState *bsState = NULL;
@@ -2397,6 +2510,12 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
     INFO(FLAGCX_INIT, "NET/%s_P2P : bootstrap P2P listen on port %d",
          engine->adaptor->name, engine->bsListenPort);
   }
+  if (engine->bsListenState == NULL || engine->bsListenPort <= 0) {
+    WARN("NET/%s_P2P : bootstrap listener initialization failed",
+         engine->adaptor->name);
+    flagcxP2pEngineDestroy(engine);
+    return NULL;
+  }
 
   return engine;
 }
@@ -2408,9 +2527,16 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
     return;
 
   flagcxP2pEngineStopAccept(engine);
-  if (engine->notifListenActive) {
-    flagcxSocketClose(&engine->notifListenSock);
-    engine->notifListenActive = false;
+  // StopAccept only prevents new data/RPC sessions. Established connections
+  // continue to use accepted notification/control sockets for messages and
+  // dynamic MR refresh, so stop that plane only during full destruction.
+  engine->stopNotif.store(true, std::memory_order_release);
+  {
+    std::lock_guard<std::mutex> listenLock(engine->notifListenMutex);
+    if (engine->notifListenActive) {
+      flagcxSocketClose(&engine->notifListenSock);
+      engine->notifListenActive = false;
+    }
   }
   if (engine->notifThread.joinable() &&
       engine->notifThread.get_id() != std::this_thread::get_id())
@@ -2469,6 +2595,8 @@ void flagcxP2pEngineDestroy(FlagcxP2pEngine *engine) {
   // cache. Retire only this Engine's requests; process-global bookkeeping may
   // still contain live transfers owned by another Engine instance.
   drainEngineTransfers(engine);
+  if (setEngineDevice(engine) == flagcxSuccess)
+    retryDeferredIpcCleanups(engine->localGpuIdx);
 
   const std::vector<std::pair<FlagcxP2pMr, size_t>> ownedMrs =
       engineOwnedMrs(engine);
@@ -2502,13 +2630,17 @@ void flagcxP2pEngineStopAccept(FlagcxP2pEngine *engine) {
     return;
 
   engine->stopAccept.store(true, std::memory_order_release);
-  engine->stopNotif = true;
   engine->stopRpcServer.store(true, std::memory_order_release);
   __atomic_store_n(&engine->acceptAbortFlag, 1, __ATOMIC_RELEASE);
 
-  if (engine->notifListenActive) {
-    flagcxSocketClose(&engine->notifListenSock);
-    engine->notifListenActive = false;
+  // Stop admitting new control peers, but keep the notification thread and
+  // already accepted peer sockets alive for established connections.
+  {
+    std::lock_guard<std::mutex> listenLock(engine->notifListenMutex);
+    if (engine->notifListenActive) {
+      flagcxSocketClose(&engine->notifListenSock);
+      engine->notifListenActive = false;
+    }
   }
 
   if (engine->bsListenState && engine->bsListenState->p2p) {
@@ -2748,8 +2880,13 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
   conn->notifSockConnected = false;
   memset(&conn->notifSock, 0, sizeof(conn->notifSock));
 
-  if (!conn->sameProcess && remoteMeta.notifPort > 0) {
-    connectNotifSocket(conn, peerAddress, remoteMeta.notifPort);
+  if (!conn->sameProcess &&
+      (remoteMeta.notifPort <= 0 ||
+       connectNotifSocket(conn, peerAddress, remoteMeta.notifPort) != 0)) {
+    WARN("NET/P2P_ENGINE : connect notification channel failed");
+    flagcxP2pEngineConnDestroy(conn);
+    bootstrapClose(bsConn);
+    return NULL;
   }
 
   // Step 5: Exchange desc table over bootstrap
@@ -2932,8 +3069,13 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
                   ipAddrBufLen);
   *remoteGpuIdx = remoteMeta.gpuIdx;
 
-  if (!conn->sameProcess && remoteMeta.notifPort > 0) {
-    connectNotifSocket(conn, &peerAddress, remoteMeta.notifPort);
+  if (!conn->sameProcess &&
+      (remoteMeta.notifPort <= 0 ||
+       connectNotifSocket(conn, &peerAddress, remoteMeta.notifPort) != 0)) {
+    WARN("NET/P2P_ENGINE : accept notification channel failed");
+    flagcxP2pEngineConnDestroy(conn);
+    bootstrapClose(bsConn);
+    return NULL;
   }
 
   // Step 5: Exchange desc table over bootstrap
@@ -3083,7 +3225,12 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
     entry.size = size;
     entry.ibDevN = ibDevN;
 
-    setEngineDevice(engine);
+    const flagcxResult_t setDeviceResult = setEngineDevice(engine);
+    if (setDeviceResult != flagcxSuccess) {
+      WARN("P2P Reg: failed to select engine device %d: %d",
+           engine->localGpuIdx, static_cast<int>(setDeviceResult));
+      return -1;
+    }
     const flagcxResult_t ptrTypeResult =
         resolvePtrType(&entry.ptrType, entry.ipcHandle, &entry.ipcHandleSize);
     if (ptrTypeResult != flagcxSuccess) {
@@ -3155,7 +3302,13 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   uint32_t ipcHandleSize = 0;
   memset(ipcHandle, 0, sizeof(ipcHandle));
 
-  setEngineDevice(engine);
+  const flagcxResult_t setDeviceResult = setEngineDevice(engine);
+  if (setDeviceResult != flagcxSuccess) {
+    WARN("P2P Reg: failed to select engine device %d: %d", engine->localGpuIdx,
+         static_cast<int>(setDeviceResult));
+    pthread_mutex_unlock(&gMrLifecycleMutex);
+    return -1;
+  }
   int ptrType = FLAGCX_PTR_HOST;
   const flagcxResult_t ptrTypeResult =
       resolvePtrType(&ptrType, ipcHandle, &ipcHandleSize);
@@ -3349,11 +3502,10 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
   struct flagcxMrEntry *entries =
       flagcxMrRegistryEntries(flagcxGlobalMrRegistry);
 
-  /* Fast path: single-entry registry (common case with 1-4 MRs) */
+  /* Find the rightmost entry beginning at or before the requested address. */
   int idx = -1;
   if (count == 1) {
-    if (entries[0].baseAddr <= dataAddr &&
-        (dataAddr - entries[0].baseAddr) < entries[0].size)
+    if (entries[0].baseAddr <= dataAddr)
       idx = 0;
   } else {
     /* O(log n) containment: find rightmost entry with baseAddr <= dataAddr */
@@ -3367,13 +3519,27 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
         hi = mid - 1;
       }
     }
-    /* Verify containment */
-    if (idx >= 0 && (dataAddr - entries[idx].baseAddr) >= entries[idx].size)
-      idx = -1;
   }
 
-  if (idx < 0 || !(entries[idx].ownerMask & FLAGCX_MR_OWNER_P2P) ||
-      !entries[idx].p2p || entries[idx].p2p->mrId != (uint64_t)mr) {
+  auto matchesRequestedMr = [&](int candidate) {
+    if (candidate < 0 || entries[candidate].baseAddr > dataAddr)
+      return false;
+    const uintptr_t offset = dataAddr - entries[candidate].baseAddr;
+    return offset <= entries[candidate].size &&
+           size <= entries[candidate].size - offset &&
+           (entries[candidate].ownerMask & FLAGCX_MR_OWNER_P2P) &&
+           entries[candidate].p2p != NULL &&
+           entries[candidate].p2p->mrId == static_cast<uint64_t>(mr);
+  };
+
+  // At an adjacent MR boundary the binary search selects the following MR.
+  // A zero-byte descriptor also belongs to the requested MR's end, so check
+  // the predecessor before rejecting it.
+  if (!matchesRequestedMr(idx) && size == 0 && idx > 0 &&
+      matchesRequestedMr(idx - 1))
+    --idx;
+
+  if (!matchesRequestedMr(idx)) {
     flagcxMrRegistryRdUnlock(flagcxGlobalMrRegistry);
     return -1;
   }
@@ -3510,10 +3676,9 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
                               uint64_t *transferId,
                               std::vector<char *> ipcBufs) {
   if (conn == NULL || numIovs <= 0 || transferId == NULL) {
-    fprintf(stderr,
-            "[FlagCX P2P] ReadVector early exit: invalid args (conn=%p, "
-            "numIovs=%d, transferId=%p)\n",
-            conn, numIovs, (void *)transferId);
+    WARN("P2P ReadVector invalid arguments: conn=%p numIovs=%d "
+         "transferId=%p",
+         conn, numIovs, (void *)transferId);
     return -1;
   }
   *transferId = 0;
@@ -3521,10 +3686,7 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
   if (dstVec.size() < static_cast<size_t>(numIovs) ||
       sizeVec.size() < static_cast<size_t>(numIovs) ||
       descs.size() < static_cast<size_t>(numIovs)) {
-    fprintf(stderr,
-            "[FlagCX P2P] ReadVector early exit: vector length mismatch "
-            "(numIovs=%d)\n",
-            numIovs);
+    WARN("P2P ReadVector vector length mismatch: numIovs=%d", numIovs);
     return -1;
   }
   for (int i = 0; i < numIovs; i++) {
@@ -3537,21 +3699,15 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
     }
   }
   if (conn->isLocal && (conn->sameProcess || !ipcBufs.empty())) {
-    fprintf(stderr,
-            "[FlagCX P2P] ReadVector taking local transfer path: numIovs=%d\n",
-            numIovs);
+    TRACE(FLAGCX_P2P, "P2P ReadVector using local path: numIovs=%d", numIovs);
     int rc = startLocalTransfer(conn, mrIds, dstVec, sizeVec, descs, numIovs,
                                 transferId, ipcBufs, false);
-    fprintf(stderr, "[FlagCX P2P] ReadVector local transfer returned: rc=%d\n",
-            rc);
+    TRACE(FLAGCX_P2P, "P2P ReadVector local path returned: rc=%d", rc);
     return rc;
   }
 
   if (mrIds.size() < static_cast<size_t>(numIovs)) {
-    fprintf(stderr,
-            "[FlagCX P2P] ReadVector early exit: mrIds length mismatch "
-            "(numIovs=%d)\n",
-            numIovs);
+    WARN("P2P ReadVector MR vector length mismatch: numIovs=%d", numIovs);
     return -1;
   }
 
@@ -3559,18 +3715,16 @@ int flagcxP2pEngineReadVector(FlagcxP2pConn *conn,
   for (int i = 0; i < numIovs; i++) {
     if (!engineOwnsMr(conn->engine, mrIds[i]) ||
         !findMemRegByMr(mrIds[i], &localEntries[i])) {
-      fprintf(stderr,
-              "[FlagCX P2P] ReadVector memReg lookup failed: iov=%d, mr=%lu\n",
-              i, (unsigned long)mrIds[i]);
+      WARN("P2P ReadVector MR lookup failed: iov=%d mr=%llu", i,
+           (unsigned long long)mrIds[i]);
       return -1;
     }
 
     if (!memRegContains(localEntries[i], reinterpret_cast<uintptr_t>(dstVec[i]),
                         sizeVec[i])) {
-      fprintf(stderr,
-              "[FlagCX P2P] ReadVector memReg bounds check failed: iov=%d, "
-              "mr=%lu, addr=%p, size=%zu\n",
-              i, (unsigned long)mrIds[i], dstVec[i], sizeVec[i]);
+      WARN("P2P ReadVector MR bounds check failed: iov=%d mr=%llu addr=%p "
+           "size=%zu",
+           i, (unsigned long long)mrIds[i], dstVec[i], sizeVec[i]);
       return -1;
     }
   }
@@ -3722,7 +3876,7 @@ static bool progressEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
   if (xfer.kind == FLAGCX_P2P_XFER_IPC) {
     if (deviceAdaptor == NULL || deviceAdaptor->eventQuery == NULL) {
       *transferResult = flagcxInternalError;
-      cleanupIpcXfer(&xfer);
+      drainAndCleanupIpcXfer(&xfer);
       gXferMap.erase(it);
       return true;
     }
@@ -3741,7 +3895,7 @@ static bool progressEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
       TRACE(FLAGCX_P2P,
             "P2P local transfer failed conn=%p transferId=%llu result=%d", conn,
             (unsigned long long)transferId, (int)queryRes);
-      cleanupIpcXfer(&xfer);
+      drainAndCleanupIpcXfer(&xfer);
       gXferMap.erase(it);
       return true;
     }

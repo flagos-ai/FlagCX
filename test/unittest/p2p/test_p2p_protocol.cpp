@@ -1,7 +1,9 @@
 #include "p2p_control.h"
+#include "socket.h"
 
 #include <gtest/gtest.h>
 
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -85,6 +87,70 @@ TEST(P2pProtocolTest, BoundedSendObservesShutdown) {
 
   close(sockets[0]);
   close(sockets[1]);
+}
+
+TEST(P2pProtocolTest, SocketAcceptHandlesPartialAndIncorrectPrefaces) {
+  const int listener = socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(listener, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  ASSERT_EQ(
+      bind(listener, reinterpret_cast<sockaddr *>(&address), sizeof(address)),
+      0);
+  ASSERT_EQ(listen(listener, 1), 0);
+  socklen_t addressLen = sizeof(address);
+  ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr *>(&address),
+                        &addressLen),
+            0);
+
+  const int client = socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(client, 0);
+  ASSERT_EQ(
+      connect(client, reinterpret_cast<sockaddr *>(&address), sizeof(address)),
+      0);
+  const int server = accept(listener, nullptr, nullptr);
+  ASSERT_GE(server, 0);
+
+  flagcxSocket accepted{};
+  ASSERT_EQ(flagcxSocketInit(&accepted, nullptr, FLAGCX_SOCKET_MAGIC,
+                             flagcxSocketTypeNetIb),
+            flagcxSuccess);
+  accepted.fd = server;
+  accepted.state = flagcxSocketStateAccepted;
+  const uint64_t magic = FLAGCX_SOCKET_MAGIC;
+  ASSERT_EQ(send(client, &magic, 3, 0), 3);
+
+  int ready = -1;
+  EXPECT_EQ(flagcxSocketReady(&accepted, &ready), flagcxSuccess);
+  EXPECT_EQ(ready, 0);
+  EXPECT_EQ(accepted.acceptPrefaceBytes, 3);
+  close(client);
+  EXPECT_EQ(flagcxSocketReady(&accepted, &ready), flagcxRemoteError);
+
+  close(server);
+
+  const int wrongMagicClient = socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(wrongMagicClient, 0);
+  ASSERT_EQ(connect(wrongMagicClient, reinterpret_cast<sockaddr *>(&address),
+                    sizeof(address)),
+            0);
+  const int wrongMagicServer = accept(listener, nullptr, nullptr);
+  ASSERT_GE(wrongMagicServer, 0);
+  ASSERT_EQ(flagcxSocketInit(&accepted, nullptr, FLAGCX_SOCKET_MAGIC,
+                             flagcxSocketTypeNetIb),
+            flagcxSuccess);
+  accepted.fd = wrongMagicServer;
+  accepted.state = flagcxSocketStateAccepted;
+  const uint64_t wrongMagic = magic ^ 1;
+  ASSERT_EQ(send(wrongMagicClient, &wrongMagic, sizeof(wrongMagic), 0),
+            sizeof(wrongMagic));
+  EXPECT_EQ(flagcxSocketReady(&accepted, &ready), flagcxSuccess);
+  EXPECT_EQ(ready, 0);
+  EXPECT_EQ(accepted.state, flagcxSocketStateAccepting);
+  close(wrongMagicClient);
+  close(listener);
 }
 
 } // namespace

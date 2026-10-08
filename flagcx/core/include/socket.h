@@ -71,6 +71,8 @@ struct flagcxSocket {
   int salen;
   uint64_t magic;
   enum flagcxSocketType type;
+  char acceptPreface[sizeof(uint64_t) + sizeof(enum flagcxSocketType)];
+  int acceptPrefaceBytes;
 };
 
 const char *flagcxSocketToString(union flagcxSocketAddress *addr, char *buf,

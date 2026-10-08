@@ -16,12 +16,14 @@ struct flagcxP2pNetBackendContext {
   void *sendComm = NULL;
   std::mutex *progressMutex = NULL;
   int write = 0;
+  flagcxResult_t (*quiesce)(void *sendComm) = NULL;
 };
 
 flagcxResult_t
 flagcxP2pNetBackendInit(struct flagcxP2pNetBackendContext *context,
                         struct flagcxNetAdaptor *adaptor, void *sendComm,
                         std::mutex *progressMutex, int write,
-                        struct flagcxP2pTransferBackend *backend);
+                        struct flagcxP2pTransferBackend *backend,
+                        flagcxResult_t (*quiesce)(void *sendComm) = NULL);
 
 #endif // FLAGCX_P2P_ENGINE_BACKEND_H_

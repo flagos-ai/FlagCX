@@ -984,6 +984,26 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsInvalidRegistrationAndDescriptorRanges) {
             -1);
 }
 
+#ifdef USE_SHARED_P2P_ENGINE
+TEST_F(FlagcxP2pEngineReadTest, AcceptsZeroLengthDescriptorAtRegistrationEnd) {
+  constexpr size_t kBytes = 4096;
+  ScopedAllocation allocation;
+  allocGpuBufferOnDevice(&allocation, kBytes, kClientGpuIdx, clientStream);
+
+  FlagcxP2pMr mr = 0;
+  ASSERT_EQ(flagcxP2pEngineReg(clientEngine,
+                               reinterpret_cast<uintptr_t>(allocation.get()),
+                               kBytes, mr),
+            0);
+  ScopedMr mrGuard;
+  mrGuard.set(clientEngine, mr);
+
+  char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
+  void *end = static_cast<char *>(allocation.get()) + kBytes;
+  EXPECT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, mr, end, 0, descBuf), 0);
+}
+#endif
+
 TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsWriteBeforeSubmission) {
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 

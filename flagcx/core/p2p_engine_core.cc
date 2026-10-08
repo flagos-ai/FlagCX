@@ -65,10 +65,25 @@ flagcxResult_t pollInflight(struct flagcxP2pTransfer *transfer) {
     if (item.state != FLAGCX_P2P_TRANSFER_INFLIGHT)
       continue;
     int done = 0;
-    const flagcxResult_t testResult =
+    flagcxResult_t testResult =
         transfer->backend.test(transfer->backend.context, item.request, &done);
-    if (testResult == flagcxInProgress)
+    if (!done) {
+      // A polling failure does not cancel an accepted native request. Keep
+      // its credit and buffers until the backend confirms completion.
+      if (testResult != flagcxSuccess && testResult != flagcxInProgress) {
+        recordTerminal(transfer, testResult);
+        flagcxResult_t failResult = failQueued(transfer, testResult);
+        if (failResult != flagcxSuccess)
+          return failResult;
+      }
       continue;
+    }
+    // Once a backend reports done it has relinquished the native request
+    // object, so the Engine must retire the item before that slot can be
+    // reused. InProgress is only meaningful while done is false; normalize a
+    // completed request carrying that value to a permanent contract error.
+    if (done && testResult == flagcxInProgress)
+      testResult = flagcxInternalError;
     if (testResult != flagcxSuccess) {
       flagcxResult_t completeResult = completeItem(transfer, i, testResult);
       if (completeResult != flagcxSuccess)

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <memory>
 #include <string>
 #include <strings.h>
 #include <thread>
@@ -15,8 +16,10 @@
 #include <gtest/gtest.h>
 
 #include "adaptor.h"
+#include "bootstrap.h"
 #include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
+#include "p2p_control.h"
 
 extern struct flagcxNetAdaptor flagcxNetIb;
 
@@ -243,7 +246,7 @@ TEST_F(P2pEngineRpcTest, GetMetadataContainsIpAndPort) {
   EXPECT_FALSE(parsed.ip.empty());
   EXPECT_GT(parsed.port, 0);
   EXPECT_GE(parsed.gpuIdx, -1);
-  EXPECT_GE(parsed.notifPort, 0);
+  EXPECT_GT(parsed.notifPort, 0);
 }
 
 TEST_F(P2pEngineRpcTest, GetMetadataPortMatchesRpcPort) {
@@ -269,6 +272,87 @@ TEST_F(P2pEngineRpcTransportTest, ConnectAcceptBasic) {
   ASSERT_TRUE(connectViaBsPort());
   EXPECT_NE(clientConn, nullptr);
   EXPECT_NE(serverConn, nullptr);
+}
+
+TEST_F(P2pEngineRpcTransportTest, RejectsOtherEnginePrefaceAndAcceptsNextPeer) {
+#if defined(USE_ACCL_BAREX) && !defined(USE_SHARED_P2P_ENGINE)
+  const char *selectedTransport = std::getenv("FLAGCX_P2P_TRANSPORT");
+  if (selectedTransport != nullptr &&
+      (strcasecmp(selectedTransport, "accl") == 0 ||
+       strcasecmp(selectedTransport, "barex") == 0))
+    GTEST_SKIP() << "Legacy ACCL does not use the IBRC protocol preface";
+#endif
+
+  char *rawMetadata = nullptr;
+  ASSERT_EQ(flagcxP2pEngineGetMetadata(serverEngine, &rawMetadata), 0);
+  ASSERT_NE(rawMetadata, nullptr);
+  std::unique_ptr<char[]> metadata(rawMetadata);
+  ParsedMetadata parsed;
+  ASSERT_TRUE(parseMetadata(metadata.get(), &parsed));
+
+  struct flagcxBootstrapHandle handle = {};
+  handle.magic = FLAGCX_SOCKET_MAGIC;
+  const std::string endpoint =
+      flagcxP2pControl::hostPort(parsed.ip, parsed.port);
+  ASSERT_EQ(flagcxSocketGetAddrFromString(&handle.addr, endpoint.c_str()),
+            flagcxSuccess);
+
+  auto acceptFuture = std::async(std::launch::async, [this]() {
+    char ipBuf[256] = {};
+    int remoteGpuIdx = -1;
+    return flagcxP2pEngineAccept(serverEngine, ipBuf, sizeof(ipBuf),
+                                 &remoteGpuIdx);
+  });
+
+  struct bootstrapState *probe = nullptr;
+  const flagcxResult_t connectResult =
+      bootstrapP2pConnect(&handle, FLAGCX_SOCKET_MAGIC, nullptr, &probe);
+  flagcxResult_t exchangeResult = flagcxInternalError;
+  flagcxP2pControl::ProtocolHello reply = {};
+  if (connectResult == flagcxSuccess) {
+#ifdef USE_SHARED_P2P_ENGINE
+    constexpr auto oppositeImplementation = flagcxP2pControl::kProtocolLegacy;
+#else
+    constexpr auto oppositeImplementation = flagcxP2pControl::kProtocolShared;
+#endif
+    auto transport = flagcxP2pControl::kProtocolIbrc;
+#ifdef USE_ACCL_BAREX
+    const char *selectedTransport = std::getenv("FLAGCX_P2P_TRANSPORT");
+    if (selectedTransport != nullptr &&
+        (strcasecmp(selectedTransport, "accl") == 0 ||
+         strcasecmp(selectedTransport, "barex") == 0))
+      transport = flagcxP2pControl::kProtocolBarex;
+#endif
+    const auto opposite =
+        flagcxP2pControl::protocolHello(oppositeImplementation, transport);
+    exchangeResult =
+        bootstrapExchange(probe, 0, flagcxP2pControl::kProtocolTag, &opposite,
+                          sizeof(opposite), &reply, sizeof(reply));
+#ifdef USE_SHARED_P2P_ENGINE
+    const auto expected = flagcxP2pControl::protocolHello(
+        flagcxP2pControl::kProtocolShared, transport);
+#else
+    const auto expected = flagcxP2pControl::protocolHello(
+        flagcxP2pControl::kProtocolLegacy, transport);
+#endif
+    EXPECT_TRUE(flagcxP2pControl::protocolCompatible(expected, reply));
+    bootstrapClose(probe);
+  } else {
+    flagcxP2pEngineStopAccept(serverEngine);
+  }
+
+  auto acceptStatus = acceptFuture.wait_for(std::chrono::seconds(10));
+  if (acceptStatus != std::future_status::ready) {
+    flagcxP2pEngineStopAccept(serverEngine);
+    acceptStatus = acceptFuture.wait_for(std::chrono::seconds(1));
+  }
+  ASSERT_EQ(acceptStatus, std::future_status::ready);
+  EXPECT_EQ(acceptFuture.get(), nullptr);
+  ASSERT_EQ(connectResult, flagcxSuccess);
+  ASSERT_EQ(exchangeResult, flagcxSuccess);
+
+  // A rejected peer must not consume the listener or publish a connection.
+  ASSERT_TRUE(connectViaBsPort());
 }
 
 TEST_F(P2pEngineRpcTransportTest, ConnectAcceptExchangesGpuIdx) {
@@ -425,6 +509,35 @@ TEST_F(P2pEngineRpcTransportTest, ConnDestroyAfterHandshake) {
   flagcxP2pEngineConnDestroy(serverConn);
   serverConn = nullptr;
   // Should not crash or leak
+}
+
+TEST_F(P2pEngineRpcTransportTest,
+       StopAcceptPreservesEstablishedControlConnection) {
+  ASSERT_TRUE(connectViaBsPort());
+  (void)flagcxP2pEngineGetNotifs();
+
+  flagcxP2pEngineStopAccept(serverEngine);
+  flagcxP2pEngineStopAccept(clientEngine);
+
+  FlagcxP2pNotifyMsg msg = {};
+  std::strncpy(msg.name, "stop-accept", sizeof(msg.name) - 1);
+  std::strncpy(msg.msg, "established-control-remains-live",
+               sizeof(msg.msg) - 1);
+  ASSERT_EQ(flagcxP2pEngineSendNotif(clientConn, &msg),
+            static_cast<int>(sizeof(msg)));
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline) {
+    const std::vector<FlagcxP2pNotifyMsg> received = flagcxP2pEngineGetNotifs();
+    for (const FlagcxP2pNotifyMsg &candidate : received) {
+      if (std::strcmp(candidate.name, msg.name) == 0 &&
+          std::strcmp(candidate.msg, msg.msg) == 0)
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  FAIL() << "notification was not delivered after StopAccept";
 }
 
 TEST_F(P2pEngineRpcTest, StopAcceptThenDestroy) {

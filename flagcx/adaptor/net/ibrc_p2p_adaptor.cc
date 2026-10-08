@@ -1080,6 +1080,15 @@ static flagcxResult_t flagcxP2pCloseSend(void *sendComm) {
   return flagcxSuccess;
 }
 
+// A CQ polling failure leaves accepted WRs without observable completions.
+// Synchronously destroy their QPs before the worker publishes failed slices.
+flagcxResult_t flagcxNetIbP2pAbortSend(void *sendComm) {
+  auto *comm = static_cast<struct flagcxP2pSendComm *>(sendComm);
+  if (comm == nullptr)
+    return flagcxInvalidArgument;
+  return flagcxP2pDestroyQps(comm->ibDevN, comm->qp_list_, comm->numQps);
+}
+
 static flagcxResult_t flagcxP2pCloseRecv(void *recvComm) {
   struct flagcxP2pRecvComm *comm = (struct flagcxP2pRecvComm *)recvComm;
   if (comm) {

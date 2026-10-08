@@ -1066,6 +1066,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("test_p2p_gpu_read.cpp", p2p_makefile)
         self.assertIn("test_p2p_visibility_policy.cpp", p2p_makefile)
         self.assertIn("coll_p2p_engine_write.cpp", p2p_makefile)
+        self.assertIn("ifeq ($(USE_SHARED_P2P_ENGINE),1)", p2p_makefile)
+        self.assertIn("filter-out test_p2p_adaptor.cpp", p2p_makefile)
+        for name in ("test_p2p_adaptor.cpp", "test_p2p_batch.cpp",
+                     "test_p2p_gpu_read.cpp"):
+            with self.subTest(legacy_adaptor_source=name):
+                source = REPO_ROOT / "test/unittest/p2p" / name
+                self.assertTrue(source.is_file())
+                self.assertIn("flagcxNetIbP2p", source.read_text())
         self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", p2p_runner)
         self.assertIn("FLAGCX_P2P_QPS_PER_CONN=2", p2p_runner)
         for platform, platform_env in platform_envs.items():
@@ -1087,8 +1095,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
         read_tests = (
             REPO_ROOT / "test/unittest/p2p/test_p2p_engine_read.cpp"
         ).read_text()
+        rpc_tests = (
+            REPO_ROOT / "test/unittest/p2p/test_p2p_engine_rpc.cpp"
+        ).read_text()
         self.assertIn("CXXFLAGS += -DUSE_SHARED_P2P_ENGINE", test_make)
         self.assertIn("#ifdef USE_SHARED_P2P_ENGINE", read_tests)
+        self.assertIn("RejectsOtherEnginePrefaceAndAcceptsNextPeer",
+                      rpc_tests)
 
         legacy_engine = (REPO_ROOT / "flagcx/core/flagcx_p2p.cc").read_text()
         self.assertIn('"P2P_QPS_PER_CONN"', legacy_engine)
@@ -1105,6 +1118,15 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"P2P_CONNECT_TIMEOUT"', engine)
         self.assertIn("std::chrono::steady_clock::now() >= deadline", engine)
         self.assertIn("stopWithAccept &&", engine)
+        self.assertEqual(engine.count("const flagcxResult_t setDeviceResult ="), 2)
+        self.assertIn("if (setDeviceResult != flagcxSuccess)", engine)
+        self.assertIn("connect notification channel failed", engine)
+        self.assertIn("accept notification channel failed", engine)
+        self.assertIn("notification listener initialization failed", engine)
+        self.assertIn("bootstrap listener initialization failed", engine)
+        self.assertGreaterEqual(
+            engine.count("connectNotifSocket(conn,"), 2
+        )
         self.assertLess(
             engine.index("Acquire every mapping before queueing"),
             engine.index("bool usedAsync = false"),

@@ -22,8 +22,8 @@ constexpr uint32_t kMaxSliceSize = 1u << 30;
 // deployment fail before either side interprets the other's payload.
 constexpr int kProtocolTag = 0x46585031; // FXP1
 constexpr uint32_t kProtocolMagic = 0x46585031;
-constexpr uint16_t kProtocolVersionLegacy = 2;
-constexpr uint16_t kProtocolVersionShared = 4;
+constexpr uint16_t kProtocolVersionLegacy = 3;
+constexpr uint16_t kProtocolVersionShared = 5;
 
 enum ProtocolImplementation : uint16_t {
   kProtocolLegacy = 1,

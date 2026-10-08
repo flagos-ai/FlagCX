@@ -517,29 +517,36 @@ static flagcxResult_t socketTryAccept(struct flagcxSocket *sock) {
 static flagcxResult_t socketFinalizeAccept(struct flagcxSocket *sock) {
   uint64_t magic;
   enum flagcxSocketType type;
-  int received = 0;
   const int one = 1;
   SYSCHECK(
       setsockopt(sock->fd, IPPROTO_TCP, TCP_NODELAY, (char *)&one, sizeof(int)),
       "setsockopt");
 
-  FLAGCXCHECK(flagcxSocketProgress(FLAGCX_SOCKET_RECV, sock, &magic,
-                                   sizeof(magic), &received));
-  if (received == 0)
-    return flagcxSuccess;
-  FLAGCXCHECK(
-      socketWait(FLAGCX_SOCKET_RECV, sock, &magic, sizeof(magic), &received));
+  // Preserve partial bytes across progress calls. Consuming them also lets
+  // socketProgress report EOF if a peer disconnects midway through the
+  // preface; the caller can check cancellation or a deadline between calls.
+  if (sock->acceptPrefaceBytes < sizeof(magic)) {
+    FLAGCXCHECK(socketProgress(FLAGCX_SOCKET_RECV, sock, sock->acceptPreface,
+                               sizeof(magic), &sock->acceptPrefaceBytes));
+    if (sock->acceptPrefaceBytes < sizeof(magic))
+      return flagcxSuccess;
+  }
+  memcpy(&magic, sock->acceptPreface, sizeof(magic));
   if (magic != sock->magic) {
     WARN("socketFinalizeAccept: wrong magic %lx != %lx", magic, sock->magic);
     close(sock->fd);
     sock->fd = -1;
     // Ignore spurious connection and accept again
     sock->state = flagcxSocketStateAccepting;
+    sock->acceptPrefaceBytes = 0;
     return flagcxSuccess;
   } else {
-    received = 0;
-    FLAGCXCHECK(
-        socketWait(FLAGCX_SOCKET_RECV, sock, &type, sizeof(type), &received));
+    FLAGCXCHECK(socketProgress(FLAGCX_SOCKET_RECV, sock, sock->acceptPreface,
+                               sizeof(sock->acceptPreface),
+                               &sock->acceptPrefaceBytes));
+    if (sock->acceptPrefaceBytes != sizeof(sock->acceptPreface))
+      return flagcxSuccess;
+    memcpy(&type, sock->acceptPreface + sizeof(magic), sizeof(type));
     if (type != sock->type) {
       WARN("socketFinalizeAccept: wrong type %d != %d", type, sock->type);
       sock->state = flagcxSocketStateError;
@@ -839,6 +846,7 @@ flagcxResult_t flagcxSocketInit(struct flagcxSocket *sock,
   sock->state = flagcxSocketStateInitialized;
   sock->magic = magic;
   sock->type = type;
+  sock->acceptPrefaceBytes = 0;
   sock->fd = -1;
   sock->acceptFd = -1;
 
