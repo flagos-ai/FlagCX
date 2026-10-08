@@ -167,6 +167,7 @@ struct flagcxIpcTableEntry; // forward declaration; defined in global_comm.h
 #define FLAGCX_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
 
 struct flagcxOneSideHandleInfo;
+struct flagcxOneSideMeshCleanup;
 struct flagcxSymWindow;
 
 struct flagcxHeteroComm {
@@ -387,6 +388,8 @@ struct flagcxHeteroComm {
   // Failed rollback is retained here until a later registration or comm
   // teardown retries deregistration. This list is never published to RMA.
   struct flagcxOneSideHandleInfo *pendingOneSideCleanup;
+  // Unpublished full-mesh handshakes/connection closes retained for retry.
+  struct flagcxOneSideMeshCleanup *pendingOneSideMeshCleanup;
 
   // Active symmetric windows. Each window owns independent IPC and network
   // locators; the list is used to resolve a local source address without

@@ -114,6 +114,31 @@ flagcxResult_t failRegMrDmaBuf(void *, void *, size_t, int, uint64_t, int, int,
 
 flagcxResult_t failDeregMr(void *, void *) { return flagcxSystemError; }
 
+flagcxResult_t (*savedFullMeshConnect)(int, void *, void **) = nullptr;
+flagcxResult_t (*savedFullMeshResetConnect)(void *) = nullptr;
+void *firstFullMeshHandle = nullptr;
+int injectedFullMeshConnectFailures = 0;
+int injectedFullMeshResetFailures = 0;
+
+flagcxResult_t failSecondFullMeshConnect(int dev, void *handle,
+                                         void **sendComm) {
+  if (firstFullMeshHandle == nullptr)
+    firstFullMeshHandle = handle;
+  else if (handle != firstFullMeshHandle &&
+           injectedFullMeshConnectFailures++ == 0) {
+    if (sendComm != nullptr)
+      *sendComm = nullptr;
+    return flagcxSystemError;
+  }
+  return savedFullMeshConnect(dev, handle, sendComm);
+}
+
+flagcxResult_t failFirstFullMeshReset(void *handle) {
+  if (injectedFullMeshResetFailures++ == 0)
+    return flagcxSystemError;
+  return savedFullMeshResetConnect(handle);
+}
+
 flagcxResult_t failIpcMemHandleGet(flagcxIpcMemHandle_t, void *) {
   return flagcxSystemError;
 }
@@ -601,6 +626,67 @@ TEST_F(SymMemTest, DirectGdrVmmPreservesMrRoute) {
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
   ASSERT_TRUE(
       allRanksSucceeded(deviceAdaptor->gdrMemFree(directBuffer, nullptr)));
+}
+
+TEST_F(SymMemTest, FullMeshRoundFailureConvergesAndRetries) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
+    GTEST_SKIP() << "Runs in the required NET invocations";
+
+  int rank = 0;
+  int nranks = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+  if (nranks < 4)
+    GTEST_SKIP() << "requires four ranks to exercise overlapping rounds";
+
+  flagcxComm_t testComm = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
+  ASSERT_NE(testComm, nullptr);
+  ASSERT_NE(testComm->heteroComm, nullptr);
+  void *buffer = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxMemAlloc(&buffer, size)));
+
+  auto *net = testComm->heteroComm->netAdaptor;
+  ASSERT_NE(net, nullptr);
+  ASSERT_NE(net->connect, nullptr);
+  ASSERT_NE(net->resetConnect, nullptr);
+  if (rank == 1) {
+    savedFullMeshConnect = net->connect;
+    savedFullMeshResetConnect = net->resetConnect;
+    firstFullMeshHandle = nullptr;
+    injectedFullMeshConnectFailures = 0;
+    injectedFullMeshResetFailures = 0;
+    net->connect = failSecondFullMeshConnect;
+    net->resetConnect = failFirstFullMeshReset;
+  }
+
+  flagcxResult_t result = flagcxOneSideRegister(testComm, buffer, size);
+  if (rank == 1) {
+    net->connect = savedFullMeshConnect;
+    net->resetConnect = savedFullMeshResetConnect;
+  }
+
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxSystemError));
+  EXPECT_EQ(maximum, minimum);
+  int injected = rank == 1 && injectedFullMeshConnectFailures > 0 ? 1 : 0;
+  MPI_Allreduce(MPI_IN_PLACE, &injected, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  EXPECT_EQ(injected, 1);
+  EXPECT_EQ(testComm->heteroComm->pendingOneSideMeshCleanup != nullptr,
+            rank == 1);
+  EXPECT_EQ(testComm->heteroComm->oneSideHandleCount, 0);
+  EXPECT_EQ(testComm->heteroComm->oneSideHandles, nullptr);
+  EXPECT_EQ(testComm->heteroComm->oneSideDataMetadataExchangeCount, 0u);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  result = flagcxOneSideRegister(testComm, buffer, size);
+  ASSERT_TRUE(allRanksSucceeded(result));
+  EXPECT_EQ(testComm->heteroComm->pendingOneSideMeshCleanup, nullptr);
+  EXPECT_EQ(testComm->heteroComm->oneSideHandleCount, 1);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
+  EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
 TEST_F(SymMemTest, RankLocalMrFailureDoesNotPublishPartialWindow) {

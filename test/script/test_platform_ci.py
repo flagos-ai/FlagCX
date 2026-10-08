@@ -579,6 +579,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
+            "SymMemTest.FullMeshRoundFailureConvergesAndRetries",
+            unit_runner,
+        )
+        self.assertIn(
             "SymMemTest.PublicRegistrationUsesVmmMrRouting",
             unit_runner,
         )

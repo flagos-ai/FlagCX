@@ -4062,4 +4062,6 @@ struct flagcxNetAdaptor flagcxNetIb = {
     flagcxIbVmmMrCaps, FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
     // iflush posts a loopback RDMA READ and completes on its CQE, so the same
     // primitive can acquire either a local GET destination or received WRITE.
-    FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE};
+    FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE,
+    0, // No provider-forced visibility boundary.
+    flagcxIbEngineResetConnect, flagcxIbEngineResetListenAccept};

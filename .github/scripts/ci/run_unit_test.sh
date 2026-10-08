@@ -50,7 +50,6 @@ if ! declare -p FLAGCX_CI_IBUC_ENV >/dev/null 2>&1; then
 fi
 : "${FLAGCX_CI_ENABLE_IBUC:=0}"
 : "${FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE:=0}"
-: "${FLAGCX_CI_VERIFY_P2P_ENGINE_SWITCH:=0}"
 
 export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
@@ -713,7 +712,7 @@ run_suite() {
         -x LD_LIBRARY_PATH
       )
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
-      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmFlatFallbackPreservesMrRoute:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmFlatFallbackPreservesMrRoute:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
 
       FLAGCX_CI_MPI_LABEL="symmem remote without NET" \
         "$MPI_RUNNER" --allow-run-as-root \

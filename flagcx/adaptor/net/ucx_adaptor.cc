@@ -1532,6 +1532,9 @@ struct flagcxNetAdaptor flagcxNetUcx = {
     // UCX iflush performs the receiver-side dummy GET used after incoming
     // WRITEs; this adaptor does not expose one-sided iget.
     FLAGCX_NET_GDR_FLUSH_WRITE,
+    0, // No provider-forced visibility boundary.
+    NULL,
+    NULL,
 };
 
 #endif // USE_UCX

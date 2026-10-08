@@ -193,6 +193,11 @@ struct flagcxNetAdaptor_latest {
   // visibility boundary even when device/topology policy would omit it.
   // This latest-only field is directional and defaults to NONE.
   uint32_t gdrFlushForceRequirements;
+
+  // Latest-only rollback hooks for an incomplete connection handshake.
+  // A completed send/recv comm is owned by closeSend/closeRecv instead.
+  flagcxResult_t (*resetConnect)(void *handle);
+  flagcxResult_t (*resetListenAccept)(void *listenComm);
 };
 
 #define flagcxNetAdaptor flagcxNetAdaptor_latest

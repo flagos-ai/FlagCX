@@ -1206,4 +1206,7 @@ struct flagcxNetAdaptor flagcxNetIbP2p = {
     // The direct P2P engine has no post-READ visibility stage yet. Do not
     // advertise the adaptor's unsupported iflush stub as a real capability.
     FLAGCX_NET_GDR_FLUSH_NONE,
+    0, // No provider-forced visibility boundary.
+    NULL,
+    NULL,
 };

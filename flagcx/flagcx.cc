@@ -416,6 +416,100 @@ flagcxOneSideConvergeStatus(struct bootstrapState *bootstrap, int rank,
   return static_cast<flagcxResult_t>(common);
 }
 
+struct flagcxOneSideRoundProgress {
+  int context;
+  int round;
+  int status;
+  int ready;
+};
+
+// Every rank participates after each bounded batch of non-blocking
+// connect/accept progress. This is both the per-round barrier and the failure
+// path: no rank leaves the progress loop while another rank is still in it.
+static flagcxResult_t flagcxOneSideConvergeRound(
+    struct bootstrapState *bootstrap, int rank, int nranks, int context,
+    int round, flagcxResult_t localStatus, bool localReady, bool *allReady) {
+  if (bootstrap == NULL || allReady == NULL || rank < 0 || rank >= nranks ||
+      nranks <= 0)
+    return flagcxInvalidArgument;
+  constexpr int gatherTag = 0x5972;
+  constexpr int broadcastTag = 0x5973;
+  flagcxOneSideRoundProgress local = {
+      context, round, static_cast<int>(localStatus), localReady ? 1 : 0};
+  flagcxOneSideRoundProgress common = local;
+  if (rank == 0) {
+    for (int peer = 1; peer < nranks; ++peer) {
+      flagcxOneSideRoundProgress remote = {};
+      FLAGCXCHECK(
+          bootstrapRecv(bootstrap, peer, gatherTag, &remote, sizeof(remote)));
+      if (remote.context != context || remote.round != round) {
+        common.status = flagcxInternalError;
+      } else if (common.status == flagcxSuccess &&
+                 remote.status != flagcxSuccess) {
+        common.status = remote.status;
+      }
+      common.ready &= remote.ready;
+    }
+    for (int peer = 1; peer < nranks; ++peer)
+      FLAGCXCHECK(bootstrapSend(bootstrap, peer, broadcastTag, &common,
+                                sizeof(common)));
+  } else {
+    FLAGCXCHECK(bootstrapSend(bootstrap, 0, gatherTag, &local, sizeof(local)));
+    FLAGCXCHECK(
+        bootstrapRecv(bootstrap, 0, broadcastTag, &common, sizeof(common)));
+  }
+  *allReady = common.ready != 0;
+  return static_cast<flagcxResult_t>(common.status);
+}
+
+struct flagcxOneSideMeshCleanup {
+  flagcxNetHandle_t *allHandles;
+  void *listenComm;
+  void **sendComms;
+  void **recvComms;
+  int nRanks;
+  int activeConnectPeer;
+  flagcxOneSideMeshCleanup *next;
+};
+
+// Keep every unclosed resource in the token if a provider close/reset fails.
+// The next collective registration (or comm teardown) retries this token
+// before a new listen handle can be published.
+static flagcxResult_t
+flagcxOneSideCleanupMesh(struct flagcxHeteroComm *heteroComm,
+                         struct flagcxOneSideMeshCleanup *cleanup) {
+  auto *net = heteroComm->netAdaptor;
+  int peer = cleanup->activeConnectPeer;
+  if (peer >= 0 && cleanup->allHandles != NULL && cleanup->sendComms != NULL &&
+      cleanup->sendComms[peer] == NULL && net->resetConnect != NULL) {
+    FLAGCXCHECK(net->resetConnect(&cleanup->allHandles[peer]));
+    cleanup->activeConnectPeer = -1;
+  }
+  if (cleanup->listenComm != NULL && net->resetListenAccept != NULL)
+    FLAGCXCHECK(net->resetListenAccept(cleanup->listenComm));
+  for (int i = 0; i < cleanup->nRanks; ++i) {
+    if (cleanup->sendComms != NULL && cleanup->sendComms[i] != NULL) {
+      FLAGCXCHECK(net->closeSend(cleanup->sendComms[i]));
+      cleanup->sendComms[i] = NULL;
+    }
+    if (cleanup->recvComms != NULL && cleanup->recvComms[i] != NULL) {
+      FLAGCXCHECK(net->closeRecv(cleanup->recvComms[i]));
+      cleanup->recvComms[i] = NULL;
+    }
+  }
+  if (cleanup->listenComm != NULL) {
+    FLAGCXCHECK(net->closeListen(cleanup->listenComm));
+    cleanup->listenComm = NULL;
+  }
+  free(cleanup->allHandles);
+  free(cleanup->sendComms);
+  free(cleanup->recvComms);
+  cleanup->allHandles = NULL;
+  cleanup->sendComms = NULL;
+  cleanup->recvComms = NULL;
+  return flagcxSuccess;
+}
+
 static flagcxResult_t
 flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
                              int rank, int contextIdx, void ***outSend,
@@ -425,8 +519,14 @@ flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
   flagcxNetHandle_t *allHandles = NULL;
   void **sendComms = NULL;
   void **recvComms = NULL;
+  int activeConnectPeer = -1;
+  auto *cleanup = static_cast<flagcxOneSideMeshCleanup *>(
+      calloc(1, sizeof(flagcxOneSideMeshCleanup)));
 
-  res = flagcxCalloc(&sendComms, nranks);
+  if (cleanup == NULL)
+    res = flagcxSystemError;
+  if (res == flagcxSuccess)
+    res = flagcxCalloc(&sendComms, nranks);
   if (res == flagcxSuccess)
     res = flagcxCalloc(&recvComms, nranks);
 
@@ -456,47 +556,68 @@ flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
     if (res != flagcxSuccess)
       goto fail_handles;
 
-    // Deadlock-free full-mesh connection (NCCL GIN pattern)
+    // NCCL GIN's full mesh has a barrier after each round. Converge bounded
+    // progress batches as well, so a rank-local failure wakes peers that are
+    // still waiting for their connect/accept to finish.
     for (int i = 0; i < nranks; i++) {
       int connectPeer = (rank + i) % nranks;
       int acceptPeer = (rank - i + nranks) % nranks;
-
-      void *sc = NULL, *rc = NULL;
-      while (sc == NULL || rc == NULL) {
-        if (sc == NULL) {
-          res = heteroComm->netAdaptor->connect(
-              heteroComm->netDev, (void *)&allHandles[connectPeer], &sc);
-          if (res != flagcxSuccess && res != flagcxInProgress) {
-            INFO(
-                FLAGCX_REG,
-                "flagcxOneSideBuildFullMesh: ctx %d connect to peer %d failed, "
-                "res=%d",
-                contextIdx, connectPeer, res);
-            goto fail_handles;
+      activeConnectPeer = connectPeer;
+      bool allReady = false;
+      while (!allReady) {
+        flagcxResult_t localResult = flagcxSuccess;
+        // Bound local spinning so a failed peer can join the status exchange
+        // even if this rank's connection remains pending indefinitely.
+        for (int attempt = 0; attempt < 32; ++attempt) {
+          if (sendComms[connectPeer] == NULL) {
+            localResult = heteroComm->netAdaptor->connect(
+                heteroComm->netDev, (void *)&allHandles[connectPeer],
+                &sendComms[connectPeer]);
+            if (localResult != flagcxSuccess &&
+                localResult != flagcxInProgress) {
+              INFO(FLAGCX_REG,
+                   "flagcxOneSideBuildFullMesh: ctx %d connect to peer %d "
+                   "failed, res=%d",
+                   contextIdx, connectPeer, localResult);
+              break;
+            }
           }
-        }
-        if (rc == NULL) {
-          res = heteroComm->netAdaptor->accept(listenComm, &rc);
-          if (res != flagcxSuccess && res != flagcxInProgress) {
-            INFO(FLAGCX_REG,
-                 "flagcxOneSideBuildFullMesh: ctx %d accept from peer %d "
-                 "failed, "
-                 "res=%d",
-                 contextIdx, acceptPeer, res);
-            goto fail_handles;
+          if (recvComms[acceptPeer] == NULL) {
+            localResult = heteroComm->netAdaptor->accept(
+                listenComm, &recvComms[acceptPeer]);
+            if (localResult != flagcxSuccess &&
+                localResult != flagcxInProgress) {
+              INFO(FLAGCX_REG,
+                   "flagcxOneSideBuildFullMesh: ctx %d accept from peer %d "
+                   "failed, res=%d",
+                   contextIdx, acceptPeer, localResult);
+              break;
+            }
           }
-        }
-        if (sc == NULL || rc == NULL)
+          if (sendComms[connectPeer] != NULL && recvComms[acceptPeer] != NULL)
+            break;
           sched_yield();
+        }
+        if (localResult == flagcxInProgress)
+          localResult = flagcxSuccess;
+        res = flagcxOneSideConvergeRound(
+            heteroComm->bootstrap, rank, nranks, contextIdx, i, localResult,
+            sendComms[connectPeer] != NULL && recvComms[acceptPeer] != NULL,
+            &allReady);
+        if (res != flagcxSuccess)
+          goto fail_handles;
       }
-      sendComms[connectPeer] = sc;
-      recvComms[acceptPeer] = rc;
+      activeConnectPeer = -1;
     }
 
+    res = heteroComm->netAdaptor->closeListen(listenComm);
+    if (res != flagcxSuccess)
+      goto fail_handles;
+    listenComm = NULL;
     free(allHandles);
-    heteroComm->netAdaptor->closeListen(listenComm);
   }
 
+  free(cleanup);
   INFO(FLAGCX_REG, "flagcxOneSideBuildFullMesh: rank %d ctx %d, %d connections",
        rank, contextIdx, nranks);
   *outSend = sendComms;
@@ -504,17 +625,29 @@ flagcxOneSideBuildOneContext(struct flagcxHeteroComm *heteroComm, int nranks,
   return flagcxSuccess;
 
 fail_handles:
-  for (int i = 0; i < nranks; i++) {
-    if (sendComms != NULL && sendComms[i])
-      heteroComm->netAdaptor->closeSend(sendComms[i]);
-    if (recvComms != NULL && recvComms[i])
-      heteroComm->netAdaptor->closeRecv(recvComms[i]);
+  if (cleanup != NULL) {
+    cleanup->allHandles = allHandles;
+    cleanup->listenComm = listenComm;
+    cleanup->sendComms = sendComms;
+    cleanup->recvComms = recvComms;
+    cleanup->nRanks = nranks;
+    cleanup->activeConnectPeer = activeConnectPeer;
+    flagcxResult_t cleanupResult =
+        flagcxOneSideCleanupMesh(heteroComm, cleanup);
+    if (cleanupResult == flagcxSuccess) {
+      free(cleanup);
+    } else {
+      WARN("flagcxOneSideBuildFullMesh: ctx %d rollback failed (%d); "
+           "retaining connection ownership for retry",
+           contextIdx, cleanupResult);
+      cleanup->next = heteroComm->pendingOneSideMeshCleanup;
+      heteroComm->pendingOneSideMeshCleanup = cleanup;
+    }
+  } else {
+    free(allHandles);
+    free(sendComms);
+    free(recvComms);
   }
-  free(allHandles);
-  if (listenComm != NULL)
-    heteroComm->netAdaptor->closeListen(listenComm);
-  free(sendComms);
-  free(recvComms);
   *outSend = NULL;
   *outRecv = NULL;
   return res;
@@ -833,6 +966,15 @@ static void flagcxOneSideRetainCleanup(struct flagcxHeteroComm *heteroComm,
 
 flagcxResult_t
 flagcxOneSideRetryPendingCleanup(struct flagcxHeteroComm *heteroComm) {
+  while (heteroComm->pendingOneSideMeshCleanup != NULL) {
+    struct flagcxOneSideMeshCleanup *cleanup =
+        heteroComm->pendingOneSideMeshCleanup;
+    flagcxResult_t result = flagcxOneSideCleanupMesh(heteroComm, cleanup);
+    if (result != flagcxSuccess)
+      return result;
+    heteroComm->pendingOneSideMeshCleanup = cleanup->next;
+    free(cleanup);
+  }
   while (heteroComm->pendingOneSideCleanup != NULL) {
     struct flagcxOneSideHandleInfo *info = heteroComm->pendingOneSideCleanup;
     flagcxResult_t result = flagcxOneSideCleanupHandle(heteroComm, info, true);

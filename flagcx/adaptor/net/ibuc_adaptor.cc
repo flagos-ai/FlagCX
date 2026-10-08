@@ -3051,6 +3051,9 @@ struct flagcxNetAdaptor flagcxNetIbuc = {
     // IBUC data uses UC QPs, while iflush deliberately uses a separate RC
     // loopback RDMA READ to establish the device-visibility boundary.
     FLAGCX_NET_GDR_FLUSH_READ | FLAGCX_NET_GDR_FLUSH_WRITE,
+    0, // No provider-forced visibility boundary.
+    NULL,
+    NULL,
 };
 
 #endif // USE_IBUC

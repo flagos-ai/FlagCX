@@ -1944,17 +1944,12 @@ flagcxResult_t flagcxBarexRuntimeGetCommChannels(void *opaqueComm,
    unsupported capability. */
 struct flagcxNetAdaptor flagcxNetBarex = {
     // Basic functions
-    "BAREX",
-    barexnet::barexInit,
-    barexnet::barexDevices,
+    "BAREX", barexnet::barexInit, barexnet::barexDevices,
     barexnet::barexGetProperties,
 
     // Setup functions
-    barexnet::barexListen,
-    barexnet::barexConnect,
-    barexnet::barexAccept,
-    barexnet::barexCloseSend,
-    barexnet::barexCloseRecv,
+    barexnet::barexListen, barexnet::barexConnect, barexnet::barexAccept,
+    barexnet::barexCloseSend, barexnet::barexCloseRecv,
     barexnet::barexCloseListen,
 
     // Memory region functions
@@ -1963,30 +1958,27 @@ struct flagcxNetAdaptor flagcxNetBarex = {
     barexnet::barexDeregMr,
 
     // Two-sided functions
-    barexnet::barexIsend,
-    barexnet::barexIrecv,
-    barexnet::barexIflush,
+    barexnet::barexIsend, barexnet::barexIrecv, barexnet::barexIflush,
     barexnet::barexTest,
 
     // One-sided functions
-    barexnet::barexIput,
-    barexnet::barexIget,
+    barexnet::barexIput, barexnet::barexIget,
     NULL, // iputSignal
 
     // Device name lookup
     barexnet::barexGetDevFromName,
 
     // Optional batch helpers and MR metadata
-    barexnet::barexIputBatch,
-    barexnet::barexTestBatch,
-    barexnet::barexIgetBatch,
-    barexnet::barexGetMrInfo,
+    barexnet::barexIputBatch, barexnet::barexTestBatch,
+    barexnet::barexIgetBatch, barexnet::barexGetMrInfo,
 
     // ACCL RegUserMr cannot currently pin VMM allocations, and ACCL exposes
     // no API that consumes a DMA-BUF fd. Ordinary GPU MR remains supported.
-    FLAGCX_VMM_MR_CAP_NONE,
-    FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
+    FLAGCX_VMM_MR_CAP_NONE, FLAGCX_NET_ADAPTOR_INTERNAL_NONE,
     FLAGCX_NET_GDR_FLUSH_NONE,
+    0, // No provider-forced visibility boundary.
+    barexnet::barexResetConnect,
+    nullptr, // closeListen discards incomplete accepted channels
 };
 
 /* Keep the external plugin ABI at v1. The complete one-sided and batch
