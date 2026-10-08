@@ -19,6 +19,9 @@ class PpuCiRegressionTest(unittest.TestCase):
         legacy_engine = (
             REPO_ROOT / "flagcx/core/flagcx_p2p.cc"
         ).read_text()
+        legacy_barex_engine = (
+            REPO_ROOT / "flagcx/core/flagcx_p2p_accl.cc"
+        ).read_text()
         shared_engine = (
             REPO_ROOT / "flagcx/core/flagcx_p2p_shared.cc"
         ).read_text()
@@ -50,6 +53,9 @@ class PpuCiRegressionTest(unittest.TestCase):
             "BarexOrderedDomainsUseStablePhysicalLanes", transport_test
         )
         self.assertIn(
+            "DescriptorPreservesSparsePhysicalNicKeys", transport_test
+        )
+        self.assertIn(
             "useBarex ? &flagcxNetBarex : &flagcxNetIb", shared_engine
         )
         self.assertIn("flagcxP2pMrSplitPair", shared_engine)
@@ -70,6 +76,28 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertTrue(
             (REPO_ROOT / "flagcx/core/include/flagcx_p2p_accl.h").exists()
         )
+        self.assertIn("acclRetryConflictingDeregs", legacy_barex_engine)
+        self.assertIn(
+            "if (!acclRetryConflictingDeregs(engine, data, size, dtype))",
+            legacy_barex_engine,
+        )
+        self.assertLess(
+            legacy_barex_engine.index(
+                "if (!acclRetryConflictingDeregs(engine, data, size, dtype))"
+            ),
+            legacy_barex_engine.index(
+                "const uint32_t reservedMrId = engine->nextMrId++"
+            ),
+        )
+        self.assertIn("current.size = csize", legacy_barex_engine)
+        self.assertIn("MSG_NOSIGNAL | MSG_DONTWAIT", legacy_barex_engine)
+        self.assertIn("std::chrono::steady_clock::now()", legacy_barex_engine)
+        self.assertIn("hasAnyRemoteKey", legacy_barex_engine)
+        self.assertIn("remoteMrInfo.rkeys[peerNic] == 0", barex)
+        self.assertNotIn("wire.rkeys[key] == 0", legacy_barex_engine)
+        self.assertNotIn("region.info.rkeys[key] == 0", shared_engine)
+        self.assertIn("if (!replyMrQuery(engine, peer.fd, query))",
+                      legacy_barex_engine)
         self.assertIn("USE_SHARED_P2P_ENGINE ?= 0", makefile)
         self.assertIn("ifeq ($(USE_SHARED_P2P_ENGINE), 1)", makefile)
         self.assertIn("flagcx/core/flagcx_p2p_shared.cc", makefile)
@@ -80,6 +108,7 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn('build-p2p-shared', unit_runner)
         self.assertIn("USE_ACCL_BAREX     ?= 0", test_make)
         self.assertIn("CXXFLAGS += -DUSE_ACCL_BAREX", test_make)
+        self.assertIn("CXXFLAGS += -DUSE_SHARED_P2P_ENGINE", test_make)
 
     def test_ppu_symmem_requires_vmm_local_and_barex_vmm_net(self):
         unit_runner = (

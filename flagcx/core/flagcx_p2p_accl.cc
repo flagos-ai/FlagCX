@@ -297,6 +297,71 @@ inline FlagcxP2pConn *COut(FlagcxAcclConn *c) {
 
 const char *bxstr(BarexResult r);
 
+bool acclMrRangesOverlap(uintptr_t firstBase, size_t firstSize,
+                         uintptr_t secondBase, size_t secondSize) {
+  if (firstSize == 0 || secondSize == 0)
+    return firstBase == secondBase;
+  if (firstBase <= secondBase)
+    return secondBase - firstBase < firstSize;
+  return firstBase - secondBase < secondSize;
+}
+
+/* RegUserMr/DeregUserMr use (base, dtype) as the provider identity. Before a
+   new registration reuses a range whose previous deregistration failed, retry
+   and remove the old provider registration. Publishing a replacement first
+   would let a later retry invalidate the replacement MR. mrMu must be held. */
+bool acclRetryConflictingDeregs(FlagcxAcclEngine *engine, uintptr_t base,
+                                size_t size, device_type dtype) {
+  bool conflict = false;
+  for (auto pending = engine->pendingMrDeregs.begin();
+       pending != engine->pendingMrDeregs.end();) {
+    auto &chunks = pending->second;
+    for (auto chunk = chunks.begin(); chunk != chunks.end();) {
+      if (chunk->dtype != dtype ||
+          !acclMrRangesOverlap(base, size, chunk->baseAddr, chunk->size)) {
+        ++chunk;
+        continue;
+      }
+      const BarexResult result = engine->mempool->DeregUserMr(
+          reinterpret_cast<void *>(chunk->baseAddr), chunk->dtype);
+      if (result == BAREX_SUCCESS) {
+        chunk = chunks.erase(chunk);
+      } else {
+        WARN("NET/ACCL_P2P : cannot register [%p,+%zu) while overlapping MR "
+             "deregistration is pending: %s",
+             reinterpret_cast<void *>(base), size, bxstr(result));
+        conflict = true;
+        ++chunk;
+      }
+    }
+    if (chunks.empty())
+      pending = engine->pendingMrDeregs.erase(pending);
+    else
+      ++pending;
+  }
+
+  for (auto chunk = engine->pendingOrphanDeregs.begin();
+       chunk != engine->pendingOrphanDeregs.end();) {
+    if (chunk->dtype != dtype ||
+        !acclMrRangesOverlap(base, size, chunk->baseAddr, chunk->size)) {
+      ++chunk;
+      continue;
+    }
+    const BarexResult result = engine->mempool->DeregUserMr(
+        reinterpret_cast<void *>(chunk->baseAddr), chunk->dtype);
+    if (result == BAREX_SUCCESS) {
+      chunk = engine->pendingOrphanDeregs.erase(chunk);
+    } else {
+      WARN("NET/ACCL_P2P : cannot register [%p,+%zu) while overlapping "
+           "orphan MR deregistration is pending: %s",
+           reinterpret_cast<void *>(base), size, bxstr(result));
+      conflict = true;
+      ++chunk;
+    }
+  }
+  return !conflict;
+}
+
 bool closeAndDeleteAcclChannel(XConnector *connector,
                                const std::shared_ptr<AcclChannelOwner> &owner) {
   if (connector == nullptr || owner == nullptr)
@@ -496,15 +561,33 @@ int recvAllFdAccl(int fd, void *buf, size_t len) {
 }
 
 int sendAllFdAccl(int fd, const void *buf, size_t len) {
+  constexpr int kWriteTimeoutMs = 5000;
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kWriteTimeoutMs);
   const char *p = static_cast<const char *>(buf);
   size_t sent = 0;
   while (sent < len) {
-    const ssize_t result = send(fd, p + sent, len - sent, MSG_NOSIGNAL);
+    if (std::chrono::steady_clock::now() >= deadline)
+      return -1;
+    const ssize_t result =
+        send(fd, p + sent, len - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
     if (result < 0 && errno == EINTR)
       continue;
     if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
       pollfd pfd{fd, POLLOUT, 0};
-      const int ready = poll(&pfd, 1, 5000);
+      int ready = -1;
+      while (ready < 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+          return -1;
+        const int remaining = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline -
+                                                                  now)
+                .count());
+        ready = poll(&pfd, 1, std::max(remaining, 1));
+        if (ready < 0 && errno != EINTR)
+          return -1;
+      }
       if (ready > 0 && !(pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
         continue;
     }
@@ -515,7 +598,7 @@ int sendAllFdAccl(int fd, const void *buf, size_t len) {
   return 0;
 }
 
-void replyMrQuery(FlagcxAcclEngine *engine, int fd,
+bool replyMrQuery(FlagcxAcclEngine *engine, int fd,
                   const AcclMrQueryWire &query) {
   AcclMrReplyWire reply{};
   reply.magic = kAcclMrReplyMagic;
@@ -558,9 +641,12 @@ void replyMrQuery(FlagcxAcclEngine *engine, int fd,
   if (reply.status != 0)
     regions.clear();
   reply.count = static_cast<uint32_t>(regions.size());
-  if (sendAllFdAccl(fd, &reply, sizeof(reply)) != 0 || regions.empty())
-    return;
-  sendAllFdAccl(fd, regions.data(), regions.size() * sizeof(regions[0]));
+  if (sendAllFdAccl(fd, &reply, sizeof(reply)) != 0)
+    return false;
+  if (regions.empty())
+    return true;
+  return sendAllFdAccl(fd, regions.data(),
+                       regions.size() * sizeof(regions[0])) == 0;
 }
 
 void notifThreadFunc(FlagcxAcclEngine *engine) {
@@ -644,7 +730,12 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
           memcpy(&query, peer.inBuf.data(), sizeof(query));
           peer.inBuf.erase(peer.inBuf.begin(),
                            peer.inBuf.begin() + sizeof(query));
-          replyMrQuery(engine, peer.fd, query);
+          if (!replyMrQuery(engine, peer.fd, query)) {
+            ::close(peer.fd);
+            peer.fd = -1;
+            peer.inBuf.clear();
+            break;
+          }
           continue;
         }
         WARN("NET/ACCL_P2P : invalid notification/control magic 0x%x", magic);
@@ -754,6 +845,16 @@ bool regionKeyForNic(const AcclRemoteRegion &r, int nic, uint32_t *rkey) {
     return false;
   *rkey = r.rkeys[nic];
   return true;
+}
+
+bool hasAnyRemoteKey(const uint32_t *rkeys, uint32_t nKeys) {
+  if (rkeys == nullptr)
+    return false;
+  for (uint32_t key = 0; key < nKeys; ++key) {
+    if (rkeys[key] != 0)
+      return true;
+  }
+  return false;
 }
 
 bool remoteRangeAvailableLocked(const FlagcxAcclConn *conn, uint64_t address,
@@ -874,9 +975,10 @@ bool refreshRemoteRange(FlagcxAcclConn *conn, const FlagcxP2pRdmaDesc &desc) {
         wire.baseAddr > UINT64_MAX - wire.size || wire.nKeys == 0 ||
         wire.nKeys > kMaxNics)
       return failControlExchange();
-    for (uint32_t key = 0; key < wire.nKeys; ++key)
-      if (wire.rkeys[key] == 0)
-        return failControlExchange();
+    // Keys use physical NIC ids, so filtered device sets can leave holes.
+    // acclSubmit validates the key for the selected peer NIC before posting.
+    if (!hasAnyRemoteKey(wire.rkeys, wire.nKeys))
+      return failControlExchange();
     AcclRemoteRegion region{};
     region.baseAddr = wire.baseAddr;
     region.size = wire.size;
@@ -974,17 +1076,17 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
       if (sizeVec[i] == 0)
         continue;
       AcclMrEntry entry;
-      if (!findMrContaining(engine, reinterpret_cast<uintptr_t>(localVec[i]),
-                            1, &entry)) {
+      if (!findMrContaining(engine, reinterpret_cast<uintptr_t>(localVec[i]), 1,
+                            &entry)) {
         WARN("NET/ACCL_P2P : local READ buffer %p is not registered",
              localVec[i]);
         return -1;
       }
       const int ptrType =
           entry.dtype == GPU ? FLAGCX_PTR_CUDA : FLAGCX_PTR_HOST;
-      if (flagcxP2pValidateReadVisibility(
-              requirements, FLAGCX_NET_GDR_FLUSH_NONE, ptrType, sizeVec[i],
-              0) != flagcxSuccess) {
+      if (flagcxP2pValidateReadVisibility(requirements,
+                                          FLAGCX_NET_GDR_FLUSH_NONE, ptrType,
+                                          sizeVec[i], 0) != flagcxSuccess) {
         WARN("NET/ACCL_P2P : GPU READ requires a visibility flush, but BAREX "
              "has no completion flush stage");
         return -1;
@@ -1292,10 +1394,8 @@ int acclHandshake(FlagcxAcclEngine *engine, struct bootstrapState *bsConn,
         remoteTable[i].baseAddr > UINT64_MAX - remoteTable[i].size ||
         remoteTable[i].nKeys == 0 || remoteTable[i].nKeys > kMaxNics)
       return -1;
-    for (uint32_t key = 0; key < remoteTable[i].nKeys; ++key) {
-      if (remoteTable[i].rkeys[key] == 0)
-        return -1;
-    }
+    if (!hasAnyRemoteKey(remoteTable[i].rkeys, remoteTable[i].nKeys))
+      return -1;
     AcclRemoteRegion r;
     r.baseAddr = remoteTable[i].baseAddr;
     r.size = remoteTable[i].size;
@@ -2035,7 +2135,7 @@ bool flagcxAcclEngineConnIsLocal(FlagcxP2pConn *c) {
 int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
                         int hintType, FlagcxP2pMr &mrId) {
   FlagcxAcclEngine *engine = E(e);
-  if (engine == nullptr || data == 0 || size == 0)
+  if (engine == nullptr || data == 0 || size == 0 || data > UINTPTR_MAX - size)
     return -1;
 
   device_type dtype;
@@ -2067,6 +2167,8 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
     mrId = existing->second.mrId;
     return 0;
   }
+  if (!acclRetryConflictingDeregs(engine, data, size, dtype))
+    return -1;
   if (engine->nextMrId == 0) {
     WARN("NET/ACCL_P2P : MR id space exhausted");
     return -1;
@@ -2127,7 +2229,11 @@ int flagcxAcclEngineReg(FlagcxP2pEngine *e, uintptr_t data, size_t size,
       std::vector<AcclMrEntry> failed;
       AcclMrEntry current{};
       current.baseAddr = cbase;
+      current.size = csize;
+      current.regBase = data;
+      current.regSize = size;
       current.dtype = dtype;
+      current.deviceId = devId;
       if (engine->mempool->DeregUserMr(reinterpret_cast<void *>(cbase),
                                        dtype) != BAREX_SUCCESS)
         failed.push_back(current);
@@ -2529,8 +2635,11 @@ int flagcxAcclEngineSendNotif(FlagcxP2pConn *c, FlagcxP2pNotifyMsg *notifyMsg) {
   memset(&wire, 0, sizeof(wire));
   wire.magic = kAcclNotifMagic;
   wire.payload = *notifyMsg;
-  if (sendAllFdAccl(conn->notifSock.fd, &wire, sizeof(wire)) != 0)
+  if (sendAllFdAccl(conn->notifSock.fd, &wire, sizeof(wire)) != 0) {
+    flagcxSocketClose(&conn->notifSock);
+    conn->notifConnected = false;
     return -1;
+  }
   return (int)sizeof(FlagcxP2pNotifyMsg);
 }
 

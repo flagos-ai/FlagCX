@@ -3468,6 +3468,11 @@ int flagcxP2pEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
 
 int flagcxP2pEngineUpdateDesc(FlagcxP2pRdmaDesc &desc, uint64_t remoteAddr,
                               uint32_t size) {
+  if (remoteAddr < desc.addr)
+    return -1;
+  const uint64_t offset = remoteAddr - desc.addr;
+  if (offset > desc.size || size > desc.size - offset)
+    return -1;
   desc.addr = remoteAddr;
   desc.size = size;
   return 0;
@@ -4066,6 +4071,12 @@ int flagcxP2pRpcBatchWriteSync(void *connPtr, int count, const uint64_t *srcVa,
     return 0;
   if (srcVa == NULL || dstVa == NULL || sizes == NULL)
     return -1;
+
+  bool hasData = false;
+  for (int i = 0; i < count; ++i)
+    hasData = hasData || sizes[i] != 0;
+  if (!hasData)
+    return 0;
 
   std::vector<void *> srcVec(count);
   std::vector<size_t> sizeVec(count);

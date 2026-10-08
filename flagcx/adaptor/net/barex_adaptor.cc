@@ -1537,7 +1537,8 @@ static flagcxResult_t barexPrepareOneSided(
   const int peerNic = channel->GetPeerNicId();
   const struct flagcxNetMrInfo &remoteMrInfo = *remoteRange.mrInfo;
   if (localNic < 0 || localNic >= kMaxNics || peerNic < 0 ||
-      peerNic >= kMaxNics || (uint32_t)peerNic >= remoteMrInfo.nKeys)
+      peerNic >= kMaxNics || (uint32_t)peerNic >= remoteMrInfo.nKeys ||
+      remoteMrInfo.rkeys[peerNic] == 0)
     return flagcxInvalidArgument;
 
   auto *mr = static_cast<BarexMr *>(localInfo->localMrHandle);

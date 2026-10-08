@@ -287,6 +287,29 @@ TEST_F(P2pEngineRpcTransportTest, ConnectAcceptIsLocalSameHost) {
   EXPECT_TRUE(flagcxP2pEngineConnIsLocal(clientConn));
 }
 
+TEST_F(P2pEngineRpcTransportTest, AllZeroBatchWriteIsNoop) {
+  ASSERT_TRUE(connectViaBsPort());
+  const uint64_t src[] = {0, UINT64_MAX};
+  const uint64_t dst[] = {UINT64_MAX, 0};
+  const uint64_t sizes[] = {0, 0};
+  EXPECT_EQ(flagcxP2pRpcBatchWriteSync(clientConn, 2, src, dst, sizes), 0);
+}
+
+TEST(P2pEngineDescriptorTest, UpdateOnlyAcceptsOriginalSubrange) {
+  FlagcxP2pRdmaDesc desc{};
+  desc.addr = 0x1000;
+  desc.size = 0x1000;
+
+  EXPECT_NE(flagcxP2pEngineUpdateDesc(desc, 0x0fff, 1), 0);
+  EXPECT_NE(flagcxP2pEngineUpdateDesc(desc, 0x1800, 0x801), 0);
+  EXPECT_EQ(desc.addr, 0x1000u);
+  EXPECT_EQ(desc.size, 0x1000u);
+
+  EXPECT_EQ(flagcxP2pEngineUpdateDesc(desc, 0x1800, 0x800), 0);
+  EXPECT_EQ(desc.addr, 0x1800u);
+  EXPECT_EQ(desc.size, 0x800u);
+}
+
 TEST_F(P2pEngineRpcTransportTest, ConnectToInvalidHostReturnsNull) {
   // Use an invalid numeric IPv4 literal so address parsing fails fast.
   FlagcxP2pConn *conn =

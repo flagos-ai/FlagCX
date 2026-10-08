@@ -1083,6 +1083,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('shared_status != 0', p2p_runner)
         self.assertIn('shared_mpi_status != 0', p2p_runner)
 
+        test_make = (REPO_ROOT / "test/make.inc").read_text()
+        read_tests = (
+            REPO_ROOT / "test/unittest/p2p/test_p2p_engine_read.cpp"
+        ).read_text()
+        self.assertIn("CXXFLAGS += -DUSE_SHARED_P2P_ENGINE", test_make)
+        self.assertIn("#ifdef USE_SHARED_P2P_ENGINE", read_tests)
+
         legacy_engine = (REPO_ROOT / "flagcx/core/flagcx_p2p.cc").read_text()
         self.assertIn('"P2P_QPS_PER_CONN"', legacy_engine)
 
@@ -1093,6 +1100,15 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('getenv("FLAGCX_IB_QPS_PER_CONNECTION")', engine)
         self.assertIn("flagcxIbConnectionQpsPerConn", ibrc)
         self.assertIn("flagcxIbConnectionMtuCap", ibrc)
+        self.assertIn("drainAndCleanupIpcXfer", engine)
+        self.assertIn("deviceAdaptor->streamSynchronize(xfer->stream)", engine)
+        self.assertIn('"P2P_CONNECT_TIMEOUT"', engine)
+        self.assertIn("std::chrono::steady_clock::now() >= deadline", engine)
+        self.assertIn("stopWithAccept &&", engine)
+        self.assertLess(
+            engine.index("Acquire every mapping before queueing"),
+            engine.index("bool usedAsync = false"),
+        )
 
     def test_runner_converges_async_errors_and_stops_new_communicators(self):
         fixture = (

@@ -73,6 +73,20 @@ TEST(P2pEngineTransportTest, DescriptorRejectsMissingMultiNicKey) {
       flagcxNotSupported);
 }
 
+TEST(P2pEngineTransportTest, DescriptorPreservesSparsePhysicalNicKeys) {
+  FlagcxP2pRdmaDesc desc{};
+  const uint32_t keys[] = {0, 0x2200, 0, 0x4400};
+  ASSERT_EQ(flagcxP2pDescSetKeys(&desc, keys, 4), flagcxSuccess);
+
+  uint32_t key = 1;
+  ASSERT_EQ(flagcxP2pDescGetKey(&desc, 0, &key), flagcxSuccess);
+  EXPECT_EQ(key, 0u);
+  ASSERT_EQ(flagcxP2pDescGetKey(&desc, 1, &key), flagcxSuccess);
+  EXPECT_EQ(key, 0x2200u);
+  ASSERT_EQ(flagcxP2pDescGetKey(&desc, 3, &key), flagcxSuccess);
+  EXPECT_EQ(key, 0x4400u);
+}
+
 TEST(P2pEngineTransportTest, LegacyDescriptorUsesConnectionSelectedKey) {
   FlagcxP2pRdmaDesc desc{};
   desc.rkey = 99;

@@ -519,6 +519,31 @@ TEST_F(MrRegistryTest, GlobalInitIdempotent) {
   EXPECT_EQ(flagcxGlobalMrRegistry, nullptr);
 }
 
+TEST_F(MrRegistryTest, GlobalIdsRemainUniqueAcrossRegistryRecreation) {
+  ASSERT_EQ(flagcxMrRegistryGlobalInit(), flagcxSuccess);
+  auto *firstExt = makeP2pExt();
+  uint64_t firstId = 0;
+  ASSERT_EQ(flagcxMrRegistryRegister(flagcxGlobalMrRegistry, 0x51000, 4096, 0,
+                                     0, FLAGCX_MR_OWNER_P2P,
+                                     reinterpret_cast<void *>(0x51000),
+                                     firstExt, &firstId),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxMrRegistryGlobalRelease(), flagcxSuccess);
+  ASSERT_EQ(flagcxGlobalMrRegistry, nullptr);
+
+  ASSERT_EQ(flagcxMrRegistryGlobalInit(), flagcxSuccess);
+  auto *secondExt = makeP2pExt();
+  uint64_t secondId = 0;
+  ASSERT_EQ(flagcxMrRegistryRegister(flagcxGlobalMrRegistry, 0x52000, 4096, 0,
+                                     0, FLAGCX_MR_OWNER_P2P,
+                                     reinterpret_cast<void *>(0x52000),
+                                     secondExt, &secondId),
+            flagcxSuccess);
+  EXPECT_GT(secondId, firstId);
+  ASSERT_EQ(flagcxMrRegistryGlobalRelease(), flagcxSuccess);
+  EXPECT_EQ(flagcxGlobalMrRegistry, nullptr);
+}
+
 TEST_F(MrRegistryTest, ConcurrentWriters) {
   // Spawn multiple threads each registering and deregistering their own
   // non-overlapping address ranges to stress the write-lock path.

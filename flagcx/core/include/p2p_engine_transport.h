@@ -46,7 +46,8 @@ struct flagcxP2pMrPairSlice {
 
 // Encode/decode up to FLAGCX_NET_MAX_MR_KEYS rkeys in the existing 64-byte
 // public descriptor. Key zero remains in the legacy rkey field; additional
-// keys use the reserved padding. Other reserved fields are left untouched.
+// keys use the reserved padding. The Engine implementation may use rid/idx to
+// distinguish embedded keys from a handshake-time multi-segment MR table.
 flagcxResult_t flagcxP2pDescSetKeys(struct FlagcxP2pRdmaDesc *desc,
                                     const uint32_t *rkeys, uint32_t nKeys);
 flagcxResult_t flagcxP2pDescGetKey(const struct FlagcxP2pRdmaDesc *desc,

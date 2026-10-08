@@ -760,6 +760,10 @@ struct flagcxMrEntry *flagcxMrRegistryEntries(struct flagcxMrRegistry *reg) {
 
 static pthread_mutex_t gRegistryMutex = PTHREAD_MUTEX_INITIALIZER;
 static int gRegistryRefCount = 0;
+// The global registry may be destroyed while provider teardown retries remain
+// owned by a subsystem. Never reuse an id after recreation: those retry
+// records use the id as their public, process-lifetime identity.
+static uint64_t gRegistryNextId = 1;
 
 flagcxResult_t flagcxMrRegistryGlobalInit(void) {
   pthread_mutex_lock(&gRegistryMutex);
@@ -769,6 +773,7 @@ flagcxResult_t flagcxMrRegistryGlobalInit(void) {
       pthread_mutex_unlock(&gRegistryMutex);
       return res;
     }
+    flagcxGlobalMrRegistry->nextId = gRegistryNextId;
   }
   gRegistryRefCount++;
   pthread_mutex_unlock(&gRegistryMutex);
@@ -783,6 +788,7 @@ flagcxResult_t flagcxMrRegistryGlobalRelease(void) {
   }
   gRegistryRefCount--;
   if (gRegistryRefCount == 0) {
+    gRegistryNextId = flagcxGlobalMrRegistry->nextId;
     flagcxMrRegistryDestroy(flagcxGlobalMrRegistry);
     flagcxGlobalMrRegistry = NULL;
   }

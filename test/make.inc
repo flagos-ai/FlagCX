@@ -81,6 +81,7 @@ USE_DU             ?= 0
 USE_SHCA           ?= 0
 USE_IBUC           ?= 0
 USE_ACCL_BAREX     ?= 0
+USE_SHARED_P2P_ENGINE ?= 0
 USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 USE_PPU            ?= 0
@@ -126,6 +127,10 @@ endif
 
 ifeq ($(USE_ACCL_BAREX), 1)
 CXXFLAGS += -DUSE_ACCL_BAREX
+endif
+
+ifeq ($(USE_SHARED_P2P_ENGINE), 1)
+CXXFLAGS += -DUSE_SHARED_P2P_ENGINE
 endif
 
 # Test-specific overrides (format for compiler flags)
