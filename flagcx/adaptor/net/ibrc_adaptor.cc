@@ -52,6 +52,85 @@ FLAGCX_PARAM(IbQpsPerConn, "IB_QPS_PER_CONNECTION", 1);
 FLAGCX_PARAM(IbSplitDataOnQps, "IB_SPLIT_DATA_ON_QPS", 0);
 FLAGCX_PARAM(IbRdAtomicDepth, "IB_RD_ATOMIC_DEPTH", 16);
 
+static thread_local bool flagcxIbEngineConnectionConfigActive = false;
+static thread_local struct flagcxIbEngineConnectionConfig
+    flagcxIbEngineConnectionConfig = {};
+
+flagcxResult_t flagcxIbEngineSetConnectionConfig(
+    const struct flagcxIbEngineConnectionConfig *config) {
+  if (config == NULL ||
+      (config->qpsPerConn != FLAGCX_IB_ENGINE_CONFIG_INHERIT &&
+       config->qpsPerConn <= 0) ||
+      (config->gidIndex != FLAGCX_IB_ENGINE_CONFIG_INHERIT &&
+       config->gidIndex < -1) ||
+      (config->mtuLength != FLAGCX_IB_ENGINE_CONFIG_INHERIT &&
+       config->mtuLength != 512 && config->mtuLength != 1024 &&
+       config->mtuLength != 2048 && config->mtuLength != 4096) ||
+      (config->trafficClass != FLAGCX_IB_ENGINE_CONFIG_INHERIT &&
+       (config->trafficClass < -1 || config->trafficClass > 255)) ||
+      (config->retryCnt != FLAGCX_IB_ENGINE_CONFIG_INHERIT &&
+       (config->retryCnt < 0 || config->retryCnt > 7)))
+    return flagcxInvalidArgument;
+  flagcxIbEngineConnectionConfig = *config;
+  flagcxIbEngineConnectionConfigActive = true;
+  return flagcxSuccess;
+}
+
+void flagcxIbEngineClearConnectionConfig(void) {
+  flagcxIbEngineConnectionConfigActive = false;
+  flagcxIbEngineConnectionConfig = {};
+}
+
+static int flagcxIbConnectionQpsPerConn(void) {
+  return flagcxIbEngineConnectionConfigActive &&
+                 flagcxIbEngineConnectionConfig.qpsPerConn !=
+                     FLAGCX_IB_ENGINE_CONFIG_INHERIT
+             ? flagcxIbEngineConnectionConfig.qpsPerConn
+             : flagcxParamIbQpsPerConn();
+}
+
+static int flagcxIbConnectionGidIndex(void) {
+  return flagcxIbEngineConnectionConfigActive &&
+                 flagcxIbEngineConnectionConfig.gidIndex !=
+                     FLAGCX_IB_ENGINE_CONFIG_INHERIT
+             ? flagcxIbEngineConnectionConfig.gidIndex
+             : flagcxParamIbGidIndex();
+}
+
+static int flagcxIbConnectionTrafficClass(void) {
+  if (!flagcxIbEngineConnectionConfigActive ||
+      flagcxIbEngineConnectionConfig.trafficClass ==
+          FLAGCX_IB_ENGINE_CONFIG_INHERIT ||
+      flagcxIbEngineConnectionConfig.trafficClass < 0)
+    return flagcxParamIbTc();
+  return flagcxIbEngineConnectionConfig.trafficClass;
+}
+
+static int flagcxIbConnectionRetryCnt(void) {
+  return flagcxIbEngineConnectionConfigActive &&
+                 flagcxIbEngineConnectionConfig.retryCnt !=
+                     FLAGCX_IB_ENGINE_CONFIG_INHERIT
+             ? flagcxIbEngineConnectionConfig.retryCnt
+             : flagcxParamIbRetryCnt();
+}
+
+static enum ibv_mtu flagcxIbConnectionMtuCap(void) {
+  if (!flagcxIbEngineConnectionConfigActive ||
+      flagcxIbEngineConnectionConfig.mtuLength ==
+          FLAGCX_IB_ENGINE_CONFIG_INHERIT)
+    return IBV_MTU_4096;
+  switch (flagcxIbEngineConnectionConfig.mtuLength) {
+    case 512:
+      return IBV_MTU_512;
+    case 1024:
+      return IBV_MTU_1024;
+    case 2048:
+      return IBV_MTU_2048;
+    default:
+      return IBV_MTU_4096;
+  }
+}
+
 int flagcxNMergedIbDevs = -1;
 int flagcxNIbDevs = -1;
 
@@ -421,7 +500,7 @@ flagcxResult_t flagcxUpdateGidIndex(struct ibv_context *context,
 
 flagcxResult_t flagcxIbGetGidIndex(struct ibv_context *context, uint8_t portNum,
                                    int gidTblLen, int *gidIndex) {
-  *gidIndex = flagcxParamIbGidIndex();
+  *gidIndex = flagcxIbConnectionGidIndex();
   if (*gidIndex >= 0) {
     if (*gidIndex >= gidTblLen) {
       WARN("NET/IB : FLAGCX_IB_GID_INDEX=%d is outside the GID table for %s "
@@ -910,8 +989,8 @@ flagcxResult_t flagcxIbInitCommDevBase(int ibDevN,
   // Recv requests can generate 2 completions (one for the post FIFO, one for
   // the Recv).
   flagcxResult_t res = flagcxWrapIbvCreateCq(
-      &base->cq, ibDev->context, 2 * MAX_REQUESTS * flagcxParamIbQpsPerConn(),
-      NULL, NULL, 0);
+      &base->cq, ibDev->context,
+      2 * MAX_REQUESTS * flagcxIbConnectionQpsPerConn(), NULL, NULL, 0);
   if (res != flagcxSuccess) {
     pthread_mutex_lock(&ibDev->lock);
     if (--ibDev->pdRefs == 0) {
@@ -1037,7 +1116,7 @@ flagcxResult_t flagcxIbRtrQp(struct ibv_qp *qp,
     qpAttr.ah_attr.grh.flow_label = 0;
     qpAttr.ah_attr.grh.sgid_index = localGidInfo->localGidIndex;
     qpAttr.ah_attr.grh.hop_limit = 255;
-    qpAttr.ah_attr.grh.traffic_class = flagcxParamIbTc();
+    qpAttr.ah_attr.grh.traffic_class = flagcxIbConnectionTrafficClass();
 #ifdef USE_SHCA
     FLAGCXCHECK(flagcxIbSetAhDlid(&qpAttr.ah_attr, info->lid));
 #endif
@@ -1066,7 +1145,7 @@ flagcxResult_t flagcxIbRtsQp(struct ibv_qp *qp,
   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
   qpAttr.qp_state = IBV_QPS_RTS;
   qpAttr.timeout = flagcxParamIbTimeout();
-  qpAttr.retry_cnt = flagcxParamIbRetryCnt();
+  qpAttr.retry_cnt = flagcxIbConnectionRetryCnt();
   qpAttr.rnr_retry = 7;
   qpAttr.sq_psn = 0;
   qpAttr.max_rd_atomic = flagcxIbInitiatorAtomicDepth(
@@ -1138,7 +1217,7 @@ ib_connect_check:
   struct flagcxIbMergedDev *mergedDev;
   mergedDev = flagcxIbMergedDevs + dev;
   comm->base.ndevs = mergedDev->ndevs;
-  comm->base.nqps = flagcxParamIbQpsPerConn() *
+  comm->base.nqps = flagcxIbConnectionQpsPerConn() *
                     comm->base.ndevs; // We must have at least 1 qp per-device
   comm->base.isSend = true;
 
@@ -1190,7 +1269,8 @@ ib_connect_check:
     // Write to the metadata struct via this pointer
     flagcxIbDevInfo *devInfo = meta.devs + i;
     devInfo->ibPort = ibDev->portNum;
-    devInfo->mtu = ibDev->portAttr.active_mtu;
+    devInfo->mtu = (enum ibv_mtu)std::min((int)ibDev->portAttr.active_mtu,
+                                          (int)flagcxIbConnectionMtuCap());
     devInfo->lid = ibDev->lid;
     devInfo->maxDestRdAtomic = flagcxIbResponderAtomicDepth(
         flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
@@ -1653,7 +1733,7 @@ ib_recv:
 
   mergedDev = flagcxIbMergedDevs + lComm->dev;
   rComm->base.ndevs = mergedDev->ndevs;
-  rComm->base.nqps = flagcxParamIbQpsPerConn() *
+  rComm->base.nqps = flagcxIbConnectionQpsPerConn() *
                      rComm->base.ndevs; // We must have at least 1 qp per-device
   rComm->base.isSend = false;
 
@@ -1803,8 +1883,9 @@ ib_recv:
         flagcxParamIbRdAtomicDepth(), ibDev->maxQpRdAtomic);
 
     // Adjust the MTU
-    remMeta.devs[i].mtu =
-        (enum ibv_mtu)std::min(remMeta.devs[i].mtu, ibDev->portAttr.active_mtu);
+    remMeta.devs[i].mtu = (enum ibv_mtu)std::min(
+        std::min((int)remMeta.devs[i].mtu, (int)ibDev->portAttr.active_mtu),
+        (int)flagcxIbConnectionMtuCap());
     meta.devs[i].mtu = remMeta.devs[i].mtu;
 
     // Prepare sizes fifo
@@ -2290,6 +2371,247 @@ static flagcxResult_t flagcxIbGetMrInfo(void *mhandle,
     info->nKeys = i + 1;
   }
   return info->nKeys == 0 ? flagcxInternalError : flagcxSuccess;
+}
+
+namespace {
+
+struct flagcxIbEngineMrHandle {
+  struct flagcxIbMrHandle base;
+  int ndevs;
+  int ibDevNs[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  bool pdOwned[FLAGCX_IB_MAX_DEVS_PER_NIC];
+  struct flagcxIbEngineMrHandle *nextDeferred;
+};
+
+pthread_mutex_t flagcxIbEngineDeferredMutex = PTHREAD_MUTEX_INITIALIZER;
+struct flagcxIbEngineMrHandle *flagcxIbEngineDeferredMrs = NULL;
+
+flagcxResult_t flagcxIbEngineAcquirePd(int ibDevN, struct ibv_pd **pd) {
+  if (pd == NULL || ibDevN < 0 || ibDevN >= flagcxNIbDevs)
+    return flagcxInvalidArgument;
+  struct flagcxIbDev *dev = flagcxIbDevs + ibDevN;
+  pthread_mutex_lock(&dev->lock);
+  flagcxResult_t result = flagcxSuccess;
+  if (dev->pdRefs == 0)
+    result = flagcxWrapIbvAllocPd(&dev->pd, dev->context);
+  if (result == flagcxSuccess) {
+    dev->pdRefs++;
+    *pd = dev->pd;
+  }
+  pthread_mutex_unlock(&dev->lock);
+  return result;
+}
+
+flagcxResult_t flagcxIbEngineReleasePd(int ibDevN) {
+  if (ibDevN < 0 || ibDevN >= flagcxNIbDevs)
+    return flagcxInvalidArgument;
+  struct flagcxIbDev *dev = flagcxIbDevs + ibDevN;
+  pthread_mutex_lock(&dev->lock);
+  flagcxResult_t result = flagcxSuccess;
+  if (dev->pdRefs > 0 && --dev->pdRefs == 0) {
+    result = flagcxWrapIbvDeallocPd(dev->pd);
+    if (result == flagcxSuccess) {
+      dev->pd = NULL;
+    } else {
+      // The PD remains live. Restore its ownership reference so a later
+      // deregistration/teardown attempt cannot allocate over it.
+      dev->pdRefs = 1;
+    }
+  }
+  pthread_mutex_unlock(&dev->lock);
+  return result;
+}
+
+} // namespace
+
+// The Engine reset helpers below clean up partially constructed main-IB
+// communicators.  Keep these declarations next to the helpers because the
+// public close entry points are defined later in this translation unit.
+flagcxResult_t flagcxIbCloseSend(void *sendComm);
+flagcxResult_t flagcxIbCloseRecv(void *recvComm);
+
+flagcxResult_t flagcxIbEngineRegMr(int netDev, void *data, size_t size,
+                                   int type, int mrFlags, void **mhandle) {
+  if (mhandle == NULL)
+    return flagcxInvalidArgument;
+  *mhandle = NULL;
+  if (data == NULL || size == 0 || netDev < 0 || netDev >= flagcxNMergedIbDevs)
+    return flagcxInvalidArgument;
+  (void)flagcxIbEngineDrainDeferredMrs();
+
+  struct flagcxIbMergedDev *merged = flagcxIbMergedDevs + netDev;
+  if (merged->ndevs <= 0 || merged->ndevs > FLAGCX_IB_MAX_DEVS_PER_NIC)
+    return flagcxInternalError;
+  struct flagcxIbEngineMrHandle *handle =
+      (struct flagcxIbEngineMrHandle *)calloc(1, sizeof(*handle));
+  if (handle == NULL)
+    return flagcxSystemError;
+  handle->ndevs = merged->ndevs;
+
+  flagcxResult_t result = flagcxSuccess;
+  for (int i = 0; i < handle->ndevs; ++i) {
+    const int ibDevN = merged->devs[i];
+    handle->ibDevNs[i] = ibDevN;
+    struct flagcxIbNetCommDevBase base = {};
+    base.ibDevN = ibDevN;
+    result = flagcxIbEngineAcquirePd(ibDevN, &base.pd);
+    if (result != flagcxSuccess)
+      break;
+    handle->pdOwned[i] = true;
+    result = flagcxIbRegMrDmaBufInternal(&base, data, size, type, 0, -1,
+                                         mrFlags, &handle->base.mrs[i]);
+    if (result != flagcxSuccess)
+      break;
+  }
+
+  if (result != flagcxSuccess) {
+    (void)flagcxIbEngineDeregMr(handle);
+    return result;
+  }
+
+  *mhandle = handle;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxIbEngineTryDeregMr(void *mhandle) {
+  if (mhandle == NULL)
+    return flagcxSuccess;
+  struct flagcxIbEngineMrHandle *handle =
+      (struct flagcxIbEngineMrHandle *)mhandle;
+  flagcxResult_t firstError = flagcxSuccess;
+  for (int i = 0; i < handle->ndevs; ++i) {
+    if (handle->base.mrs[i] != NULL) {
+      struct flagcxIbNetCommDevBase base = {};
+      base.ibDevN = handle->ibDevNs[i];
+      flagcxResult_t result =
+          flagcxIbDeregMrInternal(&base, handle->base.mrs[i]);
+      if (result == flagcxSuccess) {
+        handle->base.mrs[i] = NULL;
+      } else {
+        if (firstError == flagcxSuccess)
+          firstError = result;
+        continue;
+      }
+    }
+    if (handle->pdOwned[i]) {
+      flagcxResult_t pdResult = flagcxIbEngineReleasePd(handle->ibDevNs[i]);
+      if (pdResult == flagcxSuccess) {
+        handle->pdOwned[i] = false;
+      } else if (firstError == flagcxSuccess) {
+        firstError = pdResult;
+      }
+    }
+  }
+  if (firstError == flagcxSuccess)
+    free(handle);
+  return firstError;
+}
+
+static void flagcxIbEngineDeferMr(struct flagcxIbEngineMrHandle *handle) {
+  pthread_mutex_lock(&flagcxIbEngineDeferredMutex);
+  handle->nextDeferred = flagcxIbEngineDeferredMrs;
+  flagcxIbEngineDeferredMrs = handle;
+  pthread_mutex_unlock(&flagcxIbEngineDeferredMutex);
+}
+
+flagcxResult_t flagcxIbEngineDeregMr(void *mhandle) {
+  flagcxResult_t result = flagcxIbEngineTryDeregMr(mhandle);
+  if (result != flagcxSuccess)
+    flagcxIbEngineDeferMr((struct flagcxIbEngineMrHandle *)mhandle);
+  return result;
+}
+
+flagcxResult_t flagcxIbEngineDrainDeferredMrs(void) {
+  pthread_mutex_lock(&flagcxIbEngineDeferredMutex);
+  struct flagcxIbEngineMrHandle *list = flagcxIbEngineDeferredMrs;
+  flagcxIbEngineDeferredMrs = NULL;
+  pthread_mutex_unlock(&flagcxIbEngineDeferredMutex);
+
+  flagcxResult_t firstError = flagcxSuccess;
+  struct flagcxIbEngineMrHandle *remaining = NULL;
+  while (list != NULL) {
+    struct flagcxIbEngineMrHandle *handle = list;
+    list = list->nextDeferred;
+    handle->nextDeferred = NULL;
+    flagcxResult_t result = flagcxIbEngineTryDeregMr(handle);
+    if (result != flagcxSuccess) {
+      if (firstError == flagcxSuccess)
+        firstError = result;
+      handle->nextDeferred = remaining;
+      remaining = handle;
+    }
+  }
+  if (remaining != NULL) {
+    pthread_mutex_lock(&flagcxIbEngineDeferredMutex);
+    while (remaining != NULL) {
+      struct flagcxIbEngineMrHandle *handle = remaining;
+      remaining = remaining->nextDeferred;
+      handle->nextDeferred = flagcxIbEngineDeferredMrs;
+      flagcxIbEngineDeferredMrs = handle;
+    }
+    pthread_mutex_unlock(&flagcxIbEngineDeferredMutex);
+  }
+  return firstError;
+}
+
+flagcxResult_t flagcxIbEngineAbortListen(void *listenComm) {
+  if (listenComm == NULL)
+    return flagcxSuccess;
+  struct flagcxIbListenComm *comm =
+      static_cast<struct flagcxIbListenComm *>(listenComm);
+  return flagcxSocketClose(&comm->sock);
+}
+
+flagcxResult_t flagcxIbEngineResetListenAccept(void *listenComm) {
+  if (listenComm == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxIbListenComm *comm =
+      static_cast<struct flagcxIbListenComm *>(listenComm);
+  struct flagcxIbCommStage *stage = &comm->stage;
+  if (stage->comm != NULL) {
+    flagcxResult_t result = flagcxIbCloseRecv(stage->comm);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  free(stage->buffer);
+  memset(stage, 0, sizeof(*stage));
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxIbEngineResetConnect(void *opaqueHandle) {
+  if (opaqueHandle == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxIbHandle *handle =
+      static_cast<struct flagcxIbHandle *>(opaqueHandle);
+  struct flagcxIbCommStage *stage = &handle->stage;
+  if (stage->comm != NULL) {
+    flagcxResult_t result = flagcxIbCloseSend(stage->comm);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  free(stage->buffer);
+  memset(stage, 0, sizeof(*stage));
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxIbEngineGetCommAddress(void *comm, union flagcxSocketAddress *address) {
+  if (comm == NULL || address == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxIbNetCommBase *base =
+      static_cast<struct flagcxIbNetCommBase *>(comm);
+  return flagcxSocketGetAddr(&base->sock, address);
+}
+
+flagcxResult_t flagcxIbEngineGetCommNdevs(void *comm, int *ndevs) {
+  if (comm == NULL || ndevs == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxIbNetCommBase *base =
+      static_cast<struct flagcxIbNetCommBase *>(comm);
+  if (base->ndevs <= 0 || base->ndevs > FLAGCX_IB_MAX_DEVS_PER_NIC)
+    return flagcxInternalError;
+  *ndevs = base->ndevs;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxIbMultiSend(struct flagcxIbSendComm *comm, int slot) {
@@ -3219,6 +3541,16 @@ static flagcxResult_t flagcxIbSelectOneSidedLane(struct flagcxIbSendComm *comm,
                             lane);
 }
 
+static void flagcxIbRecordOneSidedLane(const struct flagcxIbLane *lane) {
+  if (lane == NULL || lane->base.index >= 64)
+    return;
+  struct flagcxNetSubmitContext context = {};
+  if (flagcxNetGetSubmitContext(&context) == flagcxSuccess &&
+      context.laneMask != NULL)
+    __atomic_fetch_or(context.laneMask, 1ULL << lane->base.index,
+                      __ATOMIC_RELAXED);
+}
+
 flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
                             size_t size, int srcRank, int dstRank,
                             void **srcHandles, void **dstHandles,
@@ -3276,6 +3608,7 @@ flagcxResult_t flagcxIbIput(void *sendComm, uint64_t srcOff, uint64_t dstOff,
     flagcxIbFreeRequest(req);
     return post.result;
   }
+  flagcxIbRecordOneSidedLane(&lane);
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;
@@ -3485,6 +3818,7 @@ flagcxResult_t flagcxIbIget(void *sendComm, uint64_t srcOff, uint64_t dstOff,
     flagcxIbFreeRequest(req);
     return post.result;
   }
+  flagcxIbRecordOneSidedLane(&lane);
   flagcxIbAddEvent(req, qp->devIndex, &comm->devs[qp->devIndex].base);
 
   *request = req;

@@ -16,6 +16,53 @@ constexpr int kTag = 0x46585431; // FXT1: version 1, distinct from connect tag 4
 constexpr int kMaxRequest = 256;
 constexpr uint32_t kMaxSliceSize = 1u << 30;
 
+// Every data connection exchanges this preface before any transport-specific
+// listen handle. Legacy and shared Engine builds intentionally use different
+// wire layouts; identifying both implementation and transport makes a mixed
+// deployment fail before either side interprets the other's payload.
+constexpr int kProtocolTag = 0x46585031; // FXP1
+constexpr uint32_t kProtocolMagic = 0x46585031;
+constexpr uint16_t kProtocolVersion = 1;
+
+enum ProtocolImplementation : uint16_t {
+  kProtocolLegacy = 1,
+  kProtocolShared = 2,
+};
+
+enum ProtocolTransport : uint16_t {
+  kProtocolIbrc = 1,
+  kProtocolBarex = 2,
+};
+
+struct ProtocolHello {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t implementation;
+  uint16_t transport;
+  uint16_t reserved;
+  uint32_t wireSize;
+};
+static_assert(sizeof(ProtocolHello) == 16,
+              "P2P protocol preface must have a stable wire layout");
+
+inline ProtocolHello protocolHello(ProtocolImplementation implementation,
+                                   ProtocolTransport transport) {
+  return ProtocolHello{kProtocolMagic,
+                       kProtocolVersion,
+                       static_cast<uint16_t>(implementation),
+                       static_cast<uint16_t>(transport),
+                       0,
+                       static_cast<uint32_t>(sizeof(ProtocolHello))};
+}
+
+inline bool protocolCompatible(const ProtocolHello &local,
+                               const ProtocolHello &remote) {
+  return remote.magic == kProtocolMagic && remote.version == kProtocolVersion &&
+         remote.implementation == local.implementation &&
+         remote.transport == local.transport && remote.reserved == 0 &&
+         remote.wireSize == sizeof(ProtocolHello);
+}
+
 inline uint64_t pack(uint32_t slice, uint32_t fragment) {
   return (uint64_t(slice) << 32) | (fragment < slice ? fragment : slice);
 }

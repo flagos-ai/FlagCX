@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include "barex_runtime.h"
 #include "p2p_engine_transport.h"
 
 #include <cstdint>
@@ -112,6 +113,57 @@ TEST(P2pEngineTransportTest, ZeroLengthAtRegistrationEndIsValid) {
   EXPECT_TRUE(slices.empty());
 }
 
+TEST(P2pEngineTransportTest, SplitsPairedRangesAtEitherProviderBoundary) {
+  flagcxP2pMrRecord local = makeThreeSegmentRecord();
+  flagcxP2pMrRecord remote;
+  remote.id = 8;
+  remote.base = 0x8000;
+  remote.size = 0x3000;
+  remote.segments.push_back(makeSegment(0x8000, 0x1800, 2));
+  remote.segments.push_back(makeSegment(0x9800, 0x1800, 2));
+  std::vector<flagcxP2pMrPairSlice> slices;
+
+  ASSERT_EQ(flagcxP2pMrSplitPair(&local, 0x1800, &remote, 0x8800, 0x2000, 0, 0,
+                                 &slices),
+            flagcxSuccess);
+  ASSERT_EQ(slices.size(), 4u);
+  EXPECT_EQ(slices[0].localSegmentIndex, 0u);
+  EXPECT_EQ(slices[0].remoteSegmentIndex, 0u);
+  EXPECT_EQ(slices[0].offset, 0u);
+  EXPECT_EQ(slices[0].size, 0x800u);
+  EXPECT_EQ(slices[1].localSegmentIndex, 1u);
+  EXPECT_EQ(slices[1].remoteSegmentIndex, 0u);
+  EXPECT_EQ(slices[1].offset, 0x800u);
+  EXPECT_EQ(slices[1].size, 0x800u);
+  EXPECT_EQ(slices[2].localSegmentIndex, 1u);
+  EXPECT_EQ(slices[2].remoteSegmentIndex, 1u);
+  EXPECT_EQ(slices[2].offset, 0x1000u);
+  EXPECT_EQ(slices[2].size, 0x800u);
+  EXPECT_EQ(slices[3].localSegmentIndex, 2u);
+  EXPECT_EQ(slices[3].remoteSegmentIndex, 1u);
+  EXPECT_EQ(slices[3].offset, 0x1800u);
+  EXPECT_EQ(slices[3].size, 0x800u);
+}
+
+TEST(P2pEngineTransportTest, PairSplitAppliesSliceLimitAfterMrBoundaries) {
+  flagcxP2pMrRecord local = makeThreeSegmentRecord();
+  flagcxP2pMrRecord remote = makeThreeSegmentRecord();
+  remote.base = 0x8000;
+  for (size_t i = 0; i < remote.segments.size(); ++i)
+    remote.segments[i].base = remote.base + i * 0x1000;
+  std::vector<flagcxP2pMrPairSlice> slices;
+
+  ASSERT_EQ(flagcxP2pMrSplitPair(&local, 0x1000, &remote, 0x8000, 0x1000, 0x600,
+                                 0x100, &slices),
+            flagcxSuccess);
+  ASSERT_EQ(slices.size(), 3u);
+  EXPECT_EQ(slices[0].size, 0x600u);
+  EXPECT_EQ(slices[1].offset, 0x600u);
+  EXPECT_EQ(slices[1].size, 0x600u);
+  EXPECT_EQ(slices[2].offset, 0xc00u);
+  EXPECT_EQ(slices[2].size, 0x400u);
+}
+
 TEST(P2pEngineTransportTest, RejectsGapsAndOverflow) {
   flagcxP2pMrRecord record = makeThreeSegmentRecord();
   record.segments[1].base++;
@@ -157,4 +209,84 @@ TEST(P2pEngineTransportTest, SingleKeyRegionIgnoresPhysicalLaneIndex) {
   ASSERT_EQ(flagcxTransportResolveRegion(&region, 0, 1, 7, 0, &address, &key),
             flagcxSuccess);
   EXPECT_EQ(key, 200u);
+}
+
+TEST(P2pEngineTransportTest, OrderingKeysDistributeSingleSliceTransfers) {
+  uint64_t laneMask2 = 0;
+  uint64_t laneMask4 = 0;
+  for (uint64_t transferId = 1; transferId <= 64; ++transferId) {
+    const uint64_t key = flagcxP2pEngineOrderingKey(transferId, 0);
+    laneMask2 |= 1ULL << (key % 2);
+    laneMask4 |= 1ULL << (key % 4);
+  }
+  EXPECT_EQ(laneMask2, 0x3u);
+  EXPECT_EQ(laneMask4, 0xfu);
+}
+
+TEST(P2pEngineTransportTest, OrderingKeysDistinguishSlices) {
+  const uint64_t transferId = 17;
+  EXPECT_NE(flagcxP2pEngineOrderingKey(transferId, 0),
+            flagcxP2pEngineOrderingKey(transferId, 1));
+}
+
+TEST(P2pEngineTransportTest, BarexHelloGeometryPreservesLegacyEncoding) {
+  uint32_t wire = 1;
+  ASSERT_EQ(flagcxBarexRuntimeEncodeHelloGeometry(1, 0, &wire), flagcxSuccess);
+  EXPECT_EQ(wire, 0u);
+
+  uint32_t channels = 0;
+  uint32_t lane = 1;
+  ASSERT_EQ(flagcxBarexRuntimeDecodeHelloGeometry(wire, &channels, &lane),
+            flagcxSuccess);
+  EXPECT_EQ(channels, 1u);
+  EXPECT_EQ(lane, 0u);
+}
+
+TEST(P2pEngineTransportTest, BarexListenGeometryAcceptsLegacyDeviceOnlyWire) {
+  uint32_t device = 0;
+  uint32_t channels = 0;
+  ASSERT_EQ(flagcxBarexRuntimeDecodeListenGeometry(3, &device, &channels),
+            flagcxSuccess);
+  EXPECT_EQ(device, 3u);
+  EXPECT_EQ(channels, 1u);
+
+  uint32_t wire = 0;
+  ASSERT_EQ(flagcxBarexRuntimeEncodeListenGeometry(3, 4, &wire), flagcxSuccess);
+  ASSERT_EQ(flagcxBarexRuntimeDecodeListenGeometry(wire, &device, &channels),
+            flagcxSuccess);
+  EXPECT_EQ(device, 3u);
+  EXPECT_EQ(channels, 4u);
+}
+
+TEST(P2pEngineTransportTest, BarexHelloGeometryRejectsMismatchedLanes) {
+  uint32_t wire = 0;
+  ASSERT_EQ(flagcxBarexRuntimeEncodeHelloGeometry(4, 3, &wire), flagcxSuccess);
+  uint32_t channels = 0;
+  uint32_t lane = 0;
+  ASSERT_EQ(flagcxBarexRuntimeDecodeHelloGeometry(wire, &channels, &lane),
+            flagcxSuccess);
+  EXPECT_EQ(channels, 4u);
+  EXPECT_EQ(lane, 3u);
+
+  EXPECT_EQ(flagcxBarexRuntimeEncodeHelloGeometry(4, 4, &wire),
+            flagcxInvalidArgument);
+  EXPECT_EQ(
+      flagcxBarexRuntimeDecodeHelloGeometry((4u << 16) | 4u, &channels, &lane),
+      flagcxInvalidArgument);
+  EXPECT_EQ(flagcxBarexRuntimeEncodeHelloGeometry(
+                FLAGCX_BAREX_RUNTIME_MAX_CHANNELS + 1, 0, &wire),
+            flagcxInvalidArgument);
+}
+
+TEST(P2pEngineTransportTest, BarexOrderedDomainsUseStablePhysicalLanes) {
+  uint64_t laneMask = 0;
+  for (uint64_t key = 0; key < 32; ++key) {
+    uint32_t first = 0;
+    uint32_t second = 0;
+    ASSERT_EQ(flagcxBarexRuntimeSelectLane(4, key, &first), flagcxSuccess);
+    ASSERT_EQ(flagcxBarexRuntimeSelectLane(4, key, &second), flagcxSuccess);
+    EXPECT_EQ(first, second);
+    laneMask |= 1ULL << first;
+  }
+  EXPECT_EQ(laneMask, 0xfu);
 }

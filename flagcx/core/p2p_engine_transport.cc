@@ -120,6 +120,60 @@ flagcxP2pMrSplitRange(const struct flagcxP2pMrRecord *record, uintptr_t address,
   return remaining == 0 ? flagcxSuccess : flagcxInternalError;
 }
 
+flagcxResult_t flagcxP2pMrSplitPair(
+    const struct flagcxP2pMrRecord *local, uintptr_t localAddress,
+    const struct flagcxP2pMrRecord *remote, uintptr_t remoteAddress,
+    size_t size, size_t sliceSize, size_t fragmentSize,
+    std::vector<struct flagcxP2pMrPairSlice> *slices) {
+  if (slices == nullptr)
+    return flagcxInvalidArgument;
+  slices->clear();
+  if (flagcxP2pMrRecordValidate(local) != flagcxSuccess ||
+      flagcxP2pMrRecordValidate(remote) != flagcxSuccess ||
+      !rangeFits(local->base, local->size, localAddress, size) ||
+      !rangeFits(remote->base, remote->size, remoteAddress, size))
+    return flagcxInvalidArgument;
+  if (size == 0)
+    return flagcxSuccess;
+
+  size_t localIndex = 0;
+  size_t remoteIndex = 0;
+  size_t offset = 0;
+  while (offset < size) {
+    const uintptr_t localCursor = localAddress + offset;
+    const uintptr_t remoteCursor = remoteAddress + offset;
+    while (localIndex < local->segments.size() &&
+           localCursor >= local->segments[localIndex].base +
+                              local->segments[localIndex].size)
+      ++localIndex;
+    while (remoteIndex < remote->segments.size() &&
+           remoteCursor >= remote->segments[remoteIndex].base +
+                               remote->segments[remoteIndex].size)
+      ++remoteIndex;
+    if (localIndex >= local->segments.size() ||
+        remoteIndex >= remote->segments.size())
+      return flagcxInternalError;
+
+    const flagcxP2pMrSegment &localSegment = local->segments[localIndex];
+    const flagcxP2pMrSegment &remoteSegment = remote->segments[remoteIndex];
+    if (localCursor < localSegment.base || remoteCursor < remoteSegment.base)
+      return flagcxInternalError;
+    size_t bytes = std::min(
+        size - offset,
+        std::min(static_cast<size_t>(localSegment.base + localSegment.size -
+                                     localCursor),
+                 static_cast<size_t>(remoteSegment.base + remoteSegment.size -
+                                     remoteCursor)));
+    if (sliceSize > 0 && bytes > sliceSize && bytes - sliceSize > fragmentSize)
+      bytes = sliceSize;
+    if (bytes == 0)
+      return flagcxInternalError;
+    slices->push_back({localIndex, remoteIndex, offset, bytes});
+    offset += bytes;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t
 flagcxP2pMrSegmentRegion(const struct flagcxP2pMrSegment *segment,
                          flagcxTransportRegion *region) {
@@ -132,4 +186,13 @@ flagcxP2pMrSegmentRegion(const struct flagcxP2pMrSegment *segment,
   region->mrInfo = &segment->keys;
   region->localMrHandle = segment->adaptorMr;
   return flagcxSuccess;
+}
+
+uint64_t flagcxP2pEngineOrderingKey(uint64_t transferId, uint64_t sliceIndex) {
+  // SplitMix64 gives sequential transfer IDs and slice indices well-distributed
+  // low bits. This matters because ordered-lane selection uses key % laneCount.
+  uint64_t value = transferId + 0x9e3779b97f4a7c15ULL * (sliceIndex + 1);
+  value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
+  return value ^ (value >> 31);
 }

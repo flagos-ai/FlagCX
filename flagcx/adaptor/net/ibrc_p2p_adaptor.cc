@@ -119,6 +119,8 @@ static struct flagcxP2pDevCtx flagcxP2pDevCtxs[MAX_IB_DEVS];
 static int flagcxP2pInitialized = 0;
 static pthread_mutex_t flagcxP2pInitLock = PTHREAD_MUTEX_INITIALIZER;
 
+static flagcxResult_t flagcxP2pReleasePd(int ibDevN);
+
 /* ------------------------------------------------------------------ */
 /*  Init / Devices / Properties                                        */
 /* ------------------------------------------------------------------ */
@@ -131,7 +133,11 @@ static flagcxResult_t flagcxP2pInit() {
   }
 
   // Reuse IBRC device discovery (idempotent)
-  FLAGCXCHECK(flagcxIbInit());
+  flagcxResult_t initResult = flagcxIbInit();
+  if (initResult != flagcxSuccess) {
+    pthread_mutex_unlock(&flagcxP2pInitLock);
+    return initResult;
+  }
 
   // Eagerly allocate PD for each physical IB device
   for (int i = 0; i < flagcxNIbDevs; i++) {
@@ -146,6 +152,10 @@ static flagcxResult_t flagcxP2pInit() {
       pd_fail:
         ibDev->pdRefs--;
         pthread_mutex_unlock(&ibDev->lock);
+        for (int j = 0; j < i; j++) {
+          flagcxP2pDevCtxs[j].pd = NULL;
+          flagcxP2pReleasePd(j);
+        }
         pthread_mutex_unlock(&flagcxP2pInitLock);
         return res;
       }
@@ -184,9 +194,8 @@ static inline int flagcxP2pGetIbDevN(void *comm) { return *(int *)comm; }
 static flagcxResult_t flagcxP2pRegMrDmaBuf(void *comm, void *data, size_t size,
                                            int type, uint64_t offset, int fd,
                                            int mrFlags, void **mhandle) {
-  assert(size > 0);
-  assert(comm != NULL);
-  if (mhandle == NULL)
+  if (comm == NULL || data == NULL || size == 0 || mhandle == NULL ||
+      reinterpret_cast<uintptr_t>(data) > UINTPTR_MAX - size)
     return flagcxInvalidArgument;
   *mhandle = NULL;
 
@@ -267,8 +276,6 @@ static flagcxResult_t flagcxP2pListen(int dev, void *opaqueHandle,
   *listenComm = comm;
   return flagcxSuccess;
 }
-
-static flagcxResult_t flagcxP2pReleasePd(int ibDevN);
 
 // Helper: set up PD (from eager init), CQs, QPs, and GID for a connection
 static flagcxResult_t flagcxP2pSetupConn(int dev, void *outerComm,
@@ -442,12 +449,38 @@ flagcxP2pNextQp(struct flagcxIbQp *qp_list, std::atomic<uint32_t> *nextChannel,
   return qp_list + (idx % mod);
 }
 
+class FlagcxP2pIbConnectionConfigScope {
+public:
+  FlagcxP2pIbConnectionConfigScope() : active_(false) {
+    const FlagcxP2pGlobalConfig &config = flagcxP2pGlobalConfig();
+    const struct flagcxIbEngineConnectionConfig ibConfig = {
+        config.qpsPerConn, config.gidIndex, config.mtuLength,
+        config.ibTrafficClass, config.retryCnt};
+    result_ = flagcxIbEngineSetConnectionConfig(&ibConfig);
+    active_ = result_ == flagcxSuccess;
+  }
+
+  ~FlagcxP2pIbConnectionConfigScope() {
+    if (active_)
+      flagcxIbEngineClearConnectionConfig();
+  }
+
+  flagcxResult_t result() const { return result_; }
+
+private:
+  flagcxResult_t result_;
+  bool active_;
+};
+
 static flagcxResult_t flagcxP2pConnect(int dev, void *opaqueHandle,
                                        void **sendComm) {
   struct flagcxP2pListenHandle *handle =
       (struct flagcxP2pListenHandle *)opaqueHandle;
   flagcxResult_t res;
   *sendComm = NULL;
+  FlagcxP2pIbConnectionConfigScope configScope;
+  if (configScope.result() != flagcxSuccess)
+    return configScope.result();
 
   // Allocate send comm
   struct flagcxP2pSendComm *comm;
@@ -551,6 +584,9 @@ static flagcxResult_t flagcxP2pAccept(void *listenComm, void **recvComm) {
   if (lComm == NULL ||
       __atomic_load_n(&lComm->abortFlag, __ATOMIC_RELAXED) != 0)
     return flagcxInternalError;
+  FlagcxP2pIbConnectionConfigScope configScope;
+  if (configScope.result() != flagcxSuccess)
+    return configScope.result();
 
   // Allocate recv comm
   struct flagcxP2pRecvComm *comm;

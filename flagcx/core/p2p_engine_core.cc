@@ -206,6 +206,9 @@ flagcxP2pTransferInit(struct flagcxP2pTransfer *transfer,
   for (uint32_t i = 0; i < count; ++i) {
     struct flagcxP2pTransferItem &item = transfer->items[i];
     item.op = ops[i];
+    item.op.groupId = groupId;
+    item.op.generation = generation;
+    item.op.sequence = i;
     item.submit.orderingKey = ops[i].orderingKey;
     item.submit.groupId = groupId;
     item.submit.generation = generation;
@@ -245,6 +248,28 @@ flagcxP2pTransferProgress(struct flagcxP2pTransfer *transfer,
 
   flagcxResult_t queryResult = flagcxP2pTransferQuery(transfer, status);
   return result != flagcxSuccess ? result : queryResult;
+}
+
+flagcxResult_t
+flagcxP2pTransferProgressMany(struct flagcxP2pTransfer *const *transfers,
+                              uint32_t count) {
+  if (transfers == NULL && count != 0)
+    return flagcxInvalidArgument;
+
+  flagcxResult_t firstError = flagcxSuccess;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (transfers[i] == NULL) {
+      if (firstError == flagcxSuccess)
+        firstError = flagcxInvalidArgument;
+      continue;
+    }
+    struct flagcxP2pTransferStatus status = {};
+    const flagcxResult_t result =
+        flagcxP2pTransferProgress(transfers[i], &status);
+    if (result != flagcxSuccess && firstError == flagcxSuccess)
+      firstError = result;
+  }
+  return firstError;
 }
 
 flagcxResult_t flagcxP2pTransferQuery(struct flagcxP2pTransfer *transfer,

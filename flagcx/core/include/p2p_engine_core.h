@@ -20,6 +20,9 @@ struct flagcxP2pTransferOp {
   void *srcMr = NULL;
   void *dstMr = NULL;
   uint64_t orderingKey = 0;
+  uint64_t groupId = 0;
+  uint64_t generation = 0;
+  uint64_t sequence = 0;
   uint32_t submitFlags = FLAGCX_NET_SUBMIT_DATA;
   uint64_t *laneMask = NULL;
 };
@@ -94,6 +97,13 @@ flagcxP2pTransferInit(struct flagcxP2pTransfer *transfer,
 flagcxResult_t
 flagcxP2pTransferProgress(struct flagcxP2pTransfer *transfer,
                           struct flagcxP2pTransferStatus *status);
+
+// Drive transfers that share provider progress resources. Polling one logical
+// transfer can thereby release communicator-wide native request slots needed
+// by another transfer.
+flagcxResult_t
+flagcxP2pTransferProgressMany(struct flagcxP2pTransfer *const *transfers,
+                              uint32_t count);
 
 flagcxResult_t flagcxP2pTransferQuery(struct flagcxP2pTransfer *transfer,
                                       struct flagcxP2pTransferStatus *status);

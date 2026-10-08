@@ -184,8 +184,6 @@ extern struct flagcxNetAdaptor flagcxNetUcx;
 #ifdef USE_ACCL_BAREX
 extern struct flagcxNetAdaptor flagcxNetBarex;
 #endif
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
-
 // Build-selected network adaptor entry point
 struct flagcxNetAdaptor *getNetAdaptor(int netType) {
   switch (netType) {

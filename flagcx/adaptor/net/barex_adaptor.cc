@@ -21,6 +21,7 @@
 #ifdef USE_ACCL_BAREX
 
 #include "adaptor.h"
+#include "barex_runtime.h"
 #include "bootstrap.h"
 #include "debug.h"
 #include "flagcx_net.h"
@@ -66,7 +67,6 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <limits.h>
 #include <limits>
 #include <map>
@@ -107,6 +107,14 @@ constexpr int kMaxNics = 8;       /* matches ACCL per-NIC rkey fan-out */
 constexpr int kMaxRequests = 256; /* proxy keeps <=16 in flight; roomy */
 constexpr uint32_t kImmSlotMask = 0x00FFFFFFu; /* imm_data carries 24 bits */
 constexpr uintptr_t kCompletedRequest = 1;
+
+static thread_local bool gRuntimeConnectionConfigActive = false;
+static thread_local flagcxBarexRuntimeConnectionConfig
+    gRuntimeConnectionConfig = {};
+
+static uint32_t barexConnectionChannelCount() {
+  return gRuntimeConnectionConfigActive ? gRuntimeConnectionConfig.channels : 1;
+}
 
 static const char *bxstr(BarexResult r) {
   auto it = BarexResultStrings.find(r);
@@ -159,6 +167,8 @@ struct BarexHelloMsg {
   uint32_t pad;
   uint64_t commId;
 };
+static_assert(sizeof(BarexHelloMsg) == 16,
+              "HELLO wire layout must remain compatible");
 
 struct BarexCtsMsg {
   uint32_t type;
@@ -179,8 +189,8 @@ struct BarexNetHandle {
   union flagcxSocketAddress connectAddr; /* OOB IP + barex data port */
   uint64_t commId;                       /* demux key for accept side */
   uint32_t state;                        /* connect-side stage */
-  uint32_t listenDev;                    /* remote BAREX device index */
-  void *connectState; /* connect-side heap state across retries */
+  uint32_t listenGeometry; /* low 16: device, high 16: channel count */
+  void *connectState;      /* connect-side heap state across retries */
   /* Keep <= 56 bytes: transport.cc writes stage.comm at offset 56 after
      bootstrapRecv, landing in this buffer's tail padding. */
 };
@@ -219,9 +229,11 @@ struct BarexRequest {
   uint32_t slot = 0;
 };
 
-/* MR registry is engine-wide and refcounted (regIsGlobal semantics: the
+/* MR registry is runtime-wide and refcounted (regIsGlobal semantics: the
    user-buffer path may register one buffer through several proxy
    connections). */
+
+struct BarexRuntime;
 
 struct BarexMr {
   memp_t mem; /* as returned by RegUserMr: per-NIC ibv_mr map */
@@ -235,11 +247,13 @@ struct BarexMr {
   uint32_t rkeys[kMaxNics] = {0};
   int refCount = 0;
   bool reusable = true;
+  bool deferred = false;
 };
 
 struct BarexComm {
-  struct BarexEngine *engine = nullptr;
+  BarexRuntime *runtime = nullptr;
   XChannel *channel = nullptr;
+  std::vector<XChannel *> channels;
   uint64_t commId = 0;
   bool isSend = false;
   int connectorDev = 0;
@@ -315,28 +329,44 @@ struct BarexComm {
 };
 
 struct BarexListenComm {
-  struct BarexEngine *engine = nullptr;
+  BarexRuntime *runtime = nullptr;
   uint64_t commId = 0;
   int dev = 0;
+  uint32_t channels = 1;
 };
 
 struct BarexConnectState {
-  std::atomic<XChannel *> channel{nullptr};
+  BarexRuntime *runtime = nullptr;
+  int connectorDev = -1;
+  std::vector<XChannel *> channels;
+  uint32_t channelCount = 1;
+  uint32_t connectStarted = 0;
+  std::atomic<uint32_t> connectDone{0};
   std::atomic<bool> connectFailed{false};
-  std::atomic<bool> helloDone{false};
+  uint32_t helloStarted = 0;
+  std::atomic<uint32_t> helloDone{0};
   std::atomic<bool> helloFailed{false};
   BarexComm *comm = nullptr;
+  std::atomic<bool> abandoned{false};
+  std::atomic<bool> cleanupStarted{false};
 };
 
 struct PendingAccept {
-  std::deque<XChannel *> channels;
+  std::vector<XChannel *> channels;
+  uint32_t expectedChannels = 1;
+  flagcxResult_t firstError = flagcxSuccess;
   int dev = -1;
   int nicId = -1;
 };
 
 class BarexNetCallback; /* fwd */
+static void
+barexCleanupAbandonedConnect(const std::shared_ptr<BarexConnectState> &state);
 
-struct BarexEngine {
+// Process-wide provider state owned by the BAREX net adaptor. This is not a
+// second P2P Engine: scheduling, slicing, aggregation, and transfer progress
+// remain in FlagcxP2pEngine.
+struct BarexRuntime {
   bool started = false;
   std::vector<XDevice *> devs;
   XSimpleMempool *mempool = nullptr;
@@ -357,8 +387,8 @@ struct BarexEngine {
   std::mt19937_64 rng{std::random_device{}()};
 };
 
-static BarexEngine *gEngine = nullptr;
-static std::mutex gEngineMu;
+static BarexRuntime *gBarexRuntime = nullptr;
+static std::mutex gBarexRuntimeMu;
 
 static void barexCompleteRequest(BarexRequest *request, flagcxResult_t result) {
   request->result.store(result, std::memory_order_relaxed);
@@ -387,7 +417,7 @@ static void barexReleaseRequest(BarexRequest *request) {
 
 class BarexNetCallback : public XChannelCallback {
 public:
-  explicit BarexNetCallback(BarexEngine *engine) : engine_(engine) {}
+  explicit BarexNetCallback(BarexRuntime *runtime) : runtime_(runtime) {}
 
   void OnRecvCall(XChannel *channel, char *buf, size_t len,
                   x_msg_header header) override {
@@ -400,19 +430,33 @@ public:
     if (type == BAREX_MSG_HELLO && len >= sizeof(BarexHelloMsg)) {
       BarexHelloMsg hello;
       memcpy(&hello, buf, sizeof(hello));
+      uint32_t channelCount = 0;
+      uint32_t lane = 0;
+      const flagcxResult_t geometryResult =
+          flagcxBarexRuntimeDecodeHelloGeometry(hello.pad, &channelCount,
+                                                &lane);
       bool accepted = false;
       {
-        std::lock_guard<std::mutex> lk(engine_->mu);
-        auto it = engine_->pendingAccepts.find(hello.commId);
-        if (it != engine_->pendingAccepts.end() &&
-            channel->GetLocalNicId() == it->second.nicId) {
-          it->second.channels.push_back(channel);
+        std::lock_guard<std::mutex> lk(runtime_->mu);
+        auto it = runtime_->pendingAccepts.find(hello.commId);
+        if (it != runtime_->pendingAccepts.end() &&
+            channel->GetLocalNicId() == it->second.nicId &&
+            geometryResult == flagcxSuccess &&
+            channelCount == it->second.expectedChannels &&
+            lane < it->second.channels.size() &&
+            it->second.channels[lane] == nullptr) {
+          it->second.channels[lane] = channel;
           accepted = true;
+        } else if (it != runtime_->pendingAccepts.end()) {
+          it->second.firstError = geometryResult == flagcxSuccess
+                                      ? flagcxRemoteError
+                                      : geometryResult;
         }
       }
       if (!accepted) {
-        WARN("NET/BAREX : HELLO for unknown commId 0x%llx",
-             (unsigned long long)hello.commId);
+        WARN("NET/BAREX : rejected HELLO commId 0x%llx geometry=0x%x",
+             (unsigned long long)hello.commId, hello.pad);
+        channel->Destroy();
       }
       return;
     }
@@ -422,9 +466,9 @@ public:
       memcpy(&cts, buf, sizeof(cts));
       BarexComm *comm = nullptr;
       {
-        std::lock_guard<std::mutex> lk(engine_->mu);
-        auto it = engine_->channelComm.find(channel);
-        if (it != engine_->channelComm.end() && it->second->beginCallback())
+        std::lock_guard<std::mutex> lk(runtime_->mu);
+        auto it = runtime_->channelComm.find(channel);
+        if (it != runtime_->channelComm.end() && it->second->beginCallback())
           comm = it->second;
       }
       if (comm == nullptr) {
@@ -443,9 +487,9 @@ public:
   void OnImmRecvCall(XChannel *channel, uint32_t imm) override {
     BarexComm *comm = nullptr;
     {
-      std::lock_guard<std::mutex> lk(engine_->mu);
-      auto it = engine_->channelComm.find(channel);
-      if (it != engine_->channelComm.end() && it->second->beginCallback())
+      std::lock_guard<std::mutex> lk(runtime_->mu);
+      auto it = runtime_->channelComm.find(channel);
+      if (it != runtime_->channelComm.end() && it->second->beginCallback())
         comm = it->second;
     }
     if (comm == nullptr)
@@ -466,7 +510,7 @@ public:
   }
 
 private:
-  BarexEngine *engine_;
+  BarexRuntime *runtime_;
 };
 
 /* Cheap probe used by init()/devices(): device list only, no contexts. */
@@ -492,15 +536,15 @@ static flagcxResult_t barexProbeDevices(int *ndev) {
 }
 
 /* Full bring-up; called lazily from the first listen()/connect(). */
-static flagcxResult_t barexEngineStart(BarexEngine **out) {
-  std::lock_guard<std::mutex> lk(gEngineMu);
-  if (gEngine != nullptr && gEngine->started) {
-    *out = gEngine;
+static flagcxResult_t barexRuntimeStart(BarexRuntime **out) {
+  std::lock_guard<std::mutex> lk(gBarexRuntimeMu);
+  if (gBarexRuntime != nullptr && gBarexRuntime->started) {
+    *out = gBarexRuntime;
     return flagcxSuccess;
   }
 
-  auto *e = gEngine != nullptr ? gEngine : new BarexEngine();
-  gEngine = e;
+  auto *runtime = gBarexRuntime != nullptr ? gBarexRuntime : new BarexRuntime();
+  gBarexRuntime = runtime;
 
   XDeviceManager *mgr = nullptr;
   if (XDeviceManager::Singleton(mgr) != accl::barex::BAREX_SUCCESS ||
@@ -508,58 +552,60 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
     WARN("NET/BAREX : XDeviceManager unavailable");
     return flagcxInternalError;
   }
-  e->devs = mgr->AllDevices();
-  if (e->devs.empty()) {
+  runtime->devs = mgr->AllDevices();
+  if (runtime->devs.empty()) {
     WARN("NET/BAREX : no ACCL devices");
     return flagcxInternalError;
   }
 
-  BarexResult r =
-      XSimpleMempool::NewInstance(e->mempool, "flagcx-net-barex", e->devs);
+  BarexResult r = XSimpleMempool::NewInstance(
+      runtime->mempool, "flagcx-net-barex", runtime->devs);
   if (r != accl::barex::BAREX_SUCCESS) {
     WARN("NET/BAREX : mempool: %s", bxstr(r));
     return flagcxInternalError;
   }
   const auto &workerConfig = flagcxP2pGlobalConfig();
   const int workerCount = barexWorkerCount(workerConfig);
-  XThreadpool::NewInstance(e->tpServer, workerCount, "flagcx-barex-server");
-  XThreadpool::NewInstance(e->tpClient, workerCount, "flagcx-barex-client");
+  XThreadpool::NewInstance(runtime->tpServer, workerCount,
+                           "flagcx-barex-server");
+  XThreadpool::NewInstance(runtime->tpClient, workerCount,
+                           "flagcx-barex-client");
 
   ContextConfig cfg = XConfigUtil::DefaultContextConfig();
-  for (XDevice *dev : e->devs) {
+  for (XDevice *dev : runtime->devs) {
     XContext *sctx = nullptr, *cctx = nullptr;
-    if (XContext::NewInstance(sctx, cfg, new BarexNetCallback(e), dev,
-                              e->mempool,
-                              e->tpServer) != accl::barex::BAREX_SUCCESS ||
-        XContext::NewInstance(cctx, cfg, new BarexNetCallback(e), dev,
-                              e->mempool,
-                              e->tpClient) != accl::barex::BAREX_SUCCESS) {
+    if (XContext::NewInstance(sctx, cfg, new BarexNetCallback(runtime), dev,
+                              runtime->mempool, runtime->tpServer) !=
+            accl::barex::BAREX_SUCCESS ||
+        XContext::NewInstance(cctx, cfg, new BarexNetCallback(runtime), dev,
+                              runtime->mempool, runtime->tpClient) !=
+            accl::barex::BAREX_SUCCESS) {
       WARN("NET/BAREX : XContext create failed on %s", dev->GetName().c_str());
       return flagcxInternalError;
     }
     sctx->Start();
     cctx->Start();
-    e->serverCtxs.push_back(sctx);
-    e->clientCtxs.push_back(cctx);
+    runtime->serverCtxs.push_back(sctx);
+    runtime->clientCtxs.push_back(cctx);
   }
 
   /* Bind one listener and one connector to each device.  listen(dev) and
      connect(dev) must not silently create a channel on another HCA after the
      topology layer has selected the NIC closest to the GPU. */
   const int base = 19000 + (int)(getpid() % 4096);
-  e->listeners.resize(e->devs.size(), nullptr);
-  e->barexPorts.resize(e->devs.size(), 0);
-  for (size_t d = 0; d < e->devs.size(); d++) {
-    std::vector<XContext *> oneServer = {e->serverCtxs[d]};
-    for (int attempt = 0; attempt < 32 && e->listeners[d] == nullptr;
+  runtime->listeners.resize(runtime->devs.size(), nullptr);
+  runtime->barexPorts.resize(runtime->devs.size(), 0);
+  for (size_t d = 0; d < runtime->devs.size(); d++) {
+    std::vector<XContext *> oneServer = {runtime->serverCtxs[d]};
+    for (int attempt = 0; attempt < 32 && runtime->listeners[d] == nullptr;
          attempt++) {
       const int port = base + (int)d * 96 + attempt * 3;
       XListener *lis = nullptr;
       if (XListener::NewInstance(lis, 2, port, accl::barex::TIMER_3S,
                                  oneServer) == accl::barex::BAREX_SUCCESS &&
           lis->Listen() == accl::barex::BAREX_SUCCESS) {
-        e->listeners[d] = lis;
-        e->barexPorts[d] = port;
+        runtime->listeners[d] = lis;
+        runtime->barexPorts[d] = port;
         break;
       }
       if (lis != nullptr) {
@@ -568,14 +614,14 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
         delete lis;
       }
     }
-    if (e->listeners[d] == nullptr) {
+    if (runtime->listeners[d] == nullptr) {
       WARN("NET/BAREX : no free data port for dev %zu", d);
       return flagcxInternalError;
     }
   }
 
   /* one connector per client context so connect() can honor `dev` */
-  for (XContext *ctx : e->clientCtxs) {
+  for (XContext *ctx : runtime->clientCtxs) {
     XConnector *con = nullptr;
     std::vector<XContext *> one = {ctx};
     if (XConnector::NewInstance(con, 2, accl::barex::TIMER_3S, one) !=
@@ -583,7 +629,7 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
       WARN("NET/BAREX : XConnector create failed");
       return flagcxInternalError;
     }
-    e->connectors.push_back(con);
+    runtime->connectors.push_back(con);
   }
 
   /* OOB IP for handles: same interface bootstrap uses */
@@ -593,12 +639,13 @@ static flagcxResult_t barexEngineStart(BarexEngine **out) {
     WARN("NET/BAREX : no OOB interface");
     return flagcxInternalError;
   }
-  memcpy(&e->ifAddr, ifAddr, sizeof(e->ifAddr));
+  memcpy(&runtime->ifAddr, ifAddr, sizeof(runtime->ifAddr));
 
-  e->started = true;
+  runtime->started = true;
   INFO(FLAGCX_INIT | FLAGCX_NET,
-       "NET/BAREX : engine up with %zu device-bound endpoints", e->devs.size());
-  *out = e;
+       "NET/BAREX : runtime up with %zu device-bound endpoints",
+       runtime->devs.size());
+  *out = runtime;
   return flagcxSuccess;
 }
 
@@ -653,7 +700,7 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   p->pciPath = pciPath[dev];
   p->guid = (uint64_t)dev;
   p->ptrSupport = FLAGCX_PTR_HOST | FLAGCX_PTR_CUDA;
-  p->regIsGlobal = 1; /* MRs live in the engine-wide mempool */
+  p->regIsGlobal = 1; /* MRs live in the runtime-wide mempool */
   p->speed = (int)flagcxParamBarexSpeed();
   p->port = 1;
   p->latency = 0;
@@ -664,13 +711,69 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   return flagcxSuccess;
 }
 
+static void
+barexCloseConnectorChannels(BarexRuntime *runtime, int connectorDev,
+                            const std::vector<XChannel *> &channels) {
+  if (runtime == nullptr || connectorDev < 0 ||
+      connectorDev >= static_cast<int>(runtime->connectors.size()))
+    return;
+  for (XChannel *channel : channels) {
+    if (channel == nullptr)
+      continue;
+    BarexResult result = runtime->connectors[connectorDev]->CloseChannel(
+        channel, [channel](Status status) {
+          if (!status.IsOk())
+            WARN("NET/BAREX : CloseChannel failed: %s",
+                 status.ErrMsg().c_str());
+          channel->Destroy();
+        });
+    // Match the existing BAREX lifetime contract: a synchronous failure does
+    // not authorize Destroy(), because CloseChannel may still be cleaning the
+    // channel and no completion callback is guaranteed.
+    if (result != accl::barex::BAREX_SUCCESS)
+      WARN("NET/BAREX : CloseChannel sync error: %s", bxstr(result));
+  }
+}
+
+static void
+barexCleanupAbandonedConnect(const std::shared_ptr<BarexConnectState> &state) {
+  if (state == nullptr || !state->abandoned.load(std::memory_order_acquire) ||
+      state->connectDone.load(std::memory_order_acquire) <
+          state->connectStarted ||
+      state->helloDone.load(std::memory_order_acquire) < state->helloStarted)
+    return;
+
+  bool expected = false;
+  if (!state->cleanupStarted.compare_exchange_strong(expected, true,
+                                                     std::memory_order_acq_rel))
+    return;
+
+  if (state->comm != nullptr) {
+    state->comm->state.store(BAREX_COMM_CLOSING, std::memory_order_release);
+    if (state->runtime != nullptr) {
+      std::lock_guard<std::mutex> lk(state->runtime->mu);
+      for (XChannel *channel : state->comm->channels)
+        state->runtime->channelComm.erase(channel);
+    }
+    state->comm->waitCallbacks();
+    barexCloseConnectorChannels(state->runtime, state->connectorDev,
+                                state->comm->channels);
+    delete state->comm;
+    state->comm = nullptr;
+  } else {
+    barexCloseConnectorChannels(state->runtime, state->connectorDev,
+                                state->channels);
+  }
+  state->channels.clear();
+}
+
 static flagcxResult_t barexListen(int dev, void *opaqueHandle,
                                   void **listenComm) {
   if (opaqueHandle == nullptr || listenComm == nullptr)
     return flagcxInvalidArgument;
   *listenComm = nullptr;
-  BarexEngine *e = nullptr;
-  FLAGCXCHECK(barexEngineStart(&e));
+  BarexRuntime *e = nullptr;
+  FLAGCXCHECK(barexRuntimeStart(&e));
   if (dev < 0 || dev >= (int)e->listeners.size() ||
       e->listeners[dev] == nullptr || e->barexPorts[dev] <= 0)
     return flagcxInvalidArgument;
@@ -681,8 +784,9 @@ static flagcxResult_t barexListen(int dev, void *opaqueHandle,
   addrSetPort(&handle->connectAddr, e->barexPorts[dev]);
 
   auto *lc = new BarexListenComm();
-  lc->engine = e;
+  lc->runtime = e;
   lc->dev = dev;
+  lc->channels = barexConnectionChannelCount();
   {
     std::lock_guard<std::mutex> lk(e->mu);
     do {
@@ -691,11 +795,14 @@ static flagcxResult_t barexListen(int dev, void *opaqueHandle,
     PendingAccept pending;
     pending.dev = dev;
     pending.nicId = e->devs[dev]->GetId();
+    pending.expectedChannels = lc->channels;
+    pending.channels.resize(pending.expectedChannels, nullptr);
     e->pendingAccepts[lc->commId] = std::move(pending);
   }
   handle->commId = lc->commId;
   handle->state = BAREX_CONN_INIT;
-  handle->listenDev = (uint32_t)dev;
+  FLAGCXCHECK(flagcxBarexRuntimeEncodeListenGeometry(
+      static_cast<uint32_t>(dev), lc->channels, &handle->listenGeometry));
   handle->connectState = nullptr;
 
   *listenComm = lc;
@@ -709,15 +816,33 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
   if (opaqueHandle == nullptr || sendComm == nullptr)
     return flagcxInvalidArgument;
   *sendComm = nullptr;
-  BarexEngine *e = nullptr;
-  FLAGCXCHECK(barexEngineStart(&e));
+  BarexRuntime *e = nullptr;
+  FLAGCXCHECK(barexRuntimeStart(&e));
   if (dev < 0 || dev >= (int)e->connectors.size())
     return flagcxInvalidArgument;
   auto *handle = static_cast<BarexNetHandle *>(opaqueHandle);
+  uint32_t remoteChannelCount = 0;
+  uint32_t remoteDev = 0;
+  FLAGCXCHECK(flagcxBarexRuntimeDecodeListenGeometry(
+      handle->listenGeometry, &remoteDev, &remoteChannelCount));
+  const uint32_t localChannelCount = barexConnectionChannelCount();
+  if (remoteDev >= kMaxNics ||
+      flagcxBarexRuntimeValidateChannelCount(remoteChannelCount) !=
+          flagcxSuccess ||
+      localChannelCount != remoteChannelCount) {
+    WARN("NET/BAREX : incompatible Engine geometry local channels=%u remote "
+         "channels=%u remote dev=%u",
+         localChannelCount, remoteChannelCount, remoteDev);
+    return flagcxRemoteError;
+  }
 
   if (handle->state == BAREX_CONN_INIT) {
-    auto *st = new BarexConnectState();
-    handle->connectState = st;
+    auto st = std::make_shared<BarexConnectState>();
+    st->runtime = e;
+    st->connectorDev = dev;
+    st->channelCount = localChannelCount;
+    st->channels.resize(localChannelCount, nullptr);
+    handle->connectState = new std::shared_ptr<BarexConnectState>(st);
 
     char ip[64] = {0};
     if (handle->connectAddr.sa.sa_family == AF_INET) {
@@ -730,119 +855,145 @@ static flagcxResult_t barexConnect(int dev, void *opaqueHandle,
                                : handle->connectAddr.sin6.sin6_port);
 
     XConnector *con = e->connectors[dev];
-    BarexResult r =
-        con->Connect(std::string(ip), port, [st](XChannel *ch, Status s) {
-          if (s.IsOk() && ch != nullptr)
-            st->channel.store(ch, std::memory_order_release);
-          else
-            st->connectFailed.store(true, std::memory_order_release);
-        });
-    if (r != accl::barex::BAREX_SUCCESS) {
-      WARN("NET/BAREX : Connect(%s:%d) sync error: %s", ip, port, bxstr(r));
-      delete st;
-      handle->connectState = nullptr;
-      return flagcxInternalError;
+    for (uint32_t lane = 0; lane < localChannelCount; ++lane) {
+      st->connectStarted++;
+      BarexResult r = con->Connect(
+          std::string(ip), port, [st, lane](XChannel *ch, Status s) {
+            if (s.IsOk() && ch != nullptr)
+              st->channels[lane] = ch;
+            else
+              st->connectFailed.store(true, std::memory_order_release);
+            st->connectDone.fetch_add(1, std::memory_order_release);
+            barexCleanupAbandonedConnect(st);
+          });
+      if (r != accl::barex::BAREX_SUCCESS) {
+        WARN("NET/BAREX : Connect(%s:%d) lane %u sync error: %s", ip, port,
+             lane, bxstr(r));
+        st->connectStarted--;
+        st->connectFailed.store(true, std::memory_order_release);
+        break;
+      }
     }
     handle->state = BAREX_CONN_CONNECTING;
     return flagcxSuccess; /* in progress */
   }
 
-  auto *st = static_cast<BarexConnectState *>(handle->connectState);
-  if (st == nullptr)
+  auto *holder =
+      static_cast<std::shared_ptr<BarexConnectState> *>(handle->connectState);
+  if (holder == nullptr || *holder == nullptr)
     return flagcxInternalError;
+  std::shared_ptr<BarexConnectState> st = *holder;
 
   if (handle->state == BAREX_CONN_CONNECTING) {
-    if (st->connectFailed.load(std::memory_order_acquire)) {
+    if (st->connectDone.load(std::memory_order_acquire) < st->connectStarted)
+      return flagcxSuccess;
+    if (st->connectFailed.load(std::memory_order_acquire) ||
+        st->connectStarted != st->channelCount) {
       WARN("NET/BAREX : channel connect failed (commId 0x%llx)",
            (unsigned long long)handle->commId);
-      delete st;
+      st->abandoned.store(true, std::memory_order_release);
+      barexCleanupAbandonedConnect(st);
+      delete holder;
       handle->connectState = nullptr;
       return flagcxInternalError;
     }
-    XChannel *ch = st->channel.load(std::memory_order_acquire);
-    if (ch == nullptr)
-      return flagcxSuccess; /* still connecting */
 
     auto *comm = new BarexComm();
-    comm->engine = e;
-    comm->channel = ch;
+    comm->runtime = e;
+    comm->channels = st->channels;
+    comm->channel = comm->channels.front();
     comm->commId = handle->commId;
     comm->isSend = true;
     comm->connectorDev = dev;
     st->comm = comm;
     {
       std::lock_guard<std::mutex> lk(e->mu);
-      e->channelComm[ch] = comm;
+      for (XChannel *channel : comm->channels)
+        e->channelComm[channel] = comm;
     }
 
-    /* HELLO rides a small pooled host buffer; auto_release returns it */
-    memp_t msg;
-    if (e->mempool->AllocBuffer(msg, sizeof(BarexHelloMsg), accl::barex::CPU,
-                                ch->GetLocalNicId(),
-                                0) != accl::barex::BAREX_SUCCESS) {
-      WARN("NET/BAREX : HELLO buffer alloc failed");
-      {
-        std::lock_guard<std::mutex> lk(e->mu);
-        e->channelComm.erase(ch);
+    for (uint32_t lane = 0; lane < st->channelCount; ++lane) {
+      XChannel *ch = comm->channels[lane];
+      memp_t msg;
+      if (e->mempool->AllocBuffer(msg, sizeof(BarexHelloMsg), accl::barex::CPU,
+                                  ch->GetLocalNicId(),
+                                  0) != accl::barex::BAREX_SUCCESS) {
+        WARN("NET/BAREX : HELLO buffer alloc failed for lane %u", lane);
+        st->helloFailed.store(true, std::memory_order_release);
+        break;
       }
-      delete comm;
-      delete st;
-      handle->connectState = nullptr;
-      return flagcxInternalError;
-    }
-    BarexHelloMsg hello;
-    hello.type = BAREX_MSG_HELLO;
-    hello.pad = 0;
-    hello.commId = handle->commId;
-    memcpy(msg.buf, &hello, sizeof(hello));
-    msg.buf_len = sizeof(hello);
-    x_msg_header hdr;
-    memset(&hdr, 0, sizeof(hdr));
-    BarexResult r = ch->Send(
-        msg, /*auto_release=*/true, hdr,
-        [st](Status s) {
-          if (s.IsOk())
-            st->helloDone.store(true, std::memory_order_release);
-          else
-            st->helloFailed.store(true, std::memory_order_release);
-        },
-        true);
-    if (r != accl::barex::BAREX_SUCCESS) {
-      WARN("NET/BAREX : HELLO send sync error: %s", bxstr(r));
-      /* per xchannel.h: on send failure the buffer is NOT auto-released */
-      e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
-      {
-        std::lock_guard<std::mutex> lk(e->mu);
-        e->channelComm.erase(ch);
+      BarexHelloMsg hello = {};
+      hello.type = BAREX_MSG_HELLO;
+      hello.commId = handle->commId;
+      if (flagcxBarexRuntimeEncodeHelloGeometry(st->channelCount, lane,
+                                                &hello.pad) != flagcxSuccess) {
+        e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
+        st->helloFailed.store(true, std::memory_order_release);
+        break;
       }
-      delete comm;
-      delete st;
-      handle->connectState = nullptr;
-      return flagcxInternalError;
+      memcpy(msg.buf, &hello, sizeof(hello));
+      msg.buf_len = sizeof(hello);
+      x_msg_header hdr = {};
+      st->helloStarted++;
+      BarexResult r = ch->Send(
+          msg, /*auto_release=*/true, hdr,
+          [st](Status s) {
+            if (!s.IsOk())
+              st->helloFailed.store(true, std::memory_order_release);
+            st->helloDone.fetch_add(1, std::memory_order_release);
+            barexCleanupAbandonedConnect(st);
+          },
+          true);
+      if (r != accl::barex::BAREX_SUCCESS) {
+        WARN("NET/BAREX : HELLO lane %u send sync error: %s", lane, bxstr(r));
+        e->mempool->ReleaseBuffer(msg.buf, accl::barex::CPU);
+        st->helloStarted--;
+        st->helloFailed.store(true, std::memory_order_release);
+        break;
+      }
     }
     handle->state = BAREX_CONN_HELLO;
     return flagcxSuccess; /* in progress */
   }
 
+  if (st->helloDone.load(std::memory_order_acquire) < st->helloStarted)
+    return flagcxSuccess;
   if (st->helloFailed.load(std::memory_order_acquire)) {
     WARN("NET/BAREX : HELLO delivery failed");
-    if (st->comm != nullptr) {
-      std::lock_guard<std::mutex> lk(e->mu);
-      e->channelComm.erase(st->comm->channel);
-    }
-    delete st->comm;
-    delete st;
+    st->abandoned.store(true, std::memory_order_release);
+    barexCleanupAbandonedConnect(st);
+    delete holder;
     handle->connectState = nullptr;
     return flagcxInternalError;
   }
-  if (!st->helloDone.load(std::memory_order_acquire))
-    return flagcxSuccess; /* still in flight */
-
   *sendComm = st->comm;
-  delete st;
+  st->comm = nullptr;
+  delete holder;
   handle->connectState = nullptr;
   INFO(FLAGCX_NET, "NET/BAREX : sendComm up (commId 0x%llx)",
        (unsigned long long)handle->commId);
+  return flagcxSuccess;
+}
+
+static flagcxResult_t barexResetConnect(void *opaqueHandle) {
+  if (opaqueHandle == nullptr)
+    return flagcxInvalidArgument;
+  auto *handle = static_cast<BarexNetHandle *>(opaqueHandle);
+  auto *holder =
+      static_cast<std::shared_ptr<BarexConnectState> *>(handle->connectState);
+  if (holder == nullptr) {
+    handle->state = BAREX_CONN_INIT;
+    return flagcxSuccess;
+  }
+
+  std::shared_ptr<BarexConnectState> state = *holder;
+  handle->connectState = nullptr;
+  handle->state = BAREX_CONN_INIT;
+  delete holder;
+  if (state != nullptr) {
+    state->abandoned.store(true, std::memory_order_release);
+    barexCleanupAbandonedConnect(state);
+  }
   return flagcxSuccess;
 }
 
@@ -852,36 +1003,34 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
     return flagcxInternalError;
-  BarexEngine *e = lc->engine;
+  BarexRuntime *e = lc->runtime;
 
-  XChannel *ch = nullptr;
+  std::vector<XChannel *> channels;
   {
     std::lock_guard<std::mutex> lk(e->mu);
     auto it = e->pendingAccepts.find(lc->commId);
     if (it == e->pendingAccepts.end())
       return flagcxInternalError;
-    if (!it->second.channels.empty()) {
-      ch = it->second.channels.front();
-      it->second.channels.pop_front();
-    }
+    if (it->second.firstError != flagcxSuccess)
+      return it->second.firstError;
+    if (std::all_of(it->second.channels.begin(), it->second.channels.end(),
+                    [](XChannel *channel) { return channel != nullptr; }))
+      channels = it->second.channels;
   }
-  if (ch == nullptr)
-    return flagcxSuccess; /* no HELLO yet — call again */
-  if (ch->GetLocalNicId() != e->devs[lc->dev]->GetId()) {
-    WARN("NET/BAREX : accepted channel on nic %d for listen dev %d (nic %d)",
-         ch->GetLocalNicId(), lc->dev, e->devs[lc->dev]->GetId());
-    ch->Destroy();
-    return flagcxRemoteError;
-  }
+  if (channels.empty())
+    return flagcxSuccess; /* complete lane set not here yet */
 
   auto *comm = new BarexComm();
-  comm->engine = e;
-  comm->channel = ch;
+  comm->runtime = e;
+  comm->channels = channels;
+  comm->channel = channels.front();
   comm->commId = lc->commId;
   comm->isSend = false;
   {
     std::lock_guard<std::mutex> lk(e->mu);
-    e->channelComm[ch] = comm;
+    for (XChannel *channel : channels)
+      e->channelComm[channel] = comm;
+    e->pendingAccepts.erase(lc->commId);
   }
   *recvComm = comm;
   INFO(FLAGCX_NET, "NET/BAREX : recvComm up (commId 0x%llx)",
@@ -892,33 +1041,24 @@ static flagcxResult_t barexAccept(void *listenComm, void **recvComm) {
 static flagcxResult_t barexCloseComm(BarexComm *comm) {
   if (comm == nullptr)
     return flagcxSuccess;
-  BarexEngine *e = comm->engine;
+  BarexRuntime *e = comm->runtime;
   comm->state.store(BAREX_COMM_CLOSING, std::memory_order_release);
-  if (e != nullptr && comm->channel != nullptr) {
+  if (e != nullptr && !comm->channels.empty()) {
     {
       std::lock_guard<std::mutex> lk(e->mu);
-      e->channelComm.erase(comm->channel);
+      for (XChannel *channel : comm->channels)
+        e->channelComm.erase(channel);
     }
     if (comm->isSend && comm->connectorDev >= 0 &&
-        comm->connectorDev < (int)e->connectors.size()) {
-      XChannel *ch = comm->channel;
-      BarexResult closeResult = e->connectors[comm->connectorDev]->CloseChannel(
-          ch, [ch](Status status) {
-            if (!status.IsOk())
-              WARN("NET/BAREX : CloseChannel failed: %s",
-                   status.ErrMsg().c_str());
-            ch->Destroy();
-          });
-      if (closeResult != accl::barex::BAREX_SUCCESS) {
-        WARN("NET/BAREX : CloseChannel sync error: %s", bxstr(closeResult));
-      }
-    }
+        comm->connectorDev < (int)e->connectors.size())
+      barexCloseConnectorChannels(e, comm->connectorDev, comm->channels);
   }
   /* Completion/receive callbacks retain the comm explicitly.  The channel
      close callback does not reference it, so a failed asynchronous close
      cannot keep closeSend() blocked or cause a use-after-free. */
   comm->waitCallbacks();
   comm->channel = nullptr;
+  comm->channels.clear();
   comm->state.store(BAREX_COMM_CLOSED, std::memory_order_release);
   delete comm;
   return flagcxSuccess;
@@ -936,13 +1076,13 @@ static flagcxResult_t barexCloseListen(void *listenComm) {
   auto *lc = static_cast<BarexListenComm *>(listenComm);
   if (lc == nullptr)
     return flagcxSuccess;
-  std::deque<XChannel *> pendingChannels;
+  std::vector<XChannel *> pendingChannels;
   {
-    std::lock_guard<std::mutex> lk(lc->engine->mu);
-    auto it = lc->engine->pendingAccepts.find(lc->commId);
-    if (it != lc->engine->pendingAccepts.end()) {
+    std::lock_guard<std::mutex> lk(lc->runtime->mu);
+    auto it = lc->runtime->pendingAccepts.find(lc->commId);
+    if (it != lc->runtime->pendingAccepts.end()) {
       pendingChannels.swap(it->second.channels);
-      lc->engine->pendingAccepts.erase(it);
+      lc->runtime->pendingAccepts.erase(it);
     }
   }
   for (XChannel *channel : pendingChannels)
@@ -973,8 +1113,13 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
          data, size, (long long)maxMrBytes);
     return flagcxNotSupported;
   }
-  BarexEngine *e = nullptr;
-  FLAGCXCHECK(barexEngineStart(&e));
+  BarexRuntime *e = nullptr;
+  FLAGCXCHECK(barexRuntimeStart(&e));
+
+  // Make forward progress on handles explicitly relinquished by the generic
+  // Engine. A direct adaptor caller that received a deregistration error still
+  // owns its handle, so it is never eligible for this automatic retry.
+  (void)flagcxBarexRuntimeDrainDeferredMrs();
 
   const uintptr_t base = (uintptr_t)data;
   if (size > std::numeric_limits<uintptr_t>::max() - base)
@@ -1043,8 +1188,16 @@ static flagcxResult_t barexRegMr(void *comm, void *data, size_t size, int type,
       mr->nKeys = nic + 1;
   }
   if (mr->nKeys == 0) {
-    e->mempool->DeregUserMr(data, dtype);
-    delete mr;
+    BarexResult deregResult = e->mempool->DeregUserMr(data, dtype);
+    if (deregResult == accl::barex::BAREX_SUCCESS) {
+      delete mr;
+    } else {
+      // No handle was published to the caller. Retain provider ownership in
+      // the adaptor so a later registration or Engine teardown can retry.
+      mr->reusable = false;
+      mr->deferred = true;
+      e->mrByBase[base] = mr;
+    }
     return flagcxInternalError;
   }
   e->mrByBase[base] = mr;
@@ -1057,7 +1210,7 @@ static flagcxResult_t barexDeregMr(void *comm, void *mhandle) {
   auto *mr = static_cast<BarexMr *>(mhandle);
   if (mr == nullptr)
     return flagcxSuccess;
-  BarexEngine *e = gEngine;
+  BarexRuntime *e = gBarexRuntime;
   if (e == nullptr)
     return flagcxInternalError;
   std::lock_guard<std::mutex> lk(e->mu);
@@ -1081,6 +1234,53 @@ static flagcxResult_t barexDeregMr(void *comm, void *mhandle) {
   }
   e->mrByBase.erase(it);
   delete mr;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t barexDrainDeferredMrs(BarexRuntime *e) {
+  if (e == nullptr)
+    return flagcxSuccess;
+
+  std::lock_guard<std::mutex> lk(e->mu);
+  flagcxResult_t firstError = flagcxSuccess;
+  for (auto it = e->mrByBase.begin(); it != e->mrByBase.end();) {
+    BarexMr *mr = it->second;
+    if (mr == nullptr || !mr->deferred) {
+      ++it;
+      continue;
+    }
+    if (mr->refCount != 1) {
+      if (firstError == flagcxSuccess)
+        firstError = flagcxInternalError;
+      ++it;
+      continue;
+    }
+
+    BarexResult result =
+        e->mempool->DeregUserMr(reinterpret_cast<void *>(mr->base), mr->dtype);
+    if (result != accl::barex::BAREX_SUCCESS) {
+      if (firstError == flagcxSuccess)
+        firstError = barexResult(result);
+      ++it;
+      continue;
+    }
+    delete mr;
+    it = e->mrByBase.erase(it);
+  }
+  return firstError;
+}
+
+static flagcxResult_t barexDeferMr(BarexRuntime *e, void *mhandle) {
+  auto *mr = static_cast<BarexMr *>(mhandle);
+  if (e == nullptr || mr == nullptr)
+    return flagcxInvalidArgument;
+
+  std::lock_guard<std::mutex> lk(e->mu);
+  auto it = e->mrByBase.find(mr->base);
+  if (it == e->mrByBase.end() || it->second != mr || mr->refCount != 1 ||
+      mr->reusable)
+    return flagcxInvalidArgument;
+  mr->deferred = true;
   return flagcxSuccess;
 }
 
@@ -1185,7 +1385,7 @@ static flagcxResult_t barexIrecv(void *recvComm, int n, void **data,
   flagcxResult_t submissionStatus = comm->submissionStatus();
   if (submissionStatus != flagcxSuccess)
     return submissionStatus;
-  BarexEngine *e = comm->engine;
+  BarexRuntime *e = comm->runtime;
 
   BarexRequest *req = nullptr;
   uint64_t seq = 0;
@@ -1312,14 +1512,15 @@ static flagcxResult_t barexTest(void *request, int *done, int *sizes) {
 }
 
 static flagcxResult_t barexPrepareOneSided(
-    BarexComm *comm, const struct flagcxOneSideHandleInfo *localInfo,
-    int localRank, uint64_t localOffset,
-    const struct flagcxOneSideHandleInfo *remoteInfo, int remoteRank,
-    uint64_t remoteOffset, size_t size, memp_t *localMem,
+    BarexComm *comm, XChannel *channel,
+    const struct flagcxOneSideHandleInfo *localInfo, int localRank,
+    uint64_t localOffset, const struct flagcxOneSideHandleInfo *remoteInfo,
+    int remoteRank, uint64_t remoteOffset, size_t size, memp_t *localMem,
     uint64_t *remoteAddress, uint32_t *remoteRkey) {
-  if (comm == nullptr || localInfo == nullptr || remoteInfo == nullptr ||
-      localMem == nullptr || remoteAddress == nullptr ||
-      remoteRkey == nullptr || localInfo->localMrHandle == nullptr)
+  if (comm == nullptr || channel == nullptr || localInfo == nullptr ||
+      remoteInfo == nullptr || localMem == nullptr ||
+      remoteAddress == nullptr || remoteRkey == nullptr ||
+      localInfo->localMrHandle == nullptr)
     return flagcxInvalidArgument;
   struct flagcxNetResolvedRange localRange = {};
   struct flagcxNetResolvedRange remoteRange = {};
@@ -1332,11 +1533,8 @@ static flagcxResult_t barexPrepareOneSided(
   flagcxResult_t submissionStatus = comm->submissionStatus();
   if (submissionStatus != flagcxSuccess)
     return submissionStatus;
-  if (comm->channel == nullptr)
-    return flagcxInternalError;
-
-  const int localNic = comm->channel->GetLocalNicId();
-  const int peerNic = comm->channel->GetPeerNicId();
+  const int localNic = channel->GetLocalNicId();
+  const int peerNic = channel->GetPeerNicId();
   const struct flagcxNetMrInfo &remoteMrInfo = *remoteRange.mrInfo;
   if (localNic < 0 || localNic >= kMaxNics || peerNic < 0 ||
       peerNic >= kMaxNics || (uint32_t)peerNic >= remoteMrInfo.nKeys)
@@ -1357,6 +1555,32 @@ static flagcxResult_t barexPrepareOneSided(
   *remoteAddress = remoteRange.address;
   *remoteRkey = remoteMrInfo.rkeys[peerNic];
   return flagcxSuccess;
+}
+
+static flagcxResult_t barexSelectOneSidedChannel(BarexComm *comm,
+                                                 XChannel **channel,
+                                                 uint32_t *lane) {
+  if (comm == nullptr || channel == nullptr || lane == nullptr ||
+      comm->channels.empty())
+    return flagcxInvalidArgument;
+  struct flagcxNetSubmitContext context = {};
+  uint64_t orderingKey = 0;
+  if (flagcxNetGetSubmitContext(&context) == flagcxSuccess &&
+      (context.flags & FLAGCX_NET_SUBMIT_INDEPENDENT) != 0)
+    orderingKey = context.orderingKey;
+  FLAGCXCHECK(flagcxBarexRuntimeSelectLane(
+      static_cast<uint32_t>(comm->channels.size()), orderingKey, lane));
+  *channel = comm->channels[*lane];
+  return *channel == nullptr ? flagcxInternalError : flagcxSuccess;
+}
+
+static void barexRecordOneSidedLane(uint32_t lane) {
+  if (lane >= 64)
+    return;
+  struct flagcxNetSubmitContext context = {};
+  if (flagcxNetGetSubmitContext(&context) == flagcxSuccess &&
+      context.laneMask != nullptr)
+    __atomic_fetch_or(context.laneMask, 1ULL << lane, __ATOMIC_RELAXED);
 }
 
 static rw_memp_t barexMakeRw(const memp_t &localMem, uint64_t remoteAddress,
@@ -1387,8 +1611,11 @@ static flagcxResult_t barexIput(void *sendComm, uint64_t srcOff,
   memp_t localMem;
   uint64_t remoteAddress = 0;
   uint32_t remoteRkey = 0;
-  FLAGCXCHECK(barexPrepareOneSided(comm, srcInfo, srcRank, srcOff, dstInfo,
-                                   dstRank, dstOff, size, &localMem,
+  XChannel *channel = nullptr;
+  uint32_t lane = 0;
+  FLAGCXCHECK(barexSelectOneSidedChannel(comm, &channel, &lane));
+  FLAGCXCHECK(barexPrepareOneSided(comm, channel, srcInfo, srcRank, srcOff,
+                                   dstInfo, dstRank, dstOff, size, &localMem,
                                    &remoteAddress, &remoteRkey));
 
   BarexRequest *req = comm->allocRequest();
@@ -1404,7 +1631,7 @@ static flagcxResult_t barexIput(void *sendComm, uint64_t srcOff,
     barexReleaseRequest(req);
     return comm->submissionStatus();
   }
-  BarexResult result = comm->channel->WriteSingle(
+  BarexResult result = channel->WriteSingle(
       localMem, remoteAddress, remoteRkey, /*signal_peer=*/false, 0,
       [req](Status status) { barexCompleteCallback(req, status); },
       /*done_inline=*/true, UINT64_MAX);
@@ -1415,6 +1642,7 @@ static flagcxResult_t barexIput(void *sendComm, uint64_t srcOff,
     barexReleaseRequest(req);
     return mapped;
   }
+  barexRecordOneSidedLane(lane);
   *request = req;
   return flagcxSuccess;
 }
@@ -1434,8 +1662,11 @@ static flagcxResult_t barexIget(void *sendComm, uint64_t srcOff,
   memp_t localMem;
   uint64_t remoteAddress = 0;
   uint32_t remoteRkey = 0;
-  FLAGCXCHECK(barexPrepareOneSided(comm, dstInfo, dstRank, dstOff, srcInfo,
-                                   srcRank, srcOff, size, &localMem,
+  XChannel *channel = nullptr;
+  uint32_t lane = 0;
+  FLAGCXCHECK(barexSelectOneSidedChannel(comm, &channel, &lane));
+  FLAGCXCHECK(barexPrepareOneSided(comm, channel, dstInfo, dstRank, dstOff,
+                                   srcInfo, srcRank, srcOff, size, &localMem,
                                    &remoteAddress, &remoteRkey));
 
   BarexRequest *req = comm->allocRequest();
@@ -1451,7 +1682,7 @@ static flagcxResult_t barexIget(void *sendComm, uint64_t srcOff,
     barexReleaseRequest(req);
     return comm->submissionStatus();
   }
-  BarexResult result = comm->channel->ReadSingle(
+  BarexResult result = channel->ReadSingle(
       localMem, remoteAddress, remoteRkey,
       [req](Status status) { barexCompleteCallback(req, status); },
       /*done_inline=*/true, UINT64_MAX);
@@ -1462,6 +1693,7 @@ static flagcxResult_t barexIget(void *sendComm, uint64_t srcOff,
     barexReleaseRequest(req);
     return mapped;
   }
+  barexRecordOneSidedLane(lane);
   *request = req;
   return flagcxSuccess;
 }
@@ -1489,15 +1721,18 @@ barexIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
       reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
   auto *dstInfo =
       reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  XChannel *channel = nullptr;
+  uint32_t lane = 0;
+  FLAGCXCHECK(barexSelectOneSidedChannel(comm, &channel, &lane));
   auto allData = std::make_shared<std::vector<rw_memp_t>>();
   allData->reserve(count);
   for (int i = 0; i < count; ++i) {
     memp_t localMem;
     uint64_t remoteAddress = 0;
     uint32_t remoteRkey = 0;
-    FLAGCXCHECK(barexPrepareOneSided(comm, srcInfo, srcRank, srcOffs[i],
-                                     dstInfo, dstRank, dstOffs[i], sizes[i],
-                                     &localMem, &remoteAddress, &remoteRkey));
+    FLAGCXCHECK(barexPrepareOneSided(
+        comm, channel, srcInfo, srcRank, srcOffs[i], dstInfo, dstRank,
+        dstOffs[i], sizes[i], &localMem, &remoteAddress, &remoteRkey));
     allData->push_back(
         barexMakeRw(localMem, remoteAddress, remoteRkey, sizes[i]));
   }
@@ -1522,7 +1757,7 @@ barexIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
       barexReleaseRequest(req);
     return comm->submissionStatus();
   }
-  BarexResult result = comm->channel->WriteBatch(
+  BarexResult result = channel->WriteBatch(
       postedData,
       [comm, postedData, acceptedRequests](Status status) {
         const flagcxResult_t completion = barexStatus(status);
@@ -1555,6 +1790,7 @@ barexIputBatch(void *sendComm, int count, const uint64_t *srcOffs,
                                                         : flagcxInProgress));
   for (int i = 0; i < post.accepted; ++i)
     requests[i] = (*acceptedRequests)[i];
+  barexRecordOneSidedLane(lane);
   *posted = post.accepted;
   return post.result;
 }
@@ -1586,6 +1822,9 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
       reinterpret_cast<const struct flagcxOneSideHandleInfo *>(srcHandles);
   auto *dstInfo =
       reinterpret_cast<const struct flagcxOneSideHandleInfo *>(dstHandles);
+  XChannel *channel = nullptr;
+  uint32_t lane = 0;
+  FLAGCXCHECK(barexSelectOneSidedChannel(comm, &channel, &lane));
   auto data = std::make_shared<std::vector<rw_memp_t>>();
   data->reserve(count);
   size_t totalSize = 0;
@@ -1595,9 +1834,9 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
     memp_t localMem;
     uint64_t remoteAddress = 0;
     uint32_t remoteRkey = 0;
-    FLAGCXCHECK(barexPrepareOneSided(comm, dstInfo, dstRank, dstOffs[i],
-                                     srcInfo, srcRank, srcOffs[i], sizes[i],
-                                     &localMem, &remoteAddress, &remoteRkey));
+    FLAGCXCHECK(barexPrepareOneSided(
+        comm, channel, dstInfo, dstRank, dstOffs[i], srcInfo, srcRank,
+        srcOffs[i], sizes[i], &localMem, &remoteAddress, &remoteRkey));
     data->push_back(barexMakeRw(localMem, remoteAddress, remoteRkey, sizes[i]));
     totalSize += sizes[i];
   }
@@ -1615,7 +1854,7 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
     barexReleaseRequest(req);
     return comm->submissionStatus();
   }
-  BarexResult result = comm->channel->ReadBatch(
+  BarexResult result = channel->ReadBatch(
       data, [req, data](Status status) { barexCompleteCallback(req, status); },
       /*done_inline=*/true);
   if (result != accl::barex::BAREX_SUCCESS) {
@@ -1625,6 +1864,7 @@ static flagcxResult_t barexIgetBatch(void *sendComm, int count,
     barexReleaseRequest(req);
     return mapped;
   }
+  barexRecordOneSidedLane(lane);
   *request = req;
   return flagcxSuccess;
 }
@@ -1647,6 +1887,53 @@ static flagcxResult_t barexGetDevFromName(char *name, int *dev) {
 }
 
 } // namespace barexnet
+
+flagcxResult_t flagcxBarexRuntimeSetConnectionConfig(
+    const struct flagcxBarexRuntimeConnectionConfig *config) {
+  if (config == nullptr ||
+      flagcxBarexRuntimeValidateChannelCount(config->channels) != flagcxSuccess)
+    return flagcxInvalidArgument;
+  barexnet::gRuntimeConnectionConfig = *config;
+  barexnet::gRuntimeConnectionConfigActive = true;
+  return flagcxSuccess;
+}
+
+void flagcxBarexRuntimeClearConnectionConfig(void) {
+  barexnet::gRuntimeConnectionConfig = {};
+  barexnet::gRuntimeConnectionConfigActive = false;
+}
+
+flagcxResult_t flagcxBarexRuntimeResetConnect(void *opaqueHandle) {
+  return barexnet::barexResetConnect(opaqueHandle);
+}
+
+flagcxResult_t flagcxBarexRuntimeDeferMr(void *mhandle) {
+  return barexnet::barexDeferMr(barexnet::gBarexRuntime, mhandle);
+}
+
+flagcxResult_t flagcxBarexRuntimeDrainDeferredMrs(void) {
+  return barexnet::barexDrainDeferredMrs(barexnet::gBarexRuntime);
+}
+
+size_t flagcxBarexRuntimeMrSegmentSize(int type) {
+  if (type != FLAGCX_PTR_CUDA)
+    return std::numeric_limits<size_t>::max();
+  const int64_t limit = barexnet::flagcxParamBarexMaxMrBytes();
+  return limit > 0 ? static_cast<size_t>(limit)
+                   : std::numeric_limits<size_t>::max();
+}
+
+flagcxResult_t flagcxBarexRuntimeGetCommChannels(void *opaqueComm,
+                                                 uint32_t *channels) {
+  if (opaqueComm == nullptr || channels == nullptr)
+    return flagcxInvalidArgument;
+  auto *comm = static_cast<barexnet::BarexComm *>(opaqueComm);
+  if (comm->channels.empty() ||
+      comm->channels.size() > FLAGCX_BAREX_RUNTIME_MAX_CHANNELS)
+    return flagcxInternalError;
+  *channels = static_cast<uint32_t>(comm->channels.size());
+  return flagcxSuccess;
+}
 
 /* BAREX has no remote atomic primitive, so iputSignal remains an optional
    unsupported capability. */

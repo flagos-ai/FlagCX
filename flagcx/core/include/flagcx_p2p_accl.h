@@ -49,12 +49,14 @@ void flagcxAcclEngineConnDestroy(FlagcxP2pConn *conn);
 bool flagcxAcclEngineConnIsLocal(FlagcxP2pConn *conn);
 
 int flagcxAcclEngineReg(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
-                        FlagcxP2pMr &mrId);
+                        int hintType, FlagcxP2pMr &mrId);
 void flagcxAcclEngineMrDestroy(FlagcxP2pEngine *engine, FlagcxP2pMr mr);
 int flagcxAcclEnginePrepareDesc(FlagcxP2pEngine *engine, FlagcxP2pMr mr,
                                 const void *data, size_t size, char *descBuf);
 int flagcxAcclEngineMakeDesc(FlagcxP2pConn *conn, uint64_t remoteVa,
                              uint32_t size, FlagcxP2pRdmaDesc *desc);
+int flagcxAcclEngineResolveLocalMr(FlagcxP2pConn *conn, uintptr_t address,
+                                   size_t size, FlagcxP2pMr *mr);
 
 int flagcxAcclEngineRead(FlagcxP2pConn *conn, FlagcxP2pMr mr, const void *data,
                          size_t size, FlagcxP2pRdmaDesc desc,
@@ -108,7 +110,7 @@ static inline void flagcxAcclEngineConnDestroy(FlagcxP2pConn *) {}
 static inline bool flagcxAcclEngineConnIsLocal(FlagcxP2pConn *) {
   return false;
 }
-static inline int flagcxAcclEngineReg(FlagcxP2pEngine *, uintptr_t, size_t,
+static inline int flagcxAcclEngineReg(FlagcxP2pEngine *, uintptr_t, size_t, int,
                                       FlagcxP2pMr &) {
   return -1;
 }
@@ -119,6 +121,10 @@ static inline int flagcxAcclEnginePrepareDesc(FlagcxP2pEngine *, FlagcxP2pMr,
 }
 static inline int flagcxAcclEngineMakeDesc(FlagcxP2pConn *, uint64_t, uint32_t,
                                            FlagcxP2pRdmaDesc *) {
+  return -1;
+}
+static inline int flagcxAcclEngineResolveLocalMr(FlagcxP2pConn *, uintptr_t,
+                                                 size_t, FlagcxP2pMr *) {
   return -1;
 }
 static inline int flagcxAcclEngineRead(FlagcxP2pConn *, FlagcxP2pMr,

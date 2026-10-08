@@ -8,12 +8,14 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <iomanip>
 #include <memory>
 #include <sched.h>
 #include <string>
+#include <strings.h>
 #include <thread>
 #include <vector>
 
@@ -24,7 +26,7 @@
 #include "flagcx_net_adaptor.h"
 #include "flagcx_p2p.h"
 
-extern struct flagcxNetAdaptor flagcxNetIbP2p;
+extern struct flagcxNetAdaptor flagcxNetIb;
 
 namespace {
 
@@ -32,8 +34,9 @@ bool directGpuReadVisibilityUnavailable() {
   const uint32_t requirements = flagcxResolveGdrFlushRequirements(
       deviceAdaptor == nullptr ? FLAGCX_GDR_FLUSH_NONE
                                : deviceAdaptor->gdrFlushRequirements);
-  return (requirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0 &&
-         (flagcxNetIbP2p.gdrFlushCaps & FLAGCX_NET_GDR_FLUSH_READ) == 0;
+  // Neither compile-time Engine currently owns and progresses a post-READ
+  // flush stage. A provider advertising iflush is insufficient by itself.
+  return (requirements & FLAGCX_GDR_READ_REQUIRES_FLUSH) != 0;
 }
 
 struct ParsedEngineMetadata {
@@ -247,8 +250,9 @@ protected:
   static constexpr int kServerGpuIdx = 1;
 
   void SetUp() override {
-    if (!hasIbDevices()) {
-      GTEST_SKIP() << "No IB devices available, skipping P2P read tests";
+    if (!hasEngineDevices()) {
+      GTEST_SKIP() << "No selected transport devices available, skipping P2P "
+                      "read tests";
     }
 
     ASSERT_EQ(flagcxDeviceHandleInit(&devHandle), flagcxSuccess);
@@ -296,7 +300,8 @@ protected:
       flagcxDeviceHandleFree(devHandle);
       devHandle = nullptr;
       GTEST_SKIP()
-          << "Unable to create FlagCX P2P engines; likely no IB-capable device";
+          << "Unable to create FlagCX P2P engines; selected transport has no "
+             "usable device";
     }
   }
 
@@ -426,10 +431,17 @@ protected:
   FlagcxP2pConn *clientConn = nullptr;
 
 private:
-  static bool hasIbDevices() {
+  static bool hasEngineDevices() {
+    struct flagcxNetAdaptor *adaptor = &flagcxNetIb;
+#ifdef USE_ACCL_BAREX
+    const char *transport = std::getenv("FLAGCX_P2P_TRANSPORT");
+    if (transport != nullptr && (strcasecmp(transport, "accl") == 0 ||
+                                 strcasecmp(transport, "barex") == 0))
+      adaptor = getNetAdaptor(RDMA);
+#endif
     int nDevs = 0;
-    return flagcxNetIbP2p.init() == flagcxSuccess &&
-           flagcxNetIbP2p.devices(&nDevs) == flagcxSuccess && nDevs > 0;
+    return adaptor != nullptr && adaptor->init() == flagcxSuccess &&
+           adaptor->devices(&nDevs) == flagcxSuccess && nDevs > 0;
   }
 };
 
@@ -711,6 +723,92 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsReadBeforeSubmission) {
       static_cast<char *>(localDestination.get()) + kBytes / 2);
   EXPECT_EQ(flagcxP2pEngineRead(serverConn, localMr, pastLocalRange, kBytes,
                                 remoteDesc, &transferId),
+            -1);
+  EXPECT_EQ(transferId, 0u);
+}
+
+TEST_F(FlagcxP2pEngineReadTest, RejectsInvalidRegistrationAndDescriptorRanges) {
+  constexpr size_t kBytes = 4096;
+  ScopedAllocation allocation;
+  allocGpuBufferOnDevice(&allocation, kBytes, kClientGpuIdx, clientStream);
+
+  FlagcxP2pMr mr = 0;
+  EXPECT_EQ(flagcxP2pEngineReg(clientEngine,
+                               reinterpret_cast<uintptr_t>(allocation.get()), 0,
+                               mr),
+            -1);
+
+  ASSERT_EQ(flagcxP2pEngineReg(clientEngine,
+                               reinterpret_cast<uintptr_t>(allocation.get()),
+                               kBytes, mr),
+            0);
+  ScopedMr mrGuard;
+  mrGuard.set(clientEngine, mr);
+
+  char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
+  void *pastHalf = static_cast<char *>(allocation.get()) + kBytes / 2;
+  EXPECT_EQ(
+      flagcxP2pEnginePrepareDesc(clientEngine, mr, pastHalf, kBytes, descBuf),
+      -1);
+  EXPECT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, mr, allocation.get(),
+                                       static_cast<size_t>(UINT32_MAX) + 1,
+                                       descBuf),
+            -1);
+}
+
+TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsWriteBeforeSubmission) {
+  ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
+
+  constexpr size_t kBytes = 4096;
+  ScopedAllocation remoteDestination;
+  ScopedAllocation localSource;
+  allocGpuBufferOnDevice(&remoteDestination, kBytes, kClientGpuIdx,
+                         clientStream);
+  allocGpuBufferOnDevice(&localSource, kBytes, kServerGpuIdx, serverStream);
+
+  FlagcxP2pMr remoteMr = 0;
+  FlagcxP2pMr localMr = 0;
+  ScopedMr remoteMrGuard;
+  ScopedMr localMrGuard;
+  ASSERT_EQ(
+      flagcxP2pEngineReg(clientEngine,
+                         reinterpret_cast<uintptr_t>(remoteDestination.get()),
+                         kBytes, remoteMr),
+      0);
+  remoteMrGuard.set(clientEngine, remoteMr);
+  ASSERT_EQ(flagcxP2pEngineReg(serverEngine,
+                               reinterpret_cast<uintptr_t>(localSource.get()),
+                               kBytes, localMr),
+            0);
+  localMrGuard.set(serverEngine, localMr);
+
+  char descBuf[FLAGCX_P2P_DESC_SIZE] = {};
+  ASSERT_EQ(flagcxP2pEnginePrepareDesc(clientEngine, remoteMr,
+                                       remoteDestination.get(), kBytes,
+                                       descBuf),
+            0);
+  FlagcxP2pRdmaDesc remoteDesc;
+  flagcxP2pDeserializeRdmaDesc(descBuf, &remoteDesc);
+  FlagcxP2pRdmaDesc shortDesc = remoteDesc;
+  shortDesc.size = kBytes / 2;
+
+  uint64_t transferId = 123;
+  EXPECT_EQ(flagcxP2pEngineWrite(serverConn, localMr, localSource.get(), kBytes,
+                                 shortDesc, &transferId),
+            -1);
+  EXPECT_EQ(transferId, 0u);
+
+  transferId = 456;
+  void *pastLocalRange = static_cast<char *>(localSource.get()) + kBytes / 2;
+  EXPECT_EQ(flagcxP2pEngineWrite(serverConn, localMr, pastLocalRange, kBytes,
+                                 remoteDesc, &transferId),
+            -1);
+  EXPECT_EQ(transferId, 0u);
+
+  transferId = 789;
+  EXPECT_EQ(flagcxP2pEngineWriteVector(serverConn, {localMr},
+                                       {localSource.get()}, {kBytes},
+                                       {shortDesc}, 1, &transferId),
             -1);
   EXPECT_EQ(transferId, 0u);
 }

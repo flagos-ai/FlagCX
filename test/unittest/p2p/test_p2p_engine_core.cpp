@@ -34,6 +34,7 @@ struct MockBackend {
   int postCalls = 0;
   int active = 0;
   int maxActive = 0;
+  int capacity = -1;
 };
 
 flagcxResult_t mockPost(void *context, const flagcxP2pTransferOp *,
@@ -41,10 +42,15 @@ flagcxResult_t mockPost(void *context, const flagcxP2pTransferOp *,
                         flagcxTransportPostResult *post) {
   MockBackend *backend = static_cast<MockBackend *>(context);
   backend->postCalls++;
+  if (backend->capacity >= 0 && backend->active >= backend->capacity)
+    return flagcxTransportPostResultInit(post, static_cast<int>(count), 0,
+                                         flagcxInProgress);
   PostStep step = {static_cast<int>(count), flagcxSuccess, false};
   if (backend->step < backend->steps.size())
     step = backend->steps[backend->step++];
-  const int accepted = std::min(step.accepted, static_cast<int>(count));
+  int accepted = std::min(step.accepted, static_cast<int>(count));
+  if (backend->capacity >= 0)
+    accepted = std::min(accepted, backend->capacity - backend->active);
   int asyncAccepted = 0;
   for (int i = 0; i < accepted; ++i) {
     if (step.immediate) {
@@ -195,6 +201,40 @@ TEST(P2pEngineCoreTest, ZeroAcceptanceBackpressureDoesNotConsumeCredit) {
   EXPECT_EQ(status.submitted, 1u);
   markDone(&mock, 0);
   ASSERT_EQ(flagcxP2pTransferProgress(&transfer, &status), flagcxSuccess);
+  EXPECT_TRUE(status.done);
+}
+
+TEST(P2pEngineCoreTest, ProgressManyReleasesSharedCapacityForLaterTransfer) {
+  MockBackend mock;
+  mock.capacity = 1;
+  flagcxP2pTransferBackend backend = makeBackend(&mock);
+  std::vector<flagcxP2pTransferOp> firstOps = makeOps(1);
+  std::vector<flagcxP2pTransferOp> secondOps = makeOps(1);
+  flagcxP2pTransfer first;
+  flagcxP2pTransfer second;
+  ASSERT_EQ(
+      flagcxP2pTransferInit(&first, &backend, firstOps.data(), 1, 1, 1, 30, 0),
+      flagcxSuccess);
+  ASSERT_EQ(flagcxP2pTransferInit(&second, &backend, secondOps.data(), 1, 1, 1,
+                                  31, 0),
+            flagcxSuccess);
+
+  flagcxP2pTransferStatus status = {};
+  ASSERT_EQ(flagcxP2pTransferProgress(&first, &status), flagcxSuccess);
+  EXPECT_EQ(status.submitted, 1u);
+  ASSERT_EQ(flagcxP2pTransferProgress(&second, &status), flagcxSuccess);
+  EXPECT_EQ(status.submitted, 0u);
+
+  markDone(&mock, 0);
+  flagcxP2pTransfer *transfers[] = {&first, &second};
+  ASSERT_EQ(flagcxP2pTransferProgressMany(transfers, 2), flagcxSuccess);
+  ASSERT_EQ(flagcxP2pTransferQuery(&first, &status), flagcxSuccess);
+  EXPECT_TRUE(status.done);
+  ASSERT_EQ(flagcxP2pTransferQuery(&second, &status), flagcxSuccess);
+  EXPECT_EQ(status.submitted, 1u);
+
+  markDone(&mock, 1);
+  ASSERT_EQ(flagcxP2pTransferProgress(&second, &status), flagcxSuccess);
   EXPECT_TRUE(status.done);
 }
 

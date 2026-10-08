@@ -37,6 +37,13 @@ struct flagcxP2pMrSlice {
   size_t size = 0;
 };
 
+struct flagcxP2pMrPairSlice {
+  size_t localSegmentIndex = 0;
+  size_t remoteSegmentIndex = 0;
+  size_t offset = 0;
+  size_t size = 0;
+};
+
 // Encode/decode up to FLAGCX_NET_MAX_MR_KEYS rkeys in the existing 64-byte
 // public descriptor. Key zero remains in the legacy rkey field; additional
 // keys use the reserved padding. Other reserved fields are left untouched.
@@ -56,8 +63,22 @@ flagcxP2pMrSplitRange(const struct flagcxP2pMrRecord *record, uintptr_t address,
                       size_t size,
                       std::vector<struct flagcxP2pMrSlice> *slices);
 
+// Split one logical transfer at both providers' MR boundaries and at the
+// configured Engine slice limit. The output offset is relative to both input
+// addresses, so callers can build paired local/remote transport regions
+// without assuming that their segment geometry is identical.
+flagcxResult_t flagcxP2pMrSplitPair(
+    const struct flagcxP2pMrRecord *local, uintptr_t localAddress,
+    const struct flagcxP2pMrRecord *remote, uintptr_t remoteAddress,
+    size_t size, size_t sliceSize, size_t fragmentSize,
+    std::vector<struct flagcxP2pMrPairSlice> *slices);
+
 flagcxResult_t
 flagcxP2pMrSegmentRegion(const struct flagcxP2pMrSegment *segment,
                          flagcxTransportRegion *region);
+
+// Produce a stable ordering key whose low bits vary across both transfers and
+// slices. Main-IB uses those low bits for deterministic lane selection.
+uint64_t flagcxP2pEngineOrderingKey(uint64_t transferId, uint64_t sliceIndex);
 
 #endif // FLAGCX_P2P_ENGINE_TRANSPORT_H_

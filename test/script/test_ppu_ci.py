@@ -6,6 +6,69 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PpuCiRegressionTest(unittest.TestCase):
+    def test_barex_main_adaptor_exposes_runtime_multichannel_transport(self):
+        barex = (
+            REPO_ROOT / "flagcx/adaptor/net/barex_adaptor.cc"
+        ).read_text()
+        runtime_api = (
+            REPO_ROOT / "flagcx/adaptor/include/barex_runtime.h"
+        ).read_text()
+        transport_test = (
+            REPO_ROOT / "test/unittest/p2p/test_p2p_engine_transport.cpp"
+        ).read_text()
+        legacy_engine = (
+            REPO_ROOT / "flagcx/core/flagcx_p2p.cc"
+        ).read_text()
+        shared_engine = (
+            REPO_ROOT / "flagcx/core/flagcx_p2p_shared.cc"
+        ).read_text()
+        makefile = (REPO_ROOT / "Makefile").read_text()
+        read_test = (
+            REPO_ROOT / "test/unittest/p2p/test_p2p_engine_read.cpp"
+        ).read_text()
+        rpc_test = (
+            REPO_ROOT / "test/unittest/p2p/test_p2p_engine_rpc.cpp"
+        ).read_text()
+
+        self.assertIn("std::vector<XChannel *> channels", barex)
+        self.assertIn("flagcxBarexRuntimeEncodeHelloGeometry", barex)
+        self.assertIn("flagcxBarexRuntimeSelectLane", barex)
+        self.assertIn("flagcxBarexRuntimeResetConnect", barex)
+        self.assertIn("flagcxBarexRuntimeDeferMr", barex)
+        self.assertIn("flagcxBarexRuntimeDrainDeferredMrs", barex)
+        self.assertIn("FLAGCX_NET_SUBMIT_INDEPENDENT", barex)
+        self.assertNotIn("rr.fetch_add", barex)
+        self.assertIn("FLAGCX_BAREX_RUNTIME_MAX_CHANNELS = 8", runtime_api)
+        self.assertIn(
+            "BarexOrderedDomainsUseStablePhysicalLanes", transport_test
+        )
+        self.assertIn(
+            "useBarex ? &flagcxNetBarex : &flagcxNetIb", shared_engine
+        )
+        self.assertIn("flagcxP2pMrSplitPair", shared_engine)
+        self.assertIn(
+            "SplitsPairedRangesAtEitherProviderBoundary", transport_test
+        )
+        self.assertIn("adaptor = getNetAdaptor(RDMA)", read_test)
+        self.assertIn("adaptor = getNetAdaptor(RDMA)", rpc_test)
+        self.assertIn("flagcxNetIbP2p", legacy_engine)
+        self.assertIn("return flagcxAcclEngineCreate()", legacy_engine)
+        self.assertIn("flagcxP2pIsAccl", legacy_engine)
+        self.assertTrue(
+            (REPO_ROOT / "flagcx/adaptor/net/ibrc_p2p_adaptor.cc").exists()
+        )
+        self.assertTrue(
+            (REPO_ROOT / "flagcx/core/flagcx_p2p_accl.cc").exists()
+        )
+        self.assertTrue(
+            (REPO_ROOT / "flagcx/core/include/flagcx_p2p_accl.h").exists()
+        )
+        self.assertIn("USE_P2P_SHARED_ENGINE ?= 0", makefile)
+        self.assertIn("ifeq ($(USE_P2P_SHARED_ENGINE), 1)", makefile)
+        self.assertIn("flagcx/core/flagcx_p2p_shared.cc", makefile)
+        self.assertIn("flagcx/adaptor/net/ibrc_p2p_adaptor.cc", makefile)
+        self.assertNotIn("flagcxP2pIsAccl", shared_engine)
+
     def test_ppu_symmem_requires_vmm_local_and_barex_vmm_net(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
@@ -15,9 +78,6 @@ class PpuCiRegressionTest(unittest.TestCase):
         ).read_text()
         barex = (
             REPO_ROOT / "flagcx/adaptor/net/barex_adaptor.cc"
-        ).read_text()
-        accl_p2p = (
-            REPO_ROOT / "flagcx/core/flagcx_p2p_accl.cc"
         ).read_text()
 
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
@@ -79,8 +139,6 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_VMM_MR_CAP_NONE", barex)
         self.assertIn("barexnet::barexRegMr", barex)
         self.assertNotIn("Requires FLAGCX_VMM_ENABLE=0", barex)
-        self.assertNotIn("VMM unpinnable", accl_p2p)
-        self.assertNotIn("VMM memory cannot be registered", accl_p2p)
 
     def test_ppu_runner_executes_barex_heterogeneous_variants(self):
         source = (

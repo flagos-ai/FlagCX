@@ -692,7 +692,7 @@ static_assert(
 static_assert(MAX_REQUESTS <= 256, "request id are encoded in wr_id and we "
                                    "need up to 8 requests ids per completion");
 
-// Shared IBRC helpers (defined in ibrc_adaptor.cc, used by ibrc p2p adaptor)
+// Shared IBRC helpers used by the main adaptor and internal Engine bridge.
 flagcxResult_t flagcxIbInit();
 flagcxResult_t flagcxIbGetProperties(int dev, void *props);
 flagcxResult_t flagcxIbCreateQp(uint8_t ib_port,
@@ -712,6 +712,39 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
                                            ibv_mr **mhandle);
 flagcxResult_t flagcxIbDeregMrInternal(flagcxIbNetCommDevBase *base,
                                        ibv_mr *mhandle);
+
+// Internal P2P Engine entry points. They reuse the main IBRC device, PD, MR
+// cache, connection, request, and completion implementations without adding
+// fields to the public net-adaptor ABI. Engine MRs may be created before a
+// connection, so registration is keyed by the selected merged net device.
+flagcxResult_t flagcxIbEngineRegMr(int netDev, void *data, size_t size,
+                                   int type, int mrFlags, void **mhandle);
+// Consumes the Engine handle. On cleanup failure the adaptor retains it on a
+// private retry list, so callers must not free or resubmit the same pointer.
+flagcxResult_t flagcxIbEngineDeregMr(void *mhandle);
+flagcxResult_t flagcxIbEngineDrainDeferredMrs(void);
+flagcxResult_t flagcxIbEngineAbortListen(void *listenComm);
+// Discard an incomplete asynchronous accept/connect while preserving the
+// listener (for accept) or the copied wire handle (for connect) for reuse.
+flagcxResult_t flagcxIbEngineResetListenAccept(void *listenComm);
+flagcxResult_t flagcxIbEngineResetConnect(void *opaqueHandle);
+flagcxResult_t flagcxIbEngineGetCommAddress(void *comm,
+                                            union flagcxSocketAddress *address);
+flagcxResult_t flagcxIbEngineGetCommNdevs(void *comm, int *ndevs);
+struct flagcxIbEngineConnectionConfig {
+  int qpsPerConn;
+  int gidIndex;
+  int mtuLength;
+  int trafficClass;
+  int retryCnt;
+};
+#define FLAGCX_IB_ENGINE_CONFIG_INHERIT (-2)
+// Connection setup is asynchronous but progressed synchronously by the
+// Engine. A thread-local scope preserves the documented P2P connection knobs
+// without changing the public net-adaptor ABI or other main-IB users.
+flagcxResult_t flagcxIbEngineSetConnectionConfig(
+    const struct flagcxIbEngineConnectionConfig *config);
+void flagcxIbEngineClearConnectionConfig(void);
 typedef flagcxResult_t (*flagcxIbDeregMrCallback)(flagcxIbNetCommDevBase *base,
                                                   ibv_mr *mhandle);
 flagcxResult_t flagcxIbDeregMrWithCallback(void *comm, void *mhandle,
