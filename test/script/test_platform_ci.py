@@ -1060,27 +1060,23 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
         self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", ppu_forced_net)
 
-    def test_p2p_read_diagnostics_use_fresh_qp_and_mtu_processes(self):
+    def test_p2p_ci_runs_write_only_engine_coverage(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        p2p_makefile = (
+            REPO_ROOT / "test/unittest/p2p/Makefile"
         ).read_text()
         p2p_runner = unit_runner[unit_runner.index("    p2p)") :]
         p2p_runner = p2p_runner[: p2p_runner.index("    rma)")]
 
-        self.assertIn("read_diagnostic_filter", p2p_runner)
-        self.assertIn("ReadsWholeRegisteredGpuBuffer", p2p_runner)
-        self.assertIn("TwoIndependent2KiBReadsCover4KiBBuffer", p2p_runner)
-        self.assertIn("ReadsWholeRegisteredHostBuffer", p2p_runner)
-        self.assertIn(
-            "FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=4096",
-            p2p_runner,
-        )
-        self.assertIn(
-            "FLAGCX_P2P_QPS_PER_CONN=1 FLAGCX_P2P_MTU=2048",
-            p2p_runner,
-        )
-        self.assertIn("single_qp_status", p2p_runner)
-        self.assertIn("mtu_2048_status", p2p_runner)
+        self.assertNotIn("read_diagnostic_filter", p2p_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests"', p2p_runner)
+        self.assertIn('make -C "$suite_dir" run-mpi', p2p_runner)
+        self.assertIn("test_p2p_engine_read.cpp", p2p_makefile)
+        self.assertIn("test_p2p_gpu_read.cpp", p2p_makefile)
+        self.assertIn("test_p2p_visibility_policy.cpp", p2p_makefile)
+        self.assertIn("coll_p2p_engine_write.cpp", p2p_makefile)
 
     def test_runner_converges_async_errors_and_stops_new_communicators(self):
         fixture = (

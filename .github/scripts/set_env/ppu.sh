@@ -66,7 +66,7 @@ flagcx_ci_configure_suite() {
     p2p)
       # These suites call the IBRC vtable directly. The Engine tests use the
       # runtime transport selector and are retained for ACCL coverage.
-      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pBatchStruct.*:P2pBatchTest.*:*P2pGpuReadTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
+      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pEngineRpcIbTest.ConnectAcceptIsLocalSameHost"
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     rma)
