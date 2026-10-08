@@ -3,14 +3,78 @@
 // the correctness of markSuccess/markFailed, isAllDone, and hasErrors.
 
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <future>
 #include <gtest/gtest.h>
 #include <memory>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "flagcx_p2p.h"
 #include "p2p_scheduler.h"
+
+namespace {
+
+using EngineCreateSignature = FlagcxP2pEngine *(*)();
+using EngineReadSignature = int (*)(FlagcxP2pConn *, FlagcxP2pMr, const void *,
+                                    size_t, FlagcxP2pRdmaDesc, uint64_t *);
+using EngineWriteSignature = int (*)(FlagcxP2pConn *, FlagcxP2pMr, const void *,
+                                     size_t, FlagcxP2pRdmaDesc, uint64_t *);
+using EngineStatusSignature = bool (*)(FlagcxP2pConn *, uint64_t);
+
+static_assert(std::is_same<decltype(&flagcxP2pEngineCreate),
+                           EngineCreateSignature>::value,
+              "flagcxP2pEngineCreate public signature changed");
+static_assert(
+    std::is_same<decltype(&flagcxP2pEngineRead), EngineReadSignature>::value,
+    "flagcxP2pEngineRead public signature changed");
+static_assert(
+    std::is_same<decltype(&flagcxP2pEngineWrite), EngineWriteSignature>::value,
+    "flagcxP2pEngineWrite public signature changed");
+static_assert(std::is_same<decltype(&flagcxP2pEngineXferStatus),
+                           EngineStatusSignature>::value,
+              "flagcxP2pEngineXferStatus public signature changed");
+
+static_assert(sizeof(FlagcxP2pRdmaDesc) == 64,
+              "FlagcxP2pRdmaDesc wire size changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, addr) == 0,
+              "FlagcxP2pRdmaDesc.addr offset changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, size) == 8,
+              "FlagcxP2pRdmaDesc.size offset changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, rkey) == 12,
+              "FlagcxP2pRdmaDesc.rkey offset changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, nmsgs) == 16,
+              "FlagcxP2pRdmaDesc.nmsgs offset changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, rid) == 20,
+              "FlagcxP2pRdmaDesc.rid offset changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, idx) == 24,
+              "FlagcxP2pRdmaDesc.idx offset changed");
+static_assert(offsetof(FlagcxP2pRdmaDesc, padding) == 32,
+              "FlagcxP2pRdmaDesc.padding offset changed");
+
+} // namespace
+
+TEST(P2pPublicContractTest, RdmaDescriptorSerializationPreservesEveryByte) {
+  FlagcxP2pRdmaDesc input{};
+  input.addr = UINT64_C(0x1020304050607080);
+  input.size = UINT32_C(0x11223344);
+  input.rkey = UINT32_C(0x55667788);
+  input.nmsgs = UINT32_C(0x99aabbcc);
+  input.rid = UINT32_C(0xddeeff00);
+  input.idx = UINT64_C(0x8877665544332211);
+  for (size_t i = 0; i < sizeof(input.padding); ++i)
+    input.padding[i] = static_cast<char>(i * 7 + 3);
+
+  char wire[sizeof(FlagcxP2pRdmaDesc)]{};
+  flagcxP2pSerializeRdmaDesc(input, wire);
+
+  FlagcxP2pRdmaDesc output{};
+  flagcxP2pDeserializeRdmaDesc(wire, &output);
+  EXPECT_EQ(memcmp(&input, &output, sizeof(input)), 0);
+}
 
 TEST(P2pSchedulingTest, AlignedAddressesUseAllDefaultWorkers) {
   int counts[4] = {};

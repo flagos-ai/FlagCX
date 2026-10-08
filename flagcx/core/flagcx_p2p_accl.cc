@@ -28,6 +28,7 @@
 #include "bootstrap.h"
 #include "debug.h"
 #include "p2p_control.h"
+#include "p2p_engine_transport.h"
 #include "p2p_scheduler.h"
 #include "p2p_topo.h"
 #include "p2p_visibility.h"
@@ -448,29 +449,6 @@ void notifThreadFunc(FlagcxAcclEngine *engine) {
       ::close(p.fd);
 }
 
-/* Desc helpers: rkey vector folded into the 64-byte desc */
-
-void fillDescKeys(FlagcxP2pRdmaDesc *desc, const uint32_t *rkeys,
-                  uint32_t nKeys) {
-  desc->rkey = nKeys > 0 ? rkeys[0] : 0;
-  desc->nmsgs = nKeys;
-  memset(desc->padding, 0, sizeof(desc->padding));
-  for (uint32_t k = 1; k < nKeys && k < kMaxNics; k++)
-    memcpy(desc->padding + (k - 1) * sizeof(uint32_t), &rkeys[k],
-           sizeof(uint32_t));
-}
-
-uint32_t descKeyForNic(const FlagcxP2pRdmaDesc &desc, int nic) {
-  const uint32_t nKeys = desc.nmsgs;
-  if (nKeys <= 1 || nic <= 0 || nic >= kMaxNics)
-    return desc.rkey; /* single-key or unknown nic: rkey as-is */
-  if ((uint32_t)nic >= nKeys)
-    return desc.rkey;
-  uint32_t k = 0;
-  memcpy(&k, desc.padding + (nic - 1) * sizeof(uint32_t), sizeof(uint32_t));
-  return k;
-}
-
 bool findMrContaining(FlagcxAcclEngine *engine, uintptr_t addr, size_t size,
                       AcclMrEntry *out) {
   std::lock_guard<std::mutex> lk(engine->mrMu);
@@ -680,7 +658,13 @@ int acclSubmit(FlagcxAcclConn *conn, const std::vector<void *> &localVec,
         slice = std::min(slice, (size_t)(rr->baseAddr + rr->size - rcur));
         rkey = regionKeyForNic(*rr, selected->peerNic);
       } else {
-        rkey = descKeyForNic(descs[i], selected->peerNic);
+        if (flagcxP2pDescGetKey(&descs[i],
+                                static_cast<uint32_t>(selected->peerNic),
+                                &rkey) != flagcxSuccess) {
+          WARN("NET/ACCL_P2P : descriptor has no key for peer nic %d",
+               selected->peerNic);
+          return -1;
+        }
       }
       if (sliceLimit > 0 && slice > sliceLimit &&
           slice - sliceLimit > fragmentLimit)
@@ -1553,7 +1537,8 @@ int flagcxAcclEnginePrepareDesc(FlagcxP2pEngine *e, FlagcxP2pMr mr,
     memset(&desc, 0, sizeof(desc));
     desc.addr = (uint64_t)addr;
     desc.size = (uint32_t)size;
-    fillDescKeys(&desc, entry.rkeys, entry.nKeys);
+    if (flagcxP2pDescSetKeys(&desc, entry.rkeys, entry.nKeys) != flagcxSuccess)
+      return -1;
     flagcxP2pSerializeRdmaDesc(desc, descBuf);
     return 0;
   }
@@ -1576,7 +1561,8 @@ int flagcxAcclEngineMakeDesc(FlagcxP2pConn *c, uint64_t remoteVa, uint32_t size,
       memset(desc, 0, sizeof(*desc));
       desc->addr = remoteVa;
       desc->size = size;
-      fillDescKeys(desc, r->rkeys, r->nKeys);
+      if (flagcxP2pDescSetKeys(desc, r->rkeys, r->nKeys) != flagcxSuccess)
+        return -1;
       return 0;
     }
   }

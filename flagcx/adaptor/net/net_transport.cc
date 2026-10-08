@@ -8,6 +8,28 @@
 
 #include <limits.h>
 
+flagcxResult_t flagcxTransportResolveRegion(const flagcxTransportRegion *region,
+                                            uint64_t offset, size_t size,
+                                            uint32_t keyIndex, int localKey,
+                                            uintptr_t *address, uint32_t *key) {
+  if (region == NULL || region->mrInfo == NULL || address == NULL ||
+      key == NULL || (localKey != 0 && localKey != 1) ||
+      region->base > UINTPTR_MAX - region->size || offset > region->size ||
+      size > region->size - offset)
+    return flagcxInvalidArgument;
+
+  const struct flagcxNetMrInfo *mrInfo = region->mrInfo;
+  if (mrInfo->nKeys == 0 || mrInfo->nKeys > FLAGCX_NET_MAX_MR_KEYS)
+    return flagcxInvalidArgument;
+  const uint32_t resolvedIndex = mrInfo->nKeys == 1 ? 0 : keyIndex;
+  if (resolvedIndex >= mrInfo->nKeys)
+    return flagcxNotSupported;
+
+  *address = region->base + offset;
+  *key = localKey ? mrInfo->lkeys[resolvedIndex] : mrInfo->rkeys[resolvedIndex];
+  return flagcxSuccess;
+}
+
 static thread_local struct flagcxNetSubmitContext flagcxNetThreadSubmitContext =
     {};
 static thread_local bool flagcxNetThreadSubmitContextValid = false;

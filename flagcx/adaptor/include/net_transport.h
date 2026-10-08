@@ -29,6 +29,27 @@ struct flagcxNetLane {
 typedef struct flagcxNetLane flagcxTransportLane;
 typedef struct flagcxNetLaneSet flagcxTransportLaneSet;
 
+// Lightweight view of one registered region. Higher layers may derive this
+// from a rank-indexed symmetric-window registration or from a standalone P2P
+// MR segment. The view does not own either the provider MR handle or the key
+// metadata.
+struct flagcxNetRegion {
+  uintptr_t base;
+  size_t size;
+  const struct flagcxNetMrInfo *mrInfo;
+  void *localMrHandle;
+};
+typedef struct flagcxNetRegion flagcxTransportRegion;
+
+// Resolve an offset and provider-key index without exposing a communicator's
+// rank-indexed registration object to the adaptor. A single exported key is
+// valid for every lane of a single-device connection; multi-key regions
+// require an exact key index.
+flagcxResult_t flagcxTransportResolveRegion(const flagcxTransportRegion *region,
+                                            uint64_t offset, size_t size,
+                                            uint32_t keyIndex, int localKey,
+                                            uintptr_t *address, uint32_t *key);
+
 struct flagcxNetLaneSet {
   uint32_t count;
   uint32_t unorderedCursor;
