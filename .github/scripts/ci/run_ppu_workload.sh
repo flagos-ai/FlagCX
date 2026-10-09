@@ -32,6 +32,7 @@ case "$workload" in
     command -v python3
     python3 -c 'import torch; print("torch", torch.__version__, "devices", torch.cuda.device_count()); assert torch.cuda.device_count() >= 8'
     build_flagcx
+    python3 -m pip install 'setuptools_scm>=8'
     (
       # The build script is the repo root's; plugin/torch holds only the native
       # backend sources now, and the Python package lives in src/.

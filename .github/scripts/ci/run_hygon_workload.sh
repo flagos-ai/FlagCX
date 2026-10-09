@@ -35,6 +35,7 @@ case "$workload" in
     export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
     build_flagcx
+    python3 -m pip install 'setuptools_scm>=8'
     (
       cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
