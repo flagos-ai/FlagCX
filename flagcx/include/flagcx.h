@@ -563,6 +563,21 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx);
 
+/* Stream-ordered Get from a symmetric peer window into a registered local
+ * window. The intra-node path copies through the peer IPC mapping; otherwise
+ * the operation is submitted to the network RMA proxy. Completion on stream
+ * makes the destination device-visible. A successful operation also advances
+ * the RMA completion counter once, after data movement has completed.
+ * localbuff must belong to a live symmetric window. flags is reserved (0).
+ * Keep both windows registered until stream completion (or the corresponding
+ * completion-counter advance); the peer must likewise keep its source window
+ * valid until the read has finished. */
+flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
+                              flagcxDataType_t datatype, int peer,
+                              flagcxWindow_t peerWin, size_t peerWinOffset,
+                              unsigned int flags, flagcxComm_t comm,
+                              flagcxStream_t stream);
+
 /* RDMA WRITE: push size bytes from local srcOffset to remote peer's buffer at
  * dstOffset. srcMrIdx / dstMrIdx index the per-window MR handle table
  * populated by flagcxOneSideRegister. Completion is local/source transport

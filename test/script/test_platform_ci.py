@@ -1215,6 +1215,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('std::getenv("FLAGCX_IB_DISABLE")', rma_fixture)
         self.assertIn('std::getenv("FLAGCX_P2P_DISABLE")', rma_fixture)
+        self.assertIn("RmaTest.GetAsyncOffsets", rma_makefile)
+        self.assertIn("RmaTest.IpcGetCounterFollowsCopy", rma_makefile)
+        self.assertIn("run-mpi-ipc", rma_makefile)
+        self.assertIn("run-mpi-net", rma_makefile)
 
         for path in (
             REPO_ROOT / "flagcx/core/flagcx_hetero.cc",

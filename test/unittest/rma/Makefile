@@ -38,7 +38,7 @@ NET_FILTER ?= *
 HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=$(RMA_VMM_ENABLE) $(RMA_PLATFORM_ENV)
 IPC_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=1 -x FLAGCX_P2P_DISABLE=0
 NET_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1
-IPC_FILTER := RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals
+IPC_FILTER := RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals
 
 .PHONY: all clean run-unit run-mpi-ipc run-mpi-net run-mpi run \
 	gdr-visibility-obj

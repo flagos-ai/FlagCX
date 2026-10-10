@@ -23,6 +23,7 @@ enum flagcxRmaDescType {
   // A release is deliberately a separate transport submission.  The proxy
   // posts it only after every data member in releaseGroup has completed.
   FLAGCX_RMA_RELEASE = 4,
+  FLAGCX_RMA_IPC_GET = 5,
 };
 
 enum flagcxRmaSubmitFlags {
@@ -61,11 +62,14 @@ struct flagcxRmaDesc {
   size_t size;
   int srcMrIdx; // -1 when not used (e.g. signal-only PutSignal)
   int dstMrIdx;
-  uint64_t signalOff;   // PUT_SIGNAL only
-  uint64_t signalValue; // PUT_SIGNAL only
-  uint64_t putValue;    // PUT_VALUE only (value embedded in desc)
-  void *request;        // filled by progress thread after posting IB op
-  uint64_t opSeq;       // per-peer monotonic sequence number
+  uint64_t signalOff;        // PUT_SIGNAL only
+  uint64_t signalValue;      // PUT_SIGNAL only
+  uint64_t putValue;         // PUT_VALUE only (value embedded in desc)
+  void *request;             // filled by progress thread after posting IB op
+  flagcxEvent_t streamEvent; // NET readiness or IPC copy completion
+  volatile int eventArmed;
+  flagcxResult_t ipcStatus;
+  uint64_t opSeq; // per-peer monotonic sequence number
   // Shared-transport ordering identity. Public APIs use orderingKey 0.
   uint64_t orderingKey;
   uint64_t groupId;
@@ -269,7 +273,16 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx,
                                uint64_t orderingKey = 0,
-                               bool independent = false);
+                               bool independent = false,
+                               flagcxEvent_t streamEvent = nullptr,
+                               uint64_t *assignedSeq = nullptr);
+
+flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream);
 
 // Data + signal combined (chained WRITE + ATOMIC in IB backend)
 // When size == 0, only signal ATOMIC is posted (signal-only mode)

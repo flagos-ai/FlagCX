@@ -4282,6 +4282,50 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
                          srcMrIdx, dstMrIdx);
 }
 
+flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
+                              flagcxDataType_t datatype, int peer,
+                              flagcxWindow_t peerWin, size_t peerWinOffset,
+                              unsigned int flags, flagcxComm_t comm,
+                              flagcxStream_t stream) {
+  if (flags != 0 || comm == NULL || comm->heteroComm == NULL ||
+      peerWin == NULL || stream == NULL)
+    return flagcxInvalidArgument;
+  flagcxHeteroComm_t hetero = comm->heteroComm;
+  if (peer < 0 || peer >= hetero->nRanks || !peerWin->isSymmetricDefault ||
+      peerWin->defaultBase == NULL)
+    return flagcxInvalidArgument;
+  const size_t elementSize = getFlagcxDataTypeSize(datatype);
+  if (elementSize == 0 || count > SIZE_MAX / elementSize)
+    return flagcxInvalidArgument;
+  const size_t size = count * elementSize;
+  if (localbuff == NULL)
+    return flagcxInvalidArgument;
+  flagcxSymWindow_t srcWindow = peerWin->defaultBase;
+  if (!srcWindow->published || srcWindow->owner != peerWin)
+    return flagcxInvalidArgument;
+  bool sourceOwnedByComm = false;
+  for (flagcxSymWindow_t window = hetero->symWindows; window != NULL;
+       window = window->next) {
+    if (window == srcWindow) {
+      sourceOwnedByComm = true;
+      break;
+    }
+  }
+  if (!sourceOwnedByComm)
+    return flagcxInvalidArgument;
+  if (peerWinOffset > srcWindow->heapSize ||
+      size > srcWindow->heapSize - peerWinOffset)
+    return flagcxInvalidArgument;
+  size_t dstOffset = 0;
+  flagcxSymWindow_t dstWindow =
+      flagcxSymWindowFind(hetero, localbuff, size, &dstOffset);
+  if (dstWindow == NULL)
+    return flagcxInvalidArgument;
+  return flagcxHeteroGetStream(hetero, peer, peerWinOffset, dstOffset, size,
+                               srcWindow->mrIndex, dstWindow->mrIndex,
+                               srcWindow, dstWindow, stream);
+}
+
 flagcxResult_t flagcxPut(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx) {

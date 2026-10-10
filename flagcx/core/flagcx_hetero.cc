@@ -27,6 +27,8 @@
 #endif
 #define FLAGCX_RMA_BATCH_MAX_LIMIT 256
 
+static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer);
+
 static_assert(static_cast<uint32_t>(FLAGCX_RMA_SUBMIT_DATA) ==
                   static_cast<uint32_t>(FLAGCX_NET_SUBMIT_DATA),
               "RMA and transport data flags must match");
@@ -224,6 +226,8 @@ static flagcxResult_t flagcxRmaProxyTrackDesc(struct flagcxRmaProxyState *proxy,
 static void flagcxRmaDescDestroy(struct flagcxRmaDesc *desc) {
   if (desc == NULL)
     return;
+  if (desc->streamEvent != NULL)
+    deviceAdaptor->eventDestroy(desc->streamEvent);
   flagcxRmaReleaseGroupRelease(desc->releaseGroup);
   free(desc);
 }
@@ -1125,10 +1129,48 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
       }
     }
 
+    // A network Get event marks its input stream as ready. An IPC Get event
+    // marks the D2D copy as complete. The IPC descriptor is a per-peer barrier
+    // between preceding and following network submissions.
+    if (desc->streamEvent != NULL) {
+      if (!__atomic_load_n(&desc->eventArmed, __ATOMIC_ACQUIRE))
+        break;
+      flagcxResult_t eventResult =
+          desc->ipcStatus == flagcxSuccess
+              ? deviceAdaptor->eventQuery(desc->streamEvent)
+              : desc->ipcStatus;
+      if (eventResult == flagcxInProgress)
+        break;
+      if (desc->type == FLAGCX_RMA_IPC_GET) {
+        if (__atomic_load_n(&proxy->doneSeqs[peer], __ATOMIC_ACQUIRE) <
+            desc->opSeq - 1)
+          break;
+        __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyCompleteDesc(proxy, peer, desc, eventResult);
+        if (!proxy->useStreamOps) {
+          pthread_mutex_lock(&proxy->doneMutex);
+          pthread_cond_broadcast(&proxy->doneCond);
+          pthread_mutex_unlock(&proxy->doneMutex);
+        }
+        flagcxRmaDescDestroy(desc);
+        did = true;
+        if (eventResult != flagcxSuccess)
+          break;
+        continue;
+      }
+      if (eventResult != flagcxSuccess) {
+        __atomic_store_n(&proxy->cis[peer], ci + 1, __ATOMIC_RELEASE);
+        flagcxRmaProxyCompleteDesc(proxy, peer, desc, eventResult);
+        flagcxRmaDescDestroy(desc);
+        did = true;
+        break;
+      }
+    }
+
     // Poll readySeq: wait for GPU stream to signal source data is committed.
     // Both STREAM_OPS (streamWriteValue64) and HOST_FUNC (callback) write here.
     uint64_t readySeq = UINT64_MAX;
-    if (proxy->readySeqsCpu != NULL) {
+    if (proxy->readySeqsCpu != NULL && desc->streamEvent == NULL) {
       readySeq = __atomic_load_n(&proxy->readySeqsCpu[peer], __ATOMIC_ACQUIRE);
       if (readySeq < desc->opSeq) {
         // GPU hasn't signaled ready yet; skip this peer for now
@@ -1138,6 +1180,8 @@ static bool flagcxRmaProxyPollNonPersistDesc(struct flagcxRmaProxyState *proxy,
 
     // Batch submission is an adaptor capability, not an IB-specific property.
     // This also lets BAREX use its native WriteBatch implementation.
+    if (sendComm == NULL)
+      break;
     bool canBatch = desc->type == FLAGCX_RMA_PUT && comm->netAdaptor != NULL &&
                     comm->netAdaptor->iputBatch != NULL;
     if (canBatch) {
@@ -1311,7 +1355,12 @@ static bool flagcxRmaProxyProgress(struct flagcxRmaProxyState *proxy,
     }
 
     void *sendComm = (fullSendComms != NULL) ? fullSendComms[p] : NULL;
-    if (sendComm != NULL) {
+    const uint32_t ci = __atomic_load_n(&proxy->cis[p], __ATOMIC_RELAXED);
+    const bool ipcHead = !flagcxRmaProxyCircularBufEmpty(proxy, p) &&
+                         proxy->circularBuffers[(size_t)p * proxy->queueSize +
+                                                (ci & proxy->queueMask)]
+                                 ->type == FLAGCX_RMA_IPC_GET;
+    if (sendComm != NULL || ipcHead) {
       if (flagcxRmaProxyPollNonPersistDesc(proxy, p, sendComm))
         did = true;
     } else if (!flagcxRmaProxyCircularBufEmpty(proxy, p)) {
@@ -1359,6 +1408,9 @@ flagcxHeteroRmaProxyProgressOnce(struct flagcxRmaProxyState *proxy,
 
 static void *flagcxRmaProxyProgressThread(void *arg) {
   struct flagcxRmaProxyState *proxy = (struct flagcxRmaProxyState *)arg;
+  if (deviceAdaptor != NULL && deviceAdaptor->setDevice != NULL &&
+      deviceAdaptor->setDevice(proxy->comm->cudaDev) != flagcxSuccess)
+    flagcxRmaProxyPublishError(proxy);
   bool stopping = false;
   while (true) {
     if (__atomic_load_n(&proxy->stop, __ATOMIC_ACQUIRE))
@@ -2104,27 +2156,36 @@ flagcxResult_t flagcxHeteroBatchPutSignal(
 flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
                                size_t srcOffset, size_t dstOffset, size_t size,
                                int srcMrIdx, int dstMrIdx, uint64_t orderingKey,
-                               bool independent) {
+                               bool independent, flagcxEvent_t streamEvent,
+                               uint64_t *assignedSeq) {
+  // Ownership of a non-null event transfers here, including on failure.
+  auto reject = [streamEvent](flagcxResult_t result) {
+    if (streamEvent != NULL)
+      deviceAdaptor->eventDestroy(streamEvent);
+    return result;
+  };
   if (comm == NULL)
-    return flagcxInvalidArgument;
+    return reject(flagcxInvalidArgument);
   if (comm->netAdaptor == NULL || comm->netAdaptor->iget == NULL)
-    return flagcxNotSupported;
+    return reject(flagcxNotSupported);
   if (peer < 0 || peer >= comm->nRanks) {
     WARN("flagcxHeteroGet: peer %d out of range (nRanks=%d)", peer,
          comm->nRanks);
-    return flagcxInvalidArgument;
+    return reject(flagcxInvalidArgument);
   }
   if (!flagcxRmaMrIndexIsValid(comm, srcMrIdx) ||
       !flagcxRmaMrIndexIsValid(comm, dstMrIdx))
-    return flagcxNotSupported;
+    return reject(flagcxNotSupported);
   if (comm->rmaProxy == NULL) {
     WARN("flagcxHeteroGet: rmaProxy not initialized");
-    return flagcxInternalError;
+    return reject(flagcxInternalError);
   }
   struct flagcxRmaDesc *desc = (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
   if (desc == NULL)
-    return flagcxSystemError;
+    return reject(flagcxSystemError);
   desc->type = FLAGCX_RMA_GET;
+  desc->streamEvent = streamEvent;
+  desc->eventArmed = streamEvent != NULL;
   desc->srcOff = (uint64_t)srcOffset;
   desc->dstOff = (uint64_t)dstOffset;
   desc->size = size;
@@ -2133,10 +2194,118 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
   desc->orderingKey = independent ? orderingKey : 0;
   desc->submitFlags = FLAGCX_RMA_SUBMIT_DATA |
                       (independent ? FLAGCX_RMA_SUBMIT_INDEPENDENT : 0);
-  flagcxResult_t res = flagcxRmaProxyEnqueueDesc(comm->rmaProxy, peer, desc);
+  flagcxResult_t res = flagcxRmaProxyEnqueueDesc(
+      comm->rmaProxy, peer, desc, streamEvent != NULL, assignedSeq);
   if (res != flagcxSuccess)
-    free(desc);
+    flagcxRmaDescDestroy(desc);
   return res;
+}
+
+flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream) {
+  if (comm == NULL || stream == NULL || peer < 0 || peer >= comm->nRanks)
+    return flagcxInvalidArgument;
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL)
+    return flagcxInternalError;
+
+  if (!flagcxParamP2pDisable() && flagcxIsIntraNode(comm, peer) &&
+      srcWindow != NULL && dstWindow != NULL && dstWindow->localBase != NULL &&
+      dstOffset <= dstWindow->heapSize &&
+      size <= dstWindow->heapSize - dstOffset && deviceAdaptor != NULL &&
+      deviceAdaptor->deviceMemcpy != NULL &&
+      deviceAdaptor->eventCreate != NULL &&
+      deviceAdaptor->eventRecord != NULL && deviceAdaptor->eventQuery != NULL) {
+    void *srcBuf = NULL;
+    flagcxResult_t mapResult = flagcxSymWindowResolveIpcPeerPtr(
+        comm, srcWindow, peer, srcOffset, size, &srcBuf);
+    if (mapResult == flagcxSuccess && srcBuf != NULL) {
+      void *dstBuf = (void *)((uintptr_t)dstWindow->localBase + dstOffset);
+      flagcxEvent_t doneEvent = NULL;
+      flagcxResult_t result =
+          deviceAdaptor->eventCreate(&doneEvent, flagcxEventDisableTiming);
+      if (result != flagcxSuccess)
+        return result;
+      struct flagcxRmaDesc *desc =
+          (struct flagcxRmaDesc *)calloc(1, sizeof(*desc));
+      if (desc == NULL) {
+        deviceAdaptor->eventDestroy(doneEvent);
+        return flagcxSystemError;
+      }
+      desc->type = FLAGCX_RMA_IPC_GET;
+      desc->streamEvent = doneEvent;
+      desc->ipcStatus = flagcxSuccess;
+      desc->submitFlags = FLAGCX_RMA_SUBMIT_DATA;
+      desc->srcMrIdx = -1;
+      desc->dstMrIdx = -1;
+
+      pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+      while (true) {
+        if (__atomic_load_n(&proxy->quiesced, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&proxy->pendingError, __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&proxy->rmaError, __ATOMIC_ACQUIRE)) {
+          pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+          flagcxRmaDescDestroy(desc);
+          return flagcxInvalidUsage;
+        }
+        result = flagcxInProgress;
+        if (!flagcxRmaProxyCircularBufFull(proxy, peer))
+          result = flagcxRmaProxyPrepareDesc(proxy, peer, desc);
+        if (result == flagcxSuccess)
+          break;
+        if (result != flagcxInProgress) {
+          pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+          flagcxRmaDescDestroy(desc);
+          return result;
+        }
+        pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+        sched_yield();
+        pthread_mutex_lock(&proxy->peerProducerMutexes[peer]);
+      }
+      uint32_t pi = __atomic_load_n(&proxy->pis[peer], __ATOMIC_RELAXED);
+      proxy->circularBuffers[(size_t)peer * proxy->queueSize +
+                             (pi & proxy->queueMask)] = desc;
+      __atomic_store_n(&proxy->pis[peer], pi + 1, __ATOMIC_RELEASE);
+
+      // Submission remains under the producer lock until eventArmed is set.
+      // The error drain takes this lock, so it cannot free desc mid-submit.
+      if (desc->opSeq > 1)
+        result = flagcxRmaWaitDone(proxy, peer, desc->opSeq - 1, stream);
+      if (result == flagcxSuccess && size > 0)
+        result = deviceAdaptor->deviceMemcpy(
+            dstBuf, srcBuf, size, flagcxMemcpyDeviceToDevice, stream, NULL);
+      if (result == flagcxSuccess)
+        result = deviceAdaptor->eventRecord(doneEvent, stream);
+      desc->ipcStatus = result;
+      __atomic_store_n(&desc->eventArmed, 1, __ATOMIC_RELEASE);
+      pthread_mutex_unlock(&proxy->peerProducerMutexes[peer]);
+      return result;
+    }
+  }
+
+  uint64_t assignedSeq = 0;
+  if (deviceAdaptor == NULL || deviceAdaptor->eventCreate == NULL ||
+      deviceAdaptor->eventRecord == NULL || deviceAdaptor->eventQuery == NULL)
+    return flagcxNotSupported;
+  flagcxEvent_t readyEvent = NULL;
+  flagcxResult_t res =
+      deviceAdaptor->eventCreate(&readyEvent, flagcxEventDisableTiming);
+  if (res != flagcxSuccess)
+    return res;
+  res = deviceAdaptor->eventRecord(readyEvent, stream);
+  if (res != flagcxSuccess) {
+    deviceAdaptor->eventDestroy(readyEvent);
+    return res;
+  }
+  res = flagcxHeteroGet(comm, peer, srcOffset, dstOffset, size, srcMrIdx,
+                        dstMrIdx, 0, false, readyEvent, &assignedSeq);
+  if (res != flagcxSuccess)
+    return res;
+  return flagcxRmaWaitDone(proxy, peer, assignedSeq, stream);
 }
 
 flagcxResult_t flagcxHeteroPutSignal(flagcxHeteroComm_t comm, int peer,
