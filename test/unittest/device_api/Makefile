@@ -45,6 +45,12 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
+# DU kernel objects contain absolute host relocations. Link their test
+# executables without PIE so the host linker accepts those relocations.
+ifeq ($(USE_DU), 1)
+ALL_LINK += -no-pie
+endif
+
 # Kunlunxin: device_api.o (xshmem Device API kernel) references xshmem host symbols
 # that live in libbkcl, and the XRE runtime libs. libflagcx.so imports (not
 # exports) these, so the executable must link them explicitly. Add rpaths so the

@@ -12,11 +12,7 @@
 
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#if defined(USE_ILUVATAR_ADAPTOR)
-#include "iluvatar_adaptor.h"
-#else
 #include "nvidia_adaptor.h"
-#endif
 #include "flagcx_device_internal.h"
 
 // IR wrapper declarations + implementations (needed for nvcc inline compilation)
@@ -25,8 +21,7 @@
 
 #include "device_ir.h"
 
-// Keep the shared IR tests backend-neutral. Existing backends resolve this to
-// 64; the Iluvatar DefaultBackend resolves it to its 32-bit completion domain.
+// Resolve the backend's completion width without inspecting its storage.
 static constexpr int kCompletionBits =
     flagcxBackendCompletionBits<DeviceAPI>::value;
 
@@ -74,16 +69,9 @@ __global__ void kernelCoopGroupsS_block(int *results) {
 
 // Sub-kernel: tile_span coop check.
 __global__ void kernelCoopGroupsS_tileSpan(int *results) {
-#if defined(USE_ILUVATAR_ADAPTOR)
-  // CoreX only supports an exact full-block tile span. This 128-thread block
-  // is two complete 64-lane waves.
-  uint32_t t0 = 0;
-  uint32_t nTiles = FLAGCX_BLOCK_DIM_X / FLAGCX_SIMT_WIDTH;
-#else
   int tileIdx = FLAGCX_THREAD_IDX_X / 32;
   uint32_t t0 = (uint32_t)tileIdx;
   uint32_t nTiles = 1;
-#endif
   uint32_t id = 0;
 
   int rank = flagcxCoopThreadRankExS(FLAGCX_COOP_TILE_SPAN, t0, nTiles, id);
@@ -94,11 +82,7 @@ __global__ void kernelCoopGroupsS_tileSpan(int *results) {
   __shared__ int pass;
   if (FLAGCX_THREAD_IDX_X == 0) pass = 1;
   __syncthreads();
-#if defined(USE_ILUVATAR_ADAPTOR)
-  if (rank != (int)FLAGCX_THREAD_IDX_X || size != (int)FLAGCX_BLOCK_DIM_X)
-#else
   if (rank != (int)(FLAGCX_THREAD_IDX_X % 32) || size != 32)
-#endif
     atomicExch(&pass, 0);
   __syncthreads();
   if (FLAGCX_THREAD_IDX_X == 0) results[1] = pass;

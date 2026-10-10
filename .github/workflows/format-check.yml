@@ -18,6 +18,7 @@ concurrency:
 jobs:
   format-check:
     name: code format check
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 643 }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

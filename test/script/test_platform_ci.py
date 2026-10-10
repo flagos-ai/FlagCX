@@ -11,6 +11,82 @@ HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_device_kernel_sources_use_the_selected_platform(self):
+        for platform, adaptor in (
+            ("nvidia", "nvidia_adaptor.h"),
+            ("du", "du_adaptor.h"),
+            ("iluvatar", "iluvatar_adaptor.h"),
+        ):
+            for kernel in ("device_api.cu", "device_ir.cu"):
+                source = (REPO_ROOT / "test/kernel" / platform / kernel).read_text()
+                self.assertIn(f'#include "{adaptor}"', source)
+                self.assertNotIn('../nvidia/', source)
+                self.assertNotIn('USE_ILUVATAR_ADAPTOR', source)
+
+        corex_api = (REPO_ROOT / "test/kernel/iluvatar/device_api.cu").read_text()
+        self.assertIn("flagcxIluvatarAtomicContractKernel", corex_api)
+        self.assertIn("flagcxIluvatarUnsupportedCoopKernel", corex_api)
+
+    def test_hygon_device_api_build_and_suite_configuration(self):
+        suite_dir = REPO_ROOT / "test/unittest/device_api"
+        result = subprocess.run(
+            [
+                "make", "-n", "-C", str(suite_dir), "mpi",
+                "USE_DU=1", "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk/cuda/cuda-12",
+                "CCL_HOME=/opt/dtk/cuda/cuda-12",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for target in (
+            "test_device_api_intra", "test_device_api_inter",
+            "test_device_ir_intra", "test_device_ir_inter",
+            "test_device_ir_unified_intra", "test_device_ir_unified_inter",
+        ):
+            self.assertIn(target, result.stdout)
+        self.assertIn("-DUSE_DU_ADAPTOR", result.stdout)
+        for kernel in ("device_api.cu", "device_ir.cu"):
+            compile_line = next(
+                line for line in result.stdout.splitlines()
+                if "/bin/nvcc " in line and kernel in line
+            )
+            self.assertNotIn("-Xcompiler -fPIC", compile_line)
+        for target in (
+            "test_device_api_intra", "test_device_api_inter",
+            "test_device_ir_intra", "test_device_ir_inter",
+            "test_device_ir_unified_intra", "test_device_ir_unified_inter",
+        ):
+            link_line = next(
+                line for line in result.stdout.splitlines()
+                if line.startswith("g++ ") and f"/bin/{target} " in line
+            )
+            self.assertIn("-no-pie", link_line)
+
+        for suite in ("device_api", "device_api_unified_ir"):
+            configured = subprocess.run(
+                [
+                    "bash", "-c",
+                    'source "$1"; flagcx_ci_configure_suite "$2"; '
+                    'flagcx_ci_build_suite_override "$2" ""; '
+                    'build_handled=$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED; '
+                    'flagcx_ci_run_suite_override "$2" ""; '
+                    'printf "%s %s %s %s %s %s %s" "$FLAGCX_CI_NODE_NP" '
+                    '"$FLAGCX_CI_INTRA_NP" "$CUDA_VISIBLE_DEVICES" '
+                    '"$FLAGCX_IB_HCA" '
+                    '"${FLAGCX_CI_PROJECT_MAKE_ARGS[*]}" '
+                    '"$build_handled" "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED"',
+                    "bash", str(HYGON_ENV), suite,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("2 4 0,1,6,7 shca_0,shca_3", configured.stdout)
+            self.assertIn("COMPILE_KERNEL=1", configured.stdout)
+            self.assertTrue(configured.stdout.endswith(" 0 0"))
+
     def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
         makefile = (REPO_ROOT / "Makefile").read_text()
@@ -300,6 +376,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "hygon": [
                 "adaptor",
                 "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
@@ -507,7 +586,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / "test/script/symmem_test.sh"
         ).read_text()
 
-        self.assertIn('adaptor|p2p|rma|runner|symmem)', unit_runner)
+        self.assertIn(
+            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            unit_runner,
+        )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
         self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)

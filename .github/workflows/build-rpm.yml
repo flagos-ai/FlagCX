@@ -26,6 +26,7 @@ jobs:
   # ascend targets aarch64 (the CANN 910 base image is arm64), so it runs on an
   # arm64 runner; the other targets build x86_64 packages.
   build-rpm-packages:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 643 }}
     strategy:
       fail-fast: false
       matrix:

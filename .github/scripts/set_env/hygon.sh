@@ -40,14 +40,10 @@ FLAGCX_CI_COMMON_MAKE_ARGS=(
   CCL_HOME="$CUDA_PATH"
 )
 
-# The DU makefile does not currently pull the default device-api backend into
-# libflagcx.so by itself, so CI passes it through as an extra source.
-FLAGCX_CI_PROJECT_MAKE_ARGS=(
-  "${FLAGCX_CI_COMMON_MAKE_ARGS[@]}"
-  PLATFORM_EXTRA_SRCS=flagcx/adaptor/device_api/default_dev_api_backend.cc
-)
+FLAGCX_CI_PROJECT_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_TEST_MAKE_ARGS=("${FLAGCX_CI_COMMON_MAKE_ARGS[@]}")
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
+FLAGCX_CI_UNIFIED_IR_MPI_ARGS=()
 
 FLAGCX_CI_INTRA_NP=8
 FLAGCX_CI_NODE_NP=4
@@ -91,9 +87,17 @@ flagcx_ci_configure_suite() {
         export NP=4
       fi
       ;;
-    device_api)
+    device_api|device_api_unified_ir)
+      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
+      export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+      if [[ "$suite" == "device_api" ]]; then
+        FLAGCX_CI_DEVICE_API_TRACE_K5=1
+      fi
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      FLAGCX_CI_INTRA_NP=4
+      # Each logical node sees two GPUs next to its SHCA rail.
+      FLAGCX_CI_NODE_NP=2
       ;;
   esac
 }
@@ -109,7 +113,8 @@ flagcx_ci_prepare() {
 
   if [[ "$suite" == "adaptor" || "$suite" == "p2p" ||
         "$suite" == "rma" || "$suite" == "runner" ||
-        "$suite" == "symmem" ]]; then
+        "$suite" == "symmem" || "$suite" == "device_api" ||
+        "$suite" == "device_api_unified_ir" ]]; then
     echo "Network interfaces visible inside the CI container:"
     ls /sys/class/net 2>/dev/null || true
     echo "RDMA devices visible inside the CI container:"
@@ -139,12 +144,6 @@ flagcx_ci_build_suite_override() {
   shift 2 || true
   local -a args=("$@")
 
-  if [[ "$suite" == "device_api" ]]; then
-    FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1
-    echo "Skipping Hygon device_api build: DU test kernels do not provide all launchers required by the current device_api tests."
-    return
-  fi
-
   if [[ "$suite" == "symmem" ]]; then
     FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1
     cmake -S "$PROJECT_ROOT/third-party/googletest" \
@@ -162,12 +161,6 @@ flagcx_ci_run_suite_override() {
   local suite_dir=$2
   shift 2
   local -a args=("$@")
-
-  if [[ "$suite" == "device_api" ]]; then
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-    echo "Skipping Hygon device_api tests: DU launcher coverage is incomplete in the current test kernels."
-    return
-  fi
 
   FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
 }

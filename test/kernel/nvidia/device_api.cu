@@ -27,11 +27,7 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
-#if defined(USE_ILUVATAR_ADAPTOR)
-#include "iluvatar_adaptor.h"
-#else
 #include "nvidia_adaptor.h"
-#endif
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <cuda_runtime.h>
@@ -1314,8 +1310,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     warpValues[FLAGCX_THREAD_IDX_X] = rank + 1;
     warp.sync();
     if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      // Reading the last lane also verifies that lanes 32-63 participate on
-      // a 64-lane CoreX wave.
+      // Read the final lane after the warp synchronization.
       results[1] =
           (size == FLAGCX_SIMT_WIDTH && rank == 0 &&
            warpValues[FLAGCX_SIMT_WIDTH - 1] == FLAGCX_SIMT_WIDTH)
@@ -1335,9 +1330,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     }
   }
 
-  // CoreX has no verified partial-wave barrier. Its production implementation
-  // traps instead of widening Tile<8> to a full-wave sync.
-#if !defined(USE_ILUVATAR_ADAPTOR)
   // Tile<8>
   {
     flagcxCoopTile<8> tile;
@@ -1348,10 +1340,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     }
     tile.sync();
   }
-#else
-  if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0)
-    results[3] = 1;
-#endif
 
   // Lanes (full warp mask)
   {

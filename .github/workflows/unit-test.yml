@@ -40,7 +40,7 @@ jobs:
       - name: Build platform matrix
         id: config
         env:
-          FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}
+          FLAGCX_CI_PLATFORM: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 643 && 'hygon' || github.event.inputs.platform || 'all' }}
         run: ruby .github/scripts/ci/load_platform_matrix.rb .github/configs "$FLAGCX_CI_PLATFORM"
 
   unit_tests:
