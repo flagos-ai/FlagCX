@@ -342,6 +342,9 @@ int flagcxP2pEngineMakeDesc(FlagcxP2pConn *conn, uint64_t remoteVa,
 /*  One-sided READ (RDMA GET)                                         */
 /* ================================================================== */
 
+/* A successful asynchronous submission means the transfer was accepted.
+ * Transport errors may occur later; XferStatus reports completion only. */
+
 /**
  * One-sided read of a single buffer (non-blocking).
  * @param conn          Connection handle.
@@ -421,9 +424,9 @@ int flagcxP2pEngineWriteVector(FlagcxP2pConn *conn,
                                const std::vector<char *> &ipcBufs = {});
 
 /**
- * Blocking vectored write. Submits a WriteVector and polls completion via
- * flagcxP2pEngineXferStatus until all slices finish. Aligns with
- * Mooncake's batch_transfer_sync_write: on return the data has landed in
+ * Blocking vectored write. Submits a WriteVector and waits until all slices
+ * finish. Aligns with Mooncake's batch_transfer_sync_write: on return the data
+ * has landed in
  * the peer's memory, so no separate signal/counter is needed.
  * @param conn          Connection handle.
  * @param mrIds         Vector of local memory region handles.
@@ -487,6 +490,9 @@ int flagcxP2pEngineRecv(FlagcxP2pConn *conn, FlagcxP2pMr mr, void *data,
 
 /**
  * Check the completion status of an asynchronous transfer.
+ * Completion does not indicate whether the transfer succeeded. In the shared
+ * Engine, network posting and polling continue on a P2P worker without calls
+ * to this function.
  * @param conn          Connection handle.
  * @param transferId    Transfer ID returned by a read/write/send call.
  * @return              True if the transfer has completed.

@@ -34,16 +34,17 @@
 #include "p2p_visibility.h"
 #include "param.h"
 #include "socket.h"
+#include "worker_pool.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <poll.h>
@@ -51,6 +52,7 @@
 #include <string>
 #include <strings.h>
 #include <thread>
+#include <time.h>
 #include <unordered_map>
 #include <vector>
 #if defined(__linux__)
@@ -286,6 +288,9 @@ struct FlagcxP2pListener {
   char handle[FLAGCX_NET_HANDLE_MAXSIZE];
 };
 
+struct FlagcxP2pWorkerGroup;
+struct FlagcxP2pWorkerState;
+
 struct FlagcxP2pEngine {
   struct flagcxNetAdaptor *adaptor;
   bool isBarex;
@@ -346,6 +351,9 @@ struct FlagcxP2pConn {
   // The main IB adaptor owns a non-atomic request table and CQ progress state.
   // All post/test operations using this connection's sendComm share this lock.
   std::mutex progressMutex;
+  // All transfers on this connection are progressed by one P2P worker.
+  std::shared_ptr<FlagcxP2pWorkerGroup> workerGroup;
+  FlagcxP2pWorkerState *worker = NULL;
 };
 
 struct FlagcxP2pMemRegEntry {
@@ -406,6 +414,38 @@ struct FlagcxP2pXfer {
   std::vector<uint64_t> laneMasks;
 };
 
+struct FlagcxP2pXferRecord {
+  ~FlagcxP2pXferRecord() { (void)pthread_cond_destroy(&waitCond); }
+  uint64_t id = 0;
+  FlagcxP2pXfer xfer;
+  std::atomic<bool> done{false};
+  std::atomic<flagcxResult_t> result{flagcxSuccess};
+  std::mutex waitMutex;
+  pthread_cond_t waitCond = PTHREAD_COND_INITIALIZER;
+};
+
+struct FlagcxP2pWorkerState {
+  ~FlagcxP2pWorkerState() { (void)pthread_cond_destroy(&cond); }
+  int index = -1;
+  std::mutex mutex;
+  pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+  std::vector<std::shared_ptr<FlagcxP2pXferRecord>> active;
+  size_t cursor = 0;
+};
+
+struct FlagcxP2pWorkerGroup {
+  flagcxWorkerPool pool;
+  std::vector<std::unique_ptr<FlagcxP2pWorkerState>> workers;
+  std::atomic<size_t> nextWorker{0};
+
+  ~FlagcxP2pWorkerGroup() {
+    pool.requestStopAll();
+    for (const auto &worker : workers)
+      (void)pthread_cond_signal(&worker->cond);
+    (void)pool.joinAll();
+  }
+};
+
 struct FlagcxDeferredIpcCleanup {
   int device = -1;
   flagcxStream_t stream = NULL;
@@ -423,8 +463,9 @@ static std::mutex &notifyMutex() {
   return mu;
 }
 
-static std::unordered_map<uint64_t, FlagcxP2pXfer> &xferMap() {
-  static std::unordered_map<uint64_t, FlagcxP2pXfer> map;
+static std::unordered_map<uint64_t, std::shared_ptr<FlagcxP2pXferRecord>> &
+xferMap() {
+  static std::unordered_map<uint64_t, std::shared_ptr<FlagcxP2pXferRecord>> map;
   return map;
 }
 
@@ -453,6 +494,85 @@ static uint64_t &nextXferId() {
 #define gXferMap xferMap()
 #define gXferMutex xferMutex()
 #define gNextXferId nextXferId()
+
+static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
+                                        bool *madeProgress, bool *outstanding);
+static void finishP2pWorker(void *opaque);
+
+static std::shared_ptr<FlagcxP2pWorkerGroup>
+getP2pWorkerGroup(FlagcxP2pEngine *engine, int netDev) {
+  typedef std::pair<bool, int> Key;
+  static std::mutex registryMutex;
+  static std::map<Key, std::weak_ptr<FlagcxP2pWorkerGroup>> groups;
+  const Key key(engine->isBarex, netDev);
+  std::lock_guard<std::mutex> lock(registryMutex);
+  std::shared_ptr<FlagcxP2pWorkerGroup> group = groups[key].lock();
+  if (group)
+    return group;
+
+  group.reset(new FlagcxP2pWorkerGroup);
+  const int count = flagcxP2pGlobalConfig().workersPerPool;
+  group->workers.reserve(count);
+  const flagcxWorkerOps ops = {NULL, progressP2pWorker, finishP2pWorker};
+  for (int i = 0; i < count; ++i) {
+    group->workers.emplace_back(new FlagcxP2pWorkerState);
+    FlagcxP2pWorkerState *state = group->workers.back().get();
+    state->index = i;
+    flagcxWorkerPool::Worker *handle = NULL;
+    const flagcxResult_t startResult = group->pool.start(&ops, state, &handle);
+    if (startResult != flagcxSuccess) {
+      WARN("P2P worker group start failed netDev=%d worker=%d result=%d",
+           netDev, i, (int)startResult);
+      return std::shared_ptr<FlagcxP2pWorkerGroup>();
+    }
+  }
+  groups[key] = group;
+  INFO(FLAGCX_INIT, "P2P worker group started adaptor=%s netDev=%d workers=%d",
+       engine->adaptor->name, netDev, count);
+  return group;
+}
+
+static bool bindP2pWorker(FlagcxP2pConn *conn) {
+  conn->workerGroup = getP2pWorkerGroup(conn->engine, conn->netDev);
+  if (!conn->workerGroup)
+    return false;
+  const size_t index =
+      conn->workerGroup->nextWorker.fetch_add(1, std::memory_order_relaxed) %
+      conn->workerGroup->workers.size();
+  conn->worker = conn->workerGroup->workers[index].get();
+  TRACE(FLAGCX_P2P, "P2P connection %p netDev=%d assigned worker=%zu", conn,
+        conn->netDev, static_cast<size_t>(conn->worker->index));
+  return true;
+}
+
+static bool registerP2pTransfer(FlagcxP2pConn *conn, uint64_t id,
+                                FlagcxP2pXfer &&xfer) {
+  if (conn->worker == NULL)
+    return false;
+  std::shared_ptr<FlagcxP2pXferRecord> record;
+  try {
+    record.reset(new FlagcxP2pXferRecord);
+    record->id = id;
+    record->xfer = std::move(xfer);
+    {
+      std::lock_guard<std::mutex> lock(gXferMutex);
+      gXferMap.emplace(id, record);
+      try {
+        std::lock_guard<std::mutex> workerLock(conn->worker->mutex);
+        conn->worker->active.push_back(record);
+      } catch (...) {
+        gXferMap.erase(id);
+        throw;
+      }
+    }
+  } catch (...) {
+    if (record)
+      xfer = std::move(record->xfer);
+    return false;
+  }
+  (void)pthread_cond_signal(&conn->worker->cond);
+  return true;
+}
 #define gDeferredIpcCleanups deferredIpcCleanups()
 #define gDeferredIpcCleanupMutex deferredIpcCleanupMutex()
 
@@ -821,24 +941,6 @@ static bool remoteRangeAvailableLocked(const FlagcxP2pConn *conn,
 static bool refreshRemoteRange(FlagcxP2pConn *conn,
                                const FlagcxP2pRdmaDesc &desc);
 
-// Main-IB request slots and CQs belong to the connection, not to one Engine
-// transfer. Drive sibling transfers before posting/polling the selected one so
-// an unpolled transfer cannot retain every native request slot indefinitely.
-static void progressConnectionTransfersLocked(FlagcxP2pConn *conn,
-                                              uint64_t skipTransferId) {
-  std::vector<struct flagcxP2pTransfer *> transfers;
-  transfers.reserve(gXferMap.size());
-  for (auto &entry : gXferMap) {
-    FlagcxP2pXfer &xfer = entry.second;
-    if (entry.first == skipTransferId || xfer.conn != conn || !xfer.transfer ||
-        !xfer.transfer->initialized)
-      continue;
-    transfers.push_back(xfer.transfer.get());
-  }
-  if (!transfers.empty())
-    (void)flagcxP2pTransferProgressMany(transfers.data(), transfers.size());
-}
-
 static int
 startNetTransfer(FlagcxP2pConn *conn, const std::vector<void *> &dataVec,
                  const std::vector<size_t> &sizeVec,
@@ -1033,27 +1135,10 @@ startNetTransfer(FlagcxP2pConn *conn, const std::vector<void *> &dataVec,
                             1) != flagcxSuccess)
     return -1;
 
-  {
-    std::lock_guard<std::mutex> lock(gXferMutex);
-    progressConnectionTransfersLocked(conn, 0);
-  }
-  struct flagcxP2pTransferStatus status = {};
-  const flagcxResult_t progressResult =
-      flagcxP2pTransferProgress(xfer.transfer.get(), &status);
-  // A zero-accept fatal post completes the whole group synchronously. Do not
-  // publish a transfer id for work that never reached the transport. A
-  // partially accepted fatal post must remain tracked until its accepted
-  // prefix drains; the synchronous API observes the terminal result below.
-  if ((progressResult != flagcxSuccess && status.inFlight == 0) ||
-      (status.done && status.result != flagcxSuccess)) {
-    if (status.done)
-      (void)flagcxP2pTransferReset(xfer.transfer.get());
+  // The worker performs the first post too. A transport failure after this
+  // point is an asynchronous transfer result, not a submission error.
+  if (!registerP2pTransfer(conn, xferId, std::move(xfer))) {
     return -1;
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(gXferMutex);
-    gXferMap.emplace(xferId, std::move(xfer));
   }
   *transferId = xferId;
   return 0;
@@ -1995,16 +2080,148 @@ static int startLocalTransfer(
     return -1;
   }
 
-  std::lock_guard<std::mutex> xferLock(gXferMutex);
-  const uint64_t xferId = gNextXferId++;
-  gXferMap[xferId] = std::move(xfer);
+  uint64_t xferId = 0;
+  {
+    std::lock_guard<std::mutex> xferLock(gXferMutex);
+    xferId = gNextXferId++;
+  }
+  const flagcxStream_t stream = xfer.stream;
+  const flagcxEvent_t event = xfer.event;
+  if (!registerP2pTransfer(conn, xferId, std::move(xfer))) {
+    drainAndCleanupIpcXfer(&xfer);
+    return -1;
+  }
   *transferId = xferId;
   TRACE(FLAGCX_P2P,
         "P2P local transfer submitted conn=%p transferId=%llu stream=%p "
         "event=%p",
-        conn, (unsigned long long)xferId, gXferMap[xferId].stream,
-        gXferMap[xferId].event);
+        conn, (unsigned long long)xferId, stream, event);
   return 0;
+}
+
+static flagcxResult_t progressP2pWorker(void *opaque, bool stopping,
+                                        bool *madeProgress, bool *outstanding) {
+  FlagcxP2pWorkerState *worker = static_cast<FlagcxP2pWorkerState *>(opaque);
+  *madeProgress = false;
+  std::shared_ptr<FlagcxP2pXferRecord> record;
+  {
+    std::unique_lock<std::mutex> lock(worker->mutex);
+    if (worker->active.empty() && !stopping) {
+      // PR1's pool has no wake operation. A bounded wait also lets stopAll()
+      // terminate an idle worker without relying on a new submission.
+      struct timespec deadline;
+      clock_gettime(CLOCK_REALTIME, &deadline);
+      deadline.tv_nsec += 10 * 1000 * 1000;
+      if (deadline.tv_nsec >= 1000 * 1000 * 1000) {
+        deadline.tv_nsec -= 1000 * 1000 * 1000;
+        ++deadline.tv_sec;
+      }
+      (void)pthread_cond_timedwait(&worker->cond, worker->mutex.native_handle(),
+                                   &deadline);
+    }
+    if (worker->active.empty()) {
+      *outstanding = false;
+      return flagcxSuccess;
+    }
+    worker->cursor %= worker->active.size();
+    record = worker->active[worker->cursor++];
+  }
+
+  FlagcxP2pXfer &xfer = record->xfer;
+  flagcxResult_t terminalResult = flagcxSuccess;
+  bool terminal = false;
+  if (xfer.kind == FLAGCX_P2P_XFER_IPC) {
+    const flagcxResult_t deviceResult = setEngineDevice(xfer.conn->engine);
+    const flagcxResult_t queryResult =
+        deviceResult == flagcxSuccess && deviceAdaptor != NULL &&
+                deviceAdaptor->eventQuery != NULL
+            ? deviceAdaptor->eventQuery(xfer.event)
+            : flagcxInternalError;
+    if (queryResult == flagcxSuccess) {
+      cleanupIpcXfer(&xfer);
+      terminal = true;
+    } else if (queryResult != flagcxInProgress) {
+      terminalResult = queryResult;
+      // Keep IPC mappings alive until already queued GPU copies have stopped.
+      if (deviceResult == flagcxSuccess)
+        drainAndCleanupIpcXfer(&xfer);
+      else
+        deferIpcXferCleanup(&xfer);
+      terminal = true;
+    }
+  } else if (xfer.transfer) {
+    const uint32_t submitted = xfer.transfer->submitted;
+    const uint32_t completed = xfer.transfer->completed;
+    struct flagcxP2pTransferStatus status = {};
+    const flagcxResult_t progress =
+        flagcxP2pTransferProgress(xfer.transfer.get(), &status);
+    *madeProgress =
+        status.submitted != submitted || status.completed != completed;
+    if (status.done) {
+      terminalResult =
+          status.result != flagcxSuccess ? status.result : progress;
+      if (flagcxP2pTransferReset(xfer.transfer.get()) != flagcxSuccess)
+        WARN("P2P shared transfer reset failed on worker");
+      terminal = true;
+    }
+  } else {
+    // Preserve the older request representation while its callers are retired.
+    for (int i = xfer.completed; i < xfer.total; ++i) {
+      int done = 0;
+      int sizes = 0;
+      const flagcxResult_t result =
+          xfer.conn->engine->adaptor->test(xfer.requests[i], &done, &sizes);
+      if (result != flagcxSuccess) {
+        terminalResult = result;
+        terminal = true;
+        break;
+      }
+      if (!done)
+        break;
+      ++xfer.completed;
+      *madeProgress = true;
+    }
+    if (xfer.completed >= xfer.total)
+      terminal = true;
+  }
+
+  if (terminal) {
+    xfer.transfer.reset();
+    xfer.netBackend.reset();
+    std::vector<FlagcxP2pTransferStorage>().swap(xfer.transferStorage);
+    std::vector<uint64_t>().swap(xfer.laneMasks);
+    std::vector<void *>().swap(xfer.requests);
+    std::vector<void *>().swap(xfer.openedIpcPtrs);
+    if (terminalResult != flagcxSuccess)
+      WARN("P2P shared transfer %llu completed with error %d",
+           (unsigned long long)record->id, (int)terminalResult);
+    {
+      std::lock_guard<std::mutex> lock(worker->mutex);
+      const auto it =
+          std::find(worker->active.begin(), worker->active.end(), record);
+      if (it != worker->active.end())
+        worker->active.erase(it);
+      *outstanding = !worker->active.empty();
+    }
+    {
+      std::lock_guard<std::mutex> waitLock(record->waitMutex);
+      record->result.store(terminalResult, std::memory_order_relaxed);
+      record->done.store(true, std::memory_order_release);
+    }
+    (void)pthread_cond_broadcast(&record->waitCond);
+    *madeProgress = true;
+  } else {
+    std::lock_guard<std::mutex> lock(worker->mutex);
+    *outstanding = !worker->active.empty();
+  }
+  return flagcxSuccess;
+}
+
+static void finishP2pWorker(void *opaque) {
+  FlagcxP2pWorkerState *worker = static_cast<FlagcxP2pWorkerState *>(opaque);
+  std::lock_guard<std::mutex> lock(worker->mutex);
+  if (!worker->active.empty())
+    WARN("P2P worker exited with %zu active transfers", worker->active.size());
 }
 
 // ============================================================================
@@ -2899,6 +3116,10 @@ FlagcxP2pConn *flagcxP2pEngineConnect(FlagcxP2pEngine *engine,
 
   // Step 6: Close transient bootstrap connection
   bootstrapClose(bsConn);
+  if (!bindP2pWorker(conn)) {
+    flagcxP2pEngineConnDestroy(conn);
+    return NULL;
+  }
   return conn;
 }
 
@@ -3088,6 +3309,10 @@ FlagcxP2pConn *flagcxP2pEngineAccept(FlagcxP2pEngine *engine, char *ipAddrBuf,
 
   // Step 6: Close transient bootstrap connection
   bootstrapClose(bsConn);
+  if (!bindP2pWorker(conn)) {
+    flagcxP2pEngineConnDestroy(conn);
+    return NULL;
+  }
   return conn;
 }
 
@@ -3096,57 +3321,74 @@ int flagcxP2pEngineStartListener(FlagcxP2pConn *conn) {
   return 0;
 }
 
-static bool progressEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
-                                   flagcxResult_t *transferResult);
+static bool readEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
+                               flagcxResult_t *transferResult);
+
+static void
+waitForP2pRecord(const std::shared_ptr<FlagcxP2pXferRecord> &record) {
+  std::unique_lock<std::mutex> lock(record->waitMutex);
+  while (!record->done.load(std::memory_order_acquire))
+    (void)pthread_cond_wait(&record->waitCond,
+                            record->waitMutex.native_handle());
+}
 
 static void drainConnectionTransfers(FlagcxP2pConn *conn) {
   for (;;) {
-    uint64_t transferId = 0;
+    std::shared_ptr<FlagcxP2pXferRecord> record;
     {
       std::lock_guard<std::mutex> lock(gXferMutex);
       for (const auto &entry : gXferMap) {
-        if (entry.second.conn == conn) {
-          transferId = entry.first;
+        if (entry.second->xfer.conn == conn) {
+          record = entry.second;
           break;
         }
       }
     }
-    if (transferId == 0)
+    if (!record)
       return;
-
-    flagcxResult_t transferResult = flagcxSuccess;
-    while (!progressEngineTransfer(conn, transferId, &transferResult))
-      std::this_thread::yield();
+    waitForP2pRecord(record);
+    const flagcxResult_t transferResult =
+        record->result.load(std::memory_order_acquire);
+    {
+      std::lock_guard<std::mutex> lock(gXferMutex);
+      const auto it = gXferMap.find(record->id);
+      if (it != gXferMap.end() && it->second == record)
+        gXferMap.erase(it);
+    }
     if (transferResult != flagcxSuccess) {
       WARN("P2P connection teardown drained failed transfer %llu result=%d",
-           (unsigned long long)transferId, (int)transferResult);
+           (unsigned long long)record->id, (int)transferResult);
     }
   }
 }
 
 static void drainEngineTransfers(FlagcxP2pEngine *engine) {
   for (;;) {
-    FlagcxP2pConn *conn = NULL;
-    uint64_t transferId = 0;
+    std::shared_ptr<FlagcxP2pXferRecord> record;
     {
       std::lock_guard<std::mutex> lock(gXferMutex);
       for (const auto &entry : gXferMap) {
-        if (entry.second.conn != NULL && entry.second.conn->engine == engine) {
-          conn = entry.second.conn;
-          transferId = entry.first;
+        if (entry.second->xfer.conn != NULL &&
+            entry.second->xfer.conn->engine == engine) {
+          record = entry.second;
           break;
         }
       }
     }
-    if (transferId == 0)
+    if (!record)
       return;
-
-    flagcxResult_t transferResult = flagcxSuccess;
-    while (!progressEngineTransfer(conn, transferId, &transferResult))
-      std::this_thread::yield();
+    waitForP2pRecord(record);
+    const flagcxResult_t transferResult =
+        record->result.load(std::memory_order_acquire);
+    {
+      std::lock_guard<std::mutex> lock(gXferMutex);
+      const auto it = gXferMap.find(record->id);
+      if (it != gXferMap.end() && it->second == record)
+        gXferMap.erase(it);
+    }
     if (transferResult != flagcxSuccess) {
       WARN("P2P engine teardown drained failed transfer %llu result=%d",
-           (unsigned long long)transferId, (int)transferResult);
+           (unsigned long long)record->id, (int)transferResult);
     }
   }
 }
@@ -3855,112 +4097,44 @@ int flagcxP2pEngineRecv(FlagcxP2pConn *conn, FlagcxP2pMr mr, void *data,
   return -1;
 }
 
-static bool progressEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
-                                   flagcxResult_t *transferResult) {
+static bool readEngineTransfer(FlagcxP2pConn *conn, uint64_t transferId,
+                               flagcxResult_t *transferResult) {
   if (transferResult == NULL)
     return true;
   *transferResult = flagcxSuccess;
   std::lock_guard<std::mutex> lock(gXferMutex);
-  std::unordered_map<uint64_t, FlagcxP2pXfer>::iterator it =
-      gXferMap.find(transferId);
+  auto it = gXferMap.find(transferId);
   if (it == gXferMap.end())
     return true;
-  if (it->second.conn != conn) {
+  const std::shared_ptr<FlagcxP2pXferRecord> &record = it->second;
+  if (record->xfer.conn != conn) {
     *transferResult = flagcxInvalidArgument;
     return true;
   }
-
-  progressConnectionTransfersLocked(conn, transferId);
-
-  FlagcxP2pXfer &xfer = it->second;
-  if (xfer.kind == FLAGCX_P2P_XFER_IPC) {
-    if (deviceAdaptor == NULL || deviceAdaptor->eventQuery == NULL) {
-      *transferResult = flagcxInternalError;
-      drainAndCleanupIpcXfer(&xfer);
-      gXferMap.erase(it);
-      return true;
-    }
-
-    const flagcxResult_t queryRes = deviceAdaptor->eventQuery(xfer.event);
-    if (queryRes == flagcxSuccess) {
-      TRACE(FLAGCX_P2P,
-            "P2P local transfer completed conn=%p transferId=%llu result=%d",
-            conn, (unsigned long long)transferId, (int)queryRes);
-      cleanupIpcXfer(&xfer);
-      gXferMap.erase(it);
-      return true;
-    }
-    if (queryRes != flagcxInProgress) {
-      *transferResult = queryRes;
-      TRACE(FLAGCX_P2P,
-            "P2P local transfer failed conn=%p transferId=%llu result=%d", conn,
-            (unsigned long long)transferId, (int)queryRes);
-      drainAndCleanupIpcXfer(&xfer);
-      gXferMap.erase(it);
-      return true;
-    }
+  if (!record->done.load(std::memory_order_acquire))
     return false;
-  }
+  *transferResult = record->result.load(std::memory_order_relaxed);
+  gXferMap.erase(it);
+  return true;
+}
 
-  if (xfer.transfer) {
-    struct flagcxP2pTransferStatus status = {};
-    const flagcxResult_t progress =
-        flagcxP2pTransferProgress(xfer.transfer.get(), &status);
-    if (progress != flagcxSuccess) {
-      WARN("P2P shared transfer progress failed transferId=%llu result=%d",
-           (unsigned long long)transferId, (int)progress);
-      if (status.done) {
-        *transferResult =
-            status.result != flagcxSuccess ? status.result : progress;
-        (void)flagcxP2pTransferReset(xfer.transfer.get());
-        gXferMap.erase(it);
-        return true;
-      }
-      return false;
-    }
-    if (!status.done)
-      return false;
-    *transferResult = status.result;
-    if (status.result != flagcxSuccess) {
-      WARN("P2P shared transfer completed with error transferId=%llu result=%d",
-           (unsigned long long)transferId, (int)status.result);
-    }
-    uint64_t usedLanes = 0;
-    for (uint64_t laneMask : xfer.laneMasks)
-      usedLanes |= laneMask;
-    TRACE(FLAGCX_P2P,
-          "P2P shared transfer completed transferId=%llu ops=%u lanes=0x%llx",
-          (unsigned long long)transferId, status.requested,
-          (unsigned long long)usedLanes);
-    if (flagcxP2pTransferReset(xfer.transfer.get()) != flagcxSuccess)
-      WARN("P2P shared transfer reset failed transferId=%llu",
-           (unsigned long long)transferId);
-    gXferMap.erase(it);
-    return true;
-  }
-
-  for (int i = xfer.completed; i < xfer.total; i++) {
-    int done = 0;
-    int sizes = 0;
-    const flagcxResult_t testRes =
-        conn->engine->adaptor->test(xfer.requests[i], &done, &sizes);
-    if (testRes != flagcxSuccess) {
-      *transferResult = testRes;
-      gXferMap.erase(it);
-      return true;
-    }
-    if (done) {
-      xfer.completed++;
-    } else {
-      break;
+static flagcxResult_t waitEngineTransfer(FlagcxP2pConn *conn,
+                                         uint64_t transferId) {
+  std::shared_ptr<FlagcxP2pXferRecord> record;
+  {
+    std::lock_guard<std::mutex> lock(gXferMutex);
+    const auto it = gXferMap.find(transferId);
+    if (it != gXferMap.end()) {
+      if (it->second->xfer.conn != conn)
+        return flagcxInvalidArgument;
+      record = it->second;
     }
   }
-
-  if (xfer.completed >= xfer.total) {
-    gXferMap.erase(it);
-    return true;
-  }
-  return false;
+  if (record)
+    waitForP2pRecord(record);
+  flagcxResult_t result = flagcxSuccess;
+  (void)readEngineTransfer(conn, transferId, &result);
+  return result;
 }
 
 bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
@@ -3968,7 +4142,7 @@ bool flagcxP2pEngineXferStatus(FlagcxP2pConn *conn, uint64_t transferId) {
     return true;
 
   flagcxResult_t result = flagcxSuccess;
-  const bool done = progressEngineTransfer(conn, transferId, &result);
+  const bool done = readEngineTransfer(conn, transferId, &result);
   if (done && result != flagcxSuccess)
     WARN("P2P transfer %llu completed with result=%d",
          (unsigned long long)transferId, (int)result);
@@ -4164,10 +4338,7 @@ int flagcxP2pEngineWriteVectorSync(
   if (rc != 0)
     return rc;
 
-  flagcxResult_t transferResult = flagcxSuccess;
-  while (!progressEngineTransfer(conn, transferId, &transferResult)) {
-    std::this_thread::yield();
-  }
+  const flagcxResult_t transferResult = waitEngineTransfer(conn, transferId);
   return transferResult == flagcxSuccess ? 0 : -1;
 }
 
@@ -4303,9 +4474,7 @@ int flagcxP2pRpcBatchWriteSync(void *connPtr, int count, const uint64_t *srcVa,
   if (startNetTransfer(conn, srcVec, sizeVec, descs, localEntries, count, true,
                        &xferId) != 0)
     return -1;
-  flagcxResult_t transferResult = flagcxSuccess;
-  while (!progressEngineTransfer(conn, xferId, &transferResult))
-    std::this_thread::yield();
+  const flagcxResult_t transferResult = waitEngineTransfer(conn, xferId);
   return transferResult == flagcxSuccess ? 0 : -1;
 }
 

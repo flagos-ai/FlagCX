@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -58,6 +59,13 @@ int main(int argc, char **argv) {
   MPI_Comm_rank(MPI_COMM_WORLD, &rank);
   MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
   require(worldSize == 2, rank, "requires exactly two MPI ranks");
+#ifdef USE_SHARED_P2P_ENGINE
+  // More slices than request credits require background post/poll progress.
+  require(setenv("FLAGCX_P2P_SLICE_SIZE", "256", 1) == 0 &&
+              setenv("FLAGCX_P2P_FRAGMENT_LIMIT", "256", 1) == 0 &&
+              setenv("FLAGCX_P2P_MAX_REQUESTS", "1", 1) == 0,
+          rank, "configuring background-progress test failed");
+#endif
 
   flagcxDeviceHandle_t device = nullptr;
   require(flagcxDeviceHandleInit(&device) == flagcxSuccess && device != nullptr,
@@ -219,6 +227,49 @@ int main(int argc, char **argv) {
     }
   }
   MPI_Barrier(MPI_COMM_WORLD);
+
+#ifdef USE_SHARED_P2P_ENGINE
+  if (rank == 0) {
+    std::fill(actual.begin(), actual.end(), 0);
+    require(device->deviceMemcpy(buffer, actual.data(), kBufferSize,
+                                 flagcxMemcpyHostToDevice,
+                                 stream) == flagcxSuccess &&
+                device->streamSynchronize(stream) == flagcxSuccess,
+            rank, "clearing background-progress target failed");
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  uint64_t unattendedId = 0;
+  if (rank == 1) {
+    FlagcxP2pRdmaDesc desc = {};
+    require(flagcxP2pEngineMakeDesc(conn, targetAddress, kBufferSize, &desc) ==
+                    0 &&
+                flagcxP2pEngineWrite(conn, mr, buffer, kBufferSize, desc,
+                                     &unattendedId) == 0,
+            rank, "submitting background-progress WRITE failed");
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (rank == 0) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool complete = false;
+    while (!complete) {
+      require(device->deviceMemcpy(actual.data(), buffer, kBufferSize,
+                                   flagcxMemcpyDeviceToHost,
+                                   stream) == flagcxSuccess &&
+                  device->streamSynchronize(stream) == flagcxSuccess,
+              rank, "reading background-progress target failed");
+      complete = std::equal(actual.begin(), actual.end(), expected.begin());
+      if (std::chrono::steady_clock::now() >= deadline)
+        fail(rank, "WRITE made no progress without XferStatus");
+      if (!complete)
+        std::this_thread::yield();
+    }
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (rank == 1)
+    waitForWrite(conn, unattendedId, rank);
+  MPI_Barrier(MPI_COMM_WORLD);
+#endif
 
   if (rank == 0)
     std::puts(
