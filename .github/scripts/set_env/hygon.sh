@@ -90,6 +90,9 @@ flagcx_ci_configure_suite() {
     device_api|device_api_unified_ir)
       export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+      if [[ "$suite" == "device_api" ]]; then
+        FLAGCX_CI_DEVICE_API_TRACE_K5=1
+      fi
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_INTRA_NP=4

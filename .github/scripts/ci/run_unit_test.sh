@@ -143,6 +143,9 @@ run_device_api() {
     -x FLAGCX_IB_QPS_PER_CONNECTION=2
     -x LD_LIBRARY_PATH
   )
+  if [[ "${FLAGCX_CI_DEVICE_API_TRACE_K5:-0}" == 1 ]]; then
+    common_env+=( -x FLAGCX_DEVICE_API_TRACE_K5=1 )
+  fi
   local -a flags=(-b 1M -e 4M -f 2 -R 1)
 
   declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
