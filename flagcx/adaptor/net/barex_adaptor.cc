@@ -666,6 +666,22 @@ static flagcxResult_t barexDevices(int *ndev) {
   return barexProbeDevices(ndev);
 }
 
+static uint64_t barexNicGuid(const char *name, const char *pciPath) {
+  uint64_t hash = 14695981039346656037ULL;
+  const char *parts[2] = {name, pciPath};
+  for (const char *part : parts) {
+    for (const unsigned char *byte =
+             reinterpret_cast<const unsigned char *>(part);
+         *byte != '\0'; ++byte) {
+      hash ^= *byte;
+      hash *= 1099511628211ULL;
+    }
+    hash ^= 0xff;
+    hash *= 1099511628211ULL;
+  }
+  return hash == 0 ? 1 : hash;
+}
+
 static flagcxResult_t barexGetProperties(int dev, void *props) {
   if (props == nullptr || dev < 0 || dev >= kMaxNics)
     return flagcxInvalidArgument;
@@ -703,7 +719,9 @@ static flagcxResult_t barexGetProperties(int dev, void *props) {
   }
   p->name = devName[dev];
   p->pciPath = pciPath[dev];
-  p->guid = (uint64_t)dev;
+  // NIC identity must remain stable when processes enumerate devices in a
+  // different order. PXN reserves zero for an unknown identity.
+  p->guid = barexNicGuid(devName[dev], pciPath[dev]);
   p->ptrSupport = FLAGCX_PTR_HOST | FLAGCX_PTR_CUDA;
   p->regIsGlobal = 1; /* MRs live in the runtime-wide mempool */
   p->speed = (int)flagcxParamBarexSpeed();

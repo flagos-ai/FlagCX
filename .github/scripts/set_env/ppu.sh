@@ -125,11 +125,30 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_VMM_ENABLE=0 \
       -x FLAGCX_P2P_TRANSPORT=accl \
       -x FLAGCX_P2P_DISABLE=1 \
+      -x FLAGCX_PXN_DISABLE=1 \
       -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
       -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
       -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
       -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
+      -x FLAGCX_CI_EXPECT_PXN=0 \
       ./build/bin/runner_mpi_tests
+    if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
+      FLAGCX_CI_MPI_LABEL="runner PPU PXN eight-rank" \
+        env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
+        "$MPI_RUNNER" -np 8 --allow-run-as-root \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_P2P_TRANSPORT=accl \
+        -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_PXN_DISABLE=0 \
+        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
+        -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
+        -x FLAGCX_CI_EXPECT_PXN=1 \
+        ./build/bin/runner_mpi_tests \
+        --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll
+    fi
     return
   fi
 

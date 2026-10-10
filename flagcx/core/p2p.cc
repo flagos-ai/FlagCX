@@ -766,16 +766,28 @@ flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
   if (ipcDesc == NULL || ptr == NULL)
     return flagcxInvalidArgument;
 
-  memset(ipcDesc, 0, sizeof(*ipcDesc));
   // 'directMap' parameter is reserved for future cuMem (direct mapping)
   FLAGCXCHECK(deviceAdaptor->deviceMalloc(ptr, size, flagcxMemDevice, NULL));
+  flagcxResult_t result = flagcxP2pExportShareableBuffer(*ptr, size, ipcDesc);
+  if (result != flagcxSuccess) {
+    (void)deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
+    *ptr = NULL;
+  }
+  return result;
+}
+
+flagcxResult_t
+flagcxP2pExportShareableBuffer(void *ptr, size_t size,
+                               struct flagcxP2pIpcDesc *ipcDesc) {
+  if (ipcDesc == NULL || ptr == NULL || size == 0)
+    return flagcxInvalidArgument;
+
+  memset(ipcDesc, 0, sizeof(*ipcDesc));
   size_t ipcSize = 0;
   flagcxIpcMemHandle_t handlePtr = NULL;
   flagcxResult_t res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
   if (res != flagcxSuccess) {
     WARN("deviceAdaptor->ipcMemHandleCreate failed");
-    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
-    *ptr = NULL;
     return res;
   }
   if (handlePtr == NULL || ipcSize == 0 ||
@@ -784,26 +796,20 @@ flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
          sizeof(ipcDesc->handleData));
     if (handlePtr != NULL)
       deviceAdaptor->ipcMemHandleFree(handlePtr);
-    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
-    *ptr = NULL;
     return flagcxNotSupported;
   }
 
   // Get the actual IPC handle data
-  res = deviceAdaptor->ipcMemHandleGet(handlePtr, *ptr);
+  res = deviceAdaptor->ipcMemHandleGet(handlePtr, ptr);
   if (res != flagcxSuccess) {
-    WARN("deviceAdaptor->ipcMemHandleGet failed for ptr %p size %zu", *ptr,
+    WARN("deviceAdaptor->ipcMemHandleGet failed for ptr %p size %zu", ptr,
          size);
     deviceAdaptor->ipcMemHandleFree(handlePtr);
-    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
-    *ptr = NULL;
     return res;
   }
   res = flagcxStoreIpcHandle(&ipcDesc->handleData, handlePtr, ipcSize);
   if (res != flagcxSuccess) {
     deviceAdaptor->ipcMemHandleFree(handlePtr);
-    deviceAdaptor->deviceFree(*ptr, flagcxMemDevice, NULL);
-    *ptr = NULL;
     return res;
   }
   ipcDesc->handleSize = ipcSize;

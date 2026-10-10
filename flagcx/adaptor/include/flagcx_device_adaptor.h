@@ -355,6 +355,10 @@ struct flagcxDeviceAdaptor_latest {
   // and legacy adaptors leave this NULL so policy remains conservative. This
   // must not be added to flagcxDevProps, which is part of the frozen v1 ABI.
   flagcxResult_t (*getDeviceArchitecture)(int dev, int *architecture);
+
+  // Latest-only topology query. An absent callback means peer access has not
+  // been established and must not be assumed by PXN.
+  flagcxResult_t (*canAccessPeer)(int srcDev, int dstDev, int *canAccess);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

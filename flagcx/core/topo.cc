@@ -14,6 +14,7 @@
 #include "rapidxml.h"
 #include "transport.h"
 #include "xml.h"
+#include <cstdlib>
 #include <fcntl.h>
 #include <fstream>
 #include <map>
@@ -653,7 +654,24 @@ flagcxResult_t flagcxGetNicDistance(struct flagcxTopoServer *topoServer,
 //   return flagcxSuccess;
 // }
 
-// will remove this function when we finish the function that builds server topo
+flagcxResult_t flagcxTopoNetDevFromGuid(struct flagcxTopoServer *server,
+                                        uint64_t guid, int *netDev) {
+  if (server == NULL || netDev == NULL || guid == 0)
+    return flagcxInvalidArgument;
+  int found = -1;
+  for (int n = 0; n < server->nodes[NET].count; ++n) {
+    if (server->nodes[NET].nodes[n].net.guid != guid)
+      continue;
+    if (found >= 0)
+      return flagcxNotSupported;
+    found = server->nodes[NET].nodes[n].net.dev;
+  }
+  if (found < 0)
+    return flagcxNotSupported;
+  *netDev = found;
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
                                     struct flagcxXml *xml) {
   // create root node if we didn't get topo from xml file
@@ -682,6 +700,7 @@ flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
       deviceAdaptor->getDeviceByPciBusId(&devLogicalIdx, busId);
       FLAGCXCHECK(xmlSetAttrInt(node, "dev", devLogicalIdx));
       FLAGCXCHECK(xmlSetAttrInt(node, "rank", r));
+      FLAGCXCHECK(xmlSetAttrInt(node, "gdr", comm->peerInfo[r].gdrSupport));
     }
   }
 
@@ -698,6 +717,8 @@ flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
     FLAGCXCHECK(xmlSetAttrInt(netNode, "port", props.port));
     FLAGCXCHECK(xmlInitAttrUint64(netNode, "guid", props.guid));
     FLAGCXCHECK(xmlSetAttrInt(netNode, "maxConn", props.maxComms));
+    FLAGCXCHECK(xmlSetAttrInt(
+        netNode, "gdr", flagcxNetCanUseDeviceMemory(comm->netAdaptor, &props)));
   }
 
   if (comm->rank == 0) {
@@ -770,6 +791,7 @@ flagcxResult_t flagcxTopoAddNet(struct flagcxXmlNode *xmlNet,
   FLAGCXCHECK(xmlGetAttrFloat(xmlNet, "latency", &net->net.latency));
   FLAGCXCHECK(xmlGetAttrInt(xmlNet, "port", &net->net.port));
   FLAGCXCHECK(xmlGetAttrInt(xmlNet, "maxConn", &net->net.maxConn));
+  FLAGCXCHECK(xmlGetAttrIntDefault(xmlNet, "gdr", &net->net.gdrSupport, 0));
 
   FLAGCXCHECK(flagcxTopoConnectNodes(nic, net, LINK_NET, net->net.bw));
   FLAGCXCHECK(flagcxTopoConnectNodes(net, nic, LINK_NET, net->net.bw));
@@ -800,6 +822,50 @@ flagcxResult_t flagcxTopoAddApu(struct flagcxXmlNode *xmlApu,
   // the future
   FLAGCXCHECK(xmlGetAttrInt(xmlApu, "dev", &apu->apu.dev));
   FLAGCXCHECK(xmlGetAttrInt(xmlApu, "rank", &apu->apu.rank));
+  FLAGCXCHECK(xmlGetAttrIntDefault(xmlApu, "gdr", &apu->apu.gdrSupport, 0));
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxTopoConnectPeerApus(struct flagcxTopoServer *topoServer) {
+  if (flagcxPxnDisable(NULL) != 0 || deviceAdaptor == NULL ||
+      deviceAdaptor->canAccessPeer == NULL ||
+      deviceAdaptor->getDeviceByPciBusId == NULL)
+    return flagcxSuccess;
+  for (int i = 0; i < topoServer->nodes[APU].count; ++i) {
+    struct flagcxTopoNode *src = topoServer->nodes[APU].nodes + i;
+    char srcBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
+    int srcDev = -1;
+    if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(src->id), srcBusId) !=
+            flagcxSuccess ||
+        deviceAdaptor->getDeviceByPciBusId(&srcDev, srcBusId) != flagcxSuccess)
+      continue;
+    for (int j = i + 1; j < topoServer->nodes[APU].count; ++j) {
+      struct flagcxTopoNode *dst = topoServer->nodes[APU].nodes + j;
+      if (FLAGCX_TOPO_ID_SERVER_ID(src->id) !=
+          FLAGCX_TOPO_ID_SERVER_ID(dst->id))
+        continue;
+      char dstBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
+      int dstDev = -1;
+      if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(dst->id), dstBusId) !=
+              flagcxSuccess ||
+          deviceAdaptor->getDeviceByPciBusId(&dstDev, dstBusId) !=
+              flagcxSuccess)
+        continue;
+      int forward = 0;
+      int backward = 0;
+      if (deviceAdaptor->canAccessPeer(srcDev, dstDev, &forward) !=
+              flagcxSuccess ||
+          deviceAdaptor->canAccessPeer(dstDev, srcDev, &backward) !=
+              flagcxSuccess ||
+          !forward || !backward)
+        continue;
+      // The adaptor currently reports reachability, not link bandwidth.
+      // Keep this estimate local to PXN-enabled topology construction.
+      FLAGCXCHECK(flagcxTopoConnectNodes(src, dst, LINK_CCI, PCI_BW * 2));
+      FLAGCXCHECK(flagcxTopoConnectNodes(dst, src, LINK_CCI, PCI_BW * 2));
+    }
+  }
   return flagcxSuccess;
 }
 
@@ -970,7 +1036,7 @@ flagcxTopoGetServerTopoFromXml(struct flagcxXml *xml,
     }
   }
 
-  // TODO: add CCI links, connect cpu nodes etc.
+  FLAGCXCHECK(flagcxTopoConnectPeerApus(*topoServer));
   FLAGCXCHECK(flagcxTopoFlattenBcmSwitches(*topoServer));
   FLAGCXCHECK(flagcxTopoConnectCpus(*topoServer));
 
@@ -1095,6 +1161,7 @@ static flagcxResult_t flattenNode(struct flagcxTopoServer *topoServer,
   if (node->type == APU) {
     flatNode->apu.dev = node->apu.dev;
     flatNode->apu.rank = node->apu.rank;
+    flatNode->apu.gdrSupport = node->apu.gdrSupport;
     flatNode->apu.vendor = node->apu.vendor;
   } else if (node->type == CPU) {
     flatNode->cpu.arch = node->cpu.arch;
@@ -1110,6 +1177,7 @@ static flagcxResult_t flattenNode(struct flagcxTopoServer *topoServer,
     flatNode->net.bw = node->net.bw;
     flatNode->net.latency = node->net.latency;
     flatNode->net.maxConn = node->net.maxConn;
+    flatNode->net.gdrSupport = node->net.gdrSupport;
   }
   return flagcxSuccess;
 }
@@ -1123,6 +1191,7 @@ static flagcxResult_t unflattenNode(struct flagcxTopoServer *topoServer,
   if (node->type == APU) {
     node->apu.dev = flatNode->apu.dev;
     node->apu.rank = flatNode->apu.rank;
+    node->apu.gdrSupport = flatNode->apu.gdrSupport;
     node->apu.vendor = flatNode->apu.vendor;
   } else if (node->type == CPU) {
     node->cpu.arch = flatNode->cpu.arch;
@@ -1137,6 +1206,7 @@ static flagcxResult_t unflattenNode(struct flagcxTopoServer *topoServer,
     node->net.bw = flatNode->net.bw;
     node->net.latency = flatNode->net.latency;
     node->net.maxConn = flatNode->net.maxConn;
+    node->net.gdrSupport = flatNode->net.gdrSupport;
   }
   return flagcxSuccess;
 }

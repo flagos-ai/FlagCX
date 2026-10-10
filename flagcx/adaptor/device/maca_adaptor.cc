@@ -114,6 +114,14 @@ flagcxResult_t macaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t macaAdaptorCanAccessPeer(int srcDev, int dstDev,
+                                        int *canAccess) {
+  if (canAccess == NULL)
+    return flagcxInvalidArgument;
+  DEVCHECK(mcDeviceCanAccessPeer(canAccess, srcDev, dstDev));
+  return flagcxSuccess;
+}
+
 flagcxResult_t macaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
   if (pDevice == NULL || pHost == NULL) {
     return flagcxInvalidArgument;
@@ -1087,7 +1095,7 @@ struct flagcxDeviceAdaptor macaAdaptor {
       // coherent path. WRITE-dependent stream waits currently fail safely as
       // unsupported instead of silently weakening the acquire contract.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
-      FLAGCX_GDR_DEVICE_METAX, NULL,
+      FLAGCX_GDR_DEVICE_METAX, NULL, macaAdaptorCanAccessPeer,
 };
 
 #endif // USE_METAX_ADAPTOR

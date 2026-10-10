@@ -122,6 +122,7 @@ struct flagcxProxyArgs {
   // Shared collective transport state. Adaptor requests may complete out of
   // order; the scoreboard controls contiguous chunk retirement.
   struct flagcxCollProxyTransport collTransport;
+  uint64_t sequenceBase; // Wire sequence for the first chunk of this op.
   uint8_t netCompleted[FLAGCX_COLL_PROXY_MAX_STEPS];
   size_t totalCopySize;
   size_t totalPostSize;
@@ -206,6 +207,7 @@ struct flagcxProxyOp {
   flagcxStream_t stream;
   flagcxEvent_t event; // used to record host/device func
   int selfCopy = 0;
+  void *relaySendState = NULL;
 };
 
 #define FLAGCX_MAX_NETDEVS 128
@@ -317,6 +319,15 @@ struct flagcxProxyRpcResponseHeader {
   int respSize;
 };
 
+// Client-side framing state. A response may arrive in several nonblocking
+// reads, including when another caller is polling the same proxy socket.
+struct flagcxProxyRpcReadState {
+  flagcxProxyRpcResponseHeader header;
+  size_t headerBytes;
+  void *body;
+  size_t bodyBytes;
+};
+
 // UDS support
 struct flagcxIpcHdr {
   int type;
@@ -356,6 +367,8 @@ struct flagcxProxyState {
   struct flagcxSocket ipcSock;
   // Set by flagcxProxyStop, checked by service thread as backup
   volatile int stop;
+  // Set before taking rpcMutex so an in-flight RPC write can leave the lock.
+  volatile uint32_t rpcStopping;
   flagcxResult_t asyncResult;
   // First teardown error recorded after the service thread has stopped
   // accepting work. Kept separate from asyncResult so cleanup failures do not
@@ -365,10 +378,14 @@ struct flagcxProxyState {
 
   // Used by main thread
   pthread_mutex_t mutex;
+  // Serializes client RPC frames and access to expectedResponses. The proxy
+  // progress thread can issue RPCs while the main thread is connecting peers.
+  pthread_mutex_t rpcMutex;
   pthread_cond_t cond;
   union flagcxSocketAddress *peerAddresses;
   struct flagcxSocket *peerSocks; // Array[nRanks], indexed by rank
   int nPeerSocks;                 // Number of allocated peerSocks entries
+  struct flagcxProxyRpcReadState *rpcReadStates; // Array[nPeerSocks]
   struct flagcxProxyOps proxyOps[MAXCHANNELS];
 
   struct flagcxProxyOps *prodProgChannelHead; /*producer*/
@@ -387,6 +404,8 @@ struct flagcxProxyState {
 
   // Queue of expected responses from the proxy
   struct flagcxExpectedProxyResponse *expectedResponses;
+  // Failed relay ops wait here until their GPU-side semaphore finishes.
+  struct flagcxProxyOp *deferredRelayOps;
 
   // flag indicating if the proxy is initialized.
   // This flag is used for lazy initialization of the proxy.
@@ -424,6 +443,12 @@ struct flagcxProxyConnection {
   // Physical lanes accepted for collective data on this connection. Kept in
   // the transport-neutral proxy object so BAREX-only builds need no IB types.
   uint64_t collDataLaneMask;
+  // Service-thread owner of this NET connection's shared copy stream/events.
+  struct flagcxProxyAsyncOp *activeRelayOp;
+  // Caller-side PXN mapping of the relay-owned send buffer.
+  void *relayBufferImport;
+  size_t relayBufferCapacity;
+  uint32_t relayActiveOps;
   struct flagcxCollNetSharedRes *collNet;
   int needsProxyProgress;
 };
@@ -473,7 +498,9 @@ enum flagcxProxyMsgType {
   flagcxProxyMsgDeregister = 11,
   flagcxProxyMsgRegMr = 12,
   flagcxProxyMsgDeregMr = 13,
-  flagcxProxyMsgSendRecv = 14
+  flagcxProxyMsgSendRecv = 14,
+  flagcxProxyMsgCancelRelay = 15,
+  flagcxProxyMsgReleaseRelay = 16
 };
 
 // This function is called by a client of the proxy that needs to invoke any of
@@ -495,6 +522,12 @@ flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
 flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
                                        struct flagcxProxyConnector *proxyConn,
                                        void *respBuff, void *opId);
+// A returned RPC error is different from losing the reply: only a received
+// relay release acknowledgement permits the source IPC allocation to be freed.
+flagcxResult_t flagcxPollProxyResponseWithStatus(
+    struct flagcxHeteroComm *comm, struct flagcxProxyConnector *proxyConn,
+    void *respBuff, void *opId, bool *responseReceived);
+void flagcxProxyForgetResponse(struct flagcxHeteroComm *comm, void *opId);
 
 // UDS support
 flagcxResult_t flagcxProxyClientGetFdBlocking(struct flagcxHeteroComm *comm,

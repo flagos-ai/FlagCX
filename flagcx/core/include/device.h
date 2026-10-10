@@ -124,10 +124,15 @@ struct flagcxProxyConnector {
   // the caller and remains safe to inspect when the proxy service lives in a
   // different process.
   int transport;
+  // NET route selected by the sender; readable even for a remote proxy.
+  int netDev;
+  int peerNetDev;
   bool initialized;
-  // Handle owned by the target proxy service. It may refer to another process;
-  // generic RPC code must treat it as opaque and only forward its value.
+  // Locally readable state used by operation preparation and progress.
   struct flagcxProxyConnection *connection;
+  // Opaque handle owned by the target proxy service. RPC code forwards this
+  // value without dereferencing it in the caller's process.
+  struct flagcxProxyConnection *remoteConnection;
   flagcxResult_t (*proxyProgress)(
       struct flagcxProxyState *proxyState,
       struct flagcxProxyArgs *); // Copied from transport if necessary

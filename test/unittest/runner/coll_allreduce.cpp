@@ -1,4 +1,5 @@
 // AllReduce correctness test (migrated from test/unittest/main.cpp)
+#include "pxn_assertions.hpp"
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"
 #include <cstring>
@@ -14,6 +15,7 @@ TEST_F(FlagCXCollTest, AllReduce) {
                           flagcxMemcpyHostToDevice, stream);
 
   MPI_Barrier(MPI_COMM_WORLD);
+  const uint64_t relayChunksBefore = flagcxRunnerRelayChunks(comm);
 
   flagcxAllReduce(sendbuff, recvbuff, count, flagcxFloat, flagcxSum, comm,
                   stream);
@@ -22,6 +24,10 @@ TEST_F(FlagCXCollTest, AllReduce) {
                           flagcxMemcpyDeviceToHost, stream);
 
   ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+
+  flagcxRunnerAssertPxnTraffic(comm, rank, nranks,
+                               FlagCXPxnTraffic::ConnectedCollective,
+                               relayChunksBefore, "AllReduce");
 
   MPI_Barrier(MPI_COMM_WORLD);
 

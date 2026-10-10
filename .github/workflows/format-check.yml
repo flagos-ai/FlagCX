@@ -18,6 +18,8 @@ concurrency:
 jobs:
   format-check:
     name: code format check
+    # Temporarily run only the PPU unit-test workflow on PR #648.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.number != 648 }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

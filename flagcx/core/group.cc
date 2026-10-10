@@ -14,6 +14,7 @@
 #include "p2p.h"
 #include "transport.h"
 #include "type.h"
+#include <new>
 #include <pthread.h>
 #include <queue>
 #include <sched.h>
@@ -33,6 +34,11 @@ __thread struct flagcxIntruQueue<struct flagcxAsyncJob, &flagcxAsyncJob::next>
     flagcxAsyncJobs;
 
 FLAGCX_PARAM(P2pScheduleDisable, "P2P_SCHEDULE_DISABLE", 0);
+
+static flagcxResult_t flagcxNewProxyOp(flagcxProxyOp **op) {
+  *op = new (std::nothrow) flagcxProxyOp{};
+  return *op == nullptr ? flagcxSystemError : flagcxSuccess;
+}
 
 flagcxResult_t flagcxHeteroGroupStart() {
   flagcxResult_t ret = flagcxSuccess;
@@ -211,7 +217,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 sendTasks[i]->channelId == recvTasks[j]->channelId) {
               if (sendTasks[i]->buff != recvTasks[j]->buff) {
                 flagcxProxyOp *op;
-                FLAGCXCHECK(flagcxCalloc(&op, 1));
+                FLAGCXCHECK(flagcxNewProxyOp(&op));
                 op->pattern = flagcxPatternSend;
                 op->nbytes = sendTasks[i]->bytes;
                 op->sendbuff = (uint8_t *)sendTasks[i]->buff;
@@ -287,7 +293,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 flagcxIntruQueueDequeue(&tasks->peers[recvPeer].recvQueue);
             int peer = recvPeer;
             flagcxProxyOp *op;
-            FLAGCXCHECK(flagcxCalloc(&op, 1));
+            FLAGCXCHECK(flagcxNewProxyOp(&op));
             op->pattern = flagcxPatternRecv;
             op->nbytes = p2p->bytes;
             op->recvbuff = (uint8_t *)p2p->buff;
@@ -340,7 +346,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                 flagcxIntruQueueDequeue(&tasks->peers[sendPeer].sendQueue);
             int peer = sendPeer;
             flagcxProxyOp *op;
-            FLAGCXCHECK(flagcxCalloc(&op, 1));
+            FLAGCXCHECK(flagcxNewProxyOp(&op));
             op->pattern = flagcxPatternSend;
             op->nbytes = p2p->bytes;
             op->recvbuff = (uint8_t *)p2p->buff;
@@ -350,6 +356,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
                                  .peers[peer]
                                  ->send[0]
                                  .proxyConn.connection;
+            op->comm = comm;
             op->stream = p2p->stream;
             if (op->connection == NULL) {
               WARN("groupLaunch: send proxyConn.connection is NULL for rank %d "

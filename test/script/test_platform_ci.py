@@ -1046,6 +1046,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ppu_forced_net = ppu_forced_net[:ppu_forced_net.index("return")]
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX", ppu_forced_net)
         self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", ppu_forced_net)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner PPU PXN eight-rank"', ppu_forced_net)
+        self.assertIn("FLAGCX_PXN_DISABLE=0", ppu_forced_net)
+        self.assertIn("FLAGCX_CI_EXPECT_PXN=1", ppu_forced_net)
 
     def test_p2p_ci_runs_write_only_engine_coverage(self):
         unit_runner = (
@@ -1161,12 +1164,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
         self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 4
+            runner_case.count("./build/bin/runner_mpi_tests"), 5
         )
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 3
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
         )
+        self.assertIn('"${FLAGCX_CI_ENABLE_PXN:-1}" == "1"', runner_case)
+        self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
+        self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)
+        self.assertIn('FLAGCX_PXN_DISABLE=0', runner_case)
+        self.assertNotIn('FLAGCX_CI_ENABLE_PXN_INTERSERVER', runner_case)
+        self.assertIn('FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET', runner_case)
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P", runner_case)
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", runner_case)
         self.assertNotIn("--gtest_filter=FlagCXCollTest.Scatter", runner_case)

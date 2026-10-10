@@ -227,6 +227,7 @@ struct flatTopoNode {
     struct {
       int dev; // NVML dev number
       int rank;
+      int gdrSupport;
       int vendor;
     } apu;
     struct {
@@ -236,6 +237,7 @@ struct flatTopoNode {
       float latency;
       int maxConn;
       uint64_t guid;
+      int gdrSupport;
     } net;
     struct {
       int arch;
@@ -291,6 +293,8 @@ flagcxResult_t flagcxTopoPrintPaths(struct flagcxTopoServer *topoServer);
 
 flagcxResult_t flagcxTopoGetLocalNet(struct flagcxTopoServer *topoServer,
                                      int rank, int *netDev);
+flagcxResult_t flagcxTopoNetDevFromGuid(struct flagcxTopoServer *server,
+                                        uint64_t guid, int *netDev);
 
 flagcxResult_t
 flagcxGetInterServerTopo(struct flagcxHeteroComm *comm,

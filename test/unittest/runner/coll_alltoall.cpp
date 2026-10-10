@@ -5,6 +5,7 @@
 
 #include "coll_proxy_transport.h"
 #include "net.h"
+#include "pxn_assertions.hpp"
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"
 #include "transport.h"
@@ -15,6 +16,7 @@
 TEST_F(FlagCXCollTest, AlltoAll) {
 
   size_t countPerRank = count / nranks;
+  const uint64_t relayChunksBefore = flagcxRunnerRelayChunks(comm);
 
   // Fill sendbuff: chunk[i] = rank * nranks + i (so receiver can verify sender)
   float *hsend = static_cast<float *>(hostsendbuff);
@@ -107,6 +109,9 @@ TEST_F(FlagCXCollTest, AlltoAll) {
           << "collective did not exercise multiple physical QPs";
     EXPECT_EQ(globalMismatches, 0);
   }
+
+  flagcxRunnerAssertPxnTraffic(comm, rank, nranks, FlagCXPxnTraffic::AllToAll,
+                               relayChunksBefore, "AllToAll");
 
   MPI_Barrier(MPI_COMM_WORLD);
 

@@ -3302,10 +3302,8 @@ flagcxResult_t flagcxIbGetDevFromName(char *name, int *dev) {
   return flagcxSystemError;
 }
 
-// Detect whether GDR can work on a given NIC with the current CUDA device
-// Returns :
-// flagcxSuccess : GDR works
-// flagcxSystemError : no module or module loaded but not supported by GPU
+// Detect the NVIDIA peer-memory module used by ordinary GPU MR registration.
+// This is a provider capability check, independent of the current GPU.
 flagcxResult_t flagcxIbGdrSupport() {
   static int moduleLoaded = -1;
   if (moduleLoaded == -1) {
@@ -3323,11 +3321,28 @@ flagcxResult_t flagcxIbGdrSupport() {
   return flagcxSuccess;
 }
 
+// NET properties describe the provider, independent of the GPU on which a
+// caller happens to query them. The GPU/NIC MR probe below remains available
+// for diagnostics; actual registrations are checked by regMr at connection
+// setup. DU and MetaX use their own peer-memory paths instead of nv_peermem.
+bool flagcxIbAdvertisesDeviceMemory(void) {
+  if (deviceAdaptor == NULL || deviceAdaptor->gdrMemAlloc == NULL)
+    return false;
+  switch (deviceAdaptor->gdrDeviceFamily) {
+    case FLAGCX_GDR_DEVICE_DU:
+    case FLAGCX_GDR_DEVICE_METAX:
+      return true;
+    case FLAGCX_GDR_DEVICE_CUDA:
+      return flagcxIbGdrSupport() == flagcxSuccess;
+    default:
+      return false;
+  }
+}
+
 // Probe the actual verbs registration contract for the current GPU and one
-// merged network device. The cache intentionally keeps only the most recent
-// (GPU, netDev) result: normal rank-per-GPU operation repeatedly queries the
-// topology-selected device, while a process that switches either endpoint is
-// re-probed instead of reusing a stale capability result.
+// merged network device. GPU-level GDR discovery succeeds when any candidate
+// NIC passes this check; a later connection registers its selected pair again.
+// The cache keeps only the most recent (GPU, netDev, access) result.
 flagcxResult_t flagcxIbProbeGpuMrSupport(int dev, int access, bool *supported) {
   static pthread_mutex_t probeLock = PTHREAD_MUTEX_INITIALIZER;
   static int probedGpu = -1;
@@ -3507,11 +3522,7 @@ flagcxResult_t flagcxIbGetProperties(int dev, void *props) {
   properties->guid = ibDev->guid;
   properties->ptrSupport = FLAGCX_PTR_HOST;
 
-  bool gpuMrSupported = false;
-  const int gpuMrAccess = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-                          IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
-  FLAGCXCHECK(flagcxIbProbeGpuMrSupport(dev, gpuMrAccess, &gpuMrSupported));
-  if (gpuMrSupported)
+  if (flagcxIbAdvertisesDeviceMemory())
     properties->ptrSupport |= FLAGCX_PTR_CUDA;
   properties->regIsGlobal = 1;
   if (flagcxIbDmaBufSupport(dev) == flagcxSuccess) {

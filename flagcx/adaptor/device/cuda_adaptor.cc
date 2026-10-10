@@ -123,6 +123,14 @@ flagcxResult_t cudaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t cudaAdaptorCanAccessPeer(int srcDev, int dstDev,
+                                        int *canAccess) {
+  if (canAccess == NULL)
+    return flagcxInvalidArgument;
+  DEVCHECK(cudaDeviceCanAccessPeer(canAccess, srcDev, dstDev));
+  return flagcxSuccess;
+}
+
 flagcxResult_t cudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
   if (pDevice == NULL || pHost == NULL) {
     return flagcxInvalidArgument;
@@ -1239,6 +1247,7 @@ struct flagcxDeviceAdaptor cudaAdaptor {
       // bit only after the device/NIC path is known to be coherent.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
       FLAGCX_GDR_DEVICE_CUDA, cudaAdaptorGetDeviceArchitecture,
+      cudaAdaptorCanAccessPeer,
 };
 
 #endif // USE_NVIDIA_ADAPTOR

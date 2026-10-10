@@ -195,12 +195,13 @@ struct flagcxHeteroComm {
                   // key -- only goal is to detect mismatches.
 
   uint64_t commHash;
-  int rank;                   // my rank in the communicator
-  int nRanks;                 // number of GPUs in communicator
-  int cudaDev;                // my cuda device index
-  int netDev;                 // my net  device index
-  int nvmlDev;                // my nvml device index
-  int compCap;                // compute capability of the GPU
+  int rank;                         // my rank in the communicator
+  int nRanks;                       // number of GPUs in communicator
+  int cudaDev;                      // my cuda device index
+  int netDev;                       // my net  device index
+  uint64_t pxnRelayChunksCompleted; // Source-side NET completion replies.
+  int nvmlDev;                      // my nvml device index
+  int compCap;                      // compute capability of the GPU
   int minCompCap, maxCompCap; // min/max compute capability in the communicator
   int64_t busId;              // my PCI bus ID in int format
   cpu_set_t cpuAffinity;      // CPU affinity of the GPU

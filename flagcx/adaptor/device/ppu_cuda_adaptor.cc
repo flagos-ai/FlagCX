@@ -109,6 +109,14 @@ flagcxResult_t ppucudaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ppucudaAdaptorCanAccessPeer(int srcDev, int dstDev,
+                                           int *canAccess) {
+  if (canAccess == NULL)
+    return flagcxInvalidArgument;
+  DEVCHECK(cudaDeviceCanAccessPeer(canAccess, srcDev, dstDev));
+  return flagcxSuccess;
+}
+
 flagcxResult_t ppucudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
   if (pDevice == NULL || pHost == NULL) {
     return flagcxInvalidArgument;
@@ -890,6 +898,7 @@ struct flagcxDeviceAdaptor ppucudaAdaptor {
       // a documented coherence guarantee. Do not enable READ/WRITE requirements
       // until BAREX advertises a real capability backed by a hardware test.
       FLAGCX_GDR_FLUSH_NONE, FLAGCX_GDR_DEVICE_PPU, NULL,
+      ppucudaAdaptorCanAccessPeer,
 };
 
 #endif // USE_PPU_ADAPTOR

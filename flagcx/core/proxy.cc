@@ -23,7 +23,11 @@
 #include "timer.h"
 
 #include <assert.h>
+#include <errno.h>
+#include <new>
+#include <poll.h>
 #include <string>
+#include <sys/socket.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
@@ -45,6 +49,8 @@ static bool proxyMatchOpType(int type) {
     case flagcxProxyMsgRegMr:
     case flagcxProxyMsgDeregMr:
     case flagcxProxyMsgSendRecv:
+    case flagcxProxyMsgCancelRelay:
+    case flagcxProxyMsgReleaseRelay:
       return true;
     default:
       return false;
@@ -52,7 +58,9 @@ static bool proxyMatchOpType(int type) {
 }
 
 static bool proxyCleanupOpType(int type) {
-  return type == flagcxProxyMsgDeregister || type == flagcxProxyMsgDeregMr;
+  return type == flagcxProxyMsgDeregister || type == flagcxProxyMsgDeregMr ||
+         type == flagcxProxyMsgCancelRelay ||
+         type == flagcxProxyMsgReleaseRelay;
 }
 
 FLAGCX_TEMPLETELIST_DEFINE(ProdProgChannel, struct flagcxProxyOps,
@@ -95,7 +103,8 @@ static flagcxResult_t asyncProxyOpDequeue(struct flagcxProxyLocalPeer *peer,
     free(op->reqBuff);
   if (op->respSize)
     free(op->respBuff);
-  free(op);
+  op->args.semaphore.reset();
+  delete op;
   return flagcxSuccess;
 }
 
@@ -132,8 +141,17 @@ static flagcxResult_t proxyServiceCompleteOp(struct flagcxProxyLocalPeer *peer,
                                              struct flagcxProxyAsyncOp *op,
                                              int *asyncOpCount,
                                              flagcxResult_t result) {
-  if (result != flagcxSuccess && op->respBuff != NULL && op->respSize > 0)
+  if (op->connection != NULL && op->connection->activeRelayOp == op)
+    op->connection->activeRelayOp = NULL;
+  if (op->type == flagcxProxyMsgSendRecv && op->respBuff != NULL &&
+      op->respSize == 1) {
+    // A completed NET send no longer reads this slot. A failed send must not
+    // permit the source to overwrite the relay-owned buffer.
+    op->respBuff[0] = result == flagcxSuccess ? 1 : 0;
+  } else if (result != flagcxSuccess && op->respBuff != NULL &&
+             op->respSize > 0) {
     memset(op->respBuff, 0, op->respSize);
+  }
 
   flagcxProxyRpcResponseHeader resp = {op->opId, result, op->respSize};
   flagcxResult_t sendResult =
@@ -166,6 +184,68 @@ static flagcxResult_t
 flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
                       struct flagcxProxyState *proxyState, void *reqBuff,
                       int reqSize, void *respBuff, int respSize, int *done);
+
+static flagcxResult_t flagcxNetRelaySendRpc(flagcxProxyAsyncOp *op,
+                                            flagcxHeteroComm *comm,
+                                            int sourceRank, int *done) {
+  (void)comm;
+  (void)sourceRank;
+  if (op->reqSize != sizeof(flagcxNetRelaySendRequest) || op->respSize != 1 ||
+      op->reqBuff == NULL || op->connection == NULL || !op->connection->send ||
+      op->connection->transport != TRANSPORT_NET ||
+      op->connection->state != connConnected || flagcxNetChunks <= 0 ||
+      flagcxNetChunkSize <= 0)
+    return flagcxInvalidArgument;
+  auto *resources =
+      static_cast<sendNetResources *>(op->connection->transportResources);
+  if (resources == NULL || resources->netSendComm == NULL ||
+      !resources->relayIpcBuffer || resources->relayExportBuffer == NULL ||
+      resources->buffers[0] != resources->relayExportBuffer ||
+      resources->mhandles[0] == NULL)
+    return flagcxInvalidArgument;
+  const auto *request =
+      reinterpret_cast<const flagcxNetRelaySendRequest *>(op->reqBuff);
+  if (request->bytes == 0 || request->bytes > (size_t)flagcxNetChunkSize ||
+      request->sequence == UINT64_MAX || request->requestId == 0)
+    return flagcxInvalidArgument;
+
+  if (op->connection->activeRelayOp != NULL &&
+      op->connection->activeRelayOp != op)
+    return flagcxSuccess;
+  op->connection->activeRelayOp = op;
+
+  if (op->args.semaphore == nullptr) {
+    op->args.chunkSize = flagcxNetChunkSize;
+    op->args.chunkSteps = 1;
+    op->args.sendStepMask = flagcxNetChunks - 1;
+    op->args.opId = 0;
+    op->args.step = 0;
+    FLAGCXCHECK(flagcxCollProxyTransportInit(
+        &op->args.collTransport, (uint32_t)flagcxNetChunks, request->generation,
+        request->orderingKey, request->submitFlags));
+    FLAGCXCHECK(flagcxNetCompletionScoreboardInit(
+        &op->args.collTransport.scoreboard, op->args.collTransport.entries,
+        (uint32_t)flagcxNetChunks, request->generation, request->sequence));
+    op->args.collTransport.nextSubmit = request->sequence;
+    op->args.sequenceBase = request->sequence;
+    op->args.collTransport.laneMask = &op->connection->collDataLaneMask;
+    op->args.regBufFlag = 1;
+    op->args.regHandle = resources->mhandles[0];
+    op->args.semaphore = std::make_shared<flagcxHostSemaphore>();
+    op->args.semaphore->addCounter(0);
+    op->args.semaphore->signalStart();
+  }
+
+  FLAGCXCHECK(flagcxProxySend(resources, resources->relayExportBuffer,
+                              request->bytes, &op->args));
+  *done = op->args.done;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+flagcxNetSendProxySetup(struct flagcxProxyConnection *connection,
+                        struct flagcxProxyState *proxyState, void *reqBuff,
+                        int reqSize, void *respBuff, int respSize, int *done);
 static flagcxResult_t
 flagcxNetProxyRegister(struct flagcxProxyConnection *connection,
                        struct flagcxProxyState *proxyState, void *reqBuff,
@@ -212,7 +292,7 @@ static struct flagcxTransportComm flagcxNetSendTransportComm = {
     NULL,
     NULL,
     NULL,
-    NULL,
+    flagcxNetSendProxySetup,
     flagcxNetProxyConnect,
     NULL,
     NULL,
@@ -469,6 +549,7 @@ flagcxResult_t flagcxProxyRecordAsyncError(struct flagcxProxyState *proxyState,
 }
 
 static void flagcxProxyRetireFailedOp(
+    struct flagcxProxyState *proxyState,
     struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next> *queue,
     struct flagcxProxyOp *op) {
   if (op->args.done == 0) {
@@ -476,17 +557,51 @@ static void flagcxProxyRetireFailedOp(
       op->args.semaphore->subCounter(op->args.opId);
     op->args.done = 1;
   }
-  op->args.semaphore.reset();
+  const bool gpuDone =
+      op->args.semaphore == nullptr || op->args.semaphore->pollEnd();
   flagcxIntruQueueDelete(queue, op);
-  free(op);
+  if (!gpuDone && op->relaySendState != NULL) {
+    op->next = proxyState->deferredRelayOps;
+    proxyState->deferredRelayOps = op;
+    return;
+  }
+  if (gpuDone)
+    flagcxNetCleanupRelaySendOp(op);
+  else
+    flagcxNetAbandonRelaySendOp(op);
+  op->args.semaphore.reset();
+  delete op;
 }
 
 static void flagcxProxyRetireFailedQueue(
+    struct flagcxProxyState *proxyState,
     struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next>
         *queue) {
   while (!flagcxIntruQueueEmpty(queue)) {
     struct flagcxProxyOp *op = flagcxIntruQueueHead(queue);
-    flagcxProxyRetireFailedOp(queue, op);
+    flagcxProxyRetireFailedOp(proxyState, queue, op);
+  }
+}
+
+static void flagcxProxyDrainDeferredRelayOps(struct flagcxProxyState *state,
+                                             int *idle) {
+  flagcxProxyOp **link = &state->deferredRelayOps;
+  while (*link != NULL) {
+    flagcxProxyOp *op = *link;
+    const bool gpuDone =
+        op->args.semaphore == nullptr || op->args.semaphore->pollEnd();
+    if (!gpuDone && state->progressState.stop == 0) {
+      *idle = 0;
+      link = &op->next;
+      continue;
+    }
+    *link = op->next;
+    if (gpuDone)
+      flagcxNetCleanupRelaySendOp(op);
+    else
+      flagcxNetAbandonRelaySendOp(op);
+    op->args.semaphore.reset();
+    delete op;
   }
 }
 
@@ -497,7 +612,7 @@ flagcxResult_t flagcxProxyFailProgressQueue(
   if (queue == NULL)
     return flagcxInvalidArgument;
   flagcxProxyRecordAsyncError(proxyState, result);
-  flagcxProxyRetireFailedQueue(queue);
+  flagcxProxyRetireFailedQueue(proxyState, queue);
   return result;
 }
 
@@ -509,6 +624,7 @@ flagcxResult_t flagcxProxyFailProgressQueue(
 static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                                   int *idle) {
   *idle = 1;
+  flagcxProxyDrainDeferredRelayOps(proxyState, idle);
   if (!flagcxConsProgChannelListEmpty(proxyState->consProgChannelHead)) {
     struct flagcxProxyOps *proxyOps = proxyState->consProgChannelHead;
     do {
@@ -528,7 +644,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
             if (asyncResult != flagcxSuccess &&
                 asyncResult != flagcxInProgress) {
-              flagcxProxyRetireFailedQueue(queue);
+              flagcxProxyRetireFailedQueue(proxyState, queue);
               op = NULL;
             }
             if (op != NULL) {
@@ -544,9 +660,10 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
               }
               if (op != NULL && op->args.done == 1 &&
                   op->args.semaphore->pollEnd()) {
+                flagcxNetCleanupRelaySendOp(op);
                 op->args.semaphore.reset();
                 flagcxIntruQueueDelete(queue, op);
-                free(op);
+                delete op;
               }
             }
           }
@@ -558,7 +675,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 __atomic_load_n(&proxyState->asyncResult, __ATOMIC_ACQUIRE);
             if (asyncResult != flagcxSuccess &&
                 asyncResult != flagcxInProgress) {
-              flagcxProxyRetireFailedQueue(queue);
+              flagcxProxyRetireFailedQueue(proxyState, queue);
               op = NULL;
             }
             if (op != NULL) {
@@ -577,7 +694,7 @@ static flagcxResult_t progressOps(struct flagcxProxyState *proxyState,
                 // update refcount and delete semaphore when refcount = 0
                 op->args.semaphore.reset();
                 flagcxIntruQueueDelete(queue, op);
-                free(op);
+                delete op;
               }
             }
           }
@@ -615,7 +732,8 @@ flagcxProxyGetPostedOps(struct flagcxProxyState *proxyState, int *added) {
 
   // If we have ops to progress, no need to block waiting for something to
   // arrive
-  if (flagcxConsProgChannelListEmpty(proxyState->consProgChannelHead)) {
+  if (flagcxConsProgChannelListEmpty(proxyState->consProgChannelHead) &&
+      proxyState->deferredRelayOps == NULL) {
     while (flagcxProdProgChannelListEmpty(proxyState->prodProgChannelHead) &&
            state->stop == 0) {
       pthread_cond_wait(&proxyState->cond, &proxyState->mutex);
@@ -640,8 +758,8 @@ flagcxProxyGetPostedOps(struct flagcxProxyState *proxyState, int *added) {
     struct flagcxIntruQueue<struct flagcxProxyOp, &flagcxProxyOp::next> *queue;
     queue = &proxyOps->prodPeers.sendQueue;
     if (failed) {
-      flagcxProxyRetireFailedQueue(queue);
-      flagcxProxyRetireFailedQueue(&proxyOps->prodPeers.recvQueue);
+      flagcxProxyRetireFailedQueue(proxyState, queue);
+      flagcxProxyRetireFailedQueue(proxyState, &proxyOps->prodPeers.recvQueue);
       continue;
     }
 
@@ -741,12 +859,20 @@ static flagcxResult_t expectedProxyResponseStore(struct flagcxProxyState *state,
 static flagcxResult_t
 expectedProxyResponseEnqueue(struct flagcxProxyState *state, void *opId,
                              int respSize) {
+  if (respSize < 0)
+    return flagcxInvalidArgument;
   struct flagcxExpectedProxyResponse *ex;
   FLAGCXCHECK(flagcxCalloc(&ex, 1));
   ex->opId = opId;
 
   // Pre-alloc response buffer
-  ex->respBuff = malloc(respSize);
+  if (respSize > 0) {
+    ex->respBuff = malloc(respSize);
+    if (ex->respBuff == NULL) {
+      free(ex);
+      return flagcxSystemError;
+    }
+  }
   ex->respSize = respSize;
   ex->res = flagcxInternalError;
   ex->done = false;
@@ -776,7 +902,8 @@ expectedProxyResponseDequeue(struct flagcxProxyState *state, void *opId,
       } else {
         prev->next = elem->next;
       }
-      memcpy(respBuff, elem->respBuff, elem->respSize);
+      if (elem->respSize > 0)
+        memcpy(respBuff, elem->respBuff, elem->respSize);
       flagcxResult_t res = elem->res;
       free(elem->respBuff);
       free(elem);
@@ -811,67 +938,134 @@ expectedProxyResponseRemove(struct flagcxProxyState *state, void *opId) {
   return flagcxInternalError;
 }
 
-flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
-                                       struct flagcxProxyConnector *proxyConn,
-                                       void *respBuff, void *opId) {
+static flagcxResult_t
+flagcxProxyFailResponseRead(struct flagcxSocket *sock,
+                            struct flagcxProxyRpcReadState *read,
+                            flagcxResult_t result) {
+  free(read->body);
+  *read = {};
+  (void)flagcxSocketClose(sock);
+  return result;
+}
+
+static flagcxResult_t flagcxPollProxyResponseUnlocked(
+    struct flagcxHeteroComm *comm, struct flagcxProxyConnector *proxyConn,
+    void *respBuff, void *opId, bool *responseReceived) {
+  if (responseReceived != NULL)
+    *responseReceived = false;
   struct flagcxProxyState *sharedProxyState = comm->proxyState;
   // Check response queue
   int found = 0;
   flagcxResult_t res =
       expectedProxyResponseDequeue(sharedProxyState, opId, respBuff, &found);
 
-  if (found == 0) {
-    // Attempt to read in a new response header from the proxy thread
-    if (sharedProxyState->peerSocks == NULL)
-      return flagcxInternalError;
-    struct flagcxSocket *sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
-    flagcxProxyRpcResponseHeader resp = {0};
-    int offset = 0;
-    if (flagcxSuccess != flagcxSocketProgress(FLAGCX_SOCKET_RECV, sock, &resp,
-                                              sizeof(resp), &offset)) {
-      WARN("Socket recv failed while polling for opId=%p", opId);
-      return flagcxInternalError;
-    }
-
-    if (offset == 0) {
-      return flagcxInProgress;
-      // If we've returned a partial response, block to receive the rest of it
-    } else if (offset < sizeof(resp)) {
-      while (offset < sizeof(resp))
-        FLAGCXCHECK(flagcxSocketProgress(FLAGCX_SOCKET_RECV, sock, &resp,
-                                         sizeof(resp), &offset));
-    }
-
-    INFO(FLAGCX_PROXY, "flagcxPollProxyResponse Received new opId=%p",
-         resp.opId);
-
-    // If there's a respSize to recv
-    if (resp.respSize > 0) {
-      if (resp.opId != opId) {
-        // Unexpected response, need to buffer the socket data
-        respBuff = malloc(resp.respSize);
-      }
-      assert(respBuff != NULL);
-      FLAGCXCHECK(flagcxSocketRecv(sock, respBuff, resp.respSize));
-    }
-
-    if (resp.opId == opId) {
-      INFO(FLAGCX_PROXY, "resp.opId=%p matches expected opId=%p", resp.opId,
-           opId);
-      FLAGCXCHECK(expectedProxyResponseRemove(sharedProxyState, resp.opId));
-      return resp.res;
-    } else {
-      INFO(FLAGCX_PROXY, "Queuing opId=%p respBuff=%p respSize=%d", resp.opId,
-           respBuff, resp.respSize);
-      // Store the result and mark response as completed
-      FLAGCXCHECK(expectedProxyResponseStore(
-          sharedProxyState, resp.opId, respBuff, resp.respSize, resp.res));
-      return flagcxInProgress;
-    }
-  } else {
+  if (found != 0) {
     INFO(FLAGCX_PROXY, "flagcxPollProxyResponse Dequeued cached opId=%p", opId);
+    if (responseReceived != NULL)
+      *responseReceived = true;
+    return res;
   }
+
+  if (sharedProxyState->peerSocks == NULL || proxyConn->tpRank < 0 ||
+      proxyConn->tpRank >= sharedProxyState->nPeerSocks)
+    return flagcxInternalError;
+  if (sharedProxyState->rpcReadStates == NULL)
+    FLAGCXCHECK(flagcxCalloc(&sharedProxyState->rpcReadStates,
+                             sharedProxyState->nPeerSocks));
+
+  struct flagcxSocket *sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
+  auto *read = &sharedProxyState->rpcReadStates[proxyConn->tpRank];
+  if (read->headerBytes < sizeof(read->header)) {
+    int offset = static_cast<int>(read->headerBytes);
+    res = flagcxSocketProgress(FLAGCX_SOCKET_RECV, sock, &read->header,
+                               sizeof(read->header), &offset);
+    if (res != flagcxSuccess)
+      return flagcxProxyFailResponseRead(sock, read, res);
+    read->headerBytes = offset;
+    if (read->headerBytes < sizeof(read->header))
+      return flagcxInProgress;
+
+    // Validate the announced size before allocating or reading a body. Every
+    // reply must correspond to an outstanding RPC on this communicator.
+    struct flagcxExpectedProxyResponse *expected =
+        sharedProxyState->expectedResponses;
+    while (expected != NULL && expected->opId != read->header.opId)
+      expected = expected->next;
+    if (expected == NULL || expected->done || read->header.respSize < 0 ||
+        expected->respSize != read->header.respSize)
+      return flagcxProxyFailResponseRead(sock, read, flagcxInternalError);
+    if (read->header.respSize > 0) {
+      read->body = malloc(read->header.respSize);
+      if (read->body == NULL)
+        return flagcxProxyFailResponseRead(sock, read, flagcxSystemError);
+    }
+  }
+
+  if (read->header.respSize > 0) {
+    int offset = static_cast<int>(read->bodyBytes);
+    res = flagcxSocketProgress(FLAGCX_SOCKET_RECV, sock, read->body,
+                               read->header.respSize, &offset);
+    if (res != flagcxSuccess)
+      return flagcxProxyFailResponseRead(sock, read, res);
+    read->bodyBytes = offset;
+    if (read->bodyBytes < static_cast<size_t>(read->header.respSize))
+      return flagcxInProgress;
+  }
+
+  const flagcxProxyRpcResponseHeader header = read->header;
+  void *body = read->body;
+  read->header = {};
+  read->headerBytes = 0;
+  read->body = NULL;
+  read->bodyBytes = 0;
+  res = expectedProxyResponseStore(sharedProxyState, header.opId, body,
+                                   header.respSize, header.res);
+  if (res != flagcxSuccess) {
+    free(body);
+    (void)flagcxSocketClose(sock);
+    return res;
+  }
+  if (header.opId != opId)
+    return flagcxInProgress;
+  res = expectedProxyResponseDequeue(sharedProxyState, opId, respBuff, &found);
+  if (responseReceived != NULL)
+    *responseReceived = found != 0;
   return res;
+}
+
+flagcxResult_t flagcxPollProxyResponse(struct flagcxHeteroComm *comm,
+                                       struct flagcxProxyConnector *proxyConn,
+                                       void *respBuff, void *opId) {
+  return flagcxPollProxyResponseWithStatus(comm, proxyConn, respBuff, opId,
+                                           NULL);
+}
+
+flagcxResult_t flagcxPollProxyResponseWithStatus(
+    struct flagcxHeteroComm *comm, struct flagcxProxyConnector *proxyConn,
+    void *respBuff, void *opId, bool *responseReceived) {
+  if (responseReceived != NULL)
+    *responseReceived = false;
+  if (__atomic_load_n(&comm->proxyState->rpcStopping, __ATOMIC_ACQUIRE))
+    return flagcxInternalError;
+  pthread_mutex_lock(&comm->proxyState->rpcMutex);
+  flagcxResult_t res =
+      __atomic_load_n(&comm->proxyState->rpcStopping, __ATOMIC_ACQUIRE)
+          ? flagcxInternalError
+          : flagcxPollProxyResponseUnlocked(comm, proxyConn, respBuff, opId,
+                                            responseReceived);
+  pthread_mutex_unlock(&comm->proxyState->rpcMutex);
+  return res;
+}
+
+void flagcxProxyForgetResponse(struct flagcxHeteroComm *comm, void *opId) {
+  if (comm == NULL || comm->proxyState == NULL)
+    return;
+  if (__atomic_load_n(&comm->proxyState->rpcStopping, __ATOMIC_ACQUIRE))
+    return; // Stop owns the remaining expected-response list.
+  pthread_mutex_lock(&comm->proxyState->rpcMutex);
+  if (!__atomic_load_n(&comm->proxyState->rpcStopping, __ATOMIC_ACQUIRE))
+    (void)expectedProxyResponseRemove(comm->proxyState, opId);
+  pthread_mutex_unlock(&comm->proxyState->rpcMutex);
 }
 
 static bool flagcxProxyDmaBufferSupport() {
@@ -884,13 +1078,41 @@ static bool flagcxProxyDmaBufferSupport() {
 }
 
 static flagcxResult_t
+flagcxNetSendProxySetup(struct flagcxProxyConnection *connection,
+                        struct flagcxProxyState *proxyState, void *reqBuff,
+                        int reqSize, void *respBuff, int respSize, int *done) {
+  (void)respBuff;
+  if (connection == NULL || !connection->send || proxyState == NULL ||
+      reqBuff == NULL || reqSize != sizeof(struct flagcxNetSendSetupRequest) ||
+      respSize != 0 || done == NULL || connection->transportResources != NULL)
+    return flagcxInvalidArgument;
+
+  struct flagcxNetAdaptor *netAdaptor =
+      __atomic_load_n(&proxyState->netAdaptor, __ATOMIC_ACQUIRE);
+  if (netAdaptor == NULL)
+    return flagcxInvalidArgument;
+
+  const auto *request =
+      static_cast<const struct flagcxNetSendSetupRequest *>(reqBuff);
+  int relayNetDev = -1;
+  FLAGCXCHECK(flagcxNetDevFromGuid(netAdaptor, request->netGuid, &relayNetDev));
+  struct sendNetResources *resources = NULL;
+  FLAGCXCHECK(flagcxCalloc(&resources, 1));
+  // The service thread runs on the relay rank's device. Connection cleanup
+  // releases the allocated stream, events, and NET buffer at proxy teardown.
+  connection->transportResources = resources;
+  FLAGCXCHECK(
+      flagcxNetInitSendResources(netAdaptor, relayNetDev, resources, true));
+  *done = 1;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
 flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
                       struct flagcxProxyState *proxyState, void *reqBuff,
                       int reqSize, void *respBuff, int respSize, int *done) {
   (void)proxyState;
   (void)reqSize;
-  (void)respBuff;
-  (void)respSize;
   if (connection == NULL || connection->transportResources == NULL ||
       done == NULL)
     return flagcxInvalidArgument;
@@ -899,6 +1121,16 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
   if (connection->send) {
     struct sendNetResources *resources =
         (struct sendNetResources *)connection->transportResources;
+    if (resources->relayIpcBuffer) {
+      if (respBuff == NULL || respSize != sizeof(flagcxNetRelayBufferInfo))
+        return flagcxInvalidArgument;
+    } else if (respSize != 0) {
+      return flagcxInvalidArgument;
+    }
+    // PXN always exports the gdrMemAlloc buffer through device IPC and
+    // registers that same allocation through regMr. CI runs with VMM off.
+    if (resources->relayIpcBuffer)
+      dmaBufferSupport = false;
     resources->useDmaBuf = dmaBufferSupport;
     if (resources->netSendComm == NULL) {
       FLAGCXCHECK(resources->netAdaptor->connect(resources->netDev, reqBuff,
@@ -906,26 +1138,41 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
       return flagcxSuccess;
     }
 
-    if (dmaBufferSupport && resources->netAdaptor == getNetAdaptor(RDMA)) {
-      int dmabufFd;
-      FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-          &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0));
-      flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
-          resources->netSendComm, resources->buffers[0],
-          resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
-          &resources->mhandles[0]);
-      (void)close(dmabufFd);
-      FLAGCXCHECK(result);
-    } else {
+    auto registerSendBuffer = [&]() -> flagcxResult_t {
+      if (dmaBufferSupport && resources->netAdaptor == getNetAdaptor(RDMA)) {
+        int dmabufFd;
+        FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
+            &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0));
+        flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
+            resources->netSendComm, resources->buffers[0],
+            resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
+            &resources->mhandles[0]);
+        (void)close(dmabufFd);
+        return result;
+      }
       int type = resources->netAdaptor == getNetAdaptor(SOCKET)
                      ? FLAGCX_PTR_HOST
                      : ((resources->netAdaptor == getNetAdaptor(RDMA) ||
                          (resources->ptrSupport & FLAGCX_PTR_CUDA))
                             ? FLAGCX_PTR_CUDA
                             : FLAGCX_PTR_HOST);
-      FLAGCXCHECK(resources->netAdaptor->regMr(
+      return resources->netAdaptor->regMr(
           resources->netSendComm, resources->buffers[0],
-          resources->buffSizes[0], type, 0, &resources->mhandles[0]));
+          resources->buffSizes[0], type, 0, &resources->mhandles[0]);
+    };
+    FLAGCXCHECK(registerSendBuffer());
+    if (resources->relayIpcBuffer) {
+      if (resources->mhandles[0] == NULL)
+        return flagcxInternalError;
+      auto *info = static_cast<flagcxNetRelayBufferInfo *>(respBuff);
+      info->handleData = resources->relayHandleData;
+      info->handleSize = resources->relayHandleSize;
+      info->capacity = resources->buffSizes[0];
+      // A reply may be lost after publication; require an explicit source
+      // release acknowledgement before freeing the exported allocation.
+      resources->relaySourceReleased = false;
+      INFO(FLAGCX_NET, "PXN relay registered exported buffer %p with NET/%d",
+           resources->relayExportBuffer, resources->netDev);
     }
   } else {
     struct recvNetResources *resources =
@@ -1067,9 +1314,9 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     if (op->type == flagcxProxyMsgSetup) {
       if (tcomm->proxySetup == NULL)
         return flagcxNotSupported;
-      FLAGCXCHECK(tcomm->proxySetup(op->connection, NULL, op->reqBuff,
-                                    op->reqSize, op->respBuff, op->respSize,
-                                    &done));
+      FLAGCXCHECK(tcomm->proxySetup(op->connection, comm->proxyState,
+                                    op->reqBuff, op->reqSize, op->respBuff,
+                                    op->respSize, &done));
     } else if (op->type == flagcxProxyMsgConnect) {
       if (tcomm->proxyConnect == NULL)
         return flagcxNotSupported;
@@ -1087,11 +1334,55 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
         return flagcxNotSupported;
       FLAGCXCHECK(tcomm->proxyDeregister(op->connection, NULL, op->reqBuff,
                                          op->reqSize, &done));
+    } else if (op->type == flagcxProxyMsgSendRecv) {
+      FLAGCXCHECK(flagcxNetRelaySendRpc(op, comm, peer->tpRank, &done));
+    } else if (op->type == flagcxProxyMsgCancelRelay) {
+      if (op->reqSize != sizeof(flagcxNetRelayCancelRequest) ||
+          op->respSize != 1 || op->reqBuff == NULL)
+        return flagcxInvalidArgument;
+      const auto *cancel =
+          reinterpret_cast<const flagcxNetRelayCancelRequest *>(op->reqBuff);
+      if (cancel->requestId == 0)
+        return flagcxInvalidArgument;
+      done = 1;
+      for (flagcxProxyAsyncOp *pending = peer->asyncOps; pending != NULL;
+           pending = pending->next) {
+        if (pending->type != flagcxProxyMsgSendRecv ||
+            pending->reqSize != sizeof(flagcxNetRelaySendRequest) ||
+            pending->reqBuff == NULL)
+          continue;
+        const auto *request =
+            reinterpret_cast<const flagcxNetRelaySendRequest *>(
+                pending->reqBuff);
+        if (request->requestId == cancel->requestId) {
+          // Let an already submitted NET send retire before reusing its slot.
+          // The cancellation reply certifies that the slot is idle.
+          done = 0;
+          break;
+        }
+      }
+      if (done)
+        op->respBuff[0] = 1;
+    } else if (op->type == flagcxProxyMsgReleaseRelay) {
+      if (op->reqSize != 0 || op->respSize != 0 || op->connection == NULL ||
+          !op->connection->send || op->connection->transport != TRANSPORT_NET ||
+          op->connection->transportResources == NULL)
+        return flagcxInvalidArgument;
+      auto *resources =
+          static_cast<sendNetResources *>(op->connection->transportResources);
+      if (!resources->relayIpcBuffer || op->connection->activeRelayOp != NULL)
+        return flagcxInvalidArgument;
+      resources->relaySourceReleased = true;
+      done = 1;
     } else {
       return flagcxInternalError;
     }
   }
   if (done) {
+    if (op->type == flagcxProxyMsgSendRecv && op->respSize == 1)
+      op->respBuff[0] = 1;
+    if (op->connection != NULL && op->connection->activeRelayOp == op)
+      op->connection->activeRelayOp = NULL;
     INFO(FLAGCX_PROXY,
          "proxyProgressAsync opId=%p op.type=%d op.reqBuff=%p op.respSize=%d "
          "done",
@@ -1116,7 +1407,7 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
     asyncProxyOpDequeue(peer, op);
     (*asyncOpCount)--;
     return flagcxSuccess;
-  } else if (comm->abortFlag &&
+  } else if (!proxyCleanupOpType(op->type) && comm->abortFlag &&
              __atomic_load_n(comm->abortFlag, __ATOMIC_ACQUIRE) != 0) {
     return flagcxInternalError;
   }
@@ -1124,39 +1415,112 @@ proxyProgressAsync(struct flagcxProxyLocalPeer *peer, flagcxProxyAsyncOp *op,
   return flagcxInProgress;
 }
 
+// A proxy request is a sequence of small writes protected by rpcMutex. Use
+// bounded, interruptible writes so Stop can break a peer that stopped reading
+// without first acquiring that mutex.
+static flagcxResult_t flagcxProxySendRpcBytes(struct flagcxProxyState *state,
+                                              struct flagcxSocket *sock,
+                                              const void *data, int size) {
+  if (sock->fd < 0 || sock->state != flagcxSocketStateReady)
+    return flagcxInternalError;
+  const char *bytes = static_cast<const char *>(data);
+  int offset = 0;
+  struct timespec started = {};
+  if (clock_gettime(CLOCK_MONOTONIC, &started) != 0)
+    return flagcxSystemError;
+  const uint64_t deadline = uint64_t(started.tv_sec) * 1000000000ULL +
+                            started.tv_nsec + 30000000000ULL;
+  while (offset < size) {
+    if (__atomic_load_n(&state->rpcStopping, __ATOMIC_ACQUIRE))
+      return flagcxInternalError;
+    ssize_t sent = send(sock->fd, bytes + offset, size - offset,
+                        MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (sent > 0) {
+      offset += sent;
+      continue;
+    }
+    if (sent < 0 && errno == EINTR)
+      continue;
+    if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+      struct timespec now = {};
+      if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return flagcxSystemError;
+      if (uint64_t(now.tv_sec) * 1000000000ULL + now.tv_nsec >= deadline)
+        return flagcxRemoteError;
+      struct pollfd waitForWrite = {sock->fd, POLLOUT, 0};
+      int ready = poll(&waitForWrite, 1, 10);
+      if (ready < 0 && errno != EINTR)
+        return flagcxRemoteError;
+      if (ready > 0 && (waitForWrite.revents & (POLLERR | POLLHUP | POLLNVAL)))
+        return flagcxRemoteError;
+      continue;
+    }
+    return flagcxRemoteError;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxProxyCallAsync(struct flagcxHeteroComm *comm,
                                     struct flagcxProxyConnector *proxyConn,
                                     int type, void *reqBuff, int reqSize,
                                     int respSize, void *opId) {
-  struct flagcxSocket *sock;
+  struct flagcxSocket *sock = NULL;
   flagcxResult_t ret = flagcxSuccess;
   struct flagcxProxyState *sharedProxyState = comm->proxyState;
+  struct flagcxProxyConnection *rpcConnection =
+      proxyConn->remoteConnection != NULL ? proxyConn->remoteConnection
+                                          : proxyConn->connection;
 
   flagcxResult_t asyncResult =
       __atomic_load_n(&sharedProxyState->asyncResult, __ATOMIC_ACQUIRE);
   if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress &&
       !proxyCleanupOpType(type))
     return asyncResult;
-
-  if (sharedProxyState->peerSocks == NULL)
+  if (__atomic_load_n(&sharedProxyState->rpcStopping, __ATOMIC_ACQUIRE))
     return flagcxInternalError;
+
+  pthread_mutex_lock(&sharedProxyState->rpcMutex);
+  if (__atomic_load_n(&sharedProxyState->rpcStopping, __ATOMIC_ACQUIRE) ||
+      sharedProxyState->peerSocks == NULL || proxyConn->tpRank < 0 ||
+      proxyConn->tpRank >= sharedProxyState->nPeerSocks) {
+    ret = flagcxInternalError;
+    goto error;
+  }
   sock = &sharedProxyState->peerSocks[proxyConn->tpRank];
 
-  FLAGCXCHECKGOTO(flagcxSocketSend(sock, &type, sizeof(int)), ret, error);
   FLAGCXCHECKGOTO(
-      flagcxSocketSend(sock, &proxyConn->connection, sizeof(void *)), ret,
+      flagcxProxySendRpcBytes(sharedProxyState, sock, &type, sizeof(type)), ret,
       error);
-  FLAGCXCHECKGOTO(flagcxSocketSend(sock, &reqSize, sizeof(int)), ret, error);
-  FLAGCXCHECKGOTO(flagcxSocketSend(sock, &respSize, sizeof(int)), ret, error);
+  FLAGCXCHECKGOTO(flagcxProxySendRpcBytes(sharedProxyState, sock,
+                                          &rpcConnection, sizeof(void *)),
+                  ret, error);
+  FLAGCXCHECKGOTO(flagcxProxySendRpcBytes(sharedProxyState, sock, &reqSize,
+                                          sizeof(reqSize)),
+                  ret, error);
+  FLAGCXCHECKGOTO(flagcxProxySendRpcBytes(sharedProxyState, sock, &respSize,
+                                          sizeof(respSize)),
+                  ret, error);
   if (reqSize)
-    FLAGCXCHECKGOTO(flagcxSocketSend(sock, reqBuff, reqSize), ret, error);
+    FLAGCXCHECKGOTO(
+        flagcxProxySendRpcBytes(sharedProxyState, sock, reqBuff, reqSize), ret,
+        error);
 
   // Send opId to proxy
-  FLAGCXCHECKGOTO(flagcxSocketSend(sock, &opId, sizeof(opId)), ret, error);
+  FLAGCXCHECKGOTO(
+      flagcxProxySendRpcBytes(sharedProxyState, sock, &opId, sizeof(opId)), ret,
+      error);
 
-  FLAGCXCHECK(expectedProxyResponseEnqueue(sharedProxyState, opId, respSize));
+  FLAGCXCHECKGOTO(
+      expectedProxyResponseEnqueue(sharedProxyState, opId, respSize), ret,
+      error);
+  pthread_mutex_unlock(&sharedProxyState->rpcMutex);
   return flagcxSuccess;
 error:
+  // A failed write can leave a partial request on the wire. It cannot be
+  // reused for another RPC frame; EOF lets the service discard that peer.
+  if (sock != NULL)
+    (void)flagcxSocketClose(sock);
+  pthread_mutex_unlock(&sharedProxyState->rpcMutex);
   return ret;
 }
 
@@ -1166,8 +1530,9 @@ proxyServiceInitOp(int type, struct flagcxProxyLocalPeer *peer,
                    flagcxHeteroComm_t comm, int *asyncOpCount) {
   flagcxResult_t ret = flagcxSuccess;
   struct flagcxSocket *sock = &peer->sock;
-  struct flagcxProxyAsyncOp *asyncOp;
-  FLAGCXCHECK(flagcxCalloc(&asyncOp, 1));
+  struct flagcxProxyAsyncOp *asyncOp = new (std::nothrow) flagcxProxyAsyncOp{};
+  if (asyncOp == NULL)
+    return flagcxSystemError;
 
   asyncOp->type = type;
   FLAGCXCHECKGOTO(flagcxSocketRecv(sock, &asyncOp->connection, sizeof(void *)),
@@ -1230,7 +1595,7 @@ fail:
     free(asyncOp->reqBuff);
   if (asyncOp->respBuff)
     free(asyncOp->respBuff);
-  free(asyncOp);
+  delete asyncOp;
   return ret;
 }
 
@@ -1250,6 +1615,19 @@ flagcxResult_t flagcxProxyCallBlocking(struct flagcxHeteroComm *comm,
     res = flagcxPollProxyResponse(comm, proxyConn, respBuff, opId);
   } while (res == flagcxInProgress);
 
+  if (!proxyConn->sameProcess && proxyConn->remoteConnection != NULL &&
+      proxyConn->connection != NULL &&
+      (type == flagcxProxyMsgSetup || type == flagcxProxyMsgConnect)) {
+    if (res == flagcxSuccess) {
+      __atomic_store_n(&proxyConn->connection->state,
+                       type == flagcxProxyMsgSetup ? connSetupDone
+                                                   : connConnected,
+                       __ATOMIC_RELEASE);
+    } else {
+      flagcxProxyRecordConnectionError(proxyConn->connection, res);
+    }
+  }
+
 exit:
   free(opId);
   return res;
@@ -1265,13 +1643,20 @@ struct flagcxProxyKernelServiceArg {
 flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
                                   int send, int proxyRank,
                                   struct flagcxProxyConnector *proxyConn) {
-  proxyConn->sameProcess = ((comm->peerInfo[proxyRank].hostHash ==
-                             comm->peerInfo[comm->rank].hostHash) &&
-                            (comm->peerInfo[proxyRank].pidHash ==
-                             comm->peerInfo[comm->rank].pidHash))
+  // A NET relay on another rank must execute on that rank's device even when
+  // both ranks share an address space. Give the source a local shadow and use
+  // IPC staging for all cross-rank NET sends.
+  const bool remoteNetDevice =
+      transport == TRANSPORT_NET && send && proxyRank != comm->rank;
+  proxyConn->sameProcess = !remoteNetDevice &&
+                                   (comm->peerInfo[proxyRank].hostHash ==
+                                    comm->peerInfo[comm->rank].hostHash) &&
+                                   (comm->peerInfo[proxyRank].pidHash ==
+                                    comm->peerInfo[comm->rank].pidHash)
                                ? 1
                                : 0;
   proxyConn->connection = NULL;
+  proxyConn->remoteConnection = NULL;
   proxyConn->transport = -1;
   proxyConn->tpRank = proxyRank;
   proxyConn->tpLocalRank = 0;
@@ -1310,17 +1695,31 @@ flagcxResult_t flagcxProxyConnect(struct flagcxHeteroComm *comm, int transport,
   struct flagcxProxyInitResp resp = {};
   FLAGCXCHECK(flagcxProxyCallBlocking(comm, proxyConn, flagcxProxyMsgInit, &req,
                                       sizeof(req), &resp, sizeof(resp)));
-  proxyConn->connection = resp.connection;
-  if (proxyConn->connection == NULL) {
+  proxyConn->remoteConnection = resp.connection;
+  if (proxyConn->remoteConnection == NULL) {
     WARN("flagcxProxyConnect: service thread returned NULL connection for rank "
          "%d -> peer %d",
          comm->rank, proxyRank);
     return flagcxInternalError;
   }
+  if (proxyConn->sameProcess) {
+    proxyConn->connection = proxyConn->remoteConnection;
+  } else {
+    struct flagcxProxyConnection *localConnection = NULL;
+    FLAGCXCHECK(flagcxCalloc(&localConnection, 1));
+    localConnection->transport = transport;
+    localConnection->send = send;
+    localConnection->tcomm = flagcxProxyTransportComm(transport, send);
+    localConnection->result = flagcxSuccess;
+    localConnection->state = connInitialized;
+    proxyConn->connection = localConnection;
+  }
   proxyConn->transport = transport;
   INFO(FLAGCX_PROXY,
-       "flagcxProxyConnect rank %d -> peer %d connection %p sameProcess %d",
-       comm->rank, proxyRank, proxyConn->connection, proxyConn->sameProcess);
+       "flagcxProxyConnect rank %d -> peer %d local connection %p remote "
+       "handle %p sameProcess %d",
+       comm->rank, proxyRank, proxyConn->connection,
+       proxyConn->remoteConnection, proxyConn->sameProcess);
   return flagcxSuccess;
 }
 
@@ -1340,11 +1739,14 @@ flagcxResult_t flagcxProxyInit(struct flagcxHeteroComm *comm) {
                                      sizeof(union flagcxSocketAddress)));
 
   comm->proxyState->cudaDev = comm->cudaDev;
+  __atomic_store_n(&comm->proxyState->netAdaptor, comm->netAdaptor,
+                   __ATOMIC_RELEASE);
   comm->proxyState->nRanks = comm->nRanks;
   comm->proxyState->abortFlag = comm->abortFlag;
   comm->proxyState->asyncResult = flagcxSuccess;
   comm->proxyState->cleanupResult = flagcxSuccess;
   comm->proxyState->stop = 0;
+  comm->proxyState->rpcStopping = 0;
   pthread_create(&comm->proxyState->thread, NULL, flagcxProxyService,
                  (void *)comm);
   pthread_create(&comm->proxyState->progressState.thread, NULL,
@@ -2576,20 +2978,57 @@ out:
 }
 
 flagcxResult_t flagcxProxyFree(struct flagcxHeteroComm *comm) {
-  // Connection structs and transport resources are now freed by the service
-  // thread via flagcxProxyFreeConnections. We only NULL out
-  // the pointers here to prevent dangling references.
+  // The service thread owns its connections. Free only caller-side shadows;
+  // the remoteConnection values are opaque handles, never local allocations.
+  auto releaseLocalConnection = [](struct flagcxProxyConnector *proxyConn) {
+    if (proxyConn->connection != NULL &&
+        proxyConn->connection != proxyConn->remoteConnection)
+      free(proxyConn->connection);
+    proxyConn->connection = NULL;
+    proxyConn->remoteConnection = NULL;
+  };
   for (int peer = 0; peer < comm->nRanks; peer++) {
     for (int c = 0; c < MAXCHANNELS; c++) {
-      if (comm->channels[c].peers[peer]->recv[0].connected == 1) {
-        comm->channels[c].peers[peer]->recv[0].proxyConn.connection = NULL;
-      }
-      if (comm->channels[c].peers[peer]->send[0].connected == 1) {
-        comm->channels[c].peers[peer]->send[0].proxyConn.connection = NULL;
+      if (comm->channels[c].peers == NULL ||
+          comm->channels[c].peers[peer] == NULL)
+        continue;
+      for (int index = 0; index < FLAGCX_MAX_CONNS; ++index) {
+        releaseLocalConnection(
+            &comm->channels[c].peers[peer]->recv[index].proxyConn);
+        releaseLocalConnection(
+            &comm->channels[c].peers[peer]->send[index].proxyConn);
       }
     }
+    if (comm->gproxyConn != NULL)
+      releaseLocalConnection(&comm->gproxyConn[peer]);
   }
   return flagcxSuccess;
+}
+
+static uint64_t flagcxProxyMonotonicNs() {
+  struct timespec now = {};
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return 0;
+  return uint64_t(now.tv_sec) * 1000000000ULL + now.tv_nsec;
+}
+
+static flagcxResult_t
+flagcxProxyAcknowledgeRelayRelease(flagcxHeteroComm *comm,
+                                   flagcxProxyConnector *connector,
+                                   uint64_t deadlineNs) {
+  if (deadlineNs == 0 || flagcxProxyMonotonicNs() >= deadlineNs)
+    return flagcxInternalError;
+  FLAGCXCHECK(flagcxProxyCallAsync(comm, connector, flagcxProxyMsgReleaseRelay,
+                                   NULL, 0, 0, connector));
+  while (flagcxProxyMonotonicNs() < deadlineNs) {
+    flagcxResult_t result =
+        flagcxPollProxyResponse(comm, connector, NULL, connector);
+    if (result != flagcxInProgress)
+      return result;
+    usleep(1000);
+  }
+  flagcxProxyForgetResponse(comm, connector);
+  return flagcxInternalError;
 }
 
 flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
@@ -2597,43 +3036,104 @@ flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm) {
     return flagcxSuccess;
   }
 
-  INFO(FLAGCX_PROXY, "flagcxProxyStop: sending stop to service thread...");
-  // 1. Send MsgStop to own service thread via listen socket (best-effort)
-  {
-    struct flagcxSocket sock;
-    int type = flagcxProxyMsgStop;
-    if (flagcxSocketInit(&sock, &comm->proxyState->listenSock.addr, comm->magic,
-                         flagcxSocketTypeProxy) == flagcxSuccess) {
-      if (flagcxSocketConnect(&sock) == flagcxSuccess) {
-        int ready = 0;
-        while (!ready) {
-          (void)flagcxSocketReady(&sock, &ready);
+  // Importers close first, while relay service threads and their exported NET
+  // buffers are still alive. The relay keeps its allocation if this ACK is
+  // missing, including when an in-flight operation has uncertain ownership.
+  flagcxResult_t relayCleanupResult = flagcxSuccess;
+  bool relayDeviceSet = false;
+  const uint64_t nowNs = flagcxProxyMonotonicNs();
+  const uint64_t releaseDeadlineNs = nowNs == 0 ? 0 : nowNs + 30000000000ULL;
+  for (int peer = 0; peer < comm->nRanks; ++peer) {
+    for (int channel = 0; channel < MAXCHANNELS; ++channel) {
+      if (comm->channels[channel].peers == NULL ||
+          comm->channels[channel].peers[peer] == NULL)
+        continue;
+      for (int index = 0; index < FLAGCX_MAX_CONNS; ++index) {
+        auto *connector =
+            &comm->channels[channel].peers[peer]->send[index].proxyConn;
+        auto *connection = connector->connection;
+        if (connection == NULL || connection->relayBufferImport == NULL)
+          continue;
+        if (!relayDeviceSet) {
+          flagcxResult_t setResult = deviceAdaptor->setDevice(comm->cudaDev);
+          if (setResult != flagcxSuccess) {
+            if (relayCleanupResult == flagcxSuccess)
+              relayCleanupResult = setResult;
+            continue;
+          }
+          relayDeviceSet = true;
         }
-        (void)flagcxSocketSend(&sock, &type, sizeof(int));
+        while (__atomic_load_n(&connection->relayActiveOps, __ATOMIC_ACQUIRE) !=
+                   0 &&
+               releaseDeadlineNs != 0 &&
+               flagcxProxyMonotonicNs() < releaseDeadlineNs)
+          usleep(1000);
+        if (__atomic_load_n(&connection->relayActiveOps, __ATOMIC_ACQUIRE) !=
+            0) {
+          WARN("PXN relay mapping still has active sends at shutdown; "
+               "retaining it until process exit");
+          if (relayCleanupResult == flagcxSuccess)
+            relayCleanupResult = flagcxInternalError;
+          continue;
+        }
+        INFO(FLAGCX_PROXY,
+             "PXN closing persistent relay import: source %d peer %d "
+             "channel %d",
+             comm->rank, peer, channel);
+        flagcxResult_t closeResult =
+            deviceAdaptor->ipcMemHandleClose(connection->relayBufferImport);
+        INFO(FLAGCX_PROXY, "PXN persistent relay close returned %d",
+             closeResult);
+        if (closeResult != flagcxSuccess) {
+          if (relayCleanupResult == flagcxSuccess)
+            relayCleanupResult = closeResult;
+          continue;
+        }
+        connection->relayBufferImport = NULL;
+        flagcxResult_t ackResult = flagcxProxyAcknowledgeRelayRelease(
+            comm, connector, releaseDeadlineNs);
+        if (ackResult != flagcxSuccess && relayCleanupResult == flagcxSuccess)
+          relayCleanupResult = ackResult;
       }
-      (void)flagcxSocketClose(&sock);
     }
   }
 
-  // 2. Send MsgClose + close each peerSock (best-effort)
+  // Publish shutdown before waiting for rpcMutex. A writer waiting for socket
+  // space checks rpcStopping and releases the mutex; response reads never wait
+  // for a complete frame while holding it.
+  __atomic_store_n(&comm->proxyState->rpcStopping, 1, __ATOMIC_RELEASE);
+  __atomic_store_n(&comm->proxyState->stop, 1, __ATOMIC_RELEASE);
+
+  // The service thread checks stop after at most one poll interval. Closing
+  // client sockets also interrupts any incomplete request on that side.
+  pthread_mutex_lock(&comm->proxyState->rpcMutex);
   if (comm->proxyState->peerSocks != NULL) {
     for (int i = 0; i < comm->proxyState->nPeerSocks; i++) {
       if (comm->proxyState->peerSocks[i].fd >= 0) {
         int closeType = flagcxProxyMsgClose;
-        (void)flagcxSocketSend(&comm->proxyState->peerSocks[i], &closeType,
-                               sizeof(int));
+        // Best effort only: a blocked close message must not prevent teardown.
+        (void)send(comm->proxyState->peerSocks[i].fd, &closeType,
+                   sizeof(closeType), MSG_DONTWAIT | MSG_NOSIGNAL);
         flagcxSocketClose(&comm->proxyState->peerSocks[i]);
       }
     }
   }
-
-  // 3. Set atomic stop flag (unconditional — authoritative shutdown signal)
-  __atomic_store_n(&comm->proxyState->stop, 1, __ATOMIC_RELEASE);
-
-  // 4. Signal kernel threads to stop (unconditional)
+  if (comm->proxyState->rpcReadStates != NULL) {
+    for (int i = 0; i < comm->proxyState->nPeerSocks; i++)
+      free(comm->proxyState->rpcReadStates[i].body);
+    free(comm->proxyState->rpcReadStates);
+    comm->proxyState->rpcReadStates = NULL;
+  }
+  while (comm->proxyState->expectedResponses != NULL) {
+    auto *response = comm->proxyState->expectedResponses;
+    comm->proxyState->expectedResponses = response->next;
+    free(response->respBuff);
+    free(response);
+  }
+  pthread_mutex_unlock(&comm->proxyState->rpcMutex);
   comm->proxyState->kernelState.stop = 1;
   INFO(FLAGCX_PROXY, "flagcxProxyStop: done");
-  return flagcxSuccess;
+  return relayCleanupResult;
 }
 
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm) {

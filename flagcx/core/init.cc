@@ -84,6 +84,8 @@ static flagcxResult_t fillPeerInfo(flagcxHeteroComm_t comm,
   info->busId = comm->busId;
   info->comm = comm;
   info->cudaCompCap = comm->compCap;
+  if (flagcxPxnDisable(comm) == 0)
+    FLAGCXCHECK(flagcxGpuGdrSupport(comm, &info->gdrSupport));
 
   return flagcxSuccess;
 }
@@ -308,6 +310,7 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
     pthread_mutexattr_init(&mutexAttr);
     pthread_mutexattr_setpshared(&mutexAttr, PTHREAD_PROCESS_SHARED);
     pthread_mutex_init(&comm->proxyState->mutex, &mutexAttr);
+    pthread_mutex_init(&comm->proxyState->rpcMutex, NULL);
     pthread_condattr_t condAttr;
     pthread_condattr_init(&condAttr);
     pthread_condattr_setpshared(&condAttr, PTHREAD_PROCESS_SHARED);
@@ -356,6 +359,10 @@ static flagcxResult_t flagcxCommInitRankFunc(struct flagcxAsyncJob *job_) {
   assert(flagcxP2pChunks <= FLAGCX_P2P_MAX_STEPS);
 
   FLAGCXCHECK(flagcxNetInit(comm));
+  // Eager proxy threads start before NET selection. Publish the selected
+  // adaptor before any NET send setup request can reach the service thread.
+  __atomic_store_n(&comm->proxyState->netAdaptor, comm->netAdaptor,
+                   __ATOMIC_RELEASE);
   INFO(FLAGCX_INIT, "Using network %s", comm->netAdaptor->name);
   INFO(FLAGCX_INIT, "getting busId for cudaDev %d", comm->cudaDev);
   FLAGCXCHECK(getBusId(comm->cudaDev, &comm->busId));
@@ -484,7 +491,7 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
   FLAGCXCHECK(globalRegPool.removeAllNetHandles(comm));
   // Stop: send stop + close peerSocks
-  FLAGCXCHECK(flagcxProxyStop(comm));
+  flagcxResult_t proxyStopResult = flagcxProxyStop(comm);
   // Destroy: join thread, free proxy resources
   // A transport cleanup failure is reported after the service thread has
   // joined. Continue releasing communicator-owned host state before returning
@@ -501,14 +508,14 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
     free(comm->proxyState->proxyOps[i].consPeers);
   }
   pthread_mutex_destroy(&comm->proxyState->mutex);
+  pthread_mutex_destroy(&comm->proxyState->rpcMutex);
   pthread_cond_destroy(&comm->proxyState->cond);
 
   free(comm->connectSend);
   free(comm->connectRecv);
   if (comm->gproxyConn) {
-    // gproxyConn[i].connection is an opaque handle pointing to a
-    // flagcxProxyConnection allocated and owned by the peer's service thread.
-    // Do NOT free it here — the peer frees it when its service thread exits.
+    // ProxyDestroy has already released caller-side shadows. Remote handles
+    // belong to the peer's service thread.
     free(comm->gproxyConn);
   }
   free(comm->proxyState);
@@ -526,5 +533,6 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->peerInfo);
   free(comm);
 
-  return proxyDestroyResult;
+  return proxyStopResult != flagcxSuccess ? proxyStopResult
+                                          : proxyDestroyResult;
 }

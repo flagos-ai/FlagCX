@@ -2983,11 +2983,7 @@ flagcxResult_t flagcxIbucGetProperties(int dev, void *props) {
   properties->guid = ibucDev->guid;
   properties->ptrSupport = FLAGCX_PTR_HOST;
 
-  bool gpuMrSupported = false;
-  const int gpuMrAccess =
-      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ;
-  FLAGCXCHECK(flagcxIbProbeGpuMrSupport(dev, gpuMrAccess, &gpuMrSupported));
-  if (gpuMrSupported)
+  if (flagcxIbAdvertisesDeviceMemory())
     properties->ptrSupport |= FLAGCX_PTR_CUDA;
   properties->regIsGlobal = 1;
   if (flagcxIbDmaBufSupport(dev) == flagcxSuccess) {

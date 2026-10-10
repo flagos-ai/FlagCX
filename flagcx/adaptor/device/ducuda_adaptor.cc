@@ -137,6 +137,14 @@ flagcxResult_t ducudaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ducudaAdaptorCanAccessPeer(int srcDev, int dstDev,
+                                          int *canAccess) {
+  if (canAccess == NULL)
+    return flagcxInvalidArgument;
+  DEVCHECK(cudaDeviceCanAccessPeer(canAccess, srcDev, dstDev));
+  return flagcxSuccess;
+}
+
 flagcxResult_t ducudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   if (ptr == NULL || ptrType == NULL)
     return flagcxInvalidArgument;
@@ -1078,7 +1086,7 @@ struct flagcxDeviceAdaptor ducudaAdaptor {
       // well as VMM. Its current DU runtime cannot provide stream acquire for
       // incoming WRITEs, so strong WRITE consumers fail safely as unsupported.
       FLAGCX_GDR_READ_REQUIRES_FLUSH | FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
-      FLAGCX_GDR_DEVICE_DU, NULL,
+      FLAGCX_GDR_DEVICE_DU, NULL, ducudaAdaptorCanAccessPeer,
 };
 
 #endif // USE_DU_ADAPTOR

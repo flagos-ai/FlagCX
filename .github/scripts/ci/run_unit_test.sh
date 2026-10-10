@@ -645,6 +645,7 @@ run_suite() {
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_PXN_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
@@ -653,6 +654,7 @@ run_suite() {
         -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
         -x FLAGCX_IBUC_SPLIT_DATA_ON_QPS=0 \
         -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
+        -x FLAGCX_CI_EXPECT_PXN=0 \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests
       FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
@@ -660,6 +662,7 @@ run_suite() {
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
+        -x FLAGCX_PXN_DISABLE=1 \
         -x FLAGCX_VMM_ENABLE=0 \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
@@ -668,10 +671,40 @@ run_suite() {
         -x FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1 \
         -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
         -x FLAGCX_CI_EXPECT_COLL_QP_STRIPING=1 \
+        -x FLAGCX_CI_EXPECT_PXN=0 \
         -x FLAGCX_CI_RUNNER_BYTES=67108864 \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests \
         --gtest_filter=FlagCXCollTest.AlltoAll
+      if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
+        local -a pxn_platform_env=()
+        local -a pxn_launcher=(env)
+        if [[ "$platform_name" == "hygon" ]]; then
+          # The baseline uses four visible DCUs. Expose all eight here so
+          # ranks 0-3 and 4-7 form the same two logical groups as other CI
+          # platforms.
+          pxn_launcher+=(CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7)
+          pxn_platform_env+=(
+            -x CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+            -x FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
+          )
+        fi
+        FLAGCX_CI_MPI_LABEL="runner $platform_name PXN eight-rank" \
+          "${pxn_launcher[@]}" "$MPI_RUNNER" -np 8 --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=1 \
+          -x FLAGCX_PXN_DISABLE=0 \
+          -x FLAGCX_VMM_ENABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
+          -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+          -x FLAGCX_CI_EXPECT_PXN=1 \
+          "${pxn_platform_env[@]}" \
+          "${runner_net_platform_env[@]}" \
+          ./build/bin/runner_mpi_tests \
+          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll
+      fi
       ;;
     symmem)
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"

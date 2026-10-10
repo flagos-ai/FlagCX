@@ -5,6 +5,7 @@
 #include "p2p_topo.h"
 #include "adaptor.h"
 #include "flagcx_net.h"
+#include "net.h"
 #include "utils.h"
 #include "xml.h"
 
@@ -57,6 +58,8 @@ static flagcxResult_t flagcxP2pTopoBuildXml(struct flagcxNetAdaptor *netAdaptor,
     FLAGCXCHECK(xmlSetAttrInt(netNode, "port", props.port));
     FLAGCXCHECK(xmlInitAttrUint64(netNode, "guid", props.guid));
     FLAGCXCHECK(xmlSetAttrInt(netNode, "maxConn", props.maxComms));
+    FLAGCXCHECK(xmlSetAttrInt(netNode, "gdr",
+                              flagcxNetCanUseDeviceMemory(netAdaptor, &props)));
   }
 
   *nGpusOut = nGpus;

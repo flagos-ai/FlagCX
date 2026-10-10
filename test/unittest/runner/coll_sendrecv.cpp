@@ -7,6 +7,7 @@
 #include "global_comm.h"
 #include "net.h"
 #include "p2p.h"
+#include "pxn_assertions.hpp"
 #include "runner_fixtures.hpp"
 #include "runner_result.h"
 #include "test_utils.hpp"
@@ -30,6 +31,7 @@ TEST_F(FlagCXCollTest, SendRecv) {
                           flagcxMemcpyHostToDevice, stream);
 
   MPI_Barrier(MPI_COMM_WORLD);
+  const uint64_t relayChunksBefore = flagcxRunnerRelayChunks(comm);
 
   // Use group API for concurrent send/recv
   flagcxResult_t groupResult = flagcxGroupStart(comm);
@@ -55,6 +57,9 @@ TEST_F(FlagCXCollTest, SendRecv) {
   devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
                           flagcxMemcpyDeviceToHost, stream);
   ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+
+  flagcxRunnerAssertPxnTraffic(comm, rank, nranks, FlagCXPxnTraffic::RingP2P,
+                               relayChunksBefore, "SendRecv");
 
   // The heterogeneous CI modes must prove which peer transport was actually
   // connected.  FLAGCX_P2P_DISABLE selects NET, but this assertion catches an

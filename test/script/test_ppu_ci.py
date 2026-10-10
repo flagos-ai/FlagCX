@@ -211,7 +211,7 @@ class PpuCiRegressionTest(unittest.TestCase):
             full_heterogeneous.count(
                 "env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM"
             ),
-            2,
+            3,
         )
         default_runner = source[source.index('FLAGCX_CI_MPI_LABEL="runner default"'):]
         default_runner = default_runner[:default_runner.index('FLAGCX_CI_MPI_LABEL="runner BAREX')]

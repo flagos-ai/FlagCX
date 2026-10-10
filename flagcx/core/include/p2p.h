@@ -181,6 +181,11 @@ flagcxResult_t
 flagcxP2pAllocateShareableBuffer(size_t size, int directMap,
                                  struct flagcxP2pIpcDesc *ipcDesc, void **ptr);
 
+// Export an existing device allocation. The caller retains allocator ownership
+// and must release it with the matching free callback.
+flagcxResult_t flagcxP2pExportShareableBuffer(void *ptr, size_t size,
+                                              struct flagcxP2pIpcDesc *ipcDesc);
+
 flagcxResult_t flagcxP2pImportShareableBuffer(struct flagcxHeteroComm *comm,
                                               int peer, size_t size,
                                               struct flagcxP2pIpcDesc *ipcDesc,

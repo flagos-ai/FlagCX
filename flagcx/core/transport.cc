@@ -12,6 +12,12 @@
 
 FLAGCX_PARAM(P2pDisable, "P2P_DISABLE", 0);
 
+struct flagcxNetListenInfo {
+  struct flagcxIbHandle handle;
+  int netDev;
+  uint64_t netGuid;
+};
+
 flagcxResult_t flagcxTransportPrepareProxyOp(struct flagcxHeteroComm *comm,
                                              struct flagcxProxyOp *op,
                                              void *buffer, size_t size,
@@ -40,12 +46,20 @@ static inline bool isSameNode(struct flagcxHeteroComm *comm, int peer) {
 }
 
 static flagcxResult_t waitForProxyConnect(struct flagcxHeteroComm *comm,
-                                          struct flagcxConnector *connector) {
+                                          struct flagcxConnector *connector,
+                                          void *response = NULL) {
   flagcxResult_t result;
   do {
-    result =
-        flagcxPollProxyResponse(comm, &connector->proxyConn, NULL, connector);
+    result = flagcxPollProxyResponse(comm, &connector->proxyConn, response,
+                                     connector);
   } while (result == flagcxInProgress);
+  if (result == flagcxSuccess && !connector->proxyConn.sameProcess &&
+      connector->proxyConn.connection != NULL)
+    __atomic_store_n(&connector->proxyConn.connection->state, connConnected,
+                     __ATOMIC_RELEASE);
+  else if (result != flagcxSuccess && !connector->proxyConn.sameProcess &&
+           connector->proxyConn.connection != NULL)
+    flagcxProxyRecordConnectionError(connector->proxyConn.connection, result);
   return result;
 }
 
@@ -127,16 +141,22 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           resources->useGdr = comm->netAdaptor != getNetAdaptor(SOCKET) &&
                               (comm->netAdaptor == getNetAdaptor(RDMA) ||
                                (resources->ptrSupport & FLAGCX_PTR_CUDA) != 0);
-          struct flagcxIbHandle *handle = NULL;
-          FLAGCXCHECK(flagcxCalloc(&handle, 1));
-          FLAGCXCHECK(comm->netAdaptor->listen(
-              resources->netDev, (void *)handle, &resources->netListenComm));
-          FLAGCXCHECK(bootstrapSend(comm->bootstrap, peer, 1001 + c,
-                                    (void *)handle, sizeof(flagcxIbHandle)));
+          struct flagcxNetListenInfo *listenInfo = NULL;
+          FLAGCXCHECK(flagcxCalloc(&listenInfo, 1));
+          listenInfo->netDev = resources->netDev;
+          flagcxNetProperties_t listenProps = {};
+          FLAGCXCHECK(
+              comm->netAdaptor->getProperties(resources->netDev, &listenProps));
+          listenInfo->netGuid = listenProps.guid;
+          FLAGCXCHECK(comm->netAdaptor->listen(resources->netDev,
+                                               (void *)&listenInfo->handle,
+                                               &resources->netListenComm));
+          FLAGCXCHECK(bootstrapSend(comm->bootstrap, peer, 1001 + c, listenInfo,
+                                    sizeof(*listenInfo)));
           FLAGCXCHECK(flagcxProxyCallAsync(
-              comm, &conn->proxyConn, flagcxProxyMsgConnect, (void *)handle,
-              sizeof(flagcxIbHandle), 0, conn));
-          free(handle);
+              comm, &conn->proxyConn, flagcxProxyMsgConnect,
+              &listenInfo->handle, sizeof(flagcxIbHandle), 0, conn));
+          free(listenInfo);
         }
       }
       if (comm->connectSend[peer] & (1UL << c)) {
@@ -177,56 +197,80 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           INFO(FLAGCX_NET,
                "NET Send setup: rank %d -> peer %d channel %d (different node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_NET, 1, comm->rank,
+          struct flagcxNetListenInfo *listenInfo = NULL;
+          FLAGCXCHECK(flagcxCalloc(&listenInfo, 1));
+          FLAGCXCHECK(bootstrapRecv(comm->bootstrap, peer, 1001 + c, listenInfo,
+                                    sizeof(*listenInfo)));
+          // The NET adaptor owns stage.comm during asynchronous connect.
+          // The bootstrap handle may also be sent to another process for PXN,
+          // so it must not contain a pointer to this communicator.
+          int sendNetDev = comm->netDev;
+          int proxyRank = comm->rank;
+          int peerNetDev = listenInfo->netDev;
+          if (flagcxPxnDisable(comm) == 0 && comm->topoServer != NULL &&
+              comm->interServerTopo != NULL &&
+              deviceAdaptor->ipcMemHandleCreate != NULL &&
+              deviceAdaptor->ipcMemHandleGet != NULL &&
+              deviceAdaptor->ipcMemHandleFree != NULL &&
+              deviceAdaptor->ipcMemHandleOpen != NULL &&
+              deviceAdaptor->ipcMemHandleClose != NULL) {
+            struct flagcxTopoServer *remote = NULL;
+            if (flagcxTopoGetServerFromRank(peer, comm->interServerTopo,
+                                            comm->topoServer,
+                                            &remote) == flagcxSuccess) {
+              peerNetDev = -1;
+              if (flagcxTopoNetDevFromGuid(remote, listenInfo->netGuid,
+                                           &peerNetDev) == flagcxSuccess &&
+                  flagcxTopoSelectNetRoute(comm->topoServer, remote,
+                                           comm->interServerTopo, comm->rank,
+                                           peer, peerNetDev, &sendNetDev,
+                                           &proxyRank) == flagcxSuccess) {
+                INFO(FLAGCX_NET,
+                     "PXN route: %d -> %d channel %d recv NET/%d send "
+                     "NET/%d proxy rank %d",
+                     comm->rank, peer, c, listenInfo->netDev, sendNetDev,
+                     proxyRank);
+              } else {
+                sendNetDev = comm->netDev;
+                proxyRank = comm->rank;
+              }
+            }
+          }
+          uint64_t relayNetGuid = 0;
+          if (proxyRank != comm->rank) {
+            flagcxNetProperties_t sendProps = {};
+            flagcxResult_t propsResult =
+                comm->netAdaptor->getProperties(sendNetDev, &sendProps);
+            if (propsResult != flagcxSuccess || sendProps.guid == 0) {
+              free(listenInfo);
+              return propsResult != flagcxSuccess ? propsResult
+                                                  : flagcxNotSupported;
+            }
+            relayNetGuid = sendProps.guid;
+          }
+          FLAGCXCHECK(flagcxProxyConnect(comm, TRANSPORT_NET, 1, proxyRank,
                                          &conn->proxyConn));
-          struct sendNetResources *resources;
-          FLAGCXCHECK(flagcxCalloc(&resources, 1));
-          conn->proxyConn.connection->transportResources = (void *)resources;
-          resources->commPtr = comm;
-          resources->netDev = comm->netDev;
-          resources->netAdaptor = comm->netAdaptor;
-          FLAGCXCHECK(deviceAdaptor->streamCreate(&resources->cpStream));
-          for (int s = 0; s < flagcxNetChunks; s++) {
-            FLAGCXCHECK(deviceAdaptor->eventCreate(&resources->cpEvents[s],
-                                                   flagcxEventDisableTiming));
-          }
-          resources->buffSizes[0] = flagcxNetBufferSize;
-          if (comm->netAdaptor == getNetAdaptor(SOCKET)) {
-            resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
-            if (!resources->buffers[0]) {
-              return flagcxSystemError;
-            }
-          } else if (comm->netAdaptor == getNetAdaptor(RDMA)) {
-            FLAGCXCHECK(
-                deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
-                                           resources->buffSizes[0], NULL));
+          conn->proxyConn.netDev = sendNetDev;
+          conn->proxyConn.peerNetDev = peerNetDev;
+          if (proxyRank == comm->rank) {
+            struct sendNetResources *resources;
+            FLAGCXCHECK(flagcxCalloc(&resources, 1));
+            conn->proxyConn.connection->transportResources = resources;
+            resources->commPtr = comm;
+            FLAGCXCHECK(flagcxNetInitSendResources(comm->netAdaptor, sendNetDev,
+                                                   resources));
           } else {
-            flagcxNetProperties_t props;
-            FLAGCXCHECK(
-                comm->netAdaptor->getProperties(resources->netDev, &props));
-            resources->ptrSupport = props.ptrSupport;
-            if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
-              FLAGCXCHECK(
-                  deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
-                                             resources->buffSizes[0], NULL));
-            } else {
-              resources->buffers[0] = (char *)malloc(resources->buffSizes[0]);
-              if (!resources->buffers[0])
-                return flagcxSystemError;
-            }
+            struct flagcxNetSendSetupRequest setup = {relayNetGuid};
+            FLAGCXCHECK(flagcxProxyCallBlocking(comm, &conn->proxyConn,
+                                                flagcxProxyMsgSetup, &setup,
+                                                sizeof(setup), NULL, 0));
           }
-          resources->useGdr = comm->netAdaptor != getNetAdaptor(SOCKET) &&
-                              (comm->netAdaptor == getNetAdaptor(RDMA) ||
-                               (resources->ptrSupport & FLAGCX_PTR_CUDA) != 0);
-          struct flagcxIbHandle *handle = NULL;
-          FLAGCXCHECK(flagcxCalloc(&handle, 1));
-          FLAGCXCHECK(bootstrapRecv(comm->bootstrap, peer, 1001 + c,
-                                    (void *)handle, sizeof(flagcxIbHandle)));
-          handle->stage.comm = comm;
           FLAGCXCHECK(flagcxProxyCallAsync(
-              comm, &conn->proxyConn, flagcxProxyMsgConnect, (void *)handle,
-              sizeof(flagcxIbHandle), 0, conn));
-          free(handle);
+              comm, &conn->proxyConn, flagcxProxyMsgConnect,
+              &listenInfo->handle, sizeof(flagcxIbHandle),
+              proxyRank == comm->rank ? 0 : sizeof(flagcxNetRelayBufferInfo),
+              conn));
+          free(listenInfo);
         }
       }
     }
@@ -306,7 +350,29 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
                "NET Send connect: rank %d -> peer %d channel %d (different "
                "node)",
                comm->rank, peer, c);
-          FLAGCXCHECK(waitForProxyConnect(comm, conn));
+          if (conn->proxyConn.sameProcess) {
+            FLAGCXCHECK(waitForProxyConnect(comm, conn));
+          } else {
+            flagcxNetRelayBufferInfo relayBuffer = {};
+            FLAGCXCHECK(waitForProxyConnect(comm, conn, &relayBuffer));
+            if (relayBuffer.handleSize == 0 ||
+                relayBuffer.handleSize > sizeof(relayBuffer.handleData) ||
+                relayBuffer.capacity < size_t(flagcxNetChunkSize))
+              return flagcxInternalError;
+            flagcxP2pIpcDesc desc = {};
+            desc.handleData = relayBuffer.handleData;
+            desc.handleSize = relayBuffer.handleSize;
+            desc.size = relayBuffer.capacity;
+            void *mapped = NULL;
+            FLAGCXCHECK(flagcxP2pImportShareableBuffer(
+                comm, conn->proxyConn.tpRank, desc.size, &desc, &mapped));
+            conn->proxyConn.connection->relayBufferImport = mapped;
+            conn->proxyConn.connection->relayBufferCapacity = desc.size;
+            INFO(FLAGCX_NET,
+                 "PXN imported registered relay buffer: source %d relay %d "
+                 "channel %d capacity %zu",
+                 comm->rank, conn->proxyConn.tpRank, c, desc.size);
+          }
         }
         comm->channels[c].peers[peer]->send[0].connected = 1;
         comm->connectSend[peer] ^= (1UL << c);

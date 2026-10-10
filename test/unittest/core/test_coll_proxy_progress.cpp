@@ -279,6 +279,45 @@ TEST(CollProxyProgressTest, OutOfOrderCqeDoesNotAdvanceSendStep) {
   EXPECT_EQ(fixture.args.transmitted, 2);
 }
 
+TEST(CollProxyProgressTest, RelayChunkRetiresItsWireSequence) {
+  ScopedNetChunkConfig chunkConfig;
+  SendProgressFixture fixture;
+  fixture.args.chunkSteps = 1;
+  fixture.args.sequenceBase = 3;
+  ASSERT_EQ(flagcxNetCompletionScoreboardInit(
+                &fixture.args.collTransport.scoreboard,
+                fixture.args.collTransport.entries, 2, 7, 3),
+            flagcxSuccess);
+  fixture.args.collTransport.nextSubmit = 3;
+  fixture.state.acceptRequest[0] = 1;
+  fixture.state.requests[0] = {1, flagcxSuccess};
+
+  ASSERT_EQ(flagcxProxySend(&fixture.resources, fixture.data, 1, &fixture.args),
+            flagcxSuccess);
+  EXPECT_EQ(fixture.state.submits[0].sequence, 3u);
+  ASSERT_EQ(flagcxProxySend(&fixture.resources, fixture.data, 1, &fixture.args),
+            flagcxSuccess);
+  EXPECT_EQ(fixture.args.transmitted, 1);
+  ASSERT_EQ(flagcxProxySend(&fixture.resources, fixture.data, 1, &fixture.args),
+            flagcxSuccess);
+  EXPECT_EQ(fixture.args.done, 1);
+}
+
+TEST(CollProxyProgressTest, CompletedRelaySendDoesNotStartAgain) {
+  ScopedNetChunkConfig chunkConfig;
+  flagcxHeteroComm comm{};
+  flagcxProxyConnection connection{};
+  flagcxProxyOp op{};
+  connection.send = 1;
+  op.comm = &comm;
+  op.connection = &connection;
+  op.nbytes = 1;
+  op.args.done = 1;
+
+  EXPECT_EQ(flagcxNetProgressProxyOp(&connection, &op), flagcxSuccess);
+  EXPECT_EQ(op.relaySendState, nullptr);
+}
+
 TEST(CollProxyProgressTest, BackpressureCancelsReservationBeforeRetry) {
   ScopedNetChunkConfig chunkConfig;
   SendProgressFixture fixture;
