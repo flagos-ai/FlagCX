@@ -160,4 +160,36 @@ flagcxResult_t launchKernelInterBarrier(flagcxDevComm_t devComm, int *results,
 flagcxResult_t launchKernelWorldBarrier(flagcxDevComm_t devComm, int *results,
                                         flagcxStream_t stream);
 
+// =========================================================================
+// Launch bridges for DeviceAdaptor launchKernel verification
+// =========================================================================
+//
+// launchKernel consumes (void *func, void **args), both of which <<<>>> hides at
+// compile time. These helpers expose real kernels from device_api.cu in that
+// form. The slot's own function pointer is passed in by the caller so the device
+// translation unit does not have to include the host-only adaptor.h header.
+typedef flagcxResult_t (*flagcxTestLaunchKernelFn)(
+    void *func, unsigned int block_x, unsigned int block_y, unsigned int block_z,
+    unsigned int grid_x, unsigned int grid_y, unsigned int grid_z, void **args,
+    size_t share_mem, void *stream, void *memHandle);
+
+// CommQueries kernel launched through the slot. Its parameters are passed by
+// value (flagcxDevMem / flagcxDevComm), so the args array is marshalled here.
+flagcxResult_t flagcxTestLaunchCommQueriesViaAdaptor(
+    flagcxTestLaunchKernelFn launchKernel, flagcxDevMem_t devMem,
+    flagcxDevComm_t devComm, int *results, unsigned int blockX,
+    unsigned int gridX, flagcxStream_t stream);
+
+// CoopGroups kernel address, so the host test can marshal its own args and own
+// the exact block/grid configuration.
+void *flagcxTestKernelCoopGroupsPtr(void);
+
+// CoreX-only kernels: the 32-bit RMW contract, and "an unsupported partial mask
+// must fail rather than widen and hang". NOTE the trap in the latter is
+// asynchronous, so the launcher only reports launch-time errors; the caller must
+// synchronise under its own timeout to observe the failure.
+flagcxResult_t flagcxTestLaunchAtomicContract(uint32_t *value,
+                                              flagcxStream_t stream);
+flagcxResult_t flagcxTestLaunchUnsupportedCoop(flagcxStream_t stream);
+
 #endif // TEST_KERNEL_DEVICE_API_H_

@@ -287,6 +287,50 @@ flagcxResult_t ixcudaAdaptorLaunchHostFunc(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+flagcxResult_t ixcudaAdaptorLaunchKernel(void *func, unsigned int block_x,
+                                         unsigned int block_y,
+                                         unsigned int block_z,
+                                         unsigned int grid_x, unsigned int grid_y,
+                                         unsigned int grid_z, void **args,
+                                         size_t share_mem, void *stream,
+                                         void *memHandle) {
+  // Host-side validation: report the precise reason rather than a generic
+  // device error. A NULL stream is legal (legacy default stream), so it is not
+  // rejected here.
+  if (func == NULL || args == NULL || block_x == 0 || block_y == 0 ||
+      block_z == 0 || grid_x == 0 || grid_y == 0 || grid_z == 0) {
+    return flagcxInvalidArgument;
+  }
+  (void)memHandle; // Unused anywhere in the tree; kept for ABI parity.
+
+  // FlagCX orders the dimensions block-first while CUDA orders them grid-first.
+  // Assembling them explicitly is mandatory: a positional copy would transpose
+  // the two and still "succeed" while producing wrong results or a hang.
+  dim3 grid(grid_x, grid_y, grid_z);
+  dim3 block(block_x, block_y, block_z);
+
+  // The opaque stream handle wraps the vendor stream; NULL selects the legacy
+  // default stream.
+  cudaStream_t cudaStream =
+      (stream == NULL) ? (cudaStream_t)0 : ((flagcxStream_t)stream)->base;
+
+  // Deliberately not DEVCHECK: that macro collapses every vendor error into
+  // flagcxUnhandledDeviceError and would discard the real cause. The specific
+  // error is surfaced through the log instead.
+  // The sticky error state is intentionally left untouched so that
+  // getLastError() keeps reporting it later: kernel launch and error handling
+  // are separate capabilities and must stay orthogonal.
+  cudaError_t err = cudaLaunchKernel((const void *)func, grid, block, args,
+                                     share_mem, cudaStream);
+  if (err != cudaSuccess) {
+    WARN("launchKernel FAILED: %s (%d) block=(%u,%u,%u) grid=(%u,%u,%u)",
+         cudaGetErrorString(err), (int)err, block_x, block_y, block_z, grid_x,
+         grid_y, grid_z);
+    return flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t ixcudaAdaptorGetDeviceProperties(struct flagcxDevProps *props,
                                                 int dev) {
   if (props == NULL) {
@@ -438,7 +482,7 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorIpcMemHandleOpen, ixcudaAdaptorIpcMemHandleClose,
       ixcudaAdaptorIpcMemHandleFree,
       // Kernel launch
-      NULL, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
+      ixcudaAdaptorLaunchKernel, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
             // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
             // unsigned int grid_y, unsigned int grid_z, void **args, size_t
             // share_mem, void *stream, void *memHandle);

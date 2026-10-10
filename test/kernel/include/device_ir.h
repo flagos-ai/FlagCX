@@ -366,4 +366,9 @@ extern "C" void launchKernelDevSignalShadowFlushInterWorldS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
     flagcxStream_t stream);
 
+// Launch bridge for DeviceAdaptor launchKernel verification: expose
+// kernelCommQueriesS (S1) as a plain kernel address so a host test can launch it
+// through the slot's (void *func, void **args) contract instead of <<<>>>.
+void *flagcxTestKernelCommQueriesSPtr(void);
+
 #endif // TEST_KERNEL_DEVICE_IR_H_

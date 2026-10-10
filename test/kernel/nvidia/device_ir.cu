@@ -145,7 +145,13 @@ extern "C" void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCom
 __global__ void kernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
                                          int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    void *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
+    // Declare through the IR pointer annotation instead of a bare void *.
+    // flagcxGetLocalPointerS returns FLAGCX_IR_GLOBAL_RETURN_PTR void *, which
+    // is address_space(1) on CoreX; a backend with address spaces need not
+    // provide an address_space(1) -> generic conversion, so the unannotated
+    // form is rejected there. The annotation expands to nothing on every other
+    // platform, so this is a no-op for them.
+    void FLAGCX_IR_GLOBAL_PTR *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
     // Verify local pointer is non-null and points to same data as rawBuff
     // (may be a different VA due to VMM flat-mapping)
     if (localPtr == nullptr) {

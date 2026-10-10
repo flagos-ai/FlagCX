@@ -50,11 +50,20 @@
 #define FLAGCX_IR_GLOBAL_RETURN_PTR __attribute__((address_space(1)))
 #define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
   ((FLAGCX_IR_GLOBAL_PTR type *)(ptr))
+// Volatile view of a pointer that already lives in address space 1. The
+// annotation has to stay on the pointer: a cast that drops it (including
+// const_cast to a plain volatile T *) is rejected, because there is no
+// address_space(1) <-> generic conversion. Used by the atomic helpers that
+// publish and poll device state with volatile accesses instead of atomics.
+#define FLAGCX_IR_GLOBAL_VOLATILE_CAST(type, ptr)                              \
+  ((volatile FLAGCX_IR_GLOBAL_PTR type *)(ptr))
 #else
 #define FLAGCX_IR_GLOBAL_PTR
 #define FLAGCX_IR_GLOBAL_RETURN_PTR FLAGCX_DEVICE_GLOBAL_PTR
 #define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
   FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)
+#define FLAGCX_IR_GLOBAL_VOLATILE_CAST(type, ptr)                              \
+  (FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile type, ptr))
 #endif
 
 // How an IR entry point gets hold of its flagcxDevNet.
