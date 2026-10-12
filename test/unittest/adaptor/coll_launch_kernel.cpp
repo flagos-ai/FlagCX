@@ -48,7 +48,7 @@
 // device_ir.o back to LAUNCH_KERNEL_OBJS in the Makefile) once that helper
 // linkage is resolved.
 #ifndef FLAGCX_TEST_LAUNCH_KERNEL_IR_LEG
-#define FLAGCX_TEST_LAUNCH_KERNEL_IR_LEG 0
+#define FLAGCX_TEST_LAUNCH_KERNEL_IR_LEG 1
 #endif
 #if FLAGCX_TEST_LAUNCH_KERNEL_IR_LEG
 #include "device_ir.h"
@@ -267,7 +267,7 @@ TEST_F(LaunchKernelTest, IrCommQueriesMatchesLegacyLauncher) {
 
   ASSERT_FLAGCX_SUCCESS(devHandle_->deviceMemset(
       devResults_, 0, 4 * sizeof(int), flagcxMemDevice, stream_));
-  launchKernelCommQueriesS(devCommPtr, devResults_, stream_);
+  flagcxTestLaunchCommQueriesS(devCommPtr, devResults_, stream_);
   ASSERT_FLAGCX_SUCCESS(devHandle_->streamSynchronize(stream_));
   ASSERT_FLAGCX_SUCCESS(devHandle_->deviceMemcpy(
       ref, devResults_, 4 * sizeof(int), flagcxMemcpyDeviceToHost, stream_));

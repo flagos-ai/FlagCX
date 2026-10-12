@@ -22,12 +22,25 @@ MPI_ENV    ?=
 LAUNCH_KERNEL_SRC    := coll_launch_kernel.cpp
 LAUNCH_KERNEL_OBJ    := $(OBJDIR)/$(LAUNCH_KERNEL_SRC:%.cpp=%.o)
 LAUNCH_KERNEL_TARGET := $(BINDIR)/adaptor_launch_kernel_tests
-# Only the Device API leg is linked. device_ir.o also compiles now, but both
-# objects emit out-of-line copies of the same header-inline flagcxTeam* helpers
-# (flagcx_device_core.h declares them FLAGCX_HOST_DEVICE_INLINE, i.e. neither
-# static nor inline on the device pass), so linking both is a duplicate-symbol
-# error. Keeping one object leaves link semantics exactly as before.
-LAUNCH_KERNEL_OBJS   := $(KERNEL_OBJ_DIR)/device_api.o
+# Both device legs are linked, so one binary exercises a kernel from
+# device_api.o and one from device_ir.o.
+#
+# They clash on 39 symbols: five flagcxTeam* helpers that flagcx_device_core.h
+# declares FLAGCX_HOST_DEVICE_INLINE (always_inline but neither static nor inline
+# on the device pass), plus CoreX's per-module device-image hooks
+# (__ix_fatbin_wrapper, __ix_module_ctor/dtor) and local labels.
+# --allow-multiple-definition resolves them.
+#
+# That switch was verified not to be hiding a real failure: a probe linked both
+# objects this way and launched one kernel from EACH object in the same process,
+# and both ran -- device_ir's kernel wrote its real result vector rather than
+# stale data -- so both device images really are registered. The deduplicated
+# helpers are pure functions with no global state, which is why keeping one copy
+# is sound. If a future duplicate carried mutable state this must be revisited;
+# merging the two .cu files into one device translation unit would be the
+# structural fix.
+LAUNCH_KERNEL_OBJS   := $(KERNEL_OBJ_DIR)/device_api.o $(KERNEL_OBJ_DIR)/device_ir.o
+LAUNCH_KERNEL_LDFLAGS := -Wl,--allow-multiple-definition
 # Device objects call into the CoreX libcudart entry points
 # (__ixPopCallConfiguration and friends), which the host test link line does not
 # otherwise pull in.
@@ -75,7 +88,7 @@ $(KERNEL_OBJ_DIR)/%.o:
 $(LAUNCH_KERNEL_TARGET): $(LAUNCH_KERNEL_OBJ) $(LAUNCH_KERNEL_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK) $(LAUNCH_KERNEL_DEVICE_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK) $(LAUNCH_KERNEL_DEVICE_LINK) $(LAUNCH_KERNEL_LDFLAGS)
 
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)

@@ -371,4 +371,14 @@ extern "C" void launchKernelDevSignalShadowFlushInterWorldS(
 // through the slot's (void *func, void **args) contract instead of <<<>>>.
 void *flagcxTestKernelCommQueriesSPtr(void);
 
+// Reference-path bridge for the same kernel. The host test cannot call
+// launchKernelCommQueriesS() directly: that launcher's `const void
+// FLAGCX_IR_GLOBAL_PTR *` parameter is address_space(1) in the device
+// translation unit and generic in the host one, so the two mangled names differ
+// and the direct call would link against nothing. This wrapper takes the
+// host-side generic pointer and adds the address space where the definition is
+// visible.
+void flagcxTestLaunchCommQueriesS(const void *devCommPtr, int *devResults,
+                                 flagcxStream_t stream);
+
 #endif // TEST_KERNEL_DEVICE_IR_H_
