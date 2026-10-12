@@ -37,13 +37,16 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
 
-// The device_ir.cu leg is disabled by default: test/kernel/<platform>/device_ir.o
-// does not compile on Iluvatar yet. nvidia/device_ir.cu:163 assigns an
-// address_space(1) pointer (FLAGCX_IR_GLOBAL_RETURN_PTR on CoreX) to a plain
-// void *, which the ivcore front end rejects. Until that is resolved the IR
-// half of "kernels from both translation units can be launched" cannot be
-// verified, and linking device_ir.o is impossible. Flip this to 1 (and add
-// device_ir.o back to LAUNCH_KERNEL_OBJS in the Makefile) once fixed.
+// The device_ir.cu leg is disabled by default. device_ir.o itself now compiles
+// (the address_space(1) assignment it used to fail on is fixed), but linking it
+// alongside device_api.o is a duplicate-symbol error: both objects emit
+// out-of-line copies of the same header helpers, because flagcx_device_core.h
+// declares the flagcxTeam* family FLAGCX_HOST_DEVICE_INLINE, which is
+// always_inline but neither static nor inline on the device pass
+// (device_utils.h:177-178). So the IR half of "kernels from both translation
+// units can be launched" is not verified yet. Flip this to 1 (and add
+// device_ir.o back to LAUNCH_KERNEL_OBJS in the Makefile) once that helper
+// linkage is resolved.
 #ifndef FLAGCX_TEST_LAUNCH_KERNEL_IR_LEG
 #define FLAGCX_TEST_LAUNCH_KERNEL_IR_LEG 0
 #endif
