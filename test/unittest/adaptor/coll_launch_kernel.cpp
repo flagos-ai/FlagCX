@@ -112,8 +112,19 @@ protected:
     reqs.interCounterCount = 0;
     ASSERT_FLAGCX_SUCCESS(flagcxDevCommCreate(comm_, &reqs, &devComm_));
 
-    ASSERT_FLAGCX_SUCCESS(
-        flagcxMemAlloc(&regBuff_, kWindowBytes, memAllocator_));
+    // The window buffer comes from the device adaptor, not flagcxMemAlloc.
+    // On CoreX flagcxMemAlloc(flagcxMemCCL) routes to the CCL adaptor, whose
+    // memAlloc/memFree/commWindow* entries are unimplemented and return
+    // flagcxNotSupported; that is what blocks the Device API drivers there.
+    // Registration accepts an external buffer for flagcxMemCCL by design
+    // (flagcx.cc rejects unknown provenance only for the SHMEM allocator), and
+    // flagcxCommWindowRegister already treats a flagcxNotSupported answer from
+    // the vendor backend as a documented fallback rather than a failure (the
+    // window comes back as NULL there). A runtime allocation is therefore the
+    // supported route on this platform and keeps this test independent of the
+    // CCL memory shims.
+    ASSERT_FLAGCX_SUCCESS(devHandle_->deviceMalloc(
+        &regBuff_, kWindowBytes, flagcxMemDevice, nullptr));
     ASSERT_FLAGCX_SUCCESS(flagcxCommWindowRegister(
         comm_, regBuff_, kWindowBytes, &win_, FLAGCX_WIN_COLL_SYMMETRIC,
         memAllocator_));
@@ -136,8 +147,8 @@ protected:
     if (comm_ != nullptr && win_ != nullptr) {
       flagcxCommWindowDeregister(comm_, win_, memAllocator_);
     }
-    if (regBuff_ != nullptr) {
-      flagcxMemFree(regBuff_, memAllocator_);
+    if (devHandle_ != nullptr && regBuff_ != nullptr) {
+      devHandle_->deviceFree(regBuff_, flagcxMemDevice, nullptr);
     }
     if (comm_ != nullptr && devComm_ != nullptr) {
       flagcxDevCommDestroy(comm_, devComm_);
