@@ -621,6 +621,11 @@ uint64_t getUniRunnerDagAlgorithmHash(
       hashValue = hashAlgorithmUint64(
           hashValue, static_cast<uint64_t>(algorithmConfig.bufferMode));
       break;
+    case uniRunnerDagAlgoGroupedAR:
+      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numSlices);
+      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numRedSlices);
+      // The remaining fields are shared with grouped AG.
+      [[fallthrough]];
     case uniRunnerDagAlgoGroupedAG:
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.groupSize);
       hashValue = hashAlgorithmUint64(
@@ -1145,6 +1150,192 @@ buildUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
   }
 
   return validateDagNodes(runnerState);
+}
+
+// Contiguous groups use the same rank/group mapping as grouped AG. Each
+// local lane owns a disjoint chunk and drives its own inter-group ring.
+static flagcxResult_t buildUniRunnerStateGroupedAR(
+    flagcxUniRunnerState *state, const void *sendbuff, void *recvbuff,
+    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
+    flagcxComm_t comm, int groupSize) {
+  if (count == 0) return validateDagNodes(state);
+  const int rank = comm->rank;
+  const int nGroups = comm->nranks / groupSize;
+  const int group = rank / groupSize;
+  const int lane = rank % groupSize;
+  const int nSlices = state->uniRunnerNSlices;
+  const int nRedSlices = state->uniRunnerNRedSlices;
+  const size_t typeSize = getFlagcxDataTypeSize(datatype);
+  int perSlice = 0, capacity = 0;
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(
+      static_cast<size_t>(groupSize - 1) + nGroups - 1,
+      static_cast<size_t>(nRedSlices) + 1,
+      static_cast<size_t>(nGroups - 1) + 2, &perSlice));
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(nSlices, perSlice, 1, &capacity));
+  FLAGCXCHECK(flagcxCalloc(&state->dagNodes, capacity));
+  std::vector<std::vector<int>> parents(capacity), children(capacity);
+  std::vector<int> ready;
+
+  struct Range { size_t offset; size_t count; };
+  auto partition = [](Range r, int parts, int index) -> Range {
+    const size_t base = r.count / parts;
+    const size_t rem = r.count % parts;
+    return {r.offset + index * base + std::min<size_t>(index, rem),
+            base + (static_cast<size_t>(index) < rem)};
+  };
+  auto chunkSlice = [&](int localLane, int slice) -> Range {
+    return partition(partition({0, count}, groupSize, localLane), nSlices,
+                     slice);
+  };
+  auto ptr = [&](const void *base, size_t offset) -> void * {
+    return static_cast<char *>(const_cast<void *>(base)) + offset * typeSize;
+  };
+  auto node = [&](uniRunnerDagNodeType type, const std::vector<int> &deps) {
+    const int id = state->numDagNodes++;
+    state->dagNodes[id].nodeIdx = id;
+    state->dagNodes[id].nodeType = type;
+    parents[id] = deps;
+    for (int dep : deps) children[dep].push_back(id);
+    return id;
+  };
+  auto exchange = [&](int sendPeer, Range tx, const void *src,
+                      int recvPeer, Range rx, void *dst) -> flagcxResult_t {
+    const int id = node(uniRunnerDagNodeTypeP2p, ready);
+    auto &p2p = state->dagNodes[id].nodeData.p2p;
+    p2p.numOps = 2;
+    FLAGCXCHECK(flagcxCalloc(&p2p.ops, 2));
+    p2p.ops[0] = {ptr(src, tx.offset), tx.count, sendPeer, datatype,
+                  flagcxDevicePrimSend};
+    p2p.ops[1] = {ptr(dst, rx.offset), rx.count, recvPeer, datatype,
+                  flagcxDevicePrimRecv};
+    ready = {id};
+    return flagcxSuccess;
+  };
+  auto reduce = [&](Range output, bool final) {
+    const std::vector<int> deps = ready;
+    std::vector<int> reductions;
+    // All RED nodes for a step run in parallel. Scratch is reused only after
+    // every reduction completes, including when counts are not divisible.
+    for (int r = 0; r < nRedSlices; ++r) {
+      const Range sub = partition({0, output.count}, nRedSlices, r);
+      if (sub.count == 0) continue;
+      const int id = node(uniRunnerDagNodeTypeRed, deps);
+      auto &red = state->dagNodes[id].nodeData.red;
+      red.input1 = ptr(recvbuff, output.offset + sub.offset);
+      red.input2 = ptr(state->groupedArScratch, sub.offset);
+      red.output = red.input1;
+      red.count = sub.count;
+      red.nthreads = state->uniRunnerNThreads;
+      red.datatype = datatype;
+      red.redOp = effectiveUniRunnerRedOp(op, final);
+      red.triggerIdx = -1;
+      reductions.push_back(id);
+    }
+    if (!reductions.empty()) ready = std::move(reductions);
+  };
+
+  // Publish the caller stream's preceding work before a copy on cpyStream.
+  // This also orders asynchronous input producers with the first local copy.
+  if (sendbuff != recvbuff) {
+    ready = {node(uniRunnerDagNodeTypeP2p, ready)};
+  }
+  // Initialize the entire lane before communication. A later slice's copy
+  // must not wait on earlier P2P work: stream-value waits are invisible to
+  // CUDA scheduling and can block the copies needed to finish that P2P work.
+  const Range ownLane = partition({0, count}, groupSize, lane);
+  if (sendbuff != recvbuff && ownLane.count != 0) {
+    const int id = node(uniRunnerDagNodeTypeCpy, ready);
+    auto &cpy = state->dagNodes[id].nodeData.cpy;
+    cpy.src = ptr(sendbuff, ownLane.offset);
+    cpy.dst = ptr(recvbuff, ownLane.offset);
+    cpy.count = ownLane.count;
+    cpy.datatype = datatype;
+    ready = {id};
+  }
+  for (int s = 0; s < nSlices; ++s) {
+    const Range own = chunkSlice(lane, s);
+
+    // Intra-group direct reduce-scatter. Receive into separate scratch so
+    // in-place input is preserved until all peers have consumed its chunk.
+    for (int step = 1; step < groupSize; ++step) {
+      const int txLane = positiveModulo(static_cast<int64_t>(lane) + step,
+                                        groupSize);
+      const int rxLane = positiveModulo(static_cast<int64_t>(lane) - step,
+                                        groupSize);
+      FLAGCXCHECK(exchange(group * groupSize + txLane, chunkSlice(txLane, s),
+                           sendbuff, group * groupSize + rxLane,
+                           {0, own.count}, state->groupedArScratch));
+      reduce(own, nGroups == 1 && step == groupSize - 1);
+    }
+
+    // Inter-group reduce-scatter on each independent NIC lane. Divide the
+    // lane chunk again across groups to keep network volume bandwidth optimal.
+    const int next = ((group + 1) % nGroups) * groupSize + lane;
+    const int prev = positiveModulo(static_cast<int64_t>(group) - 1,
+                                    nGroups) * groupSize + lane;
+    for (int step = 0; step < nGroups - 1; ++step) {
+      const Range tx = partition(own, nGroups, positiveModulo(
+          static_cast<int64_t>(group) - step, nGroups));
+      const Range rx = partition(own, nGroups, positiveModulo(
+          static_cast<int64_t>(group) - step - 1, nGroups));
+      FLAGCXCHECK(exchange(next, tx, recvbuff, prev, {0, rx.count},
+                           state->groupedArScratch));
+      reduce(rx, step == nGroups - 2);
+    }
+    // Inter-group allgather completes the lane's globally reduced chunk.
+    for (int step = 0; step < nGroups - 1; ++step) {
+      const Range tx = partition(own, nGroups, positiveModulo(
+          static_cast<int64_t>(group) - step + 1, nGroups));
+      const Range rx = partition(own, nGroups, positiveModulo(
+          static_cast<int64_t>(group) - step, nGroups));
+      FLAGCXCHECK(exchange(next, tx, recvbuff, prev, rx, recvbuff));
+    }
+
+    // Intra-group direct allgather, matching grouped AG's peer ordering.
+    // All input sends for this slice precede these receives (also in-place).
+    if (groupSize > 1) {
+      const int id = node(uniRunnerDagNodeTypeP2p, ready);
+      auto &p2p = state->dagNodes[id].nodeData.p2p;
+      FLAGCXCHECK(checkedUniRunnerDagNodeCount(2, groupSize - 1, 0,
+                                               &p2p.numOps));
+      FLAGCXCHECK(flagcxCalloc(&p2p.ops, p2p.numOps));
+      for (int step = 1; step < groupSize; ++step) {
+        const int txLane = positiveModulo(static_cast<int64_t>(lane) + step,
+                                          groupSize);
+        const int rxLane = positiveModulo(static_cast<int64_t>(lane) - step,
+                                          groupSize);
+        const Range rx = chunkSlice(rxLane, s);
+        p2p.ops[2 * (step - 1)] = {
+            ptr(recvbuff, own.offset), own.count, group * groupSize + txLane,
+            datatype, flagcxDevicePrimSend};
+        p2p.ops[2 * (step - 1) + 1] = {
+            ptr(recvbuff, rx.offset), rx.count, group * groupSize + rxLane,
+            datatype, flagcxDevicePrimRecv};
+      }
+      ready = {id};
+    }
+  }
+  if (state->numDagNodes == 0) {
+    free(state->dagNodes);
+    state->dagNodes = NULL;
+  }
+  for (int id = 0; id < state->numDagNodes; ++id) {
+    auto &n = state->dagNodes[id];
+    n.numParents = parents[id].size();
+    n.numChildren = children[id].size();
+    FLAGCXCHECK(allocDagNodeDeps(&n));
+    for (int i = 0; i < n.numParents; ++i)
+      FLAGCXCHECK(setDagNodeParent(&n, i, parents[id][i]));
+    std::copy(children[id].begin(), children[id].end(), n.children);
+    if (n.numParents == 0)
+      flagcxIntruQueueEnqueue(&state->p2pReadyQueue, &n);
+    else
+      ++state->numPendingNodes;
+  }
+  TRACE(FLAGCX_UNIRUNNER,
+        "GroupedAR rank %d: groupSize=%d nGroups=%d slices=%d redSlices=%d",
+        rank, groupSize, nGroups, nSlices, nRedSlices);
+  return validateDagNodes(state);
 }
 
 static flagcxResult_t buildUniRunnerStateGroupedAG(
@@ -3497,6 +3688,58 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
   });
 }
 
+flagcxResult_t initUniRunnerStateGroupedAR(
+    flagcxUniRunnerState *state, const void *sendbuff, void *recvbuff,
+    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
+    flagcxComm_t comm, int groupSize) {
+  if (comm == NULL || comm->nranks <= 0 || groupSize <= 0 ||
+      groupSize > comm->nranks || comm->nranks % groupSize != 0)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
+  setUniRunnerAvgDivisor(state, op, comm->nranks);
+  FLAGCXCHECK(setEffectiveUniRunnerRedSlices(state, count, groupSize));
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = sendbuff;
+  bindings.outputBase = recvbuff;
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 1, datatype,
+                                        &bindings.inputBytes));
+  bindings.outputBytes = bindings.inputBytes;
+  const size_t chunkCount = count / groupSize + (count % groupSize != 0);
+  const size_t sliceCount = chunkCount / state->uniRunnerNSlices +
+                           (chunkCount % state->uniRunnerNSlices != 0);
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(
+      comm->nranks > 1 ? sliceCount : 0, 1, datatype, &bindings.scratchBytes));
+  if (bindings.scratchBytes > state->groupedArScratchCapacity) {
+    void *scratch = NULL;
+    FLAGCXCHECK(deviceAdaptor->deviceMalloc(&scratch, bindings.scratchBytes,
+                                            flagcxMemDevice, NULL));
+    if (state->groupedArScratch != NULL) {
+      const flagcxResult_t res = deviceAdaptor->deviceFree(
+          state->groupedArScratch, flagcxMemDevice, NULL);
+      if (res != flagcxSuccess) {
+        (void)deviceAdaptor->deviceFree(scratch, flagcxMemDevice, NULL);
+        return res;
+      }
+    }
+    state->groupedArScratch = scratch;
+    state->groupedArScratchCapacity = bindings.scratchBytes;
+  }
+  bindings.scratchBase = state->groupedArScratch;
+  uniRunnerDagAlgorithmConfig config{};
+  config.groupSize = groupSize;
+  config.numSlices = state->uniRunnerNSlices;
+  config.numRedSlices = state->uniRunnerNRedSlices;
+  config.bufferMode = sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
+                                          : uniRunnerDagBufferModeOutOfPlace;
+  const uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoGroupedAR, config, flagcxCommOpAllReduce, count,
+      datatype, op, -1, comm);
+  return initUniRunnerStateCached(state, key, bindings, [&]() {
+    return buildUniRunnerStateGroupedAR(state, sendbuff, recvbuff, count,
+                                        datatype, op, comm, groupSize);
+  });
+}
+
 flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
                                            const void *sendbuff, void *recvbuff,
                                            size_t count,
@@ -5580,6 +5823,12 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   if (runnerState == NULL)
     return flagcxSuccess;
 
+  if (runnerState->groupedArScratch != NULL) {
+    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->groupedArScratch,
+                                          flagcxMemDevice, NULL));
+    runnerState->groupedArScratch = NULL;
+    runnerState->groupedArScratchCapacity = 0;
+  }
   flagcxComm_t comm = runnerState->ipcOwner;
   FLAGCXCHECK(destroyUniRunnerIpcDataViews(runnerState));
   if (comm != NULL && runnerState->ipcReadyMem != NULL) {

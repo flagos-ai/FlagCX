@@ -13,6 +13,7 @@ FLAGCX_PARAM(UniRunnerUseLocRed, "UNIRUNNER_USE_LOCRED", 0);
 FLAGCX_PARAM(UniRunnerUseRingAG, "UNIRUNNER_USE_RINGAG", 0);
 FLAGCX_PARAM(UniRunnerUseSlicedAR, "UNIRUNNER_USE_SLICEDAR", 0);
 FLAGCX_PARAM(UniRunnerUseIpcAR, "UNIRUNNER_USE_IPCAR", 0);
+FLAGCX_PARAM(UniRunnerUseGroupedAR, "UNIRUNNER_USE_GROUPEDAR", 0);
 FLAGCX_PARAM(UniRunnerUseGroupedAG, "UNIRUNNER_USE_GROUPEDAG", 1);
 FLAGCX_PARAM(UniRunnerGroupSize, "UNIRUNNER_GROUPSIZE", 0);
 
@@ -160,7 +161,22 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     return res;
-  if (flagcxParamUniRunnerUseIpcAR()) {
+  if (flagcxParamUniRunnerUseGroupedAR()) {
+    // Match grouped AG's contiguous groups; one rank/NIC per local lane.
+    const int64_t requested = flagcxParamUniRunnerGroupSize();
+    const int64_t groupSize = requested == 0 ? comm->localRanks : requested;
+    if (groupSize <= 0 || groupSize > comm->nranks ||
+        comm->nranks % groupSize != 0) {
+      WARN("GroupedAR requires GROUPSIZE to divide nranks (default: localRanks)");
+      res = flagcxInvalidArgument;
+      goto out;
+    }
+    FLAGCXCHECKGOTO(initUniRunnerStateGroupedAR(
+                        runnerState, sendbuff, recvbuff, count, datatype, op,
+                        comm, static_cast<int>(groupSize)),
+                    res, out);
+  } else if (flagcxParamUniRunnerUseIpcAR()) {
+    /* Sliced AllReduce with intra-node IPC/LSA push transport. */
     FLAGCXCHECKGOTO(initUniRunnerStateIpcAR(runnerState, sendbuff, recvbuff,
                                             count, datatype, op, comm),
                     res, out);

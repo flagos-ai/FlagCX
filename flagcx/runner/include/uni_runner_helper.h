@@ -149,6 +149,8 @@ inline const char *uniRunnerDagAlgoTypeToString(uniRunnerDagAlgoType algoType) {
       return "loc_red";
     case uniRunnerDagAlgoGroupedAG:
       return "grouped_ag";
+    case uniRunnerDagAlgoGroupedAR:
+      return "grouped_ar";
     case uniRunnerDagAlgoRingAG:
       return "ring_ag";
     case uniRunnerDagAlgoRingAR:
@@ -174,6 +176,8 @@ inline bool uniRunnerDagAlgoTypeFromString(const std::string &text,
     *algoType = uniRunnerDagAlgoLocRed;
   } else if (text == "grouped_ag") {
     *algoType = uniRunnerDagAlgoGroupedAG;
+  } else if (text == "grouped_ar") {
+    *algoType = uniRunnerDagAlgoGroupedAR;
   } else if (text == "ring_ag") {
     *algoType = uniRunnerDagAlgoRingAG;
   } else if (text == "ring_ar") {

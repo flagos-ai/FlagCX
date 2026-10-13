@@ -645,3 +645,34 @@ TEST(UniRunnerDagSizing, CheckedTypeBytesRejectsSizeOverflow) {
   EXPECT_TRUE(uniRunnerDagSizeFromJson(Json(0), &decodedSize));
   EXPECT_EQ(0u, decodedSize);
 }
+
+TEST(UniRunnerDagCache, GroupedAllReduceConfigurationIdentity) {
+  uniRunnerDagAlgorithmConfig config{};
+  config.groupSize = 8;
+  config.numSlices = 1;
+  config.numRedSlices = 32;
+  const auto hash = getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
+                                                 config);
+  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAG,
+                                               config));
+  auto changed = config;
+  changed.groupSize = 4;
+  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
+                                               changed));
+  changed = config;
+  changed.numSlices = 2;
+  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
+                                               changed));
+  changed = config;
+  changed.numRedSlices = 16;
+  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
+                                               changed));
+  changed = config;
+  changed.bufferMode = uniRunnerDagBufferModeInPlace;
+  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
+                                               changed));
+  uniRunnerDagAlgoType decoded = uniRunnerDagAlgoDummy;
+  ASSERT_TRUE(uniRunnerDagAlgoTypeFromString("grouped_ar", &decoded));
+  EXPECT_EQ(uniRunnerDagAlgoGroupedAR, decoded);
+  EXPECT_STREQ("grouped_ar", uniRunnerDagAlgoTypeToString(decoded));
+}

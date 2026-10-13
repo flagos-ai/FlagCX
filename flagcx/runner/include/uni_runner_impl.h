@@ -35,7 +35,8 @@ typedef enum {
   uniRunnerDagAlgoSlicedAR = 5,
   uniRunnerDagAlgoRingRS = 6,
   uniRunnerDagAlgoTreeRed = 7,
-  uniRunnerDagAlgoIpcAR = 8
+  uniRunnerDagAlgoIpcAR = 8,
+  uniRunnerDagAlgoGroupedAR = 9
 } uniRunnerDagAlgoType;
 
 // Normalized algorithm parameters that affect DAG construction. Runtime-only
@@ -220,6 +221,11 @@ typedef struct {
   size_t streamFlagsSize;
   size_t streamFlagsCapacity;
 
+  // Reused receive workspace for hierarchical AllReduce. At most one local
+  // chunk slice is live; cleanupUniRunner drains it before the next call.
+  void *groupedArScratch;
+  size_t groupedArScratchCapacity;
+
   // IPC/LSA AllReduce runtime resources. User-buffer DevMem views are reused
   // while their base/size bindings remain unchanged. ipcReadySlots counts only
   // logical DAG-ready entries; ipcReadyCapacity includes the static executor's
@@ -249,6 +255,10 @@ flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
                                            size_t count,
                                            flagcxDataType_t datatype,
                                            flagcxComm_t comm, int groupSize);
+flagcxResult_t initUniRunnerStateGroupedAR(
+    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
+    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op, flagcxComm_t comm,
+    int groupSize);
 flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         size_t count, flagcxDataType_t datatype,
