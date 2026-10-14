@@ -22,7 +22,9 @@ typedef enum {
   uniRunnerDagNodeTypeP2p = 0,
   uniRunnerDagNodeTypeRed = 1,
   uniRunnerDagNodeTypeCpy = 2,
-  uniRunnerDagNodeTypeIpc = 3
+  uniRunnerDagNodeTypeIpc = 3,
+  uniRunnerDagNodeTypeRingStep = 4,
+  uniRunnerDagNodeTypeGemm = 5
 } uniRunnerDagNodeType;
 
 enum uniRunnerDagCommDomain {
@@ -41,12 +43,25 @@ typedef enum {
   uniRunnerDagAlgoRingRS = 6,
   uniRunnerDagAlgoTreeRed = 7,
   uniRunnerDagAlgoIpcAR = 8,
-  uniRunnerDagAlgoGroupedAR = 9
+  uniRunnerDagAlgoGroupedAR = 9,
+  uniRunnerDagAlgoIpcRingAR = 10,
+  uniRunnerDagAlgoHierarchicalSlicedAR = 11
 } uniRunnerDagAlgoType;
 
-// Normalized algorithm parameters that affect DAG construction. Runtime-only
-// executor settings (for example NTHREADS/NREDBLOCKS/NIPCBLOCKS) deliberately
-// do not belong here because they do not change the cached DAG template.
+#ifndef FLAGCX_RING_STEP_KIND_DEFINED
+#define FLAGCX_RING_STEP_KIND_DEFINED
+typedef enum {
+  uniRunnerRingStepSend = 0,
+  uniRunnerRingStepRecvReduceSend = 1,
+  uniRunnerRingStepRecvReduceCopySend = 2,
+  uniRunnerRingStepRecvCopySend = 3,
+  uniRunnerRingStepRecv = 4
+} uniRunnerRingStepKind;
+#endif
+
+// Normalized algorithm parameters that affect DAG construction. Legacy
+// runtime-only executor settings deliberately do not belong here; the Ring
+// fields below are communicator tuning inputs and therefore cache identity.
 typedef enum {
   uniRunnerDagBufferModeOutOfPlace = 0,
   uniRunnerDagBufferModeInPlace = 1
@@ -59,6 +74,11 @@ struct uniRunnerDagAlgorithmConfig {
   uint64_t groupSize = 0;
   uint64_t topologyHash = 0;
   uint64_t pipelineVersion = 0;
+  uint64_t numChannels = 0;
+  uint64_t simpleBufferBytes = 0;
+  uint64_t nThreads = 0;
+  uint64_t chunkSteps = 0;
+  uint64_t sliceSteps = 0;
   uniRunnerDagBufferMode bufferMode = uniRunnerDagBufferModeOutOfPlace;
 };
 
@@ -102,7 +122,29 @@ struct uniRunnerRedNodeData {
   flagcxRedOp_t redOp;
 
   // Trigger and state tracking
+  uint32_t workerCount;
+  uint32_t nextWorkerToSubmit;
+  uint32_t *completionCounter;
   int triggerIdx; // Trigger index in FIFO
+};
+
+struct uniRunnerGemmNodeData {
+  const void *a;
+  const void *b;
+  void *c;
+  uint32_t m;
+  uint32_t n;
+  uint32_t k;
+  uint32_t lda;
+  uint32_t ldb;
+  uint32_t ldc;
+  size_t nthreads;
+  flagcxDataType_t datatype;
+  int accumulate;
+  uint32_t workerCount;
+  uint32_t nextWorkerToSubmit;
+  uint32_t *completionCounter;
+  int triggerIdx;
 };
 
 // Copy node data (operation-specific fields only)
@@ -124,6 +166,16 @@ struct uniRunnerIpcNodeData {
   int triggerIdx;
 };
 
+struct uniRunnerRingStepNodeData {
+  uint32_t channelId;
+  uint32_t laneOrdinal;
+  uint32_t kind;
+  uint32_t postOp;
+  uint64_t offsetElements;
+  uint64_t countElements;
+  int triggerIdx;
+};
+
 // Unified DAG node with common DAG structure fields
 struct uniRunnerDagNode {
   uniRunnerDagNodeType nodeType; // Discriminator for union
@@ -142,8 +194,10 @@ struct uniRunnerDagNode {
   union {
     struct uniRunnerP2pNodeData p2p;
     struct uniRunnerRedNodeData red;
+    struct uniRunnerGemmNodeData gemm;
     struct uniRunnerCpyNodeData cpy;
     struct uniRunnerIpcNodeData ipc;
+    struct uniRunnerRingStepNodeData ringStep;
   } nodeData;
 };
 
@@ -156,11 +210,19 @@ struct uniRunnerDagExecutionPlan {
   size_t numHostNodes = 0;
   size_t numRedNodes = 0;
   size_t numIpcNodes = 0;
+  // Invocation-local worker counts, populated after runtime binding.
+  size_t numRedTasks = 0;
+  size_t maxParallelRedTasks = 0;
+  bool hasGemm = false;
   size_t maxParallelRedNodes = 0;
   size_t maxRedNodeCount = 0;
   size_t maxIpcNodeBytes = 0;
+  const uint32_t *ringLaneOffsets = NULL;
+  size_t numRingLanes = 0;
+  size_t numRingStepNodes = 0;
   // Cached plans borrow immutable storage owned by the process cache.
   bool ownsTopoOrder = false;
+  bool ownsRingLaneOffsets = false;
   // Set only after static topology and node payload validation succeeds.
   // This lets runUniRunner keep per-invocation validation O(1).
   bool staticValidated = false;
@@ -213,6 +275,8 @@ typedef struct {
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       redReadyQueue;
   flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
+      gemmReadyQueue;
+  flagcxIntruQueue<struct uniRunnerDagNode, &uniRunnerDagNode::next>
       ipcReadyQueue;
 
   uint64_t uniRunnerNSlices;
@@ -224,6 +288,11 @@ typedef struct {
   uint64_t uniRunnerIpcChunkSize;
   uint64_t uniRunnerNRedSlices;
   uint64_t uniRunnerRedSliceSize;
+  bool redSliceWorkersEnabled;
+
+  // Cache-line-separated completion counters for logical RED nodes.
+  void *redCompletionCountersPool;
+  size_t redCompletionCountersCapacity;
   // One launch-wide divisor used by terminal Avg RED nodes. Intermediate
   // Avg nodes are materialized as Sum nodes, so no trigger needs to carry it.
   uint64_t avgDivisor;
@@ -257,6 +326,25 @@ typedef struct {
   uint64_t ipcEpoch;
   uint64_t *ipcParentFlagsDevice;
   size_t ipcParentFlagsCount;
+
+  void *ipcRingScratchBuffer;
+  flagcxDevMem_t ipcRingScratchMem;
+  size_t ipcRingScratchBytes;
+  void *ipcRingProgressBuffer;
+  flagcxDevMem_t ipcRingProgressMem;
+  size_t ipcRingProgressBytes;
+  size_t ipcRingChannels;
+  size_t ipcRingSimpleBufferBytes;
+  flagcxDataType_t ipcRingDatatype;
+  flagcxRedOp_t ipcRingRedOp;
+  bool ipcRingResourcesDirty;
+
+  flagcxRingStepTrigger *ipcRingTriggersDevice;
+  size_t ipcRingTriggerCount;
+  flagcxRingLaneDesc *ipcRingLanesDevice;
+  size_t ipcRingLaneCount;
+  uint64_t *ipcRingControlHost;
+  void *ipcRingControlDevice;
 } flagcxUniRunnerState;
 
 flagcxResult_t initUniRunnerStateDummy(flagcxUniRunnerState *runnerState);
@@ -291,6 +379,12 @@ flagcxResult_t initUniRunnerStateIpcAR(flagcxUniRunnerState *runnerState,
                                        size_t count,
                                        flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateIpcRingAR(flagcxUniRunnerState *runnerState,
+                                           const void *sendbuff,
+                                           void *recvbuff, size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxRedOp_t op,
+                                           flagcxComm_t comm);
 flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
                                         const void *sendbuff, void *recvbuff,
                                         void *scratchbuff, size_t count,
@@ -302,6 +396,14 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          flagcxDataType_t datatype,
                                          flagcxRedOp_t op, int root,
                                          flagcxComm_t comm);
+flagcxResult_t initUniRunnerStateHierarchicalSlicedAR(
+    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
+    void *scratchbuff, size_t count, flagcxDataType_t datatype,
+    flagcxRedOp_t op, flagcxComm_t comm, int groupSize);
+flagcxResult_t allocDagNodeDeps(uniRunnerDagNode *node);
+flagcxResult_t setDagNodeParent(uniRunnerDagNode *node, int parentSlot,
+                               int parentIdx);
+flagcxResult_t validateDagNodes(flagcxUniRunnerState *runnerState);
 size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key);
 uint64_t getUniRunnerDagAlgorithmHash(
     uniRunnerDagAlgoType algoType,
@@ -325,11 +427,15 @@ flagcxResult_t checkedUniRunnerDagNodeCount(size_t outerCount,
                                             size_t extraNodes,
                                             int *nodeCount);
 
-// Compile a structurally validated DAG into the stable HOST -> RED -> IPC
+// Compile a structurally validated DAG into the stable HOST -> RED -> IPC ->
+// RingStep
 // phase-drain order used by uniRunner when FIFO capacity is not a constraint.
 // The compiler is pure with respect to DAG nodes and rejects cycles instead of
 // allowing the runtime scheduler to spin indefinitely.
 flagcxResult_t compileUniRunnerDagExecutionPlan(
+    const uniRunnerDagNode *nodes, size_t numNodes,
+    uniRunnerDagExecutionPlan *plan);
+flagcxResult_t updateUniRunnerComputeRuntimeShape(
     const uniRunnerDagNode *nodes, size_t numNodes,
     uniRunnerDagExecutionPlan *plan);
 void destroyUniRunnerDagExecutionPlan(uniRunnerDagExecutionPlan *plan);
@@ -364,6 +470,12 @@ flagcxResult_t populateUniRunnerStaticIpcTriggers(
     size_t numNodeFlags, const uniRunnerStaticIpcTriggerConfig *config,
     flagcxIpcTrigger *triggers, size_t triggerCapacity, size_t *numTriggers,
     size_t *maxChunksPerTrigger);
+flagcxResult_t populateUniRunnerStaticRingDag(
+    uniRunnerDagNode *nodes, size_t numNodes,
+    const uniRunnerDagExecutionPlan *plan, void *const *nodeFlags,
+    size_t numNodeFlags, flagcxHeteroComm_t hcomm,
+    size_t simpleBufferBytes, flagcxRingStepTrigger *triggers,
+    size_t triggerCapacity, flagcxRingLaneDesc *lanes, size_t laneCapacity);
 
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t

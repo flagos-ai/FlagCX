@@ -471,6 +471,28 @@ flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
                                flagcxComm_t comm, flagcxStream_t stream);
 
 /*
+ * Synchronously gathers row-major FP32 input matrices in rank order and
+ * multiplies the gathered matrix by the rank-local row-major weight matrix.
+ * All ranks must pass matching dimensions, datatype, algorithm settings, and
+ * K-slice settings. In-place and overlapping buffers are not supported.
+ */
+flagcxResult_t flagcxAllGatherGemm(
+    const void *input, const void *weight, void *output, size_t mPerRank,
+    size_t n, size_t k, flagcxDataType_t datatype, flagcxComm_t comm,
+    flagcxStream_t stream);
+
+/*
+ * Synchronously multiplies row-major FP32 rank-local K partitions, sums the
+ * local products, and scatters contiguous row blocks. Only flagcxSum is
+ * supported. All ranks must pass matching arguments and fusion settings.
+ * In-place and overlapping buffers are not supported.
+ */
+flagcxResult_t flagcxGemmReduceScatter(
+    const void *input, const void *weight, void *output, size_t m, size_t n,
+    size_t kPerRank, flagcxDataType_t datatype, flagcxRedOp_t op,
+    flagcxComm_t comm, flagcxStream_t stream);
+
+/*
  * All-to-all
  *
  * Each device sends count values to other APUs into recvbuffer,

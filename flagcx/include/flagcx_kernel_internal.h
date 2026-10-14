@@ -70,6 +70,17 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              flagcxRedOp_t redop,
                                              uint64_t flagIn,
                                              uint64_t flagOut, int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t enqueueReduceWorker(
+    void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
+    size_t count, size_t nthreads, flagcxDataType_t datatype,
+    flagcxRedOp_t redop, uint32_t workerId, uint32_t workerCount,
+    uint64_t completionCounter, uint64_t flagIn, uint64_t flagOut, int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t enqueueGemm(
+    void *fifoBuffer, uint64_t a, uint64_t b, uint64_t c, uint32_t m,
+    uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
+    size_t nthreads, flagcxDataType_t datatype, int accumulate,
+    uint32_t workerId, uint32_t workerCount, uint64_t completionCounter,
+    uint64_t flagIn, uint64_t flagOut, int *idx);
 FLAGCX_HOST_DECORATOR flagcxResult_t enqueueIpc(
     void *fifoBuffer, uint64_t srcOffsetBytes, uint64_t dstOffsetBytes,
     uint64_t bytes, uint64_t chunkSize, flagcxIpcBufferType srcBufferType,
@@ -100,6 +111,14 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticCollectiveKernel(
     flagcxStaticIpcControl ipcControl, uint64_t avgDivisor);
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticIpcRecoveryKernel(
     flagcxDevMem readyMem, flagcxStaticIpcControl ipcControl);
+FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
+    flagcxRingLaneDesc *lanes, uint64_t numLanes,
+    flagcxRingStepTrigger *triggers, uint64_t numTriggers,
+    flagcxDevMem inputMem, flagcxDevMem outputMem, flagcxDevMem scratchMem,
+    flagcxDevMem progressMem, flagcxDevMem readyMem,
+    uint64_t simpleBufferBytes, uint32_t datatype, uint32_t redOp,
+    uint64_t avgDivisor, uint64_t *blocksDone, const uint64_t *abortFlag,
+    flagcxStaticIpcControl ipcControl);
 #endif // COMPILE_KERNEL
 
 flagcxResult_t flagcxLaunchCollectiveKernel(
@@ -110,6 +129,8 @@ flagcxResult_t flagcxLaunchCollectiveKernel(
 flagcxResult_t flagcxGetStaticReduceKernelMaxExecutorBlocks(
     size_t nthreads, size_t *maxExecutorBlocks);
 flagcxResult_t flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
+    size_t nthreads, size_t *maxExecutorBlocks);
+flagcxResult_t flagcxGetStaticRingDagKernelMaxExecutorBlocks(
     size_t nthreads, size_t *maxExecutorBlocks);
 flagcxResult_t flagcxLaunchStaticReduceKernel(
     void *redFifoDeviceBuffer, size_t numTriggers, size_t nthreads,
@@ -127,6 +148,16 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
 flagcxResult_t flagcxLaunchStaticIpcRecoveryKernel(
     flagcxDevMem_t readyMem, const flagcxStaticIpcControl *ipcControl,
     flagcxStream_t stream);
+flagcxResult_t flagcxLaunchStaticRingDagKernel(
+    flagcxRingLaneDesc *lanes, size_t numLanes,
+    flagcxRingStepTrigger *triggers, size_t numTriggers,
+    flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
+    flagcxDevMem_t scratchMem, flagcxDevMem_t progressMem,
+    flagcxDevMem_t readyMem, size_t simpleBufferBytes,
+    flagcxDataType_t datatype, flagcxRedOp_t redOp, uint64_t avgDivisor,
+    uint64_t *blocksDone, const uint64_t *abortFlag,
+    const flagcxStaticIpcControl *ipcControl, size_t nthreads,
+    size_t maxExecutorBlocks, flagcxStream_t stream);
 
 // ==========================================================================
 // Device Communicator — Host-side lifecycle management

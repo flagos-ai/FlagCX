@@ -12,6 +12,8 @@
 FLAGCX_PARAM(UniRunnerUseLocRed, "UNIRUNNER_USE_LOCRED", 0);
 FLAGCX_PARAM(UniRunnerUseRingAG, "UNIRUNNER_USE_RINGAG", 0);
 FLAGCX_PARAM(UniRunnerUseSlicedAR, "UNIRUNNER_USE_SLICEDAR", 0);
+FLAGCX_PARAM(UniRunnerUseHierarchicalSlicedAR,
+             "UNIRUNNER_USE_HIERARCHICAL_SLICEDAR", 0);
 FLAGCX_PARAM(UniRunnerUseIpcAR, "UNIRUNNER_USE_IPCAR", 0);
 FLAGCX_PARAM(UniRunnerUseGroupedAR, "UNIRUNNER_USE_GROUPEDAR", 0);
 FLAGCX_PARAM(UniRunnerUseGroupedAG, "UNIRUNNER_USE_GROUPEDAG", 1);
@@ -35,6 +37,24 @@ static int resolveUniRunnerGroupedAGGroupSize(flagcxComm_t comm) {
     groupSize = comm->nranks;
   }
   return groupSize;
+}
+
+static int resolveUniRunnerHierarchicalSlicedARGroupSize(flagcxComm_t comm) {
+  if (comm->nranks <= 0) {
+    return 0;
+  }
+  int64_t groupSize = flagcxParamUniRunnerGroupSize();
+  if (groupSize <= 0) {
+    groupSize = 8;
+  }
+  if (groupSize > comm->nranks || comm->nranks % groupSize != 0) {
+    TRACE(FLAGCX_UNIRUNNER,
+          "rank %d hierarchical SlicedAR groupSize %lld invalid for nranks %d, "
+          "fallback to nranks",
+          comm->rank, static_cast<long long>(groupSize), comm->nranks);
+    groupSize = comm->nranks;
+  }
+  return static_cast<int>(groupSize);
 }
 
 flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
@@ -156,8 +176,12 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
+  void *scratchbuff = nullptr;
+  size_t scratchBytes = 0;
   FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
-  FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpAllReduce));
+  if (!flagcxParamUniRunnerUseIpcAR()) {
+    FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpAllReduce));
+  }
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     return res;
@@ -176,9 +200,10 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
                         comm, static_cast<int>(groupSize)),
                     res, out);
   } else if (flagcxParamUniRunnerUseIpcAR()) {
-    /* Sliced AllReduce with intra-node IPC/LSA push transport. */
-    FLAGCXCHECKGOTO(initUniRunnerStateIpcAR(runnerState, sendbuff, recvbuff,
-                                            count, datatype, op, comm),
+    /* Primitive-level Ring/Simple AllReduce over intra-node IPC memory. */
+    FLAGCXCHECKGOTO(initUniRunnerStateIpcRingAR(
+                        runnerState, sendbuff, recvbuff, count, datatype, op,
+                        comm),
                     res, out);
   } else if (flagcxParamUniRunnerUseLocRed()) {
     /* initialize uniRunnerState for reduce test */
@@ -189,6 +214,17 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
     /* initialize uniRunnerState for p2p test */
     FLAGCXCHECKGOTO(initUniRunnerStateRingAG(runnerState, sendbuff, recvbuff,
                                              count, datatype, op, comm),
+                    res, out);
+  } else if (flagcxParamUniRunnerUseHierarchicalSlicedAR()) {
+    const int groupSize = resolveUniRunnerHierarchicalSlicedARGroupSize(comm);
+    FLAGCXCHECKGOTO(checkedUniRunnerTypeBytes(count, 1, datatype, &scratchBytes),
+                    res, out);
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(
+                        &scratchbuff, scratchBytes, flagcxMemDevice, stream),
+                    res, out);
+    FLAGCXCHECKGOTO(initUniRunnerStateHierarchicalSlicedAR(
+                        runnerState, sendbuff, recvbuff, scratchbuff, count,
+                        datatype, op, comm, groupSize),
                     res, out);
   } else if (flagcxParamUniRunnerUseSlicedAR()) {
     /* initialize uniRunnerState for sliced AllReduce */
@@ -203,7 +239,14 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
   }
   res = runUniRunner(comm);
 out:
+  if (flagcxParamUniRunnerUseIpcAR() && res != flagcxSuccess) {
+    runnerState->ipcRingResourcesDirty = true;
+  }
   flagcxRunnerRecordFirstError(cleanupUniRunner(comm), &res);
+  if (scratchbuff != nullptr) {
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->deviceFree(scratchbuff, flagcxMemDevice, stream), &res);
+  }
   return res;
 }
 

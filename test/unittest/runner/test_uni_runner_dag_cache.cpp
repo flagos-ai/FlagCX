@@ -192,7 +192,7 @@ TEST(UniRunnerDagCache, AlgorithmHashCoversAlgorithmTypeAndBuilderInputs) {
       getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoSlicedAR, config);
   // Golden FNV-1a value protects the persisted identity from accidental
   // dependence on process or standard-library hashing behavior.
-  EXPECT_EQ(6300673621123503851ull, expected);
+  EXPECT_EQ(10228955589336185928ull, expected);
   EXPECT_EQ(expected,
             getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoSlicedAR, config));
 

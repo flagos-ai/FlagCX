@@ -1,5 +1,6 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "flagcx_basic_gemm_device.cuh"
 #include "device_api/flagcx_device.h"
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
@@ -22,10 +23,31 @@
 #define FLAG_IN_IDX 12
 #define FLAG_OUT_IDX 13
 #define STATIC_ABORT_IDX 14
+#define COMPUTE_TYPE_IDX 15
+#define WORKER_INFO_IDX 16
+#define COMPLETION_COUNTER_IDX 17
+#define GEMM_MN_IDX 18
+#define GEMM_K_LDA_IDX 19
+#define GEMM_LDB_LDC_IDX 20
+#define COMPUTE_SHM_WORDS 24
 #define STATIC_IPC_ABORT_IDX 0
 #define STATIC_IPC_STATE_IDX 1
 
 static constexpr uint32_t kStaticReduceAbortPollInterval = 8;
+/*************************************************************************
+ * SPDX-FileCopyrightText: Copyright (c) 2015-2026 NVIDIA CORPORATION &
+ * AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *************************************************************************/
+static constexpr uint32_t kRingSimpleSliceSteps = FLAGCX_STEPS / 4;
+static constexpr uint32_t kRingSimpleChunkSteps = FLAGCX_STEPS / 2;
+static constexpr uint32_t kRingSimpleSlicesPerChunk =
+    kRingSimpleChunkSteps / kRingSimpleSliceSteps;
+static_assert(FLAGCX_STEPS == 8, "Ring/Simple requires eight protocol steps");
+static_assert(kRingSimpleSliceSteps == 2, "Ring/Simple slice steps changed");
+static_assert(kRingSimpleChunkSteps == 4, "Ring/Simple chunk steps changed");
+static_assert(kRingSimpleSlicesPerChunk == 2,
+              "A RingStep must execute exactly two Simple slices");
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxStreamFlagState
 loadStreamFlagState(uint64_t flagAddr) {
@@ -72,7 +94,17 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
   return value[3] >> flagcxReduceTriggerOffState &
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getComputeType() {
+  return value[3] >> flagcxReduceTriggerOffComputeType &
+         flagcxTriggerMask(flagcxReduceTriggerBitsComputeType);
+}
 FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
+  publishOutputDone();
+  recycle();
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxReduceTrigger::publishOutputDone() {
   uint64_t flagOut = getFlagOut();
   if (flagOut != 0) {
     flagcxStreamFlagState flagState = loadStreamFlagState(flagOut);
@@ -82,9 +114,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
                                flagcxDeviceMemoryOrderRelease);
     }
   }
-  // Recycle the FIFO slot only after the output flag is visible as DONE, so a
-  // host-side re-enqueue cannot overwrite flagOut before dependent streams
-  // observe completion.
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::recycle() {
   uint64_t currVal =
       DeviceAPI::Atomic::load(value + 3, flagcxDeviceMemoryOrderAcquire);
   currVal &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
@@ -94,11 +125,100 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
              << flagcxReduceTriggerOffState;
   DeviceAPI::Atomic::store(value + 3, currVal, flagcxDeviceMemoryOrderRelease);
 }
+FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxReduceTrigger::completeGemmWorker() {
+  uint64_t workerCount = getGemmWorkerCount();
+  if (workerCount == 1) {
+    publishOutputDone();
+    recycle();
+    return;
+  }
+  uint32_t *counter =
+      reinterpret_cast<uint32_t *>(getGemmCompletionCounter());
+  uint32_t oldCompleted =
+      DeviceAPI::Atomic::fetchAdd<uint32_t, flagcxDeviceScopeDevice>(
+          counter, 1u, flagcxDeviceMemoryOrderAcqRel);
+  if (static_cast<uint64_t>(oldCompleted) + 1 == workerCount) {
+    FLAGCX_DEVICE_THREAD_FENCE();
+    publishOutputDone();
+  }
+  recycle();
+}
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagIn() {
   return value[4];
 }
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagOut() {
   return value[5];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getReduceWorkerId() {
+  return value[6] >> flagcxReduceWorkerOffWorkerId &
+         flagcxTriggerMask(flagcxReduceWorkerBitsWorkerId);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getReduceWorkerCount() {
+  return value[6] >> flagcxReduceWorkerOffWorkerCount &
+         flagcxTriggerMask(flagcxReduceWorkerBitsWorkerCount);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getReduceCompletionCounter() {
+  return value[7];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxReduceTrigger::completeReduceWorker() {
+  uint64_t workerCount = getReduceWorkerCount();
+  if (workerCount <= 1) {
+    publishOutputDone();
+    recycle();
+    return;
+  }
+  uint32_t *counter =
+      reinterpret_cast<uint32_t *>(getReduceCompletionCounter());
+  uint32_t oldCompleted =
+      DeviceAPI::Atomic::fetchAdd<uint32_t, flagcxDeviceScopeDevice>(
+          counter, 1u, flagcxDeviceMemoryOrderAcqRel);
+  if (static_cast<uint64_t>(oldCompleted) + 1 == workerCount) {
+    FLAGCX_DEVICE_THREAD_FENCE();
+    publishOutputDone();
+  }
+  recycle();
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getGemmM() {
+  return value[6] >> 32;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getGemmN() {
+  return value[6] & 0xffffffffull;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getGemmK() {
+  return value[7] >> 32;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getGemmLda() {
+  return value[7] & 0xffffffffull;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getGemmLdb() {
+  return value[8] >> 32;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getGemmLdc() {
+  return value[8] & 0xffffffffull;
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getGemmAccumulate() {
+  return value[9] >> flagcxGemmTriggerOffAccumulate &
+         flagcxTriggerMask(flagcxGemmTriggerBitsAccumulate);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getGemmWorkerId() {
+  return value[9] >> flagcxGemmTriggerOffWorkerId &
+         flagcxTriggerMask(flagcxGemmTriggerBitsWorkerId);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getGemmWorkerCount() {
+  return value[9] >> flagcxGemmTriggerOffWorkerCount &
+         flagcxTriggerMask(flagcxGemmTriggerBitsWorkerCount);
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+flagcxReduceTrigger::getGemmCompletionCounter() {
+  return value[10];
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(uint64_t *buffer,
@@ -393,9 +513,111 @@ FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceKernel(
   }
 }
 
+FLAGCX_DEVICE_INLINE_DECORATOR void loadComputeTriggerMetadata(
+    flagcxReduceTrigger *trigger, uint64_t *shm) {
+  shm[COMPUTE_TYPE_IDX] = trigger->getComputeType();
+  if (shm[COMPUTE_TYPE_IDX] == flagcxComputeTriggerGemm) {
+    shm[WORKER_INFO_IDX] = trigger->value[9];
+    shm[COMPLETION_COUNTER_IDX] = trigger->getGemmCompletionCounter();
+    shm[GEMM_MN_IDX] = trigger->value[6];
+    shm[GEMM_K_LDA_IDX] = trigger->value[7];
+    shm[GEMM_LDB_LDC_IDX] = trigger->value[8];
+  } else {
+    shm[WORKER_INFO_IDX] = trigger->value[6];
+    shm[COMPLETION_COUNTER_IDX] = trigger->getReduceCompletionCounter();
+  }
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+computeReduceElementBytes(uint64_t datatype) {
+  switch (static_cast<flagcxDataType_t>(datatype)) {
+    case flagcxInt8:
+    case flagcxUint8:
+      return 1;
+    case flagcxFloat16:
+    case flagcxBfloat16:
+      return 2;
+    case flagcxInt32:
+    case flagcxUint32:
+    case flagcxFloat32:
+      return 4;
+    case flagcxInt64:
+    case flagcxUint64:
+    case flagcxFloat64:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR void executeComputeTrigger(
+    const uint64_t *shm, uint64_t avgDivisor, float *sharedA,
+    float *sharedB) {
+  const uint64_t workerInfo = shm[WORKER_INFO_IDX];
+  const uint64_t workerId = workerInfo & 0xffffffffull;
+  if (shm[COMPUTE_TYPE_IDX] == flagcxComputeTriggerGemm) {
+    const uint64_t mn = shm[GEMM_MN_IDX];
+    const uint64_t kLda = shm[GEMM_K_LDA_IDX];
+    const uint64_t ldbLdc = shm[GEMM_LDB_LDC_IDX];
+    flagcxBasicGemmDevice(
+        shm[FST_IDX], shm[SND_IDX], shm[OUT_IDX], mn >> 32,
+        mn & 0xffffffffull, kLda >> 32, kLda & 0xffffffffull,
+        ldbLdc >> 32, ldbLdc & 0xffffffffull, shm[NTHREADS_IDX],
+        workerInfo >> flagcxGemmTriggerOffAccumulate, workerId,
+        (workerInfo >> flagcxGemmTriggerOffWorkerCount) &
+            flagcxTriggerMask(flagcxGemmTriggerBitsWorkerCount),
+        sharedA, sharedB);
+    return;
+  }
+
+  const uint64_t workerCount =
+      workerInfo >> flagcxReduceWorkerOffWorkerCount;
+  uint64_t count = shm[COUNT_IDX];
+  uint64_t offset = 0;
+  if (workerCount > 1) {
+    const uint64_t base = count / workerCount;
+    const uint64_t remainder = count % workerCount;
+    offset = workerId * base + (workerId < remainder ? workerId : remainder);
+    count = base + (workerId < remainder ? 1 : 0);
+  }
+  const uint64_t byteOffset =
+      offset * computeReduceElementBytes(shm[DATATYPE_IDX]);
+  flagcxReduceKernel(shm[FST_IDX] + byteOffset, shm[SND_IDX] + byteOffset,
+                     shm[OUT_IDX] + byteOffset, count, shm[NTHREADS_IDX],
+                     shm[DATATYPE_IDX], shm[REDOP_IDX], avgDivisor);
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR void completeComputeTrigger(
+    const uint64_t *shm) {
+  uint64_t workerCount =
+      shm[WORKER_INFO_IDX] >> flagcxReduceWorkerOffWorkerCount;
+  if (shm[COMPUTE_TYPE_IDX] == flagcxComputeTriggerGemm) {
+    workerCount &= flagcxTriggerMask(flagcxGemmTriggerBitsWorkerCount);
+  }
+  if (workerCount > 1) {
+    uint32_t *counter =
+        reinterpret_cast<uint32_t *>(shm[COMPLETION_COUNTER_IDX]);
+    const uint32_t previous =
+        DeviceAPI::Atomic::fetchAdd<uint32_t, flagcxDeviceScopeDevice>(
+            counter, 1u, flagcxDeviceMemoryOrderAcqRel);
+    if (static_cast<uint64_t>(previous) + 1 != workerCount) {
+      return;
+    }
+    FLAGCX_DEVICE_THREAD_FENCE();
+  }
+  if (shm[FLAG_OUT_IDX] != 0) {
+    DeviceAPI::Atomic::store(
+        reinterpret_cast<uint64_t *>(shm[FLAG_OUT_IDX]),
+        static_cast<uint64_t>(flagcxStreamFlagDone),
+        flagcxDeviceMemoryOrderRelease);
+  }
+}
+
 FLAGCX_DEVICE_INLINE_DECORATOR void runReduceExecutor(void *fifoBuffer,
                                                        uint64_t avgDivisor) {
-  FLAGCX_SHARED uint64_t shm[16];
+  FLAGCX_SHARED uint64_t shm[COMPUTE_SHM_WORDS];
+  FLAGCX_SHARED float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
+  FLAGCX_SHARED float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
   uint64_t *vBuf = (uint64_t *)fifoBuffer;
   int emptyIter = 0; // backoff counter
   int cap = -1;
@@ -453,6 +675,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runReduceExecutor(void *fifoBuffer,
         shm[REDOP_IDX] = t->getRedop();
         shm[FLAG_IN_IDX] = t->getFlagIn();
         shm[FLAG_OUT_IDX] = t->getFlagOut();
+        loadComputeTriggerMetadata(t, shm);
       }
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -495,25 +718,19 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runReduceExecutor(void *fifoBuffer,
       DeviceAPI::Intrin::spinBackoff(emptyIter);
     }
 
-    // (4) perform reduce task
+    // (4) execute one RED or GEMM worker.
     emptyIter = 0;
-    uint64_t fst = shm[FST_IDX];
-    uint64_t snd = shm[SND_IDX];
-    uint64_t out = shm[OUT_IDX];
-    uint64_t count = shm[COUNT_IDX];
-    uint64_t nthreads = shm[NTHREADS_IDX];
-    uint64_t datatype = shm[DATATYPE_IDX];
-    uint64_t redop = shm[REDOP_IDX];
-    flagcxReduceKernel(fst, snd, out, count, nthreads, datatype, redop,
-                       avgDivisor);
+    executeComputeTrigger(shm, avgDivisor, sharedA, sharedB);
     FLAGCX_DEVICE_SYNC_THREADS();
     FLAGCX_DEVICE_THREAD_FENCE();
+    FLAGCX_DEVICE_SYNC_THREADS();
 
     // (5) signal completion and recycle the FIFO slot
     if (tid == 0) {
       flagcxReduceTrigger *t =
           (flagcxReduceTrigger *)(vBuf + flagcxFifoIdxData) + slot;
-      t->setComplete();
+      completeComputeTrigger(shm);
+      t->recycle();
     }
   }
 }
@@ -558,6 +775,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticReduceExecutor(
     flagcxReduceTrigger *triggers, uint64_t numTriggers,
     const uint64_t *abortFlag, uint64_t avgDivisor, uint64_t firstOrdinal,
     uint64_t stride, uint64_t *shm) {
+  FLAGCX_SHARED float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
+  FLAGCX_SHARED float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
   const int tid = FLAGCX_THREAD_IDX_X;
 
   for (uint64_t ordinal = firstOrdinal; ordinal < numTriggers;
@@ -575,6 +794,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticReduceExecutor(
         shm[REDOP_IDX] = trigger->getRedop();
         shm[FLAG_IN_IDX] = trigger->getFlagIn();
         shm[FLAG_OUT_IDX] = trigger->getFlagOut();
+        loadComputeTriggerMetadata(trigger, shm);
       }
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -605,9 +825,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticReduceExecutor(
       return;
     }
 
-    flagcxReduceKernel(shm[FST_IDX], shm[SND_IDX], shm[OUT_IDX],
-                       shm[COUNT_IDX], shm[NTHREADS_IDX], shm[DATATYPE_IDX],
-                       shm[REDOP_IDX], avgDivisor);
+    executeComputeTrigger(shm, avgDivisor, sharedA, sharedB);
     FLAGCX_DEVICE_SYNC_THREADS();
     FLAGCX_DEVICE_THREAD_FENCE();
     // Every reduction thread must finish its system fence before thread 0
@@ -615,11 +833,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticReduceExecutor(
     // FIFO, this exact static array is never re-enqueued, so completion does
     // not need a mapped trigger-state read/modify/write.
     FLAGCX_DEVICE_SYNC_THREADS();
-    if (tid == 0 && shm[FLAG_OUT_IDX] != 0) {
-      DeviceAPI::Atomic::store(
-          reinterpret_cast<uint64_t *>(shm[FLAG_OUT_IDX]),
-          static_cast<uint64_t>(flagcxStreamFlagDone),
-          flagcxDeviceMemoryOrderRelease);
+    if (tid == 0) {
+      completeComputeTrigger(shm);
     }
   }
 }
@@ -628,7 +843,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticReduceKernel(
     flagcxReduceTrigger *triggers, uint64_t numTriggers,
     const uint64_t *abortFlag, uint64_t avgDivisor,
     uint64_t numNetTriggers, uint64_t numNetBlocks) {
-  FLAGCX_SHARED uint64_t shm[16];
+  FLAGCX_SHARED uint64_t shm[COMPUTE_SHM_WORDS];
   const uint64_t block = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
   const uint64_t blocks = static_cast<uint64_t>(FLAGCX_GRID_DIM_X);
   if (numNetBlocks == 0) {
@@ -1239,6 +1454,311 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(
   }
 }
 
+struct alignas(16) flagcxRingVector128 {
+  uint64_t x;
+  uint64_t y;
+};
+
+template <typename T, flagcxRedOp_t Op>
+FLAGCX_DEVICE_INLINE_DECORATOR T ringReduceValue(T remote, T local,
+                                                 bool postOp,
+                                                 uint64_t avgDivisor) {
+  if constexpr (Op == flagcxAvg) {
+    return postOp
+               ? uniRunnerApplyReduce<T, flagcxAvg>(remote, local, avgDivisor)
+               : uniRunnerApplyReduce<T, flagcxSum>(remote, local, 1);
+  } else {
+    return uniRunnerApplyReduce<T, Op>(remote, local, avgDivisor);
+  }
+}
+
+template <typename T, flagcxRedOp_t Op, bool Reduce, bool Fanout>
+FLAGCX_DEVICE_INLINE_DECORATOR void ringReduceCopy(
+    T *dst0, T *dst1, const T *src0, const T *src1, uint64_t count,
+    uint64_t nworkers, bool postOp, uint64_t avgDivisor) {
+  const uint64_t tid = static_cast<uint64_t>(FLAGCX_THREAD_IDX_X);
+  if (tid >= nworkers)
+    return;
+  const uintptr_t addresses = reinterpret_cast<uintptr_t>(dst0) |
+                              reinterpret_cast<uintptr_t>(src0) |
+                              (Reduce ? reinterpret_cast<uintptr_t>(src1) : 0) |
+                              (Fanout ? reinterpret_cast<uintptr_t>(dst1) : 0);
+  uint64_t vectorElements = 0;
+  constexpr uint64_t kElementsPerVector = sizeof(flagcxRingVector128) / sizeof(T);
+  if ((addresses & (alignof(flagcxRingVector128) - 1)) == 0) {
+    const uint64_t vectors = count / kElementsPerVector;
+    for (uint64_t i = tid; i < vectors; i += nworkers) {
+      flagcxRingVector128 a =
+          reinterpret_cast<const flagcxRingVector128 *>(src0)[i];
+      flagcxRingVector128 b = {};
+      if constexpr (Reduce)
+        b = reinterpret_cast<const flagcxRingVector128 *>(src1)[i];
+      T *av = reinterpret_cast<T *>(&a);
+      const T *bv = reinterpret_cast<const T *>(&b);
+#pragma unroll
+      for (uint64_t e = 0; e < kElementsPerVector; ++e)
+        if constexpr (Reduce)
+          av[e] = ringReduceValue<T, Op>(av[e], bv[e], postOp, avgDivisor);
+      reinterpret_cast<flagcxRingVector128 *>(dst0)[i] = a;
+      if constexpr (Fanout)
+        reinterpret_cast<flagcxRingVector128 *>(dst1)[i] = a;
+    }
+    vectorElements = vectors * kElementsPerVector;
+  }
+  for (uint64_t i = vectorElements + tid; i < count; i += nworkers) {
+    T value = src0[i];
+    if constexpr (Reduce)
+      value = ringReduceValue<T, Op>(value, src1[i], postOp, avgDivisor);
+    dst0[i] = value;
+    if constexpr (Fanout)
+      dst1[i] = value;
+  }
+}
+
+template <typename T, flagcxRedOp_t Op>
+FLAGCX_DEVICE_INLINE_DECORATOR bool executeRingStep(
+    const flagcxRingStepTrigger &trigger, const flagcxRingLaneDesc &lane,
+    const flagcxDevMem &inputMem, const flagcxDevMem &outputMem,
+    const flagcxDevMem &scratchMem, const flagcxDevMem &readyMem,
+    flagcxRingChannelProgress *localProgress,
+    flagcxRingChannelProgress *nextProgress, uint64_t simpleBufferBytes,
+    uint64_t stepSizeElements, uint64_t &sendStep, uint64_t &recvStep,
+    uint64_t nworkers, uint64_t avgDivisor, const uint64_t *abortFlag,
+    const flagcxStaticIpcControl &ipcControl, uint64_t *shm) {
+  const bool hasRecv = trigger.kind != uniRunnerRingStepSend;
+  const bool hasSend = trigger.kind != uniRunnerRingStepRecv;
+  const uint64_t nelem = trigger.countElements;
+  const uint64_t sliceSize = max(
+      ((nelem + 16 * kRingSimpleSlicesPerChunk - 1) /
+       (16 * kRingSimpleSlicesPerChunk)) * 16,
+      stepSizeElements * kRingSimpleSliceSteps / 32);
+
+  for (uint32_t slice = 0; slice < kRingSimpleSlicesPerChunk; ++slice) {
+    const uint64_t sliceOffset = slice * sliceSize;
+    const uint64_t sliceCount =
+        sliceOffset >= nelem ? 0 : min(sliceSize, nelem - sliceOffset);
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      shm[0] = 0;
+      if (hasRecv) {
+        int backoff = 0;
+        while (DeviceAPI::Atomic::load(&localProgress->tail.value,
+                                       flagcxDeviceMemoryOrderAcquire) <
+               recvStep + kRingSimpleSliceSteps) {
+          if (isStaticIpcAbortRequested(abortFlag, readyMem, ipcControl)) {
+            shm[0] = 1;
+            break;
+          }
+          DeviceAPI::Intrin::spinBackoff(backoff++);
+        }
+      }
+    } else if (FLAGCX_THREAD_IDX_X == 1) {
+      shm[1] = 0;
+      int backoff = 0;
+      while (hasSend &&
+             DeviceAPI::Atomic::load(&nextProgress->head.value,
+                                     flagcxDeviceMemoryOrderAcquire) +
+                     FLAGCX_STEPS <
+                 sendStep + kRingSimpleSliceSteps) {
+        if (isStaticIpcAbortRequested(abortFlag, readyMem, ipcControl)) {
+          shm[1] = 1;
+          break;
+        }
+        DeviceAPI::Intrin::spinBackoff(backoff++);
+      }
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
+    if (shm[0] != 0 || shm[1] != 0)
+      return false;
+
+    const uint64_t byteOffset =
+        (trigger.offsetElements + sliceOffset) * sizeof(T);
+    const uint64_t localSlotOffset = lane.scratchChannelOffsetBytes +
+        (recvStep % FLAGCX_STEPS) * stepSizeElements * sizeof(T);
+    const uint64_t remoteSlotOffset = lane.scratchChannelOffsetBytes +
+        (sendStep % FLAGCX_STEPS) * stepSizeElements * sizeof(T);
+    const T *input = static_cast<const T *>(
+        flagcxGetLocalPointer(inputMem, byteOffset));
+    T *output =
+        static_cast<T *>(flagcxGetLocalPointer(outputMem, byteOffset));
+    const T *recvScratch = static_cast<const T *>(
+        flagcxGetLocalPointer(scratchMem, localSlotOffset));
+    T *sendScratch = static_cast<T *>(flagcxGetIntraPointer(
+        scratchMem, remoteSlotOffset, lane.nextLocalRank));
+    switch (trigger.kind) {
+      case uniRunnerRingStepSend:
+        ringReduceCopy<T, Op, false, false>(
+            sendScratch, nullptr, input, nullptr, sliceCount, nworkers, false,
+            avgDivisor);
+        break;
+      case uniRunnerRingStepRecvReduceSend:
+        ringReduceCopy<T, Op, true, false>(
+            sendScratch, nullptr, recvScratch, input, sliceCount, nworkers,
+            false, avgDivisor);
+        break;
+      case uniRunnerRingStepRecvReduceCopySend:
+        ringReduceCopy<T, Op, true, true>(
+            output, sendScratch, recvScratch, input, sliceCount, nworkers,
+            trigger.postOp != 0, avgDivisor);
+        break;
+      case uniRunnerRingStepRecvCopySend:
+        ringReduceCopy<T, Op, false, true>(
+            output, sendScratch, recvScratch, nullptr, sliceCount, nworkers,
+            false, avgDivisor);
+        break;
+      case uniRunnerRingStepRecv:
+        ringReduceCopy<T, Op, false, false>(
+            output, nullptr, recvScratch, nullptr, sliceCount, nworkers,
+            false, avgDivisor);
+        break;
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
+    if (hasSend)
+      DeviceAPI::Intrin::threadfenceSystem();
+    FLAGCX_DEVICE_SYNC_THREADS();
+    if (FLAGCX_THREAD_IDX_X == FLAGCX_BLOCK_DIM_X - 1 && hasSend) {
+      DeviceAPI::Atomic::store(&nextProgress->tail.value,
+                               sendStep + kRingSimpleSliceSteps,
+                               flagcxDeviceMemoryOrderRelease);
+    }
+    if (FLAGCX_THREAD_IDX_X == FLAGCX_BLOCK_DIM_X - 2 && hasRecv) {
+      DeviceAPI::Atomic::store(&localProgress->head.value,
+                               recvStep + kRingSimpleSliceSteps,
+                               flagcxDeviceMemoryOrderRelease);
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
+    if (hasSend)
+      sendStep += kRingSimpleSliceSteps;
+    if (hasRecv)
+      recvStep += kRingSimpleSliceSteps;
+  }
+  return true;
+}
+
+template <typename T, flagcxRedOp_t Op>
+FLAGCX_DEVICE_INLINE_DECORATOR void runStaticRingDagLane(
+    flagcxRingLaneDesc *lanes, uint64_t numLanes,
+    flagcxRingStepTrigger *triggers, uint64_t numTriggers,
+    const flagcxDevMem &inputMem, const flagcxDevMem &outputMem,
+    const flagcxDevMem &scratchMem, const flagcxDevMem &progressMem,
+    const flagcxDevMem &readyMem, uint64_t simpleBufferBytes,
+    uint64_t avgDivisor, const uint64_t *abortFlag,
+    const flagcxStaticIpcControl &ipcControl, uint64_t *shm) {
+  const uint64_t laneId = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
+  if (laneId >= numLanes)
+    return;
+  const flagcxRingLaneDesc lane = lanes[laneId];
+  if (lane.channelId != laneId || lane.firstTrigger > numTriggers ||
+      lane.numTriggers > numTriggers - lane.firstTrigger) {
+    requestStaticAbort(abortFlag);
+    return;
+  }
+  const uint64_t stepSizeElements =
+      simpleBufferBytes / FLAGCX_STEPS / sizeof(T);
+  const uint64_t nworkers = FLAGCX_BLOCK_DIM_X - WARP_SIZE;
+  flagcxRingChannelProgress *localProgress =
+      static_cast<flagcxRingChannelProgress *>(flagcxGetLocalPointer(
+          progressMem, laneId * sizeof(flagcxRingChannelProgress)));
+  flagcxRingChannelProgress *nextProgress =
+      static_cast<flagcxRingChannelProgress *>(flagcxGetIntraPointer(
+          progressMem, laneId * sizeof(flagcxRingChannelProgress),
+          lane.nextLocalRank));
+  uint64_t sendStep = DeviceAPI::Atomic::load(
+      &localProgress->sendStep, flagcxDeviceMemoryOrderAcquire);
+  uint64_t recvStep = DeviceAPI::Atomic::load(
+      &localProgress->recvStep, flagcxDeviceMemoryOrderAcquire);
+  bool ok = true;
+  for (uint64_t i = 0; i < lane.numTriggers && ok; ++i) {
+    const flagcxRingStepTrigger trigger = triggers[lane.firstTrigger + i];
+    if (trigger.channelId != lane.channelId || trigger.laneOrdinal != i ||
+        trigger.kind > uniRunnerRingStepRecv ||
+        trigger.postOp !=
+            (trigger.kind == uniRunnerRingStepRecvReduceCopySend ? 1u : 0u)) {
+      requestStaticAbort(abortFlag);
+      ok = false;
+      break;
+    }
+    ok = executeRingStep<T, Op>(
+        trigger, lane, inputMem, outputMem, scratchMem, readyMem,
+        localProgress, nextProgress, simpleBufferBytes, stepSizeElements,
+        sendStep, recvStep, nworkers, avgDivisor, abortFlag, ipcControl, shm);
+    if (ok && i + 1 == lane.numTriggers && trigger.flagOut != 0 &&
+        FLAGCX_THREAD_IDX_X == 0) {
+      DeviceAPI::Atomic::store(
+          reinterpret_cast<uint64_t *>(trigger.flagOut),
+          static_cast<uint64_t>(flagcxStreamFlagDone),
+          flagcxDeviceMemoryOrderRelease);
+    }
+  }
+  if (ok && FLAGCX_THREAD_IDX_X == 0) {
+    DeviceAPI::Atomic::store(&localProgress->sendStep, sendStep,
+                             flagcxDeviceMemoryOrderRelease);
+    DeviceAPI::Atomic::store(&localProgress->recvStep, recvStep,
+                             flagcxDeviceMemoryOrderRelease);
+  }
+  if (!ok && FLAGCX_THREAD_IDX_X == 0)
+    publishStaticIpcRemoteAbort(readyMem, ipcControl);
+  FLAGCX_DEVICE_SYNC_THREADS();
+}
+
+template <typename T>
+FLAGCX_DEVICE_INLINE_DECORATOR void dispatchStaticRingOp(
+    uint32_t redOp, flagcxRingLaneDesc *lanes, uint64_t numLanes,
+    flagcxRingStepTrigger *triggers, uint64_t numTriggers,
+    const flagcxDevMem &inputMem, const flagcxDevMem &outputMem,
+    const flagcxDevMem &scratchMem, const flagcxDevMem &progressMem,
+    const flagcxDevMem &readyMem, uint64_t simpleBufferBytes,
+    uint64_t avgDivisor, const uint64_t *abortFlag,
+    const flagcxStaticIpcControl &ipcControl, uint64_t *shm) {
+#define FLAGCX_RUN_RING(OP)                                                    \
+  runStaticRingDagLane<T, OP>(                                                \
+      lanes, numLanes, triggers, numTriggers, inputMem, outputMem, scratchMem,\
+      progressMem, readyMem, simpleBufferBytes, avgDivisor, abortFlag,         \
+      ipcControl, shm)
+  switch (static_cast<flagcxRedOp_t>(redOp)) {
+    case flagcxSum: FLAGCX_RUN_RING(flagcxSum); break;
+    case flagcxProd: FLAGCX_RUN_RING(flagcxProd); break;
+    case flagcxMax: FLAGCX_RUN_RING(flagcxMax); break;
+    case flagcxMin: FLAGCX_RUN_RING(flagcxMin); break;
+    case flagcxAvg: FLAGCX_RUN_RING(flagcxAvg); break;
+    default: requestStaticAbort(abortFlag); break;
+  }
+#undef FLAGCX_RUN_RING
+}
+
+FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
+    flagcxRingLaneDesc *lanes, uint64_t numLanes,
+    flagcxRingStepTrigger *triggers, uint64_t numTriggers,
+    flagcxDevMem inputMem, flagcxDevMem outputMem, flagcxDevMem scratchMem,
+    flagcxDevMem progressMem, flagcxDevMem readyMem,
+    uint64_t simpleBufferBytes, uint32_t datatype, uint32_t redOp,
+    uint64_t avgDivisor, uint64_t *blocksDone, const uint64_t *abortFlag,
+    flagcxStaticIpcControl ipcControl) {
+  FLAGCX_SHARED uint64_t shm[16];
+#define FLAGCX_DISPATCH_RING_TYPE(TYPE)                                       \
+  dispatchStaticRingOp<TYPE>(                                                 \
+      redOp, lanes, numLanes, triggers, numTriggers, inputMem, outputMem,     \
+      scratchMem, progressMem, readyMem, simpleBufferBytes, avgDivisor,       \
+      abortFlag, ipcControl, shm)
+  switch (static_cast<flagcxDataType_t>(datatype)) {
+    case flagcxInt8: FLAGCX_DISPATCH_RING_TYPE(int8_t); break;
+    case flagcxUint8: FLAGCX_DISPATCH_RING_TYPE(uint8_t); break;
+    case flagcxInt32: FLAGCX_DISPATCH_RING_TYPE(int32_t); break;
+    case flagcxUint32: FLAGCX_DISPATCH_RING_TYPE(uint32_t); break;
+    case flagcxInt64: FLAGCX_DISPATCH_RING_TYPE(int64_t); break;
+    case flagcxUint64: FLAGCX_DISPATCH_RING_TYPE(uint64_t); break;
+    case flagcxFloat32: FLAGCX_DISPATCH_RING_TYPE(float); break;
+    case flagcxFloat64: FLAGCX_DISPATCH_RING_TYPE(double); break;
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+    case flagcxFloat16: FLAGCX_DISPATCH_RING_TYPE(__half); break;
+    case flagcxBfloat16: FLAGCX_DISPATCH_RING_TYPE(__nv_bfloat16); break;
+#endif
+    default: requestStaticAbort(abortFlag); break;
+  }
+#undef FLAGCX_DISPATCH_RING_TYPE
+  finishStaticCollectiveExecution(readyMem, blocksDone, numLanes, abortFlag,
+                                  ipcControl, shm);
+}
+
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticCollectiveKernel(
     flagcxReduceTrigger *redTriggers, uint64_t numRedTriggers,
     flagcxIpcTrigger *ipcTriggers, uint64_t numIpcTriggers,
@@ -1247,7 +1767,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticCollectiveKernel(
     uint64_t numRedBlocks, uint64_t numIpcBlocks,
     uint64_t *blocksDone, const uint64_t *abortFlag,
     flagcxStaticIpcControl ipcControl, uint64_t avgDivisor) {
-  FLAGCX_SHARED uint64_t shm[16];
+  FLAGCX_SHARED uint64_t shm[COMPUTE_SHM_WORDS];
   const uint64_t globalBlock = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
   if (globalBlock < numRedBlocks) {
     runStaticReduceExecutor(redTriggers, numRedTriggers, abortFlag,
@@ -1400,6 +1920,13 @@ flagcxResult_t flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
       "RED+IPC", nthreads, maxExecutorBlocks);
 }
 
+flagcxResult_t flagcxGetStaticRingDagKernelMaxExecutorBlocks(
+    size_t nthreads, size_t *maxExecutorBlocks) {
+  return getStaticKernelMaxExecutorBlocks(
+      reinterpret_cast<const void *>(flagcxStaticRingDagKernel), "IPC Ring",
+      nthreads, maxExecutorBlocks);
+}
+
 flagcxResult_t flagcxLaunchStaticReduceKernel(
     void *redFifoDeviceBuffer, size_t numTriggers, size_t nthreads,
     size_t nRedBlocks, size_t maxExecutorBlocks, uint64_t avgDivisor,
@@ -1546,6 +2073,63 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
   cudaError_t launchResult = cudaLaunchCooperativeKernel(
       reinterpret_cast<const void *>(flagcxStaticCollectiveKernel),
       dim3(static_cast<unsigned int>(nblocks)),
+      dim3(static_cast<unsigned int>(nthreads)), args, 0,
+      *(FLAGCX_DEVICE_STREAM_PTR)stream);
+  return launchResult == cudaSuccess ? flagcxSuccess
+                                     : flagcxUnhandledDeviceError;
+#else
+  return flagcxNotSupported;
+#endif
+}
+
+flagcxResult_t flagcxLaunchStaticRingDagKernel(
+    flagcxRingLaneDesc *lanes, size_t numLanes,
+    flagcxRingStepTrigger *triggers, size_t numTriggers,
+    flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
+    flagcxDevMem_t scratchMem, flagcxDevMem_t progressMem,
+    flagcxDevMem_t readyMem, size_t simpleBufferBytes,
+    flagcxDataType_t datatype, flagcxRedOp_t redOp, uint64_t avgDivisor,
+    uint64_t *blocksDone, const uint64_t *abortFlag,
+    const flagcxStaticIpcControl *ipcControl, size_t nthreads,
+    size_t maxExecutorBlocks, flagcxStream_t stream) {
+  const size_t maxInt = static_cast<size_t>(std::numeric_limits<int>::max());
+  if (lanes == nullptr || numLanes == 0 || triggers == nullptr ||
+      numTriggers == 0 || inputMem == nullptr || outputMem == nullptr ||
+      scratchMem == nullptr || progressMem == nullptr || readyMem == nullptr ||
+      simpleBufferBytes == 0 || simpleBufferBytes % FLAGCX_STEPS != 0 ||
+      datatype < flagcxInt8 || datatype >= flagcxNumTypes ||
+      redOp < flagcxSum || redOp >= flagcxNumRedOps || avgDivisor == 0 ||
+      blocksDone == nullptr || abortFlag == nullptr || ipcControl == nullptr ||
+      nthreads < 3 * WARP_SIZE || nthreads % WARP_SIZE != 0 ||
+      nthreads > FLAGCX_SIMPLE_MAX_NTHREADS || numLanes > maxExecutorBlocks ||
+      numLanes > maxInt || numTriggers > maxInt || nthreads > maxInt ||
+      stream == nullptr || !flagcxIpcControlEpochValid(ipcControl->epoch) ||
+      ipcControl->localRanks == 0 ||
+      ipcControl->localRank >= ipcControl->localRanks ||
+      ipcControl->abortSlot != 0 || ipcControl->doneBase != 1 ||
+      ipcControl->readyDataOffset !=
+          uint64_t(1) + static_cast<uint64_t>(ipcControl->localRanks)) {
+    return flagcxInvalidArgument;
+  }
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+  flagcxDevMem input(*inputMem);
+  flagcxDevMem output(*outputMem);
+  flagcxDevMem scratch(*scratchMem);
+  flagcxDevMem progress(*progressMem);
+  flagcxDevMem ready(*readyMem);
+  uint64_t numLanes64 = static_cast<uint64_t>(numLanes);
+  uint64_t numTriggers64 = static_cast<uint64_t>(numTriggers);
+  uint64_t simpleBufferBytes64 = static_cast<uint64_t>(simpleBufferBytes);
+  uint32_t datatype32 = static_cast<uint32_t>(datatype);
+  uint32_t redOp32 = static_cast<uint32_t>(redOp);
+  flagcxStaticIpcControl control = *ipcControl;
+  void *args[] = {&lanes, &numLanes64, &triggers, &numTriggers64,
+                  &input, &output, &scratch, &progress, &ready,
+                  &simpleBufferBytes64, &datatype32, &redOp32, &avgDivisor,
+                  &blocksDone, &abortFlag, &control};
+  cudaError_t launchResult = cudaLaunchCooperativeKernel(
+      reinterpret_cast<const void *>(flagcxStaticRingDagKernel),
+      dim3(static_cast<unsigned int>(numLanes)),
       dim3(static_cast<unsigned int>(nthreads)), args, 0,
       *(FLAGCX_DEVICE_STREAM_PTR)stream);
   return launchResult == cudaSuccess ? flagcxSuccess

@@ -90,6 +90,57 @@ static flagcxResult_t fillPeerInfo(flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
+static flagcxResult_t initCollectiveRingState(flagcxHeteroComm_t comm) {
+  if (comm == NULL || comm->nRanks <= 0 || comm->peerInfo == NULL)
+    return flagcxInvalidArgument;
+
+  // UniRunner's Ring/Simple path consumes communicator tuning fields that
+  // are normally populated by a collective tuner. The hetero communicator
+  // has no collective tuner yet, so install the device protocol defaults.
+  comm->nChannels = comm->collChannels = std::min(MAXCHANNELS, 16);
+  comm->buffSizes[FLAGCX_PROTO_SIMPLE] = 4 * 1024 * 1024;
+  comm->threadThresholds[FLAGCX_ALGO_RING][FLAGCX_PROTO_SIMPLE] =
+      FLAGCX_SIMPLE_THREAD_THRESHOLD;
+  comm->maxThreads[FLAGCX_ALGO_RING][FLAGCX_PROTO_SIMPLE] = 256;
+
+  for (int c = 0; c < comm->collChannels; ++c) {
+    struct flagcxRing *ring = &comm->channels[c].ring;
+    FLAGCXCHECK(flagcxCalloc(&ring->userRanks, comm->nRanks));
+    for (int i = 0; i < comm->nRanks; ++i)
+      ring->userRanks[i] = i;
+
+    // PCI bus order is stable on every rank and yields a topology-derived
+    // ring rather than assuming rank +/- 1. Alternate traversal direction.
+    for (int i = 0; i < comm->nRanks; ++i) {
+      for (int j = i + 1; j < comm->nRanks; ++j) {
+        const int lhs = ring->userRanks[i];
+        const int rhs = ring->userRanks[j];
+        if (comm->peerInfo[rhs].busId < comm->peerInfo[lhs].busId ||
+            (comm->peerInfo[rhs].busId == comm->peerInfo[lhs].busId &&
+             rhs < lhs)) {
+          std::swap(ring->userRanks[i], ring->userRanks[j]);
+        }
+      }
+    }
+    if ((c & 1) != 0)
+      std::reverse(ring->userRanks, ring->userRanks + comm->nRanks);
+
+    ring->index = -1;
+    for (int i = 0; i < comm->nRanks; ++i) {
+      if (ring->userRanks[i] == comm->rank) {
+        ring->index = i;
+        break;
+      }
+    }
+    if (ring->index < 0)
+      return flagcxInternalError;
+    ring->prev =
+        ring->userRanks[(ring->index + comm->nRanks - 1) % comm->nRanks];
+    ring->next = ring->userRanks[(ring->index + 1) % comm->nRanks];
+  }
+  return flagcxSuccess;
+}
+
 static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
                                          flagcxHeteroComm_t parent) {
   INFO(FLAGCX_INIT, "inside initTransportsRank");
@@ -236,6 +287,8 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     }
     free(nodesFirstRank);
   }
+
+  FLAGCXCHECKGOTO(initCollectiveRingState(comm), ret, fail);
 
   if (!flagcxParamTopoDetectionDisable()) {
     INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
@@ -514,6 +567,7 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
+    free(comm->channels[i].ring.userRanks);
     for (int r = 0; r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);
     }

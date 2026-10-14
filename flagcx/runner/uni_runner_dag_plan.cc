@@ -19,7 +19,8 @@ enum uniRunnerDagPlanPhase {
   uniRunnerDagPlanPhaseHost = 0,
   uniRunnerDagPlanPhaseRed = 1,
   uniRunnerDagPlanPhaseIpc = 2,
-  uniRunnerDagPlanNumPhases = 3
+  uniRunnerDagPlanPhaseRingStep = 3,
+  uniRunnerDagPlanNumPhases = 4
 };
 
 static bool getUniRunnerDagPlanPhase(uniRunnerDagNodeType nodeType,
@@ -30,10 +31,14 @@ static bool getUniRunnerDagPlanPhase(uniRunnerDagNodeType nodeType,
       *phase = uniRunnerDagPlanPhaseHost;
       return true;
     case uniRunnerDagNodeTypeRed:
+    case uniRunnerDagNodeTypeGemm:
       *phase = uniRunnerDagPlanPhaseRed;
       return true;
     case uniRunnerDagNodeTypeIpc:
       *phase = uniRunnerDagPlanPhaseIpc;
+      return true;
+    case uniRunnerDagNodeTypeRingStep:
+      *phase = uniRunnerDagPlanPhaseRingStep;
       return true;
     default:
       return false;
@@ -115,9 +120,12 @@ static void analyzeUniRunnerRedShape(
   redNodes.reserve(numRedNodes);
   for (int nodeIdx : topoOrder) {
     const auto &node = nodeAt(static_cast<size_t>(nodeIdx));
-    if (node.nodeType == uniRunnerDagNodeTypeRed) {
+    if (node.nodeType == uniRunnerDagNodeTypeRed ||
+        node.nodeType == uniRunnerDagNodeTypeGemm) {
       redNodes.push_back(nodeIdx);
-      *maxRedNodeCount = std::max(*maxRedNodeCount, node.redCount());
+      if (node.nodeType == uniRunnerDagNodeTypeRed) {
+        *maxRedNodeCount = std::max(*maxRedNodeCount, node.redCount());
+      }
     }
   }
 
@@ -171,10 +179,11 @@ flagcxResult_t compileUniRunnerDagOrder(
     size_t numNodes, const NodeAccessor &nodeAt, std::vector<int> *topoOrder,
     size_t *numHostNodes, size_t *numRedNodes, size_t *numIpcNodes,
     size_t *maxParallelRedNodes, size_t *maxRedNodeCount,
-    size_t *maxIpcNodeBytes) {
+    size_t *maxIpcNodeBytes, size_t *numRingStepNodes) {
   if (topoOrder == NULL || numHostNodes == NULL || numRedNodes == NULL ||
       numIpcNodes == NULL || maxParallelRedNodes == NULL ||
       maxRedNodeCount == NULL || maxIpcNodeBytes == NULL ||
+      numRingStepNodes == NULL ||
       numNodes > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return flagcxInvalidArgument;
   }
@@ -185,6 +194,7 @@ flagcxResult_t compileUniRunnerDagOrder(
   *maxParallelRedNodes = 0;
   *maxRedNodeCount = 0;
   *maxIpcNodeBytes = 0;
+  *numRingStepNodes = 0;
   if (numNodes == 0) {
     return flagcxSuccess;
   }
@@ -192,8 +202,8 @@ flagcxResult_t compileUniRunnerDagOrder(
   try {
     std::vector<int> indegree(numNodes, 0);
     std::vector<int> nextReady(numNodes, -1);
-    std::array<int, uniRunnerDagPlanNumPhases> readyHead = {{-1, -1, -1}};
-    std::array<int, uniRunnerDagPlanNumPhases> readyTail = {{-1, -1, -1}};
+    std::array<int, uniRunnerDagPlanNumPhases> readyHead = {{-1, -1, -1, -1}};
+    std::array<int, uniRunnerDagPlanNumPhases> readyTail = {{-1, -1, -1, -1}};
     std::unordered_set<uint64_t> parentEdges;
     size_t numEdges = 0;
 
@@ -283,10 +293,12 @@ flagcxResult_t compileUniRunnerDagOrder(
             ++*numHostNodes;
           } else if (phase == uniRunnerDagPlanPhaseRed) {
             ++*numRedNodes;
-          } else {
+          } else if (phase == uniRunnerDagPlanPhaseIpc) {
             ++*numIpcNodes;
             *maxIpcNodeBytes =
                 std::max(*maxIpcNodeBytes, nodeAt(nodeIdx).ipcBytes());
+          } else {
+            ++*numRingStepNodes;
           }
 
           const auto &node = nodeAt(static_cast<size_t>(nodeIdx));
@@ -314,7 +326,8 @@ flagcxResult_t compileUniRunnerDagOrder(
       }
     }
 
-    if (*numHostNodes + *numRedNodes + *numIpcNodes != numNodes) {
+    if (*numHostNodes + *numRedNodes + *numIpcNodes +
+            *numRingStepNodes != numNodes) {
       return flagcxInternalError;
     }
     analyzeUniRunnerRedShape(numNodes, nodeAt, *topoOrder, *numRedNodes,
@@ -328,6 +341,7 @@ flagcxResult_t compileUniRunnerDagOrder(
     *maxParallelRedNodes = 0;
     *maxRedNodeCount = 0;
     *maxIpcNodeBytes = 0;
+    *numRingStepNodes = 0;
     return flagcxSystemError;
   }
 }
@@ -370,6 +384,108 @@ struct TemplateNodeAccessor {
   View operator()(size_t nodeIdx) const { return View(nodes[nodeIdx]); }
   const std::vector<uniRunnerDagNodeDesc> &nodes;
 };
+
+static const uniRunnerRingStepNodeData &
+getRingStepPayload(const RuntimeNodeAccessor::View &view) {
+  return view.node.nodeData.ringStep;
+}
+
+static const uniRunnerDagRingStepDesc &
+getRingStepPayload(const TemplateNodeAccessor::View &view) {
+  return view.node.ringStep;
+}
+
+template <typename NodeAccessor>
+flagcxResult_t validateUniRunnerRingLanes(
+    size_t numNodes, const NodeAccessor &nodeAt, size_t numHostNodes,
+    size_t numRedNodes, size_t numIpcNodes, size_t numRingStepNodes,
+    std::vector<uint32_t> *laneOffsets) {
+  laneOffsets->clear();
+  if (numRingStepNodes == 0) {
+    return flagcxSuccess;
+  }
+  if (numRingStepNodes != numNodes || numHostNodes != 0 || numRedNodes != 0 ||
+      numIpcNodes != 0 || numNodes > std::numeric_limits<uint32_t>::max()) {
+    return flagcxInvalidArgument;
+  }
+
+  try {
+    laneOffsets->push_back(0);
+    uint32_t expectedChannel = 0;
+    uint32_t expectedOrdinal = 0;
+    size_t laneStart = 0;
+    for (size_t i = 0; i < numNodes; ++i) {
+      const auto node = nodeAt(i);
+      const auto &step = getRingStepPayload(node);
+      if (node.nodeType != uniRunnerDagNodeTypeRingStep ||
+          step.channelId != expectedChannel ||
+          step.laneOrdinal != expectedOrdinal || step.kind > uniRunnerRingStepRecv ||
+          step.offsetElements >
+              std::numeric_limits<uint64_t>::max() - step.countElements) {
+        return flagcxInvalidArgument;
+      }
+      const bool first = expectedOrdinal == 0;
+      const bool last = i + 1 == numNodes ||
+                        getRingStepPayload(nodeAt(i + 1)).channelId !=
+                            expectedChannel;
+      if ((first ? node.numParents() != 0
+                 : node.numParents() != 1 || node.parent(0) != int(i - 1)) ||
+          (last ? node.numChildren() != 0
+                : node.numChildren() != 1 || node.child(0) != int(i + 1))) {
+        return flagcxInvalidArgument;
+      }
+      if (!first && getRingStepPayload(nodeAt(i - 1)).channelId !=
+                        expectedChannel) {
+        return flagcxInvalidArgument;
+      }
+      if (last) {
+        const size_t laneNodes = i + 1 - laneStart;
+        size_t period = 0;
+        for (size_t p = 0; p < laneNodes; ++p) {
+          if (getRingStepPayload(nodeAt(laneStart + p)).kind ==
+              uniRunnerRingStepRecv) {
+            period = p + 1;
+            break;
+          }
+        }
+        if (period < 3 || (period & 1) == 0 || laneNodes % period != 0) {
+          return flagcxInvalidArgument;
+        }
+        const size_t nranks = (period + 1) / 2;
+        for (size_t p = 0; p < laneNodes; ++p) {
+          const size_t q = p % period;
+          uint32_t expectedKind = uniRunnerRingStepRecv;
+          if (q == 0) {
+            expectedKind = uniRunnerRingStepSend;
+          } else if (q < nranks - 1) {
+            expectedKind = uniRunnerRingStepRecvReduceSend;
+          } else if (q == nranks - 1) {
+            expectedKind = uniRunnerRingStepRecvReduceCopySend;
+          } else if (q < period - 1) {
+            expectedKind = uniRunnerRingStepRecvCopySend;
+          }
+          const auto &payload = getRingStepPayload(nodeAt(laneStart + p));
+          if (payload.kind != expectedKind ||
+              payload.postOp !=
+                  (expectedKind == uniRunnerRingStepRecvReduceCopySend ? 1u
+                                                                       : 0u)) {
+            return flagcxInvalidArgument;
+          }
+        }
+        laneOffsets->push_back(static_cast<uint32_t>(i + 1));
+        ++expectedChannel;
+        expectedOrdinal = 0;
+        laneStart = i + 1;
+      } else {
+        ++expectedOrdinal;
+      }
+    }
+    return expectedChannel == 0 ? flagcxInvalidArgument : flagcxSuccess;
+  } catch (...) {
+    laneOffsets->clear();
+    return flagcxSystemError;
+  }
+}
 
 static flagcxResult_t
 validateUniRunnerDagTemplatePayload(const uniRunnerDagTemplate &dagTemplate) {
@@ -448,6 +564,17 @@ validateUniRunnerDagTemplatePayload(const uniRunnerDagTemplate &dagTemplate) {
         }
         ipcReadySlots[node.ipc.readySlot] = 1;
         break;
+      case uniRunnerDagNodeTypeRingStep:
+        if (node.ringStep.kind > uniRunnerRingStepRecv ||
+            node.ringStep.postOp > 1 ||
+            node.ringStep.offsetElements >
+                std::numeric_limits<uint64_t>::max() -
+                    node.ringStep.countElements) {
+          return flagcxInvalidArgument;
+        }
+        break;
+      case uniRunnerDagNodeTypeGemm:
+        return flagcxNotSupported;
       default:
         return flagcxInternalError;
     }
@@ -465,6 +592,113 @@ static bool isValidStaticRedTriggerPayload(const uniRunnerRedNodeData &red) {
          red.count <= flagcxTriggerMask(flagcxReduceTriggerBitsCount) &&
          red.nthreads != 0 &&
          red.nthreads <= flagcxTriggerMask(flagcxReduceTriggerBitsNThreads);
+}
+
+static bool isComputeNode(uniRunnerDagNodeType nodeType) {
+  return nodeType == uniRunnerDagNodeTypeRed ||
+         nodeType == uniRunnerDagNodeTypeGemm;
+}
+
+static uint32_t getStaticComputeWorkers(const uniRunnerDagNode &node) {
+  return std::max<uint32_t>(
+      1, node.nodeType == uniRunnerDagNodeTypeGemm
+             ? node.nodeData.gemm.workerCount
+             : node.nodeData.red.workerCount);
+}
+
+static bool isValidStaticGemmTriggerPayload(const uniRunnerGemmNodeData &gemm) {
+  return gemm.a != NULL && gemm.b != NULL && gemm.c != NULL &&
+         gemm.m != 0 && gemm.n != 0 && gemm.k != 0 &&
+         gemm.lda >= gemm.k && gemm.ldb >= gemm.n && gemm.ldc >= gemm.n &&
+         gemm.nthreads == 256 && gemm.datatype == flagcxFloat32 &&
+         (gemm.accumulate == 0 || gemm.accumulate == 1) &&
+         gemm.completionCounter != NULL;
+}
+
+static size_t computeWeightedComputeWidth(
+    const uniRunnerDagNode *nodes, size_t numNodes,
+    const uniRunnerDagExecutionPlan &plan,
+    const std::vector<int> &computeNodes, const std::vector<size_t> &workers,
+    size_t numTasks) {
+  // Weighted matching gives the expanded worker DAG's exact width without
+  // constructing a separate vertex for every worker of a logical node.
+  struct Edge {
+    size_t to;
+    size_t reverse;
+    size_t capacity;
+  };
+  const size_t n = computeNodes.size();
+  const size_t source = 2 * n;
+  const size_t sink = source + 1;
+  std::vector<std::vector<Edge>> graph(sink + 1);
+  const auto addEdge = [&](size_t from, size_t to, size_t capacity) {
+    const size_t reverse = graph[to].size();
+    const size_t forward = graph[from].size();
+    graph[from].push_back({to, reverse, capacity});
+    graph[to].push_back({from, forward, 0});
+  };
+  std::vector<uint8_t> reachable(numNodes, 0);
+  for (size_t left = 0; left < n; ++left) {
+    addEdge(source, left, workers[left]);
+    addEdge(n + left, sink, workers[left]);
+    std::fill(reachable.begin(), reachable.end(), uint8_t{0});
+    reachable[computeNodes[left]] = 1;
+    for (size_t slot = 0; slot < numNodes; ++slot) {
+      const int nodeIdx = plan.topoOrder[slot];
+      if (!reachable[nodeIdx])
+        continue;
+      const uniRunnerDagNode &node = nodes[nodeIdx];
+      for (int child = 0; child < node.numChildren; ++child)
+        reachable[node.children[child]] = 1;
+    }
+    for (size_t right = left + 1; right < n; ++right) {
+      if (reachable[computeNodes[right]])
+        addEdge(left, n + right, numTasks);
+    }
+  }
+  size_t matchedTasks = 0;
+  std::vector<int> level(graph.size());
+  std::vector<size_t> cursor(graph.size());
+  std::vector<size_t> queue;
+  while (true) {
+    std::fill(level.begin(), level.end(), -1);
+    queue.clear();
+    queue.push_back(source);
+    level[source] = 0;
+    for (size_t head = 0; head < queue.size(); ++head) {
+      const size_t from = queue[head];
+      for (const Edge &edge : graph[from]) {
+        if (edge.capacity != 0 && level[edge.to] == -1) {
+          level[edge.to] = level[from] + 1;
+          queue.push_back(edge.to);
+        }
+      }
+    }
+    if (level[sink] == -1)
+      break;
+    std::fill(cursor.begin(), cursor.end(), size_t{0});
+    const auto augment = [&](const auto &self, size_t from,
+                             size_t capacity) -> size_t {
+      if (from == sink)
+        return capacity;
+      for (size_t &i = cursor[from]; i < graph[from].size(); ++i) {
+        Edge &edge = graph[from][i];
+        if (edge.capacity == 0 || level[edge.to] != level[from] + 1)
+          continue;
+        const size_t sent =
+            self(self, edge.to, std::min(capacity, edge.capacity));
+        if (sent != 0) {
+          edge.capacity -= sent;
+          graph[edge.to][edge.reverse].capacity += sent;
+          return sent;
+        }
+      }
+      return 0;
+    };
+    while (const size_t sent = augment(augment, source, numTasks))
+      matchedTasks += sent;
+  }
+  return numTasks - matchedTasks;
 }
 
 static bool isValidStaticIpcBufferType(flagcxIpcBufferType bufferType) {
@@ -516,6 +750,9 @@ void destroyUniRunnerDagExecutionPlan(uniRunnerDagExecutionPlan *plan) {
   if (plan->ownsTopoOrder && plan->topoOrder != NULL) {
     free(const_cast<int *>(plan->topoOrder));
   }
+  if (plan->ownsRingLaneOffsets && plan->ringLaneOffsets != NULL) {
+    free(const_cast<uint32_t *>(plan->ringLaneOffsets));
+  }
   *plan = {};
 }
 
@@ -557,10 +794,15 @@ flagcxResult_t compileUniRunnerDagExecutionPlan(
   size_t maxParallelRedNodes = 0;
   size_t maxRedNodeCount = 0;
   size_t maxIpcNodeBytes = 0;
+  size_t numRingStepNodes = 0;
   FLAGCXCHECK(compileUniRunnerDagOrder(
       numNodes, RuntimeNodeAccessor(nodes), &order, &numHostNodes,
       &numRedNodes, &numIpcNodes, &maxParallelRedNodes, &maxRedNodeCount,
-      &maxIpcNodeBytes));
+      &maxIpcNodeBytes, &numRingStepNodes));
+  std::vector<uint32_t> laneOffsets;
+  FLAGCXCHECK(validateUniRunnerRingLanes(
+      numNodes, RuntimeNodeAccessor(nodes), numHostNodes, numRedNodes,
+      numIpcNodes, numRingStepNodes, &laneOffsets));
 
   int *topoOrder = NULL;
   FLAGCXCHECK(flagcxCalloc(&topoOrder, numNodes));
@@ -569,11 +811,27 @@ flagcxResult_t compileUniRunnerDagExecutionPlan(
   plan->numNodes = numNodes;
   plan->numHostNodes = numHostNodes;
   plan->numRedNodes = numRedNodes;
+  for (size_t nodeIdx = 0; nodeIdx < numNodes; ++nodeIdx) {
+    plan->hasGemm |= nodes[nodeIdx].nodeType == uniRunnerDagNodeTypeGemm;
+  }
   plan->numIpcNodes = numIpcNodes;
   plan->maxParallelRedNodes = maxParallelRedNodes;
   plan->maxRedNodeCount = maxRedNodeCount;
   plan->maxIpcNodeBytes = maxIpcNodeBytes;
+  plan->numRingStepNodes = numRingStepNodes;
   plan->ownsTopoOrder = true;
+  if (!laneOffsets.empty()) {
+    uint32_t *offsets = NULL;
+    flagcxResult_t allocResult = flagcxCalloc(&offsets, laneOffsets.size());
+    if (allocResult != flagcxSuccess) {
+      destroyUniRunnerDagExecutionPlan(plan);
+      return allocResult;
+    }
+    std::copy(laneOffsets.begin(), laneOffsets.end(), offsets);
+    plan->ringLaneOffsets = offsets;
+    plan->numRingLanes = laneOffsets.size() - 1;
+    plan->ownsRingLaneOffsets = true;
+  }
   return flagcxSuccess;
 }
 
@@ -595,7 +853,15 @@ flagcxResult_t compileUniRunnerDagTemplate(
         numNodes, TemplateNodeAccessor(dagTemplate.nodes),
         &compiled.topoOrder, &compiled.numHostNodes, &compiled.numRedNodes,
         &compiled.numIpcNodes, &compiled.maxParallelRedNodes,
-        &compiled.maxRedNodeCount, &compiled.maxIpcNodeBytes));
+        &compiled.maxRedNodeCount, &compiled.maxIpcNodeBytes,
+        &compiled.numRingStepNodes));
+    FLAGCXCHECK(validateUniRunnerRingLanes(
+        numNodes, TemplateNodeAccessor(dagTemplate.nodes),
+        compiled.numHostNodes, compiled.numRedNodes, compiled.numIpcNodes,
+        compiled.numRingStepNodes, &compiled.ringLaneOffsets));
+    compiled.numRingLanes = compiled.ringLaneOffsets.empty()
+                                ? 0
+                                : compiled.ringLaneOffsets.size() - 1;
     compiled.dagTemplate = dagTemplate;
     compiled.dagTemplate.hashValue =
         getUniRunnerDagPatternHash(compiled.dagTemplate.key);
@@ -604,6 +870,82 @@ flagcxResult_t compileUniRunnerDagTemplate(
     return flagcxSuccess;
   } catch (...) {
     *compiledTemplate = {};
+    return flagcxSystemError;
+  }
+}
+
+flagcxResult_t updateUniRunnerComputeRuntimeShape(
+    const uniRunnerDagNode *nodes, size_t numNodes,
+    uniRunnerDagExecutionPlan *plan) {
+  if (plan == NULL || plan->numNodes != numNodes ||
+      (numNodes != 0 && (nodes == NULL || plan->topoOrder == NULL))) {
+    return flagcxInvalidArgument;
+  }
+  plan->numRedTasks = 0;
+  plan->maxParallelRedTasks = 0;
+  plan->hasGemm = false;
+  try {
+    std::vector<int> computeNodes;
+    std::vector<size_t> workers;
+    size_t numTasks = 0;
+    for (size_t slot = 0; slot < numNodes; ++slot) {
+      const int nodeIdx = plan->topoOrder[slot];
+      if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= numNodes ||
+          nodes[nodeIdx].nodeIdx != nodeIdx) {
+        return flagcxInternalError;
+      }
+      const uniRunnerDagNode &node = nodes[nodeIdx];
+      if (node.numChildren < 0 ||
+          (node.numChildren != 0 && node.children == NULL)) {
+        return flagcxInvalidArgument;
+      }
+      for (int child = 0; child < node.numChildren; ++child) {
+        if (node.children[child] < 0 ||
+            static_cast<size_t>(node.children[child]) >= numNodes) {
+          return flagcxInvalidArgument;
+        }
+      }
+      if (node.nodeType != uniRunnerDagNodeTypeRed &&
+          node.nodeType != uniRunnerDagNodeTypeGemm) {
+        continue;
+      }
+      const bool gemm = node.nodeType == uniRunnerDagNodeTypeGemm;
+      const size_t count = std::max<uint32_t>(
+          1, gemm ? node.nodeData.gemm.workerCount
+                  : node.nodeData.red.workerCount);
+      if (count > static_cast<size_t>(std::numeric_limits<int>::max()) -
+                      numTasks) {
+        return flagcxInvalidArgument;
+      }
+      plan->hasGemm |= gemm;
+      numTasks += count;
+      computeNodes.push_back(nodeIdx);
+      workers.push_back(count);
+    }
+    if (computeNodes.size() != plan->numRedNodes) {
+      return flagcxInternalError;
+    }
+    if (computeNodes.empty()) {
+      return flagcxSuccess;
+    }
+    if (plan->maxParallelRedNodes == 0 ||
+        plan->maxParallelRedNodes > computeNodes.size()) {
+      return flagcxInternalError;
+    }
+    const bool uniform = std::all_of(
+        workers.begin(), workers.end(),
+        [&](size_t count) { return count == workers[0]; });
+    const size_t parallelTasks =
+        uniform ? plan->maxParallelRedNodes * workers[0]
+                : computeWeightedComputeWidth(nodes, numNodes, *plan,
+                                              computeNodes, workers, numTasks);
+    if (parallelTasks == 0 || parallelTasks > numTasks) {
+      return flagcxInternalError;
+    }
+    plan->numRedTasks = numTasks;
+    plan->maxParallelRedTasks = parallelTasks;
+    return flagcxSuccess;
+  } catch (...) {
     return flagcxSystemError;
   }
 }
@@ -632,6 +974,9 @@ flagcxResult_t resolveUniRunnerDagLaunchShape(
       std::min(plan->maxIpcNodeBytes, ipcChunkSize);
   const size_t ipcThreadDemand =
       ipcBytesPerBlock / 16 + (ipcBytesPerBlock % 16 != 0);
+  if (plan->hasGemm && maxThreads < 256) {
+    return flagcxInvalidArgument;
+  }
   const size_t threadDemand =
       std::max(plan->maxRedNodeCount, ipcThreadDemand);
   const size_t threadLimit = std::min(threadDemand, maxThreads);
@@ -640,11 +985,14 @@ flagcxResult_t resolveUniRunnerDagLaunchShape(
     resolvedThreads *= 2;
   }
 
-  *nthreads = std::max<size_t>(32, resolvedThreads);
+  *nthreads = plan->hasGemm ? 256 : std::max<size_t>(32, resolvedThreads);
   *requestedRedBlocks =
       plan->numRedNodes == 0
           ? 0
-          : std::min(plan->maxParallelRedNodes, maxBlocks);
+          : std::min(plan->maxParallelRedTasks == 0
+                         ? plan->maxParallelRedNodes
+                         : plan->maxParallelRedTasks,
+                     maxBlocks);
   *requestedIpcBlocks =
       plan->numIpcNodes == 0
           ? 0
@@ -667,12 +1015,22 @@ flagcxResult_t resolveUniRunnerStaticExecutorSchedule(
       ((plan->numNodes == 0) != (plan->topoOrder == NULL)) ||
       plan->numHostNodes > plan->numNodes ||
       plan->numRedNodes > plan->numNodes - plan->numHostNodes ||
-      plan->numIpcNodes !=
-          plan->numNodes - plan->numHostNodes - plan->numRedNodes) {
+      plan->numIpcNodes >
+          plan->numNodes - plan->numHostNodes - plan->numRedNodes ||
+      plan->numRingStepNodes != plan->numNodes - plan->numHostNodes -
+                                        plan->numRedNodes - plan->numIpcNodes ||
+      plan->numRingStepNodes != 0) {
     return flagcxInvalidArgument;
   }
 
-  schedule->numRedTasks = plan->numRedNodes;
+  if (plan->numRedTasks != 0 &&
+      (plan->numRedNodes == 0 || plan->numRedTasks < plan->numRedNodes ||
+       plan->numRedTasks >
+           static_cast<size_t>(std::numeric_limits<int>::max()))) {
+    return flagcxInvalidArgument;
+  }
+  schedule->numRedTasks =
+      plan->numRedTasks == 0 ? plan->numRedNodes : plan->numRedTasks;
   schedule->numIpcTasks = plan->numIpcNodes;
   if ((plan->numIpcNodes == 0 && maxIpcParallelism != 0) ||
       (plan->numIpcNodes != 0 && maxIpcParallelism == 0)) {
@@ -689,7 +1047,7 @@ flagcxResult_t resolveUniRunnerStaticExecutorSchedule(
   }
 
   const size_t desiredRedBlocks =
-      std::min(requestedRedBlocks, plan->numRedNodes);
+      std::min(requestedRedBlocks, schedule->numRedTasks);
   const size_t desiredIpcBlocks =
       std::min(requestedIpcBlocks, maxIpcParallelism);
   const size_t activeExecutorTypes =
@@ -812,21 +1170,25 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
       ((numNodes == 0) != (plan->topoOrder == NULL)) ||
       plan->numHostNodes > numNodes ||
       plan->numRedNodes > numNodes - plan->numHostNodes ||
-      plan->numIpcNodes !=
-          numNodes - plan->numHostNodes - plan->numRedNodes) {
+      plan->numIpcNodes > numNodes - plan->numHostNodes - plan->numRedNodes ||
+      plan->numRingStepNodes != numNodes - plan->numHostNodes -
+                                        plan->numRedNodes - plan->numIpcNodes) {
     return flagcxInvalidArgument;
   }
   if (plan->numRedNodes == 0) {
     return flagcxSuccess;
   }
   if (nodes == NULL || nodeFlags == NULL || numNodeFlags < numNodes ||
-      triggers == NULL || triggerCapacity < plan->numRedNodes) {
+      triggers == NULL ||
+      triggerCapacity <
+          (plan->numRedTasks == 0 ? plan->numRedNodes : plan->numRedTasks)) {
     return flagcxInvalidArgument;
   }
 
-  // Validate every dependency address, payload field, and single-parent RED
+  // Validate every dependency address, compute payload, and single-parent
   // constraint before writing any trigger or publishing triggerIdx.
   size_t redOrdinal = 0;
+  size_t validatedTriggers = 0;
   size_t validatedNetTriggers = 0;
   for (size_t topoSlot = 0; topoSlot < numNodes; ++topoSlot) {
     const int nodeIdx = plan->topoOrder[topoSlot];
@@ -838,14 +1200,29 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
     if (!isValidUniRunnerDagCommDomain(node->nodeType, node->commDomain)) {
       return flagcxInvalidArgument;
     }
-    if (node->nodeType != uniRunnerDagNodeTypeRed) {
+    if (!isComputeNode(node->nodeType)) {
       continue;
     }
     if (redOrdinal >= plan->numRedNodes || node->numParents < 0 ||
-        node->numParents > 1 || nodeFlags[nodeIdx] == NULL ||
-        !isValidStaticRedTriggerPayload(node->nodeData.red)) {
+        node->numParents > 1 || nodeFlags[nodeIdx] == NULL) {
       return flagcxInvalidArgument;
     }
+    const size_t workerCount = getStaticComputeWorkers(*node);
+    if (workerCount > triggerCapacity - validatedTriggers ||
+        workerCount > static_cast<size_t>(std::numeric_limits<int>::max()) -
+                          validatedTriggers) {
+      return flagcxInvalidArgument;
+    }
+    if (node->nodeType == uniRunnerDagNodeTypeGemm) {
+      if (!isValidStaticGemmTriggerPayload(node->nodeData.gemm)) {
+        return flagcxInvalidArgument;
+      }
+    } else if (!isValidStaticRedTriggerPayload(node->nodeData.red) ||
+               (workerCount > 1 &&
+                node->nodeData.red.completionCounter == NULL)) {
+      return flagcxInvalidArgument;
+    }
+    validatedTriggers += workerCount;
     if (node->numParents == 1) {
       if (node->parents == NULL || node->parents[0] < 0 ||
           static_cast<size_t>(node->parents[0]) >= numNodes ||
@@ -855,23 +1232,24 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
     }
     ++redOrdinal;
     if (node->commDomain == uniRunnerDagCommNet) {
-      ++validatedNetTriggers;
+      validatedNetTriggers += workerCount;
     }
   }
-  if (redOrdinal != plan->numRedNodes) {
+  if (redOrdinal != plan->numRedNodes ||
+      (plan->numRedTasks != 0 && validatedTriggers != plan->numRedTasks)) {
     return flagcxInternalError;
   }
 
-  // Store IPC RED tasks before NET RED tasks for the split executor,
+  // Store IPC compute tasks before NET RED tasks for the split executor,
   // retaining each domain's topological order. The unsplit executor keeps
   // the original order, including cross-domain dependencies.
   redOrdinal = 0;
   size_t ipcOrdinal = 0;
-  size_t netOrdinal = plan->numRedNodes - validatedNetTriggers;
+  size_t netOrdinal = validatedTriggers - validatedNetTriggers;
   for (size_t topoSlot = 0; topoSlot < numNodes; ++topoSlot) {
     const int nodeIdx = plan->topoOrder[topoSlot];
     uniRunnerDagNode *node = &nodes[nodeIdx];
-    if (node->nodeType != uniRunnerDagNodeTypeRed) {
+    if (!isComputeNode(node->nodeType)) {
       continue;
     }
     const uint64_t flagIn =
@@ -880,25 +1258,114 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
             : reinterpret_cast<uint64_t>(nodeFlags[node->parents[0]]);
     const uint64_t flagOut =
         reinterpret_cast<uint64_t>(nodeFlags[nodeIdx]);
-    const size_t triggerOrdinal =
-        numNetTriggers == NULL
-            ? redOrdinal
-            : (node->commDomain == uniRunnerDagCommNet ? netOrdinal++
-                                                        : ipcOrdinal++);
-    triggers[triggerOrdinal].setValue(
-        reinterpret_cast<uint64_t>(node->nodeData.red.input1),
-        reinterpret_cast<uint64_t>(node->nodeData.red.input2),
-        reinterpret_cast<uint64_t>(node->nodeData.red.output),
-        node->nodeData.red.count, node->nodeData.red.nthreads,
-        node->nodeData.red.datatype, node->nodeData.red.redOp,
-        flagcxReduceTriggerEnqueued, flagIn, flagOut);
-    node->nodeData.red.triggerIdx = static_cast<int>(triggerOrdinal);
-    ++redOrdinal;
+    const uint32_t workerCount = getStaticComputeWorkers(*node);
+    for (uint32_t worker = 0; worker < workerCount; ++worker) {
+      const size_t triggerOrdinal =
+          numNetTriggers == NULL
+              ? redOrdinal
+              : (node->commDomain == uniRunnerDagCommNet ? netOrdinal++
+                                                          : ipcOrdinal++);
+      if (node->nodeType == uniRunnerDagNodeTypeGemm) {
+        uniRunnerGemmNodeData &gemm = node->nodeData.gemm;
+        triggers[triggerOrdinal].setGemmValue(
+            reinterpret_cast<uint64_t>(gemm.a),
+            reinterpret_cast<uint64_t>(gemm.b),
+            reinterpret_cast<uint64_t>(gemm.c), gemm.m, gemm.n, gemm.k,
+            gemm.lda, gemm.ldb, gemm.ldc, gemm.nthreads, gemm.datatype,
+            gemm.accumulate, worker, workerCount,
+            reinterpret_cast<uint64_t>(gemm.completionCounter),
+            flagcxReduceTriggerEnqueued, flagIn, flagOut);
+        if (worker == 0)
+          gemm.triggerIdx = static_cast<int>(triggerOrdinal);
+      } else {
+        uniRunnerRedNodeData &red = node->nodeData.red;
+        triggers[triggerOrdinal].setReduceWorkerValue(
+            reinterpret_cast<uint64_t>(red.input1),
+            reinterpret_cast<uint64_t>(red.input2),
+            reinterpret_cast<uint64_t>(red.output), red.count, red.nthreads,
+            red.datatype, red.redOp, worker, workerCount,
+            reinterpret_cast<uint64_t>(red.completionCounter),
+            flagcxReduceTriggerEnqueued, flagIn, flagOut);
+        if (worker == 0)
+          red.triggerIdx = static_cast<int>(triggerOrdinal);
+      }
+      ++redOrdinal;
+    }
   }
   __sync_synchronize();
   *numTriggers = redOrdinal;
   if (numNetTriggers != NULL) {
     *numNetTriggers = validatedNetTriggers;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t populateUniRunnerStaticRingDag(
+    uniRunnerDagNode *nodes, size_t numNodes,
+    const uniRunnerDagExecutionPlan *plan, void *const *nodeFlags,
+    size_t numNodeFlags, flagcxHeteroComm_t hcomm,
+    size_t simpleBufferBytes, flagcxRingStepTrigger *triggers,
+    size_t triggerCapacity, flagcxRingLaneDesc *lanes, size_t laneCapacity) {
+  if (plan == NULL || nodes == NULL || nodeFlags == NULL || hcomm == NULL ||
+      triggers == NULL || lanes == NULL || plan->numNodes != numNodes ||
+      plan->numRingStepNodes != numNodes || plan->numHostNodes != 0 ||
+      plan->numRedNodes != 0 || plan->numIpcNodes != 0 ||
+      plan->numRingLanes == 0 || plan->ringLaneOffsets == NULL ||
+      triggerCapacity != numNodes || laneCapacity != plan->numRingLanes ||
+      numNodeFlags < numNodes || simpleBufferBytes == 0 ||
+      hcomm->localRanks != hcomm->nRanks) {
+    return flagcxInvalidArgument;
+  }
+  for (size_t laneId = 0; laneId < plan->numRingLanes; ++laneId) {
+    const uint32_t first = plan->ringLaneOffsets[laneId];
+    const uint32_t end = plan->ringLaneOffsets[laneId + 1];
+    if (first >= end || end > numNodes || laneId >= MAXCHANNELS) {
+      return flagcxInvalidArgument;
+    }
+    const flagcxRing &ring = hcomm->channels[laneId].ring;
+    if (ring.index < 0 || ring.index >= hcomm->nRanks || ring.prev < 0 ||
+        ring.prev >= hcomm->nRanks || ring.next < 0 ||
+        ring.next >= hcomm->nRanks || hcomm->rankToLocalRank == NULL) {
+      return flagcxInvalidArgument;
+    }
+    const int prevLocalRank = hcomm->rankToLocalRank[ring.prev];
+    const int nextLocalRank = hcomm->rankToLocalRank[ring.next];
+    if (prevLocalRank < 0 || prevLocalRank >= hcomm->localRanks ||
+        nextLocalRank < 0 || nextLocalRank >= hcomm->localRanks ||
+        laneId > std::numeric_limits<uint64_t>::max() / simpleBufferBytes) {
+      return flagcxInvalidArgument;
+    }
+    flagcxRingLaneDesc &lane = lanes[laneId];
+    lane = {};
+    lane.firstTrigger = first;
+    lane.numTriggers = end - first;
+    lane.scratchChannelOffsetBytes = laneId * simpleBufferBytes;
+    lane.channelId = static_cast<uint32_t>(laneId);
+    lane.ringIndex = static_cast<uint32_t>(ring.index);
+    lane.prevLocalRank = prevLocalRank;
+    lane.nextLocalRank = nextLocalRank;
+    lane.nRanks = static_cast<uint32_t>(hcomm->nRanks);
+
+    for (uint32_t ordinal = first; ordinal < end; ++ordinal) {
+      uniRunnerDagNode &node = nodes[ordinal];
+      const uniRunnerRingStepNodeData &step = node.nodeData.ringStep;
+      if (node.nodeType != uniRunnerDagNodeTypeRingStep ||
+          step.channelId != laneId || step.laneOrdinal != ordinal - first) {
+        return flagcxInvalidArgument;
+      }
+      flagcxRingStepTrigger &trigger = triggers[ordinal];
+      trigger = {};
+      trigger.offsetElements = step.offsetElements;
+      trigger.countElements = step.countElements;
+      trigger.flagOut = ordinal + 1 == end
+                            ? reinterpret_cast<uint64_t>(nodeFlags[ordinal])
+                            : 0;
+      trigger.channelId = step.channelId;
+      trigger.laneOrdinal = step.laneOrdinal;
+      trigger.kind = step.kind;
+      trigger.postOp = step.postOp;
+      node.nodeData.ringStep.triggerIdx = static_cast<int>(ordinal);
+    }
   }
   return flagcxSuccess;
 }
@@ -919,8 +1386,9 @@ flagcxResult_t populateUniRunnerStaticIpcTriggers(
       ((numNodes == 0) != (plan->topoOrder == NULL)) ||
       plan->numHostNodes > numNodes ||
       plan->numRedNodes > numNodes - plan->numHostNodes ||
-      plan->numIpcNodes !=
-          numNodes - plan->numHostNodes - plan->numRedNodes) {
+      plan->numIpcNodes > numNodes - plan->numHostNodes - plan->numRedNodes ||
+      plan->numRingStepNodes != numNodes - plan->numHostNodes -
+                                        plan->numRedNodes - plan->numIpcNodes) {
     return flagcxInvalidArgument;
   }
   if (plan->numIpcNodes == 0) {
@@ -983,7 +1451,8 @@ flagcxResult_t populateUniRunnerStaticIpcTriggers(
         ++hostNodes;
         continue;
       }
-      if (node.nodeType == uniRunnerDagNodeTypeRed) {
+      if (node.nodeType == uniRunnerDagNodeTypeRed ||
+          node.nodeType == uniRunnerDagNodeTypeGemm) {
         ++redNodes;
         continue;
       }
