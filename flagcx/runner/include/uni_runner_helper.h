@@ -98,6 +98,7 @@ struct uniRunnerDagIpcOpDesc {
 
 struct uniRunnerDagNodeDesc {
   uniRunnerDagNodeType nodeType = uniRunnerDagNodeTypeP2p;
+  uniRunnerDagCommDomain commDomain = uniRunnerDagCommIpc;
   int nodeIdx = 0;
   std::vector<int> parents;
   std::vector<int> children;
@@ -595,6 +596,7 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
     Json nodeJson{
         {"node_idx", node.nodeIdx},
         {"node_type", uniRunnerDagNodeTypeToString(node.nodeType)},
+        {"comm_domain", static_cast<int>(node.commDomain)},
         {"parents", node.parents},
         {"children", node.children},
     };
@@ -707,6 +709,20 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
       if (!uniRunnerDagNodeTypeFromString(nodeType, &node.nodeType)) {
         return false;
       }
+      if (nodeJson.contains("comm_domain")) {
+        size_t commDomain = 0;
+        if (!uniRunnerDagSizeFromJson(nodeJson.at("comm_domain"),
+                                       &commDomain) ||
+            commDomain > static_cast<size_t>(uniRunnerDagCommNet)) {
+          return false;
+        }
+        node.commDomain = static_cast<uniRunnerDagCommDomain>(commDomain);
+      }
+      if (node.commDomain == uniRunnerDagCommNet &&
+          node.nodeType != uniRunnerDagNodeTypeP2p &&
+          node.nodeType != uniRunnerDagNodeTypeRed) {
+        return false;
+      }
       node.nodeIdx = nodeJson.at("node_idx").get<int>();
       if (!nodeJson.at("parents").is_array() ||
           !nodeJson.at("children").is_array() ||
@@ -780,10 +796,12 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
         }
         node.cpy.datatype = static_cast<flagcxDataType_t>(datatype);
       } else if (node.nodeType == uniRunnerDagNodeTypeIpc) {
-        // IPC nodes have exactly the four common DAG fields plus their six-field
-        // structural payload. Rejecting extras prevents runtime trigger state
-        // from silently becoming part of the persistent cache schema.
-        if (nodeJson.size() != 5 || !nodeJson.contains("node_idx") ||
+        // IPC nodes contain only structural fields; legacy templates omit the
+        // communication domain. Runtime trigger state stays invocation-local.
+        const size_t expectedFields =
+            nodeJson.contains("comm_domain") ? 6 : 5;
+        if (nodeJson.size() != expectedFields ||
+            !nodeJson.contains("node_idx") ||
             !nodeJson.contains("node_type") ||
             !nodeJson.contains("parents") ||
             !nodeJson.contains("children") || !nodeJson.contains("ipc") ||

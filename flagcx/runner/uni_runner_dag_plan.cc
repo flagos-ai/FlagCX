@@ -71,6 +71,14 @@ static bool checkedCompiledTypeBytes(size_t count, flagcxDataType_t datatype,
   return true;
 }
 
+static bool isValidUniRunnerDagCommDomain(uniRunnerDagNodeType nodeType,
+                                          uniRunnerDagCommDomain domain) {
+  return domain == uniRunnerDagCommIpc ||
+         (domain == uniRunnerDagCommNet &&
+          (nodeType == uniRunnerDagNodeTypeP2p ||
+           nodeType == uniRunnerDagNodeTypeRed));
+}
+
 static bool isValidP2pPrim(flagcxDevicePrim prim) {
   return prim == flagcxDevicePrimSend || prim == flagcxDevicePrimRecv;
 }
@@ -386,6 +394,9 @@ validateUniRunnerDagTemplatePayload(const uniRunnerDagTemplate &dagTemplate) {
     return flagcxSystemError;
   }
   for (const uniRunnerDagNodeDesc &node : dagTemplate.nodes) {
+    if (!isValidUniRunnerDagCommDomain(node.nodeType, node.commDomain)) {
+      return flagcxInvalidArgument;
+    }
     switch (node.nodeType) {
       case uniRunnerDagNodeTypeP2p:
         for (const uniRunnerDagP2pOpDesc &op : node.p2pOps) {
@@ -528,6 +539,10 @@ flagcxResult_t compileUniRunnerDagExecutionPlan(
   }
 
   for (size_t nodeIdx = 0; nodeIdx < numNodes; ++nodeIdx) {
+    if (!isValidUniRunnerDagCommDomain(nodes[nodeIdx].nodeType,
+                                       nodes[nodeIdx].commDomain)) {
+      return flagcxInvalidArgument;
+    }
     if (nodes[nodeIdx].numParents < 0 || nodes[nodeIdx].numChildren < 0 ||
         (nodes[nodeIdx].numParents > 0 && nodes[nodeIdx].parents == NULL) ||
         (nodes[nodeIdx].numChildren > 0 && nodes[nodeIdx].children == NULL)) {
@@ -784,11 +799,14 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
     uniRunnerDagNode *nodes, size_t numNodes,
     const uniRunnerDagExecutionPlan *plan, void *const *nodeFlags,
     size_t numNodeFlags, flagcxReduceTrigger *triggers,
-    size_t triggerCapacity, size_t *numTriggers) {
+    size_t triggerCapacity, size_t *numTriggers, size_t *numNetTriggers) {
   if (numTriggers == NULL) {
     return flagcxInvalidArgument;
   }
   *numTriggers = 0;
+  if (numNetTriggers != NULL) {
+    *numNetTriggers = 0;
+  }
   if (plan == NULL || plan->numNodes != numNodes ||
       numNodes > static_cast<size_t>(std::numeric_limits<int>::max()) ||
       ((numNodes == 0) != (plan->topoOrder == NULL)) ||
@@ -809,6 +827,7 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
   // Validate every dependency address, payload field, and single-parent RED
   // constraint before writing any trigger or publishing triggerIdx.
   size_t redOrdinal = 0;
+  size_t validatedNetTriggers = 0;
   for (size_t topoSlot = 0; topoSlot < numNodes; ++topoSlot) {
     const int nodeIdx = plan->topoOrder[topoSlot];
     if (nodeIdx < 0 || static_cast<size_t>(nodeIdx) >= numNodes ||
@@ -816,6 +835,9 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
       return flagcxInternalError;
     }
     const uniRunnerDagNode *node = &nodes[nodeIdx];
+    if (!isValidUniRunnerDagCommDomain(node->nodeType, node->commDomain)) {
+      return flagcxInvalidArgument;
+    }
     if (node->nodeType != uniRunnerDagNodeTypeRed) {
       continue;
     }
@@ -832,12 +854,20 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
       }
     }
     ++redOrdinal;
+    if (node->commDomain == uniRunnerDagCommNet) {
+      ++validatedNetTriggers;
+    }
   }
   if (redOrdinal != plan->numRedNodes) {
     return flagcxInternalError;
   }
 
+  // Store IPC RED tasks before NET RED tasks for the split executor,
+  // retaining each domain's topological order. The unsplit executor keeps
+  // the original order, including cross-domain dependencies.
   redOrdinal = 0;
+  size_t ipcOrdinal = 0;
+  size_t netOrdinal = plan->numRedNodes - validatedNetTriggers;
   for (size_t topoSlot = 0; topoSlot < numNodes; ++topoSlot) {
     const int nodeIdx = plan->topoOrder[topoSlot];
     uniRunnerDagNode *node = &nodes[nodeIdx];
@@ -850,17 +880,26 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
             : reinterpret_cast<uint64_t>(nodeFlags[node->parents[0]]);
     const uint64_t flagOut =
         reinterpret_cast<uint64_t>(nodeFlags[nodeIdx]);
-    triggers[redOrdinal].setValue(
+    const size_t triggerOrdinal =
+        numNetTriggers == NULL
+            ? redOrdinal
+            : (node->commDomain == uniRunnerDagCommNet ? netOrdinal++
+                                                        : ipcOrdinal++);
+    triggers[triggerOrdinal].setValue(
         reinterpret_cast<uint64_t>(node->nodeData.red.input1),
         reinterpret_cast<uint64_t>(node->nodeData.red.input2),
         reinterpret_cast<uint64_t>(node->nodeData.red.output),
         node->nodeData.red.count, node->nodeData.red.nthreads,
         node->nodeData.red.datatype, node->nodeData.red.redOp,
         flagcxReduceTriggerEnqueued, flagIn, flagOut);
-    node->nodeData.red.triggerIdx = static_cast<int>(redOrdinal++);
+    node->nodeData.red.triggerIdx = static_cast<int>(triggerOrdinal);
+    ++redOrdinal;
   }
   __sync_synchronize();
   *numTriggers = redOrdinal;
+  if (numNetTriggers != NULL) {
+    *numNetTriggers = validatedNetTriggers;
+  }
   return flagcxSuccess;
 }
 

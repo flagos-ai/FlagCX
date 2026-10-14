@@ -25,6 +25,11 @@ typedef enum {
   uniRunnerDagNodeTypeIpc = 3
 } uniRunnerDagNodeType;
 
+enum uniRunnerDagCommDomain {
+  uniRunnerDagCommIpc = 0,
+  uniRunnerDagCommNet = 1
+};
+
 // Static DAG template algorithm identifiers used by the uniRunner cache.
 typedef enum {
   uniRunnerDagAlgoDummy = 0,
@@ -49,9 +54,11 @@ typedef enum {
 
 struct uniRunnerDagAlgorithmConfig {
   uint64_t numSlices = 0;
+  uint64_t numLocalSlices = 0;
   uint64_t numRedSlices = 0;
   uint64_t groupSize = 0;
   uint64_t topologyHash = 0;
+  uint64_t pipelineVersion = 0;
   uniRunnerDagBufferMode bufferMode = uniRunnerDagBufferModeOutOfPlace;
 };
 
@@ -120,6 +127,7 @@ struct uniRunnerIpcNodeData {
 // Unified DAG node with common DAG structure fields
 struct uniRunnerDagNode {
   uniRunnerDagNodeType nodeType; // Discriminator for union
+  uniRunnerDagCommDomain commDomain = uniRunnerDagCommIpc;
 
   // Common DAG structure fields (shared by all node types)
   int nodeIdx;                   // Unique index of the node in the DAG
@@ -159,13 +167,16 @@ struct uniRunnerDagExecutionPlan {
 };
 
 // Per-invocation executor counts derived from the DAG and the runtime
-// residency budget. RED trigger i is owned by block i % numRedBlocks. IPC
-// triggers remain flat and in topological order; all IPC blocks advance them
+// residency budget. Local and network RED triggers are assigned round-robin
+// within their respective block partitions. IPC triggers remain flat and in
+// topological order; all IPC blocks advance them
 // in lockstep, with chunk c owned by block c % numIpcBlocks.
 struct uniRunnerStaticExecutorSchedule {
   size_t numRedTasks = 0;
+  size_t numNetRedTasks = 0;
   size_t numIpcTasks = 0;
   size_t numRedBlocks = 0;
+  size_t numNetRedBlocks = 0;
   size_t numIpcBlocks = 0;
 };
 
@@ -185,7 +196,10 @@ typedef struct {
   flagcxFifo_t fifo;
   flagcxFifo_t ipcFifo;
   void *ipcFifoDevicePtr;
-  flagcxStream_t commStream;
+  flagcxStream_t ipcCommStream;
+  flagcxStream_t netCommStream;
+  flagcxEvent_t *dagCompletionEvents = nullptr;
+  size_t numDagCompletionEvents = 0;
   flagcxStream_t redStream;
   flagcxStream_t cpyStream;
 
@@ -338,7 +352,8 @@ flagcxResult_t populateUniRunnerStaticRedTriggers(
     uniRunnerDagNode *nodes, size_t numNodes,
     const uniRunnerDagExecutionPlan *plan, void *const *nodeFlags,
     size_t numNodeFlags, flagcxReduceTrigger *triggers,
-    size_t triggerCapacity, size_t *numTriggers);
+    size_t triggerCapacity, size_t *numTriggers,
+    size_t *numNetTriggers = nullptr);
 flagcxResult_t normalizeUniRunnerIpcChunkSize(int64_t configuredChunkSize,
                                               size_t *chunkSize);
 flagcxResult_t checkedUniRunnerIpcChunkCount(size_t bytes, size_t chunkSize,

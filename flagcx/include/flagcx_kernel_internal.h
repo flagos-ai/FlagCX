@@ -88,7 +88,8 @@ FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(
     uint64_t avgDivisor);
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticReduceKernel(
     flagcxReduceTrigger *triggers, uint64_t numTriggers,
-    const uint64_t *abortFlag, uint64_t avgDivisor);
+    const uint64_t *abortFlag, uint64_t avgDivisor,
+    uint64_t numNetTriggers, uint64_t numNetBlocks);
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticCollectiveKernel(
     flagcxReduceTrigger *redTriggers, uint64_t numRedTriggers,
     flagcxIpcTrigger *ipcTriggers, uint64_t numIpcTriggers,
@@ -113,7 +114,8 @@ flagcxResult_t flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
 flagcxResult_t flagcxLaunchStaticReduceKernel(
     void *redFifoDeviceBuffer, size_t numTriggers, size_t nthreads,
     size_t nRedBlocks, size_t maxExecutorBlocks, uint64_t avgDivisor,
-    flagcxStream_t stream);
+    flagcxStream_t stream, size_t numNetTriggers = 0,
+    size_t numNetBlocks = 0);
 flagcxResult_t flagcxLaunchStaticCollectiveKernel(
     void *redFifoDeviceBuffer, size_t numRedTriggers,
     void *ipcFifoDeviceBuffer, size_t numIpcTriggers,

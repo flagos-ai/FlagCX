@@ -626,12 +626,27 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticReduceExecutor(
 
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticReduceKernel(
     flagcxReduceTrigger *triggers, uint64_t numTriggers,
-    const uint64_t *abortFlag, uint64_t avgDivisor) {
+    const uint64_t *abortFlag, uint64_t avgDivisor,
+    uint64_t numNetTriggers, uint64_t numNetBlocks) {
   FLAGCX_SHARED uint64_t shm[16];
-  runStaticReduceExecutor(
-      triggers, numTriggers, abortFlag, avgDivisor,
-      static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X),
-      static_cast<uint64_t>(FLAGCX_GRID_DIM_X), shm);
+  const uint64_t block = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
+  const uint64_t blocks = static_cast<uint64_t>(FLAGCX_GRID_DIM_X);
+  if (numNetBlocks == 0) {
+    runStaticReduceExecutor(triggers, numTriggers, abortFlag, avgDivisor,
+                            block, blocks, shm);
+    return;
+  }
+
+  const uint64_t numLocalTriggers = numTriggers - numNetTriggers;
+  const uint64_t numLocalBlocks = blocks - numNetBlocks;
+  if (block < numLocalBlocks) {
+    runStaticReduceExecutor(triggers, numLocalTriggers, abortFlag, avgDivisor,
+                            block, numLocalBlocks, shm);
+  } else {
+    runStaticReduceExecutor(triggers + numLocalTriggers, numNetTriggers,
+                            abortFlag, avgDivisor, block - numLocalBlocks,
+                            numNetBlocks, shm);
+  }
 }
 
 struct alignas(16) flagcxIpcVector128 {
@@ -1388,9 +1403,18 @@ flagcxResult_t flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
 flagcxResult_t flagcxLaunchStaticReduceKernel(
     void *redFifoDeviceBuffer, size_t numTriggers, size_t nthreads,
     size_t nRedBlocks, size_t maxExecutorBlocks, uint64_t avgDivisor,
-    flagcxStream_t stream) {
+    flagcxStream_t stream, size_t numNetTriggers, size_t numNetBlocks) {
   if (numTriggers == 0) {
-    return nRedBlocks == 0 ? flagcxSuccess : flagcxInvalidArgument;
+    return nRedBlocks == 0 && numNetTriggers == 0 && numNetBlocks == 0
+               ? flagcxSuccess
+               : flagcxInvalidArgument;
+  }
+  if (numNetTriggers > numTriggers ||
+      (numNetBlocks != 0 &&
+       (numNetTriggers == 0 || numNetTriggers == numTriggers ||
+        numNetBlocks >= nRedBlocks || numNetBlocks > numNetTriggers ||
+        nRedBlocks - numNetBlocks > numTriggers - numNetTriggers))) {
+    return flagcxInvalidArgument;
   }
   const size_t maxInt =
       static_cast<size_t>(std::numeric_limits<int>::max());
@@ -1408,7 +1432,10 @@ flagcxResult_t flagcxLaunchStaticReduceKernel(
       words + flagcxFifoIdxData);
   uint64_t *abortFlag = words + flagcxFifoIdxTerminate;
   uint64_t numTriggers64 = static_cast<uint64_t>(numTriggers);
-  void *args[] = {&triggers, &numTriggers64, &abortFlag, &avgDivisor};
+  uint64_t numNetTriggers64 = static_cast<uint64_t>(numNetTriggers);
+  uint64_t numNetBlocks64 = static_cast<uint64_t>(numNetBlocks);
+  void *args[] = {&triggers, &numTriggers64, &abortFlag, &avgDivisor,
+                  &numNetTriggers64, &numNetBlocks64};
   cudaError_t launchResult = cudaLaunchCooperativeKernel(
       reinterpret_cast<const void *>(flagcxStaticReduceKernel),
       dim3(static_cast<unsigned int>(nRedBlocks)),
