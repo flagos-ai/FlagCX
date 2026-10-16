@@ -1,19 +1,14 @@
 name: Code Format Check
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-
-permissions:
-  contents: read
-
-concurrency:
-  group: format-check-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      repository:
+        required: true
+        type: string
+      ref:
+        required: true
+        type: string
 
 jobs:
   format-check:
@@ -23,6 +18,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -31,9 +28,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+
       - name: Run CI script unit tests
         run: |
-          python3 -m pip install --quiet pyyaml==6.0.2
+          python3 -m pip install --quiet pyyaml==6.0.2 coverage==7.10.7
           python3 -m unittest discover -s test/script -p 'test_*.py'
 
       - name: Install format dependencies
@@ -41,5 +43,5 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git
 
-      - name: Run code format check
+      - name: Run pre-commit and code format checks
         run: bash .github/scripts/ci/format.sh

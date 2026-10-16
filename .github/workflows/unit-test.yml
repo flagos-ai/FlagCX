@@ -1,50 +1,196 @@
-name: Unit Tests
+name: FlagCX CI
 
 on:
-  # main/devops automatic suites are owned by ci.yml; retain dev coverage.
   push:
-    branches: [dev]
+    branches:
+      - main
+      - devops
+  pull_request:
+    branches: [main, devops]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  schedule:
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       platform:
-        description: "Platform config name, all, or comma-separated names"
+        description: "Platform name, all, or comma-separated names"
         required: true
         type: string
         default: all
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: read
+  issues: read
+  pull-requests: read
 
 concurrency:
-  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  group: flagcx-ci-${{ github.event_name == 'issue_comment' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  load_platforms:
-    name: Load platform configurations
+  prepare:
+    name: Resolve platform matrix
+    if: github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, '/test'))
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.config.outputs.matrix }}
+      active: ${{ steps.resolve.outputs.active }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      platforms: ${{ steps.resolve.outputs.platforms }}
+      has_platforms: ${{ steps.resolve.outputs.has_platforms }}
+      repository: ${{ steps.resolve.outputs.repository }}
+      ref: ${{ steps.resolve.outputs.ref }}
     steps:
-      - name: Checkout code
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Checkout CI configuration
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Build platform matrix
-        id: config
+      - name: Resolve changed paths, labels, and authorization
+        id: resolve
         env:
-          FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}
-        run: ruby .github/scripts/ci/load_platform_matrix.rb .github/configs "$FLAGCX_CI_PLATFORM"
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          EVENT_SHA: ${{ github.sha }}
+          EVENT_REPOSITORY: ${{ github.repository }}
+          EVENT_SELECTION: ${{ inputs.platform || 'all' }}
+          ACTOR: ${{ github.actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          context_file="$RUNNER_TEMP/flagcx-ci-context.json"
+          files_file="$RUNNER_TEMP/flagcx-ci-files.txt"
+          : > "$files_file"
+          labels='[]'
+          comment=''
+          permission=none
+          is_pull_request=false
+          repository="$EVENT_REPOSITORY"
+          ref="$EVENT_SHA"
+          selection="$EVENT_SELECTION"
+
+          case "$EVENT_NAME" in
+            pull_request)
+              pr=$(jq -c '.pull_request' "$EVENT_PATH")
+              number=$(jq -r '.number' "$EVENT_PATH")
+              labels=$(jq -c '[.pull_request.labels[].name]' "$EVENT_PATH")
+              gh api --paginate "repos/$EVENT_REPOSITORY/pulls/$number/files?per_page=100" \
+                --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
+              repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
+              ref=$(jq -r '.head.sha' <<< "$pr")
+              is_pull_request=true
+              ;;
+            issue_comment)
+              comment=$(jq -r '.comment.body // ""' "$EVENT_PATH")
+              if jq -e '.issue.pull_request' "$EVENT_PATH" >/dev/null; then
+                number=$(jq -r '.issue.number' "$EVENT_PATH")
+                pr=$(gh api "repos/$EVENT_REPOSITORY/pulls/$number")
+                labels=$(jq -c '[.labels[].name]' <<< "$pr")
+                gh api --paginate "repos/$EVENT_REPOSITORY/pulls/$number/files?per_page=100" \
+                  --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
+                repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
+                ref=$(jq -r '.head.sha' <<< "$pr")
+                permission=$(gh api "repos/$EVENT_REPOSITORY/collaborators/$ACTOR/permission" \
+                  --jq '.permission' 2>/dev/null || printf 'none')
+                is_pull_request=true
+              fi
+              ;;
+            push)
+              ;;
+            schedule)
+              ;;
+            workflow_dispatch)
+              ;;
+          esac
+
+          files_json=$(jq -Rsc 'split("\n") | map(select(length > 0))' "$files_file")
+          jq -n \
+            --arg event_name "$EVENT_NAME" \
+            --argjson labels "$labels" \
+            --argjson files "$files_json" \
+            --arg permission "$permission" \
+            --arg comment "$comment" \
+            --argjson is_pull_request "$is_pull_request" \
+            --arg selection "$selection" \
+            --arg repository "$repository" \
+            --arg ref "$ref" \
+            '{event_name:$event_name, labels:$labels, files:$files, permission:$permission,
+              comment:$comment, is_pull_request:$is_pull_request, selection:$selection,
+              repository:$repository, ref:$ref}' > "$context_file"
+
+          ruby .github/scripts/ci/resolve_ci_matrix.rb \
+            .github/configs "$context_file"
 
   unit_tests:
-    name: ${{ matrix.display_name }} unit tests
-    needs: load_platforms
+    name: Platform unit tests
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.load_platforms.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     uses: ./.github/workflows/unit_tests_common.yml
     with:
       platform: ${{ matrix.platform }}
+      repository: ${{ needs.prepare.outputs.repository }}
+      ref: ${{ needs.prepare.outputs.ref }}
+
+  performance_tests:
+    name: Platform performance tests
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true'
+    uses: ./.github/workflows/test.yml
+    with:
+      platforms: ${{ needs.prepare.outputs.platforms }}
+      repository: ${{ needs.prepare.outputs.repository }}
+      ref: ${{ needs.prepare.outputs.ref }}
+
+  torch_api_tests:
+    name: Platform Torch API tests
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true'
+    uses: ./.github/workflows/torch-api-test.yml
+    with:
+      platforms: ${{ needs.prepare.outputs.platforms }}
+      repository: ${{ needs.prepare.outputs.repository }}
+      ref: ${{ needs.prepare.outputs.ref }}
+    secrets:
+      FLAGCICD_API_TOKEN: ${{ needs.prepare.outputs.repository == github.repository && secrets.FLAGCICD_API_TOKEN || '' }}
+
+  format-check:
+    name: Common checks
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true'
+    uses: ./.github/workflows/format-check.yml
+    with:
+      repository: ${{ needs.prepare.outputs.repository }}
+      ref: ${{ needs.prepare.outputs.ref }}
+
+  ci_complete:
+    name: ci-complete
+    if: always() && (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
+    needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Verify required CI results
+        env:
+          ACTIVE: ${{ needs.prepare.outputs.active }}
+          HAS_PLATFORMS: ${{ needs.prepare.outputs.has_platforms }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          UNIT_RESULT: ${{ needs.unit_tests.result }}
+          PERF_RESULT: ${{ needs.performance_tests.result }}
+          TORCH_RESULT: ${{ needs.torch_api_tests.result }}
+          FORMAT_RESULT: ${{ needs.format-check.result }}
+        shell: bash
+        run: >-
+          bash .github/scripts/ci/check_ci_results.sh
+          "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT"
+          "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"

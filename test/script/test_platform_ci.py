@@ -15,24 +15,35 @@ class PlatformCiRegressionTest(unittest.TestCase):
     def _run_platform_matrix(
         self, event_name, changed_files="", configs_dir=None
     ):
-        script = REPO_ROOT / ".github/scripts/ci/generate_matrix.py"
-        command = [
-            "python3",
-            str(script),
-            "--event-name",
-            event_name,
-        ]
-        if configs_dir is not None:
-            command.extend(["--configs-dir", str(configs_dir)])
-        if changed_files:
-            command.extend(["--changed-files", changed_files])
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return json.loads(result.stdout.strip().split("=", 1)[1])
+        script = REPO_ROOT / ".github/scripts/ci/resolve_ci_matrix.rb"
+        config_path = configs_dir or REPO_ROOT / ".github/configs"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            context_path = temp_path / "context.json"
+            output_path = temp_path / "github-output"
+            context_path.write_text(
+                json.dumps(
+                    {
+                        "event_name": event_name,
+                        "files": changed_files.splitlines() if changed_files else [],
+                        "repository": "owner/FlagCX",
+                        "ref": "HEAD",
+                    }
+                )
+            )
+            env = os.environ.copy()
+            env["GITHUB_OUTPUT"] = str(output_path)
+            subprocess.run(
+                ["ruby", str(script), str(config_path), str(context_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            outputs = dict(
+                line.split("=", 1) for line in output_path.read_text().splitlines()
+            )
+            return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
         all_platforms = ["cuda", "hygon", "metax", "ppu"]
@@ -100,16 +111,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
             )
 
     def test_main_unit_tests_have_one_automatic_entry_point(self):
-        ci_workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
         unit_workflow = (REPO_ROOT / ".github/workflows/unit-test.yml").read_text()
-        ci_trigger = ci_workflow[: ci_workflow.index("\njobs:")]
         unit_trigger = unit_workflow[: unit_workflow.index("\njobs:")]
 
-        self.assertIn("branches: [main, devops]", ci_trigger)
-        self.assertIn("pull_request:", ci_trigger)
-        self.assertIn("branches: [dev]", unit_trigger)
-        self.assertNotIn("pull_request:", unit_trigger)
-        self.assertNotIn("branches: [main]", unit_trigger)
+        self.assertIn("      - main", unit_trigger)
+        self.assertIn("      - devops", unit_trigger)
+        self.assertIn("  pull_request:", unit_trigger)
+        self.assertIn("  issue_comment:", unit_trigger)
+        self.assertIn("name: FlagCX CI", unit_trigger)
 
     def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
@@ -387,7 +396,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
         self.assertIn(
-            "FLAGCX_CI_PLATFORM: ${{ github.event.inputs.platform || 'all' }}",
+            "EVENT_SELECTION: ${{ inputs.platform || 'all' }}",
             unit_workflow,
         )
         self.assertNotIn("pull_request.number == 648", unit_workflow)
@@ -457,8 +466,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 REPO_ROOT / f".github/workflows/{workflow_name}"
             ).read_text()
             trigger = workflow[: workflow.index("\njobs:")]
-            self.assertIn("pull_request:", trigger)
-            self.assertIn("push:", trigger)
+            self.assertIn("workflow_call:", trigger)
             self.assertNotIn("pull_request.number != 648", workflow)
 
     def test_reference_platform_coverage_is_explicit(self):

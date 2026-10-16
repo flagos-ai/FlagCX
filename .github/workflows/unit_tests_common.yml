@@ -7,6 +7,17 @@ on:
         description: Platform configuration name
         required: true
         type: string
+      repository:
+        description: Repository containing the source under test
+        required: false
+        type: string
+      ref:
+        description: Commit under test
+        required: false
+        type: string
+
+env:
+  FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
 
 jobs:
   load_config:
@@ -23,8 +34,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
 
       - name: Load platform configuration
@@ -46,8 +57,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
           persist-credentials: false
           set-safe-directory: true
@@ -73,3 +84,13 @@ jobs:
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
         run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-unit_test-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,8 @@
+self-hosted-runner:
+  labels:
+    - cx-build
+    - hg-8g-cicd-flagcx
+    - nv-8g-cicd-flagcx
+    - mx-8g-cicd-flagcx
+    - flagcicd-810e
+    - h20

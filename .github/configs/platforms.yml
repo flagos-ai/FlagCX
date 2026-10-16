@@ -12,3 +12,39 @@ platforms:
     enabled: true
   ppu:
     enabled: true
+shared_paths_watch:
+  - .github/workflows/**
+  - .github/configs/platforms.yml
+  - .github/scripts/ci/check_adaptor_gpu_tests.py
+  - .github/scripts/ci/check_ci_results.sh
+  - .github/scripts/ci/check_platform_workflow.sh
+  - .github/scripts/ci/checkout_submodules.sh
+  - .github/scripts/ci/format.sh
+  - .github/scripts/ci/load_platform_config.rb
+  - .github/scripts/ci/load_platform_matrix.rb
+  - .github/scripts/ci/resolve_ci_matrix.rb
+  - .github/scripts/ci/rdma_static_preflight.sh
+  - .github/scripts/ci/run_hardware_container.sh
+  - .github/scripts/ci/run_hardware_workload.sh
+  - .github/scripts/ci/run_mpi_with_timeout.sh
+  - .github/scripts/ci/run_unit_test.sh
+  - .github/scripts/ci/run_with_timeout.sh
+  - .github/scripts/ci/run_host_perf_suite.sh
+  - .gitmodules
+  - Makefile
+  - make.inc
+  - makefiles/**
+  - flagcx/core/**
+  - flagcx/*.cc
+  - flagcx/*.h
+  - flagcx/adaptor/*.cc
+  - flagcx/include/**
+  - include/**
+  - bindings/**
+  - plugin/**
+  - src/**
+  - setup.py
+  - pyproject.toml
+  - test/unittest/**
+  - test/script/**
+  - test/perf/**

@@ -4,8 +4,11 @@ display_name: CUDA Tests
 
 # Only platform-specific files belong here; shared/unmatched changes run all.
 paths_watch:
+  - .github/configs/cuda.yml
   - .github/scripts/set_env/cuda.sh
   - flagcx/adaptor/device/cuda_adaptor.cc
+  - flagcx/adaptor/kernel/nvidia/**
+  - test/kernel/nvidia/**
   - flagcx/adaptor/ccl/nccl_adaptor.cc
   - flagcx/adaptor/include/nvidia_adaptor.h
   - flagcx/adaptor/include/device_api/nvidia_*.h
@@ -13,11 +16,9 @@ paths_watch:
   - flagcx/adaptor/include/device_api/nvshmem_comm_traits.h
   - flagcx/adaptor/device_api/nccl_dev_api_backend.cc
   - flagcx/adaptor/device_api/nvshmem_dev_api_backend.cc
-  - flagcx/adaptor/kernel/nvidia/*
   - flagcx/adaptor/shmem/nvshmem_*
   - flagcx/adaptor/tuner/nccl_tuner.cc
   - flagcx/adaptor/tuner/param/nccl_param.cc
-  - test/kernel/nvidia/*
   - test/kernel/include/nvshmem_adaptor_kernel.h
 
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:55c5c6f-cuda-dev

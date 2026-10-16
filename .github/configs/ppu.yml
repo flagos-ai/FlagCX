@@ -4,9 +4,11 @@ display_name: T-Head PPU Tests
 
 # Only platform-specific files belong here; shared/unmatched changes run all.
 paths_watch:
+  - .github/configs/ppu.yml
   - .github/scripts/set_env/ppu.sh
-  - flagcx/adaptor/device/ppu_cuda_adaptor.cc
+  - .github/scripts/ci/run_ppu_workload.sh
   - flagcx/adaptor/device/ptpu_adaptor.cc
+  - flagcx/adaptor/device/ppu_cuda_adaptor.cc
   - flagcx/adaptor/ccl/ppu_nccl_adaptor.cc
   - flagcx/adaptor/include/ppu_adaptor.h
   - flagcx/adaptor/include/barex_runtime.h

@@ -60,7 +60,16 @@ done
 cleanup() {
   docker rm --force "$container_name" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
+mkdir -p "$log_dir"
+summary_file=$(mktemp "$log_dir/summary.XXXXXX.md")
+finish() {
+  cleanup
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+trap finish EXIT
 
 cleanup
 docker pull "$image"
@@ -69,11 +78,16 @@ docker run --rm \
   "${docker_args[@]}" \
   --user=root \
   --volume "$project_root:/workspace-src:ro" \
+  --volume "$log_dir:/ci-logs" \
   --workdir /workspace \
   --env HOME=/tmp/flagcx-ci-home \
   --env GITHUB_WORKSPACE=/workspace \
   --env GITHUB_ACTIONS=true \
   --env CI=true \
+  --env FLAGCX_CI_TEST_TIMEOUT="${FLAGCX_CI_TEST_TIMEOUT:-20m}" \
+  --env FLAGCX_CI_MPI_TIMEOUT="${FLAGCX_CI_MPI_TIMEOUT:-20m}" \
+  --env FLAGCX_CI_LOG_DIR=/ci-logs \
+  --env GITHUB_STEP_SUMMARY="/ci-logs/$(basename "$summary_file")" \
   --env FLAGCX_CI_PLATFORM="$platform" \
   --env FLAGCX_CI_WORKLOAD="$workload" \
   --env FLAGCX_CI_SUITE="$suite" \
