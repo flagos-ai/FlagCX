@@ -74,7 +74,7 @@ def _canonical_adaptor(name):
 TORCH_BACKEND_VENDOR = "vendor"
 TORCH_BACKEND_FLAGOS = "flagos"
 VALID_TORCH_BACKENDS = (TORCH_BACKEND_VENDOR, TORCH_BACKEND_FLAGOS)
-FLAGOS_ADAPTORS = ("ascend", "enflame")
+FLAGOS_ADAPTORS = ("ascend", "enflame", "tsm")
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ def resolve_torch_backend(adaptor):
     if backend == TORCH_BACKEND_FLAGOS and adaptor not in FLAGOS_ADAPTORS:
         raise RuntimeError(
             "FLAGCX_TORCH_BACKEND=flagos currently supports only the "
-            f"ascend and enflame adaptors, not {adaptor!r}"
+            f"{', '.join(FLAGOS_ADAPTORS)} adaptors, not {adaptor!r}"
         )
 
     if backend == TORCH_BACKEND_FLAGOS:
@@ -377,17 +377,23 @@ def get_device_config(adaptor_flag, torch_backend=None):
         library_dirs += ["/opt/rocm/lib"]
         libs += ["hiprtc", "c10_hip", "torch_hip"]
     elif adaptor_flag == "-DUSE_TSM_ADAPTOR":
-        import torch_txda
-        txda_install_path = os.path.dirname(os.path.abspath(torch_txda.__file__))
-        # torch_txda ships libtorch_txda.so at the package root, not under lib/.
-        # Both are listed: the root is what resolves today, and lib/ is kept for
-        # a layout that may put it there. This is not cosmetic — library_dirs
-        # also becomes the RUNPATH stamped into flagcx._C, so a directory that
-        # does not exist leaves the installed extension searching a dead path.
-        txda_library_path = os.path.join(txda_install_path, "lib")
-        include_dirs += ["/usr/local/kuiper/include", os.path.join(txda_install_path, "include")]
-        library_dirs += ["/usr/local/kuiper/lib", txda_install_path, txda_library_path]
-        libs += ["torch_txda", "hpgr"]
+        include_dirs += ["/usr/local/kuiper/include"]
+        library_dirs += ["/usr/local/kuiper/lib"]
+        if torch_backend.name == TORCH_BACKEND_FLAGOS:
+            # Native tx_runtime symbols (txEventCreate, txStreamWaitEvent, ...)
+            # come from hpgr; the torch-fl runtime is linked on top of it.
+            libs += ["hpgr"]
+            flagos_includes, flagos_libdirs, flagos_libs = _get_flagos_config()
+            include_dirs += flagos_includes
+            library_dirs += flagos_libdirs
+            libs += flagos_libs
+        else:
+            import torch_txda
+            txda_install_path = os.path.dirname(os.path.abspath(torch_txda.__file__))
+            txda_library_path = txda_install_path
+            include_dirs += [os.path.join(txda_install_path, "include")]
+            library_dirs += [txda_library_path]
+            libs += ["torch_txda", "hpgr"]
     elif adaptor_flag == "-DUSE_ENFLAME_ADAPTOR":
         include_dirs += ["/opt/tops/include"]
         library_dirs += ["/opt/tops/lib"]

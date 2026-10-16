@@ -50,7 +50,7 @@ class TorchBackendConfigTest(unittest.TestCase):
 
     def test_flagos_support_matrix(self):
         with self.clean_environment(FLAGCX_TORCH_BACKEND="flagos"):
-            for adaptor in ("ascend", "enflame"):
+            for adaptor in ("ascend", "enflame", "tsm"):
                 backend = build_config.resolve_torch_backend(adaptor)
                 self.assertEqual(backend.name, "flagos")
                 self.assertEqual(backend.python_package, "torch_fl")
@@ -73,10 +73,16 @@ class TorchBackendConfigTest(unittest.TestCase):
         torch_npu.__file__ = "/opt/torch_npu/torch_npu/__init__.py"
         torch_gcu = types.ModuleType("torch_gcu")
         torch_gcu.__file__ = "/opt/torch_gcu/torch_gcu/__init__.py"
+        torch_txda = types.ModuleType("torch_txda")
+        torch_txda.__file__ = "/opt/torch_txda/torch_txda/__init__.py"
 
         with self.clean_environment(), mock.patch.dict(
             sys.modules,
-            {"torch_npu": torch_npu, "torch_gcu": torch_gcu},
+            {
+                "torch_npu": torch_npu,
+                "torch_gcu": torch_gcu,
+                "torch_txda": torch_txda,
+            },
         ):
             ascend_backend = build_config.resolve_torch_backend("ascend")
             ascend = build_config.get_device_config(
@@ -85,6 +91,10 @@ class TorchBackendConfigTest(unittest.TestCase):
             enflame_backend = build_config.resolve_torch_backend("enflame")
             enflame = build_config.get_device_config(
                 build_config.ADAPTOR_MAP["enflame"], enflame_backend
+            )
+            tsm_backend = build_config.resolve_torch_backend("tsm")
+            tsm = build_config.get_device_config(
+                build_config.ADAPTOR_MAP["tsm"], tsm_backend
             )
 
         self.assertEqual(ascend[0], ["/opt/torch_npu/torch_npu/include"])
@@ -98,8 +108,17 @@ class TorchBackendConfigTest(unittest.TestCase):
                 ["topsrt", "torch_gcu"],
             ),
         )
+        self.assertEqual(
+            tsm,
+            (
+                ["/usr/local/kuiper/include", "/opt/torch_txda/torch_txda/include"],
+                ["/usr/local/kuiper/lib", "/opt/torch_txda/torch_txda/lib"],
+                ["torch_txda", "hpgr"],
+            ),
+        )
         self.assertNotIn("flagos", ascend[2])
         self.assertNotIn("flagos", enflame[2])
+        self.assertNotIn("flagos", tsm[2])
 
     def test_flagos_device_configs_do_not_load_vendor_packages(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -124,6 +143,10 @@ class TorchBackendConfigTest(unittest.TestCase):
                 enflame = build_config.get_device_config(
                     build_config.ADAPTOR_MAP["enflame"], enflame_backend
                 )
+                tsm_backend = build_config.resolve_torch_backend("tsm")
+                tsm = build_config.get_device_config(
+                    build_config.ADAPTOR_MAP["tsm"], tsm_backend
+                )
 
         self.assertEqual(
             ascend,
@@ -141,8 +164,17 @@ class TorchBackendConfigTest(unittest.TestCase):
                 ["topsrt", "flagos"],
             ),
         )
+        self.assertEqual(
+            tsm,
+            (
+                ["/usr/local/kuiper/include", str(include_dir)],
+                ["/usr/local/kuiper/lib", str(library_dir)],
+                ["hpgr", "flagos"],
+            ),
+        )
         self.assertNotIn("torch_npu", sys.modules)
         self.assertNotIn("torch_gcu", sys.modules)
+        self.assertNotIn("torch_txda", sys.modules)
 
     def test_rpaths_preserve_flagos_library_directory(self):
         paths = ["/opt/device/lib", "/opt/flagos/lib"]

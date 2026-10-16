@@ -212,7 +212,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_DEVICE_ADAPTOR_PLUGIN` | None | Path to device adaptor plugin shared library |
 | `FLAGCX_NET_ADAPTOR_PLUGIN` | None | Path to network adaptor plugin shared library |
 | `FLAGCX_CCL_ADAPTOR_PLUGIN` | None | Path to CCL adaptor plugin shared library |
-| `FLAGCX_TORCH_BACKEND` | `vendor` | Torch plugin backend. `vendor` uses the adaptor's native Torch package; `flagos` uses torch-fl and currently supports only Ascend and Enflame |
+| `FLAGCX_TORCH_BACKEND` | `vendor` | Torch plugin backend. `vendor` uses the adaptor's native Torch package; `flagos` uses torch-fl and currently supports only Ascend, Enflame and TsingMicro |
 | `FLAGOS_INSTALL_PATH` | None | torch-fl package root containing `include/flagos.h` and `lib/libflagos.so` for `FLAGCX_TORCH_BACKEND=flagos` builds |
 | `FLAGOS_INCLUDE_DIR` | None | Explicit directory containing `flagos.h`; overrides the include path derived from `FLAGOS_INSTALL_PATH` |
 | `FLAGOS_LIBRARY_DIR` | None | Explicit directory containing `libflagos.so`; overrides the library path derived from `FLAGOS_INSTALL_PATH` |
@@ -225,6 +225,7 @@ The Torch plugin supports the following backend matrix:
 |---------|----------|----------|
 | `ascend` | `torch_npu`, device type `npu` | `torch_fl`, device type `flagos` |
 | `enflame` | `torch_gcu`, device type `gcu` | `torch_fl`, device type `flagos` |
+| `tsm` | `torch_txda`, device type `txda` | `torch_fl`, device type `flagos` |
 
 The default `vendor` mode preserves the existing Torch integration. Select the
 same backend when building and running the plugin. For example:
@@ -255,7 +256,8 @@ FLAGCX_TORCH_BACKEND=flagos torchrun --nproc_per_node=2 \
   plugin/torch/tests/distributed_smoke.py --adaptor ascend
 ```
 
-Replace `ascend` with `enflame` to test GCU hardware.
+Replace `ascend` with `enflame` to test GCU hardware, or with `tsm` to test
+TsingMicro hardware.
 
 ---
 

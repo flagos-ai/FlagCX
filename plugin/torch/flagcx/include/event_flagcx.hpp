@@ -12,8 +12,10 @@
 #include <acl/acl.h>
 #elif defined(USE_ENFLAME_ADAPTOR)
 #include <tops/tops_runtime_api.h>
+#elif defined(USE_TSM_ADAPTOR)
+#include <tx_runtime.h>
 #else
-#error "The FlagOS torch backend supports only Ascend and Enflame"
+#error "The FlagOS torch backend supports only Ascend, Enflame and TsingMicro"
 #endif
 #include <flagos.h>
 #elif USE_NVIDIA_ADAPTOR
@@ -454,6 +456,50 @@ private:
 #elif USE_TSM_ADAPTOR
 class flagcxTxdaEvent : public flagcxEvent {
 public:
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+  // The FlagOS runtime exposes a device stream but no event type, so the event
+  // is driven through the native TSM runtime, like the Ascend and Enflame
+  // FlagOS paths.
+  flagcxTxdaEvent() {
+    TORCH_CHECK(txEventCreate(&event_) == TX_SUCCESS, "txEventCreate failed");
+  }
+
+  ~flagcxTxdaEvent() override {
+    if (event_ != nullptr) {
+      txEventDestroy(event_);
+    }
+  }
+
+  void record(const int deviceId) override {
+    TORCH_CHECK(
+        txEventRecord(event_, reinterpret_cast<txStream_t>(
+                                  GetCurrentStreamForDevice(deviceId))) ==
+            TX_SUCCESS,
+        "txEventRecord failed");
+  }
+
+  void record(const flagcxStream_t &stream, const int /*deviceId*/) override {
+    TORCH_CHECK(txEventRecord(event_, *reinterpret_cast<txStream_t *>(stream)) ==
+                    TX_SUCCESS,
+                "txEventRecord failed");
+  }
+
+  void block(const int deviceId) override {
+    TORCH_CHECK(txStreamWaitEvent(reinterpret_cast<txStream_t>(
+                                      GetCurrentStreamForDevice(deviceId)),
+                                  event_) == TX_SUCCESS,
+                "txStreamWaitEvent failed");
+  }
+
+  void block(const flagcxStream_t &stream, const int /*deviceId*/) override {
+    TORCH_CHECK(txStreamWaitEvent(*reinterpret_cast<txStream_t *>(stream),
+                                  event_) == TX_SUCCESS,
+                "txStreamWaitEvent failed");
+  }
+
+private:
+  txEvent_t event_ = nullptr;
+#else
   flagcxTxdaEvent() { txda_event = torch_txda::TXDAEvent(); }
 
   void record(const int device_id) override {
@@ -476,6 +522,7 @@ public:
 
 private:
   torch_txda::TXDAEvent txda_event;
+#endif
 };
 #elif USE_ENFLAME_ADAPTOR
 class flagcxTopsEvent : public flagcxEvent {

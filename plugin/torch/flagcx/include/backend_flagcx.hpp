@@ -272,7 +272,11 @@ public:
 #elif USE_KUNLUNXIN_ADAPTOR
     devName = "cuda";
 #elif USE_TSM_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    devName = "flagos";
+#else
     devName = "txda";
+#endif
 #elif USE_ENFLAME_ADAPTOR
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
     devName = "flagos";

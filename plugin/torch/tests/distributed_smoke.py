@@ -15,6 +15,7 @@ import torch.distributed as dist
 VENDOR_PACKAGES = {
     "ascend": ("torch_npu", "npu"),
     "enflame": ("torch_gcu", "gcu"),
+    "tsm": ("torch_txda", "txda"),
 }
 
 

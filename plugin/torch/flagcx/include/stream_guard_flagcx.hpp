@@ -8,8 +8,9 @@
 #include "flagcx.h"
 
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
-#if !defined(USE_ASCEND_ADAPTOR) && !defined(USE_ENFLAME_ADAPTOR)
-#error "The FlagOS torch backend supports only Ascend and Enflame"
+#if !defined(USE_ASCEND_ADAPTOR) && !defined(USE_ENFLAME_ADAPTOR) &&           \
+    !defined(USE_TSM_ADAPTOR)
+#error "The FlagOS torch backend supports only Ascend, Enflame and TsingMicro"
 #endif
 #include <flagos.h>
 #elif USE_NVIDIA_ADAPTOR
