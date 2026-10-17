@@ -2,7 +2,6 @@ import os
 import sys
 import subprocess
 import shutil
-import glob
 import multiprocessing
 
 # Disable auto load flagcx when setup
@@ -117,7 +116,25 @@ if BuildExtension is not None:
                 )
 
             # -- Step 1: Build libflagcx.so via make --
+            bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
+            if bitcode_arch and adaptor not in ("nvidia", "du"):
+                raise RuntimeError(
+                    "FLAGCX_BITCODE_ARCH is set but this build is for the "
+                    f"{adaptor} adaptor; device bitcode supports nvidia and du"
+                )
+            du_bitcode = bool(bitcode_arch) and adaptor == "du"
+            requested_kernel_mode = os.environ.get("COMPILE_KERNEL", "")
+            if du_bitcode and requested_kernel_mode not in ("", "1"):
+                raise RuntimeError(
+                    "DU bitcode requires COMPILE_KERNEL=1 so libflagcx.so "
+                    "creates device net contexts"
+                )
+
+            # Keep DU bitcode wheels separate from ordinary builds, whose
+            # existing objects may have been compiled with COMPILE_KERNEL=0.
             build_dir = os.path.join(ROOT_DIR, "build")
+            if du_bitcode:
+                build_dir = os.path.join(build_dir, "du-bitcode")
             lib_dir = os.path.join(build_dir, "lib")
 
             make_args = [
@@ -130,12 +147,14 @@ if BuildExtension is not None:
             env_to_make = [
                 "DEVICE_HOME", "CCL_HOME", "HOST_CCL_HOME", "MPI_HOME", "UCX_HOME",
                 "USE_GLOO", "USE_BOOTSTRAP", "USE_MPI", "USE_UCX", "USE_IBUC",
-                "COMPILE_KERNEL",
             ]
             for var in env_to_make:
                 val = os.environ.get(var, "")
                 if val:
                     make_args.append(f"{var}={val}")
+            kernel_mode = "1" if du_bitcode else requested_kernel_mode
+            if kernel_mode:
+                make_args.append(f"COMPILE_KERNEL={kernel_mode}")
 
             nproc = str(multiprocessing.cpu_count())
             make_cmd = ["make", "-C", ROOT_DIR, "-j", nproc] + make_args
@@ -146,49 +165,50 @@ if BuildExtension is not None:
 
             # -- Step 1b: Build the device bitcode (opt-in) --
             # A kernel consumer of the Device API links this bitcode through
-            # `extern_libs`, and it comes from a second make: bindings/ir/nvidia
-            # is not part of the root Makefile, because it produces clang's IR
+            # `extern_libs`, and it comes from a second make in bindings/ir.
+            # That make is not part of the root Makefile: it produces clang IR
             # rather than the library's objects. It shares BUILDDIR with the
             # make above, so build/lib and build/include end up as the one tree
             # Step 4 copies out of.
             #
-            # Opt-in because it needs a clang that targets CUDA, which an
+            # Opt-in because it needs a clang that targets the selected GPU, which an
             # ordinary build environment has neither reason nor way to carry.
             # FLAGCX_BITCODE_ARCH names the architecture to compile at; with it
             # unset nothing here runs.
-            bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
             bitcode_bc = ""
             if bitcode_arch:
-                if adaptor != "nvidia":
-                    raise RuntimeError(
-                        "FLAGCX_BITCODE_ARCH is set but this build is for the "
-                        f"{adaptor} adaptor, and the device bitcode has an "
-                        "nvidia implementation only"
-                    )
-                # The comm-traits branch is a property of the library: the
-                # nvidia makefile picks it from the NCCL headers it finds. The
-                # bitcode's own Makefile never reads that file, so the branch
-                # reaches it only as a value — and without one it would compile
-                # against its default backend while the library shipped beside
-                # it talks to another.
                 bitcode_adaptor_flags = os.environ.get(
                     "FLAGCX_BITCODE_ADAPTOR_FLAGS", ""
                 )
-                if not bitcode_adaptor_flags:
-                    raise RuntimeError(
-                        "FLAGCX_BITCODE_ARCH is set but "
-                        "FLAGCX_BITCODE_ADAPTOR_FLAGS is empty, so the bitcode "
-                        "would be compiled for the wrong device API backend"
-                    )
+                if adaptor == "nvidia":
+                    # The library's NCCL/default backend choice depends on
+                    # its NCCL headers; pass that exact choice to the BC make.
+                    if not bitcode_adaptor_flags:
+                        raise RuntimeError(
+                            "FLAGCX_BITCODE_ARCH is set but "
+                            "FLAGCX_BITCODE_ADAPTOR_FLAGS is empty, so the "
+                            "bitcode would use the wrong device API backend"
+                        )
+                    bitcode_dir = "nvidia"
+                else:
+                    # DU has one Device API backend and one HIP platform path.
+                    du_flags = "-DUSE_DU_ADAPTOR -D__HIP_PLATFORM_AMD__"
+                    if bitcode_adaptor_flags and bitcode_adaptor_flags != du_flags:
+                        raise RuntimeError(
+                            "DU bitcode requires FLAGCX_BITCODE_ADAPTOR_FLAGS="
+                            f"'{du_flags}'"
+                        )
+                    bitcode_adaptor_flags = du_flags
+                    bitcode_dir = "du"
                 bitcode_cmd = [
-                    "make", "-C", os.path.join(ROOT_DIR, "bindings", "ir", "nvidia"),
+                    "make", "-C", os.path.join(ROOT_DIR, "bindings", "ir", bitcode_dir),
                     f"BUILDDIR={build_dir}",
                     f"BITCODE_LIB_ARCH={bitcode_arch}",
                     f"ADAPTOR_FLAG={bitcode_adaptor_flags}",
-                    # NCCL's device headers use `typeof`, which clang refuses
-                    # under -std=c++17, the Makefile's default.
-                    "BITCODE_CXX_STD=gnu++17",
                 ]
+                if adaptor == "nvidia":
+                    # NCCL device headers use `typeof` under clang.
+                    bitcode_cmd.append("BITCODE_CXX_STD=gnu++17")
                 for var in ("DEVICE_HOME", "CCL_HOME"):
                     val = os.environ.get(var, "")
                     if val:
@@ -233,20 +253,28 @@ if BuildExtension is not None:
             # that ships or a file that imports, never both.
             #
             # All of it is data rather than an entry point, so nothing at import
-            # time notices any of it is missing. The headers are the six the
-            # root make's `all` target exports plus the wrapper the bitcode make
-            # writes beside them.
+            # time notices any of it is missing. Use the bitcode build's header
+            # manifest so stale files from another backend cannot enter a wheel.
             payload = [src_so]
             headers = []
             if bitcode_bc:
                 payload.append(bitcode_bc)
-                headers = sorted(
-                    glob.glob(os.path.join(build_dir, "include", "*.h"))
-                )
-                if not headers:
+                header_dir = os.path.join(build_dir, "include")
+                manifest = os.path.join(header_dir, ".flagcx_device_headers")
+                if not os.path.isfile(manifest):
                     raise RuntimeError(
-                        f"{build_dir}/include is empty: the headers a bitcode "
-                        "consumer compiles against did not get exported"
+                        f"device bitcode header manifest is missing: {manifest}"
+                    )
+                with open(manifest, encoding="utf-8") as file:
+                    header_names = [line.strip() for line in file if line.strip()]
+                if not header_names:
+                    raise RuntimeError(f"device bitcode header manifest is empty: {manifest}")
+                headers = [os.path.join(header_dir, name) for name in header_names]
+                missing_headers = [path for path in headers if not os.path.isfile(path)]
+                if missing_headers:
+                    raise RuntimeError(
+                        "device bitcode headers are missing: "
+                        + ", ".join(missing_headers)
                     )
 
             for base in (self.build_lib, os.path.join(ROOT_DIR, "src")):
@@ -261,6 +289,17 @@ if BuildExtension is not None:
                 if headers:
                     dst_inc = os.path.join(base, "flagcx", "include")
                     os.makedirs(dst_inc, exist_ok=True)
+                    selected_names = {os.path.basename(path) for path in headers}
+                    # Both destinations are generated package payloads. Clear
+                    # headers left by an earlier build for another backend.
+                    for name in os.listdir(dst_inc):
+                        existing = os.path.join(dst_inc, name)
+                        if (
+                            name.endswith(".h")
+                            and name not in selected_names
+                            and os.path.isfile(existing)
+                        ):
+                            os.remove(existing)
                     for path in headers:
                         print(f"[flagcx] Copying {path} -> {dst_inc}")
                         shutil.copy2(path, dst_inc)

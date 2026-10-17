@@ -25,8 +25,9 @@ the flag and pip installs it for you.
 **Device bitcode and headers (optional):**
 
 A wheel that will be an input to a Device API kernel build also carries the device bitcode and the
-headers a consumer compiles against. Both are opt-in, because building the bitcode needs a clang
-that targets CUDA:
+headers a consumer compiles against. Both are opt-in because building bitcode needs a
+compiler and LLVM tools for the target GPU. CUDA and Hygon are supported; see
+[Device API bitcode](device_api_bitcode.md) for both build commands. For CUDA:
 
 ```shell
 FLAGCX_BITCODE_ARCH=sm_90 \
