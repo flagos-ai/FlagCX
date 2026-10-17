@@ -536,6 +536,14 @@ TEST_F(DeviceAdaptorTest, StreamWaitWriteValue64) {
   EXPECT_EQ(
       deviceAdaptor->streamWaitValue64(stream, deviceValue, expected, 1 << 30),
       flagcxInvalidArgument);
+  if (strcmp(deviceAdaptor->name, "CUDA") == 0) {
+    // CUDA requires an eight-byte-aligned wait address. A bad address is an
+    // operation error, not a missing stream-wait capability.
+    EXPECT_EQ(deviceAdaptor->streamWaitValue64(
+                  stream, static_cast<char *>(deviceValue) + 1, expected,
+                  FLAGCX_STREAM_WAIT_VALUE_DEFAULT),
+              flagcxUnhandledDeviceError);
+  }
 
   uint64_t actual = 0;
   EXPECT_EQ(devHandle->deviceMemcpy(&actual, deviceValue, sizeof(actual),

@@ -51,10 +51,15 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
   // ---- Window: Symmetric (VMM) or Asymmetric (IPC) ----
   enum WindowMode { SYMMETRIC = 0, ASYMMETRIC = 1 };
+  struct SymPeerLayout {
+    size_t userOffset;
+    size_t userSize;
+  };
   struct Window {
-    WindowMode mode;    // SYMMETRIC (VMM) or ASYMMETRIC (IPC)
-    void *flatBasePtr;  // Flat VA base (SYMMETRIC mode, nullable)
-    size_t allocSize;   // Per-rank allocation size (SYMMETRIC mode)
+    WindowMode mode;   // SYMMETRIC (VMM) or ASYMMETRIC (IPC)
+    void *flatBasePtr; // Flat VA base (SYMMETRIC mode, nullable)
+    size_t allocSize;  // Per-rank allocation size (SYMMETRIC mode)
+    FLAGCX_DEVICE_GLOBAL_PTR const SymPeerLayout *symPeerLayouts;
     void *mcBasePtr;    // Multicast base (nullable, SYMMETRIC mode only)
     void **ipcBasePtrs; // IPC peer pointers (ASYMMETRIC mode, nullable)
     int intraRank;      // Local rank index
@@ -63,10 +68,22 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int mrIndex;        // MR table index (-1 if none)
     void *rawPtr;       // Raw pointer fallback (for getLocalPointer)
 
+    FLAGCX_DEVICE_INLINE_DECORATOR void *getSegmentedPointer(size_t offset,
+                                                             int index) const {
+      if (index < 0 || index >= intraSize)
+        return nullptr;
+      if (offset >= symPeerLayouts[index].userSize)
+        return nullptr;
+      return (char *)flatBasePtr + (size_t)index * allocSize +
+             symPeerLayouts[index].userOffset + offset;
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &team, int peer) const {
       if (mode == SYMMETRIC && flatBasePtr) {
         int index = team.rank + (peer - team.rank) * team.stride;
+        if (symPeerLayouts)
+          return getSegmentedPointer(offset, index);
         return (char *)flatBasePtr + (size_t)index * allocSize + offset;
       } else if (ipcBasePtrs) {
         int index = intraRank + (peer - team.rank) * team.stride;
@@ -94,20 +111,24 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *getLocalPointer(size_t offset) const {
-      if (mode == SYMMETRIC && flatBasePtr)
+      if (mode == SYMMETRIC && flatBasePtr) {
+        if (symPeerLayouts)
+          return getSegmentedPointer(offset, intraRank);
         return (char *)flatBasePtr + (size_t)intraRank * allocSize + offset;
-      else if (ipcBasePtrs && intraRank >= 0 && intraRank < intraSize &&
-               ipcBasePtrs[intraRank])
+      } else if (ipcBasePtrs && intraRank >= 0 && intraRank < intraSize &&
+                 ipcBasePtrs[intraRank])
         return (char *)ipcBasePtrs[intraRank] + offset;
       return (char *)rawPtr + offset;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
-      if (mode == SYMMETRIC && flatBasePtr)
+      if (mode == SYMMETRIC && flatBasePtr) {
+        if (symPeerLayouts)
+          return getSegmentedPointer(offset, peer);
         return (char *)flatBasePtr + (size_t)peer * allocSize + offset;
-      else if (ipcBasePtrs && peer >= 0 && peer < intraSize &&
-               ipcBasePtrs[peer])
+      } else if (ipcBasePtrs && peer >= 0 && peer < intraSize &&
+                 ipcBasePtrs[peer])
         return (char *)ipcBasePtrs[peer] + offset;
       return nullptr;
     }
@@ -169,13 +190,15 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       if (d && d->hasFlatMapping && d->flatBase) {
         mode = SYMMETRIC;
         flatBasePtr = d->flatBase;
-        allocSize = d->allocSize;
+        allocSize = d->rankLayouts != nullptr ? d->slotStride : d->allocSize;
+        symPeerLayouts = nullptr;
         mcBasePtr = d->mcBase;
         ipcBasePtrs = nullptr;
       } else {
         mode = ASYMMETRIC;
         flatBasePtr = nullptr;
         allocSize = 0;
+        symPeerLayouts = nullptr;
         mcBasePtr = nullptr;
         ipcBasePtrs = (ipcIndex_ >= 0) ? ipcDevPeerPtrs_ : nullptr;
       }

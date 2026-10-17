@@ -30,6 +30,32 @@ bool envEnabled(const char *name) {
   return value != nullptr && std::strcmp(value, "0") != 0;
 }
 
+flagcxResult_t (*savedLsaMulticastBind)(void *, size_t, const void *,
+                                        size_t) = nullptr;
+bool failThisLocalRankLsaMulticastBind = false;
+flagcxResult_t (*savedLsaMulticastUnbind)(void *, size_t, size_t) = nullptr;
+bool failThisLocalRankLsaMulticastUnbind = false;
+
+flagcxResult_t failLsaMulticastBindOnLocalRankZero(void *handle, size_t offset,
+                                                   const void *source,
+                                                   size_t size) {
+  if (failThisLocalRankLsaMulticastBind)
+    return flagcxUnhandledDeviceError;
+  return savedLsaMulticastBind != nullptr
+             ? savedLsaMulticastBind(handle, offset, source, size)
+             : flagcxInternalError;
+}
+
+flagcxResult_t failLsaMulticastUnbindOnLocalRankZero(void *handle,
+                                                     size_t offset,
+                                                     size_t size) {
+  if (failThisLocalRankLsaMulticastUnbind)
+    return flagcxUnhandledDeviceError;
+  return savedLsaMulticastUnbind != nullptr
+             ? savedLsaMulticastUnbind(handle, offset, size)
+             : flagcxInternalError;
+}
+
 ::testing::AssertionResult vmmMrRouteMatches(uint8_t actual) {
   const char *expected = std::getenv("FLAGCX_CI_EXPECT_VMM_MR_ROUTE");
   if (expected == nullptr || expected[0] == '\0') {
@@ -198,7 +224,6 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   int localRank = comm->heteroComm->localRank;
   int localRanks = d->localRanks;
-  size_t allocSize = d->allocSize;
 
   // Each rank fills its own region with (localRank + 1) as a float pattern
   float fillValue = (float)(localRank + 1);
@@ -212,7 +237,12 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
 
   // Read from the next peer's region in the flat VA
   int peerLocalRank = (localRank + 1) % localRanks;
-  void *peerRegion = (char *)d->flatBase + (size_t)peerLocalRank * allocSize;
+  void *peerRegion = nullptr;
+  ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(
+                comm->heteroComm, d,
+                comm->heteroComm->localRankToRank[peerLocalRank], 0, size,
+                &peerRegion),
+            flagcxSuccess);
 
   // Stage through local device memory: peer VMM -> devBuff2 -> host
   std::vector<float> readBack(count, 0.0f);
@@ -275,7 +305,6 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
 
   int localRank = comm->heteroComm->localRank;
   int localRanks = d->localRanks;
-  size_t allocSize = d->allocSize;
 
   // Zero out own region first
   flagcxResult_t setupResult =
@@ -289,8 +318,12 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   // Use devBuff2 as staging: host -> local device -> peer VMM region.
   // Direct host-to-peer-VMM may not work with cudaMemcpyHostToDevice.
   int targetLocalRank = (localRank + 1) % localRanks;
-  void *targetRegion =
-      (char *)d->flatBase + (size_t)targetLocalRank * allocSize;
+  void *targetRegion = nullptr;
+  ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(
+                comm->heteroComm, d,
+                comm->heteroComm->localRankToRank[targetLocalRank], 0, size,
+                &targetRegion),
+            flagcxSuccess);
 
   float writeValue = (float)(localRank + 100);
   std::vector<float> pattern(count, writeValue);
@@ -474,14 +507,115 @@ TEST_F(SymMemTest, MulticastMappingWhenSupported) {
   bool supportedEverywhere = allRanksReady(localSupported != 0);
   if (!supportedEverywhere) {
     EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+    if (envEnabled("FLAGCX_CI_REQUIRE_MULTICAST"))
+      FAIL() << "multicast capability was required but unavailable";
     GTEST_SKIP() << "multicast capability is not present on every rank";
   }
 
-  bool mappingReady = allRanksReady(win->defaultBase->mcBase != nullptr &&
-                                    win->defaultBase->mcMapSize > 0);
+  bool mappingReady = allRanksReady(
+      win->defaultBase->resourcePath == flagcxSymResourceLsa &&
+      win->defaultBase->mcBase != nullptr && win->defaultBase->mcLsaBound);
   if (!mappingReady) {
     EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+    if (envEnabled("FLAGCX_CI_REQUIRE_MULTICAST"))
+      FAIL() << "multicast LSA binding was required but unavailable";
     GTEST_SKIP() << "multicast is unsupported by this device topology";
   }
+  EXPECT_EQ(win->defaultBase->mcHandle, nullptr);
   EXPECT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+}
+
+TEST_F(SymMemTest, LsaMulticastOffsetsReuseAndBindFailureFallsBack) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_VMM"))
+    GTEST_SKIP() << "requires VMM LSA";
+  flagcxWindow_t first = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, devBuff, size, &first, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(first, nullptr);
+  if (!allRanksReady(first->defaultBase->mcLsaBound)) {
+    ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, first)));
+    if (envEnabled("FLAGCX_CI_REQUIRE_MULTICAST"))
+      FAIL() << "multicast LSA binding was required but unavailable";
+    GTEST_SKIP() << "communicator multicast arena is unavailable";
+  }
+
+  flagcxWindow_t second = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, devBuff2, size, &second, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(second, nullptr);
+  ASSERT_TRUE(allRanksReady(second->defaultBase->mcLsaBound));
+  const size_t firstOffset = first->defaultBase->lsaWindowOffset;
+  const uintptr_t firstMc =
+      reinterpret_cast<uintptr_t>(first->defaultBase->mcBase);
+  const uintptr_t secondMc =
+      reinterpret_cast<uintptr_t>(second->defaultBase->mcBase);
+  EXPECT_NE(firstOffset, second->defaultBase->lsaWindowOffset);
+  EXPECT_EQ(firstMc - firstOffset -
+                first->defaultBase->rankLayouts[comm->heteroComm->localRank]
+                    .userOffset,
+            secondMc - second->defaultBase->lsaWindowOffset -
+                second->defaultBase->rankLayouts[comm->heteroComm->localRank]
+                    .userOffset);
+
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, first)));
+  first = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, devBuff, size, &first, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(first, nullptr);
+  ASSERT_TRUE(allRanksReady(first->defaultBase->mcLsaBound));
+  EXPECT_EQ(first->defaultBase->lsaWindowOffset, firstOffset);
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(first->defaultBase->mcBase), firstMc);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, first)));
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, second)));
+
+  ASSERT_NE(deviceAdaptor->symLsaMulticastBind, nullptr);
+  savedLsaMulticastBind = deviceAdaptor->symLsaMulticastBind;
+  failThisLocalRankLsaMulticastBind = comm->heteroComm->localRank == 0;
+  deviceAdaptor->symLsaMulticastBind = failLsaMulticastBindOnLocalRankZero;
+  flagcxWindow_t fallback = nullptr;
+  flagcxResult_t result = flagcxCommWindowRegister(
+      comm, devBuff, size, &fallback, FLAGCX_WIN_COLL_SYMMETRIC);
+  deviceAdaptor->symLsaMulticastBind = savedLsaMulticastBind;
+  savedLsaMulticastBind = nullptr;
+  failThisLocalRankLsaMulticastBind = false;
+  ASSERT_TRUE(allRanksSucceeded(result));
+  ASSERT_NE(fallback, nullptr);
+  EXPECT_EQ(fallback->defaultBase->resourcePath, flagcxSymResourceLsa);
+  EXPECT_TRUE(fallback->defaultBase->hasFlatMapping);
+  EXPECT_FALSE(fallback->defaultBase->mcLsaBound);
+  EXPECT_EQ(fallback->defaultBase->mcBase, nullptr);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, fallback)));
+}
+
+TEST_F(SymMemTest, LsaMulticastUnbindFailureRetainsWindowForRetry) {
+  if (!envEnabled("FLAGCX_CI_REQUIRE_VMM"))
+    GTEST_SKIP() << "requires VMM LSA";
+  flagcxWindow_t window = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      comm, devBuff, size, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
+  ASSERT_NE(window, nullptr);
+  if (!allRanksReady(window->defaultBase->mcLsaBound)) {
+    ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+    if (envEnabled("FLAGCX_CI_REQUIRE_MULTICAST"))
+      FAIL() << "multicast LSA binding was required but unavailable";
+    GTEST_SKIP() << "communicator multicast arena is unavailable";
+  }
+
+  ASSERT_NE(deviceAdaptor->symLsaMulticastUnbind, nullptr);
+  savedLsaMulticastUnbind = deviceAdaptor->symLsaMulticastUnbind;
+  failThisLocalRankLsaMulticastUnbind = comm->heteroComm->localRank == 0;
+  deviceAdaptor->symLsaMulticastUnbind = failLsaMulticastUnbindOnLocalRankZero;
+  flagcxResult_t result = flagcxCommWindowDeregister(comm, window);
+  deviceAdaptor->symLsaMulticastUnbind = savedLsaMulticastUnbind;
+  savedLsaMulticastUnbind = nullptr;
+  failThisLocalRankLsaMulticastUnbind = false;
+
+  int local = static_cast<int>(result);
+  int minimum = 0;
+  int maximum = 0;
+  MPI_Allreduce(&local, &minimum, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  MPI_Allreduce(&local, &maximum, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  EXPECT_EQ(minimum, maximum);
+  EXPECT_NE(result, flagcxSuccess);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
 }

@@ -149,6 +149,7 @@ struct flagcxDevCommInternal {
   void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
+  struct flagcxDevCommInternal *deferredNext; // Host-only deferred-free link
 };
 
 // The first nRanks slots preserve the existing host-RMA PutValue layout
@@ -238,10 +239,12 @@ struct flagcxDevMemInternal {
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
                    // (fallback)
   void *winHandle; // Host-side handle for cleanup
+  void *segmentedPeerLayouts; // Device array owned by default Device API
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
+  struct flagcxDevMemInternal *deferredNext; // Host-only deferred-free link
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED

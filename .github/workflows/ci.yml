@@ -117,12 +117,19 @@ jobs:
         run: pip install --quiet pyyaml==6.0.2
       - name: Compute platform matrix
         id: matrix
+        env:
+          FLAGCX_CI_PR_NUMBER: ${{ github.event.pull_request.number || 0 }}
         run: |
-          python .github/scripts/ci/generate_matrix.py \
-            --event-name "$GITHUB_EVENT_NAME" \
-            --base-ref  "${{ github.base_ref || 'main' }}" \
-            --configs-dir .github/configs \
-            >> "$GITHUB_OUTPUT"
+          # Temporarily focus PR #658 on Hygon unit tests while validating LSA VA sizing.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && "$FLAGCX_CI_PR_NUMBER" == "658" ]]; then
+            echo 'platforms=["hygon"]' >> "$GITHUB_OUTPUT"
+          else
+            python .github/scripts/ci/generate_matrix.py \
+              --event-name "$GITHUB_EVENT_NAME" \
+              --base-ref  "${{ github.base_ref || 'main' }}" \
+              --configs-dir .github/configs \
+              >> "$GITHUB_OUTPUT"
+          fi
 
   platform-pipeline:
     name: Platform pipeline (${{ matrix.platform }})

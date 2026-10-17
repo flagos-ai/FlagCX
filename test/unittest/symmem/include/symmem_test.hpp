@@ -1,7 +1,6 @@
 #pragma once
 
 #include "flagcx.h"
-#include "flagcx_kernel.h"
 #include "flagcx_test.hpp"
 
 // Buffer size for symmetric memory tests (1 MB)

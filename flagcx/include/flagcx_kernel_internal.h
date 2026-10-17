@@ -95,9 +95,7 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot);
 // Drain deferred IPC entries queued by releaseIpcTableSlot.
 flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
 
-// Deferred device/host-pinned memory free.
-// Collects pointers during DevComm/DevMem cleanup.
-void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
+// Drain cached device allocations retained by retired DevComm/DevMem owners.
 flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm);
 
 // Drain deferred DevComm buffer queue (localBarrierFlags, epoch, signal, etc.).

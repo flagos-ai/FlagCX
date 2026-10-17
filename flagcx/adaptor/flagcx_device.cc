@@ -135,6 +135,10 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
   if (devComm == nullptr) {
     return flagcxSuccess;
   }
+  if (comm == nullptr &&
+      (devComm->cachedNetContextsPtr || devComm->cachedDevicePtr ||
+       devComm->cachedGridBarrierPtr))
+    return flagcxInvalidArgument;
 
   // Stop the proxy from acquiring a new reference while the backend tears
   // down fields reachable through DevComm. Restore publication on failure so
@@ -151,16 +155,16 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
     return result;
   }
 
-  // Free cached device pointers (thin-layer responsibility)
-  if (devComm->cachedNetContextsPtr) {
-    flagcxCommDeferFree(comm, devComm->cachedNetContextsPtr, flagcxMemDevice);
+  if (devComm->cachedNetContextsPtr || devComm->cachedDevicePtr ||
+      devComm->cachedGridBarrierPtr) {
+    // Keep the owner as the queue node. No allocation or device free occurs
+    // while work may still be using cached device state.
+    devComm->deferredNext = comm->deferredDevComms;
+    comm->deferredDevComms = devComm;
+  } else {
+    pthread_mutex_destroy(&devComm->cachedPtrMutex);
+    free(devComm);
   }
-  if (devComm->cachedDevicePtr) {
-    flagcxCommDeferFree(comm, devComm->cachedDevicePtr, flagcxMemDevice);
-  }
-
-  pthread_mutex_destroy(&devComm->cachedPtrMutex);
-  free(devComm);
   return flagcxSuccess;
 }
 
@@ -237,6 +241,9 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (devMem == nullptr) {
     return flagcxSuccess;
   }
+  if (comm == nullptr && (devMem->ipcIndex >= 0 || devMem->cachedDevicePtr ||
+                          devMem->segmentedPeerLayouts))
+    return flagcxInvalidArgument;
 
   // Release IPC table slot (resources moved to deferred queue)
   if (devMem->ipcIndex >= 0) {
@@ -245,13 +252,13 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
 
   devApiBackend->devMemDestroy(comm, devMem);
 
-  // Free cached device pointer
-  if (devMem->cachedDevicePtr) {
-    flagcxCommDeferFree(comm, devMem->cachedDevicePtr, flagcxMemDevice);
+  if (devMem->cachedDevicePtr || devMem->segmentedPeerLayouts) {
+    devMem->deferredNext = comm->deferredDevMems;
+    comm->deferredDevMems = devMem;
+  } else {
+    pthread_mutex_destroy(&devMem->cachedPtrMutex);
+    free(devMem);
   }
-
-  pthread_mutex_destroy(&devMem->cachedPtrMutex);
-  free(devMem);
   return flagcxSuccess;
 }
 
@@ -752,33 +759,41 @@ flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm) {
 }
 
 // ==========================================================================
-// Deferred device/host-pinned memory free.
+// Deferred device memory free.
 // ==========================================================================
-void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType) {
-  if (comm == nullptr || ptr == nullptr)
-    return;
-  if (comm->deferredFreeCount >= FLAGCX_MAX_DEFERRED_FREES) {
-    WARN("flagcxCommDeferFree: deferred free list full (%d), freeing now",
-         FLAGCX_MAX_DEFERRED_FREES);
-    deviceAdaptor->deviceFree(ptr, (flagcxMemType_t)memType, NULL);
-    return;
-  }
-  comm->deferredFrees[comm->deferredFreeCount].ptr = ptr;
-  comm->deferredFrees[comm->deferredFreeCount].memType = memType;
-  comm->deferredFreeCount++;
-}
-
 flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm) {
   if (comm == nullptr)
     return flagcxSuccess;
-  for (int i = 0; i < comm->deferredFreeCount; i++) {
-    struct flagcxDeferredFree *d = &comm->deferredFrees[i];
-    if (d->ptr) {
-      deviceAdaptor->deviceFree(d->ptr, (flagcxMemType_t)d->memType, NULL);
-      d->ptr = nullptr;
-    }
+  while (comm->deferredDevMems != nullptr) {
+    flagcxDevMem_t owner = comm->deferredDevMems;
+    if (owner->cachedDevicePtr)
+      deviceAdaptor->deviceFree(owner->cachedDevicePtr, flagcxMemDevice, NULL);
+    owner->cachedDevicePtr = nullptr;
+    if (owner->segmentedPeerLayouts)
+      deviceAdaptor->deviceFree(owner->segmentedPeerLayouts, flagcxMemDevice,
+                                NULL);
+    owner->segmentedPeerLayouts = nullptr;
+    comm->deferredDevMems = owner->deferredNext;
+    pthread_mutex_destroy(&owner->cachedPtrMutex);
+    free(owner);
   }
-  comm->deferredFreeCount = 0;
+  while (comm->deferredDevComms != nullptr) {
+    flagcxDevComm_t owner = comm->deferredDevComms;
+    if (owner->cachedNetContextsPtr)
+      deviceAdaptor->deviceFree(owner->cachedNetContextsPtr, flagcxMemDevice,
+                                NULL);
+    owner->cachedNetContextsPtr = nullptr;
+    if (owner->cachedDevicePtr)
+      deviceAdaptor->deviceFree(owner->cachedDevicePtr, flagcxMemDevice, NULL);
+    owner->cachedDevicePtr = nullptr;
+    if (owner->cachedGridBarrierPtr)
+      deviceAdaptor->deviceFree(owner->cachedGridBarrierPtr, flagcxMemDevice,
+                                NULL);
+    owner->cachedGridBarrierPtr = nullptr;
+    comm->deferredDevComms = owner->deferredNext;
+    pthread_mutex_destroy(&owner->cachedPtrMutex);
+    free(owner);
+  }
   return flagcxSuccess;
 }
 

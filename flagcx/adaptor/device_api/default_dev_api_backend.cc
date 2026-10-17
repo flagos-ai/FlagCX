@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <new>
 #include <sched.h>
@@ -1114,17 +1115,8 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   free(devComm->localRankToRank);
   devComm->localRankToRank = nullptr;
 
-  // ── Free cached device pointers immediately ───────────────────────────
-  if (devComm->cachedDevicePtr) {
-    deviceAdaptor->deviceFree(devComm->cachedDevicePtr, flagcxMemDevice, NULL);
-    devComm->cachedDevicePtr = nullptr;
-  }
-  if (devComm->cachedNetContextsPtr) {
-    deviceAdaptor->deviceFree(devComm->cachedNetContextsPtr, flagcxMemDevice,
-                              NULL);
-    devComm->cachedNetContextsPtr = nullptr;
-  }
-
+  // Cached device state remains owned by the outer DevComm until the
+  // communicator's deferred-free drain.
   return flagcxSuccess;
 }
 
@@ -1284,6 +1276,50 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
         return flagcxInvalidUsage;
       }
     }
+
+    flagcxSymWindow_t d = (win != nullptr && win->isSymmetricDefault)
+                              ? win->defaultBase
+                              : nullptr;
+    if (d != nullptr && d->rankLayouts != nullptr &&
+        kWin->mode == DeviceAPI::SYMMETRIC) {
+      const int nPeers = comm->localRanks;
+      if (d->rankLayouts == nullptr || nPeers <= 0 || d->slotStride == 0 ||
+          (size_t)nPeers > std::numeric_limits<size_t>::max() /
+                               sizeof(typename DeviceAPI::SymPeerLayout)) {
+        delete kWin;
+        devMem->window = nullptr;
+        return flagcxInvalidArgument;
+      }
+      const size_t bytes =
+          (size_t)nPeers * sizeof(typename DeviceAPI::SymPeerLayout);
+      auto *hostLayouts = (typename DeviceAPI::SymPeerLayout *)malloc(bytes);
+      if (hostLayouts == nullptr) {
+        delete kWin;
+        devMem->window = nullptr;
+        return flagcxSystemError;
+      }
+      for (int peer = 0; peer < nPeers; peer++) {
+        const flagcxSymRankLayout &layout = d->rankLayouts[peer];
+        hostLayouts[peer] = {layout.userOffset, layout.userSize};
+      }
+      void *deviceLayouts = nullptr;
+      flagcxResult_t result = deviceAdaptor->deviceMalloc(
+          &deviceLayouts, bytes, flagcxMemDevice, NULL);
+      if (result == flagcxSuccess)
+        result =
+            deviceAdaptor->deviceMemcpy(deviceLayouts, hostLayouts, bytes,
+                                        flagcxMemcpyHostToDevice, NULL, NULL);
+      free(hostLayouts);
+      if (result != flagcxSuccess || deviceLayouts == nullptr) {
+        if (deviceLayouts != nullptr)
+          deviceAdaptor->deviceFree(deviceLayouts, flagcxMemDevice, NULL);
+        delete kWin;
+        devMem->window = nullptr;
+        return result == flagcxSuccess ? flagcxInternalError : result;
+      }
+      kWin->symPeerLayouts = (typename DeviceAPI::SymPeerLayout *)deviceLayouts;
+      devMem->segmentedPeerLayouts = deviceLayouts;
+    }
   }
 
   return flagcxSuccess;
@@ -1306,10 +1342,8 @@ static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);
   }
 
-  // Free cached device pointer immediately
-  if (devMem->cachedDevicePtr) {
-    deviceAdaptor->deviceFree(devMem->cachedDevicePtr, flagcxMemDevice, NULL);
-  }
+  // The outer DevMem lifecycle defers cached device state and segmented peer
+  // layouts together, so a queued kernel cannot outlive either allocation.
 
   return flagcxSuccess;
 }

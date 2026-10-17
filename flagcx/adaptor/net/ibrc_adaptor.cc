@@ -2127,12 +2127,14 @@ flagcxResult_t flagcxIbRegMrDmaBufInternal(flagcxIbNetCommDevBase *base,
       cache->slots[slot].addr = addr;
       cache->slots[slot].pages = pages;
       cache->slots[slot].refs = 1;
+      cache->slots[slot].isDmaBuf = fd != -1;
       cache->slots[slot].mr = mr;
       cache->population += 1;
       *mhandle = mr;
       res = flagcxSuccess;
       goto returning;
-    } else if ((addr >= cache->slots[slot].addr) &&
+    } else if (fd == -1 && !cache->slots[slot].isDmaBuf &&
+               (addr >= cache->slots[slot].addr) &&
                ((addr - cache->slots[slot].addr) / pageSize + pages) <=
                    cache->slots[slot].pages) {
       cache->slots[slot].refs += 1;

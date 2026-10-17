@@ -80,6 +80,21 @@ typedef enum {
   FLAGCX_GDR_WRITE_REQUIRES_FLUSH = 1 << 1,
 } flagcxGdrFlushRequirements_t;
 
+// Provider-neutral geometry of a VMM window. Segment offsets are relative to
+// the first physical mapping in a rank's slot, not to the user pointer.
+struct flagcxSymSegmentMeta {
+  size_t offset;
+  size_t size;
+};
+
+struct flagcxSymRankLayout {
+  size_t mappedSize;
+  size_t userOffset;
+  size_t userSize;
+  int firstSegment;
+  int segmentCount;
+};
+
 // Version history:
 //   v1 — Initial version with basic device functions, GDR functions,
 //         stream/event/IPC functions, kernel launch, device properties,
@@ -359,6 +374,74 @@ struct flagcxDeviceAdaptor_latest {
   // Latest-only topology query. An absent callback means peer access has not
   // been established and must not be assumed by PXN.
   flagcxResult_t (*canAccessPeer)(int srcDev, int dstDev, int *canAccess);
+
+  // Latest-only segmented VMM interface. A successful describe returns a
+  // bundle that owns provider references and an array valid until bundleFree.
+  // The common layer copies geometry and owns every FD returned by export.
+  // On a partial failure, a non-NULL bundle still requires bundleFree.
+  flagcxResult_t (*symPhysDescribe)(
+      void *ptr, size_t size, void **segmentBundle,
+      const struct flagcxSymSegmentMeta **segments, int *segmentCount,
+      size_t *userOffset, size_t *slotAlignment);
+  flagcxResult_t (*symPhysExportSegment)(void *segmentBundle, int segmentIndex,
+                                         int *shareableFd);
+  flagcxResult_t (*symPhysFreeSegments)(void *segmentBundle);
+
+  // peerFds follows the flattened rank/segment order in layouts. The map
+  // callback publishes flatBase as soon as it owns a reserved VA, including
+  // error returns. Its private record keeps partial maps and imported handles
+  // alive for retryable teardown; common code never sees provider handles.
+  flagcxResult_t (*symFlatMapSegments)(
+      const int *peerFds, int nPeers, int selfIndex, void *selfBundle,
+      const struct flagcxSymRankLayout *layouts,
+      const struct flagcxSymSegmentMeta *segments, int totalSegments,
+      size_t slotStride, size_t slotAlignment, void **flatBase);
+  // Unmap all segments first, then release imported handles. A failure leaves
+  // the private record intact so the same callback can be retried.
+  flagcxResult_t (*symFlatMappingUnmapSegments)(void *flatBase);
+  flagcxResult_t (*symFlatVaFreeSegments)(void *flatBase);
+  // Read-only, handle-free count of physical mappings intersecting [ptr,
+  // ptr+size). Providers return NotSupported for allocations they do not track.
+  flagcxResult_t (*symPhysSegmentCount)(const void *ptr, size_t size,
+                                        int *segmentCount);
+  // Streaming latest-only mapping path. Begin owns flatBase before any segment
+  // import, and mapOne consumes one FD (or -1 for the local segment). The
+  // caller closes each FD immediately after mapOne returns.
+  flagcxResult_t (*symFlatMapSegmentsBegin)(
+      int nPeers, int selfIndex, void *selfBundle,
+      const struct flagcxSymRankLayout *layouts,
+      const struct flagcxSymSegmentMeta *segments, int totalSegments,
+      size_t slotStride, size_t slotAlignment, void **flatBase);
+  flagcxResult_t (*symFlatMapSegmentOne)(void *flatBase, int segmentIndex,
+                                         int shareableFd);
+
+  // Latest-only communicator LSA interface. The arena owns one VA reservation
+  // until communicator teardown; each window maps into its assigned offset.
+  // symFlatVaFreeSegments releases only the mapping record for beginAt maps.
+  flagcxResult_t (*symLsaGetCapacity)(size_t *totalDeviceBytes,
+                                      size_t *vaAlignment);
+  flagcxResult_t (*symLsaVaReserve)(size_t size, size_t alignment,
+                                    void **arenaBase);
+  flagcxResult_t (*symLsaVaFree)(void *arenaBase, size_t size);
+  flagcxResult_t (*symLsaMapBeginAt)(
+      void *windowBase, int nPeers, int selfIndex, void *selfBundle,
+      const struct flagcxSymRankLayout *layouts,
+      const struct flagcxSymSegmentMeta *segments, int totalSegments,
+      size_t rankStride, size_t slotAlignment, void **mappingBase);
+
+  // Optional communicator-level multicast for latest LSA adaptors. The
+  // returned mapping ownership bits are valid even when map returns an error;
+  // the caller must unmap, free VA, then release the imported handle.
+  flagcxResult_t (*symLsaMulticastGranularity)(size_t objectSize,
+                                               int nLocalDevices,
+                                               size_t *granularity);
+  flagcxResult_t (*symLsaMulticastMap)(void *mcHandle, size_t size,
+                                       size_t alignment, void **base,
+                                       bool *mappingOwned, bool *vaOwned);
+  flagcxResult_t (*symLsaMulticastBind)(void *mcHandle, size_t offset,
+                                        const void *source, size_t size);
+  flagcxResult_t (*symLsaMulticastUnbind)(void *mcHandle, size_t offset,
+                                          size_t size);
 };
 
 #define flagcxDeviceAdaptor flagcxDeviceAdaptor_latest

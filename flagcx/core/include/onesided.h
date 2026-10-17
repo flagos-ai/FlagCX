@@ -15,21 +15,12 @@
 #include "flagcx_device_adaptor.h" // for flagcxVmmMrRoute_t
 #include "onesided_types.h"
 
-typedef enum {
-  flagcxVmmMrModeAuto = 0,
-  flagcxVmmMrModeDmaBuf = 1,
-  flagcxVmmMrModeVa = 2,
-} flagcxVmmMrMode_t;
-
-// Parse the latest-adaptor VMM MR routing policy. Production defaults to auto;
-// strict modes are also used by CI to exercise DMA-BUF and VA independently.
-flagcxResult_t flagcxOneSideParseVmmMrMode(const char *value,
-                                           flagcxVmmMrMode_t *mode);
-
-flagcxVmmMrRoute_t flagcxOneSideSelectVmmMrRoute(
-    uint32_t deviceCaps, int netPtrSupport, bool dmaBufExportSupported,
-    bool hasDmaBufRegistration, bool hasVaRegistration,
-    flagcxVmmMrMode_t mode = flagcxVmmMrModeAuto);
+flagcxVmmMrRoute_t flagcxOneSideSelectVmmMrRoute(uint32_t deviceCaps,
+                                                 int netPtrSupport,
+                                                 bool dmaBufExportSupported,
+                                                 bool hasDmaBufRegistration,
+                                                 bool hasVaRegistration,
+                                                 bool dmaBufEnabled = false);
 
 // Select the lowest slot that is free on every rank. occupancy is laid out as
 // [nRanks][nSlots]. Slot zero has special connection-mesh ownership and must
@@ -51,15 +42,14 @@ bool flagcxOneSideRegistryRangeIsVmm(const void *buff, size_t size);
 flagcxResult_t flagcxOneSideRegisterMr(flagcxHeteroComm_t comm, void *regComm,
                                        void *buff, size_t size, int ptrType,
                                        bool isVmm, int mrFlags, void **mrHandle,
-                                       flagcxVmmMrRoute_t *selectedRoute);
+                                       flagcxVmmMrRoute_t *selectedRoute,
+                                       int mrRangeSegmentCount = 0);
 
 // Internal implementation used by sym_heap and flagcxCommRegister
-flagcxResult_t flagcxOneSideRegisterInternal(flagcxHeteroComm_t comm,
-                                             void *buff, size_t size,
-                                             bool isVmm,
-                                             bool acquireWindowRef = false,
-                                             int *mrIndex = nullptr,
-                                             bool *rollbackPending = nullptr);
+flagcxResult_t flagcxOneSideRegisterInternal(
+    flagcxHeteroComm_t comm, void *buff, size_t size, bool isVmm,
+    bool acquireWindowRef = false, int *mrIndex = nullptr,
+    bool *rollbackPending = nullptr, int mrRangeSegmentCount = 0);
 
 // Retry MR objects retained after a failed registration rollback. Symmetric
 // windows use this before dropping their allocation lease.

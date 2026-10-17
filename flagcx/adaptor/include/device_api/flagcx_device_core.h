@@ -165,7 +165,9 @@ struct flagcxDevMem {
   FLAGCX_HOST_DEVICE_INLINE bool hasWindow() const {
     return _winBase.hasAccess();
   }
-  FLAGCX_HOST_DEVICE_INLINE auto getRawPtr() const { return _rawPtr; }
+  FLAGCX_HOST_DEVICE_INLINE FLAGCX_DEVICE_GLOBAL_PTR void *getRawPtr() const {
+    return _rawPtr;
+  }
   FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
     return _winBase.getDevPeerPtrs();
   }

@@ -524,7 +524,7 @@ run_suite() {
           -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ="$expected_read"
           -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE="$expected_write"
           -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED="$expected_read_required"
-          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=none
+          -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va
         )
         if [[ -n "$expected_write_required" ]]; then
           visibility_common_env+=(
@@ -536,7 +536,7 @@ run_suite() {
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
             RMA_VMM_ENABLE=0 \
-            RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]}" || \
+            RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} -x FLAGCX_DMABUF_ENABLE=0" || \
             visibility_status=$?
         fi
 
@@ -546,6 +546,10 @@ run_suite() {
           # records a capability note and skips that route on those machines.
           local route
           for route in va dmabuf; do
+            local dmabuf_enabled=0
+            if [[ "$route" == "dmabuf" ]]; then dmabuf_enabled=1; fi
+            local expected_route="$route"
+            if [[ "$route" == "dmabuf" ]]; then expected_route=auto; fi
             local -a cuda_vmm_env=(
               -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
               -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported
@@ -554,8 +558,8 @@ run_suite() {
               -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
               # VMM route does not alter visibility policy; CUDA WRITE remains
               # topology-derived here just as it is for ordinary allocations.
-              -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE="$route"
-              -x FLAGCX_VMM_MR_MODE="$route"
+              -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE="$expected_route"
+              -x FLAGCX_DMABUF_ENABLE="$dmabuf_enabled"
             )
             FLAGCX_CI_MPI_LABEL="rma GDR visibility VMM $route" \
               make -C "$suite_dir" run-mpi-net "${args[@]}" \
@@ -570,6 +574,8 @@ run_suite() {
           # note. DU has no separate consumer kernel in this test suite.
           local route setup_expectation
           for route in va dmabuf; do
+            local dmabuf_enabled=0
+            if [[ "$route" == "dmabuf" ]]; then dmabuf_enabled=1; fi
             if [[ "$route" == "va" ]]; then
               setup_expectation=unsupported
             else
@@ -577,7 +583,7 @@ run_suite() {
             fi
             local -a hygon_vmm_env=(
               -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP="$setup_expectation"
-              -x FLAGCX_VMM_MR_MODE="$route"
+              -x FLAGCX_DMABUF_ENABLE="$dmabuf_enabled"
               -x FLAGCX_IB_TIMEOUT=14
               -x FLAGCX_IB_RETRY_CNT=1
             )
@@ -600,7 +606,7 @@ run_suite() {
             -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=success
             -x FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=1
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED=0
-            -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=none
+            -x FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va
             -x FLAGCX_GDR_READ_REQUIRES_FLUSH=1
           )
           FLAGCX_CI_MPI_LABEL="rma GDR visibility forced unsupported READ" \
@@ -762,7 +768,7 @@ run_suite() {
         -x LD_LIBRARY_PATH
       )
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
-      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmFlatFallbackPreservesMrRoute:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmConvergesMrFailure:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
 
       FLAGCX_CI_MPI_LABEL="symmem remote without NET" \
         "$MPI_RUNNER" --allow-run-as-root \
@@ -806,10 +812,12 @@ run_suite() {
         "$MPI_RUNNER" --allow-run-as-root \
         -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_DMABUF_ENABLE=1 \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter" \
         : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+        -x FLAGCX_DMABUF_ENABLE=1 \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter"
 
@@ -819,13 +827,17 @@ run_suite() {
           -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_VMM_MR_MODE=auto \
+          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
+          -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter" \
           : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_VMM_MR_MODE=auto \
+          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
+          -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter"
       else
@@ -842,7 +854,7 @@ run_suite() {
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
         -x FLAGCX_CI_REQUIRE_VMM=1 \
         -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
-        -x FLAGCX_VMM_MR_MODE=auto \
+        -x FLAGCX_DMABUF_ENABLE=1 \
         "${symmem_route_union_env[@]}" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
         "$symmem_bin" \
@@ -851,7 +863,7 @@ run_suite() {
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
         -x FLAGCX_CI_REQUIRE_VMM=1 \
         -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
-        -x FLAGCX_VMM_MR_MODE=auto \
+        -x FLAGCX_DMABUF_ENABLE=1 \
         "${symmem_route_union_env[@]}" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" \

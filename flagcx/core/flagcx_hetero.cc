@@ -552,6 +552,9 @@ static flagcxResult_t flagcxRmaProxyPostOp(struct flagcxHeteroComm *comm,
       return comm->netAdaptor->iget(
           sendComm, desc->srcOff, desc->dstOff, desc->size, p /* srcRank */,
           comm->rank /* dstRank */, srcHandles, dstHandles, &desc->request);
+    case FLAGCX_RMA_IPC_GET:
+      WARN("flagcxRmaProxyPostOp: IPC GET must complete via its stream event");
+      return flagcxInternalError;
     case FLAGCX_RMA_PUT_VALUE: {
       struct flagcxOneSideHandleInfo *stagingH = comm->stagingHandle;
       if (stagingH == NULL || stagingH->baseVas == NULL) {

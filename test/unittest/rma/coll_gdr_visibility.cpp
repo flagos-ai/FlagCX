@@ -77,7 +77,12 @@ void verifyPolicyAndRoute(flagcxComm_t comm, flagcxWindow_t window,
                           uint32_t direction) {
   flagcxOneSideHandleInfo *handle = dataHandle(comm, window);
   ASSERT_NE(handle, nullptr);
-  EXPECT_EQ(handle->registrationRoute, static_cast<uint8_t>(expectedRoute()));
+  const char *routeExpectation = std::getenv("FLAGCX_CI_EXPECT_VMM_MR_ROUTE");
+  if (routeExpectation != nullptr && std::strcmp(routeExpectation, "auto") == 0)
+    EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA ||
+                handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF);
+  else
+    EXPECT_EQ(handle->registrationRoute, static_cast<uint8_t>(expectedRoute()));
 
   const char *requirementName = direction == FLAGCX_GDR_READ_REQUIRES_FLUSH
                                     ? "FLAGCX_CI_EXPECT_GDR_READ_REQUIRED"

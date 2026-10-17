@@ -62,7 +62,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_KERNEL_FIFO_CAPACITY` | 128 | Kernel FIFO capacity |
 | `FLAGCX_REDUCE_FIFO_CAPACITY` | 128 | Reduce operation FIFO capacity |
 | `FLAGCX_MEM_ENABLE` | 0 | When set to 1, enables memory allocation via device adaptor |
-| `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, enables DMA-BUF support for memory registration |
+| `FLAGCX_DMABUF_ENABLE` | 0 | When set to 1, prefer DMA-BUF for eligible device NET memory registration; otherwise use eligible VA routes. Multi-segment VMM can attempt one MR over its full VA range when the device and NET adaptor declare VMM VA support; the provider may still reject that range. |
 
 
 ---

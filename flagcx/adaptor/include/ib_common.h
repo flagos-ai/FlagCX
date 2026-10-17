@@ -79,6 +79,7 @@ struct flagcxIbMr {
   uintptr_t addr;
   size_t pages;
   int refs;
+  bool isDmaBuf;
   struct ibv_mr *mr;
 };
 

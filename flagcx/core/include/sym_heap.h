@@ -11,6 +11,7 @@
 
 #include "comm.h"
 #include "flagcx.h"
+#include "flagcx_device_adaptor.h"
 
 /* Concrete definition of the opaque flagcxWindow handle.
  * Internal only — external code must treat flagcxWindow_t as opaque. */
@@ -30,6 +31,15 @@ enum flagcxSymWindowState {
   flagcxSymWindowCleanupRequired = 2,
 };
 
+// Selects the callbacks that own physical and flat-mapping resources. This
+// does not describe how many physical segments a user MR spans.
+enum flagcxSymResourcePath {
+  flagcxSymResourceNone = 0,
+  flagcxSymResourceLegacyV1 = 1,
+  flagcxSymResourceSegments = 2,
+  flagcxSymResourceLsa = 3,
+};
+
 /* Symmetric window state for the default (non-vendor) path */
 struct flagcxSymWindow {
   flagcxWindow_t owner; // owning public handle (for communicator cleanup)
@@ -43,9 +53,22 @@ struct flagcxSymWindow {
   // An unpublished MR transaction is retained in comm->pendingOneSideCleanup.
   // Keep this window and its allocation lease alive until that MR is released.
   bool hasPendingNetworkCleanup;
-  size_t heapSize;  // user-requested size (for bounds info)
-  size_t allocSize; // actual physical allocation size per peer
-                    // (granularity-aligned)
+  size_t heapSize;      // user-requested size (for bounds info)
+  size_t allocSize;     // actual physical allocation size per peer
+                        // (granularity-aligned)
+  size_t slotStride;    // common VA slot width for segmented flat mappings
+  size_t slotAlignment; // common VA base alignment for segmented flat mappings
+  // A window owns an offset in each communicator LSA rank slot, rather than
+  // the VA reservation that contains all of those slots.
+  size_t lsaWindowOffset;
+  size_t lsaWindowSpan;
+  bool lsaOffsetOwned;
+  bool mcLsaBound;       // multicast binding into the communicator LSA object
+  size_t mcLsaBindSize;  // provider granularity-aligned binding length
+  bool lsaCleanupFailed; // failed mapping teardown may diverge rank allocators
+  flagcxSymRankLayout *rankLayouts;
+  flagcxSymSegmentMeta *segments;
+  int totalSegments;
   int localRanks;   // number of intra-node peers
   int ipcSlot;      // IPC table slot for non-VMM peer mappings (-1 if none)
   void *physHandle; // for cleanup (symPhysFree)
@@ -66,6 +89,7 @@ struct flagcxSymWindow {
   // mapping succeeded. Network MR routing must use isVmmAllocation; local
   // peer-pointer resolution uses hasFlatMapping/flatBase.
   bool isVmmAllocation;
+  flagcxSymResourcePath resourcePath;
   bool hasFlatMapping; // true while a VMM flat mapping is active
   bool published;      // linked into comm->symWindows only after full commit
   flagcxSymWindowState state;
@@ -111,6 +135,8 @@ flagcxResult_t flagcxSymWindowDeregister(
 // has converged successfully on all ranks.
 flagcxResult_t flagcxSymWindowPublish(flagcxHeteroComm_t comm,
                                       flagcxWindow_t win);
+// Non-failing local commit after a communicator-wide route/readiness preflight.
+void flagcxSymWindowCommit(flagcxHeteroComm_t comm, flagcxWindow_t win);
 flagcxResult_t flagcxSymRetryPendingCleanup(
     flagcxHeteroComm_t comm,
     flagcxSymCleanupMode mode = flagcxSymCleanupCollective);
@@ -119,6 +145,31 @@ flagcxResult_t flagcxSymRetainPendingCleanup(flagcxHeteroComm_t comm,
 flagcxResult_t flagcxSymConvergeStatus(flagcxHeteroComm_t comm,
                                        flagcxResult_t localStatus,
                                        flagcxResult_t *commonStatus);
+
+// Validate exchanged rank geometry and calculate the common aligned slot
+// width. The user range must be fully backed by mapped segments.
+flagcxResult_t
+flagcxSymValidateLayouts(int nRanks, const flagcxSymRankLayout *layouts,
+                         int nSegments, const flagcxSymSegmentMeta *segments,
+                         size_t slotAlignment, size_t *slotStride);
+
+// Resolve a user range inside one window of a communicator-wide LSA arena.
+// The host and Device API implementations must use the same layout formula.
+flagcxResult_t flagcxSymLsaPeerPtr(void *arenaBase, size_t rankStride,
+                                   size_t windowOffset, int localRanks,
+                                   int peerLocalRank,
+                                   const flagcxSymRankLayout *layout,
+                                   size_t offset, size_t size, void **ptr);
+
+// Called after all windows and pending cleanup tokens have been drained.
+flagcxResult_t flagcxSymLsaDestroy(flagcxHeteroComm_t comm);
+
+// Count the physical mappings touched by the user-visible range within a
+// validated rank layout. Mapping the whole allocation may involve more.
+flagcxResult_t
+flagcxSymCountUserRangeSegments(const flagcxSymRankLayout *layout,
+                                const flagcxSymSegmentMeta *rankSegments,
+                                int *count);
 
 // Acquire and attach a network MR reference to an unpublished symmetric
 // window. The operation is collective and idempotent across retries.
@@ -149,5 +200,12 @@ flagcxResult_t flagcxSymWindowResolveIpcPeerPtr(flagcxHeteroComm_t comm,
                                                 flagcxSymWindow_t window,
                                                 int peer, size_t offset,
                                                 size_t size, void **ptr);
+
+// Resolve the registered user range for a peer before a window-based RMA
+// operation. Segmented local peers use their exchanged layouts; remote peers
+// use the collective network MR metadata.
+flagcxResult_t flagcxSymWindowPeerUserSize(flagcxHeteroComm_t comm,
+                                           flagcxSymWindow_t window, int peer,
+                                           size_t *userSize);
 
 #endif // FLAGCX_SYM_HEAP_H_

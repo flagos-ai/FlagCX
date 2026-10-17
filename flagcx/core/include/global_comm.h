@@ -27,15 +27,6 @@ struct flagcxIpcTableEntry {
   bool inUse;              // true while a devMem references this entry
 };
 
-// Deferred device/host-pinned memory free — collected during cleanup,
-// drained in flagcxCommDestroy.
-#define FLAGCX_MAX_DEFERRED_FREES 32
-
-struct flagcxDeferredFree {
-  void *ptr;
-  int memType; // flagcxMemDevice, flagcxMemHost, etc.
-};
-
 // Deferred IPC entry — moved from ipcTable when a slot is released at runtime.
 // Actual ipcMemHandleClose + deviceFree happens at comm destroy.
 struct flagcxDeferredIpcEntry {
@@ -132,9 +123,11 @@ struct flagcxComm {
       deferredBufferQueue;
   int deferredBufferCount;
 
-  // Deferred device/host-pinned memory free list
-  struct flagcxDeferredFree deferredFrees[FLAGCX_MAX_DEFERRED_FREES];
-  int deferredFreeCount;
+  // Retired host handles retain cached device allocations until comm destroy.
+  // The handles themselves are the list nodes, so retirement cannot run out
+  // of queue entries or require another host allocation.
+  flagcxDevComm_t deferredDevComms;
+  flagcxDevMem_t deferredDevMems;
 
   // Custom op state (NULL = not enabled)
   struct flagcxDevCommState *devCommState;

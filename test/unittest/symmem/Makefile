@@ -3,6 +3,11 @@ include ../../make.inc
 # Local include directory for symmem test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
 
+ifneq ($(filter 1,$(USE_NVIDIA) $(USE_DU) $(USE_METAX) $(USE_PPU)),)
+SYMMEM_MPI_DEVICE_FLAGS := $(HOST_ADAPTOR_DEFINE) $(DEVICE_INCLUDE)
+SYMMEM_MPI_DEVICE_LINK := $(DEVICE_LINK)
+endif
+
 # [unit] tests: test_*.cpp — no MPI, no GPU required
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
@@ -37,7 +42,7 @@ $(UNIT_TARGET): $(UNIT_OBJS)
 $(MPI_TARGET): $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) -L$(GTEST_LIB) -lgtest -lpthread $(MPI_LINK)
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) -L$(GTEST_LIB) -lgtest -lpthread $(MPI_LINK) $(SYMMEM_MPI_DEVICE_LINK)
 
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
@@ -47,17 +52,17 @@ $(OBJDIR)/test_%.o: test_%.cpp
 $(OBJDIR)/coll_%.o: coll_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(SYMMEM_MPI_DEVICE_FLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
 
 $(OBJDIR)/symmem_test.o: symmem_test.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(SYMMEM_MPI_DEVICE_FLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
 
 $(OBJDIR)/main_mpi.o: main_mpi.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(SYMMEM_MPI_DEVICE_FLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
 
 clean:
 	@rm -rf $(BUILDDIR)

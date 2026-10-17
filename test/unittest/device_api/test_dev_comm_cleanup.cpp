@@ -8,6 +8,9 @@
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
+
+// The host test instantiates the default trait on every vendor build.
+#include "device_api/default_platform_traits.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net_adaptor.h"
@@ -24,6 +27,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 static constexpr size_t kLegacyRequirementsSize =
@@ -40,6 +44,32 @@ static_assert(offsetof(flagcxDevCommRequirements, interCounterCount) == 36,
               "flagcxDevCommRequirements legacy ABI offset changed");
 static_assert(offsetof(flagcxDevCommRequirements, intraScratchBytes) == 40,
               "new requirements fields must follow the frozen ABI prefix");
+
+TEST(DeviceApiLsaHostTest, WindowUsesCommunicatorStrideAndPeerUserOffset) {
+  typedef CommTraits<DefaultBackend<DefaultPlatform>> Traits;
+  flagcxSymRankLayout layouts[2] = {{8192, 0, 1024, 0, 1},
+                                    {8192, 4096, 1024, 1, 1}};
+  flagcxSymWindow state = {};
+  state.hasFlatMapping = true;
+  state.flatBase = reinterpret_cast<void *>(static_cast<uintptr_t>(0x100000));
+  state.slotStride = 65536;
+  state.rankLayouts = layouts;
+  flagcxWindow hostWindow = {};
+  hostWindow.isSymmetricDefault = 1;
+  hostWindow.defaultBase = &state;
+
+  Traits::Window deviceWindow = {};
+  deviceWindow.populateFromHost(&hostWindow, nullptr, 0, 2, 7, 0x200000, -1,
+                                nullptr);
+  Traits::SymPeerLayout peerLayouts[2] = {{0, 1024}, {4096, 1024}};
+  deviceWindow.symPeerLayouts = peerLayouts;
+  Traits::Team team = {2, 0, 1};
+  EXPECT_EQ(deviceWindow.getPeerPointer(128, team, 1),
+            reinterpret_cast<void *>(
+                static_cast<uintptr_t>(0x100000 + 65536 + 4096 + 128)));
+  EXPECT_EQ(deviceWindow.getPeerPointer(1024, team, 1), nullptr);
+  EXPECT_EQ(deviceWindow.getMrIndex(), 7);
+}
 
 namespace {
 
@@ -399,7 +429,7 @@ protected:
   struct flagcxDeviceAdaptor testDeviceAdaptor = {};
 };
 
-TEST_F(DefaultDevCommCleanupTest, DevMemCreateClearsOutputOnInvalidArguments) {
+TEST(DevMemApiHostTest, CreateClearsOutputOnInvalidArguments) {
   flagcxComm comm = {};
   char buffer = 0;
   auto sentinel = reinterpret_cast<flagcxDevMem_t>(0x1);
@@ -420,6 +450,15 @@ TEST_F(DefaultDevCommCleanupTest, DevMemCreateClearsOutputOnInvalidArguments) {
   EXPECT_EQ(flagcxDevMemCreate(&comm, &buffer, 0, nullptr, &devMem),
             flagcxInvalidArgument);
   EXPECT_EQ(devMem, nullptr);
+
+  EXPECT_EQ(
+      flagcxDevMemCreate(&comm, &buffer, sizeof(buffer), nullptr, nullptr),
+      flagcxInvalidArgument);
+}
+
+TEST(DevMemApiHostTest, DestroyNullIsSafe) {
+  flagcxComm comm = {};
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, nullptr), flagcxSuccess);
 }
 
 TEST_F(DefaultDevCommCleanupTest, EarlyCreateFailureDoesNotPublishHandle) {
@@ -978,6 +1017,124 @@ flagcxResult_t captureDevMemCreate(flagcxComm_t, void *, size_t, flagcxWindow_t,
 
 flagcxResult_t captureDevMemDestroy(flagcxComm_t, flagcxDevMem_t) {
   return flagcxSuccess;
+}
+
+struct DevMemLifecycleCalls {
+  flagcxComm_t createComm;
+  void *buffer;
+  size_t size;
+  flagcxWindow_t window;
+  flagcxDevMem_t handle;
+  void *initialRawPtr;
+  int initialIpcIndex;
+  flagcxComm_t destroyComm;
+  flagcxDevMem_t destroyedHandle;
+  int createCount;
+  int destroyCount;
+};
+
+DevMemLifecycleCalls devMemLifecycleCalls = {};
+
+flagcxResult_t captureDevMemLifecycleCreate(flagcxComm_t comm, void *buffer,
+                                            size_t size, flagcxWindow_t window,
+                                            flagcxDevMem_t handle) {
+  devMemLifecycleCalls.createComm = comm;
+  devMemLifecycleCalls.buffer = buffer;
+  devMemLifecycleCalls.size = size;
+  devMemLifecycleCalls.window = window;
+  devMemLifecycleCalls.handle = handle;
+  devMemLifecycleCalls.initialRawPtr = handle->rawPtr;
+  devMemLifecycleCalls.initialIpcIndex = handle->ipcIndex;
+  devMemLifecycleCalls.createCount++;
+  return flagcxSuccess;
+}
+
+flagcxResult_t captureDevMemLifecycleDestroy(flagcxComm_t comm,
+                                             flagcxDevMem_t handle) {
+  devMemLifecycleCalls.destroyComm = comm;
+  devMemLifecycleCalls.destroyedHandle = handle;
+  devMemLifecycleCalls.destroyCount++;
+  return flagcxSuccess;
+}
+
+void checkDevMemLifecycle(flagcxWindow_t window) {
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-dev-mem-lifecycle";
+  captureBackend.devMemCreate = captureDevMemLifecycleCreate;
+  captureBackend.devMemDestroy = captureDevMemLifecycleDestroy;
+  DevApiBackendGuard backendGuard(&captureBackend);
+  devMemLifecycleCalls = {};
+
+  flagcxComm comm = {};
+  char buffer[64] = {};
+  flagcxDevMem_t devMem = nullptr;
+  ASSERT_EQ(flagcxDevMemCreate(&comm, buffer, sizeof(buffer), window, &devMem),
+            flagcxSuccess);
+  ASSERT_NE(devMem, nullptr);
+  EXPECT_EQ(devMemLifecycleCalls.createCount, 1);
+  EXPECT_EQ(devMemLifecycleCalls.createComm, &comm);
+  EXPECT_EQ(devMemLifecycleCalls.buffer, buffer);
+  EXPECT_EQ(devMemLifecycleCalls.size, sizeof(buffer));
+  EXPECT_EQ(devMemLifecycleCalls.window, window);
+  EXPECT_EQ(devMemLifecycleCalls.handle, devMem);
+  EXPECT_EQ(devMemLifecycleCalls.initialRawPtr, buffer);
+  EXPECT_EQ(devMemLifecycleCalls.initialIpcIndex, -1);
+
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
+  EXPECT_EQ(devMemLifecycleCalls.destroyCount, 1);
+  EXPECT_EQ(devMemLifecycleCalls.destroyComm, &comm);
+  EXPECT_EQ(devMemLifecycleCalls.destroyedHandle, devMem);
+}
+
+TEST(DevMemApiHostTest, CreateAndDestroyWithWindow) {
+  // The capture backend checks that the opaque handle is forwarded; it never
+  // dereferences the window or needs a GPU-backed allocation.
+  char windowToken = 0;
+  checkDevMemLifecycle(reinterpret_cast<flagcxWindow_t>(&windowToken));
+}
+
+TEST(DevMemApiHostTest, CreateAndDestroyWithoutWindow) {
+  checkDevMemLifecycle(nullptr);
+}
+
+TEST_F(DefaultDevCommCleanupTest, DeferredDevicePointersHaveNoFixedLimit) {
+  flagcxComm comm = {};
+  for (int i = 0; i < 40; i++) {
+    flagcxDevMem_t devMem =
+        static_cast<flagcxDevMem_t>(calloc(1, sizeof(*devMem)));
+    ASSERT_NE(devMem, nullptr);
+    pthread_mutex_init(&devMem->cachedPtrMutex, nullptr);
+    devMem->ipcIndex = -1;
+    ASSERT_EQ(allocateTestBuffer(&devMem->cachedDevicePtr, 8), flagcxSuccess);
+    ASSERT_EQ(allocateTestBuffer(&devMem->segmentedPeerLayouts, 8),
+              flagcxSuccess);
+    ASSERT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
+  }
+  for (int i = 0; i < 20; i++) {
+    flagcxDevComm_t devComm =
+        static_cast<flagcxDevComm_t>(calloc(1, sizeof(*devComm)));
+    ASSERT_NE(devComm, nullptr);
+    pthread_mutex_init(&devComm->cachedPtrMutex, nullptr);
+    devComm->barrierIpcIndex = -1;
+    devComm->signalIpcSlot = -1;
+    ASSERT_EQ(allocateTestBuffer(&devComm->cachedDevicePtr, 8), flagcxSuccess);
+    ASSERT_EQ(allocateTestBuffer(&devComm->cachedNetContextsPtr, 8),
+              flagcxSuccess);
+    ASSERT_EQ(allocateTestBuffer(&devComm->cachedGridBarrierPtr, 8),
+              flagcxSuccess);
+    ASSERT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
+  }
+
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  ASSERT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.deferredDevMems, nullptr);
+  EXPECT_EQ(comm.deferredDevComms, nullptr);
+  ASSERT_EQ(deviceFreedPtrs.size(), allocatedPtrs.size());
+  std::unordered_set<void *> freed(deviceFreedPtrs.begin(),
+                                   deviceFreedPtrs.end());
+  EXPECT_EQ(freed.size(), allocatedPtrs.size());
+  EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
+  EXPECT_EQ(deviceFreedPtrs.size(), allocatedPtrs.size());
 }
 
 class TrackedAllocationGuard {

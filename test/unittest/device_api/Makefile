@@ -1,7 +1,8 @@
 include ../../make.inc
 
-# Only the Device API tests link HIP device objects. Keep the shared test
-# compiler as g++ so host-only suites do not compile device headers with HIPCC.
+# The host-only unit target must use the host compiler even when the Device
+# API MPI targets use HIPCC for their device objects.
+HOST_CXX := $(CXX)
 ifeq ($(USE_DU), 1)
 CXX := $(DEVICE_COMPILER)
 CXXFLAGS += -fgpu-rdc
@@ -81,7 +82,7 @@ UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
-UNIT_CXXFLAGS := $(filter-out -DCOMPILE_KERNEL,$(CXXFLAGS))
+UNIT_CXXFLAGS := $(filter-out -DCOMPILE_KERNEL -fgpu-rdc,$(CXXFLAGS))
 UNIT_INCLUDES := $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) \
                  -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 
@@ -149,12 +150,12 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 $(UNIT_OBJ): $(UNIT_SRC)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
+	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
 
 $(UNIT_TARGET): $(UNIT_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
+	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
 
 # HIPCC treats object files as HIP source when a .cpp input is present in the
 # same link invocation. Compile each test entry point first so links receive

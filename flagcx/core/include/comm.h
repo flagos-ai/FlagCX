@@ -169,6 +169,7 @@ struct flagcxIpcTableEntry; // forward declaration; defined in global_comm.h
 struct flagcxOneSideHandleInfo;
 struct flagcxOneSideMeshCleanup;
 struct flagcxSymWindow;
+struct flagcxSymLsaArena;
 class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
@@ -402,6 +403,8 @@ struct flagcxHeteroComm {
   // Unpublished registrations whose MR/VMM rollback failed. Every rank keeps
   // the transaction until a later register or communicator destroy retries it.
   struct flagcxSymWindow *pendingSymCleanup;
+  // Shared VA reservation for this communicator's local LSA team.
+  struct flagcxSymLsaArena *symLsaArena;
 
   // RMA signal memory has an IPC mapping independent of signalHandle, which
   // represents only the optional network MR registration.
