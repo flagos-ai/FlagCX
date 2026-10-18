@@ -87,6 +87,33 @@ include_dirs += dev_includes
 library_dirs += dev_libdirs
 libs += dev_libs
 
+# Which bindings/ir Makefile produces each adaptor's device bitcode, and under
+# what variable names. nvidia's comm-traits branch (Default vs CCL) is a library
+# property only knowable at build time, so its adaptor flag is a make variable
+# the caller must supply; iluvatar has only the Default branch, so its Makefile
+# states the flag itself and the caller supplies none. Any other adaptor has no
+# bindings/ir Makefile, so requesting bitcode for it is an error, not a skip.
+BITCODE_MAKEFILES = {
+    "nvidia": {
+        "make_dir": "bindings/ir/nvidia",
+        "arch_var": "BITCODE_LIB_ARCH",
+        "adaptor_flag_var": "ADAPTOR_FLAG",
+        # NCCL's device headers use `typeof`, which clang refuses under the
+        # Makefile's default -std=c++17.
+        "cxx_std": "gnu++17",
+        "extra_env": ("DEVICE_HOME", "CCL_HOME"),
+    },
+    "iluvatar": {
+        "make_dir": "bindings/ir/iluvatar",
+        "arch_var": "ILUVATAR_ARCH",
+        "adaptor_flag_var": None,
+        "cxx_std": None,
+        # COREX_CLANG is derived from DEVICE_HOME by the Makefile; llvm-dis /
+        # llvm-as / opt / llvm-nm must be on PATH (the host LLVM toolchain).
+        "extra_env": ("DEVICE_HOME",),
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Build extension classes
 # ---------------------------------------------------------------------------
@@ -146,50 +173,59 @@ if BuildExtension is not None:
 
             # -- Step 1b: Build the device bitcode (opt-in) --
             # A kernel consumer of the Device API links this bitcode through
-            # `extern_libs`, and it comes from a second make: bindings/ir/nvidia
-            # is not part of the root Makefile, because it produces clang's IR
-            # rather than the library's objects. It shares BUILDDIR with the
-            # make above, so build/lib and build/include end up as the one tree
+            # `extern_libs`, and it comes from a second make: bindings/ir is not
+            # part of the root Makefile, because it produces clang's IR rather
+            # than the library's objects. It shares BUILDDIR with the make
+            # above, so build/lib and build/include end up as the one tree
             # Step 4 copies out of.
             #
-            # Opt-in because it needs a clang that targets CUDA, which an
+            # Opt-in because it needs a clang that targets the device, which an
             # ordinary build environment has neither reason nor way to carry.
             # FLAGCX_BITCODE_ARCH names the architecture to compile at; with it
-            # unset nothing here runs.
+            # unset nothing here runs. Which Makefile it drives is a property of
+            # the adaptor (BITCODE_MAKEFILES), not of the value: the arch for a
+            # CUDA backend is an sm_*, for iluvatar an ivcore*, so the two can
+            # never be confused.
             bitcode_arch = os.environ.get("FLAGCX_BITCODE_ARCH", "")
             bitcode_bc = ""
             if bitcode_arch:
-                if adaptor != "nvidia":
+                bitcode_cfg = BITCODE_MAKEFILES.get(adaptor)
+                if bitcode_cfg is None:
                     raise RuntimeError(
                         "FLAGCX_BITCODE_ARCH is set but this build is for the "
-                        f"{adaptor} adaptor, and the device bitcode has an "
-                        "nvidia implementation only"
-                    )
-                # The comm-traits branch is a property of the library: the
-                # nvidia makefile picks it from the NCCL headers it finds. The
-                # bitcode's own Makefile never reads that file, so the branch
-                # reaches it only as a value — and without one it would compile
-                # against its default backend while the library shipped beside
-                # it talks to another.
-                bitcode_adaptor_flags = os.environ.get(
-                    "FLAGCX_BITCODE_ADAPTOR_FLAGS", ""
-                )
-                if not bitcode_adaptor_flags:
-                    raise RuntimeError(
-                        "FLAGCX_BITCODE_ARCH is set but "
-                        "FLAGCX_BITCODE_ADAPTOR_FLAGS is empty, so the bitcode "
-                        "would be compiled for the wrong device API backend"
+                        f"{adaptor} adaptor, which has no bindings/ir Makefile, "
+                        "so there is no device bitcode to compile"
                     )
                 bitcode_cmd = [
-                    "make", "-C", os.path.join(ROOT_DIR, "bindings", "ir", "nvidia"),
+                    "make",
+                    "-C",
+                    os.path.join(ROOT_DIR, *bitcode_cfg["make_dir"].split("/")),
                     f"BUILDDIR={build_dir}",
-                    f"BITCODE_LIB_ARCH={bitcode_arch}",
-                    f"ADAPTOR_FLAG={bitcode_adaptor_flags}",
-                    # NCCL's device headers use `typeof`, which clang refuses
-                    # under -std=c++17, the Makefile's default.
-                    "BITCODE_CXX_STD=gnu++17",
+                    f"{bitcode_cfg['arch_var']}={bitcode_arch}",
                 ]
-                for var in ("DEVICE_HOME", "CCL_HOME"):
+                if bitcode_cfg["cxx_std"] is not None:
+                    bitcode_cmd.append(f"BITCODE_CXX_STD={bitcode_cfg['cxx_std']}")
+                if bitcode_cfg["adaptor_flag_var"] is not None:
+                    # The comm-traits branch is a property of the library: the
+                    # nvidia makefile picks it from the NCCL headers it finds.
+                    # The bitcode's own Makefile never reads that file, so the
+                    # branch reaches it only as a value — and without one it
+                    # would compile against its default backend while the
+                    # library shipped beside it talks to another.
+                    bitcode_adaptor_flags = os.environ.get(
+                        "FLAGCX_BITCODE_ADAPTOR_FLAGS", ""
+                    )
+                    if not bitcode_adaptor_flags:
+                        raise RuntimeError(
+                            "FLAGCX_BITCODE_ARCH is set but "
+                            "FLAGCX_BITCODE_ADAPTOR_FLAGS is empty, so the "
+                            "bitcode would be compiled for the wrong device "
+                            "API backend"
+                        )
+                    bitcode_cmd.append(
+                        f"{bitcode_cfg['adaptor_flag_var']}={bitcode_adaptor_flags}"
+                    )
+                for var in bitcode_cfg["extra_env"]:
                     val = os.environ.get(var, "")
                     if val:
                         bitcode_cmd.append(f"{var}={val}")
