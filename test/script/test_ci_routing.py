@@ -60,6 +60,8 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for path, expected in (
             ("test/kernel/maca/device_api_host_helpers.cu", ["metax"]),
             ("flagcx/adaptor/device/cuda_adaptor.cc", ["cuda"]),
+            ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
+            ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
             (".github/scripts/ci/run_ppu_workload.sh", ["ppu"]),
             ("flagcx/adaptor/device/duhip_adaptor.cc", ["hygon"]),
             ("flagcx/adaptor/ccl/durccl_adaptor.cc", ["hygon"]),
@@ -128,7 +130,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_unregistered_vendor_paths_use_full_matrix(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request",
-            "files": ["flagcx/adaptor/device/ixcuda_adaptor.cc"],
+            "files": ["flagcx/adaptor/device/mlu_adaptor.cc"],
         })
         self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 

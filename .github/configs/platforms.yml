@@ -8,6 +8,8 @@ platforms:
     enabled: true
   hygon:
     enabled: true
+  iluvatar:
+    enabled: true
   metax:
     enabled: true
   ppu:

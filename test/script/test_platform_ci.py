@@ -295,7 +295,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu", "ascend"]
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -689,6 +689,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             result.stdout.strip(),
             '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
             '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
+            '{"platform":"iluvatar","display_name":"Iluvatar CoreX Tests"},'
             '{"platform":"metax","display_name":"MetaX Tests"},'
             '{"platform":"ppu","display_name":"T-Head PPU Tests"},'
             '{"platform":"ascend","display_name":"Ascend 910C unit tests"}]}',
@@ -738,6 +739,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "hygon": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "iluvatar": [
                 "adaptor",
                 "core",
                 "device_api",
@@ -1047,7 +1060,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('"$platform_name" != "hygon"', rma_case)
+        self.assertIn(
+            '"$platform_name" != "ascend" &&',
+            rma_case,
+        )
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
