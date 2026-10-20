@@ -24,6 +24,16 @@ export FLAGCX_CI_RUNNER_HETERO_SUPPORTED FLAGCX_CI_SYMMEM_VMM_SUPPORTED
 FLAGCX_CI_RMA_IPC_FILTER='RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals'
 export NP=4
 
+flagcx_ci_skip_suite() {
+  case "$1" in
+    device_api|device_api_unified_ir)
+      echo "SKIPPED: $1 requires CoreX device i64 AtomicLoad, which CoreX 4.5 llc cannot compile"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x COREX_VISIBLE_DEVICES=0,1
   -x CUDA_VISIBLE_DEVICES=0,1

@@ -27,6 +27,10 @@ source "$SET_ENV_SCRIPT"
 if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
+if declare -F flagcx_ci_skip_suite >/dev/null &&
+  flagcx_ci_skip_suite "$SUITE"; then
+  exit 0
+fi
 
 # Keep every hardware backend on the same diagnostic and allocation baseline.
 # Individual invocations may add transport selectors, but must not silently
