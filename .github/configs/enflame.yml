@@ -1,0 +1,37 @@
+# Enflame TOPS hardware configuration.
+hardware_name: enflame
+display_name: Enflame Tests
+
+paths_watch:
+  - .github/configs/enflame.yml
+  - .github/docker/Dockerfile.enflame
+  - .github/scripts/set_env/enflame.sh
+  - flagcx/adaptor/device/tops_adaptor.cc
+  - flagcx/adaptor/ccl/eccl_adaptor.cc
+  - flagcx/adaptor/include/enflame_adaptor.h
+  - makefiles/enflame.mk
+  - .github/scripts/ci/run_unit_test.sh
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:enflame-dev-fixed-20261020
+
+runner_labels:
+  - sy-8g-cicd-flagcx
+
+docker_volumes: []
+
+docker_options:
+  - --network=host
+  - --privileged=true
+  - --ipc=host
+  - --shm-size=100gb
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
+  - --ulimit=nofile=65535:65535
+
+set_env: .github/scripts/set_env/enflame.sh
+
+unit_test_suites:
+  - adaptor
+  - core
+  - device_api_host
+  - service

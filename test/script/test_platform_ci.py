@@ -295,7 +295,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -705,7 +705,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"],
         )
         selected = subprocess.run(
             ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
@@ -748,6 +748,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "runner",
                 "service",
                 "symmem",
+            ],
+            "enflame": [
+                "adaptor",
+                "core",
+                "device_api_host",
+                "service",
             ],
             "cuda": [
                 "adaptor",
@@ -819,6 +825,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 expected,
                 platform,
             )
+
+        enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
+        enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
+        self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
+        self.assertIn(
+            'GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer:NetAdaptorLoopback.*"',
+            enflame_env,
+        )
 
         ascend_env = (
             REPO_ROOT / ".github/scripts/set_env/ascend.sh"

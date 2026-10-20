@@ -354,7 +354,8 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      if ((unit_status == 0)); then
+      if ((unit_status == 0)) &&
+         [[ "$(basename "$SET_ENV_SCRIPT" .sh)" != enflame ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
       fi

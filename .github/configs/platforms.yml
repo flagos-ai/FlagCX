@@ -15,6 +15,7 @@ platforms:
   ppu:
     enabled: true
   ascend:
+  enflame:
     enabled: true
 shared_paths_watch:
   - .github/workflows/**
