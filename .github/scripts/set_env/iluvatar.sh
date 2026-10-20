@@ -18,6 +18,10 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
+FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0
+FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
+export FLAGCX_CI_RUNNER_HETERO_SUPPORTED FLAGCX_CI_SYMMEM_VMM_SUPPORTED
+FLAGCX_CI_RMA_IPC_FILTER='RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals'
 export NP=4
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
@@ -40,6 +44,7 @@ flagcx_ci_configure_suite() {
     adaptor)
       export FLAGCX_VMM_ENABLE=0
       export FLAGCX_CI_ADAPTOR_GPU_SKIP_CASES="GpuIput GpuIget GpuBatchPutAndGet GpuBounds"
+      export FLAGCX_CI_ADAPTOR_MPI_FILTER='-IpcMemHandleMpiTest.CrossProcessLifecycle'
       ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
