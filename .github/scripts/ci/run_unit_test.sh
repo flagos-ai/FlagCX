@@ -577,9 +577,9 @@ run_suite() {
             expected_write=unsupported
             expected_write_required=1
             ;;
-          hygon)
-            # DU uses the existing RMA correctness tests. No separate device
-            # consumer kernel is built for this platform.
+          hygon|enflame)
+            # These backends run the existing RMA correctness suite without a
+            # separate immediate device-consumer visibility kernel.
             ;;
           ascend)
             # The existing immediate-consumer cases are deliberately outside
@@ -616,13 +616,16 @@ run_suite() {
           )
         fi
         if [[ "$platform_name" != "hygon" &&
-              "$platform_name" != "ascend" ]]; then
+              "$platform_name" != "ascend" &&
+              "$platform_name" != "enflame" ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
             RMA_VMM_ENABLE=0 \
             RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} -x FLAGCX_DMABUF_ENABLE=0" || \
             visibility_status=$?
+        elif [[ "$platform_name" == "enflame" ]]; then
+          echo "Skipping Enflame GDR visibility consumer tests: no Enflame consumer kernel is built"
         fi
 
         if [[ "$platform_name" == "cuda" ]]; then
