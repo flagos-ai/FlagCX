@@ -96,6 +96,14 @@ flagcxResult_t ixcudaAdaptorGetVendor(char *vendor) {
   return flagcxSuccess;
 }
 
+flagcxResult_t ixcudaAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  if (pDevice == NULL || pHost == NULL) {
+    return flagcxInvalidArgument;
+  }
+  DEVCHECK(cudaHostGetDevicePointer(pDevice, pHost, 0));
+  return flagcxSuccess;
+}
+
 flagcxResult_t ixcudaAdaptorGdrMemAlloc(void **ptr, size_t size,
                                         void *memHandle) {
   if (ptr == NULL) {
@@ -456,7 +464,8 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorDeviceSynchronize, ixcudaAdaptorDeviceMemcpy,
       ixcudaAdaptorDeviceMemset, ixcudaAdaptorDeviceMalloc,
       ixcudaAdaptorDeviceFree, ixcudaAdaptorSetDevice, ixcudaAdaptorGetDevice,
-      ixcudaAdaptorGetDeviceCount, ixcudaAdaptorGetVendor, NULL,
+      ixcudaAdaptorGetDeviceCount, ixcudaAdaptorGetVendor,
+      ixcudaAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
