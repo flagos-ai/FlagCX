@@ -478,6 +478,13 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
                  << "run with: make MPI_NP=2 run-mpi";
   }
 
+  int deviceCount = 0;
+  ASSERT_FLAGCX_SUCCESS(devHandle->getDeviceCount(&deviceCount));
+  if (deviceCount < worldSize) {
+    GTEST_SKIP() << "CrossProcessLifecycle requires one device per MPI rank";
+  }
+  ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));
+
   constexpr size_t bufferSize = 4096;
   constexpr int expectedValue = 0x12345678;
 
@@ -529,7 +536,7 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
     ASSERT_FLAGCX_SUCCESS(
         devHandle->deviceMemcpy(devPtr, &hostValue, sizeof(hostValue),
                                 flagcxMemcpyHostToDevice, nullptr));
-    ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(nullptr));
+    ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleGet(handle, devPtr));
 
@@ -571,7 +578,7 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
     ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
         &receivedValue, mappedPtr, sizeof(receivedValue),
         flagcxMemcpyDeviceToHost, nullptr));
-    ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(nullptr));
+    ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
     ASSERT_MPI_TRUE(receivedValue == expectedValue);
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleClose(mappedPtr));

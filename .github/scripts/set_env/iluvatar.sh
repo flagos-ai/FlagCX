@@ -54,7 +54,6 @@ flagcx_ci_configure_suite() {
     adaptor)
       export FLAGCX_VMM_ENABLE=0
       export FLAGCX_CI_ADAPTOR_GPU_SKIP_CASES="GpuIput GpuIget GpuBatchPutAndGet GpuBounds"
-      export FLAGCX_CI_ADAPTOR_MPI_FILTER='-IpcMemHandleMpiTest.CrossProcessLifecycle'
       ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)

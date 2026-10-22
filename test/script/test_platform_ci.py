@@ -1266,6 +1266,32 @@ class PlatformCiRegressionTest(unittest.TestCase):
             symmem_runner,
         )
 
+    def test_iluvatar_keeps_ipc_and_vmm_capability_coverage(self):
+        iluvatar_env = (
+            REPO_ROOT / ".github/scripts/set_env/iluvatar.sh"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        ipc_test = (
+            REPO_ROOT / "test/unittest/adaptor/coll_ipc_mem_handle.cpp"
+        ).read_text()
+
+        self.assertNotIn("FLAGCX_CI_ADAPTOR_MPI_FILTER", iluvatar_env)
+        self.assertIn("ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));", ipc_test)
+        self.assertIn("CrossProcessLifecycle", ipc_test)
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        route_union = unit_runner.index(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
+        )
+        vmm_skip_return = unit_runner.index(
+            'echo "Skipping $platform_name VMM flat-map data tests',
+            route_union,
+        )
+        self.assertLess(route_union, vmm_skip_return)
+        self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
+        self.assertIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0", iluvatar_env)
+
         for platform in ("cuda", "metax", "hygon", "ppu"):
             config = (
                 REPO_ROOT / f".github/configs/{platform}.yml"

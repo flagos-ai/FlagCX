@@ -349,7 +349,7 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" MPI_NP=2 \
-        MPI_ENV="-x FLAGCX_VMM_ENABLE=0 ${FLAGCX_CI_ADAPTOR_MPI_FILTER:+-x GTEST_FILTER=$FLAGCX_CI_ADAPTOR_MPI_FILTER}" || ipc_status=$?
+        MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
 
       # Exercise the real IBRC connection handshake with asymmetric rank-local
       # settings. Both peers must report the same terminal error, cleanup must
@@ -884,11 +884,6 @@ run_suite() {
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter"
 
-      if ((symmem_run_vmm_local == 0)); then
-        echo "Skipping $platform_name VMM + NET tests: VMM is unavailable"
-        return 0
-      fi
-
       if ((symmem_run_vmm_net_data != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto" \
           "$MPI_RUNNER" --allow-run-as-root \
@@ -936,6 +931,11 @@ run_suite() {
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" \
         --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion
+
+      if ((symmem_run_vmm_local == 0)); then
+        echo "Skipping $platform_name VMM flat-map data tests: VMM is unavailable; route capability was tested above"
+        return 0
+      fi
       ;;
     device_api)
       run_device_api
