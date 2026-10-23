@@ -4,6 +4,9 @@
 #include "global_comm.h"
 #include "proxy.h"
 #include "uni_runner_gemm.h"
+#include "uni_runner_helper.h"
+
+int64_t flagcxParamUniRunnerGroupSize();
 
 #include <algorithm>
 #include <climits>
@@ -60,6 +63,61 @@ static flagcxResult_t resolveUniRunnerGemmWorkerCount(
     return flagcxInvalidArgument;
   }
   *workerCount = static_cast<uint32_t>(resolved);
+  return flagcxSuccess;
+}
+
+static flagcxResult_t initializeDslFusedDag(
+    flagcxUniRunnerState *state, bool allGather,
+    const void *input, const void *weight, void *output, void *scratch,
+    size_t inputBytes, size_t weightBytes, size_t outputBytes, size_t scratchBytes,
+    size_t m, size_t n, size_t k, size_t kSlices, size_t count,
+    flagcxComm_t comm, void **counters) {
+  int64_t groupSize = flagcxParamUniRunnerGroupSize();
+  if (groupSize == 0)
+    groupSize = comm->localRanks;
+  if (groupSize <= 0 || groupSize > INT_MAX ||
+      comm->nranks % groupSize != 0 || comm->nranks / groupSize != 2)
+    return flagcxInvalidArgument;
+  uniRunnerDagAlgorithmConfig config{};
+  config.matrixM = m;
+  config.matrixN = n;
+  config.matrixK = k;
+  config.numSlices = state->uniRunnerNSlices;
+  config.numKSlices = kSlices;
+  config.groupSize = groupSize;
+  config.pipelineVersion = 2;
+  uniRunnerDagRuntimeBindings bindings;
+  bindings.inputBase = input;
+  bindings.weightBase = weight;
+  bindings.outputBase = output;
+  bindings.scratchBase = scratch;
+  bindings.inputBytes = inputBytes;
+  bindings.weightBytes = weightBytes;
+  bindings.outputBytes = outputBytes;
+  bindings.scratchBytes = scratchBytes;
+  bindings.localRanks = comm->localRanks;
+  FLAGCXCHECK(loadUniRunnerFusedDag(
+      state, allGather ? uniRunnerDagAlgoAllGatherGemm : uniRunnerDagAlgoGemmReduceScatter,
+      config, count, bindings, comm));
+  size_t numGemm = 0, counterBytes = 0;
+  for (int i = 0; i < state->numDagNodes; ++i)
+    numGemm += state->dagNodes[i].nodeType == uniRunnerDagNodeTypeGemm;
+  if (!checkedMul(numGemm, kUniRunnerGemmCounterStrideBytes, &counterBytes))
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(counters, counterBytes, flagcxMemDevice, nullptr));
+  FLAGCXCHECK(deviceAdaptor->deviceMemset(*counters, 0, counterBytes, flagcxMemDevice, state->redStream));
+  size_t ordinal = 0;
+  for (int i = 0; i < state->numDagNodes; ++i) {
+    auto &node = state->dagNodes[i];
+    if (node.nodeType != uniRunnerDagNodeTypeGemm)
+      continue;
+    auto &g = node.nodeData.gemm;
+    FLAGCXCHECK(resolveUniRunnerGemmWorkerCount(
+        g.m, g.n, state->uniRunnerMaxBlocks,
+        flagcxParamUniRunnerGemmWorkersPerStep(), &g.workerCount));
+    g.completionCounter = reinterpret_cast<uint32_t *>(
+        static_cast<char *>(*counters) + ordinal++ * kUniRunnerGemmCounterStrideBytes);
+  }
   return flagcxSuccess;
 }
 
@@ -434,12 +492,18 @@ static flagcxResult_t validateCommon(const void *input, const void *weight,
 }
 
 static flagcxResult_t finishInvocation(flagcxResult_t res, bool initialized,
-                                       flagcxComm_t comm, void *workspace) {
+                                       flagcxComm_t comm, void *workspace,
+                                       void *counters = nullptr) {
   if (initialized) {
     flagcxResult_t cleanupRes = cleanupUniRunner(comm);
     if (res == flagcxSuccess) {
       res = cleanupRes;
     }
+  }
+  if (counters != nullptr) {
+    flagcxResult_t freeRes = deviceAdaptor->deviceFree(counters, flagcxMemDevice, nullptr);
+    if (res == flagcxSuccess)
+      res = freeRes;
   }
   if (workspace != NULL) {
     flagcxResult_t freeRes =
@@ -453,6 +517,12 @@ static flagcxResult_t finishInvocation(flagcxResult_t res, bool initialized,
 
 } // namespace
 
+flagcxResult_t resolveUniRunnerDslGemmWorkerCount(
+    uint32_t m, uint32_t n, uint64_t maxBlocks, int64_t requestedWorkers,
+    uint32_t *workerCount) {
+  return resolveUniRunnerGemmWorkerCount(m, n, maxBlocks, requestedWorkers, workerCount);
+}
+
 flagcxResult_t flagcxAllGatherGemm(
     const void *input, const void *weight, void *output, size_t mPerRank,
     size_t n, size_t k, flagcxDataType_t datatype, flagcxComm_t comm,
@@ -463,7 +533,8 @@ flagcxResult_t flagcxAllGatherGemm(
   if (res != flagcxSuccess) {
     return res;
   }
-  if (flagcxParamUniRunnerFusedAgGemmAlgo() != 0) {
+  const int64_t algorithm = flagcxParamUniRunnerFusedAgGemmAlgo();
+  if (algorithm < 0 || algorithm > 1) {
     return flagcxNotSupported;
   }
 
@@ -520,6 +591,7 @@ flagcxResult_t flagcxAllGatherGemm(
     return finishInvocation(res, false, comm, workspace);
   }
 
+  void *dslCounters = nullptr;
   bool initialized = false;
   res = initUniRunner(comm, stream);
   if (res == flagcxSuccess) {
@@ -539,16 +611,23 @@ flagcxResult_t flagcxAllGatherGemm(
           runnerState->uniRunnerMaxBlocks, requestedWorkers, &gemmWorkerCount);
       float *scratch = comm->nranks > 1 ? static_cast<float *>(workspace) : NULL;
       if (res == flagcxSuccess) {
-        res = buildAllGatherGemmDag(
-            runnerState, input, weight, output, scratch, mPerRank, n, k,
-            slices, gemmWorkerCount, counterBase, comm);
+        if (algorithm == 1) {
+          res = initializeDslFusedDag(
+              runnerState, true, input, weight, output, scratch,
+              inputBytes, weightBytes, outputBytes, agScratchBytes,
+              outputRows, n, k, slices, inputElements, comm, &dslCounters);
+        } else {
+          res = buildAllGatherGemmDag(
+              runnerState, input, weight, output, scratch, mPerRank, n, k,
+              slices, gemmWorkerCount, counterBase, comm);
+        }
       }
       if (res == flagcxSuccess) {
         res = runUniRunner(comm);
       }
     }
   }
-  return finishInvocation(res, initialized, comm, workspace);
+  return finishInvocation(res, initialized, comm, workspace, dslCounters);
 }
 
 flagcxResult_t flagcxGemmReduceScatter(
@@ -566,7 +645,8 @@ flagcxResult_t flagcxGemmReduceScatter(
   if (m % static_cast<size_t>(comm->nranks) != 0) {
     return flagcxInvalidArgument;
   }
-  if (flagcxParamUniRunnerFusedGemmRsAlgo() != 0) {
+  const int64_t algorithm = flagcxParamUniRunnerFusedGemmRsAlgo();
+  if (algorithm < 0 || algorithm > 1) {
     return flagcxNotSupported;
   }
 
@@ -626,6 +706,7 @@ flagcxResult_t flagcxGemmReduceScatter(
     return finishInvocation(res, false, comm, workspace);
   }
 
+  void *dslCounters = nullptr;
   bool initialized = false;
   res = initUniRunner(comm, stream);
   if (res == flagcxSuccess) {
@@ -649,14 +730,26 @@ flagcxResult_t flagcxGemmReduceScatter(
                              ? gemmOutput + fullOutputElements
                              : NULL;
       if (res == flagcxSuccess) {
-        res = buildGemmReduceScatterDag(
-            runnerState, input, weight, output, gemmOutput, rsScratch, m, n,
-            kPerRank, slices, gemmWorkerCount, counterBase, comm);
+        if (algorithm == 1) {
+          size_t globalK = 0;
+          if (!checkedMul(kPerRank, static_cast<size_t>(comm->nranks), &globalK)) {
+            res = flagcxInvalidArgument;
+          } else {
+            res = initializeDslFusedDag(
+                runnerState, false, input, weight, output, gemmOutput,
+                inputBytes, weightBytes, outputBytes, dataWorkspaceBytes,
+                m, n, globalK, slices, outputElements, comm, &dslCounters);
+          }
+        } else {
+          res = buildGemmReduceScatterDag(
+              runnerState, input, weight, output, gemmOutput, rsScratch, m, n,
+              kPerRank, slices, gemmWorkerCount, counterBase, comm);
+        }
       }
       if (res == flagcxSuccess) {
         res = runUniRunner(comm);
       }
     }
   }
-  return finishInvocation(res, initialized, comm, workspace);
+  return finishInvocation(res, initialized, comm, workspace, dslCounters);
 }

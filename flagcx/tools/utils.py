@@ -18,6 +18,8 @@ class Collective(Enum):
     AlltoAll = 9
     AlltoAllv = 10
     Nop = 11
+    AllGatherGemm = 12
+    GemmReduceScatter = 13
 
 
 class RedOp(Enum):
@@ -65,6 +67,12 @@ class BufferKind(str, Enum):
     input = "input"
     output = "output"
     scratch = "scratch"
+    weight = "weight"
+
+
+class CommDomain(IntEnum):
+    ipc = 0
+    net = 1
 
 
 class P2pType(str, Enum):
@@ -94,9 +102,11 @@ class AlgoType(str, Enum):
     grouped_ar = "grouped_ar"
     ipc_ring_ar = "ipc_ring_ar"
     hierarchical_sliced_ar = "hierarchical_sliced_ar"
+    all_gather_gemm = "all_gather_gemm"
+    gemm_reduce_scatter = "gemm_reduce_scatter"
 
 
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 ALGORITHM_HASH_SCHEMA_VERSION = 2
 FNV_OFFSET_BASIS = 14695981039346656037
 FNV_PRIME = 1099511628211
@@ -135,6 +145,8 @@ ALGO_TO_INT = {
     "grouped_ar": 9,
     "ipc_ring_ar": 10,
     "hierarchical_sliced_ar": 11,
+    "all_gather_gemm": 12,
+    "gemm_reduce_scatter": 13,
 }
 
 COMM_OP_TO_INT = {
@@ -165,6 +177,8 @@ COLLECTIVE_TO_COMM_OP = {
     Collective.AlltoAll: "all_to_all",
     Collective.AlltoAllv: "all_to_allv",
     Collective.Nop: "noop",
+    Collective.AllGatherGemm: "all_gather",
+    Collective.GemmReduceScatter: "reduce_scatter",
 }
 
 
@@ -269,6 +283,10 @@ def _algorithm_hash(algo: str, config: Mapping[str, int]) -> int:
         "ipc_ring_ar": ("num_channels", "simple_buffer_bytes", "nthreads",
                         "chunk_steps", "slice_steps", "topology_hash", "buffer_mode"),
         "hierarchical_sliced_ar": ("num_slices", "num_red_slices", "group_size", "buffer_mode"),
+        "all_gather_gemm": ("m", "n", "k", "num_slices", "num_k_slices",
+                            "group_size", "pipeline_version", "buffer_mode"),
+        "gemm_reduce_scatter": ("m", "n", "k", "num_slices", "num_k_slices",
+                                "group_size", "pipeline_version", "buffer_mode"),
         "dummy": (),
     }
     if algo == "grouped_ar":

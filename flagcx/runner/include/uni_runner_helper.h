@@ -15,7 +15,7 @@
 
 using Json = nlohmann::json;
 
-inline constexpr int kUniRunnerDagCacheFormatVersion = 7;
+inline constexpr int kUniRunnerDagCacheFormatVersion = 8;
 
 inline bool uniRunnerDagDataTypeValueValid(int value) {
   return value >= 0 && value < flagcxNumTypes;
@@ -31,7 +31,8 @@ enum uniRunnerDagBufferType {
   uniRunnerDagBufferTypeNone = 0,
   uniRunnerDagBufferTypeInput = 1,
   uniRunnerDagBufferTypeOutput = 2,
-  uniRunnerDagBufferTypeScratch = 3
+  uniRunnerDagBufferTypeScratch = 3,
+  uniRunnerDagBufferTypeWeight = 4
 };
 
 struct uniRunnerDagBufferRef {
@@ -77,6 +78,25 @@ struct uniRunnerDagRedOpDesc {
   flagcxRedOp_t redOp = flagcxRedNoOp;
 };
 
+struct uniRunnerDagGemmOpDesc {
+  uniRunnerDagBufferRef a, b, c;
+  uint32_t m = 0, n = 0, k = 0;
+  uint32_t lda = 0, ldb = 0, ldc = 0;
+  flagcxDataType_t datatype = flagcxFloat32;
+  int accumulate = 0;
+};
+
+inline bool uniRunnerDagMatrixBytes(uint32_t rows, uint32_t cols,
+                                    uint32_t stride, size_t *bytes) {
+  if (rows == 0 || cols == 0 || stride < cols || bytes == nullptr)
+    return false;
+  const uint64_t elements = uint64_t(rows - 1) * stride + cols;
+  if (elements > std::numeric_limits<size_t>::max() / sizeof(float))
+    return false;
+  *bytes = static_cast<size_t>(elements) * sizeof(float);
+  return true;
+}
+
 struct uniRunnerDagCpyOpDesc {
   uniRunnerDagBufferRef src;
   uniRunnerDagBufferRef dst;
@@ -113,6 +133,7 @@ struct uniRunnerDagNodeDesc {
   std::vector<int> children;
   std::vector<uniRunnerDagP2pOpDesc> p2pOps;
   uniRunnerDagRedOpDesc red;
+  uniRunnerDagGemmOpDesc gemm;
   uniRunnerDagCpyOpDesc cpy;
   uniRunnerDagIpcOpDesc ipc;
   uniRunnerDagRingStepDesc ringStep;
@@ -134,6 +155,7 @@ struct uniRunnerCompiledDagTemplate {
   size_t numHostNodes = 0;
   size_t numRedNodes = 0;
   size_t numIpcNodes = 0;
+  bool hasGemm = false;
   size_t maxParallelRedNodes = 0;
   size_t maxRedNodeCount = 0;
   size_t maxIpcNodeBytes = 0;
@@ -145,6 +167,39 @@ struct uniRunnerCompiledDagTemplate {
 flagcxResult_t compileUniRunnerDagTemplate(
     const uniRunnerDagTemplate &dagTemplate,
     uniRunnerCompiledDagTemplate *compiledTemplate);
+
+struct uniRunnerDagRuntimeBindings {
+  const void *inputBase = nullptr;
+  const void *weightBase = nullptr;
+  void *outputBase = nullptr;
+  void *scratchBase = nullptr;
+  size_t inputBytes = 0, weightBytes = 0, outputBytes = 0, scratchBytes = 0;
+  int localRanks = 0;
+};
+
+flagcxResult_t validateUniRunnerDagTemplateBindings(
+    const uniRunnerDagTemplate &dagTemplate,
+    const uniRunnerDagRuntimeBindings &bindings);
+// Host-only template binding and release; payload addresses are never dereferenced.
+flagcxResult_t materializeUniRunnerDagTemplate(
+    flagcxUniRunnerState *state, const uniRunnerDagTemplate &dagTemplate,
+    const uniRunnerDagRuntimeBindings &bindings);
+flagcxResult_t cleanupUniRunnerDagTemplateInstance(flagcxUniRunnerState *state);
+flagcxResult_t resolveUniRunnerRedWorkerCount(
+    const flagcxUniRunnerState *state, size_t count, uint32_t *workerCount);
+flagcxResult_t resolveUniRunnerDslGemmWorkerCount(
+    uint32_t m, uint32_t n, uint64_t maxBlocks, int64_t requestedWorkers,
+    uint32_t *workerCount);
+
+flagcxResult_t validateUniRunnerFusedDagKey(
+    const uniRunnerDagCacheKey &key, uniRunnerDagAlgoType algo,
+    const uniRunnerDagAlgorithmConfig &config,
+    const uniRunnerDagRuntimeBindings &bindings);
+
+flagcxResult_t loadUniRunnerFusedDag(
+    flagcxUniRunnerState *state, uniRunnerDagAlgoType algo,
+    const uniRunnerDagAlgorithmConfig &config, size_t count,
+    const uniRunnerDagRuntimeBindings &bindings, flagcxComm_t comm);
 
 // Production validation helpers exposed here so CPU-only cache tests exercise
 // the exact IPC materialization and topology identity rules.
@@ -181,6 +236,10 @@ inline const char *uniRunnerDagAlgoTypeToString(uniRunnerDagAlgoType algoType) {
       return "ipc_ring_ar";
     case uniRunnerDagAlgoHierarchicalSlicedAR:
       return "hierarchical_sliced_ar";
+    case uniRunnerDagAlgoAllGatherGemm:
+      return "all_gather_gemm";
+    case uniRunnerDagAlgoGemmReduceScatter:
+      return "gemm_reduce_scatter";
     default:
       return "unknown";
   }
@@ -210,6 +269,10 @@ inline bool uniRunnerDagAlgoTypeFromString(const std::string &text,
     *algoType = uniRunnerDagAlgoIpcAR;
   } else if (text == "ipc_ring_ar") {
     *algoType = uniRunnerDagAlgoIpcRingAR;
+  } else if (text == "all_gather_gemm") {
+    *algoType = uniRunnerDagAlgoAllGatherGemm;
+  } else if (text == "gemm_reduce_scatter") {
+    *algoType = uniRunnerDagAlgoGemmReduceScatter;
   } else if (text == "hierarchical_sliced_ar") {
     *algoType = uniRunnerDagAlgoHierarchicalSlicedAR;
   } else {
@@ -293,6 +356,8 @@ inline const char *uniRunnerDagNodeTypeToString(uniRunnerDagNodeType nodeType) {
       return "ipc";
     case uniRunnerDagNodeTypeRingStep:
       return "ring_step";
+    case uniRunnerDagNodeTypeGemm:
+      return "gemm";
     default:
       return "unknown";
   }
@@ -308,6 +373,8 @@ inline bool uniRunnerDagNodeTypeFromString(const std::string &text,
     *nodeType = uniRunnerDagNodeTypeCpy;
   } else if (text == "ipc") {
     *nodeType = uniRunnerDagNodeTypeIpc;
+  } else if (text == "gemm") {
+    *nodeType = uniRunnerDagNodeTypeGemm;
   } else if (text == "ring_step") {
     *nodeType = uniRunnerDagNodeTypeRingStep;
   } else {
@@ -327,6 +394,8 @@ uniRunnerDagBufferTypeToString(uniRunnerDagBufferType bufferType) {
       return "output";
     case uniRunnerDagBufferTypeScratch:
       return "scratch";
+    case uniRunnerDagBufferTypeWeight:
+      return "weight";
     default:
       return "unknown";
   }
@@ -340,6 +409,8 @@ inline bool uniRunnerDagBufferTypeFromString(const std::string &text,
     *type = uniRunnerDagBufferTypeInput;
   } else if (text == "output") {
     *type = uniRunnerDagBufferTypeOutput;
+  } else if (text == "weight") {
+    *type = uniRunnerDagBufferTypeWeight;
   } else if (text == "scratch") {
     *type = uniRunnerDagBufferTypeScratch;
   } else {
@@ -679,6 +750,16 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
           {"datatype", static_cast<int>(node.red.datatype)},
           {"red_op", static_cast<int>(node.red.redOp)},
       };
+    } else if (node.nodeType == uniRunnerDagNodeTypeGemm) {
+      const auto &g = node.gemm;
+      nodeJson["gemm"] = Json{
+          {"a", uniRunnerDagBufferRefToJson(g.a)},
+          {"b", uniRunnerDagBufferRefToJson(g.b)},
+          {"c", uniRunnerDagBufferRefToJson(g.c)},
+          {"m", g.m}, {"n", g.n}, {"k", g.k},
+          {"lda", g.lda}, {"ldb", g.ldb}, {"ldc", g.ldc},
+          {"datatype", static_cast<int>(g.datatype)},
+          {"accumulate", g.accumulate}};
     } else if (node.nodeType == uniRunnerDagNodeTypeCpy) {
       nodeJson["cpy"] = Json{
           {"src", uniRunnerDagBufferRefToJson(node.cpy.src)},
@@ -841,6 +922,31 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
         }
         node.red.datatype = static_cast<flagcxDataType_t>(datatype);
         node.red.redOp = static_cast<flagcxRedOp_t>(redOp);
+      } else if (node.nodeType == uniRunnerDagNodeTypeGemm) {
+        const Json &g = nodeJson.at("gemm");
+        if (!g.is_object() || g.size() != 11 ||
+            !uniRunnerDagBufferRefFromJson(g.at("a"), &node.gemm.a) ||
+            !uniRunnerDagBufferRefFromJson(g.at("b"), &node.gemm.b) ||
+            !uniRunnerDagBufferRefFromJson(g.at("c"), &node.gemm.c))
+          return false;
+        const char *names[] = {"m", "n", "k", "lda", "ldb", "ldc"};
+        uint32_t *fields[] = {&node.gemm.m, &node.gemm.n, &node.gemm.k,
+                             &node.gemm.lda, &node.gemm.ldb, &node.gemm.ldc};
+        for (size_t i = 0; i < 6; ++i) {
+          size_t value = 0;
+          if (!uniRunnerDagSizeFromJson(g.at(names[i]), &value) ||
+              value == 0 || value > UINT32_MAX)
+            return false;
+          *fields[i] = static_cast<uint32_t>(value);
+        }
+        size_t datatype = 0, accumulate = 0;
+        if (!uniRunnerDagSizeFromJson(g.at("datatype"), &datatype) ||
+            datatype != flagcxFloat32 ||
+            !uniRunnerDagSizeFromJson(g.at("accumulate"), &accumulate) ||
+            accumulate > 1)
+          return false;
+        node.gemm.datatype = flagcxFloat32;
+        node.gemm.accumulate = static_cast<int>(accumulate);
       } else if (node.nodeType == uniRunnerDagNodeTypeCpy) {
         const Json &cpyJson = nodeJson.at("cpy");
         if (!uniRunnerDagBufferRefFromJson(cpyJson.at("src"), &node.cpy.src) ||

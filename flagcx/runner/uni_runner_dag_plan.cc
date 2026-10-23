@@ -54,6 +54,7 @@ static bool isValidCompiledBufferRef(const uniRunnerDagBufferRef &ref,
     case uniRunnerDagBufferTypeInput:
     case uniRunnerDagBufferTypeOutput:
     case uniRunnerDagBufferTypeScratch:
+    case uniRunnerDagBufferTypeWeight:
       return true;
     case uniRunnerDagBufferTypeNone:
       return accessBytes == 0 && ref.offsetBytes == 0;
@@ -573,8 +574,21 @@ validateUniRunnerDagTemplatePayload(const uniRunnerDagTemplate &dagTemplate) {
           return flagcxInvalidArgument;
         }
         break;
-      case uniRunnerDagNodeTypeGemm:
-        return flagcxNotSupported;
+      case uniRunnerDagNodeTypeGemm: {
+        const auto &g = node.gemm;
+        size_t aBytes = 0, bBytes = 0, cBytes = 0;
+        if (g.datatype != flagcxFloat32 || (g.accumulate != 0 && g.accumulate != 1) ||
+            !uniRunnerDagMatrixBytes(g.m, g.k, g.lda, &aBytes) ||
+            !uniRunnerDagMatrixBytes(g.k, g.n, g.ldb, &bBytes) ||
+            !uniRunnerDagMatrixBytes(g.m, g.n, g.ldc, &cBytes) ||
+            !isValidCompiledBufferRef(g.a, aBytes) ||
+            !isValidCompiledBufferRef(g.b, bBytes) ||
+            !isValidCompiledBufferRef(g.c, cBytes) ||
+            g.c.bufferType == uniRunnerDagBufferTypeInput ||
+            g.c.bufferType == uniRunnerDagBufferTypeWeight)
+          return flagcxInvalidArgument;
+        break;
+      }
       default:
         return flagcxInternalError;
     }
@@ -863,6 +877,11 @@ flagcxResult_t compileUniRunnerDagTemplate(
                                 ? 0
                                 : compiled.ringLaneOffsets.size() - 1;
     compiled.dagTemplate = dagTemplate;
+    compiled.hasGemm = std::any_of(
+        dagTemplate.nodes.begin(), dagTemplate.nodes.end(),
+        [](const uniRunnerDagNodeDesc &node) {
+          return node.nodeType == uniRunnerDagNodeTypeGemm;
+        });
     compiled.dagTemplate.hashValue =
         getUniRunnerDagPatternHash(compiled.dagTemplate.key);
     compiled.numNodes = numNodes;

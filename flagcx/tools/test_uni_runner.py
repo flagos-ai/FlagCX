@@ -145,7 +145,9 @@ def build_slicedar(
                     rb.cpy(workflow.input(0), workflow.output(0), count, name="self_copy")
             return workflow
 
-        nodes_per_slice = (effective_red_slices + 2) * (world_size - 1)
+        # RED workers are expanded by the persistent runtime, once per logical node.
+        physical_red_slices = 1
+        nodes_per_slice = (physical_red_slices + 2) * (world_size - 1)
         num_nodes = num_slices * nodes_per_slice
 
         for rank in workflow.ranks():
@@ -170,13 +172,13 @@ def build_slicedar(
                             if step > 0 and slice_idx == 0:
                                 parent_idx = (
                                     (num_slices - 1) * nodes_per_slice
-                                    + (step - 1) * (1 + effective_red_slices)
+                                    + (step - 1) * (1 + physical_red_slices)
                                 )
                             p2p_parents.append(parent_idx)
                             if step > 0:
                                 p2p_parents.extend(
-                                    p2p_node_idx - effective_red_slices + red_slice
-                                    for red_slice in range(effective_red_slices)
+                                    p2p_node_idx - physical_red_slices + red_slice
+                                    for red_slice in range(physical_red_slices)
                                 )
                         rb.p2p(
                             [
@@ -190,20 +192,21 @@ def build_slicedar(
 
                         red_base_offset, red_base_count = rx_offset, rx_count
                         red_start_idx = global_node_idx
-                        for red_slice in range(effective_red_slices):
-                            sub_offset, sub_count = _slice_chunk(red_base_count, effective_red_slices, red_slice)
+                        for red_slice in range(physical_red_slices):
+                            sub_offset, sub_count = _slice_chunk(red_base_count, physical_red_slices, red_slice)
                             red_offset = red_base_offset + sub_offset
                             rb.red(
                                 workflow.output(red_offset),
                                 workflow.input(red_offset),
                                 workflow.output(red_offset),
                                 sub_count,
-                                red_op=red_op_enum,
+                                red_op=(RedOp.sum if red_op_enum == RedOp.avg
+                                        and step != world_size - 2 else red_op_enum),
                                 parents=[p2p_node_idx],
                                 name=f"rs_red_s{slice_idx}_step{step}_r{red_slice}",
                             )
                             global_node_idx += 1
-                        assert red_start_idx + effective_red_slices == global_node_idx
+                        assert red_start_idx + physical_red_slices == global_node_idx
 
                     for step in range(world_size - 1):
                         p2p_node_idx = global_node_idx
@@ -218,20 +221,20 @@ def build_slicedar(
                             if step == 0:
                                 parent_idx = (
                                     (num_slices - 1) * nodes_per_slice
-                                    + (world_size - 2) * (1 + effective_red_slices)
+                                    + (world_size - 2) * (1 + physical_red_slices)
                                 )
                             else:
                                 parent_idx = (
                                     (num_slices - 1) * nodes_per_slice
-                                    + (world_size - 1) * (1 + effective_red_slices)
+                                    + (world_size - 1) * (1 + physical_red_slices)
                                     + step
                                     - 1
                                 )
                         p2p_parents.append(parent_idx)
                         if step == 0:
                             p2p_parents.extend(
-                                p2p_node_idx - effective_red_slices + red_slice
-                                for red_slice in range(effective_red_slices)
+                                p2p_node_idx - physical_red_slices + red_slice
+                                for red_slice in range(physical_red_slices)
                             )
 
                         rb.p2p(
@@ -679,9 +682,20 @@ class UniRunnerDslTest(unittest.TestCase):
         self.assertIn("red", node_types)
         self.assertEqual(
             sum(1 for node in entry["dag"]["nodes"] if node["node_type"] == "red"),
-            12,
+            6,
         )
-        self.assertEqual(entry["dag"]["num_nodes"], 24)
+        self.assertEqual(entry["dag"]["num_nodes"], 18)
+
+    def test_slicedar_avg_only_normalizes_the_final_rs_step(self):
+        workflow = build_slicedar(
+            world_size=4, count=101, num_slices=3,
+            num_red_slices=4, red_op=RedOp.avg,
+        )
+        for dag in workflow.rank_templates().values():
+            reductions = [node.red for node in dag.nodes if node.node_type == "red"]
+            self.assertEqual([red.red_op for red in reductions],
+                             [RedOp.sum, RedOp.sum, RedOp.avg] * 3)
+        workflow.semantic_check().raise_for_error()
 
     def test_hierarchical_slicedar_semantics_and_runtime_json(self):
         workflow = build_hierarchical_slicedar(

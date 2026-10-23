@@ -12,6 +12,7 @@ try:
         AlgoType,
         BufferKind,
         Collective,
+        CommDomain,
         DataType,
         P2pType,
         RedOp,
@@ -33,6 +34,7 @@ except ImportError:  # Keep compatibility with direct execution from flagcx/tool
         AlgoType,
         BufferKind,
         Collective,
+        CommDomain,
         DataType,
         P2pType,
         RedOp,
@@ -116,6 +118,29 @@ class CpyOpDesc:
 
 
 @dataclass
+class GemmOpDesc:
+    a: BufferRef
+    b: BufferRef
+    c: BufferRef
+    m: int
+    n: int
+    k: int
+    lda: int
+    ldb: int
+    ldc: int
+    datatype: int
+    accumulate: int = 0
+
+    def to_json(self) -> Dict:
+        return {
+            "a": self.a.to_json(), "b": self.b.to_json(), "c": self.c.to_json(),
+            "m": self.m, "n": self.n, "k": self.k,
+            "lda": self.lda, "ldb": self.ldb, "ldc": self.ldc,
+            "datatype": self.datatype, "accumulate": self.accumulate,
+        }
+
+
+@dataclass
 class UniRunnerDagNode:
     node_idx: int
     node_type: str
@@ -124,13 +149,15 @@ class UniRunnerDagNode:
     p2p_ops: List[P2pOp] = field(default_factory=list)
     red: Optional[RedOpDesc] = None
     cpy: Optional[CpyOpDesc] = None
+    gemm: Optional[GemmOpDesc] = None
+    comm_domain: int = int(CommDomain.ipc)
     name: str = ""
 
     def to_json(self) -> Dict:
         payload = {
             "node_idx": self.node_idx,
             "node_type": self.node_type,
-            "comm_domain": 0,
+            "comm_domain": int(self.comm_domain),
             "parents": list(self.parents),
             "children": list(self.children),
         }
@@ -140,6 +167,8 @@ class UniRunnerDagNode:
             payload["red"] = self.red.to_json()
         elif self.node_type == "cpy":
             payload["cpy"] = self.cpy.to_json()
+        elif self.node_type == "gemm":
+            payload["gemm"] = self.gemm.to_json()
         else:
             raise ValueError(f"Unsupported node type {self.node_type}")
         return payload
@@ -241,6 +270,7 @@ class UniRunnerWorkflow:
         scratch_count: int = 0,
         semantic: Optional[CollectiveSemantics] = None,
         algorithm_config: Optional[Mapping[str, int]] = None,
+        weight_count: int = 0,
     ):
         if world_size <= 0:
             raise ValueError("world_size must be positive")
@@ -258,6 +288,7 @@ class UniRunnerWorkflow:
         self.input_count = count if input_count is None else input_count
         self.output_count = count if output_count is None else output_count
         self.scratch_count = scratch_count
+        self.weight_count = weight_count
         self.semantic = semantic
         self._ranks = {rank: UniRunnerRankDag(rank) for rank in range(world_size)}
         self._active_rank: Optional[int] = None
@@ -287,6 +318,12 @@ class UniRunnerWorkflow:
     def scratch(self, offset: int = 0) -> BufferRef:
         return self.buffer(BufferKind.scratch, offset)
 
+    def weight(self, offset: int = 0) -> BufferRef:
+        return self.buffer(BufferKind.weight, offset)
+
+    def weight_bytes(self, offset_bytes: int = 0) -> BufferRef:
+        return BufferRef(BufferKind.weight.value, offset_bytes)
+
     def input_bytes(self, offset_bytes: int = 0) -> BufferRef:
         return BufferRef(BufferKind.input.value, offset_bytes)
 
@@ -312,9 +349,11 @@ class UniRunnerWorkflow:
         ops: Optional[Sequence[P2pOp]] = None,
         parents: Optional[Sequence[int]] = None,
         name: str = "",
+        comm_domain: Union[CommDomain, int] = CommDomain.ipc,
     ) -> int:
         rank = self._resolve_rank(rank)
         node = self._new_node(rank, "p2p", parents, name)
+        node.comm_domain = int(CommDomain(comm_domain))
         node.p2p_ops = list(ops or [])
         self._ranks[rank].add_node(node)
         self._finalized = False
@@ -330,9 +369,11 @@ class UniRunnerWorkflow:
         red_op: Optional[Union[RedOp, int]] = None,
         parents: Optional[Sequence[int]] = None,
         name: str = "",
+        comm_domain: Union[CommDomain, int] = CommDomain.ipc,
     ) -> int:
         rank = self._resolve_rank(rank)
         node = self._new_node(rank, "red", parents, name)
+        node.comm_domain = int(CommDomain(comm_domain))
         node.red = RedOpDesc(
             input1=input1 or BufferRef.none(),
             input2=input2 or BufferRef.none(),
@@ -353,10 +394,32 @@ class UniRunnerWorkflow:
         count: int = 0,
         parents: Optional[Sequence[int]] = None,
         name: str = "",
+        comm_domain: Union[CommDomain, int] = CommDomain.ipc,
     ) -> int:
         rank = self._resolve_rank(rank)
         node = self._new_node(rank, "cpy", parents, name)
+        node.comm_domain = int(CommDomain(comm_domain))
         node.cpy = CpyOpDesc(src or BufferRef.none(), dst or BufferRef.none(), count, self.datatype)
+        self._ranks[rank].add_node(node)
+        self._finalized = False
+        return node.node_idx
+
+    def gemm(
+        self, rank: Optional[int] = None, a: Optional[BufferRef] = None,
+        b: Optional[BufferRef] = None, c: Optional[BufferRef] = None,
+        m: int = 0, n: int = 0, k: int = 0, lda: Optional[int] = None,
+        ldb: Optional[int] = None, ldc: Optional[int] = None,
+        accumulate: bool = False, parents: Optional[Sequence[int]] = None,
+        name: str = "", comm_domain: Union[CommDomain, int] = CommDomain.ipc,
+    ) -> int:
+        rank = self._resolve_rank(rank)
+        node = self._new_node(rank, "gemm", parents, name)
+        node.comm_domain = int(CommDomain(comm_domain))
+        node.gemm = GemmOpDesc(
+            a or BufferRef.none(), b or BufferRef.none(), c or BufferRef.none(),
+            m, n, k, k if lda is None else lda, n if ldb is None else ldb,
+            n if ldc is None else ldc, self.datatype, int(accumulate),
+        )
         self._ranks[rank].add_node(node)
         self._finalized = False
         return node.node_idx
@@ -380,10 +443,25 @@ class UniRunnerWorkflow:
             rank_dag.finalize_dependencies()
         self._finalized = True
 
+    def validate_structure(self) -> Dict:
+        """Validate the persistent input contract without allocating tensors."""
+        try:
+            from .dsl_validation import validate_workflow
+        except ImportError:
+            from dsl_validation import validate_workflow
+        return validate_workflow(self)
+
     def validate(self) -> SemanticCheckResult:
         return self.semantic_check()
 
     def semantic_check(self, semantic: Optional[CollectiveSemantics] = None) -> SemanticCheckResult:
+        if self.collective in (Collective.AllGatherGemm, Collective.GemmReduceScatter) or any(
+            node.node_type == "gemm" for dag in self._ranks.values() for node in dag.nodes
+        ):
+            return SemanticCheckResult(False, [
+                "GEMM numerical semantics need a numerical reference; "
+                "use validate_structure() for CPU input-contract validation"
+            ])
         if semantic is None:
             semantic = self.semantic
         if semantic is None and self.collective != Collective.Custom:
@@ -423,6 +501,9 @@ class UniRunnerWorkflow:
             "hash": str(key.hash_value()),
             "key": key.to_json(),
             "dag": {"num_nodes": len(nodes), "nodes": nodes},
+            "algorithm": {"name": self.algo, "config": self.algorithm_config},
+            "bindings": {name + "_bytes": getattr(self, name + "_count", 0) * self.type_size
+                         for name in ("input", "output", "scratch", "weight")},
         }
 
     def runtime_cache_json(self, ranks: Optional[Iterable[int]] = None) -> Dict:
@@ -430,7 +511,7 @@ class UniRunnerWorkflow:
         return {
             "format_version": FORMAT_VERSION,
             "address_model": "buffer_kind+offset_bytes",
-            "buffer_kinds": ["input", "output", "scratch"],
+            "buffer_kinds": ["input", "output", "scratch", "weight"],
             "entries": [self.runtime_entry(rank) for rank in selected_ranks],
         }
 
@@ -511,8 +592,9 @@ class _RankBuilder:
         self.workflow._active_rank = None
         return False
 
-    def p2p(self, ops: Sequence[P2pOp], parents: Optional[Sequence[int]] = None, name: str = "") -> int:
-        return self.workflow.p2p(self.rank, ops, parents, name)
+    def p2p(self, ops: Sequence[P2pOp], parents: Optional[Sequence[int]] = None,
+            name: str = "", comm_domain: Union[CommDomain, int] = CommDomain.ipc) -> int:
+        return self.workflow.p2p(self.rank, ops, parents, name, comm_domain)
 
     def red(
         self,
@@ -523,11 +605,22 @@ class _RankBuilder:
         red_op: Optional[Union[RedOp, int]] = None,
         parents: Optional[Sequence[int]] = None,
         name: str = "",
+        comm_domain: Union[CommDomain, int] = CommDomain.ipc,
     ) -> int:
-        return self.workflow.red(self.rank, input1, input2, output, count, red_op, parents, name)
+        return self.workflow.red(self.rank, input1, input2, output, count, red_op, parents, name, comm_domain)
 
-    def cpy(self, src: BufferRef, dst: BufferRef, count: int, parents: Optional[Sequence[int]] = None, name: str = "") -> int:
-        return self.workflow.cpy(self.rank, src, dst, count, parents, name)
+    def cpy(self, src: BufferRef, dst: BufferRef, count: int,
+            parents: Optional[Sequence[int]] = None, name: str = "",
+            comm_domain: Union[CommDomain, int] = CommDomain.ipc) -> int:
+        return self.workflow.cpy(self.rank, src, dst, count, parents, name, comm_domain)
+
+    def gemm(self, a: BufferRef, b: BufferRef, c: BufferRef, m: int, n: int,
+             k: int, lda: Optional[int] = None, ldb: Optional[int] = None,
+             ldc: Optional[int] = None, accumulate: bool = False,
+             parents: Optional[Sequence[int]] = None, name: str = "",
+             comm_domain: Union[CommDomain, int] = CommDomain.ipc) -> int:
+        return self.workflow.gemm(self.rank, a, b, c, m, n, k, lda, ldb, ldc,
+                                  accumulate, parents, name, comm_domain)
 
     def dep(self, parent: int, child: int):
         self.workflow.dep(self.rank, parent, child)
@@ -538,6 +631,8 @@ unirunnerworkflow = UniRunnerWorkflow
 
 __all__ = [
     "BufferRef",
+    "CommDomain",
+    "GemmOpDesc",
     "P2pOp",
     "UniRunnerDagCacheKey",
     "UniRunnerDagNode",
