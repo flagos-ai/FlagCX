@@ -6,8 +6,9 @@
 # "Ubuntu22.04" file name is a label on the build host, not a requirement --
 # its libraries ask for nothing newer than glibc 2.29.
 
+ARG BASE_IMAGE=openeuler/openeuler
 ARG BASE_IMAGE_VERSION=24.03-lts
-FROM openeuler/openeuler:${BASE_IMAGE_VERSION}
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
 
 ARG FILE_STORE=https://resource.flagos.net/repository/flagos-filestore/hygon
 ARG SDK_PACKAGE=DTK-26.04-Ubuntu22.04-x86_64.tar.gz
