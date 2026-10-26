@@ -18,6 +18,8 @@ enabled platform. Renames include both their old and new paths.
 
 PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
 `platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
+
+PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:mthreads`, and `platform:ppu`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
@@ -87,6 +89,13 @@ the mount, permissions or interfaces are missing. On DinD deployments the
 mounted namespace must expose the physical RDMA interfaces; an isolated DinD
 network still needs runner-side network provisioning. This check establishes
 visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
+
+Mthreads CI uses `mr-8g-cicd-flagcx` and the image configured in
+`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host, p2p,
+rma, runner, and service unit suites plus homogeneous and heterogeneous host
+collective benchmarks. MUSA device kernels, symmetric VMM, and Torch plugin
+tests are not selected because this backend does not yet provide those paths.
+Build its CI image with `docker build -f docker/mthreads-ci.Dockerfile .`.
 
 Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration

@@ -138,7 +138,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
     def test_all_hardware_platforms_are_enabled(self):
         self.assertEqual(
             ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
+            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "mthreads", "ppu", "ascend"],
         )
 
     def test_backend_phase_skips_follow_platform_setup(self):
@@ -1171,6 +1171,15 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "service",
                 "symmem",
             ],
+            "mthreads": [
+                "adaptor",
+                "core",
+                "device_api_host",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+            ],
             "ppu": [
                 "adaptor",
                 "core",
@@ -1269,6 +1278,12 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', hygon_handler)
         self.assertIn("metax perf", perf_workflow)
         self.assertIn('run_host_perf_suite.sh" heterogeneous "$perf_bin"', metax_handler)
+        self.assertIn("mthreads perf", perf_workflow)
+        mthreads_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_mthreads_workload.sh"
+        ).read_text()
+        self.assertIn('"$perf_runner" homogeneous "$perf_bin"', mthreads_handler)
+        self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', mthreads_handler)
 
         self.assertIn("hygon torch-api", torch_workflow)
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
