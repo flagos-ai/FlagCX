@@ -38,6 +38,28 @@ flagcx_ci_configure_suite() {
   esac
 }
 
+flagcx_ci_has_rdma() {
+  compgen -G "/sys/class/infiniband_verbs/uverbs*" >/dev/null || return 1
+  compgen -G "/dev/infiniband/uverbs*" >/dev/null || return 1
+  [[ -e /dev/infiniband/rdma_cm ]] || return 1
+
+  local hca port state link_layer
+  while IFS= read -r hca; do
+    [[ -n "$hca" ]] || continue
+    while IFS= read -r port; do
+      [[ -r "$port/state" && -r "$port/link_layer" ]] || continue
+      state=$(<"$port/state")
+      link_layer=$(<"$port/link_layer")
+      if [[ "$state" == 4:* &&
+            ( "${link_layer,,}" == "ethernet" ||
+              "${link_layer,,}" == "infiniband" ) ]]; then
+        return 0
+      fi
+    done < <(compgen -G "$hca/ports/*" || true)
+  done < <(compgen -G "/sys/class/infiniband/*" || true)
+  return 1
+}
+
 flagcx_ci_prepare() {
   local suite=$1
   echo "Preparing Enflame environment for CI workload: $suite"
@@ -46,4 +68,19 @@ flagcx_ci_prepare() {
   mpirun --version
   topscc --version
   efsmi || true
+
+  case "$suite" in
+    device_api|device_api_unified_ir)
+      if [[ ! -d "${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}/test/kernel/tops" ]]; then
+        export FLAGCX_CI_SKIP_SUITE=1
+        export FLAGCX_CI_SKIP_REASON="TOPS device-kernel test backend is not present (test/kernel/tops)"
+      fi
+      ;;
+    p2p|rma|runner|symmem)
+      if ! flagcx_ci_has_rdma; then
+        export FLAGCX_CI_SKIP_SUITE=1
+        export FLAGCX_CI_SKIP_REASON="runner has no ACTIVE RDMA HCA with /dev/infiniband/uverbs* and rdma_cm"
+      fi
+      ;;
+  esac
 }

@@ -138,6 +138,23 @@ flagcx_ci_require_rdma() {
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
+
+# A platform may be present in the common matrix before all of its optional
+# device-kernel or fabric capabilities are available.  Let the platform
+# script record an explicit, successful capability skip instead of turning an
+# unavailable backend into a misleading compile/test failure.
+if [[ "${FLAGCX_CI_SKIP_SUITE:-0}" == "1" ]]; then
+  echo "Skipping $SUITE: ${FLAGCX_CI_SKIP_REASON:-platform capability is unavailable}"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### Enflame capability skip"
+      echo "- **Suite:** $SUITE"
+      echo "- **Reason:** ${FLAGCX_CI_SKIP_REASON:-platform capability is unavailable}"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  exit 0
+fi
+
 # RMA has separate IPC and network invocations. Its RDMA preflight runs only
 # before the network invocation so missing RDMA cannot hide IPC regressions.
 if [[ "$SUITE" != rma ]]; then
