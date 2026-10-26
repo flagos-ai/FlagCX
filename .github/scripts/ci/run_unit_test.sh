@@ -24,11 +24,54 @@ fi
 # shellcheck source=/dev/null
 source "$SET_ENV_SCRIPT"
 
+if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
+  coverage_build_dir="$PROJECT_ROOT"
+  report_dir=${FLAGCX_CI_CPP_COVERAGE_REPORT:-"$PROJECT_ROOT/.ci-coverage/$SUITE"}
+  FLAGCX_CI_PROJECT_MAKE_ARGS+=(FLAGCX_COVERAGE=1)
+  coverage_python_dir="${TMPDIR:-/tmp}/flagcx-coverage-python"
+  if ! PYTHONPATH="$coverage_python_dir${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m gcovr --version >/dev/null 2>&1; then
+    python3 -m pip install --quiet --disable-pip-version-check \
+      --target "$coverage_python_dir" gcovr==8.2
+  fi
+  export PYTHONPATH="$coverage_python_dir${PYTHONPATH:+:$PYTHONPATH}"
+
+  collect_cpp_coverage_on_exit() {
+    local command_status=$?
+    local report_status=0
+    local -a skip_args=()
+    trap - EXIT
+    mkdir -p "$report_dir"
+    if [[ -n "${FLAGCX_CI_COVERAGE_SKIP_REASON:-}" ]]; then
+      skip_args+=(--skip-reason "$FLAGCX_CI_COVERAGE_SKIP_REASON")
+    fi
+    python3 "$PROJECT_ROOT/.github/scripts/ci/collect_cpp_coverage.py" \
+      --root "$PROJECT_ROOT" \
+      --build-dir "$coverage_build_dir" \
+      --output-dir "$report_dir" \
+      --platform "$(basename "$SET_ENV_SCRIPT" .sh)/$SUITE" \
+      "${skip_args[@]}" || report_status=$?
+    if ((command_status == 0 && report_status != 0)); then
+      command_status=$report_status
+    fi
+    exit "$command_status"
+  }
+  trap collect_cpp_coverage_on_exit EXIT
+fi
+
 if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
+if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
+  GTEST_FILTER=$(bash "$PROJECT_ROOT/.github/scripts/ci/filter_supplemental_tests.sh" \
+    "${GTEST_FILTER:-*}" exclude)
+  export GTEST_FILTER
+fi
 if declare -F flagcx_ci_skip_suite >/dev/null &&
   flagcx_ci_skip_suite "$SUITE"; then
+  if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
+    export FLAGCX_CI_COVERAGE_SKIP_REASON="platform configuration marks suite unsupported"
+  fi
   exit 0
 fi
 
@@ -953,6 +996,37 @@ run_suite() {
   esac
 }
 
+run_supplemental_unit_tests() {
+  [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]] || return 0
+
+  local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  local binary
+  case "$SUITE" in
+    device_api_host)
+      binary="$PROJECT_ROOT/test/unittest/device_api/build/bin/test_dev_comm_cleanup"
+      ;;
+    adaptor|core|p2p|rma|runner|service|symmem)
+      binary="$suite_dir/build/bin/${SUITE}_unit_tests"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  [[ -x "$binary" ]] || return 0
+  local test_list
+  if ! test_list=$(timeout 30s "$binary" --gtest_list_tests 2>&1); then
+    echo "Could not enumerate GoogleTest cases for $binary" >&2
+    return 1
+  fi
+  if [[ "$test_list" != *CoverageSupplemental* ]]; then
+    return 0
+  fi
+
+  FLAGCX_CI_TEST_LABEL="$SUITE supplemental white-box tests" \
+    "$TEST_RUNNER" "$binary" --gtest_filter='CoverageSupplemental.*'
+}
+
 case "$SUITE" in
   adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
@@ -980,3 +1054,4 @@ if ((suite_status != 0)); then
   fi
   exit "$suite_status"
 fi
+run_supplemental_unit_tests
