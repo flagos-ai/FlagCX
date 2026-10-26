@@ -1,7 +1,8 @@
 # Build FlagCX MetaX RPM packages on Rocky Linux.
 
+ARG BASE_IMAGE=rockylinux
 ARG BASE_IMAGE_VERSION=8
-FROM rockylinux:${BASE_IMAGE_VERSION}
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
 
 WORKDIR /workspace
 COPY . /workspace/

@@ -146,12 +146,18 @@ environment (for example `pip install nvidia-nccl-cu13`).
 The TsingMicro, Sunrise and Hygon targets need no vendor base image: each SDK
 installs into `/usr/local` or `/opt` without calling a package manager, so the
 build starts from the plain `openeuler/openeuler` image and fetches its
-installers from the FlagOS file store. `BASE_IMAGE` and the version argument
-select another registry or openEuler tag:
+installers from the FlagOS file store.
+
+Every backend takes its base image from `BASE_IMAGE` and its tag from the
+second argument, so building behind a registry mirror needs no edit to the
+Dockerfiles:
 
 ```bash
 BASE_IMAGE=hub.example.org/openeuler/openeuler \
   ./packaging/rpm/build-flagcx-rpm.sh tsm 24.03-lts
+
+BASE_IMAGE=hub.example.org/ascendai/cann \
+  ./packaging/rpm/build-flagcx-rpm.sh ascend 8.5.0-910-openeuler24.03-py3.11
 ```
 
 As with the openEuler CUDA target, the resulting `.oe2403` RPMs intentionally
