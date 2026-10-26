@@ -106,6 +106,8 @@ else ifeq ($(USE_ENFLAME), 1)
   include $(PROJECT_ROOT)/makefiles/enflame.mk
 else ifeq ($(USE_METAX), 1)
   include $(PROJECT_ROOT)/makefiles/metax.mk
+else ifeq ($(USE_MUSA), 1)
+  include $(PROJECT_ROOT)/makefiles/musa.mk
 else ifeq ($(USE_PPU), 1)
   include $(PROJECT_ROOT)/makefiles/ppu.mk
 else

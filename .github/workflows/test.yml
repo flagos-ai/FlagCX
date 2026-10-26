@@ -40,6 +40,10 @@ jobs:
       ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
+      mthreads_ci_image: ${{ steps.mthreads.outputs.ci_image }}
+      mthreads_docker_args: ${{ steps.mthreads.outputs.docker_args }}
+      mthreads_set_env: ${{ steps.mthreads.outputs.set_env }}
+      mthreads_runs_on: ${{ steps.mthreads.outputs.runs_on }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -63,6 +67,10 @@ jobs:
       - name: Load PPU configuration
         id: ppu
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
+
+      - name: Load Mthreads configuration
+        id: mthreads
+        run: ruby .github/scripts/ci/load_platform_config.rb mthreads
 
   perf-test:
     if: contains(fromJSON(inputs.platforms), 'cuda')
@@ -309,6 +317,55 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  perf-test-mthreads:
+    if: contains(fromJSON(inputs.platforms), 'mthreads')
+    name: perf-test (mthreads)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.mthreads_runs_on) }}
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run perf-test (mthreads) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.mthreads_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.mthreads_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.mthreads_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          mthreads perf
+
+      - name: Cleanup perf-test (mthreads) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-mthreads-perf-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-perf-test-mthreads-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   perf_complete:
     name: Validate selected performance jobs
     if: always()
@@ -319,6 +376,7 @@ jobs:
       - perf-test-cuda
       - perf-test-metax
       - perf-test-ppu
+      - perf-test-mthreads
     runs-on: ubuntu-latest
     env:
       PLATFORMS: ${{ inputs.platforms }}
@@ -328,6 +386,7 @@ jobs:
       HYGON_RESULT: ${{ needs['perf-test-hygon'].result }}
       METAX_RESULT: ${{ needs['perf-test-metax'].result }}
       PPU_RESULT: ${{ needs['perf-test-ppu'].result }}
+      MTHREADS_RESULT: ${{ needs['perf-test-mthreads'].result }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -340,4 +399,4 @@ jobs:
         run: >-
           bash .github/scripts/ci/check_platform_workflow.sh
           "$PLATFORMS" "$CONFIG_RESULT" "$CUDA_BASE_RESULT" "$CUDA_RESULT"
-          "$HYGON_RESULT" "$METAX_RESULT" "$PPU_RESULT"
+          "$HYGON_RESULT" "$METAX_RESULT" "$PPU_RESULT" "$MTHREADS_RESULT"

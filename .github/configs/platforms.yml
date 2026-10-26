@@ -10,6 +10,8 @@ platforms:
     enabled: true
   metax:
     enabled: true
+  mthreads:
+    enabled: true
   ppu:
     enabled: true
 shared_paths_watch:
@@ -33,6 +35,7 @@ shared_paths_watch:
   - .gitmodules
   - Makefile
   - make.inc
+  - test/make.inc
   - makefiles/**
   - flagcx/core/**
   - flagcx/*.cc

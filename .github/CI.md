@@ -6,7 +6,7 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, and `platform:ppu`
+PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:mthreads`, and `platform:ppu`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
@@ -43,6 +43,13 @@ unexpected skips of selected platforms. Empty selections skip hardware jobs
 while still running common checks.
 
 ## Retry Logs
+
+Mthreads CI uses `mr-8g-cicd-flagcx` and the image configured in
+`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host, p2p,
+rma, runner, and service unit suites plus homogeneous and heterogeneous host
+collective benchmarks. MUSA device kernels, symmetric VMM, and Torch plugin
+tests are not selected because this backend does not yet provide those paths.
+Build its CI image with `docker build -f docker/mthreads-ci.Dockerfile .`.
 
 Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration
