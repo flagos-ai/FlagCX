@@ -158,27 +158,25 @@ struct PlatformTraits<IluvatarPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     load(T *ptr, flagcxDeviceMemoryOrder_t order) {
       (void)Scope;
-      switch (order) {
-        case flagcxDeviceMemoryOrderRelaxed:
-        case flagcxDeviceMemoryOrderRelease:
-          return __atomic_load_n(ptr, __ATOMIC_RELAXED);
-        case flagcxDeviceMemoryOrderAcquire:
-        case flagcxDeviceMemoryOrderAcqRel:
-        case flagcxDeviceMemoryOrderSeqCst:
-        default:
-          return *const_cast<volatile T *>(ptr);
-      }
+      (void)order;
+      // ivcore11 has no pattern for AtomicLoad in address space 1, so
+      // __atomic_load_n kills llc with "Cannot select: AtomicLoad ...
+      // addrspace 1" -- for BOTH i32 and i64, which broke every polling loop
+      // in a real kernel. A volatile load is what the acquire path already
+      // used and is enough for a word readers only poll.
+      return *const_cast<volatile T *>(ptr);
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     FLAGCX_DEVICE_INLINE_DECORATOR static void
     store(T *ptr, const T &value, flagcxDeviceMemoryOrder_t order) {
       (void)Scope;
-      if (order == flagcxDeviceMemoryOrderRelaxed) {
-        __atomic_store_n(ptr, value, __ATOMIC_RELAXED);
-        return;
+      // __atomic_store_n lowers to the same unselectable AtomicStore in
+      // address space 1 that the load side hit, so publish with a fence plus a
+      // volatile store on every path.
+      if (order != flagcxDeviceMemoryOrderRelaxed) {
+        FLAGCX_DEVICE_THREAD_FENCE();
       }
-      FLAGCX_DEVICE_THREAD_FENCE();
       *const_cast<volatile T *>(ptr) = value;
     }
 
