@@ -42,7 +42,7 @@ __global__ void kernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, 
   }
 }
 
-extern "C" void launchKernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
+void launchKernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                               flagcxStream_t stream) {
   kernelCommQueriesS<<<1, 1, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -110,7 +110,7 @@ __global__ void kernelCoopGroupsS_lanes(int *results) {
   if (FLAGCX_THREAD_IDX_X == 0) results[2] = pass;
 }
 
-extern "C" void launchKernelCoopGroupsS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
+void launchKernelCoopGroupsS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                              flagcxStream_t stream) {
   kernelCoopGroupsS_block<<<1, 32, 0, stream->base>>>(devResults);
   kernelCoopGroupsS_tileSpan<<<1, 128, 0, stream->base>>>(devResults);
@@ -133,7 +133,7 @@ __global__ void kernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, 
   }
 }
 
-extern "C" void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
+void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                                    flagcxStream_t stream) {
   kernelTeamQueriesS<<<1, 1, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -145,13 +145,7 @@ extern "C" void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCom
 __global__ void kernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
                                          int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    // Declare through the IR pointer annotation instead of a bare void *.
-    // flagcxGetLocalPointerS returns FLAGCX_IR_GLOBAL_RETURN_PTR void *, which
-    // is address_space(1) on CoreX; a backend with address spaces need not
-    // provide an address_space(1) -> generic conversion, so the unannotated
-    // form is rejected there. The annotation expands to nothing on every other
-    // platform, so this is a no-op for them.
-    void FLAGCX_IR_GLOBAL_PTR *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
+    void *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
     // Verify local pointer is non-null and points to same data as rawBuff
     // (may be a different VA due to VMM flat-mapping)
     if (localPtr == nullptr) {
@@ -164,7 +158,7 @@ __global__ void kernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, 
   }
 }
 
-extern "C" void launchKernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
+void launchKernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
                                     int *devResults, flagcxStream_t stream) {
   kernelLocalPointerS<<<1, 1, 0, stream->base>>>(devMemPtr, rawBuff,
                                                        devResults);
@@ -208,7 +202,7 @@ __global__ void kernelIntraPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *d
   }
 }
 
-extern "C" void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                     const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *devOutput,
                                     int count,
                                     flagcxStream_t stream) {
@@ -246,7 +240,7 @@ __global__ void kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   }
 }
 
-extern "C" void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream) {
@@ -285,7 +279,7 @@ __global__ void kernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *d
                           flagcxDeviceMemoryOrderAcquire);
 }
 
-extern "C" void launchKernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream) {
@@ -333,7 +327,7 @@ __global__ void kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *de
   }
 }
 
-extern "C" void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *devOutput,
                               int count,
                               flagcxStream_t stream) {
@@ -384,7 +378,7 @@ __global__ void kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPt
                           flagcxDeviceMemoryOrderRelease);
 }
 
-extern "C" void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                   int count, flagcxStream_t stream) {
   kernelIntraAllReduceS<<<4, 256, 0, stream->base>>>(
@@ -432,7 +426,7 @@ __global__ void kernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPt
   }
 }
 
-extern "C" void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
+void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                                  flagcxStream_t stream) {
   kernelNetGetFromCommS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -477,7 +471,7 @@ __global__ void kernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int
   }
 }
 
-extern "C" void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
+void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                            flagcxStream_t stream) {
   kernelNetResetS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResults);
 }
@@ -556,7 +550,7 @@ __global__ void kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCo
 
 }
 
-extern "C" void launchKernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                      flagcxStream_t stream) {
   kernelNetWaitSignalFlushS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
 }
@@ -637,7 +631,7 @@ __global__ void kernelNetWaitSignalMeetShadowS(const void FLAGCX_IR_GLOBAL_PTR *
   }
 }
 
-extern "C" void launchKernelNetWaitSignalMeetShadowS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetWaitSignalMeetShadowS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                           flagcxStream_t stream) {
   kernelNetWaitSignalMeetShadowS<<<1, 32, 0, stream->base>>>(devCommPtr);
 }
@@ -677,7 +671,7 @@ __global__ void kernelInterBarrierStress(const void FLAGCX_IR_GLOBAL_PTR *devCom
   }
 }
 
-extern "C" void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
+void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResults,
                                int nIters, flagcxStream_t stream) {
   kernelInterBarrierStress<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, devResults,
                                                          nIters);
@@ -760,7 +754,7 @@ __global__ void kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devComm
 
 }
 
-extern "C" void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                    flagcxStream_t stream) {
@@ -830,7 +824,7 @@ __global__ void kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
                           flagcxDeviceMemoryOrderRelaxed, flagcxDevNetFenceLevel::Relaxed);
 }
 
-extern "C" void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                   size_t countPerPeer, flagcxStream_t stream) {
@@ -918,7 +912,7 @@ kernelNetMultiContextPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     results[contextId] = 1;
 }
 
-extern "C" void launchKernelNetMultiContextPutSignalIncS(
+void launchKernelNetMultiContextPutSignalIncS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
     const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t dataBase,
@@ -1003,7 +997,7 @@ __global__ void kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommP
 
 }
 
-extern "C" void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                                   flagcxStream_t stream) {
@@ -1121,7 +1115,7 @@ __global__ void kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCo
 
 }
 
-extern "C" void launchKernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                      const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                      const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                      size_t countPerPeer,
@@ -1193,7 +1187,7 @@ __global__ void kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
 
 }
 
-extern "C" void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
+void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
   kernelNetSignalS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
 }
 
@@ -1265,7 +1259,7 @@ __global__ void kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 }
 
-extern "C" void launchKernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+void launchKernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                               size_t putValBase, flagcxStream_t stream) {
   kernelNetPutValueS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, recvMemPtr,
                                                   putValBase);
@@ -1321,7 +1315,7 @@ __global__ void kernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const
 
 }
 
-extern "C" void launchKernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+void launchKernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                          const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
                          flagcxStream_t stream) {
   kernelNetGetS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr, sendMemPtr,
@@ -1402,7 +1396,7 @@ __global__ void kernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr)
 
 }
 
-extern "C" void launchKernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
+void launchKernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
   kernelWorldBarrierS<<<FLAGCX_DEVICE_CTA_COUNT, 128, 0, stream->base>>>(devCommPtr);
 }
 
@@ -1474,7 +1468,7 @@ __global__ void kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devC
 
 }
 
-extern "C" void launchKernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
                                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
                                       size_t countPerPeer,
@@ -1611,7 +1605,7 @@ __global__ void kernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   }
 }
 
-extern "C" void launchKernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+void launchKernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                     const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
                                     flagcxStream_t stream) {
   kernelDevPutIntraWorldS<<<4, 128, 0, stream->base>>>(
@@ -1708,7 +1702,7 @@ __global__ void kernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *de
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) result[0] = 1;
 }
 
-extern "C" void launchKernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
   kernelDevPutValueIntraWorldS<<<4, 128, 0,
@@ -1820,7 +1814,7 @@ __global__ void kernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-extern "C" void launchKernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+void launchKernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
                                     const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
                                     flagcxStream_t stream) {
   kernelDevGetIntraWorldS<<<4, 128, 0, stream->base>>>(
@@ -1852,7 +1846,7 @@ __global__ void kernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-extern "C" void launchKernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+void launchKernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                         flagcxStream_t stream) {
   kernelDevBarrierIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -1893,7 +1887,7 @@ __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBA
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-extern "C" void launchKernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevBarrierArriveWaitIntraWorldS<<<4, 128, 0,
@@ -2014,7 +2008,7 @@ __global__ void kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL
     atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+void launchKernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevSignalStandaloneIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -2130,7 +2124,7 @@ __global__ void kernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_P
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-extern "C" void launchKernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                                flagcxStream_t stream) {
@@ -2243,7 +2237,7 @@ __global__ void kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PT
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                               size_t bytes, flagcxStream_t stream) {
@@ -2361,7 +2355,7 @@ __global__ void kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
@@ -2535,7 +2529,7 @@ __global__ void kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                            size_t bytes, flagcxStream_t stream) {
@@ -2653,7 +2647,7 @@ __global__ void kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                              int *devResult, size_t bytes,
                                              flagcxStream_t stream) {
@@ -2761,7 +2755,7 @@ __global__ void kernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBA
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevSignalShadowFlushIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                   int *devResult,
                                                   flagcxStream_t stream) {
   kernelDevSignalShadowFlushIntraWorldS<<<4, 128, 0, stream->base>>>(
@@ -2889,7 +2883,7 @@ __global__ void kernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   }
 }
 
-extern "C" void launchKernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+void launchKernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
                                    flagcxStream_t stream) {
   kernelDevPutInterWorldS<<<4, 128, 0, stream->base>>>(
@@ -2986,7 +2980,7 @@ __global__ void kernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *de
   if (myBlockIdx == 0 && FLAGCX_THREAD_IDX_X == 0) result[0] = 1;
 }
 
-extern "C" void launchKernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
   kernelDevPutValueInterWorldS<<<4, 128, 0,
@@ -3099,7 +3093,7 @@ __global__ void kernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devComm
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-extern "C" void launchKernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+void launchKernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
                                    flagcxStream_t stream) {
   kernelDevGetInterWorldS<<<4, 128, 0, stream->base>>>(
@@ -3131,7 +3125,7 @@ __global__ void kernelDevBarrierInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-extern "C" void launchKernelDevBarrierInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+void launchKernelDevBarrierInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                        flagcxStream_t stream) {
   kernelDevBarrierInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -3172,7 +3166,7 @@ __global__ void kernelDevBarrierArriveWaitInterWorldS(const void FLAGCX_IR_GLOBA
   if (FLAGCX_THREAD_IDX_X == 0) result[FLAGCX_BLOCK_IDX_X] = 1;
 }
 
-extern "C" void launchKernelDevBarrierArriveWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevBarrierArriveWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevBarrierArriveWaitInterWorldS<<<4, 128, 0,
@@ -3281,7 +3275,7 @@ __global__ void kernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+void launchKernelDevSignalStandaloneInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                                  flagcxStream_t stream) {
   kernelDevSignalStandaloneInterWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
@@ -3433,7 +3427,7 @@ __global__ void kernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_P
   if (FLAGCX_THREAD_IDX_X == 0 && myBlockIdx == 0) result[0] = 1;
 }
 
-extern "C" void launchKernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                                const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                                flagcxStream_t stream) {
@@ -3546,7 +3540,7 @@ __global__ void kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PT
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                               size_t bytes, flagcxStream_t stream) {
@@ -3665,7 +3659,7 @@ __global__ void kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                         size_t bytes, flagcxStream_t stream) {
@@ -3834,7 +3828,7 @@ __global__ void kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
                                            size_t bytes, flagcxStream_t stream) {
@@ -3953,7 +3947,7 @@ __global__ void kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                              const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
                                              int *devResult, size_t bytes,
                                              flagcxStream_t stream) {
@@ -4061,7 +4055,7 @@ __global__ void kernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBA
   if (FLAGCX_THREAD_IDX_X == 0) atomicAnd(result, ok ? 1 : 0);
 }
 
-extern "C" void launchKernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+void launchKernelDevSignalShadowFlushInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                   int *devResult,
                                                   flagcxStream_t stream) {
   kernelDevSignalShadowFlushInterWorldS<<<4, 128, 0, stream->base>>>(
