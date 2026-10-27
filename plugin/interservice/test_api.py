@@ -122,5 +122,22 @@ class FlagcxDefaultLibraryTest(unittest.TestCase):
         self.assertIn("system library lookup", message)
 
 
+class FlagcxDataTypeEnumTest(unittest.TestCase):
+    def test_one_byte_types_map_to_uint8(self):
+        import torch
+
+        enum = flagcx_api.flagcxDataTypeEnum
+        for dtype in (torch.uint8, torch.bool, torch.float8_e4m3fn,
+                      torch.float8_e5m2):
+            with self.subTest(dtype=dtype):
+                self.assertEqual(enum.from_torch(dtype), enum.flagcxUint8)
+
+    def test_unsupported_dtype_raises(self):
+        import torch
+
+        with self.assertRaisesRegex(ValueError, "Unsupported dtype"):
+            flagcx_api.flagcxDataTypeEnum.from_torch(torch.complex64)
+
+
 if __name__ == "__main__":
     unittest.main()
