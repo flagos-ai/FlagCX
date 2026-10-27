@@ -372,9 +372,11 @@ run_suite() {
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
       if ((unit_status == 0)) &&
-         [[ "$(basename "$SET_ENV_SCRIPT" .sh)" != enflame ]]; then
+         [[ "${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}" == 1 ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
+      elif [[ "${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}" == 0 ]]; then
+        echo "Skipping mandatory GPU loopback assertion: no ACTIVE RDMA HCA is available"
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -497,11 +499,15 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+          make -C "$suite_dir" run-mpi "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" \
+          MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      else
+        echo "Skipping P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
+      fi
       # Keep the production/default artifact on the legacy Engine. Platforms
       # build the shared implementation in isolated output trees and run the
       # same unit and WRITE MPI tests against it.
@@ -535,13 +541,16 @@ run_suite() {
             "$TEST_RUNNER" make -C "$suite_dir" run-unit \
               "${shared_test_args[@]}" || shared_status=$?
         fi
-        if ((shared_status == 0)); then
+        if ((shared_status == 0)) &&
+           [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
           LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
             FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
             FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
             make -C "$suite_dir" run-mpi \
               "${shared_test_args[@]}" MPIRUN="$MPI_RUNNER" \
               MPI_ENV="$p2p_mpi_env" || shared_mpi_status=$?
+        elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+          echo "Skipping shared P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
         fi
       fi
 
@@ -565,7 +574,7 @@ run_suite() {
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
         IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
-      if flagcx_ci_require_rdma "$SUITE"; then
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]] && flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
           MPIRUN="$MPI_RUNNER" || network_status=$?
@@ -723,6 +732,8 @@ run_suite() {
             RMA_PLATFORM_ENV="$base_rma_platform_env ${ppu_forced_read_env[*]}" || \
             visibility_status=$?
         fi
+      elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        echo "Skipping RMA network MPI and visibility tests: no ACTIVE RDMA HCA is available"
       else
         network_status=$?
       fi
@@ -766,6 +777,10 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
         ./build/bin/runner_mpi_tests || hybrid_status=$?
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        echo "Skipping runner forced NET, multi-QP and PXN MPI tests: no ACTIVE RDMA HCA is available"
+        return 0
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -851,6 +866,10 @@ run_suite() {
       ;;
     symmem)
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        echo "Skipping symmem remote NET/VMM+NET MPI tests: no ACTIVE RDMA HCA is available"
+        return 0
+      fi
       : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
       declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
         echo "symmem NET tests require FLAGCX_CI_NODE1_MPI_ARGS" >&2

@@ -29,7 +29,13 @@ flagcx_ci_configure_suite() {
   local suite=$1
   case "$suite" in
     adaptor)
-      export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer:NetAdaptorLoopback.*"
+      if ! flagcx_ci_has_rdma; then
+        export GTEST_FILTER="-NetAdaptorLoopback.*"
+        export FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=0
+      else
+        unset GTEST_FILTER
+        export FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1
+      fi
       ;;
     device_api|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
@@ -76,11 +82,10 @@ flagcx_ci_prepare() {
         export FLAGCX_CI_SKIP_REASON="TOPS device-kernel test backend is not present (test/kernel/tops)"
       fi
       ;;
-    p2p|rma|runner|symmem)
-      if ! flagcx_ci_has_rdma; then
-        export FLAGCX_CI_SKIP_SUITE=1
-        export FLAGCX_CI_SKIP_REASON="runner has no ACTIVE RDMA HCA with /dev/infiniband/uverbs* and rdma_cm"
-      fi
-      ;;
   esac
+  if flagcx_ci_has_rdma; then
+    export FLAGCX_CI_HAS_RDMA=1
+  else
+    export FLAGCX_CI_HAS_RDMA=0
+  fi
 }

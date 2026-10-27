@@ -835,10 +835,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
-        self.assertIn(
-            'GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer:NetAdaptorLoopback.*"',
-            enflame_env,
-        )
+        self.assertIn('export GTEST_FILTER="-NetAdaptorLoopback.*"', enflame_env)
+        self.assertIn("unset GTEST_FILTER", enflame_env)
 
         ascend_env = (
             REPO_ROOT / ".github/scripts/set_env/ascend.sh"
@@ -1073,8 +1071,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("TOPS device-kernel test backend is not present", enflame_env)
-        self.assertIn("runner has no ACTIVE RDMA HCA", enflame_env)
-        self.assertIn("FLAGCX_CI_SKIP_SUITE", unit_runner)
+        self.assertIn("FLAGCX_CI_HAS_RDMA=1", enflame_env)
+        self.assertIn("FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1", enflame_env)
+        self.assertIn("Skipping P2P Engine WRITE MPI tests", unit_runner)
+        self.assertIn("Skipping RMA network MPI and visibility tests", unit_runner)
+        self.assertIn("Skipping runner forced NET, multi-QP and PXN MPI tests", unit_runner)
+        self.assertIn("Skipping symmem remote NET/VMM+NET MPI tests", unit_runner)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
