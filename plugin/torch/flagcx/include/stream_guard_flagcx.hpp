@@ -257,7 +257,7 @@ private:
 #elif USE_ASCEND_ADAPTOR
   c10_npu::NPUStream guard_;
 #elif USE_AMD_ADAPTOR
-  c10::hip::HIPStreamGuard guard_;
+  c10::cuda::CUDAStreamGuard guard_;
 #elif USE_TSM_ADAPTOR
   torch_txda::TXDAStreamGuard guard_;
 #elif USE_ENFLAME_ADAPTOR
