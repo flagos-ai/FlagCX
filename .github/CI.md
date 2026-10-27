@@ -44,12 +44,17 @@ while still running common checks.
 
 ## Retry Logs
 
-Mthreads CI uses `mr-8g-cicd-flagcx` and the image configured in
-`.github/configs/mthreads.yml`. It runs adaptor, core, device_api_host, p2p,
-rma, runner, and service unit suites plus homogeneous and heterogeneous host
-collective benchmarks. MUSA device kernels, symmetric VMM, and Torch plugin
-tests are not selected because this backend does not yet provide those paths.
-Build its CI image with `docker build -f docker/mthreads-ci.Dockerfile .`.
+Mthreads CI uses `mt-8g-cicd-flagcx` and the image configured in
+`.github/configs/mthreads.yml`. It runs adaptor, core, device, device_api_host,
+p2p, rma, runner, service, symmem host unit, and topo unit suites plus
+homogeneous and heterogeneous collective benchmarks. The symmem job currently
+runs host unit tests only; it does not cover IPC, VMM, or multi-process paths.
+The device adaptor suite excludes `DeviceAdaptorTest.StreamWaitEvent`, which
+currently fails on MUSA; all other device adaptor tests run.
+Device API MPI and kernel suites remain unselected because this repository has
+no MUSA device-kernel compiler backend. Torch plugin tests are also not
+configured for Mthreads. Build its CI image with
+`docker build -f docker/mthreads-ci.Dockerfile .`.
 
 Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration

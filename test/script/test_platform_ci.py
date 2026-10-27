@@ -636,11 +636,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "mthreads": [
                 "adaptor",
                 "core",
+                "device",
                 "device_api_host",
                 "p2p",
                 "rma",
                 "runner",
                 "service",
+                "symmem",
+                "topo",
             ],
             "ppu": [
                 "adaptor",
@@ -882,12 +885,20 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("export FLAGCX_DEBUG_SUBSYS=ALL", unit_runner)
         self.assertIn("export FLAGCX_VMM_ENABLE=0", unit_runner)
 
-        for platform in ("cuda", "metax", "hygon", "ppu"):
+        for platform in ("cuda", "metax", "hygon", "mthreads", "ppu"):
             source = (
                 REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
             ).read_text()
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
+
+        mthreads_env = (
+            REPO_ROOT / ".github/scripts/set_env/mthreads.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_CI_MUSA_DEVICES", mthreads_env)
+        self.assertIn("FLAGCX_CI_DEVICE_GTEST_FILTER", mthreads_env)
+        self.assertIn("mthreads-gmi", mthreads_env)
+        self.assertIn('"$suite" == symmem', mthreads_env)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (

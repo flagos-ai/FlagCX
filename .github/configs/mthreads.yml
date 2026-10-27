@@ -35,8 +35,11 @@ set_env: .github/scripts/set_env/mthreads.sh
 unit_test_suites:
   - adaptor
   - core
+  - device
   - device_api_host
   - p2p
   - rma
   - runner
   - service
+  - symmem
+  - topo
