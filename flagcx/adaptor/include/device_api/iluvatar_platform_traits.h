@@ -1,4 +1,4 @@
-/*************************************************************************
+﻿/*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Iluvatar/CoreX platform traits for the common FlagCX Device API.
@@ -12,6 +12,19 @@
 #include <cstdint>
 
 struct IluvatarPlatform {};
+
+// Volatile view of a device pointer, kept backend-private on purpose: this fix
+// must not require editing the shared device_utils.h. The address-space
+// annotation has to stay on the pointer - a cast that drops it (including
+// const_cast to a plain volatile T *) does not compile, because there is no
+// address_space(1) <-> generic conversion.
+#if defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                                \
+  ((volatile FLAGCX_IR_GLOBAL_PTR type *)(ptr))
+#else
+#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                                \
+  (FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile type, ptr))
+#endif
 
 template <>
 struct PlatformCompletionWord<IluvatarPlatform> {
@@ -223,7 +236,7 @@ struct PlatformTraits<IluvatarPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     load(T *ptr, flagcxDeviceMemoryOrder_t order) {
-      const T value = *FLAGCX_IR_GLOBAL_VOLATILE_CAST(T, ptr);
+      const T value = *FLAGCX_ILUVATAR_VOLATILE_CAST(T, ptr);
       // The read has to come first: a fence ahead of it would be a release on a
       // load, which orders nothing. The acquire edge only exists after the read
       // whose result the caller is about to act on.
@@ -244,7 +257,7 @@ struct PlatformTraits<IluvatarPlatform> {
       if (order != flagcxDeviceMemoryOrderRelaxed) {
         scopedFence<Scope>();
       }
-      *FLAGCX_IR_GLOBAL_VOLATILE_CAST(T, ptr) = value;
+      *FLAGCX_ILUVATAR_VOLATILE_CAST(T, ptr) = value;
     }
 
     // The six RMW members below still ignore both Scope and order: they lower
