@@ -22,6 +22,55 @@ class GroupedARDslTest(unittest.TestCase):
                         red_op=op)
                     workflow.semantic_check().raise_for_error()
 
+    def test_single_group_logical_reductions(self):
+        for workers in (1, 32, 64):
+            for op in (RedOp.sum, RedOp.avg):
+                with self.subTest(workers=workers, op=op):
+                    workflow = build_groupedar(
+                        world_size=8, group_size=8, count=257,
+                        num_slices=2, num_local_slices=2,
+                        num_red_slices=workers, red_op=op)
+                    workflow.semantic_check().raise_for_error()
+                    self.assertEqual(workflow.algorithm_config["num_red_slices"], workers)
+                    self.assertEqual(workflow.algorithm_config["pipeline_version"], 3)
+                    for dag in workflow.rank_templates().values():
+                        reductions = [node for node in dag.nodes if node.node_type == "red"]
+                        self.assertEqual(len(reductions), 7 * 2 * 2)
+                        for node in reductions:
+                            parent = dag.nodes[node.parents[0]]
+                            received = next(op for op in parent.p2p_ops if op.type == "recv")
+                            self.assertEqual(node.red.count, received.count)
+                            self.assertEqual(node.red.input2, received.buffer)
+
+    def test_single_group_slice_overlap_and_scratch_reuse(self):
+        workflow = build_groupedar(
+            world_size=8, group_size=8, count=257,
+            num_slices=3, num_local_slices=2, num_red_slices=32)
+        workflow.semantic_check().raise_for_error()
+        self.assertEqual(workflow.scratch_count, 33)
+        for dag in workflow.rank_templates().values():
+            named = {node.name: node for node in dag.nodes}
+            ancestors = []
+            for node in dag.nodes:
+                deps = set(node.parents)
+                for parent in node.parents:
+                    deps.update(ancestors[parent])
+                ancestors.append(deps)
+            for outer in range(3):
+                for inner in range(2):
+                    for step in range(2, 8):
+                        exchange = named[f"local_rs_s{outer}_step{step}_u{inner}"]
+                        previous = named[f"local_red_s{outer}_step{step - 1}_u{inner}_r0"]
+                        self.assertIn(previous.node_idx, exchange.parents)
+                if outer:
+                    exchange = named[f"local_rs_s{outer}_step1_u0"]
+                    previous = named[f"local_red_s{outer - 1}_step1_u0_r0"]
+                    self.assertNotIn(previous.node_idx, ancestors[exchange.node_idx])
+                gather = named[f"local_ag_s{outer}"]
+                for node in dag.nodes:
+                    if node.name.startswith("local_rs_"):
+                        self.assertIn(node.node_idx, ancestors[gather.node_idx])
+
     def test_4g_ranges_reductions_and_message_pairing(self):
         workflow = build_groupedar_4g_example()
         self.assertEqual(workflow.count, 1 << 30)

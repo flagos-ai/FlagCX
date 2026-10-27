@@ -1582,7 +1582,8 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
   const int group = rank / groupSize;
   const int lane = rank % groupSize;
   const int nSlices = state->uniRunnerNSlices;
-  const int nRedSlices = state->uniRunnerNRedSlices;
+  // A single group uses the same logical RED / worker split as SlicedAR.
+  const int nRedSlices = nGroups == 1 ? 1 : state->uniRunnerNRedSlices;
   const size_t typeSize = getFlagcxDataTypeSize(datatype);
   int localSteps = 0, perSlice = 0, capacity = 0;
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(
@@ -1682,35 +1683,40 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
         deps.push_back(id);
     return deps;
   };
-  auto localReduceScatter = [&](int s, const std::vector<int> &deps,
+  auto localReduceScatter = [&](int firstSlice, int sliceSpan,
+                                const std::vector<int> &deps,
                                 std::vector<int> *done) -> flagcxResult_t {
     ready = deps;
     domain = uniRunnerDagCommIpc;
     scratchOffset = 0;
-    const Range own = chunkSlice(lane, s);
-
-    // Each inner slice has a disjoint scratch/output range. Advance P2P
-    // independently of RED, waiting only before reusing the same range.
+    // Independent scratch ranges allow the next slice's P2P to overlap RED.
     std::vector<int> commTail = ready;
-    std::vector<std::vector<int>> redTails(groupSize > 1 ? nLocalSlices : 0);
+    std::vector<std::vector<int>> redTails(
+        groupSize > 1 ? static_cast<size_t>(sliceSpan) * nLocalSlices : 0);
     for (int step = 1; step < groupSize; ++step) {
       const int txLane = positiveModulo(static_cast<int64_t>(lane) + step,
                                         groupSize);
       const int rxLane = positiveModulo(static_cast<int64_t>(lane) - step,
                                         groupSize);
-      for (int u = 0; u < nLocalSlices; ++u) {
-        const Range output = partition(own, nLocalSlices, u);
-        const Range tx = partition(chunkSlice(txLane, s), nLocalSlices, u);
-        scratchOffset = output.offset - own.offset;
-        ready = mergeDeps(commTail, redTails[u]);
-        FLAGCXCHECK(exchange(group * groupSize + txLane, tx, sendbuff,
-                             group * groupSize + rxLane,
-                             {scratchOffset, output.count},
-                             state->groupedArScratch));
-        commTail = ready;
-        // RED retains a single P2P parent; scratch reuse is gated above.
-        reduce(output, nGroups == 1 && step == groupSize - 1);
-        redTails[u] = ready;
+      for (int t = 0; t < sliceSpan; ++t) {
+        const int s = firstSlice + t;
+        const Range own = chunkSlice(lane, s);
+        for (int u = 0; u < nLocalSlices; ++u) {
+          const Range output = partition(own, nLocalSlices, u);
+          const Range tx = partition(chunkSlice(txLane, s), nLocalSlices, u);
+          const size_t tail = static_cast<size_t>(t) * nLocalSlices + u;
+          scratchOffset = output.offset -
+                          (nGroups == 1 ? ownLane.offset : own.offset);
+          ready = mergeDeps(commTail, redTails[tail]);
+          FLAGCXCHECK(exchange(group * groupSize + txLane, tx, sendbuff,
+                               group * groupSize + rxLane,
+                               {scratchOffset, output.count},
+                               state->groupedArScratch));
+          commTail = ready;
+          // RED retains a single P2P parent; scratch reuse is gated above.
+          reduce(output, nGroups == 1 && step == groupSize - 1);
+          redTails[tail] = ready;
+        }
       }
     }
     ready = std::move(commTail);
@@ -1787,22 +1793,30 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     return flagcxSuccess;
   };
 
-  std::vector<int> localDone, ipcTail, netTail;
-  FLAGCXCHECK(localReduceScatter(0, ready, &localDone));
-  ipcTail = localDone;
-  for (int s = 0; s < nSlices; ++s) {
-    std::vector<int> netDone, nextLocalDone;
-    FLAGCXCHECK(networkAllReduce(s, mergeDeps(localDone, netTail), &netDone));
-    netTail = netDone;
-    // Keep one local slice ahead of the network. The local stream order is
-    // RS(0), RS(1), AG(0), RS(2), AG(1), ...; each domain reuses only its
-    // own scratch after its preceding reductions have completed.
-    if (s + 1 < nSlices) {
-      FLAGCXCHECK(localReduceScatter(s + 1, ipcTail, &nextLocalDone));
-      ipcTail = nextLocalDone;
+  if (nGroups == 1) {
+    // Finish all input sends before allgather can overwrite in-place input.
+    std::vector<int> ipcTail;
+    FLAGCXCHECK(localReduceScatter(0, nSlices, ready, &ipcTail));
+    for (int s = 0; s < nSlices; ++s)
+      FLAGCXCHECK(localAllGather(s, ipcTail, &ipcTail));
+  } else {
+    std::vector<int> localDone, ipcTail, netTail;
+    FLAGCXCHECK(localReduceScatter(0, 1, ready, &localDone));
+    ipcTail = localDone;
+    for (int s = 0; s < nSlices; ++s) {
+      std::vector<int> netDone, nextLocalDone;
+      FLAGCXCHECK(networkAllReduce(s, mergeDeps(localDone, netTail), &netDone));
+      netTail = netDone;
+      // Keep one local slice ahead of the network. The local stream order is
+      // RS(0), RS(1), AG(0), RS(2), AG(1), ...; each domain reuses only its
+      // own scratch after its preceding reductions have completed.
+      if (s + 1 < nSlices) {
+        FLAGCXCHECK(localReduceScatter(s + 1, 1, ipcTail, &nextLocalDone));
+        ipcTail = nextLocalDone;
+      }
+      FLAGCXCHECK(localAllGather(s, mergeDeps(ipcTail, netDone), &ipcTail));
+      localDone = std::move(nextLocalDone);
     }
-    FLAGCXCHECK(localAllGather(s, mergeDeps(ipcTail, netDone), &ipcTail));
-    localDone = std::move(nextLocalDone);
   }
   if (state->numDagNodes == 0) {
     free(state->dagNodes);
@@ -4729,6 +4743,7 @@ flagcxResult_t initUniRunnerStateGroupedAR(
     return flagcxInvalidArgument;
   }
   FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
+  state->redSliceWorkersEnabled = groupSize == comm->nranks;
   setUniRunnerAvgDivisor(state, op, comm->nranks);
   FLAGCXCHECK(setEffectiveUniRunnerRedSlices(state, count, groupSize));
   uniRunnerDagRuntimeBindings bindings;
@@ -4741,7 +4756,8 @@ flagcxResult_t initUniRunnerStateGroupedAR(
   const size_t sliceCount = chunkCount / state->uniRunnerNSlices +
                            (chunkCount % state->uniRunnerNSlices != 0);
   const int nGroups = comm->nranks / groupSize;
-  const size_t localScratchCount = groupSize > 1 ? sliceCount : 0;
+  const size_t localScratchCount =
+      groupSize > 1 ? (nGroups == 1 ? chunkCount : sliceCount) : 0;
   const size_t netScratchCount = nGroups > 1
       ? sliceCount / nGroups + (sliceCount % nGroups != 0) : 0;
   if (localScratchCount > std::numeric_limits<size_t>::max() - netScratchCount)
@@ -4768,7 +4784,7 @@ flagcxResult_t initUniRunnerStateGroupedAR(
   bindings.scratchBase = state->groupedArScratch;
   uniRunnerDagAlgorithmConfig config{};
   config.groupSize = groupSize;
-  config.pipelineVersion = 2;
+  config.pipelineVersion = nGroups == 1 ? 3 : 2;
   config.numSlices = state->uniRunnerNSlices;
   config.numLocalSlices = static_cast<uint64_t>(nLocalSlices);
   config.numRedSlices = state->uniRunnerNRedSlices;

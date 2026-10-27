@@ -45,7 +45,8 @@ def build_groupedar(
 
     ``count`` and ``red_slice_size`` are element counts, including K/M/G
     suffixes. Use ``count_from_size_bytes`` for a message size in bytes.
-    GroupedAR uses explicit RED slices with one runtime worker per RED node.
+    A single group uses logical RED nodes split into runtime workers.
+    Multiple groups retain explicit RED slices with one worker per node.
     """
     if in_place:
         raise NotImplementedError("GroupedAR DSL currently defines out-of-place buffers")
@@ -73,14 +74,15 @@ def build_groupedar(
         count, group_size, num_slices, num_red_slices, red_slice_size)
     if red_slices > 0x7fffffff:
         raise ValueError("resolved RED slices exceed INT_MAX")
+    logical_red_slices = 1 if n_groups == 1 else red_slices
     local_steps = (group_size - 1) * num_local_slices
     capacity = num_slices * (
-        (local_steps + n_groups - 1) * (red_slices + 1) + n_groups + 1) + 2
+        (local_steps + n_groups - 1) * (logical_red_slices + 1) + n_groups + 1) + 2
     if count and capacity > 0x7fffffff:
         raise ValueError("GroupedAR node capacity exceeds INT_MAX")
     max_chunk = (count + group_size - 1) // group_size
     max_slice = (max_chunk + num_slices - 1) // num_slices
-    local_scratch = max_slice if group_size > 1 else 0
+    local_scratch = (max_chunk if n_groups == 1 else max_slice) if group_size > 1 else 0
     net_scratch = (max_slice + n_groups - 1) // n_groups if n_groups > 1 else 0
 
     with UniRunnerWorkflow(
@@ -90,7 +92,8 @@ def build_groupedar(
         scratch_count=local_scratch + net_scratch,
         algorithm_config={
             "num_slices": num_slices, "num_local_slices": num_local_slices,
-            "num_red_slices": red_slices, "pipeline_version": 2,
+            "num_red_slices": red_slices,
+            "pipeline_version": 3 if n_groups == 1 else 2,
             "group_size": group_size, "buffer_mode": 0,
         },
     ) as workflow:
@@ -114,8 +117,8 @@ def build_groupedar(
                     reductions = []
                     operation = (RedOp.sum if requested_op == RedOp.avg and not final
                                  else requested_op)
-                    for part in range(red_slices):
-                        relative, amount = _partition((0, region[1]), red_slices, part)
+                    for part in range(logical_red_slices):
+                        relative, amount = _partition((0, region[1]), logical_red_slices, part)
                         if amount == 0:
                             continue
                         offset = region[0] + relative
@@ -135,32 +138,35 @@ def build_groupedar(
                         own_lane[1], parents=ready, name="initialize_own_lane",
                         comm_domain=CommDomain.ipc)]
 
-                def local_reduce_scatter(outer, dependencies):
-                    own = chunk_slice(lane, outer)
+                def local_reduce_scatter(first_slice, slice_span, dependencies):
                     comm_tail = list(dependencies)
-                    red_tails = [[] for _ in range(num_local_slices)] if group_size > 1 else []
+                    red_tails = ([[] for _ in range(slice_span * num_local_slices)]
+                                 if group_size > 1 else [])
                     for step in range(1, group_size):
                         tx_lane = (lane + step) % group_size
                         rx_lane = (lane - step) % group_size
-                        for inner in range(num_local_slices):
-                            output = _partition(own, num_local_slices, inner)
-                            tx = _partition(chunk_slice(tx_lane, outer), num_local_slices, inner)
-                            scratch_offset = output[0] - own[0]
-                            comm_tail = exchange(
-                                group * group_size + tx_lane, tx, workflow.input,
-                                group * group_size + rx_lane, (scratch_offset, output[1]),
-                                workflow.scratch,
-                                _merge_dependencies(comm_tail, red_tails[inner]),
-                                CommDomain.ipc, f"local_rs_s{outer}_step{step}_u{inner}")
-                            red_tails[inner] = reduce(
-                                output, scratch_offset, comm_tail, CommDomain.ipc,
-                                n_groups == 1 and step == group_size - 1,
-                                f"local_red_s{outer}_step{step}_u{inner}")
+                        for outer in range(first_slice, first_slice + slice_span):
+                            own = chunk_slice(lane, outer)
+                            for inner in range(num_local_slices):
+                                output = _partition(own, num_local_slices, inner)
+                                tx = _partition(chunk_slice(tx_lane, outer), num_local_slices, inner)
+                                tail = (outer - first_slice) * num_local_slices + inner
+                                scratch_offset = output[0] - (own_lane[0] if n_groups == 1 else own[0])
+                                comm_tail = exchange(
+                                    group * group_size + tx_lane, tx, workflow.input,
+                                    group * group_size + rx_lane, (scratch_offset, output[1]),
+                                    workflow.scratch,
+                                    _merge_dependencies(comm_tail, red_tails[tail]),
+                                    CommDomain.ipc, f"local_rs_s{outer}_step{step}_u{inner}")
+                                red_tails[tail] = reduce(
+                                    output, scratch_offset, comm_tail, CommDomain.ipc,
+                                    n_groups == 1 and step == group_size - 1,
+                                    f"local_red_s{outer}_step{step}_u{inner}")
                     done = list(comm_tail)
                     for tail in red_tails:
                         done = _merge_dependencies(done, tail)
                     if n_groups > 1:
-                        done = [rb.p2p([], parents=done, name=f"local_join_s{outer}",
+                        done = [rb.p2p([], parents=done, name=f"local_join_s{first_slice}",
                                        comm_domain=CommDomain.ipc)]
                     return done
 
@@ -203,20 +209,25 @@ def build_groupedar(
                     return [rb.p2p(ops, parents=dependencies,
                                    name=f"local_ag_s{outer}", comm_domain=CommDomain.ipc)]
 
-                local_done = local_reduce_scatter(0, ready)
-                ipc_tail = list(local_done)
-                net_tail = []
-                for outer in range(num_slices):
-                    net_done = network_allreduce(
-                        outer, _merge_dependencies(local_done, net_tail))
-                    net_tail = net_done
-                    next_local_done = []
-                    if outer + 1 < num_slices:
-                        next_local_done = local_reduce_scatter(outer + 1, ipc_tail)
-                        ipc_tail = next_local_done
-                    ipc_tail = local_allgather(
-                        outer, _merge_dependencies(ipc_tail, net_done))
-                    local_done = next_local_done
+                if n_groups == 1:
+                    ipc_tail = local_reduce_scatter(0, num_slices, ready)
+                    for outer in range(num_slices):
+                        ipc_tail = local_allgather(outer, ipc_tail)
+                else:
+                    local_done = local_reduce_scatter(0, 1, ready)
+                    ipc_tail = list(local_done)
+                    net_tail = []
+                    for outer in range(num_slices):
+                        net_done = network_allreduce(
+                            outer, _merge_dependencies(local_done, net_tail))
+                        net_tail = net_done
+                        next_local_done = []
+                        if outer + 1 < num_slices:
+                            next_local_done = local_reduce_scatter(outer + 1, 1, ipc_tail)
+                            ipc_tail = next_local_done
+                        ipc_tail = local_allgather(
+                            outer, _merge_dependencies(ipc_tail, net_done))
+                        local_done = next_local_done
     return workflow
 
 
