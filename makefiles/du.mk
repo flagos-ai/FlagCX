@@ -30,12 +30,27 @@ PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENS
 # DUSHMEM (Sugon HIP SHMEM, DTK) and the corresponding CommTraits, just as it
 # selects NVSHMEM and NvshmemBackend on NVIDIA.
 # DUSHMEM headers sit under $(SHMEM_HOME)/include (added to INCLUDEDIR by the
-# top-level Makefile when USE_SHMEM=1). The host library is libdushmem_host;
-# device-side PGAS/collective symbols resolve from the static
-# libdushmem_device archive during the hipcc device link (-fgpu-rdc).
+# top-level Makefile when USE_SHMEM=1). Host entry points (dushmemx_init,
+# dushmemx_malloc, ...) come from the shared libdushmem_host.
+#
+# Device-side symbols need the static archive, passed as a plain input file:
+#   libdushmem_host.so    — host API
+#   libdushmem_device.a   — HIP_SEPARABLE_COMPILATION + -fgpu-rdc, carries the
+#                           device bundle (dushmemi_transfer_quiet,
+#                           dushmemi_transfer_amo_nonfetch, ...)
+# HIP device code cannot be resolved across a .so boundary, so the archive has
+# to be linked into libflagcx.so. And the clang/dcc driver only harvests device
+# bundles from plain input files: neither -ldushmem_device nor
+# -Wl,--whole-archive -ldushmem_device reaches the amdgcn-link step, they both
+# leave dushmemi_transfer_* undefined. Spelling the archive path out works
+# because the driver then treats it as an input file. Verified on nmz17.
+# (DUSHMEM_BUILD_BITCODE_LIBRARY is rejected by the DTK/HIP backend, so there
+# is no .bc to link instead, and DUSHMEM_ENABLE_ALL_DEVICE_INLINING defaults to
+# OFF, which is why these symbols live in the archive at all.)
 ifeq ($(USE_SHMEM), 1)
   ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
-  DEVICE_LINK  += -L$(SHMEM_HOME)/lib -ldushmem_host -ldushmem_device
+  DEVICE_LINK  += -L$(SHMEM_HOME)/lib -ldushmem_host \
+                  $(SHMEM_HOME)/lib/libdushmem_device.a
   # Compile ONLY the dushmem host adaptor — do NOT use a shmem/*.cc wildcard,
   # since that would also pull in nvshmem_adaptor.cc (needs nvshmem.h and
   # would define a duplicate shmemAdaptor).
