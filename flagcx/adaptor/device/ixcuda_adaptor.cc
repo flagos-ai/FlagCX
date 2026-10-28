@@ -430,6 +430,18 @@ flagcxResult_t ixcudaAdaptorSymMulticastFree(void *) {
   return flagcxNotSupported;
 }
 
+// Consumes the pending device error: cudaGetLastError() both reads the record
+// and clears it, so a later caller cannot mistake this failure for its own. The
+// counterpart is ixcudaAdaptorLaunchKernel(), which deliberately leaves the
+// sticky state set and reports the failure itself -- there is nothing left to
+// log here, and logging again would report one failure twice.
+// Measured on CoreX 5.1.0: the record is the per-thread slot that every runtime
+// call overwrites, so a reader only sees it before the next runtime call.
+flagcxResult_t ixcudaAdaptorGetLastError() {
+  cudaError_t err = cudaGetLastError();
+  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+}
+
 flagcxResult_t ixcudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   if (ptr == NULL || ptrType == NULL)
     return flagcxInvalidArgument;
@@ -524,7 +536,7 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorSymMulticastSupported, ixcudaAdaptorSymMulticastCreate,
       ixcudaAdaptorSymMulticastBind, ixcudaAdaptorSymMulticastTeardown,
       ixcudaAdaptorSymMulticastFree,
-      NULL, // flagcxResult_t (*getLastError)();
+      ixcudaAdaptorGetLastError, // flagcxResult_t (*getLastError)();
       ixcudaAdaptorGetPointerType,
       flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
