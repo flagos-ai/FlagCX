@@ -139,11 +139,11 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
   int localUnexpectedError =
       op != flagcxSuccess && op != flagcxNotSupported ? 1 : 0;
   int anyUnexpectedError = 0;
-  MPI_Allreduce(&localUnexpectedError, &anyUnexpectedError, 1, MPI_INT,
-                MPI_MAX, MPI_COMM_WORLD);
+  MPI_Allreduce(&localUnexpectedError, &anyUnexpectedError, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
   ASSERT_EQ(anyUnexpectedError, 0)
-      << "IPC Get operation failed on rank " << rank
-      << " with result " << static_cast<int>(op);
+      << "IPC Get operation failed on rank " << rank << " with result "
+      << static_cast<int>(op);
   if (anyUnsupported) {
     if (rank == 1) {
       EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
