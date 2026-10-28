@@ -568,7 +568,7 @@ struct CommTraits<DushmemBackend> {
 // ============================================================
 // Grid-wide synchronization helpers for DUSHMEM barriers.
 // Block 0 collects arrive flags from all blocks, performs the
-// dushmemx_barrier_block PE-level barrier, then releases others.
+// team-level (PE) barrier, then releases the other blocks.
 // ============================================================
 
 template <typename Coop>
@@ -603,7 +603,24 @@ dushmemGridWait(Coop &coop, dushmem_team_t team, volatile uint64_t *arrive,
   int numBlocks = FLAGCX_GRID_DIM_X;
   if (FLAGCX_BLOCK_IDX_X == 0) {
     coop.sync();
-    dushmemx_barrier_block(team);
+    // PE-level barrier, executed by block 0 only.
+    //
+    // DUSHMEM's non-ABI block/warp-scoped collectives -- the family
+    // nvshmemx_barrier_block() corresponds to -- are declared in
+    // dushmemx_coll_api.h but never implemented and never reachable, so calling
+    // dushmemx_barrier_block() leaves an unresolved device symbol and the GPU
+    // jumps to address 0 (VMFault FaultAddress 0). Use the internal
+    // threadgroup-scoped barrier the ABI wrappers build on
+    // (dushmem_barrier_all() -> dushmemi_barrier_threadgroup<thread>): with
+    // SCOPE = BLOCK only thread 0 of the block advances the team counter and
+    // the block's threads cover the team members, which is exactly the
+    // one-block-per-PE contract this grid barrier needs.
+    // The device-pass guard is required because dushmemi_barrier_threadgroup is
+    // only declared under __HIP_DEVICE_COMPILE__ (non-ABI headers).
+#if defined(__HIP_DEVICE_COMPILE__)
+    if (team != DUSHMEM_TEAM_INVALID)
+      dushmemi_barrier_threadgroup<DUSHMEMI_THREADGROUP_BLOCK>(team);
+#endif
     coop.sync();
     for (int i = coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
       release[i]++;
