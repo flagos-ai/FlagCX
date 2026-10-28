@@ -53,6 +53,22 @@ static flagcxResult_t dushmemAdaptorInit(int rank, int nranks, void *handle) {
   // initialized.
   if (dushmemx_init_status() == DUSHMEM_STATUS_NOT_INITIALIZED)
     return flagcxInternalError;
+  // DUSHMEM bootstraps in two stages: init returns with IS_BOOTSTRAPPED and
+  // the runtime deliberately defers common_init (get_cucontext reports
+  // GPU_NOT_SELECTED on the first pass), completing it lazily inside the
+  // next collective call. team_split does not trigger that lazy path and
+  // would fail with "called before DUSHMEM initialization has completed",
+  // so finish the second stage eagerly with the same barrier the DUSHMEM
+  // init-status unit test uses.
+  if (dushmemx_init_status() < DUSHMEM_STATUS_IS_INITIALIZED) {
+    dushmem_barrier_all();
+  }
+  if (dushmemx_init_status() < DUSHMEM_STATUS_IS_INITIALIZED) {
+    WARN("dushmem init: runtime stuck at status %d (expected >= %d)",
+         dushmemx_init_status(), DUSHMEM_STATUS_IS_INITIALIZED);
+    dushmem_finalize();
+    return flagcxInternalError;
+  }
   if (dushmem_my_pe() != rank || dushmem_n_pes() != nranks) {
     WARN("dushmem init: caller (rank %d/%d) does not match the initialized "
          "dushmem world (pe %d/%d)",
