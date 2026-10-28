@@ -1105,6 +1105,13 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   for (size_t i = tid; i < count; i += nthreads) {
     float *peerPtr =
         (float *)flagcxGetPeerPointer(devMem, i * sizeof(float), intra, peer);
+    if (peerPtr == nullptr) {
+      if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+        printf("[K6 PeerPointer] null peer pointer: rank=%d peer=%d i=%zu\n",
+               myRank, peer, i);
+      }
+      return;
+    }
     output[i] = *peerPtr;
   }
 }
