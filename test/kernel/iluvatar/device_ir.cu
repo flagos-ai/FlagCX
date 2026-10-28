@@ -4220,3 +4220,17 @@ void launchKernelDevTeamResolutionIntraWorldS(const void *devCommPtr, const void
 void launchKernelDevTeamResolutionInterWorldS(const void *devCommPtr, const void *dstMemPtr, const void *srcMemPtr, int *devResult, flagcxStream_t stream) {
   launchKernelDevTeamResolutionInterWorldS((const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr, (const void FLAGCX_IR_GLOBAL_PTR *)dstMemPtr, (const void FLAGCX_IR_GLOBAL_PTR *)srcMemPtr, devResult, stream);
 }
+
+void launchKernelNetGetS(const void *devCommPtr, const void *sendMemPtr,
+                         const void *recvMemPtr, size_t countPerPeer,
+                         flagcxStream_t stream) {
+  launchKernelNetGetS((const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr,
+                      (const void FLAGCX_IR_GLOBAL_PTR *)sendMemPtr,
+                      (const void FLAGCX_IR_GLOBAL_PTR *)recvMemPtr,
+                      countPerPeer, stream);
+}
+void launchKernelNetWaitSignalMeetShadowS(const void *devCommPtr,
+                                          flagcxStream_t stream) {
+  launchKernelNetWaitSignalMeetShadowS(
+      (const void FLAGCX_IR_GLOBAL_PTR *)devCommPtr, stream);
+}
