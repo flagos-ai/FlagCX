@@ -1,0 +1,45 @@
+# Mthreads MUSA hardware configuration
+hardware_name: mthreads
+display_name: Mthreads MUSA Tests
+
+# Only platform-specific files belong here; shared/unmatched changes run all.
+paths_watch:
+  - .github/configs/mthreads.yml
+  - .github/scripts/ci/run_mthreads_workload.sh
+  - .github/scripts/set_env/mthreads.sh
+  - flagcx/adaptor/device/musa_adaptor.cc
+  - flagcx/adaptor/ccl/musa_mccl_adaptor.cc
+  - flagcx/adaptor/include/musa_adaptor.h
+  - makefiles/musa.mk
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:mthreads-dev-fixed-20261022
+
+runner_labels:
+  - mt-8g-cicd-flagcx
+
+docker_volumes: []
+
+docker_options:
+  - --network=host
+  - --runtime=mthreads
+  - --privileged
+  - --ipc=host
+  - --shm-size=32g
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
+  - --ulimit=nofile=65535:65535
+  - --group-add=video
+
+set_env: .github/scripts/set_env/mthreads.sh
+
+unit_test_suites:
+  - adaptor
+  - core
+  - device
+  - device_api_host
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem
+  - topo

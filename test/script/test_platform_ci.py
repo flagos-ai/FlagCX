@@ -233,7 +233,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu"]
+        all_platforms = ["cuda", "hygon", "metax", "mthreads", "ppu"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -584,6 +584,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
             '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
             '{"platform":"metax","display_name":"MetaX Tests"},'
+            '{"platform":"mthreads","display_name":"Mthreads MUSA Tests"},'
             '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
         )
         unit_workflow = (
@@ -631,6 +632,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "runner",
                 "service",
                 "symmem",
+            ],
+            "mthreads": [
+                "adaptor",
+                "core",
+                "device",
+                "device_api_host",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+                "topo",
             ],
             "ppu": [
                 "adaptor",
@@ -686,6 +699,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', hygon_handler)
         self.assertIn("metax perf", perf_workflow)
         self.assertIn('run_host_perf_suite.sh" heterogeneous "$perf_bin"', metax_handler)
+        self.assertIn("mthreads perf", perf_workflow)
+        mthreads_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_mthreads_workload.sh"
+        ).read_text()
+        self.assertIn('"$perf_runner" homogeneous "$perf_bin"', mthreads_handler)
+        self.assertIn('"$perf_runner" heterogeneous "$perf_bin"', mthreads_handler)
 
         self.assertIn("hygon torch-api", torch_workflow)
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
@@ -703,7 +722,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ):
             self.assertNotIn("container:", workflow)
             self.assertNotIn("image: harbor.baai.ac.cn", workflow)
-            for platform in ("cuda", "metax", "hygon", "ppu"):
+            platforms = ("cuda", "metax", "hygon", "ppu")
+            if workload == "perf":
+                platforms += ("mthreads",)
+            for platform in platforms:
                 with self.subTest(workload=workload, platform=platform):
                     self.assertIn(
                         f"ruby .github/scripts/ci/load_platform_config.rb {platform}",
@@ -863,12 +885,20 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("export FLAGCX_DEBUG_SUBSYS=ALL", unit_runner)
         self.assertIn("export FLAGCX_VMM_ENABLE=0", unit_runner)
 
-        for platform in ("cuda", "metax", "hygon", "ppu"):
+        for platform in ("cuda", "metax", "hygon", "mthreads", "ppu"):
             source = (
                 REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
             ).read_text()
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
+
+        mthreads_env = (
+            REPO_ROOT / ".github/scripts/set_env/mthreads.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_CI_MUSA_DEVICES", mthreads_env)
+        self.assertIn("FLAGCX_CI_DEVICE_GTEST_FILTER", mthreads_env)
+        self.assertIn("mthreads-gmi", mthreads_env)
+        self.assertIn('"$suite" == symmem', mthreads_env)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (

@@ -60,7 +60,7 @@ flagcx_ci_require_rdma() {
 
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
   case "$platform_name" in
-    cuda|metax|hygon|ppu) ;;
+    cuda|metax|hygon|mthreads|ppu) ;;
     *) return 0 ;;
   esac
 
@@ -104,6 +104,8 @@ build_suite() {
   if [[ "$SUITE" == device_api_host ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  elif [[ "$SUITE" == device ]]; then
+    suite_dir="$PROJECT_ROOT/test/unittest/device"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
@@ -704,6 +706,8 @@ run_suite() {
           local pxn_visible_devices_var=CUDA_VISIBLE_DEVICES
           if [[ "$platform_name" == "metax" ]]; then
             pxn_visible_devices_var=MACA_VISIBLE_DEVICES
+          elif [[ "$platform_name" == "mthreads" ]]; then
+            pxn_visible_devices_var=MUSA_VISIBLE_DEVICES
           elif [[ "$platform_name" == "hygon" ]]; then
             pxn_visible_devices_var=HIP_VISIBLE_DEVICES
           fi
@@ -876,6 +880,15 @@ run_suite() {
     device_api_host)
       run_device_api_host
       ;;
+    device)
+      FLAGCX_CI_TEST_LABEL="device adaptor tests" \
+        GTEST_FILTER="${FLAGCX_CI_DEVICE_GTEST_FILTER:-*}" \
+        "$TEST_RUNNER" make -C "$suite_dir" run
+      ;;
+    topo)
+      FLAGCX_CI_TEST_LABEL="topology unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      ;;
     device_api_unified_ir)
       run_device_api_unified_ir
       ;;
@@ -887,7 +900,7 @@ run_suite() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api_host|p2p|rma|runner|service|symmem)
+  adaptor|core|device|device_api_host|p2p|rma|runner|service|symmem|topo)
     build_googletest
     ;;
   device_api|device_api_unified_ir)

@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 7 ]]; then
-  echo "Usage: $0 <platforms-json> <config> <cuda-base> <cuda-specific> <hygon> <metax> <ppu>" >&2
+if [[ $# -ne 7 && $# -ne 8 ]]; then
+  echo "Usage: $0 <platforms-json> <config> <cuda-base> <cuda-specific> <hygon> <metax> <ppu> [mthreads]" >&2
   exit 2
 fi
 
@@ -28,7 +28,7 @@ require_success() {
   fi
 }
 
-if selected cuda || selected metax || selected hygon || selected ppu; then
+if selected cuda || selected metax || selected hygon || selected ppu || selected mthreads; then
   require_success "Hardware config loading" "$config_result"
 fi
 
@@ -37,6 +37,9 @@ cuda_specific=$2
 hygon=$3
 metax=$4
 ppu=$5
+# The Torch workflow currently supports only the original four backends.
+# Performance workflows pass an eighth argument to enforce Mthreads results.
+mthreads=${6:-}
 if selected cuda; then
   require_success "CUDA base workload" "$cuda_base"
   require_success "CUDA platform workload" "$cuda_specific"
@@ -49,6 +52,9 @@ if selected metax; then
 fi
 if selected ppu; then
   require_success "PPU workload" "$ppu"
+fi
+if [[ -n "$mthreads" ]] && selected mthreads; then
+  require_success "Mthreads workload" "$mthreads"
 fi
 
 echo "All selected platform workloads succeeded."
