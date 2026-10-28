@@ -1035,7 +1035,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$(KERNEL_INCLUDE)", rma_makefile)
         self.assertIn("RMA_VMM_ENABLE ?= 0", rma_makefile)
         self.assertIn("NET_FILTER ?= *", rma_makefile)
-        for platform in ("iluvatar)", "metax)", "hygon)", "ppu)", "cuda)"):
+        for platform in ("iluvatar)", "metax)", "hygon|enflame)", "ppu)", "cuda)"):
             self.assertIn(platform, rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
@@ -1143,6 +1143,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
 
+        enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
+        enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
+        self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
+        self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
+        self.assertIn('GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"', enflame_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL=1", enflame_env)
+
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
@@ -1157,6 +1164,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn("Skipping symmem VMM-local MPI tests", symmem_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
         for platform, adaptor in (
             ("hygon", "du"),

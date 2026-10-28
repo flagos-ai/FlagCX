@@ -64,8 +64,10 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
 
 echo ""
-echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
-if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
+if [[ "${FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL:-0}" == 1 ]]; then
+  echo "Skipping symmem VMM-local MPI tests: this platform does not expose a validated cross-GPU flat VMM mapping"
+elif [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
+  echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
   FLAGCX_CI_MPI_LABEL="symmem VMM local" \
     "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
       -x FLAGCX_USE_HETERO_COMM=1 \
@@ -78,7 +80,7 @@ if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
       "$BUILD_BIN/symmem_mpi_tests" \
       --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
 else
-  echo "Skipping symmem VMM-local tests: VMM is unavailable on this CoreX runtime"
+  echo "Skipping symmem VMM-local tests: VMM is unavailable on this runtime"
 fi
 
 if ((run_multi_segment)); then

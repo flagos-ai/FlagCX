@@ -541,16 +541,17 @@ run_suite() {
             "$TEST_RUNNER" make -C "$suite_dir" run-unit \
               "${shared_test_args[@]}" || shared_status=$?
         fi
-        if ((shared_status == 0)) &&
-           [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
-          LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
-            FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-            FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
-            make -C "$suite_dir" run-mpi \
-              "${shared_test_args[@]}" MPIRUN="$MPI_RUNNER" \
-              MPI_ENV="$p2p_mpi_env" || shared_mpi_status=$?
-        elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
-          echo "Skipping shared P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
+        if ((shared_status == 0)); then
+          if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
+            LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
+              FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+              FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
+              make -C "$suite_dir" run-mpi \
+                "${shared_test_args[@]}" MPIRUN="$MPI_RUNNER" \
+                MPI_ENV="$p2p_mpi_env" || shared_mpi_status=$?
+          else
+            echo "Skipping shared P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
+          fi
         fi
       fi
 
@@ -573,7 +574,7 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
-        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+        ${FLAGCX_CI_RMA_IPC_FILTER:+IPC_FILTER="$FLAGCX_CI_RMA_IPC_FILTER"} || ipc_status=$?
       if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]] && flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
@@ -748,7 +749,11 @@ run_suite() {
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
       local runner_mpi_runner="$MPI_RUNNER"
       local -a runner_net_platform_env=()
+      local -a runner_mpi_filter=()
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ -n "${FLAGCX_CI_RUNNER_MPI_FILTER:-}" ]]; then
+        runner_mpi_filter=("$FLAGCX_CI_RUNNER_MPI_FILTER")
+      fi
       if [[ "$platform_name" == ascend ]]; then
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_ascend_runner_mpi.sh"
       elif [[ "$platform_name" == iluvatar ]]; then
@@ -768,15 +773,19 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
-        ./build/bin/runner_mpi_tests || default_status=$?
-      FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
-        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_P2P_DISABLE=0 \
-        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
-        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-        ./build/bin/runner_mpi_tests || hybrid_status=$?
+        ./build/bin/runner_mpi_tests "${runner_mpi_filter[@]}" || default_status=$?
+      if [[ "${FLAGCX_CI_SKIP_RUNNER_HYBRID:-0}" == 1 ]]; then
+        echo "Skipping runner heterogeneous HYBRID MPI tests: S60 ECCL P2P runner path hangs"
+      else
+        FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+          ./build/bin/runner_mpi_tests "${runner_mpi_filter[@]}" || hybrid_status=$?
+      fi
       if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
         echo "Skipping runner forced NET, multi-QP and PXN MPI tests: no ACTIVE RDMA HCA is available"
         return 0
