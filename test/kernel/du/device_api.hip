@@ -1062,13 +1062,16 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
 
-  // Check first pointer before any thread dereferences
-  float *firstPtr = (float *)flagcxGetIntraPointer(devMem, tid * sizeof(float), peer);
-  if (firstPtr == nullptr)
-    return;
-
   for (size_t i = tid; i < count; i += nthreads) {
-    float *peerPtr = (float *)flagcxGetIntraPointer(devMem, i * sizeof(float), peer);
+    float *peerPtr =
+        (float *)flagcxGetIntraPointer(devMem, i * sizeof(float), peer);
+    if (peerPtr == nullptr) {
+      if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+        printf("[K5 IntraPointer] null peer pointer: rank=%d peer=%d i=%zu\n",
+               myRank, peer, i);
+      }
+      return;
+    }
     output[i] = *peerPtr;
   }
 }
