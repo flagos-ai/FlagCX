@@ -1,5 +1,4 @@
 include ../../make.inc
-$(eval $(REQUIRE_COMPILE_KERNEL))
 
 # Each test_*.cpp becomes its own binary: $(BINDIR)/perf_<name>
 SRCS := $(wildcard test_*.cpp)

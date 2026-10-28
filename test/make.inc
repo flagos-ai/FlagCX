@@ -189,17 +189,6 @@ ifeq ($(filter clean help info,$(MAKECMDGOALS)),)
 endif
 endif
 
-# Device-side test directories $(eval) this right after including make.inc, so
-# building them directly without COMPILE_KERNEL=1 fails instead of linking
-# against a libflagcx that lacks the device objects.
-define REQUIRE_COMPILE_KERNEL
-ifneq ($(COMPILE_KERNEL), 1)
-ifneq ($(filter-out clean,$(or $(MAKECMDGOALS),all)),)
-  $$(error $(notdir $(CURDIR)) tests require COMPILE_KERNEL=1)
-endif
-endif
-endef
-
 # Debug helper — use 'make print-config' to verify paths.
 # NOTE: Do NOT define targets in make.inc (would override default target
 # in leaf Makefiles). This is just a variable definition.
