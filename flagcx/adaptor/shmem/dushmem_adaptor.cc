@@ -32,6 +32,17 @@
 static int shmemInitRefCount = 0;
 
 static flagcxResult_t dushmemAdaptorInit(int rank, int nranks, void *handle) {
+  if (shmemInitRefCount > 0) {
+    // DUSHMEM has no re-init: additional devComms join the existing world.
+    if (dushmem_my_pe() != rank || dushmem_n_pes() != nranks) {
+      WARN("dushmem init: already initialized with a different world "
+           "(caller %d/%d, dushmem %d/%d)",
+           rank, nranks, dushmem_my_pe(), dushmem_n_pes());
+      return flagcxInvalidUsage;
+    }
+    shmemInitRefCount++;
+    return flagcxSuccess;
+  }
   if (handle != nullptr) {
     // UID mode: the caller borrowed a dushmemx_uniqueid_t obtained from the
     // bootstrap PE (usually rank 0 via dushmemx_get_uniqueid) and exchanged
