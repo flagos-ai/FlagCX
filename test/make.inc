@@ -144,11 +144,6 @@ ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
 # particular, a normal g++ compilation cannot consume the XPU implementation;
 # the platform device compiler selects those traits for the kernel object.
 HOST_ADAPTOR_DEFINE := $(filter-out -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_DEFINE))
-ifeq ($(DEVICE_PLATFORM), CUDA)
-  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/nvidia
-else
-  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
-endif
 
 # SHMEM include path and host-test allocator selection. Device CommTraits are
 # selected separately by each platform's ADAPTOR_DEFINE/device compiler flags;
@@ -163,18 +158,47 @@ endif
 
 # Test kernel build directory (platform-specific device code)
 KERNEL_DIR := $(PROJECT_ROOT)/test/kernel
-# Only require DEVICE_PLATFORM for build targets, not for clean/help/info
-ifeq ($(filter clean help info,$(MAKECMDGOALS)),)
-ifeq ($(strip $(DEVICE_PLATFORM)),)
-  $(error DEVICE_PLATFORM is not set by the selected makefiles/<platform>.mk; cannot determine test kernel platform)
-endif
-endif
-KERNEL_PLATFORM := $(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
-ifeq ($(KERNEL_PLATFORM), cuda)
-  KERNEL_PLATFORM := nvidia
-endif
-KERNEL_OBJ_DIR := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/build/obj
 KERNEL_INCLUDE := -I$(KERNEL_DIR)/include
+
+# Host-only tests do not need a device platform, matching the main build, which
+# uses DEVICE_PLATFORM only with COMPILE_KERNEL=1. The paths are still derived
+# whenever the platform declares one: some host suites build a standalone test
+# kernel without COMPILE_KERNEL (rma's GDR visibility consumer, NVSHMEM tests).
+ifneq ($(strip $(DEVICE_PLATFORM)),)
+  KERNEL_PLATFORM := $(shell echo $(DEVICE_PLATFORM) | tr 'A-Z' 'a-z')
+  ifeq ($(KERNEL_PLATFORM), cuda)
+    KERNEL_PLATFORM := nvidia
+  endif
+  PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/$(KERNEL_PLATFORM)
+  KERNEL_OBJ_DIR := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/build/obj
+endif
+
+# Kernel and Device API tests (COMPILE_KERNEL=1) need the platform's device
+# compiler and test kernels; fail clearly where the platform provides neither.
+ifeq ($(COMPILE_KERNEL), 1)
+ifeq ($(filter clean help info,$(MAKECMDGOALS)),)
+  ifeq ($(strip $(DEVICE_PLATFORM)),)
+    $(error COMPILE_KERNEL=1: the selected makefiles/<platform>.mk sets no DEVICE_PLATFORM, so kernel and Device API tests are not supported on this platform)
+  endif
+  ifeq ($(strip $(DEVICE_COMPILER)),)
+    $(error COMPILE_KERNEL=1: DEVICE_PLATFORM=$(DEVICE_PLATFORM) has no DEVICE_COMPILER in its makefiles/<platform>.mk)
+  endif
+  ifeq ($(wildcard $(KERNEL_DIR)/$(KERNEL_PLATFORM)/Makefile),)
+    $(error COMPILE_KERNEL=1: no test kernels for DEVICE_PLATFORM=$(DEVICE_PLATFORM) (missing test/kernel/$(KERNEL_PLATFORM)))
+  endif
+endif
+endif
+
+# Device-side test directories $(eval) this right after including make.inc, so
+# building them directly without COMPILE_KERNEL=1 fails instead of linking
+# against a libflagcx that lacks the device objects.
+define REQUIRE_COMPILE_KERNEL
+ifneq ($(COMPILE_KERNEL), 1)
+ifneq ($(filter-out clean,$(or $(MAKECMDGOALS),all)),)
+  $$(error $(notdir $(CURDIR)) tests require COMPILE_KERNEL=1)
+endif
+endif
+endef
 
 # Debug helper — use 'make print-config' to verify paths.
 # NOTE: Do NOT define targets in make.inc (would override default target

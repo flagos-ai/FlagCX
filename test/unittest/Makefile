@@ -11,17 +11,23 @@
 #   make clean        Clean all build artifacts
 
 COMPONENTS := adaptor core service runner p2p rma topo symmem
+DEVICE_COMPONENTS := kernel device_api
 
 ifeq ($(COMPILE_KERNEL), 1)
-COMPONENTS += kernel device_api
+COMPONENTS += $(DEVICE_COMPONENTS)
 endif
 
-.PHONY: all $(COMPONENTS) clean run-unit run-mpi run
+.PHONY: all $(COMPONENTS) $(DEVICE_COMPONENTS) clean run-unit run-mpi run
 
 all: $(COMPONENTS)
 
 $(COMPONENTS):
 	@$(MAKE) -C $@
+
+ifneq ($(COMPILE_KERNEL), 1)
+$(DEVICE_COMPONENTS):
+	$(error $@ tests require COMPILE_KERNEL=1)
+endif
 
 clean:
 	@for comp in $(COMPONENTS); do $(MAKE) -C $$comp clean; done

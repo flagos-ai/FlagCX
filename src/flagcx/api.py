@@ -155,13 +155,6 @@ class flagcxHandlerGroup(ctypes.Structure):
 flagcxHandlerGroup_t = ctypes.POINTER(flagcxHandlerGroup)
 
 
-_FP8_DTYPES = tuple(
-    getattr(torch, name)
-    for name in ("float8_e4m3fn", "float8_e5m2", "float8_e4m3fnuz", "float8_e5m2fnuz")
-    if hasattr(torch, name)
-)
-
-
 class flagcxDataTypeEnum:
     flagcxInt8 = 0
     flagcxChar = 0
@@ -198,8 +191,8 @@ class flagcxDataTypeEnum:
             return cls.flagcxFloat64
         if dtype == torch.bfloat16:
             return cls.flagcxBfloat16
-        # 1-byte types without a FlagCX enum; only valid for non-reducing ops.
-        if dtype == torch.bool or dtype in _FP8_DTYPES:
+        # Same convention as PyTorch's NCCL backend (bool -> ncclUint8).
+        if dtype == torch.bool:
             return cls.flagcxUint8
         raise ValueError(f"Unsupported dtype: {dtype}")
 

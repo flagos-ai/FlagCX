@@ -1,4 +1,5 @@
 include ../../make.inc
+$(eval $(REQUIRE_COMPILE_KERNEL))
 
 # The host-only unit target must use the host compiler even when the Device
 # API MPI targets use HIPCC for their device objects.

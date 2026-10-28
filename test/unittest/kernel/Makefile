@@ -1,4 +1,5 @@
 include ../../make.inc
+$(eval $(REQUIRE_COMPILE_KERNEL))
 
 # Local include directories for test fixtures
 LOCAL_INCLUDE := -I$(abspath include)

@@ -123,20 +123,23 @@ class FlagcxDefaultLibraryTest(unittest.TestCase):
 
 
 class FlagcxDataTypeEnumTest(unittest.TestCase):
-    def test_one_byte_types_map_to_uint8(self):
+    def test_bool_maps_to_uint8(self):
         import torch
 
         enum = flagcx_api.flagcxDataTypeEnum
-        for dtype in (torch.uint8, torch.bool, torch.float8_e4m3fn,
-                      torch.float8_e5m2):
+        for dtype in (torch.uint8, torch.bool):
             with self.subTest(dtype=dtype):
                 self.assertEqual(enum.from_torch(dtype), enum.flagcxUint8)
 
     def test_unsupported_dtype_raises(self):
         import torch
 
-        with self.assertRaisesRegex(ValueError, "Unsupported dtype"):
-            flagcx_api.flagcxDataTypeEnum.from_torch(torch.complex64)
+        # FP8 stays rejected: a reduction on its encoded bytes as uint8 would
+        # silently produce wrong values.
+        for dtype in (torch.complex64, torch.float8_e4m3fn, torch.float8_e5m2):
+            with self.subTest(dtype=dtype):
+                with self.assertRaisesRegex(ValueError, "Unsupported dtype"):
+                    flagcx_api.flagcxDataTypeEnum.from_torch(dtype)
 
 
 if __name__ == "__main__":
