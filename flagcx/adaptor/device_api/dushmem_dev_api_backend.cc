@@ -9,6 +9,8 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "bootstrap.h"
+#include "comm.h"
 #include "dev_api_backend.h"
 #include "device_api/flagcx_device.h"
 #include "device_api/dushmem_comm_traits.h"
@@ -19,6 +21,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <dushmemx.h>
 #include <new>
 
 // Host-visible helper from flagcx/adaptor/kernel/du/device_api_host_helpers.hip
@@ -54,18 +57,36 @@ dushmemDevApiCommCreate(flagcxComm_t comm,
     return flagcxInternalError;
   }
 
-  // DUSHMEM is initialized with the environment-selected bootstrap; no
-  // vendor-specific handle is required (pass nullptr). A borrowed
-  // dushmemx_uniqueid_t can be passed instead once the public Device API
-  // can exchange it through the FlagCX bootstrap.
+  // DUSHMEM is bootstrapped with a unique id exchanged through the FlagCX
+  // bootstrap: the environment bootstrap would otherwise create a single-PE
+  // world when launched without DUSHMEM_BOOTSTRAP settings (e.g. under
+  // mpirun without PMI export).
   if (comm->homoRanks != comm->nranks) {
     WARN("dushmem Device API currently requires a homogeneous communicator "
          "(homoRanks=%d, nranks=%d)",
          comm->homoRanks, comm->nranks);
     return flagcxNotSupported;
   }
-  flagcxResult_t ret = shmemAdaptor->init(comm->homoRank, comm->homoRanks,
-                                          nullptr);
+  if (comm->bootstrap == nullptr) {
+    WARN("dushmem Device API requires a bootstrap for unique-id exchange");
+    return flagcxInvalidUsage;
+  }
+  dushmemx_uniqueid_t uid;
+  memset(&uid, 0, sizeof(uid));
+  if (comm->homoRank == 0) {
+    if (dushmemx_get_uniqueid(&uid) != 0) {
+      WARN("dushmemx_get_uniqueid failed");
+      return flagcxInternalError;
+    }
+  }
+  if (bootstrapCollBroadcast(comm->bootstrap, comm->homoRank, comm->homoRanks,
+                             0, &uid,
+                             sizeof(uid)) != flagcxSuccess) {
+    WARN("broadcasting the dushmem unique id failed");
+    return flagcxInternalError;
+  }
+  flagcxResult_t ret =
+      shmemAdaptor->init(comm->homoRank, comm->homoRanks, &uid);
   if (ret != flagcxSuccess) {
     return ret;
   }
