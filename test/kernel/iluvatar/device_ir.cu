@@ -145,7 +145,7 @@ void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *
 __global__ void kernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
                                          int *results) {
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    void *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
+    auto localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
     // Verify local pointer is non-null and points to same data as rawBuff
     // (may be a different VA due to VMM flat-mapping)
     if (localPtr == nullptr) {

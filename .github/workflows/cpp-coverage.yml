@@ -1,0 +1,83 @@
+name: FlagCX C++ Coverage
+
+on:
+  schedule:
+    - cron: '0 18 * * 6'
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform name, all, or comma-separated names
+        required: true
+        type: string
+        default: all
+
+permissions:
+  contents: read
+
+env:
+  FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
+  FLAGCX_CI_COVERAGE: '1'
+  FLAGCX_CI_TEST_TIMEOUT: 80m
+  FLAGCX_CI_MPI_TIMEOUT: 80m
+
+jobs:
+  prepare:
+    name: Resolve coverage platform matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Resolve requested platforms
+        id: resolve
+        env:
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform || 'all' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby .github/scripts/ci/load_platform_matrix.rb .github/configs "$FLAGCX_CI_PLATFORM"
+
+  coverage:
+    name: C++ coverage (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    uses: ./.github/workflows/unit_tests_common.yml
+    with:
+      platform: ${{ matrix.platform }}
+      cpp_coverage: true
+
+  aggregate:
+    name: Aggregate C++ coverage reports
+    if: always()
+    needs: [coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: cpp-coverage-*
+          path: coverage-reports
+          merge-multiple: false
+      - name: Write matrix summary
+        run: |
+          python3 .github/scripts/ci/aggregate_cpp_coverage.py \
+            --input-dir coverage-reports \
+            --output coverage-reports/summary.md
+      - name: Publish summary
+        run: cat coverage-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive C++ coverage matrix
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp-coverage-matrix
+          path: coverage-reports/
+          if-no-files-found: error
+          retention-days: 14

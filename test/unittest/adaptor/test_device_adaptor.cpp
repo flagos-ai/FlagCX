@@ -260,9 +260,15 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
             flagcxSuccess);
 
   void *managedPtr = nullptr;
-  ASSERT_EQ(devHandle->deviceMalloc(&managedPtr, TEST_SIZE, flagcxMemManaged,
-                                    nullptr),
-            flagcxSuccess);
+  flagcxResult_t managedResult = devHandle->deviceMalloc(
+      &managedPtr, TEST_SIZE, flagcxMemManaged, nullptr);
+  char vendor[128] = {};
+  if (managedResult != flagcxSuccess &&
+      devHandle->getVendor(vendor) == flagcxSuccess &&
+      strcmp(vendor, "ILUVATAR_COREX") == 0) {
+    GTEST_SKIP() << "Managed allocations are not supported on CoreX";
+  }
+  ASSERT_EQ(managedResult, flagcxSuccess);
   ASSERT_NE(managedPtr, nullptr);
   EXPECT_EQ(deviceAdaptor->getPointerType(managedPtr, &ptrType), flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
@@ -975,8 +981,12 @@ TEST_F(DeviceAdaptorTest, EventElapsedTime) {
   ASSERT_EQ(devHandle->eventRecord(endEvent, stream), flagcxSuccess);
   ASSERT_EQ(devHandle->eventSynchronize(endEvent), flagcxSuccess);
   float elapsedMs = -1.0f;
-  EXPECT_EQ(devHandle->eventElapsedTime(&elapsedMs, startEvent, endEvent),
-            flagcxSuccess);
+  flagcxResult_t elapsedResult =
+      devHandle->eventElapsedTime(&elapsedMs, startEvent, endEvent);
+  if (elapsedResult == flagcxNotSupported) {
+    GTEST_SKIP() << "Event elapsed time is not supported";
+  }
+  EXPECT_EQ(elapsedResult, flagcxSuccess);
   EXPECT_GE(elapsedMs, 0.0f);
   EXPECT_EQ(devHandle->eventElapsedTime(nullptr, startEvent, endEvent),
             flagcxInvalidArgument);

@@ -16,6 +16,9 @@ DEVICE_COMPILER := $(DEVICE_HOME)/bin/nvcc
 DEVICE_COMPILE_FLAG := -c --cudart=shared -Xcompiler -fPIC -MMD -MP -g
 DEVICE_LINK_FLAG := --cudart=shared -Xcompiler -fPIC
 DEVICE_FILE_EXTENSION := cu
+ifeq ($(FLAGCX_COVERAGE), 1)
+DEVICE_COMPILE_FLAG += -Xcompiler --coverage
+endif
 
 CCL_HOME    ?= /usr/local/nccl/build
 CCL_LIB     := $(CCL_HOME)/lib64

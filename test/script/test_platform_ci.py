@@ -233,7 +233,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu"]
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -583,6 +583,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             result.stdout.strip(),
             '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
             '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
+            '{"platform":"iluvatar","display_name":"Iluvatar CoreX Tests"},'
             '{"platform":"metax","display_name":"MetaX Tests"},'
             '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
         )
@@ -612,6 +613,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "hygon": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "iluvatar": [
                 "adaptor",
                 "core",
                 "device_api",
@@ -803,7 +816,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('if [[ "$platform_name" != "hygon" ]]; then', rma_case)
+        self.assertIn(
+            'if [[ "$platform_name" != "hygon" && "$platform_name" != "iluvatar" ]]; then',
+            rma_case,
+        )
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -998,6 +1014,40 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry",
             symmem_runner,
         )
+
+    def test_iluvatar_keeps_ipc_and_vmm_capability_coverage(self):
+        iluvatar_env = (
+            REPO_ROOT / ".github/scripts/set_env/iluvatar.sh"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        ipc_test = (
+            REPO_ROOT / "test/unittest/adaptor/coll_ipc_mem_handle.cpp"
+        ).read_text()
+
+        self.assertNotIn("FLAGCX_CI_ADAPTOR_MPI_FILTER", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_RMA_IPC_FILTER", iluvatar_env)
+        self.assertIn("ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));", ipc_test)
+        self.assertIn("CrossProcessLifecycle", ipc_test)
+        rma_ipc_test = (
+            REPO_ROOT / "test/unittest/rma/coll_rma_get_async.cpp"
+        ).read_text()
+        self.assertIn("op == flagcxNotSupported", rma_ipc_test)
+        self.assertIn(
+            "CoreX does not support asynchronous IPC Get", rma_ipc_test
+        )
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        route_union = unit_runner.index(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
+        )
+        vmm_skip_return = unit_runner.index(
+            'echo "Skipping $platform_name VMM flat-map data tests',
+            route_union,
+        )
+        self.assertLess(route_union, vmm_skip_return)
+        self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
+        self.assertIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0", iluvatar_env)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
             config = (

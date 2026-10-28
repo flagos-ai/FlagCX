@@ -8,6 +8,8 @@ platforms:
     enabled: true
   hygon:
     enabled: true
+  iluvatar:
+    enabled: true
   metax:
     enabled: true
   ppu:
@@ -20,6 +22,7 @@ shared_paths_watch:
   - .github/scripts/ci/check_platform_workflow.sh
   - .github/scripts/ci/checkout_submodules.sh
   - .github/scripts/ci/format.sh
+  - .github/scripts/ci/filter_supplemental_tests.sh
   - .github/scripts/ci/load_platform_config.rb
   - .github/scripts/ci/load_platform_matrix.rb
   - .github/scripts/ci/resolve_ci_matrix.rb
@@ -28,6 +31,8 @@ shared_paths_watch:
   - .github/scripts/ci/run_hardware_workload.sh
   - .github/scripts/ci/run_mpi_with_timeout.sh
   - .github/scripts/ci/run_unit_test.sh
+  - .github/scripts/ci/collect_cpp_coverage.py
+  - .github/scripts/ci/aggregate_cpp_coverage.py
   - .github/scripts/ci/run_with_timeout.sh
   - .github/scripts/ci/run_host_perf_suite.sh
   - .gitmodules

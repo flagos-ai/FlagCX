@@ -15,6 +15,11 @@ on:
         description: Commit under test
         required: false
         type: string
+      cpp_coverage:
+        description: Build the instrumented C++ coverage variant and run supplemental tests
+        required: false
+        type: boolean
+        default: false
 
 env:
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
@@ -74,6 +79,10 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_config.outputs.docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load_config.outputs.ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
+          FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
+          FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
+          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
@@ -94,3 +103,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload C++ coverage report
+        if: ${{ always() && inputs.cpp_coverage }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Require the shared GPU one-sided adaptor cases to run in hardware CI."""
 
+import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -14,7 +15,8 @@ REQUIRED_CASES = (
 )
 
 
-def check_results(path: Path) -> list[str]:
+def check_results(path: Path, allowed_skips: set[str] | None = None) -> list[str]:
+    allowed_skips = allowed_skips or set()
     try:
         root = ET.parse(path).getroot()
     except (OSError, ET.ParseError) as error:
@@ -33,6 +35,8 @@ def check_results(path: Path) -> list[str]:
             errors.append(f"NetAdaptorLoopback.{name}: expected once, found {len(matches)}")
             continue
         case = matches[0]
+        if case.find("skipped") is not None and name in allowed_skips:
+            continue
         if (
             case.get("status") != "run"
             or case.get("result") != "completed"
@@ -47,9 +51,18 @@ def check_results(path: Path) -> list[str]:
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.exit("Usage: check_adaptor_gpu_tests.py <gtest-xml>")
-    failures = check_results(Path(sys.argv[1]))
+    allowed_skips = set(
+        os.environ.get("FLAGCX_CI_ADAPTOR_GPU_SKIP_CASES", "").split()
+    )
+    failures = check_results(Path(sys.argv[1]), allowed_skips)
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
         sys.exit(1)
-    print("All four GPU one-sided adaptor cases ran and passed")
+    passed = set(REQUIRED_CASES) - allowed_skips
+    if passed:
+        print(f"GPU one-sided adaptor cases passed: {', '.join(sorted(passed))}")
+    else:
+        print("No GPU one-sided adaptor cases are supported on this platform")
+    if allowed_skips:
+        print(f"Expected capability skips: {', '.join(sorted(allowed_skips))}")

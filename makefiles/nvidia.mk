@@ -12,6 +12,11 @@ DEVICE_COMPILER := $(DEVICE_HOME)/bin/nvcc
 DEVICE_COMPILE_FLAG := -c --cudart=shared -Xcompiler -fPIC -MMD -MP -rdc=true -g $(DEVICE_COMPILER_GENCODE)
 DEVICE_LINK_FLAG := --cudart=shared -Xcompiler -fPIC $(DEVICE_COMPILER_GENCODE)
 DEVICE_FILE_EXTENSION := cu
+ifeq ($(FLAGCX_COVERAGE), 1)
+# Instrument NVCC's GCC-compiled host stubs. CUDA device instructions remain
+# outside the gcov report and are listed as device-source gaps.
+DEVICE_COMPILE_FLAG += -Xcompiler --coverage
+endif
 
 CCL_HOME    ?= /usr/local/nccl/build
 CCL_LIB     := $(CCL_HOME)/lib

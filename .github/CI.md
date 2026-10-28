@@ -78,3 +78,20 @@ log must show HTTP 2xx and the FlagCICD UI must display that run's Python
 coverage. HTTP 401/403 indicates a token issue; curl exit 6 indicates DNS
 failure; exit 7/28 indicates connectivity or timeout. Green CI alone does not
 prove upload success.
+
+## C++ Coverage
+
+`cpp-coverage.yml` runs the full platform unit-test suite on Saturday UTC and
+can be dispatched for selected platforms. It builds FlagCX host sources with
+GCC gcov instrumentation and archives per-platform/suite JSON and HTML reports
+with line, function, and branch metrics. The matrix summary keeps platforms
+separate; the cross-platform denominator is intentionally unset until the
+coverage policy is approved. Coverage is informational and does not add a 90%
+merge gate.
+
+Reports list production files that did not produce gcov data. This includes
+device-code sources until their vendor toolchains have a verified collection
+backend; skipped suites include an explicit reason rather than a fabricated
+zero-percent result. New supplemental GoogleTest cases use the
+`CoverageSupplemental.` suite-name prefix: ordinary PR jobs exclude these
+cases, while the weekly coverage workflow runs them.

@@ -142,6 +142,10 @@ ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
 # particular, a normal g++ compilation cannot consume the XPU implementation;
 # the platform device compiler selects those traits for the kernel object.
 HOST_ADAPTOR_DEFINE := $(filter-out -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_DEFINE))
+ifeq ($(USE_ILUVATAR), 1)
+# Host tests must use the same 32-bit FIFO control words as the Iluvatar library.
+CXXFLAGS += $(HOST_ADAPTOR_DEFINE) -I$(DEVICE_HOME)/include
+endif
 ifeq ($(DEVICE_PLATFORM), CUDA)
   PLATFORM_IR_DIR := $(PROJECT_ROOT)/bindings/ir/nvidia
 else

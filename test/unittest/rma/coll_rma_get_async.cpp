@@ -132,7 +132,26 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
     if (op == flagcxSuccess)
       op = devHandle->streamSynchronize(stream);
   }
-  ASSERT_EQ(collectiveFailed(op), 0) << "IPC Get operation failed";
+  int localUnsupported = op == flagcxNotSupported ? 1 : 0;
+  int anyUnsupported = 0;
+  MPI_Allreduce(&localUnsupported, &anyUnsupported, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  int localUnexpectedError =
+      op != flagcxSuccess && op != flagcxNotSupported ? 1 : 0;
+  int anyUnexpectedError = 0;
+  MPI_Allreduce(&localUnexpectedError, &anyUnexpectedError, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  ASSERT_EQ(anyUnexpectedError, 0)
+      << "IPC Get operation failed on rank " << rank << " with result "
+      << static_cast<int>(op);
+  if (anyUnsupported) {
+    if (rank == 1) {
+      EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
+      EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    GTEST_SKIP() << "CoreX does not support asynchronous IPC Get";
+  }
   if (rank == 1) {
     EXPECT_EQ(pending, before) << "IPC Get completed before its D2D copy";
     std::vector<uint8_t> actual(64);

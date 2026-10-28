@@ -166,6 +166,11 @@ COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
 HOST_CXX_STANDARD ?=
 HOST_CXXFLAGS ?=
+FLAGCX_COVERAGE ?= 0
+ifeq ($(FLAGCX_COVERAGE), 1)
+  HOST_CXXFLAGS += --coverage -O0
+  COVERAGE_LINK_FLAG := --coverage
+endif
 ifeq ($(USE_NVIDIA), 1)
   include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
@@ -415,7 +420,7 @@ $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) p2p_engine_mode_force
 	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
 	     [ -n "$(filter-out p2p_engine_mode_force,$?)" ]; then \
 	    echo "Linking   $@"; \
-	    $(LINKER) $(LINKER_FLAGS) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
+	    $(LINKER) $(LINKER_FLAGS) $(COVERAGE_LINK_FLAG) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
 	    printf '%s\n' '$(USE_SHARED_P2P_ENGINE)' > $(P2P_ENGINE_MODE_FILE); \
 	  fi
 

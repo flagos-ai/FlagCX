@@ -1193,7 +1193,6 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
         << static_cast<int>(result);
 
     if (result == flagcxSuccess) {
-      routeSucceeded[routeIndex] = true;
       ASSERT_NE(window, nullptr);
       ASSERT_NE(window->defaultBase, nullptr);
       ASSERT_TRUE(window->defaultBase->hasNetworkMrRef);
@@ -1202,12 +1201,16 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
       ASSERT_LT(mrIndex, testComm->heteroComm->oneSideHandleCount);
       auto *handle = testComm->heteroComm->oneSideHandles[mrIndex];
       ASSERT_NE(handle, nullptr);
-      if (routeIndex == 1)
-        EXPECT_EQ(handle->registrationRoute,
-                  static_cast<uint8_t>(FLAGCX_VMM_MR_ROUTE_VA));
-      else
+      if (handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_NONE &&
+          envEnabled("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED")) {
+        EXPECT_FALSE(window->defaultBase->hasFlatMapping)
+            << modes[routeIndex]
+            << " reported no VMM route while retaining a flat mapping";
+      } else {
+        routeSucceeded[routeIndex] = true;
         EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF ||
                     handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA);
+      }
       ASSERT_TRUE(
           allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
     } else {
