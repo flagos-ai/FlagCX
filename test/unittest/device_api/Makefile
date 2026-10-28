@@ -47,9 +47,13 @@ TOOLS_OBJ := $(OBJDIR)/tools.o
 IR_INCLUDE := -I$(PROJECT_ROOT)/bindings/ir
 PLATFORM_INCLUDES := -I$(PLATFORM_IR_DIR)
 
-# All includes
+# All includes. SHMEM_INCLUDE must precede any platform-bundled SHMEM headers:
+# DTK ships an older DUSHMEM under $(DEVICE_HOME)/include/dushmem with a
+# different (pre-qp_handle) dushmemi_transfer_* device ABI, and compiling
+# against it produces symbols the static libdushmem_device.a cannot resolve.
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
-    $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE)
+    $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) \
+    $(SHMEM_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
