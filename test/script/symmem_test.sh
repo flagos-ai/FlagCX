@@ -36,18 +36,22 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
 
 echo ""
-echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
-FLAGCX_CI_MPI_LABEL="symmem VMM local" \
-  "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
-    -x FLAGCX_USE_HETERO_COMM=1 \
-    -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-    -x FLAGCX_MEM_ENABLE=1 \
-    -x FLAGCX_VMM_ENABLE=1 \
-    -x FLAGCX_IB_DISABLE=1 \
-    -x FLAGCX_CI_REQUIRE_VMM=1 \
-    "${vmm_provider_env[@]}" \
-    "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+if [[ "${FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL:-0}" == 1 ]]; then
+  echo "Skipping symmem VMM-local MPI tests: this platform does not expose a validated cross-GPU flat VMM mapping"
+else
+  echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
+  FLAGCX_CI_MPI_LABEL="symmem VMM local" \
+    "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
+      -x FLAGCX_USE_HETERO_COMM=1 \
+      -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+      -x FLAGCX_MEM_ENABLE=1 \
+      -x FLAGCX_VMM_ENABLE=1 \
+      -x FLAGCX_IB_DISABLE=1 \
+      -x FLAGCX_CI_REQUIRE_VMM=1 \
+      "${vmm_provider_env[@]}" \
+      "$BUILD_BIN/symmem_mpi_tests" \
+      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+fi
 
 case "${FLAGCX_ADAPTOR:-}" in
   nvidia|metax|ppu)

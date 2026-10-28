@@ -233,7 +233,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu"]
+        all_platforms = ["cuda", "hygon", "metax", "ppu", "enflame"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -580,11 +580,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(
-            result.stdout.strip(),
-            '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
-            '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
-            '{"platform":"metax","display_name":"MetaX Tests"},'
-            '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
+            json.loads(result.stdout),
+            {"include": [
+                {"platform": "cuda", "display_name": "CUDA Tests"},
+                {"platform": "hygon", "display_name": "Hygon DCU Tests"},
+                {"platform": "metax", "display_name": "MetaX Tests"},
+                {"platform": "ppu", "display_name": "T-Head PPU Tests"},
+                {"platform": "enflame", "display_name": "Enflame Tests"},
+            ]},
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
@@ -635,6 +638,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "ppu": [
                 "adaptor",
                 "core",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "enflame": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
@@ -783,7 +798,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$(KERNEL_INCLUDE)", rma_makefile)
         self.assertIn("RMA_VMM_ENABLE ?= 0", rma_makefile)
         self.assertIn("NET_FILTER ?= *", rma_makefile)
-        for platform in ("metax)", "hygon)", "ppu)", "cuda)"):
+        for platform in ("metax)", "hygon|enflame)", "ppu)", "cuda)"):
             self.assertIn(platform, rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
@@ -803,7 +818,22 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('if [[ "$platform_name" != "hygon" ]]; then', rma_case)
+        self.assertIn(
+            'if [[ "$platform_name" != "hygon" &&\n'
+            '              "$platform_name" != "enflame" ]]; then',
+            rma_case,
+        )
+        self.assertIn("hygon|enflame)", rma_case)
+        self.assertIn("Skipping Enflame GDR visibility consumer tests", rma_case)
+
+        enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
+        self.assertIn("TOPS device-kernel test backend is not present", enflame_env)
+        self.assertIn("FLAGCX_CI_HAS_RDMA=1", enflame_env)
+        self.assertIn("FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1", enflame_env)
+        self.assertIn("Skipping P2P Engine WRITE MPI tests", unit_runner)
+        self.assertIn("Skipping RMA network MPI and visibility tests", unit_runner)
+        self.assertIn("Skipping runner forced NET, multi-QP and PXN MPI tests", unit_runner)
+        self.assertIn("Skipping symmem remote NET/VMM+NET MPI tests", unit_runner)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -870,6 +900,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
 
+        enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
+        enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
+        self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
+        self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
+        self.assertIn('GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"', enflame_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL=1", enflame_env)
+
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
@@ -884,6 +921,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
+        self.assertIn("Skipping symmem VMM-local MPI tests", symmem_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
         self.assertIn('nvidia|metax|ppu)', symmem_runner)
         self.assertIn('nvidia|du|metax|ppu)', symmem_runner)

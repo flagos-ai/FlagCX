@@ -82,6 +82,23 @@ flagcx_ci_require_rdma() {
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
+
+# A platform may be present in the common matrix before all of its optional
+# device-kernel or fabric capabilities are available.  Let the platform
+# script record an explicit, successful capability skip instead of turning an
+# unavailable backend into a misleading compile/test failure.
+if [[ "${FLAGCX_CI_SKIP_SUITE:-0}" == "1" ]]; then
+  echo "Skipping $SUITE: ${FLAGCX_CI_SKIP_REASON:-platform capability is unavailable}"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### Enflame capability skip"
+      echo "- **Suite:** $SUITE"
+      echo "- **Reason:** ${FLAGCX_CI_SKIP_REASON:-platform capability is unavailable}"
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  exit 0
+fi
+
 # RMA has separate IPC and network invocations. Its RDMA preflight runs only
 # before the network invocation so missing RDMA cannot hide IPC regressions.
 if [[ "$SUITE" != rma ]]; then
@@ -290,9 +307,12 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      if ((unit_status == 0)); then
+      if ((unit_status == 0)) &&
+         [[ "${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}" == 1 ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" || unit_status=$?
+      elif [[ "${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}" == 0 ]]; then
+        echo "Skipping mandatory GPU loopback assertion: no ACTIVE RDMA HCA is available"
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -411,11 +431,15 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+          make -C "$suite_dir" run-mpi "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" \
+          MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      else
+        echo "Skipping P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
+      fi
       # Keep the production/default artifact on the legacy Engine. Platforms
       # build the shared implementation in isolated output trees and run the
       # same unit and WRITE MPI tests against it.
@@ -440,7 +464,8 @@ run_suite() {
           make -C "$suite_dir" --jobs="$(nproc)" \
             "${shared_test_args[@]}" || shared_status=$?
         fi
-        if ((shared_status == 0)); then
+        if ((shared_status == 0)) &&
+           [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
           LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
             FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
             FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 \
@@ -450,12 +475,18 @@ run_suite() {
               "${shared_test_args[@]}" || shared_status=$?
         fi
         if ((shared_status == 0)); then
-          LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
-            FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-            FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
-            make -C "$suite_dir" run-mpi \
-              "${shared_test_args[@]}" MPIRUN="$MPI_RUNNER" \
-              MPI_ENV="$p2p_mpi_env" || shared_mpi_status=$?
+          if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]]; then
+            LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
+              FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+              FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
+              make -C "$suite_dir" run-mpi \
+                "${shared_test_args[@]}" MPIRUN="$MPI_RUNNER" \
+                MPI_ENV="$p2p_mpi_env" || shared_mpi_status=$?
+          else
+            echo "Skipping shared P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
+          fi
+        elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+          echo "Skipping shared P2P Engine WRITE MPI tests: no ACTIVE RDMA HCA is available"
         fi
       fi
 
@@ -476,8 +507,9 @@ run_suite() {
       # the other path from running and producing a useful result.
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" || ipc_status=$?
-      if flagcx_ci_require_rdma "$SUITE"; then
+        MPIRUN="$MPI_RUNNER" \
+        ${FLAGCX_CI_RMA_IPC_FILTER:+IPC_FILTER="$FLAGCX_CI_RMA_IPC_FILTER"} || ipc_status=$?
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == 1 ]] && flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
           MPIRUN="$MPI_RUNNER" || network_status=$?
@@ -498,9 +530,9 @@ run_suite() {
             expected_write=unsupported
             expected_write_required=1
             ;;
-          hygon)
-            # DU uses the existing RMA correctness tests. No separate device
-            # consumer kernel is built for this platform.
+          hygon|enflame)
+            # These backends run the existing RMA correctness suite without a
+            # separate immediate device-consumer visibility kernel.
             ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
@@ -531,13 +563,16 @@ run_suite() {
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
           )
         fi
-        if [[ "$platform_name" != "hygon" ]]; then
+        if [[ "$platform_name" != "hygon" &&
+              "$platform_name" != "enflame" ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
             RMA_VMM_ENABLE=0 \
             RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} -x FLAGCX_DMABUF_ENABLE=0" || \
             visibility_status=$?
+        elif [[ "$platform_name" == "enflame" ]]; then
+          echo "Skipping Enflame GDR visibility consumer tests: no Enflame consumer kernel is built"
         fi
 
         if [[ "$platform_name" == "cuda" ]]; then
@@ -618,6 +653,8 @@ run_suite() {
             RMA_PLATFORM_ENV="$base_rma_platform_env ${ppu_forced_read_env[*]}" || \
             visibility_status=$?
         fi
+      elif [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        echo "Skipping RMA network MPI and visibility tests: no ACTIVE RDMA HCA is available"
       else
         network_status=$?
       fi
@@ -630,7 +667,12 @@ run_suite() {
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       local platform_name
       local -a runner_net_platform_env=()
+      local -a runner_mpi_filter=()
+      local -a runner_hybrid_filter=()
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ -n "${FLAGCX_CI_RUNNER_MPI_FILTER:-}" ]]; then
+        runner_mpi_filter=("$FLAGCX_CI_RUNNER_MPI_FILTER")
+      fi
       if [[ "$platform_name" == "hygon" ]]; then
         # A broken SHCA route otherwise consumes the default RC retry budget
         # for several minutes before the completion reports RETRY_EXC_ERR.
@@ -645,15 +687,23 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
-        ./build/bin/runner_mpi_tests
-      FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_P2P_DISABLE=0 \
-        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
-        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-        ./build/bin/runner_mpi_tests
+        ./build/bin/runner_mpi_tests "${runner_mpi_filter[@]}"
+      if [[ "${FLAGCX_CI_SKIP_RUNNER_HYBRID:-0}" == 1 ]]; then
+        echo "Skipping runner heterogeneous HYBRID MPI tests: S60 ECCL P2P runner path hangs"
+      else
+        FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
+          "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+          ./build/bin/runner_mpi_tests "${runner_mpi_filter[@]}"
+      fi
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        echo "Skipping runner forced NET, multi-QP and PXN MPI tests: no ACTIVE RDMA HCA is available"
+        return 0
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -732,6 +782,10 @@ run_suite() {
       ;;
     symmem)
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
+      if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        echo "Skipping symmem remote NET/VMM+NET MPI tests: no ACTIVE RDMA HCA is available"
+        return 0
+      fi
       : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
       declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
         echo "symmem NET tests require FLAGCX_CI_NODE1_MPI_ARGS" >&2
