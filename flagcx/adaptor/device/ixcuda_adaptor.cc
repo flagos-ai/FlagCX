@@ -295,13 +295,12 @@ flagcxResult_t ixcudaAdaptorLaunchHostFunc(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-flagcxResult_t ixcudaAdaptorLaunchKernel(void *func, unsigned int block_x,
-                                         unsigned int block_y,
-                                         unsigned int block_z,
-                                         unsigned int grid_x, unsigned int grid_y,
-                                         unsigned int grid_z, void **args,
-                                         size_t share_mem, void *stream,
-                                         void *memHandle) {
+flagcxResult_t
+ixcudaAdaptorLaunchKernel(void *func, unsigned int block_x,
+                          unsigned int block_y, unsigned int block_z,
+                          unsigned int grid_x, unsigned int grid_y,
+                          unsigned int grid_z, void **args, size_t share_mem,
+                          void *stream, void *memHandle) {
   // Host-side validation: report the precise reason rather than a generic
   // device error. A NULL stream is legal (legacy default stream), so it is not
   // rejected here.
@@ -503,12 +502,14 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorIpcMemHandleOpen, ixcudaAdaptorIpcMemHandleClose,
       ixcudaAdaptorIpcMemHandleFree,
       // Kernel launch
-      ixcudaAdaptorLaunchKernel, // flagcxResult_t (*launchKernel)(void *func, unsigned int block_x,
-            // unsigned int block_y, unsigned int block_z, unsigned int grid_x,
-            // unsigned int grid_y, unsigned int grid_z, void **args, size_t
-            // share_mem, void *stream, void *memHandle);
-      NULL, // flagcxResult_t (*copyArgsInit)(void **args);
-      NULL, // flagcxResult_t (*copyArgsFree)(void *args);
+      ixcudaAdaptorLaunchKernel, // flagcxResult_t (*launchKernel)(void *func,
+                                 // unsigned int block_x, unsigned int block_y,
+                                 // unsigned int block_z, unsigned int grid_x,
+                                 // unsigned int grid_y, unsigned int grid_z,
+                                 // void **args, size_t share_mem, void *stream,
+                                 // void *memHandle);
+      NULL,                      // flagcxResult_t (*copyArgsInit)(void **args);
+      NULL,                      // flagcxResult_t (*copyArgsFree)(void *args);
       NULL, // flagcxResult_t (*launchDeviceFunc)(flagcxStream_t stream, void
             // *args);
       // Others

@@ -1,4 +1,4 @@
-﻿/*************************************************************************
+/*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Iluvatar/CoreX platform traits for the common FlagCX Device API.
@@ -19,10 +19,10 @@ struct IluvatarPlatform {};
 // const_cast to a plain volatile T *) does not compile, because there is no
 // address_space(1) <-> generic conversion.
 #if defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
-#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                                \
+#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                               \
   ((volatile FLAGCX_IR_GLOBAL_PTR type *)(ptr))
 #else
-#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                                \
+#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                               \
   (FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile type, ptr))
 #endif
 
@@ -178,14 +178,14 @@ struct PlatformTraits<IluvatarPlatform> {
     //
     // The relaxed/release path used to call __atomic_load_n / __atomic_store_n.
     // ivcore11 has no pattern for AtomicLoad/AtomicStore in address space 1, so
-    // that crashed llc with "Cannot select: AtomicLoad ... addrspace 1" for BOTH
-    // i32 and i64; every polling loop in a real kernel died with it. Every
-    // access is therefore a plain volatile load/store, which carries no ordering
-    // of its own: volatile only keeps volatile accesses from being reordered
-    // against each other, and does nothing to stop the compiler from hoisting an
-    // ordinary payload read above the flag read. The ordering is therefore
-    // emitted explicitly, on the side the requested order names: release before
-    // the store, acquire after the load.
+    // that crashed llc with "Cannot select: AtomicLoad ... addrspace 1" for
+    // BOTH i32 and i64; every polling loop in a real kernel died with it. Every
+    // access is therefore a plain volatile load/store, which carries no
+    // ordering of its own: volatile only keeps volatile accesses from being
+    // reordered against each other, and does nothing to stop the compiler from
+    // hoisting an ordinary payload read above the flag read. The ordering is
+    // therefore emitted explicitly, on the side the requested order names:
+    // release before the store, acquire after the load.
     //
     // Scope dispatch. A scope names how far a fence has to reach, so the
     // cheapest correct fence differs per level: threads inside one CTA share an
