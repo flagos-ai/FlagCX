@@ -555,9 +555,15 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
       comm->proxyState->uniRunnerState.streamFlags != NULL ||
       comm->proxyState->uniRunnerState.streamFlagsCapacity != 0 ||
+      comm->proxyState->uniRunnerState.redCompletionCountersPool != NULL ||
+      comm->proxyState->uniRunnerState.groupedArScratch != NULL ||
+      comm->proxyState->uniRunnerState.ipcOwner != NULL ||
       comm->proxyState->uniRunnerState.ipcInputMem != NULL ||
       comm->proxyState->uniRunnerState.ipcOutputMem != NULL ||
-      comm->proxyState->uniRunnerState.ipcReadyMem != NULL) {
+      comm->proxyState->uniRunnerState.ipcReadyMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcReadyBuffer != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingScratchBuffer != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingProgressBuffer != NULL) {
     streamFlagsCleanupResult = deviceAdaptor->setDevice(comm->cudaDev);
     if (streamFlagsCleanupResult == flagcxSuccess) {
       streamFlagsCleanupResult = cleanupUniRunnerPersistentState(

@@ -190,7 +190,9 @@ flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle) {
     return flagcxInvalidArgument;
   }
   flagcxResult_t res = flagcxSuccess;
-  flagcxDeviceAdaptorPluginInit();
+  res = flagcxDeviceAdaptorPluginInit();
+  if (res != flagcxSuccess)
+    return res;
   flagcxCCLAdaptorPluginInit();
   (*devHandle) = NULL;
   FLAGCXCHECKGOTO(flagcxCalloc(devHandle, 1), res, fail);
@@ -212,8 +214,7 @@ flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle) {
     return flagcxSuccess;
   free(devHandle);
   flagcxCCLAdaptorPluginFinalize();
-  flagcxDeviceAdaptorPluginFinalize();
-  return flagcxSuccess;
+  return flagcxDeviceAdaptorPluginFinalize();
 }
 
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler) {
@@ -3426,7 +3427,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   }
 
   // Ensure device/CCL plugins are loaded (idempotent, ref-counted)
-  flagcxDeviceAdaptorPluginInit();
+  flagcxResult_t pluginInitResult = flagcxDeviceAdaptorPluginInit();
+  if (pluginInitResult != flagcxSuccess)
+    return pluginInitResult;
   flagcxCCLAdaptorPluginInit();
 
   (*comm) = NULL;
@@ -4000,10 +4003,10 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   // Finalize device/CCL adaptor plugins (ref-counted)
   flagcxCCLAdaptorPluginFinalize();
-  flagcxDeviceAdaptorPluginFinalize();
+  flagcxResult_t devicePluginResult = flagcxDeviceAdaptorPluginFinalize();
 
   free(comm);
-  return destroyResult;
+  return destroyResult != flagcxSuccess ? destroyResult : devicePluginResult;
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {

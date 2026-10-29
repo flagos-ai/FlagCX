@@ -153,11 +153,17 @@ struct flagcxStreamValueBufferPool {
   ~flagcxStreamValueBufferPool();
   flagcxResult_t acquire(uint64_t **signals, void **dSignals);
   void release(uint64_t *signals);
+  flagcxResult_t clear();
 
 private:
   flagcxResult_t grow();
 };
 extern flagcxStreamValueBufferPool streamValueBufferPool;
+
+// Probe on a private stream before group operations are submitted. Results are
+// cached for the current adaptor and device until the adaptor is unloaded.
+flagcxResult_t flagcxStreamValueSupported(bool *supported);
+void flagcxClearStreamValueProbeCache();
 
 // Device semaphore derived class
 struct flagcxDeviceSemaphore : public flagcxSemaphore {
@@ -245,6 +251,7 @@ struct flagcxDeviceSemaphore : public flagcxSemaphore {
 };
 
 struct flagcxStreamValueSemaphore : public flagcxSemaphore {
+  flagcxResult_t initResult;
   int counter;
   uint64_t *signals;
   void *dSignals;
@@ -254,9 +261,9 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   std::vector<flagcxEvent_t> events;
 
   flagcxStreamValueSemaphore()
-      : counter(0), signals(nullptr), dSignals(nullptr),
-        completionEvent(nullptr) {
-    streamValueBufferPool.acquire(&signals, &dSignals);
+      : initResult(flagcxSuccess), counter(0), signals(nullptr),
+        dSignals(nullptr), completionEvent(nullptr) {
+    initResult = streamValueBufferPool.acquire(&signals, &dSignals);
   }
   ~flagcxStreamValueSemaphore() override {
     if (completionEvent != nullptr) {
@@ -284,8 +291,7 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
     const int idx = it->second;
     const int previous =
         __atomic_fetch_add(&steps[idx].first, 1, __ATOMIC_ACQ_REL);
-    if (previous + 1 ==
-        __atomic_load_n(&steps[idx].second, __ATOMIC_ACQUIRE)) {
+    if (previous + 1 == __atomic_load_n(&steps[idx].second, __ATOMIC_ACQUIRE)) {
       if (__atomic_sub_fetch(&counter, 1, __ATOMIC_ACQ_REL) == 0) {
         __atomic_store_n(signals + 1, uint64_t(1), __ATOMIC_RELEASE);
       }
