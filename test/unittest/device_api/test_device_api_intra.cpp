@@ -36,6 +36,11 @@
 
 #define DATATYPE flagcxFloat
 
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+extern "C" void flagcxDushmemSyncDeviceState();
+extern "C" void flagcxDushmemFinalizeDeviceState();
+#endif
+
 static void printResult(const char *name, bool ok, int rank) {
   printf("[rank %d] %-35s %s\n", rank, name, ok ? "PASS" : "FAIL");
 }
@@ -92,6 +97,9 @@ int main(int argc, char *argv[]) {
   reqs.interCounterCount = 0;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemSyncDeviceState();
+#endif
 
   // Buffer sized to maxBytes, symmetric window registered
   size_t bufSize = maxBytes;
@@ -425,6 +433,9 @@ int main(int argc, char *argv[]) {
   flagcxDevComm_t interOnlyComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &interOnlyReqs, &interOnlyComm));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, interOnlyComm));
+#endif
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemFinalizeDeviceState();
 #endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));

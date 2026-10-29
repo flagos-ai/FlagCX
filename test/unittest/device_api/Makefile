@@ -43,6 +43,17 @@ endif
 TOOLS_SRC := $(PROJECT_ROOT)/test/tools.cc
 TOOLS_OBJ := $(OBJDIR)/tools.o
 
+# A SHMEM consumer executable owns a device-state symbol in its final device
+# image. Register that state after libflagcx has initialized the host runtime.
+SHMEM_SYNC_OBJ :=
+ifeq ($(USE_SHMEM)$(KERNEL_PLATFORM), 1nvidia)
+SHMEM_SYNC_SRC := $(PROJECT_ROOT)/test/unittest/shmem_adaptor/nvshmem_state_sync.cc
+SHMEM_SYNC_OBJ := $(OBJDIR)/nvshmem_state_sync.o
+else ifeq ($(USE_SHMEM)$(KERNEL_PLATFORM), 1du)
+SHMEM_SYNC_SRC := $(PROJECT_ROOT)/test/unittest/shmem_adaptor/dushmem_state_sync.cc
+SHMEM_SYNC_OBJ := $(OBJDIR)/dushmem_state_sync.o
+endif
+
 # IR wrapper headers
 IR_INCLUDE := -I$(PROJECT_ROOT)/bindings/ir
 PLATFORM_INCLUDES := -I$(PLATFORM_IR_DIR)
@@ -180,6 +191,13 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 	@echo "Compiling tools.cc"
 	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ALL_INCLUDES)
 
+ifneq ($(SHMEM_SYNC_OBJ),)
+$(SHMEM_SYNC_OBJ): $(SHMEM_SYNC_SRC)
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $(notdir $<)"
+	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(SHMEM_INCLUDE) $(DEVICE_INCLUDE)
+endif
+
 $(UNIT_OBJ): $(UNIT_SRC)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
@@ -196,34 +214,34 @@ $(UNIT_TARGET): $(UNIT_OBJ)
 $(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
+	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(ALL_INCLUDES)
 
-$(BINDIR)/test_device_ir_intra: $(OBJDIR)/test_device_ir_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_intra: $(OBJDIR)/test_device_ir_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_inter: $(OBJDIR)/test_device_ir_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_inter: $(OBJDIR)/test_device_ir_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_unified_intra: $(OBJDIR)/test_device_ir_unified_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_unified_intra: $(OBJDIR)/test_device_ir_unified_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_ir_unified_inter: $(OBJDIR)/test_device_ir_unified_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_ir_unified_inter: $(OBJDIR)/test_device_ir_unified_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_api_intra: $(OBJDIR)/test_device_api_intra.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_api_intra: $(OBJDIR)/test_device_api_intra.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
-$(BINDIR)/test_device_api_inter: $(OBJDIR)/test_device_api_inter.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+$(BINDIR)/test_device_api_inter: $(OBJDIR)/test_device_api_inter.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
