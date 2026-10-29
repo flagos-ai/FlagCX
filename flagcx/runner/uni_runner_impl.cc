@@ -3,6 +3,7 @@
 #include "coll_proxy_transport.h"
 #include "comm.h"
 #include "device_api/completion_word.h"
+#include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "info.h"
 #include "net.h"
@@ -11,22 +12,21 @@
 #include "runner_result.h"
 #include "socket.h"
 #include "transport.h"
-#include "uni_runner_helper.h"
 #include "uni_runner_gemm.h"
-#include "device_api/flagcx_device.h"
+#include "uni_runner_helper.h"
 #define ENABLE_TIMER 0
 #include "timer.h"
 
 #include <algorithm>
 #include <assert.h>
-#include <cerrno>
 #include <cctype>
-#include <cstdlib>
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <math.h>
-#include <new>
 #include <mutex>
+#include <new>
 #include <sched.h>
 #include <string>
 #include <sys/stat.h>
@@ -71,10 +71,20 @@ static flagcxResult_t parseUniRunnerRedSliceSize(uint64_t *redSliceSize) {
       return flagcxInvalidArgument;
     }
     switch (*end) {
-      case 'k': case 'K': multiplier = uint64_t(1024); break;
-      case 'm': case 'M': multiplier = uint64_t(1024) * 1024; break;
-      case 'g': case 'G': multiplier = uint64_t(1024) * 1024 * 1024; break;
-      default: return flagcxInvalidArgument;
+      case 'k':
+      case 'K':
+        multiplier = uint64_t(1024);
+        break;
+      case 'm':
+      case 'M':
+        multiplier = uint64_t(1024) * 1024;
+        break;
+      case 'g':
+      case 'G':
+        multiplier = uint64_t(1024) * 1024 * 1024;
+        break;
+      default:
+        return flagcxInvalidArgument;
     }
   }
   if (parsed > std::numeric_limits<uint64_t>::max() / multiplier) {
@@ -118,8 +128,8 @@ static flagcxResult_t loadUniRunnerDagBuilderConfig(uint64_t *nSlices,
   if (nSlices == NULL || nRedSlices == NULL || redSliceSize == NULL) {
     return flagcxInvalidArgument;
   }
-  if (rawNSlices <= 0 || rawNSlices > maxBuilderCount ||
-      rawNRedSlices < 0 || rawNRedSlices > maxBuilderCount) {
+  if (rawNSlices <= 0 || rawNSlices > maxBuilderCount || rawNRedSlices < 0 ||
+      rawNRedSlices > maxBuilderCount) {
     WARN("UniRunner requires 0 < NSLICES <= INT_MAX, "
          "0 <= NREDSLICES <= INT_MAX and REDSLICESIZE >= 0");
     return flagcxInvalidArgument;
@@ -134,28 +144,28 @@ flagcxResult_t validateUniRunnerLaunchConfig(flagcxCommOp_t commOp) {
   uint64_t maxThreads = 0;
   uint64_t maxBlocks = 0;
   uint64_t nIpcBlocks = 0;
-  FLAGCXCHECK(
-      loadUniRunnerLaunchConfig(&maxThreads, &maxBlocks, &nIpcBlocks));
+  FLAGCXCHECK(loadUniRunnerLaunchConfig(&maxThreads, &maxBlocks, &nIpcBlocks));
   uint64_t nSlices = 0;
   uint64_t nRedSlices = 0;
   uint64_t redSliceSize = 0;
-  FLAGCXCHECK(loadUniRunnerDagBuilderConfig(&nSlices, &nRedSlices,
-                                            &redSliceSize));
+  FLAGCXCHECK(
+      loadUniRunnerDagBuilderConfig(&nSlices, &nRedSlices, &redSliceSize));
 
   (void)commOp;
   return flagcxSuccess;
 }
 
 static flagcxResult_t ensureUniRunnerIpcDataViews(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm,
-    const void *sendbuff, void *recvbuff, size_t bytes,
-    flagcxResult_t localPreparationResult);
-static flagcxResult_t agreeUniRunnerResourceState(
-    flagcxComm_t comm, bool localCanReuse, flagcxResult_t localResult,
-    bool *allCanReuse, flagcxResult_t *collectiveResult);
-static flagcxResult_t ensureUniRunnerIpcRingResources(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm,
-    size_t numChannels, size_t simpleBufferBytes) {
+    flagcxUniRunnerState *runnerState, flagcxComm_t comm, const void *sendbuff,
+    void *recvbuff, size_t bytes, flagcxResult_t localPreparationResult);
+static flagcxResult_t
+agreeUniRunnerResourceState(flagcxComm_t comm, bool localCanReuse,
+                            flagcxResult_t localResult, bool *allCanReuse,
+                            flagcxResult_t *collectiveResult);
+static flagcxResult_t
+ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
+                                flagcxComm_t comm, size_t numChannels,
+                                size_t simpleBufferBytes) {
   if (runnerState == NULL || comm == NULL || numChannels == 0 ||
       simpleBufferBytes == 0 ||
       numChannels > std::numeric_limits<size_t>::max() / simpleBufferBytes ||
@@ -163,8 +173,7 @@ static flagcxResult_t ensureUniRunnerIpcRingResources(
                         sizeof(flagcxRingChannelProgress))
     return flagcxInvalidArgument;
   const size_t scratchBytes = numChannels * simpleBufferBytes;
-  const size_t progressBytes =
-      numChannels * sizeof(flagcxRingChannelProgress);
+  const size_t progressBytes = numChannels * sizeof(flagcxRingChannelProgress);
   const bool completeMatch =
       runnerState->ipcRingScratchMem != NULL &&
       runnerState->ipcRingProgressMem != NULL &&
@@ -180,15 +189,15 @@ static flagcxResult_t ensureUniRunnerIpcRingResources(
   flagcxResult_t collectiveResult = flagcxSuccess;
   FLAGCXCHECK(agreeUniRunnerResourceState(
       comm, completeMatch,
-      completeMatch || empty ? flagcxSuccess : flagcxInvalidUsage,
-      &allMatch, &collectiveResult));
+      completeMatch || empty ? flagcxSuccess : flagcxInvalidUsage, &allMatch,
+      &collectiveResult));
   if (collectiveResult != flagcxSuccess)
     return collectiveResult;
   if (allMatch)
     return flagcxSuccess;
   bool allEmpty = false;
-  FLAGCXCHECK(agreeUniRunnerResourceState(
-      comm, empty, flagcxSuccess, &allEmpty, &collectiveResult));
+  FLAGCXCHECK(agreeUniRunnerResourceState(comm, empty, flagcxSuccess, &allEmpty,
+                                          &collectiveResult));
   if (collectiveResult != flagcxSuccess)
     return collectiveResult;
   if (!allEmpty)
@@ -203,23 +212,24 @@ static flagcxResult_t ensureUniRunnerIpcRingResources(
   bool scratchCreateEntered = false;
   bool progressCreateEntered = false;
 
-  result = deviceAdaptor->deviceMalloc(&scratch, scratchBytes,
-                                        flagcxMemDevice, NULL);
+  result = deviceAdaptor->deviceMalloc(&scratch, scratchBytes, flagcxMemDevice,
+                                       NULL);
   if (result == flagcxSuccess && scratch == NULL)
     result = flagcxSystemError;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, result, &ignoredReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
+                                              &ignoredReuse, &collectiveResult),
                   result, fail);
   if (collectiveResult != flagcxSuccess) {
     result = collectiveResult;
     goto fail;
   }
   scratchCreateEntered = true;
-  result = flagcxDevMemCreate(comm, scratch, scratchBytes, NULL, &scratchMem);
+  result =
+      flagcxUniRunnerIpcDevMemCreate(comm, scratch, scratchBytes, &scratchMem);
   if (result == flagcxSuccess && scratchMem == NULL)
     result = flagcxSystemError;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, result, &ignoredReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
+                                              &ignoredReuse, &collectiveResult),
                   result, fail);
   if (collectiveResult != flagcxSuccess) {
     result = collectiveResult;
@@ -227,45 +237,44 @@ static flagcxResult_t ensureUniRunnerIpcRingResources(
   }
 
   result = deviceAdaptor->deviceMalloc(&progress, progressBytes,
-                                        flagcxMemDevice, NULL);
+                                       flagcxMemDevice, NULL);
   if (result == flagcxSuccess && progress == NULL)
     result = flagcxSystemError;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, result, &ignoredReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
+                                              &ignoredReuse, &collectiveResult),
                   result, fail);
   if (collectiveResult != flagcxSuccess) {
     result = collectiveResult;
     goto fail;
   }
   progressCreateEntered = true;
-  result = flagcxDevMemCreate(comm, progress, progressBytes, NULL,
-                              &progressMem);
+  result = flagcxUniRunnerIpcDevMemCreate(comm, progress, progressBytes,
+                                          &progressMem);
   if (result == flagcxSuccess && progressMem == NULL)
     result = flagcxSystemError;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, result, &ignoredReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
+                                              &ignoredReuse, &collectiveResult),
                   result, fail);
   if (collectiveResult != flagcxSuccess) {
     result = collectiveResult;
     goto fail;
   }
-  result = scratchMem->hasWindow && progressMem->hasWindow
-               ? flagcxSuccess
-               : flagcxNotSupported;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, result, &ignoredReuse, &collectiveResult),
+  result = scratchMem->hasWindow && progressMem->hasWindow ? flagcxSuccess
+                                                           : flagcxNotSupported;
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
+                                              &ignoredReuse, &collectiveResult),
                   result, fail);
   if (collectiveResult != flagcxSuccess) {
     result = collectiveResult;
     goto fail;
   }
   result = deviceAdaptor->deviceMemset(scratch, 0, scratchBytes,
-                                        flagcxMemDevice, NULL);
+                                       flagcxMemDevice, NULL);
   if (result == flagcxSuccess)
     result = deviceAdaptor->deviceMemset(progress, 0, progressBytes,
-                                          flagcxMemDevice, NULL);
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, result, &ignoredReuse, &collectiveResult),
+                                         flagcxMemDevice, NULL);
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
+                                              &ignoredReuse, &collectiveResult),
                   result, fail);
   if (collectiveResult != flagcxSuccess) {
     result = collectiveResult;
@@ -303,13 +312,14 @@ fail:
   return result;
 }
 
-static flagcxResult_t resetDirtyUniRunnerIpcRingResources(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm) {
+static flagcxResult_t
+resetDirtyUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
+                                    flagcxComm_t comm) {
   bool allClean = false;
   flagcxResult_t collectiveResult = flagcxSuccess;
-  FLAGCXCHECK(agreeUniRunnerResourceState(
-      comm, !runnerState->ipcRingResourcesDirty, flagcxSuccess, &allClean,
-      &collectiveResult));
+  FLAGCXCHECK(
+      agreeUniRunnerResourceState(comm, !runnerState->ipcRingResourcesDirty,
+                                  flagcxSuccess, &allClean, &collectiveResult));
   if (collectiveResult != flagcxSuccess)
     return collectiveResult;
   if (allClean)
@@ -318,26 +328,27 @@ static flagcxResult_t resetDirtyUniRunnerIpcRingResources(
       runnerState->ipcRingScratchBuffer, 0, runnerState->ipcRingScratchBytes,
       flagcxMemDevice, NULL);
   if (result == flagcxSuccess)
-    result = deviceAdaptor->deviceMemset(
-        runnerState->ipcRingProgressBuffer, 0,
-        runnerState->ipcRingProgressBytes, flagcxMemDevice, NULL);
+    result = deviceAdaptor->deviceMemset(runnerState->ipcRingProgressBuffer, 0,
+                                         runnerState->ipcRingProgressBytes,
+                                         flagcxMemDevice, NULL);
   bool ignoredReuse = false;
-  FLAGCXCHECK(agreeUniRunnerResourceState(
-      comm, false, result, &ignoredReuse, &collectiveResult));
+  FLAGCXCHECK(agreeUniRunnerResourceState(comm, false, result, &ignoredReuse,
+                                          &collectiveResult));
   if (collectiveResult != flagcxSuccess)
     return collectiveResult;
   runnerState->ipcRingResourcesDirty = false;
   return flagcxSuccess;
 }
 
-static flagcxResult_t ensureUniRunnerIpcReadyStorage(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm,
-    size_t requiredSlots);
-static flagcxResult_t agreeUniRunnerInvocationState(
-    flagcxComm_t comm, uint64_t localSignature, flagcxResult_t localResult,
-    flagcxResult_t *collectiveResult);
-static flagcxResult_t releaseUniRunnerIpcRingInvocation(
-    flagcxUniRunnerState *runnerState);
+static flagcxResult_t
+ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
+                               flagcxComm_t comm, size_t requiredSlots);
+static flagcxResult_t
+agreeUniRunnerInvocationState(flagcxComm_t comm, uint64_t localSignature,
+                              flagcxResult_t localResult,
+                              flagcxResult_t *collectiveResult);
+static flagcxResult_t
+releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState);
 
 static bool isValidUniRunnerDataType(flagcxDataType_t datatype) {
   return static_cast<int>(datatype) >= 0 &&
@@ -356,8 +367,8 @@ flagcxResult_t validateUniRunnerReduceArgs(size_t count,
   if (!isValidUniRunnerDataType(datatype) || !isValidUniRunnerRedOp(op)) {
     return flagcxInvalidArgument;
   }
-  if (count > std::numeric_limits<size_t>::max() /
-                  getFlagcxDataTypeSize(datatype)) {
+  if (count >
+      std::numeric_limits<size_t>::max() / getFlagcxDataTypeSize(datatype)) {
     return flagcxInvalidArgument;
   }
   return flagcxSuccess;
@@ -366,9 +377,8 @@ flagcxResult_t validateUniRunnerReduceArgs(size_t count,
 flagcxResult_t checkedUniRunnerTypeBytes(size_t count, size_t multiplier,
                                          flagcxDataType_t datatype,
                                          size_t *bytes) {
-  if (bytes == NULL || validateUniRunnerReduceArgs(count, datatype,
-                                                    flagcxSum) !=
-                          flagcxSuccess) {
+  if (bytes == NULL || validateUniRunnerReduceArgs(
+                           count, datatype, flagcxSum) != flagcxSuccess) {
     return flagcxInvalidArgument;
   }
   const size_t typeSize = getFlagcxDataTypeSize(datatype);
@@ -386,8 +396,7 @@ flagcxResult_t checkedUniRunnerTypeBytes(size_t count, size_t multiplier,
 
 flagcxResult_t checkedUniRunnerDagNodeCount(size_t outerCount,
                                             size_t nodesPerOuter,
-                                            size_t extraNodes,
-                                            int *nodeCount) {
+                                            size_t extraNodes, int *nodeCount) {
   if (nodeCount == NULL ||
       extraNodes > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return flagcxInvalidArgument;
@@ -427,8 +436,7 @@ static void setUniRunnerAvgDivisor(flagcxUniRunnerState *runnerState,
 // eviction policy must first add an owning cache pin to each active invocation.
 std::mutex gUniRunnerDagCacheMutex;
 std::unordered_map<
-    size_t,
-    std::vector<std::shared_ptr<const uniRunnerCompiledDagTemplate>>>
+    size_t, std::vector<std::shared_ptr<const uniRunnerCompiledDagTemplate>>>
     gUniRunnerCompiledDagCache;
 std::unordered_set<std::string> gUniRunnerDagLoadedPaths;
 
@@ -509,10 +517,9 @@ static flagcxResult_t insertUniRunnerCompiledDagTemplateLocked(
 static bool findUniRunnerCompiledDagTemplateLocked(
     size_t hashValue, const uniRunnerDagCacheKey &key,
     std::shared_ptr<const uniRunnerCompiledDagTemplate> *compiled) {
-  std::unordered_map<
-      size_t,
-      std::vector<std::shared_ptr<const uniRunnerCompiledDagTemplate>>>::
-      iterator it = gUniRunnerCompiledDagCache.find(hashValue);
+  std::unordered_map<size_t, std::vector<std::shared_ptr<
+                                 const uniRunnerCompiledDagTemplate>>>::iterator
+      it = gUniRunnerCompiledDagCache.find(hashValue);
   if (it == gUniRunnerCompiledDagCache.end()) {
     return false;
   }
@@ -653,8 +660,8 @@ captureBufferRef(const void *ptr, const uniRunnerDagRuntimeBindings &bindings,
 
   int64_t offsetBytes = 0;
   if (uniRunnerDagBindingRangeContains(ptr, bindings.weightBase,
-                                      bindings.weightBytes, accessBytes,
-                                      &offsetBytes)) {
+                                       bindings.weightBytes, accessBytes,
+                                       &offsetBytes)) {
     ref->bufferType = uniRunnerDagBufferTypeWeight;
     ref->offsetBytes = offsetBytes;
     return flagcxSuccess;
@@ -757,26 +764,27 @@ resolveEffectiveUniRunnerRedSlices(const flagcxUniRunnerState *runnerState,
   return std::max<size_t>(1, count / divisor + (count % divisor != 0));
 }
 
-static flagcxResult_t setEffectiveUniRunnerRedSlices(
-    flagcxUniRunnerState *runnerState, size_t count, int nranks) {
+static flagcxResult_t
+setEffectiveUniRunnerRedSlices(flagcxUniRunnerState *runnerState, size_t count,
+                               int nranks) {
   if (runnerState == NULL || nranks <= 0) {
     return flagcxInvalidArgument;
   }
   const size_t resolved =
       resolveEffectiveUniRunnerRedSlices(runnerState, count, nranks);
-  if (resolved >
-      static_cast<size_t>(std::numeric_limits<int>::max())) {
+  if (resolved > static_cast<size_t>(std::numeric_limits<int>::max())) {
     return flagcxInvalidArgument;
   }
   runnerState->uniRunnerNRedSlices = static_cast<uint64_t>(resolved);
   return flagcxSuccess;
 }
 
-static uniRunnerDagCacheKey makeUniRunnerDagCacheKey(
-    uniRunnerDagAlgoType algoType,
-    const uniRunnerDagAlgorithmConfig &algorithmConfig,
-    flagcxCommOp_t commOp, size_t count, flagcxDataType_t datatype,
-    flagcxRedOp_t redOp, int root, flagcxComm_t comm) {
+static uniRunnerDagCacheKey
+makeUniRunnerDagCacheKey(uniRunnerDagAlgoType algoType,
+                         const uniRunnerDagAlgorithmConfig &algorithmConfig,
+                         flagcxCommOp_t commOp, size_t count,
+                         flagcxDataType_t datatype, flagcxRedOp_t redOp,
+                         int root, flagcxComm_t comm) {
   uniRunnerDagCacheKey key{};
   key.algoHash = getUniRunnerDagAlgorithmHash(algoType, algorithmConfig);
   key.commOp = commOp;
@@ -789,8 +797,7 @@ static uniRunnerDagCacheKey makeUniRunnerDagCacheKey(
   return key;
 }
 
-static bool
-findUniRunnerCompiledDagTemplate(
+static bool findUniRunnerCompiledDagTemplate(
     size_t hashValue, const uniRunnerDagCacheKey &key,
     std::shared_ptr<const uniRunnerCompiledDagTemplate> *compiled) {
   std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
@@ -816,8 +823,7 @@ static flagcxResult_t cacheUniRunnerCompiledDagTemplate(
       makeUniRunnerDagFilePath(dagDir, hashValue, dagTemplate.key.rank);
   {
     std::lock_guard<std::mutex> lock(gUniRunnerDagCacheMutex);
-    FLAGCXCHECK(
-        insertUniRunnerCompiledDagTemplateLocked(compiled, &canonical));
+    FLAGCXCHECK(insertUniRunnerCompiledDagTemplateLocked(compiled, &canonical));
   }
   if (dagDir.empty()) {
     return flagcxSuccess;
@@ -848,10 +854,12 @@ uint64_t getUniRunnerDagAlgorithmHash(
       break;
     case uniRunnerDagAlgoGroupedAR:
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numSlices);
-      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numLocalSlices);
+      hashValue =
+          hashAlgorithmUint64(hashValue, algorithmConfig.numLocalSlices);
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numRedSlices);
       if (algorithmConfig.pipelineVersion != 0)
-        hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.pipelineVersion);
+        hashValue =
+            hashAlgorithmUint64(hashValue, algorithmConfig.pipelineVersion);
       // The remaining fields are shared with grouped AG.
       [[fallthrough]];
     case uniRunnerDagAlgoGroupedAG:
@@ -863,8 +871,7 @@ uint64_t getUniRunnerDagAlgorithmHash(
     case uniRunnerDagAlgoRingRS:
     case uniRunnerDagAlgoTreeRed:
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numSlices);
-      hashValue =
-          hashAlgorithmUint64(hashValue, algorithmConfig.numRedSlices);
+      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numRedSlices);
       hashValue = hashAlgorithmUint64(
           hashValue, static_cast<uint64_t>(algorithmConfig.bufferMode));
       break;
@@ -872,14 +879,6 @@ uint64_t getUniRunnerDagAlgorithmHash(
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numSlices);
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numRedSlices);
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.groupSize);
-      hashValue = hashAlgorithmUint64(
-          hashValue, static_cast<uint64_t>(algorithmConfig.bufferMode));
-      break;
-    case uniRunnerDagAlgoIpcAR:
-      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numSlices);
-      hashValue =
-          hashAlgorithmUint64(hashValue, algorithmConfig.numRedSlices);
-      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.topologyHash);
       hashValue = hashAlgorithmUint64(
           hashValue, static_cast<uint64_t>(algorithmConfig.bufferMode));
       break;
@@ -902,7 +901,8 @@ uint64_t getUniRunnerDagAlgorithmHash(
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numSlices);
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.numKSlices);
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.groupSize);
-      hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.pipelineVersion);
+      hashValue =
+          hashAlgorithmUint64(hashValue, algorithmConfig.pipelineVersion);
       hashValue = hashAlgorithmUint64(hashValue, algorithmConfig.bufferMode);
       break;
     case uniRunnerDagAlgoDummy:
@@ -912,42 +912,10 @@ uint64_t getUniRunnerDagAlgorithmHash(
   return hashValue;
 }
 
-flagcxResult_t getUniRunnerIpcTopologyHash(int localRanks, int nranks,
-                                           const int *localRankToRank,
-                                           uint64_t *topologyHash) {
-  if (localRanks <= 0 || nranks <= 0 || localRanks != nranks ||
-      nranks > FLAGCX_MAX_LOCAL_RANKS || localRankToRank == NULL ||
-      topologyHash == NULL) {
-    return localRanks > 0 && nranks > 0 && localRanks != nranks
-               ? flagcxNotSupported
-               : flagcxInvalidArgument;
-  }
-  for (int localRank = 0; localRank < localRanks; ++localRank) {
-    const int globalRank = localRankToRank[localRank];
-    if (globalRank < 0 || globalRank >= nranks) {
-      return flagcxInvalidArgument;
-    }
-    for (int previous = 0; previous < localRank; ++previous) {
-      if (localRankToRank[previous] == globalRank) {
-        return flagcxInvalidArgument;
-      }
-    }
-  }
-
-  uint64_t hashValue = kUniRunnerDagFnvOffsetBasis;
-  hashValue = hashAlgorithmUint64(hashValue,
-                                  static_cast<uint64_t>(localRanks));
-  for (int localRank = 0; localRank < localRanks; ++localRank) {
-    hashValue = hashAlgorithmUint64(
-        hashValue, static_cast<uint64_t>(localRankToRank[localRank]));
-  }
-  *topologyHash = hashValue;
-  return flagcxSuccess;
-}
-
-flagcxResult_t validateUniRunnerIpcDagTemplateBindings(
-    const uniRunnerDagTemplate &dagTemplate, size_t inputBytes,
-    size_t outputBytes, int localRanks) {
+flagcxResult_t
+validateUniRunnerIpcDagTemplateBindings(const uniRunnerDagTemplate &dagTemplate,
+                                        size_t inputBytes, size_t outputBytes,
+                                        int localRanks) {
   size_t numIpcNodes = 0;
   for (const uniRunnerDagNodeDesc &node : dagTemplate.nodes) {
     if (node.nodeType == uniRunnerDagNodeTypeIpc) {
@@ -977,14 +945,13 @@ flagcxResult_t validateUniRunnerIpcDagTemplateBindings(
         ipc.srcBufferType != flagcxIpcBufferOutput) {
       return flagcxInvalidArgument;
     }
-    const size_t srcBytes = ipc.srcBufferType == flagcxIpcBufferInput
-                                ? inputBytes
-                                : outputBytes;
+    const size_t srcBytes =
+        ipc.srcBufferType == flagcxIpcBufferInput ? inputBytes : outputBytes;
     if (ipc.srcOffsetBytes > srcBytes ||
         ipc.bytes > srcBytes - ipc.srcOffsetBytes ||
         ipc.dstOffsetBytes > outputBytes ||
-        ipc.bytes > outputBytes - ipc.dstOffsetBytes ||
-        ipc.peerLocalRank < 0 || ipc.peerLocalRank >= localRanks ||
+        ipc.bytes > outputBytes - ipc.dstOffsetBytes || ipc.peerLocalRank < 0 ||
+        ipc.peerLocalRank >= localRanks ||
         static_cast<size_t>(ipc.readySlot) >= numIpcNodes ||
         readySlots[ipc.readySlot] != 0) {
       return flagcxInvalidArgument;
@@ -1007,13 +974,12 @@ size_t getUniRunnerDagPatternHash(const uniRunnerDagCacheKey &key) {
   // Cache format is serialization metadata rather than a collective semantic
   // key field. Salt the persisted pattern hash so incompatible formats never
   // share a cache filename.
-  hashValue = hashCombine(
-      hashValue, static_cast<size_t>(kUniRunnerDagCacheFormatVersion));
-  hashValue = hashCombine(
-      hashValue,
-      static_cast<size_t>(static_cast<uint32_t>(key.algoHash & 0xffffffffu)));
-  hashValue = hashCombine(
-      hashValue, static_cast<size_t>(static_cast<uint32_t>(key.algoHash >> 32)));
+  hashValue = hashCombine(hashValue,
+                          static_cast<size_t>(kUniRunnerDagCacheFormatVersion));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(static_cast<uint32_t>(
+                                         key.algoHash & 0xffffffffu)));
+  hashValue = hashCombine(hashValue, static_cast<size_t>(static_cast<uint32_t>(
+                                         key.algoHash >> 32)));
   hashValue = hashCombine(hashValue, static_cast<size_t>(key.commOp));
   hashValue = hashCombine(hashValue, key.count);
   hashValue = hashCombine(hashValue, static_cast<size_t>(key.datatype));
@@ -1038,7 +1004,7 @@ flagcxResult_t allocDagNodeDeps(uniRunnerDagNode *node) {
 }
 
 flagcxResult_t setDagNodeParent(uniRunnerDagNode *node, int parentSlot,
-                                       int parentIdx) {
+                                int parentIdx) {
   if (parentSlot < 0 || parentSlot >= node->numParents ||
       node->parents == NULL) {
     return flagcxInternalError;
@@ -1057,8 +1023,7 @@ flagcxResult_t validateDagNodes(flagcxUniRunnerState *runnerState) {
     return flagcxInternalError;
   }
   if (runnerState->numDagNodes == 0) {
-    return runnerState->dagNodes == NULL ? flagcxSuccess
-                                         : flagcxInternalError;
+    return runnerState->dagNodes == NULL ? flagcxSuccess : flagcxInternalError;
   }
   if (runnerState->dagNodes == NULL) {
     return flagcxInternalError;
@@ -1086,8 +1051,7 @@ flagcxResult_t validateDagNodes(flagcxUniRunnerState *runnerState) {
     switch (node->nodeType) {
       case uniRunnerDagNodeTypeP2p:
         if (node->nodeData.p2p.numOps < 0 ||
-            (node->nodeData.p2p.numOps > 0 &&
-             node->nodeData.p2p.ops == NULL)) {
+            (node->nodeData.p2p.numOps > 0 && node->nodeData.p2p.ops == NULL)) {
           return flagcxInternalError;
         }
         for (int opIdx = 0; opIdx < node->nodeData.p2p.numOps; ++opIdx) {
@@ -1119,8 +1083,8 @@ flagcxResult_t validateDagNodes(flagcxUniRunnerState *runnerState) {
             gemm.c == NULL || gemm.m == 0 || gemm.n == 0 || gemm.k == 0 ||
             gemm.lda < gemm.k || gemm.ldb < gemm.n || gemm.ldc < gemm.n ||
             gemm.datatype != flagcxFloat32 ||
-            gemm.nthreads != kUniRunnerGemmThreads ||
-            gemm.workerCount == 0 || gemm.completionCounter == NULL ||
+            gemm.nthreads != kUniRunnerGemmThreads || gemm.workerCount == 0 ||
+            gemm.completionCounter == NULL ||
             (gemm.accumulate != 0 && gemm.accumulate != 1)) {
           return flagcxInvalidArgument;
         }
@@ -1310,9 +1274,9 @@ static flagcxResult_t prepareDagStreamFlags(flagcxUniRunnerState *runnerState) {
 
 constexpr size_t kUniRunnerRedCounterStrideBytes = 128;
 
-flagcxResult_t resolveUniRunnerRedWorkerCount(
-    const flagcxUniRunnerState *runnerState, size_t count,
-    uint32_t *workerCount) {
+flagcxResult_t
+resolveUniRunnerRedWorkerCount(const flagcxUniRunnerState *runnerState,
+                               size_t count, uint32_t *workerCount) {
   if (runnerState->uniRunnerMaxBlocks == 0 || count > UINT32_MAX) {
     return flagcxInvalidArgument;
   }
@@ -1330,7 +1294,8 @@ flagcxResult_t resolveUniRunnerRedWorkerCount(
   }
   uint64_t resolved = runnerState->uniRunnerNRedSlices;
   if (resolved == 0) {
-    // Fused DSL graphs contain logical RED nodes of potentially different sizes.
+    // Fused DSL graphs contain logical RED nodes of potentially different
+    // sizes.
     const uint64_t sliceSize = runnerState->uniRunnerRedSliceSize;
     resolved = count / sliceSize + (count % sliceSize != 0);
   }
@@ -1347,8 +1312,9 @@ flagcxResult_t resolveUniRunnerRedWorkerCount(
   return flagcxSuccess;
 }
 
-static flagcxResult_t ensureRedCompletionCounterCapacity(
-    flagcxUniRunnerState *runnerState, size_t required) {
+static flagcxResult_t
+ensureRedCompletionCounterCapacity(flagcxUniRunnerState *runnerState,
+                                   size_t required) {
   if (required <= runnerState->redCompletionCountersCapacity) {
     return flagcxSuccess;
   }
@@ -1366,8 +1332,8 @@ static flagcxResult_t ensureRedCompletionCounterCapacity(
   }
   void *newPool = NULL;
   FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-      &newPool, newCapacity * kUniRunnerRedCounterStrideBytes,
-      flagcxMemDevice, NULL));
+      &newPool, newCapacity * kUniRunnerRedCounterStrideBytes, flagcxMemDevice,
+      NULL));
   if (runnerState->redCompletionCountersPool != NULL) {
     flagcxResult_t freeRes = deviceAdaptor->deviceFree(
         runnerState->redCompletionCountersPool, flagcxMemDevice, NULL);
@@ -1414,13 +1380,12 @@ prepareRedWorkerRuntimeState(flagcxUniRunnerState *runnerState) {
     }
   }
 
-  FLAGCXCHECK(ensureRedCompletionCounterCapacity(runnerState,
-                                                 multiWorkerRedNodeCount));
+  FLAGCXCHECK(
+      ensureRedCompletionCounterCapacity(runnerState, multiWorkerRedNodeCount));
   if (multiWorkerRedNodeCount == 0) {
     return flagcxSuccess;
   }
-  if (multiWorkerRedNodeCount >
-      SIZE_MAX / kUniRunnerRedCounterStrideBytes) {
+  if (multiWorkerRedNodeCount > SIZE_MAX / kUniRunnerRedCounterStrideBytes) {
     return flagcxInvalidArgument;
   }
   size_t bytes = multiWorkerRedNodeCount * kUniRunnerRedCounterStrideBytes;
@@ -1428,8 +1393,7 @@ prepareRedWorkerRuntimeState(flagcxUniRunnerState *runnerState) {
       runnerState->redCompletionCountersPool, 0, bytes, flagcxMemDevice,
       runnerState->redStream));
 
-  char *poolBase =
-      static_cast<char *>(runnerState->redCompletionCountersPool);
+  char *poolBase = static_cast<char *>(runnerState->redCompletionCountersPool);
   size_t ordinal = 0;
   for (int i = 0; i < runnerState->numDagNodes; ++i) {
     uniRunnerDagNode *node = &runnerState->dagNodes[i];
@@ -1470,7 +1434,8 @@ getDagNodeExecutionStream(flagcxUniRunnerState *runnerState,
   switch (node->nodeType) {
     case uniRunnerDagNodeTypeP2p:
       return node->commDomain == uniRunnerDagCommNet
-                 ? runnerState->netCommStream : runnerState->ipcCommStream;
+                 ? runnerState->netCommStream
+                 : runnerState->ipcCommStream;
     case uniRunnerDagNodeTypeRed:
     case uniRunnerDagNodeTypeGemm:
       return runnerState->redStream;
@@ -1576,7 +1541,8 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     flagcxUniRunnerState *state, const void *sendbuff, void *recvbuff,
     size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
     flagcxComm_t comm, int groupSize, int nLocalSlices) {
-  if (count == 0) return validateDagNodes(state);
+  if (count == 0)
+    return validateDagNodes(state);
   const int rank = comm->rank;
   const int nGroups = comm->nranks / groupSize;
   const int group = rank / groupSize;
@@ -1586,12 +1552,12 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
   const int nRedSlices = nGroups == 1 ? 1 : state->uniRunnerNRedSlices;
   const size_t typeSize = getFlagcxDataTypeSize(datatype);
   int localSteps = 0, perSlice = 0, capacity = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(
-      groupSize - 1, nLocalSlices, 0, &localSteps));
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(groupSize - 1, nLocalSlices, 0,
+                                           &localSteps));
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(
       static_cast<size_t>(localSteps) + nGroups - 1,
-      static_cast<size_t>(nRedSlices) + 1,
-      static_cast<size_t>(nGroups - 1) + 2, &perSlice));
+      static_cast<size_t>(nRedSlices) + 1, static_cast<size_t>(nGroups - 1) + 2,
+      &perSlice));
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(nSlices, perSlice, 2, &capacity));
   FLAGCXCHECK(flagcxCalloc(&state->dagNodes, capacity));
   std::vector<std::vector<int>> parents(capacity), children(capacity);
@@ -1599,7 +1565,10 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
   uniRunnerDagCommDomain domain = uniRunnerDagCommIpc;
   size_t scratchOffset = 0;
 
-  struct Range { size_t offset; size_t count; };
+  struct Range {
+    size_t offset;
+    size_t count;
+  };
   auto partition = [](Range r, int parts, int index) -> Range {
     const size_t base = r.count / parts;
     const size_t rem = r.count % parts;
@@ -1619,11 +1588,12 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     state->dagNodes[id].nodeType = type;
     state->dagNodes[id].commDomain = domain;
     parents[id] = deps;
-    for (int dep : deps) children[dep].push_back(id);
+    for (int dep : deps)
+      children[dep].push_back(id);
     return id;
   };
-  auto exchange = [&](int sendPeer, Range tx, const void *src,
-                      int recvPeer, Range rx, void *dst) -> flagcxResult_t {
+  auto exchange = [&](int sendPeer, Range tx, const void *src, int recvPeer,
+                      Range rx, void *dst) -> flagcxResult_t {
     const int id = node(uniRunnerDagNodeTypeP2p, ready);
     auto &p2p = state->dagNodes[id].nodeData.p2p;
     p2p.numOps = 2;
@@ -1642,7 +1612,8 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     // every reduction completes, including when counts are not divisible.
     for (int r = 0; r < nRedSlices; ++r) {
       const Range sub = partition({0, output.count}, nRedSlices, r);
-      if (sub.count == 0) continue;
+      if (sub.count == 0)
+        continue;
       const int id = node(uniRunnerDagNodeTypeRed, deps);
       auto &red = state->dagNodes[id].nodeData.red;
       red.input1 = ptr(recvbuff, output.offset + sub.offset);
@@ -1655,7 +1626,8 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
       red.triggerIdx = -1;
       reductions.push_back(id);
     }
-    if (!reductions.empty()) ready = std::move(reductions);
+    if (!reductions.empty())
+      ready = std::move(reductions);
   };
 
   // Publish the caller stream's preceding work before a copy on cpyStream.
@@ -1694,10 +1666,10 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     std::vector<std::vector<int>> redTails(
         groupSize > 1 ? static_cast<size_t>(sliceSpan) * nLocalSlices : 0);
     for (int step = 1; step < groupSize; ++step) {
-      const int txLane = positiveModulo(static_cast<int64_t>(lane) + step,
-                                        groupSize);
-      const int rxLane = positiveModulo(static_cast<int64_t>(lane) - step,
-                                        groupSize);
+      const int txLane =
+          positiveModulo(static_cast<int64_t>(lane) + step, groupSize);
+      const int rxLane =
+          positiveModulo(static_cast<int64_t>(lane) - step, groupSize);
       for (int t = 0; t < sliceSpan; ++t) {
         const int s = firstSlice + t;
         const Range own = chunkSlice(lane, s);
@@ -1705,8 +1677,8 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
           const Range output = partition(own, nLocalSlices, u);
           const Range tx = partition(chunkSlice(txLane, s), nLocalSlices, u);
           const size_t tail = static_cast<size_t>(t) * nLocalSlices + u;
-          scratchOffset = output.offset -
-                          (nGroups == 1 ? ownLane.offset : own.offset);
+          scratchOffset =
+              output.offset - (nGroups == 1 ? ownLane.offset : own.offset);
           ready = mergeDeps(commTail, redTails[tail]);
           FLAGCXCHECK(exchange(group * groupSize + txLane, tx, sendbuff,
                                group * groupSize + rxLane,
@@ -1725,7 +1697,8 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
 
     // Publish this slice's RED completion on the IPC stream so the network
     // handoff can use a CUDA-visible event dependency.
-    if (nGroups > 1) ready = {node(uniRunnerDagNodeTypeP2p, ready)};
+    if (nGroups > 1)
+      ready = {node(uniRunnerDagNodeTypeP2p, ready)};
     *done = ready;
     return flagcxSuccess;
   };
@@ -1738,23 +1711,28 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     // Inter-group reduce-scatter on each independent NIC lane. Divide the
     // lane chunk again across groups to keep network volume bandwidth optimal.
     const int next = ((group + 1) % nGroups) * groupSize + lane;
-    const int prev = positiveModulo(static_cast<int64_t>(group) - 1,
-                                    nGroups) * groupSize + lane;
+    const int prev =
+        positiveModulo(static_cast<int64_t>(group) - 1, nGroups) * groupSize +
+        lane;
     for (int step = 0; step < nGroups - 1; ++step) {
-      const Range tx = partition(own, nGroups, positiveModulo(
-          static_cast<int64_t>(group) - step, nGroups));
-      const Range rx = partition(own, nGroups, positiveModulo(
-          static_cast<int64_t>(group) - step - 1, nGroups));
+      const Range tx = partition(
+          own, nGroups,
+          positiveModulo(static_cast<int64_t>(group) - step, nGroups));
+      const Range rx = partition(
+          own, nGroups,
+          positiveModulo(static_cast<int64_t>(group) - step - 1, nGroups));
       FLAGCXCHECK(exchange(next, tx, recvbuff, prev, {scratchOffset, rx.count},
                            state->groupedArScratch));
       reduce(rx, step == nGroups - 2);
     }
     // Inter-group allgather completes the lane's globally reduced chunk.
     for (int step = 0; step < nGroups - 1; ++step) {
-      const Range tx = partition(own, nGroups, positiveModulo(
-          static_cast<int64_t>(group) - step + 1, nGroups));
-      const Range rx = partition(own, nGroups, positiveModulo(
-          static_cast<int64_t>(group) - step, nGroups));
+      const Range tx = partition(
+          own, nGroups,
+          positiveModulo(static_cast<int64_t>(group) - step + 1, nGroups));
+      const Range rx = partition(
+          own, nGroups,
+          positiveModulo(static_cast<int64_t>(group) - step, nGroups));
       FLAGCXCHECK(exchange(next, tx, recvbuff, prev, rx, recvbuff));
     }
 
@@ -1771,21 +1749,21 @@ static flagcxResult_t buildUniRunnerStateGroupedAR(
     if (groupSize > 1) {
       const int id = node(uniRunnerDagNodeTypeP2p, ready);
       auto &p2p = state->dagNodes[id].nodeData.p2p;
-      FLAGCXCHECK(checkedUniRunnerDagNodeCount(2, groupSize - 1, 0,
-                                               &p2p.numOps));
+      FLAGCXCHECK(
+          checkedUniRunnerDagNodeCount(2, groupSize - 1, 0, &p2p.numOps));
       FLAGCXCHECK(flagcxCalloc(&p2p.ops, p2p.numOps));
       for (int step = 1; step < groupSize; ++step) {
-        const int txLane = positiveModulo(static_cast<int64_t>(lane) + step,
-                                          groupSize);
-        const int rxLane = positiveModulo(static_cast<int64_t>(lane) - step,
-                                          groupSize);
+        const int txLane =
+            positiveModulo(static_cast<int64_t>(lane) + step, groupSize);
+        const int rxLane =
+            positiveModulo(static_cast<int64_t>(lane) - step, groupSize);
         const Range rx = chunkSlice(rxLane, s);
-        p2p.ops[2 * (step - 1)] = {
-            ptr(recvbuff, own.offset), own.count, group * groupSize + txLane,
-            datatype, flagcxDevicePrimSend};
-        p2p.ops[2 * (step - 1) + 1] = {
-            ptr(recvbuff, rx.offset), rx.count, group * groupSize + rxLane,
-            datatype, flagcxDevicePrimRecv};
+        p2p.ops[2 * (step - 1)] = {ptr(recvbuff, own.offset), own.count,
+                                   group * groupSize + txLane, datatype,
+                                   flagcxDevicePrimSend};
+        p2p.ops[2 * (step - 1) + 1] = {ptr(recvbuff, rx.offset), rx.count,
+                                       group * groupSize + rxLane, datatype,
+                                       flagcxDevicePrimRecv};
       }
       ready = {id};
     }
@@ -1905,22 +1883,22 @@ static flagcxResult_t buildUniRunnerStateGroupedAG(
     bool isLastStep = (step == nGroups - 1);
     int numIntraPeers = groupSize - 1;
     int numOps = 0;
-    FLAGCXCHECK(checkedUniRunnerDagNodeCount(
-        2, numIntraPeers, isLastStep ? 0 : 2, &numOps));
+    FLAGCXCHECK(checkedUniRunnerDagNodeCount(2, numIntraPeers,
+                                             isLastStep ? 0 : 2, &numOps));
 
     runnerState->dagNodes[nodeIdx].nodeIdx = nodeIdx;
     runnerState->dagNodes[nodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
     runnerState->dagNodes[nodeIdx].nodeData.p2p.numOps = numOps;
     if (numOps > 0) {
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[nodeIdx].nodeData.p2p.ops, numOps));
+      FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes[nodeIdx].nodeData.p2p.ops,
+                               numOps));
     }
 
     for (int i = 0; i < numIntraPeers; i++) {
-      int locSendPeer = positiveModulo(
-          static_cast<int64_t>(locRank) + i + 1, groupSize);
-      int locRecvPeer = positiveModulo(
-          static_cast<int64_t>(locRank) - i - 1, groupSize);
+      int locSendPeer =
+          positiveModulo(static_cast<int64_t>(locRank) + i + 1, groupSize);
+      int locRecvPeer =
+          positiveModulo(static_cast<int64_t>(locRank) - i - 1, groupSize);
 
       // Send
       runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[2 * i].type =
@@ -1956,10 +1934,10 @@ static flagcxResult_t buildUniRunnerStateGroupedAG(
     }
 
     if (!isLastStep) {
-      size_t sendGroupIdx = positiveModulo(
-          static_cast<int64_t>(groupIdx) + step + 1, nGroups);
-      size_t recvGroupIdx = positiveModulo(
-          static_cast<int64_t>(groupIdx) - step - 1, nGroups);
+      size_t sendGroupIdx =
+          positiveModulo(static_cast<int64_t>(groupIdx) + step + 1, nGroups);
+      size_t recvGroupIdx =
+          positiveModulo(static_cast<int64_t>(groupIdx) - step - 1, nGroups);
       size_t sendPeer = sendGroupIdx * groupSize + locRank;
       size_t recvPeer = recvGroupIdx * groupSize + locRank;
       size_t recvOffset = recvPeer * count * typeSize;
@@ -1973,10 +1951,7 @@ static flagcxResult_t buildUniRunnerStateGroupedAG(
       runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].datatype =
           datatype;
       runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].addr =
-          step == 0 ? const_cast<void *>(sendbuff)
-                    : static_cast<void *>(static_cast<char *>(recvbuff) +
-                                          localBaseOffset +
-                                          locRank * count * typeSize);
+          const_cast<void *>(sendbuff);
       opIdx++;
       runnerState->dagNodes[nodeIdx].nodeData.p2p.ops[opIdx].type =
           flagcxDevicePrimRecv;
@@ -2105,12 +2080,11 @@ buildUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
   // All-Gather: P2P * (nranks - 1)
   const int nodesPerSlice = nranks - 1;
   int numNodes = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0,
-                                           &numNodes));
+  FLAGCXCHECK(
+      checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0, &numNodes));
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 1,
                                            &runnerState->numDagNodes));
-  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
-                           runnerState->numDagNodes));
+  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes, runnerState->numDagNodes));
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
@@ -2129,13 +2103,11 @@ buildUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
       runnerState->dagNodes[p2pNodeIdx].nodeIdx = p2pNodeIdx;
       runnerState->dagNodes[p2pNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.numOps = 2;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
 
-      int txChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i, nranks);
-      int rxChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
+      int txChunk = positiveModulo(static_cast<int64_t>(rank) - i, nranks);
+      int rxChunk = positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
 
       // Calculate slice count with uneven distribution (last slice gets
       // remainder)
@@ -2306,11 +2278,10 @@ buildUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
   // Scatter-Reduce: (P2P + Reduce) * (nranks - 1)
   // All-Gather: P2P * (nranks - 1)
   int nodesPerSlice = 0;
-  FLAGCXCHECK(
-      checkedUniRunnerDagNodeCount(3, nranks - 1, 0, &nodesPerSlice));
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(3, nranks - 1, 0, &nodesPerSlice));
   int numNodes = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0,
-                                           &numNodes));
+  FLAGCXCHECK(
+      checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0, &numNodes));
 
   runnerState->numDagNodes = numNodes;
   FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes, numNodes));
@@ -2336,13 +2307,11 @@ buildUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
       runnerState->dagNodes[p2pNodeIdx].nodeIdx = p2pNodeIdx;
       runnerState->dagNodes[p2pNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.numOps = 2;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
 
-      int txChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i, nranks);
-      int rxChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
+      int txChunk = positiveModulo(static_cast<int64_t>(rank) - i, nranks);
+      int rxChunk = positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
 
       // Calculate slice count with uneven distribution (last slice gets
       // remainder)
@@ -2479,13 +2448,11 @@ buildUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
       runnerState->dagNodes[p2pNodeIdx].nodeIdx = p2pNodeIdx;
       runnerState->dagNodes[p2pNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.numOps = 2;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
 
-      int txChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i + 1, nranks);
-      int rxChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i, nranks);
+      int txChunk = positiveModulo(static_cast<int64_t>(rank) - i + 1, nranks);
+      int rxChunk = positiveModulo(static_cast<int64_t>(rank) - i, nranks);
 
       // Calculate slice count with uneven distribution (last slice gets
       // remainder)
@@ -2662,18 +2629,16 @@ buildUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
   // Scatter-Reduce: (P2P + Reduce * numRedSlices) * (nranks - 1)
   // All-Gather: P2P * (nranks - 1)
   int nodesPerStep = 0;
-  FLAGCXCHECK(
-      checkedUniRunnerDagNodeCount(1, numRedSlices, 2, &nodesPerStep));
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(1, numRedSlices, 2, &nodesPerStep));
   int nodesPerSlice = 0;
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(nodesPerStep, nranks - 1, 0,
                                            &nodesPerSlice));
   int numNodes = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0,
-                                           &numNodes));
+  FLAGCXCHECK(
+      checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0, &numNodes));
 
   runnerState->numDagNodes = numNodes;
-  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
-                           runnerState->numDagNodes));
+  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes, runnerState->numDagNodes));
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
@@ -2696,13 +2661,11 @@ buildUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
       runnerState->dagNodes[p2pNodeIdx].nodeIdx = p2pNodeIdx;
       runnerState->dagNodes[p2pNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.numOps = 2;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
 
-      int txChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i, nranks);
-      int rxChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
+      int txChunk = positiveModulo(static_cast<int64_t>(rank) - i, nranks);
+      int rxChunk = positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
 
       // Calculate slice count with uneven distribution (last slice gets
       // remainder)
@@ -2861,13 +2824,11 @@ buildUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
       runnerState->dagNodes[p2pNodeIdx].nodeIdx = p2pNodeIdx;
       runnerState->dagNodes[p2pNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.numOps = 2;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
 
-      int txChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i + 1, nranks);
-      int rxChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i, nranks);
+      int txChunk = positiveModulo(static_cast<int64_t>(rank) - i + 1, nranks);
+      int rxChunk = positiveModulo(static_cast<int64_t>(rank) - i, nranks);
 
       // Calculate slice count with uneven distribution (last slice gets
       // remainder)
@@ -2988,30 +2949,6 @@ buildUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
   return validateDagNodes(runnerState);
 }
 
-static bool getIpcBufferOffset(const void *ptr, const void *base, size_t bytes,
-                               size_t accessBytes, size_t *offset) {
-  if (offset == NULL) {
-    return false;
-  }
-  // One-past-end is valid for a zero-count slice; the trigger will carry
-  // bytes==0 and only exchange its ready epoch.
-  int64_t checkedOffset = 0;
-  if (!uniRunnerDagBindingRangeContains(ptr, base, bytes, accessBytes,
-                                        &checkedOffset)) {
-    return false;
-  }
-  *offset = static_cast<size_t>(checkedOffset);
-  return true;
-}
-
-static int globalRankToLocalRank(flagcxComm_t comm, int globalRank) {
-  for (int localRank = 0; localRank < comm->localRanks; ++localRank) {
-    if (comm->localRankToRank[localRank] == globalRank)
-      return localRank;
-  }
-  return -1;
-}
-
 /*************************************************************************
  * SPDX-FileCopyrightText: Copyright (c) 2015-2026 NVIDIA CORPORATION &
  * AFFILIATES. All rights reserved.
@@ -3028,9 +2965,11 @@ struct uniRunnerRingCbd {
   uint64_t chunkGrainsHi;
 };
 
-static flagcxResult_t selectUniRunnerRingSimple(
-    flagcxHeteroComm_t hcomm, size_t nBytes, size_t *numChannels,
-    size_t *nThreads, size_t *simpleBufferBytes) {
+static flagcxResult_t selectUniRunnerRingSimple(flagcxHeteroComm_t hcomm,
+                                                size_t nBytes,
+                                                size_t *numChannels,
+                                                size_t *nThreads,
+                                                size_t *simpleBufferBytes) {
   if (hcomm == NULL || numChannels == NULL || nThreads == NULL ||
       simpleBufferBytes == NULL || hcomm->collChannels <= 0) {
     return flagcxInvalidArgument;
@@ -3074,8 +3013,9 @@ static flagcxResult_t selectUniRunnerRingSimple(
   return flagcxSuccess;
 }
 
-static flagcxResult_t getUniRunnerIpcRingTopologyHash(
-    flagcxHeteroComm_t hcomm, size_t numChannels, uint64_t *topologyHash) {
+static flagcxResult_t getUniRunnerIpcRingTopologyHash(flagcxHeteroComm_t hcomm,
+                                                      size_t numChannels,
+                                                      uint64_t *topologyHash) {
   if (hcomm == NULL || topologyHash == NULL || hcomm->localRanks <= 0 ||
       hcomm->nRanks <= 0 || hcomm->localRanks != hcomm->nRanks) {
     return hcomm != NULL && hcomm->localRanks != hcomm->nRanks
@@ -3093,8 +3033,7 @@ static flagcxResult_t getUniRunnerIpcRingTopologyHash(
   hash = hashAlgorithmUint64(hash, static_cast<uint64_t>(hcomm->localRanks));
   for (int i = 0; i < hcomm->localRanks; ++i) {
     const int rank = hcomm->localRankToRank[i];
-    if (rank < 0 || rank >= hcomm->nRanks ||
-        hcomm->rankToLocalRank[rank] != i)
+    if (rank < 0 || rank >= hcomm->nRanks || hcomm->rankToLocalRank[rank] != i)
       return flagcxInvalidArgument;
     for (int j = 0; j < i; ++j)
       if (hcomm->localRankToRank[j] == rank)
@@ -3128,11 +3067,12 @@ static flagcxResult_t getUniRunnerIpcRingTopologyHash(
   return flagcxSuccess;
 }
 
-static flagcxResult_t buildUniRunnerRingCbd(
-    uint64_t count, size_t typeSize, size_t numChannels,
-    size_t simpleBufferBytes, uniRunnerRingCbd *cbd) {
-  if (cbd == NULL || typeSize == 0 || 512 % typeSize != 0 ||
-      numChannels == 0 || numChannels > std::numeric_limits<uint32_t>::max())
+static flagcxResult_t buildUniRunnerRingCbd(uint64_t count, size_t typeSize,
+                                            size_t numChannels,
+                                            size_t simpleBufferBytes,
+                                            uniRunnerRingCbd *cbd) {
+  if (cbd == NULL || typeSize == 0 || 512 % typeSize != 0 || numChannels == 0 ||
+      numChannels > std::numeric_limits<uint32_t>::max())
     return flagcxInvalidArgument;
   const uint64_t grainElements = 512 / typeSize;
   const uint64_t grains = count / grainElements + (count % grainElements != 0);
@@ -3146,12 +3086,11 @@ static flagcxResult_t buildUniRunnerRingCbd(
     return flagcxInvalidArgument;
   cbd->channelLo = 0;
   cbd->channelHi = static_cast<uint32_t>(active - 1);
-  cbd->countLo = std::min<uint64_t>(
-      count, (baseGrains + (extraGrains != 0)) * grainElements);
+  cbd->countLo = std::min<uint64_t>(count, (baseGrains + (extraGrains != 0)) *
+                                               grainElements);
   cbd->countMid = std::min<uint64_t>(count, baseGrains * grainElements);
   const uint64_t midChannels = active > 2 ? active - 2 : 0;
-  const uint64_t assigned =
-      cbd->countLo + midChannels * cbd->countMid;
+  const uint64_t assigned = cbd->countLo + midChannels * cbd->countMid;
   cbd->countHi = active > 1 ? count - std::min(count, assigned) : 0;
   cbd->chunkGrainsLo = chunkElements / grainElements;
   cbd->chunkGrainsMid = cbd->chunkGrainsLo;
@@ -3159,27 +3098,28 @@ static flagcxResult_t buildUniRunnerRingCbd(
   return flagcxSuccess;
 }
 
-static flagcxResult_t getUniRunnerRingCbdPart(
-    const uniRunnerRingCbd &cbd, uint32_t channelId, uint64_t totalCount,
-    uint64_t *gridOffset, uint64_t *channelCount, uint64_t *chunkCount,
-    size_t typeSize) {
+static flagcxResult_t
+getUniRunnerRingCbdPart(const uniRunnerRingCbd &cbd, uint32_t channelId,
+                        uint64_t totalCount, uint64_t *gridOffset,
+                        uint64_t *channelCount, uint64_t *chunkCount,
+                        size_t typeSize) {
   if (gridOffset == NULL || channelCount == NULL || chunkCount == NULL ||
       channelId < cbd.channelLo || channelId > cbd.channelHi || typeSize == 0)
     return flagcxInvalidArgument;
   const uint64_t mid = channelId - cbd.channelLo - 1;
-  const uint64_t offset = channelId == cbd.channelLo
-                              ? 0
-                              : cbd.countLo + mid * cbd.countMid;
+  const uint64_t offset =
+      channelId == cbd.channelLo ? 0 : cbd.countLo + mid * cbd.countMid;
   const bool last = channelId == cbd.channelHi;
   uint64_t partCount = channelId == cbd.channelLo
                            ? cbd.countLo
                            : (last ? cbd.countHi : cbd.countMid);
-  const uint64_t chunkGrains = channelId == cbd.channelLo
-                                   ? cbd.chunkGrainsLo
-                                   : (last ? cbd.chunkGrainsHi
-                                           : cbd.chunkGrainsMid);
+  const uint64_t chunkGrains =
+      channelId == cbd.channelLo
+          ? cbd.chunkGrainsLo
+          : (last ? cbd.chunkGrainsHi : cbd.chunkGrainsMid);
   *gridOffset = offset;
-  *channelCount = std::min(partCount, totalCount - std::min(totalCount, offset));
+  *channelCount =
+      std::min(partCount, totalCount - std::min(totalCount, offset));
   *chunkCount = chunkGrains * (512 / typeSize);
   return *chunkCount == 0 ? flagcxInvalidArgument : flagcxSuccess;
 }
@@ -3224,13 +3164,12 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
 
   uniRunnerRingCbd cbd = {};
   FLAGCXCHECK(buildUniRunnerRingCbd(count, typeSize, numChannels,
-                                     simpleBufferBytes, &cbd));
+                                    simpleBufferBytes, &cbd));
   const size_t activeChannels = cbd.channelHi - cbd.channelLo + 1;
-  const uint64_t stepSizeElements =
-      simpleBufferBytes / FLAGCX_STEPS / typeSize;
+  const uint64_t stepSizeElements = simpleBufferBytes / FLAGCX_STEPS / typeSize;
   if (stepSizeElements == 0 ||
-      stepSizeElements > std::numeric_limits<uint64_t>::max() /
-                             ALLREDUCE_CHUNKSTEPS)
+      stepSizeElements >
+          std::numeric_limits<uint64_t>::max() / ALLREDUCE_CHUNKSTEPS)
     return flagcxInvalidArgument;
 
   struct PendingStep {
@@ -3245,9 +3184,9 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
   try {
     for (size_t c = 0; c < activeChannels; ++c) {
       uint64_t gridOffset = 0, channelCount = 0, baseChunkCount = 0;
-      FLAGCXCHECK(getUniRunnerRingCbdPart(
-          cbd, static_cast<uint32_t>(c), count, &gridOffset, &channelCount,
-          &baseChunkCount, typeSize));
+      FLAGCXCHECK(getUniRunnerRingCbdPart(cbd, static_cast<uint32_t>(c), count,
+                                          &gridOffset, &channelCount,
+                                          &baseChunkCount, typeSize));
       if (baseChunkCount > stepSizeElements * ALLREDUCE_CHUNKSTEPS)
         return flagcxInvalidArgument;
       const int ringIx = comm->heteroComm->channels[c].ring.index;
@@ -3261,8 +3200,8 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
                 std::numeric_limits<uint64_t>::max() / comm->nranks ||
             remCount < effectiveChunkCount * comm->nranks) {
           const uint64_t alignment = std::max<uint64_t>(1, 16 / typeSize);
-          const uint64_t perRank = remCount / comm->nranks +
-                                   (remCount % comm->nranks != 0);
+          const uint64_t perRank =
+              remCount / comm->nranks + (remCount % comm->nranks != 0);
           effectiveChunkCount =
               ((perRank + alignment - 1) / alignment) * alignment;
         }
@@ -3274,18 +3213,18 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
                                  uint32_t postOp) -> flagcxResult_t {
           const uint64_t chunkOffset =
               static_cast<uint64_t>(chunk) * effectiveChunkCount;
-          const uint64_t nelem = chunkOffset >= remCount
-                                     ? 0
-                                     : std::min(effectiveChunkCount,
-                                                remCount - chunkOffset);
+          const uint64_t nelem =
+              chunkOffset >= remCount
+                  ? 0
+                  : std::min(effectiveChunkCount, remCount - chunkOffset);
           if (gridOffset > std::numeric_limits<uint64_t>::max() - elemOffset ||
               gridOffset + elemOffset >
                   std::numeric_limits<uint64_t>::max() - chunkOffset ||
               ordinal == std::numeric_limits<uint32_t>::max())
             return flagcxInvalidArgument;
-          steps.push_back(PendingStep{
-              static_cast<uint32_t>(c), ordinal++, kind, postOp,
-              gridOffset + elemOffset + chunkOffset, nelem});
+          steps.push_back(
+              PendingStep{static_cast<uint32_t>(c), ordinal++, kind, postOp,
+                          gridOffset + elemOffset + chunkOffset, nelem});
           return flagcxSuccess;
         };
         const auto modRanks = [&](int value) {
@@ -3296,8 +3235,7 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
         for (int j = 2; j < comm->nranks; ++j)
           FLAGCXCHECK(addStep(modRanks(ringIx + comm->nranks - j),
                               uniRunnerRingStepRecvReduceSend, 0));
-        FLAGCXCHECK(addStep(ringIx,
-                            uniRunnerRingStepRecvReduceCopySend, 1));
+        FLAGCXCHECK(addStep(ringIx, uniRunnerRingStepRecvReduceCopySend, 1));
         for (int j = 1; j < comm->nranks - 1; ++j)
           FLAGCXCHECK(addStep(modRanks(ringIx + comm->nranks - j),
                               uniRunnerRingStepRecvCopySend, 0));
@@ -3316,8 +3254,8 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
     const PendingStep &src = steps[i];
     uniRunnerDagNode &dst = runnerState->dagNodes[i];
     const bool first = src.ordinal == 0;
-    const bool last = i + 1 == steps.size() ||
-                      steps[i + 1].channel != src.channel;
+    const bool last =
+        i + 1 == steps.size() || steps[i + 1].channel != src.channel;
     dst.nodeType = uniRunnerDagNodeTypeRingStep;
     dst.nodeIdx = static_cast<int>(i);
     dst.numParents = first ? 0 : 1;
@@ -3335,123 +3273,6 @@ static flagcxResult_t buildUniRunnerStateIpcRingAR(
     dst.nodeData.ringStep.countElements = src.count;
     dst.nodeData.ringStep.triggerIdx = -1;
   }
-  return validateDagNodes(runnerState);
-}
-
-static flagcxResult_t buildUniRunnerStateIpcAR(
-    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
-    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
-    flagcxComm_t comm) {
-  if (comm->localRanks != comm->nranks)
-    return flagcxNotSupported;
-  if (comm->nranks <= 1 || count == 0) {
-    return buildUniRunnerStateSlicedAR(runnerState, sendbuff, recvbuff, count,
-                                       datatype, op, comm);
-  }
-
-  FLAGCXCHECK(buildUniRunnerStateSlicedAR(runnerState, sendbuff, recvbuff,
-                                          count, datatype, op, comm));
-
-  size_t totalBytes = 0;
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 1, datatype, &totalBytes));
-  uint32_t readySlot = 0;
-  for (int nodeIdx = 0; nodeIdx < runnerState->numDagNodes; ++nodeIdx) {
-    uniRunnerDagNode *node = &runnerState->dagNodes[nodeIdx];
-    if (node->nodeType != uniRunnerDagNodeTypeP2p)
-      continue;
-
-    const uniRunnerP2pOpData *sendOp = NULL;
-    const uniRunnerP2pOpData *recvOp = NULL;
-    for (int opIdx = 0; opIdx < node->nodeData.p2p.numOps; ++opIdx) {
-      const uniRunnerP2pOpData *candidate = &node->nodeData.p2p.ops[opIdx];
-      if (candidate->type == flagcxDevicePrimSend)
-        sendOp = candidate;
-      else if (candidate->type == flagcxDevicePrimRecv)
-        recvOp = candidate;
-    }
-    if (sendOp == NULL || recvOp == NULL) {
-      return flagcxNotSupported;
-    }
-
-    size_t sendBytes = 0;
-    FLAGCXCHECK(checkedUniRunnerTypeBytes(sendOp->count, 1,
-                                          sendOp->datatype, &sendBytes));
-    size_t recvBytes = 0;
-    FLAGCXCHECK(checkedUniRunnerTypeBytes(recvOp->count, 1,
-                                          recvOp->datatype, &recvBytes));
-
-    size_t srcOffset = 0;
-    flagcxIpcBufferType srcBufferType = flagcxIpcBufferInput;
-    // Prefer output for aliased buffers: both handles describe the same local
-    // storage and output is the destination surface carried around the ring.
-    if (getIpcBufferOffset(sendOp->addr, recvbuff, totalBytes, sendBytes,
-                           &srcOffset)) {
-      srcBufferType = flagcxIpcBufferOutput;
-    } else if (getIpcBufferOffset(sendOp->addr, sendbuff, totalBytes,
-                                  sendBytes, &srcOffset)) {
-      srcBufferType = flagcxIpcBufferInput;
-    } else {
-      return flagcxInvalidArgument;
-    }
-
-    size_t localRecvOffset = 0;
-    if (!getIpcBufferOffset(recvOp->addr, recvbuff, totalBytes,
-                            recvBytes, &localRecvOffset)) {
-      return flagcxInvalidArgument;
-    }
-    (void)localRecvOffset;
-    int peerLocalRank = globalRankToLocalRank(comm, sendOp->peerRank);
-    if (peerLocalRank < 0)
-      return flagcxNotSupported;
-
-    uniRunnerP2pOpData *oldOps = node->nodeData.p2p.ops;
-    uniRunnerIpcNodeData ipc = {};
-    ipc.srcOffsetBytes = srcOffset;
-    // Ring chunks retain their global output-buffer offset at every rank. The
-    // local recv op refers to the chunk arriving from prevRank, while this
-    // send op writes its own source chunk to nextRank at srcOffset.
-    ipc.dstOffsetBytes = srcOffset;
-    ipc.bytes = sendBytes;
-    if (ipc.bytes > totalBytes - srcOffset ||
-        recvBytes > totalBytes - localRecvOffset ||
-        ipc.bytes > totalBytes - ipc.dstOffsetBytes) {
-      return flagcxInvalidArgument;
-    }
-    ipc.srcBufferType = srcBufferType;
-    ipc.peerLocalRank = peerLocalRank;
-    if (readySlot == std::numeric_limits<uint32_t>::max()) {
-      return flagcxInvalidArgument;
-    }
-    ipc.readySlot = readySlot++;
-    ipc.parentFlagsOffset = 0;
-    ipc.triggerIdx = -1;
-    free(oldOps);
-    node->nodeType = uniRunnerDagNodeTypeIpc;
-    node->nodeData.ipc = ipc;
-  }
-
-  flagcxIntruQueueConstruct(&runnerState->p2pReadyQueue);
-  flagcxIntruQueueConstruct(&runnerState->redReadyQueue);
-  flagcxIntruQueueConstruct(&runnerState->gemmReadyQueue);
-  flagcxIntruQueueConstruct(&runnerState->ipcReadyQueue);
-  runnerState->numPendingNodes = 0;
-  for (int nodeIdx = 0; nodeIdx < runnerState->numDagNodes; ++nodeIdx) {
-    uniRunnerDagNode *node = &runnerState->dagNodes[nodeIdx];
-    node->pendingParents = node->numParents;
-    if (node->numParents == 0) {
-      if (node->nodeType == uniRunnerDagNodeTypeRed) {
-        flagcxIntruQueueEnqueue(&runnerState->redReadyQueue, node);
-      } else if (node->nodeType == uniRunnerDagNodeTypeIpc) {
-        flagcxIntruQueueEnqueue(&runnerState->ipcReadyQueue, node);
-      } else {
-        flagcxIntruQueueEnqueue(&runnerState->p2pReadyQueue, node);
-      }
-    } else {
-      runnerState->numPendingNodes++;
-    }
-  }
-
-  runnerState->ipcReadySlots = static_cast<size_t>(readySlot);
   return validateDagNodes(runnerState);
 }
 
@@ -3510,18 +3331,16 @@ static flagcxResult_t buildUniRunnerStateRingRS(
   // Nodes per slice chain:
   // (P2P + Reduce * numRedSlices) * (nranks - 1)
   int nodesPerStep = 0;
-  FLAGCXCHECK(
-      checkedUniRunnerDagNodeCount(1, numRedSlices, 1, &nodesPerStep));
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(1, numRedSlices, 1, &nodesPerStep));
   int nodesPerSlice = 0;
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(nodesPerStep, nranks - 1, 0,
                                            &nodesPerSlice));
   int numNodes = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0,
-                                           &numNodes));
+  FLAGCXCHECK(
+      checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0, &numNodes));
 
   runnerState->numDagNodes = numNodes;
-  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
-                           runnerState->numDagNodes));
+  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes, runnerState->numDagNodes));
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
@@ -3540,13 +3359,11 @@ static flagcxResult_t buildUniRunnerStateRingRS(
       runnerState->dagNodes[p2pNodeIdx].nodeIdx = p2pNodeIdx;
       runnerState->dagNodes[p2pNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.numOps = 2;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[p2pNodeIdx].nodeData.p2p.ops, 2));
 
-      int txChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
-      int rxChunk =
-          positiveModulo(static_cast<int64_t>(rank) - i - 2, nranks);
+      int txChunk = positiveModulo(static_cast<int64_t>(rank) - i - 1, nranks);
+      int rxChunk = positiveModulo(static_cast<int64_t>(rank) - i - 2, nranks);
 
       size_t txRankChunkCount = baseRankChunkCount;
       size_t rxRankChunkCount = baseRankChunkCount;
@@ -3740,8 +3557,7 @@ static flagcxResult_t buildUniRunnerStateTreeRed(
   int rank = comm->rank;
   int nranks = comm->nranks;
 
-  if (nranks < 1 || rank < 0 || rank >= nranks || root < 0 ||
-      root >= nranks) {
+  if (nranks < 1 || rank < 0 || rank >= nranks || root < 0 || root >= nranks) {
     return flagcxInvalidArgument;
   }
   int algoRank = positiveModulo(static_cast<int64_t>(rank) - root,
@@ -3796,16 +3612,16 @@ static flagcxResult_t buildUniRunnerStateTreeRed(
   }
   const int sendNodesPerSlice = algoRank ? 1 : 0;
   int redNodesPerSlice = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(
-      recvNodesPerSlice, numRedSlices, 0, &redNodesPerSlice));
+  FLAGCXCHECK(checkedUniRunnerDagNodeCount(recvNodesPerSlice, numRedSlices, 0,
+                                           &redNodesPerSlice));
   int nodesPerSlice = 0;
   FLAGCXCHECK(checkedUniRunnerDagNodeCount(
       1, redNodesPerSlice,
       static_cast<size_t>(sendNodesPerSlice) + recvNodesPerSlice,
       &nodesPerSlice));
   int numNodes = 0;
-  FLAGCXCHECK(checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0,
-                                           &numNodes));
+  FLAGCXCHECK(
+      checkedUniRunnerDagNodeCount(numSlices, nodesPerSlice, 0, &numNodes));
 
   TRACE(FLAGCX_UNIRUNNER,
         "rank %d (algoRank %d) initUniRunnerStateTreeReduce called, count=%lu, "
@@ -3814,8 +3630,7 @@ static flagcxResult_t buildUniRunnerStateTreeRed(
         sendNodesPerSlice);
 
   runnerState->numDagNodes = numNodes;
-  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
-                           runnerState->numDagNodes));
+  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes, runnerState->numDagNodes));
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
@@ -3847,13 +3662,13 @@ static flagcxResult_t buildUniRunnerStateTreeRed(
       runnerState->dagNodes[recvNodeIdx].nodeIdx = recvNodeIdx;
       runnerState->dagNodes[recvNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[recvNodeIdx].nodeData.p2p.numOps = 1;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[recvNodeIdx].nodeData.p2p.ops,
-          runnerState->dagNodes[recvNodeIdx].nodeData.p2p.numOps));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[recvNodeIdx].nodeData.p2p.ops,
+                       runnerState->dagNodes[recvNodeIdx].nodeData.p2p.numOps));
 
       // Recv Node
-      int peer = positiveModulo(
-          static_cast<int64_t>(rank) + (int64_t{1} << i), nranks);
+      int peer = positiveModulo(static_cast<int64_t>(rank) + (int64_t{1} << i),
+                                nranks);
       runnerState->dagNodes[recvNodeIdx].nodeData.p2p.ops[0].type =
           flagcxDevicePrimRecv;
       runnerState->dagNodes[recvNodeIdx].nodeData.p2p.ops[0].peerRank = peer;
@@ -3949,8 +3764,7 @@ static flagcxResult_t buildUniRunnerStateTreeRed(
             runnerState->uniRunnerNThreads;
         runnerState->dagNodes[redNodeIdx].nodeData.red.datatype = datatype;
         runnerState->dagNodes[redNodeIdx].nodeData.red.redOp =
-            effectiveUniRunnerRedOp(
-                op, algoRank == 0 && i == nTotalSteps - 1);
+            effectiveUniRunnerRedOp(op, algoRank == 0 && i == nTotalSteps - 1);
 
         // Set up red node dependency
         runnerState->numPendingNodes++;
@@ -3976,14 +3790,13 @@ static flagcxResult_t buildUniRunnerStateTreeRed(
       runnerState->dagNodes[sendNodeIdx].nodeIdx = sendNodeIdx;
       runnerState->dagNodes[sendNodeIdx].nodeType = uniRunnerDagNodeTypeP2p;
       runnerState->dagNodes[sendNodeIdx].nodeData.p2p.numOps = 1;
-      FLAGCXCHECK(flagcxCalloc(
-          &runnerState->dagNodes[sendNodeIdx].nodeData.p2p.ops,
-          runnerState->dagNodes[sendNodeIdx].nodeData.p2p.numOps));
+      FLAGCXCHECK(
+          flagcxCalloc(&runnerState->dagNodes[sendNodeIdx].nodeData.p2p.ops,
+                       runnerState->dagNodes[sendNodeIdx].nodeData.p2p.numOps));
 
-      int peer = positiveModulo(
-          static_cast<int64_t>(rank) -
-              (int64_t{1} << __builtin_ctz(algoRank)),
-          nranks);
+      int peer = positiveModulo(static_cast<int64_t>(rank) -
+                                    (int64_t{1} << __builtin_ctz(algoRank)),
+                                nranks);
 
       runnerState->dagNodes[sendNodeIdx].nodeData.p2p.ops[0].type =
           flagcxDevicePrimSend;
@@ -4123,23 +3936,22 @@ static flagcxResult_t captureUniRunnerDagTemplateFromState(
         opDesc.datatype = op->datatype;
         opDesc.type = op->type;
         size_t opBytes = 0;
-        FLAGCXCHECK(checkedUniRunnerTypeBytes(op->count, 1, op->datatype,
-                                              &opBytes));
+        FLAGCXCHECK(
+            checkedUniRunnerTypeBytes(op->count, 1, op->datatype, &opBytes));
         FLAGCXCHECK(
             captureBufferRef(op->addr, bindings, opBytes, &opDesc.buffer));
         nodeDesc.p2pOps.push_back(opDesc);
       }
     } else if (node->nodeType == uniRunnerDagNodeTypeRed) {
       size_t opBytes = 0;
-      FLAGCXCHECK(checkedUniRunnerTypeBytes(node->nodeData.red.count, 1,
-                                            node->nodeData.red.datatype,
-                                            &opBytes));
-      FLAGCXCHECK(captureBufferRef(node->nodeData.red.input1, bindings,
-                                   opBytes, &nodeDesc.red.input1));
-      FLAGCXCHECK(captureBufferRef(node->nodeData.red.input2, bindings,
-                                   opBytes, &nodeDesc.red.input2));
-      FLAGCXCHECK(captureBufferRef(node->nodeData.red.output, bindings,
-                                   opBytes, &nodeDesc.red.output));
+      FLAGCXCHECK(checkedUniRunnerTypeBytes(
+          node->nodeData.red.count, 1, node->nodeData.red.datatype, &opBytes));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.red.input1, bindings, opBytes,
+                                   &nodeDesc.red.input1));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.red.input2, bindings, opBytes,
+                                   &nodeDesc.red.input2));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.red.output, bindings, opBytes,
+                                   &nodeDesc.red.output));
       nodeDesc.red.count = node->nodeData.red.count;
       nodeDesc.red.datatype = node->nodeData.red.datatype;
       nodeDesc.red.redOp = node->nodeData.red.redOp;
@@ -4163,13 +3975,12 @@ static flagcxResult_t captureUniRunnerDagTemplateFromState(
       nodeDesc.gemm.accumulate = g.accumulate;
     } else if (node->nodeType == uniRunnerDagNodeTypeCpy) {
       size_t opBytes = 0;
-      FLAGCXCHECK(checkedUniRunnerTypeBytes(node->nodeData.cpy.count, 1,
-                                            node->nodeData.cpy.datatype,
-                                            &opBytes));
-      FLAGCXCHECK(captureBufferRef(node->nodeData.cpy.src, bindings,
-                                   opBytes, &nodeDesc.cpy.src));
-      FLAGCXCHECK(captureBufferRef(node->nodeData.cpy.dst, bindings,
-                                   opBytes, &nodeDesc.cpy.dst));
+      FLAGCXCHECK(checkedUniRunnerTypeBytes(
+          node->nodeData.cpy.count, 1, node->nodeData.cpy.datatype, &opBytes));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.cpy.src, bindings, opBytes,
+                                   &nodeDesc.cpy.src));
+      FLAGCXCHECK(captureBufferRef(node->nodeData.cpy.dst, bindings, opBytes,
+                                   &nodeDesc.cpy.dst));
       nodeDesc.cpy.count = node->nodeData.cpy.count;
       nodeDesc.cpy.datatype = node->nodeData.cpy.datatype;
     } else if (node->nodeType == uniRunnerDagNodeTypeIpc) {
@@ -4184,8 +3995,7 @@ static flagcxResult_t captureUniRunnerDagTemplateFromState(
       nodeDesc.ringStep.laneOrdinal = node->nodeData.ringStep.laneOrdinal;
       nodeDesc.ringStep.kind = node->nodeData.ringStep.kind;
       nodeDesc.ringStep.postOp = node->nodeData.ringStep.postOp;
-      nodeDesc.ringStep.offsetElements =
-          node->nodeData.ringStep.offsetElements;
+      nodeDesc.ringStep.offsetElements = node->nodeData.ringStep.offsetElements;
       nodeDesc.ringStep.countElements = node->nodeData.ringStep.countElements;
     } else {
       return flagcxNotSupported;
@@ -4210,8 +4020,7 @@ materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
   // previous invocation visible to the collective IPC preparation agreement.
   runnerState->ipcReadySlots = 0;
   FLAGCXCHECK(validateUniRunnerDagTemplateBindings(dagTemplate, bindings));
-  const size_t maxInt =
-      static_cast<size_t>(std::numeric_limits<int>::max());
+  const size_t maxInt = static_cast<size_t>(std::numeric_limits<int>::max());
   if (dagTemplate.nodes.size() > maxInt) {
     return flagcxInvalidArgument;
   }
@@ -4232,8 +4041,7 @@ materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
     return flagcxSuccess;
   }
 
-  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes,
-                           runnerState->numDagNodes));
+  FLAGCXCHECK(flagcxCalloc(&runnerState->dagNodes, runnerState->numDagNodes));
   if (runnerState->dagNodes == NULL) {
     return flagcxSystemError;
   }
@@ -4277,8 +4085,8 @@ materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
     } else if (dst->nodeType == uniRunnerDagNodeTypeRed) {
       dst->nodeData.red.triggerIdx = -1;
       size_t opBytes = 0;
-      FLAGCXCHECK(checkedUniRunnerTypeBytes(src.red.count, 1,
-                                            src.red.datatype, &opBytes));
+      FLAGCXCHECK(checkedUniRunnerTypeBytes(src.red.count, 1, src.red.datatype,
+                                            &opBytes));
       FLAGCXCHECK(resolveBufferRef(src.red.input1, bindings, opBytes,
                                    &dst->nodeData.red.input1));
       FLAGCXCHECK(resolveBufferRef(src.red.input2, bindings, opBytes,
@@ -4296,9 +4104,12 @@ materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
     } else if (dst->nodeType == uniRunnerDagNodeTypeGemm) {
       auto &g = dst->nodeData.gemm;
       size_t aBytes = 0, bBytes = 0, cBytes = 0;
-      if (!uniRunnerDagMatrixBytes(src.gemm.m, src.gemm.k, src.gemm.lda, &aBytes) ||
-          !uniRunnerDagMatrixBytes(src.gemm.k, src.gemm.n, src.gemm.ldb, &bBytes) ||
-          !uniRunnerDagMatrixBytes(src.gemm.m, src.gemm.n, src.gemm.ldc, &cBytes))
+      if (!uniRunnerDagMatrixBytes(src.gemm.m, src.gemm.k, src.gemm.lda,
+                                   &aBytes) ||
+          !uniRunnerDagMatrixBytes(src.gemm.k, src.gemm.n, src.gemm.ldb,
+                                   &bBytes) ||
+          !uniRunnerDagMatrixBytes(src.gemm.m, src.gemm.n, src.gemm.ldc,
+                                   &cBytes))
         return flagcxInvalidArgument;
       void *a = nullptr, *b = nullptr;
       FLAGCXCHECK(resolveBufferRef(src.gemm.a, bindings, aBytes, &a));
@@ -4321,8 +4132,8 @@ materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
       g.triggerIdx = -1;
     } else if (dst->nodeType == uniRunnerDagNodeTypeCpy) {
       size_t opBytes = 0;
-      FLAGCXCHECK(checkedUniRunnerTypeBytes(src.cpy.count, 1,
-                                            src.cpy.datatype, &opBytes));
+      FLAGCXCHECK(checkedUniRunnerTypeBytes(src.cpy.count, 1, src.cpy.datatype,
+                                            &opBytes));
       FLAGCXCHECK(resolveBufferRef(src.cpy.src, bindings, opBytes,
                                    &dst->nodeData.cpy.src));
       FLAGCXCHECK(resolveBufferRef(src.cpy.dst, bindings, opBytes,
@@ -4370,9 +4181,9 @@ materializeUniRunnerDagTemplate(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-static flagcxResult_t bindUniRunnerCompiledDagPlan(
-    const uniRunnerCompiledDagTemplate &compiled,
-    uniRunnerDagExecutionPlan *plan) {
+static flagcxResult_t
+bindUniRunnerCompiledDagPlan(const uniRunnerCompiledDagTemplate &compiled,
+                             uniRunnerDagExecutionPlan *plan) {
   if (plan == NULL || compiled.numNodes != compiled.dagTemplate.nodes.size() ||
       compiled.topoOrder.size() != compiled.numNodes ||
       compiled.numHostNodes + compiled.numRedNodes + compiled.numIpcNodes +
@@ -4383,9 +4194,8 @@ static flagcxResult_t bindUniRunnerCompiledDagPlan(
     return flagcxInternalError;
   }
   destroyUniRunnerDagExecutionPlan(plan);
-  plan->topoOrder = compiled.topoOrder.empty()
-                        ? NULL
-                        : compiled.topoOrder.data();
+  plan->topoOrder =
+      compiled.topoOrder.empty() ? NULL : compiled.topoOrder.data();
   plan->numNodes = compiled.numNodes;
   plan->numHostNodes = compiled.numHostNodes;
   plan->numRedNodes = compiled.numRedNodes;
@@ -4396,9 +4206,8 @@ static flagcxResult_t bindUniRunnerCompiledDagPlan(
   plan->maxIpcNodeBytes = compiled.maxIpcNodeBytes;
   plan->numRingStepNodes = compiled.numRingStepNodes;
   plan->numRingLanes = compiled.numRingLanes;
-  plan->ringLaneOffsets = compiled.ringLaneOffsets.empty()
-                              ? NULL
-                              : compiled.ringLaneOffsets.data();
+  plan->ringLaneOffsets =
+      compiled.ringLaneOffsets.empty() ? NULL : compiled.ringLaneOffsets.data();
   plan->ownsTopoOrder = false;
   plan->ownsRingLaneOffsets = false;
   plan->staticValidated = true;
@@ -4430,9 +4239,8 @@ static flagcxResult_t tryLoadCachedUniRunnerDag(
         "uniRunner DAG cache hit, algo_hash=%llu commOp=%s pattern_hash=%lu",
         static_cast<unsigned long long>(key.algoHash),
         uniRunnerCommOpToString(key.commOp), hashValue);
-  FLAGCXCHECK(
-      materializeUniRunnerDagTemplate(runnerState, compiled->dagTemplate,
-                                      bindings));
+  FLAGCXCHECK(materializeUniRunnerDagTemplate(runnerState,
+                                              compiled->dagTemplate, bindings));
   FLAGCXCHECK(bindUniRunnerCompiledDagPlan(*compiled, &runnerState->dagPlan));
   // IPC ready slots are one-to-one with cached IPC nodes. Use the compiled
   // count instead of scanning the materialized DAG again.
@@ -4456,8 +4264,8 @@ cacheBuiltUniRunnerDag(const flagcxUniRunnerState *runnerState,
         runnerState, key, bindings, &dagTemplate);
     if (captureRes != flagcxSuccess) {
       TRACE(FLAGCX_UNIRUNNER,
-            "uniRunner DAG capture skipped for hash=%lu, result=%d",
-            hashValue, captureRes);
+            "uniRunner DAG capture skipped for hash=%lu, result=%d", hashValue,
+            captureRes);
       return flagcxSuccess;
     }
 
@@ -4470,8 +4278,7 @@ cacheBuiltUniRunnerDag(const flagcxUniRunnerState *runnerState,
     compiled->numHostNodes = runnerState->dagPlan.numHostNodes;
     compiled->numRedNodes = runnerState->dagPlan.numRedNodes;
     compiled->numIpcNodes = runnerState->dagPlan.numIpcNodes;
-    compiled->maxParallelRedNodes =
-        runnerState->dagPlan.maxParallelRedNodes;
+    compiled->maxParallelRedNodes = runnerState->dagPlan.maxParallelRedNodes;
     compiled->maxRedNodeCount = runnerState->dagPlan.maxRedNodeCount;
     compiled->maxIpcNodeBytes = runnerState->dagPlan.maxIpcNodeBytes;
     compiled->numRingLanes = runnerState->dagPlan.numRingLanes;
@@ -4480,18 +4287,18 @@ cacheBuiltUniRunnerDag(const flagcxUniRunnerState *runnerState,
       if (runnerState->dagPlan.topoOrder == NULL) {
         return flagcxInternalError;
       }
-      compiled->topoOrder.assign(
-          runnerState->dagPlan.topoOrder,
-          runnerState->dagPlan.topoOrder + runnerState->dagPlan.numNodes);
+      compiled->topoOrder.assign(runnerState->dagPlan.topoOrder,
+                                 runnerState->dagPlan.topoOrder +
+                                     runnerState->dagPlan.numNodes);
     }
     if (runnerState->dagPlan.numRingLanes != 0) {
       if (runnerState->dagPlan.ringLaneOffsets == NULL) {
         return flagcxInternalError;
       }
-      compiled->ringLaneOffsets.assign(
-          runnerState->dagPlan.ringLaneOffsets,
-          runnerState->dagPlan.ringLaneOffsets +
-              runnerState->dagPlan.numRingLanes + 1);
+      compiled->ringLaneOffsets.assign(runnerState->dagPlan.ringLaneOffsets,
+                                       runnerState->dagPlan.ringLaneOffsets +
+                                           runnerState->dagPlan.numRingLanes +
+                                           1);
     }
     flagcxResult_t cacheRes = cacheUniRunnerCompiledDagTemplate(compiled);
     if (cacheRes != flagcxSuccess) {
@@ -4505,8 +4312,8 @@ cacheBuiltUniRunnerDag(const flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-static flagcxResult_t applyUniRunnerDagLaunchShape(
-    flagcxUniRunnerState *runnerState) {
+static flagcxResult_t
+applyUniRunnerDagLaunchShape(flagcxUniRunnerState *runnerState) {
   // RingStep uses the communicator-selected Ring/Simple launch shape.
   if (runnerState->dagPlan.numRingStepNodes != 0)
     return flagcxSuccess;
@@ -4558,7 +4365,8 @@ static flagcxResult_t cleanupDagScheduler(flagcxUniRunnerState *runnerState) {
   return flagcxSuccess;
 }
 
-flagcxResult_t cleanupUniRunnerDagTemplateInstance(flagcxUniRunnerState *state) {
+flagcxResult_t
+cleanupUniRunnerDagTemplateInstance(flagcxUniRunnerState *state) {
   return cleanupDagScheduler(state);
 }
 
@@ -4600,21 +4408,24 @@ flagcxResult_t validateUniRunnerDagTemplateBindings(
     size_t bytes = 0;
     if (node.nodeType == uniRunnerDagNodeTypeP2p) {
       for (const auto &op : node.p2pOps) {
-        FLAGCXCHECK(checkedUniRunnerTypeBytes(op.count, 1, op.datatype, &bytes));
+        FLAGCXCHECK(
+            checkedUniRunnerTypeBytes(op.count, 1, op.datatype, &bytes));
         FLAGCXCHECK(check(op.buffer, bytes));
         if (op.type == flagcxDevicePrimRecv &&
             op.buffer.bufferType == uniRunnerDagBufferTypeWeight)
           return flagcxInvalidArgument;
       }
     } else if (node.nodeType == uniRunnerDagNodeTypeRed) {
-      FLAGCXCHECK(checkedUniRunnerTypeBytes(node.red.count, 1, node.red.datatype, &bytes));
+      FLAGCXCHECK(checkedUniRunnerTypeBytes(node.red.count, 1,
+                                            node.red.datatype, &bytes));
       FLAGCXCHECK(check(node.red.input1, bytes));
       FLAGCXCHECK(check(node.red.input2, bytes));
       FLAGCXCHECK(check(node.red.output, bytes));
       if (node.red.output.bufferType == uniRunnerDagBufferTypeWeight)
         return flagcxInvalidArgument;
     } else if (node.nodeType == uniRunnerDagNodeTypeCpy) {
-      FLAGCXCHECK(checkedUniRunnerTypeBytes(node.cpy.count, 1, node.cpy.datatype, &bytes));
+      FLAGCXCHECK(checkedUniRunnerTypeBytes(node.cpy.count, 1,
+                                            node.cpy.datatype, &bytes));
       FLAGCXCHECK(check(node.cpy.src, bytes));
       FLAGCXCHECK(check(node.cpy.dst, bytes));
       if (node.cpy.dst.bufferType == uniRunnerDagBufferTypeWeight)
@@ -4635,55 +4446,68 @@ flagcxResult_t validateUniRunnerDagTemplateBindings(
   return flagcxSuccess;
 }
 
-flagcxResult_t validateUniRunnerFusedDagKey(
-    const uniRunnerDagCacheKey &key, uniRunnerDagAlgoType algo,
-    const uniRunnerDagAlgorithmConfig &config,
-    const uniRunnerDagRuntimeBindings &bindings) {
+flagcxResult_t
+validateUniRunnerFusedDagKey(const uniRunnerDagCacheKey &key,
+                             uniRunnerDagAlgoType algo,
+                             const uniRunnerDagAlgorithmConfig &config,
+                             const uniRunnerDagRuntimeBindings &bindings) {
   const bool ag = algo == uniRunnerDagAlgoAllGatherGemm;
   if ((!ag && algo != uniRunnerDagAlgoGemmReduceScatter) || key.nranks <= 0 ||
       key.rank < 0 || key.rank >= key.nranks || key.root != -1 ||
       key.commOp != (ag ? flagcxCommOpAllGather : flagcxCommOpReduceScatter) ||
-      key.redOp != (ag ? flagcxRedNoOp : flagcxSum) || key.datatype != flagcxFloat32 ||
+      key.redOp != (ag ? flagcxRedNoOp : flagcxSum) ||
+      key.datatype != flagcxFloat32 ||
       key.algoHash != getUniRunnerDagAlgorithmHash(algo, config) ||
       config.matrixM == 0 || config.matrixN == 0 || config.matrixK == 0 ||
-      config.matrixM % key.nranks != 0 || (!ag && config.matrixK % key.nranks != 0) ||
-      config.groupSize == 0 || config.groupSize > static_cast<uint64_t>(key.nranks) ||
-      key.nranks % config.groupSize != 0 || key.nranks / config.groupSize != 2 ||
-      config.numSlices == 0 || config.numKSlices == 0 || config.pipelineVersion != 2 ||
+      config.matrixM % key.nranks != 0 ||
+      (!ag && config.matrixK % key.nranks != 0) || config.groupSize == 0 ||
+      config.groupSize > static_cast<uint64_t>(key.nranks) ||
+      key.nranks % config.groupSize != 0 ||
+      key.nranks / config.groupSize != 2 || config.numSlices == 0 ||
+      config.numKSlices == 0 || config.pipelineVersion != 2 ||
       config.bufferMode != uniRunnerDagBufferModeOutOfPlace)
     return flagcxInvalidArgument;
   const size_t localM = config.matrixM / key.nranks;
   const size_t localK = ag ? config.matrixK : config.matrixK / key.nranks;
   if ((ag ? localM : config.matrixM) > UINT32_MAX ||
-      config.matrixN > UINT32_MAX || localK > UINT32_MAX || config.numKSlices > localK)
+      config.matrixN > UINT32_MAX || localK > UINT32_MAX ||
+      config.numKSlices > localK)
     return flagcxInvalidArgument;
   size_t inputBytes = 0, weightBytes = 0, outputBytes = 0, scratchBytes = 0;
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(ag ? localM : config.matrixM,
-      localK, flagcxFloat32, &inputBytes));
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(localK, config.matrixN,
-      flagcxFloat32, &weightBytes));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(ag ? localM : config.matrixM, localK,
+                                        flagcxFloat32, &inputBytes));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(localK, config.matrixN, flagcxFloat32,
+                                        &weightBytes));
   FLAGCXCHECK(checkedUniRunnerTypeBytes(ag ? config.matrixM : localM,
-      config.matrixN, flagcxFloat32, &outputBytes));
+                                        config.matrixN, flagcxFloat32,
+                                        &outputBytes));
   FLAGCXCHECK(checkedUniRunnerTypeBytes(config.matrixM,
-      ag ? config.matrixK : config.matrixN, flagcxFloat32, &scratchBytes));
+                                        ag ? config.matrixK : config.matrixN,
+                                        flagcxFloat32, &scratchBytes));
   if (!ag) {
-    if (scratchBytes > SIZE_MAX / 2) return flagcxInvalidArgument;
+    if (scratchBytes > SIZE_MAX / 2)
+      return flagcxInvalidArgument;
     scratchBytes *= 2;
   }
   const size_t count = (ag ? inputBytes : outputBytes) / sizeof(float);
   if (count > UINT32_MAX || key.count != count ||
-      bindings.inputBytes != inputBytes || bindings.weightBytes != weightBytes ||
-      bindings.outputBytes != outputBytes || bindings.scratchBytes != scratchBytes)
+      bindings.inputBytes != inputBytes ||
+      bindings.weightBytes != weightBytes ||
+      bindings.outputBytes != outputBytes ||
+      bindings.scratchBytes != scratchBytes)
     return flagcxInvalidArgument;
   return flagcxSuccess;
 }
 
-flagcxResult_t loadUniRunnerFusedDag(
-    flagcxUniRunnerState *state, uniRunnerDagAlgoType algo,
-    const uniRunnerDagAlgorithmConfig &config, size_t count,
-    const uniRunnerDagRuntimeBindings &bindings, flagcxComm_t comm) {
-  if (state == nullptr || comm == nullptr || getUniRunnerDagCacheDirFromEnv().empty() ||
-      (algo != uniRunnerDagAlgoAllGatherGemm && algo != uniRunnerDagAlgoGemmReduceScatter))
+flagcxResult_t
+loadUniRunnerFusedDag(flagcxUniRunnerState *state, uniRunnerDagAlgoType algo,
+                      const uniRunnerDagAlgorithmConfig &config, size_t count,
+                      const uniRunnerDagRuntimeBindings &bindings,
+                      flagcxComm_t comm) {
+  if (state == nullptr || comm == nullptr ||
+      getUniRunnerDagCacheDirFromEnv().empty() ||
+      (algo != uniRunnerDagAlgoAllGatherGemm &&
+       algo != uniRunnerDagAlgoGemmReduceScatter))
     return flagcxInvalidArgument;
   const bool ag = algo == uniRunnerDagAlgoAllGatherGemm;
   state->redSliceWorkersEnabled = !ag;
@@ -4718,9 +4542,9 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
 
   uniRunnerDagAlgorithmConfig algorithmConfig{};
   algorithmConfig.numSlices = runnerState->uniRunnerNSlices;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
+  algorithmConfig.bufferMode = sendbuff == recvbuff
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
       uniRunnerDagAlgoLocRed, algorithmConfig, flagcxCommOpAllReduce, count,
       datatype, op, -1, comm);
@@ -4730,10 +4554,12 @@ flagcxResult_t initUniRunnerStateLocRed(flagcxUniRunnerState *runnerState,
   });
 }
 
-flagcxResult_t initUniRunnerStateGroupedAR(
-    flagcxUniRunnerState *state, const void *sendbuff, void *recvbuff,
-    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
-    flagcxComm_t comm, int groupSize) {
+flagcxResult_t initUniRunnerStateGroupedAR(flagcxUniRunnerState *state,
+                                           const void *sendbuff, void *recvbuff,
+                                           size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxRedOp_t op, flagcxComm_t comm,
+                                           int groupSize) {
   if (comm == NULL || comm->nranks <= 0 || groupSize <= 0 ||
       groupSize > comm->nranks || comm->nranks % groupSize != 0)
     return flagcxInvalidArgument;
@@ -4749,21 +4575,21 @@ flagcxResult_t initUniRunnerStateGroupedAR(
   uniRunnerDagRuntimeBindings bindings;
   bindings.inputBase = sendbuff;
   bindings.outputBase = recvbuff;
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 1, datatype,
-                                        &bindings.inputBytes));
+  FLAGCXCHECK(
+      checkedUniRunnerTypeBytes(count, 1, datatype, &bindings.inputBytes));
   bindings.outputBytes = bindings.inputBytes;
   const size_t chunkCount = count / groupSize + (count % groupSize != 0);
   const size_t sliceCount = chunkCount / state->uniRunnerNSlices +
-                           (chunkCount % state->uniRunnerNSlices != 0);
+                            (chunkCount % state->uniRunnerNSlices != 0);
   const int nGroups = comm->nranks / groupSize;
   const size_t localScratchCount =
       groupSize > 1 ? (nGroups == 1 ? chunkCount : sliceCount) : 0;
-  const size_t netScratchCount = nGroups > 1
-      ? sliceCount / nGroups + (sliceCount % nGroups != 0) : 0;
+  const size_t netScratchCount =
+      nGroups > 1 ? sliceCount / nGroups + (sliceCount % nGroups != 0) : 0;
   if (localScratchCount > std::numeric_limits<size_t>::max() - netScratchCount)
     return flagcxInvalidArgument;
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(
-      localScratchCount + netScratchCount, 1, datatype, &bindings.scratchBytes));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(localScratchCount + netScratchCount, 1,
+                                        datatype, &bindings.scratchBytes));
   if (count != 0 && nGroups > 1)
     FLAGCXCHECK(deviceAdaptor->streamCreate(&state->netCommStream));
   if (bindings.scratchBytes > state->groupedArScratchCapacity) {
@@ -4789,10 +4615,10 @@ flagcxResult_t initUniRunnerStateGroupedAR(
   config.numLocalSlices = static_cast<uint64_t>(nLocalSlices);
   config.numRedSlices = state->uniRunnerNRedSlices;
   config.bufferMode = sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                                          : uniRunnerDagBufferModeOutOfPlace;
+                                           : uniRunnerDagBufferModeOutOfPlace;
   const uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
-      uniRunnerDagAlgoGroupedAR, config, flagcxCommOpAllReduce, count,
-      datatype, op, -1, comm);
+      uniRunnerDagAlgoGroupedAR, config, flagcxCommOpAllReduce, count, datatype,
+      op, -1, comm);
   return initUniRunnerStateCached(state, key, bindings, [&]() {
     return buildUniRunnerStateGroupedAR(state, sendbuff, recvbuff, count,
                                         datatype, op, comm, groupSize,
@@ -4812,9 +4638,9 @@ flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
   bindings.outputBase = recvbuff;
   FLAGCXCHECK(
       checkedUniRunnerTypeBytes(count, 1, datatype, &bindings.inputBytes));
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(
-      count, static_cast<size_t>(comm->nranks), datatype,
-      &bindings.outputBytes));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(count,
+                                        static_cast<size_t>(comm->nranks),
+                                        datatype, &bindings.outputBytes));
 
   uniRunnerDagAlgorithmConfig algorithmConfig{};
   algorithmConfig.groupSize = static_cast<uint64_t>(groupSize);
@@ -4823,10 +4649,9 @@ flagcxResult_t initUniRunnerStateGroupedAG(flagcxUniRunnerState *runnerState,
                                  typeSize)
           ? uniRunnerDagBufferModeInPlace
           : uniRunnerDagBufferModeOutOfPlace;
-  uniRunnerDagCacheKey key =
-      makeUniRunnerDagCacheKey(uniRunnerDagAlgoGroupedAG, algorithmConfig,
-                               flagcxCommOpAllGather, count, datatype,
-                               flagcxRedNoOp, -1, comm);
+  uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
+      uniRunnerDagAlgoGroupedAG, algorithmConfig, flagcxCommOpAllGather, count,
+      datatype, flagcxRedNoOp, -1, comm);
   return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
     return buildUniRunnerStateGroupedAG(runnerState, sendbuff, recvbuff, count,
                                         datatype, comm, groupSize);
@@ -4847,9 +4672,9 @@ flagcxResult_t initUniRunnerStateRingAG(flagcxUniRunnerState *runnerState,
 
   uniRunnerDagAlgorithmConfig algorithmConfig{};
   algorithmConfig.numSlices = runnerState->uniRunnerNSlices;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
+  algorithmConfig.bufferMode = sendbuff == recvbuff
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
       uniRunnerDagAlgoRingAG, algorithmConfig, flagcxCommOpAllReduce, count,
       datatype, flagcxRedNoOp, -1, comm);
@@ -4873,9 +4698,9 @@ flagcxResult_t initUniRunnerStateRingAR(flagcxUniRunnerState *runnerState,
 
   uniRunnerDagAlgorithmConfig algorithmConfig{};
   algorithmConfig.numSlices = runnerState->uniRunnerNSlices;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
+  algorithmConfig.bufferMode = sendbuff == recvbuff
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
       uniRunnerDagAlgoRingAR, algorithmConfig, flagcxCommOpAllReduce, count,
       datatype, op, -1, comm);
@@ -4901,8 +4726,8 @@ flagcxResult_t initUniRunnerStateHierarchicalSlicedAR(
   bindings.inputBase = sendbuff;
   bindings.outputBase = recvbuff;
   bindings.scratchBase = scratchbuff;
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 1, datatype,
-                                        &bindings.inputBytes));
+  FLAGCXCHECK(
+      checkedUniRunnerTypeBytes(count, 1, datatype, &bindings.inputBytes));
   bindings.outputBytes = bindings.inputBytes;
   bindings.scratchBytes = bindings.inputBytes;
   uniRunnerDagAlgorithmConfig algorithmConfig{};
@@ -4910,8 +4735,8 @@ flagcxResult_t initUniRunnerStateHierarchicalSlicedAR(
   algorithmConfig.numRedSlices = runnerState->uniRunnerNRedSlices;
   algorithmConfig.groupSize = groupSize;
   algorithmConfig.bufferMode = sendbuff == recvbuff
-                                  ? uniRunnerDagBufferModeInPlace
-                                  : uniRunnerDagBufferModeOutOfPlace;
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   const uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
       uniRunnerDagAlgoHierarchicalSlicedAR, algorithmConfig,
       flagcxCommOpAllReduce, count, datatype, op, -1, comm);
@@ -4929,8 +4754,7 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
                                           flagcxRedOp_t op, flagcxComm_t comm) {
   runnerState->redSliceWorkersEnabled = true;
   setUniRunnerAvgDivisor(runnerState, op, comm->nranks);
-  FLAGCXCHECK(
-      setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks));
+  FLAGCXCHECK(setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks));
 
   uniRunnerDagRuntimeBindings bindings;
   bindings.inputBase = sendbuff;
@@ -4942,9 +4766,9 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
   uniRunnerDagAlgorithmConfig algorithmConfig{};
   algorithmConfig.numSlices = runnerState->uniRunnerNSlices;
   algorithmConfig.numRedSlices = runnerState->uniRunnerNRedSlices;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
+  algorithmConfig.bufferMode = sendbuff == recvbuff
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
       uniRunnerDagAlgoSlicedAR, algorithmConfig, flagcxCommOpAllReduce, count,
       datatype, op, -1, comm);
@@ -4954,90 +4778,23 @@ flagcxResult_t initUniRunnerStateSlicedAR(flagcxUniRunnerState *runnerState,
   });
 }
 
-flagcxResult_t initUniRunnerStateIpcAR(flagcxUniRunnerState *runnerState,
-                                       const void *sendbuff, void *recvbuff,
-                                       size_t count,
-                                       flagcxDataType_t datatype,
-                                       flagcxRedOp_t op, flagcxComm_t comm) {
-  setUniRunnerAvgDivisor(runnerState, op, comm->nranks);
-  flagcxResult_t result = flagcxSuccess;
-  if (runnerState->uniRunnerIpcChunkSize < 16 ||
-      runnerState->uniRunnerIpcChunkSize % 16 != 0) {
-    WARN("UniRunner IPCCHUNKSIZE must be a positive multiple of 16 bytes");
-    result = flagcxInvalidArgument;
-  }
-  if (result == flagcxSuccess) {
-    result =
-        setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks);
-  }
-  size_t bytes = 0;
-  if (result == flagcxSuccess) {
-    result = checkedUniRunnerTypeBytes(count, 1, datatype, &bytes);
-  }
-
-  uniRunnerDagRuntimeBindings bindings;
-  bindings.inputBase = sendbuff;
-  bindings.outputBase = recvbuff;
-  bindings.inputBytes = bytes;
-  bindings.outputBytes = bytes;
-  bindings.localRanks = comm->localRanks;
-
-  uniRunnerDagAlgorithmConfig algorithmConfig{};
-  algorithmConfig.numSlices = runnerState->uniRunnerNSlices;
-  algorithmConfig.numRedSlices = runnerState->uniRunnerNRedSlices;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
-  if (result == flagcxSuccess) {
-    result = getUniRunnerIpcTopologyHash(
-        comm->localRanks, comm->nranks, comm->localRankToRank,
-        &algorithmConfig.topologyHash);
-  }
-
-  if (result == flagcxSuccess) {
-    const uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
-        uniRunnerDagAlgoIpcAR, algorithmConfig, flagcxCommOpAllReduce, count,
-        datatype, op, -1, comm);
-    try {
-      result = initUniRunnerStateCached(runnerState, key, bindings, [&]() {
-        return buildUniRunnerStateIpcAR(runnerState, sendbuff, recvbuff, count,
-                                        datatype, op, comm);
-      });
-    } catch (...) {
-      // IPC preparation is collective below: convert allocation/container
-      // exceptions into an agreed result instead of letting one rank escape.
-      result = flagcxSystemError;
-    }
-  }
-  // The data-view agreement below also makes DAG-build status, data bytes and
-  // IPC-node cardinality collective before any rank enters DevMem creation.
-  // In particular, no local cache/build error returns before this agreement.
-  FLAGCXCHECK(ensureUniRunnerIpcDataViews(
-      runnerState, comm, sendbuff, recvbuff, bytes, result));
-  if (runnerState->ipcReadySlots == 0)
-    return flagcxSuccess;
-  // Static IPC prepends abort and rank-done control slots to the logical ready
-  // array. Allocate that collective storage only after static occupancy and
-  // schedule validation have succeeded.
-  return flagcxSuccess;
-}
-
-flagcxResult_t initUniRunnerStateIpcRingAR(
-    flagcxUniRunnerState *runnerState, const void *sendbuff, void *recvbuff,
-    size_t count, flagcxDataType_t datatype, flagcxRedOp_t op,
-    flagcxComm_t comm) {
+flagcxResult_t initUniRunnerStateIpcRingAR(flagcxUniRunnerState *runnerState,
+                                           const void *sendbuff, void *recvbuff,
+                                           size_t count,
+                                           flagcxDataType_t datatype,
+                                           flagcxRedOp_t op,
+                                           flagcxComm_t comm) {
   if (runnerState == NULL || comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   setUniRunnerAvgDivisor(runnerState, op, comm->nranks);
   size_t bytes = 0;
-  flagcxResult_t result =
-      checkedUniRunnerTypeBytes(count, 1, datatype, &bytes);
+  flagcxResult_t result = checkedUniRunnerTypeBytes(count, 1, datatype, &bytes);
   size_t numChannels = 0;
   size_t nThreads = 0;
   size_t simpleBufferBytes = 0;
   if (result == flagcxSuccess && comm->nranks > 1) {
-    result = comm->localRanks == comm->nranks ? flagcxSuccess
-                                              : flagcxNotSupported;
+    result =
+        comm->localRanks == comm->nranks ? flagcxSuccess : flagcxNotSupported;
   }
   if (result == flagcxSuccess && comm->nranks > 1) {
     result = selectUniRunnerRingSimple(comm->heteroComm, bytes, &numChannels,
@@ -5047,7 +4804,8 @@ flagcxResult_t initUniRunnerStateIpcRingAR(
     const size_t typeSize = getFlagcxDataTypeSize(datatype);
     const uint64_t grains =
         count / (512 / typeSize) + (count % (512 / typeSize) != 0);
-    numChannels = std::min<uint64_t>(numChannels, std::max<uint64_t>(grains, 1));
+    numChannels =
+        std::min<uint64_t>(numChannels, std::max<uint64_t>(grains, 1));
   }
   if (comm->nranks == 1) {
     numChannels = 0;
@@ -5070,12 +4828,12 @@ flagcxResult_t initUniRunnerStateIpcRingAR(
   algorithmConfig.nThreads = nThreads;
   algorithmConfig.chunkSteps = ALLREDUCE_CHUNKSTEPS;
   algorithmConfig.sliceSteps = ALLREDUCE_SLICESTEPS;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
+  algorithmConfig.bufferMode = sendbuff == recvbuff
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   if (result == flagcxSuccess && comm->nranks > 1) {
-    result = getUniRunnerIpcRingTopologyHash(
-        comm->heteroComm, numChannels, &algorithmConfig.topologyHash);
+    result = getUniRunnerIpcRingTopologyHash(comm->heteroComm, numChannels,
+                                             &algorithmConfig.topologyHash);
   }
   if (result == flagcxSuccess) {
     const uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
@@ -5083,18 +4841,17 @@ flagcxResult_t initUniRunnerStateIpcRingAR(
         count, datatype, op, -1, comm);
     try {
       result = initUniRunnerStateCached(runnerState, key, bindings, [&]() {
-        return buildUniRunnerStateIpcRingAR(
-            runnerState, sendbuff, recvbuff, count, datatype, op, comm,
-            numChannels, simpleBufferBytes);
+        return buildUniRunnerStateIpcRingAR(runnerState, sendbuff, recvbuff,
+                                            count, datatype, op, comm,
+                                            numChannels, simpleBufferBytes);
       });
     } catch (...) {
       result = flagcxSystemError;
     }
   }
   const size_t resourceChannels =
-      comm->nranks > 1
-          ? static_cast<size_t>(comm->heteroComm->collChannels)
-          : 0;
+      comm->nranks > 1 ? static_cast<size_t>(comm->heteroComm->collChannels)
+                       : 0;
   if (result == flagcxSuccess && runnerState->ipcRingScratchMem != NULL &&
       (runnerState->ipcRingChannels != resourceChannels ||
        runnerState->ipcRingSimpleBufferBytes != simpleBufferBytes)) {
@@ -5106,8 +4863,8 @@ flagcxResult_t initUniRunnerStateIpcRingAR(
   }
   runnerState->ipcRingDatatype = datatype;
   runnerState->ipcRingRedOp = op;
-  FLAGCXCHECK(ensureUniRunnerIpcDataViews(
-      runnerState, comm, sendbuff, recvbuff, bytes, result));
+  FLAGCXCHECK(ensureUniRunnerIpcDataViews(runnerState, comm, sendbuff, recvbuff,
+                                          bytes, result));
   return flagcxSuccess;
 }
 
@@ -5119,16 +4876,15 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
   runnerState->redSliceWorkersEnabled = true;
   setUniRunnerAvgDivisor(runnerState, op, comm->nranks);
   const size_t typeSize = getFlagcxDataTypeSize(datatype);
-  FLAGCXCHECK(
-      setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks));
+  FLAGCXCHECK(setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks));
 
   uniRunnerDagRuntimeBindings bindings;
   bindings.inputBase = sendbuff;
   bindings.outputBase = recvbuff;
   bindings.scratchBase = scratchbuff;
-  FLAGCXCHECK(checkedUniRunnerTypeBytes(
-      count, static_cast<size_t>(comm->nranks), datatype,
-      &bindings.inputBytes));
+  FLAGCXCHECK(checkedUniRunnerTypeBytes(count,
+                                        static_cast<size_t>(comm->nranks),
+                                        datatype, &bindings.inputBytes));
   FLAGCXCHECK(
       checkedUniRunnerTypeBytes(count, 1, datatype, &bindings.outputBytes));
   bindings.scratchBytes = bindings.inputBytes;
@@ -5142,8 +4898,8 @@ flagcxResult_t initUniRunnerStateRingRS(flagcxUniRunnerState *runnerState,
           ? uniRunnerDagBufferModeInPlace
           : uniRunnerDagBufferModeOutOfPlace;
   uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
-      uniRunnerDagAlgoRingRS, algorithmConfig, flagcxCommOpReduceScatter,
-      count, datatype, op, -1, comm);
+      uniRunnerDagAlgoRingRS, algorithmConfig, flagcxCommOpReduceScatter, count,
+      datatype, op, -1, comm);
   return initUniRunnerStateCached(runnerState, key, bindings, [&]() {
     return buildUniRunnerStateRingRS(runnerState, sendbuff, recvbuff,
                                      scratchbuff, count, datatype, op, comm);
@@ -5158,8 +4914,7 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
                                          flagcxComm_t comm) {
   runnerState->redSliceWorkersEnabled = true;
   setUniRunnerAvgDivisor(runnerState, op, comm->nranks);
-  FLAGCXCHECK(
-      setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks));
+  FLAGCXCHECK(setEffectiveUniRunnerRedSlices(runnerState, count, comm->nranks));
 
   uniRunnerDagRuntimeBindings bindings;
   bindings.inputBase = sendbuff;
@@ -5174,9 +4929,9 @@ flagcxResult_t initUniRunnerStateTreeRed(flagcxUniRunnerState *runnerState,
   uniRunnerDagAlgorithmConfig algorithmConfig{};
   algorithmConfig.numSlices = runnerState->uniRunnerNSlices;
   algorithmConfig.numRedSlices = runnerState->uniRunnerNRedSlices;
-  algorithmConfig.bufferMode =
-      sendbuff == recvbuff ? uniRunnerDagBufferModeInPlace
-                           : uniRunnerDagBufferModeOutOfPlace;
+  algorithmConfig.bufferMode = sendbuff == recvbuff
+                                   ? uniRunnerDagBufferModeInPlace
+                                   : uniRunnerDagBufferModeOutOfPlace;
   uniRunnerDagCacheKey key = makeUniRunnerDagCacheKey(
       uniRunnerDagAlgoTreeRed, algorithmConfig, flagcxCommOpReduce, count,
       datatype, op, root, comm);
@@ -5191,8 +4946,7 @@ static flagcxResult_t launchHostDagNode(flagcxUniRunnerState *runnerState,
                                         flagcxHeteroComm_t comm,
                                         uniRunnerDagNode *current) {
   if (runnerState == NULL || comm == NULL || current == NULL ||
-      current->nodeIdx < 0 ||
-      current->nodeIdx >= runnerState->numDagNodes) {
+      current->nodeIdx < 0 || current->nodeIdx >= runnerState->numDagNodes) {
     return flagcxInvalidArgument;
   }
   void *flag = getDagNodeFlag(runnerState, current->nodeIdx);
@@ -5221,8 +4975,8 @@ static flagcxResult_t launchHostDagNode(flagcxUniRunnerState *runnerState,
         continue;
       }
       void *parentFlag = getDagNodeFlag(runnerState, parentIdx);
-      FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
-          currentStream, parentFlag, flagcxStreamFlagDone, 0));
+      FLAGCXCHECK(deviceAdaptor->streamWaitValue64(currentStream, parentFlag,
+                                                   flagcxStreamFlagDone, 0));
       TRACE(FLAGCX_UNIRUNNER, "rank %d p2p op %d streamWait flag %d: DONE",
             comm->rank, current->nodeIdx, parentIdx);
     }
@@ -5286,12 +5040,11 @@ static flagcxResult_t launchHostDagNode(flagcxUniRunnerState *runnerState,
 
     // Launch copy
     size_t copyBytes = 0;
-    FLAGCXCHECK(checkedUniRunnerTypeBytes(
-        current->nodeData.cpy.count, 1, current->nodeData.cpy.datatype,
-        &copyBytes));
+    FLAGCXCHECK(checkedUniRunnerTypeBytes(current->nodeData.cpy.count, 1,
+                                          current->nodeData.cpy.datatype,
+                                          &copyBytes));
     FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
-        current->nodeData.cpy.dst, current->nodeData.cpy.src,
-        copyBytes,
+        current->nodeData.cpy.dst, current->nodeData.cpy.src, copyBytes,
         flagcxMemcpyDeviceToDevice, runnerState->cpyStream, NULL));
 
     // Write flag to stream
@@ -5409,9 +5162,10 @@ struct uniRunnerDataViewAgreement {
   int result;
 };
 
-static flagcxResult_t agreeUniRunnerResourceState(
-    flagcxComm_t comm, bool localCanReuse, flagcxResult_t localResult,
-    bool *allCanReuse, flagcxResult_t *collectiveResult) {
+static flagcxResult_t
+agreeUniRunnerResourceState(flagcxComm_t comm, bool localCanReuse,
+                            flagcxResult_t localResult, bool *allCanReuse,
+                            flagcxResult_t *collectiveResult) {
   if (comm == NULL || comm->bootstrap == NULL || comm->nranks <= 0 ||
       comm->nranks > FLAGCX_MAX_LOCAL_RANKS || comm->rank < 0 ||
       comm->rank >= comm->nranks || allCanReuse == NULL ||
@@ -5423,15 +5177,14 @@ static flagcxResult_t agreeUniRunnerResourceState(
   uniRunnerResourceAgreement exchanges[FLAGCX_MAX_LOCAL_RANKS] = {};
   exchanges[comm->rank].canReuse = localCanReuse ? uint64_t{1} : uint64_t{0};
   exchanges[comm->rank].result = static_cast<int>(localResult);
-  FLAGCXCHECK(bootstrapCollAllGather(
-      comm->bootstrap, exchanges, sizeof(uniRunnerResourceAgreement)));
+  FLAGCXCHECK(bootstrapCollAllGather(comm->bootstrap, exchanges,
+                                     sizeof(uniRunnerResourceAgreement)));
 
   *allCanReuse = true;
   for (int rank = 0; rank < comm->nranks; ++rank) {
     if (exchanges[rank].result != static_cast<int>(flagcxSuccess) &&
         *collectiveResult == flagcxSuccess) {
-      *collectiveResult =
-          static_cast<flagcxResult_t>(exchanges[rank].result);
+      *collectiveResult = static_cast<flagcxResult_t>(exchanges[rank].result);
     }
     if (exchanges[rank].canReuse == 0) {
       *allCanReuse = false;
@@ -5440,28 +5193,27 @@ static flagcxResult_t agreeUniRunnerResourceState(
   return flagcxSuccess;
 }
 
-static flagcxResult_t agreeUniRunnerInvocationState(
-    flagcxComm_t comm, uint64_t localSignature, flagcxResult_t localResult,
-    flagcxResult_t *collectiveResult) {
+static flagcxResult_t
+agreeUniRunnerInvocationState(flagcxComm_t comm, uint64_t localSignature,
+                              flagcxResult_t localResult,
+                              flagcxResult_t *collectiveResult) {
   if (comm == NULL || comm->bootstrap == NULL || comm->nranks <= 0 ||
       comm->nranks > FLAGCX_MAX_LOCAL_RANKS || comm->rank < 0 ||
-      comm->rank >= comm->nranks ||
-      collectiveResult == NULL) {
+      comm->rank >= comm->nranks || collectiveResult == NULL) {
     return flagcxInvalidArgument;
   }
   *collectiveResult = flagcxSuccess;
   uniRunnerInvocationAgreement exchanges[FLAGCX_MAX_LOCAL_RANKS] = {};
   exchanges[comm->rank].signature = localSignature;
   exchanges[comm->rank].result = static_cast<int>(localResult);
-  FLAGCXCHECK(bootstrapCollAllGather(
-      comm->bootstrap, exchanges, sizeof(uniRunnerInvocationAgreement)));
+  FLAGCXCHECK(bootstrapCollAllGather(comm->bootstrap, exchanges,
+                                     sizeof(uniRunnerInvocationAgreement)));
 
   const uint64_t expectedSignature = exchanges[0].signature;
   for (int rank = 0; rank < comm->nranks; ++rank) {
     if (exchanges[rank].result != static_cast<int>(flagcxSuccess) &&
         *collectiveResult == flagcxSuccess) {
-      *collectiveResult =
-          static_cast<flagcxResult_t>(exchanges[rank].result);
+      *collectiveResult = static_cast<flagcxResult_t>(exchanges[rank].result);
     }
   }
   if (*collectiveResult == flagcxSuccess) {
@@ -5479,10 +5231,11 @@ static flagcxResult_t agreeUniRunnerInvocationState(
   return flagcxSuccess;
 }
 
-static flagcxResult_t agreeUniRunnerDataViewState(
-    flagcxComm_t comm, size_t localReadySlots, size_t localDataBytes,
-    bool localCanReuse, flagcxResult_t localResult, bool *allCanReuse,
-    flagcxResult_t *collectiveResult) {
+static flagcxResult_t
+agreeUniRunnerDataViewState(flagcxComm_t comm, size_t localReadySlots,
+                            size_t localDataBytes, bool localCanReuse,
+                            flagcxResult_t localResult, bool *allCanReuse,
+                            flagcxResult_t *collectiveResult) {
   if (comm == NULL || comm->bootstrap == NULL || comm->nranks <= 0 ||
       comm->nranks > FLAGCX_MAX_LOCAL_RANKS || comm->rank < 0 ||
       comm->rank >= comm->nranks || allCanReuse == NULL ||
@@ -5496,15 +5249,14 @@ static flagcxResult_t agreeUniRunnerDataViewState(
   exchanges[comm->rank].dataBytes = static_cast<uint64_t>(localDataBytes);
   exchanges[comm->rank].canReuse = localCanReuse ? uint64_t{1} : uint64_t{0};
   exchanges[comm->rank].result = static_cast<int>(localResult);
-  FLAGCXCHECK(bootstrapCollAllGather(
-      comm->bootstrap, exchanges, sizeof(uniRunnerDataViewAgreement)));
+  FLAGCXCHECK(bootstrapCollAllGather(comm->bootstrap, exchanges,
+                                     sizeof(uniRunnerDataViewAgreement)));
 
   *allCanReuse = true;
   for (int rank = 0; rank < comm->nranks; ++rank) {
     if (exchanges[rank].result != static_cast<int>(flagcxSuccess) &&
         *collectiveResult == flagcxSuccess) {
-      *collectiveResult =
-          static_cast<flagcxResult_t>(exchanges[rank].result);
+      *collectiveResult = static_cast<flagcxResult_t>(exchanges[rank].result);
     }
     if (exchanges[rank].canReuse == 0) {
       *allCanReuse = false;
@@ -5524,16 +5276,15 @@ static flagcxResult_t agreeUniRunnerDataViewState(
 }
 
 static uint64_t mixUniRunnerInvocationSignature(uint64_t signature,
-                                                 uint64_t value) {
+                                                uint64_t value) {
   // Boost-style 64-bit hash combine. This is a consistency guard rather than a
   // cache identity; all inputs below are already range-validated integers.
-  return signature ^
-         (value + uint64_t{0x9e3779b97f4a7c15} + (signature << 6) +
-          (signature >> 2));
+  return signature ^ (value + uint64_t{0x9e3779b97f4a7c15} + (signature << 6) +
+                      (signature >> 2));
 }
 
-static flagcxResult_t destroyUniRunnerIpcDataViews(
-    flagcxUniRunnerState *runnerState) {
+static flagcxResult_t
+destroyUniRunnerIpcDataViews(flagcxUniRunnerState *runnerState) {
   if (runnerState->ipcOwner == NULL)
     return flagcxSuccess;
   flagcxComm_t comm = runnerState->ipcOwner;
@@ -5561,28 +5312,26 @@ static flagcxResult_t destroyUniRunnerIpcDataViews(
 }
 
 static flagcxResult_t ensureUniRunnerIpcDataViews(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm,
-    const void *sendbuff, void *recvbuff, size_t bytes,
-    flagcxResult_t localPreparationResult) {
-  const bool localCanReuse =
-      localPreparationResult == flagcxSuccess &&
-      (runnerState->ipcReadySlots != 0 ||
-       runnerState->dagPlan.numRingStepNodes != 0) &&
-      runnerState->ipcOwner == comm &&
-      runnerState->ipcInputMem != NULL &&
-      runnerState->ipcOutputMem != NULL &&
-      runnerState->ipcInputBase == sendbuff &&
-      runnerState->ipcOutputBase == recvbuff &&
-      bytes <= runnerState->ipcDataBytes;
+    flagcxUniRunnerState *runnerState, flagcxComm_t comm, const void *sendbuff,
+    void *recvbuff, size_t bytes, flagcxResult_t localPreparationResult) {
+  const bool localCanReuse = localPreparationResult == flagcxSuccess &&
+                             (runnerState->ipcReadySlots != 0 ||
+                              runnerState->dagPlan.numRingStepNodes != 0) &&
+                             runnerState->ipcOwner == comm &&
+                             runnerState->ipcInputMem != NULL &&
+                             runnerState->ipcOutputMem != NULL &&
+                             runnerState->ipcInputBase == sendbuff &&
+                             runnerState->ipcOutputBase == recvbuff &&
+                             bytes <= runnerState->ipcDataBytes;
   bool allCanReuse = false;
   flagcxResult_t collectiveResult = flagcxSuccess;
-  FLAGCXCHECK(agreeUniRunnerDataViewState(
-      comm,
-      runnerState->dagPlan.numRingStepNodes != 0
-          ? runnerState->dagPlan.numRingStepNodes
-          : runnerState->ipcReadySlots,
-      bytes, localCanReuse,
-      localPreparationResult, &allCanReuse, &collectiveResult));
+  FLAGCXCHECK(
+      agreeUniRunnerDataViewState(comm,
+                                  runnerState->dagPlan.numRingStepNodes != 0
+                                      ? runnerState->dagPlan.numRingStepNodes
+                                      : runnerState->ipcReadySlots,
+                                  bytes, localCanReuse, localPreparationResult,
+                                  &allCanReuse, &collectiveResult));
   if (collectiveResult != flagcxSuccess) {
     return collectiveResult;
   }
@@ -5602,34 +5351,33 @@ static flagcxResult_t ensureUniRunnerIpcDataViews(
   // Every rank performs exactly two creates in the same output-then-input
   // order. Even when sendbuff == recvbuff the second handle participates in
   // the all-rank reuse consensus and retains its own IPC-table reference.
-  res = flagcxDevMemCreate(comm, recvbuff, bytes, NULL, &newOutputMem);
+  res = flagcxUniRunnerIpcDevMemCreate(comm, recvbuff, bytes, &newOutputMem);
   if (res == flagcxSuccess && newOutputMem == NULL) {
     res = flagcxSystemError;
   }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, res, &allCanReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
+                                              &collectiveResult),
                   res, fail);
   if (collectiveResult != flagcxSuccess) {
     res = collectiveResult;
     goto fail;
   }
-  res = flagcxDevMemCreate(comm, const_cast<void *>(sendbuff), bytes, NULL,
-                           &newInputMem);
+  res = flagcxUniRunnerIpcDevMemCreate(comm, const_cast<void *>(sendbuff),
+                                       bytes, &newInputMem);
   if (res == flagcxSuccess && newInputMem == NULL) {
     res = flagcxSystemError;
   }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, res, &allCanReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
+                                              &collectiveResult),
                   res, fail);
   if (collectiveResult != flagcxSuccess) {
     res = collectiveResult;
     goto fail;
   }
-  res = newInputMem->hasWindow && newOutputMem->hasWindow
-            ? flagcxSuccess
-            : flagcxNotSupported;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, res, &allCanReuse, &collectiveResult),
+  res = newInputMem->hasWindow && newOutputMem->hasWindow ? flagcxSuccess
+                                                          : flagcxNotSupported;
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
+                                              &collectiveResult),
                   res, fail);
   if (collectiveResult != flagcxSuccess) {
     res = collectiveResult;
@@ -5659,15 +5407,14 @@ static flagcxResult_t ensureUniRunnerIpcDataViews(
       oldDestroyResult = flagcxDevMemDestroy(oldOwner, oldInputMem);
     }
     if (oldOutputMem != NULL) {
-      flagcxResult_t outputResult =
-          flagcxDevMemDestroy(oldOwner, oldOutputMem);
+      flagcxResult_t outputResult = flagcxDevMemDestroy(oldOwner, oldOutputMem);
       if (oldDestroyResult == flagcxSuccess) {
         oldDestroyResult = outputResult;
       }
     }
   }
-  FLAGCXCHECK(agreeUniRunnerResourceState(
-      comm, false, oldDestroyResult, &allCanReuse, &collectiveResult));
+  FLAGCXCHECK(agreeUniRunnerResourceState(comm, false, oldDestroyResult,
+                                          &allCanReuse, &collectiveResult));
   if (collectiveResult != flagcxSuccess) {
     return collectiveResult;
   }
@@ -5683,13 +5430,12 @@ fail:
   return res;
 }
 
-static flagcxResult_t ensureUniRunnerIpcReadyStorage(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm,
-    size_t requiredSlots) {
+static flagcxResult_t
+ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
+                               flagcxComm_t comm, size_t requiredSlots) {
   if (requiredSlots == 0)
     return flagcxSuccess;
-  if (requiredSlots >
-      std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
+  if (requiredSlots > std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
     return flagcxInvalidArgument;
   }
   // requiredSlots is derived solely from the collective DAG and local-rank
@@ -5698,13 +5444,11 @@ static flagcxResult_t ensureUniRunnerIpcReadyStorage(
   // releases a table reference but imported CUDA IPC mappings are closed only
   // when the table is rebound or the communicator is destroyed, so an online
   // resize must not free the old exporter allocation.
-  if (runnerState->ipcReadyMem != NULL &&
-      runnerState->ipcReadyBuffer != NULL &&
+  if (runnerState->ipcReadyMem != NULL && runnerState->ipcReadyBuffer != NULL &&
       runnerState->ipcReadyCapacity >= requiredSlots) {
     return flagcxSuccess;
   }
-  if (runnerState->ipcReadyMem != NULL ||
-      runnerState->ipcReadyBuffer != NULL ||
+  if (runnerState->ipcReadyMem != NULL || runnerState->ipcReadyBuffer != NULL ||
       runnerState->ipcReadyCapacity != 0) {
     WARN("UniRunner static IPC ready storage cannot grow safely during the "
          "communicator lifetime (required=%zu capacity=%zu)",
@@ -5720,11 +5464,11 @@ static flagcxResult_t ensureUniRunnerIpcReadyStorage(
   bool devMemCreateEntered = false;
   res = allocUniRunnerIpcReadyBuffer(&newBuffer, bytes);
   if (res == flagcxSuccess) {
-    res = deviceAdaptor->deviceMemset(newBuffer, 0, bytes, flagcxMemDevice,
-                                      NULL);
+    res =
+        deviceAdaptor->deviceMemset(newBuffer, 0, bytes, flagcxMemDevice, NULL);
   }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, res, &allCanReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
+                                              &collectiveResult),
                   res, fail);
   if (collectiveResult != flagcxSuccess) {
     res = collectiveResult;
@@ -5733,20 +5477,20 @@ static flagcxResult_t ensureUniRunnerIpcReadyStorage(
   // Creating a DevMem binding exchanges the backing allocation across all
   // ranks. The allocation remains bound until communicator teardown.
   devMemCreateEntered = true;
-  res = flagcxDevMemCreate(comm, newBuffer, bytes, NULL, &newMem);
+  res = flagcxUniRunnerIpcDevMemCreate(comm, newBuffer, bytes, &newMem);
   if (res == flagcxSuccess && newMem == NULL) {
     res = flagcxSystemError;
   }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, res, &allCanReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
+                                              &collectiveResult),
                   res, fail);
   if (collectiveResult != flagcxSuccess) {
     res = collectiveResult;
     goto fail;
   }
   res = newMem->hasWindow ? flagcxSuccess : flagcxNotSupported;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(
-                      comm, false, res, &allCanReuse, &collectiveResult),
+  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
+                                              &collectiveResult),
                   res, fail);
   if (collectiveResult != flagcxSuccess) {
     res = collectiveResult;
@@ -5777,11 +5521,11 @@ fail:
   return res;
 }
 
-static flagcxResult_t prepareUniRunnerIpcParentFlags(
-    flagcxUniRunnerState *runnerState) {
+static flagcxResult_t
+prepareUniRunnerIpcParentFlags(flagcxUniRunnerState *runnerState) {
   if (runnerState->ipcParentFlagsDevice != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(
-        runnerState->ipcParentFlagsDevice, flagcxMemDevice, NULL));
+    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->ipcParentFlagsDevice,
+                                          flagcxMemDevice, NULL));
     runnerState->ipcParentFlagsDevice = NULL;
     runnerState->ipcParentFlagsCount = 0;
   }
@@ -5799,8 +5543,7 @@ static flagcxResult_t prepareUniRunnerIpcParentFlags(
     }
     numParentFlags += static_cast<size_t>(node->numParents);
   }
-  if (numParentFlags >
-      std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
+  if (numParentFlags > std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
     return flagcxInvalidArgument;
   }
 
@@ -5866,10 +5609,10 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
     uint64_t flagOut = (uintptr_t)getDagNodeFlag(runnerState, current->nodeIdx);
     if (red->workerCount == 1) {
       int idx = -1;
-      FLAGCXCHECK(enqueue(
-          (void *)runnerState->fifo->buffer, (uintptr_t)red->input1,
-          (uintptr_t)red->input2, (uintptr_t)red->output, red->count,
-          red->nthreads, red->datatype, red->redOp, flagIn, flagOut, &idx));
+      FLAGCXCHECK(enqueue((void *)runnerState->fifo->buffer,
+                          (uintptr_t)red->input1, (uintptr_t)red->input2,
+                          (uintptr_t)red->output, red->count, red->nthreads,
+                          red->datatype, red->redOp, flagIn, flagOut, &idx));
       if (idx == -1) {
         sched_yield();
         return flagcxSuccess;
@@ -5941,15 +5684,13 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
   while (!flagcxIntruQueueEmpty(&runnerState->ipcReadyQueue)) {
     uniRunnerDagNode *current =
         flagcxIntruQueueHead(&runnerState->ipcReadyQueue);
-    uint64_t flagOut =
-        reinterpret_cast<uint64_t>(getDagNodeFlag(runnerState,
-                                                  current->nodeIdx));
+    uint64_t flagOut = reinterpret_cast<uint64_t>(
+        getDagNodeFlag(runnerState, current->nodeIdx));
     int idx = -1;
     FLAGCXCHECK(enqueueIpc(
         runnerState->ipcFifo->buffer, current->nodeData.ipc.srcOffsetBytes,
         current->nodeData.ipc.dstOffsetBytes, current->nodeData.ipc.bytes,
-        runnerState->uniRunnerIpcChunkSize,
-        current->nodeData.ipc.srcBufferType,
+        runnerState->uniRunnerIpcChunkSize, current->nodeData.ipc.srcBufferType,
         current->nodeData.ipc.peerLocalRank, current->nodeData.ipc.readySlot,
         runnerState->ipcEpoch, current->nodeData.ipc.parentFlagsOffset,
         static_cast<uint32_t>(current->numParents), flagOut, &idx));
@@ -5986,6 +5727,7 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
       runnerState->ipcFifoDevicePtr != NULL ||
       runnerState->ipcCommStream != NULL || runnerState->redStream != NULL ||
       runnerState->cpyStream != NULL || runnerState->netCommStream != NULL ||
+      runnerState->groupedAgInputReadyEvent != NULL ||
       hcomm->uniRunnerFifoBuffer != NULL ||
       runnerState->ipcParentFlagsDevice != NULL ||
       runnerState->ipcParentFlagsCount != 0 ||
@@ -6026,6 +5768,7 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   runnerState->ipcFifoDevicePtr = NULL;
   runnerState->ipcCommStream = NULL;
   runnerState->netCommStream = NULL;
+  runnerState->groupedAgInputReadyEvent = NULL;
   runnerState->redStream = NULL;
   runnerState->cpyStream = NULL;
   hcomm->uniRunnerFifoBuffer = NULL;
@@ -6033,14 +5776,14 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   FLAGCXCHECK(loadUniRunnerDagBuilderConfig(
       &runnerState->uniRunnerNSlices, &runnerState->uniRunnerNRedSlices,
       &runnerState->uniRunnerRedSliceSize));
-  FLAGCXCHECK(loadUniRunnerLaunchConfig(
-      &runnerState->uniRunnerMaxThreads, &runnerState->uniRunnerMaxBlocks,
-      &runnerState->uniRunnerNIpcBlocks));
+  FLAGCXCHECK(loadUniRunnerLaunchConfig(&runnerState->uniRunnerMaxThreads,
+                                        &runnerState->uniRunnerMaxBlocks,
+                                        &runnerState->uniRunnerNIpcBlocks));
   runnerState->uniRunnerNThreads = runnerState->uniRunnerMaxThreads;
   runnerState->uniRunnerNRedBlocks = runnerState->uniRunnerMaxBlocks;
   size_t ipcChunkSize = 0;
-  FLAGCXCHECK(normalizeUniRunnerIpcChunkSize(
-      flagcxParamUniRunnerIpcChunkSize(), &ipcChunkSize));
+  FLAGCXCHECK(normalizeUniRunnerIpcChunkSize(flagcxParamUniRunnerIpcChunkSize(),
+                                             &ipcChunkSize));
   runnerState->uniRunnerIpcChunkSize = ipcChunkSize;
   runnerState->avgDivisor = 1;
   runnerState->redSliceWorkersEnabled = false;
@@ -6095,87 +5838,112 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
 }
 
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
+  if (comm == nullptr || comm->heteroComm == nullptr ||
+      comm->heteroComm->proxyState == nullptr)
+    return flagcxInvalidArgument;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
-  flagcxStream_t ipcCommStream = hcomm->proxyState->uniRunnerState.ipcCommStream;
-  flagcxStream_t redStream = hcomm->proxyState->uniRunnerState.redStream;
-  flagcxStream_t cpyStream = hcomm->proxyState->uniRunnerState.cpyStream;
-  flagcxStream_t netCommStream = hcomm->proxyState->uniRunnerState.netCommStream;
+  flagcxUniRunnerState *state = &hcomm->proxyState->uniRunnerState;
+  flagcxResult_t result = flagcxSuccess;
 
-  // Clean up DAG scheduler
-  FLAGCXCHECK(cleanupDagScheduler(&hcomm->proxyState->uniRunnerState));
-  hcomm->proxyState->uniRunnerState.ipcReadySlots = 0;
+  // Stream work may still reference completion flags and invocation buffers.
+  // If a stream cannot be drained, retain all resources for a later retry.
+  if (state->redStream != nullptr)
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(state->redStream), &result);
+  if (state->cpyStream != nullptr)
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(state->cpyStream), &result);
+  if (state->ipcCommStream != nullptr)
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(state->ipcCommStream), &result);
+  if (state->netCommStream != nullptr)
+    flagcxRunnerRecordFirstError(
+        deviceAdaptor->streamSynchronize(state->netCommStream), &result);
+  if (result != flagcxSuccess)
+    return result;
 
-  // Outstanding stream waits/writes may still touch streamFlags when
-  // runUniRunner exits early on an error path, so synchronize before marking
-  // the reusable flag-address queue inactive for this invocation.
-  if (redStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamSynchronize(redStream));
-  }
-  if (cpyStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamSynchronize(cpyStream));
-  }
-  if (ipcCommStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamSynchronize(ipcCommStream));
+  if (state->groupedAgInputReadyEvent != nullptr) {
+    flagcxResult_t destroyResult =
+        deviceAdaptor->eventDestroy(state->groupedAgInputReadyEvent);
+    if (destroyResult != flagcxSuccess)
+      return destroyResult;
+    state->groupedAgInputReadyEvent = nullptr;
   }
 
-  if (netCommStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamSynchronize(netCommStream));
-  }
+  flagcxRunnerRecordFirstError(cleanupDagScheduler(state), &result);
+  state->ipcReadySlots = 0;
 
-  auto &state = hcomm->proxyState->uniRunnerState;
-  for (size_t i = 0; i < state.numDagCompletionEvents; ++i) {
-    if (state.dagCompletionEvents[i] != NULL) {
-      FLAGCXCHECK(deviceAdaptor->eventDestroy(state.dagCompletionEvents[i]));
-      state.dagCompletionEvents[i] = NULL;
+  for (size_t i = 0; i < state->numDagCompletionEvents; ++i) {
+    if (state->dagCompletionEvents[i] != nullptr) {
+      flagcxResult_t destroyResult =
+          deviceAdaptor->eventDestroy(state->dagCompletionEvents[i]);
+      flagcxRunnerRecordFirstError(destroyResult, &result);
+      if (destroyResult == flagcxSuccess)
+        state->dagCompletionEvents[i] = nullptr;
     }
   }
-  free(state.dagCompletionEvents);
-  state.dagCompletionEvents = NULL;
-  state.numDagCompletionEvents = 0;
-  FLAGCXCHECK(releaseUniRunnerIpcRingInvocation(
-      &hcomm->proxyState->uniRunnerState));
+  if (result != flagcxSuccess)
+    return result;
+  free(state->dagCompletionEvents);
+  state->dagCompletionEvents = nullptr;
+  state->numDagCompletionEvents = 0;
+  flagcxRunnerRecordFirstError(releaseUniRunnerIpcRingInvocation(state),
+                               &result);
+  if (result != flagcxSuccess)
+    return result;
+  state->streamFlagsSize = 0;
 
-  hcomm->proxyState->uniRunnerState.streamFlagsSize = 0;
+  if (state->redStream != nullptr) {
+    flagcxResult_t destroyResult =
+        deviceAdaptor->streamDestroy(state->redStream);
+    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (destroyResult == flagcxSuccess)
+      state->redStream = nullptr;
+  }
+  if (state->cpyStream != nullptr) {
+    flagcxResult_t destroyResult =
+        deviceAdaptor->streamDestroy(state->cpyStream);
+    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (destroyResult == flagcxSuccess)
+      state->cpyStream = nullptr;
+  }
+  if (state->netCommStream != nullptr) {
+    flagcxResult_t destroyResult =
+        deviceAdaptor->streamDestroy(state->netCommStream);
+    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (destroyResult == flagcxSuccess)
+      state->netCommStream = nullptr;
+  }
+  state->ipcCommStream = nullptr;
 
-  // Destroy streams
-  if (redStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamDestroy(redStream));
-    hcomm->proxyState->uniRunnerState.redStream = NULL;
+  if (state->fifo != nullptr) {
+    flagcxResult_t destroyResult = state->fifo->flagcxRedFifoDestroy();
+    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (destroyResult == flagcxSuccess) {
+      delete state->fifo;
+      state->fifo = nullptr;
+    }
   }
-  if (cpyStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamDestroy(cpyStream));
-    hcomm->proxyState->uniRunnerState.cpyStream = NULL;
+  hcomm->uniRunnerFifoBuffer = nullptr;
+  if (state->ipcFifo != nullptr) {
+    flagcxResult_t destroyResult = state->ipcFifo->flagcxIpcFifoDestroy();
+    flagcxRunnerRecordFirstError(destroyResult, &result);
+    if (destroyResult == flagcxSuccess) {
+      delete state->ipcFifo;
+      state->ipcFifo = nullptr;
+    }
   }
-  if (netCommStream != NULL) {
-    FLAGCXCHECK(deviceAdaptor->streamDestroy(netCommStream));
-    hcomm->proxyState->uniRunnerState.netCommStream = NULL;
+  state->ipcFifoDevicePtr = nullptr;
+  if (state->ipcParentFlagsDevice != nullptr) {
+    flagcxResult_t freeResult = deviceAdaptor->deviceFree(
+        state->ipcParentFlagsDevice, flagcxMemDevice, nullptr);
+    flagcxRunnerRecordFirstError(freeResult, &result);
+    if (freeResult == flagcxSuccess) {
+      state->ipcParentFlagsDevice = nullptr;
+      state->ipcParentFlagsCount = 0;
+    }
   }
-  hcomm->proxyState->uniRunnerState.ipcCommStream = NULL;
-
-  // Destroy fifo
-  if (hcomm->proxyState->uniRunnerState.fifo != NULL) {
-    FLAGCXCHECK(hcomm->proxyState->uniRunnerState.fifo->flagcxRedFifoDestroy());
-    delete hcomm->proxyState->uniRunnerState.fifo;
-    hcomm->proxyState->uniRunnerState.fifo = NULL;
-  }
-  hcomm->uniRunnerFifoBuffer = NULL;
-  if (hcomm->proxyState->uniRunnerState.ipcFifo != NULL) {
-    FLAGCXCHECK(
-        hcomm->proxyState->uniRunnerState.ipcFifo->flagcxIpcFifoDestroy());
-    delete hcomm->proxyState->uniRunnerState.ipcFifo;
-    hcomm->proxyState->uniRunnerState.ipcFifo = NULL;
-  }
-  hcomm->proxyState->uniRunnerState.ipcFifoDevicePtr = NULL;
-
-  if (hcomm->proxyState->uniRunnerState.ipcParentFlagsDevice != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(
-        hcomm->proxyState->uniRunnerState.ipcParentFlagsDevice,
-        flagcxMemDevice, NULL));
-    hcomm->proxyState->uniRunnerState.ipcParentFlagsDevice = NULL;
-    hcomm->proxyState->uniRunnerState.ipcParentFlagsCount = 0;
-  }
-
-  return flagcxSuccess;
+  return result;
 }
 
 static flagcxResult_t initializeDynamicRedFifo(flagcxHeteroComm_t hcomm) {
@@ -6195,8 +5963,7 @@ static flagcxResult_t initializeDynamicRedFifo(flagcxHeteroComm_t hcomm) {
     if (result == flagcxSuccess) {
       result = flagcxSystemError;
     }
-    flagcxResult_t destroyResult =
-        runnerState->fifo->flagcxRedFifoDestroy();
+    flagcxResult_t destroyResult = runnerState->fifo->flagcxRedFifoDestroy();
     if (result == flagcxSuccess) {
       result = destroyResult;
     }
@@ -6206,8 +5973,8 @@ static flagcxResult_t initializeDynamicRedFifo(flagcxHeteroComm_t hcomm) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t releaseUniRunnerIpcParentFlags(
-    flagcxUniRunnerState *runnerState) {
+static flagcxResult_t
+releaseUniRunnerIpcParentFlags(flagcxUniRunnerState *runnerState) {
   if (runnerState == NULL || runnerState->ipcParentFlagsDevice == NULL) {
     return flagcxSuccess;
   }
@@ -6220,8 +5987,8 @@ static flagcxResult_t releaseUniRunnerIpcParentFlags(
   return result;
 }
 
-static flagcxResult_t releaseUniRunnerInvocationFifos(
-    flagcxHeteroComm_t hcomm) {
+static flagcxResult_t
+releaseUniRunnerInvocationFifos(flagcxHeteroComm_t hcomm) {
   if (hcomm == NULL || hcomm->proxyState == NULL) {
     return flagcxInvalidArgument;
   }
@@ -6244,8 +6011,9 @@ static flagcxResult_t releaseUniRunnerInvocationFifos(
   return result;
 }
 
-static flagcxResult_t getUniRunnerStaticIpcMaxChunks(
-    const flagcxUniRunnerState *runnerState, size_t *maxChunks) {
+static flagcxResult_t
+getUniRunnerStaticIpcMaxChunks(const flagcxUniRunnerState *runnerState,
+                               size_t *maxChunks) {
   if (runnerState == NULL || maxChunks == NULL ||
       runnerState->dagPlan.numIpcNodes == 0) {
     return flagcxInvalidArgument;
@@ -6260,9 +6028,8 @@ static flagcxResult_t getUniRunnerStaticIpcMaxChunks(
 
 static flagcxResult_t prepareStaticCollectiveExecution(
     flagcxComm_t comm, uniRunnerStaticExecutorSchedule *schedule,
-    size_t *numRedTriggers, size_t *numIpcTriggers,
-    size_t *maxExecutorBlocks, flagcxStaticIpcControl *ipcControl,
-    flagcxResult_t localPreparationResult) {
+    size_t *numRedTriggers, size_t *numIpcTriggers, size_t *maxExecutorBlocks,
+    flagcxStaticIpcControl *ipcControl, flagcxResult_t localPreparationResult) {
   if (comm == NULL || comm->heteroComm == NULL || schedule == NULL ||
       numRedTriggers == NULL || numIpcTriggers == NULL ||
       maxExecutorBlocks == NULL || ipcControl == NULL) {
@@ -6281,15 +6048,14 @@ static flagcxResult_t prepareStaticCollectiveExecution(
   flagcxResult_t result = localPreparationResult;
   if (result == flagcxSuccess &&
       (ipcTasks == 0 || runnerState->ipcReadySlots != ipcTasks ||
-      runnerState->fifo == NULL || runnerState->ipcFifo == NULL ||
-      runnerState->fifo->buffer != NULL ||
-      runnerState->ipcFifo->buffer != NULL ||
-      hcomm->uniRunnerFifoBuffer != NULL ||
-      runnerState->ipcFifoDevicePtr != NULL ||
-      runnerState->ipcOwner != comm || runnerState->ipcInputMem == NULL ||
-      runnerState->ipcOutputMem == NULL || runnerState->ipcDataBytes == 0 ||
-      comm->localRanks <= 0 || comm->localRank < 0 ||
-       comm->localRank >= comm->localRanks)) {
+       runnerState->fifo == NULL || runnerState->ipcFifo == NULL ||
+       runnerState->fifo->buffer != NULL ||
+       runnerState->ipcFifo->buffer != NULL ||
+       hcomm->uniRunnerFifoBuffer != NULL ||
+       runnerState->ipcFifoDevicePtr != NULL || runnerState->ipcOwner != comm ||
+       runnerState->ipcInputMem == NULL || runnerState->ipcOutputMem == NULL ||
+       runnerState->ipcDataBytes == 0 || comm->localRanks <= 0 ||
+       comm->localRank < 0 || comm->localRank >= comm->localRanks)) {
     result = flagcxInternalError;
   }
 
@@ -6301,12 +6067,11 @@ static flagcxResult_t prepareStaticCollectiveExecution(
 #ifdef COMPILE_KERNEL_HOST
   if (result == flagcxSuccess) {
     result = flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
-        static_cast<size_t>(runnerState->uniRunnerNThreads),
-        maxExecutorBlocks);
+        static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks);
     if (result == flagcxSuccess) {
-      *maxExecutorBlocks = std::min(
-          *maxExecutorBlocks,
-          static_cast<size_t>(runnerState->uniRunnerMaxBlocks));
+      *maxExecutorBlocks =
+          std::min(*maxExecutorBlocks,
+                   static_cast<size_t>(runnerState->uniRunnerMaxBlocks));
     }
   }
 #else
@@ -6323,20 +6088,18 @@ static flagcxResult_t prepareStaticCollectiveExecution(
         maxIpcParallelism, *maxExecutorBlocks, schedule);
   }
   if (result == flagcxSuccess &&
-      (schedule->numRedTasks != redTasks ||
-       schedule->numIpcTasks != ipcTasks || schedule->numIpcBlocks == 0 ||
+      (schedule->numRedTasks != redTasks || schedule->numIpcTasks != ipcTasks ||
+       schedule->numIpcBlocks == 0 ||
        (redTasks != 0 && schedule->numRedBlocks == 0) ||
        (redTasks == 0 && schedule->numRedBlocks != 0))) {
     result = flagcxInternalError;
   }
 
-  const size_t localRanks = comm->localRanks > 0
-                                ? static_cast<size_t>(comm->localRanks)
-                                : size_t{0};
+  const size_t localRanks =
+      comm->localRanks > 0 ? static_cast<size_t>(comm->localRanks) : size_t{0};
   size_t controlSlots = 0;
   size_t requiredReadySlots = 0;
-  const uint64_t maxControlEpoch =
-      flagcxIpcControlAbortBit - uint64_t{1};
+  const uint64_t maxControlEpoch = flagcxIpcControlAbortBit - uint64_t{1};
   uint64_t epoch = 0;
   uint64_t invocationSignature = 0;
   uint64_t preflightSignature = 0;
@@ -6388,8 +6151,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
 
   const bool hasReadyMem = runnerState->ipcReadyMem != NULL;
   const bool hasReadyBuffer = runnerState->ipcReadyBuffer != NULL;
-  if (!hasReadyMem && !hasReadyBuffer &&
-      runnerState->ipcReadyCapacity == 0) {
+  if (!hasReadyMem && !hasReadyBuffer && runnerState->ipcReadyCapacity == 0) {
     readyState = 0; // Empty: every rank must enter initial creation.
   } else if (hasReadyMem && hasReadyBuffer) {
     readyState = runnerState->ipcReadyCapacity >= requiredReadySlots ? 1 : 2;
@@ -6402,8 +6164,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
   preflightSignature =
       mixUniRunnerInvocationSignature(preflightSignature, readyState);
   preflightSignature = mixUniRunnerInvocationSignature(
-      preflightSignature,
-      static_cast<uint64_t>(runnerState->ipcReadyCapacity));
+      preflightSignature, static_cast<uint64_t>(runnerState->ipcReadyCapacity));
 
   // Everything above is rank-local, while ready DevMem creation below is a
   // bootstrap collective. Agree once before entering it so an occupancy,
@@ -6426,8 +6187,8 @@ static flagcxResult_t prepareStaticCollectiveExecution(
     goto fail;
   }
 
-  result = ensureUniRunnerIpcReadyStorage(runnerState, comm,
-                                          requiredReadySlots);
+  result =
+      ensureUniRunnerIpcReadyStorage(runnerState, comm, requiredReadySlots);
   if (result != flagcxSuccess) {
     goto fail;
   }
@@ -6459,20 +6220,17 @@ static flagcxResult_t prepareStaticCollectiveExecution(
   }
 
   if (result == flagcxSuccess && redTasks != 0) {
-    flagcxReduceTrigger *redTriggers =
-        reinterpret_cast<flagcxReduceTrigger *>(
-            runnerState->fifo->buffer + flagcxFifoIdxData);
+    flagcxReduceTrigger *redTriggers = reinterpret_cast<flagcxReduceTrigger *>(
+        runnerState->fifo->buffer + flagcxFifoIdxData);
     result = populateUniRunnerStaticRedTriggers(
         runnerState->dagNodes, static_cast<size_t>(runnerState->numDagNodes),
         &runnerState->dagPlan, runnerState->streamFlags,
-        runnerState->streamFlagsSize, redTriggers, redTasks,
-        numRedTriggers);
+        runnerState->streamFlagsSize, redTriggers, redTasks, numRedTriggers);
   }
 
   if (result == flagcxSuccess) {
     uniRunnerStaticIpcTriggerConfig config = {};
-    config.chunkSize =
-        static_cast<size_t>(runnerState->uniRunnerIpcChunkSize);
+    config.chunkSize = static_cast<size_t>(runnerState->uniRunnerIpcChunkSize);
     config.epoch = epoch;
     config.dataBytes = runnerState->ipcDataBytes;
     config.readySlots = runnerState->ipcReadySlots;
@@ -6486,8 +6244,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
         &runnerState->dagPlan, runnerState->streamFlags,
         runnerState->streamFlagsSize, &config, ipcTriggers, ipcTasks,
         numIpcTriggers, &materializedMaxChunks);
-    if (result == flagcxSuccess &&
-        materializedMaxChunks != maxIpcParallelism) {
+    if (result == flagcxSuccess && materializedMaxChunks != maxIpcParallelism) {
       result = flagcxInternalError;
     }
   }
@@ -6508,8 +6265,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
   invocationSignature = mixUniRunnerInvocationSignature(
       invocationSignature, static_cast<uint64_t>(redTasks));
   invocationSignature = mixUniRunnerInvocationSignature(
-      invocationSignature,
-      static_cast<uint64_t>(runnerState->ipcReadySlots));
+      invocationSignature, static_cast<uint64_t>(runnerState->ipcReadySlots));
   invocationSignature = mixUniRunnerInvocationSignature(
       invocationSignature, static_cast<uint64_t>(controlSlots));
   invocationSignature = mixUniRunnerInvocationSignature(
@@ -6524,8 +6280,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
   invocationSignature = mixUniRunnerInvocationSignature(
       invocationSignature, static_cast<uint64_t>(*maxExecutorBlocks));
   invocationSignature = mixUniRunnerInvocationSignature(
-      invocationSignature,
-      static_cast<uint64_t>(runnerState->ipcDataBytes));
+      invocationSignature, static_cast<uint64_t>(runnerState->ipcDataBytes));
   invocationSignature = mixUniRunnerInvocationSignature(
       invocationSignature,
       static_cast<uint64_t>(runnerState->uniRunnerIpcChunkSize));
@@ -6555,33 +6310,32 @@ static flagcxResult_t prepareStaticCollectiveExecution(
 
   TRACE(FLAGCX_UNIRUNNER,
         "static RED+IPC schedule: red_tasks=%zu ipc_tasks=%zu "
-        "max_ipc_chunks=%zu nthreads=%llu red_blocks=%zu ipc_blocks=%zu budget=%zu "
+        "max_ipc_chunks=%zu nthreads=%llu red_blocks=%zu ipc_blocks=%zu "
+        "budget=%zu "
         "epoch=%llu",
         redTasks, ipcTasks, maxIpcParallelism,
         static_cast<unsigned long long>(runnerState->uniRunnerNThreads),
-        schedule->numRedBlocks,
-        schedule->numIpcBlocks, *maxExecutorBlocks,
+        schedule->numRedBlocks, schedule->numIpcBlocks, *maxExecutorBlocks,
         static_cast<unsigned long long>(epoch));
   return flagcxSuccess;
 
-fail:
-  {
-    flagcxResult_t parentResult =
-        releaseUniRunnerIpcParentFlags(runnerState);
-    if (result == flagcxSuccess && parentResult != flagcxSuccess) {
-      result = parentResult;
-    }
-    flagcxResult_t fifoResult = releaseUniRunnerInvocationFifos(hcomm);
-    if (result == flagcxSuccess && fifoResult != flagcxSuccess) {
-      result = fifoResult;
-    }
+fail : {
+  flagcxResult_t parentResult = releaseUniRunnerIpcParentFlags(runnerState);
+  if (result == flagcxSuccess && parentResult != flagcxSuccess) {
+    result = parentResult;
   }
+  flagcxResult_t fifoResult = releaseUniRunnerInvocationFifos(hcomm);
+  if (result == flagcxSuccess && fifoResult != flagcxSuccess) {
+    result = fifoResult;
+  }
+}
   return result;
 }
 
-static flagcxResult_t prepareStaticRedExecution(
-    flagcxHeteroComm_t hcomm, uniRunnerStaticExecutorSchedule *schedule,
-    size_t *numTriggers, size_t *maxExecutorBlocks) {
+static flagcxResult_t
+prepareStaticRedExecution(flagcxHeteroComm_t hcomm,
+                          uniRunnerStaticExecutorSchedule *schedule,
+                          size_t *numTriggers, size_t *maxExecutorBlocks) {
   if (hcomm == NULL || schedule == NULL || numTriggers == NULL ||
       maxExecutorBlocks == NULL) {
     return flagcxInvalidArgument;
@@ -6591,10 +6345,8 @@ static flagcxResult_t prepareStaticRedExecution(
   *maxExecutorBlocks = 0;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   if (runnerState->dagPlan.numIpcNodes != 0 ||
-      runnerState->dagPlan.numRingStepNodes != 0 ||
-      runnerState->fifo == NULL ||
-      runnerState->fifo->buffer != NULL ||
-      hcomm->uniRunnerFifoBuffer != NULL) {
+      runnerState->dagPlan.numRingStepNodes != 0 || runnerState->fifo == NULL ||
+      runnerState->fifo->buffer != NULL || hcomm->uniRunnerFifoBuffer != NULL) {
     return flagcxInternalError;
   }
 
@@ -6613,8 +6365,7 @@ static flagcxResult_t prepareStaticRedExecution(
   FLAGCXCHECK(resolveUniRunnerStaticExecutorSchedule(
       &runnerState->dagPlan,
       static_cast<size_t>(runnerState->uniRunnerNRedBlocks), 0, 0,
-      *maxExecutorBlocks,
-      schedule));
+      *maxExecutorBlocks, schedule));
 #else
   return flagcxNotSupported;
 #endif
@@ -6642,8 +6393,8 @@ static flagcxResult_t prepareStaticRedExecution(
   }
   hcomm->uniRunnerFifoBuffer = deviceBuffer;
 
-  triggers = reinterpret_cast<flagcxReduceTrigger *>(
-      runnerState->fifo->buffer + flagcxFifoIdxData);
+  triggers = reinterpret_cast<flagcxReduceTrigger *>(runnerState->fifo->buffer +
+                                                     flagcxFifoIdxData);
   result = populateUniRunnerStaticRedTriggers(
       runnerState->dagNodes, static_cast<size_t>(runnerState->numDagNodes),
       &runnerState->dagPlan, runnerState->streamFlags,
@@ -6660,10 +6411,11 @@ static flagcxResult_t prepareStaticRedExecution(
 
   if (schedule->numNetRedTasks != 0 && schedule->numNetRedTasks < redTasks) {
     const size_t localTasks = redTasks - schedule->numNetRedTasks;
-    const size_t netBlocks = std::min(schedule->numNetRedTasks,
-                               std::max<size_t>(1, schedule->numRedBlocks / 2));
-    const size_t localBlocks = std::min(localTasks,
-                                       schedule->numRedBlocks - netBlocks);
+    const size_t netBlocks =
+        std::min(schedule->numNetRedTasks,
+                 std::max<size_t>(1, schedule->numRedBlocks / 2));
+    const size_t localBlocks =
+        std::min(localTasks, schedule->numRedBlocks - netBlocks);
     schedule->numRedBlocks = localBlocks + netBlocks;
     schedule->numNetRedBlocks = netBlocks;
   }
@@ -6676,15 +6428,13 @@ static flagcxResult_t prepareStaticRedExecution(
         schedule->numRedBlocks);
   return flagcxSuccess;
 
-fail:
-  {
-    flagcxResult_t destroyResult =
-        runnerState->fifo->flagcxRedFifoDestroy();
-    hcomm->uniRunnerFifoBuffer = NULL;
-    if (result == flagcxSuccess) {
-      result = destroyResult;
-    }
+fail : {
+  flagcxResult_t destroyResult = runnerState->fifo->flagcxRedFifoDestroy();
+  hcomm->uniRunnerFifoBuffer = NULL;
+  if (result == flagcxSuccess) {
+    result = destroyResult;
   }
+}
   return result;
 }
 
@@ -6715,17 +6465,15 @@ static void requestUniRunnerStaticAbort(flagcxUniRunnerState *runnerState) {
     __atomic_store_n(runnerState->fifo->buffer + flagcxFifoIdxTerminate, 1,
                      __ATOMIC_RELEASE);
   }
-  if (runnerState->ipcFifo != NULL &&
-      runnerState->ipcFifo->buffer != NULL) {
+  if (runnerState->ipcFifo != NULL && runnerState->ipcFifo->buffer != NULL) {
     // The combined static kernel deliberately uses the IPC FIFO terminate word
     // as its one rank-local abort flag.
     __atomic_store_n(runnerState->ipcFifo->buffer + flagcxFifoIdxTerminate, 1,
                      __ATOMIC_RELEASE);
   }
   if (runnerState->ipcRingControlHost != NULL) {
-    __atomic_store_n(
-        runnerState->ipcRingControlHost + flagcxFifoIdxTerminate, 1,
-        __ATOMIC_RELEASE);
+    __atomic_store_n(runnerState->ipcRingControlHost + flagcxFifoIdxTerminate,
+                     1, __ATOMIC_RELEASE);
   }
 }
 
@@ -6738,27 +6486,28 @@ enum uniRunnerStaticStreamIndex {
   uniRunnerStaticNoFailedStream = -1,
 };
 
-static flagcxResult_t repairUniRunnerStaticFlags(
-    flagcxUniRunnerState *runnerState, flagcxStream_t stream) {
+static flagcxResult_t
+repairUniRunnerStaticFlags(flagcxUniRunnerState *runnerState,
+                           flagcxStream_t stream) {
   flagcxResult_t result = flagcxSuccess;
   for (size_t flagIdx = 0; flagIdx < runnerState->streamFlagsSize; ++flagIdx) {
     preserveFirstUniRunnerError(
         deviceAdaptor->streamWriteValue64(
-            stream, runnerState->streamFlags[flagIdx], flagcxStreamFlagDone,
-            0),
+            stream, runnerState->streamFlags[flagIdx], flagcxStreamFlagDone, 0),
         &result);
   }
   return result;
 }
 
-static flagcxResult_t recoverPoisonedUniRunnerRedStream(
-    flagcxUniRunnerState *runnerState,
-    const flagcxStaticIpcControl *ipcControl, flagcxResult_t result);
+static flagcxResult_t
+recoverPoisonedUniRunnerRedStream(flagcxUniRunnerState *runnerState,
+                                  const flagcxStaticIpcControl *ipcControl,
+                                  flagcxResult_t result);
 
-static flagcxResult_t pollUniRunnerStaticStreams(
-    flagcxUniRunnerState *runnerState,
-    const flagcxStaticIpcControl *ipcControl, flagcxResult_t result,
-    int knownCompleteStream) {
+static flagcxResult_t
+pollUniRunnerStaticStreams(flagcxUniRunnerState *runnerState,
+                           const flagcxStaticIpcControl *ipcControl,
+                           flagcxResult_t result, int knownCompleteStream) {
   flagcxStream_t streams[uniRunnerStaticNumStreams] = {
       runnerState->redStream, runnerState->cpyStream,
       runnerState->ipcCommStream, runnerState->netCommStream};
@@ -6778,8 +6527,10 @@ static flagcxResult_t pollUniRunnerStaticStreams(
         continue;
       }
       flagcxResult_t queryResult =
-          streamIdx == uniRunnerStaticNetCommStream && streams[streamIdx] == NULL
-              ? flagcxSuccess : deviceAdaptor->streamQuery(streams[streamIdx]);
+          streamIdx == uniRunnerStaticNetCommStream &&
+                  streams[streamIdx] == NULL
+              ? flagcxSuccess
+              : deviceAdaptor->streamQuery(streams[streamIdx]);
       if (queryResult == flagcxInProgress) {
         continue;
       }
@@ -6792,8 +6543,8 @@ static flagcxResult_t pollUniRunnerStaticStreams(
         // streamQuery returning a terminal error establishes that the local
         // executor is no longer running. Only now is an independent recovery
         // stream safe: it cannot race peer writes from the failed executor.
-        return recoverPoisonedUniRunnerRedStream(
-            runnerState, ipcControl, result);
+        return recoverPoisonedUniRunnerRedStream(runnerState, ipcControl,
+                                                 result);
       }
     }
     if (!madeProgress && remaining != 0) {
@@ -6803,9 +6554,10 @@ static flagcxResult_t pollUniRunnerStaticStreams(
   return result;
 }
 
-static flagcxResult_t recoverPoisonedUniRunnerRedStream(
-    flagcxUniRunnerState *runnerState,
-    const flagcxStaticIpcControl *ipcControl, flagcxResult_t result) {
+static flagcxResult_t
+recoverPoisonedUniRunnerRedStream(flagcxUniRunnerState *runnerState,
+                                  const flagcxStaticIpcControl *ipcControl,
+                                  flagcxResult_t result) {
   requestUniRunnerStaticAbort(runnerState);
 
   // This stream is created only on the asynchronous-error path. The failed RED
@@ -6813,8 +6565,7 @@ static flagcxResult_t recoverPoisonedUniRunnerRedStream(
   // abort/done epoch and join the peer quiescence barrier before releasing any
   // host-stream DAG waits.
   flagcxStream_t recoveryStream = NULL;
-  flagcxResult_t createResult =
-      deviceAdaptor->streamCreate(&recoveryStream);
+  flagcxResult_t createResult = deviceAdaptor->streamCreate(&recoveryStream);
   if (createResult == flagcxSuccess && recoveryStream == NULL) {
     createResult = flagcxSystemError;
   }
@@ -6839,11 +6590,10 @@ static flagcxResult_t recoverPoisonedUniRunnerRedStream(
   flagcxResult_t repairResult =
       repairUniRunnerStaticFlags(runnerState, recoveryStream);
   preserveFirstUniRunnerError(repairResult, &result);
-  flagcxResult_t syncResult =
-      deviceAdaptor->streamSynchronize(recoveryStream);
+  flagcxResult_t syncResult = deviceAdaptor->streamSynchronize(recoveryStream);
   preserveFirstUniRunnerError(syncResult, &result);
-  preserveFirstUniRunnerError(
-      deviceAdaptor->streamDestroy(recoveryStream), &result);
+  preserveFirstUniRunnerError(deviceAdaptor->streamDestroy(recoveryStream),
+                              &result);
 
   if (recoveryResult != flagcxSuccess || repairResult != flagcxSuccess ||
       syncResult != flagcxSuccess) {
@@ -6852,13 +6602,13 @@ static flagcxResult_t recoverPoisonedUniRunnerRedStream(
     // a failed GPU/context into an unbounded host busy wait.
     return result;
   }
-  return pollUniRunnerStaticStreams(
-      runnerState, ipcControl, result, uniRunnerStaticRedStream);
+  return pollUniRunnerStaticStreams(runnerState, ipcControl, result,
+                                    uniRunnerStaticRedStream);
 }
 
 static flagcxResult_t abortAndDrainStaticExecution(
-    flagcxUniRunnerState *runnerState,
-    const flagcxStaticIpcControl *ipcControl, flagcxResult_t result,
+    flagcxUniRunnerState *runnerState, const flagcxStaticIpcControl *ipcControl,
+    flagcxResult_t result,
     int knownFailedStream = uniRunnerStaticNoFailedStream) {
   requestUniRunnerStaticAbort(runnerState);
 
@@ -6866,15 +6616,14 @@ static flagcxResult_t abortAndDrainStaticExecution(
   // healthy. Queue repair after the executor: stream order establishes local
   // quiescence before releasing host streams blocked on unfinished DAG flags.
   preserveFirstUniRunnerError(
-      repairUniRunnerStaticFlags(runnerState, runnerState->redStream),
-      &result);
-  return pollUniRunnerStaticStreams(
-      runnerState, ipcControl, result, knownFailedStream);
+      repairUniRunnerStaticFlags(runnerState, runnerState->redStream), &result);
+  return pollUniRunnerStaticStreams(runnerState, ipcControl, result,
+                                    knownFailedStream);
 }
 
-static flagcxResult_t waitForStaticStreamCompletion(
-    flagcxUniRunnerState *runnerState,
-    const flagcxStaticIpcControl *ipcControl) {
+static flagcxResult_t
+waitForStaticStreamCompletion(flagcxUniRunnerState *runnerState,
+                              const flagcxStaticIpcControl *ipcControl) {
   flagcxStream_t streams[uniRunnerStaticNumStreams] = {
       runnerState->redStream, runnerState->cpyStream,
       runnerState->ipcCommStream, runnerState->netCommStream};
@@ -6888,19 +6637,21 @@ static flagcxResult_t waitForStaticStreamCompletion(
         continue;
       }
       flagcxResult_t queryResult =
-          streamIdx == uniRunnerStaticNetCommStream && streams[streamIdx] == NULL
-              ? flagcxSuccess : deviceAdaptor->streamQuery(streams[streamIdx]);
+          streamIdx == uniRunnerStaticNetCommStream &&
+                  streams[streamIdx] == NULL
+              ? flagcxSuccess
+              : deviceAdaptor->streamQuery(streams[streamIdx]);
       if (queryResult == flagcxSuccess) {
         complete[streamIdx] = true;
         --remaining;
         madeProgress = true;
       } else if (queryResult != flagcxInProgress) {
         if (streamIdx == uniRunnerStaticRedStream) {
-          return recoverPoisonedUniRunnerRedStream(
-              runnerState, ipcControl, queryResult);
+          return recoverPoisonedUniRunnerRedStream(runnerState, ipcControl,
+                                                   queryResult);
         }
-        return abortAndDrainStaticExecution(
-            runnerState, ipcControl, queryResult, streamIdx);
+        return abortAndDrainStaticExecution(runnerState, ipcControl,
+                                            queryResult, streamIdx);
       }
     }
     if (!madeProgress && remaining != 0) {
@@ -6910,37 +6661,61 @@ static flagcxResult_t waitForStaticStreamCompletion(
   return flagcxSuccess;
 }
 
-static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm);
+static flagcxResult_t
+runDynamicDagFallback(flagcxHeteroComm_t hcomm,
+                      flagcxComm_t consensusComm = nullptr);
 
 // Connection setup may allocate device memory. Complete it before submitting
 // cross-stream waits or launching the persistent executor for the pipeline.
-static flagcxResult_t prepareUniRunnerP2pConnections(flagcxHeteroComm_t comm) {
+static flagcxResult_t
+prepareUniRunnerP2pConnections(flagcxHeteroComm_t comm,
+                               flagcxComm_t consensusComm = nullptr) {
   flagcxUniRunnerState &state = comm->proxyState->uniRunnerState;
-  if (state.netCommStream == NULL && !state.dagPlan.hasGemm)
+  if (state.netCommStream == NULL && !state.dagPlan.hasGemm &&
+      consensusComm == nullptr)
     return flagcxSuccess;
-  if (!comm->proxyState->initialized) FLAGCXCHECK(flagcxProxyInit(comm));
+  flagcxResult_t initResult = flagcxSuccess;
+  if (!comm->proxyState->initialized)
+    initResult = flagcxProxyInit(comm);
+  if (consensusComm != nullptr) {
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECK(
+        flagcxConvergeBootstrapStatus(consensusComm, initResult, &common));
+    if (common != flagcxSuccess)
+      return common;
+  }
+  FLAGCXCHECK(initResult);
   bool pending = false;
   for (int i = 0; i < state.numDagNodes; ++i) {
     const auto &node = state.dagNodes[i];
-    if (node.nodeType != uniRunnerDagNodeTypeP2p) continue;
+    if (node.nodeType != uniRunnerDagNodeTypeP2p)
+      continue;
     for (int j = 0; j < node.nodeData.p2p.numOps; ++j) {
       const auto &op = node.nodeData.p2p.ops[j];
       const bool send = op.type == flagcxDevicePrimSend;
-      auto &connector = send ? comm->channels[0].peers[op.peerRank]->send[0]
-                             : comm->channels[0].peers[op.peerRank]->recv[0];
-      if (connector.connected) continue;
-      (send ? comm->connectSend : comm->connectRecv)[op.peerRank] |= 1UL;
+      const int channelId = flagcxCollProxyChannelForEdge(
+          send ? comm->rank : op.peerRank, send ? op.peerRank : comm->rank, 0);
+      auto &connector =
+          send ? comm->channels[channelId].peers[op.peerRank]->send[0]
+               : comm->channels[channelId].peers[op.peerRank]->recv[0];
+      if (connector.connected)
+        continue;
+      (send ? comm->connectSend : comm->connectRecv)[op.peerRank] |=
+          1UL << channelId;
       connector.registered = 1;
       pending = true;
     }
   }
-  if (pending) FLAGCXCHECK(flagcxTransportP2pSetup(comm, NULL, 0));
-  if (state.netCommStream == NULL) return flagcxSuccess;
+  if (pending)
+    FLAGCXCHECK(flagcxTransportP2pSetup(comm, NULL, 0));
+  if (state.netCommStream == NULL)
+    return flagcxSuccess;
   FLAGCXCHECK(flagcxCalloc(&state.dagCompletionEvents, state.numDagNodes));
   state.numDagCompletionEvents = state.numDagNodes;
   for (int i = 0; i < state.numDagNodes; ++i) {
     const auto &node = state.dagNodes[i];
-    if (node.nodeType != uniRunnerDagNodeTypeP2p) continue;
+    if (node.nodeType != uniRunnerDagNodeTypeP2p)
+      continue;
     for (int j = 0; j < node.numParents; ++j) {
       const int parentIdx = node.parents[j];
       const auto &parent = state.dagNodes[parentIdx];
@@ -6955,14 +6730,52 @@ static flagcxResult_t prepareUniRunnerP2pConnections(flagcxHeteroComm_t comm) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm) {
-  FLAGCXCHECK(prepareUniRunnerP2pConnections(hcomm));
+static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
+                                       flagcxComm_t consensusComm = nullptr) {
+  flagcxResult_t prepareResult =
+      prepareUniRunnerP2pConnections(hcomm, consensusComm);
+  if (consensusComm != nullptr) {
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECK(
+        flagcxConvergeBootstrapStatus(consensusComm, prepareResult, &common));
+    if (common != flagcxSuccess)
+      return common;
+  }
+  FLAGCXCHECK(prepareResult);
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   uniRunnerStaticExecutorSchedule schedule;
   size_t numTriggers = 0;
   size_t maxExecutorBlocks = 0;
-  flagcxResult_t prepareResult = prepareStaticRedExecution(
-      hcomm, &schedule, &numTriggers, &maxExecutorBlocks);
+  prepareResult = prepareStaticRedExecution(hcomm, &schedule, &numTriggers,
+                                            &maxExecutorBlocks);
+  if (consensusComm != nullptr) {
+    const bool localFallback = prepareResult == flagcxNotSupported ||
+                               prepareResult == flagcxUnhandledDeviceError;
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECK(flagcxConvergeBootstrapStatus(
+        consensusComm, localFallback ? flagcxSuccess : prepareResult, &common));
+    if (common != flagcxSuccess)
+      return common;
+    FLAGCXCHECK(flagcxConvergeBootstrapStatus(
+        consensusComm, localFallback ? flagcxNotSupported : flagcxSuccess,
+        &common));
+    if (common == flagcxNotSupported) {
+      flagcxResult_t releaseResult = flagcxSuccess;
+      if (runnerState->fifo != nullptr &&
+          runnerState->fifo->buffer != nullptr) {
+        releaseResult = runnerState->fifo->flagcxRedFifoDestroy();
+        if (releaseResult == flagcxSuccess)
+          hcomm->uniRunnerFifoBuffer = nullptr;
+      }
+      FLAGCXCHECK(
+          flagcxConvergeBootstrapStatus(consensusComm, releaseResult, &common));
+      if (common != flagcxSuccess)
+        return common;
+      return runDynamicDagFallback(hcomm, consensusComm);
+    }
+    if (common != flagcxSuccess)
+      return common;
+  }
   if (prepareResult != flagcxSuccess) {
 #ifdef COMPILE_KERNEL_HOST
     // Capability/occupancy probing happens before the exact static FIFO is
@@ -6993,8 +6806,7 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm) {
       // A runtime launch API may report an earlier asynchronous error even if
       // this executor was accepted. Abort and queue flag repair behind it on
       // redStream so both the enqueued and definitely-unlaunched cases drain.
-      return abortAndDrainStaticExecution(
-          runnerState, NULL, launchResult);
+      return abortAndDrainStaticExecution(runnerState, NULL, launchResult);
     }
   }
 #else
@@ -7018,8 +6830,7 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm) {
 }
 
 static flagcxResult_t recoverFailedStaticCollectiveLaunch(
-    flagcxUniRunnerState *runnerState,
-    const flagcxStaticIpcControl *ipcControl,
+    flagcxUniRunnerState *runnerState, const flagcxStaticIpcControl *ipcControl,
     flagcxStream_t executorStream, flagcxResult_t launchResult) {
   // Queue recovery on the same RED stream as the attempted cooperative launch.
   // If the launch actually enqueued but reported an earlier asynchronous error,
@@ -7036,14 +6847,14 @@ static flagcxResult_t recoverFailedStaticCollectiveLaunch(
   // original executor launch and this recovery launch may have been accepted
   // while the API surfaced an earlier asynchronous failure. Stream order is
   // the only safe way to resolve that ambiguity.
-  flagcxResult_t syncResult =
-      deviceAdaptor->streamSynchronize(executorStream);
+  flagcxResult_t syncResult = deviceAdaptor->streamSynchronize(executorStream);
   preserveFirstUniRunnerError(syncResult, &launchResult);
   if (recoveryResult != flagcxSuccess || syncResult != flagcxSuccess) {
     // Resolve any remaining launch ambiguity explicitly. Host abort makes a
     // live main executor leave its polling loops; once streamQuery is terminal,
     // an independent stream can retry the idempotent recovery without racing
-    // executor peer writes. A true hardware hang remains an external-abort case.
+    // executor peer writes. A true hardware hang remains an external-abort
+    // case.
     flagcxResult_t queryResult = flagcxInProgress;
     while (queryResult == flagcxInProgress) {
       queryResult = deviceAdaptor->streamQuery(executorStream);
@@ -7052,8 +6863,8 @@ static flagcxResult_t recoverFailedStaticCollectiveLaunch(
       }
     }
     preserveFirstUniRunnerError(queryResult, &launchResult);
-    return recoverPoisonedUniRunnerRedStream(
-        runnerState, ipcControl, launchResult);
+    return recoverPoisonedUniRunnerRedStream(runnerState, ipcControl,
+                                             launchResult);
   }
 #else
   (void)ipcControl;
@@ -7062,42 +6873,49 @@ static flagcxResult_t recoverFailedStaticCollectiveLaunch(
   return launchResult;
 }
 
-static flagcxResult_t releaseUniRunnerIpcRingInvocation(
-    flagcxUniRunnerState *runnerState) {
+static flagcxResult_t
+releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
   flagcxResult_t result = flagcxSuccess;
   if (runnerState->ipcRingTriggersDevice != NULL) {
-    result = deviceAdaptor->deviceFree(runnerState->ipcRingTriggersDevice,
-                                        flagcxMemDevice, NULL);
+    flagcxResult_t freeResult = deviceAdaptor->deviceFree(
+        runnerState->ipcRingTriggersDevice, flagcxMemDevice, NULL);
+    preserveFirstUniRunnerError(freeResult, &result);
+    if (freeResult == flagcxSuccess) {
+      runnerState->ipcRingTriggersDevice = NULL;
+      runnerState->ipcRingTriggerCount = 0;
+    }
   }
   if (runnerState->ipcRingLanesDevice != NULL) {
     flagcxResult_t laneResult = deviceAdaptor->deviceFree(
         runnerState->ipcRingLanesDevice, flagcxMemDevice, NULL);
     preserveFirstUniRunnerError(laneResult, &result);
+    if (laneResult == flagcxSuccess) {
+      runnerState->ipcRingLanesDevice = NULL;
+      runnerState->ipcRingLaneCount = 0;
+    }
   }
   if (runnerState->ipcRingControlHost != NULL) {
     flagcxResult_t controlResult = deviceAdaptor->deviceFree(
         runnerState->ipcRingControlHost, flagcxMemHost, NULL);
     preserveFirstUniRunnerError(controlResult, &result);
+    if (controlResult == flagcxSuccess) {
+      runnerState->ipcRingControlHost = NULL;
+      runnerState->ipcRingControlDevice = NULL;
+    }
   }
-  runnerState->ipcRingTriggersDevice = NULL;
-  runnerState->ipcRingTriggerCount = 0;
-  runnerState->ipcRingLanesDevice = NULL;
-  runnerState->ipcRingLaneCount = 0;
-  runnerState->ipcRingControlHost = NULL;
-  runnerState->ipcRingControlDevice = NULL;
   return result;
 }
 
-static flagcxResult_t runStaticRingDag(
-    flagcxComm_t comm, flagcxResult_t localPreparationResult) {
+static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
+                                       flagcxResult_t localPreparationResult) {
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   const uniRunnerDagExecutionPlan &plan = runnerState->dagPlan;
   flagcxResult_t result = localPreparationResult;
   if (result == flagcxSuccess &&
       (plan.numRingStepNodes == 0 || plan.numRingLanes == 0 ||
-      plan.numHostNodes != 0 || plan.numRedNodes != 0 ||
-      plan.numIpcNodes != 0 || runnerState->ipcOwner != comm ||
+       plan.numHostNodes != 0 || plan.numRedNodes != 0 ||
+       plan.numIpcNodes != 0 || runnerState->ipcOwner != comm ||
        runnerState->ipcInputMem == NULL || runnerState->ipcOutputMem == NULL)) {
     result = flagcxInvalidArgument;
   }
@@ -7165,15 +6983,15 @@ static flagcxResult_t runStaticRingDag(
   if (result == flagcxSuccess && newLanes == NULL)
     result = flagcxSystemError;
   if (result == flagcxSuccess)
-    result = deviceAdaptor->deviceMemcpy(
-        newTriggers, hostTriggers.data(),
-        hostTriggers.size() * sizeof(flagcxRingStepTrigger),
-        flagcxMemcpyHostToDevice, NULL, NULL);
+    result = deviceAdaptor->deviceMemcpy(newTriggers, hostTriggers.data(),
+                                         hostTriggers.size() *
+                                             sizeof(flagcxRingStepTrigger),
+                                         flagcxMemcpyHostToDevice, NULL, NULL);
   if (result == flagcxSuccess)
-    result = deviceAdaptor->deviceMemcpy(
-        newLanes, hostLanes.data(),
-        hostLanes.size() * sizeof(flagcxRingLaneDesc),
-        flagcxMemcpyHostToDevice, NULL, NULL);
+    result = deviceAdaptor->deviceMemcpy(newLanes, hostLanes.data(),
+                                         hostLanes.size() *
+                                             sizeof(flagcxRingLaneDesc),
+                                         flagcxMemcpyHostToDevice, NULL, NULL);
   if (result == flagcxSuccess)
     result = deviceAdaptor->deviceMalloc(
         reinterpret_cast<void **>(&newControlHost),
@@ -7181,8 +6999,8 @@ static flagcxResult_t runStaticRingDag(
   if (result == flagcxSuccess && newControlHost == NULL)
     result = flagcxSystemError;
   if (result == flagcxSuccess)
-    result = deviceAdaptor->hostGetDevicePointer(
-        &newControlDevice, newControlHost);
+    result =
+        deviceAdaptor->hostGetDevicePointer(&newControlDevice, newControlHost);
   if (result == flagcxSuccess && newControlDevice == NULL)
     result = flagcxSystemError;
   if (result == flagcxSuccess) {
@@ -7231,8 +7049,7 @@ static flagcxResult_t runStaticRingDag(
   size_t maxExecutorBlocks = 0;
 #ifdef COMPILE_KERNEL_HOST
   result = flagcxGetStaticRingDagKernelMaxExecutorBlocks(
-      static_cast<size_t>(runnerState->uniRunnerNThreads),
-      &maxExecutorBlocks);
+      static_cast<size_t>(runnerState->uniRunnerNThreads), &maxExecutorBlocks);
   if (result == flagcxSuccess && plan.numRingLanes > maxExecutorBlocks)
     result = flagcxNotSupported;
 #else
@@ -7265,14 +7082,13 @@ static flagcxResult_t runStaticRingDag(
       runnerState->redStream);
   if (result != flagcxSuccess) {
     runnerState->ipcRingResourcesDirty = true;
-    return recoverFailedStaticCollectiveLaunch(
-        runnerState, &control, runnerState->redStream, result);
+    return recoverFailedStaticCollectiveLaunch(runnerState, &control,
+                                               runnerState->redStream, result);
   }
 #endif
   result = waitForStaticStreamCompletion(runnerState, &control);
   if (result == flagcxSuccess &&
-      __atomic_load_n(runnerState->ipcRingControlHost +
-                          flagcxFifoIdxTerminate,
+      __atomic_load_n(runnerState->ipcRingControlHost + flagcxFifoIdxTerminate,
                       __ATOMIC_ACQUIRE) != 0)
     result = flagcxRemoteError;
   if (result != flagcxSuccess)
@@ -7280,8 +7096,8 @@ static flagcxResult_t runStaticRingDag(
   return result;
 }
 
-static flagcxResult_t runStaticHostRedIpc(
-    flagcxComm_t comm, flagcxResult_t localPreparationResult) {
+static flagcxResult_t
+runStaticHostRedIpc(flagcxComm_t comm, flagcxResult_t localPreparationResult) {
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   uniRunnerStaticExecutorSchedule schedule = {};
@@ -7295,9 +7111,8 @@ static flagcxResult_t runStaticHostRedIpc(
 
 #ifdef COMPILE_KERNEL_HOST
   flagcxResult_t launchResult = flagcxLaunchStaticCollectiveKernel(
-      hcomm->uniRunnerFifoBuffer, numRedTriggers,
-      runnerState->ipcFifoDevicePtr, numIpcTriggers,
-      runnerState->ipcInputMem, runnerState->ipcOutputMem,
+      hcomm->uniRunnerFifoBuffer, numRedTriggers, runnerState->ipcFifoDevicePtr,
+      numIpcTriggers, runnerState->ipcInputMem, runnerState->ipcOutputMem,
       runnerState->ipcReadyMem, runnerState->ipcParentFlagsDevice,
       runnerState->ipcParentFlagsCount,
       static_cast<size_t>(runnerState->uniRunnerNThreads),
@@ -7319,8 +7134,7 @@ static flagcxResult_t runStaticHostRedIpc(
   if (result != flagcxSuccess) {
     // The executor is already live. Signal its own abort word and let its
     // blocksDone epilogue establish quiescence; never launch recovery here.
-    result = abortAndDrainStaticExecution(
-        runnerState, &ipcControl, result);
+    result = abortAndDrainStaticExecution(runnerState, &ipcControl, result);
   } else {
     result = waitForStaticStreamCompletion(runnerState, &ipcControl);
     if (result == flagcxSuccess && runnerState->ipcFifo != NULL &&
@@ -7333,26 +7147,33 @@ static flagcxResult_t runStaticHostRedIpc(
   return result;
 }
 
-static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm) {
+static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm,
+                                            flagcxComm_t consensusComm) {
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   // IPC FIFOs now carry a control prefix and are materialized statically.
   // Feeding IPC nodes through the legacy producer/dequeue path would alias its
   // ready slot zero with the abort word, so fallback is intentionally RED-only.
   if (runnerState->dagPlan.numIpcNodes != 0 ||
       runnerState->dagPlan.numRingStepNodes != 0 ||
-      runnerState->ipcFifo == NULL ||
-      runnerState->ipcFifo->buffer != NULL ||
+      runnerState->ipcFifo == NULL || runnerState->ipcFifo->buffer != NULL ||
       runnerState->ipcFifoDevicePtr != NULL) {
     return flagcxNotSupported;
   }
-  FLAGCXCHECK(initializeDynamicRedFifo(hcomm));
+  flagcxResult_t initResult = initializeDynamicRedFifo(hcomm);
+  if (consensusComm != nullptr) {
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECK(
+        flagcxConvergeBootstrapStatus(consensusComm, initResult, &common));
+    if (common != flagcxSuccess)
+      return common;
+  }
+  FLAGCXCHECK(initResult);
 
 #ifdef COMPILE_KERNEL_HOST
   FLAGCXCHECK(flagcxLaunchCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, NULL, NULL, NULL, NULL, NULL,
-      runnerState->uniRunnerNThreads, runnerState->uniRunnerNRedBlocks,
-      0, runnerState->avgDivisor,
-      runnerState->redStream));
+      runnerState->uniRunnerNThreads, runnerState->uniRunnerNRedBlocks, 0,
+      runnerState->avgDivisor, runnerState->redStream));
 #else
   return flagcxNotSupported;
 #endif
@@ -7363,9 +7184,8 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm) {
         flagcxIntruQueueEmpty(&runnerState->gemmReadyQueue) &&
         flagcxIntruQueueEmpty(&runnerState->ipcReadyQueue) &&
         runnerState->numPendingNodes == 0) {
-      TRACE(
-          FLAGCX_UNIRUNNER,
-          "runUniRunner: dynamic RED fallback drained, terminating executor");
+      TRACE(FLAGCX_UNIRUNNER,
+            "runUniRunner: dynamic RED fallback drained, terminating executor");
       __atomic_store_n(runnerState->fifo->buffer + flagcxFifoIdxTerminate, 1,
                        __ATOMIC_RELEASE);
       break;
@@ -7375,14 +7195,13 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm) {
   return drainUniRunnerStreams(runnerState, flagcxSuccess);
 }
 
-flagcxResult_t runUniRunner(flagcxComm_t comm) {
+flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   TRACE(FLAGCX_UNIRUNNER, "runUniRunner called");
-  const bool ipcIntent =
-      runnerState->ipcOwner == comm &&
-      (runnerState->dagPlan.numIpcNodes != 0 ||
-       runnerState->dagPlan.numRingStepNodes != 0);
+  const bool ipcIntent = runnerState->ipcOwner == comm &&
+                         (runnerState->dagPlan.numIpcNodes != 0 ||
+                          runnerState->dagPlan.numRingStepNodes != 0);
   flagcxResult_t localPreparationResult = flagcxSuccess;
   if (runnerState->numDagNodes < 0 ||
       (runnerState->numDagNodes == 0) != (runnerState->dagNodes == NULL)) {
@@ -7447,10 +7266,17 @@ flagcxResult_t runUniRunner(flagcxComm_t comm) {
                ? runStaticRingDag(comm, localPreparationResult)
                : runStaticHostRedIpc(comm, localPreparationResult);
   }
+  if (convergeHostPreparation) {
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECK(
+        flagcxConvergeBootstrapStatus(comm, localPreparationResult, &common));
+    if (common != flagcxSuccess)
+      return common;
+  }
   if (localPreparationResult != flagcxSuccess) {
     return localPreparationResult;
   }
-  return runStaticHostRed(hcomm);
+  return runStaticHostRed(hcomm, convergeHostPreparation ? comm : nullptr);
 }
 
 flagcxResult_t
@@ -7506,11 +7332,11 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   }
   if (runnerState->ipcRingScratchBuffer != NULL) {
     flagcxCommDeferFree(comm, runnerState->ipcRingScratchBuffer,
-                       flagcxMemDevice);
+                        flagcxMemDevice);
   }
   if (runnerState->ipcRingProgressBuffer != NULL) {
     flagcxCommDeferFree(comm, runnerState->ipcRingProgressBuffer,
-                       flagcxMemDevice);
+                        flagcxMemDevice);
   }
   runnerState->ipcRingScratchBuffer = NULL;
   runnerState->ipcRingProgressBuffer = NULL;

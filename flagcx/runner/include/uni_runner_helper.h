@@ -41,8 +41,7 @@ struct uniRunnerDagBufferRef {
 };
 
 inline bool uniRunnerDagBindingRangeContains(const void *ptr, const void *base,
-                                             size_t bytes,
-                                             size_t accessBytes,
+                                             size_t bytes, size_t accessBytes,
                                              int64_t *offsetBytes) {
   if (ptr == nullptr || base == nullptr || offsetBytes == nullptr) {
     return false;
@@ -164,9 +163,9 @@ struct uniRunnerCompiledDagTemplate {
   size_t numRingStepNodes = 0;
 };
 
-flagcxResult_t compileUniRunnerDagTemplate(
-    const uniRunnerDagTemplate &dagTemplate,
-    uniRunnerCompiledDagTemplate *compiledTemplate);
+flagcxResult_t
+compileUniRunnerDagTemplate(const uniRunnerDagTemplate &dagTemplate,
+                            uniRunnerCompiledDagTemplate *compiledTemplate);
 
 struct uniRunnerDagRuntimeBindings {
   const void *inputBase = nullptr;
@@ -180,35 +179,39 @@ struct uniRunnerDagRuntimeBindings {
 flagcxResult_t validateUniRunnerDagTemplateBindings(
     const uniRunnerDagTemplate &dagTemplate,
     const uniRunnerDagRuntimeBindings &bindings);
-// Host-only template binding and release; payload addresses are never dereferenced.
-flagcxResult_t materializeUniRunnerDagTemplate(
-    flagcxUniRunnerState *state, const uniRunnerDagTemplate &dagTemplate,
-    const uniRunnerDagRuntimeBindings &bindings);
+// Host-only template binding and release; payload addresses are never
+// dereferenced.
+flagcxResult_t
+materializeUniRunnerDagTemplate(flagcxUniRunnerState *state,
+                                const uniRunnerDagTemplate &dagTemplate,
+                                const uniRunnerDagRuntimeBindings &bindings);
 flagcxResult_t cleanupUniRunnerDagTemplateInstance(flagcxUniRunnerState *state);
-flagcxResult_t resolveUniRunnerRedWorkerCount(
-    const flagcxUniRunnerState *state, size_t count, uint32_t *workerCount);
-flagcxResult_t resolveUniRunnerDslGemmWorkerCount(
-    uint32_t m, uint32_t n, uint64_t maxBlocks, int64_t requestedWorkers,
-    uint32_t *workerCount);
+flagcxResult_t resolveUniRunnerRedWorkerCount(const flagcxUniRunnerState *state,
+                                              size_t count,
+                                              uint32_t *workerCount);
+flagcxResult_t resolveUniRunnerDslGemmWorkerCount(uint32_t m, uint32_t n,
+                                                  uint64_t maxBlocks,
+                                                  int64_t requestedWorkers,
+                                                  uint32_t *workerCount);
 
-flagcxResult_t validateUniRunnerFusedDagKey(
-    const uniRunnerDagCacheKey &key, uniRunnerDagAlgoType algo,
-    const uniRunnerDagAlgorithmConfig &config,
-    const uniRunnerDagRuntimeBindings &bindings);
+flagcxResult_t
+validateUniRunnerFusedDagKey(const uniRunnerDagCacheKey &key,
+                             uniRunnerDagAlgoType algo,
+                             const uniRunnerDagAlgorithmConfig &config,
+                             const uniRunnerDagRuntimeBindings &bindings);
 
-flagcxResult_t loadUniRunnerFusedDag(
-    flagcxUniRunnerState *state, uniRunnerDagAlgoType algo,
-    const uniRunnerDagAlgorithmConfig &config, size_t count,
-    const uniRunnerDagRuntimeBindings &bindings, flagcxComm_t comm);
+flagcxResult_t
+loadUniRunnerFusedDag(flagcxUniRunnerState *state, uniRunnerDagAlgoType algo,
+                      const uniRunnerDagAlgorithmConfig &config, size_t count,
+                      const uniRunnerDagRuntimeBindings &bindings,
+                      flagcxComm_t comm);
 
 // Production validation helpers exposed here so CPU-only cache tests exercise
 // the exact IPC materialization and topology identity rules.
-flagcxResult_t validateUniRunnerIpcDagTemplateBindings(
-    const uniRunnerDagTemplate &dagTemplate, size_t inputBytes,
-    size_t outputBytes, int localRanks);
-flagcxResult_t getUniRunnerIpcTopologyHash(int localRanks, int nranks,
-                                           const int *localRankToRank,
-                                           uint64_t *topologyHash);
+flagcxResult_t
+validateUniRunnerIpcDagTemplateBindings(const uniRunnerDagTemplate &dagTemplate,
+                                        size_t inputBytes, size_t outputBytes,
+                                        int localRanks);
 
 inline const char *uniRunnerDagAlgoTypeToString(uniRunnerDagAlgoType algoType) {
   switch (algoType) {
@@ -230,8 +233,6 @@ inline const char *uniRunnerDagAlgoTypeToString(uniRunnerDagAlgoType algoType) {
       return "ring_rs";
     case uniRunnerDagAlgoTreeRed:
       return "tree_red";
-    case uniRunnerDagAlgoIpcAR:
-      return "ipc_ar";
     case uniRunnerDagAlgoIpcRingAR:
       return "ipc_ring_ar";
     case uniRunnerDagAlgoHierarchicalSlicedAR:
@@ -265,8 +266,6 @@ inline bool uniRunnerDagAlgoTypeFromString(const std::string &text,
     *algoType = uniRunnerDagAlgoRingRS;
   } else if (text == "tree_red") {
     *algoType = uniRunnerDagAlgoTreeRed;
-  } else if (text == "ipc_ar") {
-    *algoType = uniRunnerDagAlgoIpcAR;
   } else if (text == "ipc_ring_ar") {
     *algoType = uniRunnerDagAlgoIpcRingAR;
   } else if (text == "all_gather_gemm") {
@@ -575,8 +574,7 @@ inline bool uniRunnerDagSizeFromJson(const Json &j, size_t *value) {
     if (j.is_number_integer()) {
       const int64_t decoded = j.get<int64_t>();
       if (decoded < 0 ||
-          static_cast<uint64_t>(decoded) >
-              std::numeric_limits<size_t>::max()) {
+          static_cast<uint64_t>(decoded) > std::numeric_limits<size_t>::max()) {
         return false;
       }
       *value = static_cast<size_t>(decoded);
@@ -614,14 +612,12 @@ inline bool uniRunnerDagUint32FromJson(const Json &j, uint32_t *value) {
   return true;
 }
 
-inline Json
-uniRunnerDagIpcOpDescToJson(const uniRunnerDagIpcOpDesc &ipc) {
+inline Json uniRunnerDagIpcOpDescToJson(const uniRunnerDagIpcOpDesc &ipc) {
   return Json{
       {"src_offset_bytes", ipc.srcOffsetBytes},
       {"dst_offset_bytes", ipc.dstOffsetBytes},
       {"bytes", ipc.bytes},
-      {"src_buffer_type",
-       uniRunnerDagIpcBufferTypeToString(ipc.srcBufferType)},
+      {"src_buffer_type", uniRunnerDagIpcBufferTypeToString(ipc.srcBufferType)},
       {"peer_local_rank", ipc.peerLocalRank},
       {"ready_slot", ipc.readySlot},
   };
@@ -646,7 +642,7 @@ inline bool uniRunnerDagIpcOpDescFromJson(const Json &j,
            uniRunnerDagIpcBufferTypeFromString(srcBufferType,
                                                &ipc->srcBufferType) &&
            uniRunnerDagNonNegativeIntFromJson(j.at("peer_local_rank"),
-                                               &ipc->peerLocalRank) &&
+                                              &ipc->peerLocalRank) &&
            uniRunnerDagUint32FromJson(j.at("ready_slot"), &ipc->readySlot);
   } catch (...) {
     return false;
@@ -663,8 +659,8 @@ uniRunnerDagRingStepDescToJson(const uniRunnerDagRingStepDesc &step) {
               {"count_elements", std::to_string(step.countElements)}};
 }
 
-inline bool uniRunnerDagRingStepDescFromJson(
-    const Json &j, uniRunnerDagRingStepDesc *step) {
+inline bool uniRunnerDagRingStepDescFromJson(const Json &j,
+                                             uniRunnerDagRingStepDesc *step) {
   if (step == nullptr || !j.is_object() || j.size() != 6 ||
       !j.contains("channel_id") || !j.contains("lane_ordinal") ||
       !j.contains("kind") || !j.contains("post_op") ||
@@ -752,14 +748,17 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
       };
     } else if (node.nodeType == uniRunnerDagNodeTypeGemm) {
       const auto &g = node.gemm;
-      nodeJson["gemm"] = Json{
-          {"a", uniRunnerDagBufferRefToJson(g.a)},
-          {"b", uniRunnerDagBufferRefToJson(g.b)},
-          {"c", uniRunnerDagBufferRefToJson(g.c)},
-          {"m", g.m}, {"n", g.n}, {"k", g.k},
-          {"lda", g.lda}, {"ldb", g.ldb}, {"ldc", g.ldc},
-          {"datatype", static_cast<int>(g.datatype)},
-          {"accumulate", g.accumulate}};
+      nodeJson["gemm"] = Json{{"a", uniRunnerDagBufferRefToJson(g.a)},
+                              {"b", uniRunnerDagBufferRefToJson(g.b)},
+                              {"c", uniRunnerDagBufferRefToJson(g.c)},
+                              {"m", g.m},
+                              {"n", g.n},
+                              {"k", g.k},
+                              {"lda", g.lda},
+                              {"ldb", g.ldb},
+                              {"ldc", g.ldc},
+                              {"datatype", static_cast<int>(g.datatype)},
+                              {"accumulate", g.accumulate}};
     } else if (node.nodeType == uniRunnerDagNodeTypeCpy) {
       nodeJson["cpy"] = Json{
           {"src", uniRunnerDagBufferRefToJson(node.cpy.src)},
@@ -770,8 +769,7 @@ uniRunnerDagTemplateToJson(const uniRunnerDagTemplate &dagTemplate) {
     } else if (node.nodeType == uniRunnerDagNodeTypeIpc) {
       nodeJson["ipc"] = uniRunnerDagIpcOpDescToJson(node.ipc);
     } else if (node.nodeType == uniRunnerDagNodeTypeRingStep) {
-      nodeJson["ring_step"] =
-          uniRunnerDagRingStepDescToJson(node.ringStep);
+      nodeJson["ring_step"] = uniRunnerDagRingStepDescToJson(node.ringStep);
     }
     nodes.push_back(nodeJson);
   }
@@ -792,8 +790,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
   try {
     if (!j.is_object() || !j.contains("format_version") ||
         !j.at("format_version").is_number_integer() ||
-        j.at("format_version").get<int>() !=
-            kUniRunnerDagCacheFormatVersion) {
+        j.at("format_version").get<int>() != kUniRunnerDagCacheFormatVersion) {
       return false;
     }
     if (!uniRunnerDagCacheKeyFromJson(j.at("key"), &dagTemplate->key)) {
@@ -820,8 +817,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
     const Json &numNodesJson = dagJson.at("num_nodes");
     if (numNodesJson.is_number_unsigned()) {
       const uint64_t value = numNodesJson.get<uint64_t>();
-      if (value >
-          static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+      if (value > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
         return false;
       }
       declaredNumNodes = static_cast<size_t>(value);
@@ -843,8 +839,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
     dagTemplate->nodes.clear();
     dagTemplate->nodes.reserve(declaredNumNodes);
 
-    const size_t maxInt =
-        static_cast<size_t>(std::numeric_limits<int>::max());
+    const size_t maxInt = static_cast<size_t>(std::numeric_limits<int>::max());
     for (const Json &nodeJson : nodes) {
       uniRunnerDagNodeDesc node;
       std::string nodeType = nodeJson.at("node_type").get<std::string>();
@@ -854,7 +849,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
       if (nodeJson.contains("comm_domain")) {
         size_t commDomain = 0;
         if (!uniRunnerDagSizeFromJson(nodeJson.at("comm_domain"),
-                                       &commDomain) ||
+                                      &commDomain) ||
             commDomain > static_cast<size_t>(uniRunnerDagCommNet)) {
           return false;
         }
@@ -885,8 +880,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
           uniRunnerDagP2pOpDesc op;
           std::string primType = opJson.at("type").get<std::string>();
           if (!uniRunnerDevicePrimFromString(primType, &op.type) ||
-              !uniRunnerDagBufferRefFromJson(opJson.at("buffer"),
-                                             &op.buffer)) {
+              !uniRunnerDagBufferRefFromJson(opJson.at("buffer"), &op.buffer)) {
             return false;
           }
           op.peerRank = opJson.at("peer_rank").get<int>();
@@ -910,8 +904,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
                                            &node.red.output)) {
           return false;
         }
-        if (!uniRunnerDagSizeFromJson(redJson.at("count"),
-                                      &node.red.count)) {
+        if (!uniRunnerDagSizeFromJson(redJson.at("count"), &node.red.count)) {
           return false;
         }
         const int datatype = redJson.at("datatype").get<int>();
@@ -930,12 +923,12 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
             !uniRunnerDagBufferRefFromJson(g.at("c"), &node.gemm.c))
           return false;
         const char *names[] = {"m", "n", "k", "lda", "ldb", "ldc"};
-        uint32_t *fields[] = {&node.gemm.m, &node.gemm.n, &node.gemm.k,
-                             &node.gemm.lda, &node.gemm.ldb, &node.gemm.ldc};
+        uint32_t *fields[] = {&node.gemm.m,   &node.gemm.n,   &node.gemm.k,
+                              &node.gemm.lda, &node.gemm.ldb, &node.gemm.ldc};
         for (size_t i = 0; i < 6; ++i) {
           size_t value = 0;
-          if (!uniRunnerDagSizeFromJson(g.at(names[i]), &value) ||
-              value == 0 || value > UINT32_MAX)
+          if (!uniRunnerDagSizeFromJson(g.at(names[i]), &value) || value == 0 ||
+              value > UINT32_MAX)
             return false;
           *fields[i] = static_cast<uint32_t>(value);
         }
@@ -953,8 +946,7 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
             !uniRunnerDagBufferRefFromJson(cpyJson.at("dst"), &node.cpy.dst)) {
           return false;
         }
-        if (!uniRunnerDagSizeFromJson(cpyJson.at("count"),
-                                      &node.cpy.count)) {
+        if (!uniRunnerDagSizeFromJson(cpyJson.at("count"), &node.cpy.count)) {
           return false;
         }
         const int datatype = cpyJson.at("datatype").get<int>();
@@ -965,24 +957,20 @@ inline bool uniRunnerDagTemplateFromJson(const Json &j,
       } else if (node.nodeType == uniRunnerDagNodeTypeIpc) {
         // IPC nodes contain only structural fields; legacy templates omit the
         // communication domain. Runtime trigger state stays invocation-local.
-        const size_t expectedFields =
-            nodeJson.contains("comm_domain") ? 6 : 5;
+        const size_t expectedFields = nodeJson.contains("comm_domain") ? 6 : 5;
         if (nodeJson.size() != expectedFields ||
-            !nodeJson.contains("node_idx") ||
-            !nodeJson.contains("node_type") ||
-            !nodeJson.contains("parents") ||
-            !nodeJson.contains("children") || !nodeJson.contains("ipc") ||
+            !nodeJson.contains("node_idx") || !nodeJson.contains("node_type") ||
+            !nodeJson.contains("parents") || !nodeJson.contains("children") ||
+            !nodeJson.contains("ipc") ||
             !uniRunnerDagIpcOpDescFromJson(nodeJson.at("ipc"), &node.ipc)) {
           return false;
         }
       } else if (node.nodeType == uniRunnerDagNodeTypeRingStep) {
         if (nodeJson.size() != 5 || !nodeJson.contains("node_idx") ||
-            !nodeJson.contains("node_type") ||
-            !nodeJson.contains("parents") ||
-            !nodeJson.contains("children") ||
-            !nodeJson.contains("ring_step") ||
+            !nodeJson.contains("node_type") || !nodeJson.contains("parents") ||
+            !nodeJson.contains("children") || !nodeJson.contains("ring_step") ||
             !uniRunnerDagRingStepDescFromJson(nodeJson.at("ring_step"),
-                                               &node.ringStep)) {
+                                              &node.ringStep)) {
           return false;
         }
       }

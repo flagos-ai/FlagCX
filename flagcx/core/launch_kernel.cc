@@ -181,9 +181,7 @@ flagcxResult_t flagcxStreamValueSupported(bool *supported) {
     return flagcxSuccess;
 
   int device = -1;
-  flagcxResult_t deviceResult = adaptor->getDevice(&device);
-  if (deviceResult != flagcxSuccess)
-    return deviceResult;
+  FLAGCXCHECK(adaptor->getDevice(&device));
   std::lock_guard<std::mutex> lock(streamValueProbeMutex);
   auto &devices = streamValueProbeCache[adaptor];
   auto found = devices.find(device);
@@ -290,13 +288,19 @@ flagcxStreamValueSemaphore::enqueueCompletion(flagcxStream_t launchStream) {
   FLAGCXCHECK(deviceAdaptor->streamWaitValue64(
       launchStream, static_cast<char *>(dSignals) + sizeof(uint64_t), 1, 0));
   FLAGCXCHECK(deviceAdaptor->eventRecord(completionEvent, launchStream));
+  // Publish the event handle only after it has captured the stream work.
+  __atomic_store_n(&completionState, 1, __ATOMIC_RELEASE);
   return flagcxSuccess;
 }
 
 int flagcxStreamValueSemaphore::pollEnd() {
-  if (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) != 0 ||
-      completionEvent == nullptr) {
+  if (__atomic_load_n(&counter, __ATOMIC_ACQUIRE) != 0) {
     return 0;
   }
+  const int state = __atomic_load_n(&completionState, __ATOMIC_ACQUIRE);
+  if (state == 0)
+    return 0;
+  if (state == 2)
+    return 1;
   return deviceAdaptor->eventQuery(completionEvent) == flagcxSuccess;
 }

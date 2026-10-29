@@ -201,4 +201,3 @@ def build_gemm_reducescatter(world_size, m, n, k, group_size=8,
                 prior_slice_gate = previous_reds[-1]
     wf.finalize()
     return wf
-

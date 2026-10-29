@@ -98,7 +98,6 @@ class AlgoType(str, Enum):
     sliced_ar = "sliced_ar"
     ring_rs = "ring_rs"
     tree_red = "tree_red"
-    ipc_ar = "ipc_ar"
     grouped_ar = "grouped_ar"
     ipc_ring_ar = "ipc_ring_ar"
     hierarchical_sliced_ar = "hierarchical_sliced_ar"
@@ -141,7 +140,6 @@ ALGO_TO_INT = {
     "sliced_ar": 5,
     "ring_rs": 6,
     "tree_red": 7,
-    "ipc_ar": 8,
     "grouped_ar": 9,
     "ipc_ring_ar": 10,
     "hierarchical_sliced_ar": 11,
@@ -279,7 +277,6 @@ def _algorithm_hash(algo: str, config: Mapping[str, int]) -> int:
         "sliced_ar": ("num_slices", "num_red_slices", "buffer_mode"),
         "ring_rs": ("num_slices", "num_red_slices", "buffer_mode"),
         "tree_red": ("num_slices", "num_red_slices", "buffer_mode"),
-        "ipc_ar": ("num_slices", "num_red_slices", "topology_hash", "buffer_mode"),
         "ipc_ring_ar": ("num_channels", "simple_buffer_bytes", "nthreads",
                         "chunk_steps", "slice_steps", "topology_hash", "buffer_mode"),
         "hierarchical_sliced_ar": ("num_slices", "num_red_slices", "group_size", "buffer_mode"),

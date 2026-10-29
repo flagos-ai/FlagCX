@@ -94,12 +94,7 @@ def build_groupedag(
                         recv_group_idx = (group_idx - step - 1 + n_groups) % n_groups
                         send_peer = send_group_idx * group_size + loc_rank
                         recv_peer = recv_group_idx * group_size + loc_rank
-                        send_ref = (
-                            workflow.input(0)
-                            if step == 0
-                            else workflow.output(local_base + loc_rank * count)
-                        )
-                        ops.append(workflow.send(send_peer, send_ref, count))
+                        ops.append(workflow.send(send_peer, workflow.input(0), count))
                         ops.append(workflow.recv(recv_peer, workflow.output(recv_peer * count), count))
                         local_base = recv_group_idx * group_chunk_count
 
@@ -667,6 +662,12 @@ class UniRunnerDslTest(unittest.TestCase):
             self.assertFalse(self.LEGACY_RUNTIME_FIELDS & set(payload["key"]))
             self.assertEqual(payload["dag"]["nodes"][0]["node_type"], "p2p")
 
+    def test_groupedag_three_groups_preserves_each_rank_contribution(self):
+        workflow = build_groupedag(
+            name="groupedag_three_groups", world_size=6, count=8, group_size=2
+        )
+        workflow.semantic_check().raise_for_error()
+
     def test_slicedar_example_semantics_and_runtime_json(self):
         workflow = build_slicedar_example()
 
@@ -861,6 +862,53 @@ class UniRunnerDslTest(unittest.TestCase):
         self.assertEqual(workflow.algo, "dummy")
         self.assertEqual(workflow.runtime_entry(0)["key"]["algo_hash"],
                          str(workflow.cache_key(0).algorithm_hash()))
+
+    @staticmethod
+    def _identity_with_p2p(send_count: int, recv_count: int) -> UniRunnerWorkflow:
+        semantic = CollectiveSemantics.custom(
+            "identity_with_p2p",
+            world_size=2,
+            input_count=1,
+            output_count=1,
+            scratch_count=1,
+            expected_output=[[(RedOp.nop, [0])], [(RedOp.nop, [1])]],
+        )
+        with UniRunnerWorkflow(
+            "identity_with_p2p",
+            collective=Collective.Custom,
+            world_size=2,
+            count=1,
+            datatype=DataType.float32,
+            algo=AlgoType.dummy,
+            comm_op="noop",
+            input_count=1,
+            output_count=1,
+            scratch_count=1,
+            semantic=semantic,
+        ) as workflow:
+            with workflow.rank(0) as rb:
+                rb.cpy(workflow.input(), workflow.output(), 1)
+                for _ in range(send_count):
+                    rb.p2p([workflow.send(1, workflow.input(), 1)])
+            with workflow.rank(1) as rb:
+                rb.cpy(workflow.input(), workflow.output(), 1)
+                for _ in range(recv_count):
+                    rb.p2p([workflow.recv(0, workflow.scratch(), 1)])
+        return workflow
+
+    def test_semantic_check_rejects_orphan_send(self):
+        result = self._identity_with_p2p(1, 0).semantic_check()
+        self.assertFalse(result.ok)
+        self.assertIn("send to rank 1", "\n".join(result.errors))
+        self.assertIn("has no matching recv", "\n".join(result.errors))
+
+    def test_semantic_check_rejects_extra_send(self):
+        result = self._identity_with_p2p(2, 1).semantic_check()
+        self.assertFalse(result.ok)
+        self.assertIn("has no matching recv", "\n".join(result.errors))
+
+    def test_semantic_check_accepts_paired_send_recv(self):
+        self._identity_with_p2p(1, 1).semantic_check().raise_for_error()
 
 
 def main():

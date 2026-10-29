@@ -29,8 +29,7 @@ public:
       nodes[i].parents = parents[i].empty() ? nullptr : parents[i].data();
       nodes[i].pendingParents = nodes[i].numParents;
       nodes[i].numChildren = static_cast<int>(children[i].size());
-      nodes[i].children =
-          children[i].empty() ? nullptr : children[i].data();
+      nodes[i].children = children[i].empty() ? nullptr : children[i].data();
     }
   }
 
@@ -57,8 +56,7 @@ std::vector<int> orderOf(const uniRunnerDagExecutionPlan &plan) {
   if (plan.numNodes == 0) {
     return {};
   }
-  return std::vector<int>(plan.topoOrder,
-                          plan.topoOrder + plan.numNodes);
+  return std::vector<int>(plan.topoOrder, plan.topoOrder + plan.numNodes);
 }
 
 } // namespace
@@ -69,9 +67,9 @@ TEST(UniRunnerDagPlan, DrainsRootPhasesWithStableOrderWithinEachPhase) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{2, 3, 0, 1}), orderOf(holder.plan));
   EXPECT_EQ(2u, holder.plan.numHostNodes);
   EXPECT_EQ(1u, holder.plan.numRedNodes);
@@ -91,9 +89,9 @@ TEST(UniRunnerDagPlan, ContinuesDrainingNodesUnlockedInSamePhase) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{0, 3, 1, 4, 2, 5}), orderOf(holder.plan));
 }
 
@@ -107,9 +105,9 @@ TEST(UniRunnerDagPlan, DefersNodesUnlockedInAnEarlierPhaseToNextRound) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{2, 0, 1, 5, 3, 4}), orderOf(holder.plan));
 }
 
@@ -122,9 +120,9 @@ TEST(UniRunnerDagPlan, OrdersForkJoinOnlyAfterAllParents) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{0, 1, 2, 3}), orderOf(holder.plan));
 }
 
@@ -142,11 +140,44 @@ TEST(UniRunnerDagPlan, ComputesMaximumRedAntichainAndCount) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ(2u, holder.plan.maxParallelRedNodes);
   EXPECT_EQ(300u, holder.plan.maxRedNodeCount);
+}
+
+TEST(UniRunnerDagPlan, BoundsLargeRedWidthAnalysis) {
+  constexpr size_t nodeCount = 4096;
+  TestDag dag(
+      std::vector<uniRunnerDagNodeType>(nodeCount, uniRunnerDagNodeTypeRed));
+  for (size_t i = 1; i < nodeCount; ++i)
+    dag.addEdge(static_cast<int>(i - 1), static_cast<int>(i));
+  dag.bind();
+  PlanHolder holder;
+
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
+  // The exact chain width is one. The large-DAG path keeps a safe upper bound
+  // and the launch planner caps its block request at the configured limit.
+  EXPECT_EQ(nodeCount, holder.plan.maxParallelRedNodes);
+  size_t nthreads = 0;
+  size_t redBlocks = 0;
+  size_t ipcBlocks = 0;
+  ASSERT_EQ(flagcxSuccess,
+            resolveUniRunnerDagLaunchShape(&holder.plan, 65536, 512, 64,
+                                           &nthreads, &redBlocks, &ipcBlocks));
+  EXPECT_EQ(64u, redBlocks);
+  EXPECT_EQ(0u, ipcBlocks);
+
+  for (size_t i = 0; i < nodeCount; ++i)
+    dag.nodes[i].nodeData.red.workerCount = i % 2 == 0 ? 1 : 2;
+  ASSERT_EQ(flagcxSuccess,
+            updateUniRunnerComputeRuntimeShape(dag.nodes.data(),
+                                               dag.nodes.size(), &holder.plan));
+  EXPECT_EQ(nodeCount + nodeCount / 2, holder.plan.numRedTasks);
+  EXPECT_EQ(holder.plan.numRedTasks, holder.plan.maxParallelRedTasks);
 }
 
 TEST(UniRunnerDagPlan, ComputesMixedRedAndIpcShapeAcrossIpcEdges) {
@@ -161,9 +192,9 @@ TEST(UniRunnerDagPlan, ComputesMixedRedAndIpcShapeAcrossIpcEdges) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ(1u, holder.plan.maxParallelRedNodes);
   EXPECT_EQ(257u, holder.plan.maxRedNodeCount);
   EXPECT_EQ(1048577u, holder.plan.maxIpcNodeBytes);
@@ -175,9 +206,9 @@ TEST(UniRunnerDagPlan, HostOnlyDagHasNoRedShape) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ(0u, holder.plan.maxParallelRedNodes);
   EXPECT_EQ(0u, holder.plan.maxRedNodeCount);
 }
@@ -190,9 +221,9 @@ TEST(UniRunnerDagPlan, SupportsHighIndexParentsOfLowIndexChildren) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{2, 0, 1}), orderOf(holder.plan));
 }
 
@@ -204,9 +235,9 @@ TEST(UniRunnerDagPlan, PreservesChildListOrderForSamePhaseReadiness) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{0, 2, 1}), orderOf(holder.plan));
 }
 
@@ -223,9 +254,9 @@ TEST(UniRunnerDagPlan, DoesNotMutateRuntimeDagState) {
   const std::vector<std::vector<int>> childrenBefore = dag.children;
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   for (size_t i = 0; i < dag.nodes.size(); ++i) {
     EXPECT_EQ(before[i].nodeIdx, dag.nodes[i].nodeIdx);
     EXPECT_EQ(before[i].nodeType, dag.nodes[i].nodeType);
@@ -244,9 +275,9 @@ TEST(UniRunnerDagPlan, RejectsWholeAndPartialCycles) {
   cycle.addEdge(1, 0);
   cycle.bind();
   PlanHolder holder;
-  EXPECT_EQ(flagcxInvalidArgument, compileUniRunnerDagExecutionPlan(
-                                          cycle.nodes.data(),
-                                          cycle.nodes.size(), &holder.plan));
+  EXPECT_EQ(flagcxInvalidArgument,
+            compileUniRunnerDagExecutionPlan(cycle.nodes.data(),
+                                             cycle.nodes.size(), &holder.plan));
   EXPECT_EQ(nullptr, holder.plan.topoOrder);
   EXPECT_EQ(0u, holder.plan.numNodes);
 
@@ -255,9 +286,9 @@ TEST(UniRunnerDagPlan, RejectsWholeAndPartialCycles) {
   partial.addEdge(1, 2);
   partial.addEdge(2, 1);
   partial.bind();
-  EXPECT_EQ(flagcxInvalidArgument, compileUniRunnerDagExecutionPlan(
-                                          partial.nodes.data(),
-                                          partial.nodes.size(), &holder.plan));
+  EXPECT_EQ(flagcxInvalidArgument,
+            compileUniRunnerDagExecutionPlan(
+                partial.nodes.data(), partial.nodes.size(), &holder.plan));
   EXPECT_EQ(nullptr, holder.plan.topoOrder);
   EXPECT_EQ(0u, holder.plan.numNodes);
 }
@@ -269,43 +300,43 @@ TEST(UniRunnerDagPlan, RejectsMalformedNodeMetadata) {
   PlanHolder holder;
 
   dag.nodes[1].nodeIdx = 0;
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   dag.nodes[1].nodeIdx = 1;
 
   dag.children[0][0] = 2;
   dag.bind();
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   dag.children[0][0] = 1;
   dag.bind();
 
   dag.nodes[0].numChildren = 1;
   dag.nodes[0].children = nullptr;
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   dag.bind();
 
   dag.nodes[0].nodeType = static_cast<uniRunnerDagNodeType>(99);
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   dag.nodes[0].nodeType = uniRunnerDagNodeTypeP2p;
 
   dag.nodes[1].numParents = -1;
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   dag.bind();
 
   dag.parents[1][0] = -1;
   dag.bind();
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
 }
 
 TEST(UniRunnerDagPlan, RejectsChildListThatOverDecrementsIndegree) {
@@ -315,9 +346,9 @@ TEST(UniRunnerDagPlan, RejectsChildListThatOverDecrementsIndegree) {
   dag.bind();
   PlanHolder holder;
 
-  EXPECT_EQ(flagcxInternalError, compileUniRunnerDagExecutionPlan(
-                                       dag.nodes.data(), dag.nodes.size(),
-                                       &holder.plan));
+  EXPECT_EQ(flagcxInternalError,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ(nullptr, holder.plan.topoOrder);
 }
 
@@ -329,13 +360,13 @@ TEST(UniRunnerDagPlan, RecompileAndDestroyLeaveNoStalePlan) {
   second.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               first.nodes.data(), first.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(first.nodes.data(),
+                                             first.nodes.size(), &holder.plan));
   EXPECT_EQ((std::vector<int>{0, 1}), orderOf(holder.plan));
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               second.nodes.data(), second.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(second.nodes.data(),
+                                                            second.nodes.size(),
+                                                            &holder.plan));
   EXPECT_EQ((std::vector<int>{0}), orderOf(holder.plan));
   EXPECT_EQ(0u, holder.plan.numHostNodes);
   EXPECT_EQ(0u, holder.plan.numRedNodes);
@@ -356,22 +387,22 @@ TEST(UniRunnerDagPlan, FailedOrEmptyRecompileClearsPreviousPlan) {
   cycle.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               valid.nodes.data(), valid.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(valid.nodes.data(),
+                                             valid.nodes.size(), &holder.plan));
   ASSERT_NE(nullptr, holder.plan.topoOrder);
-  EXPECT_EQ(flagcxInvalidArgument, compileUniRunnerDagExecutionPlan(
-                                          cycle.nodes.data(),
-                                          cycle.nodes.size(), &holder.plan));
+  EXPECT_EQ(flagcxInvalidArgument,
+            compileUniRunnerDagExecutionPlan(cycle.nodes.data(),
+                                             cycle.nodes.size(), &holder.plan));
   EXPECT_EQ(nullptr, holder.plan.topoOrder);
   EXPECT_EQ(0u, holder.plan.numNodes);
   EXPECT_EQ(0u, holder.plan.numHostNodes);
   EXPECT_EQ(0u, holder.plan.numRedNodes);
   EXPECT_EQ(0u, holder.plan.numIpcNodes);
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               valid.nodes.data(), valid.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(valid.nodes.data(),
+                                             valid.nodes.size(), &holder.plan));
   ASSERT_NE(nullptr, holder.plan.topoOrder);
   EXPECT_EQ(flagcxSuccess,
             compileUniRunnerDagExecutionPlan(nullptr, 0, &holder.plan));
@@ -389,8 +420,8 @@ TEST(UniRunnerDagPlan, HandlesEmptyAndRejectsOversizedInputBeforeDereference) {
   uniRunnerDagNode dummy = {};
   const size_t tooMany =
       static_cast<size_t>(std::numeric_limits<int>::max()) + 1;
-  EXPECT_EQ(flagcxInvalidArgument, compileUniRunnerDagExecutionPlan(
-                                          &dummy, tooMany, &holder.plan));
+  EXPECT_EQ(flagcxInvalidArgument,
+            compileUniRunnerDagExecutionPlan(&dummy, tooMany, &holder.plan));
   EXPECT_EQ(flagcxInvalidArgument,
             compileUniRunnerDagExecutionPlan(nullptr, 1, &holder.plan));
   EXPECT_EQ(flagcxInvalidArgument,
@@ -404,14 +435,14 @@ TEST(UniRunnerDagPlan, UsesArrayOrderForRingAllGatherLikeDualRoots) {
   dag.bind();
   PlanHolder holder;
 
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ((std::vector<int>{0, 1}), orderOf(holder.plan));
 
   const std::vector<int> firstOrder = orderOf(holder.plan);
-  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagExecutionPlan(
-                               dag.nodes.data(), dag.nodes.size(),
-                               &holder.plan));
+  ASSERT_EQ(flagcxSuccess,
+            compileUniRunnerDagExecutionPlan(dag.nodes.data(), dag.nodes.size(),
+                                             &holder.plan));
   EXPECT_EQ(firstOrder, orderOf(holder.plan));
 }

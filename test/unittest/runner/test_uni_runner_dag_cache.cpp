@@ -44,8 +44,8 @@ uniRunnerDagTemplate makeCompiledDagTemplate() {
   uniRunnerDagTemplate dagTemplate;
   dagTemplate.key = makeCacheKey(0x8877665544332211ull);
   const std::array<uniRunnerDagNodeType, 4> types = {
-      uniRunnerDagNodeTypeP2p, uniRunnerDagNodeTypeRed,
-      uniRunnerDagNodeTypeCpy, uniRunnerDagNodeTypeIpc};
+      uniRunnerDagNodeTypeP2p, uniRunnerDagNodeTypeRed, uniRunnerDagNodeTypeCpy,
+      uniRunnerDagNodeTypeIpc};
   uniRunnerDagP2pOpDesc p2p;
   p2p.buffer.bufferType = uniRunnerDagBufferTypeInput;
   p2p.peerRank = 4;
@@ -93,8 +93,7 @@ uniRunnerDagTemplate makeCompiledDagTemplate() {
 TEST(UniRunnerDagCache, CompilesReusableStaticTemplate) {
   const uniRunnerDagTemplate dagTemplate = makeCompiledDagTemplate();
   uniRunnerCompiledDagTemplate compiled;
-  ASSERT_EQ(flagcxSuccess,
-            compileUniRunnerDagTemplate(dagTemplate, &compiled));
+  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagTemplate(dagTemplate, &compiled));
   EXPECT_EQ((std::vector<int>{0, 1, 2, 3}), compiled.topoOrder);
   EXPECT_EQ(4u, compiled.numNodes);
   EXPECT_EQ(2u, compiled.numHostNodes);
@@ -103,8 +102,7 @@ TEST(UniRunnerDagCache, CompilesReusableStaticTemplate) {
   EXPECT_EQ(1u, compiled.maxParallelRedNodes);
   EXPECT_EQ(4u, compiled.maxRedNodeCount);
   EXPECT_EQ(1048577u, compiled.maxIpcNodeBytes);
-  EXPECT_EQ(dagTemplate.key.algoHash,
-            compiled.dagTemplate.key.algoHash);
+  EXPECT_EQ(dagTemplate.key.algoHash, compiled.dagTemplate.key.algoHash);
 
   // Compiled-only fields remain process local and cannot alter JSON v5.
   const Json encoded = uniRunnerSerializeDagTemplate(compiled.dagTemplate);
@@ -118,8 +116,7 @@ TEST(UniRunnerDagCache, CompilesNoIpcRedShape) {
   dagTemplate.nodes.back().children.clear();
 
   uniRunnerCompiledDagTemplate compiled;
-  ASSERT_EQ(flagcxSuccess,
-            compileUniRunnerDagTemplate(dagTemplate, &compiled));
+  ASSERT_EQ(flagcxSuccess, compileUniRunnerDagTemplate(dagTemplate, &compiled));
   EXPECT_EQ((std::vector<int>{0, 1, 2}), compiled.topoOrder);
   EXPECT_EQ(1u, compiled.numRedNodes);
   EXPECT_EQ(0u, compiled.numIpcNodes);
@@ -248,46 +245,17 @@ TEST(UniRunnerDagCache, AlgorithmHashIgnoresUnrelatedBuilderSlots) {
             getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAG, grouped));
 }
 
-TEST(UniRunnerDagCache, IpcAlgorithmHashIncludesLocalTopology) {
+TEST(UniRunnerDagCache, IpcRingAlgorithmHashIncludesLocalTopology) {
   uniRunnerDagAlgorithmConfig config{};
-  config.numSlices = 2;
-  config.numRedSlices = 8;
+  config.numChannels = 2;
+  config.simpleBufferBytes = 4096;
+  config.nThreads = 128;
   config.topologyHash = 0x1234;
   const uint64_t expected =
-      getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoIpcAR, config);
+      getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoIpcRingAR, config);
   config.topologyHash++;
   EXPECT_NE(expected,
-            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoIpcAR, config));
-}
-
-TEST(UniRunnerDagCache, IpcTopologyHashIsStableOrderedAndValidated) {
-  const int topology[] = {2, 0, 3, 1};
-  uint64_t hash = 0;
-  ASSERT_EQ(flagcxSuccess,
-            getUniRunnerIpcTopologyHash(4, 4, topology, &hash));
-  uint64_t repeated = 0;
-  ASSERT_EQ(flagcxSuccess,
-            getUniRunnerIpcTopologyHash(4, 4, topology, &repeated));
-  EXPECT_EQ(hash, repeated);
-
-  const int reordered[] = {0, 2, 3, 1};
-  uint64_t reorderedHash = 0;
-  ASSERT_EQ(flagcxSuccess,
-            getUniRunnerIpcTopologyHash(4, 4, reordered, &reorderedHash));
-  EXPECT_NE(hash, reorderedHash);
-
-  const int duplicate[] = {0, 1, 1, 3};
-  EXPECT_EQ(flagcxInvalidArgument,
-            getUniRunnerIpcTopologyHash(4, 4, duplicate, &repeated));
-  const int outOfRange[] = {0, 1, 2, 4};
-  EXPECT_EQ(flagcxInvalidArgument,
-            getUniRunnerIpcTopologyHash(4, 4, outOfRange, &repeated));
-  EXPECT_EQ(flagcxNotSupported,
-            getUniRunnerIpcTopologyHash(2, 4, topology, &repeated));
-  EXPECT_EQ(flagcxInvalidArgument,
-            getUniRunnerIpcTopologyHash(4, 4, nullptr, &repeated));
-  EXPECT_EQ(flagcxInvalidArgument,
-            getUniRunnerIpcTopologyHash(4, 4, topology, nullptr));
+            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoIpcRingAR, config));
 }
 
 TEST(UniRunnerDagCache, PatternHashIncludesAlgorithmHash) {
@@ -301,9 +269,9 @@ TEST(UniRunnerDagCache, PatternHashIncludesAlgorithmHash) {
 TEST(UniRunnerDagCache, JsonKeyContainsOnlyAlgorithmHashAndCollectiveIdentity) {
   const uniRunnerDagCacheKey key = makeCacheKey(0xfedcba9876543210ull);
   const Json json = uniRunnerDagCacheKeyToJson(key);
-  const std::set<std::string> expectedFields = {
-      "algo_hash", "comm_op", "count", "datatype",
-      "red_op",    "rank",    "nranks", "root"};
+  const std::set<std::string> expectedFields = {"algo_hash", "comm_op", "count",
+                                                "datatype",  "red_op",  "rank",
+                                                "nranks",    "root"};
   std::set<std::string> actualFields;
   for (auto it = json.begin(); it != json.end(); ++it) {
     actualFields.insert(it.key());
@@ -312,8 +280,7 @@ TEST(UniRunnerDagCache, JsonKeyContainsOnlyAlgorithmHashAndCollectiveIdentity) {
   EXPECT_EQ(expectedFields, actualFields);
   EXPECT_FALSE(json.contains("algo_name"));
   EXPECT_TRUE(json.at("algo_hash").is_string());
-  EXPECT_EQ("18364758544493064720",
-            json.at("algo_hash").get<std::string>());
+  EXPECT_EQ("18364758544493064720", json.at("algo_hash").get<std::string>());
   EXPECT_FALSE(json.contains("format_version"));
   EXPECT_FALSE(json.contains("num_slices"));
   EXPECT_FALSE(json.contains("num_red_slices"));
@@ -353,7 +320,7 @@ TEST(UniRunnerDagCache, IpcDescriptorJsonRoundTripContainsOnlyStructure) {
   const Json &ipcJson = nodeJson.at("ipc");
   const std::set<std::string> expectedFields = {
       "src_offset_bytes", "dst_offset_bytes", "bytes",
-      "src_buffer_type",  "peer_local_rank", "ready_slot"};
+      "src_buffer_type",  "peer_local_rank",  "ready_slot"};
   std::set<std::string> actualFields;
   for (auto it = ipcJson.begin(); it != ipcJson.end(); ++it) {
     actualFields.insert(it.key());
@@ -363,9 +330,8 @@ TEST(UniRunnerDagCache, IpcDescriptorJsonRoundTripContainsOnlyStructure) {
 
   for (const char *runtimeField :
        {"parent_flags_offset", "trigger_idx", "chunk_size", "epoch",
-        "num_chunks", "completed_chunks", "next_chunk", "state",
-        "flag_in", "flag_out", "src_ptr", "dst_ptr", "dev_mem",
-        "window"}) {
+        "num_chunks", "completed_chunks", "next_chunk", "state", "flag_in",
+        "flag_out", "src_ptr", "dst_ptr", "dev_mem", "window"}) {
     EXPECT_FALSE(ipcJson.contains(runtimeField));
     EXPECT_FALSE(nodeJson.contains(runtimeField));
   }
@@ -388,8 +354,8 @@ TEST(UniRunnerDagCache, RejectsMalformedIpcDescriptorFields) {
   uniRunnerDagTemplate decoded;
 
   for (const char *requiredField :
-       {"src_offset_bytes", "dst_offset_bytes", "bytes",
-        "src_buffer_type", "peer_local_rank", "ready_slot"}) {
+       {"src_offset_bytes", "dst_offset_bytes", "bytes", "src_buffer_type",
+        "peer_local_rank", "ready_slot"}) {
     Json json = valid;
     json["dag"]["nodes"][0]["ipc"].erase(requiredField);
     EXPECT_FALSE(uniRunnerDeserializeDagTemplate(json, &decoded))
@@ -432,31 +398,26 @@ TEST(UniRunnerDagCache, ValidatesIpcMaterializationBindings) {
   dagTemplate.nodes[0].ipc.peerLocalRank = 1;
   dagTemplate.nodes[0].ipc.readySlot = 0;
   EXPECT_EQ(flagcxSuccess, validateUniRunnerIpcDagTemplateBindings(
-                              dagTemplate, 1024, 1024, 2));
+                               dagTemplate, 1024, 1024, 2));
 
   uniRunnerDagTemplate malformed = dagTemplate;
-  malformed.nodes[0].ipc.srcBufferType =
-      static_cast<flagcxIpcBufferType>(99);
+  malformed.nodes[0].ipc.srcBufferType = static_cast<flagcxIpcBufferType>(99);
   EXPECT_EQ(flagcxInvalidArgument,
-            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024,
-                                                    2));
+            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024, 2));
 
   malformed = dagTemplate;
   malformed.nodes[0].ipc.peerLocalRank = 2;
   EXPECT_EQ(flagcxInvalidArgument,
-            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024,
-                                                    2));
+            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024, 2));
 
   malformed = dagTemplate;
   malformed.nodes[0].ipc.srcOffsetBytes = 800;
   EXPECT_EQ(flagcxInvalidArgument,
-            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024,
-                                                    2));
+            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024, 2));
   malformed = dagTemplate;
   malformed.nodes[0].ipc.dstOffsetBytes = 800;
   EXPECT_EQ(flagcxInvalidArgument,
-            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024,
-                                                    2));
+            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024, 2));
 
   // A zero-byte one-past-end range is valid and cannot underflow the bounds
   // checks used by materialization.
@@ -464,8 +425,8 @@ TEST(UniRunnerDagCache, ValidatesIpcMaterializationBindings) {
   malformed.nodes[0].ipc.srcOffsetBytes = 1024;
   malformed.nodes[0].ipc.dstOffsetBytes = 1024;
   malformed.nodes[0].ipc.bytes = 0;
-  EXPECT_EQ(flagcxSuccess, validateUniRunnerIpcDagTemplateBindings(
-                              malformed, 1024, 1024, 2));
+  EXPECT_EQ(flagcxSuccess,
+            validateUniRunnerIpcDagTemplateBindings(malformed, 1024, 1024, 2));
 }
 
 TEST(UniRunnerDagCache, RejectsNonDenseOrDuplicateIpcReadySlots) {
@@ -479,17 +440,15 @@ TEST(UniRunnerDagCache, RejectsNonDenseOrDuplicateIpcReadySlots) {
   second.nodeIdx = 1;
   second.ipc.readySlot = 1;
   dagTemplate.nodes.push_back(second);
-  ASSERT_EQ(flagcxSuccess, validateUniRunnerIpcDagTemplateBindings(
-                              dagTemplate, 128, 128, 2));
+  ASSERT_EQ(flagcxSuccess,
+            validateUniRunnerIpcDagTemplateBindings(dagTemplate, 128, 128, 2));
 
   dagTemplate.nodes[1].ipc.readySlot = 0;
   EXPECT_EQ(flagcxInvalidArgument,
-            validateUniRunnerIpcDagTemplateBindings(dagTemplate, 128, 128,
-                                                    2));
+            validateUniRunnerIpcDagTemplateBindings(dagTemplate, 128, 128, 2));
   dagTemplate.nodes[1].ipc.readySlot = 2;
   EXPECT_EQ(flagcxInvalidArgument,
-            validateUniRunnerIpcDagTemplateBindings(dagTemplate, 128, 128,
-                                                    2));
+            validateUniRunnerIpcDagTemplateBindings(dagTemplate, 128, 128, 2));
 }
 
 TEST(UniRunnerDagCache, RejectsIpcPeerAndReadySlotOverflow) {
@@ -603,8 +562,7 @@ TEST(UniRunnerDagCache, RejectsUnsafeDagArraySizes) {
 
 TEST(UniRunnerDagSizing, CheckedNodeCountRejectsIntOverflow) {
   int nodeCount = -1;
-  const size_t maxInt =
-      static_cast<size_t>(std::numeric_limits<int>::max());
+  const size_t maxInt = static_cast<size_t>(std::numeric_limits<int>::max());
 
   EXPECT_EQ(flagcxSuccess,
             checkedUniRunnerDagNodeCount(0, maxInt, 0, &nodeCount));
@@ -651,26 +609,26 @@ TEST(UniRunnerDagCache, GroupedAllReduceConfigurationIdentity) {
   config.groupSize = 8;
   config.numSlices = 1;
   config.numRedSlices = 32;
-  const auto hash = getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
-                                                 config);
-  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAG,
-                                               config));
+  const auto hash =
+      getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR, config);
+  EXPECT_NE(hash,
+            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAG, config));
   auto changed = config;
   changed.groupSize = 4;
-  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
-                                               changed));
+  EXPECT_NE(hash,
+            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR, changed));
   changed = config;
   changed.numSlices = 2;
-  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
-                                               changed));
+  EXPECT_NE(hash,
+            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR, changed));
   changed = config;
   changed.numRedSlices = 16;
-  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
-                                               changed));
+  EXPECT_NE(hash,
+            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR, changed));
   changed = config;
   changed.bufferMode = uniRunnerDagBufferModeInPlace;
-  EXPECT_NE(hash, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR,
-                                               changed));
+  EXPECT_NE(hash,
+            getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGroupedAR, changed));
   uniRunnerDagAlgoType decoded = uniRunnerDagAlgoDummy;
   ASSERT_TRUE(uniRunnerDagAlgoTypeFromString("grouped_ar", &decoded));
   EXPECT_EQ(uniRunnerDagAlgoGroupedAR, decoded);

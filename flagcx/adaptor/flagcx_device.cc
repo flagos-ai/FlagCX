@@ -7,6 +7,7 @@
 
 #define FLAGCX_DISABLE_DEV_COMM_CREATE_SIZE_DISPATCH
 #include "device_api/flagcx_device.h"
+#include "alloc.h"
 #include "comm.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
@@ -172,54 +173,85 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // DevMem lifecycle
 // ==========================================================================
 
-extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
+static void freeUnboundDevMem(flagcxDevMem_t handle) {
+  free(handle->uniRunnerIpc);
+  pthread_mutex_destroy(&handle->cachedPtrMutex);
+  free(handle);
+}
+
+static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
+                                             bool uniRunnerIpc,
                                              flagcxDevMem_t *devMem) {
-  if (devMem == nullptr) {
+  if (devMem == nullptr && !uniRunnerIpc)
     return flagcxInvalidArgument;
-  }
-  *devMem = nullptr;
-  if (comm == nullptr || buff == nullptr || size == 0) {
+  if (devMem != nullptr)
+    *devMem = nullptr;
+  if (comm == nullptr)
     return flagcxInvalidArgument;
+  flagcxResult_t localPrepare =
+      devMem == nullptr || buff == nullptr || size == 0 ? flagcxInvalidArgument
+                                                        : flagcxSuccess;
+  flagcxDevMem_t handle = nullptr;
+  if (localPrepare == flagcxSuccess) {
+    handle = (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
+    if (handle == nullptr) {
+      localPrepare = flagcxSystemError;
+    } else {
+      memset(handle, 0, sizeof(struct flagcxDevMemInternal));
+      if (pthread_mutex_init(&handle->cachedPtrMutex, NULL) != 0) {
+        free(handle);
+        handle = nullptr;
+        localPrepare = flagcxSystemError;
+      }
+    }
   }
-  *devMem = nullptr;
-
-  flagcxDevMem_t handle =
-      (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
-  if (handle == nullptr) {
-    return flagcxSystemError;
+  if (localPrepare == flagcxSuccess) {
+    handle->rawPtr = buff;
+    handle->ipcIndex = -1;
+    if (uniRunnerIpc) {
+      localPrepare = flagcxCalloc(&handle->uniRunnerIpc, 1);
+      if (localPrepare == flagcxSuccess)
+        handle->uniRunnerIpc->slot = -1;
+    }
   }
-  memset(handle, 0, sizeof(struct flagcxDevMemInternal));
-  pthread_mutex_init(&handle->cachedPtrMutex, NULL);
-
-  // Baseline: always
-  handle->rawPtr = buff;
-  handle->ipcIndex = -1;
 
   // A subrange is valid only when its complete byte range lies inside the
   // exact flagcxMemAlloc allocation that contains its first byte. Unknown
   // pointers remain supported for the default/CCL backend.
-  flagcxMemAllocationInfo allocation;
-  flagcxResult_t allocationRes =
-      globalMemAllocRegistry.findRange(buff, 1, &allocation);
-  if (allocationRes == flagcxSuccess) {
-    if (globalMemAllocRegistry.findRange(buff, size, &allocation) !=
-        flagcxSuccess) {
-      pthread_mutex_destroy(&handle->cachedPtrMutex);
-      free(handle);
-      return flagcxInvalidUsage;
+  if (localPrepare == flagcxSuccess) {
+    flagcxMemAllocationInfo allocation;
+    flagcxResult_t allocationRes =
+        globalMemAllocRegistry.findRange(buff, 1, &allocation);
+    if (allocationRes == flagcxSuccess) {
+      if (globalMemAllocRegistry.findRange(buff, size, &allocation) !=
+          flagcxSuccess) {
+        localPrepare = flagcxInvalidUsage;
+      } else {
+        handle->allocationTracked = true;
+        handle->allocationBase = allocation.base;
+        handle->allocationSize = allocation.size;
+        handle->allocator = allocation.allocator;
+        handle->allocBackend = allocation.backend;
+      }
+    } else if (allocationRes != flagcxInvalidUsage) {
+      localPrepare = allocationRes;
     }
-    handle->allocationTracked = true;
-    handle->allocationBase = allocation.base;
-    handle->allocationSize = allocation.size;
-    handle->allocator = allocation.allocator;
-    handle->allocBackend = allocation.backend;
-  } else if (allocationRes != flagcxInvalidUsage) {
-    pthread_mutex_destroy(&handle->cachedPtrMutex);
-    free(handle);
-    return allocationRes;
   }
-
+  if (uniRunnerIpc) {
+    flagcxResult_t commonPrepare = flagcxSuccess;
+    flagcxResult_t consensus =
+        flagcxConvergeBootstrapStatus(comm, localPrepare, &commonPrepare);
+    if (consensus != flagcxSuccess || commonPrepare != flagcxSuccess) {
+      if (handle != nullptr)
+        freeUnboundDevMem(handle);
+      return consensus != flagcxSuccess ? consensus : commonPrepare;
+    }
+  } else if (localPrepare != flagcxSuccess) {
+    if (handle != nullptr)
+      freeUnboundDevMem(handle);
+    return localPrepare;
+  }
   // Backend-specific creation
   {
     flagcxResult_t ret =
@@ -227,14 +259,28 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
     if (ret != flagcxSuccess) {
       WARN("flagcxDevMemCreate: %s backend failed (%d)", devApiBackend->name,
            ret);
-      pthread_mutex_destroy(&handle->cachedPtrMutex);
-      free(handle);
+      if (uniRunnerIpc)
+        (void)flagcxDevMemDestroy(comm, handle);
+      else
+        freeUnboundDevMem(handle);
       return ret;
     }
   }
 
   *devMem = handle;
   return flagcxSuccess;
+}
+
+extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
+                                             size_t size, flagcxWindow_t win,
+                                             flagcxDevMem_t *devMem) {
+  return flagcxDevMemCreateImpl(comm, buff, size, win, false, devMem);
+}
+
+flagcxResult_t flagcxUniRunnerIpcDevMemCreate(flagcxComm_t comm, void *buff,
+                                              size_t size,
+                                              flagcxDevMem_t *devMem) {
+  return flagcxDevMemCreateImpl(comm, buff, size, nullptr, true, devMem);
 }
 
 extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
@@ -247,15 +293,31 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
        devMem->segmentedPeerLayouts || devMem->deferredResources))
     return flagcxInvalidArgument;
 
-  // Keep the handle and its IPC slot owned by the caller if backend teardown
-  // fails. A retry must still have the original Window state available.
+  struct flagcxIpcTableEntry *ipcEntry = nullptr;
+  if (devMem->uniRunnerIpc != nullptr &&
+      devMem->uniRunnerIpc->ownsTableReference) {
+    const int slot = devMem->uniRunnerIpc->slot;
+    if (comm == nullptr || slot < 0 || slot >= FLAGCX_MAX_IPC_ENTRIES)
+      return flagcxInvalidUsage;
+    ipcEntry = &comm->ipcTable[slot];
+    if (ipcEntry->bindingGeneration != devMem->uniRunnerIpc->generation ||
+        ipcEntry->size != devMem->uniRunnerIpc->boundSize ||
+        ipcEntry->refCount == 0)
+      return flagcxInvalidUsage;
+  }
+
+  // Preserve the handle and IPC reference when backend teardown needs a retry.
   FLAGCXCHECK(devApiBackend->devMemDestroy(comm, devMem));
 
-  // Release IPC table slot (device resources move to the deferred queue).
-  if (devMem->ipcIndex >= 0) {
+  if (ipcEntry != nullptr) {
+    if (--ipcEntry->refCount == 0)
+      releaseIpcTableSlot(comm, devMem->uniRunnerIpc->slot);
+  } else if (devMem->ipcIndex >= 0) {
     releaseIpcTableSlot(comm, devMem->ipcIndex);
-    devMem->ipcIndex = -1;
   }
+  devMem->ipcIndex = -1;
+  free(devMem->uniRunnerIpc);
+  devMem->uniRunnerIpc = nullptr;
 
   if (devMem->cachedDevicePtr || devMem->segmentedPeerLayouts ||
       devMem->deferredResources) {
@@ -393,6 +455,10 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
   if (e->hostPeerPtrs == nullptr && e->hostPeerBasePtrs == nullptr &&
       e->devPeerPtrs == nullptr) {
+    e->basePtr = nullptr;
+    e->size = 0;
+    e->refCount = 0;
+    e->bindingGeneration = 0;
     e->inUse = false;
     return;
   }
@@ -423,6 +489,9 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   e->devPeerPtrs = nullptr;
   e->nPeers = 0;
   e->basePtr = nullptr;
+  e->size = 0;
+  e->refCount = 0;
+  e->bindingGeneration = 0;
   e->inUse = false;
 }
 
@@ -533,9 +602,9 @@ flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxConvergeIpcPrepareStatus(flagcxComm_t comm,
-                                                     flagcxResult_t local,
-                                                     flagcxResult_t *common) {
+flagcxResult_t flagcxConvergeBootstrapStatus(flagcxComm_t comm,
+                                             flagcxResult_t local,
+                                             flagcxResult_t *common) {
   if (comm == nullptr || comm->bootstrap == nullptr || common == nullptr ||
       comm->rank < 0 || comm->rank >= comm->nranks || comm->nranks <= 0)
     return flagcxInvalidArgument;
@@ -661,7 +730,7 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
     localPrepare = flagcxSystemError;
   flagcxResult_t commonPrepare = flagcxSuccess;
   FLAGCXCHECKGOTO(
-      flagcxConvergeIpcPrepareStatus(comm, localPrepare, &commonPrepare), res,
+      flagcxConvergeBootstrapStatus(comm, localPrepare, &commonPrepare), res,
       fail);
   if (commonPrepare != flagcxSuccess) {
     res = commonPrepare;
@@ -760,6 +829,9 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   comm->ipcTable[slot].devPeerPtrs = devPeerPtrs;
   comm->ipcTable[slot].nPeers = localRanks;
   comm->ipcTable[slot].basePtr = buff;
+  comm->ipcTable[slot].size = size;
+  comm->ipcTable[slot].refCount = 0;
+  comm->ipcTable[slot].bindingGeneration = 0;
   comm->ipcTable[slot].inUse = true;
 
   INFO(FLAGCX_INIT,

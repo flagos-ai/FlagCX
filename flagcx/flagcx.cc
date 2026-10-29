@@ -3864,6 +3864,10 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   if (!useHomoComm(comm) || useHeteroComm())
     FLAGCXCHECK(flagcxCommQuiesce(comm));
 
+  // Retained fused buffers may still be referenced by unfinished stream work.
+  // Keep the communicator retryable if the device cannot be drained.
+  FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
+
   // Preserve transport-specific shutdown coordination before any DevComm or
   // one-sided registration can release remotely accessible memory.
   if (!useHomoComm(comm) || useHeteroComm())

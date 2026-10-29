@@ -256,16 +256,24 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   uint64_t *signals;
   void *dSignals;
   flagcxEvent_t completionEvent;
+  // 0: not recorded, 1: recorded, 2: failed submission safely drained.
+  int completionState;
+  bool completionUnsafe;
   std::map<int, int> stepInfo;
   std::vector<std::pair<int, int>> steps;
   std::vector<flagcxEvent_t> events;
 
   flagcxStreamValueSemaphore()
       : initResult(flagcxSuccess), counter(0), signals(nullptr),
-        dSignals(nullptr), completionEvent(nullptr) {
+        dSignals(nullptr), completionEvent(nullptr), completionState(0),
+        completionUnsafe(false) {
     initResult = streamValueBufferPool.acquire(&signals, &dSignals);
   }
   ~flagcxStreamValueSemaphore() override {
+    // A failed synchronization may leave GPU work using the event or slot.
+    // Keep both allocated so the pool cannot hand the slot out again.
+    if (completionUnsafe)
+      return;
     if (completionEvent != nullptr) {
       deviceAdaptor->eventDestroy(completionEvent);
     }
@@ -276,6 +284,10 @@ struct flagcxStreamValueSemaphore : public flagcxSemaphore {
   }
 
   flagcxResult_t enqueueCompletion(flagcxStream_t launchStream);
+  void markCompletionDrained() {
+    __atomic_store_n(&completionState, 2, __ATOMIC_RELEASE);
+  }
+  void markCompletionUnsafe() { completionUnsafe = true; }
 
   flagcxEvent_t getEvent() override {
     events.push_back(nullptr);

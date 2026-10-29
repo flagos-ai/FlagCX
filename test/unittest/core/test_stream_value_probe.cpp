@@ -16,6 +16,7 @@ namespace {
 
 struct FakeDeviceState {
   int device = 0;
+  flagcxResult_t getDeviceResult = flagcxSuccess;
   int allocations = 0;
   int frees = 0;
   int writes = 0;
@@ -29,8 +30,9 @@ FakeDeviceState *fakeState = nullptr;
 int fakeStream;
 
 flagcxResult_t fakeGetDevice(int *device) {
-  *device = fakeState->device;
-  return flagcxSuccess;
+  if (fakeState->getDeviceResult == flagcxSuccess)
+    *device = fakeState->device;
+  return fakeState->getDeviceResult;
 }
 
 flagcxResult_t fakeDeviceMalloc(void **ptr, size_t size, flagcxMemType_t,
@@ -138,6 +140,20 @@ TEST_F(StreamValueProbeTest, UnsupportedWriteFallsBackWithoutWaiting) {
   EXPECT_EQ(state.waits, 0);
   EXPECT_EQ(state.synchronizations, 0);
   EXPECT_EQ(state.allocations, state.frees);
+}
+
+TEST_F(StreamValueProbeTest, UnsupportedDeviceQueryIsReportedWithoutProbing) {
+  state.getDeviceResult = flagcxNotSupported;
+  bool supported = true;
+  EXPECT_EQ(flagcxStreamValueSupported(&supported), flagcxNotSupported);
+  EXPECT_FALSE(supported);
+  EXPECT_EQ(state.allocations, 0);
+  EXPECT_EQ(state.writes, 0);
+
+  state.getDeviceResult = flagcxSuccess;
+  EXPECT_EQ(flagcxStreamValueSupported(&supported), flagcxSuccess);
+  EXPECT_TRUE(supported);
+  EXPECT_EQ(state.writes, 1);
 }
 
 TEST_F(StreamValueProbeTest, SupportedResultIsCachedPerDevice) {

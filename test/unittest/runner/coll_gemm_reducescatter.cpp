@@ -1,6 +1,7 @@
 #include "runner_fixtures.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <vector>
 
@@ -33,8 +34,7 @@ TEST_F(FlagCXCollTest, GemmReduceScatter) {
     for (size_t col = 0; col < n; ++col) {
       float sum = 0.0f;
       for (size_t p = 0; p < kPerRank; ++p) {
-        sum += hostInput[row * kPerRank + p] *
-               hostWeight[p * n + col];
+        sum += hostInput[row * kPerRank + p] * hostWeight[p * n + col];
       }
       localProduct[row * n + col] = sum;
     }
@@ -74,5 +74,25 @@ TEST_F(FlagCXCollTest, GemmReduceScatter) {
     EXPECT_NEAR(hostOutput[i], expected, tolerance) << "index " << i;
   }
   EXPECT_EQ(devHandle->deviceFree(deviceWeight, flagcxMemDevice, NULL),
+            flagcxSuccess);
+}
+
+TEST_F(FlagCXCollTest, GemmReduceScatterConvergesRankLocalSizeFailure) {
+  if (nranks < 2)
+    GTEST_SKIP();
+  void *deviceWeight = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&deviceWeight, 4 * sizeof(float),
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  const size_t large =
+      static_cast<size_t>(UINT32_MAX) -
+      static_cast<size_t>(UINT32_MAX) % static_cast<size_t>(nranks);
+  const size_t m = rank == 0 ? large : static_cast<size_t>(nranks) * 2;
+  const size_t n = rank == 0 ? UINT32_MAX : 2;
+  const size_t k = rank == 0 ? UINT32_MAX : 2;
+  EXPECT_EQ(flagcxGemmReduceScatter(sendbuff, deviceWeight, recvbuff, m, n, k,
+                                    flagcxFloat32, flagcxSum, comm, stream),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->deviceFree(deviceWeight, flagcxMemDevice, nullptr),
             flagcxSuccess);
 }

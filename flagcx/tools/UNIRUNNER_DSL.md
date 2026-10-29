@@ -271,14 +271,14 @@ enable this path separately from the original SlicedAR loader:
 
 ```bash
 export FLAGCX_USE_HETERO_COMM=1
-export FLAGCX_UNIRUNNER_USE_HIERARCHICAL_SLICEDAR=1
+export FLAGCX_UNIRUNNER_ALGO=5
 export FLAGCX_UNIRUNNER_GROUPSIZE=8
 export FLAGCX_UNIRUNNER_NSLICES=2
 export FLAGCX_UNIRUNNER_NREDSLICES=2
 export FLAGCX_UNIRUNNER_ALGO_PATH=algo_output/hierarchical_slicedar
 ```
 
-`FLAGCX_UNIRUNNER_USE_SLICEDAR=1` still selects the original `sliced_ar` loader. The
+`FLAGCX_UNIRUNNER_ALGO=6` still selects the original `sliced_ar` loader. The
 hierarchical loader expects a matching DSL-generated cache file and does not
 silently fall back to the original SlicedAR DAG.
 
@@ -571,18 +571,18 @@ export FLAGCX_UNIRUNNER_NREDSLICES=0
 export FLAGCX_UNIRUNNER_REDSLICESIZE=1M
 ```
 
-For GroupedAR select `FLAGCX_UNIRUNNER_USE_GROUPEDAR=1`,
+For GroupedAR select `FLAGCX_UNIRUNNER_ALGO=1`,
 `FLAGCX_UNIRUNNER_LOCAL_NSLICES=2` and set
 `FLAGCX_UNIRUNNER_ALGO_PATH` to the generated `groupedar` directory.
 
-For AllGatherGemm select `FLAGCX_UNIRUNNER_FUSED_AG_GEMM_ALGO=1`; for
-GemmReduceScatter select `FLAGCX_UNIRUNNER_FUSED_GEMM_RS_ALGO=1`.
+For AllGatherGemm select `FLAGCX_UNIRUNNER_ALGO=10`; for
+GemmReduceScatter select `FLAGCX_UNIRUNNER_ALGO=12`.
 Both use `FLAGCX_UNIRUNNER_GEMM_KSLICES=1`,
 `FLAGCX_UNIRUNNER_MAX_BLOCKS=128`,
 `FLAGCX_UNIRUNNER_GEMM_WORKERS_PER_STEP=128` and their corresponding
 generated directory as `FLAGCX_UNIRUNNER_ALGO_PATH`.
-The fused algorithm selector 0 retains the original built-in ring.
-Selector 1 requires a matching DSL file and fails if it cannot load one.
+The default fused algorithms retain the original built-in ring. Selectors 10
+and 12 require matching DSL files and fail if they cannot load them.
 
 These settings describe future operator invocation. Translation itself
 needs none of these runtime environment variables. No operator is launched

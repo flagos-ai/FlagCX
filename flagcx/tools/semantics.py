@@ -4,8 +4,10 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 try:
+    from .dsl_validation import execution_order
     from .utils import Collective, RedOp
 except ImportError:  # Keep compatibility with the existing tools/*.py scripts.
+    from dsl_validation import execution_order
     from utils import Collective, RedOp
 
 Atom = int
@@ -327,6 +329,9 @@ class DagSemanticChecker:
         result.merge(self._check_structure())
         if not result.ok:
             return result
+        result.merge(self._check_p2p_pairs())
+        if not result.ok:
+            return result
 
         simulated = self._simulate(result)
         if simulated is None:
@@ -385,6 +390,56 @@ class DagSemanticChecker:
                 result.add_error(f"rank {rank} parent/child dependency edges differ")
             if self._has_cycle(nodes):
                 result.add_error(f"rank {rank} dependency graph contains a cycle")
+        return result
+
+    def _check_p2p_pairs(self) -> SemanticCheckResult:
+        result = SemanticCheckResult(ok=True)
+        # Match the FIFO topological order used to submit each rank's nodes.
+        sends: Dict[Tuple[int, int, int], List[Tuple[int, int, int]]] = {}
+        receives: Dict[Tuple[int, int, int], List[Tuple[int, int, int]]] = {}
+        for rank, template in self.rank_templates.items():
+            try:
+                order = execution_order(template.nodes)
+            except ValueError as error:
+                result.add_error(f"rank {rank}: {error}")
+                continue
+            for node_idx in order:
+                node = template.nodes[node_idx]
+                if node.node_type != "p2p":
+                    continue
+                for op in node.p2p_ops:
+                    if op.type == "send":
+                        key = (rank, op.peer_rank, node.comm_domain)
+                        sends.setdefault(key, []).append(
+                            (op.count, op.datatype, node_idx)
+                        )
+                    elif op.type == "recv":
+                        key = (op.peer_rank, rank, node.comm_domain)
+                        receives.setdefault(key, []).append(
+                            (op.count, op.datatype, node_idx)
+                        )
+
+        for key in sorted(sends.keys() | receives.keys()):
+            src, dst, domain = key
+            sent = sends.get(key, [])
+            received = receives.get(key, [])
+            for send, recv in zip(sent, received):
+                if send[:2] != recv[:2]:
+                    result.add_error(
+                        f"rank {src} node {send[2]} send to rank {dst} "
+                        f"does not match rank {dst} node {recv[2]} recv "
+                        f"in domain {domain}: {send[:2]} != {recv[:2]}"
+                    )
+            for send in sent[len(received):]:
+                result.add_error(
+                    f"rank {src} node {send[2]} send to rank {dst} "
+                    f"in domain {domain} has no matching recv"
+                )
+            for recv in received[len(sent):]:
+                result.add_error(
+                    f"rank {dst} node {recv[2]} recv from rank {src} "
+                    f"in domain {domain} has no matching send"
+                )
         return result
 
     @staticmethod

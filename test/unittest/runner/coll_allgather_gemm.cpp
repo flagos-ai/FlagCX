@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <vector>
 
@@ -21,8 +22,8 @@ TEST_F(FlagCXCollTest, AllGatherGemm) {
   std::vector<float> gatheredInput(nranks * inputElements);
   std::vector<float> expected(outputElements);
   for (size_t i = 0; i < inputElements; ++i) {
-    hostInput[i] = 0.1f * static_cast<float>(rank + 1) +
-                   0.01f * static_cast<float>(i + 1);
+    hostInput[i] =
+        0.1f * static_cast<float>(rank + 1) + 0.01f * static_cast<float>(i + 1);
   }
   for (size_t i = 0; i < weightElements; ++i) {
     hostWeight[i] = 0.02f * static_cast<float>(rank + 1) +
@@ -56,7 +57,7 @@ TEST_F(FlagCXCollTest, AllGatherGemm) {
             flagcxSuccess);
 
   EXPECT_EQ(flagcxAllGatherGemm(sendbuff, deviceWeight, recvbuff, mPerRank, n,
-                               k, flagcxFloat32, comm, stream),
+                                k, flagcxFloat32, comm, stream),
             flagcxSuccess);
   ASSERT_EQ(devHandle->deviceMemcpy(hostOutput.data(), recvbuff,
                                     outputElements * sizeof(float),
@@ -69,5 +70,23 @@ TEST_F(FlagCXCollTest, AllGatherGemm) {
     EXPECT_NEAR(hostOutput[i], expected[i], tolerance) << "index " << i;
   }
   EXPECT_EQ(devHandle->deviceFree(deviceWeight, flagcxMemDevice, NULL),
+            flagcxSuccess);
+}
+
+TEST_F(FlagCXCollTest, AllGatherGemmConvergesRankLocalSizeFailure) {
+  if (nranks < 2)
+    GTEST_SKIP();
+  void *deviceWeight = nullptr;
+  ASSERT_EQ(devHandle->deviceMalloc(&deviceWeight, 4 * sizeof(float),
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  const size_t large = static_cast<size_t>(UINT32_MAX);
+  const size_t m = rank == 0 ? large : 2;
+  const size_t n = rank == 0 ? large : 2;
+  const size_t k = rank == 0 ? large : 2;
+  EXPECT_EQ(flagcxAllGatherGemm(sendbuff, deviceWeight, recvbuff, m, n, k,
+                                flagcxFloat32, comm, stream),
+            flagcxInvalidArgument);
+  EXPECT_EQ(devHandle->deviceFree(deviceWeight, flagcxMemDevice, nullptr),
             flagcxSuccess);
 }

@@ -419,7 +419,30 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
 
   if (launchStream != nullptr && launchEvent != nullptr) {
     if (useStreamValueGroup) {
-      FLAGCXCHECK(streamValueSemaphore->enqueueCompletion(launchStream));
+      ret = streamValueSemaphore->enqueueCompletion(launchStream);
+      if (ret != flagcxSuccess) {
+        // Proxy ops were posted before the completion event was recorded.
+        // Abort them so their counters can drain and release a queued stream
+        // wait before synchronizing the stream.
+        for (auto &step : proxyOps) {
+          for (auto &entry : step.second) {
+            flagcxProxyRecordAsyncError(entry.first->proxyState, ret);
+          }
+        }
+        flagcxResult_t syncResult =
+            deviceAdaptor->streamSynchronize(launchStream);
+        if (syncResult != flagcxSuccess)
+          syncResult = deviceAdaptor->deviceSynchronize();
+        if (syncResult == flagcxSuccess)
+          streamValueSemaphore->markCompletionDrained();
+        else {
+          WARN("Failed to drain stream-value completion after error %d; "
+               "retaining its signal slot",
+               ret);
+          streamValueSemaphore->markCompletionUnsafe();
+        }
+        goto fail;
+      }
     } else if (deviceAsyncKernel) {
       FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
           launchStream, deviceAsyncKernel, (void *)semaphore->getSignals()));

@@ -62,15 +62,13 @@ def export_examples(output_dir):
         environment = dict(common_env, FLAGCX_UNIRUNNER_ALGO_PATH=str(folder))
         if name == "groupedar":
             environment.update(
-                FLAGCX_UNIRUNNER_USE_GROUPEDAR="1",
+                FLAGCX_UNIRUNNER_ALGO="1",
                 FLAGCX_UNIRUNNER_LOCAL_NSLICES="2",
             )
         else:
-            selector = ("FLAGCX_UNIRUNNER_FUSED_AG_GEMM_ALGO" if
-                        name == "allgather_gemm" else
-                        "FLAGCX_UNIRUNNER_FUSED_GEMM_RS_ALGO")
             environment.update({
-                selector: "1", "FLAGCX_UNIRUNNER_GEMM_KSLICES": "1",
+                "FLAGCX_UNIRUNNER_ALGO": "10" if name == "allgather_gemm" else "12",
+                "FLAGCX_UNIRUNNER_GEMM_KSLICES": "1",
                 "FLAGCX_UNIRUNNER_GEMM_WORKERS_PER_STEP": "128",
                 "FLAGCX_UNIRUNNER_MAX_BLOCKS": "128",
             })

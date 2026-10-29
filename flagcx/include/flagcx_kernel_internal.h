@@ -63,61 +63,59 @@ flagcxResult_t resolveUniRunnerStaticExecutorResidencyBudget(
 
 FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
                                              flagcxDeviceTrigger_t trigger);
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
-                                             uint64_t addr2, uint64_t addr3,
-                                             size_t count, size_t nthreads,
-                                             flagcxDataType_t datatype,
-                                             flagcxRedOp_t redop,
-                                             uint64_t flagIn,
-                                             uint64_t flagOut, int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueue(void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
+        size_t count, size_t nthreads, flagcxDataType_t datatype,
+        flagcxRedOp_t redop, uint64_t flagIn, uint64_t flagOut, int *idx);
 FLAGCX_HOST_DECORATOR flagcxResult_t enqueueReduceWorker(
     void *fifoBuffer, uint64_t addr1, uint64_t addr2, uint64_t addr3,
     size_t count, size_t nthreads, flagcxDataType_t datatype,
     flagcxRedOp_t redop, uint32_t workerId, uint32_t workerCount,
     uint64_t completionCounter, uint64_t flagIn, uint64_t flagOut, int *idx);
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueueGemm(
-    void *fifoBuffer, uint64_t a, uint64_t b, uint64_t c, uint32_t m,
-    uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
-    size_t nthreads, flagcxDataType_t datatype, int accumulate,
-    uint32_t workerId, uint32_t workerCount, uint64_t completionCounter,
-    uint64_t flagIn, uint64_t flagOut, int *idx);
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueueIpc(
-    void *fifoBuffer, uint64_t srcOffsetBytes, uint64_t dstOffsetBytes,
-    uint64_t bytes, uint64_t chunkSize, flagcxIpcBufferType srcBufferType,
-    int peerLocalRank, uint32_t readySlot, uint64_t epoch,
-    uint32_t parentFlagsOffset, uint32_t numParentFlags, uint64_t flagOut,
-    int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueueGemm(void *fifoBuffer, uint64_t a, uint64_t b, uint64_t c, uint32_t m,
+            uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
+            size_t nthreads, flagcxDataType_t datatype, int accumulate,
+            uint32_t workerId, uint32_t workerCount, uint64_t completionCounter,
+            uint64_t flagIn, uint64_t flagOut, int *idx);
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueueIpc(void *fifoBuffer, uint64_t srcOffsetBytes, uint64_t dstOffsetBytes,
+           uint64_t bytes, uint64_t chunkSize,
+           flagcxIpcBufferType srcBufferType, int peerLocalRank,
+           uint32_t readySlot, uint64_t epoch, uint32_t parentFlagsOffset,
+           uint32_t numParentFlags, uint64_t flagOut, int *idx);
 #ifdef COMPILE_KERNEL
 FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t dequeue(volatile uint64_t *buffer,
                                                       int *idx);
 
 struct flagcxDevMem;
-FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(
-    void *redFifoBuffer, void *ipcFifoBuffer, flagcxDevMem inputMem,
-    flagcxDevMem outputMem, flagcxDevMem readyMem,
-    const uint64_t *ipcParentFlags, int nRedBlocks, int nIpcBlocks,
-    uint64_t avgDivisor);
-FLAGCX_GLOBAL_DECORATOR void flagcxStaticReduceKernel(
-    flagcxReduceTrigger *triggers, uint64_t numTriggers,
-    const uint64_t *abortFlag, uint64_t avgDivisor,
-    uint64_t numNetTriggers, uint64_t numNetBlocks);
+FLAGCX_GLOBAL_DECORATOR void
+flagcxCollectiveKernel(void *redFifoBuffer, void *ipcFifoBuffer,
+                       flagcxDevMem inputMem, flagcxDevMem outputMem,
+                       flagcxDevMem readyMem, const uint64_t *ipcParentFlags,
+                       int nRedBlocks, int nIpcBlocks, uint64_t avgDivisor);
+FLAGCX_GLOBAL_DECORATOR void
+flagcxStaticReduceKernel(flagcxReduceTrigger *triggers, uint64_t numTriggers,
+                         const uint64_t *abortFlag, uint64_t avgDivisor,
+                         uint64_t numNetTriggers, uint64_t numNetBlocks);
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticCollectiveKernel(
     flagcxReduceTrigger *redTriggers, uint64_t numRedTriggers,
     flagcxIpcTrigger *ipcTriggers, uint64_t numIpcTriggers,
     flagcxDevMem inputMem, flagcxDevMem outputMem, flagcxDevMem readyMem,
     const uint64_t *ipcParentFlags, uint64_t numIpcParentFlags,
-    uint64_t numRedBlocks, uint64_t numIpcBlocks,
-    uint64_t *blocksDone, const uint64_t *abortFlag,
-    flagcxStaticIpcControl ipcControl, uint64_t avgDivisor);
-FLAGCX_GLOBAL_DECORATOR void flagcxStaticIpcRecoveryKernel(
-    flagcxDevMem readyMem, flagcxStaticIpcControl ipcControl);
+    uint64_t numRedBlocks, uint64_t numIpcBlocks, uint64_t *blocksDone,
+    const uint64_t *abortFlag, flagcxStaticIpcControl ipcControl,
+    uint64_t avgDivisor);
+FLAGCX_GLOBAL_DECORATOR void
+flagcxStaticIpcRecoveryKernel(flagcxDevMem readyMem,
+                              flagcxStaticIpcControl ipcControl);
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
     flagcxRingLaneDesc *lanes, uint64_t numLanes,
     flagcxRingStepTrigger *triggers, uint64_t numTriggers,
     flagcxDevMem inputMem, flagcxDevMem outputMem, flagcxDevMem scratchMem,
-    flagcxDevMem progressMem, flagcxDevMem readyMem,
-    uint64_t simpleBufferBytes, uint32_t datatype, uint32_t redOp,
-    uint64_t avgDivisor, uint64_t *blocksDone, const uint64_t *abortFlag,
+    flagcxDevMem progressMem, flagcxDevMem readyMem, uint64_t simpleBufferBytes,
+    uint32_t datatype, uint32_t redOp, uint64_t avgDivisor,
+    uint64_t *blocksDone, const uint64_t *abortFlag,
     flagcxStaticIpcControl ipcControl);
 #endif // COMPILE_KERNEL
 
@@ -126,32 +124,33 @@ flagcxResult_t flagcxLaunchCollectiveKernel(
     flagcxDevMem_t outputMem, flagcxDevMem_t readyMem,
     const uint64_t *ipcParentFlags, size_t nthreads, size_t nRedBlocks,
     size_t nIpcBlocks, uint64_t avgDivisor, flagcxStream_t stream);
-flagcxResult_t flagcxGetStaticReduceKernelMaxExecutorBlocks(
-    size_t nthreads, size_t *maxExecutorBlocks);
-flagcxResult_t flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
-    size_t nthreads, size_t *maxExecutorBlocks);
-flagcxResult_t flagcxGetStaticRingDagKernelMaxExecutorBlocks(
-    size_t nthreads, size_t *maxExecutorBlocks);
+flagcxResult_t
+flagcxGetStaticReduceKernelMaxExecutorBlocks(size_t nthreads,
+                                             size_t *maxExecutorBlocks);
+flagcxResult_t
+flagcxGetStaticCollectiveKernelMaxExecutorBlocks(size_t nthreads,
+                                                 size_t *maxExecutorBlocks);
+flagcxResult_t
+flagcxGetStaticRingDagKernelMaxExecutorBlocks(size_t nthreads,
+                                              size_t *maxExecutorBlocks);
 flagcxResult_t flagcxLaunchStaticReduceKernel(
     void *redFifoDeviceBuffer, size_t numTriggers, size_t nthreads,
     size_t nRedBlocks, size_t maxExecutorBlocks, uint64_t avgDivisor,
-    flagcxStream_t stream, size_t numNetTriggers = 0,
-    size_t numNetBlocks = 0);
+    flagcxStream_t stream, size_t numNetTriggers = 0, size_t numNetBlocks = 0);
 flagcxResult_t flagcxLaunchStaticCollectiveKernel(
-    void *redFifoDeviceBuffer, size_t numRedTriggers,
-    void *ipcFifoDeviceBuffer, size_t numIpcTriggers,
-    flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
+    void *redFifoDeviceBuffer, size_t numRedTriggers, void *ipcFifoDeviceBuffer,
+    size_t numIpcTriggers, flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
     flagcxDevMem_t readyMem, const uint64_t *ipcParentFlags,
     size_t numIpcParentFlags, size_t nthreads, size_t nRedBlocks,
     size_t nIpcBlocks, size_t maxExecutorBlocks, uint64_t avgDivisor,
     const flagcxStaticIpcControl *ipcControl, flagcxStream_t stream);
-flagcxResult_t flagcxLaunchStaticIpcRecoveryKernel(
-    flagcxDevMem_t readyMem, const flagcxStaticIpcControl *ipcControl,
-    flagcxStream_t stream);
+flagcxResult_t
+flagcxLaunchStaticIpcRecoveryKernel(flagcxDevMem_t readyMem,
+                                    const flagcxStaticIpcControl *ipcControl,
+                                    flagcxStream_t stream);
 flagcxResult_t flagcxLaunchStaticRingDagKernel(
-    flagcxRingLaneDesc *lanes, size_t numLanes,
-    flagcxRingStepTrigger *triggers, size_t numTriggers,
-    flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
+    flagcxRingLaneDesc *lanes, size_t numLanes, flagcxRingStepTrigger *triggers,
+    size_t numTriggers, flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
     flagcxDevMem_t scratchMem, flagcxDevMem_t progressMem,
     flagcxDevMem_t readyMem, size_t simpleBufferBytes,
     flagcxDataType_t datatype, flagcxRedOp_t redOp, uint64_t avgDivisor,
@@ -189,6 +188,11 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 // Release an IPC table slot at runtime — moves resources to a deferred queue
 // so the slot can be reused by buildIpcPeerPointers. Actual cleanup at destroy.
 void releaseIpcTableSlot(flagcxComm_t comm, int slot);
+
+// Agree on rank-local errors before entering another bootstrap collective.
+flagcxResult_t flagcxConvergeBootstrapStatus(flagcxComm_t comm,
+                                             flagcxResult_t local,
+                                             flagcxResult_t *common);
 
 // Drain deferred IPC entries queued by releaseIpcTableSlot.
 flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
