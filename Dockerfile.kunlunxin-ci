@@ -1,0 +1,19 @@
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1@sha256:5046b61a78e8702be175b8b04505ed010d2e7346374cf24f5d19954aa2f7d291
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libibverbs-dev \
+        libnuma-dev \
+        nlohmann-json3-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH=/usr/local/mpich-3.3.2/bin:/usr/local/xpu/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/xccl_Linux_x86_64/so:/usr/local/mpich-3.3.2/lib:/usr/local/xpu/so:/usr/local/xpu/lib:${LD_LIBRARY_PATH}

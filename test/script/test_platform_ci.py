@@ -12,6 +12,40 @@ HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_kunlunxin_ci_reports_missing_xpu_test_toolchain_as_skipped(self):
+        env_script = (
+            REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
+        ).read_text()
+        runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        self.assertIn("flagcx_ci_find_xpu_toolchain", env_script)
+        self.assertIn("FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE=0", env_script)
+        self.assertIn("SKIPPED $suite", env_script)
+        self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS", env_script)
+        self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS=1", env_script)
+        self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", env_script)
+        self.assertIn("FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
+        self.assertIn("FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
+        self.assertIn('[[ ! -f "$CCL_HOME/include/xshmem/xshmem.h" ]]', env_script)
+        self.assertIn('"$suite" == kernel', env_script)
+        self.assertIn("Skipping KunlunXin GDR visibility conformance", runner)
+        self.assertIn('flagcx_ci_build_suite_override "$SUITE"', runner)
+        self.assertIn("Skipping $platform_name VMM + NET data tests", runner)
+        self.assertIn('    device)', runner)
+        self.assertIn('    topo)', runner)
+        self.assertIn('kernel)', runner)
+        self.assertIn('"$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP"', runner)
+
+        perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        self.assertIn("perf-test-kunlunxin:", perf_workflow)
+        self.assertIn("kunlunxin perf", perf_workflow)
+        handler = (
+            REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
+        ).read_text()
+        self.assertIn("run_host_perf_suite.sh\" homogeneous", handler)
+        self.assertIn("run_host_perf_suite.sh\" heterogeneous", handler)
+
     def test_gpu_ci_world_uses_four_ranks(self):
         for platform in ("cuda", "metax", "hygon", "ppu"):
             with self.subTest(platform=platform):
@@ -233,7 +267,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu"]
+        all_platforms = ["cuda", "hygon", "metax", "kunlunxin", "ppu"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -584,6 +618,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
             '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
             '{"platform":"metax","display_name":"MetaX Tests"},'
+            '{"platform":"kunlunxin","display_name":"KunlunXin Tests"},'
             '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
         )
         unit_workflow = (
@@ -631,6 +666,21 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "runner",
                 "service",
                 "symmem",
+            ],
+            "kunlunxin": [
+                "adaptor",
+                "core",
+                "device",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "kernel",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+                "topo",
             ],
             "ppu": [
                 "adaptor",
@@ -803,7 +853,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('if [[ "$platform_name" != "hygon" ]]; then', rma_case)
+        self.assertIn(
+            'if ((run_visibility != 0)) && [[ "$platform_name" != "hygon" ]]; then',
+            rma_case,
+        )
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -879,7 +932,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn(
-            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            'adaptor|p2p|rma|runner|symmem|topo|device_api|device_api_unified_ir)',
             unit_runner,
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
@@ -918,8 +971,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("local symmem_run_vmm_net_data=1", unit_runner)
         self.assertIn(
-            'if [[ "$platform_name" == "ppu" || '
-            '"$platform_name" == "hygon" ]]',
+            '"$platform_name" == "kunlunxin"',
             unit_runner,
         )
         self.assertIn(

@@ -43,6 +43,10 @@ jobs:
       ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
+      kunlunxin_ci_image: ${{ steps.kunlunxin.outputs.ci_image }}
+      kunlunxin_docker_args: ${{ steps.kunlunxin.outputs.docker_args }}
+      kunlunxin_set_env: ${{ steps.kunlunxin.outputs.set_env }}
+      kunlunxin_runs_on: ${{ steps.kunlunxin.outputs.runs_on }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -66,6 +70,10 @@ jobs:
       - name: Load PPU configuration
         id: ppu
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
+
+      - name: Load KunlunXin configuration
+        id: kunlunxin
+        run: ruby .github/scripts/ci/load_platform_config.rb kunlunxin
 
   torch-api-test-hygon:
     if: contains(fromJSON(inputs.platforms), 'hygon')
@@ -292,6 +300,55 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  torch-api-test-kunlunxin:
+    if: contains(fromJSON(inputs.platforms), 'kunlunxin')
+    name: torch-api-test (kunlunxin)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_runs_on) }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run torch-api-test (kunlunxin) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-kunlunxin-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          kunlunxin torch-api
+
+      - name: Cleanup torch-api-test (kunlunxin) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-kunlunxin-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-torch-api-test-kunlunxin-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
   torch_api_complete:
     name: Validate selected Torch API jobs
     if: always()
@@ -301,6 +358,7 @@ jobs:
       - torch-api-test-cuda
       - torch-api-test-metax
       - torch-api-test-ppu
+      - torch-api-test-kunlunxin
     runs-on: ubuntu-latest
     env:
       PLATFORMS: ${{ inputs.platforms }}
@@ -310,6 +368,7 @@ jobs:
       HYGON_RESULT: ${{ needs['torch-api-test-hygon'].result }}
       METAX_RESULT: ${{ needs['torch-api-test-metax'].result }}
       PPU_RESULT: ${{ needs['torch-api-test-ppu'].result }}
+      KUNLUNXIN_RESULT: ${{ needs['torch-api-test-kunlunxin'].result }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -323,3 +382,15 @@ jobs:
           bash .github/scripts/ci/check_platform_workflow.sh
           "$PLATFORMS" "$CONFIG_RESULT" "$CUDA_BASE_RESULT" "$CUDA_RESULT"
           "$HYGON_RESULT" "$METAX_RESULT" "$PPU_RESULT"
+
+      - name: Validate selected KunlunXin Torch API job
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          CONFIG_RESULT: ${{ needs['load-hardware-container-configs'].result }}
+          KUNLUNXIN_RESULT: ${{ needs['torch-api-test-kunlunxin'].result }}
+        shell: bash
+        run: |
+          if python3 -c 'import json, os, sys; sys.exit(0 if "kunlunxin" in json.loads(os.environ["PLATFORMS"]) else 1)'; then
+            [[ "$CONFIG_RESULT" == success ]] || { echo "KunlunXin configuration loading ended with: $CONFIG_RESULT" >&2; exit 1; }
+            [[ "$KUNLUNXIN_RESULT" == success ]] || { echo "KunlunXin Torch API job ended with: $KUNLUNXIN_RESULT" >&2; exit 1; }
+          fi

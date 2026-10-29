@@ -60,12 +60,12 @@ flagcx_ci_require_rdma() {
 
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
   case "$platform_name" in
-    cuda|metax|hygon|ppu) ;;
+    cuda|metax|hygon|ppu|kunlunxin) ;;
     *) return 0 ;;
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|symmem|topo|device_api|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -82,6 +82,16 @@ flagcx_ci_require_rdma() {
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
+
+if declare -F flagcx_ci_build_suite_override >/dev/null; then
+  FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
+  flagcx_ci_build_suite_override "$SUITE"
+  if [[ "$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
+    echo "SKIPPED $SUITE: required KunlunXin device toolchain or XSHMEM headers are unavailable"
+    exit 0
+  fi
+fi
+
 # RMA has separate IPC and network invocations. Its RDMA preflight runs only
 # before the network invocation so missing RDMA cannot hide IPC regressions.
 if [[ "$SUITE" != rma ]]; then
@@ -134,6 +144,17 @@ run_device_api_host() {
 
 run_device_api() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local platform_name
+  platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+  # KunlunXin intentionally builds only the unified-IR device API targets;
+  # its legacy test_device_api_* launchers are not part of the backend.
+  # Reuse the unified-IR coverage for the device_api matrix entry instead of
+  # failing on a binary that cannot be produced by the platform Makefile.
+  if [[ "$platform_name" == kunlunxin ]]; then
+    echo "Legacy device_api targets are unavailable; running unified-IR coverage for $suite"
+    run_device_api_unified_ir
+    return
+  fi
   local -a common_env=(
     -x FLAGCX_USE_HETERO_COMM=1
     -x FLAGCX_MEM_ENABLE=1
@@ -290,9 +311,12 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      if ((unit_status == 0)); then
+      if ((unit_status == 0)) &&
+         [[ "${FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS:-1}" == 1 ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" || unit_status=$?
+      elif ((unit_status == 0)); then
+        echo "Skipping mandatory adaptor GPU one-sided check: platform runtime does not provide the required GDR contract"
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -486,6 +510,7 @@ run_suite() {
         # general RMA suite: requirement overrides and VMM route selection are
         # cached once, and each case must exercise one unambiguous policy.
         local platform_name visibility_filter base_rma_platform_env
+        local run_visibility=1
         local expected_read=success expected_write=success
         local expected_read_required=1 expected_write_required=
         platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -509,6 +534,12 @@ run_suite() {
             expected_read_required=0
             expected_write_required=0
             ;;
+          kunlunxin)
+            # The current XPU runtime has no validated GDR consumer visibility
+            # route. Keep the ordinary IPC and network RMA tests, and report
+            # this optional conformance block as unavailable.
+            run_visibility=0
+            ;;
           cuda)
             # READ stays required. WRITE is resolved from compute capability
             # and GPU/NIC/CPU topology, so do not hard-code a pre-Hopper bit.
@@ -519,7 +550,11 @@ run_suite() {
             ;;
         esac
 
-        local -a visibility_common_env=(
+        local -a visibility_common_env=()
+        if ((run_visibility == 0)); then
+          echo "Skipping KunlunXin GDR visibility conformance: no validated XPU consumer route"
+        else
+        visibility_common_env=(
           -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
           -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ="$expected_read"
           -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE="$expected_write"
@@ -531,7 +566,7 @@ run_suite() {
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
           )
         fi
-        if [[ "$platform_name" != "hygon" ]]; then
+        if ((run_visibility != 0)) && [[ "$platform_name" != "hygon" ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
@@ -540,7 +575,7 @@ run_suite() {
             visibility_status=$?
         fi
 
-        if [[ "$platform_name" == "cuda" ]]; then
+        if ((run_visibility != 0)) && [[ "$platform_name" == "cuda" ]]; then
           # CUDA validates a VMM route when available. Some runners cannot
           # export DMA-BUF even though VA registration works; the fixture
           # records a capability note and skips that route on those machines.
@@ -568,7 +603,7 @@ run_suite() {
               RMA_PLATFORM_ENV="$base_rma_platform_env ${cuda_vmm_env[*]}" || \
               visibility_status=$?
           done
-        elif [[ "$platform_name" == "hygon" ]]; then
+        elif ((run_visibility != 0)) && [[ "$platform_name" == "hygon" ]]; then
           # SHCA VMM VA must fail closed. If DMA-BUF is available, GetSmall
           # checks its data path; otherwise the fixture records a capability
           # note. DU has no separate consumer kernel in this test suite.
@@ -594,7 +629,7 @@ run_suite() {
               RMA_PLATFORM_ENV="$base_rma_platform_env ${hygon_vmm_env[*]}" || \
               visibility_status=$?
           done
-        elif [[ "$platform_name" == "ppu" ]]; then
+        elif ((run_visibility != 0)) && [[ "$platform_name" == "ppu" ]]; then
           # Forcing READ turns the temporary NONE policy into a hard contract.
           # BAREX has no real READ flush capability, so completion must fail
           # closed before a consumer kernel is launched.
@@ -617,6 +652,7 @@ run_suite() {
             RMA_VMM_ENABLE=0 \
             RMA_PLATFORM_ENV="$base_rma_platform_env ${ppu_forced_read_env[*]}" || \
             visibility_status=$?
+        fi
         fi
       else
         network_status=$?
@@ -730,6 +766,23 @@ run_suite() {
           --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll
       fi
       ;;
+    device)
+      FLAGCX_CI_TEST_LABEL="device unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run "${args[@]}"
+      ;;
+    topo)
+      FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      ;;
+    kernel)
+      FLAGCX_CI_TEST_LABEL="kernel unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      FLAGCX_CI_MPI_LABEL="kernel MPI tests" \
+        "$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP" \
+        -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_VMM_ENABLE=0 -x LD_LIBRARY_PATH \
+        "$suite_dir/build/bin/kernel_mpi_tests"
+      ;;
     symmem)
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
       : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
@@ -755,7 +808,8 @@ run_suite() {
       # disabled and Hygon's DMA-BUF route is independently exercised by the
       # RMA immediate-consumer job. Keep the broader multi-node symmem VMM data
       # matrix disabled until that hardware job establishes a supported route.
-      if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ]]; then
+      if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ||
+            "$platform_name" == "kunlunxin" ]]; then
         symmem_run_vmm_net_data=0
       fi
       symmem_common_env=(
@@ -887,7 +941,7 @@ run_suite() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api_host|p2p|rma|runner|service|symmem)
+  adaptor|core|device|device_api_host|kernel|p2p|rma|runner|service|symmem|topo)
     build_googletest
     ;;
   device_api|device_api_unified_ir)

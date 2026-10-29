@@ -19,7 +19,11 @@ case "$workload" in
       "$set_env" "$suite"
     ;;
   torch-api|perf|perf-legacy)
-    handler="$project_root/.github/scripts/ci/run_${platform}_workload.sh"
+    if [[ "$platform" == kunlunxin ]]; then
+      handler="$project_root/.github/scripts/ci/run_kunlunxin_workload.sh"
+    else
+      handler="$project_root/.github/scripts/ci/run_${platform}_workload.sh"
+    fi
     if [[ ! -f "$handler" ]]; then
       echo "No $platform handler is available for the $workload workload: $handler" >&2
       exit 2
