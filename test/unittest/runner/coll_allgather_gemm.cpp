@@ -63,7 +63,7 @@ TEST_F(FlagCXCollTest, AllGatherGemm) {
                                     outputElements * sizeof(float),
                                     flagcxMemcpyDeviceToHost, stream),
             flagcxSuccess);
-  ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
 
   for (size_t i = 0; i < outputElements; ++i) {
     float tolerance = 1e-4f + 1e-4f * std::fabs(expected[i]);

@@ -33,6 +33,8 @@ __thread int flagcxGroupBlocking = 1; /* default mode */
 __thread struct flagcxIntruQueue<struct flagcxAsyncJob, &flagcxAsyncJob::next>
     flagcxAsyncJobs;
 
+int flagcxGetGroupDepth() { return flagcxGroupDepth; }
+
 FLAGCX_PARAM(P2pScheduleDisable, "P2P_SCHEDULE_DISABLE", 0);
 
 static flagcxResult_t flagcxNewProxyOp(flagcxProxyOp **op) {

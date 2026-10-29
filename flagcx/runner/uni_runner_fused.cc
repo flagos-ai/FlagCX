@@ -2,6 +2,7 @@
 #include "alloc.h"
 #include "comm.h"
 #include "global_comm.h"
+#include "group.h"
 #include "proxy.h"
 #include "uni_runner_algorithm.h"
 #include "uni_runner_gemm.h"
@@ -615,6 +616,8 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
   if (comm == nullptr) {
     return res;
   }
+  if (flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
   UniRunnerAlgorithm algorithm = uniRunnerAlgorithmAllGatherGemmBuiltIn;
   flagcxResult_t selectionResult =
       resolveUniRunnerAlgorithm(uniRunnerAlgorithmAllGatherGemmBuiltIn,
@@ -622,7 +625,7 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
                                 uniRunnerAlgorithmAllGatherGemmDsl, &algorithm);
   if (res != flagcxSuccess)
     selectionResult = res;
-  FLAGCXCHECK(agreeUniRunnerAlgorithm(comm, algorithm, selectionResult));
+  FLAGCXCHECK(selectionResult);
 
   flagcxFusedInvocationBuffers *buffers = nullptr;
   res = flagcxFusedDrainPendingBuffers(comm);
@@ -745,6 +748,8 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
   if (comm == nullptr) {
     return res;
   }
+  if (flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
   UniRunnerAlgorithm algorithm = uniRunnerAlgorithmGemmReduceScatterBuiltIn;
   flagcxResult_t selectionResult = resolveUniRunnerAlgorithm(
       uniRunnerAlgorithmGemmReduceScatterBuiltIn,
@@ -757,7 +762,7 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
   if (selectionResult == flagcxSuccess &&
       m % static_cast<size_t>(comm->nranks) != 0)
     selectionResult = flagcxInvalidArgument;
-  FLAGCXCHECK(agreeUniRunnerAlgorithm(comm, algorithm, selectionResult));
+  FLAGCXCHECK(selectionResult);
 
   flagcxFusedInvocationBuffers *buffers = nullptr;
   res = flagcxFusedDrainPendingBuffers(comm);

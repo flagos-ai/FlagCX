@@ -3415,6 +3415,45 @@ flagcxResult_t flagcxHomoCommInit(struct bootstrapState *state,
   return flagcxSuccess;
 }
 
+struct flagcxStreamValueRankCapability {
+  int result;
+  int supported;
+};
+
+static flagcxResult_t initUniRunnerStreamValueCapability(flagcxComm_t comm) {
+  flagcxStreamValueRankCapability *capabilities = nullptr;
+  flagcxResult_t allocationResult =
+      flagcxCalloc(&capabilities, static_cast<size_t>(comm->nranks));
+  flagcxResult_t commonAllocationResult = flagcxSuccess;
+  flagcxResult_t result = flagcxConvergeBootstrapStatus(
+      comm, allocationResult, &commonAllocationResult);
+  if (result != flagcxSuccess || commonAllocationResult != flagcxSuccess) {
+    free(capabilities);
+    return result != flagcxSuccess ? result : commonAllocationResult;
+  }
+
+  bool localSupported = false;
+  flagcxResult_t probeResult = flagcxStreamValueSupported(&localSupported);
+  capabilities[comm->rank] = {static_cast<int>(probeResult),
+                              localSupported ? 1 : 0};
+  result = bootstrapCollAllGather(comm->bootstrap, capabilities,
+                                  sizeof(flagcxStreamValueRankCapability));
+  if (result == flagcxSuccess) {
+    bool allSupported = true;
+    for (int rank = 0; rank < comm->nranks; ++rank) {
+      if (capabilities[rank].result != static_cast<int>(flagcxSuccess)) {
+        result = static_cast<flagcxResult_t>(capabilities[rank].result);
+        break;
+      }
+      allSupported = allSupported && capabilities[rank].supported != 0;
+    }
+    if (result == flagcxSuccess)
+      comm->streamValueSupported = allSupported;
+  }
+  free(capabilities);
+  return result;
+}
+
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank) {
   if (nranks < 1 || rank < 0 || rank >= nranks) {
@@ -3444,6 +3483,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->magic = 0;
   (*comm)->abortFlag = 0;
   (*comm)->bootstrap = NULL;
+  (*comm)->streamValueSupported = false;
   (*comm)->localRank = 0;
   (*comm)->localRanks = 1;
   (*comm)->localRankToRank = NULL;
@@ -3476,6 +3516,9 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                 nranks, magic, (*comm)->abortFlag,
                                 &(*comm)->bootstrap));
   struct bootstrapState *state = (*comm)->bootstrap;
+
+  if (useHeteroComm())
+    FLAGCXCHECK(initUniRunnerStreamValueCapability(*comm));
 
   // Ready to detect heterogeneous/homogeneous communicator
   // Use bootstrap allgather to exchange Device info
@@ -3858,114 +3901,141 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
         comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
         comm->commMap.size());
 
-  // Stop new producers and drain device FIFOs plus the RMA proxy before any MR
-  // deregistration can close a connection. Quiesce is idempotent so a failed
-  // deregistration leaves this communicator in a retryable, owned state.
-  if (!useHomoComm(comm) || useHeteroComm())
-    FLAGCXCHECK(flagcxCommQuiesce(comm));
+  if (comm->destroyPhase == 0) {
+    // Stop new producers and drain device FIFOs plus the RMA proxy before any
+    // MR deregistration can close a connection. Quiesce is idempotent so a
+    // failed deregistration leaves this communicator in a retryable, owned
+    // state.
+    if (!useHomoComm(comm) || useHeteroComm())
+      FLAGCXCHECK(flagcxCommQuiesce(comm));
 
-  // Retained fused buffers may still be referenced by unfinished stream work.
-  // Keep the communicator retryable if the device cannot be drained.
-  FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
+    // Retained fused buffers may still be referenced by unfinished stream work.
+    // Keep the communicator retryable if the device cannot be drained.
+    FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
 
-  // Preserve transport-specific shutdown coordination before any DevComm or
-  // one-sided registration can release remotely accessible memory.
-  if (!useHomoComm(comm) || useHeteroComm())
-    FLAGCXCHECK(flagcxCommCleanup(comm));
+    // Preserve transport-specific shutdown coordination before any DevComm or
+    // one-sided registration can release remotely accessible memory.
+    if (!useHomoComm(comm) || useHeteroComm())
+      FLAGCXCHECK(flagcxCommCleanup(comm));
 
-  // A failed create rollback can exist for any Device API backend. Retry it
-  // while the outer communicator and its vendor communicator are still live.
-  flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
-  if (cleanupResult != flagcxSuccess)
-    return cleanupResult;
-
-  // Custom-op staged windows are also present in symWindows. Remove their
-  // device objects and explicit owners first so the generic live-window drain
-  // below cannot free a handle still referenced by devCommState.
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p", comm);
-  cleanupResult = flagcxDevCommStateDestroy(comm);
-  if (cleanupResult != flagcxSuccess)
-    return cleanupResult;
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
-
-  // DevCommStateDestroy can retire its Window handles. Release their attached
-  // resources now, while the one-sided transport is still available. A failed
-  // callback retains its owner so commDestroy can retry before teardown.
-  FLAGCXCHECK(flagcxCommDrainDeferredWindowResources(comm));
-
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // Each stage retains ownership on failure so the same rank can retry the
-    // call safely after transport shutdown coordination has completed.
-    cleanupResult = flagcxOneSideStagingDeregister(comm);
+    // A failed create rollback can exist for any Device API backend. Retry it
+    // while the outer communicator and its vendor communicator are still live.
+    flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
     if (cleanupResult != flagcxSuccess)
       return cleanupResult;
-    cleanupResult = flagcxOneSideSignalDeregister(comm);
+
+    // Custom-op staged windows are also present in symWindows. Remove their
+    // device objects and explicit owners first so the generic live-window drain
+    // below cannot free a handle still referenced by devCommState.
+    TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p",
+          comm);
+    cleanupResult = flagcxDevCommStateDestroy(comm);
     if (cleanupResult != flagcxSuccess)
       return cleanupResult;
-    cleanupResult =
-        flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
-    // Applications are allowed to destroy a communicator without explicitly
-    // deregistering every window. Release local mappings before the shared MR
-    // table and its connections disappear. Each window remains linked if a
-    // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
-    while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
-      flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
-      if (liveWindow == NULL)
-        return flagcxInternalError;
-      cleanupResult = flagcxCommWindowDeregisterInternal(
-          comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
+    TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
+
+    // Retired Window resources still need the live one-sided transport.
+    // A failed callback retains ownership so communicator teardown can retry.
+    FLAGCXCHECK(flagcxCommDrainDeferredWindowResources(comm));
+
+    if (!useHomoComm(comm) || useHeteroComm()) {
+      // Each stage retains ownership on failure so the same rank can retry the
+      // call safely after transport shutdown coordination has completed.
+      cleanupResult = flagcxOneSideStagingDeregister(comm);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+      cleanupResult = flagcxOneSideSignalDeregister(comm);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+      cleanupResult =
+          flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+      // Applications are allowed to destroy a communicator without explicitly
+      // deregistering every window. Release local mappings before the shared MR
+      // table and its connections disappear. Each window remains linked if a
+      // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
+      while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
+        flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
+        if (liveWindow == NULL)
+          return flagcxInternalError;
+        cleanupResult = flagcxCommWindowDeregisterInternal(
+            comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
+        if (cleanupResult != flagcxSuccess)
+          return cleanupResult;
+      }
+      cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
+      cleanupResult = flagcxSymLsaDestroy(comm->heteroComm);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     }
-    cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
-    cleanupResult = flagcxSymLsaDestroy(comm->heteroComm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+    comm->destroyPhase = 1;
   }
 
-  // Destroy cluster info
-  free(comm->clusterIds);
-  free(comm->clusterSizes);
-  free(comm->globalRank2HomoRank);
-  free(comm->localRankToRank);
-  free(comm->c2cSchedule);
-  free(comm->clusterInterRanks);
+  if (comm->destroyPhase == 1) {
+    // Keep the existing homo-before-hetero teardown order. Clear each owner
+    // only after its destruction succeeds so a later stage can be retried.
+    free(comm->clusterIds);
+    comm->clusterIds = NULL;
+    free(comm->clusterSizes);
+    comm->clusterSizes = NULL;
+    free(comm->globalRank2HomoRank);
+    comm->globalRank2HomoRank = NULL;
+    free(comm->localRankToRank);
+    comm->localRankToRank = NULL;
+    free(comm->c2cSchedule);
+    comm->c2cSchedule = NULL;
+    free(comm->clusterInterRanks);
+    comm->clusterInterRanks = NULL;
 
-  // Destroy homo comms
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
-  if (comm->tuner) {
-    size_t homoCommIndex = 0;
-    for (const auto &item : comm->homoCommMap) {
-      if (item.second != nullptr) {
-        TRACE(FLAGCX_INIT,
-              "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
-              comm, homoCommIndex, item.second);
-        FLAGCXCHECK(
-            cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
-        TRACE(FLAGCX_INIT,
-              "flagcxCommDestroy homo comm end comm=%p index=%zu inner=%p",
-              comm, homoCommIndex, item.second);
+    TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
+    if (comm->tuner) {
+      size_t homoCommIndex = 0;
+      for (auto &item : comm->homoCommMap) {
+        if (item.second != nullptr) {
+          TRACE(FLAGCX_INIT,
+                "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
+                comm, homoCommIndex, item.second);
+          FLAGCXCHECK(
+              cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
+          item.second = nullptr;
+        }
+        homoCommIndex++;
       }
-      homoCommIndex++;
+    } else if (comm->homoComm != nullptr) {
+      FLAGCXCHECK(
+          cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
+      comm->homoComm = nullptr;
     }
-  } else {
-    FLAGCXCHECK(
-        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
+    TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
+    comm->destroyPhase = 2;
   }
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
+
+  if (comm->destroyPhase == 2) {
+    if (!useHomoComm(comm) || useHeteroComm())
+      FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
+    comm->destroyPhase = 3;
+  }
+
+  if (comm->destroyPhase == 3) {
+    // The proxy and UniRunner state are drained, but the communicator and
+    // device adaptor still own every deferred allocation on a failed free.
+    FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+    FLAGCXCHECK(flagcxCommDrainDeferredIpc(comm));
+    FLAGCXCHECK(flagcxCommDrainDeferredBuffers(comm));
+    FLAGCXCHECK(flagcxCommDrainDeferredFree(comm));
+    comm->destroyPhase = 4;
+  }
 
   if (!useHomoComm(comm) || useHeteroComm()) {
-    // Backend-level comm cleanup: relay teardown, IPC table cleanup.
-    // Must run before flagcxHeteroCommDestroy, which frees proxyState and
-    // heteroComm.
+    // The proxy and UniRunner resources were prepared above. Their owner
+    // remains alive through the deferred-free drain.
     TRACE(FLAGCX_INIT,
           "flagcxCommDestroy backend cleanup begin comm=%p heteroComm=%p", comm,
           comm->heteroComm);
-    // Destroy hetero comm
+    // Release the retained host state after all fallible device frees.
     TRACE(FLAGCX_INIT,
           "flagcxCommDestroy hetero cleanup begin comm=%p heteroComm=%p", comm,
           comm->heteroComm);
@@ -3978,21 +4048,6 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
           cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
     }
   }
-
-  // Clean up IPC peer pointer table — deferred to here.
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy IPC table cleanup begin comm=%p", comm);
-  FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
-
-  // Drain deferred IPC entries (slots released at runtime).
-  FLAGCXCHECK(flagcxCommDrainDeferredIpc(comm));
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy IPC table cleanup end comm=%p", comm);
-
-  // Drain deferred DevComm buffer queue.
-  FLAGCXCHECK(flagcxCommDrainDeferredBuffers(comm));
-
-  // Drain deferred device/host-pinned memory frees,
-  // collected during DevComm/DevMem cleanup.
-  FLAGCXCHECK(flagcxCommDrainDeferredFree(comm));
 
   // Destroy bootstrap state and net
   bootstrapClose(comm->bootstrap);

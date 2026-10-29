@@ -211,9 +211,17 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   flagcxDevMem_t progressMem = NULL;
   bool scratchCreateEntered = false;
   bool progressCreateEntered = false;
+  flagcxDeferredFree *scratchDeferred = NULL;
+  flagcxDeferredFree *progressDeferred = NULL;
 
-  result = deviceAdaptor->deviceMalloc(&scratch, scratchBytes, flagcxMemDevice,
-                                       NULL);
+  // Reserve metadata before a collective create can expose either buffer to
+  // peers. The failure path must never need an allocation to retain ownership.
+  result = flagcxCalloc(&scratchDeferred, 1);
+  if (result == flagcxSuccess)
+    result = flagcxCalloc(&progressDeferred, 1);
+  if (result == flagcxSuccess)
+    result = deviceAdaptor->deviceMalloc(&scratch, scratchBytes,
+                                         flagcxMemDevice, NULL);
   if (result == flagcxSuccess && scratch == NULL)
     result = flagcxSystemError;
   FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
@@ -290,6 +298,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   runnerState->ipcRingChannels = numChannels;
   runnerState->ipcRingSimpleBufferBytes = simpleBufferBytes;
   runnerState->ipcRingResourcesDirty = false;
+  free(scratchDeferred);
+  free(progressDeferred);
   return flagcxSuccess;
 
 fail:
@@ -298,17 +308,31 @@ fail:
   if (scratchMem != NULL)
     (void)flagcxDevMemDestroy(comm, scratchMem);
   if (progress != NULL) {
-    if (progressCreateEntered)
-      flagcxCommDeferFree(comm, progress, flagcxMemDevice);
-    else
-      (void)deviceAdaptor->deviceFree(progress, flagcxMemDevice, NULL);
+    if (progressCreateEntered) {
+      flagcxCommDeferFreeReserved(comm, progressDeferred, progress,
+                                  flagcxMemDevice);
+      progressDeferred = NULL;
+    } else if (deviceAdaptor->deviceFree(progress, flagcxMemDevice, NULL) !=
+               flagcxSuccess) {
+      flagcxCommDeferFreeReserved(comm, progressDeferred, progress,
+                                  flagcxMemDevice);
+      progressDeferred = NULL;
+    }
   }
   if (scratch != NULL) {
-    if (scratchCreateEntered)
-      flagcxCommDeferFree(comm, scratch, flagcxMemDevice);
-    else
-      (void)deviceAdaptor->deviceFree(scratch, flagcxMemDevice, NULL);
+    if (scratchCreateEntered) {
+      flagcxCommDeferFreeReserved(comm, scratchDeferred, scratch,
+                                  flagcxMemDevice);
+      scratchDeferred = NULL;
+    } else if (deviceAdaptor->deviceFree(scratch, flagcxMemDevice, NULL) !=
+               flagcxSuccess) {
+      flagcxCommDeferFreeReserved(comm, scratchDeferred, scratch,
+                                  flagcxMemDevice);
+      scratchDeferred = NULL;
+    }
   }
+  free(scratchDeferred);
+  free(progressDeferred);
   return result;
 }
 
@@ -5295,19 +5319,23 @@ destroyUniRunnerIpcDataViews(flagcxUniRunnerState *runnerState) {
   flagcxResult_t result = flagcxSuccess;
   if (runnerState->ipcInputMem != NULL) {
     result = flagcxDevMemDestroy(comm, runnerState->ipcInputMem);
+    if (result == flagcxSuccess)
+      runnerState->ipcInputMem = NULL;
   }
   if (runnerState->ipcOutputMem != NULL) {
     flagcxResult_t outputResult =
         flagcxDevMemDestroy(comm, runnerState->ipcOutputMem);
+    if (outputResult == flagcxSuccess)
+      runnerState->ipcOutputMem = NULL;
     if (result == flagcxSuccess) {
       result = outputResult;
     }
   }
-  runnerState->ipcInputMem = NULL;
-  runnerState->ipcOutputMem = NULL;
-  runnerState->ipcInputBase = NULL;
-  runnerState->ipcOutputBase = NULL;
-  runnerState->ipcDataBytes = 0;
+  if (result == flagcxSuccess) {
+    runnerState->ipcInputBase = NULL;
+    runnerState->ipcOutputBase = NULL;
+    runnerState->ipcDataBytes = 0;
+  }
   return result;
 }
 
@@ -5462,7 +5490,10 @@ ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
   void *newBuffer = NULL;
   flagcxDevMem_t newMem = NULL;
   bool devMemCreateEntered = false;
-  res = allocUniRunnerIpcReadyBuffer(&newBuffer, bytes);
+  flagcxDeferredFree *newBufferDeferred = NULL;
+  res = flagcxCalloc(&newBufferDeferred, 1);
+  if (res == flagcxSuccess)
+    res = allocUniRunnerIpcReadyBuffer(&newBuffer, bytes);
   if (res == flagcxSuccess) {
     res =
         deviceAdaptor->deviceMemset(newBuffer, 0, bytes, flagcxMemDevice, NULL);
@@ -5502,6 +5533,7 @@ ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
   runnerState->ipcReadyCapacity = requiredSlots;
   newMem = NULL;
   newBuffer = NULL;
+  free(newBufferDeferred);
   return flagcxSuccess;
 
 fail:
@@ -5513,11 +5545,16 @@ fail:
       // Once DevMemCreate is entered, a peer may have imported this exporter
       // even when the local call eventually reports an error or never returns
       // a handle. Never infer mapping absence from newMem == NULL.
-      flagcxCommDeferFree(comm, newBuffer, flagcxMemDevice);
-    } else {
-      (void)freeUniRunnerIpcReadyBuffer(newBuffer);
+      flagcxCommDeferFreeReserved(comm, newBufferDeferred, newBuffer,
+                                  flagcxMemDevice);
+      newBufferDeferred = NULL;
+    } else if (freeUniRunnerIpcReadyBuffer(newBuffer) != flagcxSuccess) {
+      flagcxCommDeferFreeReserved(comm, newBufferDeferred, newBuffer,
+                                  flagcxMemDevice);
+      newBufferDeferred = NULL;
     }
   }
+  free(newBufferDeferred);
   return res;
 }
 
@@ -7295,6 +7332,15 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
     runnerState->groupedArScratchCapacity = 0;
   }
   flagcxComm_t comm = runnerState->ipcOwner;
+  if (comm == NULL &&
+      (runnerState->ipcInputMem != NULL || runnerState->ipcOutputMem != NULL ||
+       runnerState->ipcReadyMem != NULL ||
+       runnerState->ipcRingScratchMem != NULL ||
+       runnerState->ipcRingProgressMem != NULL ||
+       runnerState->ipcReadyBuffer != NULL ||
+       runnerState->ipcRingScratchBuffer != NULL ||
+       runnerState->ipcRingProgressBuffer != NULL))
+    return flagcxInternalError;
   FLAGCXCHECK(destroyUniRunnerIpcDataViews(runnerState));
   if (comm != NULL && runnerState->ipcReadyMem != NULL) {
     FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
@@ -7306,9 +7352,10 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
     }
     // Peer CUDA IPC mappings are closed later by
     // flagcxCommCleanupIpcTable(). Defer the exporter allocation until the
-    // communicator subsequently drains deferred frees. The communicator's
-    // overflow chain preserves safety if its fixed inline slots are exhausted.
-    flagcxCommDeferFree(comm, runnerState->ipcReadyBuffer, flagcxMemDevice);
+    // communicator subsequently drains deferred frees. On queue allocation
+    // failure the pointer stays in runnerState for the next destroy attempt.
+    FLAGCXCHECK(flagcxCommDeferFree(comm, runnerState->ipcReadyBuffer,
+                                    flagcxMemDevice));
   }
   runnerState->ipcReadyBuffer = NULL;
   runnerState->ipcReadyCapacity = 0;
@@ -7317,29 +7364,29 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
     if (comm == NULL)
       return flagcxInternalError;
     FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcRingScratchMem));
+    runnerState->ipcRingScratchMem = NULL;
   }
   if (runnerState->ipcRingProgressMem != NULL) {
     if (comm == NULL)
       return flagcxInternalError;
     FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcRingProgressMem));
+    runnerState->ipcRingProgressMem = NULL;
   }
-  runnerState->ipcRingScratchMem = NULL;
-  runnerState->ipcRingProgressMem = NULL;
   if ((runnerState->ipcRingScratchBuffer != NULL ||
        runnerState->ipcRingProgressBuffer != NULL) &&
       comm == NULL) {
     return flagcxInternalError;
   }
   if (runnerState->ipcRingScratchBuffer != NULL) {
-    flagcxCommDeferFree(comm, runnerState->ipcRingScratchBuffer,
-                        flagcxMemDevice);
+    FLAGCXCHECK(flagcxCommDeferFree(comm, runnerState->ipcRingScratchBuffer,
+                                    flagcxMemDevice));
+    runnerState->ipcRingScratchBuffer = NULL;
   }
   if (runnerState->ipcRingProgressBuffer != NULL) {
-    flagcxCommDeferFree(comm, runnerState->ipcRingProgressBuffer,
-                        flagcxMemDevice);
+    FLAGCXCHECK(flagcxCommDeferFree(comm, runnerState->ipcRingProgressBuffer,
+                                    flagcxMemDevice));
+    runnerState->ipcRingProgressBuffer = NULL;
   }
-  runnerState->ipcRingScratchBuffer = NULL;
-  runnerState->ipcRingProgressBuffer = NULL;
   runnerState->ipcRingScratchBytes = 0;
   runnerState->ipcRingProgressBytes = 0;
   runnerState->ipcRingChannels = 0;

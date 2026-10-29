@@ -27,7 +27,7 @@ struct flagcxIpcTableEntry {
   size_t size;
   size_t refCount;
   uint64_t bindingGeneration;
-  bool inUse;              // true while a devMem references this entry
+  bool inUse; // true while a devMem references this entry
 };
 
 // Deferred IPC entry — moved from ipcTable when a slot is released at runtime.
@@ -73,6 +73,11 @@ typedef enum {
 
 struct flagcxComm {
   // TODO: adjust code format
+  // 0: active, 1: backend stopped, 2: homo comms destroyed,
+  // 3: hetero resources prepared, 4: deferred allocations drained.
+  // Failures before final host-state release resume at the last completed
+  // stage.
+  int destroyPhase;
   int rank;
   int nranks;
   int nclusters;
@@ -88,6 +93,7 @@ struct flagcxComm {
   int *globalRank2HomoRank;
   int *clusterInterRanks;
   struct bootstrapState *bootstrap;
+  bool streamValueSupported;
   int localRank;        // intra-node rank index (computed from hostHash)
   int localRanks;       // number of ranks on this node
   int *localRankToRank; // mapping: local index -> global rank

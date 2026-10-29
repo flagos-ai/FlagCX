@@ -43,9 +43,4 @@ inline flagcxResult_t resolveUniRunnerAlgorithm(UniRunnerAlgorithm defaultAlgo,
   return flagcxSuccess;
 }
 
-flagcxResult_t agreeUniRunnerAlgorithm(flagcxComm_t comm,
-                                       UniRunnerAlgorithm selected,
-                                       flagcxResult_t localResult,
-                                       int64_t groupSize = 0);
-
 #endif

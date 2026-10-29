@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include "adaptor.h"
+#include "comm.h"
+#include "flagcx_hetero.h"
 #include "launch_kernel.h"
+#include "proxy.h"
 
 #include <cstdlib>
 
@@ -10,6 +13,7 @@ namespace {
 flagcxStreamValueSemaphore *recordingSemaphore = nullptr;
 int eventQueries = 0;
 bool failRecord = false;
+bool failSetDevice = false;
 char eventStorage;
 
 flagcxResult_t hostAlloc(void **ptr, size_t bytes, flagcxMemType_t,
@@ -34,6 +38,14 @@ flagcxResult_t createEvent(flagcxEvent_t *event, flagcxEventType_t) {
 }
 
 flagcxResult_t destroyEvent(flagcxEvent_t) { return flagcxSuccess; }
+
+flagcxResult_t setDevice(int) {
+  if (failSetDevice) {
+    failSetDevice = false;
+    return flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
+}
 
 flagcxResult_t writeOrWait(flagcxStream_t, void *, uint64_t, int) {
   return flagcxSuccess;
@@ -66,11 +78,13 @@ protected:
     fakeAdaptor.eventDestroy = destroyEvent;
     fakeAdaptor.eventRecord = recordEvent;
     fakeAdaptor.eventQuery = queryEvent;
+    fakeAdaptor.setDevice = setDevice;
     fakeAdaptor.streamWriteValue64 = writeOrWait;
     fakeAdaptor.streamWaitValue64 = writeOrWait;
     deviceAdaptor = &fakeAdaptor;
     eventQueries = 0;
     failRecord = false;
+    failSetDevice = false;
   }
 
   void TearDown() override {
@@ -100,6 +114,22 @@ TEST_F(StreamValueCompletionTest, FailedRecordCannotCompleteUntilDrained) {
   semaphore.markCompletionDrained();
   EXPECT_EQ(semaphore.pollEnd(), 1);
   EXPECT_EQ(eventQueries, 0);
+}
+
+TEST_F(StreamValueCompletionTest,
+       PersistentStateKeepsOwnerAfterSetDeviceError) {
+  flagcxHeteroComm comm = {};
+  flagcxProxyState proxy = {};
+  comm.proxyState = &proxy;
+  proxy.uniRunnerState.groupedArScratch = std::malloc(8);
+  ASSERT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
+  failSetDevice = true;
+
+  EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxUnhandledDeviceError);
+  EXPECT_TRUE(comm.destroyProxyComplete);
+  EXPECT_NE(proxy.uniRunnerState.groupedArScratch, nullptr);
+  EXPECT_EQ(flagcxHeteroCommPrepareDestroy(&comm), flagcxSuccess);
+  EXPECT_EQ(proxy.uniRunnerState.groupedArScratch, nullptr);
 }
 
 } // namespace

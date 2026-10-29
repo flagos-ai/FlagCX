@@ -57,6 +57,8 @@ struct flagcxGroupJob {
 
 flagcxResult_t flagcxGroupStartInternal();
 flagcxResult_t flagcxGroupEndInternal();
+// Group nesting belongs to the calling thread.
+int flagcxGetGroupDepth();
 flagcxResult_t flagcxAsyncJobComplete(struct flagcxAsyncJob *job);
 
 ////////////////////////////////////////////////////////////////////////////////

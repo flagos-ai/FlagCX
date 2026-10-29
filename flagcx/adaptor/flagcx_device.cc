@@ -393,7 +393,8 @@ flagcxResult_t flagcxCommQuiesce(flagcxComm_t comm) {
 }
 
 // ==========================================================================
-// IPC table cleanup — called from flagcxCommDestroy after heteroComm destroy
+// IPC table cleanup — called after hetero resources stop using the mappings,
+// while the owning communicator and device adaptor are still alive.
 // ==========================================================================
 
 flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
@@ -495,22 +496,28 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   e->inUse = false;
 }
 
-void flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType) {
+flagcxResult_t flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType) {
   if (comm == nullptr || ptr == nullptr)
-    return;
+    return flagcxInvalidArgument;
   if (comm->deferredFreeCount < FLAGCX_MAX_DEFERRED_FREES) {
     flagcxDeferredFree *entry = &comm->deferredFrees[comm->deferredFreeCount++];
     entry->ptr = ptr;
     entry->memType = memType;
     entry->next = nullptr;
-    return;
+    return flagcxSuccess;
   }
   flagcxDeferredFree *entry =
       static_cast<flagcxDeferredFree *>(malloc(sizeof(flagcxDeferredFree)));
   if (entry == nullptr) {
     WARN("flagcxCommDeferFree: failed to track deferred allocation %p", ptr);
-    return;
+    return flagcxSystemError;
   }
+  flagcxCommDeferFreeReserved(comm, entry, ptr, memType);
+  return flagcxSuccess;
+}
+
+void flagcxCommDeferFreeReserved(flagcxComm_t comm, flagcxDeferredFree *entry,
+                                 void *ptr, int memType) {
   entry->ptr = ptr;
   entry->memType = memType;
   entry->next = nullptr;
@@ -916,11 +923,12 @@ flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm) {
   while (comm->deferredDevMems != nullptr) {
     flagcxDevMem_t owner = comm->deferredDevMems;
     if (owner->cachedDevicePtr)
-      deviceAdaptor->deviceFree(owner->cachedDevicePtr, flagcxMemDevice, NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(owner->cachedDevicePtr,
+                                            flagcxMemDevice, NULL));
     owner->cachedDevicePtr = nullptr;
     if (owner->segmentedPeerLayouts)
-      deviceAdaptor->deviceFree(owner->segmentedPeerLayouts, flagcxMemDevice,
-                                NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(owner->segmentedPeerLayouts,
+                                            flagcxMemDevice, NULL));
     owner->segmentedPeerLayouts = nullptr;
     comm->deferredDevMems = owner->deferredNext;
     pthread_mutex_destroy(&owner->cachedPtrMutex);
@@ -929,15 +937,16 @@ flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm) {
   while (comm->deferredDevComms != nullptr) {
     flagcxDevComm_t owner = comm->deferredDevComms;
     if (owner->cachedNetContextsPtr)
-      deviceAdaptor->deviceFree(owner->cachedNetContextsPtr, flagcxMemDevice,
-                                NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(owner->cachedNetContextsPtr,
+                                            flagcxMemDevice, NULL));
     owner->cachedNetContextsPtr = nullptr;
     if (owner->cachedDevicePtr)
-      deviceAdaptor->deviceFree(owner->cachedDevicePtr, flagcxMemDevice, NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(owner->cachedDevicePtr,
+                                            flagcxMemDevice, NULL));
     owner->cachedDevicePtr = nullptr;
     if (owner->cachedGridBarrierPtr)
-      deviceAdaptor->deviceFree(owner->cachedGridBarrierPtr, flagcxMemDevice,
-                                NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(owner->cachedGridBarrierPtr,
+                                            flagcxMemDevice, NULL));
     owner->cachedGridBarrierPtr = nullptr;
     comm->deferredDevComms = owner->deferredNext;
     pthread_mutex_destroy(&owner->cachedPtrMutex);
@@ -946,8 +955,8 @@ flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm) {
   for (int i = 0; i < comm->deferredFreeCount; ++i) {
     flagcxDeferredFree *entry = &comm->deferredFrees[i];
     if (entry->ptr != nullptr)
-      deviceAdaptor->deviceFree(
-          entry->ptr, static_cast<flagcxMemType_t>(entry->memType), NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(
+          entry->ptr, static_cast<flagcxMemType_t>(entry->memType), NULL));
     entry->ptr = nullptr;
   }
   comm->deferredFreeCount = 0;
@@ -955,13 +964,15 @@ flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm) {
   while (overflow != nullptr) {
     flagcxDeferredFree *next = overflow->next;
     if (overflow->ptr != nullptr)
-      deviceAdaptor->deviceFree(
-          overflow->ptr, static_cast<flagcxMemType_t>(overflow->memType), NULL);
+      FLAGCXCHECK(deviceAdaptor->deviceFree(
+          overflow->ptr, static_cast<flagcxMemType_t>(overflow->memType),
+          NULL));
+    comm->deferredFreeOverflowHead = next;
+    if (next == nullptr)
+      comm->deferredFreeOverflowTail = nullptr;
     free(overflow);
     overflow = next;
   }
-  comm->deferredFreeOverflowHead = nullptr;
-  comm->deferredFreeOverflowTail = nullptr;
   return flagcxSuccess;
 }
 

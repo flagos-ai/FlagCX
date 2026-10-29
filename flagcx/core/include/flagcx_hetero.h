@@ -245,6 +245,7 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
                                         int *rank);
 
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm);
 
 flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm);
 

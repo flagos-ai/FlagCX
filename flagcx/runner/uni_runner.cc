@@ -2,7 +2,6 @@
  * Copyright (c) 2025 BAAI. All rights reserved.
  ************************************************************************/
 
-#include "alloc.h"
 #include "coll_proxy_transport.h"
 #include "flagcx_hetero.h"
 #include "group.h"
@@ -11,9 +10,6 @@
 #include "runner_result.h"
 #include "uni_runner_algorithm.h"
 #include "uni_runner_impl.h"
-// bootstrap.h wraps its dependencies in extern "C"; load C++ dependencies
-// first.
-#include "bootstrap.h"
 #include <cerrno>
 #include <cstdlib>
 
@@ -38,55 +34,6 @@ flagcxResult_t flagcxReadUniRunnerAlgorithm(int64_t *value) {
   return flagcxSuccess;
 }
 
-struct uniRunnerAlgorithmChoice {
-  int64_t algorithm;
-  int result;
-  int64_t groupSize;
-};
-
-flagcxResult_t agreeUniRunnerAlgorithm(flagcxComm_t comm,
-                                       UniRunnerAlgorithm selected,
-                                       flagcxResult_t localResult,
-                                       int64_t groupSize) {
-  if (comm == nullptr || comm->bootstrap == nullptr || comm->nranks <= 0 ||
-      comm->rank < 0 || comm->rank >= comm->nranks)
-    return flagcxInvalidArgument;
-  uniRunnerAlgorithmChoice *choices = nullptr;
-  flagcxResult_t allocationResult =
-      flagcxCalloc(&choices, static_cast<size_t>(comm->nranks));
-  flagcxResult_t commonPrepare = flagcxSuccess;
-  flagcxResult_t result =
-      flagcxConvergeBootstrapStatus(comm, allocationResult, &commonPrepare);
-  if (result != flagcxSuccess || commonPrepare != flagcxSuccess) {
-    free(choices);
-    return result != flagcxSuccess ? result : commonPrepare;
-  }
-  choices[comm->rank] = {static_cast<int64_t>(selected),
-                         static_cast<int>(localResult), groupSize};
-  result = bootstrapCollAllGather(comm->bootstrap, choices,
-                                  sizeof(uniRunnerAlgorithmChoice));
-  if (result == flagcxSuccess) {
-    for (int rank = 0; rank < comm->nranks; ++rank) {
-      if (choices[rank].result != flagcxSuccess) {
-        result = static_cast<flagcxResult_t>(choices[rank].result);
-        break;
-      }
-    }
-  }
-  if (result == flagcxSuccess) {
-    for (int rank = 0; rank < comm->nranks; ++rank) {
-      if (choices[rank].algorithm != choices[0].algorithm ||
-          (selected == uniRunnerAlgorithmGroupedAR &&
-           choices[rank].groupSize != choices[0].groupSize)) {
-        result = flagcxInvalidUsage;
-        break;
-      }
-    }
-  }
-  free(choices);
-  return result;
-}
-
 static int resolveUniRunnerGroupedAGGroupSize(flagcxComm_t comm) {
   if (comm->nranks <= 0) {
     return 0;
@@ -105,76 +52,6 @@ static int resolveUniRunnerGroupedAGGroupSize(flagcxComm_t comm) {
     groupSize = comm->nranks;
   }
   return groupSize;
-}
-
-struct uniRunnerAllGatherSelection {
-  int result;
-  int64_t algorithm;
-  int groupedAgEnabled;
-  int streamValueSupported;
-  int groupSize;
-};
-
-static flagcxResult_t
-agreeUniRunnerAllGatherSelection(flagcxComm_t comm, flagcxResult_t localResult,
-                                 UniRunnerAlgorithm algorithm,
-                                 bool localEnabled, bool localSupported,
-                                 int localGroupSize, bool *useGroupedAg) {
-  if (comm == nullptr || comm->bootstrap == nullptr || comm->nranks <= 0 ||
-      comm->rank < 0 || comm->rank >= comm->nranks || useGroupedAg == nullptr)
-    return flagcxInvalidArgument;
-
-  *useGroupedAg = false;
-  uniRunnerAllGatherSelection *selections = nullptr;
-  flagcxResult_t allocationResult =
-      flagcxCalloc(&selections, static_cast<size_t>(comm->nranks));
-  flagcxResult_t commonPrepare = flagcxSuccess;
-  flagcxResult_t result =
-      flagcxConvergeBootstrapStatus(comm, allocationResult, &commonPrepare);
-  if (result != flagcxSuccess || commonPrepare != flagcxSuccess) {
-    free(selections);
-    return result != flagcxSuccess ? result : commonPrepare;
-  }
-  selections[comm->rank] = {
-      static_cast<int>(localResult), static_cast<int64_t>(algorithm),
-      localEnabled ? 1 : 0, localSupported ? 1 : 0, localGroupSize};
-  result = bootstrapCollAllGather(comm->bootstrap, selections,
-                                  sizeof(uniRunnerAllGatherSelection));
-  if (result != flagcxSuccess) {
-    free(selections);
-    return result;
-  }
-
-  bool allEnabledAndSupported = true;
-  bool sameGroupSize = true;
-  bool sameAlgorithm = true;
-  const int groupSize = selections[0].groupSize;
-  const int64_t selectedAlgorithm = selections[0].algorithm;
-  flagcxResult_t commonResult = flagcxSuccess;
-  for (int rank = 0; rank < comm->nranks; ++rank) {
-    const auto &selection = selections[rank];
-    if (selection.result != static_cast<int>(flagcxSuccess) &&
-        commonResult == flagcxSuccess)
-      commonResult = static_cast<flagcxResult_t>(selection.result);
-    if (!selection.groupedAgEnabled || !selection.streamValueSupported)
-      allEnabledAndSupported = false;
-    if (selection.groupSize != groupSize)
-      sameGroupSize = false;
-    if (selection.algorithm != selectedAlgorithm)
-      sameAlgorithm = false;
-  }
-  free(selections);
-  if (commonResult != flagcxSuccess)
-    return commonResult;
-  if (!sameAlgorithm)
-    return flagcxInvalidUsage;
-
-  *useGroupedAg = allEnabledAndSupported && sameGroupSize;
-  if (allEnabledAndSupported && !sameGroupSize)
-    TRACE(FLAGCX_UNIRUNNER,
-          "rank %d GroupedAG groupSize differs across ranks; use P2P AllGather",
-          comm->rank);
-  return flagcxSuccess;
 }
 
 static int resolveUniRunnerHierarchicalSlicedARGroupSize(flagcxComm_t comm) {
@@ -199,6 +76,8 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, int root, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  if (flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
@@ -311,6 +190,8 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
                                   size_t count, flagcxDataType_t datatype,
                                   flagcxRedOp_t op, flagcxComm_t comm,
                                   flagcxStream_t stream) {
+  if (flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
@@ -337,8 +218,7 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
       selectionResult = flagcxInvalidArgument;
     }
   }
-  FLAGCXCHECK(agreeUniRunnerAlgorithm(comm, algorithm, selectionResult,
-                                      groupedArGroupSize));
+  FLAGCXCHECK(selectionResult);
   res = initUniRunner(comm, stream);
   if (res != flagcxSuccess)
     return res;
@@ -419,6 +299,8 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                                       flagcxDataType_t datatype,
                                       flagcxRedOp_t op, flagcxComm_t comm,
                                       flagcxStream_t stream) {
+  if (flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
@@ -490,37 +372,27 @@ flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
   flagcxResult_t localResult = resolveUniRunnerAlgorithm(
       uniRunnerAlgorithmGroupedAG, uniRunnerAlgorithmGroupedAG,
       uniRunnerAlgorithmP2pAG, &algorithm);
-  if (flagcxGroupDepth > 0) {
-    // GroupedAG runs its own P2P groups. While an outer group is open, submit
-    // the existing P2P AllGather tasks for that group's normal launch path.
-    FLAGCXCHECK(localResult);
-    FLAGCXCHECK(checkedUniRunnerTypeBytes(sendcount, 1, datatype, &size));
-    FLAGCXCHECK(checkedUniRunnerTypeBytes(
-        sendcount, static_cast<size_t>(comm->nranks), datatype, &totalSize));
-    return submitUniRunnerP2pAllGather(sendbuff, recvbuff, sendcount, datatype,
-                                       comm, stream, size);
-  }
+  // An outer group defers P2P nodes until GroupEnd, while the DAG waits for
+  // those nodes. Keep P2pAG available without silently changing algorithms.
+  if (localResult == flagcxSuccess &&
+      algorithm == uniRunnerAlgorithmGroupedAG && flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
   if (localResult == flagcxSuccess)
     localResult = checkedUniRunnerTypeBytes(sendcount, 1, datatype, &size);
   if (localResult == flagcxSuccess)
     localResult = checkedUniRunnerTypeBytes(
         sendcount, static_cast<size_t>(comm->nranks), datatype, &totalSize);
 
-  const bool localGroupedAgEnabled = algorithm == uniRunnerAlgorithmGroupedAG;
-  bool streamValueSupported = false;
-  if (localResult == flagcxSuccess && localGroupedAgEnabled)
-    localResult = flagcxStreamValueSupported(&streamValueSupported);
-  if (localResult == flagcxSuccess && streamValueSupported)
+  const bool useGroupedAg =
+      algorithm == uniRunnerAlgorithmGroupedAG && comm->streamValueSupported;
+  if (localResult == flagcxSuccess && useGroupedAg)
     localResult = validateUniRunnerLaunchConfig(flagcxCommOpAllGather);
-  const int groupSize = resolveUniRunnerGroupedAGGroupSize(comm);
-  bool useGroupedAg = false;
-  FLAGCXCHECK(agreeUniRunnerAllGatherSelection(
-      comm, localResult, algorithm, localGroupedAgEnabled, streamValueSupported,
-      groupSize, &useGroupedAg));
+  FLAGCXCHECK(localResult);
   if (!useGroupedAg)
     return submitUniRunnerP2pAllGather(sendbuff, recvbuff, sendcount, datatype,
                                        comm, stream, size);
 
+  const int groupSize = resolveUniRunnerGroupedAGGroupSize(comm);
   (void)totalSize;
 
   flagcxResult_t res = flagcxSuccess;

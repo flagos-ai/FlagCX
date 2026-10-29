@@ -141,6 +141,15 @@ The former `FLAGCX_UNIRUNNER_USE_*` and fused `*_ALGO` selectors no longer
 select algorithms. `FLAGCX_UNIRUNNER_ALGO_PATH` still specifies the DSL cache
 directory independently of the numeric selector.
 
+When `FLAGCX_USE_HETERO_COMM=1`, UniRunner DAG algorithms reject calls made
+between `flagcxGroupStart` and `flagcxGroupEnd` with `flagcxInvalidUsage`.
+Use `FLAGCX_UNIRUNNER_ALGO=8` for AllGather inside a user group; the default
+GroupedAG algorithm (7) does not switch to P2P automatically in that case.
+UniRunner exchanges stream-value capability once during communicator
+initialization and uses the saved all-rank result for GroupedAG. Algorithm
+settings and group depth are checked locally during collective calls; configure
+the same algorithm and group size on all ranks.
+
 ---
 
 ## Network Configuration

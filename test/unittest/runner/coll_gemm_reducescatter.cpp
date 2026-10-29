@@ -65,7 +65,7 @@ TEST_F(FlagCXCollTest, GemmReduceScatter) {
                                     outputElements * sizeof(float),
                                     flagcxMemcpyDeviceToHost, stream),
             flagcxSuccess);
-  ASSERT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
 
   size_t expectedOffset = static_cast<size_t>(rank) * outputElements;
   for (size_t i = 0; i < outputElements; ++i) {
