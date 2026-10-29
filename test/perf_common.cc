@@ -1,9 +1,29 @@
 #include "perf_common.h"
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+
+[[noreturn]] void perfAbort(const char *message, const char *file, int line) {
+  fprintf(stderr, "Perf test failure at %s:%d: %s\n", file, line, message);
+  fflush(stderr);
+  int mpiInitialized = 0;
+  MPI_Initialized(&mpiInitialized);
+  if (mpiInitialized)
+    MPI_Abort(MPI_COMM_WORLD, 1);
+  abort();
+}
+
+void perfCheck(flagcxResult_t result, const char *expression, const char *file,
+               int line) {
+  if (result == flagcxSuccess)
+    return;
+  char message[1024];
+  snprintf(message, sizeof(message), "%s returned %d (%s)", expression,
+           static_cast<int>(result), flagcxGetErrorString(result));
+  perfAbort(message, file, line);
+}
 
 namespace {
 
@@ -48,8 +68,7 @@ static float halfBitsToFloat(uint16_t value) {
         --exp;
       }
       mantissa &= 0x3ffu;
-      bits = sign | (static_cast<uint32_t>(exp + 127) << 23) |
-             (mantissa << 13);
+      bits = sign | (static_cast<uint32_t>(exp + 127) << 23) | (mantissa << 13);
     }
   } else if (exponent == 0x1fu) {
     bits = sign | 0x7f800000u | (mantissa << 13);
@@ -75,11 +94,13 @@ static float bfloat16BitsToFloat(uint16_t value) {
   return result;
 }
 
-template <typename T> static void storeRaw(void *buffer, size_t index, T value) {
+template <typename T>
+static void storeRaw(void *buffer, size_t index, T value) {
   memcpy(static_cast<char *>(buffer) + index * sizeof(T), &value, sizeof(T));
 }
 
-template <typename T> static T loadRaw(const void *buffer, size_t index) {
+template <typename T>
+static T loadRaw(const void *buffer, size_t index) {
   T value{};
   memcpy(&value, static_cast<const char *>(buffer) + index * sizeof(T),
          sizeof(T));
@@ -108,7 +129,8 @@ static void storeValue(void *buffer, flagcxDataType_t datatype, size_t index,
       storeRaw<uint64_t>(buffer, index, static_cast<uint64_t>(value));
       break;
     case flagcxFloat16:
-      storeRaw<uint16_t>(buffer, index, floatToHalfBits(static_cast<float>(value)));
+      storeRaw<uint16_t>(buffer, index,
+                         floatToHalfBits(static_cast<float>(value)));
       break;
     case flagcxFloat32:
       storeRaw<float>(buffer, index, static_cast<float>(value));
@@ -157,6 +179,10 @@ static bool valueMatches(flagcxDataType_t datatype, long double actual,
                          long double expected) {
   const bool integral = datatype <= flagcxUint64;
   if (integral)
+    return actual == expected;
+  if (std::isnan(actual) || std::isnan(expected))
+    return false;
+  if (std::isinf(actual) || std::isinf(expected))
     return actual == expected;
   const long double diff = fabsl(actual - expected);
   const long double scale = std::max(1.0L, fabsl(expected));
@@ -221,15 +247,15 @@ void perfInitReductionBuffers(PerfContext &ctx, size_t size, size_t count,
   const long double localValue = static_cast<long double>(ctx.proc + 1);
   for (size_t i = 0; i < count; ++i)
     storeValue(ctx.hello, ctx.datatype, i, localValue);
-  ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello, size,
-                              flagcxMemcpyHostToDevice, NULL);
+  PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello, size,
+                                         flagcxMemcpyHostToDevice, NULL));
 
   if (initializeRecvWithLocalInput) {
     memset(ctx.hello, 0, size);
     for (size_t i = 0; i < count; ++i)
       storeValue(ctx.hello, ctx.datatype, i, localValue);
-    ctx.devHandle->deviceMemcpy(ctx.recvbuff, ctx.hello, size,
-                                flagcxMemcpyHostToDevice, NULL);
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.recvbuff, ctx.hello, size,
+                                           flagcxMemcpyHostToDevice, NULL));
   }
 }
 
@@ -282,9 +308,9 @@ bool perfCheckUniformReduction(PerfContext &ctx, size_t count,
       loadValue(expectedStorage, ctx.datatype, 0);
   const size_t size = count * ctx.typeSize;
   if (size != 0) {
-    ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
-                                flagcxMemcpyDeviceToHost, NULL);
-    ctx.devHandle->streamSynchronize(ctx.stream);
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
+                                           flagcxMemcpyDeviceToHost, NULL));
+    PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
   }
   for (size_t i = 0; i < count; ++i) {
     const long double actual = loadValue(ctx.hello, ctx.datatype, i);
@@ -293,8 +319,8 @@ bool perfCheckUniformReduction(PerfContext &ctx, size_t count,
         fprintf(stderr,
                 "%s failed (%s/%s) at element %zu: expected %.12Lg, got "
                 "%.12Lg\n",
-                label, perfDataTypeName(ctx.datatype),
-                perfRedOpName(ctx.redOp), i, normalizedExpected, actual);
+                label, perfDataTypeName(ctx.datatype), perfRedOpName(ctx.redOp),
+                i, normalizedExpected, actual);
       }
       ctx.accuracyFailed = true;
       return false;
@@ -307,14 +333,16 @@ bool perfCheckLocalReduction(PerfContext &ctx, size_t count,
                              const char *label) {
   const size_t size = count * ctx.typeSize;
   if (size != 0) {
-    ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
-                                flagcxMemcpyDeviceToHost, NULL);
-    ctx.devHandle->streamSynchronize(ctx.stream);
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
+                                           flagcxMemcpyDeviceToHost, NULL));
+    PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
   }
-  const size_t begin = count * static_cast<size_t>(ctx.proc) /
-                       static_cast<size_t>(ctx.totalProcs);
-  const size_t end = count * static_cast<size_t>(ctx.proc + 1) /
-                     static_cast<size_t>(ctx.totalProcs);
+  const size_t ranks = static_cast<size_t>(ctx.totalProcs);
+  const size_t rank = static_cast<size_t>(ctx.proc);
+  const size_t base = count / ranks;
+  const size_t remainder = count % ranks;
+  const size_t begin = rank * base + std::min(rank, remainder);
+  const size_t end = begin + base + (rank < remainder ? 1 : 0);
   for (size_t i = 0; i < count; ++i) {
     const long double local = static_cast<long double>(ctx.proc + 1);
     const long double expected =
@@ -329,8 +357,8 @@ bool perfCheckLocalReduction(PerfContext &ctx, size_t count,
         fprintf(stderr,
                 "%s failed (%s/%s) at element %zu: expected %.12Lg, got "
                 "%.12Lg\n",
-                label, perfDataTypeName(ctx.datatype),
-                perfRedOpName(ctx.redOp), i, normalizedExpected, actual);
+                label, perfDataTypeName(ctx.datatype), perfRedOpName(ctx.redOp),
+                i, normalizedExpected, actual);
       }
       ctx.accuracyFailed = true;
       return false;
@@ -339,20 +367,18 @@ bool perfCheckLocalReduction(PerfContext &ctx, size_t count,
   return true;
 }
 
-bool perfCheckRingGather(PerfContext &ctx, size_t count,
-                         const char *label) {
+bool perfCheckRingGather(PerfContext &ctx, size_t count, const char *label) {
   const size_t size = count * ctx.typeSize;
   if (size != 0) {
-    ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
-                                flagcxMemcpyDeviceToHost, NULL);
-    ctx.devHandle->streamSynchronize(ctx.stream);
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
+                                           flagcxMemcpyDeviceToHost, NULL));
+    PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
   }
   for (size_t i = 0; i < count; ++i) {
-    const int source = count == 0
-                           ? 0
-                           : std::min(ctx.totalProcs - 1,
-                                      static_cast<int>(i * ctx.totalProcs /
-                                                       count));
+    const int source =
+        count == 0 ? 0
+                   : std::min(ctx.totalProcs - 1,
+                              static_cast<int>(i * ctx.totalProcs / count));
     const long double expected = static_cast<long double>(source + 1);
     const long double actual = loadValue(ctx.hello, ctx.datatype, i);
     if (!valueMatches(ctx.datatype, actual, expected)) {
@@ -374,9 +400,9 @@ void perfPrintBuffer(const PerfContext &ctx, size_t count, const char *label) {
     return;
   const size_t size = count * ctx.typeSize;
   if (size != 0) {
-    ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
-                                flagcxMemcpyDeviceToHost, NULL);
-    ctx.devHandle->streamSynchronize(ctx.stream);
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
+                                           flagcxMemcpyDeviceToHost, NULL));
+    PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
   }
   printf("rank %d %s (%s/%s) = ", ctx.proc, label,
          perfDataTypeName(ctx.datatype), perfRedOpName(ctx.redOp));
@@ -400,12 +426,13 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.localRegister = ctx.args->getLocalRegister();
   ctx.datatype = ctx.args->getDataType();
   ctx.redOp = ctx.args->getRedOp();
-  ctx.typeSize = sizeof(float);
-  ctx.useTypedReduction = false;
+  ctx.typeSize = getFlagcxDataTypeSize(ctx.datatype);
+  if (ctx.typeSize == 0)
+    perfAbort("invalid datatype size", __FILE__, __LINE__);
   ctx.accuracyFailed = false;
 
   // Initialize FlagCX device handle
-  flagcxDeviceHandleInit(&ctx.devHandle);
+  PERF_CHECK(flagcxDeviceHandleInit(&ctx.devHandle));
 
   // Initialize MPI environment
   ctx.color = 0;
@@ -422,24 +449,29 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
 
   // GPU setup
   int nGpu;
-  ctx.devHandle->getDeviceCount(&nGpu);
-  ctx.devHandle->setDevice(ctx.worldRank % nGpu);
+  PERF_CHECK(ctx.devHandle->getDeviceCount(&nGpu));
+  if (nGpu <= 0)
+    perfAbort("no accelerator devices are visible", __FILE__, __LINE__);
+  PERF_CHECK(ctx.devHandle->setDevice(ctx.worldRank % nGpu));
 
   // Create and broadcast uniqueId
   flagcxUniqueId uniqueId;
   if (ctx.proc == 0)
-    flagcxGetUniqueId(&uniqueId);
+    PERF_CHECK(flagcxGetUniqueId(&uniqueId));
   MPI_Bcast((void *)&uniqueId, sizeof(flagcxUniqueId), MPI_BYTE, 0,
             ctx.splitComm);
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Initialize communicator
-  flagcxCommInitRank(&ctx.comm, ctx.totalProcs, &uniqueId, ctx.proc);
+  PERF_CHECK(
+      flagcxCommInitRank(&ctx.comm, ctx.totalProcs, &uniqueId, ctx.proc));
 
   // Create stream
-  ctx.devHandle->streamCreate(&ctx.stream);
+  PERF_CHECK(ctx.devHandle->streamCreate(&ctx.stream));
 
-  // Buffer sizes: call bufSizeFn if provided (totalProcs is now known)
+  // maxBytes is a byte capacity. The loops derive element counts from the
+  // active datatype, so count * typeSize never exceeds this capacity.
+  // Call bufSizeFn after MPI init, when totalProcs is known.
   size_t sBufSize = ctx.maxBytes;
   size_t rBufSize = ctx.maxBytes;
   if (bufSizeFn) {
@@ -454,187 +486,221 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.recvHandle = nullptr;
 
   if (ctx.localRegister) {
-    flagcxMemAlloc(&ctx.sendbuff, sBufSize);
-    flagcxMemAlloc(&ctx.recvbuff, rBufSize);
-    flagcxCommRegister(ctx.comm, ctx.sendbuff, sBufSize, &ctx.sendHandle);
-    flagcxCommRegister(ctx.comm, ctx.recvbuff, rBufSize, &ctx.recvHandle);
+    PERF_CHECK(flagcxMemAlloc(&ctx.sendbuff, sBufSize));
+    PERF_CHECK(flagcxMemAlloc(&ctx.recvbuff, rBufSize));
+    PERF_CHECK(
+        flagcxCommRegister(ctx.comm, ctx.sendbuff, sBufSize, &ctx.sendHandle));
+    PERF_CHECK(
+        flagcxCommRegister(ctx.comm, ctx.recvbuff, rBufSize, &ctx.recvHandle));
   } else {
-    ctx.devHandle->deviceMalloc(&ctx.sendbuff, sBufSize, flagcxMemDevice, NULL);
-    ctx.devHandle->deviceMalloc(&ctx.recvbuff, rBufSize, flagcxMemDevice, NULL);
+    PERF_CHECK(ctx.devHandle->deviceMalloc(&ctx.sendbuff, sBufSize,
+                                           flagcxMemDevice, NULL));
+    PERF_CHECK(ctx.devHandle->deviceMalloc(&ctx.recvbuff, rBufSize,
+                                           flagcxMemDevice, NULL));
   }
   ctx.hello = malloc(hBufSize);
+  if (ctx.hello == nullptr)
+    perfAbort("failed to allocate host staging buffer", __FILE__, __LINE__);
   memset(ctx.hello, 0, hBufSize);
 
   ctx.userData = nullptr;
 }
 
-void perfEnableTypedReduction(PerfContext &ctx) {
-  ctx.typeSize = getFlagcxDataTypeSize(ctx.datatype);
-  ctx.useTypedReduction = true;
-}
-
 void perfTeardown(PerfContext &ctx) {
   if (ctx.localRegister) {
-    flagcxCommDeregister(ctx.comm, ctx.sendHandle);
-    flagcxCommDeregister(ctx.comm, ctx.recvHandle);
-    flagcxMemFree(ctx.sendbuff);
-    flagcxMemFree(ctx.recvbuff);
+    PERF_CHECK(flagcxCommDeregister(ctx.comm, ctx.sendHandle));
+    PERF_CHECK(flagcxCommDeregister(ctx.comm, ctx.recvHandle));
+    PERF_CHECK(flagcxMemFree(ctx.sendbuff));
+    PERF_CHECK(flagcxMemFree(ctx.recvbuff));
   } else {
-    ctx.devHandle->deviceFree(ctx.sendbuff, flagcxMemDevice, NULL);
-    ctx.devHandle->deviceFree(ctx.recvbuff, flagcxMemDevice, NULL);
+    PERF_CHECK(ctx.devHandle->deviceFree(ctx.sendbuff, flagcxMemDevice, NULL));
+    PERF_CHECK(ctx.devHandle->deviceFree(ctx.recvbuff, flagcxMemDevice, NULL));
   }
   free(ctx.hello);
-  ctx.devHandle->streamDestroy(ctx.stream);
-  flagcxCommDestroy(ctx.comm);
-  flagcxDeviceHandleFree(ctx.devHandle);
+  PERF_CHECK(ctx.devHandle->streamDestroy(ctx.stream));
+  PERF_CHECK(flagcxCommDestroy(ctx.comm));
+  PERF_CHECK(flagcxDeviceHandleFree(ctx.devHandle));
   delete ctx.args;
 
   MPI_Finalize();
 }
 
 void perfWarmup(PerfContext &ctx, PerfCollFn fn) {
-  const size_t elementSize =
-      ctx.useTypedReduction ? ctx.typeSize : sizeof(float);
+  const size_t elementSize = ctx.typeSize;
   // Warmup for large size
   size_t largeCount = ctx.maxBytes / elementSize;
   for (int i = 0; i < ctx.numWarmupIters; i++) {
     fn(ctx, largeCount);
   }
-  ctx.devHandle->streamSynchronize(ctx.stream);
+  PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
 
   // Warmup for small size
   size_t smallCount = ctx.minBytes / elementSize;
   for (int i = 0; i < ctx.numWarmupIters; i++) {
     fn(ctx, smallCount);
   }
-  ctx.devHandle->streamSynchronize(ctx.stream);
+  PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
+}
+
+template <typename Fn>
+static void perfForEachCase(PerfContext &ctx, bool iterateOps, Fn runCase) {
+  static const flagcxDataType_t types[] = {
+      flagcxInt8,    flagcxUint8,   flagcxInt32,   flagcxUint32,
+      flagcxInt64,   flagcxUint64,  flagcxFloat16, flagcxFloat32,
+      flagcxFloat64, flagcxBfloat16};
+  // Keep the historical "all" sweep limited to the four broadly supported
+  // reduction operations. An explicit -o avg still runs avg.
+  static const flagcxRedOp_t ops[] = {flagcxSum, flagcxProd, flagcxMax,
+                                      flagcxMin};
+  const flagcxDataType_t selectedType = ctx.datatype;
+  const flagcxRedOp_t selectedOp = ctx.redOp;
+  const size_t typeCount =
+      ctx.args->allDataTypes() ? sizeof(types) / sizeof(types[0]) : 1;
+  const size_t opCount =
+      iterateOps && ctx.args->allRedOps() ? sizeof(ops) / sizeof(ops[0]) : 1;
+  for (size_t ti = 0; ti < typeCount; ++ti) {
+    ctx.datatype = ctx.args->allDataTypes() ? types[ti] : selectedType;
+    ctx.typeSize = getFlagcxDataTypeSize(ctx.datatype);
+    if (ctx.typeSize == 0)
+      perfAbort("invalid datatype size", __FILE__, __LINE__);
+    for (size_t oi = 0; oi < opCount; ++oi) {
+      ctx.redOp = iterateOps && ctx.args->allRedOps() ? ops[oi] : selectedOp;
+      if (ctx.proc == 0 && ctx.color == 0)
+        printf("#\n# datatype: %s, op: %s\n#\n", perfDataTypeName(ctx.datatype),
+               perfRedOpName(ctx.redOp));
+      runCase();
+    }
+  }
+  ctx.datatype = selectedType;
+  ctx.redOp = selectedOp;
+  ctx.typeSize = getFlagcxDataTypeSize(ctx.datatype);
 }
 
 void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
                        PerfBwFactorFn bwFactorFn, PerfDataInitFn dataInitFn,
-                       PerfPostIterFn postIterFn) {
+                       PerfPostIterFn postIterFn, bool iterateOps) {
   if (ctx.stepFactor <= 1) {
-    fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
-    return;
+    perfAbort("stepFactor must be greater than 1", __FILE__, __LINE__);
   }
-  const size_t elementSize =
-      ctx.useTypedReduction ? ctx.typeSize : sizeof(float);
-  for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
-       size *= ctx.stepFactor) {
-    size_t count = size / elementSize;
-    size_t actualSize = count * elementSize;
-
-    // Optional data initialization
-    if (dataInitFn) {
-      dataInitFn(ctx, actualSize, count);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    // Timed loop
-    ctx.tim.reset();
-    for (int i = 0; i < ctx.numIters; i++) {
-      collFn(ctx, count);
-    }
-    ctx.devHandle->streamSynchronize(ctx.stream);
-
-    // Compute average elapsed time across all ranks
-    double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
-    MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
-                  MPI_COMM_WORLD);
-    elapsedTime /= ctx.worldSize;
-
-    // Bandwidth calculation
-    double baseBw = (double)(actualSize) / 1.0E9 / elapsedTime;
-    double algBw = baseBw;
-    double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
-    double busBw = baseBw * factor;
-
-    if (ctx.proc == 0 && ctx.color == 0) {
-      printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
-             "%lf GB/s; Bus bandwidth: %lf GB/s\n",
-             actualSize, elapsedTime, algBw, busBw);
-    }
-
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    // Optional post-iteration callback
-    if (postIterFn) {
-      postIterFn(ctx, actualSize, count);
-    }
-  }
-}
-
-void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
-                           PerfBwFactorFn bwFactorFn,
-                           PerfRootDataInitFn dataInitFn,
-                           PerfRootPostIterFn postIterFn) {
-  if (ctx.stepFactor <= 1) {
-    fprintf(stderr, "Error: stepFactor must be > 1 (got %d)\n", ctx.stepFactor);
-    return;
-  }
-  const size_t elementSize =
-      ctx.useTypedReduction ? ctx.typeSize : sizeof(float);
-  for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
-       size *= ctx.stepFactor) {
-    const size_t reportedSize = (size / elementSize) * elementSize;
-    int beginRoot, endRoot;
-    double sumAlgBw = 0;
-    double sumBusBw = 0;
-    double sumTime = 0;
-    int testCount = 0;
-
-    if (ctx.root != -1) {
-      beginRoot = endRoot = ctx.root;
-    } else {
-      beginRoot = 0;
-      endRoot = ctx.totalProcs - 1;
-    }
-
-    for (int r = beginRoot; r <= endRoot; r++) {
+  perfForEachCase(ctx, iterateOps, [&]() {
+    const size_t elementSize = ctx.typeSize;
+    for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
+         size *= ctx.stepFactor) {
       size_t count = size / elementSize;
       size_t actualSize = count * elementSize;
 
+      // Optional data initialization
       if (dataInitFn) {
-        dataInitFn(ctx, actualSize, count, r);
+        dataInitFn(ctx, actualSize, count);
       }
 
       MPI_Barrier(MPI_COMM_WORLD);
 
+      // Timed loop
       ctx.tim.reset();
       for (int i = 0; i < ctx.numIters; i++) {
-        collFn(ctx, count, r);
+        collFn(ctx, count);
       }
-      ctx.devHandle->streamSynchronize(ctx.stream);
+      PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
 
-      MPI_Barrier(MPI_COMM_WORLD);
-
+      // Compute average elapsed time across all ranks
       double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
       MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE, MPI_SUM,
                     MPI_COMM_WORLD);
       elapsedTime /= ctx.worldSize;
 
+      // Bandwidth calculation
       double baseBw = (double)(actualSize) / 1.0E9 / elapsedTime;
       double algBw = baseBw;
       double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
       double busBw = baseBw * factor;
-      sumAlgBw += algBw;
-      sumBusBw += busBw;
-      sumTime += elapsedTime;
-      testCount++;
 
+      if (ctx.proc == 0 && ctx.color == 0) {
+        printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
+               "%lf GB/s; Bus bandwidth: %lf GB/s\n",
+               actualSize, elapsedTime, algBw, busBw);
+      }
+
+      MPI_Barrier(MPI_COMM_WORLD);
+
+      // Optional post-iteration callback
       if (postIterFn) {
-        postIterFn(ctx, actualSize, count, r);
+        postIterFn(ctx, actualSize, count);
       }
     }
+  });
+}
 
-    if (ctx.proc == 0 && ctx.color == 0) {
-      double algBw = sumAlgBw / testCount;
-      double busBw = sumBusBw / testCount;
-      double elapsedTime = sumTime / testCount;
-      printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
-             "%lf GB/s; Bus bandwidth: %lf GB/s\n",
-             reportedSize, elapsedTime, algBw, busBw);
-    }
+void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
+                           PerfBwFactorFn bwFactorFn,
+                           PerfRootDataInitFn dataInitFn,
+                           PerfRootPostIterFn postIterFn, bool iterateOps) {
+  if (ctx.stepFactor <= 1) {
+    perfAbort("stepFactor must be greater than 1", __FILE__, __LINE__);
   }
+  perfForEachCase(ctx, iterateOps, [&]() {
+    const size_t elementSize = ctx.typeSize;
+    for (size_t size = ctx.minBytes; size <= ctx.maxBytes;
+         size *= ctx.stepFactor) {
+      const size_t reportedSize = (size / elementSize) * elementSize;
+      int beginRoot, endRoot;
+      double sumAlgBw = 0;
+      double sumBusBw = 0;
+      double sumTime = 0;
+      int testCount = 0;
+
+      if (ctx.root != -1) {
+        beginRoot = endRoot = ctx.root;
+      } else {
+        beginRoot = 0;
+        endRoot = ctx.totalProcs - 1;
+      }
+
+      for (int r = beginRoot; r <= endRoot; r++) {
+        size_t count = size / elementSize;
+        size_t actualSize = count * elementSize;
+
+        if (dataInitFn) {
+          dataInitFn(ctx, actualSize, count, r);
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        ctx.tim.reset();
+        for (int i = 0; i < ctx.numIters; i++) {
+          collFn(ctx, count, r);
+        }
+        PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
+
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        double elapsedTime = ctx.tim.elapsed() / ctx.numIters;
+        MPI_Allreduce(MPI_IN_PLACE, (void *)&elapsedTime, 1, MPI_DOUBLE,
+                      MPI_SUM, MPI_COMM_WORLD);
+        elapsedTime /= ctx.worldSize;
+
+        double baseBw = (double)(actualSize) / 1.0E9 / elapsedTime;
+        double algBw = baseBw;
+        double factor = bwFactorFn ? bwFactorFn(ctx.totalProcs) : 1.0;
+        double busBw = baseBw * factor;
+        sumAlgBw += algBw;
+        sumBusBw += busBw;
+        sumTime += elapsedTime;
+        testCount++;
+
+        if (postIterFn) {
+          postIterFn(ctx, actualSize, count, r);
+        }
+      }
+
+      if (ctx.proc == 0 && ctx.color == 0) {
+        double algBw = sumAlgBw / testCount;
+        double busBw = sumBusBw / testCount;
+        double elapsedTime = sumTime / testCount;
+        printf("Comm size: %zu bytes; Elapsed time: %lf sec; Algo bandwidth: "
+               "%lf GB/s; Bus bandwidth: %lf GB/s\n",
+               reportedSize, elapsedTime, algBw, busBw);
+      }
+    }
+  });
 }

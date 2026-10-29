@@ -22,8 +22,9 @@ static void dataInitFn(PerfContext &ctx, size_t size, size_t count) {
     ((float *)ctx.hello)[i] = (1 << ctx.proc) * (i % 10);
   }
 
-  ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello, size / ctx.totalProcs,
-                              flagcxMemcpyHostToDevice, NULL);
+  PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello,
+                                         size / ctx.totalProcs,
+                                         flagcxMemcpyHostToDevice, NULL));
   if ((ctx.proc == 0 || ctx.proc == ctx.totalProcs - 1) && ctx.color == 0 &&
       ctx.printBuffer) {
     printf("sendbuff =");
@@ -38,8 +39,8 @@ static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
   if (ctx.datatype != flagcxFloat32)
     return;
   memset(ctx.hello, 0, size);
-  ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
-                              flagcxMemcpyDeviceToHost, NULL);
+  PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
+                                         flagcxMemcpyDeviceToHost, NULL));
 
   int correct = 1;
   size_t count_per_rank = count / ctx.totalProcs;
@@ -53,6 +54,7 @@ static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
                "offset %zu), expected %f, got %f\n",
                ctx.proc, recv_offset, src_rank, offset, expected, actual);
         correct = 0;
+        ctx.accuracyFailed = true;
         break;
       }
     }
@@ -76,6 +78,7 @@ int main(int argc, char *argv[]) {
   perfSetup(ctx, argc, argv, bufSizeFn);
   perfWarmup(ctx, collFn);
   perfBenchmarkLoop(ctx, collFn, bwFactorFn, dataInitFn, postIterFn, false);
+  const int result = ctx.accuracyFailed ? 1 : 0;
   perfTeardown(ctx);
-  return 0;
+  return result;
 }

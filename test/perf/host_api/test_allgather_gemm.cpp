@@ -76,8 +76,7 @@ static float weightValue(int rank, size_t row, size_t col) {
 }
 
 static void collFn(PerfContext &ctx, size_t count) {
-  FusedGemmPerfState *state =
-      static_cast<FusedGemmPerfState *>(ctx.userData);
+  FusedGemmPerfState *state = static_cast<FusedGemmPerfState *>(ctx.userData);
   size_t mPerRank = mPerRankForCount(ctx, count);
   flagcxResult_t result = flagcxAllGatherGemm(
       ctx.sendbuff, state->weight, ctx.recvbuff, mPerRank, state->n, state->k,
@@ -94,31 +93,28 @@ static double bwFactorFn(int totalProcs) {
 }
 
 static void dataInitFn(PerfContext &ctx, size_t, size_t count) {
-  FusedGemmPerfState *state =
-      static_cast<FusedGemmPerfState *>(ctx.userData);
+  FusedGemmPerfState *state = static_cast<FusedGemmPerfState *>(ctx.userData);
   size_t mPerRank = mPerRankForCount(ctx, count);
   size_t inputCount = mPerRank * state->k;
   for (size_t row = 0; row < mPerRank; ++row) {
     for (size_t col = 0; col < state->k; ++col) {
-      state->hostInput[row * state->k + col] =
-          inputValue(ctx.proc, row, col);
+      state->hostInput[row * state->k + col] = inputValue(ctx.proc, row, col);
     }
   }
-  ctx.devHandle->deviceMemcpy(ctx.sendbuff, state->hostInput.data(),
-                              inputCount * sizeof(float),
-                              flagcxMemcpyHostToDevice, ctx.stream);
+  PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.sendbuff, state->hostInput.data(),
+                                         inputCount * sizeof(float),
+                                         flagcxMemcpyHostToDevice, ctx.stream));
 }
 
 static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
   if (!ctx.printBuffer) {
     return;
   }
-  FusedGemmPerfState *state =
-      static_cast<FusedGemmPerfState *>(ctx.userData);
+  FusedGemmPerfState *state = static_cast<FusedGemmPerfState *>(ctx.userData);
   size_t mPerRank = mPerRankForCount(ctx, count);
-  ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
-                              flagcxMemcpyDeviceToHost, ctx.stream);
-  ctx.devHandle->streamSynchronize(ctx.stream);
+  PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, size,
+                                         flagcxMemcpyDeviceToHost, ctx.stream));
+  PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
 
   int correct = 1;
   size_t globalRows = static_cast<size_t>(ctx.totalProcs) * mPerRank;
@@ -128,16 +124,18 @@ static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
     for (size_t col = 0; col < state->n; ++col) {
       float expected = 0.0f;
       for (size_t p = 0; p < state->k; ++p) {
-        expected += inputValue(sourceRank, localRow, p) *
-                    weightValue(ctx.proc, p, col);
+        expected +=
+            inputValue(sourceRank, localRow, p) * weightValue(ctx.proc, p, col);
       }
       float actual = static_cast<float *>(ctx.hello)[row * state->n + col];
       float tolerance = 1e-4f + 1e-4f * std::fabs(expected);
-      if (std::fabs(actual - expected) > tolerance) {
+      if (!std::isfinite(actual) || !std::isfinite(expected) ||
+          std::fabs(actual - expected) > tolerance) {
         fprintf(stderr,
                 "rank %d wrong output at (%zu,%zu), expected %f, got %f\n",
                 ctx.proc, row, col, expected, actual);
         correct = 0;
+        ctx.accuracyFailed = true;
         break;
       }
     }
@@ -155,8 +153,7 @@ int main(int argc, char *argv[]) {
     fail(ctx, "weight buffer size overflow");
   }
   size_t weightCount = state.k * state.n;
-  size_t maxMPerRank =
-      ctx.maxBytes / sizeof(float) / ctx.totalProcs / state.n;
+  size_t maxMPerRank = ctx.maxBytes / sizeof(float) / ctx.totalProcs / state.n;
   state.hostInput.resize(maxMPerRank * state.k);
   std::vector<float> hostWeight(weightCount);
   for (size_t row = 0; row < state.k; ++row) {
@@ -168,10 +165,9 @@ int main(int argc, char *argv[]) {
                                   flagcxMemDevice, NULL) != flagcxSuccess) {
     fail(ctx, "failed to allocate weight buffer");
   }
-  if (ctx.devHandle->deviceMemcpy(state.weight, hostWeight.data(),
-                                  weightCount * sizeof(float),
-                                  flagcxMemcpyHostToDevice,
-                                  ctx.stream) != flagcxSuccess) {
+  if (ctx.devHandle->deviceMemcpy(
+          state.weight, hostWeight.data(), weightCount * sizeof(float),
+          flagcxMemcpyHostToDevice, ctx.stream) != flagcxSuccess) {
     fail(ctx, "failed to initialize weight buffer");
   }
   ctx.userData = &state;
@@ -179,7 +175,8 @@ int main(int argc, char *argv[]) {
   perfWarmup(ctx, collFn);
   perfBenchmarkLoop(ctx, collFn, bwFactorFn, dataInitFn, postIterFn);
 
+  const int result = ctx.accuracyFailed ? 1 : 0;
   ctx.devHandle->deviceFree(state.weight, flagcxMemDevice, NULL);
   perfTeardown(ctx);
-  return 0;
+  return result;
 }

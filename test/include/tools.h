@@ -1,5 +1,6 @@
-#include "mpi.h"
+#include "check.h"
 #include "flagcx.h"
+#include "mpi.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -30,6 +31,8 @@ public:
   int getLocalRegister() const { return localRegister; }
   flagcxDataType_t getDataType() const { return datatype; }
   flagcxRedOp_t getRedOp() const { return redOp; }
+  bool allDataTypes() const { return sweepDataTypes; }
+  bool allRedOps() const { return sweepRedOps; }
 
   size_t minBytes;
   size_t maxBytes;
@@ -42,4 +45,6 @@ public:
   int localRegister;
   flagcxDataType_t datatype;
   flagcxRedOp_t redOp;
+  bool sweepDataTypes;
+  bool sweepRedOps;
 };

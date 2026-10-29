@@ -686,6 +686,19 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
         ./build/bin/runner_mpi_tests || hybrid_status=$?
+      if [[ "$platform_name" == "cuda" ]]; then
+        FLAGCX_CI_MPI_LABEL="runner UniRunner outer group handling" \
+          "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_USE_HETERO_COMM=1 \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 \
+          -x FLAGCX_UNIRUNNER_ALGO=8 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x LD_LIBRARY_PATH \
+          ./build/bin/runner_mpi_tests \
+          --gtest_filter=FlagCXCollTest.UniRunnerDagAlgorithmsRejectOuterGroup:FlagCXCollTest.AllGatherInsideGroup
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \

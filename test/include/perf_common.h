@@ -27,7 +27,6 @@ struct PerfContext {
   flagcxDataType_t datatype;
   flagcxRedOp_t redOp;
   size_t typeSize;
-  bool useTypedReduction;
   bool accuracyFailed;
 
   // FlagCX handles
@@ -70,15 +69,17 @@ using PerfRootDataInitFn = void (*)(PerfContext &ctx, size_t size, size_t count,
 using PerfRootPostIterFn = void (*)(PerfContext &ctx, size_t size, size_t count,
                                     int root);
 
+[[noreturn]] void perfAbort(const char *message, const char *file, int line);
+void perfCheck(flagcxResult_t result, const char *expression, const char *file,
+               int line);
+#define PERF_CHECK(expression)                                                 \
+  perfCheck((expression), #expression, __FILE__, __LINE__)
+
 // Initialize everything: parse args, MPI init, GPU setup, comm init,
 // buffer allocation. bufSizeFn is called after MPI init (when totalProcs
 // is known) to determine send/recv buffer sizes; nullptr = both maxBytes.
 void perfSetup(PerfContext &ctx, int argc, char **argv,
                PerfBufSizeFn bufSizeFn = nullptr);
-
-// Enable the selected dtype for the reduction benchmark family. Other host
-// API perf tests intentionally retain their historical float32 payloads.
-void perfEnableTypedReduction(PerfContext &ctx);
 
 // Free all buffers, destroy comm/stream, free devHandle, MPI_Finalize.
 void perfTeardown(PerfContext &ctx);
@@ -91,14 +92,16 @@ void perfWarmup(PerfContext &ctx, PerfCollFn fn);
 void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
                        PerfBwFactorFn bwFactorFn = nullptr,
                        PerfDataInitFn dataInitFn = nullptr,
-                       PerfPostIterFn postIterFn = nullptr);
+                       PerfPostIterFn postIterFn = nullptr,
+                       bool iterateOps = true);
 
 // Run the benchmark size sweep with root iteration (for reduce, broadcast,
 // scatter, gather). Iterates over roots per size, accumulating BW.
 void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
                            PerfBwFactorFn bwFactorFn = nullptr,
                            PerfRootDataInitFn dataInitFn = nullptr,
-                           PerfRootPostIterFn postIterFn = nullptr);
+                           PerfRootPostIterFn postIterFn = nullptr,
+                           bool iterateOps = true);
 
 // Typed reduction-test helpers shared by the host API accuracy checks.
 const char *perfDataTypeName(flagcxDataType_t datatype);
@@ -109,8 +112,6 @@ long double perfReduceAcrossRanks(flagcxRedOp_t op, int nranks);
 long double perfReduceBinary(flagcxRedOp_t op, long double value);
 bool perfCheckUniformReduction(PerfContext &ctx, size_t count,
                                long double expected, const char *label);
-bool perfCheckLocalReduction(PerfContext &ctx, size_t count,
-                             const char *label);
-bool perfCheckRingGather(PerfContext &ctx, size_t count,
-                         const char *label);
+bool perfCheckLocalReduction(PerfContext &ctx, size_t count, const char *label);
+bool perfCheckRingGather(PerfContext &ctx, size_t count, const char *label);
 void perfPrintBuffer(const PerfContext &ctx, size_t count, const char *label);

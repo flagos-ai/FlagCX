@@ -2,9 +2,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <getopt.h>
 #include <libgen.h>
-#include <cstring>
 
 static bool parsePerfDataType(const char *value, flagcxDataType_t *datatype) {
   if (std::strcmp(value, "int8") == 0 || std::strcmp(value, "char") == 0) {
@@ -138,6 +138,8 @@ parser::parser(int argc, char **argv) {
   localRegister = 0;
   datatype = flagcxFloat32;
   redOp = flagcxSum;
+  sweepDataTypes = false;
+  sweepRedOps = false;
 
   double parsedValue;
   int longIndex;
@@ -229,16 +231,26 @@ parser::parser(int argc, char **argv) {
         }
         break;
       case 'o':
+        if (std::strcmp(optarg, "all") == 0) {
+          sweepRedOps = true;
+          break;
+        }
         if (!parsePerfRedOp(optarg, &redOp)) {
           fprintf(stderr, "Invalid reduce op: %s\n", optarg);
           exit(1);
         }
+        sweepRedOps = false;
         break;
       case 'd':
+        if (std::strcmp(optarg, "all") == 0) {
+          sweepDataTypes = true;
+          break;
+        }
         if (!parsePerfDataType(optarg, &datatype)) {
           fprintf(stderr, "Invalid datatype: %s\n", optarg);
           exit(1);
         }
+        sweepDataTypes = false;
         break;
       case 'h':
       default:
@@ -254,9 +266,9 @@ parser::parser(int argc, char **argv) {
                "[-r <root>] \n\t"
                "[-s <splitmask OCT/DEC/HEX>] \n\t"
                "[-R <localregister 0/1/2>] \n\t"
-               "[-o <sum/prod/max/min/avg>] \n\t"
+               "[-o <sum/prod/max/min/avg/all>] \n\t"
                "[-d <int8/uint8/int32/uint32/int64/uint64/float16/float32/"
-               "float64/bfloat16>] \n\t"
+               "float64/bfloat16/all>] \n\t"
                "[-h\n",
                basename(argv[0]));
         printf("Use default values with -b 1M -e 1G -f 2 -w 5 -n 20 -p 0 -r 0 "
