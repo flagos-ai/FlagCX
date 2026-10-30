@@ -15,6 +15,9 @@ import torch
 import torch.distributed as dist
 
 
+_retained_groups = []
+
+
 VENDOR_PACKAGES = {
     "ascend": ("torch_npu", "npu"),
     "enflame": ("torch_gcu", "gcu"),
@@ -39,6 +42,11 @@ def parse_args():
         "--work-completion",
         action="store_true",
         help="check Ascend/FlagOS device completion before the peer submits",
+    )
+    parser.add_argument(
+        "--retain-group-at-exit",
+        action="store_true",
+        help="keep a backend reference alive through interpreter shutdown",
     )
     return parser.parse_args()
 
@@ -193,6 +201,9 @@ def main():
         rank=rank,
         world_size=world_size,
     )
+
+    if args.retain_group_at_exit:
+        _retained_groups.append(dist.distributed_c10d._get_default_group())
 
     try:
         value = torch.tensor([rank + 1], dtype=torch.float32, device=device)
