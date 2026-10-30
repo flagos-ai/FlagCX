@@ -15,6 +15,16 @@
 static flagcxResult_t flagcxP2pTopoBuildXml(struct flagcxNetAdaptor *netAdaptor,
                                             struct flagcxXml *xml,
                                             int *nGpusOut) {
+  if (xml == NULL || nGpusOut == NULL || deviceAdaptor == NULL ||
+      deviceAdaptor->getDeviceCount == NULL ||
+      deviceAdaptor->getDevicePciBusId == NULL ||
+      deviceAdaptor->getDeviceByPciBusId == NULL || netAdaptor == NULL ||
+      netAdaptor->devices == NULL || netAdaptor->getProperties == NULL) {
+    WARN("P2P topo: required device or network topology callbacks are "
+         "unavailable");
+    return flagcxNotSupported;
+  }
+
   // Create root node
   struct flagcxXmlNode *top;
   FLAGCXCHECK(xmlAddNode(xml, NULL, "system", &top));
@@ -68,6 +78,18 @@ static flagcxResult_t flagcxP2pTopoBuildXml(struct flagcxNetAdaptor *netAdaptor,
 
 flagcxResult_t flagcxP2pTopoInit(struct flagcxNetAdaptor *netAdaptor,
                                  struct flagcxP2pTopoManager **mgr) {
+  if (mgr == NULL)
+    return flagcxInvalidArgument;
+  *mgr = NULL;
+  if (deviceAdaptor == NULL || deviceAdaptor->getDeviceCount == NULL ||
+      deviceAdaptor->getDevicePciBusId == NULL ||
+      deviceAdaptor->getDeviceByPciBusId == NULL || netAdaptor == NULL ||
+      netAdaptor->devices == NULL || netAdaptor->getProperties == NULL) {
+    WARN("P2P topo: required device or network topology callbacks are "
+         "unavailable");
+    return flagcxNotSupported;
+  }
+
   struct flagcxP2pTopoManager *m;
   FLAGCXCHECK(flagcxCalloc(&m, 1));
 

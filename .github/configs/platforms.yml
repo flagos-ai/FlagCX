@@ -12,6 +12,8 @@ platforms:
     enabled: true
   ppu:
     enabled: true
+  ascend:
+    enabled: true
 shared_paths_watch:
   - .github/workflows/**
   - .github/configs/platforms.yml

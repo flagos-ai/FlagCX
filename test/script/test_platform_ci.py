@@ -13,7 +13,7 @@ HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
 class PlatformCiRegressionTest(unittest.TestCase):
     def test_gpu_ci_world_uses_four_ranks(self):
-        for platform in ("cuda", "metax", "hygon", "ppu"):
+        for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
             with self.subTest(platform=platform):
                 source = (
                     REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
@@ -123,9 +123,27 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertTrue(unit_link_line.startswith("g++ "))
 
+        device_api_unit_result = subprocess.run(
+            [
+                "make", "-n", "-B", "-C",
+                str(REPO_ROOT / "test/unittest/device_api"),
+                "unit", "USE_DU=1", "USE_SHCA=1",
+                "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        device_api_unit_link = next(
+            line for line in device_api_unit_result.stdout.splitlines()
+            if "/bin/test_deviceptr_args " in line
+        )
+        self.assertTrue(device_api_unit_link.startswith("g++ "))
+
         kernel_result = subprocess.run(
             [
-                "make", "-n", "-B", "-C", str(REPO_ROOT / "test/unittest/kernel"),
+                "make", "-n", "-B", "-C",
+                str(REPO_ROOT / "test/unittest/device_api/kernel"),
                 "all", "USE_DU=1", "USE_SHCA=1",
                 "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
             ],
@@ -133,11 +151,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        kernel_unit_link = next(
-            line for line in kernel_result.stdout.splitlines()
-            if "/bin/kernel_unit_tests " in line
-        )
-        self.assertTrue(kernel_unit_link.startswith("g++ "))
         kernel_mpi_link = next(
             line for line in kernel_result.stdout.splitlines()
             if "/bin/kernel_mpi_tests " in line
@@ -147,6 +160,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("-no-pie", kernel_mpi_link)
         self.assertIn("/du/build/obj/device_api.o", kernel_mpi_link)
         self.assertNotIn(".cpp", kernel_mpi_link)
+        self.assertIn("-lgtest", kernel_mpi_link)
+        self.assertNotIn("-lgtest_main", kernel_mpi_link)
 
         perf_result = subprocess.run(
             [
@@ -233,7 +248,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu"]
+        all_platforms = ["cuda", "hygon", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -245,6 +260,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
             ["hygon"],
+        )
+        self.assertEqual(
+            self._run_platform_matrix(
+                "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
+            ),
+            ["ascend"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -490,12 +511,39 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("IbucRetransmissionTest.*", adaptor_case)
         self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", adaptor_case)
         self.assertIn("FLAGCX_IBUC_SPLIT_DATA_ON_QPS=1", adaptor_case)
+
         self.assertIn("FLAGCX_CI_EXPECT_NET_ADAPTOR=IBUC", unit_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="IBUC forced NET runner"', unit_runner)
 
         hygon_env = HYGON_ENV.read_text()
         self.assertNotIn("FLAGCX_CI_ENABLE_IBUC=1", hygon_env)
         self.assertNotIn("FLAGCX_CI_IBUC_ENV=(", hygon_env)
+
+    def test_cuda_enables_nvidia_symmem_and_rma_coverage(self):
+        cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
+        cuda_env = (
+            REPO_ROOT / ".github/scripts/set_env/cuda.sh"
+        ).read_text()
+        symmem_runner = (
+            REPO_ROOT / "test/script/symmem_test.sh"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+
+        self.assertIn("export FLAGCX_ADAPTOR=nvidia", cuda_env)
+        suites = cuda_config[cuda_config.index("unit_test_suites:") :]
+        self.assertIn("  - rma", suites)
+        self.assertIn("  - symmem", suites)
+        self.assertIn("nvidia|metax|ppu)", symmem_runner)
+        self.assertIn("nvidia|du|metax|ppu)", symmem_runner)
+        self.assertIn(
+            "SymMemTest.SegmentedVmmSubrangeMapsOnlyTouchedSegment",
+            symmem_runner,
+        )
+        self.assertIn("SymMemTest.UntrackedVmmMappingIsRejected", symmem_runner)
+        self.assertIn('if [[ "$platform_name" == "cuda" ]]; then', unit_runner)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="rma GDR visibility VMM $route"', unit_runner)
 
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
@@ -584,14 +632,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
             '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
             '{"platform":"metax","display_name":"MetaX Tests"},'
-            '{"platform":"ppu","display_name":"T-Head PPU Tests"}]}',
+            '{"platform":"ppu","display_name":"T-Head PPU Tests"},'
+            '{"platform":"ascend","display_name":"Ascend 910C unit tests"}]}',
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
+        common_unit_workflow = (
+            REPO_ROOT / ".github/workflows/unit_tests_common.yml"
+        ).read_text()
         self.assertIn(
             "EVENT_SELECTION: ${{ inputs.platform || 'all' }}",
             unit_workflow,
+        )
+        self.assertIn('if [[ "$FLAGCX_CI_PLATFORM" == "ascend" ]]; then', common_unit_workflow)
+        self.assertIn("if command -v git >/dev/null 2>&1; then", common_unit_workflow)
+        self.assertLess(
+            common_unit_workflow.index("if command -v git >/dev/null 2>&1; then"),
+            common_unit_workflow.index("git_version=\"$(git --version"),
         )
         self.assertNotIn("pull_request.number == 643", unit_workflow)
         self.assertNotIn("pull_request.number == 648", unit_workflow)
@@ -599,6 +657,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("FLAGCX_CI_PR_NUMBER", unit_workflow)
 
         expected_suites = {
+            "ascend": [
+                "core",
+                "adaptor",
+                "device_api_host",
+                "topo",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
             "cuda": [
                 "adaptor",
                 "core",
@@ -657,6 +726,51 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 platform,
             )
 
+        ascend_env = (
+            REPO_ROOT / ".github/scripts/set_env/ascend.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_CI_INTRA_NP=4", ascend_env)
+        self.assertIn("FLAGCX_CI_NODE_NP=2", ascend_env)
+        self.assertIn("FLAGCX_CI_RUNNER_NP=4", ascend_env)
+        self.assertIn("FLAGCX_CI_ENABLE_PXN=0", ascend_env)
+        self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", ascend_env)
+        self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", ascend_env)
+        self.assertNotIn("flagcx_ci_build_suite_additional", ascend_env)
+        self.assertNotIn("flagcx_ci_run_suite_additional", ascend_env)
+        self.assertFalse(
+            (REPO_ROOT / "test/unittest/core/test_p2p_topo.cpp").exists()
+        )
+        self.assertTrue(
+            (REPO_ROOT / "test/unittest/topo/test_p2p_topo.cpp").exists()
+        )
+        self.assertIn("device_api_host|topo|p2p", ascend_env)
+        self.assertTrue(
+            (REPO_ROOT / "test/unittest/device_api/test_deviceptr_args.cpp").exists()
+        )
+        self.assertTrue(
+            (REPO_ROOT / "test/unittest/device_api/kernel/Makefile").exists()
+        )
+        self.assertFalse((REPO_ROOT / "test/unittest/device").exists())
+        self.assertIn("flagcx_ci_run_suite_override", ascend_env)
+        self.assertIn("CANN does not expose the symmetric-memory VMM", ascend_env)
+        ascend_symmem_override = ascend_env[
+            ascend_env.index("flagcx_ci_run_suite_override() {") :
+            ascend_env.index("flagcx_ci_prepare() {")
+        ]
+        self.assertIn('"$suite" != "symmem"', ascend_symmem_override)
+        self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1', ascend_symmem_override)
+        self.assertIn('"$suite_dir/build/bin/symmem_unit_tests"', ascend_symmem_override)
+        self.assertIn('-x FLAGCX_VMM_ENABLE=0', ascend_symmem_override)
+        self.assertIn('Ascend symmem NET MR and fallback', ascend_symmem_override)
+        self.assertIn('FLAGCX_CI_REQUIRE_NET_MR=1', ascend_symmem_override)
+        self.assertIn('unit_status=$?', ascend_symmem_override)
+        self.assertIn('ipc_status=$?', ascend_symmem_override)
+        self.assertIn('network_status=$?', ascend_symmem_override)
+        self.assertNotIn('FLAGCX_CI_REQUIRE_VMM=1', ascend_symmem_override)
+        self.assertIn('run_ascend_runner_mpi.sh', (
+            REPO_ROOT / '.github/scripts/ci/run_unit_test.sh'
+        ).read_text())
+
         for workflow_name in (
             "test.yml",
             "torch-api-test.yml",
@@ -678,6 +792,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         hygon_handler = (
             REPO_ROOT / ".github/scripts/ci/run_hygon_workload.sh"
         ).read_text()
+        ascend_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_ascend_workload.sh"
+        ).read_text()
         metax_handler = (
             REPO_ROOT / ".github/scripts/ci/run_metax_workload.sh"
         ).read_text()
@@ -691,6 +808,36 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("unset FLAGCX_SKIP_HETERO", hygon_handler)
         self.assertIn("metax torch-api", torch_workflow)
         self.assertNotIn("export FLAGCX_USE_HETERO_COMM", metax_handler)
+        self.assertIn("ascend perf", perf_workflow)
+        self.assertIn('"$perf_runner" homogeneous "$perf_bin"', ascend_handler)
+        self.assertIn("ascend torch-api", torch_workflow)
+        self.assertIn("import torch, torch_npu", ascend_handler)
+        self.assertIn('"$PYTHON_BIN" setup.py build_ext --inplace', ascend_handler)
+
+    def test_ascend_symmem_override_runs_supported_tests_without_vmm(self):
+        result = subprocess.run(
+            [
+                os.environ.get("BASH", "bash"),
+                "-c",
+                'source "$1"; TEST_RUNNER=echo MPI_RUNNER=echo; '
+                'flagcx_ci_run_suite_override symmem test/unittest/symmem; '
+                'printf "handled=%s\\n" "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED"',
+                "bash",
+                ".github/scripts/set_env/ascend.sh",
+            ],
+            cwd=REPO_ROOT,
+            env={**os.environ, "BASH_ENV": ""},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("symmem_unit_tests", result.stdout)
+        self.assertIn("symmem_mpi_tests", result.stdout)
+        self.assertIn("FLAGCX_VMM_ENABLE=0", result.stdout)
+        self.assertNotIn("FLAGCX_CI_REQUIRE_VMM=1", result.stdout)
+        self.assertIn("handled=1", result.stdout)
 
     def test_perf_and_torch_jobs_use_platform_configured_images(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
@@ -703,7 +850,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ):
             self.assertNotIn("container:", workflow)
             self.assertNotIn("image: harbor.baai.ac.cn", workflow)
-            for platform in ("cuda", "metax", "hygon", "ppu"):
+            for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
                 with self.subTest(workload=workload, platform=platform):
                     self.assertIn(
                         f"ruby .github/scripts/ci/load_platform_config.rb {platform}",
@@ -803,7 +950,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('if [[ "$platform_name" != "hygon" ]]; then', rma_case)
+        self.assertIn('"$platform_name" != "hygon"', rma_case)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -879,7 +1026,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn(
-            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            'adaptor|topo|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
             unit_runner,
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
@@ -1691,6 +1838,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "FLAGCX_P2P_DISABLE=1", configure, platform
             )
 
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        rma_case = unit_runner[
+            unit_runner.index("    rma)\n") :
+            unit_runner.index("    runner)\n")
+        ]
+        self.assertIn("          ascend)", rma_case)
+        self.assertIn('"$platform_name" != "ascend"', rma_case)
+        self.assertIn("CANN has no stream wait/write-value support", rma_case)
+
     def test_rma_registration_failure_runs_in_two_rank_network_ci(self):
         rma_makefile = (
             REPO_ROOT / "test/unittest/rma/Makefile"
@@ -1851,10 +2009,84 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
         self.assertIn("usleep(100000)", device_api_test)
 
+    def test_device_api_host_wires_deviceptr_args(self):
+        device_api_dir = REPO_ROOT / "test/unittest/device_api"
+        result = subprocess.run(
+            ["make", "-n", "-C", str(device_api_dir), "run-unit", "USE_NVIDIA=1"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("test_deviceptr_args.cpp", result.stdout)
+        self.assertIn("build/bin/test_deviceptr_args", result.stdout)
+
+    def test_device_api_wires_kernel_mpi(self):
+        device_api_dir = REPO_ROOT / "test/unittest/device_api"
+        result = subprocess.run(
+            ["make", "-n", "-C", str(device_api_dir), "mpi", "USE_NVIDIA=1"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("kernel_mpi_tests", result.stdout)
+
+        run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        self.assertIn("kernel/build/bin/kernel_mpi_tests", run_unit)
+        idx = run_unit.rindex('case "$SUITE" in')
+        googletest_branch = run_unit[idx : run_unit.index("build_project", idx)]
+        self.assertIn("device_api|", googletest_branch)
+
+    def test_runner_propagates_intermediate_command_failure(self):
+        run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        self.assertNotIn("run_suite || suite_status=$?", run_unit)
+        self.assertIn("set +e", run_unit)
+        self.assertIn("run_suite", run_unit)
+        self.assertIn('if ((suite_status != 0)); then', run_unit)
+
+        subshell_script = (
+            "failing_func() {\n"
+            "  false\n"
+            "  true\n"
+            "}\n"
+            "set +e\n"
+            "(\n"
+            "  set -e\n"
+            "  failing_func\n"
+            ")\n"
+            "suite_status=$?\n"
+            "set -e\n"
+            'printf "%d" "$suite_status"\n'
+        )
+        res_subshell = subprocess.run(
+            ["bash", "-c", subshell_script],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res_subshell.stdout.strip(), "1")
+
+        swallow_script = (
+            "failing_func() {\n"
+            "  false\n"
+            "  true\n"
+            "}\n"
+            "suite_status=0\n"
+            "failing_func || suite_status=$?\n"
+            'printf "%d" "$suite_status"\n'
+        )
+        res_swallow = subprocess.run(
+            ["bash", "-c", swallow_script],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res_swallow.stdout.strip(), "0")
+
 
 class MetaXEnvironmentTest(unittest.TestCase):
     def run_metax_shell(self, body, *, extra_env=None):
         environment = os.environ.copy()
+        environment.pop("BASH_ENV", None)
         if extra_env:
             environment.update(extra_env)
         return subprocess.run(

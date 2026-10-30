@@ -6,7 +6,7 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, and `platform:ppu`
+PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
@@ -20,6 +20,7 @@ one of these exact commands on a PR:
 /test hygon
 /test metax
 /test ppu
+/test ascend
 /test all
 ```
 
@@ -41,6 +42,17 @@ keep their existing independent triggers.
 The gate fails on matrix/configuration errors, failed or cancelled tests, or
 unexpected skips of selected platforms. Empty selections skip hardware jobs
 while still running common checks.
+
+Ascend backend limitations, required follow-up, and local verification results
+are tracked in [ASCEND_CI_ISSUES.md](ASCEND_CI_ISSUES.md). Ascend uses standard
+unit, perf, and Torch API jobs. Its runner launches collectives in separate MPI
+processes so one asynchronous failure cannot skip subsequent collectives.
+Ordinary SymMem IPC and NET/MR invocations record independent statuses; VMM and
+RMA visibility coverage still require the backend contracts listed there.
+The first-device selector is restricted to local adaptor/P2P test fixtures;
+it does not replace production topology selection or validate APU/NIC proximity.
+P2P/RMA/SymMem failures containing SIGSEGV trigger bounded, per-rank GDB
+reproduction stored with the attempt artifacts, preserving the suite failure.
 
 ## Retry Logs
 

@@ -1,0 +1,65 @@
+# Huawei Ascend 910C unit-test configuration.
+hardware_name: ascend
+display_name: Ascend 910C unit tests
+paths_watch:
+  - .github/configs/ascend.yml
+  - .github/scripts/set_env/ascend.sh
+  - .github/scripts/ci/run_ascend_workload.sh
+  - .github/scripts/ci/run_ascend_diagnostics.sh
+  - .github/scripts/ci/run_ascend_runner_mpi.sh
+  - .github/workflows/unit_tests_common.yml
+  - Dockerfile.ascend-ci
+  - flagcx/adaptor/device/cann_adaptor.cc
+  - flagcx/adaptor/include/ascend_adaptor.h
+  - flagcx/adaptor/ccl/hccl_adaptor.cc
+  - makefiles/ascend.mk
+  - test/make.inc
+  - test/unittest/adaptor/net_test_utils.h
+  - test/unittest/topo/**
+  - flagcx/core/p2p_topo.cc
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:ascend-dev-fixed-20261028-debug
+runner_labels:
+  - flagcicd-910c
+docker_volumes:
+  - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
+  - /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi:ro
+  - /usr/local/dcmi:/usr/local/dcmi:ro
+  - /etc/ascend_install.info:/etc/ascend_install.info:ro
+  - /sys/class/infiniband:/sys/class/infiniband:ro
+  - /sys/bus/pci/devices:/sys/bus/pci/devices:ro
+docker_options:
+  - --network=host
+  - --ipc=host
+  - --privileged
+  - --device=/dev/davinci_manager
+  - --device=/dev/devmm_svm
+  - --device=/dev/hisi_hdc
+  - --device=/dev/davinci0
+  - --device=/dev/davinci1
+  - --device=/dev/davinci2
+  - --device=/dev/davinci3
+  - --device=/dev/davinci4
+  - --device=/dev/davinci5
+  - --device=/dev/davinci6
+  - --device=/dev/davinci7
+  - --device=/dev/davinci8
+  - --device=/dev/davinci9
+  - --device=/dev/davinci10
+  - --device=/dev/davinci11
+  - --device=/dev/davinci12
+  - --device=/dev/davinci13
+  - --device=/dev/davinci14
+  - --device=/dev/davinci15
+  - --mount=type=bind,src=/dev/infiniband,dst=/dev/infiniband
+  - --ulimit=memlock=-1
+set_env: .github/scripts/set_env/ascend.sh
+unit_test_suites:
+  - core
+  - adaptor
+  - device_api_host
+  - topo
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem

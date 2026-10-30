@@ -54,6 +54,40 @@ jobs:
         suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
     steps:
+      - name: Install Git for repository checkout
+        shell: bash
+        env:
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
+        run: |
+          if [[ "$FLAGCX_CI_PLATFORM" == "ascend" ]]; then
+            git_version=""
+            if command -v git >/dev/null 2>&1; then
+              git_version="$(git --version | sed -E 's/.* ([0-9]+)\.([0-9]+).*/\1 \2/')"
+            fi
+          else
+            git_version="$(git --version 2>/dev/null | sed -E 's/.* ([0-9]+)\.([0-9]+).*/\1 \2/')"
+          fi
+          read -r git_major git_minor <<< "$git_version"
+          if [[ -z "$git_version" ]] || ((git_major < 2 || (git_major == 2 && git_minor < 18))); then
+            if command -v dnf >/dev/null 2>&1; then
+              installer=(dnf)
+            elif command -v yum >/dev/null 2>&1; then
+              installer=(yum)
+            else
+              echo "Git is missing and no supported package manager is available" >&2
+              exit 1
+            fi
+            if ((EUID == 0)); then
+              "${installer[@]}" install -y git
+            elif command -v sudo >/dev/null 2>&1; then
+              sudo "${installer[@]}" install -y git
+            else
+              echo "Installing Git requires root or sudo" >&2
+              exit 1
+            fi
+          fi
+          git version
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:

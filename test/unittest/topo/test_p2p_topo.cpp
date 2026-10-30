@@ -79,8 +79,3 @@ TEST_F(P2pTopoTest, NullArgs) {
   EXPECT_NE(flagcxP2pTopoGetNetDev(nullptr, 0, nullptr), flagcxSuccess);
   EXPECT_EQ(flagcxP2pTopoDestroy(nullptr), flagcxSuccess);
 }
-
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

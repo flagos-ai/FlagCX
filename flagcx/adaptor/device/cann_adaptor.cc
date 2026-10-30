@@ -4,6 +4,14 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include <cstdio>
+#include <dcmi_interface_api.h>
+#include <strings.h>
+
+static int cannAdaptorInitDcmi() {
+  static const int result = dcmi_init();
+  return result;
+}
 
 std::map<flagcxMemcpyType_t, aclrtMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, ACL_MEMCPY_HOST_TO_DEVICE},
@@ -78,6 +86,60 @@ flagcxResult_t cannAdaptorGetDevice(int *dev) {
 flagcxResult_t cannAdaptorGetDeviceCount(int *count) {
   DEVCHECK(aclrtGetDeviceCount((uint32_t *)count));
   return flagcxSuccess;
+}
+
+flagcxResult_t cannAdaptorGetDevicePciBusId(char *pciBusId, int len, int dev) {
+  if (pciBusId == nullptr || len <= 0 || dev < 0)
+    return flagcxInvalidArgument;
+  pciBusId[0] = '\0';
+  if (cannAdaptorInitDcmi() != 0) {
+    WARN("CANN PCI lookup: dcmi_init failed");
+    return flagcxUnhandledDeviceError;
+  }
+
+  int cardId = -1;
+  int deviceId = -1;
+  if (dcmi_get_card_id_device_id_from_logicid(&cardId, &deviceId,
+                                              (unsigned int)dev) != 0) {
+    WARN("CANN PCI lookup: failed to map logical device %d to DCMI", dev);
+    return flagcxUnhandledDeviceError;
+  }
+
+  struct dcmi_pcie_info_all pcieInfo = {};
+  if (dcmi_get_device_pcie_info_v2(cardId, deviceId, &pcieInfo) != 0) {
+    WARN("CANN PCI lookup: DCMI failed for card %d device %d", cardId,
+         deviceId);
+    return flagcxUnhandledDeviceError;
+  }
+
+  const int written = std::snprintf(pciBusId, len, "%04x:%02x:%02x.%x",
+                                    (unsigned int)pcieInfo.domain,
+                                    pcieInfo.bdf_busid,
+                                    pcieInfo.bdf_deviceid,
+                                    pcieInfo.bdf_funcid);
+  if (written < 0 || written >= len)
+    return flagcxInvalidArgument;
+  return flagcxSuccess;
+}
+
+flagcxResult_t cannAdaptorGetDeviceByPciBusId(int *dev, const char *pciBusId) {
+  if (dev == nullptr || pciBusId == nullptr)
+    return flagcxInvalidArgument;
+
+  uint32_t deviceCount = 0;
+  DEVCHECK(aclrtGetDeviceCount(&deviceCount));
+  for (uint32_t i = 0; i < deviceCount; ++i) {
+    char candidate[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
+    flagcxResult_t result = cannAdaptorGetDevicePciBusId(
+        candidate, sizeof(candidate), (int)i);
+    if (result != flagcxSuccess)
+      return result;
+    if (strcasecmp(candidate, pciBusId) == 0) {
+      *dev = (int)i;
+      return flagcxSuccess;
+    }
+  }
+  return flagcxInvalidArgument;
 }
 
 flagcxResult_t cannAdaptorGetVendor(char *vendor) {
@@ -350,11 +412,8 @@ struct flagcxDeviceAdaptor cannAdaptor {
       // Others
       NULL, // flagcxResult_t (*getDeviceProperties)(struct flagcxDevProps
             // *props, int dev);
-      NULL, // flagcxResult_t (*getDevicePciBusId)(char
-            // *pciBusId, int len, int dev);
-      NULL, // flagcxResult_t
-            // (*getDeviceByPciBusId)(int
-            // *dev, const char *pciBusId);
+      cannAdaptorGetDevicePciBusId,
+      cannAdaptorGetDeviceByPciBusId,
       cannAdaptorLaunchHostFunc,
       // DMA buffer
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);

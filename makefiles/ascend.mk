@@ -3,9 +3,9 @@
 
 DEVICE_HOME  ?= /usr/local/Ascend/ascend-toolkit/latest
 DEVICE_LIB   := $(DEVICE_HOME)/lib64
-DEVICE_INCLUDE := $(DEVICE_HOME)/include
-DEVICE_LINK  := -lascendcl
-DEVICE_PLATFORM :=
+DEVICE_INCLUDE := $(DEVICE_HOME)/include /usr/local/dcmi
+DEVICE_LINK  := -lascendcl -L/usr/local/dcmi -ldcmi
+DEVICE_PLATFORM := ASCEND
 DEVICE_COMPILER :=
 DEVICE_COMPILE_FLAG :=
 DEVICE_LINK_FLAG :=

@@ -7,6 +7,8 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
+export FLAGCX_ADAPTOR=nvidia
+
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 
 # The FlagScale training image ships a launcher wrapper that passes "$@" as a

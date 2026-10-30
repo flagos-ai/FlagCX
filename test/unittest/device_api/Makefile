@@ -79,6 +79,10 @@ CXXFLAGS += -DCOMPILE_KERNEL
 UNIT_SRC := test_dev_comm_cleanup.cpp
 UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
+
+DEVICEPTR_ARGS_SRC := test_deviceptr_args.cpp
+DEVICEPTR_ARGS_OBJ := $(OBJDIR)/test_deviceptr_args.o
+DEVICEPTR_ARGS_TARGET := $(BINDIR)/test_deviceptr_args
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
@@ -116,7 +120,7 @@ endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
-.PHONY: all unit mpi clean run-unit run-mpi run-mpi-intra run-mpi-inter \
+.PHONY: all unit mpi kernel-mpi clean run-unit run-mpi run-mpi-intra run-mpi-inter \
         run-mpi-unified-intra run-mpi-unified-inter run
 
 all: unit mpi
@@ -124,9 +128,12 @@ ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET)
+unit: $(UNIT_TARGET) $(DEVICEPTR_ARGS_TARGET)
 
-mpi: $(MPI_TARGETS)
+mpi: $(MPI_TARGETS) kernel-mpi
+
+kernel-mpi:
+	@$(MAKE) -C kernel mpi
 
 # Build device kernel objects via dispatcher
 KERNEL_API_TARGETS := device_api.o
@@ -153,6 +160,16 @@ $(UNIT_OBJ): $(UNIT_SRC)
 	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
 
 $(UNIT_TARGET): $(UNIT_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
+
+$(DEVICEPTR_ARGS_OBJ): $(DEVICEPTR_ARGS_SRC)
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
+
+$(DEVICEPTR_ARGS_TARGET): $(DEVICEPTR_ARGS_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
@@ -200,6 +217,7 @@ clean:
 
 run-unit: unit
 	@$(UNIT_TARGET)
+	@$(DEVICEPTR_ARGS_TARGET)
 
 # Env vars for inter-node testing on single node
 HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \

@@ -36,13 +36,18 @@ ifneq ($(wildcard $(GTEST_DIR)/build/lib/libgtest.a),)
 GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
 GTEST_LIB     := $(GTEST_DIR)/build/lib
 GTEST_SRC_ROOT := $(GTEST_DIR)/googletest
+else ifneq ($(wildcard $(GTEST_DIR)/build/lib64/libgtest.a),)
+GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
+GTEST_LIB     := $(GTEST_DIR)/build/lib64
+GTEST_SRC_ROOT := $(GTEST_DIR)/googletest
 else
 GTEST_DIR     := /usr/src/googletest
 GTEST_INCLUDE := -I$(GTEST_DIR)/googletest/include
 GTEST_LIB     := /usr/lib/x86_64-linux-gnu
 GTEST_SRC_ROOT := $(GTEST_DIR)/googletest
 endif
-GTEST_LINK    := -L$(GTEST_LIB) -lgtest -lgtest_main -lpthread
+GTEST_BASE_LINK := -L$(GTEST_LIB) -lgtest -lpthread
+GTEST_LINK      := $(GTEST_BASE_LINK) -lgtest_main
 
 # Shared test fixtures
 FIXTURE_INCLUDE := -I$(PROJECT_ROOT)/test/fixtures
@@ -57,6 +62,10 @@ ifeq ($(wildcard $(MPI_HOME)/include/mpi.h),)
     MPI_HOME := /usr
     MPI_INCLUDE := -I/usr/include/x86_64-linux-gnu/mpi
     MPI_LINK := -L/usr/lib/x86_64-linux-gnu/openmpi/lib -lmpi
+  else ifneq ($(wildcard /usr/include/aarch64-linux-gnu/mpi/mpi.h),)
+    MPI_HOME := /usr
+    MPI_INCLUDE := -I/usr/include/aarch64-linux-gnu/mpi
+    MPI_LINK := -L/usr/lib/aarch64-linux-gnu/openmpi/lib -lmpi
   else
     MPI_INCLUDE := -I$(MPI_HOME)/include
     MPI_LINK := -L$(MPI_HOME)/lib -lmpi

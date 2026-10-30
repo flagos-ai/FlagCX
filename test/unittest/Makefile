@@ -10,8 +10,8 @@
 #   make run          Run everything
 #   make clean        Clean all build artifacts
 
-COMPONENTS := adaptor core service runner p2p rma topo symmem
-DEVICE_COMPONENTS := kernel device_api
+COMPONENTS := adaptor core service runner p2p rma symmem
+DEVICE_COMPONENTS := device_api
 
 ifeq ($(COMPILE_KERNEL), 1)
 COMPONENTS += $(DEVICE_COMPONENTS)
