@@ -332,12 +332,30 @@ void recordFlagcxTuneObject(const flagcxBackend::TuneObjectKey &key,
 
 } // namespace
 
-bool flagcxWork::isCompleted() { return future_->completed(); }
+bool flagcxWork::isCompleted() {
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ASCEND_ADAPTOR)
+  int previousDevice = 0;
+  C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  bool complete = false;
+  try {
+    complete = event_->query();
+  } catch (...) {
+    devHandle_->setDevice(previousDevice);
+    throw;
+  }
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(previousDevice), std::nullopt);
+  return complete;
+#else
+  return future_->completed();
+#endif
+}
 
 bool flagcxWork::isSuccess() const { return future_->hasValue(); }
 
 bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
-#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) &&                                    \
+    (defined(USE_ENFLAME_ADAPTOR) || defined(USE_ASCEND_ADAPTOR))
   int previousDevice = 0;
   C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
@@ -358,7 +376,8 @@ bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
-#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) &&                                    \
+    (defined(USE_ENFLAME_ADAPTOR) || defined(USE_ASCEND_ADAPTOR))
   wait();
 #endif
   return future_;

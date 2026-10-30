@@ -207,11 +207,11 @@ flagcxResult_t cannAdaptorEventSynchronize(flagcxEvent_t event) {
 flagcxResult_t cannAdaptorEventQuery(flagcxEvent_t event) {
   flagcxResult_t res = flagcxSuccess;
   if (event != NULL) {
-    aclrtEventWaitStatus status;
-    DEVCHECK(aclrtQueryEventWaitStatus(event->base, &status));
-    if (status == ACL_EVENT_WAIT_STATUS_COMPLETE) {
+    aclrtEventRecordedStatus status;
+    DEVCHECK(aclrtQueryEventStatus(event->base, &status));
+    if (status == ACL_EVENT_RECORDED_STATUS_COMPLETE) {
       res = flagcxSuccess;
-    } else if (status == ACL_EVENT_WAIT_STATUS_NOT_READY) {
+    } else if (status == ACL_EVENT_RECORDED_STATUS_NOT_READY) {
       res = flagcxInProgress;
     } else {
       res = flagcxUnhandledDeviceError;

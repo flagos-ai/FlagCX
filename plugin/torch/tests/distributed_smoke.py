@@ -9,6 +9,7 @@ import gc
 import importlib
 import os
 import time
+from datetime import timedelta
 
 import torch
 import torch.distributed as dist
@@ -33,6 +34,11 @@ def parse_args():
         "--tensor-retention",
         action="store_true",
         help="exercise collectives after dropping their input and Work",
+    )
+    parser.add_argument(
+        "--work-completion",
+        action="store_true",
+        help="check Ascend/FlagOS device completion before the peer submits",
     )
     return parser.parse_args()
 
@@ -93,7 +99,7 @@ def check_p2p_retention(rank, device, device_module):
     dist.barrier()
     if rank == 0:
         memory_allocated = getattr(device_module, "memory_allocated", None)
-        baseline = memory_allocated(device) if memory_allocated else None
+        baseline = memory_allocated(device.index) if memory_allocated else None
         send_tensor = torch.full(
             (numel,), 29, dtype=torch.float32, device=device
         )
@@ -112,7 +118,7 @@ def check_p2p_retention(rank, device, device_module):
     if rank == 0 and baseline is not None:
         # No later P2P call should be needed to release a completed send.
         deadline = time.monotonic() + 5
-        while memory_allocated(device) > baseline + numel:
+        while memory_allocated(device.index) > baseline + numel:
             if time.monotonic() >= deadline:
                 raise AssertionError("Completed P2P tensor remained allocated")
             time.sleep(0.02)
@@ -132,6 +138,39 @@ def check_collective_retention(rank, device, device_module, world_size):
     dist.barrier()
     for peer, output in enumerate(outputs):
         assert_tensor_equal(output, torch.full((numel,), peer + 31))
+
+
+def check_work_completion(rank, device):
+    """Separate host submission from device completion with a CPU rendezvous."""
+    control = dist.new_group(backend="gloo", timeout=timedelta(seconds=60))
+    try:
+        # Warm the HCCL communicator before holding back one rank.
+        warmup = torch.tensor([rank + 1.0], device=device)
+        dist.all_reduce(warmup)
+        dist.barrier(group=control)
+        value = torch.tensor([rank + 1.0], device=device)
+        token = torch.ones(1, dtype=torch.int64)
+        if rank == 0:
+            work = dist.all_reduce(value, async_op=True)
+            # Rank one cannot enter HCCL until this observation is sent.
+            completed_early = work.is_completed()
+            token.fill_(int(completed_early))
+            dist.send(token, dst=1, group=control)
+        else:
+            dist.recv(token, src=0, group=control)
+            work = dist.all_reduce(value, async_op=True)
+        work.get_future().wait()
+        assert_tensor_equal(value, torch.tensor([3.0]))
+        if token.item():
+            raise AssertionError("Work reported completion before its peer submitted")
+        if not work.is_completed():
+            raise AssertionError("Work remained incomplete after get_future().wait()")
+        barrier = dist.barrier(async_op=True)
+        barrier.wait()
+        if not barrier.is_completed():
+            raise AssertionError("Barrier remained incomplete after wait()")
+    finally:
+        dist.destroy_process_group(control)
 
 
 def main():
@@ -285,6 +324,10 @@ def main():
 
         barrier = dist.barrier(async_op=True)
         barrier.wait()
+        if args.work_completion:
+            if args.adaptor != "ascend" or device_type != "flagos":
+                raise RuntimeError("--work-completion requires Ascend/FlagOS")
+            check_work_completion(rank, device)
         if args.p2p_retention:
             check_p2p_retention(rank, device, device_module)
         if args.tensor_retention:
