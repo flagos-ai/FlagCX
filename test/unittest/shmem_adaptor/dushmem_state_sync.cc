@@ -14,9 +14,10 @@
 
 #include <dushmem.h>
 
-extern "C" void flagcxDushmemSyncDeviceState() {
-  dushmem_init();
-}
+// libflagcx.so localizes the archive's host symbols. This executable therefore
+// owns its initialization callback and host shadow, so re-entrant initialization
+// registers the same device state that its kernels read. No module reload is used.
+extern "C" void flagcxDushmemSyncDeviceState() { dushmem_init(); }
 
 extern "C" void flagcxDushmemFinalizeDeviceState() {
   dushmem_finalize();

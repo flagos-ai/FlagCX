@@ -49,6 +49,10 @@ PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENS
 # OFF, which is why these symbols live in the archive at all.)
 ifeq ($(USE_SHMEM), 1)
   ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
+  # Keep archive host shadows/callbacks local to libflagcx.so, avoiding ELF
+  # interposition with consumers. The archive remains a HIP device-link input;
+  # each consumer initializes and registers its own device state.
+  DEVICE_LINK_FLAG += -Wl,--exclude-libs,libdushmem_device.a
   DEVICE_LINK  += -L$(SHMEM_HOME)/lib -ldushmem_host \
                   $(SHMEM_HOME)/lib/libdushmem_device.a
   # Compile ONLY the dushmem host adaptor — do NOT use a shmem/*.cc wildcard,

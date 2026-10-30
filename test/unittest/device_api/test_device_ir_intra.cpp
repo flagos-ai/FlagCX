@@ -30,6 +30,11 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+extern "C" void flagcxDushmemSyncDeviceState();
+extern "C" void flagcxDushmemFinalizeDeviceState();
+#endif
+
 // ===========================================================================
 // Main test driver
 // ===========================================================================
@@ -89,6 +94,9 @@ int main(int argc, char *argv[]) {
   reqs.interCounterCount = 1;
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemSyncDeviceState();
+#endif
 
   // Allocate test buffer sized to maxBytes
   size_t bufSize = maxBytes;
@@ -413,6 +421,9 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemDestroy(comm, devMem));
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, win, memAllocator));
   FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemFinalizeDeviceState();
+#endif
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
