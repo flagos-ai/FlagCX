@@ -56,7 +56,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         result = subprocess.run(
             [
                 "make", "-n", "-B", "-C", str(suite_dir), "mpi",
-                "USE_DU=1", "USE_SHCA=1",
+                "USE_DU=1", "USE_SHCA=1", "COMPILE_KERNEL=1",
                 "DEVICE_HOME=/opt/dtk",
                 "CCL_HOME=/opt/dtk",
             ],
@@ -126,7 +126,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         kernel_result = subprocess.run(
             [
                 "make", "-n", "-B", "-C", str(REPO_ROOT / "test/unittest/kernel"),
-                "all", "USE_DU=1", "USE_SHCA=1",
+                "all", "USE_DU=1", "USE_SHCA=1", "COMPILE_KERNEL=1",
                 "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
             ],
             check=True,
@@ -151,7 +151,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         perf_result = subprocess.run(
             [
                 "make", "-n", "-B", "-C", str(REPO_ROOT / "test/perf/device_api"),
-                "all", "USE_DU=1", "USE_SHCA=1",
+                "all", "USE_DU=1", "USE_SHCA=1", "COMPILE_KERNEL=1",
                 "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
             ],
             check=True,
@@ -198,6 +198,54 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("2 4 0,1,6,7 shca_0,shca_3", configured.stdout)
             self.assertIn("COMPILE_KERNEL=1", configured.stdout)
             self.assertTrue(configured.stdout.endswith(" 0 0"))
+
+    def test_device_test_targets_require_kernel_mode(self):
+        cases = (
+            ("test/unittest/device_api", ("all", "mpi", "run"),
+             "build/bin/test_device_ir_unified_intra"),
+            ("test/unittest/kernel", ("run-mpi",), "build/bin/kernel_mpi_tests"),
+            ("test/perf/device_api", ("all",), "build/bin/perf_allreduce_intranode"),
+        )
+        for directory, aggregates, binary in cases:
+            with self.subTest(directory=directory):
+                suite = REPO_ROOT / directory
+                base = ["make", "-s", "-C", str(suite), "USE_DU=1",
+                        "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk"]
+                for target in (*aggregates, str(suite / binary)):
+                    rejected = subprocess.run(
+                        base + ["COMPILE_KERNEL=0", target],
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("Device tests require COMPILE_KERNEL=1", rejected.stderr)
+                subprocess.run(
+                    base + ["COMPILE_KERNEL=1", "require-compile-kernel"],
+                    check=True, capture_output=True, text=True,
+                )
+
+        for directory, targets in (
+            ("test/unittest/device_api", ("unit", "run-unit", "clean")),
+            ("test/unittest/kernel", ("run-unit", "clean")),
+            ("test/perf/device_api", ("clean",)),
+        ):
+            for target in targets:
+                subprocess.run(
+                    ["make", "-n", "-C", str(REPO_ROOT / directory), target,
+                     "USE_DU=1", "COMPILE_KERNEL=0", "DEVICE_HOME=/opt/dtk",
+                     "CCL_HOME=/opt/dtk"],
+                    check=True, capture_output=True, text=True,
+                )
+
+        kernel_suite = REPO_ROOT / "test/unittest/kernel"
+        host_only = subprocess.run(
+            ["make", "-n", "-B", "-C", str(kernel_suite), "all",
+             "USE_DU=1", "COMPILE_KERNEL=0", "DEVICE_HOME=/opt/dtk",
+             "CCL_HOME=/opt/dtk"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertIn("kernel_unit_tests", host_only.stdout)
+        self.assertNotIn("kernel_mpi_tests", host_only.stdout)
+        self.assertNotIn("device_api.hip", host_only.stdout)
 
     def _run_platform_matrix(
         self, event_name, changed_files="", configs_dir=None

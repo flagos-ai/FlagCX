@@ -43,11 +43,18 @@ ALL_LINK += -L$(CCL_LIB) -Wl,-rpath,$(CCL_LIB) $(CCL_LINK) \
             -Wl,-rpath,$(DEVICE_LIB)
 endif
 
+ifeq ($(COMPILE_KERNEL),1)
 CXXFLAGS += -DCOMPILE_KERNEL
+endif
 
-.PHONY: all clean
+.PHONY: all clean require-compile-kernel
 
-all: $(BINS)
+all: require-compile-kernel $(BINS)
+
+require-compile-kernel:
+	$(REQUIRE_COMPILE_KERNEL)
+
+$(BINS) $(DEVICE_API_OBJ) $(DLINK_OBJ) $(SHMEM_SYNC_OBJ): | require-compile-kernel
 
 # Build kernel objects via dispatcher
 KERNEL_TARGETS := device_api.o
@@ -79,7 +86,7 @@ $(TOOLS_OBJ): $(TOOLS_SRC)
 	@mkdir -p $(OBJDIR)
 	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(ALL_INCLUDES)
 
-$(OBJDIR)/perf_%.o: test_%.cpp
+$(OBJDIR)/perf_%.o: test_%.cpp | require-compile-kernel
 	@mkdir -p $(OBJDIR)
 	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(ALL_INCLUDES)
 

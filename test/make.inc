@@ -199,3 +199,8 @@ PRINT_CONFIG = \
 	echo "FLAGCX_LIB:      $(FLAGCX_LIB)"; \
 	echo "GTEST_DIR:       $(GTEST_DIR)"; \
 	echo "MPI_HOME:        $(MPI_HOME)"
+
+# Device targets use this as an order-only prerequisite so the check also
+# runs when a device binary is already up to date.
+REQUIRE_COMPILE_KERNEL = @test "$(COMPILE_KERNEL)" = "1" || { \
+	echo "Device tests require COMPILE_KERNEL=1" >&2; exit 1; }

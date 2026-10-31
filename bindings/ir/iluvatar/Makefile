@@ -19,8 +19,7 @@ ifeq ($(filter $(ILUVATAR_ARCH),$(SUPPORTED_ARCHES)),)
   $(error Unsupported Iluvatar target '$(ILUVATAR_ARCH)'; supported: $(SUPPORTED_ARCHES))
 endif
 
-OBJDIR := $(BUILDDIR)/obj/llvm_ir/iluvatar/$(ILUVATAR_ARCH)
-ARCH_LIBDIR := $(BUILDDIR)/lib/iluvatar/$(ILUVATAR_ARCH)
+OBJDIR := $(BUILDDIR)/obj/llvm_ir
 LIBDIR := $(BUILDDIR)/lib
 INCLUDEDIR := $(BUILDDIR)/include
 
@@ -29,9 +28,10 @@ STRIPPED_LL := $(OBJDIR)/libflagcx_device.stripped.ll
 STRIPPED_BC := $(OBJDIR)/libflagcx_device.stripped.bc
 OPTIMIZED_BC := $(OBJDIR)/libflagcx_device.bc.optimized
 LLVM_IR_FILE := $(OBJDIR)/libflagcx_device.ll
-ARCH_BC := $(ARCH_LIBDIR)/libflagcx_device.bc
 FINAL_BC := $(LIBDIR)/libflagcx_device.bc
-WRAPPER_HEADER := $(INCLUDEDIR)/flagcx_device_wrapper.h
+
+IR_PLATFORM_HEADERS := iluvatar_platform_traits.h iluvatar_comm_traits.h
+include ../device_ir_headers.mk
 
 DEVICE_HOME ?= /usr/local/corex
 COREX_CLANG ?= $(DEVICE_HOME)/bin/clang
@@ -50,31 +50,28 @@ FLAGCX_INCLUDES := \
 	-I$(FLAGCX_ROOT)/flagcx/runner/include \
 	-I$(DEVICE_HOME)/include
 
+ADAPTOR_FLAG ?= -DUSE_ILUVATAR_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT
 COMMON_CLANG_FLAGS := \
 	-std=c++17 -x ivcore \
 	--cuda-path=$(DEVICE_HOME) --cuda-device-only \
 	--cuda-gpu-arch=$(ILUVATAR_ARCH) \
 	$(FLAGCX_INCLUDES) \
 	-D__clang_llvm_bitcode_lib__ \
-	-DUSE_ILUVATAR_ADAPTOR \
+	$(ADAPTOR_FLAG) \
 	-DFLAGCX_ILUVATAR_DEVICE_COMPILE=1 \
-	-DFLAGCX_COMM_TRAITS_DEFAULT \
 	-DNDEBUG
 
 CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS)
 OPT_PASSES := --passes=internalize,inline,globaldce \
 	-internalize-public-api-file=$(SYMBOLS_FILE)
+IR_INPUT_BC := $(UNOPTIMIZED_BC)
 
 all: llvm_ir
-
-$(WRAPPER_HEADER): ../flagcx_device_wrapper.h
-	@mkdir -p $(INCLUDEDIR)
-	cp -f $< $@
 
 $(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
 	@echo "[FlagCX][Iluvatar] Generating unoptimized Device IR"
-	$(COREX_CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
+	$(COREX_CLANG) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
 $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 	$(LLVM_DIS) $< -o $@.tmp
@@ -84,19 +81,15 @@ $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 $(STRIPPED_BC): $(STRIPPED_LL)
 	$(LLVM_AS) $< -o $@
 
-$(OPTIMIZED_BC): $(STRIPPED_BC)
+$(OPTIMIZED_BC): $(STRIPPED_BC) $(SYMBOLS_FILE)
 	$(OPT) $(OPT_PASSES) $< -o $@
 
 $(LLVM_IR_FILE): $(OPTIMIZED_BC)
 	$(LLVM_DIS) $< -o $@
 
-$(ARCH_BC): $(LLVM_IR_FILE)
-	@mkdir -p $(ARCH_LIBDIR)
-	$(LLVM_AS) $< -o $@
-
-$(FINAL_BC): $(ARCH_BC)
+$(FINAL_BC): $(LLVM_IR_FILE)
 	@mkdir -p $(LIBDIR)
-	cp -f $< $@
+	$(LLVM_AS) $< -o $@
 
 check_public_symbols: $(LLVM_IR_FILE)
 	@missing=0; \
@@ -130,9 +123,10 @@ check_ir: $(OPTIMIZED_BC) $(LLVM_IR_FILE)
 		$(LLVM_NM) --undefined-only $(OPTIMIZED_BC); exit 1; \
 	fi
 
-llvm_ir: $(FINAL_BC) $(ARCH_BC) $(WRAPPER_HEADER) check_public_symbols check_ir
-	@echo "[FlagCX][Iluvatar] Device IR ready: $(ARCH_BC)"
-	@echo "[FlagCX][Iluvatar] Compatibility copy: $(FINAL_BC)"
+llvm_ir: $(FINAL_BC) headers check_public_symbols check_ir
+	@echo "[FlagCX][Iluvatar] Device IR ready: $(FINAL_BC)"
+
+include ../device_ir_dependencies.mk
 
 else
 
@@ -144,7 +138,8 @@ endif
 build: llvm_ir
 
 clean:
-	rm -rf $(OBJDIR) $(ARCH_LIBDIR)
-	rm -f $(FINAL_BC) $(WRAPPER_HEADER)
+	rm -rf $(OBJDIR)
+	rm -f $(FINAL_BC) $(INCLUDEDIR)/flagcx_device_wrapper.h \
+		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
 .PHONY: all build llvm_ir check_public_symbols check_ir clean

@@ -9,6 +9,10 @@ DEVICE_PLATFORM := DU
 DEVICE_COMPILER := $(DEVICE_HOME)/bin/hipcc
 DEVICE_COMPILE_FLAG := -std=c++17 -c -fPIC -MMD -MP -fgpu-rdc -g
 DEVICE_LINK_FLAG := -fgpu-rdc -fPIC
+ifneq ($(strip $(DEVICE_BITCODE_ARCH)),)
+  DEVICE_COMPILE_FLAG += --offload-arch=$(DEVICE_BITCODE_ARCH)
+  DEVICE_LINK_FLAG += --offload-arch=$(DEVICE_BITCODE_ARCH)
+endif
 DEVICE_FILE_EXTENSION := hip
 DEVICE_NEEDS_DLINK := 0
 
