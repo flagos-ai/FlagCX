@@ -1521,7 +1521,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void ringReduceCopy(
 template <typename T, flagcxRedOp_t Op>
 FLAGCX_DEVICE_INLINE_DECORATOR bool executeRingStep(
     const flagcxRingStepTrigger &trigger, const flagcxRingLaneDesc &lane,
-    const flagcxDevMem &inputMem, const flagcxDevMem &outputMem,
+    const void *inputBase, void *outputBase,
     const flagcxDevMem &scratchMem, const flagcxDevMem &readyMem,
     flagcxRingChannelProgress *localProgress,
     flagcxRingChannelProgress *nextProgress, uint64_t simpleBufferBytes,
@@ -1579,10 +1579,10 @@ FLAGCX_DEVICE_INLINE_DECORATOR bool executeRingStep(
         (recvStep % FLAGCX_STEPS) * stepSizeElements * sizeof(T);
     const uint64_t remoteSlotOffset = lane.scratchChannelOffsetBytes +
         (sendStep % FLAGCX_STEPS) * stepSizeElements * sizeof(T);
-    const T *input = static_cast<const T *>(
-        flagcxGetLocalPointer(inputMem, byteOffset));
-    T *output =
-        static_cast<T *>(flagcxGetLocalPointer(outputMem, byteOffset));
+    const T *input = reinterpret_cast<const T *>(
+        static_cast<const char *>(inputBase) + byteOffset);
+    T *output = reinterpret_cast<T *>(static_cast<char *>(outputBase) +
+                                      byteOffset);
     const T *recvScratch = static_cast<const T *>(
         flagcxGetLocalPointer(scratchMem, localSlotOffset));
     T *sendScratch = static_cast<T *>(flagcxGetIntraPointer(
@@ -1641,7 +1641,7 @@ template <typename T, flagcxRedOp_t Op>
 FLAGCX_DEVICE_INLINE_DECORATOR void runStaticRingDagLane(
     flagcxRingLaneDesc *lanes, uint64_t numLanes,
     flagcxRingStepTrigger *triggers, uint64_t numTriggers,
-    const flagcxDevMem &inputMem, const flagcxDevMem &outputMem,
+    const void *inputBase, void *outputBase,
     const flagcxDevMem &scratchMem, const flagcxDevMem &progressMem,
     const flagcxDevMem &readyMem, uint64_t simpleBufferBytes,
     uint64_t avgDivisor, const uint64_t *abortFlag,
@@ -1681,7 +1681,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticRingDagLane(
       break;
     }
     ok = executeRingStep<T, Op>(
-        trigger, lane, inputMem, outputMem, scratchMem, readyMem,
+        trigger, lane, inputBase, outputBase, scratchMem, readyMem,
         localProgress, nextProgress, simpleBufferBytes, stepSizeElements,
         sendStep, recvStep, nworkers, avgDivisor, abortFlag, ipcControl, shm);
     if (ok && i + 1 == lane.numTriggers && trigger.flagOut != 0 &&
@@ -1707,14 +1707,14 @@ template <typename T>
 FLAGCX_DEVICE_INLINE_DECORATOR void dispatchStaticRingOp(
     uint32_t redOp, flagcxRingLaneDesc *lanes, uint64_t numLanes,
     flagcxRingStepTrigger *triggers, uint64_t numTriggers,
-    const flagcxDevMem &inputMem, const flagcxDevMem &outputMem,
+    const void *inputBase, void *outputBase,
     const flagcxDevMem &scratchMem, const flagcxDevMem &progressMem,
     const flagcxDevMem &readyMem, uint64_t simpleBufferBytes,
     uint64_t avgDivisor, const uint64_t *abortFlag,
     const flagcxStaticIpcControl &ipcControl, uint64_t *shm) {
 #define FLAGCX_RUN_RING(OP)                                                    \
   runStaticRingDagLane<T, OP>(                                                \
-      lanes, numLanes, triggers, numTriggers, inputMem, outputMem, scratchMem,\
+      lanes, numLanes, triggers, numTriggers, inputBase, outputBase, scratchMem,\
       progressMem, readyMem, simpleBufferBytes, avgDivisor, abortFlag,         \
       ipcControl, shm)
   switch (static_cast<flagcxRedOp_t>(redOp)) {
@@ -1731,7 +1731,7 @@ FLAGCX_DEVICE_INLINE_DECORATOR void dispatchStaticRingOp(
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
     flagcxRingLaneDesc *lanes, uint64_t numLanes,
     flagcxRingStepTrigger *triggers, uint64_t numTriggers,
-    flagcxDevMem inputMem, flagcxDevMem outputMem, flagcxDevMem scratchMem,
+    const void *inputBase, void *outputBase, flagcxDevMem scratchMem,
     flagcxDevMem progressMem, flagcxDevMem readyMem,
     uint64_t simpleBufferBytes, uint32_t datatype, uint32_t redOp,
     uint64_t avgDivisor, uint64_t *blocksDone, const uint64_t *abortFlag,
@@ -1739,7 +1739,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
   FLAGCX_SHARED uint64_t shm[16];
 #define FLAGCX_DISPATCH_RING_TYPE(TYPE)                                       \
   dispatchStaticRingOp<TYPE>(                                                 \
-      redOp, lanes, numLanes, triggers, numTriggers, inputMem, outputMem,     \
+      redOp, lanes, numLanes, triggers, numTriggers, inputBase, outputBase,   \
       scratchMem, progressMem, readyMem, simpleBufferBytes, avgDivisor,       \
       abortFlag, ipcControl, shm)
   switch (static_cast<flagcxDataType_t>(datatype)) {
@@ -2088,7 +2088,7 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
 flagcxResult_t flagcxLaunchStaticRingDagKernel(
     flagcxRingLaneDesc *lanes, size_t numLanes,
     flagcxRingStepTrigger *triggers, size_t numTriggers,
-    flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
+    const void *inputBase, void *outputBase,
     flagcxDevMem_t scratchMem, flagcxDevMem_t progressMem,
     flagcxDevMem_t readyMem, size_t simpleBufferBytes,
     flagcxDataType_t datatype, flagcxRedOp_t redOp, uint64_t avgDivisor,
@@ -2097,7 +2097,7 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
     size_t maxExecutorBlocks, flagcxStream_t stream) {
   const size_t maxInt = static_cast<size_t>(std::numeric_limits<int>::max());
   if (lanes == nullptr || numLanes == 0 || triggers == nullptr ||
-      numTriggers == 0 || inputMem == nullptr || outputMem == nullptr ||
+      numTriggers == 0 || inputBase == nullptr || outputBase == nullptr ||
       scratchMem == nullptr || progressMem == nullptr || readyMem == nullptr ||
       simpleBufferBytes == 0 || simpleBufferBytes % FLAGCX_STEPS != 0 ||
       datatype < flagcxInt8 || datatype >= flagcxNumTypes ||
@@ -2115,8 +2115,6 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
     return flagcxInvalidArgument;
   }
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
-  flagcxDevMem input(*inputMem);
-  flagcxDevMem output(*outputMem);
   flagcxDevMem scratch(*scratchMem);
   flagcxDevMem progress(*progressMem);
   flagcxDevMem ready(*readyMem);
@@ -2127,7 +2125,7 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
   uint32_t redOp32 = static_cast<uint32_t>(redOp);
   flagcxStaticIpcControl control = *ipcControl;
   void *args[] = {&lanes, &numLanes64, &triggers, &numTriggers64,
-                  &input, &output, &scratch, &progress, &ready,
+                  &inputBase, &outputBase, &scratch, &progress, &ready,
                   &simpleBufferBytes64, &datatype32, &redOp32, &avgDivisor,
                   &blocksDone, &abortFlag, &control};
   cudaError_t launchResult = cudaLaunchCooperativeKernel(

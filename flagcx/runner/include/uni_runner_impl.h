@@ -325,10 +325,10 @@ typedef struct {
   void *groupedArScratch;
   size_t groupedArScratchCapacity;
 
-  // IPC/LSA AllReduce runtime resources. User-buffer DevMem views are reused
-  // while their base/size bindings remain unchanged. ipcReadySlots counts only
-  // logical DAG-ready entries; ipcReadyCapacity includes the static executor's
-  // abort/done control prefix and is the number of allocated uint64_t slots.
+  // IPC/LSA AllReduce runtime resources. Ring input/output bases are borrowed
+  // only for the current invocation; scratch and control DevMem bindings are
+  // owned by the communicator. ipcReadySlots counts logical DAG-ready entries;
+  // ipcReadyCapacity includes the static executor's abort/done control prefix.
   flagcxComm_t ipcOwner;
   flagcxDevMem_t ipcInputMem;
   flagcxDevMem_t ipcOutputMem;

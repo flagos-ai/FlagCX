@@ -106,21 +106,20 @@ static flagcxResult_t initCollectiveRingState(flagcxHeteroComm_t comm) {
   for (int c = 0; c < comm->collChannels; ++c) {
     struct flagcxRing *ring = &comm->channels[c].ring;
     FLAGCXCHECK(flagcxCalloc(&ring->userRanks, comm->nRanks));
-    for (int i = 0; i < comm->nRanks; ++i)
-      ring->userRanks[i] = i;
-
-    // PCI bus order is stable on every rank and yields a topology-derived
-    // ring rather than assuming rank +/- 1. Alternate traversal direction.
-    for (int i = 0; i < comm->nRanks; ++i) {
-      for (int j = i + 1; j < comm->nRanks; ++j) {
-        const int lhs = ring->userRanks[i];
-        const int rhs = ring->userRanks[j];
-        if (comm->peerInfo[rhs].busId < comm->peerInfo[lhs].busId ||
-            (comm->peerInfo[rhs].busId == comm->peerInfo[lhs].busId &&
-             rhs < lhs)) {
-          std::swap(ring->userRanks[i], ring->userRanks[j]);
-        }
-      }
+    if (c == 0) {
+      for (int i = 0; i < comm->nRanks; ++i)
+        ring->userRanks[i] = i;
+      // The rank tie-breaker makes this order identical to the old sort.
+      std::sort(
+          ring->userRanks, ring->userRanks + comm->nRanks,
+          [comm](int lhs, int rhs) {
+            return comm->peerInfo[lhs].busId < comm->peerInfo[rhs].busId ||
+                   (comm->peerInfo[lhs].busId == comm->peerInfo[rhs].busId &&
+                    lhs < rhs);
+          });
+    } else {
+      memcpy(ring->userRanks, comm->channels[0].ring.userRanks,
+             static_cast<size_t>(comm->nRanks) * sizeof(int));
     }
     if ((c & 1) != 0)
       std::reverse(ring->userRanks, ring->userRanks + comm->nRanks);

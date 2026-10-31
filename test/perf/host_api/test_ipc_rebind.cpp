@@ -1,8 +1,9 @@
+#include "global_comm.h"
 #include "perf_common.h"
 #include "uni_runner_algorithm.h"
 
-// Rotate buffers on only two ranks. All ranks must still take the same IPC
-// descriptor-exchange or reuse path on each AllReduce invocation.
+// Rotate caller buffers on only two ranks while reusing the communicator's
+// IPC scratch and control bindings across AllReduce invocations.
 int main(int argc, char **argv) {
   PerfContext ctx;
   perfSetup(ctx, argc, argv);
@@ -39,6 +40,12 @@ int main(int argc, char **argv) {
     MPI_Barrier(ctx.splitComm);
     PERF_CHECK(flagcxAllReduce(send, recv, count, flagcxFloat32, flagcxSum,
                                ctx.comm, ctx.stream));
+    for (int slot = 0; slot < FLAGCX_MAX_IPC_ENTRIES; ++slot) {
+      const flagcxIpcTableEntry &entry = ctx.comm->ipcTable[slot];
+      if (entry.inUse && (entry.basePtr == send || entry.basePtr == recv))
+        perfAbort("IPC Ring exported a caller-owned buffer", __FILE__,
+                  __LINE__);
+    }
     PERF_CHECK(ctx.devHandle->deviceMemcpy(
         ctx.hello, recv, bytes, flagcxMemcpyDeviceToHost, ctx.stream));
     PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
@@ -53,19 +60,13 @@ int main(int argc, char **argv) {
     MPI_Barrier(ctx.splitComm);
   }
 
-  // Imported CUDA IPC mappings remain valid until communicator destruction.
-  PERF_CHECK(ctx.devHandle->streamDestroy(ctx.stream));
-  PERF_CHECK(flagcxCommDestroy(ctx.comm));
-  PERF_CHECK(ctx.devHandle->deviceFree(ctx.sendbuff, flagcxMemDevice, NULL));
-  PERF_CHECK(ctx.devHandle->deviceFree(ctx.recvbuff, flagcxMemDevice, NULL));
+  // User buffers can be released after the operation while the communicator
+  // and its library-owned IPC scratch remain alive.
   if (alternateSend != nullptr)
     PERF_CHECK(ctx.devHandle->deviceFree(alternateSend, flagcxMemDevice, NULL));
   if (alternateRecv != nullptr)
     PERF_CHECK(ctx.devHandle->deviceFree(alternateRecv, flagcxMemDevice, NULL));
-  free(ctx.hello);
-  PERF_CHECK(flagcxDeviceHandleFree(ctx.devHandle));
-  delete ctx.args;
   const int result = ctx.accuracyFailed ? 1 : 0;
-  MPI_Finalize();
+  perfTeardown(ctx);
   return result;
 }

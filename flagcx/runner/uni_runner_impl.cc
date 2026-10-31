@@ -155,9 +155,11 @@ flagcxResult_t validateUniRunnerLaunchConfig(flagcxCommOp_t commOp) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t ensureUniRunnerIpcDataViews(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm, const void *sendbuff,
-    void *recvbuff, size_t bytes, flagcxResult_t localPreparationResult);
+static flagcxResult_t
+agreeUniRunnerDataViewState(flagcxComm_t comm, size_t localReadySlots,
+                            size_t localDataBytes, bool localCanReuse,
+                            flagcxResult_t localResult, bool *allCanReuse,
+                            flagcxResult_t *collectiveResult);
 static flagcxResult_t
 agreeUniRunnerResourceState(flagcxComm_t comm, bool localCanReuse,
                             flagcxResult_t localResult, bool *allCanReuse,
@@ -4887,8 +4889,23 @@ flagcxResult_t initUniRunnerStateIpcRingAR(flagcxUniRunnerState *runnerState,
   }
   runnerState->ipcRingDatatype = datatype;
   runnerState->ipcRingRedOp = op;
-  FLAGCXCHECK(ensureUniRunnerIpcDataViews(runnerState, comm, sendbuff, recvbuff,
-                                          bytes, result));
+  if (result == flagcxSuccess && bytes != 0 &&
+      (sendbuff == NULL || recvbuff == NULL))
+    result = flagcxInvalidArgument;
+  bool allCanReuse = false;
+  flagcxResult_t collectiveResult = flagcxSuccess;
+  FLAGCXCHECK(agreeUniRunnerDataViewState(
+      comm, runnerState->dagPlan.numRingStepNodes, bytes, false, result,
+      &allCanReuse, &collectiveResult));
+  if (collectiveResult != flagcxSuccess)
+    return collectiveResult;
+  // Ring steps access user input/output only on this GPU. Keep only their
+  // addresses for this invocation; IPC-exported scratch and control buffers
+  // remain owned by the communicator.
+  runnerState->ipcOwner = comm;
+  runnerState->ipcInputBase = sendbuff;
+  runnerState->ipcOutputBase = recvbuff;
+  runnerState->ipcDataBytes = bytes;
   return flagcxSuccess;
 }
 
@@ -5339,125 +5356,6 @@ destroyUniRunnerIpcDataViews(flagcxUniRunnerState *runnerState) {
   return result;
 }
 
-static flagcxResult_t ensureUniRunnerIpcDataViews(
-    flagcxUniRunnerState *runnerState, flagcxComm_t comm, const void *sendbuff,
-    void *recvbuff, size_t bytes, flagcxResult_t localPreparationResult) {
-  const bool localCanReuse = localPreparationResult == flagcxSuccess &&
-                             (runnerState->ipcReadySlots != 0 ||
-                              runnerState->dagPlan.numRingStepNodes != 0) &&
-                             runnerState->ipcOwner == comm &&
-                             runnerState->ipcInputMem != NULL &&
-                             runnerState->ipcOutputMem != NULL &&
-                             runnerState->ipcInputBase == sendbuff &&
-                             runnerState->ipcOutputBase == recvbuff &&
-                             bytes <= runnerState->ipcDataBytes;
-  bool allCanReuse = false;
-  flagcxResult_t collectiveResult = flagcxSuccess;
-  FLAGCXCHECK(
-      agreeUniRunnerDataViewState(comm,
-                                  runnerState->dagPlan.numRingStepNodes != 0
-                                      ? runnerState->dagPlan.numRingStepNodes
-                                      : runnerState->ipcReadySlots,
-                                  bytes, localCanReuse, localPreparationResult,
-                                  &allCanReuse, &collectiveResult));
-  if (collectiveResult != flagcxSuccess) {
-    return collectiveResult;
-  }
-  if (runnerState->ipcReadySlots == 0 &&
-      runnerState->dagPlan.numRingStepNodes == 0) {
-    return flagcxSuccess;
-  }
-  if (allCanReuse) {
-    return flagcxSuccess;
-  }
-
-  flagcxResult_t res = flagcxSuccess;
-  flagcxDevMem_t newInputMem = NULL;
-  flagcxDevMem_t newOutputMem = NULL;
-  flagcxResult_t oldDestroyResult = flagcxSuccess;
-
-  // Every rank performs exactly two creates in the same output-then-input
-  // order. Even when sendbuff == recvbuff the second handle participates in
-  // the all-rank reuse consensus and retains its own IPC-table reference.
-  res = flagcxUniRunnerIpcDevMemCreate(comm, recvbuff, bytes, &newOutputMem);
-  if (res == flagcxSuccess && newOutputMem == NULL) {
-    res = flagcxSystemError;
-  }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
-                                              &collectiveResult),
-                  res, fail);
-  if (collectiveResult != flagcxSuccess) {
-    res = collectiveResult;
-    goto fail;
-  }
-  res = flagcxUniRunnerIpcDevMemCreate(comm, const_cast<void *>(sendbuff),
-                                       bytes, &newInputMem);
-  if (res == flagcxSuccess && newInputMem == NULL) {
-    res = flagcxSystemError;
-  }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
-                                              &collectiveResult),
-                  res, fail);
-  if (collectiveResult != flagcxSuccess) {
-    res = collectiveResult;
-    goto fail;
-  }
-  res = newInputMem->hasWindow && newOutputMem->hasWindow ? flagcxSuccess
-                                                          : flagcxNotSupported;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
-                                              &collectiveResult),
-                  res, fail);
-  if (collectiveResult != flagcxSuccess) {
-    res = collectiveResult;
-    goto fail;
-  }
-
-  {
-    flagcxDevMem_t oldInputMem = runnerState->ipcInputMem;
-    flagcxDevMem_t oldOutputMem = runnerState->ipcOutputMem;
-    flagcxComm_t oldOwner = runnerState->ipcOwner;
-
-    // Retain the prior peer bindings until both new collective creates have
-    // completed. At that point every rank has left any kernel which could still
-    // dereference the old views. The backing allocations remain user-owned;
-    // their lifetime continues to follow the existing registered-buffer API
-    // contract after these handles release their table references.
-    runnerState->ipcOwner = comm;
-    runnerState->ipcInputMem = newInputMem;
-    runnerState->ipcOutputMem = newOutputMem;
-    runnerState->ipcInputBase = sendbuff;
-    runnerState->ipcOutputBase = recvbuff;
-    runnerState->ipcDataBytes = bytes;
-    newInputMem = NULL;
-    newOutputMem = NULL;
-
-    if (oldInputMem != NULL) {
-      oldDestroyResult = flagcxDevMemDestroy(oldOwner, oldInputMem);
-    }
-    if (oldOutputMem != NULL) {
-      flagcxResult_t outputResult = flagcxDevMemDestroy(oldOwner, oldOutputMem);
-      if (oldDestroyResult == flagcxSuccess) {
-        oldDestroyResult = outputResult;
-      }
-    }
-  }
-  FLAGCXCHECK(agreeUniRunnerResourceState(comm, false, oldDestroyResult,
-                                          &allCanReuse, &collectiveResult));
-  if (collectiveResult != flagcxSuccess) {
-    return collectiveResult;
-  }
-  return flagcxSuccess;
-
-fail:
-  if (newInputMem != NULL) {
-    (void)flagcxDevMemDestroy(comm, newInputMem);
-  }
-  if (newOutputMem != NULL) {
-    (void)flagcxDevMemDestroy(comm, newOutputMem);
-  }
-  return res;
-}
-
 static flagcxResult_t
 ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                flagcxComm_t comm, size_t requiredSlots) {
@@ -5880,6 +5778,9 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
     return flagcxInvalidArgument;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *state = &hcomm->proxyState->uniRunnerState;
+  const bool borrowedRingBuffers = state->ipcOwner == comm &&
+                                   state->ipcInputMem == NULL &&
+                                   state->ipcOutputMem == NULL;
   flagcxResult_t result = flagcxSuccess;
 
   // Stream work may still reference completion flags and invocation buffers.
@@ -5979,6 +5880,11 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
       state->ipcParentFlagsDevice = nullptr;
       state->ipcParentFlagsCount = 0;
     }
+  }
+  if (result == flagcxSuccess && borrowedRingBuffers) {
+    state->ipcInputBase = nullptr;
+    state->ipcOutputBase = nullptr;
+    state->ipcDataBytes = 0;
   }
   return result;
 }
@@ -6953,7 +6859,8 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
       (plan.numRingStepNodes == 0 || plan.numRingLanes == 0 ||
        plan.numHostNodes != 0 || plan.numRedNodes != 0 ||
        plan.numIpcNodes != 0 || runnerState->ipcOwner != comm ||
-       runnerState->ipcInputMem == NULL || runnerState->ipcOutputMem == NULL)) {
+       runnerState->ipcInputBase == NULL ||
+       runnerState->ipcOutputBase == NULL)) {
     result = flagcxInvalidArgument;
   }
   flagcxResult_t collectiveResult = flagcxSuccess;
@@ -7096,7 +7003,7 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   agreementResult = agreeUniRunnerInvocationState(
       comm,
       mixUniRunnerInvocationSignature(uint64_t{0xcbf29ce484222325},
-                                      maxExecutorBlocks),
+                                      plan.numRingLanes),
       result, &collectiveResult);
   if (agreementResult != flagcxSuccess || collectiveResult != flagcxSuccess) {
     runnerState->ipcRingResourcesDirty = true;
@@ -7109,7 +7016,7 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   result = flagcxLaunchStaticRingDagKernel(
       runnerState->ipcRingLanesDevice, plan.numRingLanes,
       runnerState->ipcRingTriggersDevice, plan.numRingStepNodes,
-      runnerState->ipcInputMem, runnerState->ipcOutputMem,
+      runnerState->ipcInputBase, runnerState->ipcOutputBase,
       runnerState->ipcRingScratchMem, runnerState->ipcRingProgressMem,
       runnerState->ipcReadyMem, runnerState->ipcRingSimpleBufferBytes,
       runnerState->ipcRingDatatype, runnerState->ipcRingRedOp,

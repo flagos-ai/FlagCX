@@ -14,6 +14,9 @@ make -C "$project_root" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
 make -C "$project_root/test/perf" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
+cmake -S "$project_root/third-party/googletest" \
+  -B "$project_root/third-party/googletest/build"
+cmake --build "$project_root/third-party/googletest/build" --parallel "$(nproc)"
 make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 cuda-extended
 
@@ -89,6 +92,15 @@ FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner IPC buffer rebinding' \
     -x FLAGCX_USE_HETERO_COMM=1 \
     -x FLAGCX_UNIRUNNER_ALGO=2 \
     "$perf_bin/perf_ipc_rebind" -b 4K -e 4K -d float32 -o sum -R 0 -w 0 -n 1
+
+# RingAG splits remainder elements among the first ranks.
+FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner RingAG uneven count' \
+  "$mpi_runner" -np 4 --allow-run-as-root \
+    -x PATH -x LD_LIBRARY_PATH \
+    -x CUDA_VISIBLE_DEVICES=0,1,2,3 \
+    -x FLAGCX_USE_HETERO_COMM=1 \
+    -x FLAGCX_UNIRUNNER_ALGO=4 \
+    "$perf_bin/perf_allreduce" -b 40 -e 40 -f 2 -d float32 -w 1 -n 1
 
 # Four groups of one rank exercise GroupedAG's later inter-group rounds.
 FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner grouped AllGather' \

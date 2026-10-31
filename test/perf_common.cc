@@ -374,11 +374,14 @@ bool perfCheckRingGather(PerfContext &ctx, size_t count, const char *label) {
                                            flagcxMemcpyDeviceToHost, NULL));
     PERF_CHECK(ctx.devHandle->streamSynchronize(ctx.stream));
   }
+  const size_t ranks = static_cast<size_t>(ctx.totalProcs);
+  const size_t baseCount = count / ranks;
+  const size_t extraRanks = count % ranks;
+  const size_t extraElements = extraRanks * (baseCount + 1);
   for (size_t i = 0; i < count; ++i) {
-    const int source =
-        count == 0 ? 0
-                   : std::min(ctx.totalProcs - 1,
-                              static_cast<int>(i * ctx.totalProcs / count));
+    const size_t source = i < extraElements
+                              ? i / (baseCount + 1)
+                              : extraRanks + (i - extraElements) / baseCount;
     const long double expected = static_cast<long double>(source + 1);
     const long double actual = loadValue(ctx.hello, ctx.datatype, i);
     if (!valueMatches(ctx.datatype, actual, expected)) {

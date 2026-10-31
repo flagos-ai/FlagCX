@@ -1,4 +1,5 @@
 #include "device_api/flagcx_device_internal.h"
+#include "global_comm.h"
 #include "group.h"
 #include "runner_fixtures.hpp"
 #include "test_utils.hpp"

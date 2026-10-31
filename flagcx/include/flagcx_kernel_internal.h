@@ -112,7 +112,7 @@ flagcxStaticIpcRecoveryKernel(flagcxDevMem readyMem,
 FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
     flagcxRingLaneDesc *lanes, uint64_t numLanes,
     flagcxRingStepTrigger *triggers, uint64_t numTriggers,
-    flagcxDevMem inputMem, flagcxDevMem outputMem, flagcxDevMem scratchMem,
+    const void *inputBase, void *outputBase, flagcxDevMem scratchMem,
     flagcxDevMem progressMem, flagcxDevMem readyMem, uint64_t simpleBufferBytes,
     uint32_t datatype, uint32_t redOp, uint64_t avgDivisor,
     uint64_t *blocksDone, const uint64_t *abortFlag,
@@ -150,7 +150,7 @@ flagcxLaunchStaticIpcRecoveryKernel(flagcxDevMem_t readyMem,
                                     flagcxStream_t stream);
 flagcxResult_t flagcxLaunchStaticRingDagKernel(
     flagcxRingLaneDesc *lanes, size_t numLanes, flagcxRingStepTrigger *triggers,
-    size_t numTriggers, flagcxDevMem_t inputMem, flagcxDevMem_t outputMem,
+    size_t numTriggers, const void *input, void *output,
     flagcxDevMem_t scratchMem, flagcxDevMem_t progressMem,
     flagcxDevMem_t readyMem, size_t simpleBufferBytes,
     flagcxDataType_t datatype, flagcxRedOp_t redOp, uint64_t avgDivisor,
