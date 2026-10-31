@@ -1,10 +1,13 @@
+#include "device_api/flagcx_device_internal.h"
 #include "group.h"
 #include "runner_fixtures.hpp"
+#include "test_utils.hpp"
 #include "uni_runner_algorithm.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -113,4 +116,50 @@ TEST_F(FlagCXCollTest, UniRunnerDagAlgorithmsRejectOuterGroup) {
   for (int source = 0; source < nranks; ++source)
     EXPECT_EQ(static_cast<float *>(hostrecvbuff)[source],
               static_cast<float>(source));
+}
+
+TEST_F(FlagCXCollTest, UniRunnerIpcPreparationErrorConverges) {
+  if (nranks < 2)
+    GTEST_SKIP() << "Requires at least two ranks";
+  int bootstrapReady = comm->bootstrap != nullptr ? 1 : 0;
+  int allBootstrapReady = 0;
+  MPI_Allreduce(&bootstrapReady, &allBootstrapReady, 1, MPI_INT, MPI_MIN,
+                MPI_COMM_WORLD);
+  if (!allBootstrapReady)
+    GTEST_SKIP() << "Communicator has no bootstrap state";
+
+  flagcxDevMem_t handle = nullptr;
+  const flagcxResult_t result = flagcxUniRunnerIpcDevMemCreate(
+      comm, rank == 0 ? nullptr : sendbuff, size, &handle);
+  EXPECT_EQ(result, flagcxInvalidArgument);
+  EXPECT_EQ(handle, nullptr);
+}
+
+TEST_F(FlagCXCollTest, AllGatherInsideGroup) {
+  for (size_t i = 0; i < count / nranks; ++i)
+    static_cast<float *>(hostsendbuff)[i] = rank * 1000.0f + (i % 10);
+  ASSERT_EQ(devHandle->deviceMemcpy(sendbuff, hostsendbuff, size / nranks,
+                                    flagcxMemcpyHostToDevice, stream),
+            flagcxSuccess);
+
+  ASSERT_EQ(flagcxGroupStart(comm), flagcxSuccess);
+  const flagcxResult_t submitResult = flagcxAllGather(
+      sendbuff, recvbuff, count / nranks, flagcxFloat, comm, stream);
+  const flagcxResult_t groupResult = flagcxGroupEnd(comm);
+  ASSERT_EQ(submitResult, flagcxSuccess);
+  ASSERT_EQ(groupResult, flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
+                                    flagcxMemcpyDeviceToHost, stream),
+            flagcxSuccess);
+  ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+
+  const size_t chunkCount = count / nranks;
+  std::vector<float> expected(chunkCount);
+  for (int source = 0; source < nranks; ++source) {
+    for (size_t i = 0; i < chunkCount; ++i)
+      expected[i] = source * 1000.0f + (i % 10);
+    EXPECT_TRUE(
+        verifyBuffer(static_cast<float *>(hostrecvbuff) + source * chunkCount,
+                     expected.data(), chunkCount));
+  }
 }

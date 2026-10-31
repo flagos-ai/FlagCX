@@ -48,8 +48,7 @@ struct SingleIpcMaterialization {
 
   SingleIpcMaterialization() {
     node.nodeIdx = 0;
-    setValidIpcPayload(&node, 0, 16, 16, flagcxIpcBufferInput, 0, 0,
-                       0);
+    setValidIpcPayload(&node, 0, 16, 16, flagcxIpcBufferInput, 0, 0, 0);
     plan.topoOrder = &topoOrder;
     plan.numNodes = 1;
     plan.numIpcNodes = 1;
@@ -73,9 +72,8 @@ struct SingleIpcMaterialization {
 TEST(UniRunnerStaticTrigger, ChecksHeaderPlusPayloadAllocationSize) {
   size_t bytes = 0;
   const size_t headerBytes = flagcxFifoIdxData * sizeof(uint64_t);
-  EXPECT_EQ(flagcxSuccess,
-            flagcxCheckedFifoAllocationSize(
-                129, sizeof(flagcxReduceTrigger), &bytes));
+  EXPECT_EQ(flagcxSuccess, flagcxCheckedFifoAllocationSize(
+                               129, sizeof(flagcxReduceTrigger), &bytes));
   EXPECT_EQ(headerBytes + 129 * sizeof(flagcxReduceTrigger), bytes);
 
   const size_t maxCapacity =
@@ -174,51 +172,50 @@ TEST(UniRunnerStaticTrigger, DoesNotPublishPartialMaterialization) {
   flagcxReduceTrigger trigger = {};
   size_t numTriggers = 99;
 
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          0, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 0, &numTriggers));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(-1, node.nodeData.red.triggerIdx);
 
   int parents[] = {0, 0};
   node.numParents = 2;
   node.parents = parents;
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          1, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 1, &numTriggers));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(-1, node.nodeData.red.triggerIdx);
 
   node.numParents = 0;
   node.parents = nullptr;
-  node.nodeData.red.count =
-      flagcxTriggerMask(flagcxReduceTriggerBitsCount) + 1;
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          1, &numTriggers));
+  node.nodeData.red.count = flagcxTriggerMask(flagcxReduceTriggerBitsCount) + 1;
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 1, &numTriggers));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(-1, node.nodeData.red.triggerIdx);
 
   node.nodeData.red.count = 17;
   node.nodeData.red.nthreads = 0;
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          1, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 1, &numTriggers));
   node.nodeData.red.nthreads =
       flagcxTriggerMask(flagcxReduceTriggerBitsNThreads) + 1;
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          1, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 1, &numTriggers));
   node.nodeData.red.nthreads = 32;
   node.nodeData.red.datatype = static_cast<flagcxDataType_t>(flagcxNumTypes);
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          1, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 1, &numTriggers));
   node.nodeData.red.datatype = flagcxFloat32;
   node.nodeData.red.redOp = flagcxNumRedOps;
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          &node, 1, &plan, &flag, 1, &trigger,
-                                          1, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, &flag, 1,
+                                               &trigger, 1, &numTriggers));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(-1, node.nodeData.red.triggerIdx);
 }
@@ -243,9 +240,9 @@ TEST(UniRunnerStaticTrigger, ValidatesAllNodesBeforeWritingAnyTrigger) {
   triggers[1].value[0] = 0xbbbb;
   size_t numTriggers = 99;
 
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticRedTriggers(
-                                          nodes, 2, &plan, flags, 2, triggers,
-                                          2, &numTriggers));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticRedTriggers(nodes, 2, &plan, flags, 2,
+                                               triggers, 2, &numTriggers));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(-7, nodes[0].nodeData.red.triggerIdx);
   EXPECT_EQ(-8, nodes[1].nodeData.red.triggerIdx);
@@ -264,9 +261,9 @@ TEST(UniRunnerStaticTrigger, AcceptsHostOnlyPlanWithoutTriggerStorage) {
   plan.numHostNodes = 1;
   size_t numTriggers = 99;
 
-  EXPECT_EQ(flagcxSuccess, populateUniRunnerStaticRedTriggers(
-                               &node, 1, &plan, nullptr, 0, nullptr, 0,
-                               &numTriggers));
+  EXPECT_EQ(flagcxSuccess,
+            populateUniRunnerStaticRedTriggers(&node, 1, &plan, nullptr, 0,
+                                               nullptr, 0, &numTriggers));
   EXPECT_EQ(0u, numTriggers);
 }
 
@@ -293,11 +290,9 @@ TEST(UniRunnerStaticIpcTrigger, NormalizesConfiguredChunkSizeBeforeCasting) {
   EXPECT_EQ(16u, chunkSize);
   EXPECT_EQ(flagcxSuccess, normalizeUniRunnerIpcChunkSize(32, &chunkSize));
   EXPECT_EQ(32u, chunkSize);
-  EXPECT_EQ(flagcxInvalidArgument,
-            normalizeUniRunnerIpcChunkSize(16, nullptr));
+  EXPECT_EQ(flagcxInvalidArgument, normalizeUniRunnerIpcChunkSize(16, nullptr));
 
-  const int64_t largestAligned =
-      std::numeric_limits<int64_t>::max() - 15;
+  const int64_t largestAligned = std::numeric_limits<int64_t>::max() - 15;
   if (static_cast<uint64_t>(largestAligned) <=
       static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
     EXPECT_EQ(flagcxSuccess,
@@ -312,17 +307,13 @@ TEST(UniRunnerStaticIpcTrigger, NormalizesConfiguredChunkSizeBeforeCasting) {
 
 TEST(UniRunnerStaticIpcTrigger, ComputesCheckedChunkCountsAtBoundaries) {
   uint32_t numChunks = 99;
-  EXPECT_EQ(flagcxSuccess,
-            checkedUniRunnerIpcChunkCount(0, 16, &numChunks));
+  EXPECT_EQ(flagcxSuccess, checkedUniRunnerIpcChunkCount(0, 16, &numChunks));
   EXPECT_EQ(1u, numChunks);
-  EXPECT_EQ(flagcxSuccess,
-            checkedUniRunnerIpcChunkCount(1, 16, &numChunks));
+  EXPECT_EQ(flagcxSuccess, checkedUniRunnerIpcChunkCount(1, 16, &numChunks));
   EXPECT_EQ(1u, numChunks);
-  EXPECT_EQ(flagcxSuccess,
-            checkedUniRunnerIpcChunkCount(16, 16, &numChunks));
+  EXPECT_EQ(flagcxSuccess, checkedUniRunnerIpcChunkCount(16, 16, &numChunks));
   EXPECT_EQ(1u, numChunks);
-  EXPECT_EQ(flagcxSuccess,
-            checkedUniRunnerIpcChunkCount(17, 16, &numChunks));
+  EXPECT_EQ(flagcxSuccess, checkedUniRunnerIpcChunkCount(17, 16, &numChunks));
   EXPECT_EQ(2u, numChunks);
 
   numChunks = 99;
@@ -350,17 +341,15 @@ TEST(UniRunnerStaticIpcTrigger, ComputesCheckedChunkCountsAtBoundaries) {
     if (maxBytes != std::numeric_limits<size_t>::max()) {
       numChunks = 99;
       EXPECT_EQ(flagcxInvalidArgument,
-                checkedUniRunnerIpcChunkCount(maxBytes + 1, 16,
-                                               &numChunks));
+                checkedUniRunnerIpcChunkCount(maxBytes + 1, 16, &numChunks));
       EXPECT_EQ(0u, numChunks);
     }
   }
 
   const size_t largestAligned = std::numeric_limits<size_t>::max() - 15;
   EXPECT_EQ(flagcxSuccess,
-            checkedUniRunnerIpcChunkCount(
-                std::numeric_limits<size_t>::max(), largestAligned,
-                &numChunks));
+            checkedUniRunnerIpcChunkCount(std::numeric_limits<size_t>::max(),
+                                          largestAligned, &numChunks));
   EXPECT_EQ(2u, numChunks);
 }
 
@@ -391,15 +380,15 @@ TEST(UniRunnerStaticIpcTrigger, EncodesBoundedControlEpochsAndAbortState) {
   EXPECT_TRUE(flagcxIpcControlEpochValid(1));
   EXPECT_TRUE(flagcxIpcControlEpochValid(maxControlEpoch));
   EXPECT_FALSE(flagcxIpcControlEpochValid(flagcxIpcControlAbortBit));
-  EXPECT_FALSE(flagcxIpcControlEpochValid(
-      flagcxIpcControlAbortBit | uint64_t{1}));
+  EXPECT_FALSE(
+      flagcxIpcControlEpochValid(flagcxIpcControlAbortBit | uint64_t{1}));
 
   EXPECT_TRUE(flagcxIpcControlEpochReached(7, 7));
   EXPECT_TRUE(flagcxIpcControlEpochReached(8, 7));
-  EXPECT_TRUE(flagcxIpcControlEpochReached(
-      flagcxIpcControlAbortBit | uint64_t{7}, 7));
-  EXPECT_TRUE(flagcxIpcControlEpochReached(
-      flagcxIpcControlAbortBit | uint64_t{8}, 7));
+  EXPECT_TRUE(
+      flagcxIpcControlEpochReached(flagcxIpcControlAbortBit | uint64_t{7}, 7));
+  EXPECT_TRUE(
+      flagcxIpcControlEpochReached(flagcxIpcControlAbortBit | uint64_t{8}, 7));
   EXPECT_FALSE(flagcxIpcControlEpochReached(6, 7));
   EXPECT_FALSE(flagcxIpcControlEpochReached(7, 0));
   EXPECT_FALSE(flagcxIpcControlEpochReached(1, maxControlEpoch));
@@ -415,14 +404,12 @@ TEST(UniRunnerStaticIpcTrigger,
   int nodeThreeParents[] = {1, 2};
   nodes[0].numParents = 1;
   nodes[0].parents = nodeZeroParents;
-  setValidIpcPayload(&nodes[0], 8, 16, 16, flagcxIpcBufferInput, 0, 0,
-                     0);
+  setValidIpcPayload(&nodes[0], 8, 16, 16, flagcxIpcBufferInput, 0, 0, 0);
   nodes[1].nodeType = uniRunnerDagNodeTypeP2p;
   nodes[2].nodeType = uniRunnerDagNodeTypeRed;
   nodes[3].numParents = 2;
   nodes[3].parents = nodeThreeParents;
-  setValidIpcPayload(&nodes[3], 64, 80, 33, flagcxIpcBufferOutput, 1, 1,
-                     1);
+  setValidIpcPayload(&nodes[3], 64, 80, 33, flagcxIpcBufferOutput, 1, 1, 1);
 
   int topoOrder[] = {1, 2, 3, 0};
   uniRunnerDagExecutionPlan plan = {};
@@ -445,8 +432,8 @@ TEST(UniRunnerStaticIpcTrigger,
   size_t maxChunksPerTrigger = 99;
 
   ASSERT_EQ(flagcxSuccess, populateUniRunnerStaticIpcTriggers(
-                               nodes, 4, &plan, flags, 4, &config, triggers,
-                               2, &numTriggers, &maxChunksPerTrigger));
+                               nodes, 4, &plan, flags, 4, &config, triggers, 2,
+                               &numTriggers, &maxChunksPerTrigger));
   ASSERT_EQ(2u, numTriggers);
   EXPECT_EQ(3u, maxChunksPerTrigger);
   EXPECT_EQ(1, nodes[0].nodeData.ipc.triggerIdx);
@@ -530,8 +517,8 @@ TEST(UniRunnerStaticIpcTrigger,
   size_t maxChunksPerTrigger = 99;
 
   EXPECT_EQ(flagcxSuccess, populateUniRunnerStaticIpcTriggers(
-                               &node, 1, &plan, nullptr, 0, nullptr, nullptr,
-                               0, &numTriggers, &maxChunksPerTrigger));
+                               &node, 1, &plan, nullptr, 0, nullptr, nullptr, 0,
+                               &numTriggers, &maxChunksPerTrigger));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(0u, maxChunksPerTrigger);
 }
@@ -541,8 +528,7 @@ TEST(UniRunnerStaticIpcTrigger,
   uniRunnerDagNode nodes[2] = {};
   for (int i = 0; i < 2; ++i) {
     nodes[i].nodeIdx = i;
-    setValidIpcPayload(&nodes[i], 0, 16, 16, flagcxIpcBufferInput, i, i,
-                       0);
+    setValidIpcPayload(&nodes[i], 0, 16, 16, flagcxIpcBufferInput, i, i, 0);
     nodes[i].nodeData.ipc.triggerIdx = -7 - i;
   }
   nodes[1].nodeData.ipc.srcOffsetBytes = 49;
@@ -568,10 +554,10 @@ TEST(UniRunnerStaticIpcTrigger,
   size_t numTriggers = 99;
   size_t maxChunksPerTrigger = 99;
 
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticIpcTriggers(
-                                        nodes, 2, &plan, flags, 2, &config,
-                                        triggers, 2, &numTriggers,
-                                        &maxChunksPerTrigger));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticIpcTriggers(
+                nodes, 2, &plan, flags, 2, &config, triggers, 2, &numTriggers,
+                &maxChunksPerTrigger));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(0u, maxChunksPerTrigger);
   EXPECT_EQ(-7, nodes[0].nodeData.ipc.triggerIdx);
@@ -597,8 +583,7 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesSourceAndDestinationExtents) {
   EXPECT_EQ(flagcxInvalidArgument, materialize(0, 65, 0, 64));
 
   const size_t maxExtent = std::numeric_limits<size_t>::max();
-  EXPECT_EQ(flagcxSuccess,
-            materialize(maxExtent, maxExtent, 0, maxExtent));
+  EXPECT_EQ(flagcxSuccess, materialize(maxExtent, maxExtent, 0, maxExtent));
   EXPECT_EQ(flagcxInvalidArgument,
             materialize(maxExtent, maxExtent, 1, maxExtent));
 }
@@ -613,20 +598,15 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesBufferTypeAndPeerBoundaries) {
     return materialization.populate();
   };
 
-  EXPECT_EQ(flagcxSuccess,
-            materialize(flagcxIpcBufferInput, 0, 3));
-  EXPECT_EQ(flagcxSuccess,
-            materialize(flagcxIpcBufferOutput, 2, 3));
+  EXPECT_EQ(flagcxSuccess, materialize(flagcxIpcBufferInput, 0, 3));
+  EXPECT_EQ(flagcxSuccess, materialize(flagcxIpcBufferOutput, 2, 3));
   EXPECT_EQ(flagcxInvalidArgument,
             materialize(static_cast<flagcxIpcBufferType>(-1), 0, 3));
   EXPECT_EQ(flagcxInvalidArgument,
             materialize(static_cast<flagcxIpcBufferType>(2), 0, 3));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(flagcxIpcBufferInput, -1, 3));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(flagcxIpcBufferInput, 3, 3));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(flagcxIpcBufferInput, 0, 0));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(flagcxIpcBufferInput, -1, 3));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(flagcxIpcBufferInput, 3, 3));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(flagcxIpcBufferInput, 0, 0));
 }
 
 TEST(UniRunnerStaticIpcTrigger, ValidatesReadySlotsAndExactCapacity) {
@@ -663,8 +643,7 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesReadySlotsAndExactCapacity) {
   uniRunnerDagNode nodes[2] = {};
   for (int i = 0; i < 2; ++i) {
     nodes[i].nodeIdx = i;
-    setValidIpcPayload(&nodes[i], 0, 16, 16, flagcxIpcBufferInput, 0, 0,
-                       0);
+    setValidIpcPayload(&nodes[i], 0, 16, 16, flagcxIpcBufferInput, 0, 0, 0);
   }
   int topoOrder[] = {0, 1};
   uniRunnerDagExecutionPlan plan = {};
@@ -681,10 +660,10 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesReadySlotsAndExactCapacity) {
   flagcxIpcTrigger triggers[2] = {};
   size_t numTriggers = 99;
   size_t maxChunksPerTrigger = 99;
-  EXPECT_EQ(flagcxInvalidArgument, populateUniRunnerStaticIpcTriggers(
-                                        nodes, 2, &plan, flags, 2, &config,
-                                        triggers, 2, &numTriggers,
-                                        &maxChunksPerTrigger));
+  EXPECT_EQ(flagcxInvalidArgument,
+            populateUniRunnerStaticIpcTriggers(
+                nodes, 2, &plan, flags, 2, &config, triggers, 2, &numTriggers,
+                &maxChunksPerTrigger));
   EXPECT_EQ(0u, numTriggers);
   EXPECT_EQ(0u, maxChunksPerTrigger);
 }
@@ -727,30 +706,21 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesParentFlagLayoutAndReferences) {
 
   EXPECT_EQ(flagcxSuccess, materialize(0, false, 0, 0, 0, false));
   EXPECT_EQ(flagcxSuccess, materialize(1, true, 0, 0, 1, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(-1, false, 0, 0, 0, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(1, false, 0, 0, 1, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(1, true, 0, 1, 1, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(2, true, 0, 0, 1, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(1, true, -1, 0, 1, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(1, true, 2, 0, 1, true));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(1, true, 0, 0, 1, false));
-  EXPECT_EQ(flagcxInvalidArgument,
-            materialize(0, false, 0, 0, 1, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(-1, false, 0, 0, 0, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(1, false, 0, 0, 1, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(1, true, 0, 1, 1, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(2, true, 0, 0, 1, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(1, true, -1, 0, 1, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(1, true, 2, 0, 1, true));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(1, true, 0, 0, 1, false));
+  EXPECT_EQ(flagcxInvalidArgument, materialize(0, false, 0, 0, 1, true));
 
   if (static_cast<size_t>(std::numeric_limits<uint32_t>::max()) <
       std::numeric_limits<size_t>::max()) {
     EXPECT_EQ(flagcxInvalidArgument,
               materialize(
                   0, false, 0, 0,
-                  static_cast<size_t>(std::numeric_limits<uint32_t>::max()) +
-                      1,
+                  static_cast<size_t>(std::numeric_limits<uint32_t>::max()) + 1,
                   true));
   }
 }

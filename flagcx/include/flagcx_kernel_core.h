@@ -346,30 +346,28 @@ struct alignas(16) flagcxReduceTrigger {
   FLAGCX_DEVICE_INLINE_DECORATOR void completeGemmWorker();
   FLAGCX_DEVICE_INLINE_DECORATOR void setComplete();
 #endif
-  FLAGCX_HOST_DECORATOR void setValue(uint64_t fst, uint64_t snd, uint64_t out,
-                                      size_t count, size_t nthreads,
-                                      flagcxDataType_t datatype,
-                                      flagcxRedOp_t redOp,
-                                      flagcxReduceTriggerState state,
-                                      uint64_t flagIn, uint64_t flagOut);
+  FLAGCX_HOST_DECORATOR void
+  setValue(uint64_t fst, uint64_t snd, uint64_t out, size_t count,
+           size_t nthreads, flagcxDataType_t datatype, flagcxRedOp_t redOp,
+           flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
   FLAGCX_HOST_DECORATOR void setReduceWorkerValue(
-      uint64_t fst, uint64_t snd, uint64_t out, size_t count,
-      size_t nthreads, flagcxDataType_t datatype, flagcxRedOp_t redOp,
-      uint32_t workerId, uint32_t workerCount, uint64_t completionCounter,
-      flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
-  FLAGCX_HOST_DECORATOR void setGemmValue(
-      uint64_t a, uint64_t b, uint64_t c, uint32_t m, uint32_t n, uint32_t k,
-      uint32_t lda, uint32_t ldb, uint32_t ldc, size_t nthreads,
-      flagcxDataType_t datatype, int accumulate, uint32_t workerId,
+      uint64_t fst, uint64_t snd, uint64_t out, size_t count, size_t nthreads,
+      flagcxDataType_t datatype, flagcxRedOp_t redOp, uint32_t workerId,
       uint32_t workerCount, uint64_t completionCounter,
       flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
+  FLAGCX_HOST_DECORATOR void
+  setGemmValue(uint64_t a, uint64_t b, uint64_t c, uint32_t m, uint32_t n,
+               uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
+               size_t nthreads, flagcxDataType_t datatype, int accumulate,
+               uint32_t workerId, uint32_t workerCount,
+               uint64_t completionCounter, flagcxReduceTriggerState state,
+               uint64_t flagIn, uint64_t flagOut);
   FLAGCX_HOST_DECORATOR uint64_t pollState();
   FLAGCX_HOST_DECORATOR void setState(int state);
 };
 typedef flagcxReduceTrigger *flagcxReduceTrigger_t;
 static_assert(sizeof(flagcxReduceTrigger) == 96,
               "compute trigger layout must remain 96 bytes");
-
 
 // Intra-node IPC/LSA push trigger. The source and destination memory handles
 // are bound once at collective-kernel launch; FIFO entries only carry buffer

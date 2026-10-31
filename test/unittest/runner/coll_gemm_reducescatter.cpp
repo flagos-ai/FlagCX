@@ -57,10 +57,15 @@ TEST_F(FlagCXCollTest, GemmReduceScatter) {
                                     flagcxMemcpyHostToDevice, stream),
             flagcxSuccess);
 
-  EXPECT_EQ(flagcxGemmReduceScatter(sendbuff, deviceWeight, recvbuff, m, n,
-                                    kPerRank, flagcxFloat32, flagcxSum, comm,
-                                    stream),
-            flagcxSuccess);
+  const flagcxResult_t result =
+      flagcxGemmReduceScatter(sendbuff, deviceWeight, recvbuff, m, n, kPerRank,
+                              flagcxFloat32, flagcxSum, comm, stream);
+  if (result != flagcxSuccess) {
+    EXPECT_EQ(result, flagcxSuccess);
+    EXPECT_EQ(devHandle->deviceFree(deviceWeight, flagcxMemDevice, NULL),
+              flagcxSuccess);
+    return;
+  }
   ASSERT_EQ(devHandle->deviceMemcpy(hostOutput.data(), recvbuff,
                                     outputElements * sizeof(float),
                                     flagcxMemcpyDeviceToHost, stream),

@@ -48,17 +48,15 @@ FLAGCX_HOST_DEVICE_INLINE uint64_t uniRunnerGemmTotalTiles(uint64_t m,
   return uniRunnerGemmNumTileRows(m) * uniRunnerGemmNumTileCols(n);
 }
 
-FLAGCX_HOST_DEVICE_INLINE uint64_t
-uniRunnerGemmWorkerTileCount(uint64_t totalTiles, uint64_t workerCount,
-                             uint64_t workerId) {
+FLAGCX_HOST_DEVICE_INLINE uint64_t uniRunnerGemmWorkerTileCount(
+    uint64_t totalTiles, uint64_t workerCount, uint64_t workerId) {
   uint64_t baseTiles = totalTiles / workerCount;
   uint64_t remainder = totalTiles % workerCount;
   return baseTiles + (workerId < remainder ? 1 : 0);
 }
 
-FLAGCX_HOST_DEVICE_INLINE uint64_t
-uniRunnerGemmWorkerTileBegin(uint64_t totalTiles, uint64_t workerCount,
-                             uint64_t workerId) {
+FLAGCX_HOST_DEVICE_INLINE uint64_t uniRunnerGemmWorkerTileBegin(
+    uint64_t totalTiles, uint64_t workerCount, uint64_t workerId) {
   uint64_t baseTiles = totalTiles / workerCount;
   uint64_t remainder = totalTiles % workerCount;
   return workerId * baseTiles + (workerId < remainder ? workerId : remainder);

@@ -56,9 +56,15 @@ TEST_F(FlagCXCollTest, AllGatherGemm) {
                                     flagcxMemcpyHostToDevice, stream),
             flagcxSuccess);
 
-  EXPECT_EQ(flagcxAllGatherGemm(sendbuff, deviceWeight, recvbuff, mPerRank, n,
-                                k, flagcxFloat32, comm, stream),
-            flagcxSuccess);
+  const flagcxResult_t result =
+      flagcxAllGatherGemm(sendbuff, deviceWeight, recvbuff, mPerRank, n, k,
+                          flagcxFloat32, comm, stream);
+  if (result != flagcxSuccess) {
+    EXPECT_EQ(result, flagcxSuccess);
+    EXPECT_EQ(devHandle->deviceFree(deviceWeight, flagcxMemDevice, NULL),
+              flagcxSuccess);
+    return;
+  }
   ASSERT_EQ(devHandle->deviceMemcpy(hostOutput.data(), recvbuff,
                                     outputElements * sizeof(float),
                                     flagcxMemcpyDeviceToHost, stream),

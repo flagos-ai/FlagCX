@@ -43,33 +43,31 @@ FLAGCX_HOST_DECORATOR void flagcxReduceTrigger::setGemmValue(
   tmp[0] = a;
   tmp[1] = b;
   tmp[2] = c;
-  tmp[3] =
-      (nthreads & flagcxTriggerMask(flagcxReduceTriggerBitsNThreads))
-          << flagcxReduceTriggerOffNThreads |
-      (datatype & flagcxTriggerMask(flagcxReduceTriggerBitsDatatype))
-          << flagcxReduceTriggerOffDatatype |
-      (flagcxRedNoOp & flagcxTriggerMask(flagcxReduceTriggerBitsRedop))
-          << flagcxReduceTriggerOffRedop |
-      (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
-          << flagcxReduceTriggerOffState |
-      (flagcxComputeTriggerGemm &
-       flagcxTriggerMask(flagcxReduceTriggerBitsComputeType))
-          << flagcxReduceTriggerOffComputeType;
+  tmp[3] = (nthreads & flagcxTriggerMask(flagcxReduceTriggerBitsNThreads))
+               << flagcxReduceTriggerOffNThreads |
+           (datatype & flagcxTriggerMask(flagcxReduceTriggerBitsDatatype))
+               << flagcxReduceTriggerOffDatatype |
+           (flagcxRedNoOp & flagcxTriggerMask(flagcxReduceTriggerBitsRedop))
+               << flagcxReduceTriggerOffRedop |
+           (state & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+               << flagcxReduceTriggerOffState |
+           (flagcxComputeTriggerGemm &
+            flagcxTriggerMask(flagcxReduceTriggerBitsComputeType))
+               << flagcxReduceTriggerOffComputeType;
   tmp[4] = flagIn;
   tmp[5] = flagOut;
   tmp[6] = static_cast<uint64_t>(m) << 32 | n;
   tmp[7] = static_cast<uint64_t>(k) << 32 | lda;
   tmp[8] = static_cast<uint64_t>(ldb) << 32 | ldc;
-  tmp[9] =
-      (static_cast<uint64_t>(workerId) &
-       flagcxTriggerMask(flagcxGemmTriggerBitsWorkerId))
-          << flagcxGemmTriggerOffWorkerId |
-      (static_cast<uint64_t>(workerCount) &
-       flagcxTriggerMask(flagcxGemmTriggerBitsWorkerCount))
-          << flagcxGemmTriggerOffWorkerCount |
-      (static_cast<uint64_t>(accumulate != 0) &
-       flagcxTriggerMask(flagcxGemmTriggerBitsAccumulate))
-          << flagcxGemmTriggerOffAccumulate;
+  tmp[9] = (static_cast<uint64_t>(workerId) &
+            flagcxTriggerMask(flagcxGemmTriggerBitsWorkerId))
+               << flagcxGemmTriggerOffWorkerId |
+           (static_cast<uint64_t>(workerCount) &
+            flagcxTriggerMask(flagcxGemmTriggerBitsWorkerCount))
+               << flagcxGemmTriggerOffWorkerCount |
+           (static_cast<uint64_t>(accumulate != 0) &
+            flagcxTriggerMask(flagcxGemmTriggerBitsAccumulate))
+               << flagcxGemmTriggerOffAccumulate;
   tmp[10] = completionCounter;
   memcpy(this->value, tmp, sizeof(tmp));
 }
@@ -193,24 +191,22 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueueReduceWorker(
     sched_yield();
     return flagcxSuccess;
   }
-  trigger->setReduceWorkerValue(
-      addr1, addr2, addr3, count, nthreads, datatype, redop, workerId,
-      workerCount, completionCounter, flagcxReduceTriggerEnqueued, flagIn,
-      flagOut);
+  trigger->setReduceWorkerValue(addr1, addr2, addr3, count, nthreads, datatype,
+                                redop, workerId, workerCount, completionCounter,
+                                flagcxReduceTriggerEnqueued, flagIn, flagOut);
   __atomic_fetch_add(buffer + flagcxFifoIdxProduced, 1ul, __ATOMIC_RELEASE);
   *ret = idx;
-  TRACE(FLAGCX_KERNEL,
-        "enqueue red worker: count=%lu, worker=%u/%u, idx=%d", count,
-        workerId, workerCount, idx);
+  TRACE(FLAGCX_KERNEL, "enqueue red worker: count=%lu, worker=%u/%u, idx=%d",
+        count, workerId, workerCount, idx);
   return flagcxSuccess;
 }
 
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueueGemm(
-    void *fifoBuffer, uint64_t a, uint64_t b, uint64_t c, uint32_t m,
-    uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
-    size_t nthreads, flagcxDataType_t datatype, int accumulate,
-    uint32_t workerId, uint32_t workerCount, uint64_t completionCounter,
-    uint64_t flagIn, uint64_t flagOut, int *ret) {
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueueGemm(void *fifoBuffer, uint64_t a, uint64_t b, uint64_t c, uint32_t m,
+            uint32_t n, uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
+            size_t nthreads, flagcxDataType_t datatype, int accumulate,
+            uint32_t workerId, uint32_t workerCount, uint64_t completionCounter,
+            uint64_t flagIn, uint64_t flagOut, int *ret) {
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[flagcxFifoIdxCapacity];
   int distance = buffer[flagcxFifoIdxProduced] - buffer[flagcxFifoIdxConsumed];
@@ -233,8 +229,8 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueueGemm(
   __atomic_fetch_add(buffer + flagcxFifoIdxProduced, 1ul, __ATOMIC_RELEASE);
   *ret = idx;
   TRACE(FLAGCX_KERNEL,
-        "enqueue gemm worker: m=%u, n=%u, k=%u, worker=%u/%u, idx=%d", m, n,
-        k, workerId, workerCount, idx);
+        "enqueue gemm worker: m=%u, n=%u, k=%u, worker=%u/%u, idx=%d", m, n, k,
+        workerId, workerCount, idx);
   return flagcxSuccess;
 }
 
@@ -271,8 +267,8 @@ flagcxResult_t flagcxFifo::flagcxRedFifoInit(size_t numTriggers) {
   FLAGCXCHECK(flagcxCheckedFifoAllocationSize(
       numTriggers, sizeof(flagcxReduceTrigger), &bytes));
   uint64_t *newBuffer = NULL;
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-      reinterpret_cast<void **>(&newBuffer), bytes, flagcxMemHost, NULL));
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(reinterpret_cast<void **>(&newBuffer),
+                                          bytes, flagcxMemHost, NULL));
   if (newBuffer == NULL) {
     return flagcxSystemError;
   }
@@ -289,12 +285,12 @@ flagcxResult_t flagcxFifo::flagcxRedFifoInit(size_t numTriggers) {
   return flagcxSuccess;
 }
 
-FLAGCX_HOST_DECORATOR flagcxResult_t enqueueIpc(
-    void *fifoBuffer, uint64_t srcOffsetBytes, uint64_t dstOffsetBytes,
-    uint64_t bytes, uint64_t chunkSize, flagcxIpcBufferType srcBufferType,
-    int peerLocalRank, uint32_t readySlot, uint64_t epoch,
-    uint32_t parentFlagsOffset, uint32_t numParentFlags, uint64_t flagOut,
-    int *ret) {
+FLAGCX_HOST_DECORATOR flagcxResult_t
+enqueueIpc(void *fifoBuffer, uint64_t srcOffsetBytes, uint64_t dstOffsetBytes,
+           uint64_t bytes, uint64_t chunkSize,
+           flagcxIpcBufferType srcBufferType, int peerLocalRank,
+           uint32_t readySlot, uint64_t epoch, uint32_t parentFlagsOffset,
+           uint32_t numParentFlags, uint64_t flagOut, int *ret) {
   if (chunkSize == 0) {
     return flagcxInvalidArgument;
   }
@@ -307,10 +303,10 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueueIpc(
 
   uint64_t *buffer = static_cast<uint64_t *>(fifoBuffer);
   int capacity = static_cast<int>(buffer[flagcxFifoIdxCapacity]);
-  uint64_t produced = __atomic_load_n(buffer + flagcxFifoIdxProduced,
-                                      __ATOMIC_ACQUIRE);
-  uint64_t consumed = __atomic_load_n(buffer + flagcxFifoIdxConsumed,
-                                      __ATOMIC_ACQUIRE);
+  uint64_t produced =
+      __atomic_load_n(buffer + flagcxFifoIdxProduced, __ATOMIC_ACQUIRE);
+  uint64_t consumed =
+      __atomic_load_n(buffer + flagcxFifoIdxConsumed, __ATOMIC_ACQUIRE);
   if (produced - consumed >= static_cast<uint64_t>(capacity)) {
     *ret = -1;
     sched_yield();
@@ -369,8 +365,8 @@ flagcxResult_t flagcxFifo::flagcxIpcFifoInit(size_t numTriggers) {
   FLAGCXCHECK(flagcxCheckedFifoAllocationSize(
       numTriggers, sizeof(flagcxIpcTrigger), &bytes));
   uint64_t *newBuffer = NULL;
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-      reinterpret_cast<void **>(&newBuffer), bytes, flagcxMemHost, NULL));
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc(reinterpret_cast<void **>(&newBuffer),
+                                          bytes, flagcxMemHost, NULL));
   if (newBuffer == NULL) {
     return flagcxSystemError;
   }
@@ -379,8 +375,7 @@ flagcxResult_t flagcxFifo::flagcxIpcFifoInit(size_t numTriggers) {
   buffer[flagcxFifoIdxConsumed] = 0;
   buffer[flagcxFifoIdxProduced] = 0;
   buffer[flagcxFifoIdxTerminate] = 0;
-  memset(buffer + flagcxFifoIdxData, 0,
-         numTriggers * sizeof(flagcxIpcTrigger));
+  memset(buffer + flagcxFifoIdxData, 0, numTriggers * sizeof(flagcxIpcTrigger));
   __sync_synchronize();
   return flagcxSuccess;
 }

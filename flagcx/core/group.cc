@@ -111,18 +111,8 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   int defaultStep = 0;
   // Each groupLaunch we create a semaphore to track the
   // p2p ops and a stream to launch host or device func
-  bool useStreamValueGroup = false;
-  flagcxResult_t probeResult = flagcxStreamValueSupported(&useStreamValueGroup);
-  if (probeResult != flagcxSuccess)
-    return probeResult;
   std::shared_ptr<flagcxSemaphore> semaphore;
-  std::shared_ptr<flagcxStreamValueSemaphore> streamValueSemaphore;
-  if (useStreamValueGroup) {
-    streamValueSemaphore = std::make_shared<flagcxStreamValueSemaphore>();
-    if (streamValueSemaphore->initResult != flagcxSuccess)
-      return streamValueSemaphore->initResult;
-    semaphore = streamValueSemaphore;
-  } else if (deviceAsyncKernel) {
+  if (deviceAsyncKernel) {
     semaphore = std::make_shared<flagcxDeviceSemaphore>();
   } else {
     semaphore = std::make_shared<flagcxHostSemaphore>();
@@ -420,32 +410,7 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   }
 
   if (launchStream != nullptr && launchEvent != nullptr) {
-    if (useStreamValueGroup) {
-      ret = streamValueSemaphore->enqueueCompletion(launchStream);
-      if (ret != flagcxSuccess) {
-        // Proxy ops were posted before the completion event was recorded.
-        // Abort them so their counters can drain and release a queued stream
-        // wait before synchronizing the stream.
-        for (auto &step : proxyOps) {
-          for (auto &entry : step.second) {
-            flagcxProxyRecordAsyncError(entry.first->proxyState, ret);
-          }
-        }
-        flagcxResult_t syncResult =
-            deviceAdaptor->streamSynchronize(launchStream);
-        if (syncResult != flagcxSuccess)
-          syncResult = deviceAdaptor->deviceSynchronize();
-        if (syncResult == flagcxSuccess)
-          streamValueSemaphore->markCompletionDrained();
-        else {
-          WARN("Failed to drain stream-value completion after error %d; "
-               "retaining its signal slot",
-               ret);
-          streamValueSemaphore->markCompletionUnsafe();
-        }
-        goto fail;
-      }
-    } else if (deviceAsyncKernel) {
+    if (deviceAsyncKernel) {
       FLAGCXCHECK(deviceAdaptor->launchDeviceFunc(
           launchStream, deviceAsyncKernel, (void *)semaphore->getSignals()));
       // device semaphore need this event to signal completion

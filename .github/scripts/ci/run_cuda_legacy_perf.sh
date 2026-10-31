@@ -7,15 +7,40 @@ export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$project_root/build/lib:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}"
 perf_bin="$project_root/test/perf/host_api/build/bin"
 device_api_bin="$project_root/test/perf/device_api/build/bin"
+cuda_extended_runner="$project_root/test/unittest/runner/build/bin/runner_cuda_extended_mpi_tests"
 mpi_runner="$project_root/.github/scripts/ci/run_mpi_with_timeout.sh"
 
 make -C "$project_root" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
 make -C "$project_root/test/perf" --jobs="$(nproc)" \
   USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1
+make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
+  USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 cuda-extended
 
 source "$project_root/test/script/_gpu_check.sh"
 wait_for_gpu
+
+# Run UniRunner-only GPU tests here, outside the cross-platform runner suite.
+cuda_extended_runner_env=(
+  -x PATH
+  -x LD_LIBRARY_PATH
+  -x CUDA_VISIBLE_DEVICES=0,1,2,3
+  -x FLAGCX_USE_HETERO_COMM=1
+  -x FLAGCX_MEM_ENABLE=1
+  -x FLAGCX_CLUSTER_SPLIT_LIST=2
+  -x FLAGCX_P2P_DISABLE=0
+  -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID
+)
+FLAGCX_CI_MPI_LABEL='CUDA extended UniRunner fused and group tests' \
+  env -u FLAGCX_UNIRUNNER_ALGO "$mpi_runner" -np 4 --allow-run-as-root \
+    "${cuda_extended_runner_env[@]}" "$cuda_extended_runner" \
+    --gtest_filter='FlagCXCollTest.AllGatherGemm*:FlagCXCollTest.GemmReduceScatter*:FlagCXCollTest.UniRunnerDagAlgorithmsRejectOuterGroup:FlagCXCollTest.UniRunnerIpcPreparationErrorConverges'
+
+FLAGCX_CI_MPI_LABEL='CUDA extended UniRunner P2P outer group' \
+  "$mpi_runner" -np 4 --allow-run-as-root \
+    "${cuda_extended_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=8 \
+    "$cuda_extended_runner" \
+    --gtest_filter=FlagCXCollTest.AllGatherInsideGroup
 
 # The regular CUDA perf job owns the homogeneous and heterogeneous API suites.
 # Keep only parameter variants and APIs that it does not run.

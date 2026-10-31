@@ -12,7 +12,8 @@ uniRunnerDagTemplate gemmTemplate() {
   config.numKSlices = 1;
   config.groupSize = 1;
   config.pipelineVersion = 2;
-  dag.key.algoHash = getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoAllGatherGemm, config);
+  dag.key.algoHash =
+      getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoAllGatherGemm, config);
   dag.key.commOp = flagcxCommOpAllGather;
   dag.key.count = 64 * 32;
   dag.key.datatype = flagcxFloat32;
@@ -44,7 +45,7 @@ uniRunnerDagRuntimeBindings bindings() {
   result.outputBytes = 64 * 64 * sizeof(float);
   return result;
 }
-}
+} // namespace
 
 TEST(UniRunnerDsl, GemmRoundTripKeepsOnlyStructuralFields) {
   auto dag = gemmTemplate();
@@ -61,7 +62,8 @@ TEST(UniRunnerDsl, GemmRoundTripKeepsOnlyStructuralFields) {
   ASSERT_EQ(compileUniRunnerDagTemplate(restored, &compiled), flagcxSuccess);
   EXPECT_TRUE(compiled.hasGemm);
   EXPECT_EQ(compiled.numRedNodes, 1);
-  EXPECT_EQ(validateUniRunnerDagTemplateBindings(restored, bindings()), flagcxSuccess);
+  EXPECT_EQ(validateUniRunnerDagTemplateBindings(restored, bindings()),
+            flagcxSuccess);
 }
 
 TEST(UniRunnerDsl, RejectsInvalidGemmShapeAndRuntimePayload) {
@@ -103,14 +105,18 @@ TEST(UniRunnerDsl, FusedHashCoversShapeAndPipeline) {
   config.numKSlices = 1;
   config.groupSize = 8;
   config.pipelineVersion = 2;
-  const auto baseline = getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoAllGatherGemm, config);
+  const auto baseline =
+      getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoAllGatherGemm, config);
   config.matrixK++;
-  EXPECT_NE(baseline, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoAllGatherGemm, config));
+  EXPECT_NE(baseline, getUniRunnerDagAlgorithmHash(
+                          uniRunnerDagAlgoAllGatherGemm, config));
   config.matrixK--;
   config.numSlices++;
-  EXPECT_NE(baseline, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoAllGatherGemm, config));
+  EXPECT_NE(baseline, getUniRunnerDagAlgorithmHash(
+                          uniRunnerDagAlgoAllGatherGemm, config));
   config.numSlices--;
-  EXPECT_NE(baseline, getUniRunnerDagAlgorithmHash(uniRunnerDagAlgoGemmReduceScatter, config));
+  EXPECT_NE(baseline, getUniRunnerDagAlgorithmHash(
+                          uniRunnerDagAlgoGemmReduceScatter, config));
 }
 
 TEST(UniRunnerDsl, FusedKeyMatchesPublicApiBindingContract) {
@@ -127,21 +133,26 @@ TEST(UniRunnerDsl, FusedKeyMatchesPublicApiBindingContract) {
   ranges.outputBytes *= 2;
   ranges.scratchBytes = 128 * 32 * sizeof(float);
   EXPECT_EQ(validateUniRunnerFusedDagKey(dag.key, uniRunnerDagAlgoAllGatherGemm,
-      config, ranges), flagcxSuccess);
+                                         config, ranges),
+            flagcxSuccess);
   auto previousConfig = config;
   previousConfig.pipelineVersion = 1;
   auto previousKey = dag.key;
   previousKey.algoHash = getUniRunnerDagAlgorithmHash(
       uniRunnerDagAlgoAllGatherGemm, previousConfig);
-  EXPECT_NE(validateUniRunnerFusedDagKey(previousKey, uniRunnerDagAlgoAllGatherGemm,
-      previousConfig, ranges), flagcxSuccess);
+  EXPECT_NE(validateUniRunnerFusedDagKey(previousKey,
+                                         uniRunnerDagAlgoAllGatherGemm,
+                                         previousConfig, ranges),
+            flagcxSuccess);
   dag.key.redOp = flagcxSum;
   EXPECT_NE(validateUniRunnerFusedDagKey(dag.key, uniRunnerDagAlgoAllGatherGemm,
-      config, ranges), flagcxSuccess);
+                                         config, ranges),
+            flagcxSuccess);
   dag.key.redOp = flagcxRedNoOp;
   dag.key.count--;
   EXPECT_NE(validateUniRunnerFusedDagKey(dag.key, uniRunnerDagAlgoAllGatherGemm,
-      config, ranges), flagcxSuccess);
+                                         config, ranges),
+            flagcxSuccess);
 }
 
 TEST(UniRunnerDsl, LogicalRedWorkerPolicyPreservesSingleWorkerMode) {
@@ -149,14 +160,18 @@ TEST(UniRunnerDsl, LogicalRedWorkerPolicyPreservesSingleWorkerMode) {
   state.uniRunnerMaxBlocks = 32;
   state.uniRunnerRedSliceSize = 1024 * 1024;
   uint32_t workers = 0;
-  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 16 * 1024 * 1024, &workers), flagcxSuccess);
+  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 16 * 1024 * 1024, &workers),
+            flagcxSuccess);
   EXPECT_EQ(workers, 1);
   state.redSliceWorkersEnabled = true;
-  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 16 * 1024 * 1024, &workers), flagcxSuccess);
+  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 16 * 1024 * 1024, &workers),
+            flagcxSuccess);
   EXPECT_EQ(workers, 16);
-  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 64 * 1024 * 1024, &workers), flagcxSuccess);
+  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 64 * 1024 * 1024, &workers),
+            flagcxSuccess);
   EXPECT_EQ(workers, 32);
   state.uniRunnerNRedSlices = 4;
-  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 16 * 1024 * 1024, &workers), flagcxSuccess);
+  ASSERT_EQ(resolveUniRunnerRedWorkerCount(&state, 16 * 1024 * 1024, &workers),
+            flagcxSuccess);
   EXPECT_EQ(workers, 4);
 }

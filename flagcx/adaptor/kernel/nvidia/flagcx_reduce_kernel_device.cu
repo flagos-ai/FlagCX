@@ -1,7 +1,10 @@
 #include "flagcx.h"
 #include "flagcx_kernel.h"
+#include "flagcx_kernel_internal.h"
 #include "flagcx_basic_gemm_device.cuh"
 #include "device_api/flagcx_device.h"
+#include "debug.h"
+#include "device.h"
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
 #include <cuda_bf16.h>
