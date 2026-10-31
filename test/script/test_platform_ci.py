@@ -933,12 +933,20 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
-        self.assertIn('nvidia|metax|ppu)', symmem_runner)
-        self.assertIn('nvidia|du|metax|ppu)', symmem_runner)
+        for platform, adaptor in (
+            ("cuda", "nvidia"),
+            ("hygon", "du"),
+            ("ppu", "ppu"),
+            ("metax", "metax"),
+        ):
+            set_env = (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            self.assertIn(f"export FLAGCX_ADAPTOR={adaptor}", set_env)
+        self.assertNotIn('run_symmem_case.sh', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_PROVIDER_VMM=1', symmem_runner)
         self.assertIn('FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0', symmem_runner)
-        self.assertIn('"${vmm_provider_env[@]}"', symmem_runner)
         self.assertIn('DuMultiSegmentDisabledPreservesSingleVmm', (
             REPO_ROOT / 'test/unittest/symmem/coll_sym_register.cpp'
         ).read_text())

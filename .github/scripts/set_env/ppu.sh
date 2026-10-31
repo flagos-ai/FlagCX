@@ -6,6 +6,8 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
+export FLAGCX_ADAPTOR=ppu
+
 export PATH="/usr/local/PPU_SDK/bin:${PATH}"
 export LD_LIBRARY_PATH="/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 FLAGCX_CI_PPU_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
