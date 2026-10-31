@@ -1642,6 +1642,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertEqual(
             runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
         )
+        self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
+        cuda_extended = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
+        ).read_text()
+        self.assertIn("UniRunnerDagAlgorithmsRejectOuterGroup", cuda_extended)
+        self.assertIn("FLAGCX_UNIRUNNER_ALGO=8", cuda_extended)
         self.assertIn('"${FLAGCX_CI_ENABLE_PXN:-1}" == "1"', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)

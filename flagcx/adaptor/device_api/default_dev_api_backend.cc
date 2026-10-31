@@ -10,6 +10,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "alloc.h"
 #include "bootstrap.h"
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
@@ -1124,6 +1125,49 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
 // DevMem Create
 // ==========================================================================
 
+struct uniRunnerIpcReuseChoice {
+  int canReuse;
+  int canBuild;
+};
+
+static flagcxResult_t agreeUniRunnerIpcReuse(flagcxComm_t comm,
+                                             bool localCanReuse,
+                                             bool localCanBuild,
+                                             bool *allCanReuse,
+                                             bool *allCanBuild) {
+  if (comm == nullptr || comm->bootstrap == nullptr || allCanReuse == nullptr ||
+      allCanBuild == nullptr || comm->nranks <= 0 || comm->rank < 0 ||
+      comm->rank >= comm->nranks)
+    return flagcxInvalidArgument;
+  *allCanReuse = false;
+  *allCanBuild = false;
+  uniRunnerIpcReuseChoice *choices = nullptr;
+  flagcxResult_t allocationResult =
+      flagcxCalloc(&choices, static_cast<size_t>(comm->nranks));
+  flagcxResult_t commonPrepare = flagcxSuccess;
+  flagcxResult_t result =
+      flagcxConvergeBootstrapStatus(comm, allocationResult, &commonPrepare);
+  if (result != flagcxSuccess || commonPrepare != flagcxSuccess) {
+    free(choices);
+    return result != flagcxSuccess ? result : commonPrepare;
+  }
+  choices[comm->rank] = {localCanReuse ? 1 : 0, localCanBuild ? 1 : 0};
+  result = bootstrapCollAllGather(comm->bootstrap, choices,
+                                  sizeof(uniRunnerIpcReuseChoice));
+  if (result == flagcxSuccess) {
+    *allCanReuse = true;
+    *allCanBuild = true;
+    for (int rank = 0; rank < comm->nranks; ++rank) {
+      if (choices[rank].canReuse == 0)
+        *allCanReuse = false;
+      if (choices[rank].canBuild == 0)
+        *allCanBuild = false;
+    }
+  }
+  free(choices);
+  return result;
+}
+
 static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t devMem) {
@@ -1181,11 +1225,61 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
       devMem->winHandle = (void *)win;
     }
-    // ---- Priority 4 & 5: No window — IPC ----
+    // ---- Priority 4 & 5: No window — uniRunner IPC Ring AR ----
+    else if (win == nullptr && devMem->uniRunnerIpc != nullptr) {
+      int existingIdx = -1;
+      uint64_t newestGeneration = 0;
+      const bool localCanBuild = !flagcxParamDeviceOneSidedForceNet();
+      if (localCanBuild) {
+        for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; ++i) {
+          const struct flagcxIpcTableEntry &entry = comm->ipcTable[i];
+          if (entry.inUse && entry.basePtr == buff && entry.size >= size &&
+              entry.hostPeerPtrs != nullptr && entry.devPeerPtrs != nullptr &&
+              entry.refCount > 0 &&
+              entry.refCount < std::numeric_limits<size_t>::max() &&
+              entry.bindingGeneration > newestGeneration) {
+            existingIdx = i;
+            newestGeneration = entry.bindingGeneration;
+          }
+        }
+      }
+      bool allCanReuse = false;
+      bool allCanBuild = false;
+      FLAGCXCHECK(agreeUniRunnerIpcReuse(comm, existingIdx >= 0, localCanBuild,
+                                         &allCanReuse, &allCanBuild));
+      if (allCanReuse) {
+        struct flagcxIpcTableEntry &entry = comm->ipcTable[existingIdx];
+        ++entry.refCount;
+        devMem->ipcIndex = existingIdx;
+      } else if (allCanBuild) {
+        int idx = buildIpcPeerPointers(comm, buff, size);
+        if (idx >= 0) {
+          struct flagcxIpcTableEntry &entry = comm->ipcTable[idx];
+          entry.size = size;
+          entry.refCount = 1;
+          entry.bindingGeneration = ++comm->ipcTableGeneration;
+          if (entry.bindingGeneration == 0)
+            entry.bindingGeneration = ++comm->ipcTableGeneration;
+          devMem->ipcIndex = idx;
+        } else {
+          WARN("flagcxDevMemCreate: uniRunner IPC peer setup failed");
+        }
+      }
+      if (devMem->ipcIndex >= 0) {
+        const struct flagcxIpcTableEntry &entry =
+            comm->ipcTable[devMem->ipcIndex];
+        devMem->uniRunnerIpc->slot = devMem->ipcIndex;
+        devMem->uniRunnerIpc->generation = entry.bindingGeneration;
+        devMem->uniRunnerIpc->boundSize = entry.size;
+        devMem->uniRunnerIpc->ownsTableReference = true;
+      }
+    }
+    // ---- Priority 4 & 5: No window — ordinary Device API IPC ----
     else if (win == nullptr && !flagcxParamDeviceOneSidedForceNet()) {
       int existingIdx = -1;
       for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
-        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
+        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff &&
+            comm->ipcTable[i].bindingGeneration == 0) {
           existingIdx = i;
           break;
         }
@@ -1261,6 +1355,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                ? (void *)comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                : nullptr);
       delete kWin;
+      devMem->window = nullptr;
       return flagcxInvalidUsage;
     }
 
@@ -1332,14 +1427,15 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
 static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
   // Mark IPC table entry as no longer in use
-  if (comm != nullptr && devMem->ipcIndex >= 0 &&
-      devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
+  if (comm != nullptr && devMem->uniRunnerIpc == nullptr &&
+      devMem->ipcIndex >= 0 && devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devMem->ipcIndex].inUse = false;
   }
 
   // Free window allocation if present
   if (devMem->window != nullptr) {
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);
+    devMem->window = nullptr;
   }
 
   // The outer DevMem lifecycle defers cached device state and segmented peer

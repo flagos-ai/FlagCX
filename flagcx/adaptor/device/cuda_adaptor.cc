@@ -490,7 +490,11 @@ flagcxResult_t cudaAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
   CUstream cuStream = (CUstream)(stream->base);
   CUresult err = cuStreamWriteValue64(cuStream, (CUdeviceptr)addr, value,
                                       CU_STREAM_WRITE_VALUE_DEFAULT);
-  return (err == CUDA_SUCCESS) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  if (err == CUDA_SUCCESS)
+    return flagcxSuccess;
+  if (err == CUDA_ERROR_NOT_SUPPORTED)
+    return flagcxNotSupported;
+  return flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t cudaAdaptorEventCreate(flagcxEvent_t *event,

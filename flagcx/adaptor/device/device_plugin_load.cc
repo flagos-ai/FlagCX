@@ -7,6 +7,7 @@
 #include "alloc.h"
 #include "core.h"
 #include "flagcx_device_adaptor.h"
+#include "launch_kernel.h"
 
 #include <dlfcn.h>
 #include <mutex>
@@ -89,10 +90,24 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
     WARN("ADAPTOR/Plugin: Device adaptor plugin '%s' is missing required "
          "function pointers",
          envValue);
+    free(upgradedPluginAdaptor);
+    upgradedPluginAdaptor = NULL;
     flagcxAdaptorClosePluginLib(devicePluginDlHandle);
     devicePluginDlHandle = NULL;
     return flagcxSuccess;
   }
+
+  // A built-in adaptor may have been used before this valid plugin was
+  // requested. Release its cached signals before switching adaptors.
+  flagcxResult_t poolResult = streamValueBufferPool.clear();
+  if (poolResult != flagcxSuccess) {
+    free(upgradedPluginAdaptor);
+    upgradedPluginAdaptor = NULL;
+    flagcxAdaptorClosePluginLib(devicePluginDlHandle);
+    devicePluginDlHandle = NULL;
+    return poolResult;
+  }
+  flagcxClearStreamValueProbeCache();
 
   defaultDeviceAdaptor = deviceAdaptor;
   deviceAdaptor = plugin;
@@ -103,6 +118,14 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
 }
 
 flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
+  if (devicePluginDlHandle != NULL) {
+    // The pool outlives communicators. Free its host-pinned allocations while
+    // the plugin that allocated them is still installed and loaded.
+    flagcxResult_t result = streamValueBufferPool.clear();
+    if (result != flagcxSuccess)
+      return result;
+    flagcxClearStreamValueProbeCache();
+  }
   if (defaultDeviceAdaptor != NULL) {
     deviceAdaptor = defaultDeviceAdaptor;
     defaultDeviceAdaptor = NULL;
@@ -119,7 +142,9 @@ flagcxResult_t flagcxDeviceAdaptorPluginUnload() {
 
 flagcxResult_t flagcxDeviceAdaptorPluginInit() {
   std::lock_guard<std::mutex> lock(devicePluginMutex);
-  flagcxDeviceAdaptorPluginLoad();
+  flagcxResult_t result = flagcxDeviceAdaptorPluginLoad();
+  if (result != flagcxSuccess)
+    return result;
   if (devicePluginDlHandle != NULL) {
     devicePluginRefCount++;
   }
@@ -128,9 +153,15 @@ flagcxResult_t flagcxDeviceAdaptorPluginInit() {
 
 flagcxResult_t flagcxDeviceAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(devicePluginMutex);
-  if (devicePluginRefCount > 0 && --devicePluginRefCount == 0) {
+  if (devicePluginRefCount == 1) {
     INFO(FLAGCX_INIT, "Unloading device adaptor plugin");
-    flagcxDeviceAdaptorPluginUnload();
+    // The last communicator releases its reference even when pool cleanup
+    // fails. In that case the loader retains the live plugin handle and a
+    // future init/finalize can retry unloading without a phantom reference.
+    devicePluginRefCount = 0;
+    return flagcxDeviceAdaptorPluginUnload();
+  } else if (devicePluginRefCount > 1) {
+    --devicePluginRefCount;
   }
   return flagcxSuccess;
 }

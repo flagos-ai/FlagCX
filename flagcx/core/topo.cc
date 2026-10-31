@@ -1541,6 +1541,20 @@ flagcxGetInterServerTopo(struct flagcxHeteroComm *comm,
   *interServerTopo = new flagcxInterServerTopo(); // remember to delete this
                                                   // when destroying comm
   flagcxInterServerTopo *interServer = *interServerTopo;
+  // A communicator whose ranks are all local has exactly one server. Avoid
+  // serializing and all-gathering the (large) flat topology in that case: it
+  // is redundant and can block communicator initialization on some hosts.
+  // Keep a one-entry container so existing topology lookup/free paths retain
+  // the same invariants as the multi-server path.
+  if (comm->localRanks == comm->nRanks) {
+    topoServer->serverId = 0;
+    topoServer->nHosts = 1;
+    interServer->numServers = 1;
+    FLAGCXCHECK(flagcxCalloc(&interServer->servers, 1));
+    FLAGCXCHECK(fillNetToServerMap(interServer, topoServer));
+    return flagcxSuccess;
+  }
+
   flatTopoServer *flatServerData;
   FLAGCXCHECK(flagcxCalloc(&flatServerData, nRanks));
   // we need to flatten topoServer first to remove all pointer types in the

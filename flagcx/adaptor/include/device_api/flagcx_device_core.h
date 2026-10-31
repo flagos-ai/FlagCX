@@ -148,27 +148,31 @@ struct flagcxDevComm {
 struct flagcxDevMem {
   typename DeviceAPI::Window _winBase;
   FLAGCX_DEVICE_GLOBAL_PTR void *_rawPtr;
+  void **_ipcPeerPtrs;
 
-  FLAGCX_HOST_DEVICE_INLINE flagcxDevMem() : _winBase(), _rawPtr(nullptr) {}
+  FLAGCX_HOST_DEVICE_INLINE flagcxDevMem()
+      : _winBase(), _rawPtr(nullptr), _ipcPeerPtrs(nullptr) {}
 
 // Host-side internal constructor — see flagcxDevComm for why it is excluded
 // from the xpu3 device pass.
 #if !defined(__clang_llvm_bitcode_lib__) &&                                    \
     (!defined(__xpu__) || defined(__xpu_on_host__))
   FLAGCX_HOST_DEVICE_INLINE flagcxDevMem(const flagcxDevMemInternal &di)
-      : _rawPtr(di.rawPtr) {
+      : _rawPtr(di.rawPtr), _ipcPeerPtrs(di.ipcDevPeerPtrs) {
     if (di.window)
       _winBase = *(typename DeviceAPI::Window *)di.window;
   }
 #endif
 
   FLAGCX_HOST_DEVICE_INLINE bool hasWindow() const {
-    return _winBase.hasAccess();
+    return _winBase.hasAccess() || _ipcPeerPtrs != nullptr;
   }
   FLAGCX_HOST_DEVICE_INLINE FLAGCX_DEVICE_GLOBAL_PTR void *getRawPtr() const {
     return _rawPtr;
   }
   FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
+    if (_ipcPeerPtrs != nullptr)
+      return _ipcPeerPtrs;
     return _winBase.getDevPeerPtrs();
   }
   FLAGCX_HOST_DEVICE_INLINE int getMrIndex() const {
@@ -623,6 +627,9 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam team,
                      int peer) {
+  if (mem._ipcPeerPtrs != nullptr)
+    return static_cast<void *>(static_cast<char *>(mem._ipcPeerPtrs[peer]) +
+                               offset);
   return mem._winBase.getPeerPointer(offset, team._teamBase, peer);
 }
 
@@ -636,6 +643,8 @@ flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset,
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
+  if (mem._ipcPeerPtrs != nullptr || !mem._winBase.hasAccess())
+    return static_cast<void *>(static_cast<char *>(mem._rawPtr) + offset);
   return mem._winBase.getLocalPointer(offset);
 }
 
@@ -651,6 +660,9 @@ flagcxGetMulticastPointer(const flagcxDevMem &mem, size_t offset,
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer) {
   // Without team, treat as intra-node access
+  if (mem._ipcPeerPtrs != nullptr)
+    return static_cast<void *>(static_cast<char *>(mem._ipcPeerPtrs[peer]) +
+                               offset);
   return mem._winBase.getIntraPointer(offset, peer);
 }
 
@@ -664,6 +676,9 @@ flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset, int peer,
 // Intra-node rank pointer.
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetIntraPointer(const flagcxDevMem &mem, size_t offset, int peer) {
+  if (mem._ipcPeerPtrs != nullptr)
+    return static_cast<void *>(static_cast<char *>(mem._ipcPeerPtrs[peer]) +
+                               offset);
   return mem._winBase.getIntraPointer(offset, peer);
 }
 

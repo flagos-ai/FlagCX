@@ -6,46 +6,52 @@
 #include <getopt.h>
 #include <libgen.h>
 
-// Datatype tables
-const flagcxDataType_t test_types[] = {
-    flagcxInt8,   flagcxUint8,   flagcxInt32,   flagcxUint32,  flagcxInt64,
-    flagcxUint64, flagcxFloat16, flagcxFloat32, flagcxFloat64, flagcxBfloat16};
-const char *test_typenames[] = {"int8",   "uint8",   "int32", "uint32",
-                                "int64",  "uint64",  "half",  "float",
-                                "double", "bfloat16"};
-int test_typenum = 10;
-
-// Reduction op tables
-// Note: flagcxAvg is excluded from the default "all" sweep (test_opnum=4)
-// because it is not supported by all adaptors (MPI, Gloo). Users can still
-// explicitly select it with --op avg on supported backends.
-const flagcxRedOp_t test_ops[] = {flagcxSum, flagcxProd, flagcxMax, flagcxMin,
-                                  flagcxAvg};
-const char *test_opnames[] = {"sum", "prod", "max", "min", "avg"};
-int test_opnum = 4; // only sweep sum/prod/max/min in "all" mode
-
-int flagcxStringToType(const char *str) {
-  for (int t = 0; t < test_typenum; t++) {
-    if (strcmp(str, test_typenames[t]) == 0)
-      return t;
+static bool parsePerfDataType(const char *value, flagcxDataType_t *datatype) {
+  if (std::strcmp(value, "int8") == 0 || std::strcmp(value, "char") == 0) {
+    *datatype = flagcxInt8;
+  } else if (std::strcmp(value, "uint8") == 0) {
+    *datatype = flagcxUint8;
+  } else if (std::strcmp(value, "int32") == 0 ||
+             std::strcmp(value, "int") == 0) {
+    *datatype = flagcxInt32;
+  } else if (std::strcmp(value, "uint32") == 0) {
+    *datatype = flagcxUint32;
+  } else if (std::strcmp(value, "int64") == 0) {
+    *datatype = flagcxInt64;
+  } else if (std::strcmp(value, "uint64") == 0) {
+    *datatype = flagcxUint64;
+  } else if (std::strcmp(value, "float16") == 0 ||
+             std::strcmp(value, "half") == 0) {
+    *datatype = flagcxFloat16;
+  } else if (std::strcmp(value, "float32") == 0 ||
+             std::strcmp(value, "float") == 0) {
+    *datatype = flagcxFloat32;
+  } else if (std::strcmp(value, "float64") == 0 ||
+             std::strcmp(value, "double") == 0) {
+    *datatype = flagcxFloat64;
+  } else if (std::strcmp(value, "bfloat16") == 0) {
+    *datatype = flagcxBfloat16;
+  } else {
+    return false;
   }
-  if (strcmp(str, "all") == 0)
-    return -1;
-  printf("invalid datatype '%s', defaulting to float\n", str);
-  return flagcxFloat;
+  return true;
 }
 
-int flagcxStringToOp(const char *str) {
-  // Search all ops including avg (which is beyond test_opnum)
-  static const int totalOps = sizeof(test_ops) / sizeof(test_ops[0]);
-  for (int o = 0; o < totalOps; o++) {
-    if (strcmp(str, test_opnames[o]) == 0)
-      return o;
+static bool parsePerfRedOp(const char *value, flagcxRedOp_t *redOp) {
+  if (std::strcmp(value, "sum") == 0) {
+    *redOp = flagcxSum;
+  } else if (std::strcmp(value, "prod") == 0) {
+    *redOp = flagcxProd;
+  } else if (std::strcmp(value, "max") == 0) {
+    *redOp = flagcxMax;
+  } else if (std::strcmp(value, "min") == 0) {
+    *redOp = flagcxMin;
+  } else if (std::strcmp(value, "avg") == 0) {
+    *redOp = flagcxAvg;
+  } else {
+    return false;
   }
-  if (strcmp(str, "all") == 0)
-    return -1;
-  printf("invalid op '%s', defaulting to sum\n", str);
-  return flagcxSum;
+  return true;
 }
 
 void initMpiEnv(int argc, char **argv, int &worldRank, int &worldSize,
@@ -130,8 +136,10 @@ parser::parser(int argc, char **argv) {
   root = -1;
   splitMask = 0;
   localRegister = 0;
-  datatype = flagcxFloat;
-  op = flagcxSum;
+  datatype = flagcxFloat32;
+  redOp = flagcxSum;
+  sweepDataTypes = false;
+  sweepRedOps = false;
 
   double parsedValue;
   int longIndex;
@@ -222,11 +230,27 @@ parser::parser(int argc, char **argv) {
           exit(1);
         }
         break;
-      case 'd':
-        datatype = flagcxStringToType(optarg);
-        break;
       case 'o':
-        op = flagcxStringToOp(optarg);
+        if (std::strcmp(optarg, "all") == 0) {
+          sweepRedOps = true;
+          break;
+        }
+        if (!parsePerfRedOp(optarg, &redOp)) {
+          fprintf(stderr, "Invalid reduce op: %s\n", optarg);
+          exit(1);
+        }
+        sweepRedOps = false;
+        break;
+      case 'd':
+        if (std::strcmp(optarg, "all") == 0) {
+          sweepDataTypes = true;
+          break;
+        }
+        if (!parsePerfDataType(optarg, &datatype)) {
+          fprintf(stderr, "Invalid datatype: %s\n", optarg);
+          exit(1);
+        }
+        sweepDataTypes = false;
         break;
       case 'h':
       default:
@@ -242,12 +266,13 @@ parser::parser(int argc, char **argv) {
                "[-r <root>] \n\t"
                "[-s <splitmask OCT/DEC/HEX>] \n\t"
                "[-R <localregister 0/1/2>] \n\t"
-               "[-d <datatype/all>] \n\t"
-               "[-o <op/all>] \n\t"
+               "[-o <sum/prod/max/min/avg/all>] \n\t"
+               "[-d <int8/uint8/int32/uint32/int64/uint64/float16/float32/"
+               "float64/bfloat16/all>] \n\t"
                "[-h\n",
                basename(argv[0]));
         printf("Use default values with -b 1M -e 1G -f 2 -w 5 -n 20 -p 0 -r 0 "
-               "-s 0 -R 0 -d float -o sum\n");
+               "-s 0 -R 0 -o sum -d float32\n");
         break;
     }
   }

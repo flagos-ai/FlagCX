@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "alloc.h"
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
 #include "device_api/flagcx_device.h"
@@ -242,6 +243,8 @@ int deviceMemsetCallCount = 0;
 int failDeviceMallocCall = -1;
 int failDeviceMemsetCall = -1;
 int gdrFreeCallCount = 0;
+int deviceFreeCallCount = 0;
+int failDeviceFreeCall = -1;
 
 enum class CleanupEventKind { Deregister, BufferFree };
 
@@ -261,6 +264,14 @@ flagcxResult_t recordDeviceFree(void *ptr, flagcxMemType_t, flagcxStream_t) {
   deviceFreedPtrs.push_back(ptr);
   cleanupEvents.push_back({CleanupEventKind::BufferFree, ptr});
   return flagcxSuccess;
+}
+
+flagcxResult_t failDeviceFreeAtCall(void *ptr, flagcxMemType_t type,
+                                    flagcxStream_t stream) {
+  deviceFreeCallCount++;
+  if (deviceFreeCallCount == failDeviceFreeCall)
+    return flagcxRemoteError;
+  return recordDeviceFree(ptr, type, stream);
 }
 
 flagcxResult_t recordGdrFree(void *ptr, void *) {
@@ -412,6 +423,8 @@ protected:
     failDeviceMallocCall = -1;
     failDeviceMemsetCall = -1;
     gdrFreeCallCount = 0;
+    deviceFreeCallCount = 0;
+    failDeviceFreeCall = -1;
     savedDefaultDevCommDestroy = nullptr;
     observedDestroyCalls = 0;
     handleClearedBeforeDestroy = false;
@@ -1135,6 +1148,43 @@ TEST_F(DefaultDevCommCleanupTest, DeferredDevicePointersHaveNoFixedLimit) {
   EXPECT_EQ(freed.size(), allocatedPtrs.size());
   EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
   EXPECT_EQ(deviceFreedPtrs.size(), allocatedPtrs.size());
+}
+
+TEST_F(DefaultDevCommCleanupTest, FailedDeferredFreeRetainsPointerForRetry) {
+  flagcxComm comm = {};
+  for (int i = 0; i < FLAGCX_MAX_DEFERRED_FREES + 1; ++i) {
+    void *ptr = nullptr;
+    ASSERT_EQ(allocateTestBuffer(&ptr, 8), flagcxSuccess);
+    ASSERT_EQ(flagcxCommDeferFree(&comm, ptr, flagcxMemDevice), flagcxSuccess);
+  }
+  testDeviceAdaptor.deviceFree = failDeviceFreeAtCall;
+  failDeviceFreeCall = FLAGCX_MAX_DEFERRED_FREES + 1;
+  EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxRemoteError);
+  ASSERT_NE(comm.deferredFreeOverflowHead, nullptr);
+  EXPECT_EQ(comm.deferredFreeOverflowHead->ptr, allocatedPtrs.back());
+  EXPECT_EQ(deviceFreedPtrs.size(), FLAGCX_MAX_DEFERRED_FREES);
+
+  EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.deferredFreeOverflowHead, nullptr);
+  EXPECT_EQ(deviceFreedPtrs.size(), allocatedPtrs.size());
+}
+
+TEST_F(DefaultDevCommCleanupTest, FailedDeferredOwnerFreeRetainsOwner) {
+  flagcxComm comm = {};
+  flagcxDevMem_t owner = nullptr;
+  ASSERT_EQ(flagcxCalloc(&owner, 1), flagcxSuccess);
+  pthread_mutex_init(&owner->cachedPtrMutex, nullptr);
+  ASSERT_EQ(allocateTestBuffer(&owner->cachedDevicePtr, 8), flagcxSuccess);
+  comm.deferredDevMems = owner;
+  testDeviceAdaptor.deviceFree = failDeviceFreeAtCall;
+  failDeviceFreeCall = 1;
+  EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxRemoteError);
+  EXPECT_EQ(comm.deferredDevMems, owner);
+  EXPECT_EQ(owner->cachedDevicePtr, allocatedPtrs.front());
+
+  EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.deferredDevMems, nullptr);
+  EXPECT_EQ(deviceFreedPtrs.size(), 1u);
 }
 
 class TrackedAllocationGuard {
