@@ -24,8 +24,10 @@ case "${FLAGCX_ADAPTOR:-}" in
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
     ;;
+  "")
+    ;;
   *)
-    echo "FLAGCX_ADAPTOR must be nvidia, du, ppu, or metax for SymMem CI" >&2
+    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, or metax" >&2
     exit 2
     ;;
 esac
@@ -91,10 +93,12 @@ if ((run_multi_segment)); then
   fi
 fi
 
-echo ""
-echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
-run_required_case SymMemTest.UntrackedVmmMappingIsRejected \
-  -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1
+if [[ -n "${FLAGCX_ADAPTOR:-}" ]]; then
+  echo ""
+  echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
+  run_required_case SymMemTest.UntrackedVmmMappingIsRejected \
+    -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1
+fi
 
 if [[ "${FLAGCX_CI_REQUIRE_MULTICAST:-0}" == "1" ]]; then
   case "${FLAGCX_ADAPTOR:-}" in
