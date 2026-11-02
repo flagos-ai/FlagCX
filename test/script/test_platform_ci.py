@@ -785,10 +785,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("device_api_host|topo|p2p", ascend_env)
         self.assertTrue(
-            (REPO_ROOT / "test/unittest/device_api/test_deviceptr_args.cpp").exists()
+            (REPO_ROOT / "test/unittest/kernel/test_deviceptr_args.cpp").exists()
         )
         self.assertTrue(
-            (REPO_ROOT / "test/unittest/device_api/kernel/Makefile").exists()
+            (REPO_ROOT / "test/unittest/kernel/Makefile").exists()
         )
         self.assertFalse((REPO_ROOT / "test/unittest/device").exists())
         self.assertIn("flagcx_ci_run_suite_override", ascend_env)

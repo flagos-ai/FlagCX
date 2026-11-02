@@ -5,7 +5,52 @@ available local host reports `Ascend910`; it is not a substitute for the PR's
 `flagcicd-910c` runner. CI setup fixes below improve isolation and diagnostics;
 they do not claim unsupported backend behavior as passing coverage. The DCMI
 PCI callback experiment and the global CUDA provider override were withdrawn
-from this CI PR after review.
+from this CI PR after review. Subsequent upstream main commit `332fbbd` added
+the CUDA provider marker independently; the current branch preserves that
+upstream setting.
+
+## PR head d10e6ea: CI failures observed on 2026-11-02
+
+- [Common checks job](https://github.com/flagos-ai/FlagCX/actions/runs/41381607840/job/125079498972):
+  `test_automatic_hardware_ci_covers_all_platforms_and_suites` failed at
+  `test_platform_ci.py:787`. The assertions still referenced
+  `test/unittest/device_api/test_deviceptr_args.cpp` and
+  `test/unittest/device_api/kernel/Makefile` after the main merge moved the
+  kernel suite. They now check `test/unittest/kernel/`.
+- [Ascend perf job](https://github.com/flagos-ai/FlagCX/actions/runs/41381607840/job/125079558756):
+  all ten homogeneous operations completed before heterogeneous `alltoall`
+  failed twice with exit 139. The last initialization messages included:
+
+  ```text
+  FLAGCX INFO Using network IB
+  FLAGCX INFO getting busId for cudaDev 0
+  mpirun noticed that process rank 0 ... exited on signal 11 (Segmentation fault).
+  Ascend heterogeneous perf: alltoall attempt 2 failed with exit=139
+  ```
+
+  The source path is `flagcxCommInitRankFunc()` in `flagcx/core/init.cc` -> `getBusId()`
+  in `flagcx/service/utils.cc` -> `deviceAdaptor->getDevicePciBusId`.
+  CANN currently leaves that callback null. This is a source-based explanation
+  of a definite null-call hazard consistent with the log, not a captured GDB
+  stack for this perf run.
+- The new guards return `flagcxNotSupported` with a diagnostic when the PCI
+  lookup callback is missing. Topology discovery likewise checks the reverse
+  lookup callback and propagates lookup errors. These checks remove those
+  unsafe calls; they do **not** implement PCI identity, repair NIC routing,
+  or make heterogeneous perf supported. No synthetic BDF or DCMI dependency
+  was introduced. The 910C perf job must be rerun after the patch.
+- Local validation rebuilt the CANN library and core test binary in an isolated
+  container: all 209 core tests passed, including six added lookup/guard tests.
+  All 96 CI script tests passed with Ruby available in a clean Python
+  environment, and the repository-wide clang-format dry-run passed.
+  This validation does not exercise the 910C hardware perf workload.
+
+On the inspected attempt of run `41381607840`, unit jobs and Torch API jobs
+ended cancelled. Their aggregate validation checks and `ci-complete` therefore
+failed too; those checks are not additional backend failure logs. The
+authorization note below describes an older run only. Passing homogeneous
+perf does not establish MPI unit-suite, GPU MR, IPC, or heterogeneous perf
+coverage.
 
 | Finding | Evidence / current behavior | Required owner and work | CI coverage |
 |---|---|---|---|
@@ -16,7 +61,7 @@ from this CI PR after review.
 | GPU MR and NET registration | Historical adaptor results skipped mandatory GPU MR cases; recorded P2P topology shows no APU-to-NIC path. CANN's absence of CUDA VMM callbacks is a separate limitation. | CANN + RDMA provider owners: validate whether APU allocations can be registered/pinned for the chosen RNIC, provide/import the MR, and support safe deregistration. Do not count host MR or skipped tests as GPU MR support. | Existing GPU coverage gate remains active; NET SymMem tests require `FLAGCX_CI_REQUIRE_NET_MR=1` and explicit IB selection. |
 | SymMem VMM/MR routes | CANN Symmetric VMM callbacks (`cannAdaptorSymPhysAlloc/Free`, flat map/unmap and multicast functions) are stubs returning `flagcxNotSupported`. Local CI can exercise ordinary-allocation IPC and NET/MR separately, but VMM routes are unavailable. | CANN backend owner: implement physical symmetric allocation, cross-rank mapping and teardown, plus network-MR routing for VMM-backed allocations; otherwise keep VMM cases explicitly unsupported. | Ascend override separates unit, IPC, local NET fallback, and ordinary NET/MR tests, records each status, and emits this limitation. VMM is not reported as covered. |
 | RMA visibility | `cannAdaptorStreamWaitValue64` and `cannAdaptorStreamWriteValue64` return `flagcxNotSupported`; the device-consumer visibility kernel is not built for Ascend. | CANN backend owner: implement acquire/release remote-write visibility semantics with correct ordering and flushing, and add an Ascend device-consumer kernel. Then add capability-aware ordinary and supported-MR route tests. | Current CI runs RMA unit, IPC, and network correctness independently and records the visibility gap. It does not claim CUDA parity for visibility. |
-| Perf and Torch API jobs | Ascend jobs are wired in `.github/workflows/test.yml` and `torch-api-test.yml`; job wiring is not evidence the hardware workloads passed. | CI maintainers: authorize the PR run and confirm the 910C runner, image, PyTorch/Torch-NPU, and benchmark topology. | The current `d27fe8d` run was `action_required` with zero jobs. The logged `canghaiX` account had no push permission on upstream `flagos-ai/FlagCX`, so a repository maintainer must approve/enable the run. |
+| Perf and Torch API jobs | Ascend jobs are wired in `.github/workflows/test.yml` and `torch-api-test.yml`. On head `d10e6ea`, homogeneous perf completed ten operations; heterogeneous alltoall crashed during PCI lookup. | Backend/core maintainers: implement the reviewed PCI identity and routing contracts in a follow-up PR. CI maintainers: rerun perf and inspect Torch API results on the latest head. | See the 2026-11-02 job links above. Homogeneous perf success is separate from heterogeneous perf and unit-suite results. |
 
 ## Local Verification
 

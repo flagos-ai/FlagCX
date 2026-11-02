@@ -674,6 +674,11 @@ flagcxResult_t flagcxTopoNetDevFromGuid(struct flagcxTopoServer *server,
 
 flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
                                     struct flagcxXml *xml) {
+  if (deviceAdaptor == nullptr ||
+      deviceAdaptor->getDeviceByPciBusId == nullptr) {
+    WARN("PCI reverse bus-ID lookup is unavailable for topology discovery");
+    return flagcxNotSupported;
+  }
   // create root node if we didn't get topo from xml file
   if (xml->maxIndex == 0) {
     INFO(FLAGCX_INIT, "creating root XML node");
@@ -697,7 +702,7 @@ flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
         continue;
       }
       int devLogicalIdx = 0;
-      deviceAdaptor->getDeviceByPciBusId(&devLogicalIdx, busId);
+      FLAGCXCHECK(deviceAdaptor->getDeviceByPciBusId(&devLogicalIdx, busId));
       FLAGCXCHECK(xmlSetAttrInt(node, "dev", devLogicalIdx));
       FLAGCXCHECK(xmlSetAttrInt(node, "rank", r));
       FLAGCXCHECK(xmlSetAttrInt(node, "gdr", comm->peerInfo[r].gdrSupport));

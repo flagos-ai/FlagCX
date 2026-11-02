@@ -40,6 +40,12 @@ flagcxResult_t busIdToInt64(const char *busId, int64_t *id) {
 
 // Convert a logical cudaDev index to the NVML device minor number
 flagcxResult_t getBusId(int cudaDev, int64_t *busId) {
+  if (busId == nullptr || cudaDev < 0)
+    return flagcxInvalidArgument;
+  if (deviceAdaptor == nullptr || deviceAdaptor->getDevicePciBusId == nullptr) {
+    WARN("PCI bus-ID lookup is unavailable for device %d", cudaDev);
+    return flagcxNotSupported;
+  }
   // On most systems, the PCI bus ID comes back as in the 0000:00:00.0
   // format. Still need to allocate proper space in case PCI domain goes
   // higher.
