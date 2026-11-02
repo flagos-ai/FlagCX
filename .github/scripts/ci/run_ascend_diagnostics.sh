@@ -77,6 +77,16 @@ if [[ "$suite" == symmem ]]; then
       --gtest_filter=SymMemTest.FullMeshRoundFailureConvergesAndRetries || status=$?
 fi
 echo "Ascend $suite diagnostic exit=$status; per-rank backtraces: $FLAGCX_CI_DIAGNOSTIC_DIR"
+# The per-rank traces are the only product of this run, and gdb's own errors
+# (missing ptrace capability, failed attach) land in them too. Echo their tails
+# so a failing diagnostic is readable in the job log instead of only inside the
+# attempts artifact.
+diagnostic_tail=${FLAGCX_CI_DIAGNOSTIC_TAIL:-80}
+for trace in "$FLAGCX_CI_DIAGNOSTIC_DIR"/rank-*.log; do
+  [[ -f "$trace" ]] || continue
+  echo "----- $(basename "$trace") (last $diagnostic_tail lines) -----"
+  tail -n "$diagnostic_tail" "$trace" || true
+done
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   printf '\nAscend %s crash reproduction exit=%s; backtraces: `%s` (see attempts artifact).\n' \
     "$suite" "$status" "$FLAGCX_CI_DIAGNOSTIC_DIR" >> "$GITHUB_STEP_SUMMARY"
