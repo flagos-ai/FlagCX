@@ -73,16 +73,15 @@ UNIT_RPATH := -Wl,-rpath,$(DEVICE_LIB) -Wl,-rpath,$(CCL_LIB)
 endif
 
 # Kernel flag
+ifeq ($(COMPILE_KERNEL),1)
 CXXFLAGS += -DCOMPILE_KERNEL
+endif
 
 # Host-only lifecycle/provenance tests.
 UNIT_SRC := test_dev_comm_cleanup.cpp
 UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
 
-DEVICEPTR_ARGS_SRC := test_deviceptr_args.cpp
-DEVICEPTR_ARGS_OBJ := $(OBJDIR)/test_deviceptr_args.o
-DEVICEPTR_ARGS_TARGET := $(BINDIR)/test_deviceptr_args
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
@@ -100,6 +99,7 @@ IR_TARGETS  := $(BINDIR)/test_device_ir_intra \
                $(BINDIR)/test_device_ir_unified_inter
 API_TARGETS := $(BINDIR)/test_device_api_intra \
                $(BINDIR)/test_device_api_inter
+ALL_DEVICE_TEST_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
 SKIPPED_TARGETS :=
 ifeq ($(KERNEL_PLATFORM), klx)
@@ -120,20 +120,26 @@ endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
-.PHONY: all unit mpi kernel-mpi clean run-unit run-mpi run-mpi-intra run-mpi-inter \
+.PHONY: all unit mpi clean require-compile-kernel run-unit run-mpi run-mpi-intra run-mpi-inter \
         run-mpi-unified-intra run-mpi-unified-inter run
 
-all: unit mpi
+all: require-compile-kernel unit mpi
 ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET) $(DEVICEPTR_ARGS_TARGET)
+unit: $(UNIT_TARGET)
 
-mpi: $(MPI_TARGETS) kernel-mpi
+require-compile-kernel:
+	$(REQUIRE_COMPILE_KERNEL)
 
-kernel-mpi:
-	@$(MAKE) -C kernel mpi
+mpi: require-compile-kernel $(MPI_TARGETS)
+
+$(ALL_DEVICE_TEST_TARGETS) $(DEVICE_API_OBJ) $(DEVICE_IR_OBJ) \
+    $(DLINK_API_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ): | require-compile-kernel
+
+run-mpi run-mpi-intra run-mpi-inter run-mpi-unified-intra \
+    run-mpi-unified-inter: | require-compile-kernel
 
 # Build device kernel objects via dispatcher
 KERNEL_API_TARGETS := device_api.o
@@ -164,20 +170,10 @@ $(UNIT_TARGET): $(UNIT_OBJ)
 	@echo "Linking   $@"
 	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
 
-$(DEVICEPTR_ARGS_OBJ): $(DEVICEPTR_ARGS_SRC)
-	@mkdir -p $(OBJDIR)
-	@echo "Compiling $<"
-	@$(HOST_CXX) $< -o $@ -c $(UNIT_CXXFLAGS) $(UNIT_INCLUDES)
-
-$(DEVICEPTR_ARGS_TARGET): $(DEVICEPTR_ARGS_OBJ)
-	@mkdir -p $(BINDIR)
-	@echo "Linking   $@"
-	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
-
 # HIPCC treats object files as HIP source when a .cpp input is present in the
 # same link invocation. Compile each test entry point first so links receive
 # object files only. This also keeps the host sources out of device linking.
-$(OBJDIR)/test_device_%.o: test_device_%.cpp
+$(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
 	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
@@ -303,4 +299,4 @@ endif
 run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra \
          run-mpi-unified-inter
 
-run: run-unit run-mpi
+run: require-compile-kernel run-unit run-mpi

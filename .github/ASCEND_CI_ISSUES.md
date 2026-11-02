@@ -3,13 +3,15 @@
 Status is based on the PR review and local Ascend 910 container runs. The
 available local host reports `Ascend910`; it is not a substitute for the PR's
 `flagcicd-910c` runner. CI setup fixes below improve isolation and diagnostics;
-they do not claim unsupported backend behavior as passing coverage.
+they do not claim unsupported backend behavior as passing coverage. The DCMI
+PCI callback experiment and the global CUDA provider override were withdrawn
+from this CI PR after review.
 
 | Finding | Evidence / current behavior | Required owner and work | CI coverage |
 |---|---|---|---|
 | HCCL async-error query / Runner | `FlagCXCollTest.AllGather` fails at `coll_allgather.cpp:23`: `synchronizeAndCheckAsyncError()` returns 9 (`flagcxNotSupported`). The query calls `flagcxCommGetAsyncError()`, which dispatches to `hcclAdaptorCommGetAsyncError()`; that callback unconditionally returns `flagcxNotSupported`. Ten isolated default collective cases failed, while `SkewedP2pTeardown` is intentionally skipped in default mode. This is not evidence that `HcclAllGather()` itself returned unsupported. | CANN/HCCL backend owner: implement the async-error query contract or explicitly design a capability-aware interface with the core owner. Do not replace the stub with unconditional success or remove the error check; validate each collective after the query is supported. | `runner` suite; Ascend runner wrapper reports each collective separately. |
-| P2P APU-to-NIC route | Recorded CI/local logs show `Could not find any local path from apu 0/1 to net`; `DevicesReturnsPositive` returns selection error and P2P WRITE has failed. The test helper can explicitly select first visible devices for adaptor/P2P interface loopback checks; that does not establish production P2P proximity or make routed WRITE work. | Topology/CANN plus network backend owners: check DCMI BDF mapping for every logical device against `/sys/class/infiniband/*/device`, container visibility, PCI root-complex topology, and the FlagCX `APU -> CPU -> NIC` path. Do not assume NPU index matches NIC index. If no physical path exists, the platform/transport owner must provide a supported route or define P2P-over-RDMA unsupported. | `adaptor` and `p2p` use explicit first-local test selection for their local interface fixtures; the P2P WRITE integration test stays required and reports route failures. Verify on the 910C runner. |
-| SymMem proxy SIGSEGV; MPI WRITE/RMA need separate confirmation | With a freshly rebuilt library containing the CANN PCI callback, ordinary-allocation NET SymMem exits 139. GDB reproduces `flagcxProxyService()` at `flagcx/core/proxy.cc:1976`, dereferencing `comm->proxyState->stop`; see the trace below. Both two-rank registration and four-rank logical-node NET reproduction hit this line. | Core proxy/communicator lifecycle owner: inspect service-thread shutdown, communicator/proxy ownership and failed-init cleanup. The crash point is confirmed; null/dangling state ownership is not yet proved. Fix the invalid access and rerun SymMem, then separately reproduce MPI WRITE/RMA; do not attribute all historical crashes to this stack. | Failure-only `run_ascend_diagnostics.sh` attempts separate P2P, RMA, or SymMem MPI reproductions; traces are stored with attempt logs. |
+| P2P APU-to-NIC route | Recorded CI/local logs show `Could not find any local path from apu 0/1 to net`; `DevicesReturnsPositive` returns selection error and P2P WRITE has failed. The test helper can explicitly select first visible devices for adaptor/P2P interface loopback checks; that does not establish production P2P proximity or make routed WRITE work. The CANN PCI callbacks are intentionally left unset in this PR because the image does not provide the reviewed AscendCL 9.2 API contract. | Topology/CANN plus network backend owners: implement and validate forward/reverse bus-ID lookup with the target CANN API, then check device-to-NIC mapping, container PCI visibility, root-complex topology, and the FlagCX `APU -> CPU -> NIC` path. Do not assume NPU index matches NIC index. If no physical path exists, define P2P-over-RDMA unsupported. | `adaptor` and `p2p` retain PCI-related tests and diagnostics; unsupported callback tests skip explicitly. The P2P WRITE integration test remains required and must be verified on the 910C runner. |
+| SymMem proxy SIGSEGV; MPI WRITE/RMA need separate confirmation | A historical local run with the then-present DCMI callback exited 139. GDB reproduced `flagcxProxyService()` at `flagcx/core/proxy.cc:1976`, dereferencing `comm->proxyState->stop`; see the trace below. The DCMI callback has now been withdrawn from this CI PR, so the crash must be reproduced again on the reviewed baseline before attributing it to current code. | Core proxy/communicator lifecycle owner: inspect service-thread shutdown, communicator/proxy ownership and failed-init cleanup. The historical crash point is known; its root cause is not. Fix the invalid access if it reproduces, then separately collect MPI WRITE/RMA stacks. | Failure-only `run_ascend_diagnostics.sh` attempts separate P2P, RMA, or SymMem MPI reproductions; traces are stored with attempt logs. |
 | CANN IPC | `cannAdaptorIpcMemHandleCreate/Get/Open/Close/Free` in `flagcx/adaptor/device/cann_adaptor.cc` return `flagcxNotSupported`; the historical result was 0 passed / 16 skipped. | CANN device-backend owner: implement the supported inter-process device-memory export/import lifecycle (or an explicitly supported equivalent), including ownership, error cleanup, and peer accessibility. If the driver has no such primitive, state the limitation and keep those cases unsupported. | IPC-local SymMem/RMA/adaptor invocations report their own status; they cannot provide coverage until the backend implements the contract. |
 | GPU MR and NET registration | Historical adaptor results skipped mandatory GPU MR cases; recorded P2P topology shows no APU-to-NIC path. CANN's absence of CUDA VMM callbacks is a separate limitation. | CANN + RDMA provider owners: validate whether APU allocations can be registered/pinned for the chosen RNIC, provide/import the MR, and support safe deregistration. Do not count host MR or skipped tests as GPU MR support. | Existing GPU coverage gate remains active; NET SymMem tests require `FLAGCX_CI_REQUIRE_NET_MR=1` and explicit IB selection. |
 | SymMem VMM/MR routes | CANN Symmetric VMM callbacks (`cannAdaptorSymPhysAlloc/Free`, flat map/unmap and multicast functions) are stubs returning `flagcxNotSupported`. Local CI can exercise ordinary-allocation IPC and NET/MR separately, but VMM routes are unavailable. | CANN backend owner: implement physical symmetric allocation, cross-rank mapping and teardown, plus network-MR routing for VMM-backed allocations; otherwise keep VMM cases explicitly unsupported. | Ascend override separates unit, IPC, local NET fallback, and ordinary NET/MR tests, records each status, and emits this limitation. VMM is not reported as covered. |
@@ -36,19 +38,19 @@ they do not claim unsupported backend behavior as passing coverage.
   independent phases, so the IPC failure no longer prevents NET diagnostics.
   Shell syntax, formatting and nine targeted CI regression checks passed;
   the full routing regression requires Ruby, which is absent on this host.
-- Full GDB logs are saved locally under
+- Historical full GDB logs are saved locally under
   `/tmp/flagcx-ascend-review-evidence/ascend-symmem-backtrace.NTqYJM/`.
   CI stores the equivalent per-rank files inside the existing attempts artifact.
 - This host identifies its device as Ascend910, not Ascend 910C. Therefore
   local results do not replace the required `flagcicd-910c` CI run.
 
-## Confirmed SymMem Crash (2026-10-30)
+## Historical SymMem Crash (2026-10-30)
 
-Image: `harbor.baai.ac.cn/flagos-dev/flagcx:ascend-dev-fixed-20261028-debug`,
+Image used for the historical reproduction: `harbor.baai.ac.cn/flagos-dev/flagcx:ascend-dev-fixed-20261028-debug`,
 digest `sha256:1e4db1717af5caf241c80ba0d756978a7ba787be7114526b4b1278662c5e89ee`.
-The library was rebuilt with `make -B -j8 USE_ASCEND=1`; its exported symbols
-include `cannAdaptorGetDevicePciBusId`. This trace is from the rebuilt library,
-rather than a stale library without the PCI callback.
+The library was rebuilt with `make -B -j8 USE_ASCEND=1` while the DCMI-backed
+PCI callback experiment was present. The current PR no longer links DCMI or
+registers those callbacks; this stack is retained as historical evidence only.
 
 Reproduce the two-rank case inside the configured Ascend container:
 

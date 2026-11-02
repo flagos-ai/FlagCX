@@ -123,9 +123,15 @@ public:
         guard_(
             at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId))
 #elif USE_DU_ADAPTOR
+  // torch 2.13 (DTK 26.10) hipifies the DU guard to c10::cuda and drops
+  // CUDAStream::hip_stream(); torch 2.9 (DTK 26.04) has neither.
+#if defined(PYTORCH_DTK_VERSION) && PYTORCH_DTK_VERSION >= 261000
+        guard_(at::hip::getStreamFromExternal(*(hipStream_t *)stream, deviceId))
+#else
         guard_(at::hip::getStreamFromExternalMasqueradingAsCUDA(
                    *(hipStream_t *)stream, deviceId)
                    .hip_stream())
+#endif
 #elif USE_KUNLUNXIN_ADAPTOR
         guard_(
             at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId))
@@ -202,9 +208,14 @@ public:
     guard_.reset_stream(
         at::musa::getStreamFromExternal(*(musaStream_t *)stream, deviceId_));
 #elif USE_DU_ADAPTOR
+#if defined(PYTORCH_DTK_VERSION) && PYTORCH_DTK_VERSION >= 261000
+    guard_.reset_stream(
+        at::hip::getStreamFromExternal(*(hipStream_t *)stream, deviceId_));
+#else
     guard_.reset_stream(at::hip::getStreamFromExternalMasqueradingAsCUDA(
                             *(hipStream_t *)stream, deviceId_)
                             .hip_stream());
+#endif
 #elif USE_KUNLUNXIN_ADAPTOR
     guard_.reset_stream(
         at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId_));
@@ -251,7 +262,11 @@ private:
 #elif USE_MUSA_ADAPTOR
   c10::musa::MUSAStreamGuard guard_;
 #elif USE_DU_ADAPTOR
+#if defined(PYTORCH_DTK_VERSION) && PYTORCH_DTK_VERSION >= 261000
+  c10::cuda::CUDAStreamGuard guard_;
+#else
   c10::hip::HIPStreamGuard guard_;
+#endif
 #elif USE_KUNLUNXIN_ADAPTOR
   c10::cuda::CUDAStreamGuard guard_;
 #elif USE_ASCEND_ADAPTOR

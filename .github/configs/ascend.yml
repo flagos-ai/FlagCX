@@ -23,7 +23,6 @@ runner_labels:
 docker_volumes:
   - /usr/local/Ascend/driver:/usr/local/Ascend/driver:ro
   - /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi:ro
-  - /usr/local/dcmi:/usr/local/dcmi:ro
   - /etc/ascend_install.info:/etc/ascend_install.info:ro
   - /sys/class/infiniband:/sys/class/infiniband:ro
   - /sys/bus/pci/devices:/sys/bus/pci/devices:ro

@@ -17,6 +17,7 @@ ifneq ($(EMIT_LLVM_IR), 0)
 # Source (one level up — shared wrapper)
 LLVM_SRC := ../flagcx_device_wrapper_impl.h
 LLVM_COMPAT_IMPL := ../flagcx_device_compat_ir_impl.h
+FLAGCX_ROOT := $(abspath ../../..)
 BUILDDIR ?= $(abspath ../../../build)
 OBJDIR := $(BUILDDIR)/obj/llvm_ir
 LIBDIR := $(BUILDDIR)/lib
@@ -27,7 +28,17 @@ UNOPTIMIZED_BC := $(OBJDIR)/libflagcx_device.bc.unoptimized
 OPTIMIZED_BC   := $(OBJDIR)/libflagcx_device.bc.optimized
 LLVM_IR_FILE   := $(OBJDIR)/libflagcx_device.ll
 FINAL_BC       := $(LIBDIR)/libflagcx_device.bc
-WRAPPER_HEADER := $(INCLUDEDIR)/flagcx_device_wrapper.h
+
+# Export only the headers used by the selected Device API backend.
+ADAPTOR_FLAG ?= -DUSE_NVIDIA_ADAPTOR
+IR_PLATFORM_HEADERS := nvidia_platform_traits.h nvidia_comm_traits.h
+ifneq ($(findstring -DFLAGCX_COMM_TRAITS_CCL,$(ADAPTOR_FLAG)),)
+IR_PLATFORM_HEADERS += nccl_comm_traits.h
+endif
+ifneq ($(findstring -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_FLAG)),)
+IR_PLATFORM_HEADERS += nvshmem_comm_traits.h
+endif
+include ../device_ir_headers.mk
 
 # GPU architecture
 DEVICE_HOME ?= /usr/local/cuda
@@ -54,9 +65,6 @@ OPT      ?= opt
 LLVM_DIS ?= llvm-dis
 LLVM_AS  ?= llvm-as
 
-# FlagCX source root (three levels up from bindings/ir/nvidia/)
-FLAGCX_ROOT := $(abspath ../../..)
-
 # Include paths
 #   -I..  : shared wrapper headers (flagcx_device_wrapper.h, flagcx_device_wrapper_impl.h)
 #   -I.   : platform-specific headers
@@ -76,20 +84,22 @@ CUDA_INCLUDES := \
 CCL_INCLUDES := \
 	-I$(CCL_HOME)/include
 
-# Adaptor flag (determines which CommTraits specialization is active)
-ADAPTOR_FLAG ?= -DUSE_NVIDIA_ADAPTOR
+ifneq ($(findstring -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_FLAG)),)
+SHMEM_HOME ?= /usr/local/nvshmem
+CCL_INCLUDES += -I$(SHMEM_HOME)/include
+endif
 
 # Clang flags for LLVM IR generation
 COMMON_CLANG_FLAGS := \
 	-std=$(BITCODE_CXX_STD) -x cuda \
 	--cuda-path=$(DEVICE_HOME) --cuda-device-only \
 	--cuda-gpu-arch=$(BITCODE_LIB_ARCH) \
-	$(FLAGCX_INCLUDES) $(CUDA_INCLUDES) $(CCL_INCLUDES) \
 	-D__clang_llvm_bitcode_lib__ \
 	-DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) \
 	$(ADAPTOR_FLAG)
 
-CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS)
+CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS) \
+	$(FLAGCX_INCLUDES) $(CUDA_INCLUDES) $(CCL_INCLUDES)
 
 # Optimization passes — use file-based API list to avoid shell quoting issues
 SYMBOLS_FILE := $(abspath ../public_symbols.txt)
@@ -99,20 +109,17 @@ OPT_PASSES := --passes=internalize,inline,globaldce \
 # Intermediate files
 STRIPPED_LL := $(OBJDIR)/libflagcx_device.stripped.ll
 STRIPPED_BC := $(OBJDIR)/libflagcx_device.stripped.bc
+IR_INPUT_BC := $(UNOPTIMIZED_BC)
 
 # ---- Build rules ----
 
 # Default target
 all: llvm_ir
 
-$(WRAPPER_HEADER): ../flagcx_device_wrapper.h
-	@mkdir -p $(INCLUDEDIR)
-	cp -f $< $@
-
 $(UNOPTIMIZED_BC): $(LLVM_SRC) $(LLVM_COMPAT_IMPL)
 	@mkdir -p $(OBJDIR)
 	@echo "Generating unoptimized LLVM bitcode..."
-	$(CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
+	$(CLANG) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
 # Strip @llvm.used/@llvm.compiler.used so internalize can remove internal symbols
 $(STRIPPED_LL): $(UNOPTIMIZED_BC)
@@ -124,7 +131,7 @@ $(STRIPPED_LL): $(UNOPTIMIZED_BC)
 $(STRIPPED_BC): $(STRIPPED_LL)
 	$(LLVM_AS) $< -o $@
 
-$(OPTIMIZED_BC): $(STRIPPED_BC)
+$(OPTIMIZED_BC): $(STRIPPED_BC) $(SYMBOLS_FILE)
 	@echo "Optimizing LLVM bitcode..."
 	$(OPT) $(OPT_PASSES) $< -o $@
 
@@ -157,7 +164,13 @@ check_public_symbols: $(LLVM_IR_FILE)
 	done < $(SYMBOLS_FILE); \
 	test $$missing -eq 0
 
-llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
+check_ir: $(FINAL_BC)
+	$(OPT) --passes=verify $(FINAL_BC) -disable-output
+	@grep -Eq '^target triple = "nvptx64-nvidia-cuda' $(LLVM_IR_FILE) || { \
+		echo "NVIDIA Device IR does not target NVPTX"; exit 1; \
+	}
+
+llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) headers check_public_symbols check_ir
 	@echo "LLVM IR and bitcode generated successfully:"
 	@echo "  C++ Standard:      $(BITCODE_CXX_STD)"
 	@echo "  GPU Architecture:  $(BITCODE_LIB_ARCH)"
@@ -166,7 +179,9 @@ llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
 	@echo "  Optimized:         $(OPTIMIZED_BC)"
 	@echo "  LLVM IR:           $(LLVM_IR_FILE)"
 	@echo "  Final BC:          $(FINAL_BC)"
-	@echo "  Wrapper Header:    $(WRAPPER_HEADER)"
+	@echo "  Public Headers:    $(INCLUDEDIR)"
+
+include ../device_ir_dependencies.mk
 
 else
 llvm_ir:
@@ -176,6 +191,8 @@ endif
 build: llvm_ir
 
 clean:
-	rm -rf $(OBJDIR) $(FINAL_BC) $(WRAPPER_HEADER)
+	rm -rf $(OBJDIR) $(FINAL_BC)
+	rm -f $(INCLUDEDIR)/flagcx_device_wrapper.h \
+		$(addprefix $(INCLUDEDIR)/,$(IR_PLATFORM_HEADERS))
 
-.PHONY: all llvm_ir check_public_symbols build clean
+.PHONY: all llvm_ir check_public_symbols check_ir build clean

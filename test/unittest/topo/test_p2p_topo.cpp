@@ -21,6 +21,12 @@ protected:
     // Initialize device adaptor (sets global deviceAdaptor)
     flagcxDeviceHandleInit(&devHandle);
 
+    if (deviceAdaptor == nullptr ||
+        deviceAdaptor->getDevicePciBusId == nullptr ||
+        deviceAdaptor->getDeviceByPciBusId == nullptr) {
+      GTEST_SKIP() << "P2P topology tests require PCI bus-ID callbacks";
+    }
+
     netAdaptor = &flagcxNetIb;
     ASSERT_EQ(netAdaptor->init(), flagcxSuccess)
         << "IB P2P net adaptor init failed";

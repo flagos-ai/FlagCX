@@ -1,4 +1,4 @@
-include ../../../make.inc
+include ../../make.inc
 
 # Local include directories for test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
@@ -40,26 +40,25 @@ MPI_SRCS   := $(wildcard coll_*.cpp) flagcx_kernel_test.cpp deviceapi_test.cpp m
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/kernel_mpi_tests
 
-.PHONY: all unit mpi clean run-unit run-mpi run device-api-obj
+.PHONY: all clean require-compile-kernel run-unit run-mpi run device-api-obj
 
 # Only build targets that have sources
 ALL_TARGETS :=
-ifneq ($(UNIT_SRCS),)
-ALL_TARGETS += $(UNIT_TARGET)
-endif
+ifeq ($(COMPILE_KERNEL),1)
 ifneq ($(MPI_SRCS),)
 ALL_TARGETS += $(MPI_TARGET)
+endif
+endif
+ifneq ($(UNIT_SRCS),)
+ALL_TARGETS += $(UNIT_TARGET)
 endif
 
 all: $(ALL_TARGETS)
 
-ifneq ($(UNIT_SRCS),)
-unit: $(UNIT_TARGET)
-else
-unit:
-endif
+require-compile-kernel:
+	$(REQUIRE_COMPILE_KERNEL)
 
-mpi: $(MPI_TARGET)
+$(MPI_TARGET) $(MPI_OBJS) device-api-obj run-mpi: | require-compile-kernel
 
 # Build device_api.o (and dlink_api.o if USE_SHMEM) from test/kernel/
 DEVICE_API_TARGETS := device_api.o
@@ -80,7 +79,7 @@ endif
 $(MPI_TARGET): device-api-obj $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(MPI_LINKER) $(MPI_LINK_FLAGS) $(MPI_OBJS) $(DEVICE_API_OBJ) $(DLINK_OBJ) -o $@ $(FLAGCX_LINK) $(GTEST_BASE_LINK) $(MPI_LINK) $(DEVICE_LINK)
+	@$(MPI_LINKER) $(MPI_LINK_FLAGS) $(MPI_OBJS) $(DEVICE_API_OBJ) $(DLINK_OBJ) -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
@@ -106,4 +105,8 @@ endif
 run-mpi: $(MPI_TARGET)
 	@$(HETERO_ENV) mpirun --allow-run-as-root -np 4 $(MPI_TARGET)
 
+ifeq ($(COMPILE_KERNEL),1)
 run: run-unit run-mpi
+else
+run: run-unit
+endif

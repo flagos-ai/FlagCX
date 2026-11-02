@@ -56,7 +56,7 @@ OPT       ?= $(XTDK_HOME)/bin/opt
 LLVM_DIS  ?= $(XTDK_HOME)/bin/llvm-dis
 LLVM_AS   ?= $(XTDK_HOME)/bin/llvm-as
 
-OBJDIR := $(BUILDDIR)/obj/llvm_ir/kunlunxin/$(XPU_ARCH)
+OBJDIR := $(BUILDDIR)/obj/llvm_ir
 LIBDIR := $(BUILDDIR)/lib
 INCLUDEDIR := $(BUILDDIR)/include
 
@@ -103,6 +103,7 @@ CLANG_FLAGS := -c -emit-llvm --xpu-device-only -O1 $(COMMON_CLANG_FLAGS)
 # Optimization passes — keep only the public Device IR symbols.
 OPT_PASSES := --passes=internalize,inline,globaldce \
 	-internalize-public-api-file=$(SYMBOLS_FILE)
+IR_INPUT_BC := $(BUNDLE_BC)
 
 # ---- Build rules ----
 
@@ -115,7 +116,7 @@ $(WRAPPER_HEADER): ../flagcx_device_wrapper.h
 $(BUNDLE_BC): $(LLVM_SRC) ir_views.h
 	@mkdir -p $(OBJDIR)
 	@echo "Generating KunlunXin Device IR bundle..."
-	$(XPU_CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
+	$(XPU_CLANG) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
 # LLVM 19 emits a plain xpu-device-only bitcode (not an offload bundle), so the
 # unbundle step is a no-op copy that keeps the rule graph intact.
@@ -123,7 +124,7 @@ $(UNOPTIMIZED_BC): $(BUNDLE_BC)
 	@echo "Copying xpu-device-only bitcode..."
 	cp -f $< $@
 
-$(OPTIMIZED_BC): $(UNOPTIMIZED_BC)
+$(OPTIMIZED_BC): $(UNOPTIMIZED_BC) $(SYMBOLS_FILE)
 	@echo "Optimizing KunlunXin Device IR..."
 	$(OPT) $(OPT_PASSES) $< -o $@
 
@@ -162,6 +163,8 @@ llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
 	@echo "  LLVM IR:          $(LLVM_IR_FILE)"
 	@echo "  Final BC:         $(FINAL_BC)"
 	@echo "  Wrapper Header:   $(WRAPPER_HEADER)"
+
+include ../device_ir_dependencies.mk
 
 else
 llvm_ir:

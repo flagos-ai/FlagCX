@@ -56,7 +56,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         result = subprocess.run(
             [
                 "make", "-n", "-B", "-C", str(suite_dir), "mpi",
-                "USE_DU=1", "USE_SHCA=1",
+                "USE_DU=1", "USE_SHCA=1", "COMPILE_KERNEL=1",
                 "DEVICE_HOME=/opt/dtk",
                 "CCL_HOME=/opt/dtk",
             ],
@@ -136,15 +136,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         device_api_unit_link = next(
             line for line in device_api_unit_result.stdout.splitlines()
-            if "/bin/test_deviceptr_args " in line
+            if "/bin/test_dev_comm_cleanup " in line
         )
         self.assertTrue(device_api_unit_link.startswith("g++ "))
 
         kernel_result = subprocess.run(
             [
-                "make", "-n", "-B", "-C",
-                str(REPO_ROOT / "test/unittest/device_api/kernel"),
-                "all", "USE_DU=1", "USE_SHCA=1",
+                "make", "-n", "-B", "-C", str(REPO_ROOT / "test/unittest/kernel"),
+                "all", "USE_DU=1", "USE_SHCA=1", "COMPILE_KERNEL=1",
                 "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
             ],
             check=True,
@@ -161,12 +160,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("/du/build/obj/device_api.o", kernel_mpi_link)
         self.assertNotIn(".cpp", kernel_mpi_link)
         self.assertIn("-lgtest", kernel_mpi_link)
-        self.assertNotIn("-lgtest_main", kernel_mpi_link)
+        self.assertIn("-lgtest_main", kernel_mpi_link)
 
         perf_result = subprocess.run(
             [
                 "make", "-n", "-B", "-C", str(REPO_ROOT / "test/perf/device_api"),
-                "all", "USE_DU=1", "USE_SHCA=1",
+                "all", "USE_DU=1", "USE_SHCA=1", "COMPILE_KERNEL=1",
                 "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk",
             ],
             check=True,
@@ -213,6 +212,54 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("2 4 0,1,6,7 shca_0,shca_3", configured.stdout)
             self.assertIn("COMPILE_KERNEL=1", configured.stdout)
             self.assertTrue(configured.stdout.endswith(" 0 0"))
+
+    def test_device_test_targets_require_kernel_mode(self):
+        cases = (
+            ("test/unittest/device_api", ("all", "mpi", "run"),
+             "build/bin/test_device_ir_unified_intra"),
+            ("test/unittest/kernel", ("run-mpi",), "build/bin/kernel_mpi_tests"),
+            ("test/perf/device_api", ("all",), "build/bin/perf_allreduce_intranode"),
+        )
+        for directory, aggregates, binary in cases:
+            with self.subTest(directory=directory):
+                suite = REPO_ROOT / directory
+                base = ["make", "-s", "-C", str(suite), "USE_DU=1",
+                        "DEVICE_HOME=/opt/dtk", "CCL_HOME=/opt/dtk"]
+                for target in (*aggregates, str(suite / binary)):
+                    rejected = subprocess.run(
+                        base + ["COMPILE_KERNEL=0", target],
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("Device tests require COMPILE_KERNEL=1", rejected.stderr)
+                subprocess.run(
+                    base + ["COMPILE_KERNEL=1", "require-compile-kernel"],
+                    check=True, capture_output=True, text=True,
+                )
+
+        for directory, targets in (
+            ("test/unittest/device_api", ("unit", "run-unit", "clean")),
+            ("test/unittest/kernel", ("run-unit", "clean")),
+            ("test/perf/device_api", ("clean",)),
+        ):
+            for target in targets:
+                subprocess.run(
+                    ["make", "-n", "-C", str(REPO_ROOT / directory), target,
+                     "USE_DU=1", "COMPILE_KERNEL=0", "DEVICE_HOME=/opt/dtk",
+                     "CCL_HOME=/opt/dtk"],
+                    check=True, capture_output=True, text=True,
+                )
+
+        kernel_suite = REPO_ROOT / "test/unittest/kernel"
+        host_only = subprocess.run(
+            ["make", "-n", "-B", "-C", str(kernel_suite), "all",
+             "USE_DU=1", "COMPILE_KERNEL=0", "DEVICE_HOME=/opt/dtk",
+             "CCL_HOME=/opt/dtk"],
+            check=True, capture_output=True, text=True,
+        )
+        self.assertIn("kernel_unit_tests", host_only.stdout)
+        self.assertNotIn("kernel_mpi_tests", host_only.stdout)
+        self.assertNotIn("device_api.hip", host_only.stdout)
 
     def _run_platform_matrix(
         self, event_name, changed_files="", configs_dir=None
@@ -519,7 +566,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("FLAGCX_CI_ENABLE_IBUC=1", hygon_env)
         self.assertNotIn("FLAGCX_CI_IBUC_ENV=(", hygon_env)
 
-    def test_cuda_enables_nvidia_symmem_and_rma_coverage(self):
+    def test_cuda_keeps_generic_symmem_and_rma_coverage(self):
         cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
         cuda_env = (
             REPO_ROOT / ".github/scripts/set_env/cuda.sh"
@@ -531,19 +578,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
         ).read_text()
 
-        self.assertIn("export FLAGCX_ADAPTOR=nvidia", cuda_env)
+        self.assertNotIn("FLAGCX_ADAPTOR", cuda_env)
         suites = cuda_config[cuda_config.index("unit_test_suites:") :]
         self.assertIn("  - rma", suites)
         self.assertIn("  - symmem", suites)
-        self.assertIn("nvidia|metax|ppu)", symmem_runner)
-        self.assertIn("nvidia|du|metax|ppu)", symmem_runner)
-        self.assertIn(
-            "SymMemTest.SegmentedVmmSubrangeMapsOnlyTouchedSegment",
-            symmem_runner,
-        )
-        self.assertIn("SymMemTest.UntrackedVmmMappingIsRejected", symmem_runner)
-        self.assertIn('if [[ "$platform_name" == "cuda" ]]; then', unit_runner)
-        self.assertIn('FLAGCX_CI_MPI_LABEL="rma GDR visibility VMM $route"', unit_runner)
+        self.assertIn('"$BUILD_BIN/symmem_mpi_tests"', symmem_runner)
+        self.assertIn('run-mpi-net', unit_runner)
 
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
@@ -1032,12 +1072,22 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
-        self.assertIn('nvidia|metax|ppu)', symmem_runner)
-        self.assertIn('nvidia|du|metax|ppu)', symmem_runner)
+        self.assertNotIn("FLAGCX_ADAPTOR", (
+            REPO_ROOT / ".github/scripts/set_env/cuda.sh"
+        ).read_text())
+        for platform, adaptor in (
+            ("hygon", "du"),
+            ("ppu", "ppu"),
+            ("metax", "metax"),
+        ):
+            set_env = (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            self.assertIn(f"export FLAGCX_ADAPTOR={adaptor}", set_env)
+        self.assertNotIn('run_symmem_case.sh', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_MULTI_SEGMENT=1', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_PROVIDER_VMM=1', symmem_runner)
         self.assertIn('FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0', symmem_runner)
-        self.assertIn('"${vmm_provider_env[@]}"', symmem_runner)
         self.assertIn('DuMultiSegmentDisabledPreservesSingleVmm', (
             REPO_ROOT / 'test/unittest/symmem/coll_sym_register.cpp'
         ).read_text())
@@ -1758,7 +1808,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('pxn_visible_devices_var=HIP_VISIBLE_DEVICES', pxn_case)
         self.assertIn('pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
         self.assertIn('-x "$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
-        self.assertIn('"$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)
+        self.assertIn('"$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank"', pxn_case)
         self.assertNotIn('FLAGCX_CI_ENABLE_PXN_INTERSERVER', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET', runner_case)
@@ -2010,7 +2060,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("usleep(100000)", device_api_test)
 
     def test_device_api_host_wires_deviceptr_args(self):
-        device_api_dir = REPO_ROOT / "test/unittest/device_api"
+        device_api_dir = REPO_ROOT / "test/unittest/kernel"
         result = subprocess.run(
             ["make", "-n", "-C", str(device_api_dir), "run-unit", "USE_NVIDIA=1"],
             check=True,
@@ -2018,12 +2068,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
             text=True,
         )
         self.assertIn("test_deviceptr_args.cpp", result.stdout)
-        self.assertIn("build/bin/test_deviceptr_args", result.stdout)
+        self.assertIn("build/bin/kernel_unit_tests", result.stdout)
 
     def test_device_api_wires_kernel_mpi(self):
-        device_api_dir = REPO_ROOT / "test/unittest/device_api"
+        device_api_dir = REPO_ROOT / "test/unittest/kernel"
         result = subprocess.run(
-            ["make", "-n", "-C", str(device_api_dir), "mpi", "USE_NVIDIA=1"],
+            ["make", "-n", "-C", str(device_api_dir), "all", "USE_NVIDIA=1", "COMPILE_KERNEL=1"],
             check=True,
             capture_output=True,
             text=True,
