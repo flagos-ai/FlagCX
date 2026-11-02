@@ -17,10 +17,8 @@ make -C "$project_root/test/perf" --jobs="$(nproc)" \
 source "$project_root/test/script/_gpu_check.sh"
 wait_for_gpu
 
-# Preserve the original extended perf-test coverage.
-export FLAGCX_CI_PERF_PLATFORM='CUDA extended'
-"$project_root/.github/scripts/ci/run_host_perf_suite.sh" homogeneous "$perf_bin"
-
+# The regular CUDA perf job owns the homogeneous and heterogeneous API suites.
+# Keep only parameter variants and APIs that it does not run.
 "$mpi_runner" -np 4 --allow-run-as-root "$perf_bin/perf_allreduce" \
   -b 128M -e 1G -f 2 -p 1 -R 1
 
