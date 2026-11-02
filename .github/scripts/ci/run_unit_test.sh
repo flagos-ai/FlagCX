@@ -285,8 +285,10 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
+      local gpu_mr_policy=required
       if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
+        gpu_mr_policy=ascend
       fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
@@ -299,7 +301,7 @@ run_suite() {
         unit_status=$?
       if ((unit_status == 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
-          "$gpu_result_xml" || unit_status=$?
+          "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
