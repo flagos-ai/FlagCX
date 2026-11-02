@@ -37,18 +37,26 @@ def check_results(
             errors.append(f"NetAdaptorLoopback.{name}: expected once, found {len(matches)}")
             continue
         case = matches[0]
-        if case.get("status") != "run" or case.get("result") != "completed":
+        if case.get("status") != "run":
             errors.append(f"NetAdaptorLoopback.{name}: skipped or not run")
             continue
         if case.find("failure") is not None or case.find("error") is not None:
             errors.append(f"NetAdaptorLoopback.{name}: failed")
             continue
+        # GoogleTest records GTEST_SKIP as result="skipped" with a <skipped>
+        # child instead of result="completed". Classify the skip before
+        # enforcing the completed result, otherwise the policy below is
+        # unreachable for every skipped case.
         skipped = case.find("skipped")
-        if skipped is None:
+        if skipped is None and case.get("result") == "completed":
             continue
-        reason = " ".join(
-            " ".join((skipped.get("message", ""), "".join(skipped.itertext()))).split()
-        )
+        reason = ""
+        if skipped is not None:
+            reason = " ".join(
+                " ".join(
+                    (skipped.get("message", ""), "".join(skipped.itertext()))
+                ).split()
+            )
         if allow_gpu_mr_unsupported and UNSUPPORTED_GPU_MR_REASON in reason:
             unsupported.append(name)
         else:
