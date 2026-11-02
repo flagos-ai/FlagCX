@@ -301,7 +301,27 @@ struct CommTraits<DushmemBackend> {
       if (coop.threadRank() == 0) {
         int pe = resolvePE(team, peer);
         void *dstPtr = (char *)dst.symBase + dstOff;
-        dushmem_putmem(dstPtr, (const void *)&value, sizeof(T), pe);
+        // The source value lives in thread-private memory, which the remote
+        // transport cannot register or read with DMA. Send its bits inline.
+        if constexpr (sizeof(T) == 8) {
+          uint64_t bits;
+          __builtin_memcpy(&bits, &value, sizeof(bits));
+          dushmem_uint64_p((uint64_t *)dstPtr, bits, pe);
+        } else if constexpr (sizeof(T) == 4) {
+          uint32_t bits;
+          __builtin_memcpy(&bits, &value, sizeof(bits));
+          dushmem_uint32_p((uint32_t *)dstPtr, bits, pe);
+        } else if constexpr (sizeof(T) == 2) {
+          uint16_t bits;
+          __builtin_memcpy(&bits, &value, sizeof(bits));
+          dushmem_uint16_p((uint16_t *)dstPtr, bits, pe);
+        } else {
+          const unsigned char *bytes = (const unsigned char *)&value;
+          for (size_t i = 0; i < sizeof(T); ++i)
+            dushmem_uchar_p((unsigned char *)dstPtr + i, bytes[i], pe);
+        }
+        // Order the value before the following remote signal.
+        dushmem_fence();
         signalImpl(pe, ra);
       }
       coop.sync();
