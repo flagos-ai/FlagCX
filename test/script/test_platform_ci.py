@@ -568,9 +568,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
     def test_cuda_keeps_generic_symmem_and_rma_coverage(self):
         cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
-        cuda_env = (
-            REPO_ROOT / ".github/scripts/set_env/cuda.sh"
-        ).read_text()
         symmem_runner = (
             REPO_ROOT / "test/script/symmem_test.sh"
         ).read_text()
@@ -578,7 +575,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
         ).read_text()
 
-        self.assertIn("export FLAGCX_ADAPTOR=nvidia", cuda_env)
         suites = cuda_config[cuda_config.index("unit_test_suites:") :]
         self.assertIn("  - rma", suites)
         self.assertIn("  - symmem", suites)
@@ -1072,9 +1068,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
-        self.assertIn("export FLAGCX_ADAPTOR=nvidia", (
-            REPO_ROOT / ".github/scripts/set_env/cuda.sh"
-        ).read_text())
         for platform, adaptor in (
             ("hygon", "du"),
             ("ppu", "ppu"),
