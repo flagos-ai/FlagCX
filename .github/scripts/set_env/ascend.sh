@@ -46,9 +46,10 @@ flagcx_ci_run_suite_override() {
   local suite=$1
   local suite_dir=$2
 
-  # CANN does not expose the symmetric-memory VMM entry points. Exercise
-  # ordinary-allocation IPC and NET/MR independently; neither is evidence
-  # of VMM or visibility parity. See .github/ASCEND_CI_ISSUES.md.
+  # CANN does not expose the symmetric-memory VMM entry points
+  # (cannAdaptorSymPhysAlloc/Free and the flat map/unmap functions are stubs
+  # returning flagcxNotSupported). Exercise ordinary-allocation IPC and
+  # NET/MR independently; neither is evidence of VMM or visibility parity.
   if [[ "$suite" != "symmem" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     return
@@ -94,7 +95,7 @@ flagcx_ci_run_suite_override() {
       "$suite_dir/build/bin/symmem_mpi_tests" --gtest_filter="$net_filter" || network_status=$?
 
   echo "Ascend symmem results: unit=$unit_status IPC=$ipc_status fallback=$fallback_status NET=$network_status"
-  echo "Ascend coverage gap: VMM/MR routes and RMA visibility require backend support; see .github/ASCEND_CI_ISSUES.md"
+  echo "Ascend coverage gap: SymMem VMM routes need cannAdaptorSymPhysAlloc/Free plus flat map/unmap, and RMA visibility needs cannAdaptorStreamWaitValue64/StreamWriteValue64; all return flagcxNotSupported today, so neither route is covered above"
   if ((unit_status != 0 || ipc_status != 0 || fallback_status != 0 || network_status != 0)); then
     return 1
   fi

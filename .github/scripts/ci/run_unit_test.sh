@@ -414,7 +414,7 @@ run_suite() {
       local p2p_mpi_env=""
       if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-        echo "Ascend P2P diagnostics: target hardware must expose an APU-to-NIC topology edge; see .github/ASCEND_CI_ISSUES.md"
+        echo "Ascend P2P diagnostics: target hardware must expose an APU-to-NIC topology edge; recorded runs report 'Could not find any local path from apu 0/1 to net' because the CANN PCI lookup callbacks are unset"
       fi
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
@@ -525,7 +525,7 @@ run_suite() {
             # device-consumer kernel is not built for Ascend. Keep the
             # platform's IPC/NET correctness runs without this conformance
             # matrix.
-            echo "Ascend coverage gap: RMA visibility requires CANN stream wait/write support and a device-consumer kernel; see .github/ASCEND_CI_ISSUES.md"
+            echo "Ascend coverage gap: RMA visibility requires cannAdaptorStreamWaitValue64/StreamWriteValue64 (both return flagcxNotSupported) and an Ascend device-consumer kernel, so this conformance matrix is not run"
             ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
