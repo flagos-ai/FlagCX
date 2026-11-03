@@ -504,32 +504,18 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" || ipc_status=$?
-      local platform_name
-      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       if flagcx_ci_require_rdma "$SUITE"; then
-        local -a net_rma_args=()
-        if [[ "$platform_name" == ascend ]]; then
-          # The selected net adaptor advertises no GPU MR, so
-          # flagcxCommWindowRegister() cannot build the symmetric data window
-          # and RmaTest::SetUp() reports "RMA data window is unavailable" for
-          # every network case. Let the fixture's existing capability path skip
-          # on flagcxNotSupported; any other registration error still fails as
-          # a non-capability error.
-          echo "Ascend coverage gap: RMA network cases need GPU MR for flagcxCommWindowRegister(); the CANN net adaptor does not advertise it, so cases whose window registration returns flagcxNotSupported are skipped rather than failed"
-          net_rma_args=(
-            RMA_PLATFORM_ENV="${RMA_PLATFORM_ENV:-} -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported"
-          )
-        fi
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
-          MPIRUN="$MPI_RUNNER" "${net_rma_args[@]}" || network_status=$?
+          MPIRUN="$MPI_RUNNER" || network_status=$?
 
         # Visibility conformance is deliberately a separate process from the
         # general RMA suite: requirement overrides and VMM route selection are
         # cached once, and each case must exercise one unambiguous policy.
-        local visibility_filter base_rma_platform_env
+        local platform_name visibility_filter base_rma_platform_env
         local expected_read=success expected_write=success
         local expected_read_required=1 expected_write_required=
+        platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
         visibility_filter="RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility"
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
         case "$platform_name" in
