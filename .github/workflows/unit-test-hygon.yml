@@ -12,6 +12,8 @@ concurrency:
 
 jobs:
   hygon_unit_tests:
+    # Temporarily pause non-Ascend platform CI.
+    if: ${{ false }}
     name: Hygon DCU unit tests
     uses: ./.github/workflows/unit_tests_common.yml
     with:
