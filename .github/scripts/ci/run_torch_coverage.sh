@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 python_bin=${PYTHON_BIN:-python3}
-report_path=${FLAGCX_CI_COVERAGE_REPORT:-coverage-cuda-gpu-torch.json}
+report_path=${FLAGCX_CI_COVERAGE_REPORT:-coverage-${FLAGCX_CI_PLATFORM:-cuda}-gpu-torch.json}
 cd "$project_root"
 export PYTHONPATH="$project_root/src:$project_root/plugin/torch${PYTHONPATH:+:$PYTHONPATH}"
 export COVERAGE_RCFILE="$project_root/.github/configs/coverage.ini"

@@ -801,7 +801,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
         ).read_text()
         self.assertIn("cuda perf-legacy", perf_workflow)
-        self.assertIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', legacy_perf)
+        self.assertNotIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', legacy_perf)
         self.assertIn('"$perf_bin/perf_allreduce"', legacy_perf)
         self.assertIn("for operation in put get", legacy_perf)
         self.assertIn('"$perf_bin/perf_$operation"', legacy_perf)

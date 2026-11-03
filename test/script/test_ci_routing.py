@@ -393,23 +393,31 @@ class CiWorkflowWiringTest(unittest.TestCase):
         caller = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
         token = caller["jobs"]["torch_api_tests"]["secrets"]["FLAGCICD_API_TOKEN"]
         self.assertIn("needs.prepare.outputs.repository == github.repository", token)
-        job = workflow["jobs"]["torch-api-test-cuda"]
-        steps = {step.get("name"): step for step in job["steps"]}
-        upload = steps["Upload coverage report to FlagCICD"]
-        self.assertTrue(upload["continue-on-error"])
-        self.assertEqual(upload["with"]["file_type"], "coverage")
-        self.assertEqual(upload["with"]["job_name"], "coverage-cuda-gpu-torch")
-        self.assertEqual(upload["with"]["report_path"], "coverage-cuda-gpu-torch.json")
-        self.assertEqual(upload["with"]["fail_on_error"], "false")
-        self.assertIn("FLAGCICD_TOKEN_SET == 'true'", upload["if"])
-        self.assertIn("hashFiles('coverage-cuda-gpu-torch.json')", upload["if"])
-        self.assertIn("github.event.issue.number", upload["with"]["pr_id"])
-        self.assertNotIn("container", job)
-        self.assertIn("Collect Python coverage report", steps)
-        workload = steps["Run torch-api-test (cuda) in configured container"]
-        self.assertEqual(workload["env"]["FLAGCX_CI_TORCH_COVERAGE"], "1")
-        cuda_runner = (REPO_ROOT / ".github/scripts/ci/run_cuda_workload.sh").read_text()
-        self.assertIn('bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"', cuda_runner)
+        for platform in ("cuda", "hygon", "metax", "ppu"):
+            with self.subTest(platform=platform):
+                job = workflow["jobs"][f"torch-api-test-{platform}"]
+                steps = {step.get("name"): step for step in job["steps"]}
+                report = f"coverage-{platform}-gpu-torch.json"
+                upload = steps["Upload coverage report to FlagCICD"]
+                self.assertTrue(upload["continue-on-error"])
+                self.assertEqual(upload["with"]["file_type"], "coverage")
+                self.assertEqual(upload["with"]["job_name"], report.removesuffix(".json"))
+                self.assertEqual(upload["with"]["report_path"], report)
+                self.assertEqual(upload["with"]["fail_on_error"], "false")
+                self.assertIn("FLAGCICD_TOKEN_SET == 'true'", upload["if"])
+                self.assertIn(f"hashFiles('{report}')", upload["if"])
+                self.assertIn("github.event.issue.number", upload["with"]["pr_id"])
+                self.assertNotIn("container", job)
+                self.assertIn("Collect Python coverage report", steps)
+                self.assertIn(report, steps["Collect Python coverage report"]["run"])
+                self.assertEqual(steps["Archive Python coverage report"]["with"]["path"], report)
+                workload = steps[f"Run torch-api-test ({platform}) in configured container"]
+                self.assertEqual(workload["env"]["FLAGCX_CI_TORCH_COVERAGE"], "1")
+                runner = (REPO_ROOT / f".github/scripts/ci/run_{platform}_workload.sh").read_text()
+                self.assertIn('bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"', runner)
+
+        container_runner = (REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh").read_text()
+        self.assertIn('coverage-${platform}-gpu-torch.json', container_runner)
         runner = (REPO_ROOT / ".github/scripts/ci/run_torch_coverage.sh").read_text()
         self.assertIn("-m coverage run -m unittest discover", runner)
 
