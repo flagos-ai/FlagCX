@@ -478,7 +478,8 @@ TEST_F(DeviceAdaptorTest, StreamWaitEvent) {
 
   // Create second stream and event
   ASSERT_EQ(devHandle->streamCreate(&stream2), flagcxSuccess);
-  ASSERT_EQ(devHandle->eventCreate(&event, flagcxEventDefault), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&event, flagcxEventDisableTiming),
+            flagcxSuccess);
 
   // Record event on first stream
   auto result = devHandle->eventRecord(event, stream);
@@ -852,6 +853,9 @@ TEST_F(DeviceAdaptorTest, HostRegisterUnregister) {
 
 // Test: getDevicePciBusId — string format and invalid-arg guards
 TEST_F(DeviceAdaptorTest, GetDevicePciBusId) {
+  if (deviceAdaptor->getDevicePciBusId == nullptr) {
+    GTEST_SKIP() << "getDevicePciBusId not implemented for this backend";
+  }
   int numDevices = 0;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_GT(numDevices, 0);
@@ -886,6 +890,9 @@ TEST_F(DeviceAdaptorTest, GetDevicePciBusId) {
 
 // Test: getDeviceProperties — name and PCI fields, invalid-arg guards
 TEST_F(DeviceAdaptorTest, GetDeviceProperties) {
+  if (deviceAdaptor->getDeviceProperties == nullptr) {
+    GTEST_SKIP() << "getDeviceProperties not implemented for this backend";
+  }
   int numDevices = 0;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_GT(numDevices, 0);
@@ -927,6 +934,10 @@ TEST_F(DeviceAdaptorTest, GetDeviceProperties) {
 
 // Test: getDeviceByPciBusId — reverse lookup and invalid-arg guards
 TEST_F(DeviceAdaptorTest, GetDeviceByPciBusId) {
+  if (deviceAdaptor->getDevicePciBusId == nullptr ||
+      deviceAdaptor->getDeviceByPciBusId == nullptr) {
+    GTEST_SKIP() << "PCI bus ID lookup not implemented for this backend";
+  }
   int numDevices = 0;
   ASSERT_EQ(devHandle->getDeviceCount(&numDevices), flagcxSuccess);
   ASSERT_GT(numDevices, 0);
@@ -975,8 +986,13 @@ TEST_F(DeviceAdaptorTest, EventElapsedTime) {
   ASSERT_EQ(devHandle->eventRecord(endEvent, stream), flagcxSuccess);
   ASSERT_EQ(devHandle->eventSynchronize(endEvent), flagcxSuccess);
   float elapsedMs = -1.0f;
-  EXPECT_EQ(devHandle->eventElapsedTime(&elapsedMs, startEvent, endEvent),
-            flagcxSuccess);
+  auto result = devHandle->eventElapsedTime(&elapsedMs, startEvent, endEvent);
+  if (result == flagcxNotSupported) {
+    EXPECT_EQ(devHandle->eventDestroy(startEvent), flagcxSuccess);
+    EXPECT_EQ(devHandle->eventDestroy(endEvent), flagcxSuccess);
+    GTEST_SKIP() << "eventElapsedTime not implemented for this backend";
+  }
+  EXPECT_EQ(result, flagcxSuccess);
   EXPECT_GE(elapsedMs, 0.0f);
   EXPECT_EQ(devHandle->eventElapsedTime(nullptr, startEvent, endEvent),
             flagcxInvalidArgument);

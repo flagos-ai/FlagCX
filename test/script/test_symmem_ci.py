@@ -72,6 +72,26 @@ class SymmemCiTest(unittest.TestCase):
                         2 if adaptor == "du" else 0,
                     )
 
+            generic_capture = root / "generic.calls"
+            generic_env = os.environ.copy()
+            generic_env.pop("FLAGCX_ADAPTOR", None)
+            generic_env["CI_CAPTURE"] = str(generic_capture)
+            generic = subprocess.run(
+                ["bash", str(script)],
+                env=generic_env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(generic.returncode, 0, generic.stderr)
+            generic_calls = generic_capture.read_text().splitlines()
+            self.assertEqual(
+                sum("symmem_mpi_tests" in line for line in generic_calls), 2
+            )
+            self.assertFalse(any(
+                "--gtest_filter=SymMemTest." in line for line in generic_calls
+            ))
+            self.assertNotIn("UntrackedVmmMappingIsRejected", generic.stdout)
+
             invalid = subprocess.run(
                 ["bash", str(script)],
                 env=dict(os.environ, FLAGCX_ADAPTOR="unknown"),
@@ -79,7 +99,7 @@ class SymmemCiTest(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(invalid.returncode, 2)
-            self.assertIn("FLAGCX_ADAPTOR must be", invalid.stderr)
+            self.assertIn("Unsupported FLAGCX_ADAPTOR", invalid.stderr)
 
             failed = subprocess.run(
                 ["bash", str(script)],

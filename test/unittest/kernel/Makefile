@@ -44,13 +44,13 @@ MPI_TARGET := $(BINDIR)/kernel_mpi_tests
 
 # Only build targets that have sources
 ALL_TARGETS :=
-ifneq ($(UNIT_SRCS),)
-ALL_TARGETS += $(UNIT_TARGET)
-endif
 ifeq ($(COMPILE_KERNEL),1)
 ifneq ($(MPI_SRCS),)
 ALL_TARGETS += $(MPI_TARGET)
 endif
+endif
+ifneq ($(UNIT_SRCS),)
+ALL_TARGETS += $(UNIT_TARGET)
 endif
 
 all: $(ALL_TARGETS)
@@ -69,10 +69,12 @@ endif
 device-api-obj:
 	@$(MAKE) -C $(KERNEL_DIR) $(DEVICE_API_TARGETS)
 
+ifneq ($(UNIT_SRCS),)
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
+endif
 
 $(MPI_TARGET): device-api-obj $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
@@ -92,8 +94,13 @@ $(OBJDIR)/%.o: %.cpp
 clean:
 	@rm -rf $(BUILDDIR)
 
+ifneq ($(UNIT_SRCS),)
 run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
+else
+run-unit:
+	@echo "No unit tests found in kernel"
+endif
 
 run-mpi: $(MPI_TARGET)
 	@$(HETERO_ENV) mpirun --allow-run-as-root -np 4 $(MPI_TARGET)
