@@ -45,4 +45,19 @@ extern struct flagcxDevApiBackend *devApiBackend;
 flagcxResult_t flagcxCommQuiesce(flagcxComm_t comm);
 flagcxResult_t flagcxDevCommRetryPendingCleanup(flagcxComm_t comm);
 
+// Transfer ownership of a device-visible, Window-scoped resource to devMem.
+// Resources can be attached after the DevComm device view has been published;
+// attachment manages lifetime but does not publish a device address. They are
+// released during communicator teardown after Device API producers quiesce and
+// before one-sided transport teardown. Callers must finish any other kernels
+// using these device-visible resources before destroying the communicator.
+// On attachment failure the caller retains ownership.
+// Release must be retryable: an error must leave the resource valid for another
+// call. The callback must own its Window/MR and peer metadata because those
+// may already have been destroyed independently or by commCleanup. Any
+// one-sided connections used by the callback have not yet been torn down.
+flagcxResult_t
+flagcxDevMemAttachDeferredResource(flagcxDevMem_t devMem, void *resource,
+                                   flagcxResult_t (*release)(void *resource));
+
 #endif // FLAGCX_DEV_API_BACKEND_H_

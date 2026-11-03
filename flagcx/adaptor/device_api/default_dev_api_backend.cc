@@ -1340,6 +1340,7 @@ static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
   // Free window allocation if present
   if (devMem->window != nullptr) {
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);
+    devMem->window = nullptr;
   }
 
   // The outer DevMem lifecycle defers cached device state and segmented peer
