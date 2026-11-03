@@ -85,3 +85,21 @@ TEST_F(P2pTopoTest, NullArgs) {
   EXPECT_NE(flagcxP2pTopoGetNetDev(nullptr, 0, nullptr), flagcxSuccess);
   EXPECT_EQ(flagcxP2pTopoDestroy(nullptr), flagcxSuccess);
 }
+
+TEST_F(P2pTopoTest, FailedPciLookupLeavesManagerNull) {
+  flagcxDeviceAdaptor failingAdaptor = *deviceAdaptor;
+  failingAdaptor.getDevicePciBusId = [](char *, int, int) {
+    return flagcxNotSupported;
+  };
+  flagcxDeviceAdaptor *savedAdaptor = deviceAdaptor;
+  deviceAdaptor = &failingAdaptor;
+
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    struct flagcxP2pTopoManager *mgr = nullptr;
+    EXPECT_EQ(flagcxP2pTopoInit(netAdaptor, &mgr), flagcxNotSupported);
+    EXPECT_EQ(mgr, nullptr);
+    flagcxP2pTopoDestroy(mgr);
+  }
+
+  deviceAdaptor = savedAdaptor;
+}

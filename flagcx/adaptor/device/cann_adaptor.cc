@@ -4,6 +4,317 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "check.h"
+#include <ctype.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Keep the DCMI ABI local to the CANN adaptor. */
+struct flagcxCannDcmiPcieInfo {
+  unsigned int vendorId;
+  unsigned int subVendorId;
+  unsigned int deviceId;
+  unsigned int subDeviceId;
+  int domain;
+  unsigned int bus;
+  unsigned int device;
+  unsigned int function;
+  unsigned char reserved[32];
+};
+typedef char flagcxCannDcmiPcieInfoSizeCheck
+    [sizeof(struct flagcxCannDcmiPcieInfo) == 64 ? 1 : -1];
+
+struct flagcxCannPciApi {
+  int (*deviceCount)(uint32_t *);
+  int (*aclGetBusId)(int32_t, char *, int32_t);
+  int (*aclGetDeviceByBusId)(const char *, int32_t *);
+  int (*userToLogicId)(int32_t, int32_t *);
+  int (*dcmiLogicToCardDevice)(int *, int *, unsigned int);
+  int (*dcmiGetPcieInfo)(int, int, struct flagcxCannDcmiPcieInfo *);
+};
+
+enum flagcxCannPciProvider {
+  CANN_PCI_PROVIDER_ACL,
+  CANN_PCI_PROVIDER_DCMI,
+};
+
+#define CANN_PCI_BUS_ID_SIZE 32
+#define CANN_PCI_ACL_FEATURE_NOT_SUPPORTED 207000
+
+static int cannPciNormalizeBusId(const char *input, char *normalized,
+                                 size_t capacity) {
+  size_t length;
+  size_t domainDigits;
+  unsigned int domain = 0, bus = 0, device = 0, function = 0;
+  int written;
+
+  if (input == NULL || normalized == NULL || capacity == 0)
+    return 0;
+  length = strlen(input);
+  domainDigits = length == 12 ? 4 : (length == 16 ? 8 : 0);
+  if (domainDigits == 0 || input[domainDigits] != ':' ||
+      input[domainDigits + 3] != ':' || input[domainDigits + 6] != '.' ||
+      input[domainDigits + 8] != '\0')
+    return 0;
+  for (size_t i = 0; i < length; ++i) {
+    if (i == domainDigits || i == domainDigits + 3 || i == domainDigits + 6)
+      continue;
+    if (!isxdigit((unsigned char)input[i]))
+      return 0;
+  }
+  if (sscanf(input, "%x:%x:%x.%x", &domain, &bus, &device, &function) != 4 ||
+      bus > 0xff || device > 0x1f || function > 7)
+    return 0;
+  written =
+      snprintf(normalized, capacity,
+               domain <= 0xffff ? "%04x:%02x:%02x.%x" : "%08x:%02x:%02x.%x",
+               domain, bus, device, function);
+  return written >= 0 && (size_t)written < capacity;
+}
+
+static flagcxResult_t cannPciMapAclError(int result, const char *operation) {
+  if (result == 0)
+    return flagcxSuccess;
+  WARN("CANN PCI: %s returned ACL error %d", operation, result);
+  return result == CANN_PCI_ACL_FEATURE_NOT_SUPPORTED
+             ? flagcxNotSupported
+             : flagcxUnhandledDeviceError;
+}
+
+static flagcxResult_t
+cannPciVisibleDeviceCount(const struct flagcxCannPciApi *api, uint32_t *count) {
+  if (api == NULL || api->deviceCount == NULL)
+    return flagcxNotSupported;
+  return cannPciMapAclError(api->deviceCount(count), "aclrtGetDeviceCount");
+}
+
+static flagcxResult_t cannPciGetDcmiBusId(const struct flagcxCannPciApi *api,
+                                          int userDeviceId, char *busId,
+                                          size_t capacity) {
+  int32_t logicId = -1;
+  int cardId = -1, chipId = -1;
+  int result;
+  struct flagcxCannDcmiPcieInfo info;
+
+  if (api->userToLogicId == NULL || api->dcmiLogicToCardDevice == NULL ||
+      api->dcmiGetPcieInfo == NULL)
+    return flagcxNotSupported;
+  memset(&info, 0, sizeof(info));
+  FLAGCXCHECK(cannPciMapAclError(api->userToLogicId(userDeviceId, &logicId),
+                                 "aclrtGetLogicDevIdByUserDevId"));
+  if (logicId < 0)
+    return flagcxUnhandledDeviceError;
+  result = api->dcmiLogicToCardDevice(&cardId, &chipId, (unsigned int)logicId);
+  if (result != 0 || cardId < 0 || chipId < 0) {
+    WARN("CANN PCI: DCMI logic-to-card failed: %d", result);
+    return flagcxUnhandledDeviceError;
+  }
+  result = api->dcmiGetPcieInfo(cardId, chipId, &info);
+  if (result != 0) {
+    WARN("CANN PCI: DCMI PCI query failed: %d", result);
+    return flagcxUnhandledDeviceError;
+  }
+  if (info.domain < 0 || info.bus > 0xff || info.device > 0x1f ||
+      info.function > 7)
+    return flagcxUnhandledDeviceError;
+  result = snprintf(
+      busId, capacity,
+      info.domain <= 0xffff ? "%04x:%02x:%02x.%x" : "%08x:%02x:%02x.%x",
+      (unsigned int)info.domain, info.bus, info.device, info.function);
+  return result >= 0 && (size_t)result < capacity ? flagcxSuccess
+                                                  : flagcxInvalidArgument;
+}
+
+static struct flagcxCannPciApi cannPciProductionApi;
+static pthread_once_t cannPciInitOnce = PTHREAD_ONCE_INIT;
+static pthread_once_t cannDcmiInitOnce = PTHREAD_ONCE_INIT;
+
+static void cannPciInitializeProductionApi(void) {
+  cannPciProductionApi.deviceCount =
+      (int (*)(uint32_t *))dlsym(RTLD_DEFAULT, "aclrtGetDeviceCount");
+  cannPciProductionApi.aclGetBusId = (int (*)(int32_t, char *, int32_t))dlsym(
+      RTLD_DEFAULT, "aclrtDeviceGetPCIBusId");
+  cannPciProductionApi.aclGetDeviceByBusId =
+      (int (*)(const char *, int32_t *))dlsym(RTLD_DEFAULT,
+                                              "aclrtDeviceGetByPCIBusId");
+  cannPciProductionApi.userToLogicId = (int (*)(int32_t, int32_t *))dlsym(
+      RTLD_DEFAULT, "aclrtGetLogicDevIdByUserDevId");
+}
+
+static void cannPciInitializeDcmiApi(void) {
+  void *dcmi;
+  int (*dcmiInit)(void);
+  int (*logicToCard)(int *, int *, unsigned int);
+  int (*pcieInfo)(int, int, struct flagcxCannDcmiPcieInfo *);
+  int result;
+
+  dcmi = dlopen("libdcmi.so", RTLD_NOW | RTLD_LOCAL);
+  if (dcmi == NULL)
+    dcmi = dlopen("libdcmi.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (dcmi == NULL) {
+    WARN("CANN PCI: DCMI library unavailable: %s", dlerror());
+    return;
+  }
+  dcmiInit = (int (*)(void))dlsym(dcmi, "dcmi_init");
+  logicToCard = (int (*)(int *, int *, unsigned int))dlsym(
+      dcmi, "dcmi_get_card_id_device_id_from_logicid");
+  pcieInfo = (int (*)(int, int, struct flagcxCannDcmiPcieInfo *))dlsym(
+      dcmi, "dcmi_get_device_pcie_info_v2");
+  if (dcmiInit == NULL || logicToCard == NULL || pcieInfo == NULL) {
+    WARN("CANN PCI: required DCMI symbols unavailable");
+    dlclose(dcmi);
+    return;
+  }
+  result = dcmiInit();
+  if (result != 0) {
+    WARN("CANN PCI: dcmi_init failed: %d", result);
+    dlclose(dcmi);
+    return;
+  }
+  /* Keep libdcmi loaded while its function pointers and state are in use. */
+  cannPciProductionApi.dcmiLogicToCardDevice = logicToCard;
+  cannPciProductionApi.dcmiGetPcieInfo = pcieInfo;
+}
+
+static const struct flagcxCannPciApi *cannPciGetProductionApi(void) {
+  pthread_once(&cannPciInitOnce, cannPciInitializeProductionApi);
+  return &cannPciProductionApi;
+}
+
+static void cannPciEnsureDcmi(const struct flagcxCannPciApi *api) {
+  if (api == &cannPciProductionApi)
+    pthread_once(&cannDcmiInitOnce, cannPciInitializeDcmiApi);
+}
+
+static flagcxResult_t cannPciGetBusId(const struct flagcxCannPciApi *api,
+                                      char *busId, int length, int userDeviceId,
+                                      enum flagcxCannPciProvider *provider) {
+  uint32_t count = 0;
+  char raw[CANN_PCI_BUS_ID_SIZE] = {0};
+  char normalized[CANN_PCI_BUS_ID_SIZE] = {0};
+  size_t normalizedLength;
+
+  if (api == NULL || busId == NULL || length <= 0 || userDeviceId < 0)
+    return flagcxInvalidArgument;
+  busId[0] = '\0';
+  FLAGCXCHECK(cannPciVisibleDeviceCount(api, &count));
+  if ((uint32_t)userDeviceId >= count)
+    return flagcxInvalidArgument;
+
+  enum flagcxCannPciProvider selected = CANN_PCI_PROVIDER_DCMI;
+  if (api->aclGetBusId != NULL && api->aclGetDeviceByBusId != NULL) {
+    flagcxResult_t result =
+        cannPciMapAclError(api->aclGetBusId(userDeviceId, raw, sizeof(raw)),
+                           "aclrtDeviceGetPCIBusId");
+    if (result == flagcxSuccess) {
+      raw[sizeof(raw) - 1] = '\0';
+      if (!cannPciNormalizeBusId(raw, normalized, sizeof(normalized)))
+        return flagcxUnhandledDeviceError;
+      selected = CANN_PCI_PROVIDER_ACL;
+    } else if (result != flagcxNotSupported) {
+      return result;
+    }
+  }
+  if (selected == CANN_PCI_PROVIDER_DCMI) {
+    cannPciEnsureDcmi(api);
+    FLAGCXCHECK(
+        cannPciGetDcmiBusId(api, userDeviceId, normalized, sizeof(normalized)));
+  }
+  normalizedLength = strlen(normalized) + 1;
+  if (normalizedLength > (size_t)length)
+    return flagcxInvalidArgument;
+  memcpy(busId, normalized, normalizedLength);
+  if (provider != NULL)
+    *provider = selected;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t cannPciFindByDcmiBusId(const struct flagcxCannPciApi *api,
+                                             const char *target, uint32_t count,
+                                             int *userDeviceId) {
+  int matched = -1;
+  cannPciEnsureDcmi(api);
+  for (uint32_t device = 0; device < count; ++device) {
+    char candidate[CANN_PCI_BUS_ID_SIZE] = {0};
+    FLAGCXCHECK(
+        cannPciGetDcmiBusId(api, (int)device, candidate, sizeof(candidate)));
+    if (strcmp(target, candidate) != 0)
+      continue;
+    if (matched >= 0)
+      return flagcxInternalError;
+    matched = (int)device;
+  }
+  if (matched < 0)
+    return flagcxNotSupported;
+  *userDeviceId = matched;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t
+cannPciGetDeviceByBusId(const struct flagcxCannPciApi *api, int *userDeviceId,
+                        const char *busId) {
+  uint32_t count = 0;
+  char target[CANN_PCI_BUS_ID_SIZE] = {0};
+  int matched = -1;
+  enum flagcxCannPciProvider matchedProvider = CANN_PCI_PROVIDER_DCMI;
+
+  if (api == NULL || userDeviceId == NULL || busId == NULL)
+    return flagcxInvalidArgument;
+  if (!cannPciNormalizeBusId(busId, target, sizeof(target)))
+    return flagcxInvalidArgument;
+  FLAGCXCHECK(cannPciVisibleDeviceCount(api, &count));
+  for (uint32_t device = 0; device < count; ++device) {
+    char candidate[CANN_PCI_BUS_ID_SIZE] = {0};
+    enum flagcxCannPciProvider candidateProvider;
+    FLAGCXCHECK(cannPciGetBusId(api, candidate, sizeof(candidate), (int)device,
+                                &candidateProvider));
+    if (strcmp(target, candidate) != 0)
+      continue;
+    if (matched >= 0)
+      return flagcxInternalError; /* A duplicate BDF is not an identity. */
+    matched = (int)device;
+    matchedProvider = candidateProvider;
+  }
+  if (matched < 0)
+    return flagcxNotSupported;
+  if (matchedProvider == CANN_PCI_PROVIDER_ACL) {
+    char raw[CANN_PCI_BUS_ID_SIZE] = {0};
+    char normalized[CANN_PCI_BUS_ID_SIZE] = {0};
+    int32_t found = -1;
+    flagcxResult_t result = cannPciMapAclError(
+        api->aclGetBusId(matched, raw, sizeof(raw)), "aclrtDeviceGetPCIBusId");
+    if (result == flagcxNotSupported)
+      return cannPciFindByDcmiBusId(api, target, count, userDeviceId);
+    FLAGCXCHECK(result);
+    raw[sizeof(raw) - 1] = '\0';
+    if (!cannPciNormalizeBusId(raw, normalized, sizeof(normalized)) ||
+        strcmp(normalized, target) != 0)
+      return flagcxUnhandledDeviceError;
+    result = cannPciMapAclError(api->aclGetDeviceByBusId(raw, &found),
+                                "aclrtDeviceGetByPCIBusId");
+    if (result == flagcxNotSupported)
+      return cannPciFindByDcmiBusId(api, target, count, userDeviceId);
+    FLAGCXCHECK(result);
+    if (found != matched)
+      return flagcxUnhandledDeviceError;
+  }
+  *userDeviceId = matched;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t cannAdaptorGetDevicePciBusId(char *busId, int length,
+                                                   int userDeviceId) {
+  return cannPciGetBusId(cannPciGetProductionApi(), busId, length, userDeviceId,
+                         NULL);
+}
+
+static flagcxResult_t cannAdaptorGetDeviceByPciBusId(int *userDeviceId,
+                                                     const char *busId) {
+  return cannPciGetDeviceByBusId(cannPciGetProductionApi(), userDeviceId,
+                                 busId);
+}
 
 std::map<flagcxMemcpyType_t, aclrtMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, ACL_MEMCPY_HOST_TO_DEVICE},
@@ -350,8 +661,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       // Others
       NULL, // flagcxResult_t (*getDeviceProperties)(struct flagcxDevProps
             // *props, int dev);
-      NULL, // PCI lookup unsupported.
-      NULL, // PCI reverse lookup unsupported.
+      cannAdaptorGetDevicePciBusId, cannAdaptorGetDeviceByPciBusId,
       cannAdaptorLaunchHostFunc,
       // DMA buffer
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);

@@ -42,14 +42,9 @@ flagcx_ci_configure_suite() {
   esac
 }
 
-# Every multi-rank phase of these suites needs a hetero communicator, and
-# flagcxHeteroCommInitRank() cannot build one on CANN: flagcxTopoGetXmlTopo()
-# requires deviceAdaptor->getDeviceByPciBusId for PCI topology discovery and
-# CANN leaves it unset, so topo.cc reports
-# "PCI reverse bus-ID lookup is unavailable for topology discovery".
-# The single-process phases do not need a communicator and still run in full.
-# Each skipped phase prints the capability it waits on; see the CI coverage
-# sheet for the owning backend and the unblocking condition.
+# PCI lookup is covered by the perf and Torch workloads. These suites still
+# run only their single-process phases until their remaining capabilities and
+# multi-rank lifecycle issues are addressed in later changes.
 flagcx_ci_run_suite_override() {
   local suite=$1
   local suite_dir=$2
@@ -71,7 +66,7 @@ flagcx_ci_run_suite_override() {
   rma)
     FLAGCX_CI_TEST_LABEL="Ascend rma unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    echo "Ascend coverage gap: rma IPC and network MPI are not run. Both need a hetero communicator, which fails in flagcxTopoGetXmlTopo() for want of getDeviceByPciBusId, so every case reported 'RMA data window is unavailable'. Device-memory MR is a second gap: the CANN net adaptor does not advertise GPU MR. RMA visibility needs cannAdaptorStreamWaitValue64/StreamWriteValue64 and an Ascend device-consumer kernel"
+    echo "Ascend coverage gap: rma IPC and network MPI are not run. PCI lookup is now wired, but the CANN net adaptor does not advertise GPU MR. RMA visibility also needs cannAdaptorStreamWaitValue64/StreamWriteValue64 and an Ascend device-consumer kernel; multi-rank RMA remains pending validation"
     ;;
   runner)
     FLAGCX_CI_TEST_LABEL="Ascend runner unit tests" \
@@ -81,7 +76,7 @@ flagcx_ci_run_suite_override() {
   symmem)
     FLAGCX_CI_TEST_LABEL="Ascend symmem unit tests" \
       "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests" || unit_status=$?
-    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run. They need the same hetero communicator, and the runs additionally exited 139: the gtest summary completed and the crash followed during process exit inside flagcxProxyService, an independent proxy lifecycle defect owned by the core maintainers. SymMem VMM routes separately need cannAdaptorSymPhysAlloc/Free plus flat map/unmap, and CANN IPC needs the cannAdaptorIpcMemHandle* contract"
+    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run. A prior multi-rank diagnostic exited 139 during process teardown inside flagcxProxyService; that lifecycle failure still needs a hardware stack trace. SymMem VMM routes separately need cannAdaptorSymPhysAlloc/Free plus flat map/unmap, and CANN IPC needs the cannAdaptorIpcMemHandle* contract"
     ;;
   esac
 
@@ -102,6 +97,8 @@ flagcx_ci_prepare() {
   npu-smi info
   ls -l /dev/davinci* /dev/infiniband
   command -v g++
+  command -v python3
+  python3 "$FLAGCX_CI_ENV_DIR/../ci/check_ascend_pci_runtime.py"
   if [[ "$suite" == core ]]; then
     flagcx_ci_validate_rdma core
   fi

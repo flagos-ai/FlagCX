@@ -695,7 +695,7 @@ flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
       INFO(FLAGCX_INIT, "preparing to detect APU for rank %d", r);
       char busId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
       INFO(FLAGCX_INIT, "converting busId to string");
-      FLAGCXCHECK(int64ToBusId(comm->peerInfo[r].busId, busId));
+      FLAGCXCHECK(int64ToBusId(comm->peerInfo[r].busId, busId, sizeof(busId)));
       struct flagcxXmlNode *node;
       FLAGCXCHECK(flagcxTopoFillApu(xml, busId, &node));
       if (node == NULL) {
@@ -841,8 +841,8 @@ flagcxTopoConnectPeerApus(struct flagcxTopoServer *topoServer) {
     struct flagcxTopoNode *src = topoServer->nodes[APU].nodes + i;
     char srcBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
     int srcDev = -1;
-    if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(src->id), srcBusId) !=
-            flagcxSuccess ||
+    if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(src->id), srcBusId,
+                     sizeof(srcBusId)) != flagcxSuccess ||
         deviceAdaptor->getDeviceByPciBusId(&srcDev, srcBusId) != flagcxSuccess)
       continue;
     for (int j = i + 1; j < topoServer->nodes[APU].count; ++j) {
@@ -852,8 +852,8 @@ flagcxTopoConnectPeerApus(struct flagcxTopoServer *topoServer) {
         continue;
       char dstBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
       int dstDev = -1;
-      if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(dst->id), dstBusId) !=
-              flagcxSuccess ||
+      if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(dst->id), dstBusId,
+                       sizeof(dstBusId)) != flagcxSuccess ||
           deviceAdaptor->getDeviceByPciBusId(&dstDev, dstBusId) !=
               flagcxSuccess)
         continue;

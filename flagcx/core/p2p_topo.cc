@@ -5,6 +5,7 @@
 #include "p2p_topo.h"
 #include "adaptor.h"
 #include "flagcx_net.h"
+#include "graph.h"
 #include "net.h"
 #include "utils.h"
 #include "xml.h"
@@ -90,31 +91,44 @@ flagcxResult_t flagcxP2pTopoInit(struct flagcxNetAdaptor *netAdaptor,
     return flagcxNotSupported;
   }
 
-  struct flagcxP2pTopoManager *m;
-  FLAGCXCHECK(flagcxCalloc(&m, 1));
+  struct flagcxP2pTopoManager *m = NULL;
+  struct flagcxXml *xml = NULL;
+  flagcxResult_t result = flagcxSuccess;
+  int nGpus = 0;
+  uint64_t localHostHash = 0;
+  FLAGCXCHECKGOTO(flagcxCalloc(&m, 1), result, fail);
 
   // Build XML topology
-  struct flagcxXml *xml;
-  FLAGCXCHECK(xmlAlloc(&xml, FLAGCX_TOPO_XML_MAX_NODES));
+  FLAGCXCHECKGOTO(xmlAlloc(&xml, FLAGCX_TOPO_XML_MAX_NODES), result, fail);
 
-  int nGpus = 0;
-  FLAGCXCHECK(flagcxP2pTopoBuildXml(netAdaptor, xml, &nGpus));
+  FLAGCXCHECKGOTO(flagcxP2pTopoBuildXml(netAdaptor, xml, &nGpus), result, fail);
 
   // Convert XML to server topology
-  uint64_t localHostHash = getHostHash();
-  FLAGCXCHECK(
-      flagcxTopoGetServerTopoFromXml(xml, &m->topoServer, localHostHash));
+  localHostHash = getHostHash();
+  FLAGCXCHECKGOTO(
+      flagcxTopoGetServerTopoFromXml(xml, &m->topoServer, localHostHash),
+      result, fail);
 
   free(xml);
+  xml = NULL;
 
   // Compute shortest paths between all nodes
-  FLAGCXCHECK(flagcxTopoComputePaths(m->topoServer, NULL));
+  FLAGCXCHECKGOTO(flagcxTopoComputePaths(m->topoServer, NULL), result, fail);
 
   m->nGpus = nGpus;
   *mgr = m;
 
   INFO(FLAGCX_INIT, "P2P topo manager initialized: %d GPUs", nGpus);
   return flagcxSuccess;
+
+fail:
+  free(xml);
+  if (m != NULL) {
+    if (m->topoServer != NULL)
+      flagcxTopoFree(m->topoServer);
+    free(m);
+  }
+  return result;
 }
 
 flagcxResult_t flagcxP2pTopoGetNetDev(struct flagcxP2pTopoManager *mgr,
@@ -135,7 +149,8 @@ flagcxResult_t flagcxP2pTopoDestroy(struct flagcxP2pTopoManager *mgr) {
   if (mgr == NULL) {
     return flagcxSuccess;
   }
-  free(mgr->topoServer);
+  if (mgr->topoServer != NULL)
+    flagcxTopoFree(mgr->topoServer);
   free(mgr);
   return flagcxSuccess;
 }

@@ -5,6 +5,7 @@ paths_watch:
   - .github/configs/ascend.yml
   - .github/scripts/set_env/ascend.sh
   - .github/scripts/ci/run_ascend_workload.sh
+  - .github/scripts/ci/check_ascend_pci_runtime.py
   - .github/scripts/ci/run_ascend_diagnostics.sh
   - .github/scripts/ci/run_ascend_runner_mpi.sh
   - .github/workflows/unit_tests_common.yml
