@@ -32,9 +32,41 @@ TEST_F(BusIdLookup, MissingAdaptorReturnsUnsupported) {
   EXPECT_EQ(id, -1);
 }
 
-TEST_F(BusIdLookup, MissingCallbackReturnsUnsupported) {
+TEST_F(BusIdLookup, MissingCallbackYieldsStableNonPciIdentity) {
+  // Backends without a PCI bus ID still need an identity that distinguishes
+  // devices on one host, because that is all comm->busId is compared for.
+  int64_t first = -1;
+  int64_t second = -1;
+  EXPECT_EQ(getBusId(2, &first), flagcxSuccess);
+  EXPECT_EQ(getBusId(2, &second), flagcxSuccess);
+  EXPECT_EQ(first, second) << "identity must be stable for one device";
+
+  int64_t other = -1;
+  EXPECT_EQ(getBusId(3, &other), flagcxSuccess);
+  EXPECT_NE(first, other) << "distinct devices must not alias";
+}
+
+TEST_F(BusIdLookup, NonPciIdentityCannotResolveAsSysfsPath) {
+  // The synthetic domain must stay outside the range a real BDF can take, so
+  // that a consumer treating it as a /sys/class/pci_bus location fails
+  // instead of matching an unrelated device.
   int64_t id = -1;
-  EXPECT_EQ(getBusId(0, &id), flagcxNotSupported);
+  ASSERT_EQ(getBusId(1, &id), flagcxSuccess);
+
+  char text[64] = {0};
+  ASSERT_EQ(int64ToBusId(id, text), flagcxSuccess);
+  EXPECT_STREQ(text, "ffff:00:01.0");
+
+  int64_t roundTrip = 0;
+  ASSERT_EQ(busIdToInt64(text, &roundTrip), flagcxSuccess);
+  EXPECT_EQ(roundTrip, id);
+}
+
+TEST_F(BusIdLookup, NonPciIdentityRejectsUnaddressableDeviceIndex) {
+  // Truncating the index would hand two devices the same identity and trip
+  // the duplicate-device check, so it is refused instead.
+  int64_t id = -1;
+  EXPECT_EQ(getBusId(0x100, &id), flagcxNotSupported);
   EXPECT_EQ(id, -1);
 }
 
