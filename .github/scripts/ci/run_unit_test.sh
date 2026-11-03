@@ -65,7 +65,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|topo|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -486,10 +486,6 @@ run_suite() {
         echo "P2P failures: unit=$unit_status MPI_WRITE=$mpi_status shared=$shared_status shared_MPI_WRITE=$shared_mpi_status" >&2
         return 1
       fi
-      ;;
-    topo)
-      FLAGCX_CI_TEST_LABEL="topo unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       ;;
     rma)
       local unit_status=0
@@ -932,7 +928,7 @@ run_suite() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|topo|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   *)

@@ -719,7 +719,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "core",
                 "adaptor",
                 "device_api_host",
-                "topo",
                 "p2p",
                 "rma",
                 "runner",
@@ -795,13 +794,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", ascend_env)
         self.assertNotIn("flagcx_ci_build_suite_additional", ascend_env)
         self.assertNotIn("flagcx_ci_run_suite_additional", ascend_env)
-        self.assertFalse(
+        # topo is not a standalone suite: no platform runs one, and the P2P
+        # topology cases live in core so every platform picks them up.
+        self.assertTrue(
             (REPO_ROOT / "test/unittest/core/test_p2p_topo.cpp").exists()
         )
-        self.assertTrue(
-            (REPO_ROOT / "test/unittest/topo/test_p2p_topo.cpp").exists()
+        self.assertFalse((REPO_ROOT / "test/unittest/topo").exists())
+        self.assertIn("device_api_host|p2p", ascend_env)
+        self.assertNotIn(
+            "\n  - topo\n",
+            (REPO_ROOT / ".github/configs/ascend.yml").read_text(),
         )
-        self.assertIn("device_api_host|topo|p2p", ascend_env)
         self.assertTrue(
             (REPO_ROOT / "test/unittest/kernel/test_deviceptr_args.cpp").exists()
         )
@@ -1120,7 +1123,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn(
-            'adaptor|topo|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
             unit_runner,
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)

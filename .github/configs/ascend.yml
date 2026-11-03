@@ -15,7 +15,6 @@ paths_watch:
   - makefiles/ascend.mk
   - test/make.inc
   - test/unittest/adaptor/net_test_utils.h
-  - test/unittest/topo/**
   - flagcx/core/p2p_topo.cc
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:ascend-dev-fixed-20261028-debug
 runner_labels:
@@ -56,7 +55,6 @@ unit_test_suites:
   - core
   - adaptor
   - device_api_host
-  - topo
   - p2p
   - rma
   - runner

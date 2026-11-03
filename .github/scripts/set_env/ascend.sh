@@ -37,7 +37,7 @@ FLAGCX_CI_NODE2_MPI_ARGS=(
 
 flagcx_ci_configure_suite() {
   case "$1" in
-    core|adaptor|device_api_host|topo|p2p|rma|runner|service|symmem|perf|torch-api) ;;
+    core|adaptor|device_api_host|p2p|rma|runner|service|symmem|perf|torch-api) ;;
     *) echo "Ascend CI does not enable suite: $1" >&2; return 1 ;;
   esac
 }
