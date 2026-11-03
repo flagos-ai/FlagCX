@@ -350,11 +350,8 @@ struct flagcxDeviceAdaptor cannAdaptor {
       // Others
       NULL, // flagcxResult_t (*getDeviceProperties)(struct flagcxDevProps
             // *props, int dev);
-      NULL, // flagcxResult_t (*getDevicePciBusId)(char
-            // *pciBusId, int len, int dev);
-      NULL, // flagcxResult_t
-            // (*getDeviceByPciBusId)(int
-            // *dev, const char *pciBusId);
+      NULL, // PCI lookup unsupported.
+      NULL, // PCI reverse lookup unsupported.
       cannAdaptorLaunchHostFunc,
       // DMA buffer
       NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);

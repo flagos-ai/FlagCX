@@ -81,6 +81,7 @@ endif
 UNIT_SRC := test_dev_comm_cleanup.cpp
 UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
+
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
@@ -212,6 +213,7 @@ clean:
 
 run-unit: unit
 	@$(UNIT_TARGET)
+	@$(DEVICEPTR_ARGS_TARGET)
 
 # Env vars for inter-node testing on single node
 HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \

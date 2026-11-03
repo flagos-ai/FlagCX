@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-if [[ $# -ne 7 ]]; then
-  echo "Usage: $0 <platforms-json> <config> <cuda-base> <cuda-specific> <hygon> <metax> <ppu>" >&2
+if [[ $# -ne 8 ]]; then
+  echo "Usage: $0 <platforms-json> <config> <cuda-base> <cuda-specific> <hygon> <metax> <ppu> <ascend>" >&2
   exit 2
 fi
 
@@ -28,7 +28,7 @@ require_success() {
   fi
 }
 
-if selected cuda || selected metax || selected hygon || selected ppu; then
+if selected cuda || selected metax || selected hygon || selected ppu || selected ascend; then
   require_success "Hardware config loading" "$config_result"
 fi
 
@@ -37,6 +37,7 @@ cuda_specific=$2
 hygon=$3
 metax=$4
 ppu=$5
+ascend=$6
 if selected cuda; then
   require_success "CUDA base workload" "$cuda_base"
   require_success "CUDA platform workload" "$cuda_specific"
@@ -49,6 +50,9 @@ if selected metax; then
 fi
 if selected ppu; then
   require_success "PPU workload" "$ppu"
+fi
+if selected ascend; then
+  require_success "Ascend workload" "$ascend"
 fi
 
 echo "All selected platform workloads succeeded."

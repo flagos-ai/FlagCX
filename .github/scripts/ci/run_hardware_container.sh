@@ -100,6 +100,16 @@ pull_image() {
 
 cleanup
 pull_image
+
+# Ascend devices are host-global and cannot be safely shared by concurrent
+# containers. Serialize Ascend jobs even when they come from different
+# workflows or manual runs on the same self-hosted runner. Take the lock
+# after pulling so the image retries above never hold it.
+if [[ "$platform" == "ascend" ]]; then
+  exec 9>/var/lock/flagcx-ascend-ci.lock
+  flock --exclusive --wait 7200 9
+fi
+
 docker run --rm \
   --name "$container_name" \
   "${docker_args[@]}" \

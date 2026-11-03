@@ -60,7 +60,7 @@ flagcx_ci_require_rdma() {
 
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
   case "$platform_name" in
-    cuda|metax|hygon|ppu) ;;
+    cuda|metax|hygon|ppu|ascend) ;;
     *) return 0 ;;
   esac
 
@@ -281,6 +281,11 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
+      local gpu_mr_policy=required
+      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
+        export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
+        gpu_mr_policy=ascend
+      fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
@@ -292,7 +297,7 @@ run_suite() {
         unit_status=$?
       if ((unit_status == 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
-          "$gpu_result_xml" || unit_status=$?
+          "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -403,6 +408,15 @@ run_suite() {
       local shared_status=0
       local shared_mpi_status=0
       local p2p_mpi_env=""
+      local p2p_write_unsupported=0
+      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
+        # The routed WRITE path needs a device-to-NIC topology edge, which
+        # p2p_topo builds from the CANN PCI forward/reverse lookup callbacks.
+        # Those are deliberately unset on this branch, so the interface-level
+        # unit cases below still run while the routed WRITE path cannot.
+        export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
+        p2p_write_unsupported=1
+      fi
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
@@ -411,11 +425,15 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      if ((p2p_write_unsupported)); then
+        echo "Ascend coverage gap: P2P Engine WRITE MPI is not run because flagcxP2pEngineReg() cannot classify a device address without the CANN PCI lookup callbacks; flagcx/core/p2p_topo.cc reports 'required device or network topology callbacks are unavailable', flagcx/core/flagcx_p2p.cc then reports 'failed to classify addr ...: 9' (flagcxNotSupported), and test/unittest/p2p/coll_p2p_engine_write.cpp aborts on 'registering GPU buffer failed'. The p2p unit cases above still run and are not affected"
+      else
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+          make -C "$suite_dir" run-mpi "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" \
+          MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      fi
       # Keep the production/default artifact on the legacy Engine. Platforms
       # build the shared implementation in isolated output trees and run the
       # same unit and WRITE MPI tests against it.
@@ -466,11 +484,12 @@ run_suite() {
       fi
       ;;
     rma)
+      local unit_status=0
       local ipc_status=0
       local network_status=0
       local visibility_status=0
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
       # Keep these as separate invocations so each transport has its own
       # timeout. Collect both statuses so a failure in one path cannot prevent
       # the other path from running and producing a useful result.
@@ -502,6 +521,13 @@ run_suite() {
             # DU uses the existing RMA correctness tests. No separate device
             # consumer kernel is built for this platform.
             ;;
+          ascend)
+            # CANN has no stream wait/write-value support, and the RMA
+            # device-consumer kernel is not built for Ascend. Keep the
+            # platform's IPC/NET correctness runs without this conformance
+            # matrix.
+            echo "Ascend coverage gap: RMA visibility requires cannAdaptorStreamWaitValue64/StreamWriteValue64 (both return flagcxNotSupported) and an Ascend device-consumer kernel, so this conformance matrix is not run"
+            ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
             # READ consumer runs; WRITE records a capability note if BAREX
@@ -531,7 +557,8 @@ run_suite() {
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
           )
         fi
-        if [[ "$platform_name" != "hygon" ]]; then
+        if [[ "$platform_name" != "hygon" &&
+              "$platform_name" != "ascend" ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
@@ -621,16 +648,21 @@ run_suite() {
       else
         network_status=$?
       fi
-      if ((ipc_status != 0 || network_status != 0 || visibility_status != 0)); then
-        echo "RMA MPI failures: IPC=$ipc_status network=$network_status visibility=$visibility_status" >&2
+      if ((unit_status != 0 || ipc_status != 0 || network_status != 0 || visibility_status != 0)); then
+        echo "RMA failures: unit=$unit_status IPC=$ipc_status network=$network_status visibility=$visibility_status" >&2
         return 1
       fi
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       local platform_name
+      local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
+      local runner_mpi_runner="$MPI_RUNNER"
       local -a runner_net_platform_env=()
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == ascend ]]; then
+        runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_ascend_runner_mpi.sh"
+      fi
       if [[ "$platform_name" == "hygon" ]]; then
         # A broken SHCA route otherwise consumes the default RC retry budget
         # for several minutes before the completion reports RETRY_EXC_ERR.
@@ -640,22 +672,22 @@ run_suite() {
         )
       fi
       FLAGCX_CI_TEST_LABEL="runner unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
       cd "$suite_dir"
       FLAGCX_CI_MPI_LABEL="runner default" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
-        ./build/bin/runner_mpi_tests
+        ./build/bin/runner_mpi_tests || default_status=$?
       FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=0 \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-        ./build/bin/runner_mpi_tests
+        ./build/bin/runner_mpi_tests || hybrid_status=$?
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
@@ -670,9 +702,9 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
         -x FLAGCX_CI_EXPECT_PXN=0 \
         "${runner_net_platform_env[@]}" \
-        ./build/bin/runner_mpi_tests
+        ./build/bin/runner_mpi_tests || net_status=$?
       FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
-        "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_P2P_DISABLE=1 \
@@ -689,7 +721,7 @@ run_suite() {
         -x FLAGCX_CI_RUNNER_BYTES=67108864 \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests \
-        --gtest_filter=FlagCXCollTest.AlltoAll
+        --gtest_filter=FlagCXCollTest.AlltoAll || stripe_status=$?
       if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
         local -a pxn_platform_env=()
         local -a pxn_launcher=(env)
@@ -713,7 +745,7 @@ run_suite() {
           )
         fi
         FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank" \
-          "${pxn_launcher[@]}" "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          "${pxn_launcher[@]}" "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
           -x FLAGCX_MEM_ENABLE=1 \
           -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
           -x FLAGCX_P2P_DISABLE=1 \
@@ -727,7 +759,12 @@ run_suite() {
           "${pxn_platform_env[@]}" \
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
-          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll
+          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
+      fi
+      if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
+           net_status != 0 || stripe_status != 0 || pxn_status != 0)); then
+        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status striping=$stripe_status PXN=$pxn_status" >&2
+        return 1
       fi
       ;;
     symmem)
@@ -887,10 +924,8 @@ run_suite() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api_host|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
-    ;;
-  device_api|device_api_unified_ir)
     ;;
   *)
     echo "Unsupported unit test suite: $SUITE" >&2
@@ -900,4 +935,18 @@ esac
 
 build_project
 build_suite
-run_suite
+set +e
+(
+  set -e
+  run_suite
+)
+suite_status=$?
+set -e
+if ((suite_status != 0)); then
+  if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend &&
+        "$suite_status" != 130 && "$suite_status" != 143 ]]; then
+    bash "$PROJECT_ROOT/.github/scripts/ci/run_ascend_diagnostics.sh" "$SUITE" || \
+      echo "Ascend crash diagnostics did not complete; preserving suite exit=$suite_status" >&2
+  fi
+  exit "$suite_status"
+fi

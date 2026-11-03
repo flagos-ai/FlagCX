@@ -6,7 +6,10 @@
 #define FLAGCX_TEST_UNITTEST_ADAPTOR_NET_TEST_UTILS_H_
 
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
+#include "adaptor.h"
 #include "flagcx.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
@@ -29,10 +32,40 @@ inline flagcxResult_t getLocalNetDevice(struct flagcxNetAdaptor *netAdaptor,
     return flagcxInternalError;
   }
 
+  const char *firstLocalDevice =
+      std::getenv("FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE");
+  const bool forceFirstLocalDevice =
+      firstLocalDevice != nullptr && std::strcmp(firstLocalDevice, "1") == 0;
+  const bool pciTopologyAvailable =
+      deviceAdaptor != nullptr && deviceAdaptor->getDevicePciBusId != nullptr &&
+      deviceAdaptor->getDeviceByPciBusId != nullptr;
   int gpuDev = 0;
-  result = deviceHandle->getDevice(&gpuDev);
-  if (result != flagcxSuccess) {
-    flagcxDeviceHandleFree(deviceHandle);
+  if (pciTopologyAvailable && !forceFirstLocalDevice) {
+    result = deviceHandle->getDevice(&gpuDev);
+    if (result != flagcxSuccess) {
+      flagcxDeviceHandleFree(deviceHandle);
+      return result;
+    }
+  }
+
+  if (!pciTopologyAvailable || forceFirstLocalDevice) {
+    int gpuCount = 0;
+    result = deviceHandle->getDeviceCount(&gpuCount);
+    if (result == flagcxSuccess && gpuCount > 0) {
+      gpuDev = 0;
+      *netDev = 0;
+    } else if (result == flagcxSuccess) {
+      result = flagcxInternalError;
+    }
+    const flagcxResult_t deviceFreeResult =
+        flagcxDeviceHandleFree(deviceHandle);
+    if (result == flagcxSuccess)
+      result = deviceFreeResult;
+    if (result == flagcxSuccess && selectedGpu != nullptr)
+      *selectedGpu = gpuDev;
+    if (result == flagcxSuccess)
+      fprintf(stderr, "Adaptor tests selected first local accelerator/NIC; "
+                      "PCI proximity is unavailable or disabled.\n");
     return result;
   }
 
