@@ -235,6 +235,27 @@ flagcxResult_t flagcxStreamValueBufferPool::grow() {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxStreamValueBufferPool::reserve(size_t requiredFreeSlots) {
+  if (requiredFreeSlots == 0)
+    return flagcxSuccess;
+  std::lock_guard<std::mutex> lock(mutex);
+  size_t missing = requiredFreeSlots;
+  for (const auto &chunk : chunks) {
+    for (int slot = 0; slot < chunk.capacity; ++slot) {
+      if (chunk.inUse[slot] == 0 && --missing == 0)
+        return flagcxSuccess;
+    }
+  }
+  while (missing != 0) {
+    FLAGCXCHECK(grow());
+    const size_t added = static_cast<size_t>(chunks.back().capacity);
+    if (added >= missing)
+      return flagcxSuccess;
+    missing -= added;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxStreamValueBufferPool::acquire(uint64_t **signals,
                                                     void **dSignals) {
   std::lock_guard<std::mutex> lock(mutex);

@@ -204,6 +204,57 @@ TEST_F(StreamValueProbeTest, PoolClearRequiresAllSlotsToBeReleased) {
   EXPECT_EQ(state.allocations, state.frees);
 }
 
+TEST_F(StreamValueProbeTest, ReservedFreeSlotsNeedNoAllocationDuringAcquire) {
+  uint64_t *held = nullptr;
+  void *deviceSignals = nullptr;
+  ASSERT_EQ(streamValueBufferPool.acquire(&held, &deviceSignals), flagcxSuccess);
+  *held = 19;
+  const size_t requested = streamValueBufferPool.chunks.front().capacity + 1;
+  ASSERT_EQ(streamValueBufferPool.reserve(requested), flagcxSuccess);
+  const int allocations = state.allocations;
+  std::vector<uint64_t *> acquired;
+  for (size_t i = 0; i < requested; ++i) {
+    uint64_t *signals = nullptr;
+    ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals),
+              flagcxSuccess);
+    EXPECT_NE(signals, held);
+    acquired.push_back(signals);
+  }
+  EXPECT_EQ(state.allocations, allocations);
+  EXPECT_EQ(*held, 19u);
+  for (auto *signals : acquired)
+    streamValueBufferPool.release(signals);
+  streamValueBufferPool.release(held);
+  EXPECT_EQ(streamValueBufferPool.clear(), flagcxSuccess);
+  EXPECT_EQ(state.allocations, state.frees);
+}
+
+TEST_F(StreamValueProbeTest, BuiltinOwnersKeepSignalsUntilLastFinalize) {
+  ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
+  ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
+  uint64_t *signals = nullptr;
+  void *deviceSignals = nullptr;
+  ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals), flagcxSuccess);
+  streamValueBufferPool.release(signals);
+  ASSERT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxSuccess);
+  EXPECT_EQ(state.frees, 0);
+  ASSERT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxSuccess);
+  EXPECT_EQ(state.allocations, state.frees);
+}
+
+TEST_F(StreamValueProbeTest, BuiltinFinalizeCanRetryAfterActiveSlotRelease) {
+  ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
+  uint64_t *signals = nullptr;
+  void *deviceSignals = nullptr;
+  ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals), flagcxSuccess);
+  EXPECT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxInvalidUsage);
+  EXPECT_EQ(state.frees, 0);
+  streamValueBufferPool.release(signals);
+  ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
+  ASSERT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxSuccess);
+  EXPECT_EQ(state.allocations, state.frees);
+}
+
 TEST_F(StreamValueProbeTest, MissingPluginDoesNotClearAnActivePool) {
   uint64_t *signals = nullptr;
   void *deviceSignals = nullptr;

@@ -151,6 +151,7 @@ struct flagcxStreamValueBufferPool {
   std::vector<Chunk> chunks;
 
   ~flagcxStreamValueBufferPool();
+  flagcxResult_t reserve(size_t requiredFreeSlots);
   flagcxResult_t acquire(uint64_t **signals, void **dSignals);
   void release(uint64_t *signals);
   flagcxResult_t clear();

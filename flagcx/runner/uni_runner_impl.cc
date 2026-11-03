@@ -6,6 +6,7 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "info.h"
+#include "launch_kernel.h"
 #include "net.h"
 #include "p2p.h"
 #include "proxy.h"
@@ -6614,12 +6615,21 @@ static flagcxResult_t
 prepareUniRunnerP2pConnections(flagcxHeteroComm_t comm,
                                flagcxComm_t consensusComm = nullptr) {
   flagcxUniRunnerState &state = comm->proxyState->uniRunnerState;
-  if (state.netCommStream == NULL && !state.dagPlan.hasGemm &&
-      consensusComm == nullptr)
-    return flagcxSuccess;
+  const bool needsConnections = state.netCommStream != NULL ||
+                                state.dagPlan.hasGemm ||
+                                consensusComm != nullptr;
   flagcxResult_t initResult = flagcxSuccess;
-  if (!comm->proxyState->initialized)
+  if (needsConnections && !comm->proxyState->initialized)
     initResult = flagcxProxyInit(comm);
+  size_t p2pNodes = 0;
+  for (int i = 0; i < state.numDagNodes; ++i)
+    p2pNodes += state.dagNodes[i].nodeType == uniRunnerDagNodeTypeP2p;
+  if (initResult == flagcxSuccess && p2pNodes != 0) {
+    bool streamValueSupported = false;
+    initResult = flagcxStreamValueSupported(&streamValueSupported);
+    if (initResult == flagcxSuccess && streamValueSupported)
+      initResult = streamValueBufferPool.reserve(p2pNodes);
+  }
   if (consensusComm != nullptr) {
     flagcxResult_t common = flagcxSuccess;
     FLAGCXCHECK(
@@ -6628,6 +6638,8 @@ prepareUniRunnerP2pConnections(flagcxHeteroComm_t comm,
       return common;
   }
   FLAGCXCHECK(initResult);
+  if (!needsConnections)
+    return flagcxSuccess;
   bool pending = false;
   for (int i = 0; i < state.numDagNodes; ++i) {
     const auto &node = state.dagNodes[i];
