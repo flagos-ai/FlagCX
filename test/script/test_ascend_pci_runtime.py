@@ -16,7 +16,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 def make_acl(forward_result=0, reverse_result=0, include_forward=True,
-             include_reverse=True):
+             include_reverse=True, duplicate=False, reverse_device=None):
     def acl_init(_):
         return 0
 
@@ -40,14 +40,19 @@ def make_acl(forward_result=0, reverse_result=0, include_forward=True,
     if include_forward:
         def forward(device, out, _):
             if forward_result == 0:
-                out.value = f"0000:3d:{device:02x}.0".encode()
+                pci_device = 0 if duplicate else device
+                out.value = f"0000:3d:{pci_device:02x}.0".encode()
             return forward_result
 
         acl.aclrtDeviceGetPCIBusId = forward
     if include_reverse:
         def reverse(bus_id, out):
             if reverse_result == 0:
-                out._obj.value = int(bus_id.decode().split(":")[2][:2], 16)
+                out._obj.value = (
+                    reverse_device
+                    if reverse_device is not None
+                    else int(bus_id.decode().split(":")[2][:2], 16)
+                )
             return reverse_result
 
         acl.aclrtDeviceGetByPCIBusId = reverse
@@ -103,11 +108,20 @@ class AscendPciRuntimeTest(unittest.TestCase):
         self.assertIn("DCMI", provider)
         self.assertIn("libdcmi.so", loaded)
 
-    def test_unsupported_reverse_lookup_uses_dcmi(self):
-        provider, _ = self.check_with(
-            make_acl(reverse_result=207000), make_dcmi()
-        )
-        self.assertIn("DCMI", provider)
+    def test_unsupported_reverse_lookup_uses_unique_forward_mapping(self):
+        provider, loaded = self.check_with(make_acl(reverse_result=207000))
+        self.assertIn("AscendCL", provider)
+        self.assertEqual(loaded, ["libascendcl.so"])
+
+    def test_duplicate_forward_bdf_rejected_even_if_reverse_is_unsupported(self):
+        with self.assertRaisesRegex(RuntimeError, "duplicate BDF"):
+            self.check_with(make_acl(reverse_result=207000, duplicate=True))
+
+    def test_wrong_or_failed_native_reverse_does_not_pass(self):
+        with self.assertRaisesRegex(RuntimeError, "reverse lookup failed"):
+            self.check_with(make_acl(reverse_device=7))
+        with self.assertRaisesRegex(RuntimeError, "reverse lookup failed"):
+            self.check_with(make_acl(reverse_result=123))
 
     def test_missing_or_partial_ascendcl_pair_uses_dcmi(self):
         for forward, reverse in ((False, False), (True, False), (False, True)):

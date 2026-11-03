@@ -259,12 +259,18 @@ cannPciGetDeviceByBusId(const struct flagcxCannPciApi *api, int *userDeviceId,
   char target[CANN_PCI_BUS_ID_SIZE] = {0};
   int matched = -1;
   enum flagcxCannPciProvider matchedProvider = CANN_PCI_PROVIDER_DCMI;
+  int32_t nativeFound = -1;
+  flagcxResult_t nativeResult = flagcxNotSupported;
 
   if (api == NULL || userDeviceId == NULL || busId == NULL)
     return flagcxInvalidArgument;
   if (!cannPciNormalizeBusId(busId, target, sizeof(target)))
     return flagcxInvalidArgument;
   FLAGCXCHECK(cannPciVisibleDeviceCount(api, &count));
+  if (api->aclGetBusId != NULL && api->aclGetDeviceByBusId != NULL)
+    nativeResult =
+        cannPciMapAclError(api->aclGetDeviceByBusId(busId, &nativeFound),
+                           "aclrtDeviceGetByPCIBusId");
   for (uint32_t device = 0; device < count; ++device) {
     char candidate[CANN_PCI_BUS_ID_SIZE] = {0};
     enum flagcxCannPciProvider candidateProvider;
@@ -282,7 +288,6 @@ cannPciGetDeviceByBusId(const struct flagcxCannPciApi *api, int *userDeviceId,
   if (matchedProvider == CANN_PCI_PROVIDER_ACL) {
     char raw[CANN_PCI_BUS_ID_SIZE] = {0};
     char normalized[CANN_PCI_BUS_ID_SIZE] = {0};
-    int32_t found = -1;
     flagcxResult_t result = cannPciMapAclError(
         api->aclGetBusId(matched, raw, sizeof(raw)), "aclrtDeviceGetPCIBusId");
     if (result == flagcxNotSupported)
@@ -292,13 +297,15 @@ cannPciGetDeviceByBusId(const struct flagcxCannPciApi *api, int *userDeviceId,
     if (!cannPciNormalizeBusId(raw, normalized, sizeof(normalized)) ||
         strcmp(normalized, target) != 0)
       return flagcxUnhandledDeviceError;
-    result = cannPciMapAclError(api->aclGetDeviceByBusId(raw, &found),
-                                "aclrtDeviceGetByPCIBusId");
-    if (result == flagcxNotSupported)
-      return cannPciFindByDcmiBusId(api, target, count, userDeviceId);
-    FLAGCXCHECK(result);
-    if (found != matched)
-      return flagcxUnhandledDeviceError;
+    if (nativeResult != flagcxNotSupported &&
+        (nativeResult != flagcxSuccess || nativeFound != matched)) {
+      int32_t rawFound = -1;
+      result = cannPciMapAclError(api->aclGetDeviceByBusId(raw, &rawFound),
+                                  "aclrtDeviceGetByPCIBusId");
+      FLAGCXCHECK(result);
+      if (rawFound != matched)
+        return flagcxUnhandledDeviceError;
+    }
   }
   *userDeviceId = matched;
   return flagcxSuccess;

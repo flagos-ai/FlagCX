@@ -149,13 +149,13 @@ def check_runtime(load=ctypes.CDLL):
                 found = ctypes.c_int32(-1)
                 result = reverse(bus_id.value, ctypes.byref(found))
                 if result == ACL_FEATURE_NOT_SUPPORTED:
-                    break
+                    continue
                 if result != 0 or found.value != device_id:
                     raise RuntimeError(
                         f"device {device_id} AscendCL PCI reverse lookup failed: {result}"
                     )
             else:
-                return "AscendCL PCI lookup (forward/reverse verified)"
+                return "AscendCL PCI lookup (visible BDF mapping verified)"
 
         return check_dcmi(acl, load, count.value)
     finally:
