@@ -49,6 +49,10 @@ case "$workload" in
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     bash "$project_root/test/script/torch_api_test.sh"
+    if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
+      "$PYTHON_BIN" -m pip install --break-system-packages --quiet coverage==7.10.7
+      bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
+    fi
     ;;
   *)
     echo "Unknown MetaX workload: $workload" >&2

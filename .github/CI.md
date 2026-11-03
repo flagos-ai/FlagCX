@@ -64,12 +64,14 @@ tests executed in explicitly managed Docker containers.
 
 ## Python Coverage
 
-The CUDA Torch job measures Python code in `src/flagcx` and the Torch build
-helpers using `plugin/torch/tests/test_*.py`. It does not measure C++ or MPI code.
-The report and artifact are `coverage-cuda-gpu-torch.json`. Coverage runs inside
-the configured CUDA container, using the built plugin. The report is persisted
-through the attempt-log mount and copied to the runner for upload. Test failure
-still fails CI, even when a partial coverage report is generated.
+The CUDA, Hygon, MetaX, and PPU Torch jobs run `plugin/torch/tests/test_*.py`
+and measure Python code in `src/flagcx` and the Torch build helpers. The suite
+currently contains 17 tests. It does not measure C++ or MPI code, or the Torch
+API example that runs before coverage starts. Each platform produces a separate
+`coverage-<platform>-gpu-torch.json` report and artifact. Coverage runs inside
+the configured hardware container, using the built plugin. The report is
+persisted through the attempt-log mount and copied to the runner for upload.
+Python test failure still fails CI, even when a partial coverage report is generated.
 
 Repository configuration:
 

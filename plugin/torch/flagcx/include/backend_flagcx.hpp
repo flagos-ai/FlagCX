@@ -13,6 +13,8 @@
 #include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/python.h>
 
+#include <c10/core/Storage.h>
+
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -367,7 +369,9 @@ protected:
     bool recorded = false;
     bool completionUncertain = false;
     bool ownsStreamWrapper = false;
-    std::vector<at::Tensor> tensors;
+    // Storage keeps queued buffers alive without retaining Python Tensor
+    // wrappers that would need the GIL when released by the reaper.
+    std::vector<c10::Storage> storages;
   };
   std::list<inflightTensorBatch> inflightTensorBatches_;
   std::list<inflightTensorBatch> reapingTensorBatches_;

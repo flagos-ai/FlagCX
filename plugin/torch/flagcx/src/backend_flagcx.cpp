@@ -332,12 +332,30 @@ void recordFlagcxTuneObject(const flagcxBackend::TuneObjectKey &key,
 
 } // namespace
 
-bool flagcxWork::isCompleted() { return future_->completed(); }
+bool flagcxWork::isCompleted() {
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ASCEND_ADAPTOR)
+  int previousDevice = 0;
+  C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  bool complete = false;
+  try {
+    complete = event_->query();
+  } catch (...) {
+    devHandle_->setDevice(previousDevice);
+    throw;
+  }
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(previousDevice), std::nullopt);
+  return complete;
+#else
+  return future_->completed();
+#endif
+}
 
 bool flagcxWork::isSuccess() const { return future_->hasValue(); }
 
 bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
-#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) &&                                    \
+    (defined(USE_ENFLAME_ADAPTOR) || defined(USE_ASCEND_ADAPTOR))
   int previousDevice = 0;
   C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
@@ -358,7 +376,8 @@ bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
-#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) &&                                    \
+    (defined(USE_ENFLAME_ADAPTOR) || defined(USE_ASCEND_ADAPTOR))
   wait();
 #endif
   return future_;
@@ -931,12 +950,14 @@ flagcxBackend::retainedTensorBatch::~retainedTensorBatch() noexcept {
 }
 
 void flagcxBackend::retainedTensorBatch::add(const at::Tensor &tensor) {
-  batch_->tensors.push_back(tensor);
+  batch_->storages.push_back(tensor.storage());
 }
 
 void flagcxBackend::retainedTensorBatch::add(
     const std::vector<at::Tensor> &tensors) {
-  batch_->tensors.insert(batch_->tensors.end(), tensors.begin(), tensors.end());
+  for (const auto &tensor : tensors) {
+    add(tensor);
+  }
 }
 
 void flagcxBackend::retainedTensorBatch::finish() {
@@ -1032,9 +1053,9 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
           finishTensorBatchOnError(batch, mayHaveSubmitted);
         }
       });
-      batch->tensors.reserve(pairCoalesce_.pendingOps.size());
+      batch->storages.reserve(pairCoalesce_.pendingOps.size());
       for (const auto &op : pairCoalesce_.pendingOps) {
-        batch->tensors.push_back(op.tensor);
+        batch->storages.push_back(op.tensor.storage());
       }
       size_t i = 0;
       const size_t n = pairCoalesce_.pendingOps.size();
@@ -2052,7 +2073,7 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
         finishTensorBatchOnError(batch, mayHaveSubmitted);
       }
     });
-    batch->tensors.push_back(tensor);
+    batch->storages.push_back(tensor.storage());
     const int peerRank = (rank_ < dstRank) ? 1 : 0;
     mayHaveSubmitted = true;
     C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
@@ -2066,7 +2087,7 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
         heteroCoalesce_.batch = prepareTensorBatch(deviceId_, stream);
         heteroCoalesce_.deviceId = deviceId_;
       }
-      (*heteroCoalesce_.batch)->tensors.push_back(tensor);
+      (*heteroCoalesce_.batch)->storages.push_back(tensor.storage());
       heteroCoalesce_.mayHaveSubmitted = true;
       C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
                                    flagcxDataType, dstRank, comm_, stream),
@@ -2081,7 +2102,7 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
         finishTensorBatchOnError(batch, mayHaveSubmitted);
       }
     });
-    batch->tensors.push_back(tensor);
+    batch->storages.push_back(tensor.storage());
     mayHaveSubmitted = true;
     C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
                                  flagcxDataType, dstRank, comm_, stream),
@@ -2169,7 +2190,7 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
         finishTensorBatchOnError(batch, mayHaveSubmitted);
       }
     });
-    batch->tensors.push_back(tensor);
+    batch->storages.push_back(tensor.storage());
     const int peerRank = (rank_ < srcRank) ? 1 : 0;
     mayHaveSubmitted = true;
     C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
@@ -2183,7 +2204,7 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
         heteroCoalesce_.batch = prepareTensorBatch(deviceId_, stream);
         heteroCoalesce_.deviceId = deviceId_;
       }
-      (*heteroCoalesce_.batch)->tensors.push_back(tensor);
+      (*heteroCoalesce_.batch)->storages.push_back(tensor.storage());
       heteroCoalesce_.mayHaveSubmitted = true;
       C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
                                    flagcxDataType, srcRank, comm_, stream),
@@ -2198,7 +2219,7 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
         finishTensorBatchOnError(batch, mayHaveSubmitted);
       }
     });
-    batch->tensors.push_back(tensor);
+    batch->storages.push_back(tensor.storage());
     mayHaveSubmitted = true;
     C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
                                  flagcxDataType, srcRank, comm_, stream),
