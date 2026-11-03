@@ -71,8 +71,35 @@ finish() {
 }
 trap finish EXIT
 
+pull_image() {
+  local attempt pull_log status
+  for attempt in 1 2 3; do
+    pull_log="$log_dir/image-pull-attempt-$attempt.log"
+    if docker pull "$image" >"$pull_log" 2>&1; then
+      cat "$pull_log"
+      printf -- '- **Image pull:** succeeded on attempt %s/3\n' "$attempt" >> "$summary_file"
+      return 0
+    else
+      status=$?
+    fi
+    cat "$pull_log" >&2
+    # Retry registry/network outages only; authentication, missing manifests and
+    # unknown errors still fail immediately. Never substitute a cached image.
+    if [[ "$attempt" == 3 ]] || grep -Eiq \
+        'unauthorized|authentication required|no basic auth credentials|pull access denied|manifest unknown|invalid reference format' \
+        "$pull_log" || ! grep -Eiq \
+        'timeout|timed out|connection reset|connection refused|temporary failure|no such host|network is unreachable|unexpected (HTTP )?status.*50[0-9]|service unavailable|bad gateway|internal server error' \
+        "$pull_log"; then
+      printf -- '- **Image pull:** failed on attempt %s/3 (exit=%s)\n' "$attempt" "$status" >> "$summary_file"
+      return "$status"
+    fi
+    echo "::warning::Image pull attempt $attempt/3 failed; retrying in $((attempt * 5)) seconds. Log: $pull_log" >&2
+    sleep "$((attempt * 5))"
+  done
+}
+
 cleanup
-docker pull "$image"
+pull_image
 docker run --rm \
   --name "$container_name" \
   "${docker_args[@]}" \

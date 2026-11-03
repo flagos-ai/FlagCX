@@ -96,6 +96,7 @@ inline c10::Stream flagcxToC10Stream(flagcxStream_t stream, int device_id) {
 class flagcxEvent {
 public:
   virtual ~flagcxEvent() = default;
+  virtual bool query() { return false; }
 
   virtual void record(const int deviceId) = 0;
   virtual void record(const flagcxStream_t &stream, const int deviceId) = 0;
@@ -191,7 +192,7 @@ class flagcxCannEvent : public flagcxEvent {
 public:
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
   flagcxCannEvent() {
-    TORCH_CHECK(aclrtCreateEventWithFlag(&event_, ACL_EVENT_TIME_LINE) ==
+    TORCH_CHECK(aclrtCreateEventWithFlag(&event_, ACL_EVENT_SYNC) ==
                     ACL_SUCCESS,
                 "aclrtCreateEventWithFlag failed");
   }
@@ -226,6 +227,13 @@ public:
     TORCH_CHECK(aclrtStreamWaitEvent(*reinterpret_cast<aclrtStream *>(stream),
                                      event_) == ACL_SUCCESS,
                 "aclrtStreamWaitEvent failed");
+  }
+
+  bool query() override {
+    aclrtEventRecordedStatus status;
+    TORCH_CHECK(aclrtQueryEventStatus(event_, &status) == ACL_SUCCESS,
+                "aclrtQueryEventStatus failed");
+    return status == ACL_EVENT_RECORDED_STATUS_COMPLETE;
   }
 
 private:
