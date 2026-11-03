@@ -5,6 +5,7 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "comm.h"
+#include <cstring>
 #include <map>
 #include <vector>
 
@@ -65,6 +66,15 @@ std::map<flagcxResult_t, HcclResult> f2h_ret_map = {
     {flagcxInvalidArgument, HCCL_E_PARA},
     {flagcxRemoteError, HCCL_E_REMOTE},
     {flagcxUnhandledDeviceError, HCCL_E_RESERVED}};
+
+static flagcxResult_t hcclResultToFlagcx(HcclResult result) {
+  if (result == HCCL_SUCCESS)
+    return flagcxSuccess;
+  auto it = h2f_ret_map.find(result);
+  return it != h2f_ret_map.end() && it->second != flagcxSuccess
+             ? it->second
+             : flagcxUnhandledCCLError;
+}
 
 struct HcclSendRecvItemEx {
   flagcxInnerComm_t comm;
@@ -134,8 +144,7 @@ flagcxResult_t hcclAdaptorCommSuspend(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t hcclAdaptorCommCount(const flagcxInnerComm_t comm, int *count) {
-  return (flagcxResult_t)
-      h2f_ret_map[HcclGetRankSize(comm->base, (uint32_t *)count)];
+  return hcclResultToFlagcx(HcclGetRankSize(comm->base, (uint32_t *)count));
 }
 
 // TODO: unsupported
@@ -146,8 +155,7 @@ flagcxResult_t hcclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
 
 flagcxResult_t hcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
                                        int *rank) {
-  return (
-      flagcxResult_t)h2f_ret_map[HcclGetRankId(comm->base, (uint32_t *)rank)];
+  return hcclResultToFlagcx(HcclGetRankId(comm->base, (uint32_t *)rank));
 }
 
 // TODO: unsupported
@@ -381,6 +389,25 @@ hcclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
 flagcxResult_t hcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
                                          flagcxInnerDevComm_t /*devComm*/) {
   return flagcxNotSupported;
+}
+
+flagcxResult_t hcclAdaptorCommGetName(flagcxInnerComm_t comm, char *name,
+                                      size_t capacity) {
+  if (capacity < COMM_NAME_MAX_LENGTH)
+    return flagcxInvalidArgument;
+  // HcclGetCommName is a weak symbol in the CANN headers.
+  if (HcclGetCommName == nullptr)
+    return flagcxNotSupported;
+  char commName[COMM_NAME_MAX_LENGTH] = {};
+  auto result = hcclResultToFlagcx(HcclGetCommName(comm->base, commName));
+  if (result != flagcxSuccess)
+    return result;
+  auto end =
+      static_cast<const char *>(memchr(commName, '\0', sizeof(commName)));
+  if (end == nullptr || end == commName)
+    return flagcxInternalError;
+  memcpy(name, commName, end - commName + 1);
+  return flagcxSuccess;
 }
 
 struct flagcxCCLAdaptor hcclAdaptor = {

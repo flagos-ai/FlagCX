@@ -3,6 +3,9 @@
 #include "flagcx.h"
 #include "hccl/hccl.h"
 #include <map>
+
+flagcxResult_t hcclAdaptorCommGetName(struct flagcxInnerComm *comm, char *name,
+                                      size_t capacity);
 struct flagcxInnerDevComm {};
 
 struct flagcxInnerComm {

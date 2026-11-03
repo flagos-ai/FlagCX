@@ -10,6 +10,8 @@
 
 #include "adaptor.h"
 #include "flagcx.h"
+#include "flagcx_tuner.h"
+#include "global_comm.h"
 #include "topo.h"
 
 TEST(DeviceAdaptorCompatibilityTest, V1UpgradePreservesSignalAcquire) {
@@ -1064,6 +1066,36 @@ TEST_F(DeviceAdaptorTest, IpcMemHandleClose) {
     GTEST_SKIP() << "IPC memory handles are not supported";
   }
   EXPECT_EQ(result, flagcxInvalidArgument);
+}
+
+TEST(HcclCommNameTest, RejectsInvalidArguments) {
+  flagcxComm comm{};
+  char name[128];
+  EXPECT_EQ(flagcxCommGetHcclCommName(nullptr, name, sizeof(name)),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, nullptr, sizeof(name)),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, name, 0), flagcxInvalidArgument);
+}
+
+TEST(HcclCommNameTest, RejectsHybridCommunicator) {
+  flagcxComm comm{};
+  comm.commType = flagcxCommunicatorHybrid;
+  char name[128];
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, name, sizeof(name)),
+            flagcxNotSupported);
+  EXPECT_EQ(name[0], '\0');
+}
+
+TEST(HcclCommNameTest, RejectsTunedCommunicator) {
+  flagcxComm comm{};
+  flagcxTuner_t tuner{};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.tuner = &tuner;
+  char name[128] = {};
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, name, sizeof(name)),
+            flagcxNotSupported);
+  EXPECT_EQ(name[0], '\0');
 }
 
 int main(int argc, char **argv) {

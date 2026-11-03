@@ -664,6 +664,22 @@ void flagcxBackend::initComm() {
 #endif
 }
 
+std::optional<std::string> flagcxBackend::getHcclCommName(int device) {
+#ifdef USE_ASCEND_ADAPTOR
+  TORCH_CHECK(device >= 0 && device < nDevs_, "Invalid NPU device index ",
+              device);
+  initComm(at::Device(at::DeviceType::PrivateUse1, device));
+  char name[128] = {};
+  auto ret = flagcxCommGetHcclCommName(comm_, name, sizeof(name));
+  if (ret == flagcxNotSupported)
+    return std::nullopt;
+  C10D_FLAGCX_CHECK(ret, std::nullopt);
+  return std::string(name);
+#else
+  return std::nullopt;
+#endif
+}
+
 flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
   std::string key;
   int numRanks;
@@ -2300,6 +2316,17 @@ c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createFlagcxBackend", &flagcxBackend::createFlagcxBackend);
+  m.def(
+      "get_hccl_comm_name",
+      [](const c10::intrusive_ptr<Backend> &backend, int device) {
+        auto *flagcx = dynamic_cast<flagcxBackend *>(backend.get());
+        TORCH_CHECK(flagcx != nullptr, "Expected a FlagCX backend");
+        return flagcx->getHcclCommName(device);
+      },
+      py::arg("backend"), py::arg("device"),
+      "Return an HCCL name or None when unsupported. First use initializes the "
+      "communicator collectively; all group ranks must participate. Keep the "
+      "group alive and order external operations against FlagCX collectives.");
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
