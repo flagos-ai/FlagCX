@@ -20,7 +20,11 @@ FLAGCX_CI_RUNNER_NP=4
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
 FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0
 FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
-export FLAGCX_CI_RUNNER_HETERO_SUPPORTED FLAGCX_CI_SYMMEM_VMM_SUPPORTED
+# CoreX cannot run the heterogeneous P2P path yet. Forced NET, QP striping,
+# and PXN stay enabled independently so CI validates those supported routes.
+FLAGCX_CI_RUNNER_NET_SUPPORTED=1
+export FLAGCX_CI_RUNNER_HETERO_SUPPORTED FLAGCX_CI_RUNNER_NET_SUPPORTED \
+  FLAGCX_CI_SYMMEM_VMM_SUPPORTED
 export NP=4
 
 flagcx_ci_skip_suite() {
@@ -52,7 +56,6 @@ flagcx_ci_configure_suite() {
   case "$suite" in
     adaptor)
       export FLAGCX_VMM_ENABLE=0
-      export FLAGCX_CI_ADAPTOR_GPU_SKIP_CASES="GpuIput GpuIget GpuBatchPutAndGet GpuBounds"
       ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)

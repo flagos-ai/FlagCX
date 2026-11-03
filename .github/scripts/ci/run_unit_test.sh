@@ -328,10 +328,8 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
-      local gpu_mr_policy=required
       if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-        gpu_mr_policy=ascend
       fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
@@ -344,7 +342,7 @@ run_suite() {
         unit_status=$?
       if ((unit_status == 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
-          "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
+          "$gpu_result_xml" || unit_status=$?
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -743,7 +741,7 @@ run_suite() {
       else
         echo "Skipping heterogeneous runner modes: unsupported on $platform_name CoreX runtime"
       fi
-      if [[ "${FLAGCX_CI_RUNNER_HETERO_SUPPORTED:-1}" == 1 ]]; then
+      if [[ "${FLAGCX_CI_RUNNER_NET_SUPPORTED:-1}" == 1 ]]; then
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -819,11 +817,11 @@ run_suite() {
           ./build/bin/runner_mpi_tests \
           --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
       fi
+      fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
            net_status != 0 || stripe_status != 0 || pxn_status != 0)); then
         echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status striping=$stripe_status PXN=$pxn_status" >&2
         return 1
-      fi
       fi
       ;;
     symmem)

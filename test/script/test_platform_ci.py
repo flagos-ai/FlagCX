@@ -1299,6 +1299,21 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertLess(route_union, vmm_skip_return)
         self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
         self.assertIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0", iluvatar_env)
+        self.assertIn("FLAGCX_CI_RUNNER_NET_SUPPORTED=1", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_ADAPTOR_GPU_SKIP_CASES", iluvatar_env)
+        runner_case = unit_runner[
+            unit_runner.index("    runner)") : unit_runner.index("    symmem)")
+        ]
+        net_gate = runner_case.index(
+            'if [[ "${FLAGCX_CI_RUNNER_NET_SUPPORTED:-1}" == 1 ]]'
+        )
+        hetero_gate = runner_case.index(
+            'if [[ "${FLAGCX_CI_RUNNER_HETERO_SUPPORTED:-1}" == 1 ]]'
+        )
+        self.assertGreater(net_gate, hetero_gate)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET"', runner_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping"', runner_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank"', runner_case)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
             config = (
