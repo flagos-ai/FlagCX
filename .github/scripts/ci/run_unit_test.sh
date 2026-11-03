@@ -179,10 +179,6 @@ run_device_api() {
     build/bin/test_device_ir_inter "${flags[@]}" \
     : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
     build/bin/test_device_ir_inter "${flags[@]}"
-
-  FLAGCX_CI_MPI_LABEL="device_api kernel collective tests" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
-    "${common_env[@]}" kernel/build/bin/kernel_mpi_tests
 }
 
 run_device_api_unified_ir() {

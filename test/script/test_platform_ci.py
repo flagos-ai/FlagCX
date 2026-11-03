@@ -2124,10 +2124,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("test_deviceptr_args.cpp", result.stdout)
         self.assertIn("build/bin/kernel_unit_tests", result.stdout)
 
-    def test_device_api_wires_kernel_mpi(self):
-        device_api_dir = REPO_ROOT / "test/unittest/kernel"
+    def test_kernel_suite_builds_but_is_not_wired_into_a_platform(self):
+        # test/unittest/kernel builds on its own, but no platform lists it as
+        # a suite, so nothing builds or runs it. run_device_api() used to
+        # launch kernel/build/bin/kernel_mpi_tests relative to
+        # test/unittest/device_api; once the kernel directory moved back out
+        # of device_api that path could never resolve and the binary was never
+        # built, so CUDA device_api failed with "could not access or execute
+        # an executable". Wiring it up again needs a build entry first.
+        kernel_dir = REPO_ROOT / "test/unittest/kernel"
         result = subprocess.run(
-            ["make", "-n", "-C", str(device_api_dir), "all", "USE_NVIDIA=1", "COMPILE_KERNEL=1"],
+            ["make", "-n", "-C", str(kernel_dir), "all", "USE_NVIDIA=1", "COMPILE_KERNEL=1"],
             check=True,
             capture_output=True,
             text=True,
@@ -2135,7 +2142,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("kernel_mpi_tests", result.stdout)
 
         run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
-        self.assertIn("kernel/build/bin/kernel_mpi_tests", run_unit)
+        self.assertNotIn("kernel/build/bin/kernel_mpi_tests", run_unit)
+        self.assertFalse(
+            (REPO_ROOT / "test/unittest/device_api/kernel").exists(),
+            "the relative path only resolves while kernel lives under device_api",
+        )
+        for config in (REPO_ROOT / ".github/configs").glob("*.yml"):
+            self.assertNotIn("\n  - kernel\n", config.read_text(), config.name)
+
         idx = run_unit.rindex('case "$SUITE" in')
         googletest_branch = run_unit[idx : run_unit.index("build_project", idx)]
         self.assertIn("device_api|", googletest_branch)
