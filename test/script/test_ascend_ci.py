@@ -15,9 +15,14 @@ class AscendCiTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def test_symmem_net_runs_after_unit_or_ipc_failure(self):
-        for failed in ("unit", "IPC", "local NET fallback", "NET MR", "none"):
-            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as tmp:
+    def test_symmem_override_runs_unit_only_and_propagates_its_status(self):
+        # The multi-rank phases stay skipped while the backend gaps they need
+        # are unresolved, so only the single-process phase runs. A failing unit
+        # phase must still fail the suite, otherwise the skip would turn a real
+        # regression green.
+        for unit_fails in (False, True):
+            with self.subTest(unit_fails=unit_fails), \
+                    tempfile.TemporaryDirectory() as tmp:
                 tmp = Path(tmp)
                 log = tmp / "commands"
                 runner = self.script(tmp / "runner", '''
@@ -30,21 +35,24 @@ printf '%s %s\n' "$label" "$*" >> "$COMMAND_LOG"
                      'MPI_RUNNER="$2"; flagcx_ci_run_suite_override symmem /suite',
                      "bash", str(ROOT / ".github/scripts/set_env/ascend.sh"), str(runner)],
                     env={**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
-                         "FAILED_PHASE": failed},
+                         "FAILED_PHASE": "unit" if unit_fails else "none"},
                     capture_output=True, text=True,
                 )
-                self.assertEqual(result.returncode, 0 if failed == "none" else 1,
+                # The unit status is propagated verbatim, so the original exit
+                # code stays visible instead of being flattened to 1.
+                self.assertEqual(result.returncode, 7 if unit_fails else 0,
                                  result.stdout + result.stderr)
                 commands = log.read_text().splitlines()
-                self.assertEqual(len(commands), 4)
-                self.assertIn("local NET fallback", commands[-2])
-                self.assertIn("FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1", commands[-2])
-                self.assertIn("Ascend symmem NET MR and fallback", commands[-1])
-                self.assertIn("FLAGCX_CI_REQUIRE_NET_MR=1", commands[-1])
-                self.assertIn("FLAGCX_HOSTID=node0", commands[-1])
-                self.assertIn("FLAGCX_HOSTID=node1", commands[-1])
-                self.assertIn("RankLocalIpcFailureUsesNetworkMrFallback", commands[-2])
-                self.assertNotIn("FLAGCX_VMM_ENABLE=1", log.read_text())
+                self.assertEqual(len(commands), 1, commands)
+                self.assertIn("symmem_unit_tests", commands[0])
+                # No multi-rank phase may be launched.
+                self.assertNotIn("symmem_mpi_tests", log.read_text())
+                self.assertNotIn("FLAGCX_CI_REQUIRE_NET_MR=1", log.read_text())
+                self.assertNotIn("FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1",
+                                 log.read_text())
+                # The skipped phases must still name what they wait on.
+                self.assertIn("Ascend coverage gap", result.stdout)
+                self.assertIn("flagcxProxyService", result.stdout)
 
     def test_runner_isolates_collectives_and_preserves_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
