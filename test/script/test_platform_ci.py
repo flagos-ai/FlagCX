@@ -581,6 +581,42 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"$BUILD_BIN/symmem_mpi_tests"', symmem_runner)
         self.assertIn('run-mpi-net', unit_runner)
 
+    def test_ascend_unsupported_routes_are_gated_and_explained(self):
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        p2p_case = unit_runner[unit_runner.index("    p2p)") :]
+        p2p_case = p2p_case[: p2p_case.index("    rma)")]
+        rma_case = unit_runner[unit_runner.index("    rma)") :]
+        rma_case = rma_case[: rma_case.index("    runner)")]
+
+        # Both skips default to off, so only the Ascend branch can enable them;
+        # a platform-independent regression would trip these assertions.
+        self.assertIn("local p2p_write_unsupported=0", p2p_case)
+        self.assertIn("p2p_write_unsupported=1", p2p_case)
+        self.assertIn("if ((p2p_write_unsupported)); then", p2p_case)
+        self.assertIn("local -a net_rma_args=()", rma_case)
+
+        # Each skip must name the missing capability in the job log rather than
+        # silently dropping coverage.
+        self.assertIn("flagcxP2pEngineReg", p2p_case)
+        self.assertIn("flagcxNotSupported", p2p_case)
+        self.assertIn("GPU MR", rma_case)
+        self.assertIn("flagcxCommWindowRegister", rma_case)
+
+        # The RMA network phase relies on the fixture's capability path, which
+        # tolerates flagcxNotSupported only; other platforms keep the
+        # unmodified invocation because the array stays empty.
+        self.assertIn(
+            "FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported",
+            rma_case,
+        )
+        self.assertIn('MPIRUN="$MPI_RUNNER" "${net_rma_args[@]}"', rma_case)
+
+        # The p2p unit phase must stay unconditional; only the routed WRITE
+        # phase is gated.
+        self.assertIn('FLAGCX_CI_TEST_LABEL="p2p unit tests"', p2p_case)
+
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
             REPO_ROOT / "flagcx/adaptor/include/ib_common.h"
