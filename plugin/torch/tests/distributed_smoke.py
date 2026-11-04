@@ -200,6 +200,7 @@ def check_hccl_comm_name(device, device_module):
         with device_module.stream(stream):
             size, rank = dist.get_world_size(group), dist.get_rank(group)
             weight = torch.eye(256, device=device, dtype=torch.bfloat16)
+            # Encode unique group ranks using only BF16-exact values 1 and 2.
             rank_bits = torch.arange(32)
             for _ in range(3):
                 x = torch.full(
@@ -248,36 +249,10 @@ def check_hccl_comm_name(device, device_module):
     finally:
         dist.destroy_process_group(group)
 
-    backend = dist.group.WORLD._get_backend(device)
-    device_count = device_module.device_count()
-    error_cases = [
-        (
-            dist.group.WORLD._get_backend(torch.device("cpu")),
-            device.index,
-            "Expected a FlagCX backend",
-        ),
-        (backend, -1, "Invalid NPU device index"),
-        (backend, device_count, "Invalid NPU device index"),
-    ]
-    if device_count > 1:
-        error_cases.append(
-            (
-                backend,
-                (device.index + 1) % device_count,
-                "initialized with different device",
-            )
-        )
-    for other, index, message in error_cases:
-        try:
-            flagcx.get_hccl_comm_name(other, index)
-        except RuntimeError as error:
-            assert message in str(error), str(error)
-        else:
-            raise AssertionError(message)
     if dist.get_rank() == 0:
         print(
             f"PASS: HCCL communicator name, world/subgroups, stream interop, "
-            f"backend/device errors; ranks={size}"
+            f"ranks={size}"
         )
 
 

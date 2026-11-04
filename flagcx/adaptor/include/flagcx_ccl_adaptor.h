@@ -38,7 +38,7 @@ typedef flagcxInnerUniqueId *flagcxInnerUniqueId_t;
 //         allReduce, reduceScatter, allGather, alltoAll, alltoAllv,
 //         send, recv, groupStart, groupEnd
 //   latest — v1 + devCommReqsInit, devCommCreate, devCommDestroy
-//            (Device API host-side management)
+//            (Device API host-side management), optional commGetName
 struct flagcxCCLAdaptor_v1 {
   const char *name;
   // Basic functions
@@ -121,7 +121,7 @@ struct flagcxCCLAdaptor_v1 {
   flagcxResult_t (*groupEnd)();
 };
 
-// Latest version — extends v1 with Device API host-side management pointers.
+// Latest version — extends v1 with Device API management and optional queries.
 // All v1 fields must stay layout-compatible (same order, same offsets).
 struct flagcxCCLAdaptor_latest {
   const char *name;
@@ -212,13 +212,16 @@ struct flagcxCCLAdaptor_latest {
                                   flagcxInnerDevComm_t *devComm);
   flagcxResult_t (*devCommDestroy)(flagcxInnerComm_t comm,
                                    flagcxInnerDevComm_t devComm);
+
+  // Optional native HCCL communicator-name query; NULL when unsupported.
+  flagcxResult_t (*commGetName)(flagcxInnerComm_t comm, char *name,
+                                size_t capacity);
 };
 
 #define flagcxCCLAdaptor flagcxCCLAdaptor_latest
 
 // Upgrade a v1 plugin struct to latest in-place into dst.
-// Fields added beyond v1 (devCommReqsInit, devCommCreate, devCommDestroy) are
-// zeroed (NULL).
+// All fields added beyond v1 are zeroed (NULL).
 static inline void
 flagcxCCLAdaptorUpgradeV1(const struct flagcxCCLAdaptor_v1 *src,
                           struct flagcxCCLAdaptor_latest *dst) {

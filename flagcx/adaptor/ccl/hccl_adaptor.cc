@@ -403,10 +403,10 @@ flagcxResult_t hcclAdaptorCommGetName(flagcxInnerComm_t comm, char *name,
   if (result != flagcxSuccess)
     return result;
   auto end =
-      static_cast<const char *>(memchr(commName, '\0', sizeof(commName)));
+      static_cast<const char *>(std::memchr(commName, '\0', sizeof(commName)));
   if (end == nullptr || end == commName)
     return flagcxInternalError;
-  memcpy(name, commName, end - commName + 1);
+  std::memcpy(name, commName, end - commName + 1);
   return flagcxSuccess;
 }
 
@@ -432,6 +432,8 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
     // Device API
     hcclAdaptorDevCommReqsInit, hcclAdaptorDevCommCreate,
-    hcclAdaptorDevCommDestroy};
+    hcclAdaptorDevCommDestroy,
+    // Optional communicator-name query
+    hcclAdaptorCommGetName};
 
 #endif // USE_ASCEND_ADAPTOR

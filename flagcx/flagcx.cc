@@ -1,8 +1,5 @@
 #include "flagcx.h"
 #include "adaptor.h"
-#ifdef USE_ASCEND_ADAPTOR
-#include "ascend_adaptor.h"
-#endif
 #include "adaptor_plugin_load.h"
 #include "alloc.h"
 #include "bootstrap.h"
@@ -2935,22 +2932,20 @@ flagcxResult_t flagcxCommGetHcclCommName(flagcxComm_t comm, char *name,
   if (comm == nullptr || name == nullptr || capacity == 0)
     return flagcxInvalidArgument;
   name[0] = '\0';
-#ifdef USE_ASCEND_ADAPTOR
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (!useHomoComm(comm) || useHeteroComm() || comm->tuner != nullptr ||
-      cclAdaptors[flagcxCCLAdaptorDevice] != &hcclAdaptor)
+  if (!useHomoComm(comm) || useHeteroComm() || comm->tuner != nullptr)
+    return flagcxNotSupported;
+  auto *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+  if (adaptor == nullptr || adaptor->commGetName == nullptr)
     return flagcxNotSupported;
   if (comm->homoComm == nullptr)
     return flagcxInternalError;
   int rank, size;
-  FLAGCXCHECK(hcclAdaptor.commUserRank(comm->homoComm, &rank));
-  FLAGCXCHECK(hcclAdaptor.commCount(comm->homoComm, &size));
+  FLAGCXCHECK(adaptor->commUserRank(comm->homoComm, &rank));
+  FLAGCXCHECK(adaptor->commCount(comm->homoComm, &size));
   if (rank != comm->rank || size != comm->nranks)
     return flagcxNotSupported;
-  return hcclAdaptorCommGetName(comm->homoComm, name, capacity);
-#else
-  return flagcxNotSupported;
-#endif
+  return adaptor->commGetName(comm->homoComm, name, capacity);
 }
 
 flagcxResult_t flagcxGetVersion(int *version) {

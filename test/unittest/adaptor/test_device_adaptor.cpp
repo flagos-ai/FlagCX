@@ -1084,6 +1084,23 @@ TEST_F(DeviceAdaptorTest, IpcMemHandleClose) {
   EXPECT_EQ(result, flagcxInvalidArgument);
 }
 
+TEST(CCLAdaptorCompatibilityTest, V1UpgradeDisablesNameQuery) {
+  static_assert(sizeof(flagcxCCLAdaptor_v1) == 35 * sizeof(void *),
+                "flagcxCCLAdaptor_v1 ABI changed");
+  static_assert(offsetof(flagcxCCLAdaptor_latest, devCommReqsInit) ==
+                    sizeof(flagcxCCLAdaptor_v1),
+                "latest adaptor no longer preserves the v1 prefix");
+  flagcxCCLAdaptor_v1 v1{};
+  v1.name = "legacy";
+  flagcxCCLAdaptor latest{};
+  latest.commGetName = [](flagcxInnerComm_t, char *, size_t) {
+    return flagcxSuccess;
+  };
+  flagcxCCLAdaptorUpgradeV1(&v1, &latest);
+  EXPECT_EQ(std::memcmp(&v1, &latest, sizeof(v1)), 0);
+  EXPECT_EQ(latest.commGetName, nullptr);
+}
+
 TEST(HcclCommNameTest, RejectsInvalidArguments) {
   flagcxComm comm{};
   char name[128];
