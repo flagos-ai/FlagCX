@@ -328,8 +328,10 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
+      local gpu_mr_policy=required
       if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
+        gpu_mr_policy=ascend
       fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
@@ -342,7 +344,7 @@ run_suite() {
         unit_status=$?
       if ((unit_status == 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
-          "$gpu_result_xml" || unit_status=$?
+          "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -574,10 +576,6 @@ run_suite() {
             # matrix.
             echo "Ascend coverage gap: RMA visibility requires cannAdaptorStreamWaitValue64/StreamWriteValue64 (both return flagcxNotSupported) and an Ascend device-consumer kernel, so this conformance matrix is not run"
             ;;
-          iluvatar)
-            # The CoreX RMA build has no device-consumer visibility kernel.
-            echo "Iluvatar: device-consumer visibility coverage is unavailable; running standard RMA correctness tests."
-            ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
             # READ consumer runs; WRITE records a capability note if BAREX
@@ -608,8 +606,7 @@ run_suite() {
           )
         fi
         if [[ "$platform_name" != "hygon" &&
-              "$platform_name" != "ascend" &&
-              "$platform_name" != "iluvatar" ]]; then
+              "$platform_name" != "ascend" ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \

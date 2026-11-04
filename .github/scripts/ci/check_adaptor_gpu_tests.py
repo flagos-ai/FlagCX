@@ -19,6 +19,8 @@ UNSUPPORTED_GPU_MR_REASON = "Selected net adaptor does not advertise GPU MR"
 
 def check_results(
     path: Path,
+    *,
+    allow_gpu_mr_unsupported: bool = False,
 ) -> tuple[list[str], list[str]]:
     try:
         root = ET.parse(path).getroot()
@@ -47,7 +49,7 @@ def check_results(
             reason = " ".join(
                 " ".join((skipped.get("message", ""), "".join(skipped.itertext()))).split()
             )
-            if UNSUPPORTED_GPU_MR_REASON in reason:
+            if allow_gpu_mr_unsupported and UNSUPPORTED_GPU_MR_REASON in reason:
                 unsupported.append(name)
             else:
                 errors.append(f"NetAdaptorLoopback.{name}: skipped or not run")
@@ -58,9 +60,11 @@ def check_results(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("Usage: check_adaptor_gpu_tests.py <gtest-xml>")
-    failures, unsupported = check_results(Path(sys.argv[1]))
+    if len(sys.argv) != 3 or sys.argv[2] not in {"ascend", "required"}:
+        sys.exit("Usage: check_adaptor_gpu_tests.py <gtest-xml> <ascend|required>")
+    failures, unsupported = check_results(
+        Path(sys.argv[1]), allow_gpu_mr_unsupported=sys.argv[2] == "ascend"
+    )
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)

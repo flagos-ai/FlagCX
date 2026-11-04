@@ -43,11 +43,21 @@ def build_results(path, names, case_markup):
 
 
 class AdaptorGpuCiTest(unittest.TestCase):
-    def check(self, names, skipped=(), *, markup=GPU_MR_SKIP):
+    def check(
+        self,
+        names,
+        skipped=(),
+        *,
+        allow_gpu_mr_unsupported=False,
+        markup=GPU_MR_SKIP,
+    ):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "results.xml"
             build_results(path, names, {name: markup for name in skipped})
-            return MODULE.check_results(path)
+            return MODULE.check_results(
+                path,
+                allow_gpu_mr_unsupported=allow_gpu_mr_unsupported,
+            )
 
     def test_all_cases_pass(self):
         self.assertEqual(self.check(MODULE.REQUIRED_CASES), ([], []))
@@ -64,6 +74,7 @@ class AdaptorGpuCiTest(unittest.TestCase):
         failures, unsupported = self.check(
             MODULE.REQUIRED_CASES,
             skipped=MODULE.REQUIRED_CASES,
+            allow_gpu_mr_unsupported=True,
         )
         self.assertEqual(failures, [])
         self.assertEqual(unsupported, list(MODULE.REQUIRED_CASES))
@@ -72,6 +83,7 @@ class AdaptorGpuCiTest(unittest.TestCase):
         failures, unsupported = self.check(
             MODULE.REQUIRED_CASES,
             skipped=("GpuIget",),
+            allow_gpu_mr_unsupported=True,
             markup=GPU_MR_SKIP_ATTR,
         )
         self.assertEqual(failures, [])
@@ -81,6 +93,7 @@ class AdaptorGpuCiTest(unittest.TestCase):
         failures, _ = self.check(
             MODULE.REQUIRED_CASES,
             skipped=("GpuIget",),
+            allow_gpu_mr_unsupported=True,
             markup=UNRELATED_SKIP,
         )
         self.assertEqual(failures, ["NetAdaptorLoopback.GpuIget: skipped or not run"])

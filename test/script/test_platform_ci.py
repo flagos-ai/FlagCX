@@ -1288,7 +1288,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn(
             "CoreX does not support asynchronous IPC Get", rma_ipc_test
         )
-        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
         )
@@ -1298,9 +1298,21 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertLess(route_union, vmm_skip_return)
         self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
-        self.assertIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0", iluvatar_env)
-        self.assertIn("FLAGCX_CI_RUNNER_NET_SUPPORTED=1", iluvatar_env)
-        self.assertNotIn("FLAGCX_CI_ADAPTOR_GPU_SKIP_CASES", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED=0", iluvatar_env)
+        self.assertNotIn("flagcx_ci_skip_suite", iluvatar_env)
+        rma_makefile = (REPO_ROOT / "test/unittest/rma/Makefile").read_text()
+        iluvatar_kernel_makefile = (
+            REPO_ROOT / "test/kernel/iluvatar/Makefile"
+        ).read_text()
+        self.assertIn("$(USE_ILUVATAR)", rma_makefile)
+        self.assertIn("gdr_visibility.o", iluvatar_kernel_makefile)
+        visibility_runner = unit_runner[
+            unit_runner.index('visibility_filter="RmaTest.DirectConsumerReadVisibility') :
+            unit_runner.index('local -a visibility_common_env=',
+                               unit_runner.index('visibility_filter="RmaTest.DirectConsumerReadVisibility'))
+        ]
+        self.assertNotIn('platform_name != "iluvatar"', visibility_runner)
         runner_case = unit_runner[
             unit_runner.index("    runner)") : unit_runner.index("    symmem)")
         ]

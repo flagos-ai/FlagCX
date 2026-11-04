@@ -18,24 +18,7 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
-FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0
-FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
-# CoreX cannot run the heterogeneous P2P path yet. Forced NET, QP striping,
-# and PXN stay enabled independently so CI validates those supported routes.
-FLAGCX_CI_RUNNER_NET_SUPPORTED=1
-export FLAGCX_CI_RUNNER_HETERO_SUPPORTED FLAGCX_CI_RUNNER_NET_SUPPORTED \
-  FLAGCX_CI_SYMMEM_VMM_SUPPORTED
 export NP=4
-
-flagcx_ci_skip_suite() {
-  case "$1" in
-    device_api|device_api_unified_ir)
-      echo "SKIPPED: $1 requires CoreX device i64 AtomicLoad, which CoreX 4.5 llc cannot compile"
-      return 0
-      ;;
-  esac
-  return 1
-}
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x COREX_VISIBLE_DEVICES=0,1
