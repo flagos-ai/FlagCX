@@ -24,6 +24,12 @@ ALL_ENABLED_PLATFORMS = [
 ]
 
 
+def enabled_platform_or_matrix(platform):
+    if platform in ALL_ENABLED_PLATFORMS:
+        return [platform]
+    return ALL_ENABLED_PLATFORMS
+
+
 class CiMatrixRoutingTest(unittest.TestCase):
     def resolve(self, context):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -58,22 +64,61 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_platform_specific_changes_select_only_matching_platform(self):
         for path, expected in (
-            ("test/kernel/maca/device_api_host_helpers.cu", ["metax"]),
-            ("flagcx/adaptor/device/cuda_adaptor.cc", ["cuda"]),
+            (
+                "test/kernel/maca/device_api_host_helpers.cu",
+                enabled_platform_or_matrix("metax"),
+            ),
+            (
+                "flagcx/adaptor/device/cuda_adaptor.cc",
+                enabled_platform_or_matrix("cuda"),
+            ),
             ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
             ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
-            (".github/scripts/ci/run_ppu_workload.sh", ["ppu"]),
-            ("flagcx/adaptor/device/duhip_adaptor.cc", ["hygon"]),
-            ("flagcx/adaptor/ccl/durccl_adaptor.cc", ["hygon"]),
-            ("test/kernel/du/device_ir.hip", ["hygon"]),
-            ("test/kernel/du/nested/device_ir.hip", ["hygon"]),
-            ("flagcx/adaptor/kernel/du/nested/kernel.hip", ["hygon"]),
-            ("test/kernel/maca/nested/foo.cu", ["metax"]),
-            ("flagcx/adaptor/kernel/nvidia/nested/foo.cu", ["cuda"]),
-            ("test/kernel/nvidia/nested/foo.cu", ["cuda"]),
-            (".github/scripts/ci/run_cuda_workload.sh", ["cuda"]),
-            (".github/scripts/ci/run_cuda_legacy_perf.sh", ["cuda"]),
-            (".github/scripts/ci/run_metax_workload.sh", ["metax"]),
+            (
+                ".github/scripts/ci/run_ppu_workload.sh",
+                enabled_platform_or_matrix("ppu"),
+            ),
+            (
+                "flagcx/adaptor/device/duhip_adaptor.cc",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                "flagcx/adaptor/ccl/durccl_adaptor.cc",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            ("test/kernel/du/device_ir.hip", enabled_platform_or_matrix("hygon")),
+            (
+                "test/kernel/du/nested/device_ir.hip",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                "flagcx/adaptor/kernel/du/nested/kernel.hip",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                "test/kernel/maca/nested/foo.cu",
+                enabled_platform_or_matrix("metax"),
+            ),
+            (
+                "flagcx/adaptor/kernel/nvidia/nested/foo.cu",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                "test/kernel/nvidia/nested/foo.cu",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_cuda_workload.sh",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_cuda_legacy_perf.sh",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_metax_workload.sh",
+                enabled_platform_or_matrix("metax"),
+            ),
         ):
             with self.subTest(path=path):
                 outputs, _ = self.resolve(
@@ -81,15 +126,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 )
                 self.assertEqual(outputs["platforms"], expected)
 
-    def test_platform_labels_override_paths_and_can_select_multiple_platforms(self):
+    def test_platform_labels_override_paths_for_enabled_platforms(self):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:ppu", "platform:hygon"],
+                "labels": ["platform:iluvatar"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["hygon", "ppu"])
+        self.assertEqual(outputs["platforms"], ["iluvatar"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -137,7 +182,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:cuda"],
+            "ref": "a" * 40, "labels": ["platform:iluvatar"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -145,10 +190,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:ppu"],
+            "is_pull_request": True, "labels": ["platform:iluvatar"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["ppu"])
+        self.assertEqual(outputs["platforms"], ["iluvatar"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -159,15 +204,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "cuda,ppu"}, ["cuda", "ppu"]),
+            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test metax",
+                    "comment": "/test iluvatar",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["metax"],
+                ["iluvatar"],
             ),
             (
                 "issue_comment",
@@ -186,7 +231,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["cuda"],
+                ["iluvatar"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):

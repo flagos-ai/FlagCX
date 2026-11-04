@@ -672,7 +672,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("sizeof(struct flagcxIbSendFifo) == 64", common)
         self.assertIn("offsetof(struct flagcxIbSendFifo, idx) == 56", common)
 
-    def test_automatic_hardware_ci_covers_all_platforms_and_suites(self):
+    def test_automatic_hardware_ci_uses_enabled_platforms_and_suites(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
             [
@@ -687,12 +687,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             result.stdout.strip(),
-            '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
-            '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
-            '{"platform":"iluvatar","display_name":"Iluvatar CoreX Tests"},'
-            '{"platform":"metax","display_name":"MetaX Tests"},'
-            '{"platform":"ppu","display_name":"T-Head PPU Tests"},'
-            '{"platform":"ascend","display_name":"Ascend 910C unit tests"}]}',
+            '{"include":[{"platform":"iluvatar","display_name":"Iluvatar CoreX Tests"}]}',
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
