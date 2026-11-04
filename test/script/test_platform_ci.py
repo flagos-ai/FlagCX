@@ -1060,10 +1060,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn(
-            '"$platform_name" != "ascend" &&',
-            rma_case,
+        visibility_start = rma_case.index(
+            'if [[ "$platform_name" != "hygon" &&'
         )
+        visibility_run_condition = rma_case[
+            visibility_start : rma_case.index("RMA_VMM_ENABLE=0", visibility_start)
+        ]
+        self.assertIn(
+            '"$platform_name" != "hygon" &&\n              "$platform_name" != "ascend"',
+            visibility_run_condition,
+        )
+        self.assertNotIn('"$platform_name" != "iluvatar"', visibility_run_condition)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
