@@ -569,8 +569,11 @@ flagcxResult_t cannAdaptorIpcMemHandleFree(flagcxIpcMemHandle_t handle) {
 flagcxResult_t cannAdaptorLaunchHostFunc(flagcxStream_t stream,
                                          void (*fn)(void *), void *args) {
   if (stream != NULL) {
-    DEVCHECK(
-        aclrtLaunchCallback(fn, args, ACL_CALLBACK_NO_BLOCK, stream->base));
+    aclError aclStatus = aclrtLaunchHostFunc(stream->base, fn, args);
+    if (aclStatus != ACL_SUCCESS) {
+      WARN("CANN aclrtLaunchHostFunc failed: acl=%d", (int)aclStatus);
+      return flagcxUnhandledDeviceError;
+    }
   }
   return flagcxSuccess;
 }

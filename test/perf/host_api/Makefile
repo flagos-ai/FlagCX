@@ -27,6 +27,8 @@ endif
 
 all: $(BINS)
 
+$(BINDIR)/perf_alltoall $(BINDIR)/perf_alltoallv: perf_alltoall_check.h
+
 $(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS)
 	@mkdir -p $(BINDIR)
 	@echo "Compiling $@"

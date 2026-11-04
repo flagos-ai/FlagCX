@@ -58,7 +58,11 @@ fi
 mpi_args+=("$@")
 
 for operation in "${operations[@]}"; do
-  operation_args=(-b 128M -e 1G -f 2 -p 1)
+  max_bytes=1G
+  if [[ "$mode" == heterogeneous && "$operation" == sendrecv ]]; then
+    max_bytes=${FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES:-1G}
+  fi
+  operation_args=(-b 128M -e "$max_bytes" -f 2 -p 1)
   case "$operation" in
     broadcast|gather|scatter|reduce)
       operation_args+=(-r 0)
@@ -71,7 +75,16 @@ for operation in "${operations[@]}"; do
     exit 1
   fi
 
-  FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
-    "${clean_mode_env[@]}" "$mpi_runner" \
-    "${mpi_args[@]}" "$binary" "${operation_args[@]}"
+  if [[ "$mode" == heterogeneous && "$operation" == sendrecv &&
+        "$platform" == Ascend ]]; then
+    FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
+      FLAGCX_DEBUG=TRACE FLAGCX_DEBUG_SUBSYS=NET \
+      "${clean_mode_env[@]}" "$mpi_runner" \
+      "${mpi_args[@]}" -x FLAGCX_DEBUG=TRACE \
+      -x FLAGCX_DEBUG_SUBSYS=NET "$binary" "${operation_args[@]}"
+  else
+    FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
+      "${clean_mode_env[@]}" "$mpi_runner" \
+      "${mpi_args[@]}" "$binary" "${operation_args[@]}"
+  fi
 done

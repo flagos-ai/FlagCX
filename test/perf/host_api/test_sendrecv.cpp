@@ -14,6 +14,10 @@ static void collFn(PerfContext &ctx, size_t count) {
 int main(int argc, char *argv[]) {
   PerfContext ctx;
   perfSetup(ctx, argc, argv);
+  printf("SendRecv rank=%d send_peer=%d recv_peer=%d max_bytes=%zu\n", ctx.proc,
+         (ctx.proc + 1) % ctx.totalProcs,
+         (ctx.proc - 1 + ctx.totalProcs) % ctx.totalProcs, ctx.maxBytes);
+  fflush(stdout);
   perfWarmup(ctx, collFn);
   perfBenchmarkLoop(ctx, collFn, nullptr, nullptr, nullptr, false);
   perfTeardown(ctx);

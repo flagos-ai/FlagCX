@@ -64,6 +64,10 @@ log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
 mkdir -p "$log_dir"
 summary_file=$(mktemp "$log_dir/summary.XXXXXX.md")
 finish() {
+  if [[ "$platform" == ascend && "$workload" == perf ]]; then
+    bash "$script_dir/ascend_rdma_host_inventory.sh" \
+      >"$log_dir/ascend-rdma-host-inventory-after.log" 2>&1 || true
+  fi
   cleanup
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
@@ -108,6 +112,10 @@ pull_image
 if [[ "$platform" == "ascend" ]]; then
   exec 9>/var/lock/flagcx-ascend-ci.lock
   flock --exclusive --wait 7200 9
+  if [[ "$workload" == "perf" ]]; then
+    bash "$script_dir/ascend_rdma_host_inventory.sh" | \
+      tee "$log_dir/ascend-rdma-host-inventory.log"
+  fi
 fi
 
 docker run --rm \
