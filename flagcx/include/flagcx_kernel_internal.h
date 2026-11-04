@@ -95,8 +95,12 @@ void releaseIpcTableSlot(flagcxComm_t comm, int slot);
 // Drain deferred IPC entries queued by releaseIpcTableSlot.
 flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
 
+// Release Window-scoped resources before the transport and vendor communicator
+// are destroyed. A failed callback leaves ownership in place for retry.
+flagcxResult_t flagcxCommDrainDeferredWindowResources(flagcxComm_t comm);
+
 // Drain cached device allocations retained by retired DevComm/DevMem owners.
-flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm);
+flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm);
 
 // Drain deferred DevComm buffer queue (localBarrierFlags, epoch, signal, etc.).
 // Called at flagcxCommDestroy time when all peers are guaranteed done.
