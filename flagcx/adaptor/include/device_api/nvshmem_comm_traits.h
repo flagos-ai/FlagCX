@@ -40,6 +40,8 @@ template <>
 struct CommTraits<NvshmemBackend> {
   using Intrin = PlatformTraits<NvidiaPlatform>::Intrin;
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
+  using CoopOps = PlatformTraits<NvidiaPlatform>::CoopOps;
+  using Clock = PlatformTraits<NvidiaPlatform>::Clock;
 
   // ---- Multimem ----
   struct Multimem {

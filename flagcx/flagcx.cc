@@ -3907,6 +3907,11 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     return cleanupResult;
   TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
 
+  // DevCommStateDestroy can retire its Window handles. Release their attached
+  // resources now, while the one-sided transport is still available. A failed
+  // callback retains its owner so commDestroy can retry before teardown.
+  FLAGCXCHECK(flagcxCommDrainDeferredWindowResources(comm));
+
   if (!useHomoComm(comm) || useHeteroComm()) {
     // Each stage retains ownership on failure so the same rank can retry the
     // call safely after transport shutdown coordination has completed.
@@ -4006,7 +4011,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
 
   // Drain deferred device/host-pinned memory frees,
   // collected during DevComm/DevMem cleanup.
-  FLAGCXCHECK(flagcxCommDrainDeferredFrees(comm));
+  FLAGCXCHECK(flagcxCommDrainDeferredFree(comm));
 
   // Destroy bootstrap state and net
   bootstrapClose(comm->bootstrap);
