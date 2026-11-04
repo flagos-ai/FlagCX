@@ -26,7 +26,7 @@ else
 NVCC_RDC_FLAG := -c
 endif
 
-.PHONY: all clean device_api.o device_ir.o gdr_visibility.o nvshmem_adaptor_kernel.o dlink.o dlink_api.o dlink_ir.o
+.PHONY: all clean device_api.o device_ir.o gdr_visibility.o nvshmem_adaptor_kernel.o dlink.o dlink_api.o dlink_ir.o traits_test traits_negative
 
 all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
@@ -34,6 +34,42 @@ device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
 gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
 nvshmem_adaptor_kernel.o: $(OBJDIR)/nvshmem_adaptor_kernel.o
+
+# Standalone single-GPU coverage for the NVIDIA default PlatformTraits API.
+# CI integration for the other platform toolchains is a later change.
+$(BINDIR)/test_device_api_traits: device_api_traits.cu
+	@mkdir -p $(BINDIR)
+	@$(DEVICE_COMPILER) -std=c++17 -rdc=true $(DEVICE_COMPILER_GENCODE) -o $@ $< \
+		$(ALL_INCLUDES) -DUSE_NVIDIA_ADAPTOR -DFLAGCX_FORCE_DEFAULT_PATH \
+		-DFLAGCX_COMM_TRAITS_DEFAULT -DCOMPILE_KERNEL
+
+traits_test: $(BINDIR)/test_device_api_traits
+	@$(BINDIR)/test_device_api_traits
+	@$(BINDIR)/test_device_api_traits --expect-block-trap
+	@$(BINDIR)/test_device_api_traits --expect-reduce-trap
+	@$(BINDIR)/test_device_api_traits --expect-span-trap
+	@$(BINDIR)/test_device_api_traits --expect-any-trap
+	@$(BINDIR)/test_device_api_traits --expect-order-trap
+
+traits_negative:
+	@mkdir -p $(BINDIR)
+	@for case in MMIO_SCRATCHPAD MMIO_CACHE IMMUTABLE_ACQUIRE UNSUPPORTED_TYPE; do \
+		case $$case in \
+			MMIO_SCRATCHPAD|MMIO_CACHE) expected='MMIO store requires Global/System';; \
+			IMMUTABLE_ACQUIRE) expected='immutable load must be relaxed';; \
+			UNSUPPORTED_TYPE) expected='load requires an arithmetic';; \
+		esac; \
+		if $(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) -c \
+			-o /dev/null device_api_traits_negative.cu $(ALL_INCLUDES) \
+			-DUSE_NVIDIA_ADAPTOR -DFLAGCX_NEGATIVE_$$case \
+			2>$(BINDIR)/traits_negative_$$case.log; then \
+			echo "Expected compilation failure: $$case"; exit 1; \
+		fi; \
+		if ! grep -q "$$expected" $(BINDIR)/traits_negative_$$case.log; then \
+			echo "Unexpected compilation failure: $$case"; \
+			cat $(BINDIR)/traits_negative_$$case.log; exit 1; \
+		fi; \
+	done
 
 $(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
 	../include/gdr_visibility_test.h \

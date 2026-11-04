@@ -9,6 +9,10 @@
  *             Platforms may additionally provide an optimized coopCopyBytes;
  *             the unified IR has a global-memory byte-copy baseline.
  *   - Atomic: Scoped atomic operations (load, store, fetchAdd, ...)
+ *   - CoopOps: Single-device operations parameterized by a Coop group
+ *   - Clock: Device-side time source and elapsed-time conversion
+ * Non-NVIDIA specializations may declare empty CoopOps/Clock types until the
+ * corresponding operations are implemented; an empty type is not a capability.
  *
  * Each platform (NVIDIA, DU, ...) provides a specialization.
  * CommTraits<D> pulls in platform capabilities via using-aliases.

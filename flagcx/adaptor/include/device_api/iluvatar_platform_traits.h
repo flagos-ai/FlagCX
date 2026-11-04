@@ -33,6 +33,8 @@ struct PlatformCompletionWord<IluvatarPlatform> {
 
 template <>
 struct PlatformTraits<IluvatarPlatform> {
+  struct CoopOps {};
+  struct Clock {};
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
 

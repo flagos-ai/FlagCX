@@ -15,6 +15,16 @@
 
 #include <stdint.h>
 
+// Legacy source remains warning-free by default, including builds that use
+// -Werror. Define this when migrating callers to receive deprecation warnings.
+#if defined(__cplusplus) && defined(FLAGCX_DEVICE_API_DEPRECATION_WARNINGS) && \
+    (defined(__GNUC__) || defined(__clang__))
+#define FLAGCX_DEVICE_API_DEPRECATED(message)                                  \
+  __attribute__((deprecated(message)))
+#else
+#define FLAGCX_DEVICE_API_DEPRECATED(message)
+#endif
+
 /* ================================================================
  * Device IR ABI
  *
@@ -124,7 +134,7 @@ typedef flagcxDevSignal_t flagcxDevNetSignal_t;
 typedef flagcxDevCounter_t flagcxDevNetCounter_t;
 
 /* ================================================================
- * Peer Pointer Access
+ * Peer Pointer Access (deprecated; use flagcxDeviceMemoryAccessIntent_t)
  *
  * Specifies the operations the caller may perform through a translated peer
  * pointer. Read-write preserves the legacy behavior; read-only is for load
@@ -137,6 +147,53 @@ typedef enum {
   flagcxDevPeerAccessReadWrite = 0,
   flagcxDevPeerAccessWriteOnly = 1,
   flagcxDevPeerAccessReadOnly = 2,
-} flagcxDevPeerAccess_t;
+} flagcxDevPeerAccess_t
+    FLAGCX_DEVICE_API_DEPRECATED("use flagcxDeviceMemoryAccessIntent_t");
+
+/* Device address space, as seen by a load or store instruction.  A mapped
+ * peer, host allocation, or NIC BAR can still have a Global device address. */
+typedef enum {
+  flagcxDeviceMemoryPrivate = 0,
+  flagcxDeviceMemoryScratchpad = 1,
+  flagcxDeviceMemoryGlobal = 2,
+} flagcxDeviceMemorySpace_t;
+
+/* Requested permissions when obtaining a peer pointer.  Values deliberately
+ * match flagcxDevPeerAccess_t; keep both types for source compatibility. */
+typedef enum {
+  flagcxDeviceMemoryAccessIntentReadWrite = 0,
+  flagcxDeviceMemoryAccessIntentWriteOnly = 1,
+  flagcxDeviceMemoryAccessIntentReadOnly = 2,
+} flagcxDeviceMemoryAccessIntent_t;
+
+/* Instruction semantics, independent of the pointer's source or permissions. */
+typedef enum {
+  flagcxDeviceMemoryAccessKindNormal = 0,
+  flagcxDeviceMemoryAccessKindMmio = 1,
+} flagcxDeviceMemoryAccessKind_t;
+
+typedef enum {
+  flagcxDeviceCacheL1 = 0,
+  flagcxDeviceCacheL2 = 1,
+  flagcxDeviceCacheLLC = 2,
+} flagcxDeviceCacheLevel_t;
+
+/* Performance hints only: they never establish ordering or visibility. */
+typedef enum {
+  flagcxDeviceCacheHintNone = 0,
+  flagcxDeviceCacheHintNoAllocate = 1,
+  flagcxDeviceCacheHintEvictFirst = 2,
+  flagcxDeviceCacheHintEvictLast = 3,
+} flagcxDeviceCacheHint_t;
+
+typedef enum {
+  flagcxDeviceLoadIntentOrdinary = 0,
+  flagcxDeviceLoadIntentImmutable = 1,
+} flagcxDeviceLoadIntent_t;
+
+typedef enum {
+  flagcxDeviceFunnelShiftWrap = 0,
+  flagcxDeviceFunnelShiftClamp = 1,
+} flagcxDeviceFunnelShiftMode_t;
 
 #endif /* FLAGCX_DEVICE_ENUMS_H_ */
