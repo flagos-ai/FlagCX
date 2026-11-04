@@ -76,6 +76,14 @@ struct DefaultNetGdaProvider {
     return false;
   }
 
+  // A platform implementation validates the resources referenced by this
+  // context. The default rejects GDA until such an implementation exists.
+  template <typename NetT>
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool isValid(DefaultNetContext,
+                                                     const NetT &) {
+    return false;
+  }
+
   template <typename Operation, typename... Args>
   FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
                                                   Args &&...args)
@@ -132,6 +140,21 @@ struct DefaultNetProviderPolicy {
 // platform-specific GDA provider handles only its own native implementation.
 template <typename PlatformTag>
 struct DefaultNetDispatch {
+  template <typename NetT>
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  isValid(DefaultNetContext ctx, const NetT &net, bool proxyReady) {
+    switch (ctx.provider) {
+      case DefaultNetProviderProxy:
+        return proxyReady;
+      case DefaultNetProviderGda:
+        return DefaultNetGdaProvider<PlatformTag>::compiled(ctx.providerId) &&
+               ctx.handle != nullptr &&
+               DefaultNetGdaProvider<PlatformTag>::isValid(ctx, net);
+      default:
+        return false;
+    }
+  }
+
   template <typename Op, typename... Args>
   FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
                                                   Args &&...args)
@@ -751,15 +774,13 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR
     Net(const Comm &dc, int contextIndex)
-        : _dc(dc),
-          fifoBuffer(
-              dc.fifoBuffers[contextIndex %
-                             ((dc.contextCount > 0) ? dc.contextCount : 1)]),
-          signalBuffer(dc.signalBuffer), shadowBuffer(dc.shadowBuffer),
-          counterBuffer(dc.counterBuffer), signalCount(dc.signalCount),
-          counterCount(dc.counterCount) {
+        : _dc(dc), fifoBuffer(nullptr), signalBuffer(dc.signalBuffer),
+          shadowBuffer(dc.shadowBuffer), counterBuffer(dc.counterBuffer),
+          signalCount(dc.signalCount), counterCount(dc.counterCount) {
       int cnt = (dc.contextCount > 0) ? dc.contextCount : 1;
       _contextId = contextIndex % cnt;
+      if (dc.contextCount > 0 && context().provider == DefaultNetProviderProxy)
+        fifoBuffer = dc.fifoBuffers[_contextId];
       teamRank = dc.teamRank;
       nTeamRanks = dc.nTeamRanks;
       barrierSignalBase = dc.barrierSignalBase;
@@ -799,10 +820,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
-      return context().provider == DefaultNetProviderProxy &&
-             _dc.getCompletionSignalBuffer() != nullptr &&
-             _dc.getCompletionCounterBuffer() != nullptr &&
-             fifoBuffer != nullptr;
+      const bool proxyReady = _dc.getCompletionSignalBuffer() != nullptr &&
+                              _dc.getCompletionCounterBuffer() != nullptr &&
+                              fifoBuffer != nullptr;
+      return DefaultNetDispatch<PlatformTag>::isValid(context(), *this,
+                                                      proxyReady);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord
@@ -872,11 +894,22 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           ProxyProvider::buildTrd(flagcxDevicePrimTerm, 0, 0));
     }
 
+    // Two-sided operations belong to Proxy. A GDA context must not use the
+    // Proxy FIFO, even if this Net happens to carry one.
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t requireProxyFifo() const {
+      if (context().provider != DefaultNetProviderProxy)
+        return flagcxNotSupported;
+      return fifoBuffer != nullptr ? flagcxSuccess : flagcxInvalidUsage;
+    }
+
     // ---- Two-sided Coop-scope operations ----
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     send(Coop coop, Window mem, size_t offset, size_t count,
          flagcxDataType_t datatype, int peer) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0)
         enqueueFifoSend(mem, offset, count, datatype, peer);
@@ -888,6 +921,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     recv(Coop coop, Window mem, size_t offset, size_t count,
          flagcxDataType_t datatype, int peer) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0)
         enqueueFifoRecv(mem, offset, count, datatype, peer);
@@ -897,6 +933,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0) {
         int totalCoops = (FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X) / coop.size();
@@ -908,6 +947,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0)
         ProxyProvider::fifoWait(fifoBuffer);

@@ -37,6 +37,7 @@ static_assert(defaultNetSelectProvider<NvidiaPlatform>(
 __global__ void compileDefaultNetProvider(DeviceAPI::Comm comm,
                                           DeviceAPI::Window window) {
   DeviceAPI::Net net(comm, 0);
+  (void)net.isValid();
   DeviceAPI::Team team{1, 0, 1};
   NvidiaTraits::CoopThread thread;
   DeviceAPI::DescriptorSmem descriptor;
