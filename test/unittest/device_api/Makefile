@@ -82,6 +82,16 @@ UNIT_SRC := test_dev_comm_cleanup.cpp
 UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
 
+# Provider dispatch is host-testable without a GPU or a FlagCX library link.
+PROVIDER_TEST_TARGET := $(BINDIR)/test_default_net_provider
+.PHONY: provider_test
+$(PROVIDER_TEST_TARGET): test_default_net_provider.cpp
+	@mkdir -p $(BINDIR)
+	@$(HOST_CXX) -std=c++11 -o $@ $< $(FLAGCX_INCLUDES)
+
+provider_test: $(PROVIDER_TEST_TARGET)
+	@$(PROVIDER_TEST_TARGET)
+
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.

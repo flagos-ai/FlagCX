@@ -19,6 +19,52 @@ static_assert(
 static_assert(std::is_same<Ops, NvidiaTraits::CoopOps>::value, "CoopOps alias");
 static_assert(std::is_same<DeviceAPI::Clock, NvidiaTraits::Clock>::value,
               "Clock alias");
+static_assert(defaultNetSelectProvider<NvidiaPlatform>(
+                  0, DefaultNetGdaRequiredCapabilities, true) ==
+                  DefaultNetProviderProxy,
+              "GDA implementation must be compiled before selection");
+static_assert(defaultNetSelectProvider<NvidiaPlatform>(
+                  0, DefaultNetGdaRequiredCapabilities & ~DefaultNetGdaGet,
+                  true) == DefaultNetProviderProxy,
+              "incomplete GDA operations must select Proxy");
+static_assert(defaultNetSelectProvider<NvidiaPlatform>(
+                  0, DefaultNetGdaRequiredCapabilities, false) ==
+                  DefaultNetProviderProxy,
+              "missing GDA resources must select Proxy");
+
+// Compile every NVIDIA default Net dispatch entry and the Inter Barrier
+// path without requiring an NIC in this single-GPU test executable.
+__global__ void compileDefaultNetProvider(DeviceAPI::Comm comm,
+                                          DeviceAPI::Window window) {
+  DeviceAPI::Net net(comm, 0);
+  DeviceAPI::Team team{1, 0, 1};
+  NvidiaTraits::CoopThread thread;
+  DeviceAPI::DescriptorSmem descriptor;
+  net.put(team, 0, window, 0, window, 0, 0, flagcxDevNet_None{},
+          flagcxDevNet_None{}, thread, descriptor, flagcxDeviceScopeThread,
+          flagcxDeviceScopeDevice);
+  net.get(team, 0, window, 0, window, 0, 0, thread);
+  net.putValue(team, 0, window, 0, uint64_t{1}, flagcxDevNet_None{}, thread,
+               descriptor, flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+  net.signal(team, 0, flagcxDevNet_SignalInc{(flagcxDevSignal_t)0}, thread,
+             descriptor, flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+  net.flush(thread, flagcxDeviceMemoryOrderAcquire);
+  net.waitSignal(thread, (flagcxDevSignal_t)0, 1, DeviceAPI::completionBits,
+                 flagcxDeviceMemoryOrderAcquire);
+  net.readSignal((flagcxDevSignal_t)0, DeviceAPI::completionBits,
+                 flagcxDeviceMemoryOrderAcquire);
+  net.resetSignal((flagcxDevSignal_t)0);
+  net.waitCounter(thread, (flagcxDevCounter_t)0, 1,
+                  DeviceAPI::defaultCounterBits,
+                  flagcxDeviceMemoryOrderAcquire);
+  net.readCounter((flagcxDevCounter_t)0, DeviceAPI::defaultCounterBits,
+                  flagcxDeviceMemoryOrderAcquire);
+  net.resetCounter((flagcxDevCounter_t)0);
+  DeviceAPI::Barrier<flagcxTeamTagInter, NvidiaTraits::CoopBlock> barrier(
+      NvidiaTraits::CoopBlock{}, net, comm, team, 0, 1);
+  barrier.arrive();
+  barrier.wait();
+}
 
 struct Sum {
   __device__ uint32_t operator()(uint32_t a, uint32_t b) const { return a + b; }

@@ -24,7 +24,7 @@ using DeviceAPI = CommTraits<NvshmemBackend>;
 // if NCCL version is sufficient; otherwise falls back to default internally.
 
 #else // FLAGCX_COMM_TRAITS_DEFAULT
-#include "default_comm_traits.h"
+#include "nvidia_net_provider.h"
 using DeviceAPI = CommTraits<DefaultBackend<NvidiaPlatform>>;
 
 #endif

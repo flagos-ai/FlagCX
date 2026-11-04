@@ -12,6 +12,14 @@
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
+// Unreachable device path. CUDA requires its device intrinsic; the other
+// supported device compilers and host compilers accept __builtin_trap().
+#if defined(__CUDA_ARCH__)
+#define FLAGCX_DEVICE_TRAP() __trap()
+#else
+#define FLAGCX_DEVICE_TRAP() __builtin_trap()
+#endif
+
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
