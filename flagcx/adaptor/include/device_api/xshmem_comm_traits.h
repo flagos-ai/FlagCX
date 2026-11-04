@@ -169,6 +169,8 @@ template <>
 struct CommTraits<XshmemBackend> {
   using Intrin = PlatformTraits<KunlunxinPlatform>::Intrin;
   using Atomic = PlatformTraits<KunlunxinPlatform>::Atomic;
+  using CoopOps = PlatformTraits<KunlunxinPlatform>::CoopOps;
+  using Clock = PlatformTraits<KunlunxinPlatform>::Clock;
 
   // ---- Multimem ----
   struct Multimem {

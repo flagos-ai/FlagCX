@@ -34,6 +34,8 @@ struct KunlunxinPlatform {};
 
 template <>
 struct PlatformTraits<KunlunxinPlatform> {
+  struct CoopOps {};
+  struct Clock {};
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
 

@@ -4,7 +4,7 @@
  * Comm Traits — Unified compile-time dispatch for device APIs.
  *
  * Architecture:
- *   PlatformTraits<P>         — platform-level: Intrin, Atomic
+ *   PlatformTraits<P>         — platform-level: Intrin, Atomic, CoopOps, Clock
  *   CommTraits<D>             — backend-level:  Window, Comm, Team, ...
  *   DefaultBackend<PlatformTag> — common IPC fallback (partial specialization)
  *

@@ -35,6 +35,8 @@ struct CommTraits<NcclBackend> {
   // Platform capabilities (via using, not inheritance)
   using Intrin = PlatformTraits<NvidiaPlatform>::Intrin;
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
+  using CoopOps = PlatformTraits<NvidiaPlatform>::CoopOps;
+  using Clock = PlatformTraits<NvidiaPlatform>::Clock;
 
   // ---- Team: wraps ncclTeam_t ----
   // Exposes nRanks/rank/stride for direct field access (used by flagcxTeam)

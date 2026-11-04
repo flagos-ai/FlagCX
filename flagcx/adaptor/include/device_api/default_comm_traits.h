@@ -30,6 +30,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   // Platform capabilities (resolved via PlatformTag)
   using Intrin = typename PlatformTraits<PlatformTag>::Intrin;
   using Atomic = typename PlatformTraits<PlatformTag>::Atomic;
+  using CoopOps = typename PlatformTraits<PlatformTag>::CoopOps;
+  using Clock = typename PlatformTraits<PlatformTag>::Clock;
   using CompletionWord = typename PlatformCompletionWord<PlatformTag>::type;
   using CompletionStorage = DefaultCompletionStorage<CompletionWord>;
   static_assert(sizeof(CompletionWord) == sizeof(uint32_t) ||
