@@ -288,11 +288,13 @@ flagcxResult_t flagcxTopoGetXmlFromCpu(struct flagcxXmlNode *cpuNode,
       WARN("GetXmlFromCpu : could not find CPU numa ID.");
       return flagcxInternalError;
     }
-    // Set affinity
-    char cpumaskPath[] = "/sys/devices/system/node/node0000";
-    sprintf(cpumaskPath, "/sys/devices/system/node/node%s", numaId);
-    FLAGCXCHECK(
-        flagcxTopoSetAttrFromSys(cpuNode, cpumaskPath, "cpumap", "affinity"));
+    // Unknown NUMA has no node cpumap; leave affinity unspecified.
+    if (strcmp(numaId, "-1") != 0) {
+      char cpumaskPath[] = "/sys/devices/system/node/node0000";
+      sprintf(cpumaskPath, "/sys/devices/system/node/node%s", numaId);
+      FLAGCXCHECK(
+          flagcxTopoSetAttrFromSys(cpuNode, cpumaskPath, "cpumap", "affinity"));
+    }
   }
 
   FLAGCXCHECK(xmlGetAttrIndex(cpuNode, "arch", &index));

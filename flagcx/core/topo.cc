@@ -970,11 +970,19 @@ flagcxResult_t flagcxTopoAddCpu(struct flagcxXmlNode *xmlCpu,
                                 struct flagcxTopoServer *topoServer) {
   int numaId;
   FLAGCXCHECK(xmlGetAttrInt(xmlCpu, "numaid", &numaId));
+  if (numaId < -1) {
+    WARN("Invalid CPU NUMA ID %d", numaId);
+    return flagcxInvalidArgument;
+  }
   int serverId;
   FLAGCXCHECK(flagcxGetServerId(topoServer, xmlCpu, &serverId));
+  // -1 means unknown NUMA, not a negative local ID. Keep its bits within the
+  // local field so it cannot borrow from the server ID when IDs are combined.
+  int64_t localId =
+      numaId == -1 ? FLAGCX_TOPO_ID_LOCAL_ID((int64_t)-1) : (int64_t)numaId;
   struct flagcxTopoNode *cpu;
   FLAGCXCHECK(flagcxTopoCreateNode(topoServer, &cpu, CPU,
-                                   FLAGCX_TOPO_ID(serverId, numaId)));
+                                   FLAGCX_TOPO_ID(serverId, localId)));
   const char *str;
   FLAGCXCHECK(xmlGetAttr(xmlCpu, "affinity", &str));
   if (str != NULL) {
