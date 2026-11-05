@@ -186,6 +186,14 @@ $(DEVICE_API_OBJ) $(DLINK_API_OBJ):
 $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ):
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_IR_TARGETS)
 
+ifeq ($(USE_DU), 1)
+# Check kernel headers here as well: an existing object otherwise prevents the
+# recursive kernel build from running when only a CommTraits header changes.
+$(DEVICE_API_OBJ) $(DEVICE_IR_OBJ): $(KERNEL_DIR)/du/Makefile \
+    $(PROJECT_ROOT)/test/make.inc $(PROJECT_ROOT)/makefiles/du.mk
+-include $(DEVICE_API_OBJ:.o=.d) $(DEVICE_IR_OBJ:.o=.d)
+endif
+
 $(TOOLS_OBJ): $(TOOLS_SRC)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling tools.cc"
