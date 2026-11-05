@@ -68,6 +68,13 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
+# DUSHMEM device code is embedded in the executable at the final HIP link.
+# Re-link when the archive or the Makefiles selecting link flags change.
+TEST_LINK_DEPS := $(MAKEFILE_LIST)
+ifeq ($(USE_DU)$(USE_SHMEM), 11)
+TEST_LINK_DEPS += $(SHMEM_HOME)/lib/libdushmem_device.a
+endif
+
 # DU kernel objects contain absolute host relocations. Link their test
 # executables without PIE so the host linker accepts those relocations.
 ifeq ($(USE_DU), 1)
@@ -172,6 +179,8 @@ $(ALL_DEVICE_TEST_TARGETS) $(DEVICE_API_OBJ) $(DEVICE_IR_OBJ) \
 run-mpi run-mpi-intra run-mpi-inter run-mpi-unified-intra \
     run-mpi-unified-inter: | require-compile-kernel
 
+$(UNIT_TARGET) $(MPI_TARGETS): $(TEST_LINK_DEPS)
+
 # Build device kernel objects via dispatcher
 KERNEL_API_TARGETS := device_api.o
 KERNEL_IR_TARGETS  := device_ir.o
@@ -214,7 +223,7 @@ $(UNIT_OBJ): $(UNIT_SRC)
 $(UNIT_TARGET): $(UNIT_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
+	@$(HOST_CXX) $(filter-out $(TEST_LINK_DEPS),$^) -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
 
 # HIPCC treats object files as HIP source when a .cpp input is present in the
 # same link invocation. Compile each test entry point first so links receive
@@ -227,32 +236,32 @@ $(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
 $(BINDIR)/test_device_ir_intra: $(OBJDIR)/test_device_ir_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $(filter-out $(TEST_LINK_DEPS),$^) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_inter: $(OBJDIR)/test_device_ir_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $(filter-out $(TEST_LINK_DEPS),$^) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_unified_intra: $(OBJDIR)/test_device_ir_unified_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $(filter-out $(TEST_LINK_DEPS),$^) $(ALL_LINK)
 
 $(BINDIR)/test_device_ir_unified_inter: $(OBJDIR)/test_device_ir_unified_inter.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $(filter-out $(TEST_LINK_DEPS),$^) $(ALL_LINK)
 
 $(BINDIR)/test_device_api_intra: $(OBJDIR)/test_device_api_intra.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $(filter-out $(TEST_LINK_DEPS),$^) $(ALL_LINK)
 
 $(BINDIR)/test_device_api_inter: $(OBJDIR)/test_device_api_inter.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ) $(SHMEM_SYNC_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+	@$(CXX) $(CXXFLAGS) -o $@ $(filter-out $(TEST_LINK_DEPS),$^) $(ALL_LINK)
 
 clean:
 	@rm -rf $(BUILDDIR)
