@@ -1035,7 +1035,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$(KERNEL_INCLUDE)", rma_makefile)
         self.assertIn("RMA_VMM_ENABLE ?= 0", rma_makefile)
         self.assertIn("NET_FILTER ?= *", rma_makefile)
-        for platform in ("metax)", "hygon)", "ppu)", "cuda)"):
+        for platform in ("iluvatar)", "metax)", "hygon)", "ppu)", "cuda)"):
             self.assertIn(platform, rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
@@ -1267,6 +1267,72 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry",
             symmem_runner,
         )
+
+    def test_iluvatar_rma_visibility_runs_consumers_and_propagates_failures(self):
+        source = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=rma
+SET_ENV_SCRIPT=iluvatar.sh
+PROJECT_ROOT=/workspace
+FLAGCX_CI_TEST_MAKE_ARGS=(USE_ILUVATAR=1)
+TEST_RUNNER=run_test
+MPI_RUNNER=/mpi-runner
+RMA_PLATFORM_ENV="-x EXISTING_SETTING=kept"
+run_test() { "$@"; }
+flagcx_ci_require_rdma() { return 0; }
+make() {
+  printf 'make %s\n' "$*"
+  if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
+    return "$VISIBILITY_STATUS"
+  fi
+}
+run_suite
+'''
+        for visibility_status in (0, 23):
+            with self.subTest(visibility_status=visibility_status):
+                result = subprocess.run(
+                    [os.environ.get("BASH", "bash"), "-euc", harness],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "BASH_ENV": "",
+                        "VISIBILITY_STATUS": str(visibility_status),
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0 if visibility_status == 0 else 1)
+                self.assertNotIn("Unsupported visibility conformance platform", result.stderr)
+                calls = result.stdout.splitlines()
+                self.assertTrue(any(" run-unit " in line for line in calls))
+                self.assertTrue(any(" run-mpi-ipc " in line for line in calls))
+                visibility_calls = [
+                    line for line in calls if "FLAGCX_CI_GDR_VISIBILITY_RUN=1" in line
+                ]
+                self.assertEqual(len(visibility_calls), 1)
+                call = visibility_calls[0]
+                for argument in (
+                    "USE_ILUVATAR=1",
+                    "NET_FILTER=RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility",
+                    "-x EXISTING_SETTING=kept",
+                    "FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=success",
+                    "FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=0",
+                    "FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED=1",
+                    "FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=unsupported",
+                ):
+                    self.assertIn(argument, call)
+                # Set test expectations without overriding the runtime policy.
+                self.assertNotIn("-x FLAGCX_GDR_READ_REQUIRES_FLUSH=", call)
+                self.assertNotIn("-x FLAGCX_GDR_WRITE_REQUIRES_FLUSH=", call)
+                if visibility_status:
+                    self.assertIn("visibility=23", result.stderr)
 
     def test_iluvatar_keeps_ipc_and_vmm_capability_coverage(self):
         iluvatar_env = (

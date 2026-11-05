@@ -559,6 +559,14 @@ run_suite() {
         visibility_filter="RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility"
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
         case "$platform_name" in
+          iluvatar)
+            # IXCUDA currently declares WRITE-only flush requirements. Keep
+            # the READ consumer data check and verify that the public WRITE
+            # wait rejects the unimplemented stream wait-value operation.
+            expected_read_required=0
+            expected_write_required=1
+            expected_write=unsupported
+            ;;
           metax)
             # MACA can complete GET visibility through the provider flush, but
             # its stream wait cannot acquire incoming remote WRITEs yet.
