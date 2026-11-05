@@ -6,6 +6,7 @@
 #include "alloc.h"
 #include "comm.h"
 #include <map>
+#include <stdint.h>
 #include <vector>
 
 static_assert(sizeof(HcclRootInfo) <= sizeof(flagcxInnerUniqueId),
@@ -242,10 +243,17 @@ flagcxResult_t hcclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
                                     int root, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
 
+  const size_t typeSize = getFlagcxDataTypeSize(datatype);
+  if (typeSize == 0 || count > SIZE_MAX / typeSize)
+    return flagcxInvalidArgument;
+
   uint32_t rank;
-  HcclGetRankId(comm->base, &rank);
-  if (rank == root) {
-    aclrtMemcpy(recvbuff, count, sendbuff, count, ACL_MEMCPY_DEVICE_TO_DEVICE);
+  if (HcclGetRankId(comm->base, &rank) != HCCL_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  if (rank == root && sendbuff != recvbuff && count != 0) {
+    const size_t bytes = count * typeSize;
+    DEVCHECK(aclrtMemcpy(recvbuff, bytes, sendbuff, bytes,
+                         ACL_MEMCPY_DEVICE_TO_DEVICE));
   }
   void *buffer = (rank == root) ? const_cast<void *>(sendbuff) : recvbuff;
   return (flagcxResult_t)h2f_ret_map[HcclBroadcast(

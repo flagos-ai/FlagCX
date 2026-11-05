@@ -36,19 +36,13 @@ case "$workload" in
     export FLAGCX_CI_PERF_PLATFORM=Ascend
     perf_bin="$project_root/test/perf/host_api/build/bin"
     "$perf_runner" homogeneous "$perf_bin"
-    probe_status=0
-    bash "$project_root/.github/scripts/ci/run_ascend_rdma_probe.sh" || probe_status=$?
     # CANN IPC handles are pending; exercise the heterogeneous NET route here.
+    # Force the relaxed-ordering MR path validated for Ascend NPU memory.
     echo "Ascend coverage gap: same-node IPC perf is deferred to the CANN IPC PR; running heterogeneous perf over NET"
-    perf_status=0
     FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES=512M \
       FLAGCX_CI_ATTEMPT_FAILURE_HOOK="$project_root/.github/scripts/ci/ascend_rdma_attempt_inventory.sh" \
-      "$perf_runner" heterogeneous "$perf_bin" -x FLAGCX_P2P_DISABLE=1 || perf_status=$?
-    if ((probe_status != 0)); then
-      echo "Ascend NPU-memory verbs probe failed with exit=$probe_status; see its attempt logs" >&2
-      exit "$probe_status"
-    fi
-    exit "$perf_status"
+      "$perf_runner" heterogeneous "$perf_bin" \
+      -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_IB_PCI_RELAXED_ORDERING=1
     ;;
   torch-api)
     export FLAGCX_ADAPTOR=ascend

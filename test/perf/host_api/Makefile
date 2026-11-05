@@ -27,7 +27,9 @@ endif
 
 all: $(BINS)
 
-$(BINDIR)/perf_alltoall $(BINDIR)/perf_alltoallv: perf_alltoall_check.h
+PERF_DATA_CHECK_BINS := $(addprefix $(BINDIR)/perf_,\
+    alltoall alltoallv sendrecv broadcast gather scatter)
+$(PERF_DATA_CHECK_BINS): perf_alltoall_check.h
 
 $(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS)
 	@mkdir -p $(BINDIR)

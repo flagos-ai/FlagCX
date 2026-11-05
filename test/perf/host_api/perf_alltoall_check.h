@@ -10,9 +10,9 @@ static inline unsigned char perfAlltoallByte(int source, int target,
                                             251);
 }
 
-static inline void perfAlltoallFill(unsigned char *buffer, size_t length,
-                                    int source, int target, size_t size) {
-  enum { blockSize = 4096 };
+static inline void perfDataFill(unsigned char *buffer, size_t length,
+                                int source, int target, size_t size) {
+  const size_t blockSize = 4096;
   unsigned char pattern[blockSize];
   for (size_t i = 0; i < blockSize; ++i)
     pattern[i] = perfAlltoallByte(source, target, i, size);
@@ -27,13 +27,18 @@ static inline void perfAlltoallFill(unsigned char *buffer, size_t length,
   }
 }
 
-static inline void perfAlltoallCheck(const unsigned char *buffer, size_t length,
-                                     int rank, int source, size_t base,
-                                     size_t size, const char *operation) {
-  enum { blockSize = 4096 };
+static inline void perfAlltoallFill(unsigned char *buffer, size_t length,
+                                    int source, int target, size_t size) {
+  perfDataFill(buffer, length, source, target, size);
+}
+
+static inline void perfDataCheck(const unsigned char *buffer, size_t length,
+                                 int rank, int source, int target, size_t base,
+                                 size_t size, const char *operation) {
+  const size_t blockSize = 4096;
   unsigned char pattern[blockSize];
   for (size_t i = 0; i < blockSize; ++i)
-    pattern[i] = perfAlltoallByte(source, rank, i, size);
+    pattern[i] = perfAlltoallByte(source, target, i, size);
   for (size_t offset = 0; offset < length; offset += blockSize) {
     const size_t bytes =
         length - offset < blockSize ? length - offset : blockSize;
@@ -67,10 +72,16 @@ static inline void perfAlltoallCheck(const unsigned char *buffer, size_t length,
   }
 }
 
+static inline void perfAlltoallCheck(const unsigned char *buffer, size_t length,
+                                     int rank, int source, size_t base,
+                                     size_t size, const char *operation) {
+  perfDataCheck(buffer, length, rank, source, rank, base, size, operation);
+}
+
 static inline void perfAlltoallCheckEmpty(const unsigned char *buffer,
                                           size_t length, int rank, size_t base,
                                           const char *operation) {
-  enum { blockSize = 4096 };
+  const size_t blockSize = 4096;
   const unsigned char empty[blockSize] = {};
   for (size_t offset = 0; offset < length; offset += blockSize) {
     const size_t bytes =
