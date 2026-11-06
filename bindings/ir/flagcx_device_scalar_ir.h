@@ -220,16 +220,16 @@ flagcxIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *comm,
  * @param fence     Network fence level (controls DMA visibility).
  * ================================================================ */
 
-/** @brief Signal arrival at inter-node barrier. */
-FLAGCX_DEPRECATED("use flagcxDevBarrierArrive with FLAGCX_TEAM_INTER")
+/** @brief Legacy Relaxed-only split arrival; use SyncS for Put/Get. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_INTER")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxInterBarrierArriveS(const void FLAGCX_IR_GLOBAL_PTR *net,
                           flagcxCoopKind_t coopKind, uint32_t index,
                           flagcxDeviceMemoryOrder_t order,
                           flagcxDevNetFenceLevel fence);
 
-/** @brief Wait for all inter-node peers at barrier. */
-FLAGCX_DEPRECATED("use flagcxDevBarrierWait with FLAGCX_TEAM_INTER")
+/** @brief Legacy Relaxed-only split wait; use SyncS for Put/Get. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_INTER")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxInterBarrierWaitS(const void FLAGCX_IR_GLOBAL_PTR *net,
                         flagcxCoopKind_t coopKind, uint32_t index,
@@ -258,16 +258,16 @@ flagcxInterBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *net,
  * @param fence     Network fence level (controls DMA visibility).
  * ================================================================ */
 
-/** @brief Signal arrival at world barrier (intra + inter). */
-FLAGCX_DEPRECATED("use flagcxDevBarrierArrive with FLAGCX_TEAM_WORLD")
+/** @brief Legacy Relaxed-only split arrival; use SyncS for Put/Get. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_WORLD")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxWorldBarrierArriveS(const void FLAGCX_IR_GLOBAL_PTR *net,
                           flagcxCoopKind_t coopKind, uint32_t index,
                           bool multimem, flagcxDeviceMemoryOrder_t order,
                           flagcxDevNetFenceLevel fence);
 
-/** @brief Wait for all peers at world barrier (intra + inter). */
-FLAGCX_DEPRECATED("use flagcxDevBarrierWait with FLAGCX_TEAM_WORLD")
+/** @brief Legacy Relaxed-only split wait; use SyncS for Put/Get. */
+FLAGCX_DEPRECATED("use flagcxDevBarrierSync with FLAGCX_TEAM_WORLD")
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void
 flagcxWorldBarrierWaitS(const void FLAGCX_IR_GLOBAL_PTR *net,
                         flagcxCoopKind_t coopKind, uint32_t index,

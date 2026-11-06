@@ -1064,6 +1064,9 @@ flagcxDevCommHasNetContexts(const flagcxDevComm &comm) {
 // ============================================================
 // Section 11: flagcxDevBarrier<flagcxTeamTagInter> — Inter-Node Barrier
 // ============================================================
+// Each simultaneous Coop group needs a distinct barrier index. Corresponding
+// groups on peer ranks use the same index; blockIdx.x is suitable when one
+// Coop group per CTA participates.
 // ---- Inter ----
 template <typename Coop>
 struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
@@ -1077,12 +1080,15 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
                    uint32_t index)
       : _impl(coop, net, net._dc, team._teamBase, index, net._nInterPeers) {}
 
+  // Legacy split barrier: only Relaxed is supported. Use sync for Put/Get.
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for inter-node barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for inter-node barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
@@ -1121,12 +1127,15 @@ struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
       : _impl(coop, flagcxTeamTagInter{}, net, net._dc, index, multimem,
               net._nInterPeers) {}
 
+  // Legacy split barrier: only Relaxed is supported. Use sync for Put/Get.
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for world barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for world barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {

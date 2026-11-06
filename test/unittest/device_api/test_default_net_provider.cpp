@@ -10,10 +10,43 @@
 #include <cassert>
 #include <cstdint>
 #include <type_traits>
+#include <typeinfo>
 
 struct OtherPlatform {};
 struct MockGdaPlatform {};
 static int mockGdaCalls = 0;
+struct MockBarrierCall {
+  int contextId;
+  const std::type_info *operation;
+};
+static MockBarrierCall mockBarrierCalls[8];
+static int mockBarrierCallCount = 0;
+
+// Models a participating subgroup without relying on the host thread-index
+// macros, which always describe one thread in this test.
+struct MockBarrierCoop {
+  int rank;
+  int groupSize;
+  int *syncCalls;
+
+  MockBarrierCoop(int rank = 0, int groupSize = 1, int *syncCalls = nullptr)
+      : rank(rank), groupSize(groupSize), syncCalls(syncCalls) {}
+  int threadRank() const { return rank; }
+  int size() const { return groupSize; }
+  void sync() const {
+    if (syncCalls != nullptr)
+      ++*syncCalls;
+  }
+};
+
+template <typename T>
+struct MockBarrierResult {
+  static T get() { return T(); }
+};
+template <>
+struct MockBarrierResult<void> {
+  static void get() {}
+};
 
 template <>
 struct PlatformTraits<MockGdaPlatform> : PlatformTraits<DefaultPlatform> {};
@@ -28,6 +61,11 @@ struct DefaultNetGdaProvider<MockGdaPlatform> {
     return providerId == 7;
   }
 
+  static bool supportsBarrierFence(DefaultNetContext,
+                                   flagcxDevNetFenceLevel fence) {
+    return flagcxDevNetFenceValid(fence);
+  }
+
   template <typename NetT>
   static bool isValid(DefaultNetContext ctx, const NetT &) {
     return ctx.providerId == 7 && ctx.handle != nullptr;
@@ -37,6 +75,14 @@ struct DefaultNetGdaProvider<MockGdaPlatform> {
   static auto call(DefaultNetContext ctx, Args &&...args)
       -> decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
           ctx, static_cast<Args &&>(args)...)) {
+    if (ctx.handle == reinterpret_cast<void *>(0x2000)) {
+      assert(mockBarrierCallCount < 8);
+      mockBarrierCalls[mockBarrierCallCount++] = {ctx.contextId,
+                                                  &typeid(Operation)};
+      typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+          ctx, static_cast<Args &&>(args)...)) Result;
+      return MockBarrierResult<Result>::get();
+    }
     ++mockGdaCalls;
     return DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
         ctx, static_cast<Args &&>(args)...);
@@ -51,6 +97,17 @@ static_assert(
 static_assert(
     std::is_empty<DefaultNetProviderPolicy<OtherPlatform>::BarrierState>::value,
     "non-NVIDIA Barrier must not carry Provider state");
+static_assert(static_cast<uint32_t>(flagcxDevNetFenceLevel::Relaxed) == 0,
+              "Relaxed must retain its existing value");
+static_assert(flagcxDevNetFenceHas(flagcxDevNetFenceLevel::Put |
+                                       flagcxDevNetFenceLevel::Get,
+                                   flagcxDevNetFenceLevel::Put),
+              "Put and Get fence bits must compose");
+static_assert(flagcxDevNetFenceValid(flagcxDevNetFenceLevel::Put |
+                                     flagcxDevNetFenceLevel::Get),
+              "composed fence must be valid");
+static_assert(!flagcxDevNetFenceValid(static_cast<flagcxDevNetFenceLevel>(4)),
+              "unknown fence bits must be rejected");
 
 struct MockNet {
   mutable int calls[11] = {};
@@ -144,6 +201,10 @@ int main() {
          DefaultNetProviderProxy);
   DefaultNetContext gdaContext{DefaultNetProviderGda, 7,
                                reinterpret_cast<void *>(0x1000), 0};
+  assert(DefaultNetGdaProvider<NvidiaPlatform>::supportsBarrierFence(
+      gdaContext, flagcxDevNetFenceLevel::Relaxed));
+  assert(!DefaultNetGdaProvider<NvidiaPlatform>::supportsBarrierFence(
+      gdaContext, flagcxDevNetFenceLevel::Put));
   DefaultNetDispatch<MockGdaPlatform>::call<Net::PutOp>(gdaContext, mock);
   assert(mockGdaCalls == 1 && mock.calls[0] == 2);
 
@@ -192,6 +253,128 @@ int main() {
   gdaComm.gdaDeviceContext = reinterpret_cast<void *>(0x1000);
   gdaComm.netProviderId = 8;
   assert(!MockGdaApi::Net(gdaComm, 0).isValid());
+
+  // A strong barrier dispatches only on its bound context. Put drains before
+  // signaling; Get drains after all signals have been observed.
+  uint64_t barrierSignals[16] = {};
+  uint64_t barrierShadows[16] = {};
+  MockGdaApi::Comm barrierComm{};
+  barrierComm.contextCount = 2;
+  barrierComm.netProvider = DefaultNetProviderGda;
+  barrierComm.netProviderId = 7;
+  barrierComm.gdaDeviceContext = reinterpret_cast<void *>(0x2000);
+  barrierComm.signalBuffer = barrierSignals;
+  barrierComm.shadowBuffer = barrierShadows;
+  barrierComm.signalCount = 8;
+  barrierComm.interBarrierCount = 3;
+  barrierComm.nTeamRanks = 2;
+  barrierComm.teamRank = 0;
+  barrierComm.intraSize = 1;
+  barrierComm.intraRank = 0;
+  MockGdaApi::Net barrierNet(barrierComm, 1);
+  typedef MockGdaApi::Barrier<flagcxTeamTagInter, MockGdaApi::CoopThread>
+      MockBarrier;
+  MockBarrier barrier(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
+                      MockGdaApi::Team{2, 0, 1}, 0, 1);
+  barrier.sync(flagcxDeviceMemoryOrderAcqRel,
+               flagcxDevNetFenceLevel::Put | flagcxDevNetFenceLevel::Get);
+  assert(mockBarrierCallCount == 4);
+  assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::FlushOp));
+  assert(*mockBarrierCalls[1].operation == typeid(MockGdaApi::Net::SignalOp));
+  assert(*mockBarrierCalls[2].operation ==
+         typeid(MockGdaApi::Net::WaitSignalOp));
+  assert(*mockBarrierCalls[3].operation == typeid(MockGdaApi::Net::FlushOp));
+  for (int i = 0; i < mockBarrierCallCount; ++i)
+    assert(mockBarrierCalls[i].contextId == 1);
+
+  mockBarrierCallCount = 0;
+  MockBarrier relaxedBarrier(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
+                             MockGdaApi::Team{2, 0, 1}, 1, 1);
+  relaxedBarrier.sync();
+  assert(mockBarrierCallCount == 3);
+  assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::SignalOp));
+
+  // Scalar IR reconstructs the barrier for each split call. Relaxed must not
+  // depend on state kept in the first Barrier object.
+  mockBarrierCallCount = 0;
+  MockBarrier splitArrive(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
+                          MockGdaApi::Team{2, 0, 1}, 1, 1);
+  MockBarrier splitWait(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
+                        MockGdaApi::Team{2, 0, 1}, 1, 1);
+  splitArrive.arrive();
+  splitWait.wait();
+  assert(mockBarrierCallCount == 3);
+  assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::SignalOp));
+  assert(*mockBarrierCalls[1].operation ==
+         typeid(MockGdaApi::Net::WaitSignalOp));
+  assert(*mockBarrierCalls[2].operation == typeid(MockGdaApi::Net::FlushOp));
+
+  mockBarrierCallCount = 0;
+  barrierComm.nTeamRanks = 1;
+  MockGdaApi::Net singleNet(barrierComm, 1);
+  MockBarrier singleBarrier(MockGdaApi::CoopThread{}, singleNet, barrierComm,
+                            MockGdaApi::Team{1, 0, 1}, 2, 0);
+  singleBarrier.sync(flagcxDeviceMemoryOrderAcqRel,
+                     flagcxDevNetFenceLevel::Get);
+  assert(mockBarrierCallCount == 1);
+  assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::FlushOp));
+  assert(mockBarrierCalls[0].contextId == 1);
+  mockBarrierCallCount = 0;
+  singleBarrier.sync();
+  assert(mockBarrierCallCount == 0);
+
+  typedef MockGdaApi::Barrier<flagcxTeamTagInter, MockBarrierCoop>
+      SubgroupBarrier;
+  int subgroupSyncCalls = 0;
+  MockBarrierCoop nonleader(1, 2, &subgroupSyncCalls);
+  SubgroupBarrier nonleaderBarrier(nonleader, singleNet, barrierComm,
+                                   MockGdaApi::Team{1, 0, 1}, 2, 0);
+  nonleaderBarrier.sync(flagcxDeviceMemoryOrderAcqRel,
+                        flagcxDevNetFenceLevel::Put |
+                            flagcxDevNetFenceLevel::Get);
+  assert(subgroupSyncCalls == 4);
+  assert(mockBarrierCallCount == 0);
+
+  subgroupSyncCalls = 0;
+  MockBarrierCoop leader(0, 2, &subgroupSyncCalls);
+  SubgroupBarrier leaderBarrier(leader, singleNet, barrierComm,
+                                MockGdaApi::Team{1, 0, 1}, 2, 0);
+  leaderBarrier.sync(flagcxDeviceMemoryOrderAcqRel,
+                     flagcxDevNetFenceLevel::Put | flagcxDevNetFenceLevel::Get);
+  assert(subgroupSyncCalls == 4);
+  assert(mockBarrierCallCount == 2);
+  assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::FlushOp));
+  assert(*mockBarrierCalls[1].operation == typeid(MockGdaApi::Net::FlushOp));
+
+  // With four team ranks, subgroup lane one owns only the second peer.
+  mockBarrierCallCount = 0;
+  subgroupSyncCalls = 0;
+  barrierComm.nTeamRanks = 4;
+  barrierComm.interBarrierCount = 2;
+  MockGdaApi::Net subgroupNet(barrierComm, 1);
+  SubgroupBarrier multiPeerBarrier(nonleader, subgroupNet, barrierComm,
+                                   MockGdaApi::Team{4, 0, 1}, 0, 3);
+  multiPeerBarrier.sync();
+  assert(subgroupSyncCalls == 4);
+  assert(mockBarrierCallCount == 2);
+  assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::SignalOp));
+  assert(*mockBarrierCalls[1].operation ==
+         typeid(MockGdaApi::Net::WaitSignalOp));
+
+  // Two independent groups use distinct channels within the allocated range.
+  const uint64_t channel0Epoch = barrierShadows[8 + 1];
+  const uint64_t channel1Epoch = barrierShadows[8 + 4 + 1];
+  mockBarrierCallCount = 0;
+  SubgroupBarrier channel0(leader, subgroupNet, barrierComm,
+                           MockGdaApi::Team{4, 0, 1}, 0, 3);
+  channel0.sync();
+  assert(barrierShadows[8 + 1] == channel0Epoch + 1);
+  assert(barrierShadows[8 + 4 + 1] == channel1Epoch);
+  mockBarrierCallCount = 0;
+  SubgroupBarrier channel1(leader, subgroupNet, barrierComm,
+                           MockGdaApi::Team{4, 0, 1}, 1, 3);
+  channel1.sync();
+  assert(barrierShadows[8 + 4 + 1] == channel1Epoch + 1);
 
   struct HostComm : Policy::CommState {
   } hostComm;
