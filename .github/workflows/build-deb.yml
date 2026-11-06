@@ -19,8 +19,6 @@ on:
 
 jobs:
   build-packages:
-    # Temporarily pause non-Ascend package CI.
-    if: ${{ false }}
     runs-on: h20
 
     strategy:

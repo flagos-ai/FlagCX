@@ -11,12 +11,6 @@ override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
 
-Temporarily, only Ascend is enabled in `.github/configs/platforms.yml`.
-Registered but disabled platforms are omitted even when selected by label,
-`/test`, or manual dispatch. Common checks still run. The independent Hygon
-and MetaX unit-test workflows and Debian packaging job are paused; the RPM
-matrix contains only Ascend. Re-enable those entries when platform CI resumes.
-
 Maintainers with `write`, `maintain`, or `admin` repository permission can post
 one of these exact commands on a PR:
 

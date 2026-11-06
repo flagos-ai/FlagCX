@@ -294,19 +294,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
             )
             return json.loads(outputs["platforms"])
 
-    def test_unified_ci_routes_changes_to_enabled_platforms(self):
-        all_platforms = ["ascend"]
+    def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
+        all_platforms = ["cuda", "hygon", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            all_platforms,
+            ["cuda"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            all_platforms,
+            ["hygon"],
         )
         self.assertEqual(
             self._run_platform_matrix(
@@ -672,7 +672,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("sizeof(struct flagcxIbSendFifo) == 64", common)
         self.assertIn("offsetof(struct flagcxIbSendFifo, idx) == 56", common)
 
-    def test_automatic_hardware_ci_uses_enabled_platform_and_preserves_suites(self):
+    def test_automatic_hardware_ci_covers_all_platforms_and_suites(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
             [
@@ -687,7 +687,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             result.stdout.strip(),
-            '{"include":[{"platform":"ascend","display_name":"Ascend 910C unit tests"}]}',
+            '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
+            '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
+            '{"platform":"metax","display_name":"MetaX Tests"},'
+            '{"platform":"ppu","display_name":"T-Head PPU Tests"},'
+            '{"platform":"ascend","display_name":"Ascend 910C unit tests"}]}',
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"

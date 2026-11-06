@@ -77,14 +77,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 outputs, _ = self.resolve(
                     {"event_name": "pull_request", "files": [path]}
                 )
-                # A path owned only by a paused platform falls back to the
-                # enabled matrix, so it cannot schedule the paused runner.
-                selected = (
-                    expected
-                    if expected[0] in ALL_ENABLED_PLATFORMS
-                    else ALL_ENABLED_PLATFORMS
-                )
-                self.assertEqual(outputs["platforms"], selected)
+                self.assertEqual(outputs["platforms"], expected)
 
     def test_platform_labels_override_paths_and_can_select_multiple_platforms(self):
         outputs, _ = self.resolve(
@@ -94,14 +87,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], [
-            name for name in ("hygon", "ppu") if name in ALL_ENABLED_PLATFORMS
-        ])
-        outputs, _ = self.resolve({
-            "event_name": "pull_request",
-            "labels": ["platform:ascend", "platform:cuda"],
-        })
-        self.assertEqual(outputs["platforms"], ["ascend"])
+        self.assertEqual(outputs["platforms"], ["hygon", "ppu"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -160,9 +146,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             "is_pull_request": True, "labels": ["platform:ppu"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], [
-            name for name in ("ppu",) if name in ALL_ENABLED_PLATFORMS
-        ])
+        self.assertEqual(outputs["platforms"], ["ppu"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -173,8 +157,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "cuda,ppu"}, []),
-            ("workflow_dispatch", {"selection": "ascend,cuda"}, ["ascend"]),
+            ("workflow_dispatch", {"selection": "cuda,ppu"}, ["cuda", "ppu"]),
             (
                 "issue_comment",
                 {
@@ -182,7 +165,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                [],
+                ["metax"],
             ),
             (
                 "issue_comment",
@@ -201,7 +184,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ALL_ENABLED_PLATFORMS,
+                ["cuda"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
