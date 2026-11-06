@@ -1352,9 +1352,11 @@ run_suite
         rma_ipc_test = (
             REPO_ROOT / "test/unittest/rma/coll_rma_get_async.cpp"
         ).read_text()
-        self.assertIn("op == flagcxNotSupported", rma_ipc_test)
+        self.assertIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
+        self.assertIn("gateResult == flagcxNotSupported", rma_ipc_test)
+        self.assertNotIn("op == flagcxNotSupported", rma_ipc_test)
         self.assertIn(
-            "CoreX does not support asynchronous IPC Get", rma_ipc_test
+            "CoreX streamWaitValue64 is unsupported", rma_ipc_test
         )
         self.assertNotIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(

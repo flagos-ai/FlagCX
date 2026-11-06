@@ -74,7 +74,7 @@ if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
       -x FLAGCX_VMM_ENABLE=1 \
       -x FLAGCX_IB_DISABLE=1 \
       -x FLAGCX_CI_REQUIRE_VMM=1 \
-      "${vmm_provider_env[@]}" \
+      "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
       "$BUILD_BIN/symmem_mpi_tests" \
       --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
 else
