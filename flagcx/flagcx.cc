@@ -96,27 +96,12 @@ flagcxResult_t wrapper_deviceMemcpy(void *dst, void *src, size_t size,
   return deviceAdaptor->deviceMemcpy(dst, src, size, type, stream, NULL);
 }
 
-static struct flagcxDeviceHandle globalDeviceHandle {
-  // Basic functions
-  deviceAdaptor->deviceSynchronize, wrapper_deviceMemcpy,
-      deviceAdaptor->deviceMemset, deviceAdaptor->deviceMalloc,
-      deviceAdaptor->deviceFree, deviceAdaptor->setDevice,
-      deviceAdaptor->getDevice, deviceAdaptor->getDeviceCount,
-      deviceAdaptor->getVendor, deviceAdaptor->hostGetDevicePointer,
-      // Stream functions
-      deviceAdaptor->streamCreate, deviceAdaptor->streamDestroy,
-      deviceAdaptor->streamCopy, deviceAdaptor->streamFree,
-      deviceAdaptor->streamSynchronize, deviceAdaptor->streamQuery,
-      deviceAdaptor->streamWaitEvent,
-      // Event functions
-      deviceAdaptor->eventCreate, deviceAdaptor->eventDestroy,
-      deviceAdaptor->eventRecord, deviceAdaptor->eventSynchronize,
-      deviceAdaptor->eventQuery, deviceAdaptor->eventElapsedTime,
-      // IpcMemHandle functions
-      deviceAdaptor->ipcMemHandleCreate, deviceAdaptor->ipcMemHandleGet,
-      deviceAdaptor->ipcMemHandleOpen, deviceAdaptor->ipcMemHandleClose,
-      deviceAdaptor->ipcMemHandleFree,
-};
+// Populated by flagcxRebuildGlobalDeviceHandle() below, which the device
+// adaptor plugin init runs before the only read of this object. It must not
+// be initialized from deviceAdaptor here: a vendor-neutral library has no
+// built-in adaptor, and a static initializer would dereference a null pointer
+// while the library is still being loaded, before any plugin can be opened.
+static struct flagcxDeviceHandle globalDeviceHandle {};
 
 void flagcxRebuildGlobalDeviceHandle() {
   // Basic functions
@@ -190,9 +175,11 @@ flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle) {
     return flagcxInvalidArgument;
   }
   flagcxResult_t res = flagcxSuccess;
-  flagcxDeviceAdaptorPluginInit();
-  flagcxCCLAdaptorPluginInit();
+  // Clear the out parameter before anything can jump to the failure path,
+  // which inspects it.
   (*devHandle) = NULL;
+  FLAGCXCHECKGOTO(flagcxDeviceAdaptorPluginInit(), res, fail);
+  FLAGCXCHECKGOTO(flagcxCCLAdaptorPluginInit(), res, fail);
   FLAGCXCHECKGOTO(flagcxCalloc(devHandle, 1), res, fail);
   **devHandle = globalDeviceHandle;
   return flagcxSuccess;
