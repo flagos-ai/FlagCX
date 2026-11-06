@@ -39,8 +39,7 @@ case "$workload" in
     # CANN IPC handles are pending; exercise the heterogeneous NET route here.
     # Force the relaxed-ordering MR path validated for Ascend NPU memory.
     echo "Ascend coverage gap: same-node IPC perf is deferred to the CANN IPC PR; running heterogeneous perf over NET"
-    FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES=512M \
-      FLAGCX_CI_ATTEMPT_FAILURE_HOOK="$project_root/.github/scripts/ci/ascend_rdma_attempt_inventory.sh" \
+    FLAGCX_CI_ATTEMPT_FAILURE_HOOK="$project_root/.github/scripts/ci/ascend_rdma_attempt_inventory.sh" \
       "$perf_runner" heterogeneous "$perf_bin" \
       -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_IB_PCI_RELAXED_ORDERING=1
     ;;

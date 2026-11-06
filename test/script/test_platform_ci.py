@@ -880,9 +880,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("export FLAGCX_USE_HETERO_COMM", metax_handler)
         self.assertIn("ascend perf", perf_workflow)
         self.assertIn('"$perf_runner" homogeneous "$perf_bin"', ascend_handler)
+        ascend_command = " ".join(ascend_handler.replace("\\\n", " ").split())
         self.assertIn(
-            '"$perf_runner" heterogeneous "$perf_bin" -x FLAGCX_P2P_DISABLE=1',
-            ascend_handler,
+            '"$perf_runner" heterogeneous "$perf_bin" '
+            '-x FLAGCX_P2P_DISABLE=1 -x FLAGCX_IB_PCI_RELAXED_ORDERING=1',
+            ascend_command,
         )
         self.assertIn("ascend torch-api", torch_workflow)
         self.assertIn("import torch, torch_npu", ascend_handler)
