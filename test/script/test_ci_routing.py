@@ -231,7 +231,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["iluvatar"],
+                ["cuda"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):

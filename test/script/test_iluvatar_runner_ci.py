@@ -60,6 +60,111 @@ class IluvatarRunnerCiTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
+    def test_quarantine_is_scoped_to_exact_cases_and_explicit_modes(self):
+        reason = timeout_wrapper_unsupported()
+        if reason:
+            self.skipTest(reason)
+        for mode, pxn in (("HOMO", "0"), ("HYBRID", "0"), ("HYBRID", "1")):
+            for enabled in ("0", "1"):
+                with self.subTest(mode=mode, pxn=pxn, enabled=enabled):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        binary = self.script(root / "runner_mpi_tests", '''
+[[ "$1" == --gtest_list_tests ]]
+printf 'FlagCXCollTest.\n  SendRecv\n  AlltoAll\n  AllReduce\nOtherSuite.\n  SendRecv\n'
+''')
+                        launcher = self.script(root / "mpirun", '''
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+''')
+                        result = subprocess.run(
+                            ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
+                             "-x", f"FLAGCX_CI_EXPECT_RUNNER_MODE={mode}",
+                             "-x", f"FLAGCX_CI_EXPECT_PXN={pxn}", str(binary)],
+                            env={**os.environ, "BASH_ENV": "",
+                                 "FLAGCX_CI_ILUVATAR_QUARANTINE": enabled,
+                                 "FLAGCX_CI_MPI_LABEL": "arbitrary stage label",
+                                 "FLAGCX_CI_MPIRUN": str(launcher),
+                                 "FLAGCX_CI_LOG_DIR": str(root / "logs"),
+                                 "GITHUB_STEP_SUMMARY": str(root / "summary"),
+                                 "COMMAND_LOG": str(root / "calls")},
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        calls = (root / "calls").read_text()
+                        skip_sendrecv = enabled == "1" and mode == "HYBRID"
+                        skip_alltoall = skip_sendrecv and pxn == "1"
+                        self.assertEqual("--gtest_filter=FlagCXCollTest.SendRecv" in calls,
+                                         not skip_sendrecv)
+                        self.assertEqual("--gtest_filter=FlagCXCollTest.AlltoAll" in calls,
+                                         not skip_alltoall)
+                        self.assertIn("--gtest_filter=FlagCXCollTest.AllReduce", calls)
+                        self.assertIn("--gtest_filter=OtherSuite.SendRecv", calls)
+                        record = root / "logs/iluvatar-runner-quarantine.tsv"
+                        if skip_sendrecv:
+                            self.assertIn("T-3", record.read_text())
+                            self.assertIn("T-3", (root / "summary").read_text())
+                            self.assertIn("SKIPPED", result.stdout)
+                            self.assertNotIn("FlagCXCollTest.SendRecv result=0", result.stdout)
+                            self.assertEqual("T-4" in record.read_text(), skip_alltoall)
+                        else:
+                            self.assertFalse(record.exists())
+
+    def test_quarantine_keeps_unrelated_failures_and_rejects_empty_runs(self):
+        reason = timeout_wrapper_unsupported()
+        if reason:
+            self.skipTest(reason)
+        for include_failure in (False, True):
+            with self.subTest(include_failure=include_failure):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    listing = "FlagCXCollTest.\\n  SendRecv\\n"
+                    if include_failure:
+                        listing += "  AllReduce\\n"
+                    binary = self.script(root / "runner_mpi_tests",
+                                         "printf '" + listing + "'\n")
+                    launcher = self.script(root / "mpirun", '''
+printf '%s\n' "$*" >> "$COMMAND_LOG"
+exit 7
+''')
+                    result = subprocess.run(
+                        ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
+                         "-x", "FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID", str(binary)],
+                        env={**os.environ, "BASH_ENV": "",
+                             "FLAGCX_CI_ILUVATAR_QUARANTINE": "1",
+                             "FLAGCX_CI_MPIRUN": str(launcher),
+                             "FLAGCX_CI_LOG_DIR": str(root / "logs"),
+                             "COMMAND_LOG": str(root / "calls")},
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 7 if include_failure else 1,
+                                     result.stdout + result.stderr)
+                    if include_failure:
+                        calls = (root / "calls").read_text()
+                        self.assertNotIn("--gtest_filter=FlagCXCollTest.SendRecv", calls)
+                        self.assertEqual(calls.count("--gtest_filter=FlagCXCollTest.AllReduce"), 2)
+                    else:
+                        self.assertFalse((root / "calls").exists())
+                        self.assertIn("all selected cases are quarantined", result.stderr)
+
+    def test_platform_enables_quarantine_only_for_runner_and_allows_restoration(self):
+        for override, suite, expected in (("", "runner", "1"),
+                                          ("0", "runner", "0"),
+                                          ("", "adaptor", "")):
+            with self.subTest(override=override, suite=suite):
+                env = {**os.environ, "BASH_ENV": ""}
+                env.pop("FLAGCX_CI_ILUVATAR_QUARANTINE", None)
+                if override:
+                    env["FLAGCX_CI_ILUVATAR_QUARANTINE"] = override
+                result = subprocess.run(
+                    ["bash", "-c",
+                     'source "$1"; flagcx_ci_configure_suite "$2"; '
+                     'printf "%s" "${FLAGCX_CI_ILUVATAR_QUARANTINE:-}"',
+                     "bash", str(ROOT / ".github/scripts/set_env/iluvatar.sh"), suite],
+                    env=env, capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+
     def test_timeout_does_not_hide_failures_or_prevent_later_cases(self):
         reason = timeout_wrapper_unsupported()
         if reason:

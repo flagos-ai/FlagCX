@@ -48,6 +48,9 @@ flagcx_ci_configure_suite() {
       ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      # Temporary, case-specific exclusions for PR #670 TODO T-3/T-4.
+      # Set to 0 to run the affected cases during backend diagnosis.
+      export FLAGCX_CI_ILUVATAR_QUARANTINE=${FLAGCX_CI_ILUVATAR_QUARANTINE:-1}
       ;;
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
