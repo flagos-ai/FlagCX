@@ -28,8 +28,12 @@ endif
 all: $(BINS)
 
 PERF_DATA_CHECK_BINS := $(addprefix $(BINDIR)/perf_,\
-    alltoall alltoallv sendrecv broadcast gather scatter)
+    alltoall alltoallv sendrecv allgather broadcast gather scatter)
 $(PERF_DATA_CHECK_BINS): perf_alltoall_check.h
+
+PERF_REDUCE_CHECK_BINS := $(addprefix $(BINDIR)/perf_,\
+    allreduce reduce reducescatter)
+$(PERF_REDUCE_CHECK_BINS): perf_reduce_check.h
 
 $(BINDIR)/perf_%: test_%.cpp $(COMMON_SRCS)
 	@mkdir -p $(BINDIR)
