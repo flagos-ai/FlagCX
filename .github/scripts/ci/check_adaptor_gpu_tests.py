@@ -15,6 +15,10 @@ REQUIRED_CASES = (
     "GpuBounds",
 )
 UNSUPPORTED_GPU_MR_REASON = "Selected net adaptor does not advertise GPU MR"
+# The policy names the capability under test, not the chip. A platform that
+# cannot advertise GPU MR selects gpu-mr-optional in its own set_env instead of
+# being appended to a vendor list here.
+POLICIES = ("gpu-mr-optional", "gpu-mr-required")
 
 
 def check_results(
@@ -60,14 +64,13 @@ def check_results(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[2] not in {"ascend", "iluvatar", "required"}:
+    if len(sys.argv) != 3 or sys.argv[2] not in POLICIES:
         sys.exit(
-            "Usage: check_adaptor_gpu_tests.py "
-            "<gtest-xml> <ascend|iluvatar|required>"
+            f"Usage: check_adaptor_gpu_tests.py <gtest-xml> <{'|'.join(POLICIES)}>"
         )
     failures, unsupported = check_results(
         Path(sys.argv[1]),
-        allow_gpu_mr_unsupported=sys.argv[2] in {"ascend", "iluvatar"},
+        allow_gpu_mr_unsupported=sys.argv[2] == "gpu-mr-optional",
     )
     if failures:
         for failure in failures:

@@ -81,7 +81,7 @@ class AdaptorGpuCiTest(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(unsupported, list(MODULE.REQUIRED_CASES))
 
-    def test_iluvatar_policy_allows_only_gpu_mr_capability_skips(self):
+    def test_optional_policy_allows_only_gpu_mr_capability_skips(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "results.xml"
             for markup, expected in (
@@ -95,12 +95,34 @@ class AdaptorGpuCiTest(unittest.TestCase):
                         {name: markup for name in MODULE.REQUIRED_CASES},
                     )
                     result = subprocess.run(
-                        [sys.executable, str(CHECKER), str(path), "iluvatar"],
+                        [sys.executable, str(CHECKER), str(path), "gpu-mr-optional"],
                         capture_output=True, text=True,
                     )
                     self.assertEqual(result.returncode, expected, result.stderr)
                     if expected == 0:
                         self.assertIn("skipped after runtime capability check", result.stdout)
+
+    def test_policy_names_a_capability_not_a_vendor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.xml"
+            build_results(
+                path, MODULE.REQUIRED_CASES,
+                {name: GPU_MR_SKIP for name in MODULE.REQUIRED_CASES},
+            )
+            for policy in ("ascend", "iluvatar", "required"):
+                with self.subTest(policy=policy):
+                    result = subprocess.run(
+                        [sys.executable, str(CHECKER), str(path), policy],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("gpu-mr-optional|gpu-mr-required", result.stderr)
+            required = subprocess.run(
+                [sys.executable, str(CHECKER), str(path), "gpu-mr-required"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(required.returncode, 1)
+            self.assertIn("skipped or not run", required.stderr)
 
     def test_gtest_skip_message_attribute_is_recognized(self):
         failures, unsupported = self.check(

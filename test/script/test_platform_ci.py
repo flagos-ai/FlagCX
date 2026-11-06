@@ -1368,9 +1368,18 @@ run_suite
         )
         self.assertLess(route_union, vmm_skip_return)
         self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
-        self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED=0", iluvatar_env)
-        self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED=0", iluvatar_env)
+        # Runner stages carry no capability gate: an environment variable must
+        # not be able to drop runner coverage without a recorded reason.
+        self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED", unit_runner)
+        self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED", unit_runner)
         self.assertNotIn("flagcx_ci_skip_suite", iluvatar_env)
+        # The GPU MR capability is declared by the platform, not by a vendor
+        # name baked into the shared runner or the checker.
+        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional", iluvatar_env)
+        self.assertIn(
+            "gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}", unit_runner
+        )
+        self.assertNotIn('gpu_mr_policy="$platform_name"', unit_runner)
         rma_makefile = (REPO_ROOT / "test/unittest/rma/Makefile").read_text()
         iluvatar_kernel_makefile = (
             REPO_ROOT / "test/kernel/iluvatar/Makefile"
@@ -1386,14 +1395,11 @@ run_suite
         runner_case = unit_runner[
             unit_runner.index("    runner)") : unit_runner.index("    symmem)")
         ]
-        net_gate = runner_case.index(
-            'if [[ "${FLAGCX_CI_RUNNER_NET_SUPPORTED:-1}" == 1 ]]'
+        hybrid_stage = runner_case.index(
+            'FLAGCX_CI_MPI_LABEL="runner heterogeneous"'
         )
-        hetero_gate = runner_case.index(
-            'if [[ "${FLAGCX_CI_RUNNER_HETERO_SUPPORTED:-1}" == 1 ]]'
-        )
-        self.assertGreater(net_gate, hetero_gate)
-        self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET"', runner_case)
+        net_stage = runner_case.index('FLAGCX_CI_MPI_LABEL="runner forced NET"')
+        self.assertGreater(net_stage, hybrid_stage)
         self.assertIn('elif [[ "$platform_name" == iluvatar ]]', runner_case)
         self.assertIn('ci/run_iluvatar_runner_mpi.sh', runner_case)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping"', runner_case)

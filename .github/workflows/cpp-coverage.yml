@@ -14,11 +14,11 @@ on:
 permissions:
   contents: read
 
+# A caller's env block does not reach a reusable workflow, so the coverage
+# build inputs live on the `coverage` job below. Only the jobs defined here
+# read this block.
 env:
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
-  FLAGCX_CI_COVERAGE: '1'
-  FLAGCX_CI_TEST_TIMEOUT: 80m
-  FLAGCX_CI_MPI_TIMEOUT: 80m
 
 jobs:
   prepare:

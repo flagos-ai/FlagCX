@@ -31,6 +31,10 @@ if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
   coverage_python_dir="${TMPDIR:-/tmp}/flagcx-coverage-python"
   if ! PYTHONPATH="$coverage_python_dir${PYTHONPATH:+:$PYTHONPATH}" \
     python3 -m gcovr --version >/dev/null 2>&1; then
+    # Record the fallback: a platform whose CI image pins gcovr must never
+    # reach this path, which needs outbound network from a hardware runner.
+    echo "gcovr is not installed in this CI image; falling back to a runtime" \
+      "pip install. Pin gcovr==8.2 in the platform image instead." >&2
     python3 -m pip install --quiet --disable-pip-version-check \
       --target "$coverage_python_dir" gcovr==8.2
   fi
@@ -63,6 +67,11 @@ if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
 if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
+  # GoogleTest gives the --gtest_filter flag precedence over GTEST_FILTER, so
+  # this export only reaches invocations that pass no filter of their own.
+  # Invocations below that build a filter from this variable inherit the
+  # exclusion; an invocation that hard-codes a purely negative --gtest_filter
+  # selects everything else and must exclude CoverageSupplemental.* itself.
   GTEST_FILTER=$(bash "$PROJECT_ROOT/.github/scripts/ci/filter_supplemental_tests.sh" \
     "${GTEST_FILTER:-*}" exclude)
   export GTEST_FILTER
@@ -328,14 +337,13 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
-      local gpu_mr_policy=required
+      # Each platform declares its own GPU MR capability in set_env; this
+      # shared path stays vendor-neutral and demands GPU MR by default.
+      local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
       local platform_name
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       if [[ "$platform_name" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-      fi
-      if [[ "$platform_name" == ascend || "$platform_name" == iluvatar ]]; then
-        gpu_mr_policy="$platform_name"
       fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
@@ -740,19 +748,14 @@ run_suite() {
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
         ./build/bin/runner_mpi_tests || default_status=$?
-      if [[ "${FLAGCX_CI_RUNNER_HETERO_SUPPORTED:-1}" == 1 ]]; then
-        FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
-          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-          -x FLAGCX_MEM_ENABLE=1 \
-          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-          -x FLAGCX_P2P_DISABLE=0 \
-          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
-          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-          ./build/bin/runner_mpi_tests || hybrid_status=$?
-      else
-        echo "Skipping heterogeneous runner modes: unsupported on $platform_name CoreX runtime"
-      fi
-      if [[ "${FLAGCX_CI_RUNNER_NET_SUPPORTED:-1}" == 1 ]]; then
+      FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
+        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+        -x FLAGCX_P2P_DISABLE=0 \
+        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+        ./build/bin/runner_mpi_tests || hybrid_status=$?
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -827,7 +830,6 @@ run_suite() {
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
           --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
-      fi
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
            net_status != 0 || stripe_status != 0 || pxn_status != 0)); then

@@ -117,7 +117,16 @@ class CppCoverageReportTest(unittest.TestCase):
         report = json.loads((self.output / "report.json").read_text())
         self.assertEqual(report["collection_status"], "collected")
         self.assertFalse(report["coverage_complete"])
-        self.assertEqual(report["metrics"]["line_percent"], 66.7)
+        # The fixture calls choose(1), so `return 0` stays uncovered. How many
+        # lines gcov attributes to the function differs between compilers
+        # (gcc 2/3, clang 3/4), so assert the property under test — partial
+        # line coverage — rather than one toolchain's ratio.
+        line_percent = report["metrics"]["line_percent"]
+        self.assertIsInstance(line_percent, float)
+        self.assertGreater(line_percent, 0.0)
+        self.assertLess(line_percent, 100.0)
+        # These two do not depend on line attribution: one function, called;
+        # two branches, one taken.
         self.assertEqual(report["metrics"]["function_percent"], 100.0)
         self.assertEqual(report["metrics"]["branch_percent"], 50.0)
         self.assertEqual(

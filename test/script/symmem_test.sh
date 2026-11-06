@@ -61,7 +61,7 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     -x FLAGCX_VMM_ENABLE=0 \
     -x FLAGCX_IB_DISABLE=1 \
     "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
 
 echo ""
 echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
@@ -76,7 +76,7 @@ if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
       -x FLAGCX_CI_REQUIRE_VMM=1 \
       "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
       "$BUILD_BIN/symmem_mpi_tests" \
-      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
 else
   echo "Skipping symmem VMM-local tests: VMM is unavailable on this CoreX runtime"
 fi

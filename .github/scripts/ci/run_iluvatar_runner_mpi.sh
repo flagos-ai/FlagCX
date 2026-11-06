@@ -21,36 +21,82 @@ if [[ -z "$binary" || ! -x "$binary" ]]; then
   exit 1
 fi
 
+seconds_of() {
+  local value=$1
+  case "$value" in
+    *h) awk -v v="${value%h}" 'BEGIN { printf "%.3f", v * 3600 }' ;;
+    *m) awk -v v="${value%m}" 'BEGIN { printf "%.3f", v * 60 }' ;;
+    *s) printf '%s' "${value%s}" ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+# Running one case per MPI launch loses the in-process short circuit that
+# main_mpi.cpp uses after a permanent transport error, so every case now owns a
+# full timeout budget. Bound each case well below the suite default and stop the
+# stage once the cumulative budget is spent: the unit_tests_common.yml job is
+# capped at 120 minutes and must not be consumed by a second stuck case.
+per_test_timeout=${FLAGCX_CI_RUNNER_PER_TEST_TIMEOUT:-5m}
+stage_budget=${FLAGCX_CI_RUNNER_STAGE_BUDGET:-900}
+sendrecv_timeout=${FLAGCX_CI_RUNNER_SENDRECV_TIMEOUT:-2m}
+# Collect diagnostics before, not after, timeout terminates the process group.
+# Derive the delay from the timeout actually in effect so overriding one value
+# cannot push collection past the kill.
+diagnostics_after=${FLAGCX_CI_RUNNER_DIAGNOSTICS_AFTER:-$(
+  awk -v t="$(seconds_of "$sendrecv_timeout")" 'BEGIN { printf "%.3f", t * 0.75 }'
+)}
+
 # GTest applies the original positive and negative filters before listing.
 # Listing does not initialize MPI or run any hardware fixture.
 listing=$(timeout --kill-after=5s 30s "$binary" \
   --gtest_list_tests --gtest_filter="$filter")
-tests=$(awk '
-  /^FlagCXCollTest\./ { in_suite=1; next }
-  /^[^ ]/ { in_suite=0 }
-  in_suite && /^  [A-Za-z0-9_]+/ { print "FlagCXCollTest." $1 }
+# Accept every suite the binary reports. Hard-coding one suite name would
+# silently drop any case added to this binary later.
+# Build the array with a read loop: mapfile needs Bash 4 and this repository
+# still supports the Bash 3.2 shipped on macOS.
+tests=()
+while IFS= read -r discovered; do
+  [[ -n "$discovered" ]] && tests+=("$discovered")
+done < <(awk '
+  /^[^[:space:]]/ {
+    suite = ""
+    if ($1 ~ /\.$/)
+      suite = $1
+    next
+  }
+  suite != "" && /^[[:space:]]+[A-Za-z0-9_]/ { print suite $1 }
 ' <<< "$listing")
-if [[ -z "$tests" ]]; then
-  echo "Iluvatar runner filter selected no collective tests: $filter" >&2
+if ((${#tests[@]} == 0)); then
+  echo "Iluvatar runner filter selected no tests: $filter" >&2
   exit 1
 fi
 
 status=0
 label=${FLAGCX_CI_MPI_LABEL:-Iluvatar runner}
-while IFS= read -r test; do
+start=$SECONDS
+for index in "${!tests[@]}"; do
+  test=${tests[index]}
+  if ((SECONDS - start >= stage_budget)); then
+    echo "$label exhausted its ${stage_budget}s stage budget; these cases did" \
+      "not run: ${tests[*]:index}" >&2
+    if ((status == 0)); then
+      status=1
+    fi
+    break
+  fi
   test_status=0
-  if [[ "$test" == FlagCXCollTest.SendRecv ]]; then
+  if [[ "$test" == *.SendRecv ]]; then
     # This case currently hangs in CoreX stream synchronization. Still run
     # it and fail on timeout, but do not repeat a known deterministic hang.
-    # Capture diagnostics before timeout terminates the MPI process group.
-    FLAGCX_CI_MPI_TIMEOUT="${FLAGCX_CI_RUNNER_SENDRECV_TIMEOUT:-2m}" \
-      FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="${FLAGCX_CI_RUNNER_DIAGNOSTICS_AFTER:-90}" \
+    FLAGCX_CI_MPI_TIMEOUT="$sendrecv_timeout" \
+      FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="$diagnostics_after" \
       FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
       FLAGCX_CI_MPI_LABEL="$label $test" \
       "$script_dir/run_mpi_with_timeout.sh" "${args[@]}" \
       --gtest_filter="$test" || test_status=$?
   else
-    FLAGCX_CI_MPI_LABEL="$label $test" \
+    FLAGCX_CI_MPI_TIMEOUT="$per_test_timeout" \
+      FLAGCX_CI_MPI_LABEL="$label $test" \
       "$script_dir/run_mpi_with_timeout.sh" "${args[@]}" \
       --gtest_filter="$test" || test_status=$?
   fi
@@ -61,5 +107,5 @@ while IFS= read -r test; do
   if ((status == 0 && test_status != 0)); then
     status=$test_status
   fi
-done <<< "$tests"
+done
 exit "$status"

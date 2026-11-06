@@ -17,8 +17,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       openmpi-bin \
       libopenmpi-dev \
       pkg-config \
+      python3-pip \
       ruby \
     && rm -rf /var/lib/apt/lists/*
+
+# Pin the C++ coverage toolchain in the image. run_unit_test.sh falls back to a
+# runtime pip install when gcovr is absent; that fallback needs outbound network
+# from a hardware runner, so keep this version in sync with it.
+RUN python3 -m pip install --no-cache-dir --break-system-packages gcovr==8.2 \
+    || python3 -m pip install --no-cache-dir gcovr==8.2
 
 RUN multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
     mkdir -p "$MPI_HOME/bin"; \

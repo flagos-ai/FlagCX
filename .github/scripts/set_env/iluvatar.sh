@@ -21,6 +21,9 @@ FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
 # Temporarily disable VMM-only scenarios until the IXCUDA VMM/LSA callbacks
 # are implemented. Keep IPC, NET fallback and route-capability checks enabled.
 export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
+# The selected net adaptor does not advertise GPU MR on CoreX, so the GPU
+# one-sided cases may report a runtime capability skip.
+export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional
 export NP=4
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
