@@ -123,6 +123,20 @@ flagcxResult_t flagcxDeviceAdaptorPluginInit() {
   if (devicePluginDlHandle != NULL) {
     devicePluginRefCount++;
   }
+  // A vendor-neutral library has no built-in device adaptor, so a plugin is
+  // the only possible source of one. Every load failure above leaves
+  // deviceAdaptor untouched, which makes this single check cover all of them.
+  // Builds that carry a built-in adaptor never take this branch.
+  if (deviceAdaptor == NULL) {
+    WARN("ADAPTOR/Plugin: No device adaptor available. This library is built "
+         "without a built-in device adaptor; set FLAGCX_DEVICE_ADAPTOR_PLUGIN "
+         "to a device adaptor plugin for the installed accelerator.");
+    return flagcxInvalidUsage;
+  }
+  // globalDeviceHandle is only ever read after this point, so build it from
+  // whichever adaptor is now in effect — the built-in one, or the plugin that
+  // the load above installed (for which this is idempotent).
+  flagcxRebuildGlobalDeviceHandle();
   return flagcxSuccess;
 }
 
