@@ -329,9 +329,13 @@ run_suite() {
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
       local gpu_mr_policy=required
-      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
+      local platform_name
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-        gpu_mr_policy=ascend
+      fi
+      if [[ "$platform_name" == ascend || "$platform_name" == iluvatar ]]; then
+        gpu_mr_policy="$platform_name"
       fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
@@ -718,6 +722,8 @@ run_suite() {
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       if [[ "$platform_name" == ascend ]]; then
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_ascend_runner_mpi.sh"
+      elif [[ "$platform_name" == iluvatar ]]; then
+        runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_runner_mpi.sh"
       fi
       if [[ "$platform_name" == "hygon" ]]; then
         # A broken SHCA route otherwise consumes the default RC retry budget

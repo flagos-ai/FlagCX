@@ -1358,7 +1358,7 @@ run_suite
         self.assertIn(
             "CoreX streamWaitValue64 is unsupported", rma_ipc_test
         )
-        self.assertNotIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
         )
@@ -1394,6 +1394,8 @@ run_suite
         )
         self.assertGreater(net_gate, hetero_gate)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET"', runner_case)
+        self.assertIn('elif [[ "$platform_name" == iluvatar ]]', runner_case)
+        self.assertIn('ci/run_iluvatar_runner_mpi.sh', runner_case)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping"', runner_case)
         self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank"', runner_case)
 

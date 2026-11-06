@@ -1,6 +1,8 @@
 """Check that hardware CI rejects missing or skipped GPU adaptor cases."""
 
 import importlib.util
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +80,27 @@ class AdaptorGpuCiTest(unittest.TestCase):
         )
         self.assertEqual(failures, [])
         self.assertEqual(unsupported, list(MODULE.REQUIRED_CASES))
+
+    def test_iluvatar_policy_allows_only_gpu_mr_capability_skips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.xml"
+            for markup, expected in (
+                (GPU_MR_SKIP, 0),
+                (UNRELATED_SKIP, 1),
+                ('<failure message="boom"/>', 1),
+            ):
+                with self.subTest(markup=markup):
+                    build_results(
+                        path, MODULE.REQUIRED_CASES,
+                        {name: markup for name in MODULE.REQUIRED_CASES},
+                    )
+                    result = subprocess.run(
+                        [sys.executable, str(CHECKER), str(path), "iluvatar"],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 0:
+                        self.assertIn("skipped after runtime capability check", result.stdout)
 
     def test_gtest_skip_message_attribute_is_recognized(self):
         failures, unsupported = self.check(

@@ -18,6 +18,9 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
+# Temporarily disable VMM-only scenarios until the IXCUDA VMM/LSA callbacks
+# are implemented. Keep IPC, NET fallback and route-capability checks enabled.
+export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
 export NP=4
 
 FLAGCX_CI_NODE1_MPI_ARGS=(

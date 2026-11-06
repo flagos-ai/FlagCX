@@ -60,10 +60,14 @@ def check_results(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3 or sys.argv[2] not in {"ascend", "required"}:
-        sys.exit("Usage: check_adaptor_gpu_tests.py <gtest-xml> <ascend|required>")
+    if len(sys.argv) != 3 or sys.argv[2] not in {"ascend", "iluvatar", "required"}:
+        sys.exit(
+            "Usage: check_adaptor_gpu_tests.py "
+            "<gtest-xml> <ascend|iluvatar|required>"
+        )
     failures, unsupported = check_results(
-        Path(sys.argv[1]), allow_gpu_mr_unsupported=sys.argv[2] == "ascend"
+        Path(sys.argv[1]),
+        allow_gpu_mr_unsupported=sys.argv[2] in {"ascend", "iluvatar"},
     )
     if failures:
         for failure in failures:
