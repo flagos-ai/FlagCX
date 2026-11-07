@@ -954,7 +954,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_ASCEND,
 };
 
 #endif // USE_ASCEND_ADAPTOR
