@@ -63,6 +63,9 @@ for operation in "${operations[@]}"; do
     max_bytes=${FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES:-1G}
   fi
   operation_args=(-b 128M -e "$max_bytes" -f 2 -p 1)
+  if [[ -n "${FLAGCX_CI_PERF_VERIFY:-}" ]]; then
+    operation_args+=(-v "$FLAGCX_CI_PERF_VERIFY")
+  fi
   case "$operation" in
     broadcast|gather|scatter|reduce)
       operation_args+=(-r 0)
