@@ -129,13 +129,26 @@ This document provides a comprehensive reference for all environment variables u
 |----------|---------|-------------|
 | `FLAGCX_P2P_EVENT_POOL_SIZE` | 1024 | Size of P2P event pool |
 | `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for uniRunner |
-| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for uniRunner |
-| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for uniRunner |
-| `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in uniRunner |
-| `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in uniRunner |
-| `FLAGCX_UNIRUNNER_USE_SLICEDAR` | 0 | When set to 1, uses sliced allreduce in uniRunner |
+| `FLAGCX_UNIRUNNER_MAX_THREADS` | 512 | Maximum threads per block for the uniRunner RED/IPC executor kernel; the DAG-derived launch uses a power of two and at least 32 threads |
+| `FLAGCX_UNIRUNNER_MAX_BLOCKS` | 32 | Maximum total RED and IPC blocks for a uniRunner launch; the DAG-derived launch may use fewer blocks |
+| `FLAGCX_UNIRUNNER_NIPCBLOCKS` | 0 | Legacy IPC block setting; DAG-derived static IPC launches override it |
+| `FLAGCX_UNIRUNNER_IPCCHUNKSIZE` | 262144 | IPC transfer chunk size in bytes; static IPC blocks own chunks by chunk index modulo the derived IPC block count |
+| `FLAGCX_UNIRUNNER_ALGO` | unset | Selects the algorithm for the benchmark collective. AllReduce: 0 RingAR, 1 GroupedAR, 2 IPC Ring AR, 3 LocRed, 4 RingAG, 5 hierarchical SlicedAR, 6 SlicedAR. AllGather: 7 GroupedAG, 8 P2P. AllGatherGemm: 9 built-in, 10 DSL. GemmReduceScatter: 11 built-in, 12 DSL. Unset preserves each operation's previous default (RingAR, GroupedAG, or built-in). A value for another operation is an error. |
 | `FLAGCX_UNIRUNNER_NREDSLICES` | 0 | Number of reduction slices for uniRunner (0 = auto) |
 | `FLAGCX_UNIRUNNER_REDSLICESIZE` | 65536 | Reduction slice size in bytes for uniRunner |
+
+The former `FLAGCX_UNIRUNNER_USE_*` and fused `*_ALGO` selectors no longer
+select algorithms. `FLAGCX_UNIRUNNER_ALGO_PATH` still specifies the DSL cache
+directory independently of the numeric selector.
+
+When `FLAGCX_USE_HETERO_COMM=1`, UniRunner DAG algorithms reject calls made
+between `flagcxGroupStart` and `flagcxGroupEnd` with `flagcxInvalidUsage`.
+Use `FLAGCX_UNIRUNNER_ALGO=8` for AllGather inside a user group; the default
+GroupedAG algorithm (7) does not switch to P2P automatically in that case.
+UniRunner exchanges stream-value capability once during communicator
+initialization and uses the saved all-rank result for GroupedAG. Algorithm
+settings and group depth are checked locally during collective calls; configure
+the same algorithm and group size on all ranks.
 
 ---
 
