@@ -134,6 +134,8 @@ docker run --rm \
   --env FLAGCX_CI_LOG_DIR=/ci-logs \
   --env FLAGCX_CI_TORCH_COVERAGE="${FLAGCX_CI_TORCH_COVERAGE:-0}" \
   --env FLAGCX_CI_COVERAGE_REPORT="/ci-logs/coverage-${platform}-gpu-torch.json" \
+  --env FLAGCX_CI_COVERAGE="${FLAGCX_CI_COVERAGE:-0}" \
+  --env FLAGCX_CI_CPP_COVERAGE_REPORT="${FLAGCX_CI_CPP_COVERAGE_REPORT:-/ci-logs/cpp-coverage}" \
   --env GITHUB_STEP_SUMMARY="/ci-logs/$(basename "$summary_file")" \
   --env FLAGCX_CI_PLATFORM="$platform" \
   --env FLAGCX_CI_WORKLOAD="$workload" \

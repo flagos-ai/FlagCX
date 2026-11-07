@@ -92,6 +92,10 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             scripts.mkdir(parents=True)
             self.script(scripts / "run_with_timeout.sh", 'exec "$@"\n')
             self.script(scripts / "run_ascend_diagnostics.sh", 'exit 0\n')
+            self.script(
+                scripts / "filter_supplemental_tests.sh",
+                'printf "%s\\n" "$1"\n',
+            )
             bin_dir = tmp / "bin"
             bin_dir.mkdir()
             self.script(bin_dir / "cmake", 'exit 0\n')

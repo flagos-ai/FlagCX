@@ -1,6 +1,8 @@
 """Check that hardware CI rejects missing or skipped GPU adaptor cases."""
 
 import importlib.util
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -55,17 +57,22 @@ class AdaptorGpuCiTest(unittest.TestCase):
             path = Path(directory) / "results.xml"
             build_results(path, names, {name: markup for name in skipped})
             return MODULE.check_results(
-                path, allow_gpu_mr_unsupported=allow_gpu_mr_unsupported
+                path,
+                allow_gpu_mr_unsupported=allow_gpu_mr_unsupported,
             )
 
     def test_all_cases_pass(self):
         self.assertEqual(self.check(MODULE.REQUIRED_CASES), ([], []))
 
     def test_skipped_case_fails(self):
-        failures, _ = self.check(MODULE.REQUIRED_CASES, skipped=("GpuIget",))
+        failures, _ = self.check(
+            MODULE.REQUIRED_CASES,
+            skipped=("GpuIget",),
+            markup=UNRELATED_SKIP,
+        )
         self.assertEqual(failures, ["NetAdaptorLoopback.GpuIget: skipped or not run"])
 
-    def test_explicit_unsupported_gpu_mr_skip_is_reported(self):
+    def test_runtime_confirmed_gpu_mr_capability_skip_is_reported(self):
         failures, unsupported = self.check(
             MODULE.REQUIRED_CASES,
             skipped=MODULE.REQUIRED_CASES,
@@ -73,6 +80,49 @@ class AdaptorGpuCiTest(unittest.TestCase):
         )
         self.assertEqual(failures, [])
         self.assertEqual(unsupported, list(MODULE.REQUIRED_CASES))
+
+    def test_optional_policy_allows_only_gpu_mr_capability_skips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.xml"
+            for markup, expected in (
+                (GPU_MR_SKIP, 0),
+                (UNRELATED_SKIP, 1),
+                ('<failure message="boom"/>', 1),
+            ):
+                with self.subTest(markup=markup):
+                    build_results(
+                        path, MODULE.REQUIRED_CASES,
+                        {name: markup for name in MODULE.REQUIRED_CASES},
+                    )
+                    result = subprocess.run(
+                        [sys.executable, str(CHECKER), str(path), "gpu-mr-optional"],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, expected, result.stderr)
+                    if expected == 0:
+                        self.assertIn("skipped after runtime capability check", result.stdout)
+
+    def test_policy_names_a_capability_not_a_vendor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "results.xml"
+            build_results(
+                path, MODULE.REQUIRED_CASES,
+                {name: GPU_MR_SKIP for name in MODULE.REQUIRED_CASES},
+            )
+            for policy in ("ascend", "iluvatar", "required"):
+                with self.subTest(policy=policy):
+                    result = subprocess.run(
+                        [sys.executable, str(CHECKER), str(path), policy],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("gpu-mr-optional|gpu-mr-required", result.stderr)
+            required = subprocess.run(
+                [sys.executable, str(CHECKER), str(path), "gpu-mr-required"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(required.returncode, 1)
+            self.assertIn("skipped or not run", required.stderr)
 
     def test_gtest_skip_message_attribute_is_recognized(self):
         failures, unsupported = self.check(
@@ -84,7 +134,7 @@ class AdaptorGpuCiTest(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(unsupported, ["GpuIget"])
 
-    def test_other_skip_reason_fails_even_when_gpu_mr_is_unsupported(self):
+    def test_other_skip_reason_fails(self):
         failures, _ = self.check(
             MODULE.REQUIRED_CASES,
             skipped=("GpuIget",),
@@ -94,18 +144,13 @@ class AdaptorGpuCiTest(unittest.TestCase):
         self.assertEqual(failures, ["NetAdaptorLoopback.GpuIget: skipped or not run"])
 
     def test_failed_case_fails_under_every_policy(self):
-        for allow in (False, True):
-            with self.subTest(allow_gpu_mr_unsupported=allow):
-                failures, unsupported = self.check(
-                    MODULE.REQUIRED_CASES,
-                    skipped=("GpuIget",),
-                    allow_gpu_mr_unsupported=allow,
-                    markup='<failure message="boom"/>',
-                )
-                self.assertEqual(
-                    failures, ["NetAdaptorLoopback.GpuIget: failed"]
-                )
-                self.assertEqual(unsupported, [])
+        failures, unsupported = self.check(
+            MODULE.REQUIRED_CASES,
+            skipped=("GpuIget",),
+            markup='<failure message="boom"/>',
+        )
+        self.assertEqual(failures, ["NetAdaptorLoopback.GpuIget: failed"])
+        self.assertEqual(unsupported, [])
 
     def test_missing_case_fails(self):
         failures, unsupported = self.check(MODULE.REQUIRED_CASES[:-1])

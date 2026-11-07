@@ -5,11 +5,18 @@ set -euo pipefail
 test_timeout="${FLAGCX_CI_TEST_TIMEOUT:-20m}"
 test_kill_after="${FLAGCX_CI_TEST_KILL_AFTER:-30s}"
 test_label="${FLAGCX_CI_TEST_LABEL:-test invocation}"
+max_attempts="${FLAGCX_CI_TEST_MAX_ATTEMPTS:-2}"
+diagnostics_after="${FLAGCX_CI_TEST_DIAGNOSTICS_AFTER:-}"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 log_root="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}"
 safe_label=$(printf '%s' "$test_label" | tr -c 'A-Za-z0-9_.-' '_')
 
 if [[ $# -eq 0 ]]; then
   echo "Usage: $0 <command> [arguments...]" >&2
+  exit 2
+fi
+if [[ "$max_attempts" != 1 && "$max_attempts" != 2 ]]; then
+  echo "FLAGCX_CI_TEST_MAX_ATTEMPTS must be 1 or 2" >&2
   exit 2
 fi
 if ! command -v timeout >/dev/null 2>&1; then
@@ -21,7 +28,13 @@ log_dir=$(mktemp -d "$log_root/$safe_label.XXXXXX")
 chmod 755 "$log_dir"
 
 active_pid=
+diagnostic_pid=
 cleanup_workload() {
+  if [[ -n "$diagnostic_pid" ]]; then
+    kill -TERM "$diagnostic_pid" 2>/dev/null || true
+    wait "$diagnostic_pid" 2>/dev/null || true
+    diagnostic_pid=
+  fi
   if [[ -n "$active_pid" ]]; then
     # timeout owns a process group; stop leftover ranks before another attempt.
     if kill -0 -- "-$active_pid" 2>/dev/null; then
@@ -45,7 +58,6 @@ trap 'cancel_workload 130' INT
 trap 'cancel_workload 143' TERM
 
 attempt=1
-max_attempts=2
 while ((attempt <= max_attempts)); do
   attempt_log="$log_dir/attempt-$attempt.log"
   echo "Starting $test_label (attempt $attempt/$max_attempts, timeout=$test_timeout, kill-after=$test_kill_after)"
@@ -54,6 +66,12 @@ while ((attempt <= max_attempts)); do
   timeout --signal=TERM --kill-after="$test_kill_after" \
     "$test_timeout" "$@" >&"$log_fd" 2>&1 &
   active_pid=$!
+  if [[ -n "$diagnostics_after" ]]; then
+    python3 "$script_dir/collect_process_stacks.py" \
+      --pid "$active_pid" --delay "$diagnostics_after" \
+      > "$log_dir/attempt-$attempt-stacks.log" 2>&1 &
+    diagnostic_pid=$!
+  fi
   status=0
   wait "$active_pid" || status=$?
   cleanup_workload

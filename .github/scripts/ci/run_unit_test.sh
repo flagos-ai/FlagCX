@@ -24,8 +24,64 @@ fi
 # shellcheck source=/dev/null
 source "$SET_ENV_SCRIPT"
 
+if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
+  coverage_build_dir="$PROJECT_ROOT"
+  report_dir=${FLAGCX_CI_CPP_COVERAGE_REPORT:-"$PROJECT_ROOT/.ci-coverage/$SUITE"}
+  FLAGCX_CI_PROJECT_MAKE_ARGS+=(FLAGCX_COVERAGE=1)
+  coverage_python_dir="${TMPDIR:-/tmp}/flagcx-coverage-python"
+  if ! PYTHONPATH="$coverage_python_dir${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -m gcovr --version >/dev/null 2>&1; then
+    # Record the fallback: a platform whose CI image pins gcovr must never
+    # reach this path, which needs outbound network from a hardware runner.
+    echo "gcovr is not installed in this CI image; falling back to a runtime" \
+      "pip install. Pin gcovr==8.2 in the platform image instead." >&2
+    python3 -m pip install --quiet --disable-pip-version-check \
+      --target "$coverage_python_dir" gcovr==8.2
+  fi
+  export PYTHONPATH="$coverage_python_dir${PYTHONPATH:+:$PYTHONPATH}"
+
+  collect_cpp_coverage_on_exit() {
+    local command_status=$?
+    local report_status=0
+    local -a skip_args=()
+    trap - EXIT
+    mkdir -p "$report_dir"
+    if [[ -n "${FLAGCX_CI_COVERAGE_SKIP_REASON:-}" ]]; then
+      skip_args+=(--skip-reason "$FLAGCX_CI_COVERAGE_SKIP_REASON")
+    fi
+    python3 "$PROJECT_ROOT/.github/scripts/ci/collect_cpp_coverage.py" \
+      --root "$PROJECT_ROOT" \
+      --build-dir "$coverage_build_dir" \
+      --output-dir "$report_dir" \
+      --platform "$(basename "$SET_ENV_SCRIPT" .sh)/$SUITE" \
+      "${skip_args[@]}" || report_status=$?
+    if ((command_status == 0 && report_status != 0)); then
+      command_status=$report_status
+    fi
+    exit "$command_status"
+  }
+  trap collect_cpp_coverage_on_exit EXIT
+fi
+
 if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
+fi
+if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
+  # GoogleTest gives the --gtest_filter flag precedence over GTEST_FILTER, so
+  # this export only reaches invocations that pass no filter of their own.
+  # Invocations below that build a filter from this variable inherit the
+  # exclusion; an invocation that hard-codes a purely negative --gtest_filter
+  # selects everything else and must exclude CoverageSupplemental.* itself.
+  GTEST_FILTER=$(bash "$PROJECT_ROOT/.github/scripts/ci/filter_supplemental_tests.sh" \
+    "${GTEST_FILTER:-*}" exclude)
+  export GTEST_FILTER
+fi
+if declare -F flagcx_ci_skip_suite >/dev/null &&
+  flagcx_ci_skip_suite "$SUITE"; then
+  if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
+    export FLAGCX_CI_COVERAGE_SKIP_REASON="platform configuration marks suite unsupported"
+  fi
+  exit 0
 fi
 
 # Keep every hardware backend on the same diagnostic and allocation baseline.
@@ -60,7 +116,7 @@ flagcx_ci_require_rdma() {
 
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
   case "$platform_name" in
-    cuda|metax|hygon|ppu|ascend) ;;
+    cuda|iluvatar|metax|hygon|ppu|ascend) ;;
     *) return 0 ;;
   esac
 
@@ -281,10 +337,13 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
-      local gpu_mr_policy=required
-      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
+      # Each platform declares its own GPU MR capability in set_env; this
+      # shared path stays vendor-neutral and demands GPU MR by default.
+      local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
+      local platform_name
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == ascend ]]; then
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-        gpu_mr_policy=ascend
       fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
@@ -495,7 +554,8 @@ run_suite() {
       # the other path from running and producing a useful result.
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" || ipc_status=$?
+        MPIRUN="$MPI_RUNNER" \
+        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
       if flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
@@ -511,6 +571,14 @@ run_suite() {
         visibility_filter="RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility"
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
         case "$platform_name" in
+          iluvatar)
+            # IXCUDA currently declares WRITE-only flush requirements. Keep
+            # the READ consumer data check and verify that the public WRITE
+            # wait rejects the unimplemented stream wait-value operation.
+            expected_read_required=0
+            expected_write_required=1
+            expected_write=unsupported
+            ;;
           metax)
             # MACA can complete GET visibility through the provider flush, but
             # its stream wait cannot acquire incoming remote WRITEs yet.
@@ -662,6 +730,8 @@ run_suite() {
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       if [[ "$platform_name" == ascend ]]; then
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_ascend_runner_mpi.sh"
+      elif [[ "$platform_name" == iluvatar ]]; then
+        runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_runner_mpi.sh"
       fi
       if [[ "$platform_name" == "hygon" ]]; then
         # A broken SHCA route otherwise consumes the default RC retry budget
@@ -780,6 +850,7 @@ run_suite() {
       }
       local platform_name expected_adaptor
       local symmem_run_vmm_net_data=1
+      local symmem_run_vmm_local=1
       local -a symmem_common_env symmem_platform_env
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       expected_adaptor=IB
@@ -795,6 +866,10 @@ run_suite() {
       if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ]]; then
         symmem_run_vmm_net_data=0
       fi
+      if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 0 ]]; then
+        symmem_run_vmm_net_data=0
+        symmem_run_vmm_local=0
+      fi
       symmem_common_env=(
         -x FLAGCX_USE_HETERO_COMM=1
         -x FLAGCX_CLUSTER_SPLIT_LIST=2
@@ -808,34 +883,38 @@ run_suite() {
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
       local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmConvergesMrFailure:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
 
-      FLAGCX_CI_MPI_LABEL="symmem remote without NET" \
-        "$MPI_RUNNER" --allow-run-as-root \
-        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        -x FLAGCX_USE_HETERO_COMM=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_VMM_ENABLE=1 \
-        -x FLAGCX_CI_REQUIRE_VMM=1 \
-        -x FLAGCX_IB_DISABLE=1 \
-        -x FLAGCX_P2P_DISABLE=1 \
-        -x FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1 \
-        -x LD_LIBRARY_PATH \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-        "$symmem_bin" \
-        --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow \
-        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        -x FLAGCX_USE_HETERO_COMM=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_VMM_ENABLE=1 \
-        -x FLAGCX_CI_REQUIRE_VMM=1 \
-        -x FLAGCX_IB_DISABLE=1 \
-        -x FLAGCX_P2P_DISABLE=1 \
-        -x FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1 \
-        -x LD_LIBRARY_PATH \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-        "$symmem_bin" \
-        --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow
+      if ((symmem_run_vmm_local != 0)); then
+        FLAGCX_CI_MPI_LABEL="symmem remote without NET" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          -x FLAGCX_USE_HETERO_COMM=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_IB_DISABLE=1 \
+          -x FLAGCX_P2P_DISABLE=1 \
+          -x FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1 \
+          -x LD_LIBRARY_PATH \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow \
+          : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          -x FLAGCX_USE_HETERO_COMM=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_IB_DISABLE=1 \
+          -x FLAGCX_P2P_DISABLE=1 \
+          -x FLAGCX_CI_REQUIRE_REMOTE_NO_NET=1 \
+          -x LD_LIBRARY_PATH \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow
+      else
+        echo "Skipping $platform_name VMM-local and remote-without-NET tests: VMM is unavailable"
+      fi
 
       FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback" \
         "$MPI_RUNNER" --allow-run-as-root \
@@ -906,6 +985,11 @@ run_suite() {
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" \
         --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion
+
+      if ((symmem_run_vmm_local == 0)); then
+        echo "Skipping $platform_name VMM flat-map data tests: VMM is unavailable; route capability was tested above"
+        return 0
+      fi
       ;;
     device_api)
       run_device_api
@@ -921,6 +1005,37 @@ run_suite() {
       exit 2
       ;;
   esac
+}
+
+run_supplemental_unit_tests() {
+  [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]] || return 0
+
+  local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  local binary
+  case "$SUITE" in
+    device_api_host)
+      binary="$PROJECT_ROOT/test/unittest/device_api/build/bin/test_dev_comm_cleanup"
+      ;;
+    adaptor|core|p2p|rma|runner|service|symmem)
+      binary="$suite_dir/build/bin/${SUITE}_unit_tests"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  [[ -x "$binary" ]] || return 0
+  local test_list
+  if ! test_list=$(timeout 30s "$binary" --gtest_list_tests 2>&1); then
+    echo "Could not enumerate GoogleTest cases for $binary" >&2
+    return 1
+  fi
+  if [[ "$test_list" != *CoverageSupplemental* ]]; then
+    return 0
+  fi
+
+  FLAGCX_CI_TEST_LABEL="$SUITE supplemental white-box tests" \
+    "$TEST_RUNNER" "$binary" --gtest_filter='CoverageSupplemental.*'
 }
 
 case "$SUITE" in
@@ -950,3 +1065,4 @@ if ((suite_status != 0)); then
   fi
   exit "$suite_status"
 fi
+run_supplemental_unit_tests

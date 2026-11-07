@@ -295,7 +295,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "metax", "ppu", "ascend"]
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
@@ -672,7 +672,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("sizeof(struct flagcxIbSendFifo) == 64", common)
         self.assertIn("offsetof(struct flagcxIbSendFifo, idx) == 56", common)
 
-    def test_automatic_hardware_ci_covers_all_platforms_and_suites(self):
+    def test_automatic_hardware_ci_uses_enabled_platforms_and_suites(self):
         matrix_loader = REPO_ROOT / ".github/scripts/ci/load_platform_matrix.rb"
         result = subprocess.run(
             [
@@ -686,12 +686,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
             text=True,
         )
         self.assertEqual(
-            result.stdout.strip(),
-            '{"include":[{"platform":"cuda","display_name":"CUDA Tests"},'
-            '{"platform":"hygon","display_name":"Hygon DCU Tests"},'
-            '{"platform":"metax","display_name":"MetaX Tests"},'
-            '{"platform":"ppu","display_name":"T-Head PPU Tests"},'
-            '{"platform":"ascend","display_name":"Ascend 910C unit tests"}]}',
+            [entry["platform"] for entry in json.loads(result.stdout)["include"]],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
@@ -738,6 +734,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "hygon": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "iluvatar": [
                 "adaptor",
                 "core",
                 "device_api",
@@ -1037,7 +1045,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$(KERNEL_INCLUDE)", rma_makefile)
         self.assertIn("RMA_VMM_ENABLE ?= 0", rma_makefile)
         self.assertIn("NET_FILTER ?= *", rma_makefile)
-        for platform in ("metax)", "hygon)", "ppu)", "cuda)"):
+        for platform in ("iluvatar)", "metax)", "hygon)", "ppu)", "cuda)"):
             self.assertIn(platform, rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
@@ -1057,7 +1065,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('"$platform_name" != "hygon"', rma_case)
+        visibility_start = rma_case.index(
+            'if [[ "$platform_name" != "hygon" &&'
+        )
+        visibility_run_condition = rma_case[
+            visibility_start : rma_case.index("RMA_VMM_ENABLE=0", visibility_start)
+        ]
+        self.assertIn(
+            '"$platform_name" != "hygon" &&\n              "$platform_name" != "ascend"',
+            visibility_run_condition,
+        )
+        self.assertNotIn('"$platform_name" != "iluvatar"', visibility_run_condition)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -1259,6 +1277,143 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry",
             symmem_runner,
         )
+
+    def test_iluvatar_rma_visibility_runs_consumers_and_propagates_failures(self):
+        source = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=rma
+SET_ENV_SCRIPT=iluvatar.sh
+PROJECT_ROOT=/workspace
+FLAGCX_CI_TEST_MAKE_ARGS=(USE_ILUVATAR=1)
+TEST_RUNNER=run_test
+MPI_RUNNER=/mpi-runner
+RMA_PLATFORM_ENV="-x EXISTING_SETTING=kept"
+run_test() { "$@"; }
+flagcx_ci_require_rdma() { return 0; }
+make() {
+  printf 'make %s\n' "$*"
+  if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
+    return "$VISIBILITY_STATUS"
+  fi
+}
+run_suite
+'''
+        for visibility_status in (0, 23):
+            with self.subTest(visibility_status=visibility_status):
+                result = subprocess.run(
+                    [os.environ.get("BASH", "bash"), "-euc", harness],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "BASH_ENV": "",
+                        "VISIBILITY_STATUS": str(visibility_status),
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0 if visibility_status == 0 else 1)
+                self.assertNotIn("Unsupported visibility conformance platform", result.stderr)
+                calls = result.stdout.splitlines()
+                self.assertTrue(any(" run-unit " in line for line in calls))
+                self.assertTrue(any(" run-mpi-ipc " in line for line in calls))
+                visibility_calls = [
+                    line for line in calls if "FLAGCX_CI_GDR_VISIBILITY_RUN=1" in line
+                ]
+                self.assertEqual(len(visibility_calls), 1)
+                call = visibility_calls[0]
+                for argument in (
+                    "USE_ILUVATAR=1",
+                    "NET_FILTER=RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility",
+                    "-x EXISTING_SETTING=kept",
+                    "FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ=success",
+                    "FLAGCX_CI_EXPECT_GDR_READ_REQUIRED=0",
+                    "FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED=1",
+                    "FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE=unsupported",
+                ):
+                    self.assertIn(argument, call)
+                # Set test expectations without overriding the runtime policy.
+                self.assertNotIn("-x FLAGCX_GDR_READ_REQUIRES_FLUSH=", call)
+                self.assertNotIn("-x FLAGCX_GDR_WRITE_REQUIRES_FLUSH=", call)
+                if visibility_status:
+                    self.assertIn("visibility=23", result.stderr)
+
+    def test_iluvatar_keeps_ipc_and_vmm_capability_coverage(self):
+        iluvatar_env = (
+            REPO_ROOT / ".github/scripts/set_env/iluvatar.sh"
+        ).read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        ipc_test = (
+            REPO_ROOT / "test/unittest/adaptor/coll_ipc_mem_handle.cpp"
+        ).read_text()
+
+        self.assertNotIn("FLAGCX_CI_ADAPTOR_MPI_FILTER", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_RMA_IPC_FILTER", iluvatar_env)
+        self.assertIn("ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));", ipc_test)
+        self.assertIn("CrossProcessLifecycle", ipc_test)
+        rma_ipc_test = (
+            REPO_ROOT / "test/unittest/rma/coll_rma_get_async.cpp"
+        ).read_text()
+        self.assertIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
+        self.assertIn("gateResult == flagcxNotSupported", rma_ipc_test)
+        self.assertNotIn("op == flagcxNotSupported", rma_ipc_test)
+        self.assertIn(
+            "CoreX streamWaitValue64 is unsupported", rma_ipc_test
+        )
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        route_union = unit_runner.index(
+            'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
+        )
+        vmm_skip_return = unit_runner.index(
+            'echo "Skipping $platform_name VMM flat-map data tests',
+            route_union,
+        )
+        self.assertLess(route_union, vmm_skip_return)
+        self.assertIn("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1", unit_runner)
+        # Runner stages carry no capability gate: an environment variable must
+        # not be able to drop runner coverage without a recorded reason.
+        self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED", unit_runner)
+        self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED", unit_runner)
+        self.assertNotIn("flagcx_ci_skip_suite", iluvatar_env)
+        # The GPU MR capability is declared by the platform, not by a vendor
+        # name baked into the shared runner or the checker.
+        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional", iluvatar_env)
+        self.assertIn(
+            "gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}", unit_runner
+        )
+        self.assertNotIn('gpu_mr_policy="$platform_name"', unit_runner)
+        rma_makefile = (REPO_ROOT / "test/unittest/rma/Makefile").read_text()
+        iluvatar_kernel_makefile = (
+            REPO_ROOT / "test/kernel/iluvatar/Makefile"
+        ).read_text()
+        self.assertIn("$(USE_ILUVATAR)", rma_makefile)
+        self.assertIn("gdr_visibility.o", iluvatar_kernel_makefile)
+        visibility_runner = unit_runner[
+            unit_runner.index('visibility_filter="RmaTest.DirectConsumerReadVisibility') :
+            unit_runner.index('local -a visibility_common_env=',
+                               unit_runner.index('visibility_filter="RmaTest.DirectConsumerReadVisibility'))
+        ]
+        self.assertNotIn('platform_name != "iluvatar"', visibility_runner)
+        runner_case = unit_runner[
+            unit_runner.index("    runner)") : unit_runner.index("    symmem)")
+        ]
+        hybrid_stage = runner_case.index(
+            'FLAGCX_CI_MPI_LABEL="runner heterogeneous"'
+        )
+        net_stage = runner_case.index('FLAGCX_CI_MPI_LABEL="runner forced NET"')
+        self.assertGreater(net_stage, hybrid_stage)
+        self.assertIn('elif [[ "$platform_name" == iluvatar ]]', runner_case)
+        self.assertIn('ci/run_iluvatar_runner_mpi.sh', runner_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping"', runner_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="runner $platform_name PXN four-rank"', runner_case)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
             config = (
