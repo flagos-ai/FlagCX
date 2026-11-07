@@ -629,6 +629,59 @@ flagcxResult_t cannAdaptorSymMulticastFree(void *) {
   return flagcxNotSupported;
 }
 
+flagcxResult_t cannAdaptorGetPointerType(const void *ptr, int *ptrType) {
+  if (ptr == NULL || ptrType == NULL)
+    return flagcxInvalidArgument;
+
+  aclrtPtrAttributes attrs = {};
+  aclError result = aclrtPointerGetAttributes(ptr, &attrs);
+  if (result == ACL_ERROR_INVALID_PARAM ||
+      result == ACL_ERROR_RT_PARAM_INVALID) {
+    *ptrType = FLAGCX_PTR_HOST;
+    return flagcxSuccess;
+  }
+  if (result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT)
+    return flagcxNotSupported;
+  if (result != ACL_SUCCESS) {
+    WARN("CANN pointer classification failed: ACL error %d", result);
+    return flagcxUnhandledDeviceError;
+  }
+
+  switch (attrs.location.type) {
+    case ACL_MEM_LOCATION_TYPE_DEVICE:
+    case ACL_MEM_LOCATION_TYPE_MANAGED:
+      *ptrType = FLAGCX_PTR_CUDA;
+      return flagcxSuccess;
+    case ACL_MEM_LOCATION_TYPE_HOST:
+    case ACL_MEM_LOCATION_TYPE_UNREGISTERED:
+      *ptrType = FLAGCX_PTR_HOST;
+      return flagcxSuccess;
+    default:
+      WARN("CANN pointer classification returned unknown location %d",
+           (int)attrs.location.type);
+      return flagcxUnhandledDeviceError;
+  }
+}
+
+flagcxResult_t cannAdaptorGetAddressRange(const void *ptr, void **base,
+                                          size_t *size) {
+  if (ptr == NULL || base == NULL || size == NULL)
+    return flagcxInvalidArgument;
+  *base = NULL;
+  *size = 0;
+  aclError result = aclrtMemGetAddressRange((void *)ptr, base, size);
+  if (result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT)
+    return flagcxNotSupported;
+  if (result != ACL_SUCCESS) {
+    WARN("CANN address range query failed: ACL error %d", result);
+    return flagcxUnhandledDeviceError;
+  }
+  if (*base == NULL || *size == 0 || (uintptr_t)ptr < (uintptr_t)*base ||
+      (uintptr_t)ptr - (uintptr_t)*base >= *size)
+    return flagcxInternalError;
+  return flagcxSuccess;
+}
+
 struct flagcxDeviceAdaptor cannAdaptor {
   "CANN",
       // Basic functions
@@ -686,9 +739,9 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorSymMulticastCreate, cannAdaptorSymMulticastBind,
       cannAdaptorSymMulticastTeardown, cannAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
-      flagcxDeviceAdaptorGetPointerTypeNotSupported,
-      flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
-      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
+      cannAdaptorGetPointerType, cannAdaptorGetAddressRange,
+      FLAGCX_VMM_MR_CAP_NONE, FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL,
+      NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
       FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
