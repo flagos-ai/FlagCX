@@ -9,6 +9,9 @@
 #include <map>
 #include <vector>
 
+// Keep communicator-name lookup optional even with non-weak SDK declarations.
+#pragma weak HcclGetCommName
+
 static_assert(sizeof(HcclRootInfo) <= sizeof(flagcxInnerUniqueId),
               "HcclRootInfo does not fit inside flagcxInnerUniqueId");
 
@@ -395,7 +398,6 @@ flagcxResult_t hcclAdaptorCommGetName(flagcxInnerComm_t comm, char *name,
                                       size_t capacity) {
   if (capacity < COMM_NAME_MAX_LENGTH)
     return flagcxInvalidArgument;
-  // HcclGetCommName is a weak symbol in the CANN headers.
   if (HcclGetCommName == nullptr)
     return flagcxNotSupported;
   char commName[COMM_NAME_MAX_LENGTH] = {};
