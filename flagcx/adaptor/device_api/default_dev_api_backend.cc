@@ -81,8 +81,11 @@ registrationMatchesBuffer(flagcxComm_t comm,
 static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
                                                 flagcxDevComm_t devComm) {
   struct flagcxHeteroComm *hetero = comm->heteroComm;
-  if (hetero == nullptr)
+  if (hetero == nullptr) {
+    devComm->teamRank = 0;
+    devComm->nTeamRanks = 1;
     return flagcxSuccess;
+  }
 
   int myRank = comm->rank;
   int nRanks = comm->nranks;
@@ -90,6 +93,9 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   int nNodes = hetero->nNodes;
 
   if (nNodes <= 1) {
+    // A singleton Inter team has one rank, even though it has no remote peers.
+    devComm->teamRank = 0;
+    devComm->nTeamRanks = 1;
     devComm->nInterPeers = 0;
     return flagcxSuccess;
   }
@@ -497,6 +503,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                         size_t reqsSize, flagcxDevComm_t devComm) {
   // The default backend consumes only fields in the frozen prefix.
   (void)reqsSize;
+  if (reqs->interBarrierCount < 0)
+    return flagcxInvalidArgument;
+  devComm->interBarrierCount = reqs->interBarrierCount;
   const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
   const bool hostMappedSignals =
       flagcxParamSignalHostEnable() != 0 &&
@@ -516,7 +525,16 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res = setupInterNodeSignalRelay(comm, devComm);
     if (res != flagcxSuccess) {
       devComm->nInterPeers = 0;
+      if (reqs->interBarrierCount > 0)
+        return res;
     }
+  }
+  if (reqs->interBarrierCount > 0 && comm->heteroComm != nullptr &&
+      comm->heteroComm->nNodes > 1 &&
+      (devComm->nInterPeers <= 0 || devComm->nTeamRanks <= 1)) {
+    WARN("defaultDevApiCommCreate: Inter barrier requested without a valid "
+         "inter-node team");
+    return flagcxInternalError;
   }
 
   // Allocate epoch buffer
@@ -540,14 +558,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: epochBuffer OK");
   }
 
-  // One-sided buffers: signals, counters, staging
-  // Allocated when signal/counter slots are requested — needed for both
-  // inter-node (Net FIFO) and intra-node (P2P atomic) paths.
+  // One-sided buffers: signals, counters, staging. Inter barriers need signal
+  // slots even when no user-visible signals were requested.
   INFO(FLAGCX_INIT,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
        "interCounterCount=%d",
        devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0 ||
+      reqs->interBarrierCount > 0) {
     int bufCtxCount =
         (comm->heteroComm != nullptr && comm->heteroComm->proxyState != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
@@ -560,9 +578,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res;
 
     // Signal buffer (host-pinned or GDR device memory)
-    if (reqs->interSignalCount > 0) {
+    if (reqs->interSignalCount > 0 || reqs->interBarrierCount > 0) {
       // Expand signalCount to include barrier slots:
-      // barrier needs nTeamRanks slots per barrier instance (one per CTA)
+      // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
       if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0 ||
           (reqs->interBarrierCount > 0 &&
@@ -888,6 +906,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   }
   if (oneSidedRequested && forceOneSidedNet && !devComm->netOneSidedReady) {
     WARN("defaultDevApiCommCreate: Net one-sided full mesh/FIFO is not ready");
+    return flagcxNotSupported;
+  }
+  if (reqs->interBarrierCount > 0 && devComm->nInterPeers > 0 &&
+      !devComm->netOneSidedReady) {
+    WARN("defaultDevApiCommCreate: Inter barrier Proxy FIFO is not ready");
     return flagcxNotSupported;
   }
 
