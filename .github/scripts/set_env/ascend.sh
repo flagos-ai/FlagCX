@@ -19,9 +19,9 @@ FLAGCX_CI_TEST_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_ENABLE_IBUC=0
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=0
 FLAGCX_CI_ENABLE_PXN=0
-# The selected net adaptor does not advertise GPU MR on this platform, so the
-# GPU one-sided cases may report a runtime capability skip.
-export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional
+# NPU memory registration is part of the Ascend IBRC contract. Require the
+# four one-sided GPU cases to transfer and verify data.
+export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
