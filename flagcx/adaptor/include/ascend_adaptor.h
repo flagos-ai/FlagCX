@@ -18,7 +18,9 @@ struct flagcxEvent {
 };
 
 struct flagcxIpcMemHandle {
-  char *base; // to be implemented
+  // The first 64 bytes are the transferable key payload. AscendCL uses a
+  // 65-byte string buffer; the terminating byte is reconstructed on import.
+  char key[64];
 };
 
 #define DEVCHECK(func)                                                         \
