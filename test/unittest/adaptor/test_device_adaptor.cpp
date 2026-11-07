@@ -124,8 +124,12 @@ TEST(DeviceAdaptorCompatibilityTest, LatestUsesExplicitVmmCapabilities) {
 class DeviceAdaptorTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    // Initialize flagcx handle
-    flagcxDeviceHandleInit(&devHandle);
+    // Initialize flagcx handle. A vendor-neutral library without a loaded
+    // device adaptor plugin has no device to test, and leaves devHandle NULL.
+    if (flagcxDeviceHandleInit(&devHandle) != flagcxSuccess ||
+        devHandle == nullptr) {
+      GTEST_SKIP() << "No device adaptor available";
+    }
 
     // Get device count and set device 0
     int numDevices = 0;

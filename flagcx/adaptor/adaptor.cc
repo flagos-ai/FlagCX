@@ -167,6 +167,19 @@ struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor,
                                                       &ppuncclAdaptor};
 #endif
 struct flagcxDeviceAdaptor *deviceAdaptor = &ppucudaAdaptor;
+#else
+// Vendor-neutral build (USE_GENERIC=1): there is no built-in device adaptor
+// and no built-in device CCL adaptor. Both are supplied by adaptor plugins
+// during flagcxHandleInit(), which fails when they are absent, so no device
+// path ever observes these null entries.
+#ifdef USE_GLOO_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&glooAdaptor, NULL};
+#elif USE_MPI_ADAPTOR
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&mpiAdaptor, NULL};
+#else
+struct flagcxCCLAdaptor *cclAdaptors[NCCLADAPTORS] = {&bootstrapAdaptor, NULL};
+#endif
+struct flagcxDeviceAdaptor *deviceAdaptor = NULL;
 #endif
 
 // External adaptor declarations

@@ -94,6 +94,8 @@ USE_SHARED_P2P_ENGINE ?= 0
 USE_AMD            ?= 0
 USE_ENFLAME        ?= 0
 USE_PPU            ?= 0
+# Vendor-neutral library build; takes precedence over the switches above.
+USE_GENERIC        ?= 0
 
 # ---------------------------------------------------------------------------
 # Device platform resolution — include platform .mk from library build.
@@ -101,7 +103,9 @@ USE_PPU            ?= 0
 USE_SHMEM ?= 0
 SHMEM_HOME ?= /usr/local/nvshmem
 
-ifeq ($(USE_NVIDIA), 1)
+ifeq ($(USE_GENERIC), 1)
+  include $(PROJECT_ROOT)/makefiles/generic.mk
+else ifeq ($(USE_NVIDIA), 1)
   include $(PROJECT_ROOT)/makefiles/nvidia.mk
 else ifeq ($(USE_ILUVATAR), 1)
   include $(PROJECT_ROOT)/makefiles/iluvatar.mk
@@ -144,10 +148,14 @@ ifeq ($(USE_SHARED_P2P_ENGINE), 1)
 CXXFLAGS += -DUSE_SHARED_P2P_ENGINE
 endif
 
-# Test-specific overrides (format for compiler flags)
+# Test-specific overrides (format for compiler flags). A vendor-neutral build
+# leaves these paths empty; emit no flag at all there, because a bare -I/-L
+# would swallow the argument that follows it.
 DEVICE_INCLUDE := $(addprefix -I,$(DEVICE_INCLUDE))
-CCL_INCLUDE    := -I$(CCL_INCLUDE)
-DEVICE_LINK    := -L$(DEVICE_LIB) -L$(DEVICE_HOME)/lib64/stubs $(DEVICE_LINK)
+CCL_INCLUDE    := $(addprefix -I,$(strip $(CCL_INCLUDE)))
+DEVICE_LINK    := $(addprefix -L,$(strip $(DEVICE_LIB))) \
+                  $(addprefix -L,$(addsuffix /lib64/stubs,$(strip $(DEVICE_HOME)))) \
+                  $(DEVICE_LINK)
 ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
 # Host-only test translation units must not select SHMEM CommTraits.  In
 # particular, a normal g++ compilation cannot consume the XPU implementation;
