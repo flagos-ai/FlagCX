@@ -361,6 +361,40 @@ flagcxResult_t cannAdaptorDeviceMemset(void *ptr, int value, size_t size,
   return flagcxSuccess;
 }
 
+struct cannIpcAllocation {
+  void *ptr;
+  size_t size;
+  struct cannIpcAllocation *next;
+};
+
+static pthread_mutex_t cannIpcAllocationLock = PTHREAD_MUTEX_INITIALIZER;
+static struct cannIpcAllocation *cannIpcAllocations = NULL;
+
+static flagcxResult_t cannIpcTrackAllocation(void *ptr, size_t size) {
+  struct cannIpcAllocation *entry =
+      (struct cannIpcAllocation *)calloc(1, sizeof(*entry));
+  if (entry == NULL)
+    return flagcxSystemError;
+  entry->ptr = ptr;
+  entry->size = size;
+  pthread_mutex_lock(&cannIpcAllocationLock);
+  entry->next = cannIpcAllocations;
+  cannIpcAllocations = entry;
+  pthread_mutex_unlock(&cannIpcAllocationLock);
+  return flagcxSuccess;
+}
+
+static void cannIpcUntrackAllocation(void *ptr) {
+  pthread_mutex_lock(&cannIpcAllocationLock);
+  struct cannIpcAllocation **link = &cannIpcAllocations;
+  while (*link != NULL && (*link)->ptr != ptr)
+    link = &(*link)->next;
+  struct cannIpcAllocation *entry = *link;
+  if (entry != NULL)
+    *link = entry->next;
+  pthread_mutex_unlock(&cannIpcAllocationLock);
+  free(entry);
+}
 flagcxResult_t cannAdaptorDeviceMalloc(void **ptr, size_t size,
                                        flagcxMemType_t type,
                                        flagcxStream_t stream) {
@@ -369,6 +403,12 @@ flagcxResult_t cannAdaptorDeviceMalloc(void **ptr, size_t size,
     DEVCHECK(aclrtMallocHost(ptr, size));
   } else {
     DEVCHECK(aclrtMalloc(ptr, size, ACL_MEM_MALLOC_HUGE_FIRST));
+    flagcxResult_t result = cannIpcTrackAllocation(*ptr, size);
+    if (result != flagcxSuccess) {
+      (void)aclrtFree(*ptr);
+      *ptr = NULL;
+      return result;
+    }
   }
   return flagcxSuccess;
 }
@@ -379,6 +419,7 @@ flagcxResult_t cannAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
     DEVCHECK(aclrtFreeHost(ptr));
   } else {
     DEVCHECK(aclrtFree(ptr));
+    cannIpcUntrackAllocation(ptr);
   }
   return flagcxSuccess;
 }
@@ -409,6 +450,12 @@ flagcxResult_t cannAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxInvalidArgument;
   }
   DEVCHECK(aclrtMalloc(ptr, size, ACL_MEM_MALLOC_HUGE_FIRST));
+  flagcxResult_t result = cannIpcTrackAllocation(*ptr, size);
+  if (result != flagcxSuccess) {
+    (void)aclrtFree(*ptr);
+    *ptr = NULL;
+    return result;
+  }
   return flagcxSuccess;
 }
 
@@ -418,6 +465,7 @@ flagcxResult_t cannAdaptorGdrMemFree(void *ptr, void *memHandle) {
     return flagcxSuccess;
   }
   DEVCHECK(aclrtFree(ptr));
+  cannIpcUntrackAllocation(ptr);
   return flagcxSuccess;
 }
 
