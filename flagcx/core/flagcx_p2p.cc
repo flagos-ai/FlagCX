@@ -341,6 +341,7 @@ struct FlagcxP2pMemRegEntry {
   FlagcxP2pMr mrId;
   void *mhandle;
   uintptr_t baseAddr;
+  uintptr_t ipcAllocationBase;
   size_t size;
   int ibDevN;
   int ptrType;
@@ -1547,6 +1548,7 @@ static bool findMemReg(uintptr_t addr, FlagcxP2pMemRegEntry *out) {
     out->ibDevN = entry.ibDevN;
     out->ptrType = entry.ptrType;
     out->hasIpc = p2pExt.p2p.hasIpc;
+    out->ipcAllocationBase = p2pExt.p2p.ipcAllocationBase;
     out->ipcHandleSize = p2pExt.p2p.ipcHandleSize;
     memcpy(out->ipcHandle, p2pExt.p2p.ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
   }
@@ -1615,6 +1617,7 @@ static bool findMemRegByMr(FlagcxP2pMr mr, FlagcxP2pMemRegEntry *out) {
     out->ibDevN = found.ibDevN;
     out->ptrType = found.ptrType;
     out->hasIpc = p2pExt.p2p.hasIpc;
+    out->ipcAllocationBase = p2pExt.p2p.ipcAllocationBase;
     out->ipcHandleSize = p2pExt.p2p.ipcHandleSize;
     memcpy(out->ipcHandle, p2pExt.p2p.ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
   }
@@ -2235,15 +2238,20 @@ static int startLocalTransfer(FlagcxP2pConn *conn,
       remoteIsCuda =
           haveRemoteEntry[i] && remoteEntries[i].ptrType == FLAGCX_PTR_CUDA;
     } else {
-      if (ipcBufs.empty() || i >= (int)ipcBufs.size() || ipcBufs[i] == NULL)
+      if (ipcBufs.empty() || i >= (int)ipcBufs.size() || ipcBufs[i] == NULL) {
+        cleanupIpcXfer(&xfer);
         return -1;
+      }
 
       FlagcxP2pIpcInfo ipcInfo;
       deserializeIpcInfo(ipcBufs[i], &ipcInfo);
       if ((ipcInfo.flags & FLAGCX_P2P_IPC_FLAG_CUDA) == 0 ||
           ipcInfo.handleSize == 0 ||
-          ipcInfo.handleSize > sizeof(ipcInfo.handleData))
+          ipcInfo.handleSize > sizeof(ipcInfo.handleData) ||
+          sizeVec[i] > ipcInfo.size) {
+        cleanupIpcXfer(&xfer);
         return -1;
+      }
 
       flagcxIpcMemHandle_t handle =
           reinterpret_cast<flagcxIpcMemHandle_t>(ipcInfo.handleData);
@@ -3216,15 +3224,19 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
     return flagcxAcclEngineReg(engine, data, size, hintType, mrId);
 
   auto resolvePtrType = [&](int *ptrType, char *ipcHandleBuf,
-                            uint32_t *ipcHandleSize) -> flagcxResult_t {
+                            uint32_t *ipcHandleSize,
+                            uintptr_t *ipcAllocationBase) -> flagcxResult_t {
     if (hintType == FLAGCX_PTR_HOST || hintType == FLAGCX_PTR_CUDA) {
       if (ipcHandleSize)
         *ipcHandleSize = 0;
+      if (ipcAllocationBase)
+        *ipcAllocationBase = 0;
       *ptrType = hintType;
       return flagcxSuccess;
     }
-    return flagcxP2pDetectPointerType(reinterpret_cast<void *>(data), ptrType,
-                                      ipcHandleBuf, ipcHandleSize);
+    return flagcxP2pDetectPointerType(reinterpret_cast<void *>(data), size,
+                                      ptrType, ipcHandleBuf, ipcHandleSize,
+                                      ipcAllocationBase);
   };
 
   if (!flagcxParamMrSortedLookup()) {
@@ -3259,7 +3271,8 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
 
     setEngineDevice(engine);
     const flagcxResult_t ptrTypeResult =
-        resolvePtrType(&entry.ptrType, entry.ipcHandle, &entry.ipcHandleSize);
+        resolvePtrType(&entry.ptrType, entry.ipcHandle, &entry.ipcHandleSize,
+                       &entry.ipcAllocationBase);
     if (ptrTypeResult != flagcxSuccess) {
       WARN("P2P Reg: failed to classify addr 0x%lx: %d", (unsigned long)data,
            (int)ptrTypeResult);
@@ -3322,12 +3335,13 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   /* Detect pointer type and IPC handle */
   char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES];
   uint32_t ipcHandleSize = 0;
+  uintptr_t ipcAllocationBase = 0;
   memset(ipcHandle, 0, sizeof(ipcHandle));
 
   setEngineDevice(engine);
   int ptrType = FLAGCX_PTR_HOST;
   const flagcxResult_t ptrTypeResult =
-      resolvePtrType(&ptrType, ipcHandle, &ipcHandleSize);
+      resolvePtrType(&ptrType, ipcHandle, &ipcHandleSize, &ipcAllocationBase);
   if (ptrTypeResult != flagcxSuccess) {
     WARN("P2P Reg: failed to classify addr 0x%lx: %d", (unsigned long)data,
          (int)ptrTypeResult);
@@ -3357,6 +3371,7 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   /* mrId=0 signals registry to assign from its monotonic counter */
   p2pExt->mrId = 0;
   p2pExt->hasIpc = hasIpc;
+  p2pExt->ipcAllocationBase = ipcAllocationBase;
   p2pExt->ipcHandleSize = ipcHandleSize;
   memcpy(p2pExt->ipcHandle, ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
 
@@ -4355,12 +4370,15 @@ int flagcxP2pEngineGetIpcInfo(FlagcxP2pEngine *engine, uintptr_t addr,
 
   FlagcxP2pIpcInfo info;
   memset(&info, 0, sizeof(info));
-  if (entry.ipcHandleSize == 0 || entry.ipcHandleSize > sizeof(info.handleData))
+  if (entry.ipcHandleSize == 0 ||
+      entry.ipcHandleSize > sizeof(info.handleData) ||
+      entry.ipcAllocationBase == 0 || addr < entry.baseAddr ||
+      addr - entry.baseAddr >= entry.size || addr < entry.ipcAllocationBase)
     return -1;
   memcpy(info.handleData, entry.ipcHandle, entry.ipcHandleSize);
   info.baseAddr = entry.baseAddr;
-  info.offset = addr - entry.baseAddr;
-  info.size = entry.size - info.offset;
+  info.offset = addr - entry.ipcAllocationBase;
+  info.size = entry.size - (addr - entry.baseAddr);
   info.flags = FLAGCX_P2P_IPC_FLAG_CUDA;
   info.handleSize = entry.ipcHandleSize;
 
@@ -4376,7 +4394,11 @@ int flagcxP2pEngineUpdateIpcInfo(char *ipcBuf, uintptr_t addr,
 
   FlagcxP2pIpcInfo info;
   deserializeIpcInfo(ipcBuf, &info);
-  info.offset += (addr - baseAddr);
+  const uintptr_t offset = addr - baseAddr;
+  if (offset > info.size || size > info.size - offset ||
+      info.offset > UINT64_MAX - offset)
+    return -1;
+  info.offset += offset;
   info.size = size;
   serializeIpcInfo(info, ipcBuf);
   return 0;

@@ -119,6 +119,31 @@ int main(int argc, char **argv) {
   require(flagcxP2pEngineReg(engine, reinterpret_cast<uintptr_t>(buffer),
                              kBufferSize, mr) == 0,
           rank, "registering GPU buffer failed");
+  constexpr size_t kIpcBufferSize = 256;
+  constexpr size_t kIpcRegistrationOffset = 64;
+  constexpr size_t kIpcTransferOffset = 96;
+  constexpr size_t kIpcTransferSize = 64;
+  void *ipcTarget = nullptr;
+  FlagcxP2pMr ipcMr = 0;
+  int runInteriorIpc = 0;
+  if (rank == 0) {
+    char vendor[64] = {};
+    if (device->getVendor != nullptr &&
+        device->getVendor(vendor) == flagcxSuccess)
+      runInteriorIpc = std::strcmp(vendor, "ASCEND") == 0;
+    if (runInteriorIpc) {
+      require(flagcxMemAlloc(&ipcTarget, kIpcBufferSize) == flagcxSuccess &&
+                  ipcTarget != nullptr,
+              rank, "allocating IPC target failed");
+      require(flagcxP2pEngineReg(engine,
+                                 reinterpret_cast<uintptr_t>(ipcTarget) +
+                                     kIpcRegistrationOffset,
+                                 kIpcBufferSize - kIpcRegistrationOffset,
+                                 ipcMr) == 0,
+              rank, "registering interior IPC target failed");
+    }
+  }
+  MPI_Bcast(&runInteriorIpc, 1, MPI_INT, 0, MPI_COMM_WORLD);
   require(flagcxP2pEngineStartRpcServer(engine) == 0, rank,
           "starting RPC server failed");
 
@@ -142,6 +167,61 @@ int main(int argc, char **argv) {
   if (rank == 1) {
     conn = flagcxP2pEngineGetConn(engine, session);
     require(conn != nullptr, rank, "connecting to target Engine failed");
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Export an interior registration through the public Engine API and use the
+  // returned IPC metadata for a real cross-process local transfer.
+  char ipcInfo[FLAGCX_P2P_IPC_INFO_SIZE] = {};
+  uint64_t ipcAddress = 0;
+  if (rank == 0 && runInteriorIpc) {
+    std::vector<unsigned char> sentinel(kIpcBufferSize, 0xa5);
+    require(device->deviceMemcpy(ipcTarget, sentinel.data(), kIpcBufferSize,
+                                 flagcxMemcpyHostToDevice,
+                                 stream) == flagcxSuccess &&
+                device->streamSynchronize(stream) == flagcxSuccess,
+            rank, "initializing IPC target failed");
+    ipcAddress = reinterpret_cast<uintptr_t>(ipcTarget) + kIpcTransferOffset;
+    bool hasIpc = false;
+    require(flagcxP2pEngineGetIpcInfo(engine, ipcAddress, ipcInfo, &hasIpc) ==
+                    0 &&
+                hasIpc,
+            rank, "interior registration did not provide IPC metadata");
+  }
+  MPI_Bcast(&ipcAddress, 1, MPI_UINT64_T, 0, MPI_COMM_WORLD);
+  MPI_Bcast(ipcInfo, sizeof(ipcInfo), MPI_CHAR, 0, MPI_COMM_WORLD);
+  if (rank == 1 && runInteriorIpc) {
+    require(flagcxP2pEngineConnIsLocal(conn), rank,
+            "IPC test requires a local connection");
+    FlagcxP2pRdmaDesc desc = {};
+    require(
+        flagcxP2pEngineMakeDesc(conn, ipcAddress, kIpcTransferSize, &desc) == 0,
+        rank, "creating interior IPC descriptor failed");
+    uint64_t transferId = 0;
+    require(flagcxP2pEngineWriteVector(
+                conn, {mr},
+                {static_cast<char *>(buffer) + kIpcRegistrationOffset},
+                {kIpcTransferSize}, {desc}, 1, &transferId, {ipcInfo}) == 0,
+            rank, "submitting interior IPC WRITE failed");
+    waitForWrite(conn, transferId, rank);
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (rank == 0 && runInteriorIpc) {
+    std::vector<unsigned char> received(kIpcBufferSize);
+    require(device->deviceMemcpy(received.data(), ipcTarget, kIpcBufferSize,
+                                 flagcxMemcpyDeviceToHost,
+                                 stream) == flagcxSuccess &&
+                device->streamSynchronize(stream) == flagcxSuccess,
+            rank, "reading IPC target failed");
+    for (size_t i = 0; i < kIpcBufferSize; ++i) {
+      const unsigned char want =
+          i >= kIpcTransferOffset && i < kIpcTransferOffset + kIpcTransferSize
+              ? expected[i - kIpcTransferOffset + kIpcRegistrationOffset]
+              : 0xa5;
+      if (received[i] != want)
+        failMismatch(rank, "interior IPC", kIpcTransferSize, i, want,
+                     received[i]);
+    }
   }
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -288,15 +368,22 @@ int main(int argc, char **argv) {
 #endif
 
   if (rank == 0)
-    std::puts(
-        "P2P Engine WRITE correctness: single and vector transfers passed");
+    std::puts(runInteriorIpc
+                  ? "P2P Engine WRITE correctness: single, vector and "
+                    "interior IPC transfers passed"
+                  : "P2P Engine WRITE correctness: single and vector "
+                    "transfers passed");
 
   flagcxP2pEngineMrDestroy(engine, mr);
+  if (rank == 0 && runInteriorIpc)
+    flagcxP2pEngineMrDestroy(engine, ipcMr);
   flagcxP2pEngineDestroy(engine);
   // The peer may still be closing an imported local mapping. CANN requires
   // every importer to close before the exporter releases its allocation.
   MPI_Barrier(MPI_COMM_WORLD);
   flagcxMemFree(buffer);
+  if (rank == 0 && runInteriorIpc)
+    flagcxMemFree(ipcTarget);
   device->streamDestroy(stream);
   flagcxDeviceHandleFree(device);
   MPI_Finalize();

@@ -22,6 +22,10 @@ int ipcCreateCalls = 0;
 int ipcGetCalls = 0;
 int ipcFreeCalls = 0;
 size_t mockIpcHandleSize = 16;
+void *mockExportPointer = nullptr;
+void *mockAllocationBase = nullptr;
+size_t mockAllocationSize = 0;
+flagcxResult_t rangeResult = flagcxNotSupported;
 
 flagcxResult_t mockPointerQuery(const void *, int *ptrType) {
   ++queryCalls;
@@ -38,11 +42,20 @@ flagcxResult_t mockIpcCreate(flagcxIpcMemHandle_t *handle, size_t *size) {
   return *handle == nullptr ? flagcxSystemError : flagcxSuccess;
 }
 
-flagcxResult_t mockIpcGet(flagcxIpcMemHandle_t handle, void *) {
+flagcxResult_t mockIpcGet(flagcxIpcMemHandle_t handle, void *ptr) {
   ++ipcGetCalls;
+  mockExportPointer = ptr;
   if (ipcGetResult == flagcxSuccess)
     std::memset(handle, 0x5a, mockIpcHandleSize);
   return ipcGetResult;
+}
+
+flagcxResult_t mockAddressRange(const void *, void **base, size_t *size) {
+  if (rangeResult == flagcxSuccess) {
+    *base = mockAllocationBase;
+    *size = mockAllocationSize;
+  }
+  return rangeResult;
 }
 
 flagcxResult_t mockIpcFree(flagcxIpcMemHandle_t handle) {
@@ -62,6 +75,7 @@ protected:
     adaptor_.getPointerType = mockPointerQuery;
     adaptor_.ipcMemHandleCreate = mockIpcCreate;
     adaptor_.ipcMemHandleGet = mockIpcGet;
+    adaptor_.getAddressRange = mockAddressRange;
     adaptor_.ipcMemHandleFree = mockIpcFree;
     adaptor_.getLastError = mockGetLastError;
     deviceAdaptor = &adaptor_;
@@ -73,6 +87,10 @@ protected:
     ipcGetCalls = 0;
     ipcFreeCalls = 0;
     mockIpcHandleSize = 16;
+    mockExportPointer = nullptr;
+    mockAllocationBase = nullptr;
+    mockAllocationSize = 0;
+    rangeResult = flagcxNotSupported;
   }
 
   void TearDown() override { deviceAdaptor = savedAdaptor_; }
@@ -87,8 +105,9 @@ TEST_F(PointerClassificationTest, LatestAdaptorDoesNotInferFromIpcExport) {
   std::memset(ipcHandle, 0xff, sizeof(ipcHandle));
   uint32_t ipcHandleSize = 17;
 
-  EXPECT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, ipcHandle, &ipcHandleSize),
+  EXPECT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, ipcHandle, &ipcHandleSize,
+                                       nullptr),
             flagcxNotSupported);
   EXPECT_EQ(queryCalls, 1);
   EXPECT_EQ(ipcCreateCalls, 0);
@@ -103,8 +122,8 @@ TEST_F(PointerClassificationTest, AuthoritativeHostSkipsIpcExport) {
   queryType = FLAGCX_PTR_HOST;
   int ptrType = -1;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, nullptr, nullptr),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, nullptr, nullptr, nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
   EXPECT_EQ(ipcCreateCalls, 0);
@@ -117,8 +136,9 @@ TEST_F(PointerClassificationTest, GpuTypeSurvivesOptionalIpcExportFailure) {
   int ptrType = -1;
   uint32_t ipcHandleSize = 17;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, nullptr, &ipcHandleSize),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, nullptr, &ipcHandleSize,
+                                       nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(ipcCreateCalls, 1);
@@ -127,13 +147,53 @@ TEST_F(PointerClassificationTest, GpuTypeSurvivesOptionalIpcExportFailure) {
   EXPECT_EQ(ipcHandleSize, 0u);
 }
 
+TEST_F(PointerClassificationTest, InteriorRegistrationExportsAllocationBase) {
+  queryResult = flagcxSuccess;
+  queryType = FLAGCX_PTR_CUDA;
+  rangeResult = flagcxSuccess;
+  mockAllocationBase = reinterpret_cast<void *>(0x1000);
+  mockAllocationSize = 256;
+  int ptrType = -1;
+  char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
+  uint32_t ipcHandleSize = 0;
+  uintptr_t ipcAllocationBase = 0;
+
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1040), 64,
+                                       &ptrType, ipcHandle, &ipcHandleSize,
+                                       &ipcAllocationBase),
+            flagcxSuccess);
+  EXPECT_EQ(mockExportPointer, mockAllocationBase);
+  EXPECT_EQ(ipcAllocationBase, 0x1000u);
+  EXPECT_EQ(ipcHandleSize, 16u);
+}
+
+TEST_F(PointerClassificationTest, OutOfAllocationRegistrationDoesNotExport) {
+  queryResult = flagcxSuccess;
+  queryType = FLAGCX_PTR_CUDA;
+  rangeResult = flagcxSuccess;
+  mockAllocationBase = reinterpret_cast<void *>(0x1000);
+  mockAllocationSize = 128;
+  int ptrType = -1;
+  uint32_t ipcHandleSize = 17;
+  uintptr_t ipcAllocationBase = 17;
+
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1040), 128,
+                                       &ptrType, nullptr, &ipcHandleSize,
+                                       &ipcAllocationBase),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(ipcGetCalls, 0);
+  EXPECT_EQ(ipcHandleSize, 0u);
+  EXPECT_EQ(ipcAllocationBase, 0u);
+}
+
 TEST_F(PointerClassificationTest, RejectsInvalidAuthoritativeType) {
   queryResult = flagcxSuccess;
   queryType = FLAGCX_PTR_DMABUF;
   int ptrType = -1;
 
-  EXPECT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, nullptr, nullptr),
+  EXPECT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, nullptr, nullptr, nullptr),
             flagcxInternalError);
   EXPECT_EQ(ipcCreateCalls, 0);
 }
@@ -145,8 +205,9 @@ TEST_F(PointerClassificationTest, LegacyV1RetainsWarnedIpcInference) {
   char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
   uint32_t ipcHandleSize = 0;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, ipcHandle, &ipcHandleSize),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, ipcHandle, &ipcHandleSize,
+                                       nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(ipcHandleSize, 16u);
@@ -162,8 +223,9 @@ TEST_F(PointerClassificationTest, CopiesFull65ByteIpcHandle) {
   char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
   uint32_t ipcHandleSize = 0;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, ipcHandle, &ipcHandleSize),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, ipcHandle, &ipcHandleSize,
+                                       nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(ipcHandleSize, 65u);
@@ -179,8 +241,9 @@ TEST_F(PointerClassificationTest, AcceptsFull72ByteIpcHandle) {
   char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
   uint32_t ipcHandleSize = 0;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, ipcHandle, &ipcHandleSize),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, ipcHandle, &ipcHandleSize,
+                                       nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(ipcHandleSize, 72u);
@@ -195,8 +258,9 @@ TEST_F(PointerClassificationTest, OversizedIpcHandleKeepsGpuType) {
   char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
   uint32_t ipcHandleSize = 0;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, ipcHandle, &ipcHandleSize),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, ipcHandle, &ipcHandleSize,
+                                       nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(ipcHandleSize, 0u);
@@ -207,8 +271,8 @@ TEST_F(PointerClassificationTest, TransitionalBuiltinRetainsIpcInference) {
   adaptor_.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_IPC_POINTER_INFERENCE;
   int ptrType = -1;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, nullptr, nullptr),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, nullptr, nullptr, nullptr),
             flagcxSuccess);
   EXPECT_EQ(queryCalls, 1);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
@@ -222,8 +286,8 @@ TEST_F(PointerClassificationTest, LegacyIpcRejectionFallsBackToHost) {
   ipcGetResult = flagcxUnhandledDeviceError;
   int ptrType = -1;
 
-  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
-                                       &ptrType, nullptr, nullptr),
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000), 16,
+                                       &ptrType, nullptr, nullptr, nullptr),
             flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_HOST);
   EXPECT_EQ(ipcFreeCalls, 1);

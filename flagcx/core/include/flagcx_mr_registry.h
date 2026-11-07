@@ -41,6 +41,7 @@ extern "C" {
 struct flagcxMrP2pExt {
   uint64_t mrId;
   bool hasIpc;
+  uintptr_t ipcAllocationBase;
   uint32_t ipcHandleSize;
   char ipcHandle[FLAGCX_MR_IPC_HANDLE_BYTES];
 };
