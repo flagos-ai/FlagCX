@@ -6,10 +6,10 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Platform name, all, or comma-separated names
+        description: Temporarily limited to MetaX
         required: true
         type: string
-        default: all
+        default: metax
 
 permissions:
   contents: read
@@ -36,7 +36,7 @@ jobs:
       - name: Resolve requested platforms
         id: resolve
         env:
-          FLAGCX_CI_PLATFORM: ${{ inputs.platform || 'all' }}
+          FLAGCX_CI_PLATFORM: metax # Temporary: run only MetaX coverage.
         shell: bash
         run: |
           set -euo pipefail

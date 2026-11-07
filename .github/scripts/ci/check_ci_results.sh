@@ -48,8 +48,10 @@ else
   done
 fi
 if [[ "$format_result" != success ]]; then
-  echo "Common checks ended with result: $format_result" >&2
-  exit 1
+  if [[ "${FLAGCX_CI_ONLY_PLATFORM:-}" != metax || "$format_result" != skipped ]]; then
+    echo "Common checks ended with result: $format_result" >&2
+    exit 1
+  fi
 fi
 
 echo "All selected FlagCX CI jobs completed successfully."

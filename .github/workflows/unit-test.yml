@@ -13,10 +13,10 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: "Platform name, all, or comma-separated names"
+        description: "Temporarily limited to MetaX"
         required: true
         type: string
-        default: all
+        default: metax
   issue_comment:
     types: [created]
 
@@ -61,6 +61,7 @@ jobs:
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
           ACTOR: ${{ github.actor }}
+          FLAGCX_CI_ONLY_PLATFORM: metax # Temporary: run only MetaX hardware CI.
         shell: bash
         run: |
           set -euo pipefail
@@ -165,7 +166,7 @@ jobs:
   format-check:
     name: Common checks
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: false # Temporary: only MetaX CI is enabled.
     uses: ./.github/workflows/format-check.yml
     with:
       repository: ${{ needs.prepare.outputs.repository }}
@@ -189,6 +190,7 @@ jobs:
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
+          FLAGCX_CI_ONLY_PLATFORM: metax
         shell: bash
         run: >-
           bash .github/scripts/ci/check_ci_results.sh

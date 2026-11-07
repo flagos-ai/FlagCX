@@ -31,13 +31,17 @@ def enabled_platform_or_matrix(platform):
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
-    def resolve(self, context):
+    def resolve(self, context, *, only_platform=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             context_path = Path(temp_dir) / "context.json"
             output_path = Path(temp_dir) / "github-output"
             context_path.write_text(json.dumps(context))
             env = os.environ.copy()
             env["GITHUB_OUTPUT"] = str(output_path)
+            if only_platform is not None:
+                env["FLAGCX_CI_ONLY_PLATFORM"] = only_platform
+            else:
+                env.pop("FLAGCX_CI_ONLY_PLATFORM", None)
             result = subprocess.run(
                 ["ruby", str(MATRIX_SCRIPT), str(CONFIG_DIR), str(context_path)],
                 check=True,
@@ -55,6 +59,42 @@ class CiMatrixRoutingTest(unittest.TestCase):
             with self.subTest(event=event_name):
                 outputs, _ = self.resolve({"event_name": event_name})
                 self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+    def test_temporary_metax_only_mode_keeps_metax_for_requested_ci(self):
+        for context in (
+            {"event_name": "push"},
+            {"event_name": "schedule"},
+            {
+                "event_name": "pull_request",
+                "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
+            },
+            {
+                "event_name": "pull_request",
+                "labels": ["platform:cuda"],
+                "files": ["README.md"],
+            },
+            {"event_name": "workflow_dispatch", "selection": "all"},
+            {"event_name": "workflow_dispatch", "selection": "hygon"},
+            {
+                "event_name": "issue_comment",
+                "comment": "/test cuda",
+                "permission": "write",
+                "is_pull_request": True,
+            },
+        ):
+            with self.subTest(context=context):
+                outputs, _ = self.resolve(context, only_platform="metax")
+                self.assertEqual(outputs["platforms"], ["metax"])
+        inactive, _ = self.resolve(
+            {
+                "event_name": "issue_comment",
+                "comment": "/test",
+                "permission": "read",
+                "is_pull_request": True,
+            },
+            only_platform="metax",
+        )
+        self.assertEqual(inactive["platforms"], [])
 
     def test_common_changes_select_all_platforms(self):
         outputs, _ = self.resolve(
@@ -483,11 +523,39 @@ class CiWorkflowWiringTest(unittest.TestCase):
 
 
 class CiCompletionGateTest(unittest.TestCase):
-    def check(self, *results):
+    def check(self, *results, only_platform=None):
+        env = os.environ.copy()
+        env.pop("FLAGCX_CI_ONLY_PLATFORM", None)
+        if only_platform is not None:
+            env["FLAGCX_CI_ONLY_PLATFORM"] = only_platform
         return subprocess.run(
             ["bash", str(GATE_SCRIPT), *results],
             capture_output=True,
             text=True,
+            env=env,
+        )
+
+    def test_metax_only_mode_allows_skipped_common_checks_but_requires_metax(self):
+        self.assertEqual(
+            self.check(
+                "true", "true", "success", "success", "success", "success",
+                "skipped", only_platform="metax",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.check(
+                "true", "true", "success", "skipped", "success", "success",
+                "skipped", only_platform="metax",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.check(
+                "true", "true", "success", "success", "success", "success",
+                "skipped",
+            ).returncode,
+            0,
         )
 
     def test_success_and_no_platform_matrix(self):

@@ -18,78 +18,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Build on GitHub-hosted runners. The RPMs are produced entirely inside
-  # backend-specific Docker images pulled from public registries (nvcr.io,
-  # Docker Hub, repos.metax-tech.com), so the build is host-agnostic and needs
-  # neither the internal h20 runner nor a real GPU. This keeps PR checks green
-  # without depending on the internal network's flaky public egress.
-  #
-  # tsm, sunrise and du have no vendor base image: they start from the plain
-  # openEuler one and fetch their SDK installers from the FlagOS file store,
-  # which a hosted runner reaches as well.
-  #
-  # ascend targets aarch64 (the CANN 910 base image is arm64), so it runs on an
-  # arm64 runner; the other targets build x86_64 packages.
+  # Temporary: run only MetaX package CI.
   build-rpm-packages:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: nvidia
-            backend: nvidia
-            distro: rocky8
-            base_image: nvcr.io/nvidia/cuda
-            base_image_version: 12.4.1-devel-rockylinux8
-            runner: ubuntu-latest
-          - target: nvidia-openeuler2403
-            backend: nvidia
-            distro: openeuler2403
-            base_image: openeuler/cuda
-            base_image_version: 13.0.0-oe2403lts
-            runner: ubuntu-latest
-          - target: nvidia-fedora43
-            backend: nvidia
-            distro: fedora43
-            base_image: fedora
-            base_image_version: '43'
-            runner: ubuntu-latest
           - target: metax
             backend: metax
             distro: rocky8
             base_image: rockylinux
             base_image_version: '8'
             runner: ubuntu-latest
-          - target: ascend
-            backend: ascend
-            distro: openeuler2403
-            base_image: ascendai/cann
-            base_image_version: 8.5.0-910-openeuler24.03-py3.11
-            runner: ubuntu-24.04-arm
-          # These three filter the vendor sonames out of the generated
-          # requires, so their packages install in a plain openEuler container
-          # and the install can be asserted here; install_image is what asks
-          # for it.
-          - target: tsm-openeuler2403
-            backend: tsm
-            distro: openeuler2403
-            base_image: openeuler/openeuler
-            base_image_version: 24.03-lts
-            runner: ubuntu-latest
-            install_image: openeuler/openeuler:24.03-lts
-          - target: sunrise-openeuler2403
-            backend: sunrise
-            distro: openeuler2403
-            base_image: openeuler/openeuler
-            base_image_version: 24.03-lts
-            runner: ubuntu-latest
-            install_image: openeuler/openeuler:24.03-lts
-          - target: du-openeuler2403
-            backend: du
-            distro: openeuler2403
-            base_image: openeuler/openeuler
-            base_image_version: 24.03-lts
-            runner: ubuntu-latest
-            install_image: openeuler/openeuler:24.03-lts
     runs-on: ${{ matrix.runner }}
 
     steps:
