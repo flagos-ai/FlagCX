@@ -10,6 +10,8 @@
 
 #include "adaptor.h"
 #include "flagcx.h"
+#include "flagcx_tuner.h"
+#include "global_comm.h"
 #include "topo.h"
 
 TEST(DeviceAdaptorCompatibilityTest, V1UpgradePreservesSignalAcquire) {
@@ -1080,6 +1082,53 @@ TEST_F(DeviceAdaptorTest, IpcMemHandleClose) {
     GTEST_SKIP() << "IPC memory handles are not supported";
   }
   EXPECT_EQ(result, flagcxInvalidArgument);
+}
+
+TEST(CCLAdaptorCompatibilityTest, V1UpgradeDisablesNameQuery) {
+  static_assert(sizeof(flagcxCCLAdaptor_v1) == 35 * sizeof(void *),
+                "flagcxCCLAdaptor_v1 ABI changed");
+  static_assert(offsetof(flagcxCCLAdaptor_latest, devCommReqsInit) ==
+                    sizeof(flagcxCCLAdaptor_v1),
+                "latest adaptor no longer preserves the v1 prefix");
+  flagcxCCLAdaptor_v1 v1{};
+  v1.name = "legacy";
+  flagcxCCLAdaptor latest{};
+  latest.commGetName = [](flagcxInnerComm_t, char *, size_t) {
+    return flagcxSuccess;
+  };
+  flagcxCCLAdaptorUpgradeV1(&v1, &latest);
+  EXPECT_EQ(std::memcmp(&v1, &latest, sizeof(v1)), 0);
+  EXPECT_EQ(latest.commGetName, nullptr);
+}
+
+TEST(HcclCommNameTest, RejectsInvalidArguments) {
+  flagcxComm comm{};
+  char name[128];
+  EXPECT_EQ(flagcxCommGetHcclCommName(nullptr, name, sizeof(name)),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, nullptr, sizeof(name)),
+            flagcxInvalidArgument);
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, name, 0), flagcxInvalidArgument);
+}
+
+TEST(HcclCommNameTest, RejectsHybridCommunicator) {
+  flagcxComm comm{};
+  comm.commType = flagcxCommunicatorHybrid;
+  char name[128];
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, name, sizeof(name)),
+            flagcxNotSupported);
+  EXPECT_EQ(name[0], '\0');
+}
+
+TEST(HcclCommNameTest, RejectsTunedCommunicator) {
+  flagcxComm comm{};
+  flagcxTuner_t tuner{};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.tuner = &tuner;
+  char name[128] = {};
+  EXPECT_EQ(flagcxCommGetHcclCommName(&comm, name, sizeof(name)),
+            flagcxNotSupported);
+  EXPECT_EQ(name[0], '\0');
 }
 
 int main(int argc, char **argv) {
