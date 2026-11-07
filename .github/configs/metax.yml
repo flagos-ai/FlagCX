@@ -7,6 +7,9 @@ paths_watch:
   - .github/configs/metax.yml
   - .github/scripts/set_env/metax.sh
   - .github/scripts/ci/run_metax_workload.sh
+  - .github/scripts/ci/check_metax_devices.py
+  - .github/scripts/ci/run_metax_torch_assertions.sh
+  - .github/scripts/ci/metax_torch_assertions.py
   - flagcx/adaptor/device/maca_adaptor.cc
   - test/kernel/maca/**/*
   - flagcx/adaptor/ccl/mccl_adaptor.cc

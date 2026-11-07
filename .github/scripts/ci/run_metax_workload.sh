@@ -22,13 +22,13 @@ export TORCH_DISTRIBUTED_BACKEND=mccl
 
 case "$workload" in
   perf)
+    python3 "$project_root/.github/scripts/ci/check_metax_devices.py" perf
     make -C "$project_root" --jobs="$(nproc)" USE_METAX=1
     make -C "$project_root/test/perf" --jobs="$(nproc)" \
       USE_METAX=1 MPI_HOME="$MPI_HOME" CCL_HOME=/opt/maca
 
     export FLAGCX_CI_PERF_PLATFORM=MetaX
-    # TODO: Restore data verification after the MetaX AllToAll mismatch is fixed.
-    export FLAGCX_CI_PERF_VERIFY=0
+    export FLAGCX_CI_PERF_VERIFY=1
     perf_bin="$project_root/test/perf/host_api/build/bin"
     MCCL_DEBUG=TRACE MCCL_DEBUG_SUBSYS=ALL \
       "$project_root/.github/scripts/ci/run_host_perf_suite.sh" homogeneous "$perf_bin"
@@ -41,6 +41,8 @@ case "$workload" in
     export USE_METAX=1
     export PYTHON_BIN=python3
 
+    "$PYTHON_BIN" "$project_root/.github/scripts/ci/check_metax_devices.py" torch-api
+
     make -C "$project_root" --jobs="$(nproc)" USE_METAX=1
     "$PYTHON_BIN" -m pip install --break-system-packages 'setuptools_scm>=8'
     (
@@ -50,7 +52,9 @@ case "$workload" in
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    bash "$project_root/test/script/torch_api_test.sh"
+    torch_log="${FLAGCX_CI_LOG_DIR:-/tmp}/metax-torch-api.log"
+    bash "$project_root/test/script/torch_api_test.sh" 2>&1 | tee "$torch_log"
+    bash "$project_root/.github/scripts/ci/run_metax_torch_assertions.sh"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
       "$PYTHON_BIN" -m pip install --break-system-packages --quiet coverage==7.10.7
       bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
