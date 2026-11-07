@@ -209,6 +209,8 @@ enum {
 
 static_assert(FLAGCX_P2P_IPC_HANDLE_BYTES == FLAGCX_MR_IPC_HANDLE_BYTES,
               "IPC handle size mismatch between P2P and MR registry");
+static_assert(FLAGCX_P2P_IPC_HANDLE_BYTES <= FLAGCX_IPC_HANDLE_SIZE,
+              "P2P Engine IPC handle must fit the core wire size");
 
 struct FlagcxP2pCtrlMeta {
   int32_t gpuIdx;
@@ -247,10 +249,13 @@ struct FlagcxP2pIpcInfo {
   uint64_t size;
   uint32_t flags;
   uint32_t handleSize;
-  char padding[32];
+  char padding[24];
 };
 static_assert(sizeof(FlagcxP2pIpcInfo) == FLAGCX_P2P_IPC_INFO_SIZE,
               "FlagcxP2pIpcInfo size must match FLAGCX_P2P_IPC_INFO_SIZE");
+static_assert(offsetof(FlagcxP2pIpcInfo, baseAddr) == 72 &&
+                  offsetof(FlagcxP2pIpcInfo, padding) == 104,
+              "P2P IPC info must retain its 72/32/24-byte layout");
 
 struct FlagcxP2pNotifWireMsg {
   uint32_t magic;
@@ -1996,6 +2001,8 @@ static int startLocalTransfer(
         return -1;
       deserializeIpcInfo(ipcBufs[i], &ipcInfos[i]);
       if ((ipcInfos[i].flags & FLAGCX_P2P_IPC_FLAG_CUDA) == 0 ||
+          ipcInfos[i].handleSize == 0 ||
+          ipcInfos[i].handleSize > sizeof(ipcInfos[i].handleData) ||
           sizeVec[i] > ipcInfos[i].size)
         return -1;
     }
@@ -4646,6 +4653,8 @@ int flagcxP2pEngineGetIpcInfo(FlagcxP2pEngine *engine, uintptr_t addr,
 
   FlagcxP2pIpcInfo info;
   memset(&info, 0, sizeof(info));
+  if (entry.ipcHandleSize == 0 || entry.ipcHandleSize > sizeof(info.handleData))
+    return -1;
   memcpy(info.handleData, entry.ipcHandle, entry.ipcHandleSize);
   info.baseAddr = entry.baseAddr;
   info.offset = addr - entry.baseAddr;

@@ -677,8 +677,8 @@ flagcxResult_t cannAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
   if (handle == NULL || devPtr == NULL)
     return flagcxInvalidArgument;
 
-  // A 65-byte CANN key must fit the existing 64-byte FlagCX wire payload.
-  // Keep the terminating byte locally and reconstruct it at the importer.
+  // Keep one extra sentinel byte so an invalid unterminated runtime key can
+  // still be passed safely to the cleanup API.
   char key[66] = {};
   struct cannIpcExport *exportRecord =
       (struct cannIpcExport *)calloc(1, sizeof(*exportRecord));
@@ -723,15 +723,15 @@ flagcxResult_t cannAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
                ? flagcxNotSupported
                : flagcxUnhandledDeviceError;
   }
-  if (key[0] == '\0' || key[64] != '\0') {
-    WARN("CANN IPC key cannot fit the 64-byte FlagCX handle");
+  if (key[0] == '\0' || memchr(key, '\0', 65) == NULL) {
+    WARN("CANN IPC export returned an unterminated key");
     (void)aclrtIpcMemClose(key);
     pthread_mutex_unlock(&cannIpcAllocationLock);
     free(exportRecord);
     return flagcxNotSupported;
   }
 
-  memcpy(exportRecord->key, key, 65);
+  memcpy(exportRecord->key, key, sizeof(exportRecord->key));
   exportRecord->next = allocation->exports;
   allocation->exports = exportRecord;
   memcpy(handle->key, key, sizeof(handle->key));
@@ -750,7 +750,8 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   if (importRecord == NULL)
     return flagcxSystemError;
   memcpy(importRecord->key, handle->key, sizeof(handle->key));
-  if (importRecord->key[0] == '\0') {
+  if (importRecord->key[0] == '\0' ||
+      memchr(importRecord->key, '\0', sizeof(importRecord->key)) == NULL) {
     free(importRecord);
     return flagcxInvalidArgument;
   }

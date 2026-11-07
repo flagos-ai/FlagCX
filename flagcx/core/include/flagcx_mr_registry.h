@@ -36,7 +36,7 @@ extern "C" {
 
 /* ───── Subsystem extension structs ───── */
 
-#define FLAGCX_MR_IPC_HANDLE_BYTES 64
+#define FLAGCX_MR_IPC_HANDLE_BYTES 72
 
 struct flagcxMrP2pExt {
   uint64_t mrId;

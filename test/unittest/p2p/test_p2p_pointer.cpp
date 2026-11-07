@@ -21,6 +21,7 @@ int queryCalls = 0;
 int ipcCreateCalls = 0;
 int ipcGetCalls = 0;
 int ipcFreeCalls = 0;
+size_t mockIpcHandleSize = 16;
 
 flagcxResult_t mockPointerQuery(const void *, int *ptrType) {
   ++queryCalls;
@@ -31,15 +32,16 @@ flagcxResult_t mockPointerQuery(const void *, int *ptrType) {
 
 flagcxResult_t mockIpcCreate(flagcxIpcMemHandle_t *handle, size_t *size) {
   ++ipcCreateCalls;
-  *handle = reinterpret_cast<flagcxIpcMemHandle_t>(std::malloc(16));
-  *size = 16;
+  *handle =
+      reinterpret_cast<flagcxIpcMemHandle_t>(std::malloc(mockIpcHandleSize));
+  *size = mockIpcHandleSize;
   return *handle == nullptr ? flagcxSystemError : flagcxSuccess;
 }
 
 flagcxResult_t mockIpcGet(flagcxIpcMemHandle_t handle, void *) {
   ++ipcGetCalls;
   if (ipcGetResult == flagcxSuccess)
-    std::memset(handle, 0x5a, 16);
+    std::memset(handle, 0x5a, mockIpcHandleSize);
   return ipcGetResult;
 }
 
@@ -70,6 +72,7 @@ protected:
     ipcCreateCalls = 0;
     ipcGetCalls = 0;
     ipcFreeCalls = 0;
+    mockIpcHandleSize = 16;
   }
 
   void TearDown() override { deviceAdaptor = savedAdaptor_; }
@@ -80,7 +83,7 @@ protected:
 
 TEST_F(PointerClassificationTest, LatestAdaptorDoesNotInferFromIpcExport) {
   int ptrType = FLAGCX_PTR_CUDA;
-  char ipcHandle[64];
+  char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES];
   std::memset(ipcHandle, 0xff, sizeof(ipcHandle));
   uint32_t ipcHandleSize = 17;
 
@@ -139,7 +142,7 @@ TEST_F(PointerClassificationTest, LegacyV1RetainsWarnedIpcInference) {
   adaptor_.internalFlags = FLAGCX_DEVICE_ADAPTOR_INTERNAL_LEGACY_V1;
   adaptor_.getPointerType = nullptr;
   int ptrType = -1;
-  char ipcHandle[64] = {};
+  char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
   uint32_t ipcHandleSize = 0;
 
   ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
@@ -148,6 +151,55 @@ TEST_F(PointerClassificationTest, LegacyV1RetainsWarnedIpcInference) {
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(ipcHandleSize, 16u);
   EXPECT_EQ(ipcHandle[0], 0x5a);
+  EXPECT_EQ(ipcFreeCalls, 1);
+}
+
+TEST_F(PointerClassificationTest, CopiesFull65ByteIpcHandle) {
+  queryResult = flagcxSuccess;
+  queryType = FLAGCX_PTR_CUDA;
+  mockIpcHandleSize = 65;
+  int ptrType = -1;
+  char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
+  uint32_t ipcHandleSize = 0;
+
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
+                                       &ptrType, ipcHandle, &ipcHandleSize),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(ipcHandleSize, 65u);
+  EXPECT_EQ(ipcHandle[64], 0x5a);
+  EXPECT_EQ(ipcHandle[65], 0);
+}
+
+TEST_F(PointerClassificationTest, AcceptsFull72ByteIpcHandle) {
+  queryResult = flagcxSuccess;
+  queryType = FLAGCX_PTR_CUDA;
+  mockIpcHandleSize = FLAGCX_P2P_IPC_HANDLE_BYTES;
+  int ptrType = -1;
+  char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
+  uint32_t ipcHandleSize = 0;
+
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
+                                       &ptrType, ipcHandle, &ipcHandleSize),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(ipcHandleSize, 72u);
+  EXPECT_EQ(ipcHandle[71], 0x5a);
+}
+
+TEST_F(PointerClassificationTest, OversizedIpcHandleKeepsGpuType) {
+  queryResult = flagcxSuccess;
+  queryType = FLAGCX_PTR_CUDA;
+  mockIpcHandleSize = FLAGCX_P2P_IPC_HANDLE_BYTES + 1;
+  int ptrType = -1;
+  char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES] = {};
+  uint32_t ipcHandleSize = 0;
+
+  ASSERT_EQ(flagcxP2pDetectPointerType(reinterpret_cast<void *>(0x1000),
+                                       &ptrType, ipcHandle, &ipcHandleSize),
+            flagcxSuccess);
+  EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
+  EXPECT_EQ(ipcHandleSize, 0u);
   EXPECT_EQ(ipcFreeCalls, 1);
 }
 

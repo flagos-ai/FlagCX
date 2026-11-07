@@ -10,7 +10,7 @@
 
 #include <stdint.h>
 
-#define FLAGCX_P2P_IPC_HANDLE_BYTES 64
+#define FLAGCX_P2P_IPC_HANDLE_BYTES 72
 
 // Internal P2P registration helper. Pointer classification is authoritative
 // for upgraded adaptors; only loader-upgraded v1 plugins and built-ins carrying
