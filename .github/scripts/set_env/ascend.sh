@@ -69,7 +69,7 @@ flagcx_ci_run_suite_override() {
   rma)
     FLAGCX_CI_TEST_LABEL="Ascend rma unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    echo "Ascend coverage gap: rma IPC and network MPI are not run. PCI lookup is now wired, but the CANN net adaptor does not advertise GPU MR. RMA visibility also needs cannAdaptorStreamWaitValue64/StreamWriteValue64 and an Ascend device-consumer kernel; multi-rank RMA remains pending validation"
+    echo "Ascend coverage gap: rma IPC and network MPI are not run. GPU MR and IPC are now exercised by adaptor/perf CI; RMA visibility still needs cannAdaptorStreamWaitValue64/StreamWriteValue64 and an Ascend device-consumer kernel, plus multi-rank lifecycle validation"
     ;;
   runner)
     FLAGCX_CI_TEST_LABEL="Ascend runner unit tests" \
@@ -79,7 +79,7 @@ flagcx_ci_run_suite_override() {
   symmem)
     FLAGCX_CI_TEST_LABEL="Ascend symmem unit tests" \
       "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests" || unit_status=$?
-    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run. A prior multi-rank diagnostic exited 139 during process teardown inside flagcxProxyService; that lifecycle failure still needs a hardware stack trace. SymMem VMM routes separately need cannAdaptorSymPhysAlloc/Free plus flat map/unmap, and CANN IPC needs the cannAdaptorIpcMemHandle* contract"
+    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run. A prior multi-rank diagnostic exited 139 during process teardown inside flagcxProxyService; that lifecycle failure still needs a hardware stack trace. SymMem VMM routes separately need cannAdaptorSymPhysAlloc/Free plus flat map/unmap; its IPC and NET paths need their own multi-rank validation"
     ;;
   esac
 

@@ -473,6 +473,9 @@ void runBidirectionalCrossGpuGdrIpcWrite(flagcxDeviceHandle_t devHandle) {
   ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
   ASSERT_FLAGCX_SUCCESS(
       freeIpcTestBuffer(devHandle, IpcAllocationKind::Gdr, sourcePtr));
+  // Every importer must close before either exporter closes its key and frees
+  // the allocation. Both ranks are exporters in this full-mesh case.
+  ASSERT_MPI_SUCCESS(MPI_Barrier(MPI_COMM_WORLD));
   ASSERT_FLAGCX_SUCCESS(
       freeIpcTestBuffer(devHandle, IpcAllocationKind::Gdr, exportedPtr));
   ASSERT_MPI_SUCCESS(MPI_Barrier(MPI_COMM_WORLD));
