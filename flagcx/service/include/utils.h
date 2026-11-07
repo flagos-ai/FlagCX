@@ -17,6 +17,7 @@
 #include <new>
 #include <nlohmann/json.hpp>
 #include <sched.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string>
 #include <time.h>
@@ -27,7 +28,7 @@
   (typeof(struct ::api))ptr
 
 // PCI Bus ID <-> int64 conversion functions
-flagcxResult_t int64ToBusId(int64_t id, char *busId);
+flagcxResult_t int64ToBusId(int64_t id, char *busId, size_t length);
 flagcxResult_t busIdToInt64(const char *busId, int64_t *id);
 
 flagcxResult_t getBusId(int cudaDev, int64_t *busId);

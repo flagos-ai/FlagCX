@@ -78,6 +78,17 @@ while ((attempt <= max_attempts)); do
     echo "$test_label exceeded its $test_timeout timeout on attempt $attempt" >&2
   fi
   echo "$test_label attempt $attempt failed with exit=$status; log saved to $attempt_log" >&2
+  if [[ -n "${FLAGCX_CI_ATTEMPT_FAILURE_HOOK:-}" ]]; then
+    diagnostic_log="$log_dir/diagnostics-attempt-$attempt.log"
+    diagnostic_status=0
+    bash "$FLAGCX_CI_ATTEMPT_FAILURE_HOOK" "$test_label" "$attempt" \
+      "$status" >"$diagnostic_log" 2>&1 || diagnostic_status=$?
+    cat "$diagnostic_log"
+    if ((diagnostic_status == 86)); then
+      echo "$test_label: RDMA devices disappeared before retry; diagnostics saved to $diagnostic_log" >&2
+      exit "$status"
+    fi
+  fi
   if ((attempt == max_attempts)) || [[ "$status" == 130 || "$status" == 143 || "$status" == 126 || "$status" == 127 ]]; then
     exit "$status"
   fi

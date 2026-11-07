@@ -7,6 +7,7 @@
 
 #include "adaptor.h"
 #include "comm.h"
+#include "flagcx_common.h"
 #include "topo.h"
 #include "utils.h"
 #include "xml.h"
@@ -54,7 +55,7 @@ TEST_F(BusIdLookup, NonPciIdentityCannotResolveAsSysfsPath) {
   ASSERT_EQ(getBusId(1, &id), flagcxSuccess);
 
   char text[64] = {0};
-  ASSERT_EQ(int64ToBusId(id, text), flagcxSuccess);
+  ASSERT_EQ(int64ToBusId(id, text, sizeof(text)), flagcxSuccess);
   EXPECT_STREQ(text, "ffff:00:01.0");
 
   int64_t roundTrip = 0;
@@ -113,7 +114,7 @@ TEST(BusId, Int64ToBusIdAndBack) {
   int64_t origId = 0x00041001; // domain=0, bus=0x41, dev=0x00, func=1
   char busId[64] = {0};
 
-  flagcxResult_t result = int64ToBusId(origId, busId);
+  flagcxResult_t result = int64ToBusId(origId, busId, sizeof(busId));
   EXPECT_EQ(result, flagcxSuccess);
   EXPECT_GT(strlen(busId), 0u);
 
@@ -131,9 +132,18 @@ TEST(BusId, KnownFormat) {
   int64_t id = 0x00041001;
   char busId[64] = {0};
 
-  flagcxResult_t result = int64ToBusId(id, busId);
+  flagcxResult_t result = int64ToBusId(id, busId, sizeof(busId));
   EXPECT_EQ(result, flagcxSuccess);
   EXPECT_STREQ(busId, "0000:41:00.1");
+}
+
+TEST(BusId, EightDigitDomainRoundTrip) {
+  int64_t id = -1;
+  ASSERT_EQ(busIdToInt64("12345678:3d:00.0", &id), flagcxSuccess);
+  char busId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE] = {};
+  EXPECT_EQ(int64ToBusId(id, busId, sizeof(busId)), flagcxSuccess);
+  EXPECT_STREQ(busId, "12345678:3d:00.0");
+  EXPECT_EQ(int64ToBusId(id, busId, 16), flagcxInvalidArgument);
 }
 
 TEST(BusId, InvalidBusId) {

@@ -813,7 +813,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertFalse((REPO_ROOT / "test/unittest/device").exists())
         self.assertIn("flagcx_ci_run_suite_override", ascend_env)
-        self.assertIn("getDeviceByPciBusId", ascend_env)
+        self.assertIn("check_ascend_pci_runtime.py", ascend_env)
         ascend_override = ascend_env[
             ascend_env.index("flagcx_ci_run_suite_override() {") :
             ascend_env.index("flagcx_ci_prepare() {")
@@ -831,7 +831,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         # A skipped phase must name the capability it waits on, so a silent
         # coverage drop cannot pass review.
         for marker in (
-            "RMA data window is unavailable",
+            "CANN net adaptor does not advertise GPU MR",
             "hcclAdaptorCommGetAsyncError",
             "flagcxProxyService",
             "cannAdaptorSymPhysAlloc",
@@ -884,9 +884,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("export FLAGCX_USE_HETERO_COMM", metax_handler)
         self.assertIn("ascend perf", perf_workflow)
         self.assertIn('"$perf_runner" homogeneous "$perf_bin"', ascend_handler)
+        ascend_command = " ".join(ascend_handler.replace("\\\n", " ").split())
+        self.assertIn(
+            '"$perf_runner" heterogeneous "$perf_bin" '
+            '-x FLAGCX_P2P_DISABLE=1 -x FLAGCX_IB_PCI_RELAXED_ORDERING=1',
+            ascend_command,
+        )
         self.assertIn("ascend torch-api", torch_workflow)
         self.assertIn("import torch, torch_npu", ascend_handler)
         self.assertIn('"$PYTHON_BIN" setup.py build_ext --inplace', ascend_handler)
+        self.assertIn(
+            'FLAGCX_SKIP_HETERO=1 bash "$project_root/test/script/torch_api_test.sh"',
+            ascend_handler,
+        )
 
     def test_ascend_override_runs_single_process_phases_only(self):
         def run_override(suite):
@@ -912,7 +922,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         # capability its skipped multi-rank phases wait on.
         for suite, unit_marker, reason_marker in (
             ("symmem", "symmem_unit_tests", "flagcxProxyService"),
-            ("rma", "run-unit", "RMA data window is unavailable"),
+            ("rma", "run-unit", "CANN net adaptor does not advertise GPU MR"),
             ("runner", "run-unit", "hcclAdaptorCommGetAsyncError"),
         ):
             with self.subTest(suite=suite):

@@ -695,7 +695,7 @@ flagcxResult_t flagcxTopoGetXmlTopo(struct flagcxHeteroComm *comm,
       INFO(FLAGCX_INIT, "preparing to detect APU for rank %d", r);
       char busId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
       INFO(FLAGCX_INIT, "converting busId to string");
-      FLAGCXCHECK(int64ToBusId(comm->peerInfo[r].busId, busId));
+      FLAGCXCHECK(int64ToBusId(comm->peerInfo[r].busId, busId, sizeof(busId)));
       struct flagcxXmlNode *node;
       FLAGCXCHECK(flagcxTopoFillApu(xml, busId, &node));
       if (node == NULL) {
@@ -841,8 +841,8 @@ flagcxTopoConnectPeerApus(struct flagcxTopoServer *topoServer) {
     struct flagcxTopoNode *src = topoServer->nodes[APU].nodes + i;
     char srcBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
     int srcDev = -1;
-    if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(src->id), srcBusId) !=
-            flagcxSuccess ||
+    if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(src->id), srcBusId,
+                     sizeof(srcBusId)) != flagcxSuccess ||
         deviceAdaptor->getDeviceByPciBusId(&srcDev, srcBusId) != flagcxSuccess)
       continue;
     for (int j = i + 1; j < topoServer->nodes[APU].count; ++j) {
@@ -852,8 +852,8 @@ flagcxTopoConnectPeerApus(struct flagcxTopoServer *topoServer) {
         continue;
       char dstBusId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
       int dstDev = -1;
-      if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(dst->id), dstBusId) !=
-              flagcxSuccess ||
+      if (int64ToBusId(FLAGCX_TOPO_ID_LOCAL_ID(dst->id), dstBusId,
+                       sizeof(dstBusId)) != flagcxSuccess ||
           deviceAdaptor->getDeviceByPciBusId(&dstDev, dstBusId) !=
               flagcxSuccess)
         continue;
@@ -970,11 +970,19 @@ flagcxResult_t flagcxTopoAddCpu(struct flagcxXmlNode *xmlCpu,
                                 struct flagcxTopoServer *topoServer) {
   int numaId;
   FLAGCXCHECK(xmlGetAttrInt(xmlCpu, "numaid", &numaId));
+  if (numaId < -1) {
+    WARN("Invalid CPU NUMA ID %d", numaId);
+    return flagcxInvalidArgument;
+  }
   int serverId;
   FLAGCXCHECK(flagcxGetServerId(topoServer, xmlCpu, &serverId));
+  // -1 means unknown NUMA, not a negative local ID. Keep its bits within the
+  // local field so it cannot borrow from the server ID when IDs are combined.
+  int64_t localId =
+      numaId == -1 ? FLAGCX_TOPO_ID_LOCAL_ID((int64_t)-1) : (int64_t)numaId;
   struct flagcxTopoNode *cpu;
   FLAGCXCHECK(flagcxTopoCreateNode(topoServer, &cpu, CPU,
-                                   FLAGCX_TOPO_ID(serverId, numaId)));
+                                   FLAGCX_TOPO_ID(serverId, localId)));
   const char *str;
   FLAGCXCHECK(xmlGetAttr(xmlCpu, "affinity", &str));
   if (str != NULL) {
