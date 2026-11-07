@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <mpi.h>
 
+#include <cstdlib>
 #include <vector>
 
 #include "adaptor.h"
@@ -44,6 +45,16 @@ namespace {
       return;                                                                  \
     }                                                                          \
   } while (0)
+
+// Ascend CI requires every IPC case to run; a capability skip must fail the
+// MPI job instead of producing a green result with no IPC coverage.
+#define IPC_SKIP()                                                             \
+  if (std::getenv("FLAGCX_CI_REQUIRE_IPC") != nullptr) {                       \
+    ADD_FAILURE() << "Required IPC test skipped at line " << __LINE__;         \
+    MPI_Abort(MPI_COMM_WORLD, 1);                                              \
+    return;                                                                    \
+  } else                                                                       \
+    GTEST_SKIP()
 
 class IpcMemHandleMpiTest : public ::testing::Test {
 protected:
@@ -109,7 +120,7 @@ void runCrossGpuIpcTransfer(
   ASSERT_MPI_SUCCESS(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
   ASSERT_MPI_SUCCESS(MPI_Comm_size(MPI_COMM_WORLD, &worldSize));
   if (worldSize != 2) {
-    GTEST_SKIP() << "Cross-GPU IPC tests require exactly 2 MPI ranks";
+    IPC_SKIP() << "Cross-GPU IPC tests require exactly 2 MPI ranks";
   }
   ASSERT_MPI_TRUE(exporterRank == 0 || exporterRank == 1);
   if (transferSize == 0)
@@ -124,7 +135,7 @@ void runCrossGpuIpcTransfer(
   ASSERT_MPI_SUCCESS(MPI_Allreduce(&localDeviceCount, &minDeviceCount, 1,
                                    MPI_INT, MPI_MIN, MPI_COMM_WORLD));
   if (minDeviceCount < 2) {
-    GTEST_SKIP() << "Cross-GPU IPC tests require at least 2 visible devices";
+    IPC_SKIP() << "Cross-GPU IPC tests require at least 2 visible devices";
   }
   ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));
 
@@ -138,7 +149,7 @@ void runCrossGpuIpcTransfer(
                                    &allAllocatorsAvailable, 1, MPI_INT, MPI_MIN,
                                    MPI_COMM_WORLD));
   if (!allAllocatorsAvailable) {
-    GTEST_SKIP() << "GDR memory allocation is not available";
+    IPC_SKIP() << "GDR memory allocation is not available";
   }
 
   int localApisAvailable = devHandle->ipcMemHandleCreate != nullptr &&
@@ -150,7 +161,7 @@ void runCrossGpuIpcTransfer(
   ASSERT_MPI_SUCCESS(MPI_Allreduce(&localApisAvailable, &allApisAvailable, 1,
                                    MPI_INT, MPI_MIN, MPI_COMM_WORLD));
   if (!allApisAvailable) {
-    GTEST_SKIP() << "IPC memory handle APIs are not available";
+    IPC_SKIP() << "IPC memory handle APIs are not available";
   }
 
   flagcxIpcMemHandle_t handle = nullptr;
@@ -171,7 +182,7 @@ void runCrossGpuIpcTransfer(
     if (createResult == flagcxSuccess && handle != nullptr) {
       ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
     }
-    GTEST_SKIP() << "IPC memory handles are not supported";
+    IPC_SKIP() << "IPC memory handles are not supported";
   }
   ASSERT_FLAGCX_SUCCESS(createResult);
   ASSERT_MPI_TRUE(handle != nullptr);
@@ -310,8 +321,8 @@ void runBidirectionalCrossGpuGdrIpcWrite(flagcxDeviceHandle_t devHandle) {
   ASSERT_MPI_SUCCESS(MPI_Comm_rank(MPI_COMM_WORLD, &rank));
   ASSERT_MPI_SUCCESS(MPI_Comm_size(MPI_COMM_WORLD, &worldSize));
   if (worldSize != 2) {
-    GTEST_SKIP() << "Bidirectional cross-GPU IPC tests require exactly 2 MPI "
-                    "ranks";
+    IPC_SKIP() << "Bidirectional cross-GPU IPC tests require exactly 2 MPI "
+                  "ranks";
   }
 
   int localDeviceCount = 0;
@@ -320,8 +331,8 @@ void runBidirectionalCrossGpuGdrIpcWrite(flagcxDeviceHandle_t devHandle) {
   ASSERT_MPI_SUCCESS(MPI_Allreduce(&localDeviceCount, &minDeviceCount, 1,
                                    MPI_INT, MPI_MIN, MPI_COMM_WORLD));
   if (minDeviceCount < 2) {
-    GTEST_SKIP() << "Bidirectional cross-GPU IPC tests require at least 2 "
-                    "visible devices";
+    IPC_SKIP() << "Bidirectional cross-GPU IPC tests require at least 2 "
+                  "visible devices";
   }
   ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));
 
@@ -338,7 +349,7 @@ void runBidirectionalCrossGpuGdrIpcWrite(flagcxDeviceHandle_t devHandle) {
                                    &allCapabilitiesAvailable, 1, MPI_INT,
                                    MPI_MIN, MPI_COMM_WORLD));
   if (!allCapabilitiesAvailable) {
-    GTEST_SKIP() << "GDR allocation or IPC memory handles are not available";
+    IPC_SKIP() << "GDR allocation or IPC memory handles are not available";
   }
 
   flagcxIpcMemHandle_t handle = nullptr;
@@ -359,7 +370,7 @@ void runBidirectionalCrossGpuGdrIpcWrite(flagcxDeviceHandle_t devHandle) {
     if (createResult == flagcxSuccess && handle != nullptr) {
       ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
     }
-    GTEST_SKIP() << "IPC memory handles are not supported";
+    IPC_SKIP() << "IPC memory handles are not supported";
   }
   ASSERT_FLAGCX_SUCCESS(createResult);
   ASSERT_MPI_TRUE(handle != nullptr);
@@ -474,14 +485,14 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
   ASSERT_MPI_SUCCESS(MPI_Comm_size(MPI_COMM_WORLD, &worldSize));
 
   if (worldSize != 2) {
-    GTEST_SKIP() << "CrossProcessLifecycle requires exactly 2 MPI ranks; "
-                 << "run with: make MPI_NP=2 run-mpi";
+    IPC_SKIP() << "CrossProcessLifecycle requires exactly 2 MPI ranks; "
+               << "run with: make MPI_NP=2 run-mpi";
   }
 
   int deviceCount = 0;
   ASSERT_FLAGCX_SUCCESS(devHandle->getDeviceCount(&deviceCount));
   if (deviceCount < worldSize) {
-    GTEST_SKIP() << "CrossProcessLifecycle requires one device per MPI rank";
+    IPC_SKIP() << "CrossProcessLifecycle requires one device per MPI rank";
   }
   ASSERT_FLAGCX_SUCCESS(devHandle->setDevice(rank));
 
@@ -497,7 +508,7 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
   ASSERT_MPI_SUCCESS(MPI_Allreduce(&localApisAvailable, &allApisAvailable, 1,
                                    MPI_INT, MPI_MIN, MPI_COMM_WORLD));
   if (!allApisAvailable) {
-    GTEST_SKIP() << "IPC memory handle APIs are not available";
+    IPC_SKIP() << "IPC memory handle APIs are not available";
   }
 
   // Every rank creates its receive/export storage before communication. This
@@ -520,7 +531,7 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
     if (createResult == flagcxSuccess && handle != nullptr) {
       ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleFree(handle));
     }
-    GTEST_SKIP() << "IPC memory handles are not supported";
+    IPC_SKIP() << "IPC memory handles are not supported";
   }
   ASSERT_FLAGCX_SUCCESS(createResult);
   ASSERT_MPI_TRUE(handle != nullptr);

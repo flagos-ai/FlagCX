@@ -401,10 +401,14 @@ run_suite() {
       # invocation even when the RDMA loopback tests fail so an RDMA environment
       # problem cannot hide device IPC coverage. Disable VMM to exercise the
       # same IPC-exportable GDR allocation used by the RMA suite.
+      local ipc_mpi_env="-x FLAGCX_VMM_ENABLE=0"
+      if [[ "$platform_name" == ascend ]]; then
+        ipc_mpi_env="$ipc_mpi_env -x FLAGCX_CI_REQUIRE_IPC=1"
+      fi
       FLAGCX_CI_MPI_LABEL="$SUITE IPC MPI tests" \
         make -C "$suite_dir" run-mpi "${args[@]}" \
         MPIRUN="$MPI_RUNNER" MPI_NP=2 \
-        MPI_ENV="-x FLAGCX_VMM_ENABLE=0" || ipc_status=$?
+        MPI_ENV="$ipc_mpi_env" || ipc_status=$?
 
       # Exercise the real IBRC connection handshake with asymmetric rank-local
       # settings. Both peers must report the same terminal error, cleanup must
