@@ -293,6 +293,9 @@ int main(int argc, char **argv) {
 
   flagcxP2pEngineMrDestroy(engine, mr);
   flagcxP2pEngineDestroy(engine);
+  // The peer may still be closing an imported local mapping. CANN requires
+  // every importer to close before the exporter releases its allocation.
+  MPI_Barrier(MPI_COMM_WORLD);
   flagcxMemFree(buffer);
   device->streamDestroy(stream);
   flagcxDeviceHandleFree(device);
