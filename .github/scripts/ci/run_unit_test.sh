@@ -471,14 +471,8 @@ run_suite() {
       local shared_status=0
       local shared_mpi_status=0
       local p2p_mpi_env=""
-      local p2p_write_unsupported=0
       if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
-        # The routed WRITE path needs a device-to-NIC topology edge, which
-        # p2p_topo builds from the CANN PCI forward/reverse lookup callbacks.
-        # Those are deliberately unset on this branch, so the interface-level
-        # unit cases below still run while the routed WRITE path cannot.
         export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-        p2p_write_unsupported=1
       fi
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
@@ -488,15 +482,11 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      if ((p2p_write_unsupported)); then
-        echo "Ascend coverage gap: P2P Engine WRITE MPI is not run because flagcxP2pEngineReg() cannot classify a device address without the CANN PCI lookup callbacks; flagcx/core/p2p_topo.cc reports 'required device or network topology callbacks are unavailable', flagcx/core/flagcx_p2p.cc then reports 'failed to classify addr ...: 9' (flagcxNotSupported), and test/unittest/p2p/coll_p2p_engine_write.cpp aborts on 'registering GPU buffer failed'. The p2p unit cases above still run and are not affected"
-      else
-        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-          FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
-          make -C "$suite_dir" run-mpi "${args[@]}" \
-          MPIRUN="$MPI_RUNNER" \
-          MPI_ENV="$p2p_mpi_env" || mpi_status=$?
-      fi
+      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+        make -C "$suite_dir" run-mpi "${args[@]}" \
+        MPIRUN="$MPI_RUNNER" \
+        MPI_ENV="$p2p_mpi_env" || mpi_status=$?
       # Keep the production/default artifact on the legacy Engine. Platforms
       # build the shared implementation in isolated output trees and run the
       # same unit and WRITE MPI tests against it.
