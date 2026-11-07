@@ -45,6 +45,7 @@ enum flagcxCannPciProvider {
 
 static flagcxResult_t cannAdaptorGetAddressRange(const void *ptr, void **base,
                                                  size_t *size);
+static int cannIpcHasImports(void);
 
 static int cannPciNormalizeBusId(const char *input, char *normalized,
                                  size_t capacity) {
@@ -341,7 +342,28 @@ flagcxResult_t cannAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
                                        flagcxMemcpyType_t type,
                                        flagcxStream_t stream, void *args) {
   if (stream == NULL) {
-    DEVCHECK(aclrtMemcpy(dst, size, src, size, memcpy_type_map[type]));
+    if (type == flagcxMemcpyDeviceToDevice && cannIpcHasImports()) {
+      // CANN IPC mappings require an asynchronous D2D copy. Preserve the
+      // synchronous adaptor contract with a private stream and completion.
+      aclrtStream copyStream = NULL;
+      aclError result = aclrtCreateStream(&copyStream);
+      if (result != ACL_SUCCESS) {
+        WARN("CANN D2D copy stream creation failed: ACL error %d", result);
+        return flagcxUnhandledDeviceError;
+      }
+      result = aclrtMemcpyAsync(dst, size, src, size, memcpy_type_map[type],
+                                copyStream);
+      if (result == ACL_SUCCESS)
+        result = aclrtSynchronizeStream(copyStream);
+      aclError destroyResult = aclrtDestroyStream(copyStream);
+      if (result != ACL_SUCCESS || destroyResult != ACL_SUCCESS) {
+        WARN("CANN D2D copy failed: ACL error %d, destroy error %d", result,
+             destroyResult);
+        return flagcxUnhandledDeviceError;
+      }
+    } else {
+      DEVCHECK(aclrtMemcpy(dst, size, src, size, memcpy_type_map[type]));
+    }
   } else {
     DEVCHECK(aclrtMemcpyAsync(dst, size, src, size, memcpy_type_map[type],
                               stream->base));
@@ -631,6 +653,13 @@ struct cannIpcImport {
 
 static pthread_mutex_t cannIpcImportLock = PTHREAD_MUTEX_INITIALIZER;
 static struct cannIpcImport *cannIpcImports = NULL;
+
+static int cannIpcHasImports(void) {
+  pthread_mutex_lock(&cannIpcImportLock);
+  int hasImports = cannIpcImports != NULL;
+  pthread_mutex_unlock(&cannIpcImportLock);
+  return hasImports;
+}
 
 flagcxResult_t cannAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
                                              size_t *size) {

@@ -588,11 +588,24 @@ TEST_F(IpcMemHandleMpiTest, CrossProcessLifecycle) {
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleOpen(handle, &mappedPtr));
     ASSERT_MPI_TRUE(mappedPtr != nullptr);
 
+    // Imported peer memory cannot be copied directly to Host on CANN. Stage
+    // through memory owned by this device, which works on other backends too.
+    void *localPtr = nullptr;
+    ASSERT_FLAGCX_SUCCESS(devHandle->deviceMalloc(
+        &localPtr, sizeof(expectedValue), flagcxMemDevice, nullptr));
+    flagcxStream_t copyStream = nullptr;
+    ASSERT_FLAGCX_SUCCESS(devHandle->streamCreate(&copyStream));
+    ASSERT_FLAGCX_SUCCESS(
+        devHandle->deviceMemcpy(localPtr, mappedPtr, sizeof(expectedValue),
+                                flagcxMemcpyDeviceToDevice, copyStream));
+    ASSERT_FLAGCX_SUCCESS(devHandle->streamSynchronize(copyStream));
+    ASSERT_FLAGCX_SUCCESS(devHandle->streamDestroy(copyStream));
     int receivedValue = 0;
-    ASSERT_FLAGCX_SUCCESS(devHandle->deviceMemcpy(
-        &receivedValue, mappedPtr, sizeof(receivedValue),
-        flagcxMemcpyDeviceToHost, nullptr));
-    ASSERT_FLAGCX_SUCCESS(devHandle->deviceSynchronize());
+    ASSERT_FLAGCX_SUCCESS(
+        devHandle->deviceMemcpy(&receivedValue, localPtr, sizeof(receivedValue),
+                                flagcxMemcpyDeviceToHost, nullptr));
+    ASSERT_FLAGCX_SUCCESS(
+        devHandle->deviceFree(localPtr, flagcxMemDevice, nullptr));
     ASSERT_MPI_TRUE(receivedValue == expectedValue);
 
     ASSERT_FLAGCX_SUCCESS(devHandle->ipcMemHandleClose(mappedPtr));
