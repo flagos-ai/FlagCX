@@ -842,10 +842,12 @@ static flagcxResult_t cannAdaptorGetPointerType(const void *ptr, int *ptrType) {
 
   switch (attrs.location.type) {
     case ACL_MEM_LOCATION_TYPE_DEVICE:
-    case ACL_MEM_LOCATION_TYPE_MANAGED:
+      // CANN 9.0 headers do not define ACL_MEM_LOCATION_TYPE_MANAGED.
+      // case ACL_MEM_LOCATION_TYPE_MANAGED:
       *ptrType = FLAGCX_PTR_CUDA;
       return flagcxSuccess;
     case ACL_MEM_LOCATION_TYPE_HOST:
+    case ACL_MEM_LOCATION_TYPE_HOST_NUMA:
     case ACL_MEM_LOCATION_TYPE_UNREGISTERED:
       *ptrType = FLAGCX_PTR_HOST;
       return flagcxSuccess;
