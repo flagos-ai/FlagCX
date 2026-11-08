@@ -13,7 +13,6 @@ concurrency:
 jobs:
   iluvatar_unit_tests:
     name: Iluvatar CoreX unit tests
-    if: false # Temporary: only MetaX CI is enabled.
     uses: ./.github/workflows/unit_tests_common.yml
     with:
       platform: iluvatar

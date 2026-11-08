@@ -13,10 +13,10 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: "Temporarily limited to MetaX"
+        description: "Platform name, all, or comma-separated names"
         required: true
         type: string
-        default: metax
+        default: all
   issue_comment:
     types: [created]
 
@@ -61,7 +61,6 @@ jobs:
           EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_SELECTION: ${{ inputs.platform || 'all' }}
           ACTOR: ${{ github.actor }}
-          FLAGCX_CI_ONLY_PLATFORM: metax # Temporary: run only MetaX hardware CI.
         shell: bash
         run: |
           set -euo pipefail
@@ -154,8 +153,7 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    # TODO(metax-torch): Enable after the MetaX CI image ships a usable mcPyTorch.
-    if: false # Temporary: this PR validates MetaX AllToAll through perf -v 1.
+    if: needs.prepare.outputs.active == 'true'
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -167,7 +165,7 @@ jobs:
   format-check:
     name: Common checks
     needs: prepare
-    if: false # Temporary: only MetaX CI is enabled.
+    if: needs.prepare.outputs.active == 'true'
     uses: ./.github/workflows/format-check.yml
     with:
       repository: ${{ needs.prepare.outputs.repository }}
@@ -191,7 +189,6 @@ jobs:
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
-          FLAGCX_CI_ONLY_PLATFORM: metax
         shell: bash
         run: >-
           bash .github/scripts/ci/check_ci_results.sh

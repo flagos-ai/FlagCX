@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        backend: [metax] # Temporary: run only MetaX package CI.
+        backend: [nvidia, metax]
 
     steps:
       - name: Checkout repository

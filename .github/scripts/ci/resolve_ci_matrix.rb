@@ -44,12 +44,6 @@ platforms = settings.filter_map do |name, value|
     "patterns" => patterns
   }
 end
-only_platform = ENV["FLAGCX_CI_ONLY_PLATFORM"]
-unless only_platform.nil? || only_platform.empty?
-  unless platforms.any? { |entry| entry.fetch("platform") == only_platform }
-    abort "Unknown enabled CI platform: #{only_platform}"
-  end
-end
 platform_names = platforms.map { |entry| entry.fetch("platform") }
 abort "No enabled platform configs found in #{config_dir}" if platforms.empty?
 
@@ -130,7 +124,6 @@ else
   abort "Unsupported event: #{event_name}"
 end
 
-selection = [only_platform] if active && !only_platform.nil? && !only_platform.empty?
 selected = platforms.select { |entry| selection.include?(entry.fetch("platform")) }
 matrix = { "include" => selected.map { |entry| entry.slice("platform", "display_name") } }
 outputs = {
