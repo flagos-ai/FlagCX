@@ -8,7 +8,13 @@ source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
 export FLAGCX_ADAPTOR=metax
 
-FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
+if [[ -n "${MPI_HOME:-}" ]]; then
+  FLAGCX_CI_MPI_BASE_HOME=$MPI_HOME
+elif [[ -x /opt/maca/ompi/bin/mpirun ]]; then
+  FLAGCX_CI_MPI_BASE_HOME=/opt/maca/ompi
+else
+  FLAGCX_CI_MPI_BASE_HOME=/usr/local/mpi
+fi
 
 # Use the real OpenMPI launcher if the image provides a wrapper.
 if [[ -x "$FLAGCX_CI_MPI_BASE_HOME/bin/mpirun.real" ]]; then
@@ -23,8 +29,8 @@ else
   export MPI_HOME=$FLAGCX_CI_MPI_BASE_HOME
 fi
 
-export PATH="/opt/maca/mxgpu_llvm/bin:$PATH"
-export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+export PATH="$MPI_HOME/bin:/opt/maca/mxgpu_llvm/bin:$PATH"
+export LD_LIBRARY_PATH="$MPI_HOME/lib:/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)

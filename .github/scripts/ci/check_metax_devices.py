@@ -109,7 +109,8 @@ def main():
     args = parser.parse_args()
 
     log(f"workload={args.workload}, Python={sys.executable}")
-    for name in ("CUDA_VISIBLE_DEVICES", "MACA_VISIBLE_DEVICES", "MACA_PATH"):
+    for name in ("CUDA_VISIBLE_DEVICES", "MACA_VISIBLE_DEVICES", "MACA_PATH",
+                 "MACA_CLANG_PATH", "CUDA_PATH", "CUCC_PATH"):
         log(f"{name}={os.environ.get(name, '<unset>')}")
     for path in ("/opt/mxdriver", "/dev/mxcd", "/dev/dri"):
         log(f"{path} present={Path(path).exists()}")
