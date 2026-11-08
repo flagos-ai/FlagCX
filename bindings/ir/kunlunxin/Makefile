@@ -33,12 +33,18 @@ ifneq ($(EMIT_LLVM_IR), 0)
 LLVM_SRC := ../flagcx_device_wrapper_impl.h
 SYMBOLS_FILE := $(abspath ../public_symbols.txt)
 KLX_PUBLIC_SYMBOLS := \
+	flagcxDevInit \
 	flagcxDevCommGetIntraRank \
 	flagcxDevCommGetIntraSize \
 	flagcxGetIntraPointerC \
 	flagcxIntraBarrierArriveS \
 	flagcxIntraBarrierWaitS \
-	flagcxIntraBarrierSyncS
+	flagcxIntraBarrierSyncS \
+	flagcxDevSignalInc \
+	flagcxDevSignalAdd \
+	flagcxDevWaitSignal \
+	flagcxDevWaitSignalMeetShadow \
+	flagcxDevWaitCounter
 
 FLAGCX_ROOT := $(abspath ../../..)
 BUILDDIR ?= $(FLAGCX_ROOT)/build
