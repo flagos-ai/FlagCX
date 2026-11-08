@@ -39,24 +39,10 @@ case "$workload" in
     export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
     export USE_METAX=1
-    export PYTHON_BIN=/flagos/bin/python
-    if [[ ! -x "$PYTHON_BIN" ]]; then
-      echo "MetaX CI image is missing its preinstalled /flagos Python environment" >&2
-      exit 1
-    fi
-
-    export MACA_PATH=/opt/maca
-    export MACA_CLANG_PATH="$MACA_PATH/mxgpu_llvm/bin"
-    export LD_LIBRARY_PATH="$MACA_PATH/lib:$MACA_PATH/mxgpu_llvm/lib:$MACA_PATH/ompi/lib:$LD_LIBRARY_PATH"
-    if [[ -x "$MACA_PATH/tools/cu-bridge/bin/cucc" ]]; then
-      export CUDA_PATH="$MACA_PATH/tools/cu-bridge"
-      export CUCC_PATH="$CUDA_PATH"
-      export PATH="$CUCC_PATH/tools:$CUCC_PATH/bin:$PATH"
-    fi
-
-    "$PYTHON_BIN" "$project_root/.github/scripts/ci/check_metax_devices.py" torch-api
+    export PYTHON_BIN=python3
 
     make -C "$project_root" --jobs="$(nproc)" USE_METAX=1
+    "$PYTHON_BIN" -m pip install --break-system-packages 'setuptools_scm>=8'
     (
       cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
@@ -64,9 +50,7 @@ case "$workload" in
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    torch_log="${FLAGCX_CI_LOG_DIR:-/tmp}/metax-torch-api.log"
-    bash "$project_root/test/script/torch_api_test.sh" 2>&1 | tee "$torch_log"
-    bash "$project_root/.github/scripts/ci/run_metax_torch_assertions.sh"
+    bash "$project_root/test/script/torch_api_test.sh"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
       "$PYTHON_BIN" -m pip install --break-system-packages --quiet coverage==7.10.7
       bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"

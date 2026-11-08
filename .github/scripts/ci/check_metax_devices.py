@@ -80,37 +80,13 @@ def check_mccl_alltoall():
     log(f"mcclAllToAll declaration={header}, symbol=present")
 
 
-def torch_device_count():
-    import torch
-
-    torch_dir = Path(torch.__file__).resolve().parent
-    log(f"Python={sys.executable}")
-    log(f"torch={torch.__version__}, path={torch.__file__}")
-    log(f"torch.version.cuda={torch.version.cuda}")
-    for name in ("libtorch_cuda.so", "libc10_cuda.so"):
-        log(f"{name} present={(torch_dir / 'lib' / name).is_file()}")
-    available = torch.cuda.is_available()
-    count = torch.cuda.device_count()
-    log(f"torch.cuda.is_available={available}, device_count={count}")
-    if not available or count < REQUIRED_DEVICES:
-        raise RuntimeError("mcPyTorch does not expose four CUDA-compatible MetaX devices")
-    for device in range(REQUIRED_DEVICES):
-        value = torch.ones(1, device=f"cuda:{device}")
-        torch.cuda.synchronize(device)
-        if value.item() != 1:
-            raise RuntimeError(f"cuda:{device} tensor allocation/readback failed")
-        log(f"cuda:{device} tensor allocation/readback passed")
-    return count
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("workload", choices=("torch-api", "perf"))
+    parser.add_argument("workload", choices=("perf",))
     args = parser.parse_args()
 
     log(f"workload={args.workload}, Python={sys.executable}")
-    for name in ("CUDA_VISIBLE_DEVICES", "MACA_VISIBLE_DEVICES", "MACA_PATH",
-                 "MACA_CLANG_PATH", "CUDA_PATH", "CUCC_PATH"):
+    for name in ("CUDA_VISIBLE_DEVICES", "MACA_VISIBLE_DEVICES", "MACA_PATH"):
         log(f"{name}={os.environ.get(name, '<unset>')}")
     for path in ("/opt/mxdriver", "/dev/mxcd", "/dev/dri"):
         log(f"{path} present={Path(path).exists()}")
@@ -134,11 +110,6 @@ def main():
         check_mccl_alltoall()
     except Exception as error:
         failures.append(f"MCCL: {error}")
-    if args.workload == "torch-api":
-        try:
-            torch_device_count()
-        except Exception as error:
-            failures.append(f"mcPyTorch: {error}")
     if failures:
         for failure in failures:
             log(f"FAILED: {failure}")

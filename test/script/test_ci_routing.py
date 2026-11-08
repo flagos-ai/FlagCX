@@ -538,8 +538,15 @@ class CiCompletionGateTest(unittest.TestCase):
     def test_metax_only_mode_allows_skipped_common_checks_but_requires_metax(self):
         self.assertEqual(
             self.check(
-                "true", "true", "success", "success", "success", "success",
+                "true", "true", "success", "success", "success", "skipped",
                 "skipped", only_platform="metax",
+            ).returncode,
+            0,
+        )
+        self.assertNotEqual(
+            self.check(
+                "true", "true", "success", "success", "success", "skipped",
+                "skipped",
             ).returncode,
             0,
         )

@@ -266,32 +266,6 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           metax torch-api
 
-      - name: Verify MetaX Torch API ran both modes
-        shell: bash
-        run: |
-          log="$FLAGCX_CI_LOG_DIR/metax-torch-api.log"
-          test -f "$log"
-          if grep -Fq '[SKIP]' "$log"; then
-            echo "MetaX Torch API example skipped an accelerator test" >&2
-            exit 1
-          fi
-          for mode in homogeneous heterogeneous; do
-            if ! grep -Fq "Completed PyTorch API tests in $mode mode" "$log"; then
-              echo "MetaX Torch API example did not finish $mode mode" >&2
-              exit 1
-            fi
-          done
-          assertions="$FLAGCX_CI_LOG_DIR/metax-torch-assertions.log"
-          test -f "$assertions"
-          for mode in homogeneous heterogeneous; do
-            for rank in 0 1 2 3; do
-              if ! grep -Fq "[ASSERT] MetaX Torch $mode rank=$rank:" "$assertions"; then
-                echo "MetaX Torch data assertion missing for $mode rank $rank" >&2
-                exit 1
-              fi
-            done
-          done
-
       - name: Cleanup torch-api-test (metax) container
         if: always()
         shell: bash

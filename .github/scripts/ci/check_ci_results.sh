@@ -33,12 +33,15 @@ if [[ "$has_platforms" != true && "$unit_result" != success && "$unit_result" !=
   exit 1
 fi
 if [[ "$has_platforms" == true ]]; then
-  for result in "$perf_result" "$torch_result"; do
-    [[ "$result" == success ]] || {
-      echo "Selected platform workflow ended with result: $result" >&2
-      exit 1
-    }
-  done
+  if [[ "$perf_result" != success ]]; then
+    echo "Selected platform performance workflow ended with result: $perf_result" >&2
+    exit 1
+  fi
+  if [[ "$torch_result" != success &&
+        ( "${FLAGCX_CI_ONLY_PLATFORM:-}" != metax || "$torch_result" != skipped ) ]]; then
+    echo "Selected platform Torch workflow ended with result: $torch_result" >&2
+    exit 1
+  fi
 else
   for result in "$perf_result" "$torch_result"; do
     case "$result" in
