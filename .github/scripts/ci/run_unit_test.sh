@@ -773,15 +773,6 @@ run_suite() {
       ;;
     runner)
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
-      # GTest switches stdout from line to full buffering when it is a pipe, so
-      # an assertion is lost if a rank exits before the buffer is flushed. The
-      # attempt log then ends at the last library write and reports only the
-      # exit status, which cannot be attributed to a case. Line-buffer the
-      # binary in every mode so a failure keeps its detail.
-      if ! command -v stdbuf >/dev/null 2>&1; then
-        echo "GNU stdbuf is required to keep runner failure output" >&2
-        return 1
-      fi
       local platform_name
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
       local runner_mpi_runner="$MPI_RUNNER"
@@ -806,7 +797,7 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
-        stdbuf -oL -eL ./build/bin/runner_mpi_tests || default_status=$?
+        ./build/bin/runner_mpi_tests || default_status=$?
       FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -814,7 +805,7 @@ run_suite() {
         -x FLAGCX_P2P_DISABLE=0 \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
         -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-        stdbuf -oL -eL ./build/bin/runner_mpi_tests || hybrid_status=$?
+        ./build/bin/runner_mpi_tests || hybrid_status=$?
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -831,7 +822,7 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
         -x FLAGCX_CI_EXPECT_PXN=0 \
         "${runner_net_platform_env[@]}" \
-        stdbuf -oL -eL ./build/bin/runner_mpi_tests || net_status=$?
+        ./build/bin/runner_mpi_tests || net_status=$?
       FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -849,7 +840,7 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_PXN=0 \
         -x FLAGCX_CI_RUNNER_BYTES=67108864 \
         "${runner_net_platform_env[@]}" \
-        stdbuf -oL -eL ./build/bin/runner_mpi_tests \
+        ./build/bin/runner_mpi_tests \
         --gtest_filter=FlagCXCollTest.AlltoAll || stripe_status=$?
       if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
         local -a pxn_platform_env=()
@@ -887,7 +878,7 @@ run_suite() {
           -x FLAGCX_CI_EXPECT_PXN=1 \
           "${pxn_platform_env[@]}" \
           "${runner_net_platform_env[@]}" \
-          stdbuf -oL -eL ./build/bin/runner_mpi_tests \
+          ./build/bin/runner_mpi_tests \
           --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
