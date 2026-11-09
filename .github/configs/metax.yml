@@ -16,7 +16,7 @@ paths_watch:
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
 
 runner_labels:
-  - mx-8g-cicd-flagcx
+  - mx-k8s-cicd-flagcx
 
 docker_volumes:
   - /opt/mxdriver:/opt/mxdriver:ro
