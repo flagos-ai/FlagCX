@@ -45,6 +45,17 @@ selected_platforms = if selection.nil? || selection.empty? || selection == "all"
                        selection.split(",").map(&:strip).reject(&:empty?)
                      end
 
+# An explicit coverage dispatch must honor the same temporary platform gates
+# as the automatic CI controller. Otherwise platform=<disabled name> bypasses
+# the enabled registry even though platform=all does not.
+unless registered_platforms.empty? || selected_platforms.nil?
+  disabled = selected_platforms.reject do |platform|
+    settings = registered_platforms[platform]
+    settings && (!settings.is_a?(Hash) || settings.fetch("enabled", true))
+  end
+  abort "Disabled or unregistered platform selection: #{disabled.join(', ')}" unless disabled.empty?
+end
+
 config_files = if selected_platforms.nil?
                  Dir.glob(File.join(config_dir, "*.yml")).reject do |path|
                    File.basename(path) == "platforms.yml"

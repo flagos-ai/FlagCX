@@ -6,21 +6,23 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
-override path selection. Multiple platform labels select their union;
-`platform:all` selects every enabled platform. Invalid platform labels fail
-matrix generation. Add/remove label events rerun the controller.
+During the Iluvatar Device API compiler investigation, only `iluvatar` is
+enabled in `configs/platforms.yml`. Automatic unit and C++ coverage matrices
+select Iluvatar; explicit selections of disabled platforms are rejected.
+The performance and Torch API workflows have no Iluvatar workload and report
+no selected platform jobs. Restore the registry flags to resume those platforms.
+
+PR labels override path selection; `platform:all` selects every enabled
+platform. During the temporary Iluvatar-only period, `platform:iluvatar` and
+`platform:all` are accepted. Labels for disabled platforms fail matrix
+generation. Add/remove label events rerun the controller.
 
 Maintainers with `write`, `maintain`, or `admin` repository permission can post
 one of these exact commands on a PR:
 
 ```text
 /test
-/test cuda
-/test hygon
-/test metax
-/test ppu
-/test ascend
+/test iluvatar
 /test all
 ```
 

@@ -232,7 +232,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["cuda"],
+                enabled_platform_or_matrix("cuda"),
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
@@ -252,10 +252,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], [])
 
     def test_unknown_label_and_selection_fail_closed(self):
-        for context in (
+        contexts = [
             {"event_name": "pull_request", "labels": ["platform:unknown"]},
             {"event_name": "workflow_dispatch", "selection": "unknown"},
-        ):
+        ]
+        disabled = [
+            name for name in PLATFORM_REGISTRY if name not in ALL_ENABLED_PLATFORMS
+        ]
+        if disabled:
+            contexts.append({"event_name": "workflow_dispatch", "selection": disabled[0]})
+        for context in contexts:
             with self.subTest(context=context), tempfile.TemporaryDirectory() as temp_dir:
                 context_path = Path(temp_dir) / "context.json"
                 context_path.write_text(json.dumps(context))
