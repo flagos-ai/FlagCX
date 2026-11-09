@@ -21,28 +21,9 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx-metax-maca3.8.1.3:2.3.0
 runner_labels:
   - mx-k8s-cicd-flagcx
 
-# mx-k8s-cicd-flagcx is an ARC Kubernetes Runner Scale Set. Hardware jobs run
-# in ci_image as the job container; the cluster job Pod template provides the
-# equivalent of the Docker settings below (devices, /opt/mxdriver, host network
-# and IPC, shared memory, memlock, root user). The Docker settings only apply
-# when job_container is false.
+# ARC creates the job Pod from ci_image. Device access and Pod settings are
+# provided by the Kubernetes runner configuration.
 job_container: true
-
-docker_volumes:
-  - /opt/mxdriver:/opt/mxdriver:ro
-
-docker_options:
-  - --network=host
-  - --hostname=te-cicd
-  - --ipc=host
-  - --privileged=true
-  - --shm-size=500g
-  - --ulimit=memlock=-1
-  - --ulimit=stack=67108864
-  - --ulimit=nofile=65535:65535
-  - --group-add=video
-  - --env=PLATFORM=metax
-  - --env=TORCH_DISTRIBUTED_BACKEND=mccl
 
 set_env: .github/scripts/set_env/metax.sh
 

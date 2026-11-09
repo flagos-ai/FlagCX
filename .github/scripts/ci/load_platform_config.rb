@@ -21,16 +21,20 @@ rescue ArgumentError
   YAML.safe_load(contents, [], [], false, config_path)
 end
 
+# Kubernetes jobs are created by ARC; Docker launch settings apply only to
+# platforms that use the explicit Docker launcher.
+job_container = config.fetch("job_container", false)
+abort "#{config_path}: job_container must be a boolean" unless [true, false].include?(job_container)
+
 required_keys = %w[
   hardware_name
   display_name
   ci_image
   runner_labels
-  docker_volumes
-  docker_options
   set_env
   unit_test_suites
 ]
+required_keys += %w[docker_volumes docker_options] unless job_container
 missing = required_keys.reject { |key| config.key?(key) }
 abort "#{config_path}: missing required keys: #{missing.join(', ')}" unless missing.empty?
 
@@ -40,33 +44,31 @@ abort "#{config_path}: hardware_name must be #{platform}" unless hardware_name =
 runner_labels = config.fetch("runner_labels")
 abort "#{config_path}: runner_labels must be a non-empty array" unless runner_labels.is_a?(Array) && !runner_labels.empty?
 
-docker_volumes = config.fetch("docker_volumes")
-abort "#{config_path}: docker_volumes must be an array" unless docker_volumes.is_a?(Array)
+docker_args = []
+unless job_container
+  docker_volumes = config.fetch("docker_volumes")
+  abort "#{config_path}: docker_volumes must be an array" unless docker_volumes.is_a?(Array)
 
-docker_options = config.fetch("docker_options")
-abort "#{config_path}: docker_options must be a non-empty array" unless docker_options.is_a?(Array) && !docker_options.empty?
+  docker_options = config.fetch("docker_options")
+  abort "#{config_path}: docker_options must be a non-empty array" unless docker_options.is_a?(Array) && !docker_options.empty?
 
-validate_argument = lambda do |argument, field|
-  unless argument.is_a?(String) && !argument.empty? && !argument.match?(/[\r\n\0]/)
-    abort "#{config_path}: #{field} entries must be non-empty, single-line strings"
+  validate_argument = lambda do |argument, field|
+    unless argument.is_a?(String) && !argument.empty? && !argument.match?(/[\r\n\0]/)
+      abort "#{config_path}: #{field} entries must be non-empty, single-line strings"
+    end
   end
+
+  docker_options.each { |option| validate_argument.call(option, "docker_options") }
+  docker_volumes.each { |volume| validate_argument.call(volume, "docker_volumes") }
+
+  docker_args = docker_options + docker_volumes.map { |volume| "--volume=#{volume}" }
 end
-
-docker_options.each { |option| validate_argument.call(option, "docker_options") }
-docker_volumes.each { |volume| validate_argument.call(volume, "docker_volumes") }
-
-docker_args = docker_options + docker_volumes.map { |volume| "--volume=#{volume}" }
 
 suites = config.fetch("unit_test_suites")
 abort "#{config_path}: unit_test_suites must be a non-empty array" unless suites.is_a?(Array) && !suites.empty?
 
 set_env = config.fetch("set_env")
 abort "#{config_path}: set_env does not exist: #{set_env}" unless File.file?(set_env)
-
-# Kubernetes runners cannot expose accelerators to nested `docker run`; their
-# hardware jobs must run in the CI image as the job-level container instead.
-job_container = config.fetch("job_container", false)
-abort "#{config_path}: job_container must be a boolean" unless [true, false].include?(job_container)
 
 outputs = {
   "display_name" => config.fetch("display_name"),

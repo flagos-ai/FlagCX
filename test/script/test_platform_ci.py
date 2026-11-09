@@ -1190,6 +1190,51 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 outputs = json.loads(result.stdout)
                 expected = outputs["ci_image"] if platform == "metax" else ""
                 self.assertEqual(outputs["job_container_image"], expected)
+                if platform == "metax":
+                    self.assertEqual(outputs["docker_args"], "")
+                else:
+                    self.assertTrue(outputs["docker_args"])
+
+    def test_platform_loader_requires_docker_settings_only_for_docker_jobs(self):
+        loader = REPO_ROOT / ".github/scripts/ci/load_platform_config.rb"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_dir = root / ".github/configs"
+            config_dir.mkdir(parents=True)
+            (root / "set_env.sh").write_text("#!/usr/bin/env bash\n")
+            config = {
+                "hardware_name": "fixture", "display_name": "Fixture",
+                "ci_image": "ci:test", "runner_labels": ["test-runner"],
+                "set_env": "set_env.sh", "unit_test_suites": ["core"],
+            }
+            for job_container, docker_settings, success in (
+                (True, {}, True),
+                (True, {"docker_volumes": ["/host:/container"],
+                        "docker_options": ["--privileged"]}, True),
+                (False, {}, False),
+                (False, {"docker_volumes": ["/host:/container"],
+                         "docker_options": ["--privileged"]}, True),
+            ):
+                with self.subTest(job_container=job_container,
+                                  docker_settings=docker_settings):
+                    path = config_dir / "fixture.yml"
+                    path.write_text(yaml.safe_dump(dict(
+                        config, job_container=job_container, **docker_settings)))
+                    result = subprocess.run(
+                        ["ruby", str(loader), "fixture"], cwd=root,
+                        env={k: v for k, v in os.environ.items()
+                             if k != "GITHUB_OUTPUT"},
+                        capture_output=True, text=True, check=False,
+                    )
+                    if success:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        outputs = json.loads(result.stdout)
+                        self.assertEqual(outputs["docker_args"], "" if job_container
+                                         else "--privileged\n--volume=/host:/container")
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("missing required keys: docker_volumes, docker_options",
+                                      result.stderr)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
