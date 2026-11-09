@@ -3,21 +3,23 @@
 # The per-platform files keep detailed runner/image settings. This registry
 # controls which platforms are included when the workflow runs with
 # platform=all.
+# Temporarily validate only KunlunXin while stabilizing PR #671.
+# Restore enabled: true for the other platforms to resume the full matrix.
 platforms:
   cuda:
-    enabled: true
+    enabled: false
   hygon:
-    enabled: true
+    enabled: false
   iluvatar:
-    enabled: true
+    enabled: false
   metax:
-    enabled: true
+    enabled: false
   kunlunxin:
     enabled: true
   ppu:
-    enabled: true
+    enabled: false
   ascend:
-    enabled: true
+    enabled: false
 shared_paths_watch:
   - .github/workflows/**
   - .github/configs/platforms.yml

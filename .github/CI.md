@@ -1,5 +1,10 @@
 # FlagCX CI
 
+This branch temporarily enables only `kunlunxin` in `configs/platforms.yml`.
+Automatic unit, performance, and Torch API jobs select only KunlunXin; common
+checks still run. Restore the other platforms' `enabled: true` entries to
+resume the full hardware matrix.
+
 `unit-test.yml` is the automatic controller for PRs to `main`/`devops`, pushes
 to those branches, and the daily schedule. It runs the selected platforms'
 unit, performance, and Torch API tests, plus common checks. Platform-specific

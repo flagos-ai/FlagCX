@@ -5,10 +5,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METAX_ENV = REPO_ROOT / ".github/scripts/set_env/metax.sh"
 HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
+
+PLATFORM_REGISTRY = yaml.safe_load(
+    (REPO_ROOT / ".github/configs/platforms.yml").read_text()
+)["platforms"]
+ENABLED_PLATFORMS = [
+    name for name, settings in PLATFORM_REGISTRY.items()
+    if not isinstance(settings, dict) or settings.get("enabled", True)
+]
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
@@ -329,24 +339,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"]
+        all_platforms = ENABLED_PLATFORMS
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            ["cuda"] if "cuda" in all_platforms else all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            ["hygon"] if "hygon" in all_platforms else all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            ["ascend"] if "ascend" in all_platforms else all_platforms,
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -721,7 +731,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
+            ENABLED_PLATFORMS,
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
