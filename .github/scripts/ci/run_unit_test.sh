@@ -139,12 +139,29 @@ if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
 
+# A suite the image cannot build or run still reports success so one missing
+# toolchain does not block the rest of the platform, but the gap has to stay
+# visible. A bare `exit 0` renders as a green check that is indistinguishable
+# from a suite whose cases all passed, which hides the lost coverage from
+# everyone reading the run.
+flagcx_ci_report_skipped_suite() {
+  local suite=$1
+  local reason=$2
+  echo "SKIPPED $suite: $reason"
+  echo "::warning title=FlagCX CI suite did not run::$suite was skipped: $reason"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf -- '- **Suite skipped (no coverage):** `%s` — %s\n' \
+      "$suite" "$reason" >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+
 if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]] &&
    declare -F flagcx_ci_build_suite_override >/dev/null; then
   FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
   flagcx_ci_build_suite_override "$SUITE"
   if [[ "$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
-    echo "SKIPPED $SUITE: required KunlunXin device toolchain or XSHMEM headers are unavailable"
+    flagcx_ci_report_skipped_suite "$SUITE" \
+      "required KunlunXin device toolchain or XSHMEM headers are unavailable in the CI image"
     exit 0
   fi
 fi
@@ -348,6 +365,8 @@ run_suite() {
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"
     if [[ "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
+      flagcx_ci_report_skipped_suite "$SUITE" \
+        "the platform set_env script reported this suite as unrunnable on this image"
       return
     fi
   fi
