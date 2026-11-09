@@ -18,7 +18,7 @@ FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_ENABLE_IBUC=1
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
-FLAGCX_CI_ENABLE_PXN=0
+FLAGCX_CI_ENABLE_PXN=${FLAGCX_CI_ENABLE_PXN:-0}
 # NPU memory registration is part of the Ascend IBRC contract. Require the
 # four one-sided GPU cases to transfer and verify data.
 export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
@@ -45,9 +45,8 @@ flagcx_ci_configure_suite() {
   esac
 }
 
-# PCI lookup is covered by the perf and Torch workloads. These suites still
-# run only their single-process phases until their remaining capabilities and
-# multi-rank lifecycle issues are addressed in later changes.
+# RMA and SymMem retain their single-process phases until their remaining
+# multi-rank capabilities and lifecycle issues are addressed.
 flagcx_ci_run_suite_override() {
   local suite=$1
   local suite_dir=$2
@@ -55,7 +54,7 @@ flagcx_ci_run_suite_override() {
   local -a args=("$@")
 
   case "$suite" in
-  rma | runner | symmem) ;;
+  rma | symmem) ;;
   *)
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     return
@@ -70,11 +69,6 @@ flagcx_ci_run_suite_override() {
     FLAGCX_CI_TEST_LABEL="Ascend rma unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
     echo "Ascend coverage gap: rma IPC and network MPI are not run. GPU MR and IPC are now exercised by adaptor/perf CI; RMA visibility still needs cannAdaptorStreamWaitValue64/StreamWriteValue64 and an Ascend device-consumer kernel, plus multi-rank lifecycle validation"
-    ;;
-  runner)
-    FLAGCX_CI_TEST_LABEL="Ascend runner unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    echo "Ascend coverage gap: runner collective MPI is not run. hcclAdaptorCommGetAsyncError() returns flagcxNotSupported, so synchronizeAndCheckAsyncError() yields 9 at coll_allgather.cpp:23 and every isolated collective fails on the query rather than on the collective itself"
     ;;
   symmem)
     FLAGCX_CI_TEST_LABEL="Ascend symmem unit tests" \

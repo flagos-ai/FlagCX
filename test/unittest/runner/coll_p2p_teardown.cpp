@@ -2,6 +2,7 @@
 // different times. Odd ranks retain their imported FIFO mappings briefly so
 // even-rank exporters cannot rely on service-thread scheduling for lifetime.
 
+#include "global_comm.h"
 #include "runner_fixtures.hpp"
 
 #include <cstdlib>
@@ -10,7 +11,14 @@
 TEST_F(FlagCXCollTest, SkewedP2pTeardown) {
   const char *useHetero = std::getenv("FLAGCX_USE_HETERO_COMM");
   const char *p2pDisabled = std::getenv("FLAGCX_P2P_DISABLE");
-  if (useHetero == nullptr || std::strcmp(useHetero, "1") != 0 ||
+  const char *expectedTransport =
+      std::getenv("FLAGCX_CI_EXPECT_PEER_TRANSPORT");
+  const bool expectP2p = expectedTransport != nullptr &&
+                         std::strcmp(expectedTransport, "P2P") == 0;
+  const bool heteroRequested =
+      useHetero != nullptr && std::strcmp(useHetero, "1") == 0;
+  if (comm->commType != flagcxCommunicatorHybrid ||
+      (!expectP2p && !heteroRequested) ||
       (p2pDisabled != nullptr && std::strcmp(p2pDisabled, "1") == 0)) {
     GTEST_SKIP() << "requires the heterogeneous same-node P2P transport";
   }
