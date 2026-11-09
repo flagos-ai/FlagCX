@@ -6,7 +6,7 @@ display_name: KunlunXin Tests
 paths_watch:
   - .github/configs/kunlunxin.yml
   - .github/scripts/set_env/kunlunxin.sh
-  - Dockerfile.kunlunxin-ci
+  - .github/docker/Dockerfile.kunlunxin-ci
   - makefiles/kunlunxin.mk
   - flagcx/adaptor/device/kunlunxin_adaptor.cc
   - flagcx/adaptor/kernel/kunlunxin/**/*
