@@ -23,7 +23,6 @@ protected:
   void SetUp() override;
   void TearDown() override;
   flagcxResult_t synchronizeAndCheckAsyncError();
-  void runAlltoAllvAsymmetric(bool includeZeroCounts);
 
   flagcxDeviceHandle_t devHandle = nullptr;
   flagcxComm_t comm = nullptr;
