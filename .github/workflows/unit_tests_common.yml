@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      suites:
+        description: Optional JSON array of unit-test suites for a focused run
+        required: false
+        type: string
+        default: ''
 
 env:
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
@@ -56,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
+        suite: ${{ fromJSON(inputs.suites || needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
     steps:
       - name: Install Git for repository checkout

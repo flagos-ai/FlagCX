@@ -32,12 +32,7 @@ concurrency:
 jobs:
   prepare:
     name: Resolve platform matrix
-    # PR #702 runs only the dedicated Iluvatar compile probe while diagnosing
-    # the CoreX regression. Keep the normal CI routing for other PRs.
-    if: >-
-      (github.event_name != 'pull_request' || github.event.pull_request.number != 702) &&
-      (github.event_name != 'issue_comment' ||
-       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/test')))
+    if: github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, '/test'))
     runs-on: ubuntu-latest
     outputs:
       active: ${{ steps.resolve.outputs.active }}
@@ -138,17 +133,19 @@ jobs:
     if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      matrix: >-
+        ${{ fromJSON(github.event_name == 'pull_request' && github.event.pull_request.number == 702 && '{"include":[{"platform":"cuda"},{"platform":"hygon"},{"platform":"iluvatar"}]}' || needs.prepare.outputs.matrix) }}
     uses: ./.github/workflows/unit_tests_common.yml
     with:
       platform: ${{ matrix.platform }}
       repository: ${{ needs.prepare.outputs.repository }}
       ref: ${{ needs.prepare.outputs.ref }}
+      suites: ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 702 && '["device_api","device_api_unified_ir"]' || '' }}
 
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.number != 702)
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -158,7 +155,7 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.number != 702)
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -170,7 +167,7 @@ jobs:
   format-check:
     name: Common checks
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.number != 702)
     uses: ./.github/workflows/format-check.yml
     with:
       repository: ${{ needs.prepare.outputs.repository }}
@@ -178,17 +175,23 @@ jobs:
 
   ci_complete:
     name: ci-complete
-    if: >-
-      always() &&
-      (github.event_name != 'pull_request' || github.event.pull_request.number != 702) &&
-      (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
+    if: always() && (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
     needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        if: github.event_name != 'pull_request' || github.event.pull_request.number != 702
         with:
           persist-credentials: false
+      - name: Verify focused Device API tests
+        if: github.event_name == 'pull_request' && github.event.pull_request.number == 702
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          UNIT_RESULT: ${{ needs.unit_tests.result }}
+        shell: bash
+        run: test "$PREPARE_RESULT" = success && test "$UNIT_RESULT" = success
       - name: Verify required CI results
+        if: github.event_name != 'pull_request' || github.event.pull_request.number != 702
         env:
           ACTIVE: ${{ needs.prepare.outputs.active }}
           HAS_PLATFORMS: ${{ needs.prepare.outputs.has_platforms }}
