@@ -1,4 +1,4 @@
-name: Hygon DCU Unit Tests
+name: Iluvatar CoreX Unit Tests
 
 on:
   workflow_dispatch:
@@ -7,12 +7,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: hygon-unit-tests-${{ github.ref }}
+  group: iluvatar-unit-tests-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  hygon_unit_tests:
-    name: Hygon DCU unit tests
+  iluvatar_unit_tests:
+    name: Iluvatar CoreX unit tests
     uses: ./.github/workflows/unit_tests_common.yml
     with:
-      platform: hygon
+      platform: iluvatar

@@ -241,24 +241,47 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (devMem == nullptr) {
     return flagcxSuccess;
   }
-  if (comm == nullptr && (devMem->ipcIndex >= 0 || devMem->cachedDevicePtr ||
-                          devMem->segmentedPeerLayouts))
+  if (comm == nullptr &&
+      (devMem->ipcIndex >= 0 || devMem->cachedDevicePtr ||
+       devMem->segmentedPeerLayouts || devMem->deferredResources))
     return flagcxInvalidArgument;
 
-  // Release IPC table slot (resources moved to deferred queue)
+  // Keep the handle and its IPC slot owned by the caller if backend teardown
+  // fails. A retry must still have the original Window state available.
+  FLAGCXCHECK(devApiBackend->devMemDestroy(comm, devMem));
+
+  // Release IPC table slot (device resources move to the deferred queue).
   if (devMem->ipcIndex >= 0) {
     releaseIpcTableSlot(comm, devMem->ipcIndex);
+    devMem->ipcIndex = -1;
   }
 
-  devApiBackend->devMemDestroy(comm, devMem);
-
-  if (devMem->cachedDevicePtr || devMem->segmentedPeerLayouts) {
+  if (devMem->cachedDevicePtr || devMem->segmentedPeerLayouts ||
+      devMem->deferredResources) {
     devMem->deferredNext = comm->deferredDevMems;
     comm->deferredDevMems = devMem;
   } else {
     pthread_mutex_destroy(&devMem->cachedPtrMutex);
     free(devMem);
   }
+  return flagcxSuccess;
+}
+
+flagcxResult_t
+flagcxDevMemAttachDeferredResource(flagcxDevMem_t devMem, void *resource,
+                                   flagcxResult_t (*release)(void *resource)) {
+  if (devMem == nullptr || resource == nullptr || release == nullptr)
+    return flagcxInvalidArgument;
+  auto *node = static_cast<flagcxDevMemDeferredResource *>(
+      malloc(sizeof(flagcxDevMemDeferredResource)));
+  if (node == nullptr)
+    return flagcxSystemError;
+  node->resource = resource;
+  node->release = release;
+  pthread_mutex_lock(&devMem->cachedPtrMutex);
+  node->next = devMem->deferredResources;
+  devMem->deferredResources = node;
+  pthread_mutex_unlock(&devMem->cachedPtrMutex);
   return flagcxSuccess;
 }
 
@@ -759,11 +782,33 @@ flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm) {
 }
 
 // ==========================================================================
-// Deferred device memory free.
+// Deferred Window resources and device memory free.
 // ==========================================================================
-flagcxResult_t flagcxCommDrainDeferredFrees(flagcxComm_t comm) {
+flagcxResult_t flagcxCommDrainDeferredWindowResources(flagcxComm_t comm) {
   if (comm == nullptr)
     return flagcxSuccess;
+  for (flagcxDevMem_t owner = comm->deferredDevMems; owner != nullptr;
+       owner = owner->deferredNext) {
+    while (owner->deferredResources != nullptr) {
+      auto *resource = owner->deferredResources;
+      FLAGCXCHECK(resource->release(resource->resource));
+      owner->deferredResources = resource->next;
+      free(resource);
+    }
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm) {
+  if (comm == nullptr)
+    return flagcxSuccess;
+  // Window callbacks must have run before transport teardown. Never run one
+  // here: a callback may still need a live one-sided connection.
+  for (flagcxDevMem_t owner = comm->deferredDevMems; owner != nullptr;
+       owner = owner->deferredNext) {
+    if (owner->deferredResources != nullptr)
+      return flagcxInternalError;
+  }
   while (comm->deferredDevMems != nullptr) {
     flagcxDevMem_t owner = comm->deferredDevMems;
     if (owner->cachedDevicePtr)

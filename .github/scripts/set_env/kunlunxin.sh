@@ -35,6 +35,8 @@ flagcx_ci_configure_suite() {
         "$suite" == kernel ]]; then
     FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)
     FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)
+    FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+    FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
   fi
 }
 

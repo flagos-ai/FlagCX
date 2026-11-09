@@ -14,10 +14,16 @@
 #include <stdexcept>
 #include <stdlib.h>
 
-flagcxResult_t int64ToBusId(int64_t id, char *busId) {
-  sprintf(busId, "%04lx:%02lx:%02lx.%01lx", (id) >> 20, (id & 0xff000) >> 12,
-          (id & 0xff0) >> 4, (id & 0xf));
-  return flagcxSuccess;
+flagcxResult_t int64ToBusId(int64_t id, char *busId, size_t length) {
+  if (busId == NULL || length == 0)
+    return flagcxInvalidArgument;
+  int written =
+      snprintf(busId, length, "%04lx:%02lx:%02lx.%01lx",
+               (unsigned long)((uint64_t)id >> 20),
+               (unsigned long)((id & 0xff000) >> 12),
+               (unsigned long)((id & 0xff0) >> 4), (unsigned long)(id & 0xf));
+  return written >= 0 && (size_t)written < length ? flagcxSuccess
+                                                  : flagcxInvalidArgument;
 }
 
 flagcxResult_t busIdToInt64(const char *busId, int64_t *id) {
@@ -38,8 +44,42 @@ flagcxResult_t busIdToInt64(const char *busId, int64_t *id) {
   return flagcxSuccess;
 }
 
+// Reserved PCI domain for devices whose backend exposes no PCI bus ID.
+// Synthetic identities must never resolve under /sys/class/pci_bus, so that
+// any caller which treats a bus ID as a real sysfs location fails loudly
+// instead of silently matching an unrelated device.
+#define FLAGCX_NON_PCI_BUSID_DOMAIN 0xffffLL
+
 // Convert a logical cudaDev index to the NVML device minor number
 flagcxResult_t getBusId(int cudaDev, int64_t *busId) {
+  if (busId == nullptr || cudaDev < 0)
+    return flagcxInvalidArgument;
+  if (deviceAdaptor == nullptr) {
+    WARN("PCI bus-ID lookup is unavailable for device %d", cudaDev);
+    return flagcxNotSupported;
+  }
+  if (deviceAdaptor->getDevicePciBusId == nullptr) {
+    // comm->busId only has to tell devices apart within one host: its single
+    // consumer compares peers that share a hostHash to reject two ranks bound
+    // to the same device. A stable per-device identity satisfies that without
+    // inventing a plausible BDF. It carries no topology information, so PCI
+    // distance and device-to-NIC routing stay unavailable on such backends.
+    if (cudaDev > 0xff) {
+      WARN("Cannot derive a non-PCI bus ID for device %d: index exceeds the "
+           "addressable range, and truncating it would alias another device",
+           cudaDev);
+      return flagcxNotSupported;
+    }
+    *busId = (FLAGCX_NON_PCI_BUSID_DOMAIN << 20) |
+             (static_cast<int64_t>(cudaDev) << 4);
+    char busIdStr[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
+    FLAGCXCHECK(int64ToBusId(*busId, busIdStr, sizeof(busIdStr)));
+    INFO(FLAGCX_INIT,
+         "PCI bus-ID lookup is unavailable for device %d; using non-PCI "
+         "identity %s for duplicate-device detection only",
+         cudaDev, busIdStr);
+    return flagcxSuccess;
+  }
   // On most systems, the PCI bus ID comes back as in the 0000:00:00.0
   // format. Still need to allocate proper space in case PCI domain goes
   // higher.

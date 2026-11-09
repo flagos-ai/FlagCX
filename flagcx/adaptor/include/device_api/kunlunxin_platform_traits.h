@@ -7,8 +7,9 @@
 #ifndef FLAGCX_KUNLUNXIN_PLATFORM_TRAITS_H_
 #define FLAGCX_KUNLUNXIN_PLATFORM_TRAITS_H_
 
-#if defined(__xpu__)
 #include <cstddef>
+
+#if defined(__xpu__)
 // XTDK ships no usable non-allocating placement new: in both compilation passes
 // `::new (p) T(...)` fails with "no matching 'operator new' function for
 // non-allocating placement new expression", and #include <new> does not help --
@@ -33,6 +34,8 @@ struct KunlunxinPlatform {};
 
 template <>
 struct PlatformTraits<KunlunxinPlatform> {
+  struct CoopOps {};
+  struct Clock {};
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
 

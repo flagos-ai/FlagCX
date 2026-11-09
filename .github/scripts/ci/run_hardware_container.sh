@@ -64,6 +64,10 @@ log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
 mkdir -p "$log_dir"
 summary_file=$(mktemp "$log_dir/summary.XXXXXX.md")
 finish() {
+  if [[ "$platform" == ascend && "$workload" == perf ]]; then
+    bash "$script_dir/ascend_rdma_host_inventory.sh" \
+      >"$log_dir/ascend-rdma-host-inventory-after.log" 2>&1 || true
+  fi
   cleanup
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
@@ -71,8 +75,49 @@ finish() {
 }
 trap finish EXIT
 
+pull_image() {
+  local attempt pull_log status
+  for attempt in 1 2 3; do
+    pull_log="$log_dir/image-pull-attempt-$attempt.log"
+    if docker pull "$image" >"$pull_log" 2>&1; then
+      cat "$pull_log"
+      printf -- '- **Image pull:** succeeded on attempt %s/3\n' "$attempt" >> "$summary_file"
+      return 0
+    else
+      status=$?
+    fi
+    cat "$pull_log" >&2
+    # Retry registry/network outages only; authentication, missing manifests and
+    # unknown errors still fail immediately. Never substitute a cached image.
+    if [[ "$attempt" == 3 ]] || grep -Eiq \
+        'unauthorized|authentication required|no basic auth credentials|pull access denied|manifest unknown|invalid reference format' \
+        "$pull_log" || ! grep -Eiq \
+        'timeout|timed out|connection reset|connection refused|temporary failure|no such host|network is unreachable|unexpected (HTTP )?status.*50[0-9]|service unavailable|bad gateway|internal server error' \
+        "$pull_log"; then
+      printf -- '- **Image pull:** failed on attempt %s/3 (exit=%s)\n' "$attempt" "$status" >> "$summary_file"
+      return "$status"
+    fi
+    echo "::warning::Image pull attempt $attempt/3 failed; retrying in $((attempt * 5)) seconds. Log: $pull_log" >&2
+    sleep "$((attempt * 5))"
+  done
+}
+
 cleanup
-docker pull "$image"
+pull_image
+
+# Ascend devices are host-global and cannot be safely shared by concurrent
+# containers. Serialize Ascend jobs even when they come from different
+# workflows or manual runs on the same self-hosted runner. Take the lock
+# after pulling so the image retries above never hold it.
+if [[ "$platform" == "ascend" ]]; then
+  exec 9>/var/lock/flagcx-ascend-ci.lock
+  flock --exclusive --wait 7200 9
+  if [[ "$workload" == "perf" ]]; then
+    bash "$script_dir/ascend_rdma_host_inventory.sh" | \
+      tee "$log_dir/ascend-rdma-host-inventory.log"
+  fi
+fi
+
 docker run --rm \
   --name "$container_name" \
   "${docker_args[@]}" \
@@ -88,7 +133,9 @@ docker run --rm \
   --env FLAGCX_CI_MPI_TIMEOUT="${FLAGCX_CI_MPI_TIMEOUT:-20m}" \
   --env FLAGCX_CI_LOG_DIR=/ci-logs \
   --env FLAGCX_CI_TORCH_COVERAGE="${FLAGCX_CI_TORCH_COVERAGE:-0}" \
-  --env FLAGCX_CI_COVERAGE_REPORT=/ci-logs/coverage-cuda-gpu-torch.json \
+  --env FLAGCX_CI_COVERAGE_REPORT="/ci-logs/coverage-${platform}-gpu-torch.json" \
+  --env FLAGCX_CI_COVERAGE="${FLAGCX_CI_COVERAGE:-0}" \
+  --env FLAGCX_CI_CPP_COVERAGE_REPORT="${FLAGCX_CI_CPP_COVERAGE_REPORT:-/ci-logs/cpp-coverage}" \
   --env GITHUB_STEP_SUMMARY="/ci-logs/$(basename "$summary_file")" \
   --env FLAGCX_CI_PLATFORM="$platform" \
   --env FLAGCX_CI_WORKLOAD="$workload" \

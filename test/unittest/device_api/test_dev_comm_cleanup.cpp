@@ -1126,15 +1126,126 @@ TEST_F(DefaultDevCommCleanupTest, DeferredDevicePointersHaveNoFixedLimit) {
   }
 
   EXPECT_TRUE(deviceFreedPtrs.empty());
-  ASSERT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
+  ASSERT_EQ(flagcxCommDrainDeferredFree(&comm), flagcxSuccess);
   EXPECT_EQ(comm.deferredDevMems, nullptr);
   EXPECT_EQ(comm.deferredDevComms, nullptr);
   ASSERT_EQ(deviceFreedPtrs.size(), allocatedPtrs.size());
   std::unordered_set<void *> freed(deviceFreedPtrs.begin(),
                                    deviceFreedPtrs.end());
   EXPECT_EQ(freed.size(), allocatedPtrs.size());
-  EXPECT_EQ(flagcxCommDrainDeferredFrees(&comm), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDrainDeferredFree(&comm), flagcxSuccess);
   EXPECT_EQ(deviceFreedPtrs.size(), allocatedPtrs.size());
+}
+
+int deferredReleaseCalls = 0;
+bool failDeferredReleaseOnce = false;
+
+flagcxResult_t releaseTestDeferredResource(void *resource) {
+  EXPECT_NE(resource, nullptr);
+  deferredReleaseCalls++;
+  if (failDeferredReleaseOnce) {
+    failDeferredReleaseOnce = false;
+    return flagcxRemoteError;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t publishTestDevMemPtr(flagcxDevMem_t devMem, void **devPtr) {
+  if (devMem == nullptr || devPtr == nullptr)
+    return flagcxInvalidArgument;
+  if (devMem->cachedDevicePtr == nullptr) {
+    flagcxResult_t result = allocateTestBuffer(&devMem->cachedDevicePtr, 8);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  *devPtr = devMem->cachedDevicePtr;
+  return flagcxSuccess;
+}
+
+TEST_F(DefaultDevCommCleanupTest, LateWindowResourceWaitsForDeferredDrain) {
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "capture-deferred-window";
+  captureBackend.devMemCreate = captureDevMemLifecycleCreate;
+  captureBackend.devMemDestroy = captureDevMemLifecycleDestroy;
+  captureBackend.devMemGetDevicePtr = publishTestDevMemPtr;
+  DevApiBackendGuard backendGuard(&captureBackend);
+
+  flagcxComm comm = {};
+  char buffer[8] = {};
+  flagcxDevMem_t devMem = nullptr;
+  ASSERT_EQ(flagcxDevMemCreate(&comm, buffer, sizeof(buffer), nullptr, &devMem),
+            flagcxSuccess);
+  void *publishedDevicePtr = nullptr;
+  ASSERT_EQ(flagcxDevMemGetDevicePtr(devMem, &publishedDevicePtr),
+            flagcxSuccess);
+  ASSERT_NE(publishedDevicePtr, nullptr);
+
+  // The Window gains a device resource after its device view was published.
+  int resource = 0;
+  deferredReleaseCalls = 0;
+  failDeferredReleaseOnce = true;
+  ASSERT_EQ(flagcxDevMemAttachDeferredResource(devMem, &resource,
+                                               releaseTestDeferredResource),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
+  EXPECT_EQ(deferredReleaseCalls, 0);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  ASSERT_EQ(comm.deferredDevMems, devMem);
+
+  // Final owner reclamation must not run a Window callback after transport
+  // teardown; it leaves the queue untouched until the earlier drain succeeds.
+  EXPECT_EQ(flagcxCommDrainDeferredFree(&comm), flagcxInternalError);
+  EXPECT_EQ(deferredReleaseCalls, 0);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  ASSERT_EQ(comm.deferredDevMems, devMem);
+
+  // A failed release leaves the resource and device view owned for retry.
+  EXPECT_EQ(flagcxCommDrainDeferredWindowResources(&comm), flagcxRemoteError);
+  EXPECT_EQ(deferredReleaseCalls, 1);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  ASSERT_EQ(comm.deferredDevMems, devMem);
+  EXPECT_EQ(flagcxCommDrainDeferredWindowResources(&comm), flagcxSuccess);
+  EXPECT_EQ(deferredReleaseCalls, 2);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  ASSERT_EQ(comm.deferredDevMems, devMem);
+  EXPECT_EQ(flagcxCommDrainDeferredFree(&comm), flagcxSuccess);
+  ASSERT_EQ(deviceFreedPtrs.size(), 1u);
+  EXPECT_EQ(deviceFreedPtrs[0], publishedDevicePtr);
+  EXPECT_EQ(comm.deferredDevMems, nullptr);
+  EXPECT_EQ(flagcxCommDrainDeferredFree(&comm), flagcxSuccess);
+  EXPECT_EQ(deferredReleaseCalls, 2);
+}
+
+int failBackendMemDestroyCalls = 0;
+
+flagcxResult_t failBackendMemDestroyOnce(flagcxComm_t, flagcxDevMem_t) {
+  failBackendMemDestroyCalls++;
+  return failBackendMemDestroyCalls == 1 ? flagcxRemoteError : flagcxSuccess;
+}
+
+TEST(DevMemApiHostTest, BackendDestroyFailureKeepsWindowOwnedForRetry) {
+  flagcxDevApiBackend captureBackend = {};
+  captureBackend.name = "retry-window-destroy";
+  captureBackend.devMemCreate = captureDevMemLifecycleCreate;
+  captureBackend.devMemDestroy = failBackendMemDestroyOnce;
+  DevApiBackendGuard backendGuard(&captureBackend);
+
+  flagcxComm comm = {};
+  char buffer[8] = {};
+  flagcxDevMem_t devMem = nullptr;
+  failBackendMemDestroyCalls = 0;
+  ASSERT_EQ(flagcxDevMemCreate(&comm, buffer, sizeof(buffer), nullptr, &devMem),
+            flagcxSuccess);
+  devMem->ipcIndex = 3;
+  comm.ipcTable[3].inUse = true;
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxRemoteError);
+  EXPECT_EQ(comm.deferredDevMems, nullptr);
+  EXPECT_EQ(devMem->rawPtr, buffer);
+  EXPECT_EQ(devMem->ipcIndex, 3);
+  EXPECT_TRUE(comm.ipcTable[3].inUse);
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
+  EXPECT_EQ(failBackendMemDestroyCalls, 2);
+  EXPECT_FALSE(comm.ipcTable[3].inUse);
 }
 
 class TrackedAllocationGuard {

@@ -6,9 +6,9 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`,
-`platform:kunlunxin`, and `platform:ppu` override path selection. Multiple
-platform labels select their union;
+PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
+`platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
+override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
 
@@ -19,9 +19,11 @@ one of these exact commands on a PR:
 /test
 /test cuda
 /test hygon
+/test iluvatar
 /test metax
 /test kunlunxin
 /test ppu
+/test ascend
 /test all
 ```
 
@@ -44,6 +46,17 @@ The gate fails on matrix/configuration errors, failed or cancelled tests, or
 unexpected skips of selected platforms. Empty selections skip hardware jobs
 while still running common checks.
 
+Ascend backend limitations, required follow-up, and local verification results
+are tracked in [ASCEND_CI_ISSUES.md](ASCEND_CI_ISSUES.md). Ascend uses standard
+unit, perf, and Torch API jobs. Its runner launches collectives in separate MPI
+processes so one asynchronous failure cannot skip subsequent collectives.
+Ordinary SymMem IPC and NET/MR invocations record independent statuses; VMM and
+RMA visibility coverage still require the backend contracts listed there.
+The first-device selector is restricted to local adaptor/P2P test fixtures;
+it does not replace production topology selection or validate APU/NIC proximity.
+P2P/RMA/SymMem failures containing SIGSEGV trigger bounded, per-rank GDB
+reproduction stored with the attempt artifacts, preserving the suite failure.
+
 ## Retry Logs
 
 Each test invocation has a timeout and at most one retry. Cancellation and
@@ -54,12 +67,14 @@ tests executed in explicitly managed Docker containers.
 
 ## Python Coverage
 
-The CUDA Torch job measures Python code in `src/flagcx` and the Torch build
-helpers using `plugin/torch/tests/test_*.py`. It does not measure C++ or MPI code.
-The report and artifact are `coverage-cuda-gpu-torch.json`. Coverage runs inside
-the configured CUDA container, using the built plugin. The report is persisted
-through the attempt-log mount and copied to the runner for upload. Test failure
-still fails CI, even when a partial coverage report is generated.
+The CUDA, Hygon, MetaX, and PPU Torch jobs run `plugin/torch/tests/test_*.py`
+and measure Python code in `src/flagcx` and the Torch build helpers. The suite
+currently contains 17 tests. It does not measure C++ or MPI code, or the Torch
+API example that runs before coverage starts. Each platform produces a separate
+`coverage-<platform>-gpu-torch.json` report and artifact. Coverage runs inside
+the configured hardware container, using the built plugin. The report is
+persisted through the attempt-log mount and copied to the runner for upload.
+Python test failure still fails CI, even when a partial coverage report is generated.
 
 Repository configuration:
 
@@ -80,3 +95,20 @@ log must show HTTP 2xx and the FlagCICD UI must display that run's Python
 coverage. HTTP 401/403 indicates a token issue; curl exit 6 indicates DNS
 failure; exit 7/28 indicates connectivity or timeout. Green CI alone does not
 prove upload success.
+
+## C++ Coverage
+
+`cpp-coverage.yml` runs the full platform unit-test suite on Saturday UTC and
+can be dispatched for selected platforms. It builds FlagCX host sources with
+GCC gcov instrumentation and archives per-platform/suite JSON and HTML reports
+with line, function, and branch metrics. The matrix summary keeps platforms
+separate; the cross-platform denominator is intentionally unset until the
+coverage policy is approved. Coverage is informational and does not add a 90%
+merge gate.
+
+Reports list production files that did not produce gcov data. This includes
+device-code sources until their vendor toolchains have a verified collection
+backend; skipped suites include an explicit reason rather than a fabricated
+zero-percent result. New supplemental GoogleTest cases use the
+`CoverageSupplemental.` suite-name prefix: ordinary PR jobs exclude these
+cases, while the weekly coverage workflow runs them.

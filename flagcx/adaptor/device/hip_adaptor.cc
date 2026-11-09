@@ -324,9 +324,19 @@ flagcxResult_t hipAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
                                             int) {
   return flagcxNotSupported;
 }
-flagcxResult_t hipAdaptorEventElapsedTime(float *, flagcxEvent_t,
-                                          flagcxEvent_t) {
-  return flagcxNotSupported;
+flagcxResult_t hipAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
+                                          flagcxEvent_t end) {
+  if (ms == NULL || start == NULL || end == NULL) {
+    return flagcxInvalidArgument;
+  }
+  hipError_t error = hipEventElapsedTime(ms, start->base, end->base);
+  if (error == hipSuccess) {
+    return flagcxSuccess;
+  } else if (error == hipErrorNotReady) {
+    return flagcxInProgress;
+  } else {
+    return flagcxUnhandledDeviceError;
+  }
 }
 
 flagcxResult_t hipAdaptorHostRegister(void *, size_t) {

@@ -21,6 +21,12 @@ protected:
     // Initialize device adaptor (sets global deviceAdaptor)
     flagcxDeviceHandleInit(&devHandle);
 
+    if (deviceAdaptor == nullptr ||
+        deviceAdaptor->getDevicePciBusId == nullptr ||
+        deviceAdaptor->getDeviceByPciBusId == nullptr) {
+      GTEST_SKIP() << "P2P topology tests require PCI bus-ID callbacks";
+    }
+
     netAdaptor = &flagcxNetIb;
     ASSERT_EQ(netAdaptor->init(), flagcxSuccess)
         << "IB P2P net adaptor init failed";
@@ -80,7 +86,20 @@ TEST_F(P2pTopoTest, NullArgs) {
   EXPECT_EQ(flagcxP2pTopoDestroy(nullptr), flagcxSuccess);
 }
 
-int main(int argc, char **argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+TEST_F(P2pTopoTest, FailedPciLookupLeavesManagerNull) {
+  flagcxDeviceAdaptor failingAdaptor = *deviceAdaptor;
+  failingAdaptor.getDevicePciBusId = [](char *, int, int) {
+    return flagcxNotSupported;
+  };
+  flagcxDeviceAdaptor *savedAdaptor = deviceAdaptor;
+  deviceAdaptor = &failingAdaptor;
+
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    struct flagcxP2pTopoManager *mgr = nullptr;
+    EXPECT_EQ(flagcxP2pTopoInit(netAdaptor, &mgr), flagcxNotSupported);
+    EXPECT_EQ(mgr, nullptr);
+    flagcxP2pTopoDestroy(mgr);
+  }
+
+  deviceAdaptor = savedAdaptor;
 }

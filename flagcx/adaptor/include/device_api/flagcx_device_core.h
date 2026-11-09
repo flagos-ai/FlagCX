@@ -25,6 +25,12 @@
 // Device traits — provides DeviceAPI with all type/function dispatch.
 #include "comm_traits.h"
 
+// Every selected backend must expose the platform capability types, even when
+// that platform has not implemented their methods yet. This compile-only gate
+// covers vendor selectors when their existing device code is built.
+static_assert(sizeof(DeviceAPI::CoopOps) > 0 && sizeof(DeviceAPI::Clock) > 0,
+              "DeviceAPI must forward CoopOps and Clock");
+
 // Forward declarations for host-side internal structs (defined in
 // flagcx_device_internal.h). The flagcxDevComm/flagcxDevMem constructors
 // that take these references are guarded so bitcode never instantiates them.
@@ -626,12 +632,41 @@ flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, flagcxTeam team,
   return mem._winBase.getPeerPointer(offset, team._teamBase, peer);
 }
 
+FLAGCX_DEVICE_API_DEPRECATED("use flagcxDeviceMemoryAccessIntent_t")
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset,
                                flagcxTeam team, int peer,
                                flagcxDevPeerAccess_t access) {
   return flagcxGetPeerPointerWithAccessInternal(
       mem._winBase, offset, team._teamBase, peer, access, 0);
+}
+
+// Keep the legacy Window contract at the boundary.  In particular, XSHMEM
+// has distinct read and write mappings and must see the original access value.
+FLAGCX_DEVICE_INLINE_DECORATOR flagcxDevPeerAccess_t
+flagcxLegacyPeerAccess(flagcxDeviceMemoryAccessIntent_t intent) {
+  switch (intent) {
+    case flagcxDeviceMemoryAccessIntentReadWrite:
+      return flagcxDevPeerAccessReadWrite;
+    case flagcxDeviceMemoryAccessIntentWriteOnly:
+      return flagcxDevPeerAccessWriteOnly;
+    case flagcxDeviceMemoryAccessIntentReadOnly:
+      return flagcxDevPeerAccessReadOnly;
+    default:
+      return static_cast<flagcxDevPeerAccess_t>(-1);
+  }
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset,
+                               flagcxTeam team, int peer,
+                               flagcxDeviceMemoryAccessIntent_t intent)
+    -> decltype(flagcxGetPeerPointerWithAccessInternal(
+        mem._winBase, offset, team._teamBase, peer,
+        flagcxDevPeerAccessReadWrite, 0)) {
+  return flagcxGetPeerPointerWithAccessInternal(
+      mem._winBase, offset, team._teamBase, peer,
+      flagcxLegacyPeerAccess(intent), 0);
 }
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
@@ -654,11 +689,21 @@ flagcxGetPeerPointer(const flagcxDevMem &mem, size_t offset, int peer) {
   return mem._winBase.getIntraPointer(offset, peer);
 }
 
+FLAGCX_DEVICE_API_DEPRECATED("use flagcxDeviceMemoryAccessIntent_t")
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset, int peer,
                                flagcxDevPeerAccess_t access) {
   return flagcxGetIntraPointerWithAccessInternal(mem._winBase, offset, peer,
                                                  access, 0);
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset, int peer,
+                               flagcxDeviceMemoryAccessIntent_t intent)
+    -> decltype(flagcxGetIntraPointerWithAccessInternal(
+        mem._winBase, offset, peer, flagcxDevPeerAccessReadWrite, 0)) {
+  return flagcxGetIntraPointerWithAccessInternal(
+      mem._winBase, offset, peer, flagcxLegacyPeerAccess(intent), 0);
 }
 
 // Intra-node rank pointer.
@@ -667,11 +712,22 @@ flagcxGetIntraPointer(const flagcxDevMem &mem, size_t offset, int peer) {
   return mem._winBase.getIntraPointer(offset, peer);
 }
 
+FLAGCX_DEVICE_API_DEPRECATED("use flagcxDeviceMemoryAccessIntent_t")
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetIntraPointerWithAccess(const flagcxDevMem &mem, size_t offset,
                                 int peer, flagcxDevPeerAccess_t access) {
   return flagcxGetIntraPointerWithAccessInternal(mem._winBase, offset, peer,
                                                  access, 0);
+}
+
+FLAGCX_DEVICE_INLINE_DECORATOR auto
+flagcxGetIntraPointerWithAccess(const flagcxDevMem &mem, size_t offset,
+                                int peer,
+                                flagcxDeviceMemoryAccessIntent_t intent)
+    -> decltype(flagcxGetIntraPointerWithAccessInternal(
+        mem._winBase, offset, peer, flagcxDevPeerAccessReadWrite, 0)) {
+  return flagcxGetIntraPointerWithAccessInternal(
+      mem._winBase, offset, peer, flagcxLegacyPeerAccess(intent), 0);
 }
 
 // Multicast pointer with explicit MulticastHandle.
@@ -1008,6 +1064,9 @@ flagcxDevCommHasNetContexts(const flagcxDevComm &comm) {
 // ============================================================
 // Section 11: flagcxDevBarrier<flagcxTeamTagInter> — Inter-Node Barrier
 // ============================================================
+// Each simultaneous Coop group needs a distinct barrier index. Corresponding
+// groups on peer ranks use the same index; blockIdx.x is suitable when one
+// Coop group per CTA participates.
 // ---- Inter ----
 template <typename Coop>
 struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
@@ -1021,12 +1080,15 @@ struct flagcxDevBarrier<flagcxTeamTagInter, Coop> {
                    uint32_t index)
       : _impl(coop, net, net._dc, team._teamBase, index, net._nInterPeers) {}
 
+  // Legacy split barrier: only Relaxed is supported. Use sync for Put/Get.
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for inter-node barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for inter-node barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
@@ -1065,12 +1127,15 @@ struct flagcxDevBarrier<flagcxTeamTagWorld, Coop> {
       : _impl(coop, flagcxTeamTagInter{}, net, net._dc, index, multimem,
               net._nInterPeers) {}
 
+  // Legacy split barrier: only Relaxed is supported. Use sync for Put/Get.
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for world barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     _impl.arrive(order, fence);
   }
 
+  FLAGCX_DEVICE_API_DEPRECATED("use sync for world barriers")
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {

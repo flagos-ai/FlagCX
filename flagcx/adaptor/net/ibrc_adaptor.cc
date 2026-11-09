@@ -2766,6 +2766,26 @@ flagcxResult_t flagcxIbMultiSend(struct flagcxIbSendComm *comm, int slot) {
       lastWr->wr.rdma.rkey = comm->remSizesFifo.rkeys[devIndex];
     }
 
+    for (int r = 0; r < nreqs; r++) {
+      TRACE(FLAGCX_NET,
+            "NET/IBRC post qp_num=%u lane=%d local_dev=%d remote_dev=%d "
+            "wr_id=%llu local_addr=0x%llx length=%u lkey=0x%x "
+            "remote_addr=0x%llx rkey=0x%x request_bytes=%d",
+            qp->qp->qp_num, lane.base.index, devIndex, qp->remDevIdx,
+            (unsigned long long)comm->wrs[r].wr_id,
+            (unsigned long long)comm->sges[r].addr,
+            comm->wrs[r].num_sge ? comm->sges[r].length : 0,
+            comm->wrs[r].num_sge ? comm->sges[r].lkey : 0,
+            (unsigned long long)comm->wrs[r].wr.rdma.remote_addr,
+            comm->wrs[r].wr.rdma.rkey, reqs[r]->send.size);
+    }
+    TRACE(FLAGCX_NET,
+          "NET/IBRC signal qp_num=%u lane=%d wr_id=%llu opcode=%d "
+          "remote_addr=0x%llx rkey=0x%x num_sge=%d",
+          qp->qp->qp_num, lane.base.index, (unsigned long long)lastWr->wr_id,
+          lastWr->opcode, (unsigned long long)lastWr->wr.rdma.remote_addr,
+          lastWr->wr.rdma.rkey, lastWr->num_sge);
+
     struct flagcxNetPostResult post = {};
     const int wrCount = (int)(lastWr - comm->wrs) + 1;
     FLAGCXCHECK(flagcxIbPostSendList(&lane, comm->wrs, wrCount, false, &post));

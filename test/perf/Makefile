@@ -21,7 +21,11 @@ host_api:
 
 # Device API tests require kernel functions compiled into libflagcx (.cu files).
 device_api:
+ifeq ($(COMPILE_KERNEL), 1)
 	@$(MAKE) -C device_api
+else
+	$(error device_api benchmarks require COMPILE_KERNEL=1)
+endif
 
 clean:
 	@$(MAKE) -C host_api clean

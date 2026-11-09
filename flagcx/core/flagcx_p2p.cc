@@ -2551,6 +2551,17 @@ FlagcxP2pEngine *flagcxP2pEngineCreate() {
   }
   if (flagcxP2pTopoInit(engine->adaptor, &engine->topoMgr) != flagcxSuccess) {
     engine->topoMgr = NULL;
+    // Backends without PCI callbacks retain the legacy listener fallback.
+    // With both callbacks, a failed topology must not select an arbitrary NIC.
+    if (deviceAdaptor != NULL && deviceAdaptor->getDevicePciBusId != NULL &&
+        deviceAdaptor->getDeviceByPciBusId != NULL) {
+      WARN("P2P Engine: device exposes PCI topology but NIC topology "
+           "initialization failed");
+      if (flagcxParamMrSortedLookup())
+        flagcxMrRegistryGlobalRelease();
+      delete engine;
+      return NULL;
+    }
   }
 
   for (int d = 0; d < engine->nDevs; d++) {

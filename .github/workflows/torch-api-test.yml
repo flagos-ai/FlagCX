@@ -43,6 +43,10 @@ jobs:
       ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
+      ascend_ci_image: ${{ steps.ascend.outputs.ci_image }}
+      ascend_docker_args: ${{ steps.ascend.outputs.docker_args }}
+      ascend_set_env: ${{ steps.ascend.outputs.set_env }}
+      ascend_runs_on: ${{ steps.ascend.outputs.runs_on }}
       kunlunxin_ci_image: ${{ steps.kunlunxin.outputs.ci_image }}
       kunlunxin_docker_args: ${{ steps.kunlunxin.outputs.docker_args }}
       kunlunxin_set_env: ${{ steps.kunlunxin.outputs.set_env }}
@@ -71,6 +75,10 @@ jobs:
         id: ppu
         run: ruby .github/scripts/ci/load_platform_config.rb ppu
 
+      - name: Load Ascend configuration
+        id: ascend
+        run: ruby .github/scripts/ci/load_platform_config.rb ascend
+
       - name: Load KunlunXin configuration
         id: kunlunxin
         run: ruby .github/scripts/ci/load_platform_config.rb kunlunxin
@@ -81,6 +89,8 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.hygon_runs_on) }}
     timeout-minutes: 180
+    env:
+      FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
       - name: Checkout Code
@@ -99,6 +109,7 @@ jobs:
       - name: Run torch-api-test (hygon) in configured container
         shell: bash
         env:
+          FLAGCX_CI_TORCH_COVERAGE: '1'
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.hygon_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
@@ -113,6 +124,32 @@ jobs:
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-hygon-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
         run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Collect Python coverage report
+        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-hygon-gpu-torch.json') != '' }}
+        run: cp "$FLAGCX_CI_LOG_DIR/coverage-hygon-gpu-torch.json" coverage-hygon-gpu-torch.json
+
+      - name: Upload coverage report to FlagCICD
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-hygon-gpu-torch.json') != '' }}
+        uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
+          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
+          report_path: coverage-hygon-gpu-torch.json
+          file_type: coverage
+          job_name: coverage-hygon-gpu-torch
+          pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          fail_on_error: 'false'
+
+      - name: Archive Python coverage report
+        if: ${{ !cancelled() && hashFiles('coverage-hygon-gpu-torch.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-hygon-gpu-torch
+          path: coverage-hygon-gpu-torch.json
+          retention-days: 7
 
       - name: Upload test attempt logs
         if: always()
@@ -208,6 +245,8 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
     timeout-minutes: 180
+    env:
+      FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
       - name: Checkout Code
@@ -226,6 +265,7 @@ jobs:
       - name: Run torch-api-test (metax) in configured container
         shell: bash
         env:
+          FLAGCX_CI_TORCH_COVERAGE: '1'
           FLAGCX_CI_CONTAINER_NAME: flagcx-metax-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.metax_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
@@ -240,6 +280,32 @@ jobs:
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-metax-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
         run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Collect Python coverage report
+        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-metax-gpu-torch.json') != '' }}
+        run: cp "$FLAGCX_CI_LOG_DIR/coverage-metax-gpu-torch.json" coverage-metax-gpu-torch.json
+
+      - name: Upload coverage report to FlagCICD
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-metax-gpu-torch.json') != '' }}
+        uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
+          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
+          report_path: coverage-metax-gpu-torch.json
+          file_type: coverage
+          job_name: coverage-metax-gpu-torch
+          pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          fail_on_error: 'false'
+
+      - name: Archive Python coverage report
+        if: ${{ !cancelled() && hashFiles('coverage-metax-gpu-torch.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-metax-gpu-torch
+          path: coverage-metax-gpu-torch.json
+          retention-days: 7
 
       - name: Upload test attempt logs
         if: always()
@@ -257,6 +323,8 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ppu_runs_on) }}
     timeout-minutes: 180
+    env:
+      FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
       - name: Checkout Code
@@ -275,6 +343,7 @@ jobs:
       - name: Run torch-api-test (ppu) in configured container
         shell: bash
         env:
+          FLAGCX_CI_TORCH_COVERAGE: '1'
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ppu_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
@@ -290,11 +359,86 @@ jobs:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ppu-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
         run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
+      - name: Collect Python coverage report
+        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-ppu-gpu-torch.json') != '' }}
+        run: cp "$FLAGCX_CI_LOG_DIR/coverage-ppu-gpu-torch.json" coverage-ppu-gpu-torch.json
+
+      - name: Upload coverage report to FlagCICD
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-ppu-gpu-torch.json') != '' }}
+        uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
+        continue-on-error: true
+        timeout-minutes: 2
+        with:
+          backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
+          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
+          report_path: coverage-ppu-gpu-torch.json
+          file_type: coverage
+          job_name: coverage-ppu-gpu-torch
+          pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
+          fail_on_error: 'false'
+
+      - name: Archive Python coverage report
+        if: ${{ !cancelled() && hashFiles('coverage-ppu-gpu-torch.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-ppu-gpu-torch
+          path: coverage-ppu-gpu-torch.json
+          retention-days: 7
+
       - name: Upload test attempt logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: attempts-torch-api-test-ppu-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+
+  torch-api-test-ascend:
+    if: contains(fromJSON(inputs.platforms), 'ascend')
+    name: torch-api-test (ascend)
+    needs: load-hardware-container-configs
+    runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ascend_runs_on) }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run torch-api-test (ascend) in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ascend_docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ascend_ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ascend_set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          ascend torch-api
+
+      - name: Cleanup torch-api-test (ascend) container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload test attempt logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-torch-api-test-ascend-${{ github.run_attempt }}
           path: ${{ env.FLAGCX_CI_LOG_DIR }}/
           include-hidden-files: true
           if-no-files-found: ignore
@@ -358,6 +502,7 @@ jobs:
       - torch-api-test-cuda
       - torch-api-test-metax
       - torch-api-test-ppu
+      - torch-api-test-ascend
       - torch-api-test-kunlunxin
     runs-on: ubuntu-latest
     env:
@@ -369,6 +514,7 @@ jobs:
       METAX_RESULT: ${{ needs['torch-api-test-metax'].result }}
       PPU_RESULT: ${{ needs['torch-api-test-ppu'].result }}
       KUNLUNXIN_RESULT: ${{ needs['torch-api-test-kunlunxin'].result }}
+      ASCEND_RESULT: ${{ needs['torch-api-test-ascend'].result }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v7
@@ -381,7 +527,7 @@ jobs:
         run: >-
           bash .github/scripts/ci/check_platform_workflow.sh
           "$PLATFORMS" "$CONFIG_RESULT" "$CUDA_BASE_RESULT" "$CUDA_RESULT"
-          "$HYGON_RESULT" "$METAX_RESULT" "$PPU_RESULT"
+          "$HYGON_RESULT" "$METAX_RESULT" "$PPU_RESULT" "$ASCEND_RESULT"
 
       - name: Validate selected KunlunXin Torch API job
         env:

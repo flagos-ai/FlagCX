@@ -49,10 +49,10 @@ docker_options:
 
 set_env: .github/scripts/set_env/kunlunxin.sh
 
+# Device adaptor coverage lives in adaptor; topology coverage lives in core.
 unit_test_suites:
   - adaptor
   - core
-  - device
   - device_api
   - device_api_host
   - device_api_unified_ir
@@ -62,4 +62,3 @@ unit_test_suites:
   - runner
   - service
   - symmem
-  - topo

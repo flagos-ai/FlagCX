@@ -38,7 +38,18 @@ USE_SHARED_P2P_ENGINE ?= 0
 USE_ENFLAME ?= 0
 USE_SUNRISE ?= 0
 USE_PPU ?= 0
-COMPILE_KERNEL ?= 0
+# Device bitcode needs the host library's device-side Net constructors. Set
+# this before the platform and object lists are evaluated below.
+ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
+  ifneq ($(origin COMPILE_KERNEL),undefined)
+    ifneq ($(COMPILE_KERNEL),1)
+      $(error device_bitcode requires COMPILE_KERNEL=1)
+    endif
+  endif
+  override COMPILE_KERNEL := 1
+else
+  COMPILE_KERNEL ?= 0
+endif
 
 # Device API backend selection
 USE_SHMEM ?= 0
@@ -166,6 +177,11 @@ COMPILE_KERNEL_FLAG =
 HOST_COMPILER ?= g++
 HOST_CXX_STANDARD ?=
 HOST_CXXFLAGS ?=
+FLAGCX_COVERAGE ?= 0
+ifeq ($(FLAGCX_COVERAGE), 1)
+  HOST_CXXFLAGS += --coverage -O0
+  COVERAGE_LINK_FLAG := --coverage
+endif
 ifeq ($(USE_NVIDIA), 1)
   include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
@@ -343,12 +359,90 @@ DEVOBJ := $(DEVSRCFILES:%.$(DEVICE_FILE_EXTENSION)=$(OBJDIR)/%.o)
 endif
 LIBOBJ := $(LIBSRCFILES:%.cc=$(OBJDIR)/%.o)
 P2P_ENGINE_MODE_FILE := $(BUILDDIR)/.p2p-engine-mode
+BUILD_CONFIG_FILE := $(BUILDDIR)/.build-config
 
 .PHONY: p2p_engine_mode_force
 p2p_engine_mode_force:
 
+.PHONY: build_config_force
+build_config_force:
+
+# Object filenames are shared by ordinary and bitcode-enabled builds. Compare
+# the current configuration before make checks object timestamps; a changed
+# configuration adds a phony prerequisite to force those objects to rebuild.
+BUILD_CONFIG_SIGNATURE = \
+  COMPILE_KERNEL=$(COMPILE_KERNEL) \
+  DEVICE_PLATFORM=$(DEVICE_PLATFORM) \
+  DEVICE_BITCODE_ARCH=$(DEVICE_BITCODE_ARCH) \
+  HOST_COMPILER=$(HOST_COMPILER) \
+  HOST_CXX_STANDARD=$(HOST_CXX_STANDARD) \
+  HOST_CXXFLAGS=$(HOST_CXXFLAGS) \
+  DEVICE_COMPILER=$(DEVICE_COMPILER) \
+  DEVICE_COMPILE_FLAG=$(DEVICE_COMPILE_FLAG) \
+  DEVICE_LINK_FLAG=$(DEVICE_LINK_FLAG) \
+  ADAPTOR_FLAG=$(ADAPTOR_FLAG) \
+  HOST_CCL_ADAPTOR_FLAG=$(HOST_CCL_ADAPTOR_FLAG) \
+  NET_ADAPTOR_FLAG=$(NET_ADAPTOR_FLAG) \
+  INCLUDEDIR=$(INCLUDEDIR) \
+  DEVICE_INCLUDE=$(DEVICE_INCLUDE) \
+  CCL_INCLUDE=$(CCL_INCLUDE) \
+  HOST_CCL_INCLUDE=$(HOST_CCL_INCLUDE) \
+  UCX_INCLUDE=$(UCX_INCLUDE) \
+  ACCL_BAREX_INCLUDE_FLAG=$(ACCL_BAREX_INCLUDE_FLAG) \
+  SHCA_INCLUDE_FLAG=$(SHCA_INCLUDE_FLAG) \
+  LINKER=$(LINKER) \
+  LINKER_FLAGS=$(LINKER_FLAGS) \
+  DEVICE_LINKER=$(DEVICE_LINKER) \
+  DEVICE_NEEDS_DLINK=$(DEVICE_NEEDS_DLINK) \
+  DEVICE_LIB=$(DEVICE_LIB) \
+  CCL_LIB=$(CCL_LIB) \
+  HOST_CCL_LIB=$(HOST_CCL_LIB) \
+  UCX_LIB=$(UCX_LIB) \
+  ACCL_BAREX_LINK_FLAG=$(ACCL_BAREX_LINK_FLAG) \
+  DEVICE_LINK=$(DEVICE_LINK) \
+  CCL_LINK=$(CCL_LINK) \
+  HOST_CCL_LINK=$(HOST_CCL_LINK) \
+  UCX_LINK=$(UCX_LINK) \
+  ACCL_BAREX_LINK=$(ACCL_BAREX_LINK) \
+  SHCA_LINK=$(SHCA_LINK) \
+  SHCA_LINK_FLAG=$(SHCA_LINK_FLAG)
+
+$(BUILD_CONFIG_FILE):
+	@mkdir -p $(BUILDDIR)
+	@printf '%s\n' '$(BUILD_CONFIG_SIGNATURE)' > $@
+
+$(LIBOBJ) $(DEVOBJ): $(BUILD_CONFIG_FILE)
+
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
+
+# Resolve the bitcode route from the same platform configuration that sets
+# ADAPTOR_FLAG for libflagcx.so. DEVICE_BITCODE_ARCH is the single public arch
+# input; the Iluvatar Makefile uses a different variable name internally.
+ifeq ($(USE_NVIDIA),1)
+  DEVICE_BITCODE_DIR := nvidia
+  DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
+  DEVICE_BITCODE_EXTRA_ARG := BITCODE_CXX_STD=gnu++17
+else ifeq ($(USE_ILUVATAR),1)
+  DEVICE_BITCODE_DIR := iluvatar
+  DEVICE_BITCODE_ARCH_ARG := ILUVATAR_ARCH=$(DEVICE_BITCODE_ARCH)
+else ifeq ($(USE_DU),1)
+  DEVICE_BITCODE_DIR := du
+  DEVICE_BITCODE_ARCH_ARG := BITCODE_LIB_ARCH=$(DEVICE_BITCODE_ARCH)
+endif
+
+ifneq ($(filter device_bitcode,$(MAKECMDGOALS)),)
+  ifeq ($(strip $(DEVICE_BITCODE_DIR)),)
+    $(error Device bitcode is unsupported for $(DEVICE_PLATFORM))
+  endif
+  ifeq ($(strip $(DEVICE_BITCODE_ARCH)),)
+    $(error DEVICE_BITCODE_ARCH is required)
+  endif
+endif
+
+.PHONY: device_bitcode
+device_bitcode: all
+	$(MAKE) -C bindings/ir/$(DEVICE_BITCODE_DIR) BUILDDIR=$(abspath $(BUILDDIR)) $(DEVICE_BITCODE_ARCH_ARG) ADAPTOR_FLAG='$(ADAPTOR_FLAG)' DEVICE_HOME=$(DEVICE_HOME) CCL_HOME=$(CCL_HOME) SHMEM_HOME=$(SHMEM_HOME) EMIT_LLVM_IR=1 $(DEVICE_BITCODE_EXTRA_ARG) llvm_ir
 
 print_var:
 	@echo "USE_KUNLUNXIN : $(USE_KUNLUNXIN)"
@@ -409,13 +503,19 @@ ifeq ($(USE_DU),1)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
 endif
 
+BUILD_CONFIG_CHANGED := $(shell printf '%s\n' '$(BUILD_CONFIG_SIGNATURE)' | cmp -s - '$(BUILD_CONFIG_FILE)' || echo 1)
+ifneq ($(BUILD_CONFIG_CHANGED),)
+$(BUILD_CONFIG_FILE): build_config_force
+$(LIBOBJ) $(DEVOBJ): build_config_force
+endif
+
 $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) p2p_engine_mode_force
 	@mkdir -p `dirname $@`
 	@mode=$$(test -f $(P2P_ENGINE_MODE_FILE) && sed -n '1p' $(P2P_ENGINE_MODE_FILE)); \
 	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
 	     [ -n "$(filter-out p2p_engine_mode_force,$?)" ]; then \
 	    echo "Linking   $@"; \
-	    $(LINKER) $(LINKER_FLAGS) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
+	    $(LINKER) $(LINKER_FLAGS) $(COVERAGE_LINK_FLAG) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
 	    printf '%s\n' '$(USE_SHARED_P2P_ENGINE)' > $(P2P_ENGINE_MODE_FILE); \
 	  fi
 

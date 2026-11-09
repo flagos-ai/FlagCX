@@ -15,6 +15,11 @@ on:
         description: Commit under test
         required: false
         type: string
+      cpp_coverage:
+        description: Build the instrumented C++ coverage variant and run supplemental tests
+        required: false
+        type: boolean
+        default: false
 
 env:
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
@@ -54,6 +59,40 @@ jobs:
         suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
     steps:
+      - name: Install Git for repository checkout
+        shell: bash
+        env:
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
+        run: |
+          if [[ "$FLAGCX_CI_PLATFORM" == "ascend" ]]; then
+            git_version=""
+            if command -v git >/dev/null 2>&1; then
+              git_version="$(git --version | sed -E 's/.* ([0-9]+)\.([0-9]+).*/\1 \2/')"
+            fi
+          else
+            git_version="$(git --version 2>/dev/null | sed -E 's/.* ([0-9]+)\.([0-9]+).*/\1 \2/')"
+          fi
+          read -r git_major git_minor <<< "$git_version"
+          if [[ -z "$git_version" ]] || ((git_major < 2 || (git_major == 2 && git_minor < 18))); then
+            if command -v dnf >/dev/null 2>&1; then
+              installer=(dnf)
+            elif command -v yum >/dev/null 2>&1; then
+              installer=(yum)
+            else
+              echo "Git is missing and no supported package manager is available" >&2
+              exit 1
+            fi
+            if ((EUID == 0)); then
+              "${installer[@]}" install -y git
+            elif command -v sudo >/dev/null 2>&1; then
+              sudo "${installer[@]}" install -y git
+            else
+              echo "Installing Git requires root or sudo" >&2
+              exit 1
+            fi
+          fi
+          git version
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
@@ -74,6 +113,10 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_config.outputs.docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load_config.outputs.ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
+          FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
+          FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
+          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
@@ -94,3 +137,13 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Upload C++ coverage report
+        if: ${{ always() && inputs.cpp_coverage }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

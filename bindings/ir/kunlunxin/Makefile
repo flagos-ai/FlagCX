@@ -32,6 +32,13 @@ ifneq ($(EMIT_LLVM_IR), 0)
 # Source (one level up — shared wrapper)
 LLVM_SRC := ../flagcx_device_wrapper_impl.h
 SYMBOLS_FILE := $(abspath ../public_symbols.txt)
+KLX_PUBLIC_SYMBOLS := \
+	flagcxDevCommGetIntraRank \
+	flagcxDevCommGetIntraSize \
+	flagcxGetIntraPointerC \
+	flagcxIntraBarrierArriveS \
+	flagcxIntraBarrierWaitS \
+	flagcxIntraBarrierSyncS
 
 FLAGCX_ROOT := $(abspath ../../..)
 BUILDDIR ?= $(FLAGCX_ROOT)/build
@@ -49,7 +56,7 @@ OPT       ?= $(XTDK_HOME)/bin/opt
 LLVM_DIS  ?= $(XTDK_HOME)/bin/llvm-dis
 LLVM_AS   ?= $(XTDK_HOME)/bin/llvm-as
 
-OBJDIR := $(BUILDDIR)/obj/llvm_ir/kunlunxin/$(XPU_ARCH)
+OBJDIR := $(BUILDDIR)/obj/llvm_ir
 LIBDIR := $(BUILDDIR)/lib
 INCLUDEDIR := $(BUILDDIR)/include
 
@@ -84,18 +91,19 @@ ADAPTOR_FLAG ?= -DUSE_KUNLUNXIN_ADAPTOR -DFLAGCX_COMM_TRAITS_SHMEM
 COMMON_CLANG_FLAGS := \
 	-std=c++17 -x xpu \
 	--xpu-arch=$(XPU_ARCH) \
-	-fno-builtin --target=x86_64-linux-gnu \
+	-fno-builtin \
 	$(FLAGCX_INCLUDES) \
 	-D__clang_llvm_bitcode_lib__ \
 	$(ADAPTOR_FLAG) \
 	-Wno-deprecated-declarations \
 	-DNDEBUG
 
-CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS)
+CLANG_FLAGS := -c -emit-llvm --xpu-device-only -O1 $(COMMON_CLANG_FLAGS)
 
 # Optimization passes — keep only the public Device IR symbols.
 OPT_PASSES := --passes=internalize,inline,globaldce \
 	-internalize-public-api-file=$(SYMBOLS_FILE)
+IR_INPUT_BC := $(BUNDLE_BC)
 
 # ---- Build rules ----
 
@@ -105,27 +113,23 @@ $(WRAPPER_HEADER): ../flagcx_device_wrapper.h
 	@mkdir -p $(INCLUDEDIR)
 	cp -f $< $@
 
-$(BUNDLE_BC): $(LLVM_SRC)
+$(BUNDLE_BC): $(LLVM_SRC) ir_views.h
 	@mkdir -p $(OBJDIR)
 	@echo "Generating KunlunXin Device IR bundle..."
-	$(XPU_CLANG) $(CLANG_FLAGS) $(LLVM_SRC) -o $@
+	$(XPU_CLANG) $(CLANG_FLAGS) $(IR_DEPFLAGS) $(LLVM_SRC) -o $@
 
-# Extract the xpu device module from the offload bundle.
+# LLVM 19 emits a plain xpu-device-only bitcode (not an offload bundle), so the
+# unbundle step is a no-op copy that keeps the rule graph intact.
 $(UNOPTIMIZED_BC): $(BUNDLE_BC)
-	@echo "Extracting xpu device module from offload bundle..."
-	$(BUNDLER) -type=bc \
-		-targets=$(HOST_TRIPLE),$(XPU_TRIPLE) \
-		-input=$< \
-		-output=$(OBJDIR)/libflagcx_device.bc.host \
-		-output=$@ \
-		-unbundle
+	@echo "Copying xpu-device-only bitcode..."
+	cp -f $< $@
 
-$(OPTIMIZED_BC): $(UNOPTIMIZED_BC)
+$(OPTIMIZED_BC): $(UNOPTIMIZED_BC) $(SYMBOLS_FILE)
 	@echo "Optimizing KunlunXin Device IR..."
 	$(OPT) $(OPT_PASSES) $< -o $@
 
 $(LLVM_IR_FILE): $(OPTIMIZED_BC)
-	$(LLVM_DIS) $< -o $@
+	$(OPT) -S $< -o $@
 
 $(FINAL_BC): $(LLVM_IR_FILE)
 	@mkdir -p $(LIBDIR)
@@ -133,15 +137,22 @@ $(FINAL_BC): $(LLVM_IR_FILE)
 	$(LLVM_AS) $< -o $@
 
 check_public_symbols: $(LLVM_IR_FILE)
-	@echo "Checking public Device IR symbols..."
+	@echo "Checking public Device IR symbols and ABI..."
 	@missing=0; \
-	while IFS= read -r symbol; do \
-		case "$$symbol" in ''|'#'*) continue ;; esac; \
+	for symbol in $(KLX_PUBLIC_SYMBOLS); do \
 		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(" $(LLVM_IR_FILE); then \
 			echo "Missing public Device IR symbol: $$symbol"; \
 			missing=1; \
 		fi; \
-	done < $(SYMBOLS_FILE); \
+		if ! grep -Eq "^[[:space:]]*define .*@$$symbol\\(ptr addrspace\\(1\\)" $(LLVM_IR_FILE); then \
+			echo "Missing AS1 descriptor parameter: $$symbol"; \
+			missing=1; \
+		fi; \
+	done; \
+	if ! grep -Eq "^[[:space:]]*define .*@flagcxGetIntraPointerC\\(.*i64.*i32" $(LLVM_IR_FILE); then \
+		echo "flagcxGetIntraPointerC offset must be i64"; \
+		missing=1; \
+	fi; \
 	test $$missing -eq 0
 
 llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
@@ -152,6 +163,8 @@ llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) check_public_symbols
 	@echo "  LLVM IR:          $(LLVM_IR_FILE)"
 	@echo "  Final BC:         $(FINAL_BC)"
 	@echo "  Wrapper Header:   $(WRAPPER_HEADER)"
+
+include ../device_ir_dependencies.mk
 
 else
 llvm_ir:

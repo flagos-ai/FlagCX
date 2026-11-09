@@ -191,6 +191,9 @@ class flagcxDataTypeEnum:
             return cls.flagcxFloat64
         if dtype == torch.bfloat16:
             return cls.flagcxBfloat16
+        # Same convention as PyTorch's NCCL backend (bool -> ncclUint8).
+        if dtype == torch.bool:
+            return cls.flagcxUint8
         raise ValueError(f"Unsupported dtype: {dtype}")
 
 

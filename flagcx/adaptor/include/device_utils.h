@@ -12,6 +12,14 @@
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
+// Unreachable device path. CUDA requires its device intrinsic; the other
+// supported device compilers and host compilers accept __builtin_trap().
+#if defined(__CUDA_ARCH__)
+#define FLAGCX_DEVICE_TRAP() __trap()
+#else
+#define FLAGCX_DEVICE_TRAP() __builtin_trap()
+#endif
+
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
@@ -21,6 +29,10 @@
 #define FLAGCX_CHECK_DEVICE_CC 0
 #endif
 #endif
+
+// KunlunXin LLVM bitcode boundary.  Exported Device IR pointers live in global
+// address space 1, and IR byte offsets must be 64-bit even though the xpu3
+// device pass treats size_t as 32-bit.
 
 // Tag for pointers that address device global memory and must keep the same
 // width in every compilation pass. On XPU (xpu3) a generic pointer is 4 bytes
@@ -45,7 +57,9 @@
 // pointers) in global address space 1. Keep this separate from
 // FLAGCX_DEVICE_GLOBAL_PTR: the latter is also used by by-value C++ layouts,
 // where changing the pointer type would alter the shared host/device ABI.
-#if defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+#if (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    (defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__))
 #define FLAGCX_IR_GLOBAL_PTR __attribute__((address_space(1)))
 #define FLAGCX_IR_GLOBAL_RETURN_PTR __attribute__((address_space(1)))
 #define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
@@ -55,6 +69,12 @@
 #define FLAGCX_IR_GLOBAL_RETURN_PTR FLAGCX_DEVICE_GLOBAL_PTR
 #define FLAGCX_IR_GLOBAL_PTR_CAST(type, ptr)                                   \
   FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)
+#endif
+
+#if defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__)
+#define FLAGCX_IR_OFFSET_TYPE int64_t
+#else
+#define FLAGCX_IR_OFFSET_TYPE size_t
 #endif
 
 // How an IR entry point gets hold of its flagcxDevNet.
@@ -215,10 +235,17 @@
 #define FLAGCX_HOST_DECORATOR __host__
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
+#if defined(__clang_llvm_bitcode_lib__)
+// Export wrapper definitions from the standalone bitcode translation unit.
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#else
 #define FLAGCX_DEVICE_INLINE_DECORATOR                                         \
   __device__ inline __attribute__((always_inline))
 #define FLAGCX_HOST_DEVICE_INLINE                                              \
   __host__ __device__ inline __attribute__((always_inline))
+#endif
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 #define FLAGCX_DEVICE_THREAD_FENCE __threadfence_system
 #define FLAGCX_DEVICE_SYNC_THREADS __syncthreads

@@ -6,6 +6,8 @@
 
 #if defined(USE_NVIDIA_ADAPTOR)
 #include "nvidia_adaptor.h"
+#elif defined(USE_ILUVATAR_ADAPTOR)
+#include "iluvatar_adaptor.h"
 #elif defined(USE_METAX_ADAPTOR)
 #include "metax_adaptor.h"
 #elif defined(USE_DU_ADAPTOR)

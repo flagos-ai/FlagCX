@@ -79,9 +79,10 @@ struct flagcxDevCommInternal {
   int teamRank;          // this rank's position in the inter-node team
   int nTeamRanks;        // total number of nodes (team size for barrier)
   int barrierSignalBase; // first signal slot index used for barriers
+  int interBarrierCount; // allocated Inter barrier channels
 
-  // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
-  // 0)
+  // ---- One-sided Default layer (set if signals, counters, or Inter barriers
+  // are requested)
   // ----
   uint64_t *signalBuffer;      // GPU-visible network signal words
   uint64_t *localSignalBuffer; // GPU-visible local signal words (host SHM mode)
@@ -213,6 +214,15 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
 //   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
 //   window != nullptr        → Window available (Vendor or default)
 // ============================================================
+// Host-only resources attached to a Window after communicator creation. The
+// callback must leave the resource owned by this node when it returns an error
+// so communicator teardown can retry it.
+struct flagcxDevMemDeferredResource {
+  void *resource;
+  flagcxResult_t (*release)(void *resource);
+  struct flagcxDevMemDeferredResource *next;
+};
+
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
   void *rawPtr; // = buff parameter
@@ -244,6 +254,7 @@ struct flagcxDevMemInternal {
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
+  struct flagcxDevMemDeferredResource *deferredResources; // Host-only ownership
   struct flagcxDevMemInternal *deferredNext; // Host-only deferred-free link
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED

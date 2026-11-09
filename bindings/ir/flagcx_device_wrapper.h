@@ -145,8 +145,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
 flagcxGetLocalPointerC(const void FLAGCX_IR_GLOBAL_PTR *mem, size_t offset);
 /** @brief Get pointer to intra-node peer's memory. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
-flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *mem, size_t offset,
-                       int peer);
+flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *mem,
+                       FLAGCX_IR_OFFSET_TYPE offset, int peer);
 /** @brief Get an intra-node peer pointer for an explicit access intent. */
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
 flagcxGetIntraPointerWithAccessC(const void FLAGCX_IR_GLOBAL_PTR *mem,
