@@ -35,11 +35,13 @@ case "$workload" in
     "$project_root/.github/scripts/ci/run_host_perf_suite.sh" heterogeneous "$perf_bin"
     ;;
   torch-api)
-    export CUDA_VISIBLE_DEVICES=0,1,2,3
+    export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-0,1,2,3}
     export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
     export USE_METAX=1
-    export PYTHON_BIN=python3
+    export PYTHON_BIN=${PYTHON_BIN:-python3}
+
+    "$PYTHON_BIN" "$project_root/.github/scripts/ci/check_metax_devices.py"
 
     make -C "$project_root" --jobs="$(nproc)" USE_METAX=1
     "$PYTHON_BIN" -m pip install --break-system-packages 'setuptools_scm>=8'
@@ -50,7 +52,10 @@ case "$workload" in
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    bash "$project_root/test/script/torch_api_test.sh"
+    mkdir -p "${FLAGCX_CI_LOG_DIR:=$project_root/.ci-logs}"
+    torch_log=$(mktemp "$FLAGCX_CI_LOG_DIR/metax-torch-api.XXXXXX.log")
+    bash "$project_root/test/script/torch_api_test.sh" 2>&1 | tee "$torch_log"
+    "$PYTHON_BIN" "$project_root/.github/scripts/ci/check_metax_torch_results.py" "$torch_log"
     if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
       "$PYTHON_BIN" -m pip install --break-system-packages --quiet coverage==7.10.7
       bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"

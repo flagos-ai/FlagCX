@@ -78,6 +78,12 @@ tests and artifact collection directly in `$GITHUB_WORKSPACE`; it does not
 start a nested Docker container, because `docker run` on these runners cannot
 access accelerators. Other platforms keep the explicit Docker launcher.
 
+The MetaX image is built from [docker/metax-ci/Dockerfile](../docker/metax-ci/Dockerfile).
+It retains the MACA runtime's vendor Torch in `/flagos` and exposes Open MPI at
+`/usr/local/mpi`. Before the Torch build, CI checks native MACA and Torch device
+counts and reads/writes tensors on four GPUs. The two four-rank collective
+runs fail if they skip work or any rank fails to reach the last collective.
+
 The selected Runner Scale Set must use ARC `kubernetes-novolume` and provide
 the platform-specific device resources, driver and SDK mounts, RDMA access,
 host network and IPC, shared memory, memlock, a root user, image-pull
