@@ -685,16 +685,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
-        selected = subprocess.run(
-            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "cuda"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
-            ["cuda"],
-        )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()

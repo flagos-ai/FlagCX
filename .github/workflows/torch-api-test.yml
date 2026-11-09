@@ -23,12 +23,7 @@ env:
 
 jobs:
   load-hardware-container-configs:
-    if: >-
-      contains(fromJSON(inputs.platforms), 'cuda') ||
-      contains(fromJSON(inputs.platforms), 'hygon') ||
-      contains(fromJSON(inputs.platforms), 'metax') ||
-      contains(fromJSON(inputs.platforms), 'ppu') ||
-      contains(fromJSON(inputs.platforms), 'ascend')
+    if: inputs.platforms != '[]'
     name: Load platform container configurations
     runs-on: ubuntu-latest
     outputs:

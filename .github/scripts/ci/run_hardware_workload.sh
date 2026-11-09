@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 <platform> <unittest|probe|torch-api|perf|perf-legacy> <set-env-script> <suite>" >&2
+  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-legacy> <set-env-script> <suite>" >&2
   exit 2
 fi
 
@@ -14,13 +14,6 @@ suite=$4
 project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 
 case "$workload" in
-  probe)
-    if [[ "$platform" != iluvatar ]]; then
-      echo "The probe workload is only available for Iluvatar" >&2
-      exit 2
-    fi
-    exec bash "$project_root/.github/scripts/ci/probe_iluvatar_device_api.sh"
-    ;;
   unittest)
     exec bash "$project_root/.github/scripts/ci/run_unit_test.sh" \
       "$set_env" "$suite"

@@ -1409,27 +1409,28 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
   }
   hostCopy._gridBarrierState = (unsigned int *)gridSyncPtr;
 
-  // Step 2: Allocate the device communicator and net contexts.
+  // Step 2: Copy flagcxDevComm to device
   FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&dPtr, sizeof(flagcxDevComm),
                                               flagcxMemDevice, NULL),
                   res, fail);
-  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
-    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
-    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
-                                                flagcxMemDevice, NULL),
-                    res, fail);
-    hostCopy._netContexts = netDevPtr;
-  }
-
-  // Step 3: Copy the complete communicator before constructing net contexts.
   FLAGCXCHECKGOTO(
       deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevComm),
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
 
-  if (netDevPtr) {
+  // Step 3: Allocate + construct net array on device
+  if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0) {
+    size_t netArraySize = hostCopy._contextCount * flagcxDevNetSizeOf();
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceMalloc(&netDevPtr, netArraySize,
+                                                flagcxMemDevice, NULL),
+                    res, fail);
     flagcxDevNetLaunchConstruct(netDevPtr, dPtr, hostCopy._contextCount,
                                 nullptr);
+    void *netCtxField = (char *)dPtr + offsetof(flagcxDevComm, _netContexts);
+    FLAGCXCHECKGOTO(
+        deviceAdaptor->deviceMemcpy(netCtxField, &netDevPtr, sizeof(void *),
+                                    flagcxMemcpyHostToDevice, NULL, NULL),
+        res, fail);
     FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
   }
 
