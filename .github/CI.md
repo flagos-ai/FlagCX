@@ -6,10 +6,6 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-Non-Ascend platform CI and package checks are temporarily paused. The enabled
-platform matrix currently contains only Ascend; disabled platform labels and
-manual requests schedule no hardware tests.
-
 PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail

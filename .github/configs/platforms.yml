@@ -3,18 +3,17 @@
 # The per-platform files keep detailed runner/image settings. This registry
 # controls which platforms are included when the workflow runs with
 # platform=all.
-# Temporarily run Ascend CI only; restore these flags to re-enable the others.
 platforms:
   cuda:
-    enabled: false
+    enabled: true
   hygon:
-    enabled: false
+    enabled: true
   iluvatar:
-    enabled: false
+    enabled: true
   metax:
-    enabled: false
+    enabled: true
   ppu:
-    enabled: false
+    enabled: true
   ascend:
     enabled: true
 shared_paths_watch:

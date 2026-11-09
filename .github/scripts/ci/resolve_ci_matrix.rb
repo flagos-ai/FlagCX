@@ -28,7 +28,6 @@ abort "Platform registry not found: #{registry_path}" unless File.file?(registry
 registry = load_yaml.call(registry_path)
 settings = registry.fetch("platforms", {})
 abort "#{registry_path}: platforms must be a map" unless settings.is_a?(Hash)
-registered_platform_names = settings.keys
 platforms = settings.filter_map do |name, value|
   next if value.is_a?(Hash) && value.fetch("enabled", true) == false
 
@@ -86,21 +85,21 @@ end
 parse_selection = lambda do |value|
   requested = value.to_s.split(",").map(&:strip).reject(&:empty?)
   requested = ["all"] if requested.empty?
-  unknown = requested.reject { |name| name == "all" || registered_platform_names.include?(name) }
+  unknown = requested.reject { |name| name == "all" || platform_names.include?(name) }
   abort "Unknown platform selection: #{unknown.join(', ')}" unless unknown.empty?
-  requested.include?("all") ? platform_names : requested.uniq & platform_names
+  requested.include?("all") ? platform_names : requested.uniq
 end
 
 case event_name
 when "pull_request"
   route_labels = labels.select { |label| label.start_with?("platform:") }
   invalid_labels = route_labels.map { |label| label.delete_prefix("platform:") }
-                                .reject { |name| name == "all" || registered_platform_names.include?(name) }
+                                .reject { |name| name == "all" || platform_names.include?(name) }
   abort "Unknown platform label(s): #{invalid_labels.join(', ')}" unless invalid_labels.empty?
   if route_labels.include?("platform:all")
     selection = platform_names
   elsif !route_labels.empty?
-    selection = route_labels.map { |label| label.delete_prefix("platform:") }.uniq & platform_names
+    selection = route_labels.map { |label| label.delete_prefix("platform:") }.uniq
   else
     selection = select_paths.call
   end

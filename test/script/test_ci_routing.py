@@ -30,10 +30,6 @@ def enabled_platform_or_matrix(platform):
     return ALL_ENABLED_PLATFORMS
 
 
-def enabled_platform_or_empty(platform):
-    return [platform] if platform in ALL_ENABLED_PLATFORMS else []
-
-
 class CiMatrixRoutingTest(unittest.TestCase):
     def resolve(self, context):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -76,11 +72,8 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cuda_adaptor.cc",
                 enabled_platform_or_matrix("cuda"),
             ),
-            (
-                "flagcx/adaptor/device/ixcuda_adaptor.cc",
-                enabled_platform_or_matrix("iluvatar"),
-            ),
-            ("docker/iluvatar-ci/Dockerfile", enabled_platform_or_matrix("iluvatar")),
+            ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
+            ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
             ("flagcx/adaptor/device/cann_adaptor.cc", ["ascend"]),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
@@ -142,7 +135,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], enabled_platform_or_empty("iluvatar"))
+        self.assertEqual(outputs["platforms"], ["iluvatar"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -201,7 +194,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             "is_pull_request": True, "labels": ["platform:iluvatar"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], enabled_platform_or_empty("iluvatar"))
+        self.assertEqual(outputs["platforms"], ["iluvatar"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -212,11 +205,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            (
-                "workflow_dispatch",
-                {"selection": "iluvatar"},
-                enabled_platform_or_empty("iluvatar"),
-            ),
+            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
             (
                 "issue_comment",
                 {
@@ -224,7 +213,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                enabled_platform_or_empty("iluvatar"),
+                ["iluvatar"],
             ),
             (
                 "issue_comment",
@@ -243,7 +232,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                enabled_platform_or_matrix("cuda"),
+                ["cuda"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
