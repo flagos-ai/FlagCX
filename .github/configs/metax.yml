@@ -7,12 +7,14 @@ paths_watch:
   - .github/configs/metax.yml
   - .github/scripts/set_env/metax.sh
   - .github/scripts/ci/run_metax_workload.sh
+  - .github/scripts/ci/check_metax_devices.py
   - flagcx/adaptor/device/maca_adaptor.cc
   - test/kernel/maca/**/*
   - flagcx/adaptor/ccl/mccl_adaptor.cc
   - flagcx/adaptor/include/metax_adaptor.h
   - flagcx/adaptor/tuner/mccl_tuner.cc
 
+# TODO(metax-torch): Provide a CI image with working mcPyTorch before enabling Torch API jobs.
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
 
 runner_labels:

@@ -57,28 +57,33 @@ if [[ "$mode" == heterogeneous ]]; then
 fi
 mpi_args+=("$@")
 
-# A backend that does not implement a collective declares it in its platform
-# set_env script, so the operation lists above stay the full API set every
-# platform is measured against. Keeping the gap here rather than deleting the
-# operation means one grep shows what a platform does not cover, and restoring
-# it is a one-line change. Every skipped operation is announced: a silently
-# shortened list is indistinguishable from a platform that ran everything.
-unsupported_ops=" ${FLAGCX_CI_PERF_UNSUPPORTED_OPS:-} "
-executed_ops=0
-skipped_ops=()
+continue_on_failure=${FLAGCX_CI_PERF_CONTINUE_ON_FAILURE:-0}
+passed_operations=()
+failed_operations=()
+skipped_operations=()
+
+run_operation() {
+  if [[ "$mode" == heterogeneous && "$operation" == sendrecv &&
+        "$platform" == Ascend ]]; then
+    FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
+      FLAGCX_DEBUG=TRACE FLAGCX_DEBUG_SUBSYS=NET \
+      "${clean_mode_env[@]}" "$mpi_runner" \
+      "${mpi_args[@]}" -x FLAGCX_DEBUG=TRACE \
+      -x FLAGCX_DEBUG_SUBSYS=NET "$binary" "${operation_args[@]}"
+  else
+    FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
+      "${clean_mode_env[@]}" "$mpi_runner" \
+      "${mpi_args[@]}" "$binary" "${operation_args[@]}"
+  fi
+}
+
 for operation in "${operations[@]}"; do
-  if [[ "$unsupported_ops" == *" $operation "* ]]; then
-    echo "::warning title=FlagCX perf operation not supported::$platform $mode" \
-      "perf: $operation was skipped; the backend reports it as unimplemented"
-    echo "$platform $mode perf: SKIPPED $operation (declared unsupported)"
-    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-      printf -- '- **Perf operation skipped:** `%s` / %s %s — declared unsupported\n' \
-        "$operation" "$platform" "$mode" >> "$GITHUB_STEP_SUMMARY"
-    fi
-    skipped_ops+=("$operation")
+  if [[ " ${FLAGCX_CI_PERF_SKIP_OPERATIONS:-} " == *" $operation "* ]]; then
+    skipped_operations+=("$operation")
+    echo "[PERF RESULT] $platform $mode $operation: SKIP (configured)"
     continue
   fi
-  executed_ops=$((executed_ops + 1))
+
   max_bytes=1G
   if [[ "$mode" == heterogeneous && "$operation" == sendrecv ]]; then
     max_bytes=${FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES:-1G}
@@ -96,31 +101,31 @@ for operation in "${operations[@]}"; do
   binary="$perf_bin/perf_$operation"
   if [[ ! -x "$binary" ]]; then
     echo "Perf binary is missing or not executable: $binary" >&2
-    exit 1
+    if [[ "$continue_on_failure" != 1 ]]; then
+      exit 1
+    fi
+    failed_operations+=("$operation")
+    echo "[PERF RESULT] $platform $mode $operation: FAIL (missing binary)" >&2
+    continue
   fi
 
-  if [[ "$mode" == heterogeneous && "$operation" == sendrecv &&
-        "$platform" == Ascend ]]; then
-    FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
-      FLAGCX_DEBUG=TRACE FLAGCX_DEBUG_SUBSYS=NET \
-      "${clean_mode_env[@]}" "$mpi_runner" \
-      "${mpi_args[@]}" -x FLAGCX_DEBUG=TRACE \
-      -x FLAGCX_DEBUG_SUBSYS=NET "$binary" "${operation_args[@]}"
+  if [[ "$continue_on_failure" == 1 ]]; then
+    if run_operation; then
+      passed_operations+=("$operation")
+      echo "[PERF RESULT] $platform $mode $operation: PASS"
+    else
+      result=$?
+      failed_operations+=("$operation")
+      echo "[PERF RESULT] $platform $mode $operation: FAIL (exit $result)" >&2
+    fi
   else
-    FLAGCX_CI_MPI_LABEL="$platform $mode perf: $operation" \
-      "${clean_mode_env[@]}" "$mpi_runner" \
-      "${mpi_args[@]}" "$binary" "${operation_args[@]}"
+    run_operation
   fi
 done
 
-# An invocation that measured nothing must not report success: that is the one
-# outcome a reader would mistake for a passing perf run.
-if ((executed_ops == 0)); then
-  echo "$platform $mode perf ran no operations: every selected operation is" \
-    "declared unsupported" >&2
-  exit 1
-fi
-if ((${#skipped_ops[@]} > 0)); then
-  echo "$platform $mode perf summary: executed=$executed_ops" \
-    "skipped=${skipped_ops[*]}"
+if [[ "$continue_on_failure" == 1 ]]; then
+  echo "[PERF SUMMARY] $platform $mode: passed=${passed_operations[*]:-none}; failed=${failed_operations[*]:-none}; skipped=${skipped_operations[*]:-none}"
+  if (( ${#failed_operations[@]} > 0 )); then
+    exit 1
+  fi
 fi

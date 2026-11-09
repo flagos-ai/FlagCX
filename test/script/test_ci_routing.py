@@ -77,6 +77,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ("flagcx/adaptor/device/ixcuda_adaptor.cc", enabled_platform_or_matrix("iluvatar")),
             ("docker/iluvatar-ci/Dockerfile", enabled_platform_or_matrix("iluvatar")),
             (
+                "flagcx/adaptor/device/cann_adaptor.cc",
+                enabled_platform_or_matrix("ascend"),
+            ),
+            (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
             ),
