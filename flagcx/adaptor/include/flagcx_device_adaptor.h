@@ -28,6 +28,7 @@ typedef enum {
   FLAGCX_GDR_DEVICE_METAX = 2,
   FLAGCX_GDR_DEVICE_DU = 3,
   FLAGCX_GDR_DEVICE_PPU = 4,
+  FLAGCX_GDR_DEVICE_ASCEND = 5,
 } flagcxGdrDeviceFamily_t;
 
 // C-compatible typedef matching the C++ using alias in dlsymbols.h.
