@@ -60,7 +60,26 @@ Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration
 are not retried. Recovered tests emit a flaky warning and Step Summary entry.
 The `attempts-*` artifacts preserve both attempts for seven days, including
-tests executed in explicitly managed Docker containers.
+tests executed in the Kubernetes job Pod.
+
+## Kubernetes Job Pods
+
+Unit-test and C++ coverage jobs run in the platform CI image using a job-level
+`container:`. The job Pod runs checkout, submodule checkout, build, tests, and
+artifact collection directly in `$GITHUB_WORKSPACE`; it does not start a
+nested Docker container. The `load_config` job still resolves the platform
+image and runner labels before the hardware job starts.
+
+The selected Runner Scale Set must use ARC `kubernetes-novolume` and provide
+the platform-specific device resources, driver and SDK mounts, RDMA access,
+shared memory, image-pull credentials, node scheduling, and device exclusivity
+in its job Pod configuration. These settings are cluster-owned and are not
+expressed as Docker `options` by this repository. CI images must include Git
+and the tools needed by `actions/checkout`, build, and test steps.
+
+Performance and Torch API workflows still use the legacy Docker launcher and
+must be migrated separately. RPM packaging remains an independent builder
+workflow and is not part of the hardware job Pod migration.
 
 ## Python Coverage
 
