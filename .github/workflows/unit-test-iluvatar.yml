@@ -12,6 +12,8 @@ concurrency:
 
 jobs:
   iluvatar_unit_tests:
+    # Temporarily paused alongside the platforms.yml switch during MetaX migration.
+    if: ${{ false }}
     name: Iluvatar CoreX unit tests
     uses: ./.github/workflows/unit_tests_common.yml
     with:

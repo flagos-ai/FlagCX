@@ -6,6 +6,12 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
+During the Kubernetes migration, only MetaX is enabled in
+`.github/configs/platforms.yml`. Automatic unit, performance, Torch API and
+scheduled C++ coverage runs select MetaX only. Explicit requests for disabled
+platforms are rejected. The standalone Iluvatar workflow is also paused;
+restore its job condition when re-enabling Iluvatar in the registry.
+
 PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
