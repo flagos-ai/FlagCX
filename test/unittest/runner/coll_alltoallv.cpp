@@ -8,8 +8,9 @@
 
 namespace {
 
-size_t pairCount(int src, int dst, int nranks, int round) {
-  if (dst == (src + round + 1) % nranks)
+size_t pairCount(int src, int dst, int nranks, int round,
+                 bool includeZeroCounts) {
+  if (includeZeroCounts && dst == (src + round + 1) % nranks)
     return 0;
   return 1 + static_cast<size_t>((src * 7 + dst * 3 + round) % 5);
 }
@@ -21,7 +22,7 @@ float payloadValue(int round, int src, int dst, size_t index) {
 
 } // namespace
 
-TEST_F(FlagCXCollTest, AlltoAllvAsymmetric) {
+void FlagCXCollTest::runAlltoAllvAsymmetric(bool includeZeroCounts) {
   constexpr float kSendSentinel = -101.0f;
   constexpr float kRecvSentinel = -303.0f;
   const size_t hostElements = size / sizeof(float);
@@ -34,8 +35,10 @@ TEST_F(FlagCXCollTest, AlltoAllvAsymmetric) {
 
     size_t checkedRecvElements = 0;
     for (int peer = 0; peer < nranks; ++peer) {
-      sendcounts[peer] = pairCount(rank, peer, nranks, round);
-      recvcounts[peer] = pairCount(peer, rank, nranks, round);
+      sendcounts[peer] =
+          pairCount(rank, peer, nranks, round, includeZeroCounts);
+      recvcounts[peer] =
+          pairCount(peer, rank, nranks, round, includeZeroCounts);
       sdispls[peer] = 3 + static_cast<size_t>(peer) * 11 +
                       static_cast<size_t>((rank + peer + round) % 3);
       rdispls[peer] = 5 + static_cast<size_t>(peer) * 13 +
@@ -99,4 +102,10 @@ TEST_F(FlagCXCollTest, AlltoAllvAsymmetric) {
     }
     MPI_Barrier(MPI_COMM_WORLD);
   }
+}
+
+TEST_F(FlagCXCollTest, AlltoAllvAsymmetric) { runAlltoAllvAsymmetric(true); }
+
+TEST_F(FlagCXCollTest, AlltoAllvAsymmetricNonzero) {
+  runAlltoAllvAsymmetric(false);
 }

@@ -30,8 +30,23 @@ fi
 status=0
 label=${FLAGCX_CI_MPI_LABEL:-Ascend runner}
 while IFS= read -r test; do
-  FLAGCX_CI_MPI_LABEL="$label $test" \
-    "$mpi_runner" "$@" --gtest_filter="$test" || status=$?
+  trace_call=0
+  if [[ "$label" == "runner heterogeneous" ||
+        "$label" == "runner forced NET" ]]; then
+    case "$test" in
+      FlagCXCollTest.AllReduce|FlagCXCollTest.Reduce|FlagCXCollTest.ReduceScatter)
+        trace_call=1
+        ;;
+    esac
+  fi
+  if [[ "$trace_call" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="$label $test" \
+      "$mpi_runner" -x FLAGCX_DEBUG=TRACE -x FLAGCX_DEBUG_SUBSYS=ALL \
+      "$@" --gtest_filter="$test" || status=$?
+  else
+    FLAGCX_CI_MPI_LABEL="$label $test" \
+      "$mpi_runner" "$@" --gtest_filter="$test" || status=$?
+  fi
   if [[ "$status" == 130 || "$status" == 143 ]]; then
     exit "$status"
   fi

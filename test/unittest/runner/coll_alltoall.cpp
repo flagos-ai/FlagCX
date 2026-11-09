@@ -64,12 +64,23 @@ TEST_F(FlagCXCollTest, AlltoAll) {
           &comm->heteroComm->channels[sendChannel].peers[peer]->send[0],
           &comm->heteroComm->channels[recvChannel].peers[peer]->recv[0],
       };
-      for (flagcxConnector *connector : connectors) {
+      for (int direction = 0; direction < 2; ++direction) {
+        flagcxConnector *connector = connectors[direction];
+        const int channel = direction == 0 ? sendChannel : recvChannel;
+        const char *operation = direction == 0 ? "send" : "recv";
         localChecked++;
         if (!connector->connected || !connector->proxyConn.initialized ||
             connector->proxyConn.transport != TRANSPORT_NET ||
             connector->proxyConn.connection == nullptr) {
           localMismatches++;
+          std::cerr << "AlltoAll NET connector invalid: rank=" << rank
+                    << " peer=" << peer << " channel=" << channel
+                    << " operation=" << operation
+                    << " connected=" << connector->connected
+                    << " initialized=" << connector->proxyConn.initialized
+                    << " transport=" << connector->proxyConn.transport
+                    << " connection=" << connector->proxyConn.connection
+                    << std::endl;
           continue;
         }
         if (expectIb) {
@@ -78,12 +89,21 @@ TEST_F(FlagCXCollTest, AlltoAll) {
               __atomic_load_n(&connection->collDataLaneMask, __ATOMIC_RELAXED);
           if (mask == 0) {
             localMismatches++;
+            std::cerr << "AlltoAll NET data lane missing: rank=" << rank
+                      << " peer=" << peer << " channel=" << channel
+                      << " operation=" << operation << " mask=0x" << std::hex
+                      << mask << std::dec << std::endl;
           } else {
             localLaneMask |= mask;
-            if (expectStriping && __builtin_popcountll(mask) < 2)
+            // A non-striped transfer can still use one QP per NIC. This mask
+            // also accumulates lanes across submissions on the connection.
+            if (expectStriping && __builtin_popcountll(mask) < 2) {
               localMismatches++;
-            if (!expectStriping && __builtin_popcountll(mask) != 1)
-              localMismatches++;
+              std::cerr << "AlltoAll NET QP striping missing: rank=" << rank
+                        << " peer=" << peer << " channel=" << channel
+                        << " operation=" << operation << " mask=0x" << std::hex
+                        << mask << std::dec << std::endl;
+            }
           }
         }
       }
@@ -104,9 +124,10 @@ TEST_F(FlagCXCollTest, AlltoAll) {
     EXPECT_GT(globalChecked, 0);
     EXPECT_GE(__builtin_popcountll(globalChannelMask), 2)
         << "collective did not establish multiple internal channels";
-    if (expectIb)
+    if (expectIb) {
       EXPECT_GE(__builtin_popcountll(globalLaneMask), 2)
           << "collective did not exercise multiple physical QPs";
+    }
     EXPECT_EQ(globalMismatches, 0);
   }
 
