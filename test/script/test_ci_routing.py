@@ -444,7 +444,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
         ).read_text()
         self.assertIn("FLAGCX_ADAPTOR=klx", handler)
-        self.assertIn("flagcx_ci_find_xpu_toolchain", handler)
+        self.assertNotIn("export XTDK_HOME=", handler)
         self.assertIn("torch.cuda.device_count() >= 4", handler)
         self.assertIn("test/script/torch_api_test.sh", handler)
 

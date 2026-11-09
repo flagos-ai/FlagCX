@@ -140,7 +140,8 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
         self.assertIn(
             'if [[ "$platform_name" == "ppu" || '
-            '"$platform_name" == "hygon" ]]',
+            '"$platform_name" == "hygon" ||\n'
+            '            "$platform_name" == "kunlunxin" ]]',
             unit_runner,
         )
         self.assertIn(

@@ -19,8 +19,9 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:kunlunxin-dev-fixed-20261019
 runner_labels:
   - kl-8g-cicd-flagcx
 
-docker_volumes:
-  - /usr/local/xpu:/usr/local/xpu:ro
+# Use the XRE and CUDA compatibility libraries shipped in ci_image. Mounting
+# /usr/local/xpu from the runner replaces them with the host's XRE version.
+docker_volumes: []
 
 docker_options:
   - --network=host
@@ -35,7 +36,7 @@ docker_options:
   - --env=MPI_HOME=/usr/local/mpich-3.3.2
   - --env=CCL_HOME=/usr/local/xccl_Linux_x86_64
   - --env=DEVICE_HOME=/usr/local/xpu
-  - --env=LD_LIBRARY_PATH=/usr/local/xccl_Linux_x86_64/so:/usr/local/mpich-3.3.2/lib:/usr/local/xpu/so:/usr/local/xpu/lib
+  - --env=LD_LIBRARY_PATH=/usr/local/xccl_Linux_x86_64/so:/usr/local/mpich-3.3.2/lib:/usr/local/xcudart/lib:/usr/local/xpu/so:/usr/local/xpu/lib
   - --device=/dev/xpuctrl
   - --device=/dev/xpu0
   - --device=/dev/xpu1

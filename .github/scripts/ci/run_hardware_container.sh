@@ -102,6 +102,10 @@ docker run --rm \
     git config --global --add safe.directory /workspace
     git config --global --add safe.directory /workspace/third-party/googletest
     git config --global --add safe.directory /workspace/third-party/json
+    # Local checkouts and development images can carry objects compiled with
+    # older headers. The test Makefiles do not track all header dependencies.
+    # Clean ignored artifacts in the writable copy before compiling this ref.
+    git clean -ffdX
     bash .github/scripts/ci/run_hardware_workload.sh \
       "$FLAGCX_CI_PLATFORM" "$FLAGCX_CI_WORKLOAD" \
       "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"

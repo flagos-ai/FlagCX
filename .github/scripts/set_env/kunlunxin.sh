@@ -13,7 +13,7 @@ DEVICE_HOME=${DEVICE_HOME:-/usr/local/xpu}
 export MPI_HOME CCL_HOME DEVICE_HOME
 export JSON_INCLUDE_DIR="${JSON_INCLUDE_DIR:-/usr/include}"
 export PATH="$MPI_HOME/bin:$DEVICE_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="$CCL_HOME/so:$MPI_HOME/lib:$DEVICE_HOME/so:$DEVICE_HOME/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$CCL_HOME/so:$MPI_HOME/lib:/usr/local/xcudart/lib:$DEVICE_HOME/so:$DEVICE_HOME/lib:${LD_LIBRARY_PATH:-}"
 export FLAGCX_CI_MPIRUN="$(cd "$(dirname "${BASH_SOURCE[0]}")/../ci" && pwd)/run_mpich.sh"
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_KUNLUNXIN=1 MPI_HOME="$MPI_HOME" CCL_HOME="$CCL_HOME" DEVICE_HOME="$DEVICE_HOME" "HOST_CXXFLAGS=-include cstddef")
@@ -111,6 +111,6 @@ flagcx_ci_prepare() {
     echo "KunlunXin XTDK toolchain: $toolchain"
   else
     export FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE=0
-    echo "KunlunXin XTDK toolchain not found; device_api and device_api_unified_ir will be skipped"
+    echo "KunlunXin XTDK toolchain not found; device_api, device_api_unified_ir and kernel will be skipped"
   fi
 }
