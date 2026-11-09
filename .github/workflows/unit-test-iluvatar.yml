@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - .github/scripts/ci/probe_iluvatar_device_api.sh
+      - .github/scripts/ci/probe_iluvatar_barrier_variants.py
+      - .github/workflows/unit-test-iluvatar.yml
   workflow_dispatch:
     inputs:
       diagnose_device_api:
@@ -49,28 +51,28 @@ jobs:
     needs: probe_config
     runs-on: ${{ fromJSON(needs.probe_config.outputs.runs_on) }}
     timeout-minutes: 90
-    env:
-      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
     steps:
       - name: Checkout full history for source comparisons
         uses: actions/checkout@v7
         with:
+          path: iluvatar-probe-${{ github.run_id }}-${{ github.run_attempt }}
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
       - name: Run CoreX compile probes
         env:
+          FLAGCX_CI_LOG_DIR: ${{ runner.temp }}/flagcx-iluvatar-probe-${{ github.run_id }}-${{ github.run_attempt }}
           FLAGCX_CI_CONTAINER_NAME: flagcx-iluvatar-probe-${{ github.run_id }}-${{ github.run_attempt }}
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.probe_config.outputs.docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.probe_config.outputs.ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.probe_config.outputs.set_env }}
-        run: bash .github/scripts/ci/run_hardware_container.sh iluvatar probe
+        run: bash iluvatar-probe-${{ github.run_id }}-${{ github.run_attempt }}/.github/scripts/ci/run_hardware_container.sh iluvatar probe
       - name: Upload probe logs and CoreX reproducers
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: iluvatar-device-api-probe-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          path: ${{ runner.temp }}/flagcx-iluvatar-probe-${{ github.run_id }}-${{ github.run_attempt }}/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

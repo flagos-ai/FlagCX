@@ -32,7 +32,12 @@ concurrency:
 jobs:
   prepare:
     name: Resolve platform matrix
-    if: github.event_name != 'issue_comment' || (github.event.issue.pull_request && startsWith(github.event.comment.body, '/test'))
+    # PR #702 runs only the dedicated Iluvatar compile probe while diagnosing
+    # the CoreX regression. Keep the normal CI routing for other PRs.
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.number != 702) &&
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/test')))
     runs-on: ubuntu-latest
     outputs:
       active: ${{ steps.resolve.outputs.active }}
@@ -173,7 +178,10 @@ jobs:
 
   ci_complete:
     name: ci-complete
-    if: always() && (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' || github.event.pull_request.number != 702) &&
+      (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
     needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]
     runs-on: ubuntu-latest
     steps:

@@ -1,219 +1,173 @@
 #!/usr/bin/env bash
 
-# Compile both CoreX Device API translation units at each mainline boundary.
-# This diagnostic does not change or replace the normal Iluvatar test suites.
+# Compare the complete #696 header against the same tree with only #4/#5 undone.
 set -euo pipefail
 
 repo_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 log_root=${FLAGCX_CI_LOG_DIR:-/tmp}/iluvatar-device-api-probe
 scratch_root=$(mktemp -d /tmp/flagcx-device-api-probe.XXXXXX)
 header=flagcx/adaptor/include/device_api/default_comm_traits.h
+commit=f626a08c
+variant_dir="$log_root/barrier-variants"
+snapshot="$scratch_root/after-696"
 
-mkdir -p "$log_root"
+mkdir -p "$log_root" "$variant_dir" "$snapshot"
 source "$repo_root/.github/scripts/set_env/iluvatar.sh"
 git -C "$repo_root" rev-parse HEAD > "$log_root/probe-head.txt"
-"${COREX_CLANG:-/usr/local/corex/bin/clang}" --version > "$log_root/corex-clang-version.txt"
+git -C "$repo_root" cat-file -e "50984d4f^{commit}"
+git -C "$repo_root" cat-file -e "$commit^{commit}"
+"${COREX_CLANG:-/usr/local/corex/bin/clang}" --version \
+  > "$log_root/corex-clang-version.txt"
 printf 'case\tcommit\ttarget\tresult\tfunction\n' > "$log_root/results.tsv"
 
-mainline=(pre_694 after_694 after_696 after_692 merged_670)
-commits=(4a3dca96 50984d4f f626a08c 14282a1a 9f350cf8)
+git -C "$repo_root" show "50984d4f:$header" > "$variant_dir/after_694.h"
+git -C "$repo_root" show "$commit:$header" > "$variant_dir/after_696.h"
+python3 "$repo_root/.github/scripts/ci/probe_iluvatar_barrier_variants.py" \
+  --old "$variant_dir/after_694.h" --new "$variant_dir/after_696.h" \
+  --output-dir "$variant_dir"
 
-for i in "${!commits[@]}"; do
-  git -C "$repo_root" cat-file -e "${commits[$i]}^{commit}"
-  if ((i > 0)); then
-    git -C "$repo_root" merge-base --is-ancestor "${commits[$((i - 1))]}" "${commits[$i]}" || {
-      echo "Probe commits are not ordered along one mainline" >&2
-      exit 2
-    }
-  fi
-done
+git -C "$repo_root" archive "$commit" | tar -xf - -C "$snapshot"
+# git archive records submodule references, not their files.
+if [[ -d "$repo_root/third-party/json" ]]; then
+  cp -a "$repo_root/third-party/json/." "$snapshot/third-party/json/"
+fi
+cp "$snapshot/test/kernel/iluvatar/device_api.cu" \
+  "$scratch_root/original-device_api.cu"
 
 copy_crash_files() {
   local target=$1 marker=$2 destination=$3
   mkdir -p "$destination"
-  # CoreX sometimes writes reproducer files to /tmp even when TMPDIR is set.
+  # CoreX sometimes writes reproducers to /tmp even when TMPDIR is set.
   find /tmp -maxdepth 1 -type f -name "$target-*" -newer "$marker" \
     -exec cp -p {} "$destination/" \;
 }
 
-restore_inter_barrier_class() {
-  local snapshot=$1
-  local old_class="$snapshot/parent-inter-barrier-class.h"
-  git -C "$repo_root" show "50984d4f:$header" > "$old_class"
-  python3 - "$old_class" "$snapshot/$header" <<'PY'
-import pathlib
-import sys
-
-old = pathlib.Path(sys.argv[1]).read_text()
-path = pathlib.Path(sys.argv[2])
-new = path.read_text()
-start = "// ---- Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> ----"
-end = "// ---- Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> ----"
-for text in (old, new):
-    if text.count(start) != 1 or text.count(end) != 1:
-        raise SystemExit("Inter barrier class markers changed; probe cannot apply")
-old_section = old[old.index(start):old.index(end)]
-path.write_text(new[:new.index(start)] + old_section + new[new.index(end):])
-PY
-}
-
-force_proxy_dispatch() {
-  local path=$1
+mask_k12_for_world_barrier() {
+  local path=$1 destination=$2
+  cp "$path" "$destination/original_device_api.cu"
   python3 - "$path" <<'PY'
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-dispatch = text.index("struct DefaultNetDispatch {")
-start = text.index("  template <typename Op, typename... Args>\n", dispatch)
-end = text.index("\n  }\n};", start) + len("\n  }")
-replacement = """  template <typename Op, typename... Args>
-  FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
-                                                  Args &&...args)
-      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Op>::call(
-          ctx, static_cast<Args &&>(args)...)) {
-    return DefaultNetApi<DefaultNetProviderProxy, Op>::call(
-        ctx, static_cast<Args &&>(args)...);
-  }"""
-path.write_text(text[:start] + replacement + text[end:])
+source = path.read_text()
+start = "// K12: Inter Barrier — stress test (N iterations of inter barrier sync)"
+end = "// K13: World Barrier — sync + arrive/wait split"
+if source.count(start) != 1 or source.count(end) != 1:
+    raise SystemExit("Cannot isolate K13: K12/K13 markers changed")
+first = source.index(start)
+last = source.index(end, first)
+path.write_text(source[:first] + "#if 0 // Compile-only K13 isolation\n" +
+                source[first:last] + "#endif\n" + source[last:])
 PY
+  diff -u "$destination/original_device_api.cu" "$path" \
+    > "$destination/diagnostic-source.patch" || true
+}
+
+compile_target() {
+  local label=$1 target=$2 case_name=${3:-$2}
+  local case_dir="$log_root/$label/$case_name"
+  local marker="$case_dir/start.marker" rc=0 result function
+  mkdir -p "$case_dir/tmp"
+  touch "$marker"
+  make -C "$snapshot/test/kernel/iluvatar" -B -n "$target.o" \
+    USE_ILUVATAR=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 \
+    > "$case_dir/reproduce-make-command.txt" 2>&1
+  TMPDIR="$case_dir/tmp" make -C "$snapshot/test/kernel/iluvatar" \
+    -B --jobs=1 "$target.o" USE_ILUVATAR=1 COMPILE_KERNEL=1 \
+    FORCE_DEFAULT_PATH=1 > "$case_dir/compile.log" 2>&1 || rc=$?
+  printf '%s\n' "$rc" > "$case_dir/exit-code.txt"
+  if ((rc == 0)); then
+    result=PASS
+  elif grep -Fq 'LLVM ERROR: failed to annotate CFG' "$case_dir/compile.log" && \
+       grep -Fq 'BI annotate control flow' "$case_dir/compile.log"; then
+    result=BI_CFG_CRASH
+  elif grep -Fq 'LLVM ERROR: Broken function found' "$case_dir/compile.log"; then
+    result=LLVM_VERIFIER_CRASH
+  elif grep -Fq 'LLVM ERROR:' "$case_dir/compile.log"; then
+    result=OTHER_LLVM_CRASH
+  else
+    result=COMPILE_ERROR
+  fi
+  if ((rc != 0)); then
+    copy_crash_files "$target" "$marker" "$case_dir/crash-files"
+  fi
+  function=$(sed -n "s/.*on function '\([^']*\)'.*/\1/p" \
+    "$case_dir/compile.log" | head -1)
+  if [[ -z "$function" ]]; then
+    function=$(sed -n 's/^in function \([^[:space:]]*\).*/\1/p' \
+      "$case_dir/compile.log" | head -1)
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$label" "$commit" "$case_name" "$result" "$function" \
+    >> "$log_root/results.tsv"
+  printf '%-12s %-24s %-21s %s\n' \
+    "$label" "$case_name" "$result" "$function"
 }
 
 run_case() {
-  local label=$1 commit=$2 variant=${3:-none}
-  local snapshot="$scratch_root/$label"
-  mkdir -p "$snapshot" "$log_root/$label"
-  git -C "$repo_root" archive "$commit" | tar -xf - -C "$snapshot"
-  # git archive records submodule references, not their files. The pinned JSON
-  # revision is the same at every boundary in this probe.
-  if [[ -d "$repo_root/third-party/json" ]]; then
-    cp -a "$repo_root/third-party/json/." "$snapshot/third-party/json/"
-  fi
-  cp "$snapshot/$header" "$log_root/$label/original-default_comm_traits.h"
+  local label=$1
+  local case_dir="$log_root/$label"
+  mkdir -p "$case_dir"
+  cp "$variant_dir/$label.h" "$snapshot/$header"
+  cp "$scratch_root/original-device_api.cu" \
+    "$snapshot/test/kernel/iluvatar/device_api.cu"
+  diff -u "$variant_dir/after_696.h" "$snapshot/$header" \
+    > "$case_dir/source-variant.patch" || true
+  printf '%s\n' "$commit" > "$case_dir/source-commit.txt"
 
-  case "$variant" in
-    none) ;;
-    parent_header)
-      local parent=$4
-      git -C "$repo_root" show "$parent:$header" > "$snapshot/$header"
-      ;;
-    parent_inter_barrier)
-      restore_inter_barrier_class "$snapshot"
-      ;;
-    proxy_dispatch)
-      force_proxy_dispatch "$snapshot/$header"
-      ;;
-    *) echo "Unknown probe variant: $variant" >&2; exit 2 ;;
-  esac
-
-  diff -u "$log_root/$label/original-default_comm_traits.h" \
-    "$snapshot/$header" > "$log_root/$label/source-variant.patch" || true
-  printf '%s\n' "$commit" > "$log_root/$label/source-commit.txt"
-
-  local target case_dir marker rc result function
-  for target in device_api device_ir; do
-    case_dir="$log_root/$label/$target"
-    mkdir -p "$case_dir/tmp"
-    marker="$case_dir/start.marker"
-    touch "$marker"
-    make -C "$snapshot/test/kernel/iluvatar" -n "$target.o" \
-      USE_ILUVATAR=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 \
-      > "$case_dir/reproduce-make-command.txt" 2>&1
-
-    rc=0
-    TMPDIR="$case_dir/tmp" make -C "$snapshot/test/kernel/iluvatar" \
-      --jobs=1 "$target.o" USE_ILUVATAR=1 COMPILE_KERNEL=1 \
-      FORCE_DEFAULT_PATH=1 > "$case_dir/compile.log" 2>&1 || rc=$?
-    printf '%s\n' "$rc" > "$case_dir/exit-code.txt"
-    if ((rc == 0)); then
-      result=PASS
-    elif grep -Fq 'LLVM ERROR: failed to annotate CFG' "$case_dir/compile.log" && \
-         grep -Fq 'BI annotate control flow' "$case_dir/compile.log"; then
-      result=BI_CFG_CRASH
-      copy_crash_files "$target" "$marker" "$case_dir/crash-files"
-    else
-      result=COMPILE_ERROR
-      copy_crash_files "$target" "$marker" "$case_dir/crash-files"
-    fi
-    function=$(sed -n "s/.*BI annotate control flow' on function '\([^']*\)'.*/\1/p" \
-      "$case_dir/compile.log" | head -1)
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-      "$label" "$commit" "$target" "$result" "$function" >> "$log_root/results.tsv"
-    printf '%-28s %-10s %-13s %s\n' "$label" "$commit" "$target" "$result"
-  done
+  compile_target "$label" device_api
+  compile_target "$label" device_ir
+  local diagnostic="$case_dir/device_api_without_k12"
+  mkdir -p "$diagnostic"
+  mask_k12_for_world_barrier \
+    "$snapshot/test/kernel/iluvatar/device_api.cu" "$diagnostic"
+  compile_target "$label" device_api device_api_without_k12
 }
 
-for i in "${!commits[@]}"; do
-  run_case "${mainline[$i]}" "${commits[$i]}"
-done
+run_case after_696
+run_case undo_04_05
 
-# File and control-flow probes use private source snapshots. They are compile
-# diagnostics only; a passing variant is never treated as a production fix.
-run_case after_694_parent_header 50984d4f parent_header 4a3dca96
-run_case after_694_proxy_dispatch 50984d4f proxy_dispatch
-run_case after_696_parent_header f626a08c parent_header 50984d4f
-run_case after_696_parent_inter_barrier f626a08c parent_inter_barrier
-run_case after_696_proxy_dispatch f626a08c proxy_dispatch
-
-python3 - "$log_root/results.tsv" "$log_root/summary.md" <<'PY'
+summary_rc=0
+python3 - "$log_root/results.tsv" "$log_root/summary.md" <<'PY' || summary_rc=$?
 import csv
 import pathlib
 import sys
 
 rows = list(csv.DictReader(open(sys.argv[1], newline=""), delimiter="\t"))
-labels = ["pre_694", "after_694", "after_696", "after_692", "merged_670"]
-lines = ["# Iluvatar Device API compile probe", "",
-         "All cases used the same CoreX image and kernel Makefile flags.", "",
-         "| Source case | device_api | device_ir |", "|---|---|---|"]
 results = {(row["case"], row["target"]): row for row in rows}
-for label in labels + ["after_694_parent_header", "after_694_proxy_dispatch",
-                       "after_696_parent_header", "after_696_parent_inter_barrier",
-                       "after_696_proxy_dispatch"]:
-    lines.append("| {} | {} | {} |".format(
-        label, *(results[(label, target)]["result"] for target in
-                 ("device_api", "device_ir"))))
-lines.extend(["", "## First failing mainline boundary", ""])
-for target in ("device_api", "device_ir"):
-    if results[(labels[0], target)]["result"] != "PASS":
-        lines.append(f"- {target}: already fails at pre_694; earlier history is needed")
-        continue
-    previous = "pre_694"
-    for label in labels[1:]:
-        before = results[(previous, target)]["result"]
-        after = results[(label, target)]["result"]
-        if before == "PASS" and after != "PASS":
-            function = results[(label, target)]["function"]
-            lines.append(f"- {target}: {previous} → {label} ({after}); "
-                         f"CoreX function: `{function or 'not reported'}`")
-            if label == "after_694" and after == "BI_CFG_CRASH":
-                if results[("after_694_parent_header", target)]["result"] == "PASS":
-                    lines.append("  - Replacing #694 default_comm_traits.h with its parent passes: "
-                                 "the regression is in that header.")
-                if results[("after_694_proxy_dispatch", target)]["result"] == "PASS":
-                    lines.append("  - Direct Proxy dispatch passes: inspect the #694 "
-                                 "DefaultNetDispatch::call switch and its inlined CFG.")
-            if label == "after_696" and after == "BI_CFG_CRASH":
-                if results[("after_696_parent_header", target)]["result"] == "PASS":
-                    lines.append("  - Replacing #696 default_comm_traits.h with its parent passes: "
-                                 "the regression is in that header.")
-                if results[("after_696_parent_inter_barrier", target)]["result"] == "PASS":
-                    lines.append("  - Restoring the parent Inter barrier class passes: "
-                                 "inspect its #696 control-flow changes.")
-                if results[("after_696_proxy_dispatch", target)]["result"] == "PASS":
-                    lines.append("  - Direct Proxy dispatch passes at #696: "
-                                 "inspect its interaction with the #694 switch.")
-            break
-        previous = label
-    else:
-        lines.append(f"- {target}: no failure in the selected mainline commits")
-lines.extend(["", "Each source variant is a compile-only probe, not a production fix.",
-              "COMPILE_ERROR in a variant provides no causal evidence. The regular",
-              "Iluvatar device_api and device_api_unified_ir suites remain required.", ""])
+targets = ("device_api", "device_ir", "device_api_without_k12")
+lines = [
+    "# Iluvatar #696 constructor probe", "",
+    "Both cases use commit f626a08c and the same CoreX image. The second",
+    "case restores only constructor changes #4 and #5 from 50984d4f.", "",
+    "| Case | Target | Result | CoreX function |", "|---|---|---|---|",
+]
+for label in ("after_696", "undo_04_05"):
+    for target in targets:
+        row = results[(label, target)]
+        lines.append(f"| {label} | {target} | {row['result']} | "
+                     f"`{row['function']}` |")
+
+baseline_reproduced = all(
+    results[("after_696", target)]["result"] == "BI_CFG_CRASH"
+    for target in targets
+)
+candidate_compiles = all(
+    results[("undo_04_05", target)]["result"] == "PASS"
+    for target in targets
+)
+lines.extend(["", f"Baseline BI CFG crash reproduced: {baseline_reproduced}.",
+              f"Undo #4/#5 compiles all three targets: {candidate_compiles}.",
+              "This probe checks compilation only; runtime tests are still required.",
+              "The artifact includes compile logs, make commands, source patch,",
+              "and CoreX crash files when available.", ""])
 pathlib.Path(sys.argv[2]).write_text("\n".join(lines))
 print("\n".join(lines))
+sys.exit(0 if baseline_reproduced and candidate_compiles else 1)
 PY
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   cat "$log_root/summary.md" >> "$GITHUB_STEP_SUMMARY"
 fi
+exit "$summary_rc"
