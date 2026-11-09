@@ -60,26 +60,27 @@ Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration
 are not retried. Recovered tests emit a flaky warning and Step Summary entry.
 The `attempts-*` artifacts preserve both attempts for seven days, including
-tests executed in the Kubernetes job Pod.
+tests executed in explicitly managed Docker containers or Kubernetes job Pods.
 
 ## Kubernetes Job Pods
 
-Unit-test and C++ coverage jobs run in the platform CI image using a job-level
-`container:`. The job Pod runs checkout, submodule checkout, build, tests, and
-artifact collection directly in `$GITHUB_WORKSPACE`; it does not start a
-nested Docker container. The `load_config` job still resolves the platform
-image and runner labels before the hardware job starts.
+A platform opts in with `job_container: true` in its configuration; it is
+currently enabled only for MetaX (`mx-k8s-cicd-flagcx`). Its unit-test, C++
+coverage, perf and Torch API jobs run in the platform CI image as the
+job-level `container:`. The job Pod runs checkout, submodule checkout, build,
+tests and artifact collection directly in `$GITHUB_WORKSPACE`; it does not
+start a nested Docker container, because `docker run` on these runners cannot
+access accelerators. Other platforms keep the explicit Docker launcher.
 
 The selected Runner Scale Set must use ARC `kubernetes-novolume` and provide
 the platform-specific device resources, driver and SDK mounts, RDMA access,
-shared memory, image-pull credentials, node scheduling, and device exclusivity
-in its job Pod configuration. These settings are cluster-owned and are not
-expressed as Docker `options` by this repository. CI images must include Git
-and the tools needed by `actions/checkout`, build, and test steps.
-
-Performance and Torch API workflows still use the legacy Docker launcher and
-must be migrated separately. RPM packaging remains an independent builder
-workflow and is not part of the hardware job Pod migration.
+host network and IPC, shared memory, memlock, a root user, image-pull
+credentials, node scheduling, and device exclusivity in its job Pod
+configuration. These settings are cluster-owned; the platform's
+`docker_options` and `docker_volumes` are not applied in this mode. CI images
+must include Git and the tools needed by `actions/checkout`, build, and test
+steps. RPM packaging remains an independent builder workflow and is not part
+of the hardware job Pod migration.
 
 ## Python Coverage
 

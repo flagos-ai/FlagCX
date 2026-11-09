@@ -460,13 +460,26 @@ class CiWorkflowWiringTest(unittest.TestCase):
                 self.assertEqual(upload["with"]["report_path"], report)
                 self.assertEqual(upload["with"]["fail_on_error"], "false")
                 self.assertIn("FLAGCICD_TOKEN_SET == 'true'", upload["if"])
-                self.assertIn(f"hashFiles('{report}')", upload["if"])
                 self.assertIn("github.event.issue.number", upload["with"]["pr_id"])
-                self.assertNotIn("container", job)
                 self.assertIn("Collect Python coverage report", steps)
                 self.assertIn(report, steps["Collect Python coverage report"]["run"])
                 self.assertEqual(steps["Archive Python coverage report"]["with"]["path"], report)
-                workload = steps[f"Run torch-api-test ({platform}) in configured container"]
+                if platform == "metax":
+                    # The job container's report is invisible to the runner's
+                    # hashFiles(), so the collect step reports it as an output.
+                    self.assertIn("metax_job_container_image", job["container"])
+                    found = "steps.torch_coverage.outputs.found == 'true'"
+                    self.assertIn(found, upload["if"])
+                    self.assertIn(found, steps["Archive Python coverage report"]["if"])
+                    self.assertIn('echo "found=true" >> "$GITHUB_OUTPUT"',
+                                  steps["Collect Python coverage report"]["run"])
+                    workload = steps["Run torch-api-test (metax) in job container"]
+                    self.assertIn("/coverage-metax-gpu-torch.json",
+                                  workload["env"]["FLAGCX_CI_COVERAGE_REPORT"])
+                else:
+                    self.assertIn(f"hashFiles('{report}')", upload["if"])
+                    self.assertNotIn("container", job)
+                    workload = steps[f"Run torch-api-test ({platform}) in configured container"]
                 self.assertEqual(workload["env"]["FLAGCX_CI_TORCH_COVERAGE"], "1")
                 runner = (REPO_ROOT / f".github/scripts/ci/run_{platform}_workload.sh").read_text()
                 self.assertIn('bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"', runner)

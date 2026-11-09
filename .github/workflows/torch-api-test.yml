@@ -31,8 +31,7 @@ jobs:
       cuda_docker_args: ${{ steps.cuda.outputs.docker_args }}
       cuda_set_env: ${{ steps.cuda.outputs.set_env }}
       cuda_runs_on: ${{ steps.cuda.outputs.runs_on }}
-      metax_ci_image: ${{ steps.metax.outputs.ci_image }}
-      metax_docker_args: ${{ steps.metax.outputs.docker_args }}
+      metax_job_container_image: ${{ steps.metax.outputs.job_container_image }}
       metax_set_env: ${{ steps.metax.outputs.set_env }}
       metax_runs_on: ${{ steps.metax.outputs.runs_on }}
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
@@ -237,6 +236,9 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
     timeout-minutes: 180
+    # The MetaX Kubernetes runner cannot expose accelerators to `docker run`;
+    # the job Pod runs the CI image with cluster-provided device access.
+    container: ${{ needs.load-hardware-container-configs.outputs.metax_job_container_image }}
     env:
       FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
@@ -250,35 +252,33 @@ jobs:
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Check Docker
-        shell: bash
-        run: docker version
-
-      - name: Run torch-api-test (metax) in configured container
+      - name: Run torch-api-test (metax) in job container
         shell: bash
         env:
           FLAGCX_CI_TORCH_COVERAGE: '1'
-          FLAGCX_CI_CONTAINER_NAME: flagcx-metax-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.metax_docker_args }}
-          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
+          FLAGCX_CI_PLATFORM: metax
+          FLAGCX_CI_COVERAGE_REPORT: ${{ env.FLAGCX_CI_LOG_DIR }}/coverage-metax-gpu-torch.json
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          metax torch-api
+        run: |
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_workload.sh" \
+            metax torch-api "$FLAGCX_CI_SET_ENV" ""
 
-      - name: Cleanup torch-api-test (metax) container
-        if: always()
-        shell: bash
-        env:
-          FLAGCX_CI_CONTAINER_NAME: flagcx-metax-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
-
+      # hashFiles() is evaluated by the runner rather than inside the job
+      # container, so detect the report from a step running in the container.
       - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-metax-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-metax-gpu-torch.json" coverage-metax-gpu-torch.json
+        id: torch_coverage
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          report="$FLAGCX_CI_LOG_DIR/coverage-metax-gpu-torch.json"
+          if [[ -f "$report" ]]; then
+            cp "$report" coverage-metax-gpu-torch.json
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-metax-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && steps.torch_coverage.outputs.found == 'true' }}
         uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
         continue-on-error: true
         timeout-minutes: 2
@@ -292,7 +292,7 @@ jobs:
           fail_on_error: 'false'
 
       - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-metax-gpu-torch.json') != '' }}
+        if: ${{ !cancelled() && steps.torch_coverage.outputs.found == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: coverage-metax-gpu-torch

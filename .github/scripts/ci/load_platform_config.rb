@@ -63,9 +63,15 @@ abort "#{config_path}: unit_test_suites must be a non-empty array" unless suites
 set_env = config.fetch("set_env")
 abort "#{config_path}: set_env does not exist: #{set_env}" unless File.file?(set_env)
 
+# Kubernetes runners cannot expose accelerators to nested `docker run`; their
+# hardware jobs must run in the CI image as the job-level container instead.
+job_container = config.fetch("job_container", false)
+abort "#{config_path}: job_container must be a boolean" unless [true, false].include?(job_container)
+
 outputs = {
   "display_name" => config.fetch("display_name"),
   "ci_image" => config.fetch("ci_image"),
+  "job_container_image" => job_container ? config.fetch("ci_image") : "",
   "runs_on" => JSON.generate(runner_labels),
   "docker_args" => docker_args.join("\n"),
   "set_env" => set_env,

@@ -963,19 +963,29 @@ class PlatformCiRegressionTest(unittest.TestCase):
             (perf_workflow, "perf"),
             (torch_workflow, "torch-api"),
         ):
-            self.assertNotIn("container:", workflow)
             self.assertNotIn("image: harbor.baai.ac.cn", workflow)
+            # Only the MetaX Kubernetes runner uses a job container; the other
+            # platforms launch the CI image through Docker explicitly.
+            self.assertEqual(workflow.count("container: "), 1)
+            self.assertIn(
+                "container: ${{ needs.load-hardware-container-configs"
+                ".outputs.metax_job_container_image }}",
+                workflow,
+            )
+            self.assertNotIn("metax_docker_args", workflow)
+            self.assertIn(f'run_hardware_workload.sh" \\\n            metax {workload}', workflow)
             for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
                 with self.subTest(workload=workload, platform=platform):
                     self.assertIn(
                         f"ruby .github/scripts/ci/load_platform_config.rb {platform}",
                         workflow,
                     )
-                    self.assertIn(
-                        f"FLAGCX_CI_IMAGE: "
-                        f"${{{{ needs.load-hardware-container-configs.outputs.{platform}_ci_image }}}}",
-                        workflow,
-                    )
+                    if platform != "metax":
+                        self.assertIn(
+                            f"FLAGCX_CI_IMAGE: "
+                            f"${{{{ needs.load-hardware-container-configs.outputs.{platform}_ci_image }}}}",
+                            workflow,
+                        )
                     self.assertIn(f"{platform} {workload}", workflow)
                     self.assertIn(
                         f"runs-on: "
@@ -1141,6 +1151,39 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ).read_text()
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
+
+    def test_only_job_container_platforms_skip_the_docker_launcher(self):
+        unit_workflow = (
+            REPO_ROOT / ".github/workflows/unit_tests_common.yml"
+        ).read_text()
+        self.assertIn(
+            "container: ${{ needs.load_config.outputs.job_container_image }}",
+            unit_workflow,
+        )
+        self.assertIn(
+            "if: needs.load_config.outputs.job_container_image != ''",
+            unit_workflow,
+        )
+        self.assertEqual(
+            unit_workflow.count(
+                "needs.load_config.outputs.job_container_image == ''"
+            ),
+            3,
+        )
+
+        for platform in ("cuda", "metax", "hygon", "ppu", "ascend", "iluvatar"):
+            with self.subTest(platform=platform):
+                result = subprocess.run(
+                    ["ruby", ".github/scripts/ci/load_platform_config.rb", platform],
+                    cwd=REPO_ROOT,
+                    env={k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"},
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                outputs = json.loads(result.stdout)
+                expected = outputs["ci_image"] if platform == "metax" else ""
+                self.assertEqual(outputs["job_container_image"], expected)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (

@@ -18,6 +18,13 @@ ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
 runner_labels:
   - mx-k8s-cicd-flagcx
 
+# mx-k8s-cicd-flagcx is an ARC Kubernetes Runner Scale Set. Hardware jobs run
+# in ci_image as the job container; the cluster job Pod template provides the
+# equivalent of the Docker settings below (devices, /opt/mxdriver, host network
+# and IPC, shared memory, memlock, root user). The Docker settings only apply
+# when job_container is false.
+job_container: true
+
 docker_volumes:
   - /opt/mxdriver:/opt/mxdriver:ro
 
