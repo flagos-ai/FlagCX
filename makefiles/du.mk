@@ -47,6 +47,34 @@ PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENS
 # (DUSHMEM_BUILD_BITCODE_LIBRARY is rejected by the DTK/HIP backend, so there
 # is no .bc to link instead, and DUSHMEM_ENABLE_ALL_DEVICE_INLINING defaults to
 # OFF, which is why these symbols live in the archive at all.)
+# --- DUSHMEM location ---
+# SHMEM_HOME defaults to /usr/local/nvshmem (top-level Makefile / test
+# make.inc), which is wrong on DU. When the user did not set it explicitly,
+# auto-detect the DTK-bundled DUSHMEM so a plain
+#   source $DTKROOT/env.sh && make USE_DU=1 USE_SHMEM=1
+# works out of the box. Required layout (used by the link line below):
+#   $(SHMEM_HOME)/lib/libdushmem_device.a + libdushmem_host.so
+#   $(SHMEM_HOME)/include/dushmem.h
+# Known-good locations:
+#   DTK-bundled:  $DTKROOT/dushmem   (lib/ and include/ are symlinks)
+#   self-built:   <dushmem-hip>/build/src
+ifeq ($(USE_SHMEM), 1)
+  ifeq ($(filter environment command line,$(origin SHMEM_HOME)),)
+    DU_SHMEM_AUTODETECT := $(firstword $(foreach d,\
+        $(DTKROOT)/dushmem $(ROCM_PATH)/dushmem $(HIP_PATH)/../dushmem,\
+        $(if $(wildcard $(d)/lib/libdushmem_device.a),$(abspath $(d)))))
+    ifneq ($(DU_SHMEM_AUTODETECT),)
+      SHMEM_HOME := $(DU_SHMEM_AUTODETECT)
+      $(info du.mk: SHMEM_HOME not set - auto-detected DUSHMEM at $(SHMEM_HOME))
+      $(info du.mk: NOTE the DTK-bundled DUSHMEM may lack local fixes; to link a)
+      $(info du.mk: self-built dushmem-hip instead, export SHMEM_HOME=<dushmem-hip>/build/src)
+    endif
+  endif
+  ifeq ($(wildcard $(SHMEM_HOME)/lib/libdushmem_device.a),)
+    $(error USE_SHMEM=1 on DU requires DUSHMEM, but $(SHMEM_HOME)/lib/libdushmem_device.a was not found. Export SHMEM_HOME to a DUSHMEM install, e.g. $$DTKROOT/dushmem (DTK-bundled) or <dushmem-hip>/build/src (self-built))
+  endif
+endif
+
 ifeq ($(USE_SHMEM), 1)
   ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_SHMEM
   # Keep archive host shadows/callbacks local to libflagcx.so, avoiding ELF
