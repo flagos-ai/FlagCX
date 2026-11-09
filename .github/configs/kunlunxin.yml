@@ -14,7 +14,7 @@ paths_watch:
   - flagcx/adaptor/include/device_api/kunlunxin_*.h
   - test/kernel/klx/**/*
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:kunlunxin-dev-fixed-20261019
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx-kunlunxin-xre5.37.1:2.3.0
 
 runner_labels:
   - kl-8g-cicd-flagcx
