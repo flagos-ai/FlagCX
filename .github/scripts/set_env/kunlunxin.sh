@@ -26,6 +26,12 @@ FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=4
 export NP=4
 
+# xcclAdaptorGather returns flagcxNotSupported, so flagcxGather reports 9 on
+# every rank. It is the only collective the XCCL/BKCL adaptor leaves
+# unimplemented; every other operation in the shared perf list runs. Remove
+# this line once the adaptor forwards a bkcl gather primitive.
+export FLAGCX_CI_PERF_UNSUPPORTED_OPS="gather"
+
 FLAGCX_CI_NODE1_MPI_ARGS=(-x FLAGCX_HOSTID=node0)
 FLAGCX_CI_NODE2_MPI_ARGS=(-x FLAGCX_HOSTID=node1)
 

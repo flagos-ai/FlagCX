@@ -57,7 +57,28 @@ if [[ "$mode" == heterogeneous ]]; then
 fi
 mpi_args+=("$@")
 
+# A backend that does not implement a collective declares it in its platform
+# set_env script, so the operation lists above stay the full API set every
+# platform is measured against. Keeping the gap here rather than deleting the
+# operation means one grep shows what a platform does not cover, and restoring
+# it is a one-line change. Every skipped operation is announced: a silently
+# shortened list is indistinguishable from a platform that ran everything.
+unsupported_ops=" ${FLAGCX_CI_PERF_UNSUPPORTED_OPS:-} "
+executed_ops=0
+skipped_ops=()
 for operation in "${operations[@]}"; do
+  if [[ "$unsupported_ops" == *" $operation "* ]]; then
+    echo "::warning title=FlagCX perf operation not supported::$platform $mode" \
+      "perf: $operation was skipped; the backend reports it as unimplemented"
+    echo "$platform $mode perf: SKIPPED $operation (declared unsupported)"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      printf -- '- **Perf operation skipped:** `%s` / %s %s — declared unsupported\n' \
+        "$operation" "$platform" "$mode" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    skipped_ops+=("$operation")
+    continue
+  fi
+  executed_ops=$((executed_ops + 1))
   max_bytes=1G
   if [[ "$mode" == heterogeneous && "$operation" == sendrecv ]]; then
     max_bytes=${FLAGCX_CI_HETERO_SENDRECV_MAX_BYTES:-1G}
@@ -91,3 +112,15 @@ for operation in "${operations[@]}"; do
       "${mpi_args[@]}" "$binary" "${operation_args[@]}"
   fi
 done
+
+# An invocation that measured nothing must not report success: that is the one
+# outcome a reader would mistake for a passing perf run.
+if ((executed_ops == 0)); then
+  echo "$platform $mode perf ran no operations: every selected operation is" \
+    "declared unsupported" >&2
+  exit 1
+fi
+if ((${#skipped_ops[@]} > 0)); then
+  echo "$platform $mode perf summary: executed=$executed_ops" \
+    "skipped=${skipped_ops[*]}"
+fi
