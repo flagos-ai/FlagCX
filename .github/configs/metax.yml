@@ -16,7 +16,7 @@ paths_watch:
   - flagcx/adaptor/include/metax_adaptor.h
   - flagcx/adaptor/tuner/mccl_tuner.cc
 
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx-metax-maca3.8.1.3:2.3.0
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx-metax-maca3.8.1.3:2.3.0@sha256:e9b511953d3e8675b1e8d215b7d2f4777a5d7898bd2cee9e7e58a6663c56e575
 
 runner_labels:
   - mx-k8s-cicd-flagcx
