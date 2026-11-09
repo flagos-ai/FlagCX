@@ -590,27 +590,23 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"$BUILD_BIN/symmem_mpi_tests"', symmem_runner)
         self.assertIn('run-mpi-net', unit_runner)
 
-    def test_ascend_unsupported_routes_are_gated_and_explained(self):
+    def test_ascend_p2p_write_runs_in_default_and_shared_engines(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        ascend_env = (
+            REPO_ROOT / ".github/scripts/set_env/ascend.sh"
         ).read_text()
         p2p_case = unit_runner[unit_runner.index("    p2p)") :]
         p2p_case = p2p_case[: p2p_case.index("    rma)")]
 
-        # The skip defaults to off, so only the Ascend branch can enable it; a
-        # platform-independent regression would trip these assertions.
-        self.assertIn("local p2p_write_unsupported=0", p2p_case)
-        self.assertIn("p2p_write_unsupported=1", p2p_case)
-        self.assertIn("if ((p2p_write_unsupported)); then", p2p_case)
-
-        # The skip must name the missing capability in the job log rather than
-        # silently dropping coverage.
-        self.assertIn("flagcxP2pEngineReg", p2p_case)
-        self.assertIn("flagcxNotSupported", p2p_case)
-
-        # The p2p unit phase must stay unconditional; only the routed WRITE
-        # phase is gated.
+        self.assertNotIn("p2p_write_unsupported", p2p_case)
         self.assertIn('FLAGCX_CI_TEST_LABEL="p2p unit tests"', p2p_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests"', p2p_case)
+        self.assertIn('FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests"', p2p_case)
+        self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", ascend_env)
+        self.assertIn("FLAGCX_CI_ENABLE_IBUC=1", ascend_env)
+        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required", ascend_env)
 
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
@@ -848,7 +844,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         # A skipped phase must name the capability it waits on, so a silent
         # coverage drop cannot pass review.
         for marker in (
-            "CANN net adaptor does not advertise GPU MR",
+            "GPU MR and IPC are now exercised by adaptor/perf CI",
             "hcclAdaptorCommGetAsyncError",
             "flagcxProxyService",
             "cannAdaptorSymPhysAlloc",
@@ -901,6 +897,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertNotIn("export FLAGCX_USE_HETERO_COMM", metax_handler)
         self.assertIn("ascend perf", perf_workflow)
         self.assertIn('"$perf_runner" homogeneous "$perf_bin"', ascend_handler)
+        self.assertIn('"$perf_runner" heterogeneous "$perf_bin"\n', ascend_handler)
         ascend_command = " ".join(ascend_handler.replace("\\\n", " ").split())
         self.assertIn(
             '"$perf_runner" heterogeneous "$perf_bin" '
@@ -939,7 +936,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         # capability its skipped multi-rank phases wait on.
         for suite, unit_marker, reason_marker in (
             ("symmem", "symmem_unit_tests", "flagcxProxyService"),
-            ("rma", "run-unit", "CANN net adaptor does not advertise GPU MR"),
+            ("rma", "run-unit", "RMA visibility still needs"),
             ("runner", "run-unit", "hcclAdaptorCommGetAsyncError"),
         ):
             with self.subTest(suite=suite):

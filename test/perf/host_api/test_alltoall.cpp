@@ -19,6 +19,14 @@ static void dataInitFn(PerfContext &ctx, size_t size, size_t count) {
     perfAlltoallFill(host + peer * peerBytes, peerBytes, ctx.proc, peer, size);
   PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello, size,
                                          flagcxMemcpyHostToDevice, NULL));
+  if (ctx.verifyData) {
+    // Confirm the source is on the device before entering the timed collective.
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.sendbuff, size,
+                                           flagcxMemcpyDeviceToHost, NULL));
+    for (int peer = 0; peer < ctx.totalProcs; ++peer)
+      perfDataCheck(host + peer * peerBytes, peerBytes, ctx.proc, ctx.proc,
+                    peer, peer * peerBytes, size, "AllToAll send buffer");
+  }
   PERF_CHECK(ctx.devHandle->deviceMemset(ctx.recvbuff, 0, size, flagcxMemDevice,
                                          NULL));
 }

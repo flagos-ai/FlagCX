@@ -35,7 +35,7 @@ export GITHUB_WORKSPACE="$PWD"
 export FLAGCX_CI_LOG_DIR="$PWD/.ci-logs"
 export FLAGCX_CI_PLATFORM=metax
 export FLAGCX_CI_SET_ENV=.github/scripts/set_env/metax.sh
-python3 .github/scripts/ci/check_metax_devices.py
+python3 .github/scripts/ci/check_metax_devices.py torch-api
 mpirun --allow-run-as-root -np 4 hostname
 for suite in adaptor core p2p rma runner service symmem; do
   bash .github/scripts/ci/run_unit_test.sh "$FLAGCX_CI_SET_ENV" "$suite" || exit

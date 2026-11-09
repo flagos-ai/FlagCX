@@ -35,15 +35,18 @@ class MetaXTorchPreflightTest(unittest.TestCase):
         torch.cuda.device_count.return_value = torch_count
         torch.cuda.is_available.return_value = available
         torch.arange.return_value.sum.return_value.item.return_value = result
+        output = io.StringIO()
         with mock.patch.object(CHECK.ctypes, "CDLL", return_value=runtime), \
                 mock.patch.object(CHECK.importlib.metadata, "distribution"), \
+                mock.patch.object(CHECK.shutil, "which", return_value=None), \
                 mock.patch.dict(sys.modules, {"torch": torch}), \
-                contextlib.redirect_stdout(io.StringIO()):
-            CHECK.main()
-        return torch
+                contextlib.redirect_stdout(output):
+            status = CHECK.main(["torch-api"])
+        return torch, status, output.getvalue()
 
     def test_checks_all_four_devices(self):
-        torch = self.run_check()
+        torch, status, output = self.run_check()
+        self.assertEqual(status, 0, output)
         self.assertEqual(
             [call.kwargs["device"] for call in torch.arange.call_args_list],
             [f"cuda:{i}" for i in range(4)],
@@ -54,16 +57,19 @@ class MetaXTorchPreflightTest(unittest.TestCase):
         for kwargs in ({"native_status": 3}, {"native_count": 0},
                        {"torch_count": 0}, {"torch_count": 3},
                        {"available": False}):
-            with self.subTest(kwargs=kwargs), self.assertRaises(RuntimeError):
-                self.run_check(**kwargs)
+            with self.subTest(kwargs=kwargs):
+                _, status, _ = self.run_check(**kwargs)
+                self.assertEqual(status, 1)
 
     def test_preserves_torch_initialization_error(self):
-        with self.assertRaisesRegex(RuntimeError, "wrong driver"):
-            self.run_check(init_error=RuntimeError("wrong driver"))
+        _, status, output = self.run_check(init_error=RuntimeError("wrong driver"))
+        self.assertEqual(status, 1)
+        self.assertIn("wrong driver", output)
 
     def test_bad_tensor_result_fails(self):
-        with self.assertRaisesRegex(RuntimeError, "read/write check failed"):
-            self.run_check(result=0)
+        _, status, output = self.run_check(result=0)
+        self.assertEqual(status, 1)
+        self.assertIn("read/write check failed", output)
 
 
 class MetaXTorchResultsTest(unittest.TestCase):

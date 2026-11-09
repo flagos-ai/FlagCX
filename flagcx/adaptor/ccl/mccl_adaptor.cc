@@ -272,25 +272,9 @@ flagcxResult_t mcclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
                                    size_t count, flagcxDataType_t datatype,
                                    flagcxInnerComm_t comm,
                                    flagcxStream_t stream) {
-  int rank, nranks;
-  mcclResult_t res = mcclSuccess;
-  res = mcclCommUserRank(comm->base, &rank);
-  res = mcclCommCount(comm->base, &nranks);
-
-  size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *bufferIn = static_cast<const char *>(sendbuff);
-  char *bufferOut = static_cast<char *>(recvbuff);
-
-  res = mcclGroupStart();
-  for (int r = 0; r < nranks; r++) {
-    res = mcclSend(static_cast<const void *>(bufferIn + r * size), size,
-                   mcclChar, r, comm->base, stream->base);
-    res = mcclRecv(static_cast<void *>(bufferOut + r * size), size, mcclChar, r,
-                   comm->base, stream->base);
-  }
-  res = mcclGroupEnd();
-
-  return (flagcxResult_t)res;
+  return (flagcxResult_t)mcclAllToAll(sendbuff, recvbuff, count,
+                                      (mcclDataType_t)datatype, comm->base,
+                                      stream->base);
 }
 
 flagcxResult_t mcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
