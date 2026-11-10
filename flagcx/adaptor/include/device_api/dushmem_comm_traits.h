@@ -347,14 +347,16 @@ struct CommTraits<DushmemBackend> {
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     flush(Coop coop, flagcxDeviceMemoryOrder_t order) const {
-      if (order == flagcxDeviceMemoryOrderAcqRel) {
-        coop.sync();
-        if (coop.threadRank() == 0)
-          dushmem_quiet();
-        coop.sync();
-      } else {
-        dushmem_fence();
-      }
+      // Unified IR's flush must drain previously enqueued one-sided writes.
+      // dushmem_fence() only orders WQEs; it does not ring the doorbell or
+      // wait for completion, so inline scalar putValue writes can still be
+      // in-flight when the host reads the buffer back (S18 INTER case).
+      // default_comm_traits.h::flush() drains its FIFO for every order.
+      (void)order;
+      coop.sync();
+      if (coop.threadRank() == 0)
+        dushmem_quiet();
+      coop.sync();
     }
 
     // ---- Wait: waitSignal ----
