@@ -4,6 +4,7 @@
  ************************************************************************/
 
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <iostream>
@@ -258,7 +259,18 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);
   EXPECT_EQ(devHandle->deviceFree(devicePtr, flagcxMemDevice, nullptr),
             flagcxSuccess);
+}
 
+TEST_F(DeviceAdaptorTest, GetManagedPointerType) {
+  ASSERT_NE(deviceAdaptor->getPointerType, nullptr);
+  const char *supported = std::getenv("FLAGCX_CI_MANAGED_MEMORY_SUPPORTED");
+  if (supported != nullptr && std::strcmp(supported, "0") == 0)
+    GTEST_SKIP() << "Managed allocations are unavailable in this platform SDK";
+
+  // Keep ordinary host/device pointer checks independent of managed memory.
+  int ptrType = 0;
+  if (deviceAdaptor->getPointerType(nullptr, &ptrType) == flagcxNotSupported)
+    GTEST_SKIP() << "Pointer type queries are unavailable on this adaptor";
   void *managedPtr = nullptr;
   flagcxResult_t managedResult = devHandle->deviceMalloc(
       &managedPtr, TEST_SIZE, flagcxMemManaged, nullptr);

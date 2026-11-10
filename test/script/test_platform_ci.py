@@ -23,6 +23,51 @@ ENABLED_PLATFORMS = [
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_all_chip_platforms_are_enabled(self):
+        self.assertEqual(
+            ENABLED_PLATFORMS,
+            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
+        )
+
+    def test_backend_phase_skips_are_kunlunxin_only(self):
+        runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        helper = "flagcx_ci_phase_supported() {" + runner.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        for platform in ENABLED_PLATFORMS:
+            with self.subTest(platform=platform):
+                script = '''
+set -euo pipefail
+source "$1"
+SUITE=capability-check
+flagcx_ci_report_skipped_suite() { echo "SKIPPED $*"; }
+'''+ helper + '''
+for phase in p2p-write-mpi rma-mpi symmem-mpi runner-mpi ordinary-ipc; do
+  if flagcx_ci_phase_supported "$phase"; then echo "RUN $phase"; fi
+done
+# A skipped MPI phase must preserve an earlier unit-test failure.
+run_failed_suite() {
+  local unit_status=7
+  if ! flagcx_ci_phase_supported rma-mpi; then return "$unit_status"; fi
+  return "$unit_status"
+}
+if run_failed_suite; then exit 99; else test "$?" = 7; fi
+'''
+                result = subprocess.run(
+                    ["bash", "-c", script, "bash",
+                     str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh")],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertIn("RUN ordinary-ipc", result.stdout)
+                if platform == "kunlunxin":
+                    for phase in ("p2p-write-mpi", "rma-mpi", "symmem-mpi", "runner-mpi"):
+                        self.assertIn(f"SKIPPED capability-check/{phase}", result.stdout)
+                        self.assertNotIn(f"RUN {phase}", result.stdout)
+                else:
+                    self.assertNotIn("SKIPPED", result.stdout)
+                    self.assertIn("RUN rma-mpi", result.stdout)
+                    self.assertIn("RUN runner-mpi", result.stdout)
+
     def test_kunlunxin_job_container_preserves_devices_without_host_network(self):
         result = subprocess.run(
             ["ruby", ".github/scripts/ci/load_platform_config.rb", "kunlunxin"],
@@ -831,9 +876,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "kunlunxin": [
                 "adaptor",
                 "core",
-                "device_api",
                 "device_api_host",
-                "device_api_unified_ir",
+                "device_api",
                 "kernel",
                 "p2p",
                 "rma",
@@ -1361,7 +1405,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
             source.index("run_suite() {") :
             source.index("\nrun_supplemental_unit_tests() {")
         ]
-        harness = run_suite + r'''
+        phase_helper = "flagcx_ci_phase_supported() {" + source.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        harness = phase_helper + run_suite + r'''
 SUITE=rma
 SET_ENV_SCRIPT=iluvatar.sh
 PROJECT_ROOT=/workspace

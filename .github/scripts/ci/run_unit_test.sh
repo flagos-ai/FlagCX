@@ -162,6 +162,20 @@ flagcx_ci_report_skipped_suite() {
   fi
 }
 
+# A platform can exclude a phase with a documented backend/SDK limitation.
+# Other platforms run every phase by default. Unit coverage remains separate.
+flagcx_ci_phase_supported() {
+  local phase=$1 reason=
+  if declare -F flagcx_ci_phase_skip_reason >/dev/null; then
+    reason=$(flagcx_ci_phase_skip_reason "$phase")
+  fi
+  if [[ -n "$reason" ]]; then
+    flagcx_ci_report_skipped_suite "$SUITE/$phase" "$reason"
+    return 1
+  fi
+  return 0
+}
+
 if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]] &&
    declare -F flagcx_ci_build_suite_override >/dev/null; then
   FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
@@ -469,6 +483,17 @@ run_suite() {
       # problem cannot hide device IPC coverage. Disable VMM to exercise the
       # same IPC-exportable GDR allocation used by the RMA suite.
       local ipc_mpi_env="-x FLAGCX_VMM_ENABLE=0"
+      if [[ -n "${FLAGCX_CI_ADAPTOR_IPC_EXCLUDE:-}" ]]; then
+        local ipc_filter=${GTEST_FILTER:-*}
+        if [[ "$ipc_filter" == *-* ]]; then
+          ipc_filter+=":$FLAGCX_CI_ADAPTOR_IPC_EXCLUDE"
+        else
+          ipc_filter+="-$FLAGCX_CI_ADAPTOR_IPC_EXCLUDE"
+        fi
+        flagcx_ci_report_skipped_suite "$SUITE/IPC GDR cases" \
+          "GDR allocation is unavailable; excluded cases: $FLAGCX_CI_ADAPTOR_IPC_EXCLUDE"
+        ipc_mpi_env+=" -x GTEST_FILTER=$ipc_filter"
+      fi
       if [[ "$platform_name" == ascend ]]; then
         ipc_mpi_env="$ipc_mpi_env -x FLAGCX_CI_REQUIRE_IPC=1"
       fi
@@ -549,11 +574,13 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      if flagcx_ci_phase_supported p2p-write-mpi; then
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+          make -C "$suite_dir" run-mpi "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" \
+          MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      fi
       # Keep the production/default artifact on the legacy Engine. Platforms
       # build the shared implementation in isolated output trees and run the
       # same unit and WRITE MPI tests against it.
@@ -587,7 +614,7 @@ run_suite() {
             "$TEST_RUNNER" make -C "$suite_dir" run-unit \
               "${shared_test_args[@]}" || shared_status=$?
         fi
-        if ((shared_status == 0)); then
+        if ((shared_status == 0)) && flagcx_ci_phase_supported p2p-write-mpi; then
           LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
             FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
             FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
@@ -610,6 +637,9 @@ run_suite() {
       local visibility_status=0
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
+      if ! flagcx_ci_phase_supported rma-mpi; then
+        return "$unit_status"
+      fi
       # Keep these as separate invocations so each transport has its own
       # timeout. Collect both statuses so a failure in one path cannot prevent
       # the other path from running and producing a useful result.
@@ -816,6 +846,9 @@ run_suite() {
       fi
       FLAGCX_CI_TEST_LABEL="runner unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
+      if ! flagcx_ci_phase_supported runner-mpi; then
+        return "$unit_status"
+      fi
       cd "$suite_dir"
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
@@ -920,6 +953,11 @@ run_suite() {
         "$suite_dir/build/bin/kernel_mpi_tests"
       ;;
     symmem)
+      if ! flagcx_ci_phase_supported symmem-mpi; then
+        FLAGCX_CI_TEST_LABEL="symmem unit tests" \
+          "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests"
+        return
+      fi
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
       : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
       declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
