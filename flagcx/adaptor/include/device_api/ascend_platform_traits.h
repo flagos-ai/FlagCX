@@ -9,10 +9,12 @@
  *
  *   host pass   - the Default backend's control path: GCC __atomic_* builtins,
  *                 assert-loud stubs where the platform has no capability.
- *   device pass - the CCE/AICore path: volatile load/store on the unqualified
- *                 pointers the Default backend passes down, plus
- *                 __builtin_cce_atom_* as the intended atomic channel - which
- *                 today the back end cannot select (see CceAtomic).
+ *   device pass - the CCE/AICore path. It claims no memory order at all: this
+ *                 toolchain has no selectable read-modify-write, and no fence
+ *                 whose cross-core effect has been verified on hardware, so
+ *                 every load, store and RMW here is a declared-absent
+ *                 capability that fails the build if a kernel reaches it (see
+ *                 CceAtomic, and the review decision recorded on PR #705).
  *
  * Why simtWidth is 1 and not 32 (three independent measurements, which is what
  * adaptation doc §5.1 asks for before a platform states its lane width):
@@ -192,45 +194,91 @@ struct PlatformTraits<AscendPlatform> {
     // included on this soc.
     static constexpr uint32_t kHint = 0u;
 
-    // Plain accesses, unqualified pointer in, volatile load/store out.
-    // No address space is spelled here, deliberately. bisheng refuses every
-    // explicit conversion between address spaces inside an aicore function -
-    //   "casting 'const uint32_t *' to type 'volatile __gm__ uint32_t *' is
-    //    not allowed in aicore function"
-    // (gate run of df5a92c; the reverse direction is refused as well:
-    //  "reinterpret_cast from '__gm__ uint32_t *' to 'uint32_t *' is not
-    //   allowed"). The Default backend never hands __gm__ pointers down to
-    // this layer anyway: its device structs keep pointer members unqualified,
-    // because FLAGCX_DEVICE_GLOBAL_PTR expands to __global_ptr__ only on
-    // Kunlunxin (device_utils.h:46-52), and an unqualified pointer does
-    // dereference on this pass - DeviceAPI::Net's own constructor body reads
-    // dc.fifoBuffers[_contextId] in the same run with no diagnostic. So only
-    // cv-qualification is added here, with static_cast, which does not change
-    // address space. du_platform_traits.h does the same thing for the HIP
-    // atomics: plain T* straight into __hip_atomic_load.
+    // Load and store are declared ABSENT on this pass, not implemented.
+    //
+    // What used to be here was a volatile access through the unqualified
+    // pointer the Default backend hands down, which is not what the callers
+    // asked for: default_comm_traits.h requests AcqRel on the FIFO slot
+    // reservation (:574), Acquire on the consumer's reload of the consumed
+    // counter (:580) and Release on completion-counter updates (:858). A
+    // volatile qualifier constrains compiler folding only; on a machine whose
+    // AI cores reach global memory through their own caches it orders nothing
+    // for a peer core. Saying so was the review objection on PR #705, the
+    // objection is right, and the maintainer's decision (2026-11-10) is to mark
+    // the Ascend device load/store unsupported here and take the ordered
+    // version in a follow-up once it has been verified.
+    //
+    // The channel for that follow-up is already measured - all probes of
+    // 2026-11-10 on bisheng -c, RC=0:
+    //   instr_impl/npu_arch_2201/cache_ctrl_impl.h: asc_dcci_entire_ub,
+    //     asc_dcci_entire_out, asc_dcci_entire_all, asc_dcci_entire_atomic,
+    //     asc_dcci_single(__gm__ void*) (per-address, and therefore only
+    //     reachable from __gm__ code, since plain -> __gm__ is refused);
+    //   instr_impl/npu_arch_2201/sync_impl.h: asc_sync_data_barrier(arg) ->
+    //     dsb(arg), asc_sync_block_arrive(pipe, flag) ->
+    //     ffts_cross_core_sync(pipe, GetfftsConfig(flag)),
+    //     asc_sync_notify / asc_sync_wait(pipe, tpipe, event_t).
+    // Both directions also compile in the shape this layer actually uses:
+    //   plain-pointer store, then asc_dcci_entire_out()   (release shape)
+    //   asc_dcci_entire_all(), then plain-pointer load    (acquire shape)
+    // RC=0 through -c means the instruction was selected and the device image
+    // linked - NOT that a peer core observes the ordering. That needs a
+    // two-core producer/consumer run on hardware, which is why this PR does not
+    // ship it, and why shipping a volatile access as an acquire would be worse
+    // than shipping nothing.
+    //
+    // The absence is enforced the same way as the read-modify-write members
+    // below: a call to a function that is declared and defined nowhere, which
+    // bisheng refuses at BUILD time because it links the device image inside
+    // -c. The consequence is the one the reviewer asked for - no
+    // ordering-dependent path, in this header or in the Default backend, can be
+    // instantiated on Ascend until the ordered version lands.
+    template <typename T>
+    static FLAGCX_DEVICE_INLINE_DECORATOR T noOrderedLoad() {
+      FLAGCX_ASCEND_UNSUPPORTED(
+          "CceAtomic: device load has no hardware-verified acquire on 2201");
+      return T();
+    }
+
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t load(const uint32_t *p) {
-      return *static_cast<const volatile uint32_t *>(p);
+      (void)p;
+      return noOrderedLoad<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int32_t load(const int32_t *p) {
-      return *static_cast<const volatile int32_t *>(p);
+      (void)p;
+      return noOrderedLoad<int32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t load(const uint64_t *p) {
-      return *static_cast<const volatile uint64_t *>(p);
+      (void)p;
+      return noOrderedLoad<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t load(const int64_t *p) {
-      return *static_cast<const volatile int64_t *>(p);
+      (void)p;
+      return noOrderedLoad<int64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint32_t *p, uint32_t v) {
-      *static_cast<volatile uint32_t *>(p) = v;
+      (void)p;
+      (void)v;
+      FLAGCX_ASCEND_UNSUPPORTED(
+          "CceAtomic: device store has no hardware-verified release on 2201");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(int32_t *p, int32_t v) {
-      *static_cast<volatile int32_t *>(p) = v;
+      (void)p;
+      (void)v;
+      FLAGCX_ASCEND_UNSUPPORTED(
+          "CceAtomic: device store has no hardware-verified release on 2201");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint64_t *p, uint64_t v) {
-      *static_cast<volatile uint64_t *>(p) = v;
+      (void)p;
+      (void)v;
+      FLAGCX_ASCEND_UNSUPPORTED(
+          "CceAtomic: device store has no hardware-verified release on 2201");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(int64_t *p, int64_t v) {
-      *static_cast<volatile int64_t *>(p) = v;
+      (void)p;
+      (void)v;
+      FLAGCX_ASCEND_UNSUPPORTED(
+          "CceAtomic: device store has no hardware-verified release on 2201");
     }
 
     // Read-modify-write is a declared-absent capability on this toolchain,
@@ -277,10 +325,12 @@ struct PlatformTraits<AscendPlatform> {
     // one opts out of address spaces in clang, is absent from this compiler
     // (probe B4). Within ONE address space casts are legal - the vendor's own
     // st_atomic (__clang_cce_aicore_functions.h:5852) does
-    // reinterpret_cast<__gm__ int32_t *>(addr) - which is why load/store
-    // above need no cast at all: they stay on the unqualified pointers the
-    // by-value kernel parameters carry, the same shape
-    // DeviceAPI::Net's own constructor body uses.
+    // reinterpret_cast<__gm__ int32_t *>(addr) - so the blockage is purely the
+    // cross-space step, and it applies to this whole layer: the unqualified
+    // pointers that by-value kernel parameters carry (the shape
+    // DeviceAPI::Net's own constructor body uses) can never reach the _G_
+    // forms, and the load/store above are absent for the ordering reason
+    // recorded there instead.
     //
     // So each member below names FLAGCX_ASCEND_UNSUPPORTED instead of a
     // builtin the compiler cannot emit. On this pass that macro expands to a
