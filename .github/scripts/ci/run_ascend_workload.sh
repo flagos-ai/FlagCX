@@ -57,9 +57,12 @@ case "$workload" in
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    # The heterogeneous four-rank SIGSEGV is tracked in a separate Torch PR.
-    echo "Ascend coverage gap: heterogeneous Torch API is deferred to a separate PR; running homogeneous Torch API"
-    FLAGCX_SKIP_HETERO=1 bash "$project_root/test/script/torch_api_test.sh"
+    unset FLAGCX_SKIP_HETERO
+    bash "$project_root/test/script/torch_api_test.sh"
+    if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
+      "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
+      bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
+    fi
     ;;
   *)
     echo "Unknown Ascend workload: $workload" >&2

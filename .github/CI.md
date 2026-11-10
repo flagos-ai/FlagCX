@@ -64,7 +64,7 @@ tests executed in explicitly managed Docker containers.
 
 ## Python Coverage
 
-The CUDA, Hygon, MetaX, and PPU Torch jobs run `plugin/torch/tests/test_*.py`
+The CUDA, Hygon, MetaX, PPU, and Ascend Torch jobs run `plugin/torch/tests/test_*.py`
 and measure Python code in `src/flagcx` and the Torch build helpers. The suite
 currently contains 17 tests. It does not measure C++ or MPI code, or the Torch
 API example that runs before coverage starts. Each platform produces a separate

@@ -439,7 +439,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         ):
             source = path.read_text()
             self.assertIn("workflow_call:", source)
-            for platform in ("cuda", "hygon", "metax", "ppu"):
+            for platform in ("cuda", "hygon", "metax", "ppu", "ascend"):
                 self.assertIn(f"contains(fromJSON(inputs.platforms), '{platform}')", source)
             self.assertIn("if: always()", source)
             self.assertIn("check_platform_workflow.sh", source)
@@ -449,7 +449,7 @@ class CiWorkflowWiringTest(unittest.TestCase):
         caller = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
         token = caller["jobs"]["torch_api_tests"]["secrets"]["FLAGCICD_API_TOKEN"]
         self.assertIn("needs.prepare.outputs.repository == github.repository", token)
-        for platform in ("cuda", "hygon", "metax", "ppu"):
+        for platform in ("cuda", "hygon", "metax", "ppu", "ascend"):
             with self.subTest(platform=platform):
                 job = workflow["jobs"][f"torch-api-test-{platform}"]
                 steps = {step.get("name"): step for step in job["steps"]}
