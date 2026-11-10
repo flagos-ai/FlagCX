@@ -8,12 +8,15 @@ source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
 MPI_HOME=${MPI_HOME:-/usr/local/openmpi}
 CCL_HOME=${CCL_HOME:-/usr/local/xccl_Linux_x86_64}
-DEVICE_HOME=${DEVICE_HOME:-/usr/local/xpu}
+DEVICE_HOME=${DEVICE_HOME:-/opt/flagcx-sdk/xre}
+export XCCL_HOME="$CCL_HOME"
+export XRE_HOME="$DEVICE_HOME"
 
 export MPI_HOME CCL_HOME DEVICE_HOME
+export OMPI_MCA_plm=isolated
 export JSON_INCLUDE_DIR="${JSON_INCLUDE_DIR:-/usr/include}"
 export PATH="$MPI_HOME/bin:$DEVICE_HOME/bin:$PATH"
-export LD_LIBRARY_PATH="$MPI_HOME/lib:$CCL_HOME/so:/usr/local/xcudart/lib:$DEVICE_HOME/so:$DEVICE_HOME/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$MPI_HOME/lib:$CCL_HOME/so:$DEVICE_HOME/so:$DEVICE_HOME/lib:/usr/local/xcudart/lib:${LD_LIBRARY_PATH:-}"
 export FLAGCX_CI_MPIRUN="$MPI_HOME/bin/mpirun"
 
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_KUNLUNXIN=1 MPI_HOME="$MPI_HOME" CCL_HOME="$CCL_HOME" DEVICE_HOME="$DEVICE_HOME" "HOST_CXXFLAGS=-include cstddef")
@@ -26,7 +29,7 @@ export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
 # XSHMEM on P800 is limited to intra-node communication within one four-XPU group.
 export FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY=1
 export XSHMEM_SYMMETRIC_SIZE=17179869184
-FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x XPU_VISIBLE_DEVICES=0,1,2,3)
+FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x XPU_VISIBLE_DEVICES=4,5,6,7)
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=4

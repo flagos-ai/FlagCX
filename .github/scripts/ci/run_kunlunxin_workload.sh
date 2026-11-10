@@ -14,8 +14,8 @@ source "$project_root/$FLAGCX_CI_SET_ENV"
 
 flagcx_ci_prepare "$workload"
 flagcx_ci_validate_rdma "$workload"
-# Host API performance tests and the Torch extension do not compile XPU
-# kernels. XTDK and XSHMEM are only required by the device API/kernel suites.
+# The documented perf baseline builds FlagCX with XSHMEM device kernels;
+# the Torch extension keeps its host API build configuration.
 export FLAGCX_ADAPTOR=klx
 export JSON_INCLUDE_DIR=${JSON_INCLUDE_DIR:-/usr/include}
 export FLAGCX_DEBUG=${FLAGCX_DEBUG:-INFO}
@@ -23,18 +23,32 @@ export FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-ALL}
 
 build_flagcx() {
   make -C "$project_root" --jobs="$(nproc)" \
-    "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}"
+    "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}" "$@"
 }
 
 case "$workload" in
   perf)
-    build_flagcx
-    make -C "$project_root/test/perf" --jobs="$(nproc)" \
-      "${FLAGCX_CI_TEST_MAKE_ARGS[@]}"
+    rm -f "$project_root/test/kernel/klx/build/obj/device_ir.o" \
+      "$project_root/build/obj/flagcx/adaptor/kernel/kunlunxin/device_api_host_helpers.o"
+    build_flagcx USE_SHMEM=1 COMPILE_KERNEL=1
+    make -C "$project_root/test/perf/host_api" --jobs="$(nproc)" \
+      "${FLAGCX_CI_TEST_MAKE_ARGS[@]}" USE_SHMEM=1
     export FLAGCX_CI_PERF_PLATFORM=KunlunXin
+    export XPU_VISIBLE_DEVICES=4,5,6,7
     perf_bin="$project_root/test/perf/host_api/build/bin"
-    "$project_root/.github/scripts/ci/run_host_perf_suite.sh" homogeneous "$perf_bin"
-    "$project_root/.github/scripts/ci/run_host_perf_suite.sh" heterogeneous "$perf_bin"
+    perf_status=0
+    for operation in allreduce alltoall; do
+      FLAGCX_CI_MPI_LABEL="KunlunXin documented perf: $operation" \
+        "$project_root/.github/scripts/ci/run_mpi_with_timeout.sh" \
+        -np 4 --allow-run-as-root \
+        -x LD_LIBRARY_PATH -x XPU_VISIBLE_DEVICES \
+        "$perf_bin/perf_$operation" -b 1M -e 1G -f 2 -n 5 -w 2 || perf_status=1
+    done
+    "$project_root/.github/scripts/ci/run_host_perf_suite.sh" homogeneous "$perf_bin" \
+      -x LD_LIBRARY_PATH -x XPU_VISIBLE_DEVICES || perf_status=1
+    "$project_root/.github/scripts/ci/run_host_perf_suite.sh" heterogeneous "$perf_bin" \
+      -x LD_LIBRARY_PATH -x XPU_VISIBLE_DEVICES || perf_status=1
+    exit "$perf_status"
     ;;
   torch-api)
     export CUDA_VISIBLE_DEVICES=0,1,2,3

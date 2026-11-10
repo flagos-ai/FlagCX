@@ -125,6 +125,13 @@ flagcx_ci_require_rdma() {
     *) return 0 ;;
   esac
 
+  if [[ "$platform_name" == kunlunxin &&
+        "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 &&
+        ( "$suite" == device_api || "$suite" == device_api_unified_ir ) ]]; then
+    echo "RDMA preflight is unnecessary for KunlunXin XSHMEM intra-node tests"
+    return 0
+  fi
+
   echo "Running $platform_name static RDMA preflight for unit-test suite: $suite"
   if ! declare -F flagcx_ci_validate_rdma >/dev/null; then
     echo "$platform_name does not provide the required static RDMA validator." >&2
@@ -180,6 +187,12 @@ build_googletest() {
 
 build_project() {
   local -a args=("${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}")
+  if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin &&
+        ( "$SUITE" == device_api || "$SUITE" == device_api_unified_ir ||
+          "$SUITE" == kernel ) ]]; then
+    rm -f "$PROJECT_ROOT/test/kernel/klx/build/obj/device_ir.o" \
+      "$PROJECT_ROOT/build/obj/flagcx/adaptor/kernel/kunlunxin/device_api_host_helpers.o"
+  fi
   make -C "$PROJECT_ROOT" --jobs="$(nproc)" "${args[@]}"
 }
 

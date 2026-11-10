@@ -27,7 +27,7 @@ docker_options:
   - --network=host
   - --ipc=host
   - --privileged=true
-  - --shm-size=500g
+  - --shm-size=64G
   - --ulimit=memlock=-1
   - --ulimit=stack=67108864
   - --ulimit=nofile=65535:65535
@@ -35,8 +35,8 @@ docker_options:
   - --env=PLATFORM=kunlunxin
   - --env=MPI_HOME=/usr/local/openmpi
   - --env=CCL_HOME=/usr/local/xccl_Linux_x86_64
-  - --env=DEVICE_HOME=/usr/local/xpu
-  - --env=LD_LIBRARY_PATH=/usr/local/openmpi/lib:/usr/local/xccl_Linux_x86_64/so:/usr/local/xcudart/lib:/usr/local/xpu/so:/usr/local/xpu/lib
+  - --env=DEVICE_HOME=/opt/flagcx-sdk/xre
+  - --env=LD_LIBRARY_PATH=/usr/local/openmpi/lib:/usr/local/xccl_Linux_x86_64/so:/opt/flagcx-sdk/xre/so:/opt/flagcx-sdk/xre/lib:/usr/local/xcudart/lib
   - --device=/dev/xpuctrl
   - --device=/dev/xpu0
   - --device=/dev/xpu1
@@ -50,10 +50,10 @@ docker_options:
 set_env: .github/scripts/set_env/kunlunxin.sh
 
 # Device adaptor coverage lives in adaptor; topology coverage lives in core.
+# KunlunXin device_api aliases unified IR; run that coverage once in the matrix.
 unit_test_suites:
   - adaptor
   - core
-  - device_api
   - device_api_host
   - device_api_unified_ir
   - kernel
