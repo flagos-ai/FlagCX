@@ -406,32 +406,48 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // `__ubuf__` array compiles with rc=0.
 #define FLAGCX_SHARED __ubuf__
 // No block barrier is validated for this soc yet, so these stay loud: the
-// failure lands at link time (see the FLAGCX_DEVICE_TRAP redefinition below),
-// which is a declared absence the adaptation doc allows (§13.3.2) rather than
-// the silent no-op it forbids.
+// failure lands at build time (see the split below), which is a declared
+// absence the adaptation doc allows (§13.3.2) rather than the silent no-op it
+// forbids.
 //
 // __builtin_trap() is not available on this pass. bisheng lowers it to a call
-// to abort and the CCE back end refuses that outright - "Some error found in
+// to abort and the CCE verifier refuses that outright - "Some error found in
 // cce source file. (cannot call to symbol: abort)" - measured with a kernel
-// whose entire body is the builtin (probes T0/T1). Since every vendor-neutral
-// unsupported path in the device API funnels through FLAGCX_DEVICE_TRAP() -
-// ascend_platform_traits.h and the shared default_comm_traits.h (16 call sites
-// there alone, plus the NCCL and shmem traits) - the Ascend branch redefines
-// the macro as a call to a declared-but-never-defined function. Reaching one
-// is then a link error naming the capability: loud, greppable, and impossible
-// to mistake for support.
-//
-// The cache half of this is now within reach, however: asc/include/
-// c_api/cache_ctrl/cache_ctrl.h declares asc_dcci_single(__gm__ void*),
-// asc_ub_dcci_single(__ubuf__ void*), asc_dcci_entire_ub / _out / _all, and
-// basic_api/kernel_operator_cache_intf.h has a CacheLine + DcciDst template
-// front end over them. Those are the spellings a stage-3 threadfence gets
-// measured against; this stage keeps the placeholder.
-extern "C" FLAGCX_DEVICE_DECORATOR void flagcxDeviceTrapUnavailableOn2201();
+// whose entire body is the builtin and with one that also writes through a
+// __gm__ pointer (probes T0/T1). Two further measurements then decide what
+// "loud" can mean here:
+//   * bisheng links the device image during -c, not in a separate device-link
+//     step: a call to a declared-but-never-defined aicore function dies with
+//     "ld.lld: error: undefined symbol: nf.cube / nf.vector" (probes T2/T3),
+//     so a never-defined function refuses the BUILD, which is what a
+//     declared-absent capability wants.
+//   * that only works for paths nothing instantiates by default. The shared
+//     headers end several non-void fallbacks with FLAGCX_DEVICE_TRAP() and no
+//     return - default_comm_traits.h:94-100 and :170-182, reached through a
+//     runtime provider switch, so the fallback is instantiated in EVERY
+//     platform's device translation unit - and the CCE front end insists such
+//     a function returns a value ("non return function ... should return a
+//     value", gate run of ef8f74a). Those sites need a noreturn spelling that
+//     names no symbol, or no library can be built at all.
+// So the Ascend branch splits the two roles:
+//   * FLAGCX_DEVICE_TRAP() - the shared "this cannot be reached" marker -
+//     becomes __builtin_unreachable(): noreturn, no symbol, and defensible
+//     here because the Default backend rejects the GDA provider long before a
+//     device view is published (DefaultNetGdaProvider::isValid() returns false
+//     at :86-92, supportsBarrierFence() accepts only Relaxed at :80-84), so a
+//     guarded call cannot exist at runtime. Replacing even this with a real
+//     trap instruction is an open measurement.
+//   * every capability THIS platform declares absent - cache fence, block
+//     barrier, read-modify-write, lane intrinsics - calls one of the three
+//     never-defined functions below, so a kernel that reaches one fails to
+//     build rather than running unordered or hanging.
+extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendNoCacheFence();
+extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendNoBlockBarrier();
+extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendDeviceOpUnsupported();
 #undef FLAGCX_DEVICE_TRAP
-#define FLAGCX_DEVICE_TRAP() flagcxDeviceTrapUnavailableOn2201()
-#define FLAGCX_DEVICE_THREAD_FENCE() FLAGCX_DEVICE_TRAP()
-#define FLAGCX_DEVICE_SYNC_THREADS() FLAGCX_DEVICE_TRAP()
+#define FLAGCX_DEVICE_TRAP() __builtin_unreachable()
+#define FLAGCX_DEVICE_THREAD_FENCE() flagcxAscendNoCacheFence()
+#define FLAGCX_DEVICE_SYNC_THREADS() flagcxAscendNoBlockBarrier()
 #define FLAGCX_THREAD_IDX_X 0
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
