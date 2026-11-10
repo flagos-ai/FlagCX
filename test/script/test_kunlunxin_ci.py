@@ -96,6 +96,10 @@ class KunlunXinWorkloadTest(unittest.TestCase):
                 '#!/bin/bash\nprintf "perf %s\\n" "$1" >> "$CALL_LOG"\n'
             )
             (scripts / "run_host_perf_suite.sh").chmod(0o755)
+            (scripts / "run_mpi_with_timeout.sh").write_text(
+                '#!/bin/bash\nprintf "mpi %s\\n" "$*" >> "$CALL_LOG"\n'
+            )
+            (scripts / "run_mpi_with_timeout.sh").chmod(0o755)
             torch_script = root / "test/script/torch_api_test.sh"
             torch_script.parent.mkdir(parents=True)
             torch_script.write_text('echo torch-tests >> "$CALL_LOG"\n')
