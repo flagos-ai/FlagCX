@@ -31,9 +31,19 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
+//
+// Ascend takes the same route as Iluvatar, for the same reason: bisheng
+// compiles one ASC translation unit in two passes and defines
+// __CCE_IS_AICORE__ on the device pass only, while the types guarded here
+// (flagcxDevNet) are named by BOTH halves of the helper translation unit —
+// the host half has to size the struct whose bytes it hands to the kernel,
+// so it cannot be blind to the type. The makefile therefore passes
+// -DFLAGCX_ASCEND_DEVICE_COMPILE=1 for the whole compilation and the vendor
+// condition keys on it; see makefiles/ascend.mk.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
     defined(__CCE_IS_AICORE__) ||                                              \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
+    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) \
+    || (defined(USE_ASCEND_ADAPTOR) && defined(FLAGCX_ASCEND_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
@@ -46,6 +56,13 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #endif
 
 // Device compiler check (for conditional compilation in headers)
+//
+// Deliberately NOT extended with the Ascend vendor condition above: this
+// macro keys the NCCL backend's device-only blocks (nccl_comm_traits.h), and
+// those have to stay out of the bisheng host pass, which emits host code even
+// though the translation unit as a whole is a device compilation. What the
+// Ascend device path needs to distinguish is keyed on __CCE_IS_AICORE__
+// directly; see ascend_platform_traits.h.
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
     defined(__CCE_IS_AICORE__) ||                                              \
