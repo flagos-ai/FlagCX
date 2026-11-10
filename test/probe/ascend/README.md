@@ -3,7 +3,7 @@
 The VMM and IPC probes link CANN and MPI; the optional NIC probe also links
 libibverbs. They do not initialize FlagCX, create a FlagCX communicator, or
 run the proxy service. Run them on the target Ascend host with two visible
-NPUs before implementing the SymMem and RMA callbacks.
+NPUs when diagnosing SymMem and RMA capabilities.
 
 ## VMM mapping
 
@@ -56,8 +56,8 @@ Adjust both toolkit paths and `SOC_VERSION` to the installed CANN package.
 on different NPUs. Each run first checks same-stream producer → ValueWrite(2)
 → ValueWait(GEQ 1) → consumer ordering. The default remote mode is
 `valuewrite`; set `STREAM_MODE=kernel-readback` or
-`STREAM_MODE=kernel-wait` for a Makefile run. The CI job runs all three modes
-in separate MPI processes:
+`STREAM_MODE=kernel-wait` for a Makefile run. Run all three modes in separate
+MPI processes when diagnosing visibility:
 
 * `--mode valuewrite` reports local and IPC-imported pointer attributes, then
   submits `aclrtValueWrite` to the imported signal. A failure includes the
@@ -115,21 +115,19 @@ Success establishes visibility only
 for the tested CANN, driver, NIC provider, and topology; it does not imply
 support on every Ascend system or set a FlagCX capability automatically.
 
-## Ascend CI
+## Manual probe runs
 
-For automatic PR runs on `ascend-symmem`, the main CI workflow schedules only
-the `ascend_probe` job. Manual workflow dispatch and `/test` requests retain
-the original test suites. The probe job builds and runs VMM and stream IPC on
-the same device and across devices, then runs NIC RDMA visibility across
-devices. IPC runs the three modes above; NIC runs `readback` and `wait`.
-`results-detail.tsv` records each mode, while `results.tsv` records the five
-top-level `PASS`, `FAIL`, `UNSUPPORTED`, or `NOT_RUN` cases and their totals.
-A completed five-case report succeeds as a diagnostic
-CI job even when a probe fails or reports unsupported. Build failures or
-missing hardware leave dependent cases `NOT_RUN` and fail the incomplete
-report. Tagged rank output, build logs, host RDMA inventory, and the TSV
-result summary are uploaded in the `attempts-ascend-probe-*` artifact. To
-select another topology, set `FLAGCX_CI_PROBE_DEVICE_PAIR`,
+The main CI workflow runs the configured Ascend unit, performance, and Torch
+API jobs; it does not schedule these standalone probes. For a manual
+five-case diagnostic report, run
+`FLAGCX_CI_SET_ENV=.github/scripts/set_env/ascend.sh bash .github/scripts/ci/run_ascend_probe.sh`
+on an Ascend host. The script runs VMM and stream IPC on the same device and
+across devices, then NIC RDMA visibility across devices. IPC runs the three
+modes above; NIC runs `readback` and `wait`. `results-detail.tsv` records each
+mode, while `results.tsv` records the five top-level `PASS`, `FAIL`,
+`UNSUPPORTED`, or `NOT_RUN` cases and their totals. The output is saved under
+`FLAGCX_CI_LOG_DIR` (or the script's default log directory). To select another
+topology, set `FLAGCX_CI_PROBE_DEVICE_PAIR`,
 `FLAGCX_CI_PROBE_SOC_VERSION`,
 `FLAGCX_CI_PROBE_ASCENDC_CMAKE_DIR`, `FLAGCX_CI_PROBE_IB_DEVICE`,
 `FLAGCX_CI_PROBE_IB_PORT`, or `FLAGCX_CI_PROBE_IB_GID_INDEX` in the container

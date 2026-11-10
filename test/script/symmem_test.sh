@@ -18,7 +18,7 @@ run_multi_segment=0
 # Keep this fixed list aligned with the provider cases exercised by hardware CI.
 # DU multi-segment mapping is still under driver validation.
 case "${FLAGCX_ADAPTOR:-}" in
-  nvidia|metax|ppu)
+  nvidia|metax|ppu|ascend)
     run_multi_segment=1
     ;;
   du)
@@ -27,7 +27,7 @@ case "${FLAGCX_ADAPTOR:-}" in
   "")
     ;;
   *)
-    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, or metax" >&2
+    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, or ascend" >&2
     exit 2
     ;;
 esac
@@ -97,7 +97,7 @@ if ((run_multi_segment)); then
   fi
 fi
 
-if [[ -n "${FLAGCX_ADAPTOR:-}" ]]; then
+if [[ -n "${FLAGCX_ADAPTOR:-}" && "${FLAGCX_ADAPTOR}" != ascend ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \

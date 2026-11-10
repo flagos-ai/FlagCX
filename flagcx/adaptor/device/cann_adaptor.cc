@@ -4,7 +4,9 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "cann_vmm.h"
 #include "check.h"
+#include "param.h"
 #include <ctype.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -475,6 +477,8 @@ flagcxResult_t cannAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
+  if (flagcxParamVmmEnable())
+    return cannVmmAllocate(ptr, size);
   DEVCHECK(aclrtMalloc(ptr, size, ACL_MEM_MALLOC_HUGE_FIRST));
   flagcxResult_t result = cannIpcTrackAllocation(*ptr, size);
   if (result != flagcxSuccess) {
@@ -490,6 +494,10 @@ flagcxResult_t cannAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
+  bool vmmAllocation = false;
+  FLAGCXCHECK(CannSegmentAllocation::freeAllocation(ptr, &vmmAllocation));
+  if (vmmAllocation)
+    return flagcxSuccess;
   FLAGCXCHECK(cannIpcFreeAllocation(ptr));
   return flagcxSuccess;
 }
@@ -771,13 +779,72 @@ flagcxResult_t cannAdaptorLaunchHostFunc(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
-flagcxResult_t cannAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
-                                            int) {
-  return flagcxNotSupported;
+flagcxResult_t cannAdaptorStreamWaitValue64(flagcxStream_t stream, void *ptr,
+                                            uint64_t value, int flags) {
+  if (stream == NULL || ptr == NULL ||
+      (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES) != 0)
+    return flagcxInvalidArgument;
+  // NOTE: CANN ValueWait exposes comparison modes but no CUDA-style flush
+  // flag. Both FlagCX wait modes currently use GEQ here. The existing
+  // Ascend IPC/NIC probes must verify whether subsequent device work sees
+  // remote payload writes before claiming the FLUSH_REMOTE_WRITES guarantee.
+  aclError result =
+      aclrtValueWait(ptr, value, ACL_STREAM_WAIT_VALUE_GEQ, stream->base);
+  if (result != ACL_SUCCESS) {
+    WARN("CANN stream value wait failed: ACL error %d", result);
+    return result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT
+               ? flagcxNotSupported
+               : flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
 }
-flagcxResult_t cannAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
-                                             int) {
-  return flagcxNotSupported;
+
+flagcxResult_t cannAdaptorStreamWriteValue64(flagcxStream_t stream, void *ptr,
+                                             uint64_t value, int flags) {
+  if (stream == NULL || ptr == NULL || flags != 0)
+    return flagcxInvalidArgument;
+  aclError result = aclrtValueWrite(ptr, value, 0, stream->base);
+  if (result == ACL_SUCCESS)
+    return flagcxSuccess;
+  if (result != ACL_ERROR_INVALID_PARAM &&
+      result != ACL_ERROR_RT_PARAM_INVALID) {
+    WARN("CANN stream value write failed: ACL error %d", result);
+    return result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT
+               ? flagcxNotSupported
+               : flagcxUnhandledDeviceError;
+  }
+  aclrtPtrAttributes attributes = {};
+  if (aclrtPointerGetAttributes(ptr, &attributes) != ACL_SUCCESS ||
+      attributes.location.type != static_cast<aclrtMemLocationType>(3)) {
+    WARN("CANN stream value write rejected non-IPC address: ACL error %d",
+         result);
+    return flagcxUnhandledDeviceError;
+  }
+  // Imported IPC pointers are valid memcpy destinations but CANN value-write
+  // rejects their location type. Keep the host operand alive until the queued
+  // copy completes; the callback only uses libc and does not call the runtime.
+  uint64_t *operand = (uint64_t *)malloc(sizeof(*operand));
+  if (operand == NULL)
+    return flagcxSystemError;
+  *operand = value;
+  result = aclrtMemcpyAsync(ptr, sizeof(*operand), operand, sizeof(*operand),
+                            ACL_MEMCPY_HOST_TO_DEVICE, stream->base);
+  if (result == ACL_SUCCESS)
+    result = aclrtLaunchHostFunc(stream->base, free, operand);
+  if (result != ACL_SUCCESS) {
+    // The copy may already be queued. Drain the stream before releasing its
+    // source so an error cannot leave an asynchronous use-after-free.
+    aclError drained = aclrtSynchronizeStream(stream->base);
+    if (drained == ACL_SUCCESS)
+      free(operand);
+    else
+      WARN("CANN IPC signal source retained after stream drain failed: ACL "
+           "error %d",
+           drained);
+    WARN("CANN IPC signal write failed: ACL error %d", result);
+    return flagcxUnhandledDeviceError;
+  }
+  return flagcxSuccess;
 }
 flagcxResult_t cannAdaptorEventElapsedTime(float *, flagcxEvent_t,
                                            flagcxEvent_t) {
@@ -789,18 +856,159 @@ flagcxResult_t cannAdaptorHostRegister(void *, size_t) {
 }
 flagcxResult_t cannAdaptorHostUnregister(void *) { return flagcxNotSupported; }
 
-// Symmetric memory VMM stubs (not supported)
-flagcxResult_t cannAdaptorSymPhysAlloc(void *, size_t, void **, void *,
-                                       size_t *, size_t *) {
-  return flagcxNotSupported;
+flagcxResult_t cannAdaptorSymPhysAlloc(void *ptr, size_t size,
+                                       void **physHandle, void *shareableHandle,
+                                       size_t *handleSize, size_t *allocSize) {
+  if (ptr == NULL || size == 0 || physHandle == NULL ||
+      shareableHandle == NULL || handleSize == NULL || allocSize == NULL)
+    return flagcxInvalidArgument;
+  *physHandle = NULL;
+  if (*handleSize < sizeof(int))
+    return flagcxInvalidArgument;
+  CannSegmentMap::Bundle *bundle = new (std::nothrow) CannSegmentMap::Bundle();
+  if (bundle == NULL)
+    return flagcxSystemError;
+  bool found = false;
+  size_t offset = 0;
+  flagcxResult_t result =
+      CannSegmentAllocation::describe(ptr, size, bundle, &offset, &found);
+  if (result == flagcxSuccess &&
+      (!found || offset != 0 || bundle->segments.size() != 1))
+    result = flagcxNotSupported;
+  if (result == flagcxSuccess) {
+    // The bundle borrows the tracked allocation's handle. The allocation
+    // remains live for the window lifetime, and bundle cleanup releases only
+    // its metadata. The provider handle is freed by gdrMemFree.
+    int fd = -1;
+    result = CannSegmentOps::exportHandle(bundle->handles[0], &fd);
+    if (result == flagcxSuccess) {
+      *(int *)shareableHandle = fd;
+      *handleSize = sizeof(int);
+      *allocSize = bundle->segments[0].size;
+      *physHandle = bundle;
+      return flagcxSuccess;
+    }
+  }
+  (void)CannSegmentMap::freeBundle(bundle);
+  return result;
 }
-flagcxResult_t cannAdaptorSymPhysFree(void *) { return flagcxNotSupported; }
-flagcxResult_t cannAdaptorSymFlatMap(void *[], int, int, void *, size_t,
-                                     void **) {
-  return flagcxNotSupported;
+
+flagcxResult_t cannAdaptorSymPhysFree(void *physHandle) {
+  return CannSegmentMap::freeBundle(physHandle);
 }
-flagcxResult_t cannAdaptorSymFlatUnmap(void *, size_t, int) {
-  return flagcxNotSupported;
+
+flagcxResult_t cannAdaptorSymFlatMap(void *peerHandles[], int nPeers,
+                                     int selfIndex, void *selfPhysHandle,
+                                     size_t allocSize, void **flatBase) {
+  if (peerHandles == NULL || selfPhysHandle == NULL || flatBase == NULL ||
+      nPeers <= 0 || selfIndex < 0 || selfIndex >= nPeers || allocSize == 0)
+    return flagcxInvalidArgument;
+  std::vector<flagcxSymRankLayout> layouts(nPeers);
+  std::vector<flagcxSymSegmentMeta> segments(nPeers);
+  for (int i = 0; i < nPeers; ++i) {
+    layouts[i].firstSegment = i;
+    layouts[i].segmentCount = 1;
+    segments[i].offset = 0;
+    segments[i].size = allocSize;
+  }
+  aclrtPhysicalMemProp prop = {};
+  size_t alignment = 0;
+  FLAGCXCHECK(cannVmmAllocationProp(&prop, &alignment));
+  FLAGCXCHECK(CannSegmentMap::begin(nPeers, selfIndex, selfPhysHandle,
+                                    layouts.data(), segments.data(), nPeers,
+                                    allocSize, alignment, flatBase));
+  for (int i = 0; i < nPeers; ++i) {
+    int fd = i == selfIndex ? -1 : *(int *)peerHandles[i];
+    flagcxResult_t result = CannSegmentMap::mapOne(*flatBase, i, fd);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  return flagcxSuccess;
+}
+
+flagcxResult_t cannAdaptorSymFlatMappingUnmap(void *flatBase, size_t, int) {
+  return CannSegmentMap::unmap(flatBase);
+}
+flagcxResult_t cannAdaptorSymFlatVaFree(void *flatBase, size_t, int) {
+  return CannSegmentMap::freeVa(flatBase);
+}
+flagcxResult_t cannAdaptorSymFlatUnmap(void *flatBase, size_t, int) {
+  FLAGCXCHECK(CannSegmentMap::unmap(flatBase));
+  return CannSegmentMap::freeVa(flatBase);
+}
+
+flagcxResult_t cannAdaptorSymPhysDescribe(void *ptr, size_t size, void **bundle,
+                                          const flagcxSymSegmentMeta **segments,
+                                          int *count, size_t *userOffset,
+                                          size_t *alignment) {
+  return cannVmmDescribe(ptr, size, bundle, segments, count, userOffset,
+                         alignment);
+}
+flagcxResult_t cannAdaptorSymPhysExportSegment(void *bundle, int index,
+                                               int *fd) {
+  return CannSegmentMap::exportSegment(bundle, index, fd);
+}
+flagcxResult_t cannAdaptorSymPhysFreeSegments(void *bundle) {
+  return CannSegmentMap::freeBundle(bundle);
+}
+flagcxResult_t cannAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
+                                              int *count) {
+  return CannSegmentAllocation::segmentCount(ptr, size, count);
+}
+flagcxResult_t cannAdaptorSymFlatMapSegments(
+    const int *fds, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **flatBase) {
+  return CannSegmentMap::map(fds, nPeers, self, bundle, layouts, segments,
+                             totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t cannAdaptorSymFlatMapSegmentsBegin(
+    int nPeers, int self, void *bundle, const flagcxSymRankLayout *layouts,
+    const flagcxSymSegmentMeta *segments, int totalSegments, size_t stride,
+    size_t alignment, void **flatBase) {
+  return CannSegmentMap::begin(nPeers, self, bundle, layouts, segments,
+                               totalSegments, stride, alignment, flatBase);
+}
+flagcxResult_t cannAdaptorSymFlatMapSegmentOne(void *flatBase, int index,
+                                               int fd) {
+  return CannSegmentMap::mapOne(flatBase, index, fd);
+}
+flagcxResult_t cannAdaptorSymFlatMappingUnmapSegments(void *flatBase) {
+  return CannSegmentMap::unmap(flatBase);
+}
+flagcxResult_t cannAdaptorSymFlatVaFreeSegments(void *flatBase) {
+  return CannSegmentMap::freeVa(flatBase);
+}
+flagcxResult_t cannAdaptorSymLsaGetCapacity(size_t *total, size_t *alignment) {
+  if (total == NULL || alignment == NULL)
+    return flagcxInvalidArgument;
+  size_t freeBytes = 0;
+  FLAGCXCHECK(
+      cannVmmResult(aclrtGetMemInfo(ACL_HBM_MEM_NORMAL, &freeBytes, total),
+                    "aclrtGetMemInfo"));
+  aclrtPhysicalMemProp prop = {};
+  return cannVmmAllocationProp(&prop, alignment);
+}
+flagcxResult_t cannAdaptorSymLsaVaReserve(size_t size, size_t alignment,
+                                          void **base) {
+  if (base == NULL)
+    return flagcxInvalidArgument;
+  uintptr_t address = 0;
+  flagcxResult_t result =
+      CannSegmentOps::reserveAddress(size, alignment, &address);
+  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
+  return result;
+}
+flagcxResult_t cannAdaptorSymLsaVaFree(void *base, size_t size) {
+  return CannSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
+}
+flagcxResult_t cannAdaptorSymLsaMapBeginAt(
+    void *windowBase, int nPeers, int self, void *bundle,
+    const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
+    int totalSegments, size_t stride, size_t alignment, void **mappingBase) {
+  return CannSegmentMap::beginAt(windowBase, nPeers, self, bundle, layouts,
+                                 segments, totalSegments, stride, alignment,
+                                 mappingBase);
 }
 flagcxResult_t cannAdaptorSymMulticastSupported(int *supported) {
   if (supported)
@@ -842,8 +1050,9 @@ static flagcxResult_t cannAdaptorGetPointerType(const void *ptr, int *ptrType) {
 
   switch (attrs.location.type) {
     case ACL_MEM_LOCATION_TYPE_DEVICE:
-      // CANN 9.0 headers do not define ACL_MEM_LOCATION_TYPE_MANAGED.
-      // case ACL_MEM_LOCATION_TYPE_MANAGED:
+    case static_cast<aclrtMemLocationType>(3):
+      // Some CANN headers omit the MANAGED enumerator, but imported IPC
+      // device pointers report location type 3 on the target runtime.
       *ptrType = FLAGCX_PTR_CUDA;
       return flagcxSuccess;
     case ACL_MEM_LOCATION_TYPE_HOST:
@@ -928,18 +1137,25 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                  // size_t);
       cannAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
-      // Symmetric memory VMM functions (not supported)
+      // Symmetric memory VMM functions
       cannAdaptorSymPhysAlloc, cannAdaptorSymPhysFree, cannAdaptorSymFlatMap,
       cannAdaptorSymFlatUnmap, cannAdaptorSymMulticastSupported,
       cannAdaptorSymMulticastCreate, cannAdaptorSymMulticastBind,
       cannAdaptorSymMulticastTeardown, cannAdaptorSymMulticastFree,
       NULL, // flagcxResult_t (*getLastError)();
       cannAdaptorGetPointerType, cannAdaptorGetAddressRange,
-      FLAGCX_VMM_MR_CAP_NONE, FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL,
-      NULL, NULL, NULL,
+      FLAGCX_VMM_MR_CAP_VA, FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL,
+      cannAdaptorSymFlatMappingUnmap, cannAdaptorSymFlatVaFree, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_ASCEND,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_ASCEND, NULL, NULL,
+      cannAdaptorSymPhysDescribe, cannAdaptorSymPhysExportSegment,
+      cannAdaptorSymPhysFreeSegments, cannAdaptorSymFlatMapSegments,
+      cannAdaptorSymFlatMappingUnmapSegments, cannAdaptorSymFlatVaFreeSegments,
+      cannAdaptorSymPhysSegmentCount, cannAdaptorSymFlatMapSegmentsBegin,
+      cannAdaptorSymFlatMapSegmentOne, cannAdaptorSymLsaGetCapacity,
+      cannAdaptorSymLsaVaReserve, cannAdaptorSymLsaVaFree,
+      cannAdaptorSymLsaMapBeginAt, NULL, NULL, NULL, NULL,
 };
 
 #endif // USE_ASCEND_ADAPTOR

@@ -816,36 +816,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             (REPO_ROOT / "test/unittest/kernel/Makefile").exists()
         )
         self.assertFalse((REPO_ROOT / "test/unittest/device").exists())
-        self.assertIn("flagcx_ci_run_suite_override", ascend_env)
+        self.assertNotIn("flagcx_ci_run_suite_override", ascend_env)
         self.assertIn("check_ascend_pci_runtime.py", ascend_env)
-        ascend_override = ascend_env[
-            ascend_env.index("flagcx_ci_run_suite_override() {") :
-            ascend_env.index("flagcx_ci_prepare() {")
-        ]
-        # Only RMA and SymMem retain the single-process override. Runner
-        # falls through to the common multi-rank CI path.
-        self.assertIn("rma | symmem) ;;", ascend_override)
-        self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1', ascend_override)
-        self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0', ascend_override)
-        self.assertIn('"$suite_dir/build/bin/symmem_unit_tests"', ascend_override)
-        self.assertIn('make -C "$suite_dir" run-unit', ascend_override)
-        self.assertIn('unit_status=$?', ascend_override)
-        self.assertIn('return "$unit_status"', ascend_override)
-        # A skipped phase must name the capability it waits on, so a silent
-        # coverage drop cannot pass review.
-        for marker in (
-            "GPU MR and IPC are now exercised by adaptor/perf CI",
-            "flagcxProxyService",
-            "cannAdaptorSymPhysAlloc",
-        ):
-            self.assertIn(marker, ascend_override)
-        # The multi-rank binaries must no longer be launched.
-        self.assertNotIn("symmem_mpi_tests", ascend_override)
-        self.assertNotIn("run-mpi", ascend_override)
-        self.assertNotIn('FLAGCX_CI_REQUIRE_VMM=1', ascend_override)
-        self.assertIn('run_ascend_runner_mpi.sh', (
-            REPO_ROOT / '.github/scripts/ci/run_unit_test.sh'
-        ).read_text())
+        shared_runner = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        self.assertIn('bash "$PROJECT_ROOT/test/script/symmem_test.sh"', shared_runner)
+        self.assertIn('run-mpi-ipc', shared_runner)
+        self.assertIn('run-mpi-net', shared_runner)
+        self.assertIn('run_ascend_runner_mpi.sh', shared_runner)
 
         for workflow_name in (
             "test.yml",
@@ -901,52 +878,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ascend_handler,
         )
 
-    def test_ascend_override_keeps_rma_symmem_single_process_only(self):
-        def run_override(suite):
-            return subprocess.run(
-                [
-                    os.environ.get("BASH", "bash"),
-                    "-c",
-                    'source "$1"; TEST_RUNNER=echo MPI_RUNNER=echo; '
-                    'flagcx_ci_run_suite_override "$2" "test/unittest/$2"; '
-                    'printf "handled=%s\\n" "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED"',
-                    "bash",
-                    ".github/scripts/set_env/ascend.sh",
-                    suite,
-                ],
-                cwd=REPO_ROOT,
-                env={**os.environ, "BASH_ENV": ""},
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+    def test_ascend_rma_runner_and_symmem_use_shared_multi_rank_path(self):
+        ascend_env = (REPO_ROOT / ".github/scripts/set_env/ascend.sh").read_text()
+        self.assertNotIn("flagcx_ci_run_suite_override", ascend_env)
 
-        # Each handled suite keeps its single-process phase and prints the
-        # capability its skipped multi-rank phases wait on.
-        for suite, unit_marker, reason_marker in (
-            ("symmem", "symmem_unit_tests", "flagcxProxyService"),
-            ("rma", "run-unit", "RMA visibility still needs"),
-        ):
-            with self.subTest(suite=suite):
-                result = run_override(suite)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("handled=1", result.stdout)
-                self.assertIn(unit_marker, result.stdout)
-                self.assertIn("Ascend coverage gap", result.stdout)
-                self.assertIn(reason_marker, result.stdout)
-                self.assertIn("multi-rank phases skipped", result.stdout)
-                # No multi-rank launch may happen for these suites.
-                self.assertNotIn("symmem_mpi_tests", result.stdout)
-                self.assertNotIn("run-mpi", result.stdout)
+        shared_runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        self.assertIn("    rma)", shared_runner)
+        self.assertIn("    runner)", shared_runner)
+        self.assertIn("    symmem)", shared_runner)
+        self.assertIn("run_ascend_runner_mpi.sh", shared_runner)
 
-        # Suites the override does not claim must fall through untouched, so
-        # the shared runner keeps driving them.
-        for suite in ("core", "adaptor", "p2p", "runner", "service"):
-            with self.subTest(suite=suite):
-                result = run_override(suite)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("handled=0", result.stdout)
-                self.assertNotIn("Ascend coverage gap", result.stdout)
+        hccl_adaptor = (REPO_ROOT / "flagcx/adaptor/ccl/hccl_adaptor.cc").read_text()
+        self.assertIn("HcclGetCommAsyncError(comm->base, &hcclAsyncError)", hccl_adaptor)
 
     def test_perf_and_torch_jobs_use_platform_configured_images(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()

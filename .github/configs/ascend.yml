@@ -5,18 +5,17 @@ paths_watch:
   - .github/configs/ascend.yml
   - .github/scripts/set_env/ascend.sh
   - .github/scripts/ci/run_ascend_workload.sh
-  - .github/scripts/ci/run_ascend_probe.sh
   - .github/scripts/ci/check_ascend_pci_runtime.py
   - .github/scripts/ci/run_ascend_diagnostics.sh
   - .github/scripts/ci/run_ascend_runner_mpi.sh
   - .github/workflows/unit_tests_common.yml
   - Dockerfile.ascend-ci
   - flagcx/adaptor/device/cann_adaptor.cc
+  - flagcx/adaptor/device/cann_vmm.h
   - flagcx/adaptor/include/ascend_adaptor.h
   - flagcx/adaptor/ccl/hccl_adaptor.cc
   - makefiles/ascend.mk
   - test/make.inc
-  - test/probe/ascend/*
   - test/unittest/adaptor/net_test_utils.h
   - flagcx/core/p2p_topo.cc
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:ascend-dev-fixed-20261028-debug
