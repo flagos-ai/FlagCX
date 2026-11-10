@@ -9,9 +9,10 @@
  *
  *   host pass   - the Default backend's control path: GCC __atomic_* builtins,
  *                 assert-loud stubs where the platform has no capability.
- *   device pass - the CCE/AICore path: __builtin_cce_atom_* for atomics and
- *                 volatile load/store for the rest, all on the unqualified
- *                 pointers the Default backend passes down (see CceAtomic).
+ *   device pass - the CCE/AICore path: volatile load/store on the unqualified
+ *                 pointers the Default backend passes down, plus
+ *                 __builtin_cce_atom_* as the intended atomic channel - which
+ *                 today the back end cannot select (see CceAtomic).
  *
  * Why simtWidth is 1 and not 32 (three independent measurements, which is what
  * adaptation doc §5.1 asks for before a platform states its lane width):
@@ -24,8 +25,9 @@
  *      __clang_cce_simt_dav3510_intrinsic.h - a different architecture
  *      (dav3510), and not even self-contained here (unknown type 'int4', and
  *      it collides with the 2201 dispatcher: "redefinition of '__ldg'").
- * The execution model therefore is one logical thread per AI core, with
- * cross-core cooperation through global-memory atomics. The Coop types below
+ * The execution model therefore is one logical thread per AI core; the
+ * intended cross-core channel is global-memory atomics, which this toolchain
+ * cannot emit yet (see CceAtomic). The Coop types below
  * are shared by both passes for exactly that reason - they are not no-ops
  * standing in for hardware that exists.
  *
@@ -393,26 +395,35 @@ struct PlatformTraits<AscendPlatform> {
       return __atomic_fetch_and(ptr, val, __ATOMIC_SEQ_CST);
 #endif
     }
-    // exchange() and compareExchange() are NOT available on this soc through
-    // the CCE atomic intrinsics, and the reason is measured rather than
-    // assumed: the intrinsics declare their address operand as void*, so the
-    // memory operand reaches the back end with align 1 and the EXCH/CAS
-    // patterns refuse it. Measured on __NPU_ARCH__ 2201:
-    //   "Cannot select: HiIPUISD::ATOM_SCALAR_CAS_u32<(store (s32) into %ir.0,
-    //       align 1, addrspace 1)>"
-    //   "Cannot select: HiIPUISD::ATOM_SCALAR_CAS_u64<...(s64) ... align 1...>"
-    //   "Cannot select: HiIPUISD::ATOM_SCALAR_EXCH_u64<... align 1...>"
-    // The vendor wrappers cannot be used to dodge this either - the header
-    // that declares them (__clang_cce_simt_atomic.h) is not self-contained on
-    // this soc, and the header that carries its cache-hint enum belongs to
-    // dav3510 and collides with the 2201 dispatcher.
+    // No CCE atomic intrinsic is selectable on this soc in the spelling the
+    // intrinsics force, and the scope of that is measured, not assumed: the
+    // memory operand reaches the back end with align 1 - the intrinsics
+    // declare their address operand as void*, so the DAG knows no alignment -
+    // and the pattern refuses it. Measured on __NPU_ARCH__ 2201 on the
+    // read-modify-write ops too, not only on CAS/EXCH:
+    //   "Cannot select: HiIPUISD::ATOM_SCALAR_ADD_u64<(store (s64) into
+    //       %ir.0, align 1, addrspace 1)>"             (add, __gm__ operand)
+    //   "Cannot select: HiIPUISD::ATOM_SCALAR_ADD_u32<...>"  (add, full link)
+    //   "Cannot select: HiIPUISD::ATOM_SCALAR_CAS_u32/u64/EXCH_u64<...>"
+    // Address space is not the differentiator: an __gm__ operand fails the
+    // same way. With an *unqualified* operand the same builtin instead
+    // crashes the selector in 'HiIPU Non VF DAG->DAG Pattern Instruction
+    // Selection' (probes A2/B7), which is a compiler bug rather than a
+    // spelling the traits could adopt.
+    // The vendor wrappers cannot dodge this either: the header that declares
+    // them (__clang_cce_simt_atomic.h) is not self-contained on this soc, and
+    // the header carrying its cache-hint enum belongs to dav3510 and collides
+    // with the 2201 dispatcher.
     //
-    // CceAtomic::exch/cas above stay in place so that settling the alignment
-    // question is a two-line change here instead of a rewrite; until then
-    // these two contract members declare the gap loudly. Emulating CAS from the
-    // ops that do select is not possible (add cannot express a conditional
-    // store), and emulating it with a non-atomic test-and-set would be a
-    // correctness bug dressed as a feature.
+    // CceAtomic::add/sub/or/and/exch/cas above stay in place so that settling
+    // the alignment question remains a small edit here rather than a rewrite.
+    // exchange()/compareExchange() below declare the gap loudly; whether
+    // fetchAdd/fetchSub/fetchOr/fetchAnd must do the same is exactly what the
+    // open alignment probes (assume_aligned, constant __gm__ address, hint
+    // variants) are for. Emulating CAS from the other ops is not possible (no
+    // op can express a conditional store), and emulating it with a
+    // non-atomic test-and-set would be a correctness bug dressed as a
+    // feature.
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static FLAGCX_DEVICE_INLINE_DECORATOR T exchange(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
