@@ -28,7 +28,13 @@ ASCEND_SOC ?= Ascend910_9382
 # move data, which fails the link step of an otherwise valid translation unit.
 # Disabling the auto-inference is what makes a device translation unit compile
 # (rc=0) instead of erroring out in the linker.
-DEVICE_COMPILE_FLAG := -c -x asc --npu-soc=$(ASCEND_SOC) \
+# -x asc is deliberately absent. The rule expands these flags AFTER the source
+# file (Makefile:546), where the driver reports that an input following the
+# last input file has no effect, so the language already comes from the .asc
+# extension (DEVICE_FILE_EXTENSION below). Verified rather than assumed: the
+# object this rule produces carries an .aicore_binary section, i.e. the device
+# image really is embedded even without the flag.
+DEVICE_COMPILE_FLAG := -c --npu-soc=$(ASCEND_SOC) \
     --cce-auto-infer-kernel-type=false -std=c++17 -O2 -fPIC -MMD -MP \
     -DFLAGCX_ASCEND_DEVICE_COMPILE=1
 DEVICE_LINK_FLAG :=
