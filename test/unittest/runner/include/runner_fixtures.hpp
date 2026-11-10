@@ -33,5 +33,4 @@ protected:
   void *hostrecvbuff = nullptr;
   size_t size = 0;
   size_t count = 0;
-  int teardownDelayMs = 0;
 };
