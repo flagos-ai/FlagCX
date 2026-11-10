@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - devops
+      - ascend-torch
   pull_request:
     branches: [main, devops]
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
@@ -36,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       active: ${{ steps.resolve.outputs.active }}
+      torch_only: ${{ steps.resolve.outputs.torch_only }}
       matrix: ${{ steps.resolve.outputs.matrix }}
       platforms: ${{ steps.resolve.outputs.platforms }}
       has_platforms: ${{ steps.resolve.outputs.has_platforms }}
@@ -71,6 +73,7 @@ jobs:
           comment=''
           permission=none
           is_pull_request=false
+          head_branch=''
           repository="$EVENT_REPOSITORY"
           ref="$EVENT_SHA"
           selection="$EVENT_SELECTION"
@@ -84,6 +87,7 @@ jobs:
                 --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
               repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
               ref=$(jq -r '.head.sha' <<< "$pr")
+              head_branch=$(jq -r '.head.ref // empty' <<< "$pr")
               is_pull_request=true
               ;;
             issue_comment)
@@ -102,6 +106,7 @@ jobs:
               fi
               ;;
             push)
+              head_branch="$GITHUB_REF_NAME"
               ;;
             schedule)
               ;;
@@ -117,12 +122,13 @@ jobs:
             --arg permission "$permission" \
             --arg comment "$comment" \
             --argjson is_pull_request "$is_pull_request" \
+            --arg head_branch "$head_branch" \
             --arg selection "$selection" \
             --arg repository "$repository" \
             --arg ref "$ref" \
             '{event_name:$event_name, labels:$labels, files:$files, permission:$permission,
               comment:$comment, is_pull_request:$is_pull_request, selection:$selection,
-              repository:$repository, ref:$ref}' > "$context_file"
+              head_branch:$head_branch, repository:$repository, ref:$ref}' > "$context_file"
 
           ruby .github/scripts/ci/resolve_ci_matrix.rb \
             .github/configs "$context_file"
@@ -130,7 +136,7 @@ jobs:
   unit_tests:
     name: Platform unit tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.torch_only != 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -143,7 +149,7 @@ jobs:
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.torch_only != 'true'
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -165,7 +171,7 @@ jobs:
   format-check:
     name: Common checks
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.torch_only != 'true'
     uses: ./.github/workflows/format-check.yml
     with:
       repository: ${{ needs.prepare.outputs.repository }}
@@ -181,6 +187,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify required CI results
+        if: needs.prepare.outputs.torch_only != 'true'
         env:
           ACTIVE: ${{ needs.prepare.outputs.active }}
           HAS_PLATFORMS: ${{ needs.prepare.outputs.has_platforms }}
@@ -194,3 +201,14 @@ jobs:
           bash .github/scripts/ci/check_ci_results.sh
           "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT"
           "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"
+      - name: Verify Ascend Torch result
+        if: needs.prepare.outputs.torch_only == 'true'
+        env:
+          TORCH_RESULT: ${{ needs.torch_api_tests.result }}
+        shell: bash
+        run: |
+          if [[ "$TORCH_RESULT" != success ]]; then
+            echo "Ascend Torch API tests ended with result: $TORCH_RESULT" >&2
+            exit 1
+          fi
+          echo "Ascend Torch API tests completed successfully."

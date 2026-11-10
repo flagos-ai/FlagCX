@@ -56,6 +56,49 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 outputs, _ = self.resolve({"event_name": event_name})
                 self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
+    def test_ascend_torch_branch_selects_only_ascend(self):
+        for event_name, extra in (
+            ("push", {}),
+            ("pull_request", {"files": ["flagcx/core/group.cc"]}),
+        ):
+            with self.subTest(event=event_name):
+                outputs, _ = self.resolve({
+                    "event_name": event_name,
+                    "repository": "MC952-arch/FlagCX",
+                    "head_branch": "ascend-torch",
+                    **extra,
+                })
+                self.assertEqual(outputs["active"], "true")
+                self.assertEqual(outputs["torch_only"], "true")
+                self.assertEqual(outputs["platforms"], ["ascend"])
+                self.assertEqual(outputs["matrix"]["include"][0]["platform"], "ascend")
+
+    def test_ascend_torch_route_does_not_affect_other_sources(self):
+        for extra in (
+            {"repository": "another/FlagCX", "head_branch": "ascend-torch"},
+            {"repository": "MC952-arch/FlagCX", "head_branch": "other"},
+        ):
+            with self.subTest(extra=extra):
+                outputs, _ = self.resolve({"event_name": "push", **extra})
+                self.assertEqual(outputs["torch_only"], "false")
+                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
+        outputs, _ = self.resolve({
+            "event_name": "issue_comment", "comment": "/test",
+            "permission": "read", "is_pull_request": True,
+            "repository": "MC952-arch/FlagCX", "head_branch": "ascend-torch",
+        })
+        self.assertEqual(outputs["active"], "false")
+        self.assertEqual(outputs["torch_only"], "false")
+        self.assertEqual(outputs["platforms"], [])
+
+        outputs, _ = self.resolve({
+            "event_name": "workflow_dispatch", "selection": "all",
+            "repository": "MC952-arch/FlagCX", "head_branch": "ascend-torch",
+        })
+        self.assertEqual(outputs["torch_only"], "false")
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
+
     def test_common_changes_select_all_platforms(self):
         outputs, _ = self.resolve(
             {"event_name": "pull_request", "files": ["flagcx/core/group.cc"]}
@@ -431,6 +474,22 @@ class CiWorkflowWiringTest(unittest.TestCase):
             "format-check.yml",
         ):
             self.assertIn(reusable, workflow)
+
+    def test_ascend_torch_branch_runs_only_torch_workflow(self):
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
+        jobs = workflow["jobs"]
+        self.assertEqual(jobs["prepare"]["outputs"]["torch_only"],
+                         "${{ steps.resolve.outputs.torch_only }}")
+        for name in ("unit_tests", "performance_tests", "format-check"):
+            self.assertIn("needs.prepare.outputs.torch_only != 'true'", jobs[name]["if"])
+        self.assertNotIn("torch_only != 'true'", jobs["torch_api_tests"]["if"])
+        gate = {step["name"]: step for step in jobs["ci_complete"]["steps"]
+                if "name" in step}
+        self.assertIn("needs.prepare.outputs.torch_only != 'true'",
+                      gate["Verify required CI results"]["if"])
+        self.assertIn("needs.prepare.outputs.torch_only == 'true'",
+                      gate["Verify Ascend Torch result"]["if"])
+        self.assertIn("TORCH_RESULT", gate["Verify Ascend Torch result"]["run"])
 
     def test_platform_specific_jobs_are_conditioned_on_matrix_selection(self):
         for path in (

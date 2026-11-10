@@ -124,10 +124,22 @@ else
   abort "Unsupported event: #{event_name}"
 end
 
+# Temporary validation route for this development branch. Match its source
+# repository as well so an unrelated fork with the same branch name cannot
+# reduce required CI coverage.
+torch_only = active && %w[push pull_request].include?(event_name) &&
+             context["repository"] == "MC952-arch/FlagCX" &&
+             context["head_branch"] == "ascend-torch"
+if torch_only
+  abort "Ascend platform is not enabled" unless platform_names.include?("ascend")
+  selection = ["ascend"]
+end
+
 selected = platforms.select { |entry| selection.include?(entry.fetch("platform")) }
 matrix = { "include" => selected.map { |entry| entry.slice("platform", "display_name") } }
 outputs = {
   "active" => active.to_s,
+  "torch_only" => torch_only.to_s,
   "matrix" => JSON.generate(matrix),
   "platforms" => JSON.generate(selected.map { |entry| entry.fetch("platform") }),
   "platform_csv" => selected.map { |entry| entry.fetch("platform") }.join(","),

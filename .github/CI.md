@@ -6,6 +6,12 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
+Temporary validation for `MC952-arch/FlagCX:ascend-torch` also runs on branch
+pushes. Push and PR runs from that source branch select only Ascend Torch API
+tests and check their result; unit, performance, and format jobs are skipped.
+Other branches and the daily schedule retain the normal matrix. Remove this
+branch-specific route before merging the Torch change.
+
 PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
