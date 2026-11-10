@@ -26,6 +26,14 @@ TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
   // Create DevComm
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+#ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
+  // Match the SHMEM perf launcher: push-based AllReduce stages one full
+  // contribution per peer, with separate signal slots for each cluster.
+  reqs.interContextCount = 12;
+  reqs.interSignalCount = 1;
+  reqs.intraScratchBytes =
+      static_cast<size_t>(nranks > 1 ? nranks - 1 : 1) * size;
+#endif
 
   flagcxDevComm_t devComm = nullptr;
   ASSERT_EQ(flagcxDevCommCreate(comm, &reqs, &devComm), flagcxSuccess);
