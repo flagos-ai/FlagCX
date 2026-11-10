@@ -50,12 +50,12 @@ docker_options:
 set_env: .github/scripts/set_env/kunlunxin.sh
 
 # Device adaptor coverage lives in adaptor; topology coverage lives in core.
-# KunlunXin device_api aliases unified IR; run that coverage once in the matrix.
+# KunlunXin device_api runs unified IR coverage; keep a single matrix entry.
 unit_test_suites:
   - adaptor
   - core
   - device_api_host
-  - device_api_unified_ir
+  - device_api
   - kernel
   - p2p
   - rma
