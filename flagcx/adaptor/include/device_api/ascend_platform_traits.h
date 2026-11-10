@@ -78,18 +78,18 @@ struct PlatformTraits<AscendPlatform> {
   // ==============================================================
   struct Intrin {
     static constexpr int simtWidth = 1;
-    static constexpr flagcxLaneMask_t fullMask() { return 1ull; }
+    static FLAGCX_HOST_DEVICE_INLINE constexpr flagcxLaneMask_t fullMask() { return 1ull; }
 
 #if defined(__CCE_IS_AICORE__)
     // Single-lane model: these are definitions, not stubs. Lane 0 is the only
     // lane that exists, so a mask never has more than its low bit set.
-    static inline int lane() { return 0; }
-    static inline flagcxLaneMask_t lanemaskLt() { return 0; }
-    static inline flagcxLaneMask_t activemask() { return 1ull; }
-    static inline int popc(flagcxLaneMask_t mask) { return (int)(mask & 1ull); }
+    static FLAGCX_DEVICE_INLINE_DECORATOR int lane() { return 0; }
+    static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t lanemaskLt() { return 0; }
+    static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t activemask() { return 1ull; }
+    static FLAGCX_DEVICE_INLINE_DECORATOR int popc(flagcxLaneMask_t mask) { return (int)(mask & 1ull); }
     // A convergence point of a one-lane group has nothing to converge on.
-    static inline void syncwarp(flagcxLaneMask_t = fullMask()) {}
-    static inline void spinBackoff(int cycles) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void syncwarp(flagcxLaneMask_t = fullMask()) {}
+    static FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int cycles) {
       // No backoff/sleep hint instruction is exposed for this soc, so honour
       // the caller's intent with a bounded busy loop.
       for (volatile int i = 0; i < cycles; ++i) {
@@ -101,17 +101,17 @@ struct PlatformTraits<AscendPlatform> {
     // mem_bar_* are dav3510-gated ("does not support the given target feature")
     // and calling hset_flag()/hwait_flag() with a wrong arity crashes bisheng
     // outright, so guessing is not an option here. They trap until then.
-    static inline void namedBarrierSync(int, int) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void namedBarrierSync(int, int) {
       FLAGCX_ASCEND_UNSUPPORTED("namedBarrierSync() on AscendPlatform");
     }
-    static inline void threadfenceDevice() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceDevice() {
       FLAGCX_ASCEND_UNSUPPORTED("threadfenceDevice() on AscendPlatform");
     }
-    static inline void threadfenceSystem() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceSystem() {
       FLAGCX_ASCEND_UNSUPPORTED("threadfenceSystem() on AscendPlatform");
     }
     template <typename DstPtr, typename SrcPtr>
-    static inline void coopCopyBytes(DstPtr dst, SrcPtr src, size_t bytes, int,
+    static FLAGCX_DEVICE_INLINE_DECORATOR void coopCopyBytes(DstPtr dst, SrcPtr src, size_t bytes, int,
                                      int) {
       // One lane in the group: this thread walks the whole range. Byte-wide
       // because the address spaces of caller pointers are not known here.
@@ -120,40 +120,40 @@ struct PlatformTraits<AscendPlatform> {
       for (size_t i = 0; i < bytes; ++i) d[i] = s[i];
     }
 #else
-    static inline int lane() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int lane() {
       FLAGCX_ASCEND_UNSUPPORTED("lane() on AscendPlatform");
       return 0;
     }
-    static inline flagcxLaneMask_t lanemaskLt() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t lanemaskLt() {
       FLAGCX_ASCEND_UNSUPPORTED("lanemaskLt() on AscendPlatform");
       return 0;
     }
-    static inline flagcxLaneMask_t activemask() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t activemask() {
       FLAGCX_ASCEND_UNSUPPORTED("activemask() on AscendPlatform");
       return 1;
     }
-    static inline void syncwarp(flagcxLaneMask_t = fullMask()) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void syncwarp(flagcxLaneMask_t = fullMask()) {
       FLAGCX_ASCEND_UNSUPPORTED("syncwarp() on AscendPlatform");
     }
-    static inline int popc(flagcxLaneMask_t x) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int popc(flagcxLaneMask_t x) {
       (void)x;
       FLAGCX_ASCEND_UNSUPPORTED("popc() on AscendPlatform");
       return 0;
     }
-    static inline void namedBarrierSync(int, int) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void namedBarrierSync(int, int) {
       FLAGCX_ASCEND_UNSUPPORTED("namedBarrierSync() on AscendPlatform");
     }
-    static inline void spinBackoff(int) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void spinBackoff(int) {
       FLAGCX_ASCEND_UNSUPPORTED("spinBackoff() on AscendPlatform");
     }
-    static inline void threadfenceSystem() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceSystem() {
       FLAGCX_ASCEND_UNSUPPORTED("threadfenceSystem() on AscendPlatform");
     }
-    static inline void threadfenceDevice() {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceDevice() {
       FLAGCX_ASCEND_UNSUPPORTED("threadfenceDevice() on AscendPlatform");
     }
     template <typename DstPtr, typename SrcPtr>
-    static inline void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
       FLAGCX_ASCEND_UNSUPPORTED("coopCopyBytes() on AscendPlatform");
     }
 #endif  // __CCE_IS_AICORE__
@@ -177,28 +177,28 @@ struct PlatformTraits<AscendPlatform> {
     static constexpr uint32_t kHint = 0u;
 
     // Plain accesses: volatile __gm__ load/store, verified rc=0 on 2201.
-    static inline uint32_t load(const uint32_t *p) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t load(const uint32_t *p) {
       return *(volatile __gm__ uint32_t *)p;
     }
-    static inline int32_t load(const int32_t *p) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int32_t load(const int32_t *p) {
       return *(volatile __gm__ int32_t *)p;
     }
-    static inline uint64_t load(const uint64_t *p) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t load(const uint64_t *p) {
       return *(volatile __gm__ uint64_t *)p;
     }
-    static inline int64_t load(const int64_t *p) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int64_t load(const int64_t *p) {
       return *(volatile __gm__ int64_t *)p;
     }
-    static inline void store(uint32_t *p, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint32_t *p, uint32_t v) {
       *(volatile __gm__ uint32_t *)p = v;
     }
-    static inline void store(int32_t *p, int32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(int32_t *p, int32_t v) {
       *(volatile __gm__ int32_t *)p = v;
     }
-    static inline void store(uint64_t *p, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint64_t *p, uint64_t v) {
       *(volatile __gm__ uint64_t *)p = v;
     }
-    static inline void store(int64_t *p, int64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(int64_t *p, int64_t v) {
       *(volatile __gm__ int64_t *)p = v;
     }
 
@@ -206,105 +206,105 @@ struct PlatformTraits<AscendPlatform> {
     // name resolved by bisheng's front end on 2201 (no "undeclared builtin"
     // diagnostic for any of them). The (uint32_t) hint is the third trailing
     // argument, and cas takes compare then value before it.
-    static inline uint32_t add(uint32_t *p, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t add(uint32_t *p, uint32_t v) {
       return __builtin_cce_atom_add_u32(p, v, kHint);
     }
-    static inline int32_t add(int32_t *p, int32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int32_t add(int32_t *p, int32_t v) {
       return __builtin_cce_atom_add_s32(p, v, kHint);
     }
-    static inline uint64_t add(uint64_t *p, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t add(uint64_t *p, uint64_t v) {
       return __builtin_cce_atom_add_u64(p, v, kHint);
     }
-    static inline int64_t add(int64_t *p, int64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int64_t add(int64_t *p, int64_t v) {
       return __builtin_cce_atom_add_s64(p, v, kHint);
     }
-    static inline uint32_t sub(uint32_t *p, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t sub(uint32_t *p, uint32_t v) {
       return __builtin_cce_atom_sub_u32(p, v, kHint);
     }
-    static inline uint64_t sub(uint64_t *p, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t sub(uint64_t *p, uint64_t v) {
       return __builtin_cce_atom_sub_u64(p, v, kHint);
     }
-    static inline uint32_t bitOr(uint32_t *p, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t bitOr(uint32_t *p, uint32_t v) {
       return __builtin_cce_atom_or_u32(p, v, kHint);
     }
-    static inline uint64_t bitOr(uint64_t *p, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t bitOr(uint64_t *p, uint64_t v) {
       return __builtin_cce_atom_or_u64(p, v, kHint);
     }
-    static inline uint32_t bitAnd(uint32_t *p, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t bitAnd(uint32_t *p, uint32_t v) {
       return __builtin_cce_atom_and_u32(p, v, kHint);
     }
-    static inline uint64_t bitAnd(uint64_t *p, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t bitAnd(uint64_t *p, uint64_t v) {
       return __builtin_cce_atom_and_u64(p, v, kHint);
     }
-    static inline uint32_t exch(uint32_t *p, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t exch(uint32_t *p, uint32_t v) {
       return __builtin_cce_atom_exch_u32(p, v, kHint);
     }
-    static inline uint64_t exch(uint64_t *p, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t exch(uint64_t *p, uint64_t v) {
       return __builtin_cce_atom_exch_u64(p, v, kHint);
     }
-    static inline uint32_t cas(uint32_t *p, uint32_t cmp, uint32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t cas(uint32_t *p, uint32_t cmp, uint32_t v) {
       return __builtin_cce_atom_cas_u32(p, cmp, v, kHint);
     }
-    static inline int32_t cas(int32_t *p, int32_t cmp, int32_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int32_t cas(int32_t *p, int32_t cmp, int32_t v) {
       return __builtin_cce_atom_cas_s32(p, cmp, v, kHint);
     }
-    static inline uint64_t cas(uint64_t *p, uint64_t cmp, uint64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t cas(uint64_t *p, uint64_t cmp, uint64_t v) {
       return __builtin_cce_atom_cas_u64(p, cmp, v, kHint);
     }
-    static inline int64_t cas(int64_t *p, int64_t cmp, int64_t v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR int64_t cas(int64_t *p, int64_t cmp, int64_t v) {
       return __builtin_cce_atom_cas_s64(p, cmp, v, kHint);
     }
 
     // Catch-alls. Any type outside the four integer widths reaches one of
     // these, which is a declared failure rather than a silent reinterpretation.
     template <typename T>
-    static inline T load(const T *p) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T load(const T *p) {
       (void)p;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::load: no CCE spelling for type");
       return T();
     }
     template <typename T>
-    static inline void store(T *p, const T &) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(T *p, const T &) {
       (void)p;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::store: no CCE spelling for type");
     }
     template <typename T>
-    static inline T add(T *p, T v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T add(T *p, T v) {
       (void)p;
       (void)v;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::add: no CCE spelling for type");
       return T();
     }
     template <typename T>
-    static inline T sub(T *p, T v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T sub(T *p, T v) {
       (void)p;
       (void)v;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::sub: no CCE spelling for type");
       return T();
     }
     template <typename T>
-    static inline T bitOr(T *p, T v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T bitOr(T *p, T v) {
       (void)p;
       (void)v;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::bitOr: no CCE spelling for type");
       return T();
     }
     template <typename T>
-    static inline T bitAnd(T *p, T v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T bitAnd(T *p, T v) {
       (void)p;
       (void)v;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::bitAnd: no CCE spelling for type");
       return T();
     }
     template <typename T>
-    static inline T exch(T *p, T v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T exch(T *p, T v) {
       (void)p;
       (void)v;
       FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::exch: no CCE spelling for type");
       return T();
     }
     template <typename T>
-    static inline T cas(T *p, T cmp, T v) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T cas(T *p, T cmp, T v) {
       (void)p;
       (void)cmp;
       (void)v;
@@ -319,7 +319,7 @@ struct PlatformTraits<AscendPlatform> {
   // ==============================================================
   struct Atomic {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline T load(T *ptr, flagcxDeviceMemoryOrder_t) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T load(T *ptr, flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
       return CceAtomic::load(ptr);
@@ -328,7 +328,7 @@ struct PlatformTraits<AscendPlatform> {
 #endif
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline void store(T *ptr, const T &val,
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -338,7 +338,7 @@ struct PlatformTraits<AscendPlatform> {
 #endif
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline T fetchAdd(T *ptr, const T &val,
+    static FLAGCX_DEVICE_INLINE_DECORATOR T fetchAdd(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -348,7 +348,7 @@ struct PlatformTraits<AscendPlatform> {
 #endif
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline T fetchSub(T *ptr, const T &val,
+    static FLAGCX_DEVICE_INLINE_DECORATOR T fetchSub(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -358,7 +358,7 @@ struct PlatformTraits<AscendPlatform> {
 #endif
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline T fetchOr(T *ptr, const T &val,
+    static FLAGCX_DEVICE_INLINE_DECORATOR T fetchOr(T *ptr, const T &val,
                             flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -368,7 +368,7 @@ struct PlatformTraits<AscendPlatform> {
 #endif
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline T fetchAnd(T *ptr, const T &val,
+    static FLAGCX_DEVICE_INLINE_DECORATOR T fetchAnd(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -398,7 +398,7 @@ struct PlatformTraits<AscendPlatform> {
     // store), and emulating it with a non-atomic test-and-set would be a
     // correctness bug dressed as a feature.
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline T exchange(T *ptr, const T &val,
+    static FLAGCX_DEVICE_INLINE_DECORATOR T exchange(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -411,7 +411,7 @@ struct PlatformTraits<AscendPlatform> {
 #endif
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static inline bool compareExchange(T *ptr, T &expected, const T &desired,
+    static FLAGCX_DEVICE_INLINE_DECORATOR bool compareExchange(T *ptr, T &expected, const T &desired,
                                        flagcxDeviceMemoryOrder_t) {
       (void)Scope;
 #if defined(__CCE_IS_AICORE__)
@@ -432,31 +432,36 @@ struct PlatformTraits<AscendPlatform> {
   // Coop types - one logical thread per core, identical in both passes.
   // ==============================================================
   struct CoopBlock {
-    int threadRank() const { return 0; }
-    int size() const { return 1; }
-    void sync() {}
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
   };
   template <int N>
   struct CoopTile {
-    int threadRank() const { return 0; }
-    int size() const { return N; }
-    flagcxLaneMask_t laneMask() const { return Intrin::fullMask(); }
-    void sync() {}
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
+      return Intrin::fullMask();
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
   };
   using CoopThread = CoopTile<1>;
   using CoopWarp = CoopTile<1>;
   struct CoopTileSpan {
-    CoopTileSpan(int, int, int) {}
-    int threadRank() const { return 0; }
-    int size() const { return 1; }
-    void sync() {}
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopTileSpan(int, int, int) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
   };
   struct CoopLanes {
-    CoopLanes(flagcxLaneMask_t = Intrin::fullMask()) {}
-    int threadRank() const { return 0; }
-    int size() const { return 1; }
-    void sync() {}
-    flagcxLaneMask_t getLmask() const { return Intrin::fullMask(); }
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    CoopLanes(flagcxLaneMask_t mask = Intrin::fullMask()) { (void)mask; }
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
+      return Intrin::fullMask();
+    }
   };
   using CoopAny = PlatformCoop;
 };
