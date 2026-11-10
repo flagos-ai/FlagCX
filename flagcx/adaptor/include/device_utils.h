@@ -32,6 +32,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
+    defined(__CCE_IS_AICORE__) ||                                              \
     (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
@@ -47,6 +48,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
+    defined(__CCE_IS_AICORE__) ||                                              \
     (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
@@ -354,15 +356,58 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
 
 #elif defined(USE_ASCEND_ADAPTOR)
-// Ascend (CANN): host pass only at this stage. The semantics below match the
-// generic non-device platform at the end of this ladder so the host build is
-// unchanged. A bisheng device-compiler branch (real decorators, thread-index
-// accessors and FLAGCX_SIMT_WIDTH) must be added once the Ascend toolchain
-// and its warp capability are validated; see ascend_platform_traits.h.
+// Ascend (CANN). bisheng compiles both passes of a CCE translation unit: it
+// defines __CCE_IS_AICORE__ (plus __NPU_DEVICE__, __NPU_ARCH__ 2201 on the
+// 910C soc Ascend910_9382) on the aicore pass and __NPU_HOST__ on the host
+// pass, both verified with `bisheng -x asc --npu-soc=<soc> --cce-aicore-only
+// -dM -E`. makefiles/ascend.mk additionally passes
+// -DFLAGCX_ASCEND_DEVICE_COMPILE=1 so the branch does not depend on
+// compiler-provided names alone (same trick Iluvatar uses, because clang -x
+// ivcore does not guarantee __CUDACC__).
+#if defined(__CCE_IS_AICORE__)
+// Device pass. Ascend 910C gives FlagCX no usable SIMT lane model:
+//   * `--cce-enable-puresimt` rejects this soc ("NPU soc is not supported");
+//   * `__simt_vf__` and `__simd_vf__` cannot be combined with `__global__`
+//     ('cce_simt_entry' / 'cce_simd_vf' and 'cce_kernel' attributes are not
+//     compatible);
+//   * the lane intrinsics that do exist (warpSize = 32, __ballot, __shfl in
+//     __clang_cce_simt_dav3510_intrinsic.h) are named for the dav3510
+//     architecture, while this soc reports __NPU_ARCH__ 2201, and `laneid()`
+//     is not declared at all on this toolchain.
+// So the model is one logical thread per AI core, with core-to-core and
+// rank-to-rank cooperation expressed through atomics on global memory.
+// FLAGCX_SIMT_WIDTH stays 1 — that is a measured statement about this
+// toolchain, not a defaulted width (adaptation doc §5.1).
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR __aicore__
+#define FLAGCX_GLOBAL_DECORATOR __global__ __aicore__
+#define FLAGCX_DEVICE_INLINE_DECORATOR __aicore__ inline
+#define FLAGCX_HOST_DEVICE_INLINE __aicore__ inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __aicore__
+// Block-scope scratch lives in Unified Buffer. `__ub__` is not a keyword here
+// (it fails as "unknown type name"); `__ubuf__` is, and a kernel declaring an
+// `__ubuf__` array compiles with rc=0.
+#define FLAGCX_SHARED __ubuf__
+// No cache-control or block barrier primitive has been validated for this soc
+// yet, so these stay loud. A trap is a declared failure, which the doc allows;
+// a silent no-op in a fence path is not (§13.3.2).
+#define FLAGCX_DEVICE_THREAD_FENCE() FLAGCX_DEVICE_TRAP()
+#define FLAGCX_DEVICE_SYNC_THREADS() FLAGCX_DEVICE_TRAP()
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 1
+// ACL typedefs aclrtStream to void*, so the stream slot needs no ACL header
+// here; only vendor collective kernels (not built on Ascend) use this macro.
+#define FLAGCX_DEVICE_STREAM_PTR void *
+#else
+// Host pass of an Ascend translation unit — keep the same logical platform
+// constants and erase device-only qualifiers.
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR
-#define FLAGCX_DEVICE_INLINE_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
 #define FLAGCX_HOST_DEVICE_INLINE inline
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR
 #define FLAGCX_DEVICE_STREAM_PTR
@@ -372,6 +417,9 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 1
+#define FLAGCX_SHARED static
+#endif // __CCE_IS_AICORE__
 
 #else
 // Non-NVIDIA platform
