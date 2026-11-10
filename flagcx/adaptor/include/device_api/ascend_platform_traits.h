@@ -9,8 +9,9 @@
  *
  *   host pass   - the Default backend's control path: GCC __atomic_* builtins,
  *                 assert-loud stubs where the platform has no capability.
- *   device pass - the CCE/AICore path: __builtin_cce_atom_* for atomics,
- *                 volatile __gm__ access for plain loads/stores.
+ *   device pass - the CCE/AICore path: __builtin_cce_atom_* for atomics and
+ *                 volatile load/store for the rest, all on the unqualified
+ *                 pointers the Default backend passes down (see CceAtomic).
  *
  * Why simtWidth is 1 and not 32 (three independent measurements, which is what
  * adaptation doc §5.1 asks for before a platform states its lane width):
@@ -176,30 +177,45 @@ struct PlatformTraits<AscendPlatform> {
     // included on this soc.
     static constexpr uint32_t kHint = 0u;
 
-    // Plain accesses: volatile __gm__ load/store, verified rc=0 on 2201.
+    // Plain accesses, unqualified pointer in, volatile load/store out.
+    // No address space is spelled here, deliberately. bisheng refuses every
+    // explicit conversion between address spaces inside an aicore function -
+    //   "casting 'const uint32_t *' to type 'volatile __gm__ uint32_t *' is
+    //    not allowed in aicore function"
+    // (gate run of df5a92c; the reverse direction is refused as well:
+    //  "reinterpret_cast from '__gm__ uint32_t *' to 'uint32_t *' is not
+    //   allowed"). The Default backend never hands __gm__ pointers down to
+    // this layer anyway: its device structs keep pointer members unqualified,
+    // because FLAGCX_DEVICE_GLOBAL_PTR expands to __global_ptr__ only on
+    // Kunlunxin (device_utils.h:46-52), and an unqualified pointer does
+    // dereference on this pass - DeviceAPI::Net's own constructor body reads
+    // dc.fifoBuffers[_contextId] in the same run with no diagnostic. So only
+    // cv-qualification is added here, with static_cast, which does not change
+    // address space. du_platform_traits.h does the same thing for the HIP
+    // atomics: plain T* straight into __hip_atomic_load.
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t load(const uint32_t *p) {
-      return *(volatile __gm__ uint32_t *)p;
+      return *static_cast<const volatile uint32_t *>(p);
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int32_t load(const int32_t *p) {
-      return *(volatile __gm__ int32_t *)p;
+      return *static_cast<const volatile int32_t *>(p);
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t load(const uint64_t *p) {
-      return *(volatile __gm__ uint64_t *)p;
+      return *static_cast<const volatile uint64_t *>(p);
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t load(const int64_t *p) {
-      return *(volatile __gm__ int64_t *)p;
+      return *static_cast<const volatile int64_t *>(p);
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint32_t *p, uint32_t v) {
-      *(volatile __gm__ uint32_t *)p = v;
+      *static_cast<volatile uint32_t *>(p) = v;
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(int32_t *p, int32_t v) {
-      *(volatile __gm__ int32_t *)p = v;
+      *static_cast<volatile int32_t *>(p) = v;
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint64_t *p, uint64_t v) {
-      *(volatile __gm__ uint64_t *)p = v;
+      *static_cast<volatile uint64_t *>(p) = v;
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(int64_t *p, int64_t v) {
-      *(volatile __gm__ int64_t *)p = v;
+      *static_cast<volatile int64_t *>(p) = v;
     }
 
     // __builtin_cce_atom_{add,sub,or,and,exch,cas}_{u32,s32,u64,s64} - each
