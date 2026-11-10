@@ -793,7 +793,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_INTRA_NP=4", ascend_env)
         self.assertIn("FLAGCX_CI_NODE_NP=2", ascend_env)
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", ascend_env)
-        self.assertIn("FLAGCX_CI_ENABLE_PXN=0", ascend_env)
+        self.assertIn("FLAGCX_CI_ENABLE_PXN=${FLAGCX_CI_ENABLE_PXN:-0}", ascend_env)
         self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", ascend_env)
         self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", ascend_env)
         self.assertNotIn("flagcx_ci_build_suite_additional", ascend_env)
@@ -822,10 +822,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ascend_env.index("flagcx_ci_run_suite_override() {") :
             ascend_env.index("flagcx_ci_prepare() {")
         ]
-        # The override takes over rma, runner and symmem: their multi-rank
-        # phases are skipped while each single-process phase still runs. Any
-        # other suite must fall through to the shared runner.
-        self.assertIn("rma | runner | symmem) ;;", ascend_override)
+        # Only RMA and SymMem retain the single-process override. Runner
+        # falls through to the common multi-rank CI path.
+        self.assertIn("rma | symmem) ;;", ascend_override)
         self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1', ascend_override)
         self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0', ascend_override)
         self.assertIn('"$suite_dir/build/bin/symmem_unit_tests"', ascend_override)
@@ -836,7 +835,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         # coverage drop cannot pass review.
         for marker in (
             "GPU MR and IPC are now exercised by adaptor/perf CI",
-            "hcclAdaptorCommGetAsyncError",
             "flagcxProxyService",
             "cannAdaptorSymPhysAlloc",
         ):
@@ -903,7 +901,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ascend_handler,
         )
 
-    def test_ascend_override_runs_single_process_phases_only(self):
+    def test_ascend_override_keeps_rma_symmem_single_process_only(self):
         def run_override(suite):
             return subprocess.run(
                 [
@@ -928,7 +926,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         for suite, unit_marker, reason_marker in (
             ("symmem", "symmem_unit_tests", "flagcxProxyService"),
             ("rma", "run-unit", "RMA visibility still needs"),
-            ("runner", "run-unit", "hcclAdaptorCommGetAsyncError"),
         ):
             with self.subTest(suite=suite):
                 result = run_override(suite)
@@ -944,7 +941,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
         # Suites the override does not claim must fall through untouched, so
         # the shared runner keeps driving them.
-        for suite in ("core", "adaptor", "p2p", "service"):
+        for suite in ("core", "adaptor", "p2p", "runner", "service"):
             with self.subTest(suite=suite):
                 result = run_override(suite)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -2022,6 +2019,8 @@ run_suite
         self.assertIn('pxn_visible_devices_var=MACA_VISIBLE_DEVICES', pxn_case)
         self.assertIn('elif [[ "$platform_name" == "hygon" ]]; then', pxn_case)
         self.assertIn('pxn_visible_devices_var=HIP_VISIBLE_DEVICES', pxn_case)
+        self.assertIn('elif [[ "$platform_name" == "ascend" ]]; then', pxn_case)
+        self.assertIn('pxn_visible_devices_var=ASCEND_RT_VISIBLE_DEVICES', pxn_case)
         self.assertIn('pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
         self.assertIn('-x "$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
         self.assertIn('"$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)

@@ -24,8 +24,15 @@ protected:
     if (initResult_ == flagcxSuccess) {
       flagcxNetIbP2p.devices(&nDevs_);
       if (nDevs_ > 0) {
-        selectionResult_ =
-            flagcx_test::getLocalNetDevice(&flagcxNetIbP2p, nDevs_, &netDev_);
+        if (deviceAdaptor == nullptr || deviceAdaptor->setDevice == nullptr) {
+          selectionResult_ = flagcxInternalError;
+        } else {
+          selectionResult_ = deviceAdaptor->setDevice(0);
+          if (selectionResult_ == flagcxSuccess) {
+            selectionResult_ = flagcx_test::getLocalNetDevice(&flagcxNetIbP2p,
+                                                              nDevs_, &netDev_);
+          }
+        }
       }
     }
   }

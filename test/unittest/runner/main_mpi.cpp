@@ -5,10 +5,8 @@
 #include "comm.h"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <thread>
 
 // ---------- MPIEnvironment ----------
 
@@ -163,9 +161,6 @@ flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
 }
 
 void FlagCXCollTest::TearDown() {
-  if (teardownDelayMs > 0)
-    std::this_thread::sleep_for(std::chrono::milliseconds(teardownDelayMs));
-
   // Collective work is asynchronous with respect to the host.  Drain the
   // stream before communicator teardown so no runtime callback can retain an
   // IPC mapping after the communicator starts releasing transport resources.
