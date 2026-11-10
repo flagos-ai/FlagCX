@@ -353,6 +353,26 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // CUDA runtime macros — available from both nvcc and host compiler
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
 
+#elif defined(USE_ASCEND_ADAPTOR)
+// Ascend (CANN): host pass only at this stage. The semantics below match the
+// generic non-device platform at the end of this ladder so the host build is
+// unchanged. A bisheng device-compiler branch (real decorators, thread-index
+// accessors and FLAGCX_SIMT_WIDTH) must be added once the Ascend toolchain
+// and its warp capability are validated; see ascend_platform_traits.h.
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_STREAM_PTR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+
 #else
 // Non-NVIDIA platform
 #define FLAGCX_HOST_DECORATOR
