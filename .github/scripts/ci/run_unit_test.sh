@@ -326,6 +326,8 @@ run_device_api_unified_ir() {
   # Keep P2P enabled so the intra test covers signal/counter buffers and their
   # shadows. The INTER team below crosses the two logical nodes through NET.
   if [[ "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 ]]; then
+    intra_env+=(-x XSHMEM_SYMMETRIC_SIZE)
+    intra_flags=(-b 64M -e 64M -f 4)
     echo "Skipping unified IR inter and forced NET fallback: KunlunXin XSHMEM supports intra-node communication only"
     FLAGCX_CI_MPI_LABEL="unified IR intra" \
       "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \

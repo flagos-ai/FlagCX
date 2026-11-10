@@ -33,10 +33,10 @@ docker_options:
   - --ulimit=nofile=65535:65535
   - --group-add=video
   - --env=PLATFORM=kunlunxin
-  - --env=MPI_HOME=/usr/local/mpich-3.3.2
+  - --env=MPI_HOME=/usr/local/openmpi
   - --env=CCL_HOME=/usr/local/xccl_Linux_x86_64
   - --env=DEVICE_HOME=/usr/local/xpu
-  - --env=LD_LIBRARY_PATH=/usr/local/xccl_Linux_x86_64/so:/usr/local/mpich-3.3.2/lib:/usr/local/xcudart/lib:/usr/local/xpu/so:/usr/local/xpu/lib
+  - --env=LD_LIBRARY_PATH=/usr/local/openmpi/lib:/usr/local/xccl_Linux_x86_64/so:/usr/local/xcudart/lib:/usr/local/xpu/so:/usr/local/xpu/lib
   - --device=/dev/xpuctrl
   - --device=/dev/xpu0
   - --device=/dev/xpu1

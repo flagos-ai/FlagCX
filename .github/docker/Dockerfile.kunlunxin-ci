@@ -16,7 +16,9 @@ RUN apt-get update \
         git \
         libibverbs-dev \
         libnuma-dev \
+        libopenmpi-dev \
         nlohmann-json3-dev \
+        openmpi-bin \
         pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,16 +33,27 @@ COPY --from=xccl /opt/xccl_Linux_x86_64/ /opt/flagcx-sdk/xccl/
 RUN ln -s ../../lib/clang/15.0.7/include/xpu/kernel /usr/local/xtdk-llvm15-ubuntu2004_x86_64/include/xpu/kernel \
     && rm -rf /usr/local/xccl_Linux_x86_64 \
     && ln -s /opt/flagcx-sdk/xccl /usr/local/xccl_Linux_x86_64 \
-    && ln -s /usr/local/xccl_Linux_x86_64 /usr/local/xccl
+    && ln -s /usr/local/xccl_Linux_x86_64 /usr/local/xccl \
+    && mkdir -p /usr/local/openmpi/bin \
+    && ln -s /usr/bin/mpirun.openmpi /usr/local/openmpi/bin/mpirun \
+    && ln -s /usr/bin/mpicc.openmpi /usr/local/openmpi/bin/mpicc \
+    && ln -s /usr/bin/mpicxx.openmpi /usr/local/openmpi/bin/mpicxx \
+    && ln -s /usr/lib/x86_64-linux-gnu/openmpi/include /usr/local/openmpi/include \
+    && ln -s /usr/lib/x86_64-linux-gnu/openmpi/lib /usr/local/openmpi/lib
 
+ENV MPI_HOME=/usr/local/openmpi
 ENV XTDK_HOME=/usr/local/xtdk-llvm15-ubuntu2004_x86_64
 ENV CCL_HOME=/usr/local/xccl_Linux_x86_64
 ENV XCCL_HOME=/usr/local/xccl_Linux_x86_64
 ENV XRE_HOME=/usr/local/xpu
-ENV PATH=/usr/local/xtdk-llvm15-ubuntu2004_x86_64/bin:/usr/local/mpich-3.3.2/bin:/usr/local/xpu/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/xccl_Linux_x86_64/so:/usr/local/mpich-3.3.2/lib:/usr/local/xpu/so:/usr/local/xpu/lib:${LD_LIBRARY_PATH}
+ENV PATH=/usr/local/openmpi/bin:/usr/local/xtdk-llvm15-ubuntu2004_x86_64/bin:/usr/local/xpu/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/openmpi/lib:/usr/local/xccl_Linux_x86_64/so:/usr/local/xpu/so:/usr/local/xpu/lib:/usr/local/xcudart/lib
 
-RUN test -x "$XTDK_HOME/bin/clang++" \
+RUN test -x "$MPI_HOME/bin/mpirun" \
+    && test -x "$MPI_HOME/bin/mpicxx" \
+    && "$MPI_HOME/bin/mpirun" --version | grep -q 'Open MPI' \
+    && "$MPI_HOME/bin/mpicxx" --showme:version | grep -q 'Open MPI' \
+    && test -x "$XTDK_HOME/bin/clang++" \
     && test -r "$XTDK_HOME/include/xpu/kernel/xtdk.h" \
     && test -r "$CCL_HOME/include/xshmem/xshmem.h" \
     && test -r "$CCL_HOME/include/xshmem/xshmemx.h" \
