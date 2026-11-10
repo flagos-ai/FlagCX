@@ -88,11 +88,8 @@ flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 
 flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
                                          void **devPtr);
-// FreeDevicePtr requires a valid handle; a null handle returns
-// flagcxInvalidArgument on every backend.
 flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm);
 flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem, void **devPtr);
-// A null devMem returns flagcxInvalidArgument on every backend.
 flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem);
 
 // Comm-level cleanup called by flagcxCommDestroy.

@@ -295,8 +295,6 @@ extern "C" flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,
 }
 
 extern "C" flagcxResult_t flagcxDevCommFreeDevicePtr(flagcxDevComm_t devComm) {
-  if (devComm == nullptr)
-    return flagcxInvalidArgument;
   return devApiBackend->devCommFreeDevicePtr(devComm);
 }
 
@@ -306,8 +304,6 @@ extern "C" flagcxResult_t flagcxDevMemGetDevicePtr(flagcxDevMem_t devMem,
 }
 
 extern "C" flagcxResult_t flagcxDevMemFreeDevicePtr(flagcxDevMem_t devMem) {
-  if (devMem == nullptr)
-    return flagcxInvalidArgument;
   return devApiBackend->devMemFreeDevicePtr(devMem);
 }
 
