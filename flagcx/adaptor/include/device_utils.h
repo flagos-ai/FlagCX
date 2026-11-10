@@ -405,9 +405,31 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // (it fails as "unknown type name"); `__ubuf__` is, and a kernel declaring an
 // `__ubuf__` array compiles with rc=0.
 #define FLAGCX_SHARED __ubuf__
-// No cache-control or block barrier primitive has been validated for this soc
-// yet, so these stay loud. A trap is a declared failure, which the doc allows;
-// a silent no-op in a fence path is not (§13.3.2).
+// No block barrier is validated for this soc yet, so these stay loud: the
+// failure lands at link time (see the FLAGCX_DEVICE_TRAP redefinition below),
+// which is a declared absence the adaptation doc allows (§13.3.2) rather than
+// the silent no-op it forbids.
+//
+// __builtin_trap() is not available on this pass. bisheng lowers it to a call
+// to abort and the CCE back end refuses that outright - "Some error found in
+// cce source file. (cannot call to symbol: abort)" - measured with a kernel
+// whose entire body is the builtin (probes T0/T1). Since every vendor-neutral
+// unsupported path in the device API funnels through FLAGCX_DEVICE_TRAP() -
+// ascend_platform_traits.h and the shared default_comm_traits.h (16 call sites
+// there alone, plus the NCCL and shmem traits) - the Ascend branch redefines
+// the macro as a call to a declared-but-never-defined function. Reaching one
+// is then a link error naming the capability: loud, greppable, and impossible
+// to mistake for support.
+//
+// The cache half of this is now within reach, however: asc/include/
+// c_api/cache_ctrl/cache_ctrl.h declares asc_dcci_single(__gm__ void*),
+// asc_ub_dcci_single(__ubuf__ void*), asc_dcci_entire_ub / _out / _all, and
+// basic_api/kernel_operator_cache_intf.h has a CacheLine + DcciDst template
+// front end over them. Those are the spellings a stage-3 threadfence gets
+// measured against; this stage keeps the placeholder.
+extern "C" FLAGCX_DEVICE_DECORATOR void flagcxDeviceTrapUnavailableOn2201();
+#undef FLAGCX_DEVICE_TRAP
+#define FLAGCX_DEVICE_TRAP() flagcxDeviceTrapUnavailableOn2201()
 #define FLAGCX_DEVICE_THREAD_FENCE() FLAGCX_DEVICE_TRAP()
 #define FLAGCX_DEVICE_SYNC_THREADS() FLAGCX_DEVICE_TRAP()
 #define FLAGCX_THREAD_IDX_X 0

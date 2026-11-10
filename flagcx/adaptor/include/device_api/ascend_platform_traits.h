@@ -60,13 +60,19 @@ struct AscendPlatform {};
     assert(false && (name));            \
   } while (0)
 #else
-// Device pass: a trap. The doc (§13.3.2) permits declaring a capability
-// absent; what it forbids is quietly doing nothing in a path the caller
-// depends on. Unreachable-after-trap returns are marked to keep compilers
-// from warning about them.
+// Device pass: a call to a function that is declared and never defined.
+// The doc (§13.3.2) permits declaring a capability absent; what it forbids is
+// quietly doing nothing in a path the caller depends on. A trap is not
+// available here: bisheng lowers __builtin_trap() to a call to abort and the
+// CCE back end refuses that with "Some error found in cce source file.
+// (cannot call to symbol: abort)" (probes T0/T1), so the failure lands at
+// link time instead, with the symbol name in the diagnostic. The argument is
+// deliberately unused on this pass - inside an aicore function a string
+// literal is a const __gm__ char[N], and wrapping it in anything named
+// const char * is a type error (gate run of 9366a1f) - so the operation name
+// reaches only the host assert.
 #define FLAGCX_ASCEND_UNSUPPORTED(name)    \
   do {                                     \
-    (void)(name);                          \
     FLAGCX_DEVICE_TRAP();                  \
   } while (0)
 #endif  // __CCE_IS_AICORE__
@@ -269,69 +275,72 @@ struct PlatformTraits<AscendPlatform> {
     // by-value kernel parameters carry, the same shape
     // DeviceAPI::Net's own constructor body uses.
     //
-    // So each member below traps loudly through FLAGCX_ASCEND_UNSUPPORTED
-    // instead of naming a builtin that would break the compiler. That keeps
-    // the whole Atomic contract instantiable (a device translation unit can
-    // name every member, which is what the kernel smoke gate does) while
-    // making the gap impossible to mistake for support. Restoring it is a
+    // So each member below names FLAGCX_ASCEND_UNSUPPORTED instead of a
+    // builtin the compiler cannot emit. On this pass that macro expands to a
+    // call to a function that is declared and never defined - a trap is not
+    // available, the CCE back end refuses __builtin_trap() outright (probes
+    // T0/T1, and device_utils.h explains the replacement) - so reaching a
+    // read-modify-write is a LINK error naming the symbol rather than a
+    // compile error, and certainly not a silent no-op. That keeps the whole
+    // Atomic contract parsable in every translation unit while making the
+    // gap impossible to mistake for support. Restoring it is a
     // small edit here once a CANN release gates 2201 in: the spellings to
     // reinstate are the generic builtins listed at measurement 1 for plain
     // pointers and the _G_ family at measurement 2 for __gm__ ones.
     template <typename T>
-    static FLAGCX_DEVICE_INLINE_DECORATOR T noAtomic(const char *op) {
-      (void)op;  // call sites name the op; the trap carries the reason
+    static FLAGCX_DEVICE_INLINE_DECORATOR T noAtomic() {
       FLAGCX_ASCEND_UNSUPPORTED(
           "CceAtomic: no selectable device read-modify-write on 2201");
       return T();
     }
 
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t add(uint32_t *p, uint32_t v) {
-      return noAtomic<uint32_t>("add");
+      return noAtomic<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int32_t add(int32_t *p, int32_t v) {
-      return noAtomic<int32_t>("add");
+      return noAtomic<int32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t add(uint64_t *p, uint64_t v) {
-      return noAtomic<uint64_t>("add");
+      return noAtomic<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t add(int64_t *p, int64_t v) {
-      return noAtomic<int64_t>("add");
+      return noAtomic<int64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t sub(uint32_t *p, uint32_t v) {
-      return noAtomic<uint32_t>("sub");
+      return noAtomic<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t sub(uint64_t *p, uint64_t v) {
-      return noAtomic<uint64_t>("sub");
+      return noAtomic<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t bitOr(uint32_t *p, uint32_t v) {
-      return noAtomic<uint32_t>("bitOr");
+      return noAtomic<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t bitOr(uint64_t *p, uint64_t v) {
-      return noAtomic<uint64_t>("bitOr");
+      return noAtomic<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t bitAnd(uint32_t *p, uint32_t v) {
-      return noAtomic<uint32_t>("bitAnd");
+      return noAtomic<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t bitAnd(uint64_t *p, uint64_t v) {
-      return noAtomic<uint64_t>("bitAnd");
+      return noAtomic<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t exch(uint32_t *p, uint32_t v) {
-      return noAtomic<uint32_t>("exchange");
+      return noAtomic<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t exch(uint64_t *p, uint64_t v) {
-      return noAtomic<uint64_t>("exchange");
+      return noAtomic<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t cas(uint32_t *p, uint32_t cmp, uint32_t v) {
-      return noAtomic<uint32_t>("compareExchange");
+      return noAtomic<uint32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int32_t cas(int32_t *p, int32_t cmp, int32_t v) {
-      return noAtomic<int32_t>("compareExchange");
+      return noAtomic<int32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t cas(uint64_t *p, uint64_t cmp, uint64_t v) {
-      return noAtomic<uint64_t>("compareExchange");
+      return noAtomic<uint64_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t cas(int64_t *p, int64_t cmp, int64_t v) {
-      return noAtomic<int64_t>("compareExchange");
+      return noAtomic<int64_t>();
     }
 
     // Catch-alls. Any type outside the four integer widths reaches one of
