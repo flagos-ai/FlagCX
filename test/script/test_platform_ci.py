@@ -23,6 +23,26 @@ ENABLED_PLATFORMS = [
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_kunlunxin_checkout_trusts_google_test_submodule_before_checkout(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
+        )
+        steps = workflow["jobs"]["kunlunxin_unit_test"]["steps"]
+        trust_index = next(
+            index for index, step in enumerate(steps)
+            if step.get("name") == "Trust GoogleTest submodule for checkout"
+        )
+        checkout_index = next(
+            index for index, step in enumerate(steps)
+            if step.get("name") == "Checkout code in job container"
+        )
+        self.assertLess(trust_index, checkout_index)
+        self.assertEqual(
+            steps[trust_index]["run"],
+            'git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"',
+        )
+        self.assertTrue(steps[checkout_index]["with"]["set-safe-directory"])
+
     def test_all_chip_platforms_are_enabled(self):
         self.assertEqual(
             ENABLED_PLATFORMS,
