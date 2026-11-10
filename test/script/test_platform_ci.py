@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -22,6 +23,27 @@ ENABLED_PLATFORMS = [
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_kunlunxin_job_container_preserves_devices_without_host_network(self):
+        result = subprocess.run(
+            ["ruby", ".github/scripts/ci/load_platform_config.rb", "kunlunxin"],
+            cwd=REPO_ROOT,
+            env={k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        config = json.loads(result.stdout)
+        options = shlex.split(config["container_options"])
+        self.assertFalse(any(arg.startswith("--network") for arg in options))
+        self.assertFalse(any(arg.startswith("--entrypoint") for arg in options))
+        self.assertIn("--privileged=true", options)
+        self.assertIn("--ipc=host", options)
+        self.assertIn("--shm-size=64G", options)
+        for index in range(8):
+            self.assertIn(f"--device=/dev/xpu{index}", options)
+        self.assertIn("--network=host", config["docker_args"].splitlines())
+        self.assertEqual(json.loads(config["container_volumes"]), [])
+
     def test_kunlunxin_ci_reports_missing_xpu_test_toolchain_as_skipped(self):
         env_script = (
             REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
