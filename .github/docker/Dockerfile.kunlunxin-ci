@@ -36,12 +36,16 @@ RUN ln -s ../../lib/clang/15.0.7/include/xpu/kernel /usr/local/xtdk-llvm15-ubunt
 ENV XTDK_HOME=/usr/local/xtdk-llvm15-ubuntu2004_x86_64
 ENV CCL_HOME=/usr/local/xccl_Linux_x86_64
 ENV XCCL_HOME=/usr/local/xccl_Linux_x86_64
+ENV XRE_HOME=/usr/local/xpu
 ENV PATH=/usr/local/xtdk-llvm15-ubuntu2004_x86_64/bin:/usr/local/mpich-3.3.2/bin:/usr/local/xpu/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/xccl_Linux_x86_64/so:/usr/local/mpich-3.3.2/lib:/usr/local/xpu/so:/usr/local/xpu/lib:${LD_LIBRARY_PATH}
 
 RUN test -x "$XTDK_HOME/bin/clang++" \
     && test -r "$XTDK_HOME/include/xpu/kernel/xtdk.h" \
     && test -r "$CCL_HOME/include/xshmem/xshmem.h" \
-    && test -r "$CCL_HOME/lib/libxshmem_device.a" \
+    && test -r "$CCL_HOME/include/xshmem/xshmemx.h" \
+    && test -s "$CCL_HOME/lib/libxshmem_device.a" \
+    && test -s "$CCL_HOME/so/libbkcl.so" \
     && "$XTDK_HOME/bin/clang++" --version \
-    && printf '#include <xshmem/xshmem.h>\n' | g++ -I"$CCL_HOME/include" -I/usr/local/xpu/include -x c++ -fsyntax-only -
+    && printf '#include <xshmem/xshmem.h>\n#include <xshmem/xshmemx.h>\nint main() { return 0; }\n' \
+        | g++ -I"$CCL_HOME/include" -I"$XRE_HOME/include" -x c++ -fsyntax-only -
