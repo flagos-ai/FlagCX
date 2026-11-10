@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-legacy> [unit-test-suite]" >&2
+  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-legacy|probe> [unit-test-suite]" >&2
   exit 2
 fi
 
@@ -18,7 +18,7 @@ case "$workload" in
       exit 2
     fi
     ;;
-  torch-api|perf|perf-legacy)
+  torch-api|perf|perf-legacy|probe)
     if [[ -n "$suite" ]]; then
       echo "The $workload workload does not accept a unit-test suite." >&2
       exit 2
@@ -64,7 +64,7 @@ log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
 mkdir -p "$log_dir"
 summary_file=$(mktemp "$log_dir/summary.XXXXXX.md")
 finish() {
-  if [[ "$platform" == ascend && "$workload" == perf ]]; then
+  if [[ "$platform" == ascend && ( "$workload" == perf || "$workload" == probe ) ]]; then
     bash "$script_dir/ascend_rdma_host_inventory.sh" \
       >"$log_dir/ascend-rdma-host-inventory-after.log" 2>&1 || true
   fi
@@ -112,7 +112,7 @@ pull_image
 if [[ "$platform" == "ascend" ]]; then
   exec 9>/var/lock/flagcx-ascend-ci.lock
   flock --exclusive --wait 7200 9
-  if [[ "$workload" == "perf" ]]; then
+  if [[ "$workload" == "perf" || "$workload" == "probe" ]]; then
     bash "$script_dir/ascend_rdma_host_inventory.sh" | \
       tee "$log_dir/ascend-rdma-host-inventory.log"
   fi

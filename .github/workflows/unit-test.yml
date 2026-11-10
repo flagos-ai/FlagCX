@@ -41,6 +41,7 @@ jobs:
       has_platforms: ${{ steps.resolve.outputs.has_platforms }}
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
+      probe_only: ${{ steps.resolve.outputs.probe_only }}
     steps:
       - uses: ruby/setup-ruby@v1
         with:
@@ -73,6 +74,7 @@ jobs:
           is_pull_request=false
           repository="$EVENT_REPOSITORY"
           ref="$EVENT_SHA"
+          head_branch="${GITHUB_REF_NAME:-}"
           selection="$EVENT_SELECTION"
 
           case "$EVENT_NAME" in
@@ -84,6 +86,7 @@ jobs:
                 --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
               repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
               ref=$(jq -r '.head.sha' <<< "$pr")
+              head_branch=$(jq -r '.head.ref' <<< "$pr")
               is_pull_request=true
               ;;
             issue_comment)
@@ -96,6 +99,7 @@ jobs:
                   --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
                 repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
                 ref=$(jq -r '.head.sha' <<< "$pr")
+                head_branch=$(jq -r '.head.ref' <<< "$pr")
                 permission=$(gh api "repos/$EVENT_REPOSITORY/collaborators/$ACTOR/permission" \
                   --jq '.permission' 2>/dev/null || printf 'none')
                 is_pull_request=true
@@ -108,6 +112,13 @@ jobs:
             workflow_dispatch)
               ;;
           esac
+
+          if [[ "$head_branch" == ascend-symmem &&
+                ( "$EVENT_NAME" == pull_request || "$EVENT_NAME" == push || "$EVENT_NAME" == schedule ) ]]; then
+            echo 'probe_only=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'probe_only=false' >> "$GITHUB_OUTPUT"
+          fi
 
           files_json=$(jq -Rsc 'split("\n") | map(select(length > 0))' "$files_file")
           jq -n \
@@ -130,7 +141,7 @@ jobs:
   unit_tests:
     name: Platform unit tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.has_platforms == 'true' && needs.prepare.outputs.probe_only != 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -143,7 +154,7 @@ jobs:
   performance_tests:
     name: Platform performance tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.probe_only != 'true'
     uses: ./.github/workflows/test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -153,7 +164,7 @@ jobs:
   torch_api_tests:
     name: Platform Torch API tests
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.probe_only != 'true'
     uses: ./.github/workflows/torch-api-test.yml
     with:
       platforms: ${{ needs.prepare.outputs.platforms }}
@@ -165,16 +176,87 @@ jobs:
   format-check:
     name: Common checks
     needs: prepare
-    if: needs.prepare.outputs.active == 'true'
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.probe_only != 'true'
     uses: ./.github/workflows/format-check.yml
     with:
       repository: ${{ needs.prepare.outputs.repository }}
       ref: ${{ needs.prepare.outputs.ref }}
 
+  load_ascend_probe_config:
+    name: Load Ascend probe configuration
+    needs: prepare
+    if: needs.prepare.outputs.active == 'true' && needs.prepare.outputs.probe_only == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      ci_image: ${{ steps.config.outputs.ci_image }}
+      docker_args: ${{ steps.config.outputs.docker_args }}
+      set_env: ${{ steps.config.outputs.set_env }}
+      runs_on: ${{ steps.config.outputs.runs_on }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ needs.prepare.outputs.repository }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+
+      - name: Load Ascend configuration
+        id: config
+        run: ruby .github/scripts/ci/load_platform_config.rb ascend
+
+  ascend_probe:
+    name: Ascend independent probes
+    needs: [prepare, load_ascend_probe_config]
+    if: needs.prepare.outputs.active == 'true' && needs.load_ascend_probe_config.result == 'success'
+    runs-on: ${{ fromJSON(needs.load_ascend_probe_config.outputs.runs_on) }}
+    timeout-minutes: 120
+    env:
+      FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ needs.prepare.outputs.repository }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Check Docker
+        shell: bash
+        run: docker version
+
+      - name: Run Ascend probes in configured container
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_ascend_probe_config.outputs.docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load_ascend_probe_config.outputs.ci_image }}
+          FLAGCX_CI_SET_ENV: ${{ needs.load_ascend_probe_config.outputs.set_env }}
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          ascend probe
+
+      - name: Cleanup Ascend probe container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-probe-${{ github.run_id }}-${{ github.run_attempt }}
+        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+
+      - name: Upload probe logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-ascend-probe-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   ci_complete:
     name: ci-complete
     if: always() && (github.event_name != 'issue_comment' || needs.prepare.outputs.active == 'true')
-    needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check]
+    needs: [prepare, unit_tests, performance_tests, torch_api_tests, format-check, ascend_probe]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -189,8 +271,18 @@ jobs:
           PERF_RESULT: ${{ needs.performance_tests.result }}
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
+          PROBE_ONLY: ${{ needs.prepare.outputs.probe_only }}
+          PROBE_RESULT: ${{ needs.ascend_probe.result }}
         shell: bash
-        run: >-
-          bash .github/scripts/ci/check_ci_results.sh
-          "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT"
-          "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"
+        run: |
+          if [[ "$PROBE_ONLY" == true && "$ACTIVE" == true ]]; then
+            if [[ "$PREPARE_RESULT" != success || "$PROBE_RESULT" != success ]]; then
+              echo "Ascend probe CI failed: prepare=$PREPARE_RESULT probe=$PROBE_RESULT" >&2
+              exit 1
+            fi
+            echo "Ascend probe CI collected its diagnostic report; inspect the probe summary."
+          else
+            bash .github/scripts/ci/check_ci_results.sh \
+              "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
+              "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"
+          fi
