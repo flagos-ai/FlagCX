@@ -60,20 +60,27 @@ struct AscendPlatform {};
     assert(false && (name));            \
   } while (0)
 #else
-// Device pass: a call to a function that is declared and never defined.
-// The doc (§13.3.2) permits declaring a capability absent; what it forbids is
+// Device pass: a call to a function that is declared and never defined. The
+// doc (§13.3.2) permits declaring a capability absent; what it forbids is
 // quietly doing nothing in a path the caller depends on. A trap is not
-// available here: bisheng lowers __builtin_trap() to a call to abort and the
-// CCE back end refuses that with "Some error found in cce source file.
-// (cannot call to symbol: abort)" (probes T0/T1), so the failure lands at
-// link time instead, with the symbol name in the diagnostic. The argument is
-// deliberately unused on this pass - inside an aicore function a string
-// literal is a const __gm__ char[N], and wrapping it in anything named
-// const char * is a type error (gate run of 9366a1f) - so the operation name
+// available here - bisheng lowers __builtin_trap() to a call to abort and the
+// CCE verifier refuses it ("cannot call to symbol: abort", probes T0/T1) - and
+// because bisheng links the device image during -c (probes T2/T3), a call to a
+// never-defined aicore function is refused at build time instead: louder than a
+// runtime trap, and not paperable. This is deliberately separate from
+// FLAGCX_DEVICE_TRAP(), which the shared headers use as a noreturn marker on
+// paths no platform may reach at all; those sites are instantiated for every
+// platform through a runtime provider switch, so giving them a never-defined
+// symbol would make even a correct library unbuildable - the split is
+// documented in device_utils.h.
+//
+// The argument is deliberately unused on this pass: inside an aicore function a
+// string literal is a const __gm__ char[N], and wrapping it in anything named
+// const char * is a type error (gate run of 9366a1f), so the operation name
 // reaches only the host assert.
-#define FLAGCX_ASCEND_UNSUPPORTED(name)    \
-  do {                                     \
-    FLAGCX_DEVICE_TRAP();                  \
+#define FLAGCX_ASCEND_UNSUPPORTED(name)       \
+  do {                                        \
+    flagcxAscendDeviceOpUnsupported();        \
   } while (0)
 #endif  // __CCE_IS_AICORE__
 
@@ -277,16 +284,19 @@ struct PlatformTraits<AscendPlatform> {
     //
     // So each member below names FLAGCX_ASCEND_UNSUPPORTED instead of a
     // builtin the compiler cannot emit. On this pass that macro expands to a
-    // call to a function that is declared and never defined - a trap is not
-    // available, the CCE back end refuses __builtin_trap() outright (probes
-    // T0/T1, and device_utils.h explains the replacement) - so reaching a
-    // read-modify-write is a LINK error naming the symbol rather than a
-    // compile error, and certainly not a silent no-op. That keeps the whole
-    // Atomic contract parsable in every translation unit while making the
-    // gap impossible to mistake for support. Restoring it is a
-    // small edit here once a CANN release gates 2201 in: the spellings to
-    // reinstate are the generic builtins listed at measurement 1 for plain
-    // pointers and the _G_ family at measurement 2 for __gm__ ones.
+    // call to a function that is declared and never defined anywhere: a trap
+    // is not available - the CCE back end refuses __builtin_trap() outright
+    // (probes T0/T1) - and bisheng links the device image inside the -c step,
+    // so the undefined symbol is reported there ("ld.lld: error: undefined
+    // symbol: nf.cube", probes T2/T3). Reaching a read-modify-write therefore
+    // fails the BUILD of any kernel that asks for one: louder than a runtime
+    // trap, and certainly not a silent no-op. The members still parse in every
+    // translation unit - CceAtomic is not a template, so these bodies are
+    // type-checked even in a host helper that never calls them, which is how
+    // the stage-2 gate keeps them honest. Restoring the capability is a small
+    // edit here once a CANN release gates 2201 in: the spellings to reinstate
+    // are the generic builtins listed at measurement 1 for plain pointers and
+    // the _G_ family at measurement 2 for __gm__ ones.
     template <typename T>
     static FLAGCX_DEVICE_INLINE_DECORATOR T noAtomic() {
       FLAGCX_ASCEND_UNSUPPORTED(
