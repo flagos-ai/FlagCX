@@ -220,57 +220,118 @@ struct PlatformTraits<AscendPlatform> {
       *static_cast<volatile int64_t *>(p) = v;
     }
 
-    // __builtin_cce_atom_{add,sub,or,and,exch,cas}_{u32,s32,u64,s64} - each
-    // name resolved by bisheng's front end on 2201 (no "undeclared builtin"
-    // diagnostic for any of them). The (uint32_t) hint is the third trailing
-    // argument, and cas takes compare then value before it.
+    // Read-modify-write is a declared-absent capability on this toolchain,
+    // not an implementation. Three independent measurements on Ascend 910C /
+    // __NPU_ARCH__ 2201 / CANN 9.1.0-beta.3 say the device atomic channel is
+    // not reachable:
+    //   1. the generic builtins parse - bisheng's front end resolves every
+    //      __builtin_cce_atom_{add,sub,or,and,cas,exch}_{u32,s32,u64,s64}
+    //      name, the (uint32_t) hint being the third trailing argument and
+    //      cas taking compare then value before it - but nothing selects:
+    //        "Cannot select: HiIPUISD::ATOM_SCALAR_ADD_u64<(store (s64) into
+    //         %ir.0, align 1, addrspace 1)>"   (probes B1/RA, __gm__ operand)
+    //      and with an unqualified operand the same builtin SEGFAULTS the
+    //      selector in 'HiIPU Non VF DAG->DAG Pattern Instruction Selection'
+    //      (probes A2/B7). The align-1 is inherent to the builtin's void*
+    //      address operand, not a property of the target: a constant __gm__
+    //      global (probe D0), __attribute__((assume_aligned)) (D2) and hint
+    //      values 1 and 2 (D3/D4) all fail identically.
+    //   2. the global-memory family does exist in this compiler -
+    //      __builtin_cce_atom_{add,sub,cas,and,or,nand,xor}_G_u{32,64} /
+    //      _s{32,64} and __builtin_cce_red_add_G_u{32,}s32/f32 appear in its
+    //      builtin table with a __gm__ operand - but the target gate refuses
+    //      it: "function type 'unsigned long (__gm__ void *, unsigned long,
+    //      unsigned int) noexcept' of '__builtin_cce_atom_add_G_u64' does not
+    //      support the given target feature" (probe F0). That is also why the
+    //      reduce variants are u32/s32/f32 only, with no u64.
+    //   3. every vendor surface above the builtins is arch-gated away from
+    //      2201: simt_api/device_atomic_functions.h:21 and
+    //      basic_api/kernel_operator_atomic_intf.h:30 both key on
+    //      (__NPU_ARCH__ == 3510 || __NPU_ARCH__ == 5102), so atomicAdd here
+    //      is "use of undeclared identifier" (probe F5) and
+    //      __clang_cce_simt_atomic.h, which is not gated, routes only to the
+    //      _G_ names of measurement 2.
+    //
+    // There is also no way to reach the _G_ family from the pointer types the
+    // Default backend hands this layer. bisheng refuses conversion between
+    // __gm__ and unqualified pointers inside an aicore function in every
+    // spelling: implicit (probes B2/B3), reinterpret_cast and static_cast,
+    // and the C-style form that Kunlunxin's bridge relies on
+    // (kunlunxin_platform_traits.h:120-128 generates
+    // ((__global_ptr__ uint32_t *)(p)), whose Ascend equivalent
+    // ((__gm__ uint32_t *)(p)) is refused too - probes F1/F2/F3, both with
+    // and without a space before the star). __builtin_astype, which is how
+    // one opts out of address spaces in clang, is absent from this compiler
+    // (probe B4). Within ONE address space casts are legal - the vendor's own
+    // st_atomic (__clang_cce_aicore_functions.h:5852) does
+    // reinterpret_cast<__gm__ int32_t *>(addr) - which is why load/store
+    // above need no cast at all: they stay on the unqualified pointers the
+    // by-value kernel parameters carry, the same shape
+    // DeviceAPI::Net's own constructor body uses.
+    //
+    // So each member below traps loudly through FLAGCX_ASCEND_UNSUPPORTED
+    // instead of naming a builtin that would break the compiler. That keeps
+    // the whole Atomic contract instantiable (a device translation unit can
+    // name every member, which is what the kernel smoke gate does) while
+    // making the gap impossible to mistake for support. Restoring it is a
+    // small edit here once a CANN release gates 2201 in: the spellings to
+    // reinstate are the generic builtins listed at measurement 1 for plain
+    // pointers and the _G_ family at measurement 2 for __gm__ ones.
+    template <typename T>
+    static FLAGCX_DEVICE_INLINE_DECORATOR T noAtomic(const char *op) {
+      (void)op;  // call sites name the op; the trap carries the reason
+      FLAGCX_ASCEND_UNSUPPORTED(
+          "CceAtomic: no selectable device read-modify-write on 2201");
+      return T();
+    }
+
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t add(uint32_t *p, uint32_t v) {
-      return __builtin_cce_atom_add_u32(p, v, kHint);
+      return noAtomic<uint32_t>("add");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int32_t add(int32_t *p, int32_t v) {
-      return __builtin_cce_atom_add_s32(p, v, kHint);
+      return noAtomic<int32_t>("add");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t add(uint64_t *p, uint64_t v) {
-      return __builtin_cce_atom_add_u64(p, v, kHint);
+      return noAtomic<uint64_t>("add");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t add(int64_t *p, int64_t v) {
-      return __builtin_cce_atom_add_s64(p, v, kHint);
+      return noAtomic<int64_t>("add");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t sub(uint32_t *p, uint32_t v) {
-      return __builtin_cce_atom_sub_u32(p, v, kHint);
+      return noAtomic<uint32_t>("sub");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t sub(uint64_t *p, uint64_t v) {
-      return __builtin_cce_atom_sub_u64(p, v, kHint);
+      return noAtomic<uint64_t>("sub");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t bitOr(uint32_t *p, uint32_t v) {
-      return __builtin_cce_atom_or_u32(p, v, kHint);
+      return noAtomic<uint32_t>("bitOr");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t bitOr(uint64_t *p, uint64_t v) {
-      return __builtin_cce_atom_or_u64(p, v, kHint);
+      return noAtomic<uint64_t>("bitOr");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t bitAnd(uint32_t *p, uint32_t v) {
-      return __builtin_cce_atom_and_u32(p, v, kHint);
+      return noAtomic<uint32_t>("bitAnd");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t bitAnd(uint64_t *p, uint64_t v) {
-      return __builtin_cce_atom_and_u64(p, v, kHint);
+      return noAtomic<uint64_t>("bitAnd");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t exch(uint32_t *p, uint32_t v) {
-      return __builtin_cce_atom_exch_u32(p, v, kHint);
+      return noAtomic<uint32_t>("exchange");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t exch(uint64_t *p, uint64_t v) {
-      return __builtin_cce_atom_exch_u64(p, v, kHint);
+      return noAtomic<uint64_t>("exchange");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t cas(uint32_t *p, uint32_t cmp, uint32_t v) {
-      return __builtin_cce_atom_cas_u32(p, cmp, v, kHint);
+      return noAtomic<uint32_t>("compareExchange");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int32_t cas(int32_t *p, int32_t cmp, int32_t v) {
-      return __builtin_cce_atom_cas_s32(p, cmp, v, kHint);
+      return noAtomic<int32_t>("compareExchange");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t cas(uint64_t *p, uint64_t cmp, uint64_t v) {
-      return __builtin_cce_atom_cas_u64(p, cmp, v, kHint);
+      return noAtomic<uint64_t>("compareExchange");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t cas(int64_t *p, int64_t cmp, int64_t v) {
-      return __builtin_cce_atom_cas_s64(p, cmp, v, kHint);
+      return noAtomic<int64_t>("compareExchange");
     }
 
     // Catch-alls. Any type outside the four integer widths reaches one of
@@ -395,35 +456,12 @@ struct PlatformTraits<AscendPlatform> {
       return __atomic_fetch_and(ptr, val, __ATOMIC_SEQ_CST);
 #endif
     }
-    // No CCE atomic intrinsic is selectable on this soc in the spelling the
-    // intrinsics force, and the scope of that is measured, not assumed: the
-    // memory operand reaches the back end with align 1 - the intrinsics
-    // declare their address operand as void*, so the DAG knows no alignment -
-    // and the pattern refuses it. Measured on __NPU_ARCH__ 2201 on the
-    // read-modify-write ops too, not only on CAS/EXCH:
-    //   "Cannot select: HiIPUISD::ATOM_SCALAR_ADD_u64<(store (s64) into
-    //       %ir.0, align 1, addrspace 1)>"             (add, __gm__ operand)
-    //   "Cannot select: HiIPUISD::ATOM_SCALAR_ADD_u32<...>"  (add, full link)
-    //   "Cannot select: HiIPUISD::ATOM_SCALAR_CAS_u32/u64/EXCH_u64<...>"
-    // Address space is not the differentiator: an __gm__ operand fails the
-    // same way. With an *unqualified* operand the same builtin instead
-    // crashes the selector in 'HiIPU Non VF DAG->DAG Pattern Instruction
-    // Selection' (probes A2/B7), which is a compiler bug rather than a
-    // spelling the traits could adopt.
-    // The vendor wrappers cannot dodge this either: the header that declares
-    // them (__clang_cce_simt_atomic.h) is not self-contained on this soc, and
-    // the header carrying its cache-hint enum belongs to dav3510 and collides
-    // with the 2201 dispatcher.
-    //
-    // CceAtomic::add/sub/or/and/exch/cas above stay in place so that settling
-    // the alignment question remains a small edit here rather than a rewrite.
-    // exchange()/compareExchange() below declare the gap loudly; whether
-    // fetchAdd/fetchSub/fetchOr/fetchAnd must do the same is exactly what the
-    // open alignment probes (assume_aligned, constant __gm__ address, hint
-    // variants) are for. Emulating CAS from the other ops is not possible (no
-    // op can express a conditional store), and emulating it with a
-    // non-atomic test-and-set would be a correctness bug dressed as a
-    // feature.
+
+    // exchange() and compareExchange() share the measured reason documented at
+    // the top of CceAtomic: no device-side read-modify-write is reachable on
+    // 2201 in this toolchain. They are declared absent rather than emulated,
+    // because add cannot express a conditional store and a non-atomic
+    // test-and-set would be a correctness bug dressed as a feature.
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static FLAGCX_DEVICE_INLINE_DECORATOR T exchange(T *ptr, const T &val,
                              flagcxDeviceMemoryOrder_t) {
