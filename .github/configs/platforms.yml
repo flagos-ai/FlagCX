@@ -2,20 +2,21 @@
 #
 # The per-platform files keep detailed runner/image settings. This registry
 # controls which platforms are included when the workflow runs with
-# platform=all.
+# platform=all. Non-CUDA test platforms are temporarily disabled while the
+# Device API refactor is validated on CUDA.
 platforms:
   cuda:
     enabled: true
   hygon:
-    enabled: true
+    enabled: false
   iluvatar:
-    enabled: true
+    enabled: false
   metax:
-    enabled: true
+    enabled: false
   ppu:
-    enabled: true
+    enabled: false
   ascend:
-    enabled: true
+    enabled: false
 shared_paths_watch:
   - .github/workflows/**
   - .github/configs/platforms.yml
