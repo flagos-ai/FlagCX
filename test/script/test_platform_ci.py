@@ -41,26 +41,32 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 self.assertNotIn("docker run", commands)
                 self.assertIn("third-party/json", commands)
 
-    def test_kunlunxin_checkout_trusts_submodules_before_checkout(self):
-        workflow = yaml.safe_load(
-            (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
-        )
-        steps = workflow["jobs"]["kunlunxin_unit_test"]["steps"]
-        trust_index = next(
-            index for index, step in enumerate(steps)
-            if step.get("name") == "Trust submodules for checkout"
-        )
-        checkout_index = next(
-            index for index, step in enumerate(steps)
-            if step.get("name") == "Checkout code in job container"
-        )
-        self.assertLess(trust_index, checkout_index)
-        self.assertEqual(
-            steps[trust_index]["run"],
-            'git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"\n'
-            'git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"\n',
-        )
-        self.assertTrue(steps[checkout_index]["with"]["set-safe-directory"])
+    def test_kunlunxin_checkout_trusts_workspace_before_checkout(self):
+        for filename, job in (
+            ("unit_tests_common.yml", "kunlunxin_unit_test"),
+            ("test.yml", "perf-test-kunlunxin"),
+            ("torch-api-test.yml", "torch-api-test-kunlunxin"),
+        ):
+            with self.subTest(job=job):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / ".github/workflows" / filename).read_text()
+                )
+                steps = workflow["jobs"][job]["steps"]
+                trust_index = next(
+                    i for i, step in enumerate(steps)
+                    if step.get("name") == "Trust workspace and submodules for checkout"
+                )
+                checkout_index = next(
+                    i for i, step in enumerate(steps)
+                    if step.get("uses", "").startswith("actions/checkout@")
+                )
+                self.assertLess(trust_index, checkout_index)
+                for path in ("", "/third-party/googletest", "/third-party/json"):
+                    self.assertIn(
+                        f'git config --global --add safe.directory "$GITHUB_WORKSPACE{path}"',
+                        steps[trust_index]["run"],
+                    )
+                self.assertTrue(steps[checkout_index]["with"]["set-safe-directory"])
 
     def test_cuda_submodule_checkouts_use_retry_script(self):
         cases = (
