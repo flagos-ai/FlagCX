@@ -92,7 +92,7 @@ __global__ void kernelCoopGroupsS_tileSpan(int *results) {
 // Sub-kernel: lanes coop check (one complete hardware warp/wave).
 __global__ void kernelCoopGroupsS_lanes(int *results) {
   flagcxLaneMask_t laneMask = DeviceAPI::Intrin::fullMask();
-  FLAGCX_SHARED int laneValues[FLAGCX_SIMT_WIDTH];
+  FLAGCX_SHARED_DECORATOR int laneValues[FLAGCX_SIMT_WIDTH];
 
   int rank = flagcxCoopThreadRankExS(FLAGCX_COOP_LANES, laneMask, 0, 0);
   int size = flagcxCoopSizeExS(FLAGCX_COOP_LANES, laneMask, 0, 0);

@@ -618,9 +618,9 @@ FLAGCX_DEVICE_INLINE_DECORATOR void completeComputeTrigger(
 
 FLAGCX_DEVICE_INLINE_DECORATOR void runReduceExecutor(void *fifoBuffer,
                                                        uint64_t avgDivisor) {
-  FLAGCX_SHARED uint64_t shm[COMPUTE_SHM_WORDS];
-  FLAGCX_SHARED float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
-  FLAGCX_SHARED float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
+  FLAGCX_SHARED_DECORATOR uint64_t shm[COMPUTE_SHM_WORDS];
+  FLAGCX_SHARED_DECORATOR float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
+  FLAGCX_SHARED_DECORATOR float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
   uint64_t *vBuf = (uint64_t *)fifoBuffer;
   int emptyIter = 0; // backoff counter
   int cap = -1;
@@ -778,8 +778,8 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runStaticReduceExecutor(
     flagcxReduceTrigger *triggers, uint64_t numTriggers,
     const uint64_t *abortFlag, uint64_t avgDivisor, uint64_t firstOrdinal,
     uint64_t stride, uint64_t *shm) {
-  FLAGCX_SHARED float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
-  FLAGCX_SHARED float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
+  FLAGCX_SHARED_DECORATOR float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
+  FLAGCX_SHARED_DECORATOR float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
   const int tid = FLAGCX_THREAD_IDX_X;
 
   for (uint64_t ordinal = firstOrdinal; ordinal < numTriggers;
@@ -846,7 +846,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticReduceKernel(
     flagcxReduceTrigger *triggers, uint64_t numTriggers,
     const uint64_t *abortFlag, uint64_t avgDivisor,
     uint64_t numNetTriggers, uint64_t numNetBlocks) {
-  FLAGCX_SHARED uint64_t shm[COMPUTE_SHM_WORDS];
+  FLAGCX_SHARED_DECORATOR uint64_t shm[COMPUTE_SHM_WORDS];
   const uint64_t block = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
   const uint64_t blocks = static_cast<uint64_t>(FLAGCX_GRID_DIM_X);
   if (numNetBlocks == 0) {
@@ -1297,9 +1297,9 @@ FLAGCX_DEVICE_INLINE_DECORATOR void runIpcExecutor(
     void *fifoBuffer, const flagcxDevMem &inputMem,
     const flagcxDevMem &outputMem, const flagcxDevMem &readyMem,
     const uint64_t *parentFlags) {
-  FLAGCX_SHARED uint64_t activeIdx;
-  FLAGCX_SHARED uint64_t claimedChunk;
-  FLAGCX_SHARED int finalChunk;
+  FLAGCX_SHARED_DECORATOR uint64_t activeIdx;
+  FLAGCX_SHARED_DECORATOR uint64_t claimedChunk;
+  FLAGCX_SHARED_DECORATOR int finalChunk;
   uint64_t *buffer = static_cast<uint64_t *>(fifoBuffer);
   int capacity = static_cast<int>(buffer[flagcxFifoIdxCapacity]);
   int emptyIter = 0;
@@ -1736,7 +1736,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticRingDagKernel(
     uint64_t simpleBufferBytes, uint32_t datatype, uint32_t redOp,
     uint64_t avgDivisor, uint64_t *blocksDone, const uint64_t *abortFlag,
     flagcxStaticIpcControl ipcControl) {
-  FLAGCX_SHARED uint64_t shm[16];
+  FLAGCX_SHARED_DECORATOR uint64_t shm[16];
 #define FLAGCX_DISPATCH_RING_TYPE(TYPE)                                       \
   dispatchStaticRingOp<TYPE>(                                                 \
       redOp, lanes, numLanes, triggers, numTriggers, inputBase, outputBase,   \
@@ -1770,7 +1770,7 @@ FLAGCX_GLOBAL_DECORATOR void flagcxStaticCollectiveKernel(
     uint64_t numRedBlocks, uint64_t numIpcBlocks,
     uint64_t *blocksDone, const uint64_t *abortFlag,
     flagcxStaticIpcControl ipcControl, uint64_t avgDivisor) {
-  FLAGCX_SHARED uint64_t shm[COMPUTE_SHM_WORDS];
+  FLAGCX_SHARED_DECORATOR uint64_t shm[COMPUTE_SHM_WORDS];
   const uint64_t globalBlock = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
   if (globalBlock < numRedBlocks) {
     runStaticReduceExecutor(redTriggers, numRedTriggers, abortFlag,

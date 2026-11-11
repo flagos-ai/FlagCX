@@ -31,7 +31,7 @@
  * Lane masks are part of the public C++ and LLVM IR interfaces. Keep a
  * fixed-width type so platforms with up to 64 hardware lanes share one ABI.
  * ================================================================ */
-#define FLAGCX_DEVICE_IR_ABI_VERSION 2
+#define FLAGCX_DEVICE_IR_ABI_VERSION 1
 typedef uint64_t flagcxLaneMask_t;
 
 #if defined(__cplusplus)
@@ -68,16 +68,17 @@ typedef enum {
 /* ================================================================
  * Memory Order
  *
- * Memory ordering semantics for synchronization operations.
- * Platform-agnostic classification based on C11/C++ memory model.
- * Platform implementations map these to hardware-specific fences.
+ * Memory ordering semantics for device operations. Weak means a load/store
+ * without synchronization; the remaining orders follow C11/C++ terminology.
+ * Platform implementations map these to hardware-specific operations.
  * ================================================================ */
 typedef enum {
-  FLAGCX_MEMORY_ORDER_RELAXED = 0, /* No ordering constraints */
-  FLAGCX_MEMORY_ORDER_ACQUIRE = 1, /* Acquire semantics (load barrier) */
-  FLAGCX_MEMORY_ORDER_RELEASE = 2, /* Release semantics (store barrier) */
-  FLAGCX_MEMORY_ORDER_ACQ_REL = 3, /* Both acquire and release */
-  FLAGCX_MEMORY_ORDER_SEQ_CST = 4, /* Sequential consistency */
+  FLAGCX_MEMORY_ORDER_WEAK = 0,    /* PTX weak load/store, no synchronization */
+  FLAGCX_MEMORY_ORDER_RELAXED = 1, /* Strong operation without ordering */
+  FLAGCX_MEMORY_ORDER_ACQUIRE = 2, /* Acquire semantics (load barrier) */
+  FLAGCX_MEMORY_ORDER_RELEASE = 3, /* Release semantics (store barrier) */
+  FLAGCX_MEMORY_ORDER_ACQ_REL = 4, /* Both acquire and release */
+  FLAGCX_MEMORY_ORDER_SEQ_CST = 5, /* Sequential consistency */
 } flagcxMemoryOrder_t;
 
 /* ================================================================
@@ -96,6 +97,7 @@ typedef enum {
 
 // Backward-compatible enum constant names (used by platform implementation
 // files)
+#define flagcxDeviceMemoryOrderWeak FLAGCX_MEMORY_ORDER_WEAK
 #define flagcxDeviceMemoryOrderRelaxed FLAGCX_MEMORY_ORDER_RELAXED
 #define flagcxDeviceMemoryOrderAcquire FLAGCX_MEMORY_ORDER_ACQUIRE
 #define flagcxDeviceMemoryOrderRelease FLAGCX_MEMORY_ORDER_RELEASE
@@ -153,7 +155,7 @@ typedef enum {
 /* Device address space, as seen by a load or store instruction.  A mapped
  * peer, host allocation, or NIC BAR can still have a Global device address. */
 typedef enum {
-  flagcxDeviceMemoryPrivate = 0,
+  flagcxDeviceMemoryLocal = 0,
   flagcxDeviceMemoryScratchpad = 1,
   flagcxDeviceMemoryGlobal = 2,
 } flagcxDeviceMemorySpace_t;
