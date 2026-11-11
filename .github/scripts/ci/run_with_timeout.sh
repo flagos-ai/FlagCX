@@ -77,6 +77,11 @@ while ((attempt <= max_attempts)); do
   cleanup_workload
   exec {log_fd}>&-
   wait "$log_pid"
+  if [[ "$status" == 0 && "${FLAGCX_CI_REQUIRE_GTEST_PASS:-0}" == 1 ]] &&
+     ! grep -Eq '\[ *PASSED *\] +[1-9][0-9]* tests?\.' "$attempt_log"; then
+    echo "$test_label exited successfully without a passing GTest case" >&2
+    status=1
+  fi
   if [[ "$status" == 0 ]]; then
     if ((attempt > 1)); then
       echo "::warning title=Flaky CI test::$test_label passed on retry $((attempt - 1))"
