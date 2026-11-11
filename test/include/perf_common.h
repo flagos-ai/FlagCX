@@ -24,6 +24,7 @@ struct PerfContext {
   int root;
   uint64_t splitMask;
   int localRegister;
+  bool verifyData; // -v 0 skips post-iteration data verification.
   flagcxDataType_t datatype;
   flagcxRedOp_t redOp;
   size_t typeSize;

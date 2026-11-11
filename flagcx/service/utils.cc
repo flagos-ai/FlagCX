@@ -14,10 +14,16 @@
 #include <stdexcept>
 #include <stdlib.h>
 
-flagcxResult_t int64ToBusId(int64_t id, char *busId) {
-  sprintf(busId, "%04lx:%02lx:%02lx.%01lx", (id) >> 20, (id & 0xff000) >> 12,
-          (id & 0xff0) >> 4, (id & 0xf));
-  return flagcxSuccess;
+flagcxResult_t int64ToBusId(int64_t id, char *busId, size_t length) {
+  if (busId == NULL || length == 0)
+    return flagcxInvalidArgument;
+  int written =
+      snprintf(busId, length, "%04lx:%02lx:%02lx.%01lx",
+               (unsigned long)((uint64_t)id >> 20),
+               (unsigned long)((id & 0xff000) >> 12),
+               (unsigned long)((id & 0xff0) >> 4), (unsigned long)(id & 0xf));
+  return written >= 0 && (size_t)written < length ? flagcxSuccess
+                                                  : flagcxInvalidArgument;
 }
 
 flagcxResult_t busIdToInt64(const char *busId, int64_t *id) {
@@ -66,8 +72,8 @@ flagcxResult_t getBusId(int cudaDev, int64_t *busId) {
     }
     *busId = (FLAGCX_NON_PCI_BUSID_DOMAIN << 20) |
              (static_cast<int64_t>(cudaDev) << 4);
-    char busIdStr[] = "00000000:00:00.0";
-    FLAGCXCHECK(int64ToBusId(*busId, busIdStr));
+    char busIdStr[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
+    FLAGCXCHECK(int64ToBusId(*busId, busIdStr, sizeof(busIdStr)));
     INFO(FLAGCX_INIT,
          "PCI bus-ID lookup is unavailable for device %d; using non-PCI "
          "identity %s for duplicate-device detection only",

@@ -209,6 +209,8 @@ enum {
 
 static_assert(FLAGCX_P2P_IPC_HANDLE_BYTES == FLAGCX_MR_IPC_HANDLE_BYTES,
               "IPC handle size mismatch between P2P and MR registry");
+static_assert(FLAGCX_P2P_IPC_HANDLE_BYTES <= FLAGCX_IPC_HANDLE_SIZE,
+              "P2P Engine IPC handle must fit the core wire size");
 
 struct FlagcxP2pCtrlMeta {
   int32_t gpuIdx;
@@ -247,10 +249,13 @@ struct FlagcxP2pIpcInfo {
   uint64_t size;
   uint32_t flags;
   uint32_t handleSize;
-  char padding[32];
+  char padding[24];
 };
 static_assert(sizeof(FlagcxP2pIpcInfo) == FLAGCX_P2P_IPC_INFO_SIZE,
               "FlagcxP2pIpcInfo size must match FLAGCX_P2P_IPC_INFO_SIZE");
+static_assert(offsetof(FlagcxP2pIpcInfo, baseAddr) == 72 &&
+                  offsetof(FlagcxP2pIpcInfo, padding) == 104,
+              "P2P IPC info must retain its 72/32/24-byte layout");
 
 struct FlagcxP2pNotifWireMsg {
   uint32_t magic;
@@ -361,6 +366,7 @@ struct FlagcxP2pMemRegEntry {
   FlagcxP2pMr mrId;
   void *mhandle;
   uintptr_t baseAddr;
+  uintptr_t ipcAllocationBase;
   size_t size;
   int ibDevN;
   int ptrType;
@@ -752,6 +758,7 @@ static bool findMemReg(uintptr_t addr, FlagcxP2pMemRegEntry *out) {
     out->ibDevN = entry.ibDevN;
     out->ptrType = entry.ptrType;
     out->hasIpc = p2pExt.p2p.hasIpc;
+    out->ipcAllocationBase = p2pExt.p2p.ipcAllocationBase;
     out->ipcHandleSize = p2pExt.p2p.ipcHandleSize;
     memcpy(out->ipcHandle, p2pExt.p2p.ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
     out->record = findMrRecord(out->mrId);
@@ -851,6 +858,7 @@ static bool findMemRegByMr(FlagcxP2pMr mr, FlagcxP2pMemRegEntry *out) {
     out->ibDevN = found.ibDevN;
     out->ptrType = found.ptrType;
     out->hasIpc = p2pExt.p2p.hasIpc;
+    out->ipcAllocationBase = p2pExt.p2p.ipcAllocationBase;
     out->ipcHandleSize = p2pExt.p2p.ipcHandleSize;
     memcpy(out->ipcHandle, p2pExt.p2p.ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
     out->record = findMrRecord(out->mrId);
@@ -1996,6 +2004,8 @@ static int startLocalTransfer(
         return -1;
       deserializeIpcInfo(ipcBufs[i], &ipcInfos[i]);
       if ((ipcInfos[i].flags & FLAGCX_P2P_IPC_FLAG_CUDA) == 0 ||
+          ipcInfos[i].handleSize == 0 ||
+          ipcInfos[i].handleSize > sizeof(ipcInfos[i].handleData) ||
           sizeVec[i] > ipcInfos[i].size)
         return -1;
     }
@@ -3519,19 +3529,23 @@ bool flagcxP2pEngineConnIsLocal(FlagcxP2pConn *conn) {
 
 int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
                          int hintType, FlagcxP2pMr &mrId) {
-  if (engine == NULL || data == 0)
+  if (engine == NULL || data == 0 || size == 0 || data > UINTPTR_MAX - size)
     return -1;
 
   auto resolvePtrType = [&](int *ptrType, char *ipcHandleBuf,
-                            uint32_t *ipcHandleSize) -> flagcxResult_t {
+                            uint32_t *ipcHandleSize,
+                            uintptr_t *ipcAllocationBase) -> flagcxResult_t {
     if (hintType == FLAGCX_PTR_HOST || hintType == FLAGCX_PTR_CUDA) {
       if (ipcHandleSize)
         *ipcHandleSize = 0;
+      if (ipcAllocationBase)
+        *ipcAllocationBase = 0;
       *ptrType = hintType;
       return flagcxSuccess;
     }
-    return flagcxP2pDetectPointerType(reinterpret_cast<void *>(data), ptrType,
-                                      ipcHandleBuf, ipcHandleSize);
+    return flagcxP2pDetectPointerType(reinterpret_cast<void *>(data), size,
+                                      ptrType, ipcHandleBuf, ipcHandleSize,
+                                      ipcAllocationBase);
   };
 
   if (!flagcxParamMrSortedLookup()) {
@@ -3569,7 +3583,8 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
       return -1;
     }
     const flagcxResult_t ptrTypeResult =
-        resolvePtrType(&entry.ptrType, entry.ipcHandle, &entry.ipcHandleSize);
+        resolvePtrType(&entry.ptrType, entry.ipcHandle, &entry.ipcHandleSize,
+                       &entry.ipcAllocationBase);
     if (ptrTypeResult != flagcxSuccess) {
       WARN("P2P Reg: failed to classify addr 0x%lx: %d", (unsigned long)data,
            (int)ptrTypeResult);
@@ -3637,6 +3652,7 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   /* Detect pointer type and IPC handle */
   char ipcHandle[FLAGCX_P2P_IPC_HANDLE_BYTES];
   uint32_t ipcHandleSize = 0;
+  uintptr_t ipcAllocationBase = 0;
   memset(ipcHandle, 0, sizeof(ipcHandle));
 
   const flagcxResult_t setDeviceResult = setEngineDevice(engine);
@@ -3648,7 +3664,7 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   }
   int ptrType = FLAGCX_PTR_HOST;
   const flagcxResult_t ptrTypeResult =
-      resolvePtrType(&ptrType, ipcHandle, &ipcHandleSize);
+      resolvePtrType(&ptrType, ipcHandle, &ipcHandleSize, &ipcAllocationBase);
   if (ptrTypeResult != flagcxSuccess) {
     WARN("P2P Reg: failed to classify addr 0x%lx: %d", (unsigned long)data,
          (int)ptrTypeResult);
@@ -3678,6 +3694,7 @@ int flagcxP2pEngineRegEx(FlagcxP2pEngine *engine, uintptr_t data, size_t size,
   /* mrId=0 signals registry to assign from its monotonic counter */
   p2pExt->mrId = 0;
   p2pExt->hasIpc = hasIpc;
+  p2pExt->ipcAllocationBase = ipcAllocationBase;
   p2pExt->ipcHandleSize = ipcHandleSize;
   memcpy(p2pExt->ipcHandle, ipcHandle, FLAGCX_P2P_IPC_HANDLE_BYTES);
 
@@ -4646,10 +4663,15 @@ int flagcxP2pEngineGetIpcInfo(FlagcxP2pEngine *engine, uintptr_t addr,
 
   FlagcxP2pIpcInfo info;
   memset(&info, 0, sizeof(info));
+  if (entry.ipcHandleSize == 0 ||
+      entry.ipcHandleSize > sizeof(info.handleData) ||
+      entry.ipcAllocationBase == 0 || addr < entry.baseAddr ||
+      addr - entry.baseAddr >= entry.size || addr < entry.ipcAllocationBase)
+    return -1;
   memcpy(info.handleData, entry.ipcHandle, entry.ipcHandleSize);
   info.baseAddr = entry.baseAddr;
-  info.offset = addr - entry.baseAddr;
-  info.size = entry.size - info.offset;
+  info.offset = addr - entry.ipcAllocationBase;
+  info.size = entry.size - (addr - entry.baseAddr);
   info.flags = FLAGCX_P2P_IPC_FLAG_CUDA;
   info.handleSize = entry.ipcHandleSize;
 

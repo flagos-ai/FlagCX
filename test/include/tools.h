@@ -29,6 +29,7 @@ public:
   int getRootRank() const { return root; }
   uint64_t getSplitMask() const { return splitMask; }
   int getLocalRegister() const { return localRegister; }
+  bool isVerificationEnabled() const { return verifyData == 1; }
   flagcxDataType_t getDataType() const { return datatype; }
   flagcxRedOp_t getRedOp() const { return redOp; }
   bool allDataTypes() const { return sweepDataTypes; }
@@ -43,6 +44,7 @@ public:
   int root;
   uint64_t splitMask;
   int localRegister;
+  int verifyData;
   flagcxDataType_t datatype;
   flagcxRedOp_t redOp;
   bool sweepDataTypes;

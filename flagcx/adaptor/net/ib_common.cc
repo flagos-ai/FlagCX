@@ -282,9 +282,9 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
               FLAGCXCHECK(flagcxIbCommonRecordUnsignaledCompletion(
                   r->base, wc->wr_id, flagcxRemoteError));
               WARN("%s: unsignaled WR failed with status=%d opcode=%d "
-                   "vendor_err=%d wr_id=%llu",
+                   "vendor_err=%d qp_num=%u wr_id=%llu",
                    flagcxIbCommonComponent(ops), wc->status, wc->opcode,
-                   wc->vendor_err, (unsigned long long)wc->wr_id);
+                   wc->vendor_err, wc->qp_num, (unsigned long long)wc->wr_id);
               *done = 1;
               return flagcxIbCommonRecordCommError(r->base, flagcxRemoteError);
             }
@@ -318,10 +318,11 @@ flagcxIbCommonTestDataQp(struct flagcxIbRequest *r, int *done, int *sizes,
             }
             char line[SOCKET_NAME_MAXLEN + 1];
             WARN("%s : Got completion from peer %s with status=%d opcode=%d "
-                 "len=%d vendor err %d (%s)%s%s%s%s",
+                 "len=%d vendor err %d qp_num=%u wr_id=%llu (%s)%s%s%s%s",
                  flagcxIbCommonComponent(ops),
                  flagcxSocketToString(&addr, line), wc->status, wc->opcode,
-                 wc->byte_len, wc->vendor_err, reqTypeStr[r->type],
+                 wc->byte_len, wc->vendor_err, wc->qp_num,
+                 (unsigned long long)wc->wr_id, reqTypeStr[r->type],
                  localGidStr ? " localGid " : "", localGidString,
                  remoteGidStr ? " remoteGid " : "", remoteGidString);
             FLAGCXCHECK(flagcxIbCommonRecordDataCompletion(

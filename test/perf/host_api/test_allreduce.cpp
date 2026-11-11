@@ -1,4 +1,4 @@
-#include "perf_common.h"
+#include "perf_reduce_check.h"
 #include "uni_runner_algorithm.h"
 
 static int64_t selectedUniRunnerAlgorithm() {
@@ -23,9 +23,20 @@ static double bwFactorFn(int totalProcs) {
 }
 
 static void dataInitFn(PerfContext &ctx, size_t size, size_t count) {
-  const bool useLocRed =
-      selectedUniRunnerAlgorithm() == uniRunnerAlgorithmLocRed;
-  perfInitReductionBuffers(ctx, size, count, useLocRed);
+  const int64_t algorithm = selectedUniRunnerAlgorithm();
+  if (algorithm == uniRunnerAlgorithmLocRed ||
+      algorithm == uniRunnerAlgorithmRingAG) {
+    perfInitReductionBuffers(ctx, size, count,
+                             algorithm == uniRunnerAlgorithmLocRed);
+    return;
+  }
+  const size_t bytes = count * ctx.typeSize;
+  perfReduceFillInput(static_cast<unsigned char *>(ctx.hello), count, ctx.proc,
+                      ctx.totalProcs, ctx.datatype, ctx.redOp);
+  PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello, bytes,
+                                         flagcxMemcpyHostToDevice, NULL));
+  PERF_CHECK(ctx.devHandle->deviceMemset(ctx.recvbuff, 0, size, flagcxMemDevice,
+                                         NULL));
 }
 
 static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
@@ -45,9 +56,14 @@ static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
   } else if (algorithm == uniRunnerAlgorithmRingAG) {
     perfCheckRingGather(ctx, count, "ring-gather");
   } else {
-    perfCheckUniformReduction(ctx, count,
-                              perfReduceAcrossRanks(ctx.redOp, ctx.totalProcs),
-                              "all-reduce");
+    const size_t bytes = count * ctx.typeSize;
+    PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, bytes,
+                                           flagcxMemcpyDeviceToHost, NULL));
+    perfReduceCheckOutput(static_cast<const unsigned char *>(ctx.hello), count,
+                          0, ctx.proc, ctx.totalProcs, ctx.datatype, ctx.redOp,
+                          "AllReduce");
+    if (ctx.proc == 0)
+      printf("AllReduce data verified: %zu bytes per rank\n", bytes);
   }
 }
 

@@ -13,12 +13,21 @@ COREX_TEST_FLAGS := -x ivcore --cuda-path=$(DEVICE_HOME) \
 	--cuda-gpu-arch=$(ILUVATAR_ARCH) -std=c++17 -O2 -c -fPIC \
 	-DFLAGCX_ILUVATAR_DEVICE_COMPILE=1
 
-.PHONY: all clean device_api.o device_ir.o dlink.o dlink_api.o dlink_ir.o
+.PHONY: all clean device_api.o device_ir.o gdr_visibility.o dlink.o dlink_api.o dlink_ir.o
 
 all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
+gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
+
+$(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
+	../include/gdr_visibility_test.h \
+	../include/gdr_visibility_test_kernel.cuh
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling gdr_visibility.cu (Iluvatar/CoreX)"
+	@$(DEVICE_COMPILER) $(COREX_TEST_FLAGS) -o $@ $< $(ALL_INCLUDES) \
+		$(ADAPTOR_DEFINE)
 
 $(OBJDIR)/device_api.o: device_api.cu
 	@mkdir -p $(OBJDIR)

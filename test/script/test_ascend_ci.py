@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -85,6 +86,52 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(log.read_text().splitlines()), 1)
 
+    def test_runner_skips_only_the_affected_ascend_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            ci = tmp / "ci"
+            ci.mkdir()
+            shutil.copy2(CI / "run_ascend_runner_mpi.sh",
+                         ci / "run_ascend_runner_mpi.sh")
+            self.script(ci / "run_mpi_with_timeout.sh",
+                        'printf "%s\\n" "$*" >> "$COMMAND_LOG"\n')
+            tools = tmp / "tools"
+            tools.mkdir()
+            self.script(tools / "timeout", 'shift 2\nexec "$@"\n')
+            binary = self.script(tmp / "runner_mpi_tests", '''
+[[ "$1" == --gtest_list_tests ]]
+printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Reduce\n  ReduceScatter\nOtherSuite.\n  OtherTest\n'
+''')
+            log = tmp / "commands"
+            env = {**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            for label in ("runner default", "runner heterogeneous",
+                          "runner forced NET"):
+                with self.subTest(label=label):
+                    log.write_text("")
+                    result = subprocess.run(
+                        ["bash", str(ci / "run_ascend_runner_mpi.sh"),
+                         "-np", "4", str(binary)],
+                        env={**env, "FLAGCX_CI_MPI_LABEL": label},
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0,
+                                     result.stdout + result.stderr)
+                    commands = log.read_text()
+                    self.assertIn("FlagCXCollTest.AllGather", commands)
+                    self.assertNotIn("OtherTest", commands)
+                    if label == "runner default":
+                        self.assertNotIn("FlagCXCollTest.AlltoAllvAsymmetric",
+                                         commands)
+                        for test in ("AllReduce", "Reduce", "ReduceScatter"):
+                            self.assertIn(f"FlagCXCollTest.{test}", commands)
+                    else:
+                        self.assertIn("FlagCXCollTest.AlltoAllvAsymmetric",
+                                      commands)
+                        for test in ("AllReduce", "Reduce", "ReduceScatter"):
+                            self.assertNotIn(f"FlagCXCollTest.{test}", commands)
+                    self.assertIn("Skipping", result.stdout)
+
     def test_rma_unit_failure_does_not_hide_ipc_or_network(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -92,6 +139,10 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             scripts.mkdir(parents=True)
             self.script(scripts / "run_with_timeout.sh", 'exec "$@"\n')
             self.script(scripts / "run_ascend_diagnostics.sh", 'exit 0\n')
+            self.script(
+                scripts / "filter_supplemental_tests.sh",
+                'printf "%s\\n" "$1"\n',
+            )
             bin_dir = tmp / "bin"
             bin_dir.mkdir()
             self.script(bin_dir / "cmake", 'exit 0\n')

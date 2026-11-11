@@ -76,6 +76,13 @@ struct DefaultNetGdaProvider {
     return false;
   }
 
+  // A GDA specialization must opt in only after it can provide the requested
+  // completion guarantee for the bound context.
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  supportsBarrierFence(DefaultNetContext, flagcxDevNetFenceLevel fence) {
+    return fence == flagcxDevNetFenceLevel::Relaxed;
+  }
+
   // A platform implementation validates the resources referenced by this
   // context. The default rejects GDA until such an implementation exists.
   template <typename NetT>
@@ -381,6 +388,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int teamRank;          // this rank's position in inter-node team
     int nTeamRanks;        // total nodes in team
     int barrierSignalBase; // first signal slot for barriers
+    int interBarrierCount; // allocated Inter barrier channels
 
     // One-sided fallback
     uint64_t *signalBuffer;
@@ -471,6 +479,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.teamRank = di.teamRank;
       dc.nTeamRanks = di.nTeamRanks;
       dc.barrierSignalBase = di.barrierSignalBase;
+      dc.interBarrierCount = di.interBarrierCount;
       dc.signalBuffer = di.signalBuffer;
       dc.localSignalBuffer = di.localSignalBuffer;
       dc.shadowBuffer = di.shadowBuffer;
@@ -1298,7 +1307,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0 && fifoBuffer != nullptr) {
-        ProxyProvider::fifoFlush(fifoBuffer);
+        if (ProxyProvider::fifoFlush(fifoBuffer) != flagcxSuccess)
+          FLAGCX_DEVICE_TRAP();
       }
       coop.sync();
     }
@@ -1623,8 +1633,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
               typename PlatformTraits<P>::CoopThread, flagcxDevNet_None,
               flagcxDeviceScope_t, flagcxDeviceScope_t) const {
     int targetRank = peer * _stride + _localRank;
-    ProxyProvider::enqueueSignal(_fifoBuffer, _contextId, _signalCount, 0,
-                                 (int)action.signal, 1, targetRank, 0);
+    if (ProxyProvider::enqueueSignal(_fifoBuffer, _contextId, _signalCount, 0,
+                                     (int)action.signal, 1, targetRank,
+                                     0) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -1634,25 +1646,41 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
     int absIdx = _contextId * _signalCount + (int)signalId;
     ProxyProvider::waitSignalValue(_fifoBuffer, _signalBuffer, absIdx,
                                    expected);
+    if (_fifoBuffer != nullptr &&
+        ProxyProvider::fifoTerminalStatus(
+            static_cast<uint64_t *>(_fifoBuffer)) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   proxyFlush(typename PlatformTraits<P>::CoopThread,
              flagcxDeviceMemoryOrder_t) const {
-    if (_fifoBuffer != nullptr)
-      ProxyProvider::fifoFlush(_fifoBuffer);
+    if (_fifoBuffer != nullptr &&
+        ProxyProvider::fifoFlush(_fifoBuffer) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
   }
 
-  // arrive: signal all remote peers "I have arrived"
+  // Internal phases for sync(). The fence is passed to both phases in the
+  // same call; no state is kept in the Barrier object between calls.
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+  arriveImpl(flagcxDeviceMemoryOrder_t order, flagcxDevNetFenceLevel fence) {
+    // Complete this context's earlier puts before publishing arrival. The
+    // Proxy FIFO also orders release signals after prior requests, but GDA
+    // providers must provide an equivalent FlushOp before enabling Put.
+    if (flagcxDevNetFenceHas(fence, flagcxDevNetFenceLevel::Put)) {
+      _coop.sync();
+      if (_coop.threadRank() == 0)
+        DefaultNetDispatch<P>::template call<FlushOp>(
+            context(), *this, typename PlatformTraits<P>::CoopThread{},
+            flagcxDeviceMemoryOrderRelease);
+      _coop.sync();
+    }
     if (_nTeamRanks <= 1)
       return;
     int nPeers = _nTeamRanks - 1;
-    FLAGCX_DEVICE_SYNC_THREADS();
+    _coop.sync();
     // Each thread handles a subset of peers (cooperative distribution)
-    for (int i = FLAGCX_THREAD_IDX_X; i < nPeers; i += FLAGCX_BLOCK_DIM_X) {
+    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
       int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
       int signalIdx = _barrierSignal0 + _teamRank;
       DefaultNetDispatch<P>::template call<SignalOp>(
@@ -1661,19 +1689,19 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
           typename PlatformTraits<P>::CoopThread{}, flagcxDevNet_None{},
           flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
     }
-    FLAGCX_DEVICE_SYNC_THREADS();
+    _coop.sync();
   }
 
-  // wait: wait for all remote peers' signals at MY buffer
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nTeamRanks <= 1)
+  FLAGCX_DEVICE_INLINE_DECORATOR void waitImpl(flagcxDeviceMemoryOrder_t order,
+                                               flagcxDevNetFenceLevel fence) {
+    if (_nTeamRanks <= 1 &&
+        !flagcxDevNetFenceHas(fence, flagcxDevNetFenceLevel::Get)) {
       return;
-    int nPeers = _nTeamRanks - 1;
-    FLAGCX_DEVICE_SYNC_THREADS();
+    }
+    int nPeers = _nTeamRanks > 1 ? _nTeamRanks - 1 : 0;
+    _coop.sync();
     // Each thread waits for a subset of peers (cooperative distribution)
-    for (int i = FLAGCX_THREAD_IDX_X; i < nPeers; i += FLAGCX_BLOCK_DIM_X) {
+    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
       int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
       // Wait for peer's signal at slot [barrierSignal0 + peerIdx]
       int signalIdx = _barrierSignal0 + peerIdx;
@@ -1688,20 +1716,43 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
           flagcxDeviceMemoryOrderAcquire);
     }
     // Flush: ensure all signal FIFO entries from arrive() completed on wire
-    if (FLAGCX_THREAD_IDX_X == 0) {
+    if (_coop.threadRank() == 0) {
       DefaultNetDispatch<P>::template call<FlushOp>(
           context(), *this, typename PlatformTraits<P>::CoopThread{},
           flagcxDeviceMemoryOrderAcquire);
     }
-    FLAGCX_DEVICE_SYNC_THREADS();
+    _coop.sync();
   }
 
-  // sync = arrive + wait
+  // Legacy split operations are kept for existing Relaxed callers. Strong
+  // fences require sync() so their pre/post completion phases stay together.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
+    arriveImpl(order, fence);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
+    waitImpl(order, fence);
+  }
+
+  // Strong fences apply to this barrier's one selected Net context.
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    arrive(order, fence);
-    wait(order, fence);
+    if (!flagcxDevNetFenceValid(fence))
+      FLAGCX_DEVICE_TRAP();
+    if (context().provider == DefaultNetProviderGda &&
+        !DefaultNetGdaProvider<P>::supportsBarrierFence(context(), fence))
+      FLAGCX_DEVICE_TRAP();
+    arriveImpl(order, fence);
+    waitImpl(order, fence);
   }
 };
 
@@ -1748,6 +1799,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
     if (_nInterPeers > 0) {
       _inter.arrive(order, fence);
     } else {
@@ -1758,6 +1811,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
     if (_nInterPeers > 0) {
       _inter.wait(order, fence);
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
@@ -1772,13 +1827,14 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
       // Phase 1: inter signal+wait (rank-to-rank across nodes)
-      _inter.arrive(order, fence);
-      _inter.wait(order, fence);
+      _inter.sync(order, fence);
       // Phase 2: intra sync (broadcast inter completion to local ranks)
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
       _intra.wait(flagcxDeviceMemoryOrderAcquire);
     } else {
       // Single-node: one intra sync
+      if (fence != flagcxDevNetFenceLevel::Relaxed)
+        FLAGCX_DEVICE_TRAP();
       _intra.arrive(order);
       _intra.wait(order);
     }

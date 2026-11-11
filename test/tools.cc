@@ -136,6 +136,7 @@ parser::parser(int argc, char **argv) {
   root = -1;
   splitMask = 0;
   localRegister = 0;
+  verifyData = 1;
   datatype = flagcxFloat32;
   redOp = flagcxSum;
   sweepDataTypes = false;
@@ -153,6 +154,7 @@ parser::parser(int argc, char **argv) {
       {"root", required_argument, 0, 'r'},
       {"split_mask", required_argument, 0, 's'},
       {"local_register", required_argument, 0, 'R'},
+      {"verify", required_argument, 0, 'v'},
       {"op", required_argument, 0, 'o'},
       {"datatype", required_argument, 0, 'd'},
       {"help", no_argument, 0, 'h'},
@@ -160,7 +162,7 @@ parser::parser(int argc, char **argv) {
 
   while (1) {
     int c;
-    c = getopt_long(argc, argv, "b:e:f:w:n:p:r:s:R:o:d:h", longOpts,
+    c = getopt_long(argc, argv, "b:e:f:w:n:p:r:s:R:v:o:d:h", longOpts,
                     &longIndex);
 
     if (c == -1)
@@ -230,6 +232,14 @@ parser::parser(int argc, char **argv) {
           exit(1);
         }
         break;
+      case 'v':
+        if (strcmp(optarg, "0") != 0 && strcmp(optarg, "1") != 0) {
+          fprintf(stderr, "Invalid verification value: %s (must be 0 or 1)\n",
+                  optarg);
+          exit(1);
+        }
+        verifyData = optarg[0] - '0';
+        break;
       case 'o':
         if (std::strcmp(optarg, "all") == 0) {
           sweepRedOps = true;
@@ -266,13 +276,14 @@ parser::parser(int argc, char **argv) {
                "[-r <root>] \n\t"
                "[-s <splitmask OCT/DEC/HEX>] \n\t"
                "[-R <localregister 0/1/2>] \n\t"
+               "[-v <verify 0/1>] \n\t"
                "[-o <sum/prod/max/min/avg/all>] \n\t"
                "[-d <int8/uint8/int32/uint32/int64/uint64/float16/float32/"
                "float64/bfloat16/all>] \n\t"
                "[-h\n",
                basename(argv[0]));
         printf("Use default values with -b 1M -e 1G -f 2 -w 5 -n 20 -p 0 -r 0 "
-               "-s 0 -R 0 -o sum -d float32\n");
+               "-s 0 -R 0 -v 1 -o sum -d float32\n");
         break;
     }
   }

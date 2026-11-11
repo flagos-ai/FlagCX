@@ -79,9 +79,10 @@ struct flagcxDevCommInternal {
   int teamRank;          // this rank's position in the inter-node team
   int nTeamRanks;        // total number of nodes (team size for barrier)
   int barrierSignalBase; // first signal slot index used for barriers
+  int interBarrierCount; // allocated Inter barrier channels
 
-  // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
-  // 0)
+  // ---- One-sided Default layer (set if signals, counters, or Inter barriers
+  // are requested)
   // ----
   uint64_t *signalBuffer;      // GPU-visible network signal words
   uint64_t *localSignalBuffer; // GPU-visible local signal words (host SHM mode)

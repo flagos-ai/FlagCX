@@ -427,6 +427,7 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   ctx.root = ctx.args->getRootRank();
   ctx.splitMask = ctx.args->getSplitMask();
   ctx.localRegister = ctx.args->getLocalRegister();
+  ctx.verifyData = ctx.args->isVerificationEnabled();
   ctx.datatype = ctx.args->getDataType();
   ctx.redOp = ctx.args->getRedOp();
   ctx.typeSize = getFlagcxDataTypeSize(ctx.datatype);
@@ -627,7 +628,7 @@ void perfBenchmarkLoop(PerfContext &ctx, PerfCollFn collFn,
       MPI_Barrier(MPI_COMM_WORLD);
 
       // Optional post-iteration callback
-      if (postIterFn) {
+      if (ctx.verifyData && postIterFn) {
         postIterFn(ctx, actualSize, count);
       }
     }
@@ -691,7 +692,7 @@ void perfRootBenchmarkLoop(PerfContext &ctx, PerfRootCollFn collFn,
         sumTime += elapsedTime;
         testCount++;
 
-        if (postIterFn) {
+        if (ctx.verifyData && postIterFn) {
           postIterFn(ctx, actualSize, count, r);
         }
       }

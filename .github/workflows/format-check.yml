@@ -35,7 +35,7 @@ jobs:
 
       - name: Run CI script unit tests
         run: |
-          python3 -m pip install --quiet pyyaml==6.0.2 coverage==7.10.7
+          python3 -m pip install --quiet pyyaml==6.0.2 coverage==7.10.7 gcovr==8.2
           python3 -m unittest discover -s test/script -p 'test_*.py'
 
       - name: Install format dependencies

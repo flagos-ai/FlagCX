@@ -92,6 +92,27 @@ class SymmemCiTest(unittest.TestCase):
             ))
             self.assertNotIn("UntrackedVmmMappingIsRejected", generic.stdout)
 
+            unsupported_capture = root / "vmm-unsupported.calls"
+            unsupported = subprocess.run(
+                ["bash", str(script)],
+                env=dict(
+                    generic_env,
+                    FLAGCX_CI_SYMMEM_VMM_SUPPORTED="0",
+                    CI_CAPTURE=str(unsupported_capture),
+                ),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(unsupported.returncode, 0, unsupported.stderr)
+            unsupported_calls = unsupported_capture.read_text().splitlines()
+            self.assertTrue(any("symmem_unit_tests" in line for line in unsupported_calls))
+            self.assertEqual(
+                sum("symmem_mpi_tests" in line for line in unsupported_calls), 1
+            )
+            self.assertTrue(any("FLAGCX_VMM_ENABLE=0" in line for line in unsupported_calls))
+            self.assertFalse(any("FLAGCX_VMM_ENABLE=1" in line for line in unsupported_calls))
+            self.assertIn("Skipping symmem VMM-local tests", unsupported.stdout)
+
             invalid = subprocess.run(
                 ["bash", str(script)],
                 env=dict(os.environ, FLAGCX_ADAPTOR="unknown"),
