@@ -785,8 +785,8 @@ flagcxResult_t cannAdaptorStreamWaitValue64(flagcxStream_t stream, void *ptr,
       (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES) != 0)
     return flagcxInvalidArgument;
   // NOTE: CANN ValueWait exposes comparison modes but no CUDA-style flush
-  // flag. Both FlagCX wait modes currently use GEQ here. The existing
-  // Ascend IPC/NIC probes must verify whether subsequent device work sees
+  // flag. Both FlagCX wait modes currently use GEQ here. Hardware validation
+  // must verify whether subsequent device work sees
   // remote payload writes before claiming the FLUSH_REMOTE_WRITES guarantee.
   aclError result =
       aclrtValueWait(ptr, value, ACL_STREAM_WAIT_VALUE_GEQ, stream->base);

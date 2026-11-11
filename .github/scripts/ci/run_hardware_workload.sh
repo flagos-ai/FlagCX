@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
-  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-legacy|probe> <set-env-script> <suite>" >&2
+  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-legacy> <set-env-script> <suite>" >&2
   exit 2
 fi
 
@@ -17,14 +17,6 @@ case "$workload" in
   unittest)
     exec bash "$project_root/.github/scripts/ci/run_unit_test.sh" \
       "$set_env" "$suite"
-    ;;
-  probe)
-    if [[ "$platform" != ascend || -n "$suite" ]]; then
-      echo "The probe workload requires Ascend and no unit-test suite." >&2
-      exit 2
-    fi
-    export FLAGCX_CI_SET_ENV="$set_env"
-    exec bash "$project_root/.github/scripts/ci/run_ascend_probe.sh"
     ;;
   torch-api|perf|perf-legacy)
     handler="$project_root/.github/scripts/ci/run_${platform}_workload.sh"

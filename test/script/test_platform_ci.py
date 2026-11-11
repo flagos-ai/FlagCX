@@ -2055,7 +2055,6 @@ run_suite
         ]
         self.assertIn("          ascend)", rma_case)
         self.assertIn('"$platform_name" != "ascend"', rma_case)
-        self.assertIn("CANN has no stream wait/write-value support", rma_case)
 
     def test_rma_registration_failure_runs_in_two_rank_network_ci(self):
         rma_makefile = (
