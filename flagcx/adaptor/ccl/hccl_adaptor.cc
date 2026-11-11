@@ -5,6 +5,7 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "comm.h"
+#include "debug.h"
 #include <map>
 #include <stdint.h>
 #include <vector>
@@ -151,10 +152,38 @@ flagcxResult_t hcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
       flagcxResult_t)h2f_ret_map[HcclGetRankId(comm->base, (uint32_t *)rank)];
 }
 
-// TODO: unsupported
 flagcxResult_t hcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
                                             flagcxResult_t *asyncError) {
-  return flagcxNotSupported;
+  if (comm == NULL || comm->base == NULL || asyncError == NULL)
+    return flagcxInvalidArgument;
+
+  *asyncError = flagcxSuccess;
+  HcclResult hcclAsyncError = HCCL_SUCCESS;
+  HcclResult queryResult = HcclGetCommAsyncError(comm->base, &hcclAsyncError);
+  std::map<HcclResult, flagcxResult_t>::const_iterator mapped =
+      h2f_ret_map.find(queryResult);
+  if (mapped == h2f_ret_map.end()) {
+    WARN("HcclGetCommAsyncError returned unknown status %d",
+         static_cast<int>(queryResult));
+    return flagcxUnhandledDeviceError;
+  }
+  if (mapped->second != flagcxSuccess) {
+    WARN("HcclGetCommAsyncError failed with status %d",
+         static_cast<int>(queryResult));
+    return mapped->second;
+  }
+
+  mapped = h2f_ret_map.find(hcclAsyncError);
+  if (mapped == h2f_ret_map.end()) {
+    WARN("HcclGetCommAsyncError reported unknown asynchronous error %d",
+         static_cast<int>(hcclAsyncError));
+    return flagcxUnhandledDeviceError;
+  }
+  *asyncError = mapped->second;
+  if (*asyncError != flagcxSuccess)
+    WARN("HcclGetCommAsyncError reported asynchronous error %d",
+         static_cast<int>(hcclAsyncError));
+  return flagcxSuccess;
 }
 
 // TODO: unsupported

@@ -696,10 +696,13 @@ TEST(IbTransportLaneTest, IndependentDomainUsesStableStripedLaneGroup) {
   flagcxIbNetCommBase comm = {};
   ibv_qp nativeQps[4] = {};
   comm.ready = 1;
+  comm.ndevs = 2;
   comm.nqps = 4;
   comm.qpIndex = 3;
-  for (int i = 0; i < comm.nqps; ++i)
+  for (int i = 0; i < comm.nqps; ++i) {
     comm.qps[i].qp = &nativeQps[i];
+    comm.qps[i].devIndex = i % comm.ndevs;
+  }
 
   flagcxNetSubmitContext submit = {};
   uint64_t laneMask = 0;
@@ -717,6 +720,16 @@ TEST(IbTransportLaneTest, IndependentDomainUsesStableStripedLaneGroup) {
   ASSERT_EQ(flagcxIbSelectDataLane(&comm, &policy, 1, &second), flagcxSuccess);
   EXPECT_EQ(first.base.index, 2u);
   EXPECT_EQ(second.base.index, 3u);
+  EXPECT_EQ(first.base.localDevIndex, 0);
+  EXPECT_EQ(second.base.localDevIndex, 1);
+  flagcxIbLane third = {};
+  flagcxIbLane fourth = {};
+  EXPECT_EQ(flagcxIbSelectDataLane(&comm, &policy, 2, &third), flagcxSuccess);
+  EXPECT_EQ(flagcxIbSelectDataLane(&comm, &policy, 3, &fourth), flagcxSuccess);
+  EXPECT_EQ(third.base.index, 0u);
+  EXPECT_EQ(fourth.base.index, 1u);
+  EXPECT_EQ(third.base.localDevIndex, 0);
+  EXPECT_EQ(fourth.base.localDevIndex, 1);
   EXPECT_EQ(comm.qpIndex, 3);
   EXPECT_EQ(flagcxIbCommitDataLane(&comm, &policy, &first), flagcxSuccess);
   EXPECT_EQ(comm.qpIndex, 3);

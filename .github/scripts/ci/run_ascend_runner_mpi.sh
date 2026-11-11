@@ -30,6 +30,11 @@ fi
 status=0
 label=${FLAGCX_CI_MPI_LABEL:-Ascend runner}
 while IFS= read -r test; do
+  skip_reason=$(python3 "$script_dir/ignore_test.py" runner 0 "$label" "$test")
+  if [[ -n "$skip_reason" ]]; then
+    echo "Skipping $label $test: $skip_reason"
+    continue
+  fi
   FLAGCX_CI_MPI_LABEL="$label $test" \
     "$mpi_runner" "$@" --gtest_filter="$test" || status=$?
   if [[ "$status" == 130 || "$status" == 143 ]]; then

@@ -18,7 +18,7 @@ FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ASCEND=1)
 FLAGCX_CI_ENABLE_IBUC=1
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
-FLAGCX_CI_ENABLE_PXN=0
+FLAGCX_CI_ENABLE_PXN=${FLAGCX_CI_ENABLE_PXN:-0}
 # NPU memory registration is part of the Ascend IBRC contract. Require the
 # four one-sided GPU cases to transfer and verify data.
 export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
@@ -45,9 +45,8 @@ flagcx_ci_configure_suite() {
   esac
 }
 
-# PCI lookup is covered by the perf and Torch workloads. These suites still
-# run only their single-process phases until their remaining capabilities and
-# multi-rank lifecycle issues are addressed in later changes.
+# RMA and SymMem retain their single-process phases until their remaining
+# multi-rank capabilities and lifecycle issues are addressed.
 flagcx_ci_run_suite_override() {
   local suite=$1
   local suite_dir=$2
@@ -55,7 +54,7 @@ flagcx_ci_run_suite_override() {
   local -a args=("$@")
 
   case "$suite" in
-  rma | runner | symmem) ;;
+  rma | symmem) ;;
   *)
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     return
@@ -74,13 +73,6 @@ flagcx_ci_run_suite_override() {
     skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
       phase rma rma-mpi)
     echo "Ascend coverage gap: rma IPC and network MPI are not run: $skip_reason"
-    ;;
-  runner)
-    FLAGCX_CI_TEST_LABEL="Ascend runner unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
-      phase runner runner-mpi)
-    echo "Ascend coverage gap: runner collective MPI is not run: $skip_reason"
     ;;
   symmem)
     FLAGCX_CI_TEST_LABEL="Ascend symmem unit tests" \

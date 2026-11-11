@@ -370,6 +370,12 @@ protected:
 
 class NetAdaptorLoopback : public ::testing::Test {
 protected:
+  static void SetUpTestSuite() {
+    ASSERT_NE(deviceAdaptor, nullptr);
+    ASSERT_NE(deviceAdaptor->setDevice, nullptr);
+    ASSERT_EQ(deviceAdaptor->setDevice(0), flagcxSuccess);
+  }
+
   void SetUp() override {
     net_ = getNetAdaptor(RDMA);
     ASSERT_NE(net_, nullptr);
@@ -393,9 +399,6 @@ protected:
            "network device";
     ASSERT_EQ(flagcx_test::getLocalNetDevice(net_, nDevs_, &netDev_, &gpuDev_),
               flagcxSuccess);
-    ASSERT_NE(deviceAdaptor, nullptr);
-    ASSERT_NE(deviceAdaptor->setDevice, nullptr);
-    ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
     ASSERT_EQ(net_->listen(netDev_, handle_, &listenComm_), flagcxSuccess);
     ASSERT_NE(listenComm_, nullptr);
 

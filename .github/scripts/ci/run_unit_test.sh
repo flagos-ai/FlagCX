@@ -429,9 +429,6 @@ run_suite() {
       local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
       local platform_name
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
-      if [[ "$platform_name" == ascend ]]; then
-        export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-      fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
@@ -574,9 +571,6 @@ run_suite() {
       local shared_status=0
       local shared_mpi_status=0
       local p2p_mpi_env=""
-      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
-        export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-      fi
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
@@ -925,6 +919,8 @@ run_suite() {
             pxn_visible_devices_var=MACA_VISIBLE_DEVICES
           elif [[ "$platform_name" == "hygon" ]]; then
             pxn_visible_devices_var=HIP_VISIBLE_DEVICES
+          elif [[ "$platform_name" == "ascend" ]]; then
+            pxn_visible_devices_var=ASCEND_RT_VISIBLE_DEVICES
           fi
           pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")
           pxn_platform_env+=(

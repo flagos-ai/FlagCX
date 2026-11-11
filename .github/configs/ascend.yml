@@ -67,9 +67,6 @@ ignore_test:
     - suite: rma
       name: rma-mpi
       reason: RMA visibility APIs/device consumer kernel and multi-rank lifecycle validation are unavailable
-    - suite: runner
-      name: runner-mpi
-      reason: hcclAdaptorCommGetAsyncError returns flagcxNotSupported
     - suite: symmem
       name: symmem-mpi
       reason: Prior multi-rank diagnostic crashed during proxy service teardown; lifecycle stack is pending
@@ -79,3 +76,23 @@ ignore_test:
     - suite: torch-api
       name: heterogeneous
       reason: Ascend heterogeneous Torch path is disabled in CI
+  runner:
+    - test: FlagCXCollTest.AlltoAllvAsymmetric
+      modes:
+        - runner default
+      reason: HCCL AlltoAllV fails at stream synchronization
+    - test: FlagCXCollTest.AllReduce
+      modes:
+        - runner heterogeneous
+        - runner forced NET
+      reason: C2C refresh deviceMemset fails before transfer
+    - test: FlagCXCollTest.Reduce
+      modes:
+        - runner heterogeneous
+        - runner forced NET
+      reason: C2C refresh deviceMemset fails before transfer
+    - test: FlagCXCollTest.ReduceScatter
+      modes:
+        - runner heterogeneous
+        - runner forced NET
+      reason: C2C refresh deviceMemset fails before transfer
