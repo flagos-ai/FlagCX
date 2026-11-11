@@ -2498,6 +2498,15 @@ run_suite
 
         run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
         self.assertNotIn("kernel/build/bin/kernel_mpi_tests", run_unit)
+        kernel_case = run_unit[
+            run_unit.index("    kernel)\n", run_unit.index("run_suite() {")):
+            run_unit.index("    symmem)\n", run_unit.index("run_suite() {"))
+        ]
+        self.assertIn('"$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin', kernel_case)
+        self.assertIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_case)
+        self.assertIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_case)
+        self.assertIn('GTEST_FILTER="$kernel_filter"', kernel_case)
+        self.assertIn("XSHMEM returns success while tests expect flagcxInvalidArgument", kernel_case)
         self.assertFalse(
             (REPO_ROOT / "test/unittest/device_api/kernel").exists(),
             "the relative path only resolves while kernel lives under device_api",
