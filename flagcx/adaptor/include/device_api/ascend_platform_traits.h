@@ -9,12 +9,21 @@
  *
  *   host pass   - the Default backend's control path: GCC __atomic_* builtins,
  *                 assert-loud stubs where the platform has no capability.
- *   device pass - the CCE/AICore path. It claims no memory order at all: this
- *                 toolchain has no selectable read-modify-write, and no fence
- *                 whose cross-core effect has been verified on hardware, so
- *                 every load, store and RMW here is a declared-absent
- *                 capability that fails the build if a kernel reaches it (see
- *                 CceAtomic, and the review decision recorded on PR #705).
+ *   device pass - the CCE/AICore path. It claims only what hardware showed:
+ *                 a release/acquire channel through whole-L1 cache control
+ *                 (asc_dcci_entire_out / asc_dcci_entire_all around
+ *                 __gm__ accesses), verified by a two-core producer/consumer
+ *                 rendezvous that passed 40/40 forced-race runs on this soc
+ *                 (2026-11-11; PR #705 comment "Two-core ordered round
+ *                 trip"), and nothing else. Read-modify-write is still not
+ *                 selectable, threadfenceSystem is still not measured
+ *                 cross-chip, and every PLAIN-pointer load/store stays a
+ *                 declared-absent capability that fails the build if a
+ *                 kernel reaches it (see CceAtomic, and the review decision
+ *                 recorded on PR #705). The ordering is coarse by design -
+ *                 whole-cache flush/invalidate, per-slot exclusive 128-byte
+ *                 lines, one writer and one reader per line - and is
+ *                 documented as such, not offered as a CUDA-shaped fence.
  *
  * Why simtWidth is 1 and not 32 (three independent measurements, which is what
  * adaptation doc §5.1 asks for before a platform states its lane width):
@@ -47,6 +56,10 @@
 // are host-side only in this header.
 #include "__clang_cce_aicore_functions.h"
 #include "cce_aicore_intrinsics.h"
+// asc_dcci_entire_out/_all: the measured ordered surface (see the header
+// note). Resolved from the toolkit's asc/include tree through bisheng's
+// builtin search path, same as in the standalone ascend_probe rig.
+#include "c_api/cache_ctrl/cache_ctrl.h"
 #else
 #include <cassert>
 #include <cstdint>
@@ -122,17 +135,26 @@ struct PlatformTraits<AscendPlatform> {
       for (volatile int i = 0; i < cycles; ++i) {
       }
     }
-    // namedBarrierSync / the two fences are NOT defined yet: the 2201 spellings
-    // for a cross-core barrier (set_flag/wait_flag event ids) and for GM cache
-    // control (dcci) still need their argument lists measured. __builtin_cce_
-    // mem_bar_* are dav3510-gated ("does not support the given target feature")
-    // and calling hset_flag()/hwait_flag() with a wrong arity crashes bisheng
-    // outright, so guessing is not an option here. They trap until then.
+    // threadfenceDevice is implemented below with the measured dcci pair.
+    // namedBarrierSync and threadfenceSystem are still declared absent:
+    //   * the cross-core barrier spelling (ffts via asc_sync_block_arrive)
+    //     faults under plain launch on this soc (error 507015, AIC-side
+    //     illegal instruction, three rounds of measurement), this toolkit
+    //     has no cooperative launch, and the 2201 c_api exposes no public
+    //     set-side for wait_flag_dev - a barrier from the measured GM
+    //     handshake is designed but not yet probed, so it keeps trapping;
+    //   * threadfenceSystem would promise cross-CHIP visibility, and the
+    //     rendezvous measurement covers one chip only.
     static FLAGCX_DEVICE_INLINE_DECORATOR void namedBarrierSync(int, int) {
       FLAGCX_ASCEND_UNSUPPORTED("namedBarrierSync() on AscendPlatform");
     }
+    // Release this core's dirty lines, then blind this core's later loads
+    // to pre-invalidate state: one spelling ordering both directions for
+    // the calling core, device scope, single chip. See the fence note in
+    // device_utils.h (same pair behind FLAGCX_DEVICE_THREAD_FENCE).
     static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceDevice() {
-      FLAGCX_ASCEND_UNSUPPORTED("threadfenceDevice() on AscendPlatform");
+      asc_dcci_entire_out();
+      asc_dcci_entire_all();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void threadfenceSystem() {
       FLAGCX_ASCEND_UNSUPPORTED("threadfenceSystem() on AscendPlatform");
@@ -206,7 +228,10 @@ struct PlatformTraits<AscendPlatform> {
     // included on this soc.
     static constexpr uint32_t kHint = 0u;
 
-    // Load and store are declared ABSENT on this pass, not implemented.
+    // PLAIN-pointer load and store are declared ABSENT on this pass, not
+    // implemented - the hardware-verified ordered channel lives below as the
+    // __gm__ overloads, and a plain-pointer ordered path is deliberately NOT
+    // extrapolated from it (see after the overloads for the binding proof).
     //
     // What used to be here was a volatile access through the unqualified
     // pointer the Default backend hands down, which is not what the callers
@@ -242,9 +267,11 @@ struct PlatformTraits<AscendPlatform> {
     // The absence is enforced the same way as the read-modify-write members
     // below: a call to a function that is declared and defined nowhere, which
     // bisheng refuses at BUILD time because it links the device image inside
-    // -c. The consequence is the one the reviewer asked for - no
-    // ordering-dependent path, in this header or in the Default backend, can be
-    // instantiated on Ascend until the ordered version lands.
+    // -c. The consequence is the one the reviewer asked for - a shared
+    // template that passes a plain device pointer still cannot be
+    // instantiated on Ascend; the ordered version that unblocks such paths
+    // is the __gm__ channel below, and widening it to plain pointers needs
+    // its own hardware measurement first (it is NOT extrapolated here).
     template <typename T>
     static FLAGCX_DEVICE_INLINE_DECORATOR T noOrderedLoad() {
       FLAGCX_ASCEND_UNSUPPORTED(
@@ -291,6 +318,50 @@ struct PlatformTraits<AscendPlatform> {
       (void)v;
       FLAGCX_ASCEND_UNSUPPORTED(
           "CceAtomic: device store has no hardware-verified release on 2201");
+    }
+
+    // ---- ordered channel: __gm__ overloads, verified on hardware ---------
+    // These four spellings are the measured protocol verbatim. The two-core
+    // producer/consumer rendezvous that passed 40/40 forced-race runs on
+    // Ascend 910C (2026-11-11; every slot on its own 128B line, one writer
+    // and one reader per line, GM under ACL_MEM_MALLOC_HUGE_FIRST) published
+    // by store + asc_dcci_entire_out() and acquired by asc_dcci_entire_all()
+    // + volatile load - which is exactly what these bodies are.
+    //
+    // Why this channel is __gm__-only, and the plain overloads above STAY
+    // absent rather than learning to call these: the pointer-binding matrix
+    // measured the same day showed (F1) a __gm__ pointer cannot bind to a
+    // plain parameter ("parameter must be in Local Memory"), (F3) no cast
+    // from __gm__ to plain is allowed inside an aicore function, and (F5)
+    // therefore shared templates that carry plain device pointers reach only
+    // the absent overloads and fail loudly at build time - the ordered
+    // surface is reachable exclusively by device code that carries __gm__
+    // pointers end to end (F4 showed uintptr_t is the one legal bridge, in
+    // case a pointer must cross storage that cannot hold the qualifier).
+    //
+    // Width: 32-bit only, on purpose. The rendezvous measured uint32 words;
+    // the completion word this backend needs on Ascend is 32-bit (maintainer
+    // decision, 2026-11-10); 64-bit ordered access is unmeasured and stays
+    // declared absent above.
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
+    load(__gm__ const volatile uint32_t *p) {
+      asc_dcci_entire_all();
+      return *p;
+    }
+    static FLAGCX_DEVICE_INLINE_DECORATOR int32_t
+    load(__gm__ const volatile int32_t *p) {
+      asc_dcci_entire_all();
+      return *p;
+    }
+    static FLAGCX_DEVICE_INLINE_DECORATOR void
+    store(__gm__ volatile uint32_t *p, uint32_t v) {
+      *p = v;
+      asc_dcci_entire_out();
+    }
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(__gm__ volatile int32_t *p,
+                                                     int32_t v) {
+      *p = v;
+      asc_dcci_entire_out();
     }
 
     // Read-modify-write is a declared-absent capability on this toolchain,
@@ -431,19 +502,28 @@ struct PlatformTraits<AscendPlatform> {
       return noAtomic<int64_t>();
     }
 
-    // Catch-alls. Any type outside the four integer widths reaches one of
-    // these, which is a declared failure rather than a silent reinterpretation.
-    template <typename T>
-    static FLAGCX_DEVICE_INLINE_DECORATOR T load(const T *p) {
-      (void)p;
-      FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::load: no CCE spelling for type");
-      return T();
-    }
-    template <typename T>
-    static FLAGCX_DEVICE_INLINE_DECORATOR void store(T *p, const T &) {
-      (void)p;
-      FLAGCX_ASCEND_UNSUPPORTED("CceAtomic::store: no CCE spelling for type");
-    }
+    // NO load/store catch-alls (removed 2026-11-11 after measurement B1/B2,
+    // rounds 64-66). The template `T load(const T *p)` used to sit here and
+    // it swallowed __gm__ arguments: deduction gives T = __gm__ uint32_t,
+    // the resulting `const __gm__ uint32_t *` parameter is an identity match
+    // for a `__gm__ uint32_t *` argument, and bisheng clang15's CCE fork
+    // let that beat the non-template __gm__ ordered overloads above instead
+    // of applying the [over.match.best] non-template tie-break. The gate
+    // kernel's single `CceAtomic::load(gm_ptr)` call therefore instantiated
+    // the trap body and failed the in -c device link with
+    // "ld.lld: error: undefined symbol: flagcxAscendDeviceOpUnsupported
+    // .cube/.vector" (arms B0/B2 red; store-only and fence-only arms green -
+    // store escaped only because its `const T &` second parameter conflicts
+    // with T = __gm__ deduced from the first when the value argument is
+    // plain, which is an accident of argument shape, not compiler sanity).
+    // Removing both catch-alls keeps this class loud for unwanted types the
+    // same way as before: calls that match no overload fail at the call site
+    // with "no matching function for call to ..." - still a build-time
+    // failure, only spoken by the front end instead of the linker, and the
+    // same rejection class as the measured F1/F3 pointer-binding reds. The
+    // read-modify-write catch-alls below KEEP their trap bodies on purpose:
+    // there is no ordered __gm__ sibling for them to steal from, so
+    // swallowing everything IS the declared absence there.
     template <typename T>
     static FLAGCX_DEVICE_INLINE_DECORATOR T add(T *p, T v) {
       (void)p;

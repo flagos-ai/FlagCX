@@ -449,6 +449,11 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // (it fails as "unknown type name"); `__ubuf__` is, and a kernel declaring an
 // `__ubuf__` array compiles with rc=0.
 #define FLAGCX_SHARED_DECORATOR __ubuf__
+// The measured release/acquire surface (see FLAGCX_DEVICE_THREAD_FENCE below)
+// comes from this header; bisheng's builtin search path resolves it from the
+// toolkit's asc/include tree (probe of 2026-11-11, and the standalone
+// ascend_probe rig builds with the same spelling).
+#include "c_api/cache_ctrl/cache_ctrl.h"
 // No block barrier is validated for this soc yet, so these stay loud: the
 // failure lands at build time (see the split below), which is a declared
 // absence the adaptation doc allows (§13.3.2) rather than the silent no-op it
@@ -481,16 +486,35 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 //     at :86-92, supportsBarrierFence() accepts only Relaxed at :80-84), so a
 //     guarded call cannot exist at runtime. Replacing even this with a real
 //     trap instruction is an open measurement.
-//   * every capability THIS platform declares absent - cache fence, block
-//     barrier, read-modify-write, lane intrinsics - calls one of the three
-//     never-defined functions below, so a kernel that reaches one fails to
-//     build rather than running unordered or hanging.
-extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendNoCacheFence();
+//   * every capability THIS platform still declares absent - block barrier,
+//     read-modify-write, lane intrinsics - calls one of the two never-defined
+//     functions below, so a kernel that reaches one fails to build rather
+//     than running unordered or hanging.
 extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendNoBlockBarrier();
 extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendDeviceOpUnsupported();
 #undef FLAGCX_DEVICE_TRAP
 #define FLAGCX_DEVICE_TRAP() __builtin_unreachable()
-#define FLAGCX_DEVICE_THREAD_FENCE() flagcxAscendNoCacheFence()
+// The device fence is no longer a declared absence: it is the pair measured
+// on Ascend 910C as a two-core producer/consumer rendezvous, 40/40 forced-
+// race runs on 2026-11-11 (see ascend_platform_traits.h for the record and
+// the PR #705 comment "Two-core ordered round trip"). Semantics, stated
+// narrowly:
+//   * asc_dcci_entire_out() writes back this core's dirty L1 lines; the
+//     peer core sees them in global memory. Payload-before-doorbell relies
+//     on same-core flushes landing in issue order (consistent across all
+//     40+ runs; not separately provable from two cores).
+//   * asc_dcci_entire_all() invalidates this core's L1 so the next loads
+//     refetch from global memory; measured NOT to discard this core's own
+//     dirty lines (probe D1: a never-flushed store survived the hammer),
+//     so the out-then-all order below carries no data-loss risk.
+// Device scope only: single chip, GM under ACL_MEM_MALLOC_HUGE_FIRST, one
+// writer + one reader per 128-byte cache line. Cross-chip remains
+// FLAGCX_ASCEND_UNSUPPORTED territory (threadfenceSystem).
+#define FLAGCX_DEVICE_THREAD_FENCE()                                           \
+  do {                                                                         \
+    asc_dcci_entire_out();                                                     \
+    asc_dcci_entire_all();                                                     \
+  } while (0)
 #define FLAGCX_DEVICE_SYNC_THREADS() flagcxAscendNoBlockBarrier()
 #define FLAGCX_THREAD_IDX_X 0
 #define FLAGCX_BLOCK_IDX_X 0
