@@ -9,6 +9,17 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 TEST_RUNNER=${FLAGCX_TORCH_TEST_RUNNER:-$REPO_ROOT/.github/scripts/ci/run_with_timeout.sh}
 export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
+torch_ignored_operations=$(python3 "$REPO_ROOT/.github/scripts/ci/ignore_test.py" torch homogeneous)
+if [[ " $torch_ignored_operations " == *" gather "* ]]; then
+    export FLAGCX_TORCH_SKIP_GATHER=1
+fi
+heterogeneous_skip_reason=$(python3 "$REPO_ROOT/.github/scripts/ci/ignore_test.py" \
+    phase torch-api heterogeneous)
+if [[ -n "$heterogeneous_skip_reason" ]]; then
+    export FLAGCX_SKIP_HETERO=1
+    echo "[INFO] Skipping heterogeneous PyTorch API tests: $heterogeneous_skip_reason"
+fi
+
 hash -r
 
 PYTHON_BIN=${PYTHON_BIN:-}

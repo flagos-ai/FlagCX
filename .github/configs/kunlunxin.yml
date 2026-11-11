@@ -62,3 +62,74 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+ignore_test:
+  gtest:
+    - suite: kernel
+      tests:
+        - DevicePtrArgs.DevCommFreeDevicePtrNull
+        - DevicePtrArgs.DevMemFreeDevicePtrNull
+      reason: XSHMEM returns success for null-handle release; current API tests expect flagcxInvalidArgument
+    - suite: adaptor
+      tests:
+        - IpcMemHandleMpiTest.*Gdr*
+      reason: KunlunXin GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
+    - suite: p2p
+      tests:
+        - FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake
+        - FlagcxP2pEngineReadTest.TwoIndependent2KiBReadsCover4KiBBuffer
+        - FlagcxP2pEngineReadTest.RejectsOutOfBoundsReadBeforeSubmission
+        - FlagcxP2pEngineReadTest.RejectsInvalidRegistrationAndDescriptorRanges
+        - FlagcxP2pEngineReadTest.AcceptsZeroLengthDescriptorAtRegistrationEnd
+        - FlagcxP2pEngineReadTest.RejectsOutOfBoundsWriteBeforeSubmission
+        - FlagcxP2pEngineReadTest.ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow
+      reason: These cases require GDR allocation with SYNC_MEMOPS, unavailable in the current XRE
+    - suite: adaptor
+      tests:
+        - DeviceAdaptorTest.GetManagedPointerType
+      reason: XRE does not support managed allocation
+  phases:
+    - suite: perf
+      name: heterogeneous
+      reason: XRE cudaLaunchHostFunc is unsupported
+    - suite: p2p
+      name: p2p-write-mpi
+      reason: GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
+    - suite: rma
+      name: rma-mpi
+      reason: GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
+    - suite: symmem
+      name: symmem-mpi
+      reason: GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
+    - suite: runner
+      name: runner-mpi
+      reason: XRE rejects cudaHostAlloc(Mapped, 4 MiB)
+    - suite: device_api_unified_ir
+      name: inter-and-forced-net
+      reason: XSHMEM supports intra-node communication only
+    - suite: rma
+      name: gdr-visibility
+      reason: No validated KunlunXin XPU consumer route for GDR visibility
+    - suite: symmem
+      name: vmm-local-and-remote-without-net
+      reason: No validated KunlunXin VMM MR data route
+    - suite: symmem
+      name: vmm-net-data
+      reason: No validated KunlunXin VMM MR data route
+    - suite: torch-api
+      name: heterogeneous
+      reason: XRE cudaLaunchHostFunc is unsupported
+  perf:
+    operations:
+      - gather
+    modes:
+      - homogeneous
+      - heterogeneous
+    reason: XCCL Gather adaptor returns flagcxNotSupported
+  torch:
+    operations:
+      - gather
+    modes:
+      - homogeneous
+      - heterogeneous
+    reason: Gather is unsupported and heterogeneous collectives require unsupported cudaLaunchHostFunc

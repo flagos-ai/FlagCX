@@ -61,3 +61,21 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+ignore_test:
+  phases:
+    - suite: rma
+      name: rma-mpi
+      reason: RMA visibility APIs/device consumer kernel and multi-rank lifecycle validation are unavailable
+    - suite: runner
+      name: runner-mpi
+      reason: hcclAdaptorCommGetAsyncError returns flagcxNotSupported
+    - suite: symmem
+      name: symmem-mpi
+      reason: Prior multi-rank diagnostic crashed during proxy service teardown; lifecycle stack is pending
+    - suite: rma
+      name: gdr-visibility
+      reason: Ascend lacks stream wait/write-value APIs and a device consumer kernel
+    - suite: torch-api
+      name: heterogeneous
+      reason: Ascend heterogeneous Torch path is disabled in CI

@@ -53,3 +53,35 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+ignore_test:
+  gtest:
+    - suite: symmem
+      tests:
+        - SymMemTest.CrossGpuReadViaPeerPtr
+        - SymMemTest.CrossGpuWriteViaPeerPtr
+        - SymMemTest.MulticastMappingWhenSupported
+        - SymMemTest.RankLocalVmmPrepareFailureConvergesBeforeFdExchangeAndRetries
+        - SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry
+        - SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset
+        - SymMemTest.LsaReserveFailureDoesNotPublishWindow
+        - SymMemTest.OrdinaryAllocationUsesIpcWithVmmEnabled
+      reason: IXCUDA VMM/LSA callbacks are not implemented
+  phases:
+    - suite: symmem
+      name: vmm-local-and-remote-without-net
+      reason: IXCUDA VMM/LSA callbacks are not implemented
+    - suite: symmem
+      name: vmm-net-data
+      reason: IXCUDA VMM/LSA callbacks are not implemented
+  runner:
+    - test: FlagCXCollTest.SendRecv
+      modes:
+        - HYBRID
+        - forced-NET
+        - PXN
+      reason: Known heterogeneous SendRecv hang; backend diagnosis pending
+    - test: FlagCXCollTest.AlltoAll
+      modes:
+        - PXN
+      reason: Expected PXN relay absent; topology and routing diagnosis pending

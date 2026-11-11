@@ -64,22 +64,30 @@ flagcx_ci_run_suite_override() {
 
   FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
   local unit_status=0
+  local project_root=${PROJECT_ROOT:-$(cd "$FLAGCX_CI_ENV_DIR/../../.." && pwd)}
+  local skip_reason
 
   case "$suite" in
   rma)
     FLAGCX_CI_TEST_LABEL="Ascend rma unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    echo "Ascend coverage gap: rma IPC and network MPI are not run. GPU MR and IPC are now exercised by adaptor/perf CI; RMA visibility still needs cannAdaptorStreamWaitValue64/StreamWriteValue64 and an Ascend device-consumer kernel, plus multi-rank lifecycle validation"
+    skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
+      phase rma rma-mpi)
+    echo "Ascend coverage gap: rma IPC and network MPI are not run: $skip_reason"
     ;;
   runner)
     FLAGCX_CI_TEST_LABEL="Ascend runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    echo "Ascend coverage gap: runner collective MPI is not run. hcclAdaptorCommGetAsyncError() returns flagcxNotSupported, so synchronizeAndCheckAsyncError() yields 9 at coll_allgather.cpp:23 and every isolated collective fails on the query rather than on the collective itself"
+    skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
+      phase runner runner-mpi)
+    echo "Ascend coverage gap: runner collective MPI is not run: $skip_reason"
     ;;
   symmem)
     FLAGCX_CI_TEST_LABEL="Ascend symmem unit tests" \
       "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests" || unit_status=$?
-    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run. A prior multi-rank diagnostic exited 139 during process teardown inside flagcxProxyService; that lifecycle failure still needs a hardware stack trace. SymMem VMM routes separately need cannAdaptorSymPhysAlloc/Free plus flat map/unmap; its IPC and NET paths need their own multi-rank validation"
+    skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
+      phase symmem symmem-mpi)
+    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run: $skip_reason"
     ;;
   esac
 

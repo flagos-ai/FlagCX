@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -39,7 +40,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             root = Path(temp_dir)
             scripts = root / ".github/scripts/ci"
             scripts.mkdir(parents=True)
-            for name in ("run_unit_test.sh", "filter_supplemental_tests.sh"):
+            for name in ("run_unit_test.sh", "filter_supplemental_tests.sh", "ignore_test.py"):
                 shutil.copyfile(REPO_ROOT / ".github/scripts/ci" / name, scripts / name)
             (scripts / "run_with_timeout.sh").write_text('#!/bin/bash\n"$@"\n')
             (scripts / "run_with_timeout.sh").chmod(0o755)
@@ -84,6 +85,8 @@ class KunlunXinWorkloadTest(unittest.TestCase):
             scripts.mkdir(parents=True)
             handler = scripts / HANDLER.name
             shutil.copyfile(HANDLER, handler)
+            shutil.copyfile(REPO_ROOT / ".github/scripts/ci/ignore_test.py",
+                            scripts / "ignore_test.py")
             (root / "platform.sh").write_text(
                 "FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_KUNLUNXIN=1)\n"
                 "FLAGCX_CI_TEST_MAKE_ARGS=(USE_KUNLUNXIN=1)\n"
@@ -103,7 +106,15 @@ class KunlunXinWorkloadTest(unittest.TestCase):
             (scripts / "run_mpi_with_timeout.sh").chmod(0o755)
             torch_script = root / "test/script/torch_api_test.sh"
             torch_script.parent.mkdir(parents=True)
-            torch_script.write_text('echo "torch-tests skip-gather=${FLAGCX_TORCH_SKIP_GATHER:-0} skip-hetero=${FLAGCX_SKIP_HETERO:-0}" >> "$CALL_LOG"\n')
+            helper = root / ".github/scripts/ci/ignore_test.py"
+            torch_script.write_text(
+                f'ops=$("{sys.executable}" "{helper}" torch homogeneous)\n'
+                '[[ " $ops " != *" gather "* ]] || export FLAGCX_TORCH_SKIP_GATHER=1\n'
+                f'reason=$("{sys.executable}" "{helper}" phase torch-api heterogeneous)\n'
+                '[[ -z "$reason" ]] || export FLAGCX_SKIP_HETERO=1\n'
+                'echo "torch-tests skip-gather=${FLAGCX_TORCH_SKIP_GATHER:-0} '
+                'skip-hetero=${FLAGCX_SKIP_HETERO:-0}" >> "$CALL_LOG"\n'
+            )
             binaries = root / "bin"
             binaries.mkdir()
             (binaries / "make").write_text(
@@ -111,7 +122,9 @@ class KunlunXinWorkloadTest(unittest.TestCase):
                 f"exit {make_status}\n"
             )
             (binaries / "python3").write_text(
-                '#!/bin/bash\nprintf "python %s\\n" "$*" >> "$CALL_LOG"\n'
+                '#!/bin/bash\n'
+                f'if [[ "${{1:-}}" == */ignore_test.py ]]; then exec "{sys.executable}" "$@"; fi\n'
+                'printf "python %s\\n" "$*" >> "$CALL_LOG"\n'
                 'printf "CPATH=%s\\nLIBRARY_PATH=%s\\nHOST_CXXFLAGS=%s\\n" '
                 '"${CPATH:-}" "${LIBRARY_PATH:-}" "${HOST_CXXFLAGS:-}" '
                 '>> "$CALL_LOG"\n'
@@ -135,6 +148,14 @@ class KunlunXinWorkloadTest(unittest.TestCase):
                 CPATH="/existing/include",
                 LIBRARY_PATH="/existing/lib",
                 HOST_CXXFLAGS="-O2",
+                FLAGCX_CI_IGNORE_TEST=(
+                    '{"phases":[{"suite":"perf","name":"heterogeneous",'
+                    '"reason":"runtime unsupported"},'
+                    '{"suite":"torch-api","name":"heterogeneous",'
+                    '"reason":"runtime unsupported"}],'
+                    '"torch":{"operations":["gather"],'
+                    '"modes":["homogeneous","heterogeneous"]}}'
+                ),
             )
             result = subprocess.run(
                 ["bash", str(handler), workload],
@@ -171,7 +192,6 @@ class KunlunXinWorkloadTest(unittest.TestCase):
         self.assertIn("HOST_CXXFLAGS=-O2 -include cstddef\n", calls)
         self.assertIn("python setup.py build_ext --inplace\n", calls)
         self.assertIn("torch-tests skip-gather=1 skip-hetero=1\n", calls)
-        self.assertIn("heterogeneous Torch tests skipped", result.stdout)
 
     def test_missing_cuda_headers_fail_before_torch_build(self):
         result, calls, _ = self.run_workload("torch-api", sdk=False)

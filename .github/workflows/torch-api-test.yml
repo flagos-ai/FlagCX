@@ -30,28 +30,34 @@ jobs:
       cuda_ci_image: ${{ steps.cuda.outputs.ci_image }}
       cuda_docker_args: ${{ steps.cuda.outputs.docker_args }}
       cuda_set_env: ${{ steps.cuda.outputs.set_env }}
+      cuda_ignore_test: ${{ steps.cuda.outputs.ignore_test }}
       cuda_runs_on: ${{ steps.cuda.outputs.runs_on }}
       metax_ci_image: ${{ steps.metax.outputs.ci_image }}
       metax_docker_args: ${{ steps.metax.outputs.docker_args }}
       metax_set_env: ${{ steps.metax.outputs.set_env }}
+      metax_ignore_test: ${{ steps.metax.outputs.ignore_test }}
       metax_runs_on: ${{ steps.metax.outputs.runs_on }}
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
       hygon_docker_args: ${{ steps.hygon.outputs.docker_args }}
       hygon_set_env: ${{ steps.hygon.outputs.set_env }}
+      hygon_ignore_test: ${{ steps.hygon.outputs.ignore_test }}
       hygon_runs_on: ${{ steps.hygon.outputs.runs_on }}
       ppu_ci_image: ${{ steps.ppu.outputs.ci_image }}
       ppu_docker_args: ${{ steps.ppu.outputs.docker_args }}
       ppu_set_env: ${{ steps.ppu.outputs.set_env }}
+      ppu_ignore_test: ${{ steps.ppu.outputs.ignore_test }}
       ppu_runs_on: ${{ steps.ppu.outputs.runs_on }}
       ascend_ci_image: ${{ steps.ascend.outputs.ci_image }}
       ascend_docker_args: ${{ steps.ascend.outputs.docker_args }}
       ascend_set_env: ${{ steps.ascend.outputs.set_env }}
+      ascend_ignore_test: ${{ steps.ascend.outputs.ignore_test }}
       ascend_runs_on: ${{ steps.ascend.outputs.runs_on }}
       kunlunxin_ci_image: ${{ steps.kunlunxin.outputs.ci_image }}
       kunlunxin_docker_args: ${{ steps.kunlunxin.outputs.docker_args }}
       kunlunxin_container_options: ${{ steps.kunlunxin.outputs.container_options }}
       kunlunxin_container_volumes: ${{ steps.kunlunxin.outputs.container_volumes }}
       kunlunxin_set_env: ${{ steps.kunlunxin.outputs.set_env }}
+      kunlunxin_ignore_test: ${{ steps.kunlunxin.outputs.ignore_test }}
       kunlunxin_runs_on: ${{ steps.kunlunxin.outputs.runs_on }}
     steps:
       - name: Checkout Code
@@ -116,6 +122,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.hygon_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.hygon_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.hygon_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.hygon_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           hygon torch-api
@@ -198,6 +205,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.cuda_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.cuda_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.cuda_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.cuda_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           cuda torch-api
@@ -276,6 +284,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.metax_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.metax_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           metax torch-api
@@ -354,6 +363,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ppu_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ppu_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ppu_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ppu_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           ppu torch-api
@@ -429,6 +439,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ascend_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ascend_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.ascend_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.ascend_ignore_test }}
         run: >-
           bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
           ascend torch-api
@@ -482,6 +493,7 @@ jobs:
         shell: bash
         env:
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ignore_test }}
         run: |
           set -euo pipefail
           git clean -ffdX

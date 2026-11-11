@@ -46,3 +46,13 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+ignore_test:
+  perf:
+    operations:
+      - allreduce
+      - reducescatter
+    modes:
+      - homogeneous
+      - heterogeneous
+    reason: Current MetaX perf run has data verification failures; retain remaining operation coverage

@@ -68,9 +68,6 @@ flagcx_ci_configure_suite() {
       export FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX
       ;;
     p2p)
-      # These suites call the IBRC vtable directly. The Engine tests use the
-      # runtime transport selector and are retained for BAREX coverage.
-      export GTEST_FILTER="-P2pAdaptorStruct.*:P2pAdaptorTest.*:P2pLoopbackTest.*:P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost"
       export FLAGCX_P2P_TRANSPORT=accl
       ;;
     rma)

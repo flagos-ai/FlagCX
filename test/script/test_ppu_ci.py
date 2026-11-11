@@ -140,12 +140,14 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_DMABUF_ENABLE=1", unit_runner)
         self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
-        self.assertIn(
-            'if [[ "$platform_name" == "ppu" || '
-            '"$platform_name" == "hygon" ||\n'
-            '            "$platform_name" == "kunlunxin" ]]',
-            unit_runner,
-        )
+        import yaml
+        ppu_config = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/ppu.yml").read_text()
+        )["ignore_test"]
+        self.assertTrue(any(
+            entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
+            for entry in ppu_config["phases"]
+        ))
         self.assertIn(
             "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
         )

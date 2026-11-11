@@ -42,6 +42,7 @@ project_root=$(cd "$script_dir/../../.." && pwd)
 image=$FLAGCX_CI_IMAGE
 docker_args_text=$FLAGCX_CI_DOCKER_ARGS
 set_env=$FLAGCX_CI_SET_ENV
+ignore_test=${FLAGCX_CI_IGNORE_TEST:-'{}'}
 container_name=${FLAGCX_CI_CONTAINER_NAME:-flagcx-${platform}-${workload//-/_}-${suite:-job}-$$}
 
 docker_args=()
@@ -141,6 +142,7 @@ docker run --rm \
   --env FLAGCX_CI_WORKLOAD="$workload" \
   --env FLAGCX_CI_SUITE="$suite" \
   --env FLAGCX_CI_SET_ENV="$set_env" \
+  --env "FLAGCX_CI_IGNORE_TEST=$ignore_test" \
   --entrypoint=/bin/bash \
   "$image" -lc '
     set -euo pipefail

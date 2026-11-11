@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -35,6 +36,10 @@ printf '%s %s\n' "$label" "$*" >> "$COMMAND_LOG"
                      'MPI_RUNNER="$2"; flagcx_ci_run_suite_override symmem /suite',
                      "bash", str(ROOT / ".github/scripts/set_env/ascend.sh"), str(runner)],
                     env={**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
+                         "FLAGCX_CI_IGNORE_TEST": (
+                             '{"phases":[{"suite":"symmem","name":"symmem-mpi",'
+                             '"reason":"proxy service teardown failure"}]}'
+                         ),
                          "FAILED_PHASE": "unit" if unit_fails else "none"},
                     capture_output=True, text=True,
                 )
@@ -52,7 +57,7 @@ printf '%s %s\n' "$label" "$*" >> "$COMMAND_LOG"
                                  log.read_text())
                 # The skipped phases must still name what they wait on.
                 self.assertIn("Ascend coverage gap", result.stdout)
-                self.assertIn("flagcxProxyService", result.stdout)
+                self.assertIn("proxy service teardown failure", result.stdout)
 
     def test_runner_isolates_collectives_and_preserves_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,6 +95,7 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             tmp = Path(tmp)
             scripts = tmp / ".github/scripts/ci"
             scripts.mkdir(parents=True)
+            shutil.copyfile(CI / "ignore_test.py", scripts / "ignore_test.py")
             self.script(scripts / "run_with_timeout.sh", 'exec "$@"\n')
             self.script(scripts / "run_ascend_diagnostics.sh", 'exit 0\n')
             self.script(

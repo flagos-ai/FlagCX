@@ -20,6 +20,8 @@ class SymmemCiTest(unittest.TestCase):
             shutil.copyfile(REPO_ROOT / "test/script/symmem_test.sh", script)
             ci_dir = root / ".github/scripts/ci"
             ci_dir.mkdir(parents=True)
+            shutil.copyfile(REPO_ROOT / ".github/scripts/ci/ignore_test.py",
+                            ci_dir / "ignore_test.py")
             for name in ("run_with_timeout.sh", "run_mpi_with_timeout.sh"):
                 runner = ci_dir / name
                 runner.write_text(
@@ -97,7 +99,11 @@ class SymmemCiTest(unittest.TestCase):
                 ["bash", str(script)],
                 env=dict(
                     generic_env,
-                    FLAGCX_CI_SYMMEM_VMM_SUPPORTED="0",
+                    FLAGCX_CI_IGNORE_TEST=(
+                        '{"phases":[{"suite":"symmem",'
+                        '"name":"vmm-local-and-remote-without-net",'
+                        '"reason":"VMM is unavailable"}]}'
+                    ),
                     CI_CAPTURE=str(unsupported_capture),
                 ),
                 capture_output=True,

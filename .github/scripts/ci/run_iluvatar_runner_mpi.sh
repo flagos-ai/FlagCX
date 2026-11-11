@@ -7,7 +7,6 @@ binary=
 filter=${GTEST_FILTER:-*}
 runner_mode=HOMO
 pxn_enabled=0
-quarantine=${FLAGCX_CI_ILUVATAR_QUARANTINE:-0}
 args=()
 for arg in "$@"; do
   if [[ "$arg" == --gtest_filter=* ]]; then
@@ -23,9 +22,10 @@ for arg in "$@"; do
     FLAGCX_CI_EXPECT_PXN=*) pxn_enabled=${arg#*=} ;;
   esac
 done
-if [[ "$quarantine" != 0 && "$quarantine" != 1 ]]; then
-  echo 'FLAGCX_CI_ILUVATAR_QUARANTINE must be 0 or 1' >&2
-  exit 2
+if [[ " ${args[*]} " == *"FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET"* ]]; then
+  runner_mode=forced-NET
+elif [[ "$pxn_enabled" == 1 ]]; then
+  runner_mode=PXN
 fi
 if [[ -z "$binary" || ! -x "$binary" ]]; then
   echo 'Iluvatar runner binary is missing' >&2
@@ -89,17 +89,8 @@ skipped=0
 start=$SECONDS
 for index in "${!tests[@]}"; do
   test=${tests[index]}
-  # These are known failures, not unsupported hardware capabilities. Match
-  # exact cases and modes; leave the default HOMO and NET striping coverage on.
-  # See .github/configs/iluvatar-known-issues.md for evidence and restoration.
-  reason=
-  if [[ "$quarantine" == 1 && "$runner_mode" == HYBRID ]]; then
-    if [[ "$test" == FlagCXCollTest.SendRecv ]]; then
-      reason='T-3: known heterogeneous SendRecv hang; backend diagnosis pending'
-    elif [[ "$test" == FlagCXCollTest.AlltoAll && "$pxn_enabled" == 1 ]]; then
-      reason='T-4: expected PXN relay absent; topology and routing diagnosis pending'
-    fi
-  fi
+  reason=$(python3 "$script_dir/ignore_test.py" runner \
+    "$pxn_enabled" "$runner_mode" "$test")
   if [[ -n "$reason" ]]; then
     echo "::warning title=Iluvatar known-issue quarantine::$label $test SKIPPED: $reason (PR #670)"
     quarantine_log_root=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}

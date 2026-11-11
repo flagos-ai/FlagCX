@@ -46,11 +46,16 @@ case "$workload" in
     done
     "$project_root/.github/scripts/ci/run_host_perf_suite.sh" homogeneous "$perf_bin" \
       -x LD_LIBRARY_PATH -x XPU_VISIBLE_DEVICES || perf_status=1
-    # The heterogeneous group path requires cudaLaunchHostFunc, which XRE
-    # 5.37.1 returns cudaErrorNotSupported (801) for on this runner.
-    echo "::warning title=KunlunXin heterogeneous perf skipped::XRE cudaLaunchHostFunc is unsupported; heterogeneous collective coverage is unavailable"
-    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-      echo '- **KunlunXin heterogeneous perf skipped:** XRE cudaLaunchHostFunc is unsupported.' >> "$GITHUB_STEP_SUMMARY"
+    hetero_skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
+      phase perf heterogeneous)
+    if [[ -n "$hetero_skip_reason" ]]; then
+      echo "::warning title=KunlunXin heterogeneous perf skipped::$hetero_skip_reason"
+      if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        echo "- **KunlunXin heterogeneous perf skipped:** $hetero_skip_reason" >> "$GITHUB_STEP_SUMMARY"
+      fi
+    else
+      "$project_root/.github/scripts/ci/run_host_perf_suite.sh" heterogeneous "$perf_bin" \
+        -x LD_LIBRARY_PATH -x XPU_VISIBLE_DEVICES || perf_status=1
     fi
     exit "$perf_status"
     ;;
@@ -85,14 +90,6 @@ PY
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    # XCCL's gather adaptor explicitly returns flagcxNotSupported.
-    export FLAGCX_TORCH_SKIP_GATHER=1
-    # Heterogeneous collectives require the unsupported XRE host callback.
-    export FLAGCX_SKIP_HETERO=1
-    echo "::warning title=KunlunXin heterogeneous Torch tests skipped::XRE cudaLaunchHostFunc is unsupported"
-    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-      echo '- **KunlunXin heterogeneous Torch tests skipped:** XRE cudaLaunchHostFunc is unsupported.' >> "$GITHUB_STEP_SUMMARY"
-    fi
     bash "$project_root/test/script/torch_api_test.sh"
     ;;
 esac

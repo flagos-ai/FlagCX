@@ -24,15 +24,7 @@ FLAGCX_CI_TEST_MAKE_ARGS=(USE_KUNLUNXIN=1 MPI_FLAVOR=openmpi MPI_HOME="$MPI_HOME
 FLAGCX_CI_ENABLE_IBUC=0
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
 FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS=1
-# The documented XRE rejects cudaMallocManaged (801), SYNC_MEMOPS (1), and
-# cudaHostAlloc(Mapped, 4 MiB) (1). Keep ordinary device/host and IPC tests;
-# exclude only the paths whose prerequisites fail in this SDK/backend pair.
-export FLAGCX_CI_MANAGED_MEMORY_SUPPORTED=0
-export FLAGCX_CI_GDR_ALLOC_SUPPORTED=0
 FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional
-FLAGCX_CI_ADAPTOR_IPC_EXCLUDE='IpcMemHandleMpiTest.*Gdr*'
-# No validated XPU VMM MR data route is available for this CI platform yet.
-export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
 # XSHMEM on P800 is limited to intra-node communication within one four-XPU group.
 export FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY=1
 export XSHMEM_SYMMETRIC_SIZE=17179869184
@@ -42,25 +34,8 @@ FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=4
 export NP=4
 
-# xcclAdaptorGather returns flagcxNotSupported, so flagcxGather reports 9 on
-# every rank. It is the only collective the XCCL/BKCL adaptor leaves
-# unimplemented; every other operation in the shared perf list runs. Remove
-# this line once the adaptor forwards a bkcl gather primitive.
-export FLAGCX_CI_PERF_SKIP_OPERATIONS="gather"
-
 FLAGCX_CI_NODE1_MPI_ARGS=(-x FLAGCX_HOSTID=node0)
 FLAGCX_CI_NODE2_MPI_ARGS=(-x FLAGCX_HOSTID=node1)
-
-flagcx_ci_phase_skip_reason() {
-  case "$1" in
-    p2p-write-mpi|rma-mpi|symmem-mpi)
-      echo "KunlunXin GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS); ordinary device IPC and host MR remain covered by adaptor"
-      ;;
-    runner-mpi)
-      echo "KunlunXin XRE rejects cudaHostAlloc(Mapped, 4 MiB); Runner setup then calls memset on a null pointer"
-      ;;
-  esac
-}
 
 flagcx_ci_configure_suite() {
   local suite=$1

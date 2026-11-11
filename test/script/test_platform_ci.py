@@ -102,20 +102,32 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
         )
 
-    def test_backend_phase_skips_are_kunlunxin_only(self):
+    def test_backend_phase_skips_follow_platform_yaml(self):
         runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
         helper = "flagcx_ci_phase_supported() {" + runner.split(
             "flagcx_ci_phase_supported() {", 1
         )[1].split("\n}", 1)[0] + "\n}\n"
         for platform in ENABLED_PLATFORMS:
             with self.subTest(platform=platform):
+                config_json = json.dumps(yaml.safe_load(
+                    (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+                ).get("ignore_test", {}))
                 script = '''
 set -euo pipefail
 source "$1"
 SUITE=capability-check
+PROJECT_ROOT="$2"
+export FLAGCX_CI_IGNORE_TEST="$3"
 flagcx_ci_report_skipped_suite() { echo "SKIPPED $*"; }
 '''+ helper + '''
 for phase in p2p-write-mpi rma-mpi symmem-mpi runner-mpi ordinary-ipc; do
+  case "$phase" in
+    p2p-write-mpi) SUITE=p2p ;;
+    rma-mpi) SUITE=rma ;;
+    symmem-mpi) SUITE=symmem ;;
+    runner-mpi) SUITE=runner ;;
+    *) SUITE=capability-check ;;
+  esac
   if flagcx_ci_phase_supported "$phase"; then echo "RUN $phase"; fi
 done
 # A skipped MPI phase must preserve an earlier unit-test failure.
@@ -128,18 +140,30 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
 '''
                 result = subprocess.run(
                     ["bash", "-c", script, "bash",
-                     str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh")],
+                     str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh"),
+                     str(REPO_ROOT), config_json],
                     capture_output=True, text=True, check=True,
                 )
                 self.assertIn("RUN ordinary-ipc", result.stdout)
                 if platform == "kunlunxin":
-                    for phase in ("p2p-write-mpi", "rma-mpi", "symmem-mpi", "runner-mpi"):
-                        self.assertIn(f"SKIPPED capability-check/{phase}", result.stdout)
+                    for suite, phase in (("p2p", "p2p-write-mpi"),
+                                         ("rma", "rma-mpi"),
+                                         ("symmem", "symmem-mpi"),
+                                         ("runner", "runner-mpi")):
+                        self.assertIn(f"SKIPPED {suite}/{phase}", result.stdout)
                         self.assertNotIn(f"RUN {phase}", result.stdout)
                 else:
-                    self.assertNotIn("SKIPPED", result.stdout)
-                    self.assertIn("RUN rma-mpi", result.stdout)
-                    self.assertIn("RUN runner-mpi", result.stdout)
+                    config = yaml.safe_load(
+                        (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+                    ).get("ignore_test", {}).get("phases", [])
+                    ignored = {(item["suite"], item["name"]) for item in config}
+                    for suite, phase in (("p2p", "p2p-write-mpi"),
+                                         ("rma", "rma-mpi"),
+                                         ("symmem", "symmem-mpi"),
+                                         ("runner", "runner-mpi")):
+                        marker = f"{suite}/{phase}"
+                        self.assertEqual(f"SKIPPED {marker}" in result.stdout,
+                                         (suite, phase) in ignored)
 
     def test_kunlunxin_job_container_preserves_devices_without_host_network(self):
         result = subprocess.run(
@@ -179,7 +203,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
         self.assertIn('[[ ! -f "$CCL_HOME/include/xshmem/xshmem.h" ]]', env_script)
         self.assertIn('"$suite" == kernel', env_script)
-        self.assertIn("Skipping KunlunXin GDR visibility conformance", runner)
+        self.assertIn('phase rma gdr-visibility', runner)
         self.assertIn('flagcx_ci_build_suite_override "$SUITE"', runner)
         self.assertIn("Skipping $platform_name VMM + NET data tests", runner)
         self.assertNotIn('    device)', runner)
@@ -973,6 +997,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 REPO_ROOT / f".github/configs/{platform}.yml"
             ).read_text()
             suites = config[config.index("unit_test_suites:") :]
+            suites = suites.split("ignore_test:", 1)[0]
             self.assertEqual(
                 [
                     line.strip().removeprefix("- ")
@@ -1030,13 +1055,16 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn('return "$unit_status"', ascend_override)
         # A skipped phase must name the capability it waits on, so a silent
         # coverage drop cannot pass review.
-        for marker in (
-            "GPU MR and IPC are now exercised by adaptor/perf CI",
-            "hcclAdaptorCommGetAsyncError",
-            "flagcxProxyService",
-            "cannAdaptorSymPhysAlloc",
-        ):
-            self.assertIn(marker, ascend_override)
+        ascend_config = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/ascend.yml").read_text()
+        )["ignore_test"]
+        self.assertIn("ignore_test.py", ascend_override)
+        for suite, phase in (("rma", "rma-mpi"), ("runner", "runner-mpi"),
+                             ("symmem", "symmem-mpi")):
+            self.assertTrue(any(
+                entry["suite"] == suite and entry["name"] == phase
+                for entry in ascend_config["phases"]
+            ))
         # The multi-rank binaries must no longer be launched.
         self.assertNotIn("symmem_mpi_tests", ascend_override)
         self.assertNotIn("run-mpi", ascend_override)
@@ -1094,10 +1122,13 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("ascend torch-api", torch_workflow)
         self.assertIn("import torch, torch_npu", ascend_handler)
         self.assertIn('"$PYTHON_BIN" setup.py build_ext --inplace', ascend_handler)
-        self.assertIn(
-            'FLAGCX_SKIP_HETERO=1 bash "$project_root/test/script/torch_api_test.sh"',
-            ascend_handler,
-        )
+        ascend_config = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/ascend.yml").read_text()
+        )["ignore_test"]
+        self.assertTrue(any(
+            item["suite"] == "torch-api" and item["name"] == "heterogeneous"
+            for item in ascend_config["phases"]
+        ))
 
     def test_ascend_override_runs_single_process_phases_only(self):
         def run_override(suite):
@@ -1113,7 +1144,10 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     suite,
                 ],
                 cwd=REPO_ROOT,
-                env={**os.environ, "BASH_ENV": ""},
+                env={**os.environ, "BASH_ENV": "",
+                     "FLAGCX_CI_IGNORE_TEST": json.dumps(yaml.safe_load(
+                         (REPO_ROOT / ".github/configs/ascend.yml").read_text()
+                     )["ignore_test"])},
                 text=True,
                 capture_output=True,
                 check=False,
@@ -1122,8 +1156,8 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         # Each handled suite keeps its single-process phase and prints the
         # capability its skipped multi-rank phases wait on.
         for suite, unit_marker, reason_marker in (
-            ("symmem", "symmem_unit_tests", "flagcxProxyService"),
-            ("rma", "run-unit", "RMA visibility still needs"),
+            ("symmem", "symmem_unit_tests", "proxy service teardown"),
+            ("rma", "run-unit", "RMA visibility APIs/device consumer kernel"),
             ("runner", "run-unit", "hcclAdaptorCommGetAsyncError"),
         ):
             with self.subTest(suite=suite):
@@ -1388,10 +1422,13 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
         )
         self.assertIn("local symmem_run_vmm_net_data=1", unit_runner)
-        self.assertIn(
-            '"$platform_name" == "kunlunxin"',
-            unit_runner,
-        )
+        kunlunxin_config = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+        )["ignore_test"]
+        self.assertTrue(any(
+            entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
+            for entry in kunlunxin_config["phases"]
+        ))
         self.assertIn(
             "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
         )
@@ -1483,7 +1520,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         harness = phase_helper + run_suite + r'''
 SUITE=rma
 SET_ENV_SCRIPT=iluvatar.sh
-PROJECT_ROOT=/workspace
+PROJECT_ROOT={REPO_ROOT}
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ILUVATAR=1)
 TEST_RUNNER=run_test
 MPI_RUNNER=/mpi-runner
@@ -1497,7 +1534,7 @@ make() {
   fi
 }
 run_suite
-'''
+'''.replace("PROJECT_ROOT={REPO_ROOT}", f"PROJECT_ROOT={REPO_ROOT}")
         for visibility_status in (0, 23):
             with self.subTest(visibility_status=visibility_status):
                 result = subprocess.run(
@@ -1562,7 +1599,8 @@ run_suite
         self.assertIn(
             "CoreX streamWaitValue64 is unsupported", rma_ipc_test
         )
-        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        iluvatar_config = (REPO_ROOT / ".github/configs/iluvatar.yml").read_text()
+        self.assertIn("vmm-local-and-remote-without-net", iluvatar_config)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
         )
@@ -2502,11 +2540,10 @@ run_suite
             run_unit.index("    kernel)\n", run_unit.index("run_suite() {")):
             run_unit.index("    symmem)\n", run_unit.index("run_suite() {"))
         ]
-        self.assertIn('"$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin', kernel_case)
-        self.assertIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_case)
-        self.assertIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_case)
-        self.assertIn('GTEST_FILTER="$kernel_filter"', kernel_case)
-        self.assertIn("XSHMEM returns success while tests expect flagcxInvalidArgument", kernel_case)
+        kernel_config = (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+        self.assertIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_config)
+        self.assertIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_config)
+        self.assertIn('ignore_test.py" \\\n  gtest "$SUITE"', run_unit)
         self.assertFalse(
             (REPO_ROOT / "test/unittest/device_api/kernel").exists(),
             "the relative path only resolves while kernel lives under device_api",

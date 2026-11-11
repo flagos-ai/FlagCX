@@ -66,6 +66,16 @@ fi
 if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
+ignore_filter=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+  gtest "$SUITE")
+if [[ -n "$ignore_filter" ]]; then
+  if [[ "${GTEST_FILTER:-}" == *-* ]]; then
+    GTEST_FILTER+=":$ignore_filter"
+  else
+    GTEST_FILTER="${GTEST_FILTER:-*}-$ignore_filter"
+  fi
+  export GTEST_FILTER
+fi
 if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
   # GoogleTest gives the --gtest_filter flag precedence over GTEST_FILTER, so
   # this export only reaches invocations that pass no filter of their own.
@@ -165,10 +175,9 @@ flagcx_ci_report_skipped_suite() {
 # A platform can exclude a phase with a documented backend/SDK limitation.
 # Other platforms run every phase by default. Unit coverage remains separate.
 flagcx_ci_phase_supported() {
-  local phase=$1 reason=
-  if declare -F flagcx_ci_phase_skip_reason >/dev/null; then
-    reason=$(flagcx_ci_phase_skip_reason "$phase")
-  fi
+  local phase=$1 reason
+  reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+    phase "$SUITE" "$phase")
   if [[ -n "$reason" ]]; then
     flagcx_ci_report_skipped_suite "$SUITE/$phase" "$reason"
     return 1
@@ -483,15 +492,17 @@ run_suite() {
       # problem cannot hide device IPC coverage. Disable VMM to exercise the
       # same IPC-exportable GDR allocation used by the RMA suite.
       local ipc_mpi_env="-x FLAGCX_VMM_ENABLE=0"
-      if [[ -n "${FLAGCX_CI_ADAPTOR_IPC_EXCLUDE:-}" ]]; then
+      local ipc_exclude
+      ipc_exclude=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" gtest adaptor)
+      if [[ -n "$ipc_exclude" ]]; then
         local ipc_filter=${GTEST_FILTER:-*}
         if [[ "$ipc_filter" == *-* ]]; then
-          ipc_filter+=":$FLAGCX_CI_ADAPTOR_IPC_EXCLUDE"
+          ipc_filter+=":$ipc_exclude"
         else
-          ipc_filter+="-$FLAGCX_CI_ADAPTOR_IPC_EXCLUDE"
+          ipc_filter+="-$ipc_exclude"
         fi
         flagcx_ci_report_skipped_suite "$SUITE/IPC GDR cases" \
-          "GDR allocation is unavailable; excluded cases: $FLAGCX_CI_ADAPTOR_IPC_EXCLUDE"
+          "GDR allocation is unavailable; excluded cases: $ipc_exclude"
         ipc_mpi_env+=" -x GTEST_FILTER=$ipc_filter"
       fi
       if [[ "$platform_name" == ascend ]]; then
@@ -686,7 +697,6 @@ run_suite() {
             # device-consumer kernel is not built for Ascend. Keep the
             # platform's IPC/NET correctness runs without this conformance
             # matrix.
-            echo "Ascend coverage gap: RMA visibility requires cannAdaptorStreamWaitValue64/StreamWriteValue64 (both return flagcxNotSupported) and an Ascend device-consumer kernel, so this conformance matrix is not run"
             ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
@@ -694,12 +704,6 @@ run_suite() {
             # cannot send a one-sided signal. Forced READ checks fail-close.
             expected_read_required=0
             expected_write_required=0
-            ;;
-          kunlunxin)
-            # The current XPU runtime has no validated GDR consumer visibility
-            # route. Keep the ordinary IPC and network RMA tests, and report
-            # this optional conformance block as unavailable.
-            run_visibility=0
             ;;
           cuda)
             # READ stays required. WRITE is resolved from compute capability
@@ -712,8 +716,15 @@ run_suite() {
         esac
 
         local -a visibility_common_env=()
+        local visibility_skip_reason
+        visibility_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase rma gdr-visibility)
+        if [[ -n "$visibility_skip_reason" ]]; then
+          run_visibility=0
+          echo "Skipping $platform_name GDR visibility conformance: $visibility_skip_reason"
+        fi
         if ((run_visibility == 0)); then
-          echo "Skipping KunlunXin GDR visibility conformance: no validated XPU consumer route"
+          :
         else
         visibility_common_env=(
           -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
@@ -944,21 +955,8 @@ run_suite() {
       fi
       ;;
     kernel)
-      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]]; then
-        local kernel_filter=${GTEST_FILTER:-*}
-        local kernel_skip_filter="DevicePtrArgs.DevCommFreeDevicePtrNull:DevicePtrArgs.DevMemFreeDevicePtrNull"
-        if [[ "$kernel_filter" == *-* ]]; then
-          kernel_filter+=":$kernel_skip_filter"
-        else
-          kernel_filter+="-$kernel_skip_filter"
-        fi
-        echo "::warning title=KunlunXin Kernel tests skipped::Skipping null DevComm/DevMem free return-code cases; XSHMEM returns success while tests expect flagcxInvalidArgument"
-        GTEST_FILTER="$kernel_filter" FLAGCX_CI_TEST_LABEL="kernel unit tests" \
-          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-      else
-        FLAGCX_CI_TEST_LABEL="kernel unit tests" \
-          "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
-      fi
+      FLAGCX_CI_TEST_LABEL="kernel unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
       FLAGCX_CI_MPI_LABEL="kernel MPI tests" \
         "$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP" \
         -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
@@ -992,16 +990,12 @@ run_suite() {
         expected_adaptor=BAREX
         symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
       fi
-      # PPU has no VMM-capable BAREX MR route. SHCA's unsafe VMM VA route is
-      # disabled and Hygon's DMA-BUF route is independently exercised by the
-      # RMA immediate-consumer job. Keep the broader multi-node symmem VMM data
-      # matrix disabled until that hardware job establishes a supported route.
-      if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ||
-            "$platform_name" == "kunlunxin" ]]; then
+      if [[ -n "$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem vmm-net-data)" ]]; then
         symmem_run_vmm_net_data=0
       fi
-      if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 0 ]]; then
-        symmem_run_vmm_net_data=0
+      if [[ -n "$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem vmm-local-and-remote-without-net)" ]]; then
         symmem_run_vmm_local=0
       fi
       symmem_common_env=(
@@ -1047,7 +1041,10 @@ run_suite() {
           "$symmem_bin" \
           --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow
       else
-        echo "Skipping $platform_name VMM-local and remote-without-NET tests: VMM is unavailable"
+        local vmm_local_reason
+        vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase symmem vmm-local-and-remote-without-net)
+        echo "Skipping $platform_name VMM-local and remote-without-NET tests: $vmm_local_reason"
       fi
 
       FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback" \
@@ -1092,7 +1089,10 @@ run_suite() {
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter"
       else
-        echo "Skipping $platform_name VMM + NET data tests: no validated VMM MR data route"
+        local vmm_net_reason
+        vmm_net_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase symmem vmm-net-data)
+        echo "Skipping $platform_name VMM + NET data tests: $vmm_net_reason"
       fi
 
       local -a symmem_route_union_env=()
@@ -1121,7 +1121,10 @@ run_suite() {
         --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion
 
       if ((symmem_run_vmm_local == 0)); then
-        echo "Skipping $platform_name VMM flat-map data tests: VMM is unavailable; route capability was tested above"
+        local vmm_local_reason
+        vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase symmem vmm-local-and-remote-without-net)
+        echo "Skipping $platform_name VMM flat-map data tests: ${vmm_local_reason:-VMM is unavailable}; route capability was tested above"
         return 0
       fi
       ;;
