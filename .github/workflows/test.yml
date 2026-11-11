@@ -93,9 +93,13 @@ jobs:
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout CUDA submodules with retries
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Check Docker
         shell: bash
@@ -191,9 +195,13 @@ jobs:
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-          submodules: recursive
+          submodules: false
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout CUDA submodules with retries
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Check Docker
         shell: bash

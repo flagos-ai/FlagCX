@@ -23,14 +23,14 @@ ENABLED_PLATFORMS = [
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
-    def test_kunlunxin_checkout_trusts_google_test_submodule_before_checkout(self):
+    def test_kunlunxin_checkout_trusts_submodules_before_checkout(self):
         workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
         )
         steps = workflow["jobs"]["kunlunxin_unit_test"]["steps"]
         trust_index = next(
             index for index, step in enumerate(steps)
-            if step.get("name") == "Trust GoogleTest submodule for checkout"
+            if step.get("name") == "Trust submodules for checkout"
         )
         checkout_index = next(
             index for index, step in enumerate(steps)
@@ -39,9 +39,38 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertLess(trust_index, checkout_index)
         self.assertEqual(
             steps[trust_index]["run"],
-            'git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"',
+            'git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"\n'
+            'git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"\n',
         )
         self.assertTrue(steps[checkout_index]["with"]["set-safe-directory"])
+
+    def test_cuda_submodule_checkouts_use_retry_script(self):
+        cases = (
+            ("unit_tests_common.yml", "unit_test", "Checkout code"),
+            ("test.yml", "perf-test", "Checkout Code"),
+            ("test.yml", "perf-test-cuda", "Checkout Code"),
+            ("torch-api-test.yml", "torch-api-test-cuda", "Checkout Code"),
+        )
+        for filename, job_name, checkout_name in cases:
+            with self.subTest(job=job_name):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / ".github/workflows" / filename).read_text()
+                )
+                steps = workflow["jobs"][job_name]["steps"]
+                checkout = next(i for i, step in enumerate(steps)
+                                if step.get("name") == checkout_name)
+                retry = next(i for i, step in enumerate(steps)
+                             if step.get("name") == "Checkout CUDA submodules with retries")
+                self.assertLess(checkout, retry)
+                self.assertEqual(
+                    steps[retry]["run"],
+                    "bash .github/scripts/ci/checkout_submodules.sh",
+                )
+                if job_name == "unit_test":
+                    self.assertIn("inputs.platform != 'cuda'", steps[checkout]["with"]["submodules"])
+                    self.assertEqual(steps[retry]["if"], "inputs.platform == 'cuda'")
+                else:
+                    self.assertFalse(steps[checkout]["with"]["submodules"])
 
     def test_all_chip_platforms_are_enabled(self):
         self.assertEqual(
@@ -141,7 +170,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
         ).read_text()
         self.assertIn("run_host_perf_suite.sh\" homogeneous", handler)
-        self.assertIn("run_host_perf_suite.sh\" heterogeneous", handler)
+        self.assertIn("KunlunXin heterogeneous perf skipped", handler)
 
     def test_gpu_ci_world_uses_four_ranks(self):
         for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):

@@ -101,9 +101,14 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
+          submodules: ${{ inputs.platform != 'cuda' && 'recursive' || 'false' }}
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout CUDA submodules with retries
+        if: inputs.platform == 'cuda'
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Check Docker
         shell: bash
@@ -175,8 +180,10 @@ jobs:
       FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
       FLAGCX_CI_CPP_COVERAGE_REPORT: ${{ github.workspace }}/.ci-logs/cpp-coverage/kunlunxin/${{ matrix.suite }}
     steps:
-      - name: Trust GoogleTest submodule for checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+      - name: Trust submodules for checkout
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
 
       - name: Checkout code in job container
         uses: actions/checkout@v7

@@ -1,3 +1,4 @@
+import ast
 import os
 from pathlib import Path
 import shutil
@@ -102,7 +103,7 @@ class KunlunXinWorkloadTest(unittest.TestCase):
             (scripts / "run_mpi_with_timeout.sh").chmod(0o755)
             torch_script = root / "test/script/torch_api_test.sh"
             torch_script.parent.mkdir(parents=True)
-            torch_script.write_text('echo torch-tests >> "$CALL_LOG"\n')
+            torch_script.write_text('echo "torch-tests skip-gather=${FLAGCX_TORCH_SKIP_GATHER:-0} skip-hetero=${FLAGCX_SKIP_HETERO:-0}" >> "$CALL_LOG"\n')
             binaries = root / "bin"
             binaries.mkdir()
             (binaries / "make").write_text(
@@ -149,7 +150,9 @@ class KunlunXinWorkloadTest(unittest.TestCase):
         result, calls, _ = self.run_workload("perf", sdk=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(calls.count("make "), 2)
-        self.assertIn("perf homogeneous\nperf heterogeneous\n", calls)
+        self.assertIn("perf homogeneous\n", calls)
+        self.assertNotIn("perf heterogeneous", calls)
+        self.assertIn("heterogeneous perf skipped", result.stdout)
 
     def test_perf_build_failure_is_not_hidden(self):
         result, calls, _ = self.run_workload("perf", make_status=23)
@@ -167,7 +170,8 @@ class KunlunXinWorkloadTest(unittest.TestCase):
         )
         self.assertIn("HOST_CXXFLAGS=-O2 -include cstddef\n", calls)
         self.assertIn("python setup.py build_ext --inplace\n", calls)
-        self.assertIn("torch-tests\n", calls)
+        self.assertIn("torch-tests skip-gather=1 skip-hetero=1\n", calls)
+        self.assertIn("heterogeneous Torch tests skipped", result.stdout)
 
     def test_missing_cuda_headers_fail_before_torch_build(self):
         result, calls, _ = self.run_workload("torch-api", sdk=False)
@@ -175,6 +179,28 @@ class KunlunXinWorkloadTest(unittest.TestCase):
         self.assertIn("KunlunXin Torch build requires", result.stderr)
         self.assertNotIn("python setup.py", calls)
         self.assertNotIn("torch-tests", calls)
+
+    def test_torch_gather_skip_is_explicit_and_opt_in(self):
+        source = (REPO_ROOT / "plugin/torch/example/example.py").read_text()
+        tree = ast.parse(source)
+        gather = next(node for node in tree.body
+                      if isinstance(node, ast.FunctionDef) and node.name == "test_gather")
+        module = ast.fix_missing_locations(ast.Module(body=[gather], type_ignores=[]))
+
+        class TorchProbe:
+            class cuda:
+                @staticmethod
+                def is_available():
+                    raise RuntimeError("gather reached accelerator path")
+
+        namespace = {"os": os, "torch": TorchProbe}
+        exec(compile(module, "example.py", "exec"), namespace)
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"FLAGCX_TORCH_SKIP_GATHER": "1"}):
+            namespace["test_gather"]()
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "accelerator path"):
+                namespace["test_gather"]()
 
 
 if __name__ == "__main__":
