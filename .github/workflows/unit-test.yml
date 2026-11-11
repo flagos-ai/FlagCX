@@ -36,9 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       active: ${{ steps.resolve.outputs.active }}
-      matrix: ${{ steps.resolve.outputs.ascend_focus == 'true' && '{"include":[{"platform":"ascend"}]}' || steps.resolve.outputs.matrix }}
-      platforms: ${{ steps.resolve.outputs.ascend_focus == 'true' && '["ascend"]' || steps.resolve.outputs.platforms }}
-      has_platforms: ${{ steps.resolve.outputs.ascend_focus == 'true' && 'true' || steps.resolve.outputs.has_platforms }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      platforms: ${{ steps.resolve.outputs.platforms }}
+      has_platforms: ${{ steps.resolve.outputs.has_platforms }}
       repository: ${{ steps.resolve.outputs.repository }}
       ref: ${{ steps.resolve.outputs.ref }}
     steps:
@@ -73,7 +73,6 @@ jobs:
           is_pull_request=false
           repository="$EVENT_REPOSITORY"
           ref="$EVENT_SHA"
-          head_branch="${GITHUB_REF_NAME:-}"
           selection="$EVENT_SELECTION"
 
           case "$EVENT_NAME" in
@@ -85,7 +84,6 @@ jobs:
                 --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
               repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
               ref=$(jq -r '.head.sha' <<< "$pr")
-              head_branch=$(jq -r '.head.ref' <<< "$pr")
               is_pull_request=true
               ;;
             issue_comment)
@@ -98,28 +96,18 @@ jobs:
                   --jq '.[] | .filename, (.previous_filename // empty)' > "$files_file"
                 repository=$(jq -r '.head.repo.full_name // empty' <<< "$pr")
                 ref=$(jq -r '.head.sha' <<< "$pr")
-                head_branch=$(jq -r '.head.ref' <<< "$pr")
                 permission=$(gh api "repos/$EVENT_REPOSITORY/collaborators/$ACTOR/permission" \
                   --jq '.permission' 2>/dev/null || printf 'none')
                 is_pull_request=true
               fi
               ;;
             push)
-              head_branch="${GITHUB_REF_NAME:-}"
               ;;
             schedule)
-              head_branch="${GITHUB_REF_NAME:-}"
               ;;
             workflow_dispatch)
               ;;
           esac
-
-          if [[ "$head_branch" == ascend-symmem &&
-                ( "$EVENT_NAME" == pull_request || "$EVENT_NAME" == push || "$EVENT_NAME" == schedule ) ]]; then
-            echo 'ascend_focus=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'ascend_focus=false' >> "$GITHUB_OUTPUT"
-          fi
 
           files_json=$(jq -Rsc 'split("\n") | map(select(length > 0))' "$files_file")
           jq -n \
