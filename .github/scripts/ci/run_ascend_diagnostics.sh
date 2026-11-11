@@ -19,7 +19,7 @@ if [[ "${1:-}" == --rank ]]; then
 fi
 
 case "${1:-}" in
-  p2p|rma|symmem|torch-api) suite=$1 ;;
+  p2p|rma|symmem) suite=$1 ;;
   *) exit 0 ;;
 esac
 log_root=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
@@ -39,68 +39,42 @@ export FLAGCX_CI_DIAGNOSTIC_DIR
 FLAGCX_CI_DIAGNOSTIC_DIR=$(mktemp -d "$log_root/ascend-$suite-backtrace.XXXXXX")
 export FLAGCX_CI_TEST_TIMEOUT=2m FLAGCX_CI_MPI_TIMEOUT=2m
 export FLAGCX_CI_TEST_KILL_AFTER=10s FLAGCX_CI_MPI_KILL_AFTER=10s
+export FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0
 
+binary="$project_root/test/unittest/$suite/build/bin/${suite}_mpi_tests"
 status=0
-if [[ "$suite" == torch-api ]]; then
-  # The test script constructs the same heterogeneous environment as the
-  # original invocation. Run only that mode and place each GDB trace in the
-  # artifact directory before the container is removed.
-  FLAGCX_TORCH_HETERO_DIAGNOSTIC_ONLY=1 FLAGCX_TORCH_RANK_BACKTRACE=1 \
-    FLAGCX_CI_TEST_TIMEOUT=4m FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
-    bash "$project_root/test/script/torch_api_test.sh" || status=$?
+if [[ "$suite" == p2p ]]; then
+  FLAGCX_CI_TEST_LABEL="Ascend p2p unit backtrace" \
+    "$script_dir/run_with_timeout.sh" bash "$0" --rank \
+    "$project_root/test/unittest/p2p/build/bin/p2p_unit_tests" || status=$?
+  filter='*'
+elif [[ "$suite" == rma ]]; then
+  filter='RmaTest.GetSmall'
 else
-  export FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0
-  binary="$project_root/test/unittest/$suite/build/bin/${suite}_mpi_tests"
-  if [[ "$suite" == p2p ]]; then
-    FLAGCX_CI_TEST_LABEL="Ascend p2p unit backtrace" \
-      "$script_dir/run_with_timeout.sh" bash "$0" --rank \
-      "$project_root/test/unittest/p2p/build/bin/p2p_unit_tests" || status=$?
-    filter='*'
-  elif [[ "$suite" == rma ]]; then
-    filter='RmaTest.GetSmall'
-  else
-    filter='SymMemTest.RegisterSymmetricWindow'
-  fi
-  FLAGCX_CI_MPI_LABEL="Ascend $suite MPI backtrace" \
-    "$script_dir/run_mpi_with_timeout.sh" --allow-run-as-root -np 2 \
-      -x FLAGCX_CI_DIAGNOSTIC_DIR -x FLAGCX_USE_HETERO_COMM \
-      -x FLAGCX_MEM_ENABLE -x FLAGCX_VMM_ENABLE \
-      bash "$0" --rank "$binary" --gtest_filter="$filter" || status=$?
-  if [[ "$suite" == symmem ]]; then
-    FLAGCX_CI_MPI_LABEL="Ascend symmem NET backtrace" \
-      "$script_dir/run_mpi_with_timeout.sh" --allow-run-as-root \
-        -np 2 -x FLAGCX_CI_DIAGNOSTIC_DIR -x FLAGCX_USE_HETERO_COMM \
-        -x FLAGCX_MEM_ENABLE -x FLAGCX_VMM_ENABLE \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_HOSTID=node0 \
-        -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1 \
-        -x FLAGCX_CI_REQUIRE_NET_MR=1 -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
-        bash "$0" --rank "$binary" \
-        --gtest_filter=SymMemTest.FullMeshRoundFailureConvergesAndRetries \
-        : -np 2 -x FLAGCX_CI_DIAGNOSTIC_DIR -x FLAGCX_USE_HETERO_COMM \
-        -x FLAGCX_MEM_ENABLE -x FLAGCX_VMM_ENABLE \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_HOSTID=node1 \
-        -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1 \
-        -x FLAGCX_CI_REQUIRE_NET_MR=1 -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
-        bash "$0" --rank "$binary" \
-        --gtest_filter=SymMemTest.FullMeshRoundFailureConvergesAndRetries || status=$?
-  fi
+  filter='SymMemTest.RegisterSymmetricWindow'
 fi
-if [[ "$suite" == torch-api ]]; then
-  rank_logs=0
-  crash_stacks=0
-  for rank in 0 1 2 3; do
-    trace="$FLAGCX_CI_DIAGNOSTIC_DIR/rank-$rank.log"
-    if [[ -f "$trace" ]]; then
-      rank_logs=$((rank_logs + 1))
-      if grep -Eq 'received signal SIGSEGV|Signal 11 \(SIGSEGV\)' "$trace"; then
-        crash_stacks=$((crash_stacks + 1))
-      fi
-    fi
-  done
-  echo "Ascend Torch native diagnostics: $rank_logs/4 rank logs, $crash_stacks SIGSEGV stacks"
-  if ((rank_logs != 4)); then
-    status=1
-  fi
+FLAGCX_CI_MPI_LABEL="Ascend $suite MPI backtrace" \
+  "$script_dir/run_mpi_with_timeout.sh" --allow-run-as-root -np 2 \
+    -x FLAGCX_CI_DIAGNOSTIC_DIR -x FLAGCX_USE_HETERO_COMM \
+    -x FLAGCX_MEM_ENABLE -x FLAGCX_VMM_ENABLE \
+    bash "$0" --rank "$binary" --gtest_filter="$filter" || status=$?
+if [[ "$suite" == symmem ]]; then
+  FLAGCX_CI_MPI_LABEL="Ascend symmem NET backtrace" \
+    "$script_dir/run_mpi_with_timeout.sh" --allow-run-as-root \
+      -np 2 -x FLAGCX_CI_DIAGNOSTIC_DIR -x FLAGCX_USE_HETERO_COMM \
+      -x FLAGCX_MEM_ENABLE -x FLAGCX_VMM_ENABLE \
+      -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_HOSTID=node0 \
+      -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1 \
+      -x FLAGCX_CI_REQUIRE_NET_MR=1 -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+      bash "$0" --rank "$binary" \
+      --gtest_filter=SymMemTest.FullMeshRoundFailureConvergesAndRetries \
+      : -np 2 -x FLAGCX_CI_DIAGNOSTIC_DIR -x FLAGCX_USE_HETERO_COMM \
+      -x FLAGCX_MEM_ENABLE -x FLAGCX_VMM_ENABLE \
+      -x FLAGCX_CLUSTER_SPLIT_LIST=2 -x FLAGCX_HOSTID=node1 \
+      -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1 \
+      -x FLAGCX_CI_REQUIRE_NET_MR=1 -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+      bash "$0" --rank "$binary" \
+      --gtest_filter=SymMemTest.FullMeshRoundFailureConvergesAndRetries || status=$?
 fi
 echo "Ascend $suite diagnostic exit=$status; per-rank backtraces: $FLAGCX_CI_DIAGNOSTIC_DIR"
 # The per-rank traces are the only product of this run, and gdb's own errors
@@ -114,7 +88,7 @@ for trace in "$FLAGCX_CI_DIAGNOSTIC_DIR"/rank-*.log; do
   tail -n "$diagnostic_tail" "$trace" || true
 done
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  printf '\nAscend %s diagnostic command exit=%s; backtraces: `%s` (see attempts artifact).\n' \
+  printf '\nAscend %s crash reproduction exit=%s; backtraces: `%s` (see attempts artifact).\n' \
     "$suite" "$status" "$FLAGCX_CI_DIAGNOSTIC_DIR" >> "$GITHUB_STEP_SUMMARY"
 fi
 exit "$status"

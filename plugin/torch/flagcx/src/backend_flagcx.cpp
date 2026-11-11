@@ -2300,11 +2300,6 @@ c10::intrusive_ptr<Backend> flagcxBackend::createFlagcxBackend(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("createFlagcxBackend", &flagcxBackend::createFlagcxBackend);
-#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
-  m.attr("torch_backend") = "flagos";
-#else
-  m.attr("torch_backend") = "vendor";
-#endif
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)

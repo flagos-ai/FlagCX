@@ -393,8 +393,6 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.ascend_runs_on) }}
     timeout-minutes: 180
-    env:
-      FLAGCICD_TOKEN_SET: ${{ secrets.FLAGCICD_API_TOKEN != '' }}
 
     steps:
       - name: Checkout Code
@@ -413,7 +411,6 @@ jobs:
       - name: Run torch-api-test (ascend) in configured container
         shell: bash
         env:
-          FLAGCX_CI_TORCH_COVERAGE: '1'
           FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.ascend_docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.ascend_ci_image }}
@@ -428,32 +425,6 @@ jobs:
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-ascend-torch_api-${{ github.run_id }}-${{ github.run_attempt }}
         run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
-
-      - name: Collect Python coverage report
-        if: ${{ !cancelled() && hashFiles('.ci-logs/coverage-ascend-gpu-torch.json') != '' }}
-        run: cp "$FLAGCX_CI_LOG_DIR/coverage-ascend-gpu-torch.json" coverage-ascend-gpu-torch.json
-
-      - name: Upload coverage report to FlagCICD
-        if: ${{ !cancelled() && env.FLAGCICD_TOKEN_SET == 'true' && hashFiles('coverage-ascend-gpu-torch.json') != '' }}
-        uses: flagos-ai/FlagOps/actions/post-pytest-report@5bd0e138a6ae482b1a1cc809ea6705ecfd6eb410
-        continue-on-error: true
-        timeout-minutes: 2
-        with:
-          backend_url: https://flagcicd.flagos.net/flagcicd/api/v1/cicd/metrics/
-          api_token: ${{ secrets.FLAGCICD_API_TOKEN }}
-          report_path: coverage-ascend-gpu-torch.json
-          file_type: coverage
-          job_name: coverage-ascend-gpu-torch
-          pr_id: ${{ github.event.pull_request.number || github.event.issue.number || '' }}
-          fail_on_error: 'false'
-
-      - name: Archive Python coverage report
-        if: ${{ !cancelled() && hashFiles('coverage-ascend-gpu-torch.json') != '' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-ascend-gpu-torch
-          path: coverage-ascend-gpu-torch.json
-          retention-days: 7
 
       - name: Upload test attempt logs
         if: always()

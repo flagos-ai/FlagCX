@@ -895,17 +895,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("ascend torch-api", torch_workflow)
         self.assertIn("import torch, torch_npu", ascend_handler)
-        self.assertIn("export FLAGCX_TORCH_BACKEND=vendor", ascend_handler)
         self.assertIn('"$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .',
                       ascend_handler)
         self.assertIn('export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1', ascend_handler)
-        self.assertIn('extension.torch_backend != os.environ["FLAGCX_TORCH_BACKEND"]',
-                      ascend_handler)
         self.assertIn('export FLAGCX_TORCH_HETERO_SKIP_OPS=reduce,allreduce,reducescatter',
                       ascend_handler)
-        self.assertIn("unset FLAGCX_SKIP_HETERO", ascend_handler)
         self.assertIn('bash "$project_root/test/script/torch_api_test.sh"', ascend_handler)
-        self.assertNotIn("FLAGCX_SKIP_HETERO=1", ascend_handler)
+        self.assertNotIn('FLAGCX_SKIP_HETERO=1', ascend_handler)
 
     def test_ascend_override_keeps_rma_symmem_single_process_only(self):
         def run_override(suite):

@@ -1,10 +1,6 @@
 import os
-from ci_runtime import report_ci_imports, report_ci_stage, verify_ci_flagcx_library
 
 import torch
-verify_ci_flagcx_library(stage="after torch import", require_loaded=False)
-import flagcx
-verify_ci_flagcx_library(stage="after FlagCX import", require_loaded=False)
 try:
     #deps for cambricon devices
     import torch_mlu
@@ -33,14 +29,11 @@ except:
                 except:
                     dev_name = "cuda"
 
-verify_ci_flagcx_library(stage="after device backend import", require_loaded=False)
+import flagcx
 import torch.distributed as dist
 import argparse
 #import pdb
 #pdb.set_trace()
-
-report_ci_imports()
-verify_ci_flagcx_library(stage="after imports", require_loaded=False)
 
 FLAGCX_GROUP1 = None
 FLAGCX_GROUP2 = None
@@ -96,24 +89,16 @@ def init_pg():
 
     # Heterogeneous FlagCX communicators are initialized eagerly while the
     # process group is constructed, so bind the local device first.
-    report_ci_stage("before set_device")
     torch.cuda.set_device(local_rank)
-    report_ci_stage("after set_device")
 
     # Initialize the default flagcx process group
-    report_ci_stage("before init_process_group")
     dist.init_process_group(f"cpu:gloo,{dev_name}:flagcx", rank=MY_RANK, world_size=WORLD_SIZE)
-    report_ci_stage("after init_process_group")
-    verify_ci_flagcx_library(stage="after init_process_group", require_loaded=False)
     print(f"ddp backend config is {dist.get_backend_config()}")
 
     # Create two groups
     ranks = list(range(WORLD_SIZE))
-    report_ci_stage("before group 1")
     FLAGCX_GROUP1 = dist.new_group(ranks=ranks, backend=f"cpu:gloo,{dev_name}:flagcx")
-    report_ci_stage("after group 1")
     FLAGCX_GROUP2 = dist.new_group(ranks=ranks, backend=f"cpu:gloo,{dev_name}:flagcx")
-    report_ci_stage("after group 2")
     print(f"ranks_flagcx: {dist.get_process_group_ranks(FLAGCX_GROUP1)}")
 
     # Create a group with options; this only works when flagcxBackend has Options defined
@@ -121,9 +106,7 @@ def init_pg():
     if flagcx._C is not None and hasattr(flagcx._C, 'ProcessGroupFlagCX') and hasattr(flagcx._C.ProcessGroupFlagCX, 'Options'):
         flagcx_options = flagcx._C.ProcessGroupFlagCX.Options(enable_tuner=True)
         FLAGCX_GROUP3 = dist.new_group(ranks=ranks, backend=f"{dev_name}:flagcx", pg_options=flagcx_options)
-        report_ci_stage("after group 3")
         print(f"ranks_flagcx with options: {dist.get_process_group_ranks(FLAGCX_GROUP3)}")
-    verify_ci_flagcx_library(stage="after group creation", require_loaded=False)
 
     # Get prev_rank and next_rank
     PREV_RANK = (MY_RANK - 1 + WORLD_SIZE) % WORLD_SIZE
@@ -396,9 +379,7 @@ def test_all():
         if name in skipped:
             print(f"[SKIP] PyTorch API operation {name} is excluded for this run", flush=True)
             continue
-        report_ci_stage(f"before {name}")
         operation()
-        report_ci_stage(f"after {name}")
 
 dict_op_to_test = {
     "broadcast": test_broadcast,
@@ -435,10 +416,7 @@ if __name__ == "__main__":
     if args.op in skipped_operations():
         print(f"[SKIP] PyTorch API operation {args.op} is excluded for this run", flush=True)
     else:
-        report_ci_stage(f"before requested operation {args.op}")
         dict_op_to_test.get(args.op, test_all)()
-        report_ci_stage(f"after requested operation {args.op}")
-    verify_ci_flagcx_library(stage="after communication")
 
     destroy_pg()
     

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -119,34 +120,61 @@ class TorchBackendConfigTest(unittest.TestCase):
         self.assertNotIn("flagos", enflame[2])
         self.assertNotIn("flagos", tsm[2])
 
-    def test_installed_extension_matches_selected_torch_backend(self):
-        if os.environ.get("FLAGCX_TORCH_USE_INSTALLED_PACKAGE") != "1":
-            self.skipTest("FlagCX Torch extension is not installed")
-        from flagcx import _C
+    def test_flagos_device_configs_do_not_load_vendor_packages(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_path = Path(temp_dir)
+            include_dir = install_path / "include"
+            library_dir = install_path / "lib"
+            include_dir.mkdir()
+            library_dir.mkdir()
+            (include_dir / "flagos.h").touch()
+            (library_dir / "libflagos.so").touch()
 
-        selected = os.environ.get("FLAGCX_TORCH_BACKEND", "vendor").strip().lower()
-        self.assertEqual(_C.torch_backend, selected or "vendor")
-        adaptor = os.environ.get("FLAGCX_ADAPTOR")
-        if adaptor:
-            backend = build_config.resolve_torch_backend(adaptor)
-            self.assertEqual(backend.name, _C.torch_backend)
-            if adaptor in build_config.FLAGOS_ADAPTORS:
-                _, _, libraries = build_config.get_device_config(
-                    build_config.ADAPTOR_MAP[adaptor], backend
+            with self.clean_environment(
+                FLAGCX_TORCH_BACKEND="flagos",
+                FLAGOS_INSTALL_PATH=str(install_path),
+                ASCEND_HOME_PATH="/opt/ascend",
+            ):
+                ascend_backend = build_config.resolve_torch_backend("ascend")
+                ascend = build_config.get_device_config(
+                    build_config.ADAPTOR_MAP["ascend"], ascend_backend
                 )
-                vendor_library = {
-                    "ascend": "torch_npu",
-                    "enflame": "torch_gcu",
-                    "tsm": "torch_txda",
-                }[adaptor]
-                expected_library = (
-                    "flagos" if _C.torch_backend == "flagos" else vendor_library
+                enflame_backend = build_config.resolve_torch_backend("enflame")
+                enflame = build_config.get_device_config(
+                    build_config.ADAPTOR_MAP["enflame"], enflame_backend
                 )
-                self.assertIn(expected_library, libraries)
-                self.assertNotIn(
-                    vendor_library if _C.torch_backend == "flagos" else "flagos",
-                    libraries,
+                tsm_backend = build_config.resolve_torch_backend("tsm")
+                tsm = build_config.get_device_config(
+                    build_config.ADAPTOR_MAP["tsm"], tsm_backend
                 )
+
+        self.assertEqual(
+            ascend,
+            (
+                ["/opt/ascend/include", str(include_dir)],
+                ["/opt/ascend/lib64", str(library_dir)],
+                ["ascendcl", "flagos"],
+            ),
+        )
+        self.assertEqual(
+            enflame,
+            (
+                ["/opt/tops/include", str(include_dir)],
+                ["/opt/tops/lib", str(library_dir)],
+                ["topsrt", "flagos"],
+            ),
+        )
+        self.assertEqual(
+            tsm,
+            (
+                ["/usr/local/kuiper/include", str(include_dir)],
+                ["/usr/local/kuiper/lib", str(library_dir)],
+                ["hpgr", "flagos"],
+            ),
+        )
+        self.assertNotIn("torch_npu", sys.modules)
+        self.assertNotIn("torch_gcu", sys.modules)
+        self.assertNotIn("torch_txda", sys.modules)
 
     def test_rpaths_preserve_flagos_library_directory(self):
         paths = ["/opt/device/lib", "/opt/flagos/lib"]
