@@ -23,6 +23,24 @@ ENABLED_PLATFORMS = [
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_kunlunxin_workloads_use_job_containers(self):
+        for filename, job_name, workload in (
+            ("test.yml", "perf-test-kunlunxin", "perf"),
+            ("torch-api-test.yml", "torch-api-test-kunlunxin", "torch-api"),
+        ):
+            with self.subTest(job=job_name):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / ".github/workflows" / filename).read_text()
+                )
+                job = workflow["jobs"][job_name]
+                self.assertIn("kunlunxin_ci_image", job["container"]["image"])
+                self.assertIn("kunlunxin_container_options", job["container"]["options"])
+                commands = "\n".join(step.get("run", "") for step in job["steps"])
+                self.assertIn(f"run_hardware_workload.sh kunlunxin {workload}", commands)
+                self.assertNotIn("run_hardware_container.sh", commands)
+                self.assertNotIn("docker run", commands)
+                self.assertIn("third-party/json", commands)
+
     def test_kunlunxin_checkout_trusts_submodules_before_checkout(self):
         workflow = yaml.safe_load(
             (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
@@ -1132,7 +1150,6 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             (perf_workflow, "perf"),
             (torch_workflow, "torch-api"),
         ):
-            self.assertNotIn("container:", workflow)
             self.assertNotIn("image: harbor.baai.ac.cn", workflow)
             for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
                 with self.subTest(workload=workload, platform=platform):

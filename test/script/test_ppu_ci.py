@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -317,8 +319,8 @@ class PpuCiRegressionTest(unittest.TestCase):
 
         # BAREX needs host networking. GitHub Actions job containers reject
         # --network, so the PPU jobs must launch Docker explicitly.
-        self.assertNotIn("container:", perf_workflow[perf_workflow.index("perf-test-ppu:"):])
-        self.assertNotIn("container:", torch_workflow[torch_workflow.index("torch-api-test-ppu:"):])
+        self.assertNotIn("container", yaml.safe_load(perf_workflow)["jobs"]["perf-test-ppu"])
+        self.assertNotIn("container", yaml.safe_load(torch_workflow)["jobs"]["torch-api-test-ppu"])
 
         container_runner = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"

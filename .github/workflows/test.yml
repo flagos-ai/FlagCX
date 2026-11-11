@@ -46,6 +46,8 @@ jobs:
       ascend_runs_on: ${{ steps.ascend.outputs.runs_on }}
       kunlunxin_ci_image: ${{ steps.kunlunxin.outputs.ci_image }}
       kunlunxin_docker_args: ${{ steps.kunlunxin.outputs.docker_args }}
+      kunlunxin_container_options: ${{ steps.kunlunxin.outputs.container_options }}
+      kunlunxin_container_volumes: ${{ steps.kunlunxin.outputs.container_volumes }}
       kunlunxin_set_env: ${{ steps.kunlunxin.outputs.set_env }}
       kunlunxin_runs_on: ${{ steps.kunlunxin.outputs.runs_on }}
     steps:
@@ -388,8 +390,18 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_runs_on) }}
     timeout-minutes: 240
+    container:
+      image: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}
+      options: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_container_options }}
+      volumes: ${{ fromJSON(needs.load-hardware-container-configs.outputs.kunlunxin_container_volumes) }}
 
     steps:
+      - name: Trust submodules for checkout
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+
       - name: Checkout Code
         uses: actions/checkout@v7
         with:
@@ -399,27 +411,16 @@ jobs:
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Check Docker
-        shell: bash
-        run: docker version
-
-      - name: Run perf-test (kunlunxin) in configured container
+      - name: Run perf-test (kunlunxin) in job container
         shell: bash
         env:
-          FLAGCX_CI_CONTAINER_NAME: flagcx-kunlunxin-perf-${{ github.run_id }}-${{ github.run_attempt }}
-          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_docker_args }}
-          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.kunlunxin_set_env }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          kunlunxin perf
-
-      - name: Cleanup perf-test (kunlunxin) container
-        if: always()
-        shell: bash
-        env:
-          FLAGCX_CI_CONTAINER_NAME: flagcx-kunlunxin-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          set -euo pipefail
+          git clean -ffdX
+          git submodule foreach --recursive 'git clean -ffdX'
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+          bash .github/scripts/ci/run_hardware_workload.sh kunlunxin perf "$FLAGCX_CI_SET_ENV" '' 2>&1 | tee "$FLAGCX_CI_LOG_DIR/perf.log"
 
       - name: Upload test attempt logs
         if: always()

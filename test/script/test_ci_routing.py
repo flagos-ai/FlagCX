@@ -463,9 +463,9 @@ class CiWorkflowWiringTest(unittest.TestCase):
             job["runs-on"],
         )
         steps = {step.get("name"): step for step in job["steps"]}
-        run_step = steps["Run perf-test (kunlunxin) in configured container"]
+        run_step = steps["Run perf-test (kunlunxin) in job container"]
         self.assertEqual(
-            run_step["env"]["FLAGCX_CI_IMAGE"],
+            job["container"]["image"],
             "${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}",
         )
         self.assertIn("kunlunxin perf", run_step["run"])
@@ -489,9 +489,9 @@ class CiWorkflowWiringTest(unittest.TestCase):
             job["runs-on"],
         )
         steps = {step.get("name"): step for step in job["steps"]}
-        run_step = steps["Run torch-api-test (kunlunxin) in configured container"]
+        run_step = steps["Run torch-api-test (kunlunxin) in job container"]
         self.assertEqual(
-            run_step["env"]["FLAGCX_CI_IMAGE"],
+            job["container"]["image"],
             "${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}",
         )
         self.assertIn("kunlunxin torch-api", run_step["run"])
