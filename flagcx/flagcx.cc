@@ -3415,13 +3415,14 @@ flagcxResult_t flagcxHomoCommInit(struct bootstrapState *state,
   return flagcxSuccess;
 }
 
-struct flagcxStreamValueRankCapability {
+struct flagcxUniRunnerRankCapability {
   int result;
   int supported;
+  int kernelSupported;
 };
 
-static flagcxResult_t initUniRunnerStreamValueCapability(flagcxComm_t comm) {
-  flagcxStreamValueRankCapability *capabilities = nullptr;
+static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
+  flagcxUniRunnerRankCapability *capabilities = nullptr;
   flagcxResult_t allocationResult =
       flagcxCalloc(&capabilities, static_cast<size_t>(comm->nranks));
   flagcxResult_t commonAllocationResult = flagcxSuccess;
@@ -3433,22 +3434,32 @@ static flagcxResult_t initUniRunnerStreamValueCapability(flagcxComm_t comm) {
   }
 
   bool localSupported = false;
-  flagcxResult_t probeResult = flagcxStreamValueSupported(&localSupported);
+  int kernelSupported = 0;
+  flagcxResult_t probeResult = flagcxSuccess;
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
+  kernelSupported = 1;
+  probeResult = flagcxStreamValueSupported(&localSupported);
+#endif
   capabilities[comm->rank] = {static_cast<int>(probeResult),
-                              localSupported ? 1 : 0};
+                              localSupported ? 1 : 0, kernelSupported};
   result = bootstrapCollAllGather(comm->bootstrap, capabilities,
-                                  sizeof(flagcxStreamValueRankCapability));
+                                  sizeof(flagcxUniRunnerRankCapability));
   if (result == flagcxSuccess) {
     bool allSupported = true;
+    bool allKernelsSupported = true;
     for (int rank = 0; rank < comm->nranks; ++rank) {
       if (capabilities[rank].result != static_cast<int>(flagcxSuccess)) {
         result = static_cast<flagcxResult_t>(capabilities[rank].result);
         break;
       }
       allSupported = allSupported && capabilities[rank].supported != 0;
+      allKernelsSupported =
+          allKernelsSupported && capabilities[rank].kernelSupported != 0;
     }
-    if (result == flagcxSuccess)
+    if (result == flagcxSuccess) {
       comm->streamValueSupported = allSupported;
+      comm->uniRunnerKernelSupported = allKernelsSupported;
+    }
   }
   free(capabilities);
   return result;
@@ -3484,6 +3495,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   (*comm)->abortFlag = 0;
   (*comm)->bootstrap = NULL;
   (*comm)->streamValueSupported = false;
+  (*comm)->uniRunnerKernelSupported = false;
   (*comm)->localRank = 0;
   (*comm)->localRanks = 1;
   (*comm)->localRankToRank = NULL;
@@ -3518,7 +3530,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   struct bootstrapState *state = (*comm)->bootstrap;
 
   if (useHeteroComm())
-    FLAGCXCHECK(initUniRunnerStreamValueCapability(*comm));
+    FLAGCXCHECK(initUniRunnerCapabilities(*comm));
 
   // Ready to detect heterogeneous/homogeneous communicator
   // Use bootstrap allgather to exchange Device info

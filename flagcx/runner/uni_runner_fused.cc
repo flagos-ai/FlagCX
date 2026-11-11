@@ -522,13 +522,14 @@ static flagcxResult_t validateCommon(const void *input, const void *weight,
   if (comm->nranks < 1) {
     return flagcxInvalidArgument;
   }
-  if (comm->heteroComm == NULL || datatype != flagcxFloat32) {
+  if (comm->heteroComm == NULL || datatype != flagcxFloat32 ||
+      !comm->uniRunnerKernelSupported) {
     return flagcxNotSupported;
   }
   if (comm->heteroComm->proxyState == NULL) {
     return flagcxInvalidUsage;
   }
-#ifndef COMPILE_KERNEL_HOST
+#if !defined(COMPILE_KERNEL_HOST) || !defined(USE_NVIDIA_ADAPTOR)
   return flagcxNotSupported;
 #else
   if (firstDim > UINT32_MAX || n > UINT32_MAX || k > UINT32_MAX) {

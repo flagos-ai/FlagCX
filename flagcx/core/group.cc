@@ -109,11 +109,14 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
   // DefaultSchedule: |op0{s0}|op1{s0}|...|opN{s0}|
   int defaultOpId = 0;
   int defaultStep = 0;
-  // Track proxy completion using the current device's synchronization APIs.
+  // Preserve the default host/device semaphore path for ordinary groups.
   bool useStreamValueGroup = false;
-  flagcxResult_t probeResult = flagcxStreamValueSupported(&useStreamValueGroup);
-  if (probeResult != flagcxSuccess)
-    return probeResult;
+  if (gjob->useStreamValue) {
+    flagcxResult_t probeResult =
+        flagcxStreamValueSupported(&useStreamValueGroup);
+    if (probeResult != flagcxSuccess)
+      return probeResult;
+  }
   std::shared_ptr<flagcxSemaphore> semaphore;
   std::shared_ptr<flagcxStreamValueSemaphore> streamValueSemaphore;
   if (useStreamValueGroup) {
@@ -513,7 +516,7 @@ static inline void groupResetJobState() {
   memset(&flagcxGroupJobMain, 0, sizeof(struct flagcxGroupJob));
 }
 
-flagcxResult_t flagcxGroupEndInternal() {
+flagcxResult_t flagcxGroupEndInternal(bool useStreamValue) {
   flagcxResult_t ret = flagcxSuccess;
   flagcxGroupDepth--;
   if (flagcxGroupDepth < 0)
@@ -524,6 +527,7 @@ flagcxResult_t flagcxGroupEndInternal() {
       flagcxGroupJobMain.groupCommPreconnectHeadPtr =
           &flagcxGroupCommPreconnectHead;
       flagcxGroupJobMain.asyncJobsPtr = &flagcxAsyncJobs;
+      flagcxGroupJobMain.useStreamValue = useStreamValue;
       flagcxGroupJobMain.initialized = true;
       flagcxGroupJobMainPtr = &flagcxGroupJobMain;
       FLAGCXCHECKGOTO(groupLaunch(&flagcxGroupJobMainPtr->base), ret, fail);

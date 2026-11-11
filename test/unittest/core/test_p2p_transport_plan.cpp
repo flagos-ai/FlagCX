@@ -7,8 +7,8 @@
 #include "launch_kernel.h"
 #include "net_transport.h"
 #include "p2p.h"
-#include "proxy.h"
 #include "p2p_transport.h"
+#include "proxy.h"
 #include <gtest/gtest.h>
 
 TEST(P2pTransportPlan, ResolvesAllRegistrationCombinations) {
@@ -104,10 +104,10 @@ public:
 
 TEST(P2pTransportPlan, CompletedTransferRetiresAfterPeerReusesOffer) {
   for (bool sender : {false, true}) {
-    for (auto plan : {flagcxP2pPlanFifo, flagcxP2pPlanRead,
-                      flagcxP2pPlanWrite}) {
-      SCOPED_TRACE(::testing::Message() << "sender=" << sender
-                                       << " plan=" << plan);
+    for (auto plan :
+         {flagcxP2pPlanFifo, flagcxP2pPlanRead, flagcxP2pPlanWrite}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "sender=" << sender << " plan=" << plan);
       flagcxP2pShm shm = {};
       flagcxP2pResources resources = {};
       resources.proxyInfo.shm = &shm;

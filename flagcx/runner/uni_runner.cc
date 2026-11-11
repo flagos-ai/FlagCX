@@ -78,6 +78,8 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                                flagcxStream_t stream) {
   if (flagcxGetGroupDepth() > 0)
     return flagcxInvalidUsage;
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
@@ -301,6 +303,8 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
                                       flagcxStream_t stream) {
   if (flagcxGetGroupDepth() > 0)
     return flagcxInvalidUsage;
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
   flagcxResult_t res = flagcxSuccess;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
@@ -383,8 +387,9 @@ flagcxResult_t uniRunnerAllGather(const void *sendbuff, void *recvbuff,
     localResult = checkedUniRunnerTypeBytes(
         sendcount, static_cast<size_t>(comm->nranks), datatype, &totalSize);
 
-  const bool useGroupedAg =
-      algorithm == uniRunnerAlgorithmGroupedAG && comm->streamValueSupported;
+  const bool useGroupedAg = algorithm == uniRunnerAlgorithmGroupedAG &&
+                            comm->uniRunnerKernelSupported &&
+                            comm->streamValueSupported;
   if (localResult == flagcxSuccess && useGroupedAg)
     localResult = validateUniRunnerLaunchConfig(flagcxCommOpAllGather);
   FLAGCXCHECK(localResult);

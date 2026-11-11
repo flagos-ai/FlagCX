@@ -141,12 +141,20 @@ The former `FLAGCX_UNIRUNNER_USE_*` and fused `*_ALGO` selectors no longer
 select algorithms. `FLAGCX_UNIRUNNER_ALGO_PATH` still specifies the DSL cache
 directory independently of the numeric selector.
 
+UniRunner DAG execution, including the fused collectives and DSL algorithms,
+currently requires `USE_NVIDIA=1 COMPILE_KERNEL=1` on every rank. Other platforms
+return `flagcxNotSupported` for these execution paths. AllGather retains its
+ordinary P2P fallback when the GroupedAG execution requirements are unavailable;
+ordinary P2P operations and the other runners remain available.
+
 When `FLAGCX_USE_HETERO_COMM=1`, UniRunner DAG algorithms reject calls made
 between `flagcxGroupStart` and `flagcxGroupEnd` with `flagcxInvalidUsage`.
 Use `FLAGCX_UNIRUNNER_ALGO=8` for AllGather inside a user group; the default
 GroupedAG algorithm (7) does not switch to P2P automatically in that case.
-UniRunner exchanges stream-value capability once during communicator
-initialization and uses the saved all-rank result for GroupedAG. Algorithm
+UniRunner exchanges kernel and stream-value capabilities once during
+communicator initialization and uses the saved all-rank results when selecting
+an execution path. Stream-value group synchronization is limited to DAG-owned
+groups; ordinary groups retain their host/device semaphore selection. Algorithm
 settings and group depth are checked locally during collective calls; configure
 the same algorithm and group size on all ranks.
 

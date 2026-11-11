@@ -207,7 +207,8 @@ TEST_F(StreamValueProbeTest, PoolClearRequiresAllSlotsToBeReleased) {
 TEST_F(StreamValueProbeTest, ReservedFreeSlotsNeedNoAllocationDuringAcquire) {
   uint64_t *held = nullptr;
   void *deviceSignals = nullptr;
-  ASSERT_EQ(streamValueBufferPool.acquire(&held, &deviceSignals), flagcxSuccess);
+  ASSERT_EQ(streamValueBufferPool.acquire(&held, &deviceSignals),
+            flagcxSuccess);
   *held = 19;
   const size_t requested = streamValueBufferPool.chunks.front().capacity + 1;
   ASSERT_EQ(streamValueBufferPool.reserve(requested), flagcxSuccess);
@@ -234,7 +235,8 @@ TEST_F(StreamValueProbeTest, BuiltinOwnersKeepSignalsUntilLastFinalize) {
   ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
   uint64_t *signals = nullptr;
   void *deviceSignals = nullptr;
-  ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals), flagcxSuccess);
+  ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals),
+            flagcxSuccess);
   streamValueBufferPool.release(signals);
   ASSERT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxSuccess);
   EXPECT_EQ(state.frees, 0);
@@ -246,7 +248,8 @@ TEST_F(StreamValueProbeTest, BuiltinFinalizeCanRetryAfterActiveSlotRelease) {
   ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
   uint64_t *signals = nullptr;
   void *deviceSignals = nullptr;
-  ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals), flagcxSuccess);
+  ASSERT_EQ(streamValueBufferPool.acquire(&signals, &deviceSignals),
+            flagcxSuccess);
   EXPECT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxInvalidUsage);
   EXPECT_EQ(state.frees, 0);
   streamValueBufferPool.release(signals);

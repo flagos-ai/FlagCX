@@ -94,6 +94,7 @@ struct flagcxComm {
   int *clusterInterRanks;
   struct bootstrapState *bootstrap;
   bool streamValueSupported;
+  bool uniRunnerKernelSupported;
   int localRank;        // intra-node rank index (computed from hostHash)
   int localRanks;       // number of ranks on this node
   int *localRankToRank; // mapping: local index -> global rank

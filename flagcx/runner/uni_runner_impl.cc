@@ -5050,7 +5050,7 @@ static flagcxResult_t launchHostDagNode(flagcxUniRunnerState *runnerState,
           }
           return flagcxSuccess;
         },
-        []() { return flagcxHeteroGroupEnd(); });
+        []() { return flagcxGroupEndInternal(true); });
     if (result != flagcxSuccess) {
       return result;
     }
@@ -5643,6 +5643,8 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
 }
 
 flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   if (runnerState->dagNodes != NULL || runnerState->numDagNodes != 0 ||
@@ -6008,7 +6010,7 @@ static flagcxResult_t prepareStaticCollectiveExecution(
     result = getUniRunnerStaticIpcMaxChunks(runnerState, &maxIpcParallelism);
   }
 
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   if (result == flagcxSuccess) {
     result = flagcxGetStaticCollectiveKernelMaxExecutorBlocks(
         static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks);
@@ -6301,7 +6303,7 @@ prepareStaticRedExecution(flagcxHeteroComm_t hcomm,
         schedule);
   }
 
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   FLAGCXCHECK(flagcxGetStaticReduceKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), maxExecutorBlocks));
   *maxExecutorBlocks = std::min(
@@ -6519,7 +6521,7 @@ recoverPoisonedUniRunnerRedStream(flagcxUniRunnerState *runnerState,
   }
 
   flagcxResult_t recoveryResult = flagcxSuccess;
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   if (ipcControl != NULL) {
     recoveryResult = flagcxLaunchStaticIpcRecoveryKernel(
         runnerState->ipcReadyMem, ipcControl, recoveryStream);
@@ -6732,7 +6734,7 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
       return common;
   }
   if (prepareResult != flagcxSuccess) {
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
     // Capability/occupancy probing happens before the exact static FIFO is
     // allocated. Preserve the legacy executor on devices where the static
     // cooperative-progress contract is unavailable or cannot be queried.
@@ -6749,7 +6751,7 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
     return prepareResult;
   }
 
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   if (numTriggers != 0) {
     flagcxResult_t launchResult = flagcxLaunchStaticReduceKernel(
         hcomm->uniRunnerFifoBuffer, numTriggers,
@@ -6794,7 +6796,7 @@ static flagcxResult_t recoverFailedStaticCollectiveLaunch(
   // the missing rank-local done publication. This must be the same stream used
   // for the attempted executor launch.
   requestUniRunnerStaticAbort(runnerState);
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   flagcxResult_t recoveryResult = flagcxLaunchStaticIpcRecoveryKernel(
       runnerState->ipcReadyMem, ipcControl, executorStream);
   preserveFirstUniRunnerError(recoveryResult, &launchResult);
@@ -7003,7 +7005,7 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   runnerState->ipcRingControlDevice = newControlDevice;
   runnerState->ipcEpoch = control.epoch;
   size_t maxExecutorBlocks = 0;
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   result = flagcxGetStaticRingDagKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), &maxExecutorBlocks);
   if (result == flagcxSuccess && plan.numRingLanes > maxExecutorBlocks)
@@ -7022,7 +7024,7 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
     return agreementResult != flagcxSuccess ? agreementResult
                                             : collectiveResult;
   }
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   uint64_t *controlDevice =
       static_cast<uint64_t *>(runnerState->ipcRingControlDevice);
   result = flagcxLaunchStaticRingDagKernel(
@@ -7065,7 +7067,7 @@ runStaticHostRedIpc(flagcxComm_t comm, flagcxResult_t localPreparationResult) {
       comm, &schedule, &numRedTriggers, &numIpcTriggers, &maxExecutorBlocks,
       &ipcControl, localPreparationResult));
 
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   flagcxResult_t launchResult = flagcxLaunchStaticCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, numRedTriggers, runnerState->ipcFifoDevicePtr,
       numIpcTriggers, runnerState->ipcInputMem, runnerState->ipcOutputMem,
@@ -7125,7 +7127,7 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm,
   }
   FLAGCXCHECK(initResult);
 
-#ifdef COMPILE_KERNEL_HOST
+#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
   FLAGCXCHECK(flagcxLaunchCollectiveKernel(
       hcomm->uniRunnerFifoBuffer, NULL, NULL, NULL, NULL, NULL,
       runnerState->uniRunnerNThreads, runnerState->uniRunnerNRedBlocks, 0,
@@ -7152,6 +7154,8 @@ static flagcxResult_t runDynamicDagFallback(flagcxHeteroComm_t hcomm,
 }
 
 flagcxResult_t runUniRunner(flagcxComm_t comm, bool convergeHostPreparation) {
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
   flagcxUniRunnerState *runnerState = &hcomm->proxyState->uniRunnerState;
   TRACE(FLAGCX_UNIRUNNER, "runUniRunner called");

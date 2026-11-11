@@ -7,6 +7,10 @@ MSCCL-style workflow builders: an algorithm is described in Python inside a
 plus dependencies. The generated JSON can be written in the cache format that
 the existing uniRunner runtime loads from `FLAGCX_UNIRUNNER_ALGO_PATH`.
 
+Executing these DAGs currently requires `USE_NVIDIA=1 COMPILE_KERNEL=1` on every
+rank. Other platforms return `flagcxNotSupported` for the DAG and fused execution
+paths; generating and inspecting the JSON does not require a GPU.
+
 ## Goals
 
 - Build one DAG template per rank.
