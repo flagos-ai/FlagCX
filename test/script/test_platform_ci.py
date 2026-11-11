@@ -950,7 +950,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "adaptor",
                 "core",
                 "device_api_host",
-                "device_api",
+                "device_api_unified_ir",
                 "kernel",
                 "p2p",
                 "rma",
