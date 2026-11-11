@@ -499,7 +499,8 @@ jobs:
           git clean -ffdX
           git submodule foreach --recursive 'git clean -ffdX'
           mkdir -p "$FLAGCX_CI_LOG_DIR"
-          bash .github/scripts/ci/run_hardware_workload.sh kunlunxin torch-api "$FLAGCX_CI_SET_ENV" '' 2>&1 | tee "$FLAGCX_CI_LOG_DIR/torch-api.log"
+          bash .github/scripts/ci/run_in_host_network.sh \
+            bash .github/scripts/ci/run_hardware_workload.sh kunlunxin torch-api "$FLAGCX_CI_SET_ENV" '' 2>&1 | tee "$FLAGCX_CI_LOG_DIR/torch-api.log"
 
       - name: Upload test attempt logs
         if: always()

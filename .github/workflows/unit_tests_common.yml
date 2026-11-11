@@ -210,7 +210,8 @@ jobs:
           FLAGCX_CI_SUITE: ${{ matrix.suite }}
         run: |
           set -euo pipefail
-          bash .github/scripts/ci/run_unit_test.sh \
+          bash .github/scripts/ci/run_in_host_network.sh \
+            bash .github/scripts/ci/run_unit_test.sh \
             "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE" 2>&1 \
             | tee "$FLAGCX_CI_LOG_DIR/suite.log"
 

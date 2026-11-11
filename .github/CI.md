@@ -64,6 +64,25 @@ reproduction stored with the attempt artifacts, preserving the suite failure.
 
 ## Retry Logs
 
+KunlunXin job containers retain the Actions-managed bridge for checkout and
+artifact steps. RDMA hardware workloads use `run_in_host_network.sh` to enter
+the Docker host's network namespace, using the read-only
+`/proc:/run/flagcx-host-proc:ro` job-container mount. Only networking changes;
+the workload keeps the container filesystem, SDK, environment and working
+directory. If the container uses Docker's embedded bridge DNS, a private mount
+namespace provides the host resolver for this workload; checkout and artifact
+steps retain their original DNS settings. Unit, perf and Torch jobs use the
+same entry point and do not launch another container. The image needs util-linux
+(`nsenter`, `unshare`, `mount`) and the existing privileged container option.
+
+The entry point verifies the namespace identity and checks that every ACTIVE
+mlx5 RoCE port has a GID-associated interface visible through the socket API
+before starting the workload. It fails instead of skipping RDMA tests when
+the mount, permissions or interfaces are missing. On DinD deployments the
+mounted namespace must expose the physical RDMA interfaces; an isolated DinD
+network still needs runner-side network provisioning. This check establishes
+visibility only; the adaptor Host MR and SendRecv tests verify connectivity.
+
 Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration
 are not retried. Recovered tests emit a flaky warning and Step Summary entry.

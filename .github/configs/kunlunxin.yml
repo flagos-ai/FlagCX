@@ -23,6 +23,11 @@ runner_labels:
 # /usr/local/xpu from the runner replaces them with the host's XRE version.
 docker_volumes: []
 
+# Job containers keep the Actions bridge for checkout/artifact actions. Hardware
+# workloads enter this network namespace while retaining the image filesystem.
+job_container_volumes:
+  - /proc:/run/flagcx-host-proc:ro
+
 docker_options:
   - --network=host
   - --ipc=host

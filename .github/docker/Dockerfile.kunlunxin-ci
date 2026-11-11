@@ -67,6 +67,7 @@ RUN apt-get update \
         libnuma-dev \
         nlohmann-json3-dev \
         pkg-config \
+        util-linux \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=sdk /opt/documented-sdk/xtdk/ /usr/local/xtdk-llvm15-ubuntu2004_x86_64/

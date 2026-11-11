@@ -165,7 +165,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                         self.assertEqual(f"SKIPPED {marker}" in result.stdout,
                                          (suite, phase) in ignored)
 
-    def test_kunlunxin_job_container_preserves_devices_without_host_network(self):
+    def test_kunlunxin_job_container_provides_host_namespace_mount(self):
         result = subprocess.run(
             ["ruby", ".github/scripts/ci/load_platform_config.rb", "kunlunxin"],
             cwd=REPO_ROOT,
@@ -184,7 +184,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         for index in range(8):
             self.assertIn(f"--device=/dev/xpu{index}", options)
         self.assertIn("--network=host", config["docker_args"].splitlines())
-        self.assertEqual(json.loads(config["container_volumes"]), [])
+        self.assertEqual(json.loads(config["container_volumes"]),
+                         ["/proc:/run/flagcx-host-proc:ro"])
+        self.assertNotIn("/run/flagcx-host-proc", config["docker_args"])
 
     def test_kunlunxin_ci_reports_missing_xpu_test_toolchain_as_skipped(self):
         env_script = (

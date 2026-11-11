@@ -54,6 +54,9 @@ end
 
 docker_options.each { |option| validate_argument.call(option, "docker_options") }
 docker_volumes.each { |volume| validate_argument.call(volume, "docker_volumes") }
+job_container_volumes = config.fetch("job_container_volumes", docker_volumes)
+abort "#{config_path}: job_container_volumes must be an array" unless job_container_volumes.is_a?(Array)
+job_container_volumes.each { |volume| validate_argument.call(volume, "job_container_volumes") }
 
 docker_args = docker_options + docker_volumes.map { |volume| "--volume=#{volume}" }
 # Actions manages its job network and entrypoint. Pass the remaining hardware
@@ -74,7 +77,7 @@ outputs = {
   "runs_on" => JSON.generate(runner_labels),
   "docker_args" => docker_args.join("\n"),
   "container_options" => container_options.join(" "),
-  "container_volumes" => JSON.generate(docker_volumes),
+  "container_volumes" => JSON.generate(job_container_volumes),
   "set_env" => set_env,
   "unit_test_suites" => JSON.generate(suites),
   "ignore_test" => JSON.generate(config.fetch("ignore_test", {}))
