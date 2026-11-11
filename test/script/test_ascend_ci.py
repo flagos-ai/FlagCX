@@ -171,14 +171,86 @@ flagcx_ci_validate_rdma() { return 0; }
 
     def test_no_crash_does_not_start_debugger(self):
         with tempfile.TemporaryDirectory() as tmp:
+            for suite in ("p2p", "torch-api"):
+                with self.subTest(suite=suite):
+                    result = subprocess.run(
+                        ["bash", str(CI / "run_ascend_diagnostics.sh"), suite],
+                        env={**os.environ, "BASH_ENV": "", "FLAGCX_CI_LOG_DIR": tmp},
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("No SIGSEGV", result.stdout)
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_torch_backtrace_worker_saves_rank_specific_native_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            tools = tmp / "tools"
+            tools.mkdir()
+            self.script(tools / "gdb", '''
+printf '%s\\n' 'Program received signal SIGSEGV' '#0 flagcxCommInitRank()'
+exit 11
+''')
             result = subprocess.run(
-                ["bash", str(CI / "run_ascend_diagnostics.sh"), "p2p"],
-                env={**os.environ, "BASH_ENV": "", "FLAGCX_CI_LOG_DIR": tmp},
+                ["python3", str(CI / "torch_rank_backtrace.py"), "/tmp/example.py"],
+                env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
+                     "RANK": "2", "LOCAL_RANK": "2",
+                     "FLAGCX_CI_DIAGNOSTIC_DIR": str(tmp / "traces")},
                 capture_output=True, text=True,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("No SIGSEGV", result.stdout)
-            self.assertEqual(list(Path(tmp).iterdir()), [])
+            trace = (tmp / "traces/rank-2.log").read_text()
+            self.assertIn("rank=2 local_rank=2", trace)
+            self.assertIn("#0 flagcxCommInitRank()", trace)
+            self.assertIn("gdb exit=139", trace)
+
+            propagated = subprocess.run(
+                ["python3", str(CI / "torch_rank_backtrace.py"), "/tmp/example.py"],
+                env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
+                     "RANK": "2", "LOCAL_RANK": "2",
+                     "FLAGCX_CI_DIAGNOSTIC_DIR": str(tmp / "traces"),
+                     "FLAGCX_TORCH_GDB_PROPAGATE_FAILURE": "1"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(propagated.returncode, 139, propagated.stderr)
+
+            self.script(tools / "gdb", '''
+printf '%s\\n' 'Thread 1 "python3" received signal SIGSEGV, Segmentation fault.'
+exit 0
+''')
+            crashed = subprocess.run(
+                ["python3", str(CI / "torch_rank_backtrace.py"), "/tmp/example.py"],
+                env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}",
+                     "RANK": "2", "LOCAL_RANK": "2",
+                     "FLAGCX_CI_DIAGNOSTIC_DIR": str(tmp / "traces"),
+                     "FLAGCX_TORCH_GDB_PROPAGATE_FAILURE": "1"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(crashed.returncode, 139, crashed.stderr)
+
+    def test_torch_diagnostics_count_gdb_thread_sigsegv_stacks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "logs").mkdir()
+            (tmp / "logs/attempt-1.log").write_text("Signal 11 (SIGSEGV)\n")
+            self.script(tmp / "gdb", "exit 0\n")
+            test_script = tmp / "test/script/torch_api_test.sh"
+            test_script.parent.mkdir(parents=True)
+            self.script(test_script, '''
+for rank in 0 1 2 3; do
+  printf '%s\\n' 'Thread 1 "python3" received signal SIGSEGV, Segmentation fault.' \\
+    > "$FLAGCX_CI_DIAGNOSTIC_DIR/rank-$rank.log"
+done
+''')
+            result = subprocess.run(
+                ["bash", str(CI / "run_ascend_diagnostics.sh"), "torch-api"],
+                env={**os.environ, "BASH_ENV": "", "GITHUB_WORKSPACE": str(tmp),
+                     "FLAGCX_CI_LOG_DIR": str(tmp / "logs"),
+                     "PATH": f"{tmp}:{os.environ['PATH']}"},
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("4/4 rank logs, 4 SIGSEGV stacks", result.stdout)
 
 
 
