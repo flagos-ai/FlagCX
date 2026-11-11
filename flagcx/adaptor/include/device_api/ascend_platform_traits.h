@@ -572,6 +572,17 @@ struct PlatformTraits<AscendPlatform> {
   };
   template <int N>
   struct CoopTile {
+    // One logical lane per core (simtWidth = 1, threadRank() is always 0),
+    // so a tile of N>1 reports a size it cannot populate: a loop striped by
+    // `i += size()` from rank 0 silently omits every other item even if
+    // nobody calls sync(), and sync() on such a group would be a no-op
+    // barrier. That combination is a bug, not a configuration, so
+    // instantiating it fails the build on both passes. (Review finding,
+    // 11-11; rejected at instantiation rather than only in sync() because
+    // the rank/size pair itself is what lies.)
+    static_assert(N == 1,
+                  "Ascend 2201 exposes a single logical lane: CoopTile<N> "
+                  "with N>1 has no real rank and no working sync");
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return N; }
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t laneMask() const {
@@ -585,14 +596,27 @@ struct PlatformTraits<AscendPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR CoopTileSpan(int, int, int) {}
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
+    // Whether a span covers more than one tile is a runtime argument, so the
+    // synchronization itself is the declared-absent capability: a device
+    // build that reaches it fails on the never-defined symbol instead of
+    // passing on a no-op barrier. Single-lane semantics (size 1, rank 0) are
+    // kept honest; only the barrier is refused. (Review finding, 11-11.)
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
+      FLAGCX_ASCEND_UNSUPPORTED("CoopTileSpan::sync() on AscendPlatform");
+    }
   };
   struct CoopLanes {
     FLAGCX_DEVICE_INLINE_DECORATOR
     CoopLanes(flagcxLaneMask_t mask = Intrin::fullMask()) { (void)mask; }
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const { return 0; }
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return 1; }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {}
+    // Same split as CoopTileSpan: a mask with more than its low bit set
+    // selects lanes that do not exist on 2201, and the constructor cannot
+    // reject it at compile time, so the barrier is the declared-absent
+    // capability. (Review finding, 11-11.)
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
+      FLAGCX_ASCEND_UNSUPPORTED("CoopLanes::sync() on AscendPlatform");
+    }
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
       return Intrin::fullMask();
     }
