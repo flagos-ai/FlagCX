@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METAX_ENV = REPO_ROOT / ".github/scripts/set_env/metax.sh"
@@ -295,24 +297,34 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
+        registry = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/platforms.yml").read_text()
+        )["platforms"]
+        all_platforms = [
+            name for name, settings in registry.items()
+            if not isinstance(settings, dict) or settings.get("enabled", True)
+        ]
+
+        def expected_for(platform):
+            return [platform] if platform in all_platforms else all_platforms
+
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            expected_for("cuda"),
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            expected_for("hygon"),
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            expected_for("ascend"),
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -683,7 +695,21 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ["iluvatar"],
+        )
+        disabled_result = subprocess.run(
+            [
+                "ruby",
+                str(matrix_loader),
+                str(REPO_ROOT / ".github/configs"),
+                "cuda",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(disabled_result.returncode, 0)
+        self.assertIn(
+            "Disabled or unknown platform selection: cuda", disabled_result.stderr
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"

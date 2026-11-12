@@ -32,17 +32,23 @@ registry = if File.file?(registry_path)
            end
 registered_platforms = registry.fetch("platforms", {})
 abort "#{registry_path}: platforms must be a map" unless registered_platforms.is_a?(Hash)
+enabled_platforms = registered_platforms.select do |_name, settings|
+  !settings.is_a?(Hash) || settings.fetch("enabled", true)
+end
 
 selected_platforms = if selection.nil? || selection.empty? || selection == "all"
                        if registered_platforms.empty?
                          nil
                        else
-                         registered_platforms.select do |_name, settings|
-                           !settings.is_a?(Hash) || settings.fetch("enabled", true)
-                         end.keys
+                         enabled_platforms.keys
                        end
                      else
-                       selection.split(",").map(&:strip).reject(&:empty?)
+                       requested = selection.split(",").map(&:strip).reject(&:empty?)
+                       unless registered_platforms.empty?
+                         disabled = requested - enabled_platforms.keys
+                         abort "Disabled or unknown platform selection: #{disabled.join(', ')}" unless disabled.empty?
+                       end
+                       requested
                      end
 
 config_files = if selected_platforms.nil?

@@ -74,7 +74,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
             ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
-            ("flagcx/adaptor/device/cann_adaptor.cc", ["ascend"]),
+            (
+                "flagcx/adaptor/device/cann_adaptor.cc",
+                enabled_platform_or_matrix("ascend"),
+            ),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
@@ -232,7 +235,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["cuda"],
+                enabled_platform_or_matrix("cuda"),
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
