@@ -7,9 +7,10 @@ paths_watch:
   - .github/configs/cuda.yml
   - .github/scripts/set_env/cuda.sh
   - .github/scripts/ci/run_cuda_workload.sh
-  - .github/scripts/ci/run_cuda_legacy_perf.sh
+  - .github/scripts/ci/run_cuda_experimental_perf.sh
   - flagcx/adaptor/device/cuda_adaptor.cc
   - flagcx/adaptor/kernel/nvidia/**/*
+  - flagcx/adaptor/kernel/common/**/*
   - test/kernel/nvidia/**/*
   - flagcx/adaptor/ccl/nccl_adaptor.cc
   - flagcx/adaptor/include/nvidia_adaptor.h

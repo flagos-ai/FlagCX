@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <torch-api|perf>" >&2
+  echo "Usage: $0 <torch-api|perf|perf-experimental>" >&2
   exit 2
 fi
 
@@ -61,6 +61,9 @@ case "$workload" in
     perf_bin="$project_root/test/perf/host_api/build/bin"
     "$perf_runner" homogeneous "$perf_bin"
     "$perf_runner" heterogeneous "$perf_bin"
+    ;;
+  perf-experimental)
+    source "$project_root/.github/scripts/ci/run_hygon_experimental_perf.sh"
     ;;
   *)
     echo "Unknown Hygon workload: $workload" >&2

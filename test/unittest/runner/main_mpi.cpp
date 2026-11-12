@@ -107,6 +107,41 @@ void FlagCXCollTest::SetUp() {
         << static_cast<int>(comm->commType);
   }
 
+  if (std::getenv("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL") != nullptr) {
+    const char *selectedRunner = std::getenv("FLAGCX_USE_HETERO_COMM");
+    int localSupported = selectedRunner != nullptr &&
+                         std::strcmp(selectedRunner, "1") == 0 &&
+                         comm->uniRunnerKernelSupported;
+    int allSupported = 0;
+    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allSupported, 1) << "UniRunner device kernels are unavailable";
+  }
+  if (std::getenv("FLAGCX_CI_EXPECT_STREAM_VALUE") != nullptr) {
+    int localSupported = comm->streamValueSupported ? 1 : 0;
+    int allSupported = 0;
+    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allSupported, 1) << "stream value operations are unavailable";
+  }
+  if (std::getenv("FLAGCX_CI_EXPECT_LOCAL_P2P") != nullptr) {
+    int localMatches =
+        comm->heteroComm != nullptr && comm->heteroComm->peerInfo != nullptr;
+    const char *p2pDisable = std::getenv("FLAGCX_P2P_DISABLE");
+    localMatches = localMatches && p2pDisable != nullptr &&
+                   std::strcmp(p2pDisable, "0") == 0;
+    if (localMatches) {
+      for (int peer = 0; peer < nranks; ++peer)
+        localMatches =
+            localMatches && comm->heteroComm->peerInfo[peer].hostHash ==
+                                comm->heteroComm->peerInfo[rank].hostHash;
+    }
+    int allMatch = 0;
+    MPI_Allreduce(&localMatches, &allMatch, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allMatch, 1) << "local P2P routing prerequisites are missing";
+  }
+
   // Forced-NET CI invocations must prove that they selected the intended
   // hardware adaptor. FLAGCX_P2P_DISABLE only disables the IPC transport; it
   // does not prevent flagcxNetInit() from falling back to Socket when RDMA is

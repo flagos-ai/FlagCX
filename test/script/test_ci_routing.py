@@ -109,6 +109,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
+                "flagcx/adaptor/kernel/common/nested/foo.h",
+                ["cuda", "hygon"],
+            ),
+            (
                 "test/kernel/nvidia/nested/foo.cu",
                 enabled_platform_or_matrix("cuda"),
             ),
@@ -117,8 +121,12 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
-                ".github/scripts/ci/run_cuda_legacy_perf.sh",
+                ".github/scripts/ci/run_cuda_experimental_perf.sh",
                 enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_hygon_experimental_perf.sh",
+                enabled_platform_or_matrix("hygon"),
             ),
             (
                 ".github/scripts/ci/run_metax_workload.sh",
@@ -539,6 +547,18 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_hygon_experimental_perf_is_required(self):
+        script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")
+        args = ["bash", script, '["hygon"]', "success", "skipped",
+                "skipped", "success", "failure", "skipped", "skipped",
+                "skipped"]
+        failed = subprocess.run(args, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Hygon experimental workload", failed.stderr)
+        args[7] = "success"
+        passed = subprocess.run(args, capture_output=True, text=True)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
 
     def test_selected_platform_jobs_must_succeed(self):
         self.assertEqual(

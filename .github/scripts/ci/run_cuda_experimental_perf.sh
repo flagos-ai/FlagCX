@@ -7,7 +7,7 @@ export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$project_root/build/lib:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}"
 perf_bin="$project_root/test/perf/host_api/build/bin"
 device_api_bin="$project_root/test/perf/device_api/build/bin"
-cuda_extended_runner="$project_root/test/unittest/runner/build/bin/runner_cuda_extended_mpi_tests"
+cuda_experimental_runner="$project_root/test/unittest/runner/build/bin/runner_unirunner_experimental_mpi_tests"
 mpi_runner="$project_root/.github/scripts/ci/run_mpi_with_timeout.sh"
 
 make -C "$project_root" --jobs="$(nproc)" \
@@ -18,13 +18,13 @@ cmake -S "$project_root/third-party/googletest" \
   -B "$project_root/third-party/googletest/build"
 cmake --build "$project_root/third-party/googletest/build" --parallel "$(nproc)"
 make -C "$project_root/test/unittest/runner" --jobs="$(nproc)" \
-  USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 cuda-extended
+  USE_NVIDIA=1 COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1 unirunner-experimental
 
 source "$project_root/test/script/_gpu_check.sh"
 wait_for_gpu
 
 # Run UniRunner-only GPU tests here, outside the cross-platform runner suite.
-cuda_extended_runner_env=(
+cuda_experimental_runner_env=(
   -x PATH
   -x LD_LIBRARY_PATH
   -x CUDA_VISIBLE_DEVICES=0,1,2,3
@@ -33,16 +33,31 @@ cuda_extended_runner_env=(
   -x FLAGCX_CLUSTER_SPLIT_LIST=2
   -x FLAGCX_P2P_DISABLE=0
   -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID
+  -x FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL=1
+  -x FLAGCX_CI_EXPECT_STREAM_VALUE=1
+  -x FLAGCX_CI_EXPECT_LOCAL_P2P=1
 )
-FLAGCX_CI_MPI_LABEL='CUDA extended UniRunner fused and group tests' \
-  env -u FLAGCX_UNIRUNNER_ALGO "$mpi_runner" -np 4 --allow-run-as-root \
-    "${cuda_extended_runner_env[@]}" "$cuda_extended_runner" \
-    --gtest_filter='FlagCXCollTest.AllGatherGemm*:FlagCXCollTest.GemmReduceScatter*:FlagCXCollTest.UniRunnerDagAlgorithmsRejectOuterGroup:FlagCXCollTest.UniRunnerIpcPreparationErrorConverges'
-
-FLAGCX_CI_MPI_LABEL='CUDA extended UniRunner P2P outer group' \
+FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner AllGatherGemm' \
   "$mpi_runner" -np 4 --allow-run-as-root \
-    "${cuda_extended_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=8 \
-    "$cuda_extended_runner" \
+    "${cuda_experimental_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=9 \
+    "$cuda_experimental_runner" \
+    --gtest_filter='FlagCXCollTest.AllGatherGemm*'
+
+FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner GemmReduceScatter' \
+  "$mpi_runner" -np 4 --allow-run-as-root \
+    "${cuda_experimental_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=11 \
+    "$cuda_experimental_runner" \
+    --gtest_filter='FlagCXCollTest.GemmReduceScatter*'
+
+FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner group and IPC errors' \
+  env -u FLAGCX_UNIRUNNER_ALGO "$mpi_runner" -np 4 --allow-run-as-root \
+    "${cuda_experimental_runner_env[@]}" "$cuda_experimental_runner" \
+    --gtest_filter='FlagCXCollTest.UniRunnerDagAlgorithmsRejectOuterGroup:FlagCXCollTest.UniRunnerIpcPreparationErrorConverges'
+
+FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner P2P outer group' \
+  "$mpi_runner" -np 4 --allow-run-as-root \
+    "${cuda_experimental_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=8 \
+    "$cuda_experimental_runner" \
     --gtest_filter=FlagCXCollTest.AllGatherInsideGroup
 
 # The regular CUDA perf job owns the homogeneous and heterogeneous API suites.
@@ -72,12 +87,12 @@ unirunner_sliced_ar_env=(
   -x FLAGCX_UNIRUNNER_MAX_THREADS=512
   -x FLAGCX_UNIRUNNER_ALGO=6
 )
-FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner sliced AllReduce' \
+FLAGCX_CI_MPI_LABEL='CUDA experimental uniRunner sliced AllReduce' \
   "$mpi_runner" -np 4 --allow-run-as-root \
     "${unirunner_sliced_ar_env[@]}" \
     "$perf_bin/perf_allreduce" -b 64K -e 4G -f 2 -w 20 -n 200
 
-FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner IPC Ring AllReduce' \
+FLAGCX_CI_MPI_LABEL='CUDA experimental uniRunner IPC Ring AllReduce' \
   "$mpi_runner" -np 4 --allow-run-as-root \
     -x PATH -x LD_LIBRARY_PATH \
     -x CUDA_VISIBLE_DEVICES=0,1,2,3 \
@@ -85,7 +100,7 @@ FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner IPC Ring AllReduce' \
     -x FLAGCX_UNIRUNNER_ALGO=2 \
     "$perf_bin/perf_allreduce" -b 64K -e 4M -f 2 -w 2 -n 5
 
-FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner IPC buffer rebinding' \
+FLAGCX_CI_MPI_LABEL='CUDA experimental uniRunner IPC buffer rebinding' \
   "$mpi_runner" -np 4 --allow-run-as-root \
     -x PATH -x LD_LIBRARY_PATH \
     -x CUDA_VISIBLE_DEVICES=0,1,2,3 \
@@ -94,7 +109,7 @@ FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner IPC buffer rebinding' \
     "$perf_bin/perf_ipc_rebind" -b 4K -e 4K -d float32 -o sum -R 0 -w 0 -n 1
 
 # RingAG splits remainder elements among the first ranks.
-FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner RingAG uneven count' \
+FLAGCX_CI_MPI_LABEL='CUDA experimental uniRunner RingAG uneven count' \
   "$mpi_runner" -np 4 --allow-run-as-root \
     -x PATH -x LD_LIBRARY_PATH \
     -x CUDA_VISIBLE_DEVICES=0,1,2,3 \
@@ -103,7 +118,7 @@ FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner RingAG uneven count' \
     "$perf_bin/perf_allreduce" -b 40 -e 40 -f 2 -d float32 -w 1 -n 1
 
 # Four groups of one rank exercise GroupedAG's later inter-group rounds.
-FLAGCX_CI_MPI_LABEL='CUDA extended uniRunner grouped AllGather' \
+FLAGCX_CI_MPI_LABEL='CUDA experimental uniRunner grouped AllGather' \
   "$mpi_runner" -np 4 --allow-run-as-root \
     -x PATH -x LD_LIBRARY_PATH \
     -x CUDA_VISIBLE_DEVICES=0,1,2,3 \
