@@ -68,9 +68,14 @@ ignore_test:
     - suite: rma
       name: gdr-visibility
       reason: CUDA immediate-consumer conformance cases are outside Ascend RMA/SymMem coverage
-    - suite: torch-api
-      name: heterogeneous
-      reason: Ascend heterogeneous Torch path is disabled in CI
+  torch:
+    modes:
+      - heterogeneous
+    operations:
+      - reduce
+      - allreduce
+      - reducescatter
+    reason: C2C refresh deviceMemset fails before heterogeneous transfer
   runner:
     - test: FlagCXCollTest.AlltoAllvAsymmetric
       modes:

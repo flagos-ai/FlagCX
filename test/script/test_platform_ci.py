@@ -1095,14 +1095,21 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         )
         self.assertIn("ascend torch-api", torch_workflow)
         self.assertIn("import torch, torch_npu", ascend_handler)
-        self.assertIn('"$PYTHON_BIN" setup.py build_ext --inplace', ascend_handler)
+        self.assertIn('"$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .',
+                      ascend_handler)
+        self.assertIn('export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1', ascend_handler)
         ascend_config = yaml.safe_load(
             (REPO_ROOT / ".github/configs/ascend.yml").read_text()
         )["ignore_test"]
-        self.assertTrue(any(
-            item["suite"] == "torch-api" and item["name"] == "heterogeneous"
-            for item in ascend_config["phases"]
+        self.assertEqual(ascend_config["torch"]["modes"], ["heterogeneous"])
+        self.assertEqual(ascend_config["torch"]["operations"],
+                         ["reduce", "allreduce", "reducescatter"])
+        self.assertFalse(any(
+            entry["suite"] == "torch-api" and entry["name"] == "heterogeneous"
+            for entry in ascend_config["phases"]
         ))
+        self.assertIn('bash "$project_root/test/script/torch_api_test.sh"', ascend_handler)
+        self.assertNotIn('FLAGCX_SKIP_HETERO=1', ascend_handler)
 
     def test_ascend_rma_runner_and_symmem_use_shared_multi_rank_path(self):
         ascend_env = (REPO_ROOT / ".github/scripts/set_env/ascend.sh").read_text()

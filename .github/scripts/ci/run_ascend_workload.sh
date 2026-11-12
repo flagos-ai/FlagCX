@@ -45,18 +45,23 @@ case "$workload" in
     ;;
   torch-api)
     export FLAGCX_ADAPTOR=ascend
+    export FLAGCX_TORCH_BACKEND=vendor
     export PYTHON_BIN=${PYTHON_BIN:-python3}
+    # Use the plugin built from this checkout, not the CI image's wheel.
+    "$PYTHON_BIN" -m pip uninstall --yes flagcx
+    export TORCH_DEVICE_BACKEND_AUTOLOAD=0
     "$PYTHON_BIN" -c 'import torch, torch_npu; count = torch.npu.device_count(); print("torch", torch.__version__, "torch_npu", torch_npu.__version__, "devices", count); assert count >= 4'
 
     build_flagcx
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
+    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8' wheel
     (
       cd "$project_root"
-      export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-      "$PYTHON_BIN" setup.py build_ext --inplace
+      "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
     )
 
-    export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
+    export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1
+    unset FLAGCX_SKIP_HETERO
+    # Per-operation heterogeneous exclusions come from the platform YAML.
     bash "$project_root/test/script/torch_api_test.sh"
     ;;
   *)
