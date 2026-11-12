@@ -42,8 +42,9 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // condition keys on it; see makefiles/ascend.mk.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
     defined(__CCE_IS_AICORE__) ||                                              \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) \
-    || (defined(USE_ASCEND_ADAPTOR) && defined(FLAGCX_ASCEND_DEVICE_COMPILE))
+    (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    (defined(USE_ASCEND_ADAPTOR) && defined(FLAGCX_ASCEND_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
