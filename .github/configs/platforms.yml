@@ -1,20 +1,21 @@
 # Unit-test platform registry.
 #
 # The per-platform files keep detailed runner/image settings. This registry
-# controls which platforms CI can select, including manual runs.
+# controls which platforms are included when the workflow runs with
+# platform=all.
 platforms:
   cuda:
-    enabled: false
+    enabled: true
   hygon:
-    enabled: false
+    enabled: true
   iluvatar:
     enabled: true
   metax:
-    enabled: false
+    enabled: true
   ppu:
-    enabled: false
+    enabled: true
   ascend:
-    enabled: false
+    enabled: true
 shared_paths_watch:
   - .github/workflows/**
   - .github/configs/platforms.yml
