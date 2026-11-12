@@ -45,21 +45,26 @@ case "$workload" in
     ;;
   torch-api)
     export FLAGCX_ADAPTOR=ascend
+    export FLAGCX_TORCH_BACKEND=vendor
     export PYTHON_BIN=${PYTHON_BIN:-python3}
+    # Use the plugin built from this checkout, not the CI image's wheel.
+    "$PYTHON_BIN" -m pip uninstall --yes flagcx
+    export TORCH_DEVICE_BACKEND_AUTOLOAD=0
     "$PYTHON_BIN" -c 'import torch, torch_npu; count = torch.npu.device_count(); print("torch", torch.__version__, "torch_npu", torch_npu.__version__, "devices", count); assert count >= 4'
 
     build_flagcx
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
+    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8' wheel
     (
       cd "$project_root"
-      export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-      "$PYTHON_BIN" setup.py build_ext --inplace
+      "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
     )
 
-    export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    # The heterogeneous four-rank SIGSEGV is tracked in a separate Torch PR.
-    echo "Ascend coverage gap: heterogeneous Torch API is deferred to a separate PR; running homogeneous Torch API"
-    FLAGCX_SKIP_HETERO=1 bash "$project_root/test/script/torch_api_test.sh"
+    export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1
+    unset FLAGCX_SKIP_HETERO
+    # Match the Ascend runner quarantine: C2C refresh deviceMemset fails for
+    # these three heterogeneous collectives before their transfers begin.
+    export FLAGCX_TORCH_HETERO_SKIP_OPS=reduce,allreduce,reducescatter
+    bash "$project_root/test/script/torch_api_test.sh"
     ;;
   *)
     echo "Unknown Ascend workload: $workload" >&2
