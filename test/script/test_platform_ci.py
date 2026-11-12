@@ -295,12 +295,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
+        all_platforms = ["hygon"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
@@ -312,7 +312,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            all_platforms,
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,7 +705,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ["hygon"],
         )
         selected = subprocess.run(
             ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
@@ -717,6 +717,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
             ["hygon"],
         )
+        disabled = subprocess.run(
+            [
+                "ruby",
+                str(matrix_loader),
+                str(REPO_ROOT / ".github/configs"),
+                "cuda",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(disabled.returncode, 0)
+        self.assertIn("Disabled or unknown platform selection: cuda", disabled.stderr)
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
