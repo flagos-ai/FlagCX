@@ -8,7 +8,8 @@
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
+    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) \
+    || defined(__TOPSCC__)
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
@@ -23,7 +24,8 @@
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
+    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) \
+    || defined(__TOPSCC__)
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
 #define FLAGCX_CHECK_DEVICE_CC 0
@@ -328,6 +330,45 @@
 
 // CUDA runtime macros — available from both nvcc and host compiler
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+
+#elif defined(USE_ENFLAME_ADAPTOR)
+#include <tops/tops_runtime.h>
+
+#if FLAGCX_CHECK_DEVICE_CC
+// Device pass — full TOPS qualifiers.
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE __host__ __device__ __attribute__((always_inline))
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+#define FLAGCX_DEVICE_THREAD_FENCE __threadfence
+#define FLAGCX_DEVICE_SYNC_THREADS __syncsubthreads
+#define FLAGCX_THREAD_IDX_X subThreadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X threadDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_SHARED __local__
+#else
+// Host pass: retain layout constants and erase device-only qualifiers.
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_SHARED static
+#endif // FLAGCX_CHECK_DEVICE_CC
+
+#define FLAGCX_DEVICE_STREAM_PTR topsStream_t *
 
 #else
 // Non-NVIDIA platform

@@ -90,19 +90,11 @@ flagcxResult_t ecclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ecclAdaptorMemAlloc(void **ptr, size_t size) {
-  topsError_t err = topsMalloc(ptr, size);
-  if (err != topsSuccess) {
-    return flagcxUnhandledDeviceError;
-  }
-  return flagcxSuccess;
+  return (flagcxResult_t)ecclMemAlloc(ptr, 2*size);
 }
 
 flagcxResult_t ecclAdaptorMemFree(void *ptr) {
-  topsError_t err = topsFree(ptr);
-  if (err != topsSuccess) {
-    return flagcxUnhandledDeviceError;
-  }
-  return flagcxSuccess;
+  return (flagcxResult_t)ecclMemFree(ptr);
 }
 
 flagcxResult_t ecclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
@@ -119,12 +111,28 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
                                              size_t size,
                                              flagcxInnerWindow_t *win,
                                              int winFlags) {
-  return flagcxNotSupported;
+  if (*win == NULL) {
+    FLAGCXCHECK(flagcxCalloc(win, 1));
+  }
+  ecclWindow_t ecclWin = NULL;
+  flagcxResult_t res = (flagcxResult_t)ecclCommWindowRegister(
+      comm->base, buff, 2*size, &ecclWin, winFlags);
+  if (res == flagcxSuccess) {
+    (*win)->base = ecclWin;
+    (*win)->winFlags = winFlags;
+  } else {
+    free(*win);
+    *win = NULL;
+  }
+  return res;
 }
 
 flagcxResult_t ecclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
-  return flagcxNotSupported;
+  flagcxResult_t res =
+      (flagcxResult_t)ecclCommWindowDeregister(comm->base, win->base);
+  free(win);
+  return res;
 }
 
 flagcxResult_t ecclAdaptorReduce(const void *sendbuff, void *recvbuff,
@@ -232,21 +240,86 @@ flagcxResult_t ecclAdaptorGroupStart() {
 flagcxResult_t ecclAdaptorGroupEnd() { return (flagcxResult_t)ecclGroupEnd(); }
 
 flagcxResult_t
-ecclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
-                           flagcxDevCommRequirements * /*reqs*/) {
-  return flagcxNotSupported;
+ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
+                           flagcxDevCommRequirements *reqs) {
+  ecclCommProperties_t props = ECCL_COMM_PROPERTIES_INITIALIZER;
+  flagcxResult_t ret =
+      (flagcxResult_t)ecclCommQueryProperties(comm->base, &props);
+  if (ret != flagcxSuccess) {
+    return ret;
+  }
+  if (!props.deviceApiSupport) {
+    return flagcxNotSupported;
+  }
+
+  *reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs->intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs->intraMulticast = props.multimemSupport;
+  return flagcxSuccess;
 }
 
 flagcxResult_t
-ecclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
-                         const flagcxDevCommRequirements * /*reqs*/,
-                         flagcxInnerDevComm_t * /*devComm*/) {
-  return flagcxNotSupported;
+ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
+                         const flagcxDevCommRequirements *reqs,
+                         flagcxInnerDevComm_t *devComm) {
+  flagcxInnerDevComm_t inner =
+      (flagcxInnerDevComm_t)malloc(sizeof(struct flagcxInnerDevComm));
+  if (!inner)
+    return flagcxSystemError;
+
+  ecclDevCommRequirements_t ecclReqs = ECCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+//  ecclReqs.barrierCount = reqs->barrierCount;
+  ecclReqs.lsaBarrierCount = reqs->intraBarrierCount;
+  ecclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
+  ecclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
+//  ecclReqs.railGinBarrierCount = reqs->interBarrierCount;
+//  ecclReqs.ginSignalCount = reqs->interSignalCount;
+//  ecclReqs.ginContextCount = reqs->interContextCount;
+//  ecclReqs.ginCounterCount = reqs->interCounterCount;
+
+  int nRanks = -1;
+  (flagcxResult_t)ecclCommCount(comm->base, &nRanks);
+
+  printf("\necclAdaptorDevCommCreate nRanks %d\n", nRanks);
+
+  ecclReqs.barrierCount = 1;         // one combined LSA + GIN world barrier (index 0)
+  ecclReqs.lareContextCount = 1;     // one LARE context (intra-node put + signal)
+  ecclReqs.lareSignalCount = 1;      // one LARE signal slot (intra-node arrival counter)
+  ecclReqs.ginSignalCount = 2*nRanks;  // per-peer GIN signal slot (slot == sender world rank)
+  ecclReqs.ginContextCount = 1;      // single GIN context per rank
+  ecclReqs.ginConnectionType = ECCL_GIN_CONNECTION_FULL;  // cross-node ibgda, non-railed
+
+
+//  // Connection-type decision mirrors NCCL >= 2.29.7. ginForceEnable stays
+//  // false: ECCL deprecates it in favor of an explicit ginConnectionType.
+//  const bool needsFullGin = reqs->interForceEnable ||
+//                            reqs->interSignalCount > 0 ||
+//                            reqs->interCounterCount > 0;
+//  const bool needsRailGin =
+//      reqs->barrierCount > 0 || reqs->interBarrierCount > 0;
+//  ecclReqs.ginConnectionType = needsFullGin   ? ECCL_GIN_CONNECTION_FULL
+//                               : needsRailGin ? ECCL_GIN_CONNECTION_RAIL
+//                                              : ECCL_GIN_CONNECTION_NONE;
+
+  flagcxResult_t ret =
+      (flagcxResult_t)ecclDevCommCreate(comm->base, &ecclReqs, &inner->base);
+  if (ret != flagcxSuccess) {
+    free(inner);
+    return ret;
+  }
+
+  *devComm = inner;
+  return flagcxSuccess;
 }
 
-flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
-                                         flagcxInnerDevComm_t /*devComm*/) {
-  return flagcxNotSupported;
+flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
+                                         flagcxInnerDevComm_t devComm) {
+  if (!devComm)
+    return flagcxSuccess;
+  flagcxResult_t ret =
+      (flagcxResult_t)ecclDevCommDestroy(comm->base, &devComm->base);
+  free(devComm);
+  return ret;
 }
 
 struct flagcxCCLAdaptor ecclAdaptor = {

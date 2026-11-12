@@ -157,7 +157,9 @@ $(ALL_DEVICE_TEST_TARGETS) $(DEVICE_API_OBJ) $(DEVICE_IR_OBJ) \
 run-mpi run-mpi-intra run-mpi-inter run-mpi-unified-intra \
     run-mpi-unified-inter: | require-compile-kernel
 
-# Build device kernel objects via dispatcher
+KERNEL_API_SRCS := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/device_api.$(DEVICE_FILE_EXTENSION)
+KERNEL_IR_SRCS  := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/device_ir.$(DEVICE_FILE_EXTENSION)
+
 KERNEL_API_TARGETS := device_api.o
 KERNEL_IR_TARGETS  := device_ir.o
 ifneq ($(DLINK_API_OBJ),)
@@ -165,10 +167,10 @@ KERNEL_API_TARGETS += dlink_api.o
 KERNEL_IR_TARGETS  += dlink_ir.o
 endif
 
-$(DEVICE_API_OBJ) $(DLINK_API_OBJ):
+$(DEVICE_API_OBJ) $(DLINK_API_OBJ): $(KERNEL_API_SRCS)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_API_TARGETS)
 
-$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ):
+$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ): $(KERNEL_IR_SRCS)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_IR_TARGETS)
 
 $(TOOLS_OBJ): $(TOOLS_SRC)
