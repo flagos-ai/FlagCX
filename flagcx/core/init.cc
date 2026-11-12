@@ -90,6 +90,56 @@ static flagcxResult_t fillPeerInfo(flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
+static flagcxResult_t initCollectiveRingState(flagcxHeteroComm_t comm) {
+  if (comm == NULL || comm->nRanks <= 0 || comm->peerInfo == NULL)
+    return flagcxInvalidArgument;
+
+  // UniRunner's Ring/Simple path consumes communicator tuning fields that
+  // are normally populated by a collective tuner. The hetero communicator
+  // has no collective tuner yet, so install the device protocol defaults.
+  comm->nChannels = comm->collChannels = std::min(MAXCHANNELS, 16);
+  comm->buffSizes[FLAGCX_PROTO_SIMPLE] = 4 * 1024 * 1024;
+  comm->threadThresholds[FLAGCX_ALGO_RING][FLAGCX_PROTO_SIMPLE] =
+      FLAGCX_SIMPLE_THREAD_THRESHOLD;
+  comm->maxThreads[FLAGCX_ALGO_RING][FLAGCX_PROTO_SIMPLE] = 256;
+
+  for (int c = 0; c < comm->collChannels; ++c) {
+    struct flagcxRing *ring = &comm->channels[c].ring;
+    FLAGCXCHECK(flagcxCalloc(&ring->userRanks, comm->nRanks));
+    if (c == 0) {
+      for (int i = 0; i < comm->nRanks; ++i)
+        ring->userRanks[i] = i;
+      // The rank tie-breaker makes this order identical to the old sort.
+      std::sort(
+          ring->userRanks, ring->userRanks + comm->nRanks,
+          [comm](int lhs, int rhs) {
+            return comm->peerInfo[lhs].busId < comm->peerInfo[rhs].busId ||
+                   (comm->peerInfo[lhs].busId == comm->peerInfo[rhs].busId &&
+                    lhs < rhs);
+          });
+    } else {
+      memcpy(ring->userRanks, comm->channels[0].ring.userRanks,
+             static_cast<size_t>(comm->nRanks) * sizeof(int));
+    }
+    if ((c & 1) != 0)
+      std::reverse(ring->userRanks, ring->userRanks + comm->nRanks);
+
+    ring->index = -1;
+    for (int i = 0; i < comm->nRanks; ++i) {
+      if (ring->userRanks[i] == comm->rank) {
+        ring->index = i;
+        break;
+      }
+    }
+    if (ring->index < 0)
+      return flagcxInternalError;
+    ring->prev =
+        ring->userRanks[(ring->index + comm->nRanks - 1) % comm->nRanks];
+    ring->next = ring->userRanks[(ring->index + 1) % comm->nRanks];
+  }
+  return flagcxSuccess;
+}
+
 static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
                                          flagcxHeteroComm_t parent) {
   INFO(FLAGCX_INIT, "inside initTransportsRank");
@@ -236,6 +286,8 @@ static flagcxResult_t initTransportsRank(flagcxHeteroComm_t comm,
     }
     free(nodesFirstRank);
   }
+
+  FLAGCXCHECKGOTO(initCollectiveRingState(comm), ret, fail);
 
   if (!flagcxParamTopoDetectionDisable()) {
     INFO(FLAGCX_INIT, "start flagcxTopoGetServerTopo");
@@ -467,7 +519,12 @@ flagcxResult_t flagcxHeteroCommInitRank(flagcxHeteroComm_t *newcomm, int nranks,
       flagcxCommInitRankDev(newcomm, nranks, commId, myrank, cudaDev, &config));
   flagcxResult_t proxyRes = flagcxHeteroRmaProxyStart(*newcomm);
   if (proxyRes != flagcxSuccess) {
-    flagcxHeteroCommDestroy(*newcomm);
+    // Preserve the owner if device cleanup fails; the caller can retry
+    // destruction instead of losing the remaining persistent allocations.
+    flagcxResult_t cleanupRes = flagcxHeteroCommPrepareDestroy(*newcomm);
+    if (cleanupRes != flagcxSuccess)
+      return cleanupRes;
+    (void)flagcxHeteroCommDestroy(*newcomm);
     *newcomm = NULL;
     return proxyRes;
   }
@@ -486,21 +543,50 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
+  if (!comm->destroyProxyComplete) {
+    FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
+    // Clean up P2P/Net handles while proxy is still alive and peerSocks valid.
+    FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
+    FLAGCXCHECK(globalRegPool.removeAllNetHandles(comm));
+    flagcxResult_t proxyStopResult = flagcxProxyStop(comm);
+    flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
+    comm->destroyProxyResult =
+        proxyStopResult != flagcxSuccess ? proxyStopResult : proxyDestroyResult;
+    comm->destroyProxyComplete = true;
+  }
+  if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
+      comm->proxyState->uniRunnerState.streamFlags != NULL ||
+      comm->proxyState->uniRunnerState.streamFlagsCapacity != 0 ||
+      comm->proxyState->uniRunnerState.redCompletionCountersPool != NULL ||
+      comm->proxyState->uniRunnerState.groupedArScratch != NULL ||
+      comm->proxyState->uniRunnerState.ipcOwner != NULL ||
+      comm->proxyState->uniRunnerState.ipcInputMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcOutputMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcReadyMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcReadyBuffer != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingScratchMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingProgressMem != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingScratchBuffer != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingProgressBuffer != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingTriggersDevice != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingLanesDevice != NULL ||
+      comm->proxyState->uniRunnerState.ipcRingControlHost != NULL ||
+      comm->proxyState->uniRunnerState.ipcParentFlagsDevice != NULL) {
+    FLAGCXCHECK(deviceAdaptor->setDevice(comm->cudaDev));
+    FLAGCXCHECK(
+        cleanupUniRunnerPersistentState(&comm->proxyState->uniRunnerState));
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
-  FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
-  // Clean up P2P/Net handles while proxy is still alive and peerSocks valid
-  FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
-  FLAGCXCHECK(globalRegPool.removeAllNetHandles(comm));
-  // Stop: send stop + close peerSocks
-  flagcxResult_t proxyStopResult = flagcxProxyStop(comm);
-  // Destroy: join thread, free proxy resources
-  // A transport cleanup failure is reported after the service thread has
-  // joined. Continue releasing communicator-owned host state before returning
-  // that error; returning immediately here would leak the communicator.
-  flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
+  FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm));
+  flagcxResult_t proxyResult = comm->destroyProxyResult;
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {
+    free(comm->channels[i].ring.userRanks);
     for (int r = 0; r < comm->nRanks; r++) {
       free(comm->channels[i].peers[r]);
     }
@@ -537,6 +623,5 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   free(comm->peerInfo);
   free(comm);
 
-  return proxyStopResult != flagcxSuccess ? proxyStopResult
-                                          : proxyDestroyResult;
+  return proxyResult;
 }
