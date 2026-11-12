@@ -15,6 +15,10 @@ ifneq ($(origin USE_ILUVATAR_COREX), undefined)
 endif
 
 # set to 0 if not provided
+# USE_GENERIC builds a vendor-neutral library that takes its device and CCL
+# adaptors from run-time plugins; it is mutually exclusive with the per-vendor
+# switches below and takes precedence over them.
+USE_GENERIC ?= 0
 USE_NVIDIA ?= 0
 USE_ASCEND ?= 0
 USE_ILUVATAR ?= 0
@@ -182,7 +186,9 @@ ifeq ($(FLAGCX_COVERAGE), 1)
   HOST_CXXFLAGS += --coverage -O0
   COVERAGE_LINK_FLAG := --coverage
 endif
-ifeq ($(USE_NVIDIA), 1)
+ifeq ($(USE_GENERIC), 1)
+  include makefiles/generic.mk
+else ifeq ($(USE_NVIDIA), 1)
   include makefiles/nvidia.mk
 else ifeq ($(USE_ASCEND), 1)
   include makefiles/ascend.mk
@@ -242,10 +248,12 @@ ifeq ($(USE_UCX), 1)
 	UCX_LINK = -lucp -lucs -luct
 	NET_ADAPTOR_FLAG = -DUSE_UCX
 else
-	UCX_LIB = $(UCX_HOME)/lib
-	UCX_INCLUDE = $(UCX_HOME)/include
-	UCX_LINK = 
-	NET_ADAPTOR_FLAG = 
+	# UCX_HOME is unset on this path, so emit no search path at all rather
+	# than a bare "/lib" that would end up in -L and in the RUNPATH.
+	UCX_LIB =
+	UCX_INCLUDE =
+	UCX_LINK =
+	NET_ADAPTOR_FLAG =
 endif
 
 # IBUC network adaptor configuration
@@ -323,6 +331,15 @@ INCLUDEDIR := \
 ifeq ($(USE_SHMEM), 1)
 INCLUDEDIR += $(SHMEM_HOME)/include
 endif
+
+# All -I flags for the compile rules. Built with addprefix so that an empty
+# search path emits no flag: a bare "-I" would consume the argument that
+# follows it. A vendor-neutral build leaves the device/CCL paths empty.
+COMPILE_INCLUDES = $(addprefix -I,$(INCLUDEDIR)) \
+	$(addprefix -I,$(strip $(CCL_INCLUDE))) \
+	$(addprefix -I,$(DEVICE_INCLUDE)) \
+	$(addprefix -I,$(strip $(HOST_CCL_INCLUDE))) \
+	$(addprefix -I,$(strip $(UCX_INCLUDE)))
 
 LIBSRCFILES:= \
 	$(wildcard flagcx/*.cc) \
@@ -509,13 +526,22 @@ $(BUILD_CONFIG_FILE): build_config_force
 $(LIBOBJ) $(DEVOBJ): build_config_force
 endif
 
+COMMA := ,
+
+# Build the -L and -rpath entries from the non-empty search paths only. A
+# vendor-neutral build leaves the device/CCL paths empty, and a bare "-L"
+# would otherwise swallow the following argument.
+LINK_SEARCH_DIRS := $(strip $(CCL_LIB) $(DEVICE_LIB) $(HOST_CCL_LIB) $(UCX_LIB))
+LINK_LIB_DIRS    := $(addprefix -L,$(LINK_SEARCH_DIRS))
+LINK_RPATHS      := $(addprefix -Wl$(COMMA)-rpath$(COMMA),$(strip $(CCL_LIB) $(HOST_CCL_LIB) $(UCX_LIB)))
+
 $(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS) p2p_engine_mode_force
 	@mkdir -p `dirname $@`
 	@mode=$$(test -f $(P2P_ENGINE_MODE_FILE) && sed -n '1p' $(P2P_ENGINE_MODE_FILE)); \
 	  if [ ! -f $@ ] || [ "$$mode" != "$(USE_SHARED_P2P_ENGINE)" ] || \
 	     [ -n "$(filter-out p2p_engine_mode_force,$?)" ]; then \
 	    echo "Linking   $@"; \
-	    $(LINKER) $(LINKER_FLAGS) $(COVERAGE_LINK_FLAG) $(LIBOBJ) $(DEVOBJS) -o $@ -L$(CCL_LIB) -L$(DEVICE_LIB) -L$(HOST_CCL_LIB) -L$(UCX_LIB) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) -Wl,-rpath,$(CCL_LIB) -Wl,-rpath,$(HOST_CCL_LIB) -Wl,-rpath,$(UCX_LIB) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
+	    $(LINKER) $(LINKER_FLAGS) $(COVERAGE_LINK_FLAG) $(LIBOBJ) $(DEVOBJS) -o $@ $(LINK_LIB_DIRS) $(ACCL_BAREX_LINK_FLAG) $(SHCA_LINK_FLAG) -shared -fvisibility=default -Wl,--no-as-needed -Wl,-rpath,$(LIBDIR) $(LINK_RPATHS) -lpthread -lrt -ldl $(CCL_LINK) $(DEVICE_LINK) $(HOST_CCL_LINK) $(UCX_LINK) $(ACCL_BAREX_LINK) $(SHCA_LINK) -g && \
 	    printf '%s\n' '$(USE_SHARED_P2P_ENGINE)' > $(P2P_ENGINE_MODE_FILE); \
 	  fi
 
@@ -534,7 +560,7 @@ $(BUILD_INCDIR)/device_utils.h: flagcx/adaptor/include/device_utils.h
 $(OBJDIR)/%.o: %.cc
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@"
-	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(ACCL_BAREX_INCLUDE_FLAG) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
+	@$(HOST_COMPILER) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS) $< -o $@ $(COMPILE_INCLUDES) $(ACCL_BAREX_INCLUDE_FLAG) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_HOST_FLAG) -c -fPIC -fvisibility=default -Wvla -Wno-unused-function -Wno-sign-compare -Wall -MMD -MP -g
 
 ifeq ($(COMPILE_KERNEL), 1)
 ifeq ($(DEVICE_NEEDS_DLINK), 1)
@@ -545,7 +571,7 @@ endif
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@ ($(DEVICE_PLATFORM))"
-	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
+	@$(DEVICE_COMPILER) $< -o $@ $(COMPILE_INCLUDES) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)

@@ -114,6 +114,15 @@ flagcxResult_t flagcxCCLAdaptorPluginInit() {
   if (cclPluginDlHandle != NULL) {
     cclPluginRefCount++;
   }
+  // See flagcxDeviceAdaptorPluginInit(): a vendor-neutral library carries no
+  // built-in device CCL adaptor, so the plugin is mandatory there and a no-op
+  // check everywhere else.
+  if (cclAdaptors[flagcxCCLAdaptorDevice] == NULL) {
+    WARN("ADAPTOR/Plugin: No device CCL adaptor available. This library is "
+         "built without a built-in CCL adaptor; set FLAGCX_CCL_ADAPTOR_PLUGIN "
+         "to a CCL adaptor plugin for the installed accelerator.");
+    return flagcxInvalidUsage;
+  }
   return flagcxSuccess;
 }
 
