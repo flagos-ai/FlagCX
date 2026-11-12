@@ -49,6 +49,12 @@ FLAGCX_HOST_DECORATOR flagcxResult_t enqueue(void *fifoBuffer, uint64_t addr1,
                                              size_t count, size_t nthreads,
                                              flagcxDataType_t datatype,
                                              flagcxRedOp_t redop, int *ret) {
+#if defined(USE_MUSA_ADAPTOR)
+  // The MUSA persistent reduction kernel currently implements float/Sum.
+  // Reject other operations before publishing a descriptor to the GPU.
+  if (datatype != flagcxFloat || redop != flagcxSum)
+    return flagcxNotSupported;
+#endif
   int idx = -1;
   uint64_t *buffer = (uint64_t *)fifoBuffer;
   int capacity = buffer[flagcxFifoIdxCapacity];
