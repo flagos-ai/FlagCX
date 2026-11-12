@@ -127,11 +127,21 @@ TEST(GdrVisibilityPolicy, HopperDataDirectC2cRestoresWriteRequirement) {
 TEST(GdrVisibilityPolicy, NonCudaBackendsDoNotUseCudaArchitecture) {
   for (flagcxGdrDeviceFamily_t family :
        {FLAGCX_GDR_DEVICE_METAX, FLAGCX_GDR_DEVICE_DU, FLAGCX_GDR_DEVICE_PPU,
-        FLAGCX_GDR_DEVICE_ASCEND, FLAGCX_GDR_DEVICE_UNKNOWN}) {
+        FLAGCX_GDR_DEVICE_ASCEND, FLAGCX_GDR_DEVICE_ILUVATAR,
+        FLAGCX_GDR_DEVICE_UNKNOWN}) {
     flagcxGdrVisibilityContext context = cudaContext(90);
     context.deviceFamily = family;
     EXPECT_EQ(resolve(context).requirements, kRead | kWrite);
   }
+}
+
+TEST(GdrVisibilityPolicy, IluvatarKeepsWriteAcquireRequirement) {
+  flagcxGdrVisibilityContext context = cudaContext(90);
+  context.deviceFamily = FLAGCX_GDR_DEVICE_ILUVATAR;
+  context.defaultRequirements = kWrite;
+  const flagcxGdrVisibilityDecision decision = resolve(context);
+  EXPECT_EQ(decision.requirements, kWrite);
+  EXPECT_EQ(decision.reasons & FLAGCX_GDR_VISIBILITY_REASON_CUDA_HOPPER, 0u);
 }
 
 TEST(GdrVisibilityPolicy, ProviderCanForceEitherDirection) {

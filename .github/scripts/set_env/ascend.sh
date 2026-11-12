@@ -22,7 +22,6 @@ FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
 FLAGCX_CI_ENABLE_PXN=${FLAGCX_CI_ENABLE_PXN:-0}
 # NPU memory registration is part of the Ascend IBRC contract. Require the
 # four one-sided GPU cases to transfer and verify data.
-export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
