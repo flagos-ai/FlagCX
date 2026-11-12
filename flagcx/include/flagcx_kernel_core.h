@@ -19,6 +19,7 @@
 
 #include "device_utils.h"
 #include "flagcx.h"
+#include <stddef.h>
 
 struct flagcxHeteroComm;
 
@@ -77,6 +78,78 @@ typedef enum {
   flagcxReduceTriggerInprogress = 2,
   flagcxReduceTriggerComplete = 3
 } flagcxReduceTriggerState;
+
+typedef enum {
+  flagcxIpcBufferInput = 0,
+  flagcxIpcBufferOutput = 1
+} flagcxIpcBufferType;
+
+#ifndef FLAGCX_RING_STEP_KIND_DEFINED
+#define FLAGCX_RING_STEP_KIND_DEFINED
+typedef enum {
+  uniRunnerRingStepSend = 0,
+  uniRunnerRingStepRecvReduceSend = 1,
+  uniRunnerRingStepRecvReduceCopySend = 2,
+  uniRunnerRingStepRecvCopySend = 3,
+  uniRunnerRingStepRecv = 4
+} uniRunnerRingStepKind;
+#endif
+
+typedef enum {
+  flagcxComputeTriggerReduce = 0,
+  flagcxComputeTriggerGemm = 1
+} flagcxComputeTriggerType;
+
+typedef enum {
+  flagcxStreamFlagIdle = 0,
+  flagcxStreamFlagPend = 1,
+  flagcxStreamFlagDone = 2
+} flagcxStreamFlagState;
+
+// IPC ready slots use monotonically increasing serial numbers with zero
+// reserved for "never published".  A producer may advance the same slot to a
+// later epoch before a slower consumer observes the exact expected value, so
+// equality is too strict.  Serial-number arithmetic keeps that later value
+// valid across UINT64_MAX -> 1 while rejecting stale values, provided ranks do
+// not differ by 2^63 or more invocations.
+FLAGCX_HOST_DEVICE_INLINE bool flagcxIpcEpochReached(uint64_t observed,
+                                                     uint64_t expected) {
+  return observed != 0 && expected != 0 &&
+         observed - expected < (uint64_t(1) << 63);
+}
+
+FLAGCX_HOST_DEVICE_INLINE uint64_t flagcxNextIpcEpoch(uint64_t epoch) {
+  ++epoch;
+  return epoch == 0 ? 1 : epoch;
+}
+
+// Static IPC reserves the high bit of an end-of-invocation control value to
+// propagate a remote abort. Epoch zero remains uninitialized, so a static IPC
+// invocation uses the closed interval [1, INT64_MAX].
+static constexpr uint64_t flagcxIpcControlAbortBit = uint64_t(1) << 63;
+
+FLAGCX_HOST_DEVICE_INLINE bool flagcxIpcControlEpochValid(uint64_t epoch) {
+  return epoch != 0 && (epoch & flagcxIpcControlAbortBit) == 0;
+}
+
+FLAGCX_HOST_DEVICE_INLINE bool flagcxIpcControlEpochReached(uint64_t value,
+                                                            uint64_t epoch) {
+  const uint64_t observedEpoch = value & ~flagcxIpcControlAbortBit;
+  // Control epochs deliberately do not wrap.  A faster rank may overwrite
+  // done[E] with done[E+1] before a slower rank observes E, so accepting only
+  // equality can strand the slower rank forever.
+  return flagcxIpcControlEpochValid(epoch) && observedEpoch != 0 &&
+         observedEpoch >= epoch;
+}
+
+struct alignas(16) flagcxStaticIpcControl {
+  uint64_t epoch;
+  uint64_t readyDataOffset;
+  uint64_t abortSlot;
+  uint64_t doneBase;
+  uint32_t localRank;
+  uint32_t localRanks;
+};
 
 // ==========================================================================
 // flagcxDeviceTrigger bit layout (24 bytes = 3 × uint64_t: fst, snd, trd)
@@ -172,7 +245,27 @@ constexpr unsigned int flagcxReduceTriggerOffState =
     flagcxReduceTriggerOffRedop + flagcxReduceTriggerBitsRedop;
 /* op state: 0 for available, 1 for enqueued, 2 for in-progress, 3 for done */
 constexpr unsigned int flagcxReduceTriggerBitsState = 2;
+constexpr unsigned int flagcxReduceTriggerOffComputeType =
+    flagcxReduceTriggerOffState + flagcxReduceTriggerBitsState;
+constexpr unsigned int flagcxReduceTriggerBitsComputeType = 2;
 constexpr unsigned int flagcxReduceTriggerBitsFifoReserved = 1;
+
+constexpr unsigned int flagcxReduceWorkerOffWorkerId = 0;
+constexpr unsigned int flagcxReduceWorkerBitsWorkerId = 32;
+constexpr unsigned int flagcxReduceWorkerOffWorkerCount = 32;
+constexpr unsigned int flagcxReduceWorkerBitsWorkerCount = 32;
+
+constexpr unsigned int flagcxGemmTriggerOffWorkerId = 0;
+constexpr unsigned int flagcxGemmTriggerBitsWorkerId = 32;
+constexpr unsigned int flagcxGemmTriggerOffWorkerCount = 32;
+constexpr unsigned int flagcxGemmTriggerBitsWorkerCount = 31;
+constexpr unsigned int flagcxGemmTriggerOffAccumulate = 63;
+constexpr unsigned int flagcxGemmTriggerBitsAccumulate = 1;
+
+static_assert(flagcxNumTypes <= (1u << flagcxReduceTriggerBitsDatatype),
+              "Reduce trigger datatype field is too narrow");
+static_assert(flagcxRedNoOp < (1u << flagcxReduceTriggerBitsRedop),
+              "Reduce trigger redop field is too narrow");
 
 // Kernel launch configuration constants.
 // Also defined in device_api/flagcx_device.h (with same include guard).
@@ -220,7 +313,7 @@ struct flagcxDeviceTrigger {
 typedef flagcxDeviceTrigger *flagcxDeviceTrigger_t;
 
 struct alignas(16) flagcxReduceTrigger {
-  uint64_t value[4];
+  uint64_t value[12];
 
 #ifdef COMPILE_KERNEL
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getInput1();
@@ -231,16 +324,119 @@ struct alignas(16) flagcxReduceTrigger {
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getDatatype();
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getRedop();
   FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getState();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getComputeType();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getFlagIn();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getFlagOut();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getReduceWorkerId();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getReduceWorkerCount();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getReduceCompletionCounter();
+  FLAGCX_DEVICE_INLINE_DECORATOR void publishOutputDone();
+  FLAGCX_DEVICE_INLINE_DECORATOR void recycle();
+  FLAGCX_DEVICE_INLINE_DECORATOR void completeReduceWorker();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmM();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmN();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmK();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmLda();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmLdb();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmLdc();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmAccumulate();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmWorkerId();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmWorkerCount();
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t getGemmCompletionCounter();
+  FLAGCX_DEVICE_INLINE_DECORATOR void completeGemmWorker();
   FLAGCX_DEVICE_INLINE_DECORATOR void setComplete();
 #endif
-  FLAGCX_HOST_DECORATOR void setValue(uint64_t fst, uint64_t snd, uint64_t out,
-                                      size_t count, size_t nthreads,
-                                      flagcxDataType_t datatype,
-                                      flagcxRedOp_t redOp,
-                                      flagcxReduceTriggerState state);
+  FLAGCX_HOST_DECORATOR void
+  setValue(uint64_t fst, uint64_t snd, uint64_t out, size_t count,
+           size_t nthreads, flagcxDataType_t datatype, flagcxRedOp_t redOp,
+           flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
+  FLAGCX_HOST_DECORATOR void setReduceWorkerValue(
+      uint64_t fst, uint64_t snd, uint64_t out, size_t count, size_t nthreads,
+      flagcxDataType_t datatype, flagcxRedOp_t redOp, uint32_t workerId,
+      uint32_t workerCount, uint64_t completionCounter,
+      flagcxReduceTriggerState state, uint64_t flagIn, uint64_t flagOut);
+  FLAGCX_HOST_DECORATOR void
+  setGemmValue(uint64_t a, uint64_t b, uint64_t c, uint32_t m, uint32_t n,
+               uint32_t k, uint32_t lda, uint32_t ldb, uint32_t ldc,
+               size_t nthreads, flagcxDataType_t datatype, int accumulate,
+               uint32_t workerId, uint32_t workerCount,
+               uint64_t completionCounter, flagcxReduceTriggerState state,
+               uint64_t flagIn, uint64_t flagOut);
   FLAGCX_HOST_DECORATOR uint64_t pollState();
   FLAGCX_HOST_DECORATOR void setState(int state);
 };
 typedef flagcxReduceTrigger *flagcxReduceTrigger_t;
+static_assert(sizeof(flagcxReduceTrigger) == 96,
+              "compute trigger layout must remain 96 bytes");
 
+// Intra-node IPC/LSA push trigger. The source and destination memory handles
+// are bound once at collective-kernel launch; FIFO entries only carry buffer
+// selection, byte offsets, peer-local rank, and DAG synchronization metadata.
+struct alignas(16) flagcxIpcTrigger {
+  uint64_t srcOffsetBytes;
+  uint64_t dstOffsetBytes;
+  uint64_t bytes;
+  uint64_t chunkSize;
+  uint64_t flagOut;
+  uint64_t epoch;
+  uint32_t srcBufferType;
+  uint32_t peerLocalRank;
+  uint32_t readySlot;
+  uint32_t parentFlagsOffset;
+  uint32_t numParentFlags;
+  uint32_t numChunks;
+  uint32_t completedChunks; // atomically published after peer stores
+  uint32_t state;
+  uint64_t nextChunk; // atomically claimed by IPC executor blocks
+};
+
+struct alignas(16) flagcxRingStepTrigger {
+  uint64_t offsetElements;
+  uint64_t countElements;
+  uint64_t flagOut;
+  uint32_t channelId;
+  uint32_t laneOrdinal;
+  uint32_t kind;
+  uint32_t postOp;
+};
+
+struct alignas(16) flagcxRingLaneDesc {
+  uint64_t firstTrigger;
+  uint64_t numTriggers;
+  uint64_t scratchChannelOffsetBytes;
+  uint32_t channelId;
+  uint32_t ringIndex;
+  int32_t prevLocalRank;
+  int32_t nextLocalRank;
+  uint32_t nRanks;
+  uint32_t reserved;
+};
+
+struct alignas(128) flagcxRingCounterLine {
+  uint64_t value;
+  uint8_t padding[120];
+};
+
+struct alignas(128) flagcxRingChannelProgress {
+  flagcxRingCounterLine head;
+  flagcxRingCounterLine tail;
+  uint64_t sendStep;
+  uint64_t recvStep;
+  uint8_t padding[112];
+};
+
+static_assert(sizeof(flagcxRingStepTrigger) % 16 == 0,
+              "RingStep trigger must preserve 16-byte ABI granularity");
+static_assert(alignof(flagcxRingStepTrigger) >= 16,
+              "RingStep trigger must be at least 16-byte aligned");
+static_assert(sizeof(flagcxRingLaneDesc) % 16 == 0,
+              "Ring lane descriptor must preserve 16-byte ABI granularity");
+static_assert(alignof(flagcxRingLaneDesc) >= 16,
+              "Ring lane descriptor must be at least 16-byte aligned");
+static_assert(offsetof(flagcxRingChannelProgress, tail) -
+                      offsetof(flagcxRingChannelProgress, head) >=
+                  128,
+              "Ring head and tail must occupy distinct cache lines");
+static_assert(sizeof(flagcxRingChannelProgress) % 128 == 0,
+              "Ring progress must preserve cache-line granularity");
 #endif // FLAGCX_KERNEL_CORE_H_
