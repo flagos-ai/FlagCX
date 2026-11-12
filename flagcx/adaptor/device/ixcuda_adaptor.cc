@@ -109,12 +109,22 @@ flagcxResult_t ixcudaAdaptorGdrMemAlloc(void **ptr, size_t size,
   if (ptr == NULL) {
     return flagcxInvalidArgument;
   }
+  *ptr = NULL;
   DEVCHECK(cudaMalloc(ptr, size));
   cudaPointerAttributes attrs;
-  DEVCHECK(cudaPointerGetAttributes(&attrs, *ptr));
+  if (cudaPointerGetAttributes(&attrs, *ptr) != cudaSuccess ||
+      attrs.devicePointer == NULL) {
+    cudaFree(*ptr);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
   unsigned flags = 1;
-  DEVCHECK(cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
-                                 (CUdeviceptr)attrs.devicePointer));
+  if (cuPointerSetAttribute(&flags, CU_POINTER_ATTRIBUTE_SYNC_MEMOPS,
+                            (CUdeviceptr)attrs.devicePointer) != CUDA_SUCCESS) {
+    cudaFree(*ptr);
+    *ptr = NULL;
+    return flagcxUnhandledDeviceError;
+  }
   return flagcxSuccess;
 }
 
@@ -376,6 +386,15 @@ flagcxResult_t ixcudaAdaptorGetDeviceByPciBusId(int *dev,
   return flagcxSuccess;
 }
 
+flagcxResult_t ixcudaAdaptorCanAccessPeer(int srcDev, int dstDev,
+                                          int *canAccess) {
+  if (canAccess == NULL)
+    return flagcxInvalidArgument;
+  *canAccess = 0;
+  DEVCHECK(cudaDeviceCanAccessPeer(canAccess, srcDev, dstDev));
+  return flagcxSuccess;
+}
+
 flagcxResult_t ixcudaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
                                               int) {
   return flagcxNotSupported;
@@ -543,6 +562,7 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
-      FLAGCX_GDR_WRITE_REQUIRES_FLUSH,
+      FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_ILUVATAR, NULL,
+      ixcudaAdaptorCanAccessPeer,
 };
 #endif // USE_ILUVATAR_ADAPTOR

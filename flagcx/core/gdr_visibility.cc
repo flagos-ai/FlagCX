@@ -21,7 +21,7 @@ FLAGCX_PARAM(GdrWriteRequiresFlush, "GDR_WRITE_REQUIRES_FLUSH", -1);
 
 bool isKnownDeviceFamily(flagcxGdrDeviceFamily_t family) {
   return family >= FLAGCX_GDR_DEVICE_UNKNOWN &&
-         family <= FLAGCX_GDR_DEVICE_ASCEND;
+         family <= FLAGCX_GDR_DEVICE_ILUVATAR;
 }
 
 bool isKnownGpuNetPath(flagcxGdrGpuNetPath_t path) {
