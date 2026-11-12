@@ -11,6 +11,7 @@ paths_watch:
   - .github/workflows/unit_tests_common.yml
   - Dockerfile.ascend-ci
   - flagcx/adaptor/device/cann_adaptor.cc
+  - flagcx/adaptor/device/cann_vmm.h
   - flagcx/adaptor/include/ascend_adaptor.h
   - flagcx/adaptor/ccl/hccl_adaptor.cc
   - makefiles/ascend.mk
@@ -65,14 +66,8 @@ unit_test_suites:
 ignore_test:
   phases:
     - suite: rma
-      name: rma-mpi
-      reason: RMA visibility APIs/device consumer kernel and multi-rank lifecycle validation are unavailable
-    - suite: symmem
-      name: symmem-mpi
-      reason: Prior multi-rank diagnostic crashed during proxy service teardown; lifecycle stack is pending
-    - suite: rma
       name: gdr-visibility
-      reason: Ascend lacks stream wait/write-value APIs and a device consumer kernel
+      reason: CUDA immediate-consumer conformance cases are outside Ascend RMA/SymMem coverage
     - suite: torch-api
       name: heterogeneous
       reason: Ascend heterogeneous Torch path is disabled in CI

@@ -484,8 +484,8 @@ struct flagcxCoopLanes {
 struct flagcxCoopAny {
   typename DeviceAPI::CoopAny _base;
 
-  flagcxCoopAny() = default;
-  flagcxCoopAny(flagcxCoopAny const &) = default;
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny() = default;
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopAny const &) = default;
 
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopBlock b)
       : _base(b._base) {}

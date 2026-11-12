@@ -687,10 +687,9 @@ run_suite() {
             # consumer kernel is built for this platform.
             ;;
           ascend)
-            # CANN has no stream wait/write-value support, and the RMA
-            # device-consumer kernel is not built for Ascend. Keep the
-            # platform's IPC/NET correctness runs without this conformance
-            # matrix.
+            # The existing immediate-consumer cases are deliberately outside
+            # this Ascend RMA/SymMem change. IPC and NET correctness still run.
+            echo "Ascend RMA scope: running existing IPC and NET cases without the CUDA immediate-consumer conformance cases"
             ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The

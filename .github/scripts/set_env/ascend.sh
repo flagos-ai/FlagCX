@@ -10,6 +10,7 @@ fi
 
 export DEVICE_HOME=${DEVICE_HOME:-/usr/local/Ascend/ascend-toolkit/latest}
 export CCL_HOME=${CCL_HOME:-$DEVICE_HOME}
+export FLAGCX_ADAPTOR=ascend
 export MPI_HOME=${MPI_HOME:-/usr/local/mpi}
 export PATH="$DEVICE_HOME/bin:${PATH:-}"
 export LD_LIBRARY_PATH="$DEVICE_HOME/lib64:/usr/local/Ascend/driver/lib64:/usr/local/Ascend/driver/lib64/driver:${LD_LIBRARY_PATH:-}"
@@ -45,50 +46,11 @@ flagcx_ci_configure_suite() {
   esac
 }
 
-# RMA and SymMem retain their single-process phases until their remaining
-# multi-rank capabilities and lifecycle issues are addressed.
-flagcx_ci_run_suite_override() {
-  local suite=$1
-  local suite_dir=$2
-  shift 2
-  local -a args=("$@")
-
-  case "$suite" in
-  rma | symmem) ;;
-  *)
-    FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
-    return
-    ;;
-  esac
-
-  FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
-  local unit_status=0
-  local project_root=${PROJECT_ROOT:-$(cd "$FLAGCX_CI_ENV_DIR/../../.." && pwd)}
-  local skip_reason
-
-  case "$suite" in
-  rma)
-    FLAGCX_CI_TEST_LABEL="Ascend rma unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-    skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
-      phase rma rma-mpi)
-    echo "Ascend coverage gap: rma IPC and network MPI are not run: $skip_reason"
-    ;;
-  symmem)
-    FLAGCX_CI_TEST_LABEL="Ascend symmem unit tests" \
-      "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests" || unit_status=$?
-    skip_reason=$(python3 "$project_root/.github/scripts/ci/ignore_test.py" \
-      phase symmem symmem-mpi)
-    echo "Ascend coverage gap: symmem IPC, local NET fallback and NET MR are not run: $skip_reason"
-    ;;
-  esac
-
-  echo "Ascend $suite results: unit=$unit_status (multi-rank phases skipped)"
-  return "$unit_status"
-}
-
 flagcx_ci_prepare() {
   local suite=$1
+  if [[ "$suite" == rma || "$suite" == symmem ]]; then
+    export FLAGCX_CI_REQUIRE_GTEST_PASS=1
+  fi
   echo "Preparing Ascend environment for CI workload: $suite"
   test -d "$DEVICE_HOME/include"
   test -e /dev/davinci_manager
