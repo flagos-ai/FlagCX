@@ -75,9 +75,12 @@ class IluvatarRunnerCiTest(unittest.TestCase):
         reason = timeout_wrapper_unsupported()
         if reason:
             self.skipTest(reason)
-        for mode, pxn in (("HOMO", "0"), ("HYBRID", "0"), ("HYBRID", "1")):
+        for mode, pxn, transport in (
+            ("HOMO", "0", "P2P"), ("HYBRID", "0", "P2P"),
+            ("HYBRID", "0", "NET"), ("HYBRID", "1", "NET"),
+        ):
             for enabled in ("0", "1"):
-                with self.subTest(mode=mode, pxn=pxn, enabled=enabled):
+                with self.subTest(mode=mode, pxn=pxn, transport=transport, enabled=enabled):
                     with tempfile.TemporaryDirectory() as directory:
                         root = Path(directory)
                         binary = self.script(root / "runner_mpi_tests", '''
@@ -90,7 +93,8 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
                         result = subprocess.run(
                             ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
                              "-x", f"FLAGCX_CI_EXPECT_RUNNER_MODE={mode}",
-                             "-x", f"FLAGCX_CI_EXPECT_PXN={pxn}", str(binary)],
+                             "-x", f"FLAGCX_CI_EXPECT_PXN={pxn}",
+                             "-x", f"FLAGCX_CI_EXPECT_PEER_TRANSPORT={transport}", str(binary)],
                             env={**os.environ, "BASH_ENV": "",
                                  "FLAGCX_CI_IGNORE_TEST": self.ignore_config(enabled == "1"),
                                  "FLAGCX_CI_MPI_LABEL": "arbitrary stage label",

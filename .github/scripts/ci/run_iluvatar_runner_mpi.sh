@@ -22,10 +22,10 @@ for arg in "$@"; do
     FLAGCX_CI_EXPECT_PXN=*) pxn_enabled=${arg#*=} ;;
   esac
 done
-if [[ " ${args[*]} " == *"FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET"* ]]; then
-  runner_mode=forced-NET
-elif [[ "$pxn_enabled" == 1 ]]; then
+if [[ "$pxn_enabled" == 1 ]]; then
   runner_mode=PXN
+elif [[ " ${args[*]} " == *"FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET"* ]]; then
+  runner_mode=forced-NET
 fi
 if [[ -z "$binary" || ! -x "$binary" ]]; then
   echo 'Iluvatar runner binary is missing' >&2
