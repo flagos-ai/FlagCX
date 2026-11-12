@@ -51,7 +51,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
             return outputs, result.stdout
 
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
-        self.assertEqual(ALL_ENABLED_PLATFORMS, ["cuda"])
+        self.assertEqual(
+            ALL_ENABLED_PLATFORMS,
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+        )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
                 outputs, _ = self.resolve({"event_name": event_name})
@@ -73,9 +76,9 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cuda_adaptor.cc",
                 enabled_platform_or_matrix("cuda"),
             ),
-            ("flagcx/adaptor/device/ixcuda_adaptor.cc", ALL_ENABLED_PLATFORMS),
-            ("docker/iluvatar-ci/Dockerfile", ALL_ENABLED_PLATFORMS),
-            ("flagcx/adaptor/device/cann_adaptor.cc", ALL_ENABLED_PLATFORMS),
+            ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
+            ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
+            ("flagcx/adaptor/device/cann_adaptor.cc", ["ascend"]),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
@@ -132,11 +135,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:cuda"],
+                "labels": ["platform:iluvatar"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["cuda"])
+        self.assertEqual(outputs["platforms"], ["iluvatar"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -184,7 +187,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:cuda"],
+            "ref": "a" * 40, "labels": ["platform:iluvatar"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -192,10 +195,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:cuda"],
+            "is_pull_request": True, "labels": ["platform:iluvatar"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["cuda"])
+        self.assertEqual(outputs["platforms"], ["iluvatar"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -206,15 +209,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "cuda"}, ["cuda"]),
+            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test cuda",
+                    "comment": "/test iluvatar",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["cuda"],
+                ["iluvatar"],
             ),
             (
                 "issue_comment",
@@ -256,8 +259,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for context in (
             {"event_name": "pull_request", "labels": ["platform:unknown"]},
             {"event_name": "workflow_dispatch", "selection": "unknown"},
-            {"event_name": "pull_request", "labels": ["platform:iluvatar"]},
-            {"event_name": "workflow_dispatch", "selection": "hygon"},
         ):
             with self.subTest(context=context), tempfile.TemporaryDirectory() as temp_dir:
                 context_path = Path(temp_dir) / "context.json"
