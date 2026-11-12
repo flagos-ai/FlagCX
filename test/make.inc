@@ -153,6 +153,14 @@ ADAPTOR_DEFINE := $(ADAPTOR_FLAG)
 # particular, a normal g++ compilation cannot consume the XPU implementation;
 # the platform device compiler selects those traits for the kernel object.
 HOST_ADAPTOR_DEFINE := $(filter-out -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_DEFINE))
+ifeq ($(USE_ILUVATAR), 1)
+# Define USE_ILUVATAR_ADAPTOR for every host translation unit and expose the
+# CoreX headers, so host tests see the same adaptor layout and control-word
+# widths as the library. Other platforms pass HOST_ADAPTOR_DEFINE per target.
+CXXFLAGS += $(HOST_ADAPTOR_DEFINE) -I$(DEVICE_HOME)/include
+endif
+# PLATFORM_IR_DIR is derived from KERNEL_PLATFORM further down, once
+# DEVICE_PLATFORM is known to be non-empty. Do not define it twice.
 
 # SHMEM include path and host-test allocator selection. Device CommTraits are
 # selected separately by each platform's ADAPTOR_DEFINE/device compiler flags;

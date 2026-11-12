@@ -82,6 +82,22 @@ UNIT_SRC := test_dev_comm_cleanup.cpp
 UNIT_OBJ := $(OBJDIR)/test_dev_comm_cleanup.o
 UNIT_TARGET := $(BINDIR)/test_dev_comm_cleanup
 
+# Provider dispatch is host-testable without a GPU or a FlagCX library link.
+PROVIDER_TEST_TARGET := $(BINDIR)/test_default_net_provider
+.PHONY: provider_test
+$(PROVIDER_TEST_TARGET): test_default_net_provider.cpp
+	@mkdir -p $(BINDIR)
+	@$(HOST_CXX) -std=c++11 -o $@ $< $(FLAGCX_INCLUDES)
+
+provider_test: $(PROVIDER_TEST_TARGET)
+	@$(PROVIDER_TEST_TARGET)
+
+# Only NVIDIA's host suite runs the NVIDIA Provider test automatically.
+PROVIDER_UNIT_TARGET :=
+ifeq ($(KERNEL_PLATFORM),nvidia)
+PROVIDER_UNIT_TARGET := $(PROVIDER_TEST_TARGET)
+endif
+
 # This host-only test must not select device CommTraits: KLX's SHMEM traits are
 # compiled by xpu-clang, not g++. Pass only the allocator choice needed by the
 # provenance assertions.
@@ -128,7 +144,7 @@ ifneq ($(SKIPPED_TARGETS),)
 	@echo "Skipped unsupported targets on $(KERNEL_PLATFORM): $(SKIPPED_TARGETS)"
 endif
 
-unit: $(UNIT_TARGET)
+unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET)
 
 require-compile-kernel:
 	$(REQUIRE_COMPILE_KERNEL)
@@ -214,6 +230,9 @@ clean:
 run-unit: unit
 	@$(UNIT_TARGET)
 	@$(DEVICEPTR_ARGS_TARGET)
+ifneq ($(PROVIDER_UNIT_TARGET),)
+	@$(PROVIDER_UNIT_TARGET)
+endif
 
 # Env vars for inter-node testing on single node
 HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \

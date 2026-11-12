@@ -262,9 +262,15 @@ TEST_F(DeviceAdaptorTest, GetPointerType) {
             flagcxSuccess);
 
   void *managedPtr = nullptr;
-  ASSERT_EQ(devHandle->deviceMalloc(&managedPtr, TEST_SIZE, flagcxMemManaged,
-                                    nullptr),
-            flagcxSuccess);
+  flagcxResult_t managedResult = devHandle->deviceMalloc(
+      &managedPtr, TEST_SIZE, flagcxMemManaged, nullptr);
+  char vendor[128] = {};
+  if (managedResult != flagcxSuccess &&
+      devHandle->getVendor(vendor) == flagcxSuccess &&
+      strcmp(vendor, "ILUVATAR_COREX") == 0) {
+    GTEST_SKIP() << "Managed allocations are not supported on CoreX";
+  }
+  ASSERT_EQ(managedResult, flagcxSuccess);
   ASSERT_NE(managedPtr, nullptr);
   EXPECT_EQ(deviceAdaptor->getPointerType(managedPtr, &ptrType), flagcxSuccess);
   EXPECT_EQ(ptrType, FLAGCX_PTR_CUDA);

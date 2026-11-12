@@ -35,35 +35,42 @@ case "$workload" in
 
     export FLAGCX_CI_PERF_PLATFORM=Ascend
     perf_bin="$project_root/test/perf/host_api/build/bin"
-    # Homogeneous perf drives HCCL directly and passes. Heterogeneous perf
-    # needs a hetero communicator, which flagcxCommInitRank cannot create on
-    # CANN while flagcxTopoGetXmlTopo lacks getDeviceByPciBusId.
     "$perf_runner" homogeneous "$perf_bin"
-    echo "Ascend coverage gap: heterogeneous perf is not run. flagcxCommInitRank fails after topo.cc reports 'PCI reverse bus-ID lookup is unavailable for topology discovery', so the heterogeneous operations cannot reach a communicator"
+    # Exercise local IPC as well as the already validated forced NET route.
+    "$perf_runner" heterogeneous "$perf_bin"
+    # Force the relaxed-ordering MR path validated for Ascend NPU memory.
+    FLAGCX_CI_ATTEMPT_FAILURE_HOOK="$project_root/.github/scripts/ci/ascend_rdma_attempt_inventory.sh" \
+      "$perf_runner" heterogeneous "$perf_bin" \
+      -x FLAGCX_P2P_DISABLE=1 -x FLAGCX_IB_PCI_RELAXED_ORDERING=1
     ;;
   torch-api)
-    log_dir="${FLAGCX_CI_LOG_DIR:-$project_root/.ci-logs}/hccl-comm-name"
-    mkdir -p "$log_dir"
     export FLAGCX_ADAPTOR=ascend
     export FLAGCX_TORCH_BACKEND=vendor
-    export TORCH_DEVICE_BACKEND_AUTOLOAD=0
     export PYTHON_BIN=${PYTHON_BIN:-python3}
+    # Use the plugin built from this checkout, not the CI image's wheel.
+    "$PYTHON_BIN" -m pip uninstall --yes flagcx
+    export TORCH_DEVICE_BACKEND_AUTOLOAD=0
     "$PYTHON_BIN" -c 'import torch, torch_npu; count = torch.npu.device_count(); print("torch", torch.__version__, "torch_npu", torch_npu.__version__, "devices", count); assert count >= 4'
 
-    build_flagcx 2>&1 | tee "$log_dir/build.log"
-    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
+    build_flagcx
+    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8' wheel
     (
       cd "$project_root"
-      "$PYTHON_BIN" setup.py build_ext --inplace
-    ) 2>&1 | tee "$log_dir/build-extension.log"
+      "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
+    )
 
-    export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    {
-      git -C "$project_root" rev-parse HEAD
-      git -C "$project_root" diff --stat
-      "$PYTHON_BIN" - "$project_root" <<'PY'
+    # Run HCCL-name tests first, with route settings isolated from the generic suite.
+    (
+      log_dir="${FLAGCX_CI_LOG_DIR:-$project_root/.ci-logs}/hccl-comm-name"
+      mkdir -p "$log_dir"
+      {
+        git -C "$project_root" rev-parse HEAD
+        git -C "$project_root" diff --stat
+        "$PYTHON_BIN" - "$project_root" <<'PYTHON'
+import hashlib
 import pathlib
 import sys
+from importlib.metadata import distribution
 
 import torch
 import torch_npu
@@ -71,11 +78,18 @@ import flagcx
 import flagcx._C
 
 root = pathlib.Path(sys.argv[1]).resolve()
-package = root / "src" / "flagcx"
+package = distribution("flagcx").locate_file("flagcx").resolve()
 for module in (flagcx, flagcx._C):
     path = pathlib.Path(module.__file__).resolve()
     print(module.__name__, path)
     assert path.is_relative_to(package), path
+extension = pathlib.Path(flagcx._C.__file__).resolve()
+extension_hash = hashlib.sha256(extension.read_bytes()).hexdigest()
+assert any(
+    hashlib.sha256(path.read_bytes()).hexdigest() == extension_hash
+    for path in root.glob(f"build/lib*/flagcx/{extension.name}")
+), extension
+print("extension sha256", extension_hash)
 libraries = {
     pathlib.Path(line.split()[-1]).resolve()
     for line in pathlib.Path("/proc/self/maps").read_text().splitlines()
@@ -85,42 +99,37 @@ print("loaded FlagCX libraries", sorted(map(str, libraries)))
 assert libraries == {(root / "build/lib/libflagcx.so").resolve()}, libraries
 print("Python", sys.version)
 print("torch", torch.__version__, "torch_npu", torch_npu.__version__)
-PY
-      sha256sum "$project_root/build/lib/libflagcx.so" \
-        "$project_root"/src/flagcx/_C*.so \
-        "$project_root/plugin/torch/tests/distributed_smoke.py"
-    } 2>&1 | tee "$log_dir/versions.log"
+PYTHON
+        sha256sum "$project_root/build/lib/libflagcx.so" \
+          "$project_root/plugin/torch/tests/distributed_smoke.py"
+      } 2>&1 | tee "$log_dir/versions.log"
 
-    # The torch_npu import check, the FlagCX build and the plugin extension
-    # build above all pass and stay covered. The generic example.py distributed
-    # run is not started: all four ranks of plugin/torch/example/example.py exit
-    # with SIGSEGV right after "getting busId for cudaDev N". That crash is NOT yet
-    # attributed -- the process logs no non-PCI identity line, so unlike every
-    # other suite its getDevicePciBusId slot is non-null and the fault may lie
-    # inside that call. It needs a 910C core dump before any claim is made.
-    echo "Ascend coverage gap: plugin/torch/example/example.py remains disabled pending SIGSEGV investigation; dedicated HCCL-name smoke tests run separately below."
-
-    # The gap above concerns the general example.py distributed run.
-    # The dedicated HCCL-name tests below cover homogeneous interoperability
-    # in both runner modes; they do not establish a fix for that SIGSEGV.
-    unset FLAGCX_USE_HOST_COMM FLAGCX_USE_HETERO_COMM FLAGCX_USE_TUNER
-    unset FLAGCX_CLUSTER_SPLIT_LIST
-    for ranks in 2 4; do
-      for route in default host; do
-        if [[ "$route" == host ]]; then
-          export FLAGCX_USE_HOST_COMM=1
-        else
-          unset FLAGCX_USE_HOST_COMM
-        fi
-        timeout --signal=TERM --kill-after="${FLAGCX_CI_TEST_KILL_AFTER:-30s}" \
-          "${FLAGCX_CI_HCCL_COMM_NAME_TIMEOUT:-10m}" \
-          "$PYTHON_BIN" -m torch.distributed.run --standalone --local-addr=127.0.0.1 \
-          --nproc-per-node="$ranks" \
-          "$project_root/plugin/torch/tests/distributed_smoke.py" \
-          --adaptor ascend --hccl-comm-name \
-          2>&1 | tee "$log_dir/${ranks}-ranks-${route}.log"
+      unset FLAGCX_USE_HOST_COMM FLAGCX_USE_HETERO_COMM FLAGCX_USE_TUNER
+      unset FLAGCX_CLUSTER_SPLIT_LIST
+      for ranks in 2 4; do
+        for route in default host; do
+          if [[ "$route" == host ]]; then
+            export FLAGCX_USE_HOST_COMM=1
+          else
+            unset FLAGCX_USE_HOST_COMM
+          fi
+          timeout --signal=TERM --kill-after="${FLAGCX_CI_TEST_KILL_AFTER:-30s}" \
+            "${FLAGCX_CI_HCCL_COMM_NAME_TIMEOUT:-10m}" \
+            "$PYTHON_BIN" -m torch.distributed.run --standalone --local-addr=127.0.0.1 \
+            --nproc-per-node="$ranks" \
+            "$project_root/plugin/torch/tests/distributed_smoke.py" \
+            --adaptor ascend --hccl-comm-name \
+            2>&1 | tee "$log_dir/${ranks}-ranks-${route}.log"
+        done
       done
-    done
+    )
+
+    export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1
+    unset FLAGCX_SKIP_HETERO
+    # Match the Ascend runner quarantine: C2C refresh deviceMemset fails for
+    # these three heterogeneous collectives before their transfers begin.
+    export FLAGCX_TORCH_HETERO_SKIP_OPS=reduce,allreduce,reducescatter
+    bash "$project_root/test/script/torch_api_test.sh"
     ;;
   *)
     echo "Unknown Ascend workload: $workload" >&2

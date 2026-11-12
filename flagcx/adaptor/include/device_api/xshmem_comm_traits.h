@@ -1056,6 +1056,14 @@ struct XshmemBarrierBase {
   }
 };
 
+XSHMEM_DEVICE_INLINE void
+flagcxXshmemRequireRelaxedFence(flagcxDevNetFenceLevel fence) {
+  // The existing barrier drains its team peers, but its Put/Get completion
+  // contract has not been verified for every XSHMEM access path.
+  if (fence != flagcxDevNetFenceLevel::Relaxed)
+    FLAGCX_DEVICE_TRAP();
+}
+
 template <typename Coop>
 struct Barrier<XshmemBackend, flagcxTeamTagIntra, Coop>
     : XshmemBarrierBase<Coop> {
@@ -1091,17 +1099,20 @@ struct Barrier<XshmemBackend, flagcxTeamTagInter, Coop>
 
   XSHMEM_DEVICE_INLINE void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxXshmemRequireRelaxedFence(fence);
     Base::arrive(order);
   }
   XSHMEM_DEVICE_INLINE void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxXshmemRequireRelaxedFence(fence);
     Base::wait(order);
   }
   XSHMEM_DEVICE_INLINE void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxXshmemRequireRelaxedFence(fence);
     Base::sync(order);
   }
 };
@@ -1137,17 +1148,20 @@ struct Barrier<XshmemBackend, flagcxTeamTagWorld, Coop>
 
   XSHMEM_DEVICE_INLINE void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxXshmemRequireRelaxedFence(fence);
     Base::arrive(order);
   }
   XSHMEM_DEVICE_INLINE void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxXshmemRequireRelaxedFence(fence);
     Base::wait(order);
   }
   XSHMEM_DEVICE_INLINE void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxXshmemRequireRelaxedFence(fence);
     Base::sync(order);
   }
 };

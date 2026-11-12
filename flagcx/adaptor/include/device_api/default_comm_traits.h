@@ -25,6 +25,164 @@
 #include "sym_heap.h"
 #endif
 
+// Default Net contract shared by every platform using DefaultBackend.
+// A platform adapter supplies GDA resources and operation implementations.
+enum DefaultNetProviderKind {
+  DefaultNetProviderProxy = 0,
+  DefaultNetProviderGda = 1
+};
+
+enum DefaultNetGdaCapability {
+  DefaultNetGdaPut = 1u << 0,
+  DefaultNetGdaGet = 1u << 1,
+  DefaultNetGdaPutValue = 1u << 2,
+  DefaultNetGdaSignal = 1u << 3,
+  DefaultNetGdaFlush = 1u << 4,
+  DefaultNetGdaSignalCompletion = 1u << 5,
+  DefaultNetGdaCounterCompletion = 1u << 6,
+  DefaultNetGdaBarrier = 1u << 7,
+};
+
+static constexpr unsigned DefaultNetGdaRequiredCapabilities =
+    DefaultNetGdaPut | DefaultNetGdaGet | DefaultNetGdaPutValue |
+    DefaultNetGdaSignal | DefaultNetGdaFlush | DefaultNetGdaSignalCompletion |
+    DefaultNetGdaCounterCompletion | DefaultNetGdaBarrier;
+
+struct DefaultNetContext {
+  DefaultNetProviderKind provider;
+  unsigned providerId; // Platform-defined GDA implementation; zero for Proxy.
+  void *handle;
+  int contextId;
+};
+
+template <DefaultNetProviderKind Provider, typename Operation>
+struct DefaultNetApi;
+
+template <typename Operation>
+struct DefaultNetApi<DefaultNetProviderProxy, Operation> {
+  template <typename... Args>
+  FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
+                                                  Args &&...args)
+      -> decltype(Operation::proxy(ctx, static_cast<Args &&>(args)...)) {
+    return Operation::proxy(ctx, static_cast<Args &&>(args)...);
+  }
+};
+
+// Each platform may specialize this for its compiled GDA implementations.
+// An unavailable provider traps if a malformed context reaches device code.
+template <typename PlatformTag>
+struct DefaultNetGdaProvider {
+  FLAGCX_HOST_DEVICE_INLINE static constexpr bool compiled(unsigned) {
+    return false;
+  }
+
+  // A GDA specialization must opt in only after it can provide the requested
+  // completion guarantee for the bound context.
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  supportsBarrierFence(DefaultNetContext, flagcxDevNetFenceLevel fence) {
+    return fence == flagcxDevNetFenceLevel::Relaxed;
+  }
+
+  // A platform implementation validates the resources referenced by this
+  // context. The default rejects GDA until such an implementation exists.
+  template <typename NetT>
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool isValid(DefaultNetContext,
+                                                     const NetT &) {
+    return false;
+  }
+
+  template <typename Operation, typename... Args>
+  FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
+                                                  Args &&...args)
+      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+          ctx, static_cast<Args &&>(args)...)) {
+    FLAGCX_DEVICE_TRAP();
+  }
+};
+
+// Host chooses a provider before publishing the Comm device view. Capability
+// bits cover the complete one-sided and Inter Barrier operation contract.
+template <typename PlatformTag>
+FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetProviderKind
+defaultNetSelectProvider(unsigned providerId, unsigned gdaCapabilities,
+                         bool resourcesReady) {
+  return DefaultNetGdaProvider<PlatformTag>::compiled(providerId) &&
+                 resourcesReady &&
+                 (gdaCapabilities & DefaultNetGdaRequiredCapabilities) ==
+                     DefaultNetGdaRequiredCapabilities
+             ? DefaultNetProviderGda
+             : DefaultNetProviderProxy;
+}
+
+template <typename PlatformTag>
+struct DefaultNetProviderPolicy {
+  struct WindowState {};
+  struct CommState {};
+  struct BarrierState {};
+
+  template <typename Window>
+  FLAGCX_HOST_DEVICE_INLINE static void initWindow(Window &) {}
+
+  template <typename Comm>
+  FLAGCX_HOST_DEVICE_INLINE static void initComm(Comm &) {}
+
+  template <typename Comm>
+  FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
+  makeContext(const Comm &, void *fifo, int contextId) {
+    return DefaultNetContext{DefaultNetProviderProxy, 0, fifo, contextId};
+  }
+
+  template <typename Barrier>
+  FLAGCX_HOST_DEVICE_INLINE static void initBarrier(Barrier &,
+                                                    DefaultNetContext) {}
+
+  template <typename Barrier>
+  FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
+  barrierContext(const Barrier &, void *fifo, int contextId) {
+    return DefaultNetContext{DefaultNetProviderProxy, 0, fifo, contextId};
+  }
+};
+
+// The same runtime dispatch applies to every DefaultBackend platform. A
+// platform-specific GDA provider handles only its own native implementation.
+template <typename PlatformTag>
+struct DefaultNetDispatch {
+  template <typename NetT>
+  FLAGCX_DEVICE_INLINE_DECORATOR static bool
+  isValid(DefaultNetContext ctx, const NetT &net, bool proxyReady) {
+    switch (ctx.provider) {
+      case DefaultNetProviderProxy:
+        return proxyReady;
+      case DefaultNetProviderGda:
+        return DefaultNetGdaProvider<PlatformTag>::compiled(ctx.providerId) &&
+               ctx.handle != nullptr &&
+               DefaultNetGdaProvider<PlatformTag>::isValid(ctx, net);
+      default:
+        return false;
+    }
+  }
+
+  template <typename Op, typename... Args>
+  FLAGCX_DEVICE_INLINE_DECORATOR static auto call(DefaultNetContext ctx,
+                                                  Args &&...args)
+      -> decltype(DefaultNetApi<DefaultNetProviderProxy, Op>::call(
+          ctx, static_cast<Args &&>(args)...)) {
+    switch (ctx.provider) {
+      case DefaultNetProviderProxy:
+        return DefaultNetApi<DefaultNetProviderProxy, Op>::call(
+            ctx, static_cast<Args &&>(args)...);
+      case DefaultNetProviderGda:
+        if (!DefaultNetGdaProvider<PlatformTag>::compiled(ctx.providerId) ||
+            ctx.handle == nullptr)
+          FLAGCX_DEVICE_TRAP();
+        return DefaultNetGdaProvider<PlatformTag>::template call<Op>(
+            ctx, static_cast<Args &&>(args)...);
+      default:
+        FLAGCX_DEVICE_TRAP();
+    }
+  }
+};
+
 template <typename PlatformTag>
 struct CommTraits<DefaultBackend<PlatformTag>> {
   // Platform capabilities (resolved via PlatformTag)
@@ -57,7 +215,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     size_t userOffset;
     size_t userSize;
   };
-  struct Window {
+  struct Window : DefaultNetProviderPolicy<PlatformTag>::WindowState {
     WindowMode mode;   // SYMMETRIC (VMM) or ASYMMETRIC (IPC)
     void *flatBasePtr; // Flat VA base (SYMMETRIC mode, nullable)
     size_t allocSize;  // Per-rank allocation size (SYMMETRIC mode)
@@ -180,6 +338,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     void populateFromHost(flagcxWindow_t win, void *rawPtr_, int intraRank_,
                           int intraSize_, int mrIndex_, uintptr_t mrBase_,
                           int ipcIndex_, void **ipcDevPeerPtrs_) {
+      DefaultNetProviderPolicy<PlatformTag>::initWindow(*this);
       rawPtr = rawPtr_;
       intraRank = intraRank_;
       intraSize = intraSize_;
@@ -209,7 +368,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   };
 
   // ---- Comm: All fallback layers ----
-  struct Comm : CompletionStorage {
+  struct Comm : CompletionStorage,
+                DefaultNetProviderPolicy<PlatformTag>::CommState {
     // Baseline
     int rank, nRanks;
     int intraRank, intraSize;
@@ -228,6 +388,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int teamRank;          // this rank's position in inter-node team
     int nTeamRanks;        // total nodes in team
     int barrierSignalBase; // first signal slot for barriers
+    int interBarrierCount; // allocated Inter barrier channels
 
     // One-sided fallback
     uint64_t *signalBuffer;
@@ -304,6 +465,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
                                                                const DI &di) {
+      DefaultNetProviderPolicy<PlatformTag>::initComm(dc);
       dc.rank = di.rank;
       dc.nRanks = di.nRanks;
       dc.intraRank = di.intraRank;
@@ -317,6 +479,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.teamRank = di.teamRank;
       dc.nTeamRanks = di.nTeamRanks;
       dc.barrierSignalBase = di.barrierSignalBase;
+      dc.interBarrierCount = di.interBarrierCount;
       dc.signalBuffer = di.signalBuffer;
       dc.localSignalBuffer = di.localSignalBuffer;
       dc.shadowBuffer = di.shadowBuffer;
@@ -361,130 +524,166 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   using Barrier = ::Barrier<DefaultBackend<PlatformTag>, Tag, Coop>;
 
   // ============================================================
-  // Static FIFO helpers (used by Net and InterBarrierSession)
+  // Proxy transport: FIFO encoding, producer gate, and completion domain.
   // ============================================================
+  struct ProxyProvider {
 
-  // Build trd common header: prim(4) | peerRank(20) | primSpecific(36)
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  static uint64_t buildTrd(uint64_t prim, uint64_t peerRank,
-                           uint64_t primSpecific) {
-    return ((prim & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
-            << flagcxDeviceTriggerOffPrim) |
-           ((peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
-            << flagcxDeviceTriggerOffPeerRank) |
-           primSpecific;
-  }
-
-  FLAGCX_DEVICE_INLINE_DECORATOR static bool
-  fifoWordBefore(CompletionWord lhs, CompletionWord rhs) {
-    return CompletionStorage::before(lhs, rhs);
-  }
-
-  FLAGCX_DEVICE_INLINE_DECORATOR static flagcxResult_t
-  fifoTerminalStatus(uint64_t *buffer) {
-    return static_cast<flagcxResult_t>(Atomic::load(
-        &buffer[flagcxFifoIdxTerminalStatus], flagcxDeviceMemoryOrderAcquire));
-  }
-
-  // Enqueue a trigger into the device FIFO buffer.
-  // Atomically reserves a slot, waits for space, writes 3 words.
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  static flagcxResult_t fifoEnqueue(void *fifoBuffer, uint64_t fstVal,
-                                    uint64_t sndVal, uint64_t trdVal) {
-    uint64_t *buffer = (uint64_t *)fifoBuffer;
-    CompletionWord *producerState =
-        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProducerState]);
-    if (!flagcxFifoProducerTryEnter<Atomic>(producerState)) {
-      flagcxResult_t terminal = fifoTerminalStatus(buffer);
-      return terminal == flagcxSuccess ? flagcxInternalError : terminal;
+    // Build trd common header: prim(4) | peerRank(20) | primSpecific(36)
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    static uint64_t buildTrd(uint64_t prim, uint64_t peerRank,
+                             uint64_t primSpecific) {
+      return ((prim & flagcxTriggerMask(flagcxDeviceTriggerBitsPrim))
+              << flagcxDeviceTriggerOffPrim) |
+             ((peerRank & flagcxTriggerMask(flagcxDeviceTriggerBitsPeerRank))
+              << flagcxDeviceTriggerOffPeerRank) |
+             primSpecific;
     }
-    uint64_t capacity = Atomic::load(&buffer[flagcxFifoIdxCapacity],
-                                     flagcxDeviceMemoryOrderRelaxed);
 
-    // 1. Atomically reserve a slot
-    CompletionWord *produced =
-        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
-    CompletionWord *consumed =
-        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxConsumed]);
-    CompletionWord mySlot = Atomic::fetchAdd(produced, CompletionWord{1},
-                                             flagcxDeviceMemoryOrderAcqRel);
+    FLAGCX_DEVICE_INLINE_DECORATOR static bool
+    fifoWordBefore(CompletionWord lhs, CompletionWord rhs) {
+      return CompletionStorage::before(lhs, rhs);
+    }
 
-    // 2. Wait until there's space (mySlot - consumed < capacity)
-    int iter = 0;
-    while ((CompletionWord)(mySlot -
-                            Atomic::load(consumed,
-                                         flagcxDeviceMemoryOrderAcquire)) >=
-           (CompletionWord)capacity) {
+    FLAGCX_DEVICE_INLINE_DECORATOR static flagcxResult_t
+    fifoTerminalStatus(uint64_t *buffer) {
+      return static_cast<flagcxResult_t>(
+          Atomic::load(&buffer[flagcxFifoIdxTerminalStatus],
+                       flagcxDeviceMemoryOrderAcquire));
+    }
+
+    // Enqueue a trigger into the device FIFO buffer.
+    // Atomically reserves a slot, waits for space, writes 3 words.
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    static flagcxResult_t fifoEnqueue(void *fifoBuffer, uint64_t fstVal,
+                                      uint64_t sndVal, uint64_t trdVal) {
+      uint64_t *buffer = (uint64_t *)fifoBuffer;
+      CompletionWord *producerState = reinterpret_cast<CompletionWord *>(
+          &buffer[flagcxFifoIdxProducerState]);
+      if (!flagcxFifoProducerTryEnter<Atomic>(producerState)) {
+        flagcxResult_t terminal = fifoTerminalStatus(buffer);
+        return terminal == flagcxSuccess ? flagcxInternalError : terminal;
+      }
+      uint64_t capacity = Atomic::load(&buffer[flagcxFifoIdxCapacity],
+                                       flagcxDeviceMemoryOrderRelaxed);
+
+      // 1. Atomically reserve a slot
+      CompletionWord *produced =
+          reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
+      CompletionWord *consumed =
+          reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxConsumed]);
+      CompletionWord mySlot = Atomic::fetchAdd(produced, CompletionWord{1},
+                                               flagcxDeviceMemoryOrderAcqRel);
+
+      // 2. Wait until there's space (mySlot - consumed < capacity)
+      int iter = 0;
+      while ((CompletionWord)(mySlot -
+                              Atomic::load(consumed,
+                                           flagcxDeviceMemoryOrderAcquire)) >=
+             (CompletionWord)capacity) {
+        flagcxResult_t terminal = fifoTerminalStatus(buffer);
+        if (terminal != flagcxSuccess) {
+          flagcxFifoProducerLeave<Atomic>(producerState);
+          return terminal;
+        }
+        Intrin::spinBackoff(iter++);
+      }
+
+      // A terminal error may be published after the slot reservation but before
+      // the FIFO becomes full. Leave the sequence hole unpublished; terminal
+      // cleanup waits for this producer reference and then advances all failed
+      // reservations to the stable produced value.
       flagcxResult_t terminal = fifoTerminalStatus(buffer);
       if (terminal != flagcxSuccess) {
         flagcxFifoProducerLeave<Atomic>(producerState);
         return terminal;
       }
-      Intrin::spinBackoff(iter++);
-    }
 
-    // A terminal error may be published after the slot reservation but before
-    // the FIFO becomes full. Leave the sequence hole unpublished; terminal
-    // cleanup waits for this producer reference and then advances all failed
-    // reservations to the stable produced value.
-    flagcxResult_t terminal = fifoTerminalStatus(buffer);
-    if (terminal != flagcxSuccess) {
+      // 3. Compute slot index and get pointers to slot's 3 uint64_t fields
+      uint64_t idx = (uint64_t)mySlot % capacity;
+      uint64_t *slotFst =
+          buffer + flagcxFifoIdxData +
+          idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
+      uint64_t *slotSnd = slotFst + 1;
+      uint64_t *slotTrd = slotFst + 2;
+
+      // 4. Write fst, snd (payload, relaxed)
+      Atomic::store(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
+      Atomic::store(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
+
+      // 5. Write trd with valid bit (release ensures payload visible before
+      // control)
+      Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
+                    flagcxDeviceMemoryOrderRelease);
+
       flagcxFifoProducerLeave<Atomic>(producerState);
-      return terminal;
+      return flagcxSuccess;
     }
 
-    // 3. Compute slot index and get pointers to slot's 3 uint64_t fields
-    uint64_t idx = (uint64_t)mySlot % capacity;
-    uint64_t *slotFst = buffer + flagcxFifoIdxData +
-                        idx * (sizeof(flagcxDeviceTrigger) / sizeof(uint64_t));
-    uint64_t *slotSnd = slotFst + 1;
-    uint64_t *slotTrd = slotFst + 2;
-
-    // 4. Write fst, snd (payload, relaxed)
-    Atomic::store(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
-    Atomic::store(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
-
-    // 5. Write trd with valid bit (release ensures payload visible before
-    // control)
-    Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
-                  flagcxDeviceMemoryOrderRelease);
-
-    flagcxFifoProducerLeave<Atomic>(producerState);
-    return flagcxSuccess;
-  }
-
-  // Flush: snapshot produced, then spin until completed >= snapshot.
-  // The CPU proxy advances 'completed' after IB test() confirms each op done.
-  // This replaces the old PrimWait+streamSynchronize approach that caused
-  // deadlocks.
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  static flagcxResult_t fifoFlush(void *fifoBuffer) {
-    uint64_t *buffer = (uint64_t *)fifoBuffer;
-    flagcxResult_t terminal = fifoTerminalStatus(buffer);
-    if (terminal != flagcxSuccess)
-      return terminal;
-    CompletionWord *produced =
-        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
-    CompletionWord *completed =
-        reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxCompleted]);
-    CompletionWord snapshot =
-        Atomic::load(produced, flagcxDeviceMemoryOrderAcquire);
-    int iter = 0;
-    while (fifoWordBefore(
-        Atomic::load(completed, flagcxDeviceMemoryOrderAcquire), snapshot)) {
-      terminal = fifoTerminalStatus(buffer);
+    // Flush: snapshot produced, then spin until completed >= snapshot.
+    // The CPU proxy advances 'completed' after IB test() confirms each op done.
+    // This replaces the old PrimWait+streamSynchronize approach that caused
+    // deadlocks.
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    static flagcxResult_t fifoFlush(void *fifoBuffer) {
+      uint64_t *buffer = (uint64_t *)fifoBuffer;
+      flagcxResult_t terminal = fifoTerminalStatus(buffer);
       if (terminal != flagcxSuccess)
         return terminal;
-      Intrin::spinBackoff(iter++);
+      CompletionWord *produced =
+          reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxProduced]);
+      CompletionWord *completed =
+          reinterpret_cast<CompletionWord *>(&buffer[flagcxFifoIdxCompleted]);
+      CompletionWord snapshot =
+          Atomic::load(produced, flagcxDeviceMemoryOrderAcquire);
+      int iter = 0;
+      while (fifoWordBefore(
+          Atomic::load(completed, flagcxDeviceMemoryOrderAcquire), snapshot)) {
+        terminal = fifoTerminalStatus(buffer);
+        if (terminal != flagcxSuccess)
+          return terminal;
+        Intrin::spinBackoff(iter++);
+      }
+      return flagcxSuccess;
     }
-    return flagcxSuccess;
-  }
 
-  // Wait: just flush (no PrimWait enqueue needed with completion-based flush).
-  FLAGCX_DEVICE_INLINE_DECORATOR
-  static flagcxResult_t fifoWait(void *fifoBuffer) {
-    return fifoFlush(fifoBuffer);
-  }
+    // Wait: just flush (no PrimWait enqueue needed with completion-based
+    // flush).
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    static flagcxResult_t fifoWait(void *fifoBuffer) {
+      return fifoFlush(fifoBuffer);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static flagcxResult_t
+    enqueueSignal(void *fifoBuffer, int contextId, int signalCount,
+                  int counterCount, int signalIdx, uint32_t value, int peer,
+                  uint64_t bufferType) {
+      int combinedIdx = bufferType == 0 ? contextId * signalCount + signalIdx
+                                        : contextId * counterCount + signalIdx;
+      uint64_t trdSpecific =
+          (bufferType << flagcxDeviceTriggerOffBufferType) |
+          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
+          ((uint64_t)(value & 0xFFFFu) << flagcxDeviceTriggerOffSignalValue);
+      return fifoEnqueue(fifoBuffer, 0, 0,
+                         buildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static void
+    waitSignalValue(void *fifoBuffer, uint64_t *signalBuffer, int index,
+                    uint64_t expected) {
+      uint64_t current =
+          Atomic::load(&signalBuffer[index], flagcxDeviceMemoryOrderAcquire);
+      int iter = 0;
+      while (current < expected) {
+        if (fifoBuffer != nullptr &&
+            Atomic::load(&((uint64_t *)fifoBuffer)[flagcxFifoIdxTerminalStatus],
+                         flagcxDeviceMemoryOrderAcquire) != flagcxSuccess)
+          break;
+        Intrin::spinBackoff(iter++);
+        current =
+            Atomic::load(&signalBuffer[index], flagcxDeviceMemoryOrderAcquire);
+      }
+    }
+  };
 
   // ============================================================
   // Net: FIFO-based two-sided + one-sided + GPU-spin signal/counter
@@ -502,17 +701,95 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int nTeamRanks;
     int barrierSignalBase;
 
+    // Operation tags follow NCCL GIN's per-operation dispatch pattern. The
+    // Proxy implementation remains the only compiled specialization for now.
+    struct PutOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyPut(static_cast<Args &&>(args)...);
+      }
+    };
+    struct GetOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyGet(static_cast<Args &&>(args)...);
+      }
+    };
+    struct PutValueOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyPutValue(static_cast<Args &&>(args)...);
+      }
+    };
+    struct SignalOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxySignal(static_cast<Args &&>(args)...);
+      }
+    };
+    struct FlushOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyFlush(static_cast<Args &&>(args)...);
+      }
+    };
+    struct WaitSignalOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyWaitSignal(static_cast<Args &&>(args)...);
+      }
+    };
+    struct ReadSignalOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        return net.proxyReadSignal(static_cast<Args &&>(args)...);
+      }
+    };
+    struct ResetSignalOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyResetSignal(static_cast<Args &&>(args)...);
+      }
+    };
+    struct WaitCounterOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyWaitCounter(static_cast<Args &&>(args)...);
+      }
+    };
+    struct ReadCounterOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static uint64_t
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        return net.proxyReadCounter(static_cast<Args &&>(args)...);
+      }
+    };
+    struct ResetCounterOp {
+      template <typename NetT, typename... Args>
+      FLAGCX_DEVICE_INLINE_DECORATOR static void
+      proxy(DefaultNetContext, const NetT &net, Args &&...args) {
+        net.proxyResetCounter(static_cast<Args &&>(args)...);
+      }
+    };
+
     FLAGCX_DEVICE_INLINE_DECORATOR
     Net(const Comm &dc, int contextIndex)
-        : _dc(dc),
-          fifoBuffer(
-              dc.fifoBuffers[contextIndex %
-                             ((dc.contextCount > 0) ? dc.contextCount : 1)]),
-          signalBuffer(dc.signalBuffer), shadowBuffer(dc.shadowBuffer),
-          counterBuffer(dc.counterBuffer), signalCount(dc.signalCount),
-          counterCount(dc.counterCount) {
+        : _dc(dc), fifoBuffer(nullptr), signalBuffer(dc.signalBuffer),
+          shadowBuffer(dc.shadowBuffer), counterBuffer(dc.counterBuffer),
+          signalCount(dc.signalCount), counterCount(dc.counterCount) {
       int cnt = (dc.contextCount > 0) ? dc.contextCount : 1;
       _contextId = contextIndex % cnt;
+      if (dc.contextCount > 0 && context().provider == DefaultNetProviderProxy)
+        fifoBuffer = dc.fifoBuffers[_contextId];
       teamRank = dc.teamRank;
       nTeamRanks = dc.nTeamRanks;
       barrierSignalBase = dc.barrierSignalBase;
@@ -520,6 +797,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR int getContextId() const {
       return _contextId;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR DefaultNetContext context() const {
+      return DefaultNetProviderPolicy<PlatformTag>::makeContext(_dc, fifoBuffer,
+                                                                _contextId);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
@@ -547,9 +829,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR bool isValid() const {
-      return _dc.getCompletionSignalBuffer() != nullptr &&
-             _dc.getCompletionCounterBuffer() != nullptr &&
-             fifoBuffer != nullptr;
+      const bool proxyReady = _dc.getCompletionSignalBuffer() != nullptr &&
+                              _dc.getCompletionCounterBuffer() != nullptr &&
+                              fifoBuffer != nullptr;
+      return DefaultNetDispatch<PlatformTag>::isValid(context(), *this,
+                                                      proxyReady);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord
@@ -592,28 +876,39 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     enqueueFifoSend(const Window &mem, size_t offset, size_t count,
                     flagcxDataType_t datatype, int peer) const {
       void *ptr = mem.getLocalPointer(offset);
-      fifoEnqueue(
+      ProxyProvider::fifoEnqueue(
           fifoBuffer, (uint64_t)((uintptr_t)ptr), 0,
-          buildTrd(flagcxDevicePrimSend, peer,
-                   ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
-                       ((uint64_t)count << flagcxDeviceTriggerOffCount)));
+          ProxyProvider::buildTrd(
+              flagcxDevicePrimSend, peer,
+              ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
+                  ((uint64_t)count << flagcxDeviceTriggerOffCount)));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     enqueueFifoRecv(const Window &mem, size_t offset, size_t count,
                     flagcxDataType_t datatype, int peer) const {
       void *ptr = mem.getLocalPointer(offset);
-      fifoEnqueue(
+      ProxyProvider::fifoEnqueue(
           fifoBuffer, (uint64_t)((uintptr_t)ptr), 0,
-          buildTrd(flagcxDevicePrimRecv, peer,
-                   ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
-                       ((uint64_t)count << flagcxDeviceTriggerOffCount)));
+          ProxyProvider::buildTrd(
+              flagcxDevicePrimRecv, peer,
+              ((uint64_t)datatype << flagcxDeviceTriggerOffDatatype) |
+                  ((uint64_t)count << flagcxDeviceTriggerOffCount)));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     enqueueFifoTerm(int totalCoops) const {
-      return fifoEnqueue(fifoBuffer, (uint64_t)totalCoops, 0,
-                         buildTrd(flagcxDevicePrimTerm, 0, 0));
+      return ProxyProvider::fifoEnqueue(
+          fifoBuffer, (uint64_t)totalCoops, 0,
+          ProxyProvider::buildTrd(flagcxDevicePrimTerm, 0, 0));
+    }
+
+    // Two-sided operations belong to Proxy. A GDA context must not use the
+    // Proxy FIFO, even if this Net happens to carry one.
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t requireProxyFifo() const {
+      if (context().provider != DefaultNetProviderProxy)
+        return flagcxNotSupported;
+      return fifoBuffer != nullptr ? flagcxSuccess : flagcxInvalidUsage;
     }
 
     // ---- Two-sided Coop-scope operations ----
@@ -621,6 +916,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     send(Coop coop, Window mem, size_t offset, size_t count,
          flagcxDataType_t datatype, int peer) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0)
         enqueueFifoSend(mem, offset, count, datatype, peer);
@@ -632,6 +930,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     recv(Coop coop, Window mem, size_t offset, size_t count,
          flagcxDataType_t datatype, int peer) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0)
         enqueueFifoRecv(mem, offset, count, datatype, peer);
@@ -641,6 +942,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t term(Coop coop) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0) {
         int totalCoops = (FLAGCX_GRID_DIM_X * FLAGCX_BLOCK_DIM_X) / coop.size();
@@ -652,9 +956,12 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t wait(Coop coop) const {
+      flagcxResult_t status = requireProxyFifo();
+      if (status != flagcxSuccess)
+        return status;
       coop.sync();
       if (coop.threadRank() == 0)
-        fifoWait(fifoBuffer);
+        ProxyProvider::fifoWait(fifoBuffer);
       coop.sync();
       return flagcxSuccess;
     }
@@ -670,8 +977,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       uint64_t trdSpecific =
           ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
           ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
-      return fifoEnqueue(fifoBuffer, fstValue, sndValue,
-                         buildTrd(flagcxDevicePrimPut, peer, trdSpecific));
+      return ProxyProvider::fifoEnqueue(
+          fifoBuffer, fstValue, sndValue,
+          ProxyProvider::buildTrd(flagcxDevicePrimPut, peer, trdSpecific));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
@@ -684,30 +992,22 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       uint64_t trdSpecific =
           ((uint64_t)srcMrIdx << flagcxDeviceTriggerOffSrcMrIdx) |
           ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx);
-      return fifoEnqueue(fifoBuffer, fstValue, sndValue,
-                         buildTrd(flagcxDevicePrimGet, peer, trdSpecific));
+      return ProxyProvider::fifoEnqueue(
+          fifoBuffer, fstValue, sndValue,
+          ProxyProvider::buildTrd(flagcxDevicePrimGet, peer, trdSpecific));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t
     enqueueFifoSignalRaw(int signalIdx, int peer) const {
-      uint64_t trdSpecific = ((uint64_t)(_contextId * signalCount + signalIdx)
-                              << flagcxDeviceTriggerOffSignalIdxSig) |
-                             ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
-      return fifoEnqueue(fifoBuffer, 0, 0,
-                         buildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
+      return ProxyProvider::enqueueSignal(fifoBuffer, _contextId, signalCount,
+                                          counterCount, signalIdx, 1, peer, 0);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoSignal(
         int signalIdx, uint32_t value, int peer, uint64_t bufferType) const {
-      int combinedIdx = (bufferType == 0)
-                            ? (_contextId * signalCount + signalIdx)
-                            : (_contextId * counterCount + signalIdx);
-      uint64_t trdSpecific =
-          ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
-          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
-          ((uint64_t)(value & 0xFFFFu) << flagcxDeviceTriggerOffSignalValue);
-      return fifoEnqueue(fifoBuffer, 0, 0,
-                         buildTrd(flagcxDevicePrimSignal, peer, trdSpecific));
+      return ProxyProvider::enqueueSignal(fifoBuffer, _contextId, signalCount,
+                                          counterCount, signalIdx, value, peer,
+                                          bufferType);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoSignalValue(
@@ -718,9 +1018,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       uint64_t trdSpecific =
           ((uint64_t)bufferType << flagcxDeviceTriggerOffBufferType) |
           ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig);
-      return fifoEnqueue(
+      return ProxyProvider::fifoEnqueue(
           fifoBuffer, 0, value,
-          buildTrd(flagcxDevicePrimSignalValue, peer, trdSpecific));
+          ProxyProvider::buildTrd(flagcxDevicePrimSignalValue, peer,
+                                  trdSpecific));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoPutValue(
@@ -729,8 +1030,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                           flagcxTriggerMask(flagcxDeviceTriggerBitsDstOffset);
       uint64_t trdSpecific = (uint64_t)dstMrIdx
                              << flagcxDeviceTriggerOffDstMrIdx;
-      return fifoEnqueue(fifoBuffer, fstValue, value,
-                         buildTrd(flagcxDevicePrimPutValue, peer, trdSpecific));
+      return ProxyProvider::fifoEnqueue(
+          fifoBuffer, fstValue, value,
+          ProxyProvider::buildTrd(flagcxDevicePrimPutValue, peer, trdSpecific));
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t enqueueFifoPutSignal(
@@ -747,9 +1049,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           ((uint64_t)dstMrIdx << flagcxDeviceTriggerOffDstMrIdx) |
           ((uint64_t)(_contextId * signalCount + signalIdx)
            << flagcxDeviceTriggerOffSignalIdx);
-      return fifoEnqueue(
+      return ProxyProvider::fifoEnqueue(
           fifoBuffer, fstValue, sndValue,
-          buildTrd(flagcxDevicePrimPutSignal, peer, trdSpecific));
+          ProxyProvider::buildTrd(flagcxDevicePrimPutSignal, peer,
+                                  trdSpecific));
     }
 
     // ---- MR offset helper ----
@@ -850,12 +1153,22 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return _dc.rank + (peer - team.rank) * team.stride;
     }
 
-    // ---- One-sided: put (raw Window) ----
+    // ---- One-sided: public dispatch and Proxy implementation ----
     template <typename RA, typename LA, typename Coop, typename Desc>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     put(Team team, int peer, Window dst, size_t dstOff, Window src,
         size_t srcOff, size_t bytes, RA ra, LA la, Coop coop, Desc desc,
         flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
+      DefaultNetDispatch<PlatformTag>::template call<PutOp>(
+          context(), *this, team, peer, dst, dstOff, src, srcOff, bytes, ra, la,
+          coop, desc, ar, es);
+    }
+
+    template <typename RA, typename LA, typename Coop, typename Desc>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyPut(Team team, int peer, Window dst, size_t dstOff, Window src,
+             size_t srcOff, size_t bytes, RA ra, LA la, Coop coop, Desc desc,
+             flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
       (void)desc;
       (void)ar;
       (void)es;
@@ -887,6 +1200,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     get(Team team, int peer, Window src, size_t srcOff, Window dst,
         size_t dstOff, size_t bytes, Coop coop) const {
+      DefaultNetDispatch<PlatformTag>::template call<GetOp>(
+          context(), *this, team, peer, src, srcOff, dst, dstOff, bytes, coop);
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyGet(Team team, int peer, Window src, size_t srcOff, Window dst,
+             size_t dstOff, size_t bytes, Coop coop) const {
       int worldPeer = teamRankToWorld(team, peer);
       coop.sync();
       if (coop.threadRank() == 0) {
@@ -904,6 +1225,16 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     putValue(Team team, int peer, Window dst, size_t dstOff, T value, RA ra,
              Coop coop, Desc desc, flagcxDeviceScope_t ar,
              flagcxDeviceScope_t es) const {
+      DefaultNetDispatch<PlatformTag>::template call<PutValueOp>(
+          context(), *this, team, peer, dst, dstOff, value, ra, coop, desc, ar,
+          es);
+    }
+
+    template <typename T, typename RA, typename Coop, typename Desc>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyPutValue(Team team, int peer, Window dst, size_t dstOff, T value,
+                  RA ra, Coop coop, Desc desc, flagcxDeviceScope_t ar,
+                  flagcxDeviceScope_t es) const {
       (void)desc;
       (void)ar;
       (void)es;
@@ -926,6 +1257,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     signal(Team team, int peer, RA ra, Coop coop, Desc desc,
            flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
+      DefaultNetDispatch<PlatformTag>::template call<SignalOp>(
+          context(), *this, team, peer, ra, coop, desc, ar, es);
+    }
+
+    template <typename RA, typename Coop, typename Desc>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxySignal(Team team, int peer, RA ra, Coop coop, Desc desc,
+                flagcxDeviceScope_t ar, flagcxDeviceScope_t es) const {
       (void)desc;
       (void)ar;
       (void)es;
@@ -958,10 +1297,18 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     template <typename Coop>
     FLAGCX_DEVICE_INLINE_DECORATOR void
     flush(Coop coop, flagcxDeviceMemoryOrder_t order) const {
+      DefaultNetDispatch<PlatformTag>::template call<FlushOp>(context(), *this,
+                                                              coop, order);
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyFlush(Coop coop, flagcxDeviceMemoryOrder_t order) const {
       (void)order;
       coop.sync();
       if (coop.threadRank() == 0 && fifoBuffer != nullptr) {
-        fifoFlush(fifoBuffer);
+        if (ProxyProvider::fifoFlush(fifoBuffer) != flagcxSuccess)
+          FLAGCX_DEVICE_TRAP();
       }
       coop.sync();
     }
@@ -971,6 +1318,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     waitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least, int bits,
                flagcxDeviceMemoryOrder_t order) const {
+      DefaultNetDispatch<PlatformTag>::template call<WaitSignalOp>(
+          context(), *this, coop, signalId, least, bits, order);
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyWaitSignal(Coop coop, flagcxDevSignal_t signalId, uint64_t least,
+                    int bits, flagcxDeviceMemoryOrder_t order) const {
       validateCompletionBits(bits);
       CompletionWord target = CompletionStorage::completionValue(least);
       coop.sync();
@@ -980,7 +1335,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         while (CompletionStorage::waitBefore(loadSignalValue(idx, order),
                                              target)) {
           if (fifoBuffer != nullptr &&
-              fifoTerminalStatus((uint64_t *)fifoBuffer) != flagcxSuccess)
+              ProxyProvider::fifoTerminalStatus((uint64_t *)fifoBuffer) !=
+                  flagcxSuccess)
             break;
           Intrin::spinBackoff(iter++);
         }
@@ -1031,6 +1387,13 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
     readSignal(flagcxDevSignal_t signalId, int bits,
                flagcxDeviceMemoryOrder_t order) const {
+      return DefaultNetDispatch<PlatformTag>::template call<ReadSignalOp>(
+          context(), *this, signalId, bits, order);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+    proxyReadSignal(flagcxDevSignal_t signalId, int bits,
+                    flagcxDeviceMemoryOrder_t order) const {
       validateCompletionBits(bits);
       int idx = _contextId * signalCount + (int)signalId;
       return static_cast<uint64_t>(loadSignalValue(idx, order));
@@ -1038,6 +1401,12 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetSignal(flagcxDevSignal_t signalId) const {
+      DefaultNetDispatch<PlatformTag>::template call<ResetSignalOp>(
+          context(), *this, signalId);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyResetSignal(flagcxDevSignal_t signalId) const {
       int idx = _contextId * signalCount + (int)signalId;
       Atomic::store(&_dc.getCompletionSignalBuffer()[idx], CompletionWord{0},
                     flagcxDeviceMemoryOrderRelease);
@@ -1055,6 +1424,14 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR void
     waitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
                 int bits, flagcxDeviceMemoryOrder_t order) const {
+      DefaultNetDispatch<PlatformTag>::template call<WaitCounterOp>(
+          context(), *this, coop, counterId, least, bits, order);
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyWaitCounter(Coop coop, flagcxDevCounter_t counterId, uint64_t least,
+                     int bits, flagcxDeviceMemoryOrder_t order) const {
       validateCompletionBits(bits);
       CompletionWord target = CompletionStorage::completionValue(least);
       coop.sync();
@@ -1064,7 +1441,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         while (CompletionStorage::waitBefore(loadCounterValue(idx, order),
                                              target)) {
           if (fifoBuffer != nullptr &&
-              fifoTerminalStatus((uint64_t *)fifoBuffer) != flagcxSuccess)
+              ProxyProvider::fifoTerminalStatus((uint64_t *)fifoBuffer) !=
+                  flagcxSuccess)
             break;
           Intrin::spinBackoff(iter++);
         }
@@ -1075,6 +1453,13 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
     readCounter(flagcxDevCounter_t counterId, int bits,
                 flagcxDeviceMemoryOrder_t order) const {
+      return DefaultNetDispatch<PlatformTag>::template call<ReadCounterOp>(
+          context(), *this, counterId, bits, order);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+    proxyReadCounter(flagcxDevCounter_t counterId, int bits,
+                     flagcxDeviceMemoryOrder_t order) const {
       validateCompletionBits(bits);
       int idx = _contextId * counterCount + (int)counterId;
       return static_cast<uint64_t>(loadCounterValue(idx, order));
@@ -1082,6 +1467,12 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     resetCounter(flagcxDevCounter_t counterId) const {
+      DefaultNetDispatch<PlatformTag>::template call<ResetCounterOp>(
+          context(), *this, counterId);
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void
+    proxyResetCounter(flagcxDevCounter_t counterId) const {
       int idx = _contextId * counterCount + (int)counterId;
       Atomic::store(&_dc.getCompletionCounterBuffer()[idx], CompletionWord{0},
                     flagcxDeviceMemoryOrderRelease);
@@ -1184,12 +1575,15 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
 // Barrier signals use regular PrimSignal FIFO entries (async, non-blocking
 // proxy).
 template <typename P, typename Coop>
-struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
-  using Atomic = typename PlatformTraits<P>::Atomic;
-  using Intrin = typename PlatformTraits<P>::Intrin;
+struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
+    : DefaultNetProviderPolicy<P>::BarrierState {
   using Comm = typename CommTraits<DefaultBackend<P>>::Comm;
   using Team = typename CommTraits<DefaultBackend<P>>::Team;
   using Net = typename CommTraits<DefaultBackend<P>>::Net;
+  using ProxyProvider = typename CommTraits<DefaultBackend<P>>::ProxyProvider;
+  using SignalOp = typename Net::SignalOp;
+  using WaitSignalOp = typename Net::WaitSignalOp;
+  using FlushOp = typename Net::FlushOp;
 
   Coop _coop;
   void *_fifoBuffer;
@@ -1208,7 +1602,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
   Barrier()
       : _coop(), _fifoBuffer(nullptr), _signalBuffer(nullptr),
         _shadowBuffer(nullptr), _signalCount(0), _contextId(0), _teamRank(0),
-        _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0) {}
+        _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0) {
+    DefaultNetProviderPolicy<P>::initBarrier(
+        *this, DefaultNetContext{DefaultNetProviderProxy, 0, nullptr, 0});
+  }
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -1220,47 +1617,91 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
         _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
         _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
         _stride(dc.intraSize), _localRank(dc.intraRank) {
+    DefaultNetProviderPolicy<P>::initBarrier(*this, net.context());
     assert(index < FLAGCX_DEVICE_CTA_COUNT);
   }
 
-  // arrive: signal all remote peers "I have arrived"
-  FLAGCX_DEVICE_INLINE_DECORATOR void
-  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_nTeamRanks <= 1)
-      return;
-    int nPeers = _nTeamRanks - 1;
-    FLAGCX_DEVICE_SYNC_THREADS();
-    // Each thread handles a subset of peers (cooperative distribution)
-    for (int i = FLAGCX_THREAD_IDX_X; i < nPeers; i += FLAGCX_BLOCK_DIM_X) {
-      int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
-      int targetRank = peerIdx * _stride + _localRank;
-      // Signal remote peer: enqueue PrimSignal to FIFO
-      // signalIdx = barrierSignal0 + myTeamRank (where peer expects my signal)
-      int signalIdx = _barrierSignal0 + _teamRank;
-      int combinedIdx = _contextId * _signalCount + signalIdx;
-      uint64_t trdSpecific =
-          ((uint64_t)0 << flagcxDeviceTriggerOffBufferType) |
-          ((uint64_t)combinedIdx << flagcxDeviceTriggerOffSignalIdxSig) |
-          ((uint64_t)1 << flagcxDeviceTriggerOffSignalValue);
-      CommTraits<DefaultBackend<P>>::fifoEnqueue(
-          _fifoBuffer, 0, 0,
-          CommTraits<DefaultBackend<P>>::buildTrd(flagcxDevicePrimSignal,
-                                                  targetRank, trdSpecific));
-    }
-    FLAGCX_DEVICE_SYNC_THREADS();
+  FLAGCX_DEVICE_INLINE_DECORATOR DefaultNetContext context() const {
+    return DefaultNetProviderPolicy<P>::barrierContext(*this, _fifoBuffer,
+                                                       _contextId);
   }
 
-  // wait: wait for all remote peers' signals at MY buffer
+  // Proxy implementations of the same operations used by Net. Each Barrier
+  // lane acts as a one-thread Coop; no block-wide sync belongs inside these.
   FLAGCX_DEVICE_INLINE_DECORATOR void
-  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+  proxySignal(Team, int peer, flagcxDevNet_SignalInc action,
+              typename PlatformTraits<P>::CoopThread, flagcxDevNet_None,
+              flagcxDeviceScope_t, flagcxDeviceScope_t) const {
+    int targetRank = peer * _stride + _localRank;
+    if (ProxyProvider::enqueueSignal(_fifoBuffer, _contextId, _signalCount, 0,
+                                     (int)action.signal, 1, targetRank,
+                                     0) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  proxyWaitSignal(typename PlatformTraits<P>::CoopThread,
+                  flagcxDevSignal_t signalId, uint64_t expected, int,
+                  flagcxDeviceMemoryOrder_t) const {
+    int absIdx = _contextId * _signalCount + (int)signalId;
+    ProxyProvider::waitSignalValue(_fifoBuffer, _signalBuffer, absIdx,
+                                   expected);
+    if (_fifoBuffer != nullptr &&
+        ProxyProvider::fifoTerminalStatus(
+            static_cast<uint64_t *>(_fifoBuffer)) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  proxyFlush(typename PlatformTraits<P>::CoopThread,
+             flagcxDeviceMemoryOrder_t) const {
+    if (_fifoBuffer != nullptr &&
+        ProxyProvider::fifoFlush(_fifoBuffer) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
+  }
+
+  // Internal phases for sync(). The fence is passed to both phases in the
+  // same call; no state is kept in the Barrier object between calls.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arriveImpl(flagcxDeviceMemoryOrder_t order, flagcxDevNetFenceLevel fence) {
+    // Complete this context's earlier puts before publishing arrival. The
+    // Proxy FIFO also orders release signals after prior requests, but GDA
+    // providers must provide an equivalent FlushOp before enabling Put.
+    if (flagcxDevNetFenceHas(fence, flagcxDevNetFenceLevel::Put)) {
+      _coop.sync();
+      if (_coop.threadRank() == 0)
+        DefaultNetDispatch<P>::template call<FlushOp>(
+            context(), *this, typename PlatformTraits<P>::CoopThread{},
+            flagcxDeviceMemoryOrderRelease);
+      _coop.sync();
+    }
     if (_nTeamRanks <= 1)
       return;
     int nPeers = _nTeamRanks - 1;
-    FLAGCX_DEVICE_SYNC_THREADS();
+    _coop.sync();
+    // Each thread handles a subset of peers (cooperative distribution)
+    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
+      int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
+      int signalIdx = _barrierSignal0 + _teamRank;
+      DefaultNetDispatch<P>::template call<SignalOp>(
+          context(), *this, Team{_nTeamRanks, _teamRank, _stride}, peerIdx,
+          flagcxDevNet_SignalInc{(flagcxDevSignal_t)signalIdx},
+          typename PlatformTraits<P>::CoopThread{}, flagcxDevNet_None{},
+          flagcxDeviceScopeThread, flagcxDeviceScopeDevice);
+    }
+    _coop.sync();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void waitImpl(flagcxDeviceMemoryOrder_t order,
+                                               flagcxDevNetFenceLevel fence) {
+    if (_nTeamRanks <= 1 &&
+        !flagcxDevNetFenceHas(fence, flagcxDevNetFenceLevel::Get)) {
+      return;
+    }
+    int nPeers = _nTeamRanks > 1 ? _nTeamRanks - 1 : 0;
+    _coop.sync();
     // Each thread waits for a subset of peers (cooperative distribution)
-    for (int i = FLAGCX_THREAD_IDX_X; i < nPeers; i += FLAGCX_BLOCK_DIM_X) {
+    for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
       int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
       // Wait for peer's signal at slot [barrierSignal0 + peerIdx]
       int signalIdx = _barrierSignal0 + peerIdx;
@@ -1268,33 +1709,50 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> {
       // Increment shadow (expected value) and spin on signal buffer
       _shadowBuffer[absIdx] += 1;
       uint64_t expected = _shadowBuffer[absIdx];
-      uint64_t current =
-          Atomic::load(&_signalBuffer[absIdx], flagcxDeviceMemoryOrderAcquire);
-      int iter = 0;
-      while (current < expected) {
-        if (_fifoBuffer != nullptr &&
-            Atomic::load(
-                &((uint64_t *)_fifoBuffer)[flagcxFifoIdxTerminalStatus],
-                flagcxDeviceMemoryOrderAcquire) != flagcxSuccess)
-          break;
-        Intrin::spinBackoff(iter++);
-        current = Atomic::load(&_signalBuffer[absIdx],
-                               flagcxDeviceMemoryOrderAcquire);
-      }
+      DefaultNetDispatch<P>::template call<WaitSignalOp>(
+          context(), *this, typename PlatformTraits<P>::CoopThread{},
+          (flagcxDevSignal_t)signalIdx, expected,
+          (int)CommTraits<DefaultBackend<P>>::completionBits,
+          flagcxDeviceMemoryOrderAcquire);
     }
     // Flush: ensure all signal FIFO entries from arrive() completed on wire
-    if (FLAGCX_THREAD_IDX_X == 0 && _fifoBuffer != nullptr) {
-      CommTraits<DefaultBackend<P>>::fifoFlush(_fifoBuffer);
+    if (_coop.threadRank() == 0) {
+      DefaultNetDispatch<P>::template call<FlushOp>(
+          context(), *this, typename PlatformTraits<P>::CoopThread{},
+          flagcxDeviceMemoryOrderAcquire);
     }
-    FLAGCX_DEVICE_SYNC_THREADS();
+    _coop.sync();
   }
 
-  // sync = arrive + wait
+  // Legacy split operations are kept for existing Relaxed callers. Strong
+  // fences require sync() so their pre/post completion phases stay together.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
+    arriveImpl(order, fence);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
+    waitImpl(order, fence);
+  }
+
+  // Strong fences apply to this barrier's one selected Net context.
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    arrive(order, fence);
-    wait(order, fence);
+    if (!flagcxDevNetFenceValid(fence))
+      FLAGCX_DEVICE_TRAP();
+    if (context().provider == DefaultNetProviderGda &&
+        !DefaultNetGdaProvider<P>::supportsBarrierFence(context(), fence))
+      FLAGCX_DEVICE_TRAP();
+    arriveImpl(order, fence);
+    waitImpl(order, fence);
   }
 };
 
@@ -1341,6 +1799,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
     if (_nInterPeers > 0) {
       _inter.arrive(order, fence);
     } else {
@@ -1351,6 +1811,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
     if (_nInterPeers > 0) {
       _inter.wait(order, fence);
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
@@ -1365,13 +1827,14 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_nInterPeers > 0) {
       // Phase 1: inter signal+wait (rank-to-rank across nodes)
-      _inter.arrive(order, fence);
-      _inter.wait(order, fence);
+      _inter.sync(order, fence);
       // Phase 2: intra sync (broadcast inter completion to local ranks)
       _intra.arrive(flagcxDeviceMemoryOrderAcquire);
       _intra.wait(flagcxDeviceMemoryOrderAcquire);
     } else {
       // Single-node: one intra sync
+      if (fence != flagcxDevNetFenceLevel::Relaxed)
+        FLAGCX_DEVICE_TRAP();
       _intra.arrive(order);
       _intra.wait(order);
     }

@@ -520,15 +520,41 @@ struct CommTraits<NcclBackend> {
 #endif // FLAGCX_CHECK_DEVICE_CC
 };
 
-// Fence level mapping (file scope for CUDA __constant__ compatibility)
+// Put/Get entered NCCL's GIN fence API after 2.30.4. Older supported NCCL
+// releases only define Relaxed, so keep their existing build and reject a
+// strong fence instead of referring to missing enum members.
 #if defined(FLAGCX_DEVICE_COMPILE) && FLAGCX_CHECK_DEVICE_CC
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 30, 7)
+// File scope is required for CUDA __constant__ storage.
 FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR ncclGinFenceLevel
-    flagcxDevNetFenceLevelMap[] = {ncclGinFenceLevel::Relaxed};
+    flagcxDevNetFenceLevelMap[] = {
+        ncclGinFenceLevel::Relaxed, ncclGinFenceLevel::Put,
+        ncclGinFenceLevel::Get,
+        static_cast<ncclGinFenceLevel>(
+            static_cast<uint32_t>(ncclGinFenceLevel::Put) |
+            static_cast<uint32_t>(ncclGinFenceLevel::Get))};
 static_assert(sizeof(flagcxDevNetFenceLevelMap) /
                       sizeof(flagcxDevNetFenceLevelMap[0]) ==
-                  static_cast<int>(flagcxDevNetFenceLevel::Relaxed) + 1,
+                  static_cast<int>(flagcxDevNetFenceLevel::Put |
+                                   flagcxDevNetFenceLevel::Get) +
+                      1,
               "flagcxDevNetFenceLevelMap must cover all "
               "flagcxDevNetFenceLevel values");
+
+FLAGCX_DEVICE_INLINE_DECORATOR ncclGinFenceLevel
+flagcxToNcclGinFenceLevel(flagcxDevNetFenceLevel fence) {
+  if (!flagcxDevNetFenceValid(fence))
+    FLAGCX_DEVICE_TRAP();
+  return flagcxDevNetFenceLevelMap[static_cast<uint32_t>(fence)];
+}
+#else
+FLAGCX_DEVICE_INLINE_DECORATOR ncclGinFenceLevel
+flagcxToNcclGinFenceLevel(flagcxDevNetFenceLevel fence) {
+  if (fence != flagcxDevNetFenceLevel::Relaxed)
+    FLAGCX_DEVICE_TRAP();
+  return ncclGinFenceLevel::Relaxed;
+}
+#endif
 #endif
 
 // ============================================================
@@ -626,12 +652,16 @@ struct Barrier<NcclBackend, flagcxTeamTagInter, Coop> {
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     // ncclGinBarrierSession only exposes sync; arrive is a no-op on vendor
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     // ncclGinBarrierSession only exposes sync; wait is a no-op on vendor
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -640,8 +670,9 @@ struct Barrier<NcclBackend, flagcxTeamTagInter, Coop> {
     if (_nInterPeers > 0) {
       reinterpret_cast<ncclGinBarrierSession<ncclCoopCta> *>(_implStorage)
           ->sync(ncclCoopCta(), Atomic::toNativeOrder(order),
-                 flagcxDevNetFenceLevelMap[static_cast<int>(fence)]);
-    }
+                 flagcxToNcclGinFenceLevel(fence));
+    } else if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
   }
 };
 
@@ -712,6 +743,8 @@ struct Barrier<NcclBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
     if (_intraOnly) {
       reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
           ->arrive(ncclCoopCta(), Atomic::toNativeOrder(order));
@@ -722,6 +755,8 @@ struct Barrier<NcclBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
     if (_intraOnly) {
       reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
           ->wait(ncclCoopCta(), Atomic::toNativeOrder(order));
@@ -733,12 +768,14 @@ struct Barrier<NcclBackend, flagcxTeamTagWorld, Coop> {
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     if (_intraOnly) {
+      if (fence != flagcxDevNetFenceLevel::Relaxed)
+        FLAGCX_DEVICE_TRAP();
       reinterpret_cast<ncclLsaBarrierSession<ncclCoopCta> *>(_implStorage)
           ->sync(ncclCoopCta(), Atomic::toNativeOrder(order));
     } else {
       reinterpret_cast<ncclBarrierSession<ncclCoopCta> *>(_implStorage)
           ->sync(ncclCoopCta(), Atomic::toNativeOrder(order),
-                 flagcxDevNetFenceLevelMap[static_cast<int>(fence)]);
+                 flagcxToNcclGinFenceLevel(fence));
     }
   }
 };
@@ -749,7 +786,7 @@ using DeviceAPI = CommTraits<NcclBackend>;
 
 #else
 // NCCL version too old — fall back to default
-#include "default_comm_traits.h"
+#include "nvidia_net_provider.h"
 #undef FLAGCX_DEVICE_API_VENDOR
 using DeviceAPI = CommTraits<DefaultBackend<NvidiaPlatform>>;
 

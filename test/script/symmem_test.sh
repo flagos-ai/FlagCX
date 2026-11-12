@@ -18,7 +18,7 @@ run_multi_segment=0
 # Keep this fixed list aligned with the provider cases exercised by hardware CI.
 # DU multi-segment mapping is still under driver validation.
 case "${FLAGCX_ADAPTOR:-}" in
-  nvidia|metax|ppu)
+  nvidia|metax|ppu|ascend)
     run_multi_segment=1
     ;;
   du)
@@ -27,7 +27,7 @@ case "${FLAGCX_ADAPTOR:-}" in
   "")
     ;;
   *)
-    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, or metax" >&2
+    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, or ascend" >&2
     exit 2
     ;;
 esac
@@ -61,21 +61,25 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     -x FLAGCX_VMM_ENABLE=0 \
     -x FLAGCX_IB_DISABLE=1 \
     "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
 
 echo ""
 echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
-FLAGCX_CI_MPI_LABEL="symmem VMM local" \
-  "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
-    -x FLAGCX_USE_HETERO_COMM=1 \
-    -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-    -x FLAGCX_MEM_ENABLE=1 \
-    -x FLAGCX_VMM_ENABLE=1 \
-    -x FLAGCX_IB_DISABLE=1 \
-    -x FLAGCX_CI_REQUIRE_VMM=1 \
-    "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
-    "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess
+if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
+  FLAGCX_CI_MPI_LABEL="symmem VMM local" \
+    "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
+      -x FLAGCX_USE_HETERO_COMM=1 \
+      -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+      -x FLAGCX_MEM_ENABLE=1 \
+      -x FLAGCX_VMM_ENABLE=1 \
+      -x FLAGCX_IB_DISABLE=1 \
+      -x FLAGCX_CI_REQUIRE_VMM=1 \
+      "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
+      "$BUILD_BIN/symmem_mpi_tests" \
+      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
+else
+  echo "Skipping symmem VMM-local tests: VMM is unavailable on this CoreX runtime"
+fi
 
 if ((run_multi_segment)); then
   provider_multi_segment_status=0
@@ -93,7 +97,7 @@ if ((run_multi_segment)); then
   fi
 fi
 
-if [[ -n "${FLAGCX_ADAPTOR:-}" ]]; then
+if [[ -n "${FLAGCX_ADAPTOR:-}" && "${FLAGCX_ADAPTOR}" != ascend ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \

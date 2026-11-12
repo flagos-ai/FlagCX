@@ -64,6 +64,10 @@ log_dir=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-/tmp}/flagcx-ci-attempts}
 mkdir -p "$log_dir"
 summary_file=$(mktemp "$log_dir/summary.XXXXXX.md")
 finish() {
+  if [[ "$platform" == ascend && "$workload" == perf ]]; then
+    bash "$script_dir/ascend_rdma_host_inventory.sh" \
+      >"$log_dir/ascend-rdma-host-inventory-after.log" 2>&1 || true
+  fi
   cleanup
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     cat "$summary_file" >> "$GITHUB_STEP_SUMMARY"
@@ -108,6 +112,10 @@ pull_image
 if [[ "$platform" == "ascend" ]]; then
   exec 9>/var/lock/flagcx-ascend-ci.lock
   flock --exclusive --wait 7200 9
+  if [[ "$workload" == "perf" ]]; then
+    bash "$script_dir/ascend_rdma_host_inventory.sh" | \
+      tee "$log_dir/ascend-rdma-host-inventory.log"
+  fi
 fi
 
 docker run --rm \
@@ -126,6 +134,8 @@ docker run --rm \
   --env FLAGCX_CI_LOG_DIR=/ci-logs \
   --env FLAGCX_CI_TORCH_COVERAGE="${FLAGCX_CI_TORCH_COVERAGE:-0}" \
   --env FLAGCX_CI_COVERAGE_REPORT="/ci-logs/coverage-${platform}-gpu-torch.json" \
+  --env FLAGCX_CI_COVERAGE="${FLAGCX_CI_COVERAGE:-0}" \
+  --env FLAGCX_CI_CPP_COVERAGE_REPORT="${FLAGCX_CI_CPP_COVERAGE_REPORT:-/ci-logs/cpp-coverage}" \
   --env GITHUB_STEP_SUMMARY="/ci-logs/$(basename "$summary_file")" \
   --env FLAGCX_CI_PLATFORM="$platform" \
   --env FLAGCX_CI_WORKLOAD="$workload" \

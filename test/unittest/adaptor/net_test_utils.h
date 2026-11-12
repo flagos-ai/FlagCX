@@ -6,8 +6,6 @@
 #define FLAGCX_TEST_UNITTEST_ADAPTOR_NET_TEST_UTILS_H_
 
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
 #include "adaptor.h"
 #include "flagcx.h"
@@ -32,15 +30,11 @@ inline flagcxResult_t getLocalNetDevice(struct flagcxNetAdaptor *netAdaptor,
     return flagcxInternalError;
   }
 
-  const char *firstLocalDevice =
-      std::getenv("FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE");
-  const bool forceFirstLocalDevice =
-      firstLocalDevice != nullptr && std::strcmp(firstLocalDevice, "1") == 0;
   const bool pciTopologyAvailable =
       deviceAdaptor != nullptr && deviceAdaptor->getDevicePciBusId != nullptr &&
       deviceAdaptor->getDeviceByPciBusId != nullptr;
   int gpuDev = 0;
-  if (pciTopologyAvailable && !forceFirstLocalDevice) {
+  if (pciTopologyAvailable) {
     result = deviceHandle->getDevice(&gpuDev);
     if (result != flagcxSuccess) {
       flagcxDeviceHandleFree(deviceHandle);
@@ -48,7 +42,7 @@ inline flagcxResult_t getLocalNetDevice(struct flagcxNetAdaptor *netAdaptor,
     }
   }
 
-  if (!pciTopologyAvailable || forceFirstLocalDevice) {
+  if (!pciTopologyAvailable) {
     int gpuCount = 0;
     result = deviceHandle->getDeviceCount(&gpuCount);
     if (result == flagcxSuccess && gpuCount > 0) {

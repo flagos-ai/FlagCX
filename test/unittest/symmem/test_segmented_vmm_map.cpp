@@ -1,5 +1,5 @@
-#include "../../../flagcx/adaptor/device/segmented_vmm_allocation.h"
-#include "../../../flagcx/adaptor/device/segmented_vmm_map.h"
+#include "segmented_vmm_allocation.h"
+#include "segmented_vmm_map.h"
 #include <gtest/gtest.h>
 
 namespace {

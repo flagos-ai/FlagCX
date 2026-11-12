@@ -46,6 +46,7 @@ public:
   int getRootRank() const { return root; }
   uint64_t getSplitMask() const { return splitMask; }
   int getLocalRegister() const { return localRegister; }
+  bool isVerificationEnabled() const { return verifyData == 1; }
   int getDataType() const { return datatype; }
   int getOp() const { return op; }
 
@@ -58,6 +59,7 @@ public:
   int root;
   uint64_t splitMask;
   int localRegister;
+  int verifyData;
   int datatype = -1; // index into test_types[], or -1 for "all"
   int op = -1;       // index into test_ops[], or -1 for "all"
 };

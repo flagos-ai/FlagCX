@@ -18,7 +18,8 @@ struct flagcxEvent {
 };
 
 struct flagcxIpcMemHandle {
-  char *base; // to be implemented
+  // AscendCL requires a 65-byte IPC key buffer, including its terminator.
+  char key[65];
 };
 
 #define DEVCHECK(func)                                                         \

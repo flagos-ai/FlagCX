@@ -99,8 +99,42 @@ struct flagcxDevNet_DescriptorSmem {
   flagcxDescriptorSmem smem;
 };
 
-// Fence level enum — available on all tiers for unified barrier API
-enum class flagcxDevNetFenceLevel { Relaxed };
+// Put/Get are supported by Inter/World sync(), not their legacy split
+// arrive()/wait() calls. Intra barriers have no Net fence parameter.
+// The fence covers one Net context supplied to the barrier. Team tags select
+// the participating ranks; they do not expand the fence to other contexts.
+// Put makes prior puts from participating ranks visible at this rank, while
+// Get completes this rank's prior gets into local memory. Both apply only to
+// requests submitted through that context before the barrier.
+// TODO: Introduce an explicit all-context barrier if callers need one fence
+// for requests issued through multiple Net contexts.
+enum class flagcxDevNetFenceLevel : uint32_t {
+  Relaxed = 0,
+  Put = 1u << 0,
+  Get = 1u << 1,
+};
+
+FLAGCX_HOST_DEVICE_INLINE constexpr flagcxDevNetFenceLevel
+operator|(flagcxDevNetFenceLevel a, flagcxDevNetFenceLevel b) {
+  return static_cast<flagcxDevNetFenceLevel>(static_cast<uint32_t>(a) |
+                                             static_cast<uint32_t>(b));
+}
+
+FLAGCX_HOST_DEVICE_INLINE constexpr flagcxDevNetFenceLevel
+operator&(flagcxDevNetFenceLevel a, flagcxDevNetFenceLevel b) {
+  return static_cast<flagcxDevNetFenceLevel>(static_cast<uint32_t>(a) &
+                                             static_cast<uint32_t>(b));
+}
+
+FLAGCX_HOST_DEVICE_INLINE constexpr bool
+flagcxDevNetFenceHas(flagcxDevNetFenceLevel fence, flagcxDevNetFenceLevel bit) {
+  return static_cast<uint32_t>(fence & bit) != 0;
+}
+
+FLAGCX_HOST_DEVICE_INLINE constexpr bool
+flagcxDevNetFenceValid(flagcxDevNetFenceLevel fence) {
+  return (static_cast<uint32_t>(fence) & ~uint32_t(3)) == 0;
+}
 
 // ============================================================
 // Unified team/barrier tag types.

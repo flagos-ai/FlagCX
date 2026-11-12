@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -15,44 +16,17 @@ class AscendCiTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def test_symmem_override_runs_unit_only_and_propagates_its_status(self):
-        # The multi-rank phases stay skipped while the backend gaps they need
-        # are unresolved, so only the single-process phase runs. A failing unit
-        # phase must still fail the suite, otherwise the skip would turn a real
-        # regression green.
-        for unit_fails in (False, True):
-            with self.subTest(unit_fails=unit_fails), \
-                    tempfile.TemporaryDirectory() as tmp:
-                tmp = Path(tmp)
-                log = tmp / "commands"
-                runner = self.script(tmp / "runner", '''
-label=${FLAGCX_CI_TEST_LABEL:-${FLAGCX_CI_MPI_LABEL:-}}
-printf '%s %s\n' "$label" "$*" >> "$COMMAND_LOG"
-[[ "$FAILED_PHASE" == none || "$label" != *"$FAILED_PHASE"* ]] || exit 7
-''')
-                result = subprocess.run(
-                    ["bash", "-c", 'set -e; source "$1"; TEST_RUNNER="$2"; '
-                     'MPI_RUNNER="$2"; flagcx_ci_run_suite_override symmem /suite',
-                     "bash", str(ROOT / ".github/scripts/set_env/ascend.sh"), str(runner)],
-                    env={**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
-                         "FAILED_PHASE": "unit" if unit_fails else "none"},
-                    capture_output=True, text=True,
-                )
-                # The unit status is propagated verbatim, so the original exit
-                # code stays visible instead of being flattened to 1.
-                self.assertEqual(result.returncode, 7 if unit_fails else 0,
-                                 result.stdout + result.stderr)
-                commands = log.read_text().splitlines()
-                self.assertEqual(len(commands), 1, commands)
-                self.assertIn("symmem_unit_tests", commands[0])
-                # No multi-rank phase may be launched.
-                self.assertNotIn("symmem_mpi_tests", log.read_text())
-                self.assertNotIn("FLAGCX_CI_REQUIRE_NET_MR=1", log.read_text())
-                self.assertNotIn("FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1",
-                                 log.read_text())
-                # The skipped phases must still name what they wait on.
-                self.assertIn("Ascend coverage gap", result.stdout)
-                self.assertIn("flagcxProxyService", result.stdout)
+    def test_rma_runner_and_symmem_use_shared_suite_runner(self):
+        result = subprocess.run(
+            ["bash", "-c",
+             'set -e; source "$1"; '
+             'if declare -F flagcx_ci_run_suite_override >/dev/null; then '
+             'exit 1; fi',
+             "bash", str(ROOT / ".github/scripts/set_env/ascend.sh")],
+            env={**os.environ, "BASH_ENV": ""},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_runner_isolates_collectives_and_preserves_failures(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +59,52 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(log.read_text().splitlines()), 1)
 
+    def test_runner_skips_only_the_affected_ascend_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            ci = tmp / "ci"
+            ci.mkdir()
+            shutil.copy2(CI / "run_ascend_runner_mpi.sh",
+                         ci / "run_ascend_runner_mpi.sh")
+            self.script(ci / "run_mpi_with_timeout.sh",
+                        'printf "%s\\n" "$*" >> "$COMMAND_LOG"\n')
+            tools = tmp / "tools"
+            tools.mkdir()
+            self.script(tools / "timeout", 'shift 2\nexec "$@"\n')
+            binary = self.script(tmp / "runner_mpi_tests", '''
+[[ "$1" == --gtest_list_tests ]]
+printf 'FlagCXCollTest.\n  AllGather\n  AllReduce\n  AlltoAllvAsymmetric\n  Reduce\n  ReduceScatter\nOtherSuite.\n  OtherTest\n'
+''')
+            log = tmp / "commands"
+            env = {**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(log),
+                   "PATH": f"{tools}:{os.environ['PATH']}"}
+            for label in ("runner default", "runner heterogeneous",
+                          "runner forced NET"):
+                with self.subTest(label=label):
+                    log.write_text("")
+                    result = subprocess.run(
+                        ["bash", str(ci / "run_ascend_runner_mpi.sh"),
+                         "-np", "4", str(binary)],
+                        env={**env, "FLAGCX_CI_MPI_LABEL": label},
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0,
+                                     result.stdout + result.stderr)
+                    commands = log.read_text()
+                    self.assertIn("FlagCXCollTest.AllGather", commands)
+                    self.assertNotIn("OtherTest", commands)
+                    if label == "runner default":
+                        self.assertNotIn("FlagCXCollTest.AlltoAllvAsymmetric",
+                                         commands)
+                        for test in ("AllReduce", "Reduce", "ReduceScatter"):
+                            self.assertIn(f"FlagCXCollTest.{test}", commands)
+                    else:
+                        self.assertIn("FlagCXCollTest.AlltoAllvAsymmetric",
+                                      commands)
+                        for test in ("AllReduce", "Reduce", "ReduceScatter"):
+                            self.assertNotIn(f"FlagCXCollTest.{test}", commands)
+                    self.assertIn("Skipping", result.stdout)
+
     def test_rma_unit_failure_does_not_hide_ipc_or_network(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -92,6 +112,10 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
             scripts.mkdir(parents=True)
             self.script(scripts / "run_with_timeout.sh", 'exec "$@"\n')
             self.script(scripts / "run_ascend_diagnostics.sh", 'exit 0\n')
+            self.script(
+                scripts / "filter_supplemental_tests.sh",
+                'printf "%s\\n" "$1"\n',
+            )
             bin_dir = tmp / "bin"
             bin_dir.mkdir()
             self.script(bin_dir / "cmake", 'exit 0\n')
