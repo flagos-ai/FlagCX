@@ -581,6 +581,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"$BUILD_BIN/symmem_mpi_tests"', symmem_runner)
         self.assertIn('run-mpi-net', unit_runner)
 
+    def test_cuda_device_traits_suite_runs_kernel(self):
+        cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
+        cuda_env = (REPO_ROOT / ".github/scripts/set_env/cuda.sh").read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        kernel_makefile = (REPO_ROOT / "test/kernel/nvidia/Makefile").read_text()
+
+        suites = cuda_config[cuda_config.index("unit_test_suites:") :]
+        self.assertIn("  - device_traits", suites)
+        self.assertIn(
+            "device_api|device_api_host|device_api_unified_ir|device_traits)",
+            cuda_env,
+        )
+        self.assertIn('"$SUITE" == device_traits', unit_runner)
+        self.assertIn('"$PROJECT_ROOT/test/kernel/nvidia"', unit_runner)
+        self.assertIn('          device_traits "${args[@]}"', unit_runner)
+        self.assertIn(
+            "device_traits: $(BINDIR)/test_device_api_traits", kernel_makefile
+        )
+        self.assertIn("@$(BINDIR)/test_device_api_traits", kernel_makefile)
+
     def test_ascend_p2p_write_runs_in_default_and_shared_engines(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
@@ -685,6 +707,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
+        selected = subprocess.run(
+            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
+            ["hygon"],
+        )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -723,6 +755,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "device_api",
                 "device_api_host",
                 "device_api_unified_ir",
+                "device_traits",
                 "p2p",
                 "rma",
                 "runner",

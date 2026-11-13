@@ -1289,7 +1289,7 @@ flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
 // K10: Coop Groups
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
     flagcxIntraTestCoopGroupsKernel(int *results) {
-  FLAGCX_SHARED int warpValues[256];
+  FLAGCX_SHARED_DECORATOR int warpValues[256];
 
   // Block
   {
