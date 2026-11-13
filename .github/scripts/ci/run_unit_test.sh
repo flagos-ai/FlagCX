@@ -91,6 +91,10 @@ fi
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
+if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar &&
+      ( "$SUITE" == adaptor || "$SUITE" == runner ) ]]; then
+  export FLAGCX_DEBUG=TRACE
+fi
 
 : "${MPI_HOME:?The platform set_env script must define MPI_HOME}"
 declare -p FLAGCX_CI_PROJECT_MAKE_ARGS >/dev/null 2>&1 || {
