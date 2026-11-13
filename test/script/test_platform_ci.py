@@ -2480,9 +2480,34 @@ class MetaXEnvironmentTest(unittest.TestCase):
         selector = source[source.index("flagcx_ci_select_rdma() {") :]
         selector = selector[: selector.index("flagcx_ci_validate_rdma() {")]
 
-        self.assertIn("/sys/class/infiniband/bnxt_roce*", selector)
-        self.assertIn("/sys/class/infiniband/bnxt_re_bond*", selector)
+        self.assertIn('"$rdma_sysfs_root"/*', selector)
+        self.assertIn('"$hca_path"/ports/*', selector)
+        self.assertIn(
+            'FLAGCX_CI_METAX_RDMA_SYSFS_ROOT:-/sys/class/infiniband',
+            selector,
+        )
+        self.assertNotIn("bnxt_roce*", selector)
+        self.assertNotIn("bnxt_re_bond*", selector)
         self.assertIn("export FLAGCX_IB_HCA", selector)
+
+    def test_selector_discovers_generic_rdma_names_and_pxn_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "infiniband"
+            for hca in ("bnxt_roce0", "mlx5_0", "bnxt_re_bond2"):
+                (root / hca / "ports" / "1").mkdir(parents=True)
+
+            result = self.run_metax_shell(
+                'unset FLAGCX_IB_HCA FLAGCX_CI_PXN_HCAS; '
+                'flagcx_ci_select_rdma test; '
+                'printf "%s|%s|%s\\n" "$FLAGCX_IB_HCA" "$FLAGCX_CI_PXN_HCAS" "$FLAGCX_CI_METAX_RDMA_PATTERN"',
+                extra_env={"FLAGCX_CI_METAX_RDMA_SYSFS_ROOT": str(root)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout.strip(),
+                f"bnxt_re_bond2,bnxt_roce0,mlx5_0|bnxt_roce0,mlx5_0|{root}/*",
+            )
 
     def test_prepare_does_not_select_rdma_hca(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2506,8 +2531,8 @@ class MetaXEnvironmentTest(unittest.TestCase):
     def test_validator_propagates_static_preflight_failure(self):
         result = self.run_metax_shell(
             'flagcx_ci_select_rdma() { '
-            'export FLAGCX_IB_HCA=bnxt_roce0; '
-            'FLAGCX_CI_METAX_RDMA_PATTERN=/sys/class/infiniband/bnxt_roce\\*; '
+            'export FLAGCX_IB_HCA=rdma0; '
+            'FLAGCX_CI_METAX_RDMA_PATTERN=/sys/class/infiniband/\\*; '
             '}; '
             'flagcx_ci_validate_rdma_static() { return 17; }; '
             'unset FLAGCX_IB_HCA; set +e; '
