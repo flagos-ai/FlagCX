@@ -3,13 +3,192 @@
 
 DEVICE_HOME  ?= /usr/local/Ascend/ascend-toolkit/latest
 DEVICE_LIB   := $(DEVICE_HOME)/lib64
-DEVICE_INCLUDE := $(DEVICE_HOME)/include
 DEVICE_LINK  := -lascendcl
 DEVICE_PLATFORM := ASCEND
-DEVICE_COMPILER :=
-DEVICE_COMPILE_FLAG :=
+
+# bisheng lowers a `<<<>>>` launch in a .asc translation unit into host stubs
+# that call the AscendC runtime and its profiling hooks. On this toolchain the
+# object our own flagcx/adaptor/kernel/ascend/device_api_host_helpers.asc
+# produces carries exactly eight such references:
+# AscendGetFuncFromBinary, AscendLaunchKernelWithHostArgs,
+# AscendDevBinaryLazyRegister, AscendProfRegister, AscendCGetProfkTypeImpl,
+# StartAscendProf, GetAscendProfStatus and ReportAscendProf (nm of the object;
+# no source file mentions any of them, so a grep over the tree finds nothing).
+# -lascendcl resolves none of them: libflagcx.so still links -- a shared
+# object tolerates undefined symbols -- but every EXECUTABLE that links it
+# stops with `undefined reference to ...`. Scanning the toolkit for the names
+# leads to libascendc_runtime.a, which is what carries the AscendC host
+# runtime; the spelling below follows the bisheng lookup further down (the
+# lib64 directory lives under a host-arch name that differs between
+# installs). This mirrors makefiles/nvidia.mk, where `-lcudart` is what
+# resolves the nvcc-generated cudaLaunchKernel/__cudaRegisterFatBinary stubs.
+# The wildcard guard is deliberate: a toolkit without the archive keeps
+# configuring for the host-only build instead of failing at link time.
+ASCEND_RUNTIME ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libascendc_runtime.a \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libascendc_runtime.a \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libascendc_runtime.a \
+    $(DEVICE_HOME)/compiler/lib64/libascendc_runtime.a))
+ifneq ($(ASCEND_RUNTIME),)
+DEVICE_LINK  += $(ASCEND_RUNTIME)
+endif
+
+# That archive is not self-contained. nm -A on it shows the member
+# ascendc_runtime.cpp.o carries `U strcpy_s`, and CANN provides strcpy_s in
+# libc_sec.so (nm -D gives `T strcpy_s`). No object built from our own sources
+# references strcpy_s -- a grep over build/obj for the name returns nothing --
+# so this is purely what pulling the archive in demands. Same failure shape as
+# above: libflagcx.so links (shared objects tolerate undefined symbols) but
+# every executable stops with
+#   ld: libflagcx.so: undefined reference to symbol 'strcpy_s'
+#   ld: libc_sec.so: error adding symbols: DSO missing from command line
+# libascendcl.so does not list libc_sec.so in its DT_NEEDED, so the
+# dependency has to be spelled out here rather than trusted to be reachable
+# transitively. It goes AFTER $(ASCEND_RUNTIME) so the reference precedes its
+# provider on the link line. The path resolves through $(DEVICE_LIB) (on the
+# 910C, ascend-toolkit/latest -> cann-9.1.0-beta.3, and libc_sec.so sits in
+# that lib64). Guarded the same way: absent means no change to the link.
+ASCEND_SEC ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libc_sec.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libc_sec.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libc_sec.so \
+    $(DEVICE_HOME)/compiler/lib64/libc_sec.so))
+ifneq ($(ASCEND_SEC),)
+DEVICE_LINK  += $(ASCEND_SEC)
+endif
+
+# The same class of demand appeared one step further along, measured on the
+# Ascend 910C at feafe52 while linking
+# test/unittest/device_api/build/bin/test_device_api_intra:
+#   ld: libflagcx.so: undefined reference to symbol 'CheckLogLevel'
+#   ld: /usr/local/Ascend/cann/lib64/libunified_dlog.so: error adding symbols:
+#       DSO missing from command line
+# (rc=2, test/unittest/device_api/Makefile:220, in the same run in which
+# test_dev_comm_cleanup linked -- so this is what sits BEHIND the strcpy_s
+# reference, which it only becomes visible after once libc_sec got a place on
+# the line.)
+# ld names the provider outright, and the dependency cannot be left to
+# transitive resolution: the DT_NEEDED list measured for libascendcl.so is
+# libmsprofiler, libascend_dump, libstdc++, libm, libgcc_s, libpthread, libc,
+# ld-linux, which does not contain it. "DSO missing from command line" is
+# itself the evidence that the file was reachable but unlisted.
+# Who references CheckLogLevel -- the AscendC archive, the CANN runtime
+# reached through it, or our own device objects -- is a separate measurement
+# and deliberately not claimed here; the spelling below resolves it either
+# way, since it goes after every one of them.
+ASCEND_DLOG ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libunified_dlog.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libunified_dlog.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libunified_dlog.so \
+    $(DEVICE_HOME)/compiler/lib64/libunified_dlog.so))
+ifneq ($(ASCEND_DLOG),)
+DEVICE_LINK  += $(ASCEND_DLOG)
+endif
+
+# Three more libraries of the same class, measured in one run on the Ascend
+# 910C at e2d9602.  The method matters: instead of unioning every `nm -u`
+# demand of $(ASCEND_RUNTIME) (that set is 117 names and is only an UPPER
+# bound -- members that ld never pulls in do not have to be satisfied), the
+# real link command was taken from `make -n`, run, and each time ld answered
+# `... libX.so: error adding symbols: DSO missing from command line` the named
+# libX was appended to the command line and the link re-run.  ld reports only
+# the first unsatisfied symbol per pass, so this converges from the inside
+# out.  Order and spelling are exactly what ld named:
+#   1 /usr/local/Ascend/cann/lib64/libmmpa.so
+#   2 /usr/local/Ascend/cann/lib64/libprofapi.so
+#   3 /usr/local/Ascend/cann/lib64/libruntime.so
+#   4 (nothing -- the DSO-missing chain is exhausted)
+# All three exist under $(DEVICE_LIB) (`ls -l`: 69400 / 198592 / 804776 bytes);
+# ld spells that same directory through the `cann` symlink.
+#
+# After the chain, the one remaining diagnostic class is NOT a missing
+# library: linking with -Wl,--warn-unresolved-symbols produced the executable
+# (rc=0) and listed nine warnings, all of them host launcher functions the
+# test itself calls -- launchKernelCommQueries, launchKernelCoopGroups,
+# launchKernelTeam, launchKernelLocalPointer, launchKernelIntraPointer,
+# launchKernelPeerPointer, launchKernelIntraBarrierSync,
+# launchKernelIntraBarrierArriveWait, launchKernelIntraAllReduce -- each
+# declared in test/kernel/include/device_api.h and defined per platform in
+# test/kernel/<platform>/device_api.*  test/kernel/ascend/device_api.asc is
+# the stage-2 toolchain gate and defines none of them, so that gap is missing
+# implementation, not link configuration, and is not papered over here.
+#
+# libascendc_runtime.a has no shared counterpart on this install: substituting
+# the .so spelling made the driver fail with `No such file or directory`, so
+# the archive stays and its demands are listed individually.
+ASCEND_MMPA ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libmmpa.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libmmpa.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libmmpa.so \
+    $(DEVICE_HOME)/compiler/lib64/libmmpa.so))
+ifneq ($(ASCEND_MMPA),)
+DEVICE_LINK  += $(ASCEND_MMPA)
+endif
+
+ASCEND_PROFAPI ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libprofapi.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libprofapi.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libprofapi.so \
+    $(DEVICE_HOME)/compiler/lib64/libprofapi.so))
+ifneq ($(ASCEND_PROFAPI),)
+DEVICE_LINK  += $(ASCEND_PROFAPI)
+endif
+
+ASCEND_RUNTIME_LIB ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libruntime.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libruntime.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libruntime.so \
+    $(DEVICE_HOME)/compiler/lib64/libruntime.so))
+ifneq ($(ASCEND_RUNTIME_LIB),)
+DEVICE_LINK  += $(ASCEND_RUNTIME_LIB)
+endif
+
+# bisheng ships under the host-arch directory of the toolkit, and the arch name
+# differs between x86_64 and aarch64 installs (the 910C machine used for
+# verification is aarch64). Resolve whichever exists, keeping the historical
+# compiler/bin spelling as the last candidate.
+ASCEND_BISHENG ?= $(firstword $(wildcard \
+    $(DEVICE_HOME)/aarch64-linux/bin/bisheng \
+    $(DEVICE_HOME)/x86_64-linux/bin/bisheng \
+    $(DEVICE_HOME)/compiler/bin/bisheng))
+DEVICE_COMPILER := $(ASCEND_BISHENG)
+
+# Device architecture selector. Verified on Ascend 910C (CANN 9.1.0-beta.3):
+#   bisheng -x asc --npu-soc=Ascend910_9382 --cce-auto-infer-kernel-type=false \
+#       -c probe.asc -o probe.o            -> rc=0
+# --npu-soc takes the name reported by the runtime itself (aclrtGetSocName());
+# --npu-arch and --cce-soc-version both reject every spelling tried on this
+# toolchain, so the soc form is the only supported entry point here.
+ASCEND_SOC ?= Ascend910_9382
+
+# ld.lld cannot derive a kernel's AI-Cube/AI-Vector type for kernels that do not
+# move data, which fails the link step of an otherwise valid translation unit.
+# Disabling the auto-inference is what makes a device translation unit compile
+# (rc=0) instead of erroring out in the linker.
+# -x asc is deliberately absent. The rule expands these flags AFTER the source
+# file (Makefile:546), where the driver reports that an input following the
+# last input file has no effect, so the language already comes from the .asc
+# extension (DEVICE_FILE_EXTENSION below). Verified rather than assumed: the
+# object this rule produces carries an .aicore_binary section, i.e. the device
+# image really is embedded even without the flag.
+DEVICE_COMPILE_FLAG := -c --npu-soc=$(ASCEND_SOC) \
+    --cce-auto-infer-kernel-type=false -std=c++17 -O2 -fPIC -MMD -MP \
+    -DFLAGCX_ASCEND_DEVICE_COMPILE=1
 DEVICE_LINK_FLAG :=
-DEVICE_FILE_EXTENSION :=
+# Each CCE object carries its own device image (as on DU/Iluvatar/KLX, unlike
+# nvcc's separate -dlink step), so no device-link object is produced.
+DEVICE_NEEDS_DLINK := 0
+DEVICE_FILE_EXTENSION := asc
+
+# Ascend C headers were verified at
+#   $(DEVICE_HOME)/aarch64-linux/include/ascendc/basic_api/kernel_operator.h
+# on the 910C machine; some installs expose the same tree under include/ascendc.
+# Add whichever exists so a toolkit without Ascend C still configures for the
+# host-only build.
+DEVICE_INCLUDE := $(DEVICE_HOME)/include \
+    $(firstword $(wildcard $(DEVICE_HOME)/aarch64-linux/include/ascendc) \
+                $(wildcard $(DEVICE_HOME)/include/ascendc) \
+                $(wildcard $(DEVICE_HOME)/compiler/include/ascendc))
 
 CCL_HOME    ?= /usr/local/Ascend/ascend-toolkit/latest
 CCL_LIB     := $(CCL_HOME)/lib64
@@ -17,6 +196,7 @@ CCL_INCLUDE := $(CCL_HOME)/include
 CCL_LINK    := -lhccl
 ADAPTOR_FLAG := -DUSE_ASCEND_ADAPTOR
 
-PLATFORM_KERNEL_DIR  :=
-PLATFORM_KERNEL_SRCS :=
+PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/ascend
+PLATFORM_KERNEL_SRCS := \
+    $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
 PLATFORM_EXTRA_SRCS  := flagcx/adaptor/device_api/default_dev_api_backend.cc

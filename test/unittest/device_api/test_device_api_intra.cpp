@@ -20,6 +20,13 @@
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>  -R <regMode>
  *   Runs on any single node, no network or HETERO_COMM required.
  *   -R 2 recommended (window registration for peer pointer access).
+ *
+ * Capability switches (set by test/unittest/device_api/Makefile): a platform
+ * that cannot satisfy a case compiles it out instead of shipping a launcher
+ * that would report it green.  FLAGCX_TEST_NO_COOP_GROUPS drops K2,
+ * FLAGCX_TEST_NO_PEER_POINTER drops K5/K6, FLAGCX_TEST_NO_INTRA_BARRIER drops
+ * K8/K9/K10; each site carries the reason.  K1/K3/K4 are unconditional and are
+ * what a reduced platform such as Ascend 910C still has to pass.
  ************************************************************************/
 
 #include "check.h"
@@ -132,6 +139,7 @@ int main(int argc, char *argv[]) {
   }
 
   int peer = (proc + 1) % totalProcs;
+  (void)peer; // unused when the peer-access/barrier cases are compiled out
   bool allPass = true;
 
   // =========================================================================
@@ -170,6 +178,7 @@ int main(int argc, char *argv[]) {
     // -----------------------------------------------------------------------
     // K2: Coop Groups
     // -----------------------------------------------------------------------
+#ifndef FLAGCX_TEST_NO_COOP_GROUPS
     MPI_Barrier(MPI_COMM_WORLD);
     FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 16 * sizeof(int),
                                         flagcxMemDevice, stream));
@@ -185,6 +194,13 @@ int main(int argc, char *argv[]) {
                 (hostResults[4] == 1);
     printResult("K2 CoopGroups", k2Ok, proc);
     allPass &= k2Ok;
+#else
+    // Ascend 910C gives FlagCX one logical thread per AI core: CoopBlock has
+    // size()==1/threadRank()==0 and CoopTile<N> static_asserts N==1
+    // (ascend_platform_traits.h:598-615), so this case has no rank/size pair
+    // to report and no working sync.  Compiled out on that platform by
+    // test/unittest/device_api/Makefile rather than answered with a stub.
+#endif
 
     // -----------------------------------------------------------------------
     // K3: Team
@@ -232,6 +248,7 @@ int main(int argc, char *argv[]) {
     // -----------------------------------------------------------------------
     // K5: Intra Pointer
     // -----------------------------------------------------------------------
+#ifndef FLAGCX_TEST_NO_PEER_POINTER
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Write known pattern: each rank fills regBuff with its rank value
@@ -285,6 +302,14 @@ int main(int argc, char *argv[]) {
     }
     printResult("K6 PeerPointer(team)", k6Ok, proc);
     allPass &= k6Ok;
+#else
+    // Both cases dereference a pointer into another rank's memory
+    // (flagcxGetIntraPointer / flagcxGetPeerPointer).  Whether the symmetric
+    // window registered by flagcxCommWindowRegister really maps peer device
+    // memory on Ascend 910C is unmeasured, and no launcher in
+    // test/kernel/ascend/device_api.asc claims it: compiling the cases out
+    // keeps the suite's PASS honest until that mapping is demonstrated.
+#endif
 
     // -----------------------------------------------------------------------
     // K7: Multicast Pointer (commented — NVLS-dependent)
@@ -295,6 +320,7 @@ int main(int argc, char *argv[]) {
     // -----------------------------------------------------------------------
     // K8: Intra Barrier Sync
     // -----------------------------------------------------------------------
+#ifndef FLAGCX_TEST_NO_INTRA_BARRIER
     MPI_Barrier(MPI_COMM_WORLD);
 
     // Write rank+1 to local buffer
@@ -389,6 +415,15 @@ int main(int argc, char *argv[]) {
     }
     printResult("K10 IntraAllReduce(composite)", k10Ok, proc);
     allPass &= k10Ok;
+#else
+    // All three wait on ranks before reading what they wrote: K8/K9 go
+    // through flagcxDevBarrier<Intra>, and K10 is the same composite the
+    // barrier feeds.  An intra-node device barrier needs an ordered
+    // read-modify-write on global memory, which this platform declares absent
+    // (struct CceAtomic, ascend_platform_traits.h:201, rejecting add/sub/
+    // bitOr/bitAnd/exch/cas at :439-488) -- see the note atop
+    // test/kernel/ascend/device_api.asc.
+#endif
 
     if (proc == 0)
       printf("#\n");
