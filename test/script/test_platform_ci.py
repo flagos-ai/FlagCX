@@ -717,6 +717,21 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
             ["hygon"],
         )
+        selected_cuda = subprocess.run(
+            [
+                "ruby",
+                str(matrix_loader),
+                str(REPO_ROOT / ".github/configs"),
+                "cuda",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            [entry["platform"] for entry in json.loads(selected_cuda.stdout)["include"]],
+            ["cuda"],
+        )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -955,17 +970,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
                         workflow,
                     )
 
-        self.assertIn("  perf-test:\n", perf_workflow)
-        self.assertIn("cuda perf-legacy", perf_workflow)
+        self.assertIn("  perf-test-experimental-cuda:\n", perf_workflow)
+        self.assertIn("cuda perf-test-experimental", perf_workflow)
+        self.assertIn("  perf-test-experimental-hygon:\n", perf_workflow)
+        self.assertIn("hygon perf-test-experimental", perf_workflow)
+        self.assertIn("name: perf-test-experimental (cuda)", perf_workflow)
+        self.assertIn("name: perf-test-experimental (hygon)", perf_workflow)
+        self.assertIn("HYGON_EXPERIMENTAL_RESULT:", perf_workflow)
+        self.assertIn('"$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT"', perf_workflow)
         self.assertNotIn("cuda_legacy_perf_runs_on", perf_workflow)
-        legacy_perf_job = perf_workflow.split("  perf-test:\n", 1)[1].split(
+        experimental_perf_job = perf_workflow.split("  perf-test-experimental-cuda:\n", 1)[1].split(
             "\n  perf-test-hygon:", 1
         )[0]
         self.assertIn(
             "runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}",
-            legacy_perf_job,
+            experimental_perf_job,
         )
-        self.assertIn("timeout-minutes: 240", legacy_perf_job)
+        self.assertIn("timeout-minutes: 240", experimental_perf_job)
+        hygon_experimental_job = perf_workflow.split(
+            "  perf-test-experimental-hygon:\n", 1
+        )[1].split("\n  perf-test-cuda:", 1)[0]
+        self.assertIn("hygon perf-test-experimental", hygon_experimental_job)
+        self.assertIn("timeout-minutes: 240", hygon_experimental_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
@@ -977,31 +1003,31 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_cuda_workload.sh"
         ).read_text()
         self.assertIn(
-            'source "$project_root/.github/scripts/ci/run_cuda_legacy_perf.sh"',
+            'source "$project_root/.github/scripts/ci/run_cuda_perf_experimental.sh"',
             cuda_handler,
         )
 
-    def test_p2p_perf_keeps_legacy_write_and_runs_shared_read(self):
+    def test_experimental_p2p_perf_keeps_write_and_runs_shared_read(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
-        legacy_perf = (
-            REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
+        experimental_perf = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"
         ).read_text()
-        self.assertIn("cuda perf-legacy", perf_workflow)
-        self.assertNotIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', legacy_perf)
-        self.assertIn('"$perf_bin/perf_allreduce"', legacy_perf)
-        self.assertIn("for operation in put get", legacy_perf)
-        self.assertIn('"$perf_bin/perf_$operation"', legacy_perf)
-        self.assertIn('"$device_api_bin/perf_allreduce_intranode"', legacy_perf)
-        self.assertIn('"$device_api_bin/perf_internode_onesided"', legacy_perf)
-        self.assertIn("FLAGCX_P2P_PERF_OP=write", legacy_perf)
-        self.assertIn("USE_SHARED_P2P_ENGINE=1", legacy_perf)
-        self.assertIn('FLAGCX_LIB="$shared_project_build/lib"', legacy_perf)
-        self.assertIn("FLAGCX_P2P_PERF_OP=read", legacy_perf)
-        self.assertIn("run_mpi_with_timeout.sh", legacy_perf)
-        self.assertNotIn("mpirun ", legacy_perf)
-        self.assertIn('"$shared_test_build/bin/perf_p2p_engine"', legacy_perf)
-        self.assertIn('LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH"', legacy_perf)
-        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", legacy_perf)
+        self.assertIn("cuda perf-test-experimental", perf_workflow)
+        self.assertNotIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', experimental_perf)
+        self.assertIn('"$perf_bin/perf_allreduce"', experimental_perf)
+        self.assertIn("for operation in put get", experimental_perf)
+        self.assertIn('"$perf_bin/perf_$operation"', experimental_perf)
+        self.assertIn('"$device_api_bin/perf_allreduce_intranode"', experimental_perf)
+        self.assertIn('"$device_api_bin/perf_internode_onesided"', experimental_perf)
+        self.assertIn("FLAGCX_P2P_PERF_OP=write", experimental_perf)
+        self.assertIn("USE_SHARED_P2P_ENGINE=1", experimental_perf)
+        self.assertIn('FLAGCX_LIB="$shared_project_build/lib"', experimental_perf)
+        self.assertIn("FLAGCX_P2P_PERF_OP=read", experimental_perf)
+        self.assertIn("run_mpi_with_timeout.sh", experimental_perf)
+        self.assertNotIn("mpirun ", experimental_perf)
+        self.assertIn('"$shared_test_build/bin/perf_p2p_engine"', experimental_perf)
+        self.assertIn('LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH"', experimental_perf)
+        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", experimental_perf)
 
     def test_rma_visibility_conformance_covers_supported_routes_and_policies(self):
         unit_runner = (
@@ -1983,11 +2009,11 @@ run_suite
             runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
         )
         self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
-        cuda_extended = (
-            REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
+        cuda_experimental = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"
         ).read_text()
-        self.assertIn("UniRunnerDagAlgorithmsRejectOuterGroup", cuda_extended)
-        self.assertIn("FLAGCX_UNIRUNNER_ALGO=8", cuda_extended)
+        self.assertIn("UniRunnerDagAlgorithmsRejectOuterGroup", cuda_experimental)
+        self.assertIn("FLAGCX_UNIRUNNER_ALGO=8", cuda_experimental)
         self.assertIn('"${FLAGCX_CI_ENABLE_PXN:-1}" == "1"', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)

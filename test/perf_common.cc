@@ -1,4 +1,7 @@
 #include "perf_common.h"
+#include "comm.h"
+#include "global_comm.h"
+#include "transport.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -469,6 +472,36 @@ void perfSetup(PerfContext &ctx, int argc, char **argv,
   // Initialize communicator
   PERF_CHECK(
       flagcxCommInitRank(&ctx.comm, ctx.totalProcs, &uniqueId, ctx.proc));
+  if (const char *expected = getenv("FLAGCX_CI_EXPECT_RUNNER_MODE")) {
+    const bool matches = (strcmp(expected, "HYBRID") == 0 &&
+                          ctx.comm->commType == flagcxCommunicatorHybrid) ||
+                         (strcmp(expected, "HOMO") == 0 &&
+                          ctx.comm->commType == flagcxCommunicatorHomo);
+    if (!matches)
+      perfAbort("unexpected communicator mode", __FILE__, __LINE__);
+  }
+  if (getenv("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL") != nullptr) {
+    const char *selectedRunner = getenv("FLAGCX_USE_HETERO_COMM");
+    if (selectedRunner == nullptr || strcmp(selectedRunner, "1") != 0 ||
+        !ctx.comm->uniRunnerKernelSupported)
+      perfAbort("UniRunner device execution is unavailable", __FILE__,
+                __LINE__);
+  }
+  if (getenv("FLAGCX_CI_EXPECT_STREAM_VALUE") != nullptr &&
+      !ctx.comm->streamValueSupported)
+    perfAbort("stream value operations are unavailable", __FILE__, __LINE__);
+  if (getenv("FLAGCX_CI_EXPECT_LOCAL_P2P") != nullptr) {
+    if (ctx.comm->heteroComm == nullptr ||
+        ctx.comm->heteroComm->peerInfo == nullptr ||
+        getenv("FLAGCX_P2P_DISABLE") == nullptr ||
+        strcmp(getenv("FLAGCX_P2P_DISABLE"), "0") != 0)
+      perfAbort("local P2P route was not requested", __FILE__, __LINE__);
+    for (int peer = 0; peer < ctx.totalProcs; ++peer) {
+      if (ctx.comm->heteroComm->peerInfo[peer].hostHash !=
+          ctx.comm->heteroComm->peerInfo[ctx.proc].hostHash)
+        perfAbort("a peer is outside the local P2P node", __FILE__, __LINE__);
+    }
+  }
 
   // Create stream
   PERF_CHECK(ctx.devHandle->streamCreate(&ctx.stream));

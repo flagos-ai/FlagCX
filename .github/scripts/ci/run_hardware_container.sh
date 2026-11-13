@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -lt 2 || $# -gt 3 ]]; then
-  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-legacy> [unit-test-suite]" >&2
+  echo "Usage: $0 <platform> <unittest|torch-api|perf|perf-test-experimental> [unit-test-suite]" >&2
   exit 2
 fi
 
@@ -18,7 +18,7 @@ case "$workload" in
       exit 2
     fi
     ;;
-  torch-api|perf|perf-legacy)
+  torch-api|perf|perf-test-experimental)
     if [[ -n "$suite" ]]; then
       echo "The $workload workload does not accept a unit-test suite." >&2
       exit 2
