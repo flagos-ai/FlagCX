@@ -157,6 +157,9 @@ build_project() {
 
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  if [[ "$SUITE" == device_traits ]]; then
+    return 0
+  fi
   if [[ "$SUITE" == device_api_host ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
@@ -988,6 +991,12 @@ run_suite() {
     device_api_unified_ir)
       run_device_api_unified_ir
       ;;
+    device_traits)
+      local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+      FLAGCX_CI_TEST_LABEL="NVIDIA device traits" \
+        "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/kernel/nvidia" \
+          device_traits "${args[@]}"
+      ;;
     *)
       echo "Unsupported unit test suite: $SUITE" >&2
       exit 2
@@ -1029,6 +1038,8 @@ run_supplemental_unit_tests() {
 case "$SUITE" in
   adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
+    ;;
+  device_traits)
     ;;
   *)
     echo "Unsupported unit test suite: $SUITE" >&2

@@ -5,6 +5,7 @@
 #include "xshmem_state_layout.h"
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "xshmem/xshmem.h"
 #include "xshmem/xshmemx.h"
@@ -528,20 +529,10 @@ struct CommTraits<XshmemBackend> {
           *remote = value;
           flagcxXshmemDevice::threadFence();
         }
-      } else if constexpr (sizeof(T) == sizeof(uint64_t)) {
-        if (coop.threadRank() == 0) {
-          union {
-            T value;
-            uint64_t bits;
-          } encoded;
-          encoded.value = value;
-          flagcxXshmemDevice::signalOp(
-              (XSHMEM_FGP uint64_t *)((XSHMEM_FGP char *)dst.symBase + dstOff),
-              encoded.bits, XSHMEM_SIGNAL_SET, pe);
-        }
-      } else {
-        if (coop.threadRank() == 0)
-          __builtin_trap();
+      } else if (!putValueSignal(
+                     dst, dstOff, value, pe, coop,
+                     std::integral_constant<bool,
+                                            sizeof(T) == sizeof(uint64_t)>())) {
         return;
       }
       coop.sync();
@@ -746,6 +737,31 @@ struct CommTraits<XshmemBackend> {
     }
 
   private:
+    template <typename T, typename Coop>
+    XSHMEM_DEVICE_INLINE bool putValueSignal(Window dst, size_t dstOff, T value,
+                                             int pe, Coop coop,
+                                             std::true_type) const {
+      if (coop.threadRank() == 0) {
+        union {
+          T value;
+          uint64_t bits;
+        } encoded;
+        encoded.value = value;
+        flagcxXshmemDevice::signalOp(
+            (XSHMEM_FGP uint64_t *)((XSHMEM_FGP char *)dst.symBase + dstOff),
+            encoded.bits, XSHMEM_SIGNAL_SET, pe);
+      }
+      return true;
+    }
+
+    template <typename T, typename Coop>
+    XSHMEM_DEVICE_INLINE bool putValueSignal(Window, size_t, T, int, Coop coop,
+                                             std::false_type) const {
+      if (coop.threadRank() == 0)
+        __builtin_trap();
+      return false;
+    }
+
     // Base word index of the fan-out block owned by one (context, signal).
     // Layout is described in xshmem_state_layout.h.
     XSHMEM_DEVICE_INLINE int signalBase(flagcxDevSignal_t signalId) const {

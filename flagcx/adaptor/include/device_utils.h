@@ -5,6 +5,30 @@
 #ifndef FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 #define FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 
+#include <stdint.h>
+
+#if defined(__cplusplus)
+// Register operand shapes for one complete value. For example, Vector4 on
+// uint32_t selects four byte operands (.v4.b8).
+struct Scalar {};
+struct Vector2 {};
+struct Vector4 {};
+struct Vector8 {};
+
+struct alignas(16) Bulk16 {
+  uint32_t words[4];
+};
+
+struct alignas(32) Bulk32 {
+  uint32_t words[8];
+};
+
+static_assert(sizeof(Bulk16) == 16 && alignof(Bulk16) == 16,
+              "Bulk16 must occupy and align to 16 bytes");
+static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
+              "Bulk32 must occupy and align to 32 bytes");
+#endif
+
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
@@ -160,7 +184,7 @@
 // the logical SIMT width; wider XPU launches need a wider public lane mask and
 // matching cooperative-group support first.
 #define FLAGCX_SIMT_WIDTH 16
-#define FLAGCX_SHARED __local__
+#define FLAGCX_SHARED_DECORATOR __local__
 #define FLAGCX_DEVICE_STREAM_PTR XPUStream *
 
 #else
@@ -179,7 +203,7 @@
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
 #define FLAGCX_SIMT_WIDTH 16
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #define FLAGCX_DEVICE_STREAM_PTR void **
 #endif // __xpu__
 
@@ -212,7 +236,7 @@
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
 #define FLAGCX_SIMT_WIDTH 64
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 // Host pass: retain layout constants and erase device-only qualifiers.
 #define FLAGCX_HOST_DECORATOR
@@ -228,7 +252,7 @@
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
 #define FLAGCX_SIMT_WIDTH 64
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif // FLAGCX_ILUVATAR_DEVICE_COMPILE
 
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
@@ -258,7 +282,7 @@
 #define FLAGCX_BLOCK_IDX_X blockIdx.x
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
@@ -272,7 +296,7 @@
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif
 #define FLAGCX_SIMT_WIDTH 64
 #define FLAGCX_DEVICE_STREAM_PTR hipStream_t *
@@ -305,7 +329,7 @@
 
 // SIMT lockstep width (32 lanes on NVIDIA/CUDA)
 #define FLAGCX_SIMT_WIDTH 32
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 // Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
 #define FLAGCX_HOST_DECORATOR
@@ -323,7 +347,7 @@
 
 // SIMT width (same as device, for template instantiation)
 #define FLAGCX_SIMT_WIDTH 32
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif // __CUDACC__
 
 // CUDA runtime macros — available from both nvcc and host compiler
