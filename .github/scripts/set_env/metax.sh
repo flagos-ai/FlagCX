@@ -26,6 +26,14 @@ fi
 export PATH="/opt/maca/mxgpu_llvm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
+# The MetaX RoCEv2 GID is index 3 on the CI Broadcom adapters. MPI is used
+# only for process coordination by these single-node perf jobs; keep its
+# bootstrap on the container-visible TCP interface instead of UCX's default
+# RoCE GID 0, which is not routable from the job Pod network namespace.
+export FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-3}
+export OMPI_MCA_pml=${OMPI_MCA_pml:-ob1}
+export OMPI_MCA_btl=${OMPI_MCA_btl:-self,tcp}
+
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1

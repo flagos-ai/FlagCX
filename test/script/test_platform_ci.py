@@ -2509,6 +2509,27 @@ class MetaXEnvironmentTest(unittest.TestCase):
                 f"bnxt_re_bond2,bnxt_roce0,mlx5_0|bnxt_roce0,mlx5_0|{root}/*",
             )
 
+    def test_meta_x_uses_rocev2_gid_and_tcp_mpi_bootstrap_defaults(self):
+        result = self.run_metax_shell(
+            'printf "%s|%s|%s\\n" "$FLAGCX_IB_GID_INDEX" '
+            '"$OMPI_MCA_pml" "$OMPI_MCA_btl"'
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "3|ob1|self,tcp")
+
+        overridden = self.run_metax_shell(
+            'printf "%s|%s|%s\\n" "$FLAGCX_IB_GID_INDEX" '
+            '"$OMPI_MCA_pml" "$OMPI_MCA_btl"',
+            extra_env={
+                "FLAGCX_IB_GID_INDEX": "7",
+                "OMPI_MCA_pml": "ucx",
+                "OMPI_MCA_btl": "self,vader",
+            },
+        )
+        self.assertEqual(overridden.returncode, 0, overridden.stderr)
+        self.assertEqual(overridden.stdout.strip(), "7|ucx|self,vader")
+
     def test_prepare_does_not_select_rdma_hca(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
