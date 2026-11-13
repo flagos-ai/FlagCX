@@ -6,6 +6,33 @@ DEVICE_LIB   := $(DEVICE_HOME)/lib64
 DEVICE_LINK  := -lascendcl
 DEVICE_PLATFORM := ASCEND
 
+# bisheng lowers a `<<<>>>` launch in a .asc translation unit into host stubs
+# that call the AscendC runtime and its profiling hooks. On this toolchain the
+# object our own flagcx/adaptor/kernel/ascend/device_api_host_helpers.asc
+# produces carries exactly eight such references:
+# AscendGetFuncFromBinary, AscendLaunchKernelWithHostArgs,
+# AscendDevBinaryLazyRegister, AscendProfRegister, AscendCGetProfkTypeImpl,
+# StartAscendProf, GetAscendProfStatus and ReportAscendProf (nm of the object;
+# no source file mentions any of them, so a grep over the tree finds nothing).
+# -lascendcl resolves none of them: libflagcx.so still links -- a shared
+# object tolerates undefined symbols -- but every EXECUTABLE that links it
+# stops with `undefined reference to ...`. Scanning the toolkit for the names
+# leads to libascendc_runtime.a, which is what carries the AscendC host
+# runtime; the spelling below follows the bisheng lookup further down (the
+# lib64 directory lives under a host-arch name that differs between
+# installs). This mirrors makefiles/nvidia.mk, where `-lcudart` is what
+# resolves the nvcc-generated cudaLaunchKernel/__cudaRegisterFatBinary stubs.
+# The wildcard guard is deliberate: a toolkit without the archive keeps
+# configuring for the host-only build instead of failing at link time.
+ASCEND_RUNTIME ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libascendc_runtime.a \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libascendc_runtime.a \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libascendc_runtime.a \
+    $(DEVICE_HOME)/compiler/lib64/libascendc_runtime.a))
+ifneq ($(ASCEND_RUNTIME),)
+DEVICE_LINK  += $(ASCEND_RUNTIME)
+endif
+
 # bisheng ships under the host-arch directory of the toolkit, and the arch name
 # differs between x86_64 and aarch64 installs (the 910C machine used for
 # verification is aarch64). Resolve whichever exists, keeping the historical
