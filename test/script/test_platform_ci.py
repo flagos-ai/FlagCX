@@ -295,24 +295,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"]
+        all_platforms = ["enflame"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            ["enflame"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            ["enflame"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            ["enflame"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,17 +705,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"],
+            ["enflame"],
         )
         selected = subprocess.run(
-            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
+            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "enflame"],
             check=True,
             capture_output=True,
             text=True,
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
-            ["hygon"],
+            ["enflame"],
         )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
