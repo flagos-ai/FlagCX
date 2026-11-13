@@ -1,0 +1,18 @@
+name: Enflame Unit Tests
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: enflame-unit-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  enflame_unit_tests:
+    name: Enflame unit tests
+    uses: ./.github/workflows/unit_tests_common.yml
+    with:
+      platform: enflame

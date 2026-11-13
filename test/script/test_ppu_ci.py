@@ -323,7 +323,8 @@ class PpuCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
         ).read_text()
         ppu_config = (REPO_ROOT / ".github/configs/ppu.yml").read_text()
-        self.assertIn("docker run --rm", container_runner)
+        self.assertIn("docker container run --rm", container_runner)
+        self.assertNotIn("docker run --rm", container_runner)
         self.assertNotIn("ruby ", container_runner)
         for variable in (
             "FLAGCX_CI_IMAGE",

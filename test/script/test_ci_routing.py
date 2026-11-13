@@ -53,7 +53,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -79,6 +79,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
             ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
             ("flagcx/adaptor/device/cann_adaptor.cc", ["ascend"]),
+            (".github/scripts/set_env/enflame.sh", ["enflame"]),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
@@ -206,6 +207,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 config = (CONFIG_DIR / f"{platform}.yml").read_text()
                 self.assertIn("paths_watch:", config)
                 self.assertIn(f".github/configs/{platform}.yml", config)
+        self.assertTrue((REPO_ROOT / ".github/workflows/unit-test-enflame.yml").is_file())
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (

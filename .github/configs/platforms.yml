@@ -16,6 +16,8 @@ platforms:
     enabled: true
   ascend:
     enabled: true
+  enflame:
+    enabled: true
 shared_paths_watch:
   - .github/workflows/**
   - .github/configs/platforms.yml
