@@ -835,8 +835,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
-        self.assertIn('export GTEST_FILTER="-NetAdaptorLoopback.*"', enflame_env)
-        self.assertIn("unset GTEST_FILTER", enflame_env)
+        self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
+        self.assertIn('GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"', enflame_env)
 
         ascend_env = (
             REPO_ROOT / ".github/scripts/set_env/ascend.sh"
@@ -1184,6 +1184,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text())
         self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM=1', symmem_runner)
+        self.assertIn('enflame)', symmem_runner)
+        self.assertIn('"${FLAGCX_ADAPTOR}" != enflame', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC + NET"', unit_runner)
         self.assertIn(
             'FLAGCX_CI_MPI_LABEL="symmem remote without NET"', unit_runner

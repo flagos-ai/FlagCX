@@ -21,6 +21,9 @@ case "${FLAGCX_ADAPTOR:-}" in
   nvidia|metax|ppu|ascend)
     run_multi_segment=1
     ;;
+  enflame)
+    # S60 currently has no validated provider VMM/multi-segment route.
+    ;;
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
     ;;
@@ -99,7 +102,10 @@ if ((run_multi_segment)); then
   fi
 fi
 
-if [[ -n "${FLAGCX_ADAPTOR:-}" && "${FLAGCX_ADAPTOR}" != ascend ]]; then
+if [[ -n "${FLAGCX_ADAPTOR:-}" &&
+      "${FLAGCX_ADAPTOR}" != ascend &&
+      "${FLAGCX_ADAPTOR}" != enflame &&
+      "${FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL:-0}" != 1 ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \
