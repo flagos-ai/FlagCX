@@ -119,6 +119,8 @@ private:
 #include "kunlunxin_platform_traits.h"
 #elif defined(USE_ILUVATAR_ADAPTOR)
 #include "iluvatar_platform_traits.h"
+#elif defined(USE_ENFLAME_ADAPTOR)
+#include "enflame_platform_traits.h"
 #else
 #include "default_platform_traits.h"
 #endif

@@ -1,0 +1,1716 @@
+/*************************************************************************
+ * Copyright (c) 2025, ENFLAME CORPORATION. All rights reserved.
+ *
+ * Device IR kernel implementations — TOPS kernels exercising FlagCX Device
+ * API IR functions via device pointers.
+ *
+ * Signature-compatible with test/kernel/nvidia/device_ir.cu: the same 51
+ * device kernels and the same 49 launchKernel*S launchers, with the same
+ * names and parameters, so test/kernel/include/device_ir.h and the
+ * test/unittest/device_api IR suites link unchanged.
+ *
+ * The bodies are intentionally NOT implemented yet — every entry point
+ * returns immediately. The platform stays wired end-to-end (compiles, links,
+ * the suites run) while the kernels are ported one at a time. Each stub
+ * carries the nvidia semantics in a comment plus a file:line reference to
+ * test/kernel/nvidia/device_ir.cu.
+ *
+ * Porting notes for this platform:
+ *   - nvidia declares these kernels with a raw `__global__`; here the FlagCX
+ *     decorator macro is used so the same file is a valid host TU as well
+ *     (on Enflame `FLAGCX_GLOBAL_DECORATOR` is `__global__` in the device
+ *     pass and expands to nothing in the g++ host pass).
+ *   - `flagcxStream_t` on Enflame is `struct flagcxStream { topsStream_t
+ *     base; }` (flagcx/adaptor/include/enflame_adaptor.h), so the launchers
+ *     keep the nvidia `stream->base` launch syntax verbatim.
+ *   - `__launch_bounds__` is not used on nvidia's IR kernels either; the
+ *     launchers pass the block size explicitly.
+ *   - The one-sided IR calls on this platform must go through the ECCL
+ *     backend selected by -DFLAGCX_COMM_TRAITS_CCL.
+ *   - nvidia defines S20/S21/S22/S23/S24/S25 codegen macros
+ *     (e.g. S20_INTRA_COMBO) that expand inside the kernel bodies. They are
+ *     body-local, so they are omitted here; port each macro together with
+ *     the body that uses it.
+ ************************************************************************/
+
+#include "flagcx.h"
+#include "flagcx_kernel.h"
+#include "enflame_adaptor.h"
+#include "flagcx_device_internal.h"
+#include "global_comm.h"
+
+// IR wrapper declarations + implementations (needed so the device pass sees
+// the inline IR bodies).
+#include "flagcx_device_wrapper.h"
+#include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
+
+#include "device_ir.h"
+
+#define TOPSCHECK(cmd)                                                         \
+  do {                                                                         \
+    topsError_t err = cmd;                                                     \
+    if (err != topsSuccess) {                                                  \
+      WARN("Tops failure '%s'", topsGetErrorString(err));                      \
+      (void)topsGetLastError();                                                \
+      return flagcxUnhandledDeviceError;                                       \
+    }                                                                          \
+  } while (false)
+
+#define ECCL_DEVICE_GRID_DIM      4
+#define ECCL_DEVICE_BLOCK_DIM     2
+#define ECCL_DEVICE_THREAD_DIM    4
+
+template <int GRID_DIM, int BLOCK_DIM, int THREAD_DIM,
+          typename KernelFn, typename... Args>
+flagcxResult_t launchKernelExC(KernelFn kernel, flagcxStream_t stream,
+                               Args &...args) {
+  topsLaunchConfig_t cfg = {};
+  cfg.gridDim  = {GRID_DIM,  1, 1};
+  cfg.blockDim = {BLOCK_DIM,  1, 1};
+  cfg.stream   = *(topsStream_t *)stream;
+
+  topsLaunchAttribute attr[2];
+  attr[0].id  = topsLaunchAttributeThreadDimension;
+  attr[0].val.threadDim = {THREAD_DIM, 1, 1};
+  attr[1].id  = topsLaunchAttributeCooperative;
+  attr[1].val.cooperative = 1;
+  cfg.attrs   = attr;
+  cfg.numAttrs = 2;
+
+  void *kernelArgs[] = {&args...};
+  TOPSCHECK(topsLaunchKernelExC(&cfg, (const void *)kernel, kernelArgs));
+
+  return flagcxSuccess;
+}
+
+
+// Keep the shared IR tests backend-neutral. Existing backends resolve this to
+// 64; the Iluvatar DefaultBackend resolves it to its 32-bit completion domain.
+// ECCL does not narrow it either (flagcxBackendCompletionBits defaults to 64),
+// so this stays 64 here unless the ECCL traits gain a completionBits member.
+static constexpr int kCompletionBits =
+    flagcxBackendCompletionBits<DeviceAPI>::value;
+
+// ===========================================================================
+// Scalar IR (S-suffixed) kernels — Intra-Node (S1–S10)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// S1: Comm Queries (Scalar)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    results[0] = flagcxDevCommGetRank(devCommPtr);
+    results[1] = flagcxDevCommGetSize(devCommPtr);
+    results[2] = flagcxDevCommGetIntraRank(devCommPtr);
+    results[3] = flagcxDevCommGetIntraSize(devCommPtr);
+  }
+}
+
+void launchKernelCommQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              int *devResults, flagcxStream_t stream) {
+  if (!devCommPtr || !devResults) return;
+  launchKernelExC<1, 1, 1>(kernelCommQueriesS, stream, devCommPtr, devResults);
+}
+
+// ---------------------------------------------------------------------------
+// S2: Coop Groups (Scalar) — block, tile_span, lanes in one launcher
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_block(int *results) {
+  flagcxCoopBlock coop;
+  int rank = coop.threadRank();
+  int size = coop.size();
+
+  if (FLAGCX_BLOCK_IDX_X == 0 && rank == 0) {
+    results[0] = (size == threadDim.x) ? 1 : 0;
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_thread(int *results) {
+  // CoopThread (Tile<1>) has real implementation - test it
+  flagcxCoopThread thread;
+  int rank = thread.threadRank();
+  int size = thread.size();
+  flagcxLaneMask_t mask = thread.laneMask();
+  thread.sync();
+  
+  // Verify: rank should be 0, size should be 1, mask should be 1
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    results[1] = (rank == 0 && size == 1 && mask == 1) ? 1 : 0;
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_tileSpan(int *results) {
+  // ECCL does not support tile_span - mark as skipped
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    results[2] = -1;  // skipped
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_lanes(int *results) {
+  // ECCL does not support lanes cooperation - mark as skipped
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    results[3] = -1;  // skipped
+  }
+}
+
+void launchKernelCoopGroupsS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                             int *devResults, flagcxStream_t stream) {
+  if (!devResults) return;
+  // Launch four sub-kernels into the same results buffer
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelCoopGroupsS_block, stream, devResults);
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelCoopGroupsS_thread, stream, devResults);
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelCoopGroupsS_tileSpan, stream, devResults);
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelCoopGroupsS_lanes, stream, devResults);
+  (void)devCommPtr; // unused but kept for API symmetry
+}
+
+// ---------------------------------------------------------------------------
+// S3: Team Queries (Scalar)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    int intraRank = flagcxDevCommGetIntraRank(devCommPtr);
+    int worldRank = flagcxTeamRankToWorldS(devCommPtr, FLAGCX_TEAM_INTRA, intraRank);
+    results[0] = intraRank;
+    results[1] = worldRank;
+  }
+}
+
+void launchKernelTeamQueriesS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              int *devResults, flagcxStream_t stream) {
+  if (!devCommPtr || !devResults) return;
+  launchKernelExC<1, 1, 1>(kernelTeamQueriesS, stream, devCommPtr, devResults);
+}
+
+// ---------------------------------------------------------------------------
+// S4: Local Pointer (Scalar)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, void *rawBuff,
+                    int *results) {
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    void *localPtr = flagcxGetLocalPointerS(devMemPtr, 0);
+    if (localPtr == nullptr) {
+      results[0] = 0;
+    } else {
+      float val = *((volatile float *)localPtr);
+      float expected = *((volatile float *)rawBuff);
+      results[0] = (val == expected) ? 1 : 0;
+    }
+  }
+}
+
+void launchKernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                               void *rawBuff, int *devResults,
+                               flagcxStream_t stream) {
+  if (!devMemPtr || !devResults) return;
+  launchKernelExC<1, 1, 1>(kernelLocalPointerS, stream, devMemPtr, rawBuff, devResults);
+}
+
+// ---------------------------------------------------------------------------
+// S5: Intra Pointer (Scalar)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output,
+                    int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+  int peer = (myRank + nRanks - 1) % nRanks;
+
+  // Use persistent barrier to avoid LSA epoch state contamination across kernels
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  // Initial barrier to ensure all ranks' data is visible
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // Check first pointer before any thread dereferences
+  float *firstPtr = (float *)flagcxGetIntraPointerS(devMemPtr, tid * sizeof(float), peer);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  // ECCL LSA write-only: cannot read peers' send buffers directly.
+  // Phase 1: Write my data to peer's helper region
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetIntraPointerS(devMemPtr, i * sizeof(float), myRank);
+    float *peerPtr = (float *)flagcxGetIntraPointerS(devMemPtr, (count + i) * sizeof(float), peer);
+    *peerPtr = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  // Phase 2: Read from local helper region
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetIntraPointerS(devMemPtr, (count + i) * sizeof(float), myRank);
+    output[i] = *myPtr;
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelIntraPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              float *output, int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+  int peer = (myRank + nRanks - 1) % nRanks;
+
+  // Use persistent barrier to avoid LSA epoch state contamination across kernels
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  float *firstPtr = (float *)flagcxGetIntraPointerWithAccessS(
+      devMemPtr, tid * sizeof(float), peer, flagcxDevPeerAccessReadOnly);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetIntraPointerS(devMemPtr, i * sizeof(float), myRank);
+    float *peerPtr = (float *)flagcxGetIntraPointerWithAccessS(
+        devMemPtr, (count + i) * sizeof(float), peer, flagcxDevPeerAccessReadOnly);
+    *peerPtr = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetIntraPointerWithAccessS(
+        devMemPtr, (count + i) * sizeof(float), myRank, flagcxDevPeerAccessReadOnly);
+    output[i] = *myPtr;
+  }
+}
+
+void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                               float *devOutput, int count,
+                               flagcxStream_t stream) {
+  if (!devCommPtr || !devMemPtr || !devOutput) return;
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelIntraPointerS, stream, devCommPtr, devMemPtr, devOutput, count);
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelIntraPointerWithAccessS, stream, devCommPtr, devMemPtr, devOutput, count);
+}
+
+// ---------------------------------------------------------------------------
+// S8: Intra Barrier Sync (Scalar)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                        float *buffer, float *output, int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+  int peer = (myRank + nRanks - 1) % nRanks;
+
+  // Use persistent barrier to avoid LSA epoch state contamination across kernels
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // Write my data to buffer
+  for (int i = tid; i < count; i += nthreads) {
+    buffer[i] = (float)(myRank + 1);
+  }
+
+  // Barrier sync
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  float *firstPtr = (float *)flagcxGetPeerPointerS(devMemPtr, tid * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  // ECCL LSA write-only adaptation
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
+    *peerPtr = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    output[i] = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderRelease);
+}
+
+void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                                   float *buffer, float *output, int count,
+                                   flagcxStream_t stream) {
+  if (!devCommPtr || !devMemPtr || !buffer || !output) return;
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelIntraBarrierSyncS, stream, devCommPtr, devMemPtr, buffer, output, count);
+}
+
+// ---------------------------------------------------------------------------
+// S9: Intra Barrier Sync Split (Release + read + Acquire)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              float *buffer, float *output, int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+  int peer = (myRank + nRanks - 1) % nRanks;
+
+  // Use persistent barrier to avoid LSA epoch state contamination across kernels
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // Write my data to buffer
+  for (int i = tid; i < count; i += nthreads) {
+    buffer[i] = (float)(myRank + 500);
+  }
+
+  // Arrive (release)
+  bar.sync(flagcxDeviceMemoryOrderRelease);
+
+  // Wait (acquire)
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  float *firstPtr = (float *)flagcxGetPeerPointerS(devMemPtr, tid * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  // ECCL LSA write-only adaptation
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
+    *peerPtr = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    output[i] = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderRelease);
+}
+
+void launchKernelIntraBarrierArriveWaitS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
+    int count, flagcxStream_t stream) {
+  if (!devCommPtr || !devMemPtr || !buffer || !output) return;
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelIntraBarrierArriveWaitS, stream, devCommPtr, devMemPtr, buffer, output, count);
+}
+
+// ---------------------------------------------------------------------------
+// S6: Peer Pointer (Scalar) — team-based peer memory access
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output,
+                   int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+  int peer = (myRank + nRanks - 1) % nRanks;
+
+  // Use persistent barrier to avoid LSA epoch state contamination across kernels
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  float *firstPtr = (float *)flagcxGetPeerPointerS(devMemPtr, tid * sizeof(float),
+                                                    devCommPtr, FLAGCX_TEAM_INTRA, peer);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  // ECCL LSA write-only adaptation
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
+                                                   devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+                                                     devCommPtr, FLAGCX_TEAM_INTRA, peer);
+    *peerPtr = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+                                                   devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    output[i] = *myPtr;
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                             const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                             float *output, int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+  int peer = (myRank + nRanks - 1) % nRanks;
+
+  // Use persistent barrier to avoid LSA epoch state contamination across kernels
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  float *firstPtr = (float *)flagcxGetPeerPointerWithAccessS(
+      devMemPtr, tid * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer,
+      flagcxDevPeerAccessReadOnly);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
+                                                   devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    float *peerPtr = (float *)flagcxGetPeerPointerWithAccessS(
+        devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer,
+        flagcxDevPeerAccessReadOnly);
+    *peerPtr = *myPtr;
+  }
+
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  for (int i = tid; i < count; i += nthreads) {
+    float *myPtr = (float *)flagcxGetPeerPointerWithAccessS(
+        devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank,
+        flagcxDevPeerAccessReadOnly);
+    output[i] = *myPtr;
+  }
+}
+
+void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              float *devOutput, int count,
+                              flagcxStream_t stream) {
+  if (!devCommPtr || !devMemPtr || !devOutput) return;
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelPeerPointerS, stream, devCommPtr, devMemPtr, devOutput, count);
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelPeerPointerWithAccessS, stream, devCommPtr, devMemPtr, devOutput, count);
+}
+
+// ---------------------------------------------------------------------------
+// S10: Intra AllReduce (Scalar) — composite using barriers + pointers
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                      const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
+                      int count) {
+  const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
+  int myRank = comm->getIntraRank();
+  int nRanks = comm->getIntraSize();
+
+  // Use a persistent barrier object for the entire kernel lifetime, matching
+  // the non-IR version (device_api.tops). Each flagcxIntraBarrierSyncS() call
+  // constructs and destructs a temporary ecclLsaBarrierSession, which reads
+  // the epoch from the resource buffer on construction and writes it back on
+  // destruction. With 3N-1 barrier syncs in AllReduce, the repeated
+  // construct/destruct cycle can cause LSA epoch state inconsistency under
+  // race conditions, leading to probabilistic hangs. A single persistent
+  // barrier avoids this entirely.
+  flagcxTeam intra = flagcxTeamIntra(*comm);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar{
+      flagcxCoopBlock(), *comm, intra,
+      (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x)};
+
+  // Initial barrier
+  bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+  // Single-rank fast path
+  if (nRanks == 1) {
+    bar.sync(flagcxDeviceMemoryOrderRelease);
+    return;
+  }
+
+  int tid = subThreadIdx.x + threadDim.x * (threadIdx.x + blockDim.x * blockIdx.x);
+  int nthreads = threadDim.x * blockDim.x * gridDim.x;
+
+  // Null check
+  int checkPeer = (myRank == 0) ? 1 : 0;
+  float *firstPtr = (float *)flagcxGetPeerPointerS(devMemPtr, 0, devCommPtr,
+                                                    FLAGCX_TEAM_INTRA, checkPeer);
+  if (firstPtr == nullptr) {
+    return;
+  }
+
+  // Phase 1: Reduce to rank 0 (N-1 rounds)
+  for (int step = 0; step < nRanks - 1; step++) {
+    int sender = step + 1;
+
+    if (myRank == sender) {
+      for (int i = tid; i < count; i += nthreads) {
+        float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
+                                                       devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+        float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+                                                         devCommPtr, FLAGCX_TEAM_INTRA, 0);
+        *peerPtr = *myPtr;
+      }
+    }
+
+    bar.sync(flagcxDeviceMemoryOrderAcquire);
+
+    if (myRank == 0) {
+      for (int i = tid; i < count; i += nthreads) {
+        float *helperPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+                                                           devCommPtr, FLAGCX_TEAM_INTRA, 0);
+        float *dataPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
+                                                         devCommPtr, FLAGCX_TEAM_INTRA, 0);
+        *dataPtr += *helperPtr;
+      }
+    }
+
+    bar.sync(flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Phase 2: Broadcast from rank 0 (N-1 rounds)
+  for (int step = 0; step < nRanks - 1; step++) {
+    int receiver = step + 1;
+
+    if (myRank == 0) {
+      for (int i = tid; i < count; i += nthreads) {
+        float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
+                                                       devCommPtr, FLAGCX_TEAM_INTRA, 0);
+        float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
+                                                         devCommPtr, FLAGCX_TEAM_INTRA, receiver);
+        *peerPtr = *myPtr;
+      }
+    }
+
+    bar.sync(flagcxDeviceMemoryOrderAcquire);
+  }
+
+  // Final barrier
+  bar.sync(flagcxDeviceMemoryOrderRelease);
+}
+
+void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                                 float *buffer, int count,
+                                 flagcxStream_t stream) {
+  if (!devCommPtr || !devMemPtr || !buffer) return;
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelIntraAllReduceS, stream, devCommPtr, devMemPtr, buffer, count);
+}
+
+// ---------------------------------------------------------------------------
+// S7: Multicast Pointer (Scalar) — NVLS-dependent, intentionally absent.
+// nvidia has kernelScalarMulticastPointer / launchKernelMulticastPointerS in
+// this position, both commented out because multicast needs NVLS. TOPS has no
+// equivalent here either, so the same omission is kept. Test S7 is skipped by
+// the harness (device_ir.h documents it the same way).
+// ---------------------------------------------------------------------------
+
+// ===========================================================================
+// Inter-Node Transport Tests (S1–S15, aligned with device_api_inter K1–K15)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// S1: Transport Handle — GetFromCommS
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                      int *results) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)results;
+}
+
+void launchKernelNetGetFromCommS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 int *devResults, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResults;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S2: Signal/Counter Reset
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *results) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)results;
+}
+
+void launchKernelNetResetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                           int *devResults, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResults;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S11: WaitSignalS + FlushS (standalone)
+// Each rank signals all inter peers, waits for signals from all inter peers,
+// then flushes.
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+}
+
+void launchKernelNetWaitSignalFlushS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                     flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// WaitCounterS (absent — standalone SignalCtrIncS is not supported by the GIN
+// protocol; counter wait is covered by S5 via PutS_RSigInc_LCtrInc). nvidia
+// keeps kernelNetWaitCounterS / launchKernelNetWaitCounterS commented out at
+// line 578 for the same reason.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// S10: Shadow (MeetShadowS) — increaseSignalShadow + signalSigInc to inter
+// peers + waitSignalMeetShadow
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetWaitSignalMeetShadowS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+}
+
+void launchKernelNetWaitSignalMeetShadowS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S12: Inter Barrier (stress test) — N iterations of inter barrier sync
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelInterBarrierStress(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                         int *devResults, int nIters) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResults;
+  (void)nIters;
+}
+
+void launchKernelInterBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               int *devResults, int nIters,
+                               flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResults;
+  (void)nIters;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S6: FlushDecouple — PutS(None,None) + FlushS + SignalSigIncS + WaitSignalS +
+// FlushS
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                        size_t countPerPeer) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+}
+
+void launchKernelNetFlushDecoupleS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                                   size_t countPerPeer, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S3: PutS_RSigInc + WaitSignalS + FlushS — AlltoAll with fused remote signal
+// increment
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                       size_t countPerPeer) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+}
+
+void launchKernelNetPutSignalIncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                                  size_t countPerPeer, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S4: PutS_RSigAdd + WaitSignalS + FlushS — remote signal add (value = 1 per
+// peer)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                       const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                       size_t countPerPeer) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+}
+
+void launchKernelNetPutSignalAddS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                                  size_t countPerPeer, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S5: PutS_RSigInc_LCtrInc + WaitSignalS + WaitCounterS + FlushS — both remote
+// signal inc and local counter inc
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetCounterPipelineS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                          const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                          const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                          size_t countPerPeer) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+}
+
+void launchKernelNetCounterPipelineS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S9: Signal (SigInc + SigAdd) — merged into a single kernel
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+}
+
+void launchKernelNetSignalS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                            flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S7: PutValue — PutValueS(None)+Signal then PutValueS_RSigInc (both phases in
+// one kernel)
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                   const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                   size_t putValBase) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)recvMemPtr;
+  (void)putValBase;
+}
+
+void launchKernelNetPutValueS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                              size_t putValBase, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)recvMemPtr;
+  (void)putValBase;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S8: GetS + FlushS — AlltoAll via one-sided get
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+              const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+              const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+              size_t countPerPeer) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+}
+
+void launchKernelNetGetS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                         const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                         const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                         size_t countPerPeer, flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S15: Two-sided (absent) — nvidia keeps kernelNetTwoSidedS /
+// launchKernelNetTwoSidedS commented out at line 1253 because the two-sided
+// path is covered by the Device API suite. Same omission kept here.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// S13: WorldBarrierS — sync + arrive/wait split in one kernel
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+}
+
+void launchKernelWorldBarrierS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S14: OneSidedAlltoAll (composite) — put + signal + wait + flush + world
+// barrier
+// ---------------------------------------------------------------------------
+
+FLAGCX_GLOBAL_DECORATOR void
+kernelNetOneSidedAlltoAllS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                           const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+                           const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr,
+                           size_t countPerPeer) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+}
+
+void launchKernelNetOneSidedAlltoAllS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *sendMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *recvMemPtr, size_t countPerPeer,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)sendMemPtr;
+  (void)recvMemPtr;
+  (void)countPerPeer;
+  (void)stream;
+}
+
+// =========================================================================
+// Unified One-Sided IR Tests — INTRA Suite (S16–S25)
+// INTRA + WORLD teams across THREAD, WARP and BLOCK coop kinds.
+// =========================================================================
+
+// Body-local helper the unified kernels use to decide whether a lane
+// participates in a given coop kind. nvidia:1405.
+FLAGCX_DEVICE_INLINE_DECORATOR bool
+flagcxUnifiedIrTestCoopActive(flagcxDevCoopKind_t coopKind) {
+  // TODO, gin not support now
+  (void)coopKind;
+  return false;
+}
+
+// Signal-variant selector used by S20/S21/S22/S24 bodies. nvidia:1414.
+enum {
+  FLAGCX_UNIFIED_IR_SIGNAL_INC = 0,
+  FLAGCX_UNIFIED_IR_SIGNAL_ADD = 1,
+};
+
+// ---------------------------------------------------------------------------
+// S18: flagcxDevPut — INTRA + WORLD
+// 3 coop kinds × 2 teams = 6 combinations, buffer layout 6 × base size:
+//   combo = coopLevel * 2 + teamIdx
+//     [0, bytes):         THREAD + INTRA   (idx 0)
+//     [bytes, 2*bytes):   THREAD + WORLD   (idx 1)
+//     [2*bytes, 3*bytes): WARP   + INTRA   (idx 2)
+//     [3*bytes, 4*bytes): WARP   + WORLD   (idx 3)
+//     [4*bytes, 5*bytes): BLOCK  + INTRA   (idx 4)
+//     [5*bytes, 6*bytes): BLOCK  + WORLD   (idx 5)
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                        int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                   int *devResult, size_t bytes,
+                                   flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S18: flagcxDevPutValue — INTRA + WORLD
+// Writes a scalar uint64 to a remote peer's buffer; 6 combos, one uint64 each.
+// Expected value at slot combo = (uint64_t)(proc * 100 + combo).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutValueIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                             int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutValueIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S19: flagcxDevGet — INTRA + WORLD
+// 3 coop kinds × 2 teams = 6 combinations, buffer layout 6 × base size.
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevGetIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *localMemPtr,
+                        int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)remoteMemPtr;
+  (void)localMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevGetIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)remoteMemPtr;
+  (void)localMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S16: flagcxDevBarrierSync — INTRA + WORLD
+// 2 combos: BLOCK coop × 2 teams. The barrier currently supports CTA-scoped
+// cooperation only.
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                           int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevBarrierIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S16: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTRA + WORLD
+// 2 combos: BLOCK coop × 2 teams.
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevBarrierArriveWaitIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevBarrierArriveWaitIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S20: flagcxDevSignalInc + flagcxDevSignalAdd + flagcxDevWaitSignal +
+// flagcxDevReadSignal + flagcxDevResetSignal — INTRA + WORLD (signal-only)
+// 12 combos: 3 coop kinds × 2 signal variants × 2 teams.
+//   slot = (coopIdx * 2 + signalVariant) * 2 + teamIdx
+// Per combo: Reset(slot) → assert ReadSignal == 0 → SignalInc or
+// SignalAdd(peer = next) → WaitSignal → assert ReadSignal. result[0] = 1 iff
+// all assertions pass.
+// nvidia expands the combos with the body-local S20_INTRA_COMBO macro (1849).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevSignalStandaloneIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                     int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevSignalStandaloneIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S17: flagcxDevTeamResolution — INTRA + WORLD
+// 3 coop kinds × 2 teams = 6 combinations. Each rank writes sizeof(float) to
+// the peer's buffer at rankInTeam * sizeof(float) inside its combo region.
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevTeamResolutionIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                   int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+}
+
+void launchKernelDevTeamResolutionIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S21: flagcxDevPut + SignalInc/SignalAdd + WaitSignal + ReadSignal +
+// ResetSignal — INTRA + WORLD (split put + signal form)
+// 12 combos. Per combo: ResetSignal(combo) → Put(bytes) → SignalInc or
+// SignalAdd(value = 3) → WaitSignal(slot, 1 or 3) → verify payload. result[0] =
+// 1 iff all signal reads and payload checks pass.
+// nvidia expands the combos with the body-local S21_INTRA_COMBO macro (2089).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutSignalWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                  int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutSignalWaitIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S22: flagcxDevPut_RSigInc + flagcxDevPut_RSigAdd — INTRA + WORLD
+// 12 combos: 3 coop kinds × 2 remote-signal variants × 2 teams.
+// Per combo: ResetSignal(slot) → assert ReadSignal == 0 → Put_RSigInc
+// (expected 1) or Put_RSigAdd (expected 3) → WaitSignal → assert ReadSignal →
+// verify payload.
+// nvidia expands the combos with the body-local S22_INTRA_COMBO macro (2200).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                            int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutRSigIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// Completion-variant selector used by the S23 bodies. nvidia:2306.
+enum {
+  FLAGCX_UNIFIED_IR_PUT_LCTR_INC = 0,
+  FLAGCX_UNIFIED_IR_PUT_RSIG_INC_LCTR_INC = 1,
+  FLAGCX_UNIFIED_IR_PUT_RSIG_ADD_LCTR_INC = 2,
+};
+
+// ---------------------------------------------------------------------------
+// S23: flagcxDevPut_LCtrInc + flagcxDevPut_RSigInc_LCtrInc +
+// flagcxDevPut_RSigAdd_LCtrInc — INTRA + WORLD
+// 18 combos: 3 coop kinds × 3 completion variants × 2 teams.
+// Per combo: ResetCounter + ResetSignal(combo) → Put variant → WaitCounter →
+// assert ReadCounter == 1 → for variant != 0 also WaitSignal(expected) and
+// assert ReadSignal. result[0] = 1 iff all assertions pass.
+// nvidia expands the combos with the body-local S23_INTRA_COMBO macro (2328).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutCounterIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                               int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutCounterIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S24: flagcxDevPutValue_RSigInc + flagcxDevPutValue_RSigAdd — INTRA + WORLD
+// 12 combos. Per combo: ResetSignal(slot) → assert 0 → PutValue_RSigInc
+// (expected 1) or PutValue_RSigAdd (expected 3) → WaitSignal → assert
+// ReadSignal → verify the scalar payload. result[0] = 1 iff all pass.
+// nvidia expands the combos with the body-local S24_INTRA_COMBO macro (2492).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutValueRSigIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                 int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutValueRSigIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S25: flagcxDevIncreaseSignalShadow + flagcxDevWaitSignalMeetShadow +
+// flagcxDevFlush — INTRA + WORLD
+// 6 combos: 3 coop kinds × 2 teams. Per combo: ResolveSignal slot → signal every
+// peer → waitSignalMeetShadow. result[0] = 1 iff all pass.
+// nvidia expands the combos with the body-local S25_INTRA_COMBO macro (2609).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevSignalShadowFlushIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevSignalShadowFlushIntraWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// =========================================================================
+// Unified One-Sided IR Tests — INTER Suite (S16–S25)
+// INTER + WORLD teams across THREAD, WARP and BLOCK coop kinds. Same combo
+// layouts as the INTRA suite, but the target peer is always cross-node.
+// =========================================================================
+
+// ---------------------------------------------------------------------------
+// S18: flagcxDevPut — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                        int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                   int *devResult, size_t bytes,
+                                   flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S18: flagcxDevPutValue — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutValueInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                             const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                             int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutValueInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S19: flagcxDevGet — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevGetInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *localMemPtr,
+                        int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)remoteMemPtr;
+  (void)localMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevGetInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *remoteMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *localMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)remoteMemPtr;
+  (void)localMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S16: flagcxDevBarrierSync — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevBarrierInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                            int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevBarrierInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S16: flagcxDevBarrierArrive + flagcxDevBarrierWait — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevBarrierArriveWaitInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevBarrierArriveWaitInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S20: signal-only suite — INTER + WORLD (12 combos)
+// nvidia expands the combos with the body-local S20_INTER_COMBO macro (3129).
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevSignalStandaloneInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevSignalStandaloneInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S17: flagcxDevTeamResolution — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevTeamResolutionInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                   int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+}
+
+void launchKernelDevTeamResolutionInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S21: split put + signal — INTER + WORLD (12 combos)
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutSignalWaitInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                  const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                                  int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutSignalWaitInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S22: flagcxDevPut_RSigInc + flagcxDevPut_RSigAdd — INTER + WORLD (12 combos)
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                            const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                            int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutRSigInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S23: flagcxDevPut_LCtrInc + flagcxDevPut_RSigInc_LCtrInc +
+// flagcxDevPut_RSigAdd_LCtrInc — INTER + WORLD (18 combos)
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutCounterInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr,
+                               int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutCounterInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *srcMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)srcMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S24: flagcxDevPutValue_RSigInc + flagcxDevPutValue_RSigAdd — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevPutValueRSigInterWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr,
+                                 int *result, size_t bytes) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)result;
+  (void)bytes;
+}
+
+void launchKernelDevPutValueRSigInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *dstMemPtr, int *devResult, size_t bytes,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)dstMemPtr;
+  (void)devResult;
+  (void)bytes;
+  (void)stream;
+}
+
+// ---------------------------------------------------------------------------
+// S25: increaseSignalShadow + waitSignalMeetShadow + flush — INTER + WORLD
+// ---------------------------------------------------------------------------
+FLAGCX_GLOBAL_DECORATOR void
+kernelDevSignalShadowFlushInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *result) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)result;
+}
+
+void launchKernelDevSignalShadowFlushInterWorldS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
+    flagcxStream_t stream) {
+  // TODO, gin not support now
+  (void)devCommPtr;
+  (void)devResult;
+  (void)stream;
+}
+
+
+
