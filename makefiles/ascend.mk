@@ -33,6 +33,30 @@ ifneq ($(ASCEND_RUNTIME),)
 DEVICE_LINK  += $(ASCEND_RUNTIME)
 endif
 
+# That archive is not self-contained. nm -A on it shows the member
+# ascendc_runtime.cpp.o carries `U strcpy_s`, and CANN provides strcpy_s in
+# libc_sec.so (nm -D gives `T strcpy_s`). No object built from our own sources
+# references strcpy_s -- a grep over build/obj for the name returns nothing --
+# so this is purely what pulling the archive in demands. Same failure shape as
+# above: libflagcx.so links (shared objects tolerate undefined symbols) but
+# every executable stops with
+#   ld: libflagcx.so: undefined reference to symbol 'strcpy_s'
+#   ld: libc_sec.so: error adding symbols: DSO missing from command line
+# libascendcl.so does not list libc_sec.so in its DT_NEEDED, so the
+# dependency has to be spelled out here rather than trusted to be reachable
+# transitively. It goes AFTER $(ASCEND_RUNTIME) so the reference precedes its
+# provider on the link line. The path resolves through $(DEVICE_LIB) (on the
+# 910C, ascend-toolkit/latest -> cann-9.1.0-beta.3, and libc_sec.so sits in
+# that lib64). Guarded the same way: absent means no change to the link.
+ASCEND_SEC ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libc_sec.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libc_sec.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libc_sec.so \
+    $(DEVICE_HOME)/compiler/lib64/libc_sec.so))
+ifneq ($(ASCEND_SEC),)
+DEVICE_LINK  += $(ASCEND_SEC)
+endif
+
 # bisheng ships under the host-arch directory of the toolkit, and the arch name
 # differs between x86_64 and aarch64 installs (the 910C machine used for
 # verification is aarch64). Resolve whichever exists, keeping the historical
