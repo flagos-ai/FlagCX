@@ -143,11 +143,45 @@ flagcx_ci_select_rdma() {
   export FLAGCX_CI_METAX_RDMA_PATTERN="$rdma_sysfs_root/*"
 }
 
+flagcx_ci_validate_gid_netdev() {
+  local suite=$1
+  local gid_index=${FLAGCX_IB_GID_INDEX:-}
+  local hca port state link_layer ndev
+  local missing=0
+
+  [[ "$gid_index" =~ ^[0-9]+$ ]] || return 0
+
+  while IFS= read -r hca; do
+    [[ -n "$hca" ]] || continue
+    while IFS= read -r port; do
+      [[ -n "$port" ]] || continue
+      state=$(<"$port/state" 2>/dev/null || true)
+      [[ "$state" == 4:* ]] || continue
+      link_layer=$(<"$port/link_layer" 2>/dev/null || true)
+      case "${link_layer,,}" in
+        ethernet|infiniband) ;;
+        *) continue ;;
+      esac
+      ndev=$(<"$port/gid_attrs/ndevs/$gid_index" 2>/dev/null || true)
+      if [[ -z "$ndev" || ! -e "/sys/class/net/$ndev" ]]; then
+        echo "MetaX $suite RDMA GID $gid_index for ${hca##*/} port ${port##*/} maps to network device ${ndev:-<unset>}, which is absent from this container." >&2
+        missing=1
+      fi
+    done < <(compgen -G "$hca/ports/*" || true)
+  done < <(compgen -G "$FLAGCX_CI_METAX_RDMA_PATTERN" || true)
+
+  if ((missing)); then
+    echo "MetaX $suite requires hostNetwork or an RDMA/Multus network attachment exposing every GID network device inside the Pod." >&2
+    return 1
+  fi
+}
+
 flagcx_ci_validate_rdma() {
   local suite=$1
   flagcx_ci_select_rdma "$suite" || return
   flagcx_ci_validate_rdma_static MetaX "$suite" \
     "$FLAGCX_CI_METAX_RDMA_PATTERN" || return
+  flagcx_ci_validate_gid_netdev "$suite" || return
   echo "MetaX RDMA selection: FLAGCX_IB_HCA=$FLAGCX_IB_HCA"
 }
 

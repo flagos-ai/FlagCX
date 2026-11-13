@@ -2530,6 +2530,15 @@ class MetaXEnvironmentTest(unittest.TestCase):
         self.assertEqual(overridden.returncode, 0, overridden.stderr)
         self.assertEqual(overridden.stdout.strip(), "7|ucx|self,vader")
 
+    def test_validator_checks_gid_network_device_visibility(self):
+        source = METAX_ENV.read_text()
+        validator = source[source.index("flagcx_ci_validate_gid_netdev() {") :]
+        validator = validator[: validator.index("flagcx_ci_validate_rdma() {")]
+
+        self.assertIn('gid_attrs/ndevs/$gid_index', validator)
+        self.assertIn('"/sys/class/net/$ndev"', validator)
+        self.assertIn("hostNetwork or an RDMA/Multus network attachment", validator)
+
     def test_prepare_does_not_select_rdma_hca(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
