@@ -85,6 +85,64 @@ ifneq ($(ASCEND_DLOG),)
 DEVICE_LINK  += $(ASCEND_DLOG)
 endif
 
+# Three more libraries of the same class, measured in one run on the Ascend
+# 910C at e2d9602.  The method matters: instead of unioning every `nm -u`
+# demand of $(ASCEND_RUNTIME) (that set is 117 names and is only an UPPER
+# bound -- members that ld never pulls in do not have to be satisfied), the
+# real link command was taken from `make -n`, run, and each time ld answered
+# `... libX.so: error adding symbols: DSO missing from command line` the named
+# libX was appended to the command line and the link re-run.  ld reports only
+# the first unsatisfied symbol per pass, so this converges from the inside
+# out.  Order and spelling are exactly what ld named:
+#   1 /usr/local/Ascend/cann/lib64/libmmpa.so
+#   2 /usr/local/Ascend/cann/lib64/libprofapi.so
+#   3 /usr/local/Ascend/cann/lib64/libruntime.so
+#   4 (nothing -- the DSO-missing chain is exhausted)
+# All three exist under $(DEVICE_LIB) (`ls -l`: 69400 / 198592 / 804776 bytes);
+# ld spells that same directory through the `cann` symlink.
+#
+# After the chain, the one remaining diagnostic class is NOT a missing
+# library: linking with -Wl,--warn-unresolved-symbols produced the executable
+# (rc=0) and listed nine warnings, all of them host launcher functions the
+# test itself calls -- launchKernelCommQueries, launchKernelCoopGroups,
+# launchKernelTeam, launchKernelLocalPointer, launchKernelIntraPointer,
+# launchKernelPeerPointer, launchKernelIntraBarrierSync,
+# launchKernelIntraBarrierArriveWait, launchKernelIntraAllReduce -- each
+# declared in test/kernel/include/device_api.h and defined per platform in
+# test/kernel/<platform>/device_api.*  test/kernel/ascend/device_api.asc is
+# the stage-2 toolchain gate and defines none of them, so that gap is missing
+# implementation, not link configuration, and is not papered over here.
+#
+# libascendc_runtime.a has no shared counterpart on this install: substituting
+# the .so spelling made the driver fail with `No such file or directory`, so
+# the archive stays and its demands are listed individually.
+ASCEND_MMPA ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libmmpa.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libmmpa.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libmmpa.so \
+    $(DEVICE_HOME)/compiler/lib64/libmmpa.so))
+ifneq ($(ASCEND_MMPA),)
+DEVICE_LINK  += $(ASCEND_MMPA)
+endif
+
+ASCEND_PROFAPI ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libprofapi.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libprofapi.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libprofapi.so \
+    $(DEVICE_HOME)/compiler/lib64/libprofapi.so))
+ifneq ($(ASCEND_PROFAPI),)
+DEVICE_LINK  += $(ASCEND_PROFAPI)
+endif
+
+ASCEND_RUNTIME_LIB ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libruntime.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libruntime.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libruntime.so \
+    $(DEVICE_HOME)/compiler/lib64/libruntime.so))
+ifneq ($(ASCEND_RUNTIME_LIB),)
+DEVICE_LINK  += $(ASCEND_RUNTIME_LIB)
+endif
+
 # bisheng ships under the host-arch directory of the toolkit, and the arch name
 # differs between x86_64 and aarch64 installs (the 910C machine used for
 # verification is aarch64). Resolve whichever exists, keeping the historical
