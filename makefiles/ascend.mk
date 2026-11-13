@@ -57,6 +57,34 @@ ifneq ($(ASCEND_SEC),)
 DEVICE_LINK  += $(ASCEND_SEC)
 endif
 
+# The same class of demand appeared one step further along, measured on the
+# Ascend 910C at feafe52 while linking
+# test/unittest/device_api/build/bin/test_device_api_intra:
+#   ld: libflagcx.so: undefined reference to symbol 'CheckLogLevel'
+#   ld: /usr/local/Ascend/cann/lib64/libunified_dlog.so: error adding symbols:
+#       DSO missing from command line
+# (rc=2, test/unittest/device_api/Makefile:220, in the same run in which
+# test_dev_comm_cleanup linked -- so this is what sits BEHIND the strcpy_s
+# reference, which it only becomes visible after once libc_sec got a place on
+# the line.)
+# ld names the provider outright, and the dependency cannot be left to
+# transitive resolution: the DT_NEEDED list measured for libascendcl.so is
+# libmsprofiler, libascend_dump, libstdc++, libm, libgcc_s, libpthread, libc,
+# ld-linux, which does not contain it. "DSO missing from command line" is
+# itself the evidence that the file was reachable but unlisted.
+# Who references CheckLogLevel -- the AscendC archive, the CANN runtime
+# reached through it, or our own device objects -- is a separate measurement
+# and deliberately not claimed here; the spelling below resolves it either
+# way, since it goes after every one of them.
+ASCEND_DLOG ?= $(firstword $(wildcard \
+    $(DEVICE_LIB)/libunified_dlog.so \
+    $(DEVICE_HOME)/aarch64-linux/lib64/libunified_dlog.so \
+    $(DEVICE_HOME)/x86_64-linux/lib64/libunified_dlog.so \
+    $(DEVICE_HOME)/compiler/lib64/libunified_dlog.so))
+ifneq ($(ASCEND_DLOG),)
+DEVICE_LINK  += $(ASCEND_DLOG)
+endif
+
 # bisheng ships under the host-arch directory of the toolkit, and the arch name
 # differs between x86_64 and aarch64 installs (the 910C machine used for
 # verification is aarch64). Resolve whichever exists, keeping the historical
