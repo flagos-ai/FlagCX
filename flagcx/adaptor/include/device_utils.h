@@ -405,7 +405,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // Block-scope scratch lives in Unified Buffer. `__ub__` is not a keyword here
 // (it fails as "unknown type name"); `__ubuf__` is, and a kernel declaring an
 // `__ubuf__` array compiles with rc=0.
-#define FLAGCX_SHARED __ubuf__
+#define FLAGCX_SHARED_DECORATOR __ubuf__
 // No block barrier is validated for this soc yet, so these stay loud: the
 // failure lands at build time (see the split below), which is a declared
 // absence the adaptation doc allows (§13.3.2) rather than the silent no-op it
@@ -474,7 +474,7 @@ extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendDeviceOpUnsupported();
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
 #define FLAGCX_SIMT_WIDTH 1
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif // __CCE_IS_AICORE__
 
 #else
