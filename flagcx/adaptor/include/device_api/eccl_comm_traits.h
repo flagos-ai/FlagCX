@@ -27,6 +27,10 @@
 // collide in the same TU.
 #include "eccl_device/gin.h"
 #include "eccl_device/impl/gin__funcs.h"
+// ecclBarrierSession wraps both LSA and GIN barrier sessions for World/Inter
+// barriers. Pull in the declarations and definitions explicitly.
+#include "eccl_device/barrier.h"
+#include "eccl_device/impl/barrier__funcs.h"
 #else
 #include "enflame_adaptor.h"
 #include "sym_heap.h"
@@ -641,14 +645,18 @@ template <> struct CommTraits<EcclBackend> {
 #endif // FLAGCX_CHECK_DEVICE_CC
 };
 
-// No ecclGinFenceLevel translation table here yet: the fence argument is
-// unused while the inter/world Barrier specializations below remain no-ops.
-// Reinstate one when the ecclGinBarrierSession wiring lands.
-
 // ============================================================
 // Barrier specializations for EcclBackend
 // ============================================================
 #if FLAGCX_CHECK_DEVICE_CC
+
+// ---- Fence level translation (flagcx -> ECCL) ----
+FLAGCX_DEVICE_INLINE_DECORATOR static ecclGinFenceLevel
+flagcxToEcclGinFenceLevel(flagcxDevNetFenceLevel fence) {
+  // ECCL only has Relaxed fence level, so all flagcx levels map to Relaxed
+  (void)fence;
+  return ecclGinFenceLevel::Relaxed;
+}
 
 // ---- Barrier<EcclBackend, flagcxTeamTagIntra, Coop> ----
 // Wraps ecclLsaBarrierSession<ecclCoopCta> via placement new. The session reads
@@ -706,11 +714,8 @@ struct Barrier<EcclBackend, flagcxTeamTagIntra, Coop> {
 
 // ---- Barrier<EcclBackend, flagcxTeamTagInter, Coop> ----
 // ECCL's inter-node barrier is ecclGinBarrierSession, whose sync() drives
-// net.signal()/net.waitSignal() (gin_barrier__funcs.h). GIN itself compiles
-// under topscc now and Net forwards to it, but the barrier session is not
-// wired up yet: the type is kept so the IR layer still instantiates, and
-// every operation does nothing -- an Enflame run cannot yet synchronize
-// across nodes from the device side.
+// net.signal()/net.waitSignal() (gin_barrier__funcs.h). This wraps the GIN
+// barrier session via placement new, mirroring the NCCL backend.
 template <typename Coop>
 struct Barrier<EcclBackend, flagcxTeamTagInter, Coop> {
   using Comm = CommTraits<EcclBackend>::Comm;
@@ -718,6 +723,8 @@ struct Barrier<EcclBackend, flagcxTeamTagInter, Coop> {
   using Net = CommTraits<EcclBackend>::Net;
 
   Coop _coop;
+  alignas(ecclGinBarrierSession<ecclCoopCta>) char _implStorage[sizeof(
+      ecclGinBarrierSession<ecclCoopCta>)];
   int _nInterPeers;
 
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -727,18 +734,21 @@ struct Barrier<EcclBackend, flagcxTeamTagInter, Coop> {
   Barrier(Coop coop, const Net &net, const Comm &dc, Team team, uint32_t index,
           int nInterPeers)
       : _coop(coop), _nInterPeers(nInterPeers) {
-    (void)net;
-    (void)dc;
-    (void)team;
-    (void)index;
+    new (_implStorage) ecclGinBarrierSession<ecclCoopCta>(
+        ecclCoopCta(), net._gin, (ecclTeam_t)team, dc._impl.railGinBarrier, index);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR
-  ~Barrier() {}
+  ~Barrier() {
+    if (_nInterPeers > 0)
+      reinterpret_cast<ecclGinBarrierSession<ecclCoopCta> *>(_implStorage)
+          ->~ecclGinBarrierSession();
+  }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    // ecclGinBarrierSession only exposes sync; arrive is a no-op on vendor
     (void)order;
     (void)fence;
   }
@@ -746,6 +756,7 @@ struct Barrier<EcclBackend, flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    // ecclGinBarrierSession only exposes sync; wait is a no-op on vendor
     (void)order;
     (void)fence;
   }
@@ -753,38 +764,50 @@ struct Barrier<EcclBackend, flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    (void)order;
-    (void)fence;
+    if (_nInterPeers > 0) {
+      reinterpret_cast<ecclGinBarrierSession<ecclCoopCta> *>(_implStorage)
+          ->sync(ecclCoopCta(), CommTraits<EcclBackend>::toEccl(order),
+                 flagcxToEcclGinFenceLevel(fence));
+    }
   }
 };
 
 // ---- Barrier<EcclBackend, flagcxTeamTagWorld, Coop> ----
-// Only the intra half exists. ECCL's ecclBarrierSession (World / Rail) is built
-// on ecclGinBarrierSession, which is not wired up yet, so world and inter
-// barriers do nothing. An intra barrier still uses ecclLsaBarrierSession, which
-// is LSA-only and sound. The LSA session reads the epoch out of the resource
-// buffer on construction and writes it back in its destructor, so the object
-// must not be copied or left dangling.
+// World barrier wraps ecclBarrierSession which combines LSA (intra) and GIN
+// (inter) barriers. The ecclBarrierSession handles both synchronization paths
+// internally. The LSA session reads the epoch out of the resource buffer on
+// construction and writes it back in its destructor, so the object must not be
+// copied or left dangling.
 template <typename Coop>
 struct Barrier<EcclBackend, flagcxTeamTagWorld, Coop> {
   using Comm = CommTraits<EcclBackend>::Comm;
   using Net = CommTraits<EcclBackend>::Net;
 
+  // Storage large enough for the larger of the two session types
+  static constexpr size_t kWorldSize = sizeof(ecclBarrierSession<ecclCoopCta>);
+  static constexpr size_t kIntraSize =
+      sizeof(ecclLsaBarrierSession<ecclCoopCta>);
+  static constexpr size_t kMaxSize =
+      (kWorldSize > kIntraSize) ? kWorldSize : kIntraSize;
+  static constexpr size_t kWorldAlign =
+      alignof(ecclBarrierSession<ecclCoopCta>);
+  static constexpr size_t kIntraAlign =
+      alignof(ecclLsaBarrierSession<ecclCoopCta>);
+  static constexpr size_t kMaxAlign =
+      (kWorldAlign > kIntraAlign) ? kWorldAlign : kIntraAlign;
+
   Coop _coop;
-  alignas(ecclLsaBarrierSession<ecclCoopCta>) char _implStorage[sizeof(
-      ecclLsaBarrierSession<ecclCoopCta>)];
+  alignas(kMaxAlign) char _implStorage[kMaxSize];
   bool _intraOnly;
 
-  // World barrier (intra + inter) -- the inter half is unavailable, so this is
-  // inactive. The ctor signature is shared with the other backends.
+  // World barrier (intra + inter)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
           uint32_t index, bool multimem, int)
       : _coop(coop), _intraOnly(false) {
-    (void)net;
-    (void)dc;
-    (void)index;
     (void)multimem;
+    new (_implStorage) ecclBarrierSession<ecclCoopCta>(
+        ecclCoopCta(), ecclTeamTagWorld(), net._gin, index);
   }
 
   // Intra-only barrier
@@ -797,13 +820,13 @@ struct Barrier<EcclBackend, flagcxTeamTagWorld, Coop> {
         ecclCoopCta(), dc, ecclTeamTagLsa(), index);
   }
 
-  // Inter-only barrier (ecclTeamTagRail) -- the session is not wired up yet.
+  // Inter-only barrier (ecclTeamTagRail)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &net, const Comm &,
           uint32_t index, bool, int)
       : _coop(coop), _intraOnly(false) {
-    (void)net;
-    (void)index;
+    new (_implStorage) ecclBarrierSession<ecclCoopCta>(
+        ecclCoopCta(), ecclTeamTagRail(), net._gin, index);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR
@@ -811,6 +834,9 @@ struct Barrier<EcclBackend, flagcxTeamTagWorld, Coop> {
     if (_intraOnly)
       reinterpret_cast<ecclLsaBarrierSession<ecclCoopCta> *>(_implStorage)
           ->~ecclLsaBarrierSession();
+    else
+      reinterpret_cast<ecclBarrierSession<ecclCoopCta> *>(_implStorage)
+          ->~ecclBarrierSession();
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -821,6 +847,7 @@ struct Barrier<EcclBackend, flagcxTeamTagWorld, Coop> {
       reinterpret_cast<ecclLsaBarrierSession<ecclCoopCta> *>(_implStorage)
           ->arrive(ecclCoopCta(), ecclLsaBarrierFenceRelease);
     }
+    // ecclBarrierSession (World/Inter) only exposes sync; arrive is a no-op
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -831,15 +858,19 @@ struct Barrier<EcclBackend, flagcxTeamTagWorld, Coop> {
       reinterpret_cast<ecclLsaBarrierSession<ecclCoopCta> *>(_implStorage)
           ->wait(ecclCoopCta());
     }
+    // ecclBarrierSession (World/Inter) only exposes sync; wait is a no-op
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    (void)fence;
     if (_intraOnly) {
       reinterpret_cast<ecclLsaBarrierSession<ecclCoopCta> *>(_implStorage)
           ->sync(ecclCoopCta(), ecclLsaBarrierFenceRelease);
+    } else {
+      reinterpret_cast<ecclBarrierSession<ecclCoopCta> *>(_implStorage)
+          ->sync(ecclCoopCta(), CommTraits<EcclBackend>::toEccl(order),
+                 flagcxToEcclGinFenceLevel(fence));
     }
   }
 };

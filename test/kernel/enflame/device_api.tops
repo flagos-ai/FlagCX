@@ -144,15 +144,27 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
       block.sync();
     }
 
-    // not support below
+    // Thread (Tile<1>) - CoopThread has real implementation
+    {
+      flagcxCoopThread thread;
+      int rank = thread.threadRank();
+      int size = thread.size();
+      flagcxLaneMask_t mask = thread.laneMask();
+      thread.sync();
+      
+      // Verify: rank should be 0, size should be 1, mask should be 1
+      if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
+        results[2] = (rank == 0 && size == 1 && mask == 1) ? 1 : 0;
+      }
+    }
+
+    // Not supported below - mark as skipped (-1)
     // Full hardware warp/wave.
-    // Thread (Tile<1>)
+    results[1] = -1;  // warp - skipped
     // Tile<8>
+    results[3] = -1;  // Tile<8> - skipped
     // Lanes (full warp mask)
-    results[1] = 1;
-    results[2] = 1;
-    results[3] = 1;
-    results[4] = 1;
+    results[4] = -1;  // lanes - skipped
 }
 
 flagcxResult_t launchKernelCoopGroups(int *results, flagcxStream_t stream) {

@@ -128,26 +128,42 @@ FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_block(int *results) {
   }
 }
 
-FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_tileSpan(int *results) {
-  // ECCL does not support tile_span, so we just pass this test.
+FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_thread(int *results) {
+  // CoopThread (Tile<1>) has real implementation - test it
+  flagcxCoopThread thread;
+  int rank = thread.threadRank();
+  int size = thread.size();
+  flagcxLaneMask_t mask = thread.laneMask();
+  thread.sync();
+  
+  // Verify: rank should be 0, size should be 1, mask should be 1
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    results[1] = 1;
+    results[1] = (rank == 0 && size == 1 && mask == 1) ? 1 : 0;
+  }
+}
+
+FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_tileSpan(int *results) {
+  // ECCL does not support tile_span - mark as skipped
+  if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
+    results[2] = -1;  // skipped
   }
 }
 
 FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_lanes(int *results) {
-  // ECCL does not support lanes cooperation, so we just pass this test.
+  // ECCL does not support lanes cooperation - mark as skipped
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
-    results[2] = 1;
+    results[3] = -1;  // skipped
   }
 }
 
 void launchKernelCoopGroupsS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                              int *devResults, flagcxStream_t stream) {
   if (!devResults) return;
-  // Launch three sub-kernels into the same results buffer
+  // Launch four sub-kernels into the same results buffer
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
       kernelCoopGroupsS_block, stream, devResults);
+  launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
+      kernelCoopGroupsS_thread, stream, devResults);
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
       kernelCoopGroupsS_tileSpan, stream, devResults);
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
