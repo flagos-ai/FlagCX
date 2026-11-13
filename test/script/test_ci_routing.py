@@ -31,9 +31,6 @@ def enabled_platform_or_matrix(platform):
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
-    def test_only_hygon_is_enabled(self):
-        self.assertEqual(ALL_ENABLED_PLATFORMS, ["hygon"])
-
     def resolve(self, context):
         with tempfile.TemporaryDirectory() as temp_dir:
             context_path = Path(temp_dir) / "context.json"
@@ -56,7 +53,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["hygon"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -122,7 +119,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                ALL_ENABLED_PLATFORMS,
+                ["cuda", "hygon"],
             ),
             (
                 "test/kernel/nvidia/nested/foo.cu",
@@ -256,7 +253,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ALL_ENABLED_PLATFORMS,
+                ["cuda"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
@@ -279,12 +276,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for context in (
             {"event_name": "pull_request", "labels": ["platform:unknown"]},
             {"event_name": "workflow_dispatch", "selection": "unknown"},
-            {"event_name": "pull_request", "labels": ["platform:cuda"]},
-            {"event_name": "workflow_dispatch", "selection": "cuda"},
-            {
-                "event_name": "issue_comment", "comment": "/test metax",
-                "permission": "write", "is_pull_request": True,
-            },
         ):
             with self.subTest(context=context), tempfile.TemporaryDirectory() as temp_dir:
                 context_path = Path(temp_dir) / "context.json"

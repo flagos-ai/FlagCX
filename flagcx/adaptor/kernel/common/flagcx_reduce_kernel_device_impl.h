@@ -630,8 +630,10 @@ completeComputeTrigger(const uint64_t *shm) {
 FLAGCX_DEVICE_INLINE_DECORATOR void runReduceExecutor(void *fifoBuffer,
                                                       uint64_t avgDivisor) {
   FLAGCX_SHARED_DECORATOR uint64_t shm[COMPUTE_SHM_WORDS];
-  FLAGCX_SHARED_DECORATOR float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
-  FLAGCX_SHARED_DECORATOR float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
+  FLAGCX_SHARED_DECORATOR float
+      sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
+  FLAGCX_SHARED_DECORATOR float
+      sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
   uint64_t *vBuf = (uint64_t *)fifoBuffer;
   int emptyIter = 0; // backoff counter
   int cap = -1;
@@ -787,8 +789,10 @@ FLAGCX_DEVICE_INLINE_DECORATOR void
 runStaticReduceExecutor(flagcxReduceTrigger *triggers, uint64_t numTriggers,
                         const uint64_t *abortFlag, uint64_t avgDivisor,
                         uint64_t firstOrdinal, uint64_t stride, uint64_t *shm) {
-  FLAGCX_SHARED_DECORATOR float sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
-  FLAGCX_SHARED_DECORATOR float sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
+  FLAGCX_SHARED_DECORATOR float
+      sharedA[kUniRunnerGemmTileM * kUniRunnerGemmTileK];
+  FLAGCX_SHARED_DECORATOR float
+      sharedB[kUniRunnerGemmTileK * kUniRunnerGemmTileN];
   const int tid = FLAGCX_THREAD_IDX_X;
 
   for (uint64_t ordinal = firstOrdinal; ordinal < numTriggers;

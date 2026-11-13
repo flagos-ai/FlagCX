@@ -52,6 +52,7 @@ selected_platforms = if selection.nil? || selection.empty? || selection == "all"
                        end
                        requested
                      end
+
 config_files = if selected_platforms.nil?
                  Dir.glob(File.join(config_dir, "*.yml")).reject do |path|
                    File.basename(path) == "platforms.yml"

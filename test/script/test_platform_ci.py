@@ -295,12 +295,12 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["hygon"]
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            all_platforms,
+            ["cuda"],
         )
         self.assertEqual(
             self._run_platform_matrix(
@@ -312,7 +312,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            all_platforms,
+            ["ascend"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,7 +705,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["hygon"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
         selected = subprocess.run(
             ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
@@ -717,18 +717,21 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
             ["hygon"],
         )
-        disabled = subprocess.run(
+        selected_cuda = subprocess.run(
             [
                 "ruby",
                 str(matrix_loader),
                 str(REPO_ROOT / ".github/configs"),
                 "cuda",
             ],
+            check=True,
             capture_output=True,
             text=True,
         )
-        self.assertNotEqual(disabled.returncode, 0)
-        self.assertIn("Disabled platform selection: cuda", disabled.stderr)
+        self.assertEqual(
+            [entry["platform"] for entry in json.loads(selected_cuda.stdout)["include"]],
+            ["cuda"],
+        )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
