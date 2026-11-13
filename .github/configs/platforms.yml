@@ -4,19 +4,18 @@
 # controls which platforms are included when the workflow runs with
 # platform=all.
 platforms:
-  # Temporarily isolate automatic hardware CI to the Enflame runner.
   cuda:
-    enabled: false
+    enabled: true
   hygon:
-    enabled: false
+    enabled: true
   iluvatar:
-    enabled: false
+    enabled: true
   metax:
-    enabled: false
+    enabled: true
   ppu:
-    enabled: false
+    enabled: true
   ascend:
-    enabled: false
+    enabled: true
   enflame:
     enabled: true
 shared_paths_watch:
