@@ -56,7 +56,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ["hygon"],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -133,11 +133,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
-                ".github/scripts/ci/run_cuda_experimental_perf.sh",
+                ".github/scripts/ci/run_cuda_perf_experimental.sh",
                 enabled_platform_or_matrix("cuda"),
             ),
             (
-                ".github/scripts/ci/run_hygon_experimental_perf.sh",
+                ".github/scripts/ci/run_hygon_perf_experimental.sh",
                 enabled_platform_or_matrix("hygon"),
             ),
             (

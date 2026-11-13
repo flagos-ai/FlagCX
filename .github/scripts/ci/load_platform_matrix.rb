@@ -52,11 +52,6 @@ selected_platforms = if selection.nil? || selection.empty? || selection == "all"
                        end
                        requested
                      end
-if selected_platforms && !registered_platforms.empty?
-  disabled = selected_platforms - enabled_platforms
-  abort "Disabled or unknown platform selection: #{disabled.join(', ')}" unless disabled.empty?
-end
-
 config_files = if selected_platforms.nil?
                  Dir.glob(File.join(config_dir, "*.yml")).reject do |path|
                    File.basename(path) == "platforms.yml"

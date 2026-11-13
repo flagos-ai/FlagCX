@@ -7,7 +7,7 @@ paths_watch:
   - .github/configs/hygon.yml
   - .github/scripts/set_env/hygon.sh
   - .github/scripts/ci/run_hygon_workload.sh
-  - .github/scripts/ci/run_hygon_experimental_perf.sh
+  - .github/scripts/ci/run_hygon_perf_experimental.sh
   - flagcx/adaptor/device/duhip_adaptor.cc
   - flagcx/adaptor/ccl/durccl_adaptor.cc
   - flagcx/adaptor/kernel/du/**/*

@@ -5,6 +5,7 @@
 #include "comm.h"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
+#include "transport.h"
 #include <cstdlib>
 #include <cstring>
 

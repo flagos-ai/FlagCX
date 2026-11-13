@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <torch-api|perf|perf-experimental>" >&2
+  echo "Usage: $0 <torch-api|perf|perf-test-experimental>" >&2
   exit 2
 fi
 
@@ -12,10 +12,10 @@ project_root=${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}
 : "${FLAGCX_CI_SET_ENV:?The platform configuration must provide set_env}"
 source "$project_root/$FLAGCX_CI_SET_ENV"
 
-if [[ "$workload" == perf-experimental ]]; then
+if [[ "$workload" == perf-test-experimental ]]; then
   # The experimental perf job keeps its own test selection and shares the CUDA
   # runner and image with the regular perf job.
-  source "$project_root/.github/scripts/ci/run_cuda_experimental_perf.sh"
+  source "$project_root/.github/scripts/ci/run_cuda_perf_experimental.sh"
   exit 0
 fi
 

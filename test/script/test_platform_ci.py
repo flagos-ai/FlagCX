@@ -728,7 +728,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(disabled.returncode, 0)
-        self.assertIn("Disabled or unknown platform selection: cuda", disabled.stderr)
+        self.assertIn("Disabled platform selection: cuda", disabled.stderr)
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -967,16 +967,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
                         workflow,
                     )
 
-        self.assertIn("  perf-experimental-test-cuda:\n", perf_workflow)
-        self.assertIn("cuda perf-experimental", perf_workflow)
-        self.assertIn("  perf-experimental-test-hygon:\n", perf_workflow)
-        self.assertIn("hygon perf-experimental", perf_workflow)
-        self.assertIn("name: perf-experimental-test (cuda)", perf_workflow)
-        self.assertIn("name: perf-experimental-test (hygon)", perf_workflow)
+        self.assertIn("  perf-test-experimental-cuda:\n", perf_workflow)
+        self.assertIn("cuda perf-test-experimental", perf_workflow)
+        self.assertIn("  perf-test-experimental-hygon:\n", perf_workflow)
+        self.assertIn("hygon perf-test-experimental", perf_workflow)
+        self.assertIn("name: perf-test-experimental (cuda)", perf_workflow)
+        self.assertIn("name: perf-test-experimental (hygon)", perf_workflow)
         self.assertIn("HYGON_EXPERIMENTAL_RESULT:", perf_workflow)
         self.assertIn('"$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT"', perf_workflow)
         self.assertNotIn("cuda_legacy_perf_runs_on", perf_workflow)
-        experimental_perf_job = perf_workflow.split("  perf-experimental-test-cuda:\n", 1)[1].split(
+        experimental_perf_job = perf_workflow.split("  perf-test-experimental-cuda:\n", 1)[1].split(
             "\n  perf-test-hygon:", 1
         )[0]
         self.assertIn(
@@ -985,9 +985,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("timeout-minutes: 240", experimental_perf_job)
         hygon_experimental_job = perf_workflow.split(
-            "  perf-experimental-test-hygon:\n", 1
+            "  perf-test-experimental-hygon:\n", 1
         )[1].split("\n  perf-test-cuda:", 1)[0]
-        self.assertIn("hygon perf-experimental", hygon_experimental_job)
+        self.assertIn("hygon perf-test-experimental", hygon_experimental_job)
         self.assertIn("timeout-minutes: 240", hygon_experimental_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
@@ -1000,16 +1000,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_cuda_workload.sh"
         ).read_text()
         self.assertIn(
-            'source "$project_root/.github/scripts/ci/run_cuda_experimental_perf.sh"',
+            'source "$project_root/.github/scripts/ci/run_cuda_perf_experimental.sh"',
             cuda_handler,
         )
 
     def test_experimental_p2p_perf_keeps_write_and_runs_shared_read(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
         experimental_perf = (
-            REPO_ROOT / ".github/scripts/ci/run_cuda_experimental_perf.sh"
+            REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"
         ).read_text()
-        self.assertIn("cuda perf-experimental", perf_workflow)
+        self.assertIn("cuda perf-test-experimental", perf_workflow)
         self.assertNotIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', experimental_perf)
         self.assertIn('"$perf_bin/perf_allreduce"', experimental_perf)
         self.assertIn("for operation in put get", experimental_perf)
@@ -2007,7 +2007,7 @@ run_suite
         )
         self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
         cuda_experimental = (
-            REPO_ROOT / ".github/scripts/ci/run_cuda_experimental_perf.sh"
+            REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"
         ).read_text()
         self.assertIn("UniRunnerDagAlgorithmsRejectOuterGroup", cuda_experimental)
         self.assertIn("FLAGCX_UNIRUNNER_ALGO=8", cuda_experimental)

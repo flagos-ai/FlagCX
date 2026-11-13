@@ -1,6 +1,7 @@
 #include "perf_common.h"
 #include "comm.h"
 #include "global_comm.h"
+#include "transport.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
