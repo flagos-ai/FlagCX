@@ -134,6 +134,23 @@ ifeq ($(KERNEL_PLATFORM), klx)
               -DFLAGCX_TEST_NO_REMOTE_THREAD_PUT
 endif
 
+# Ascend/CANN: there is no Device IR backend (bindings/ir/ascend does not
+# exist), and the inter-node suite drives the one-sided net path (put/signal/
+# flush), which is a later stage than this platform has reached.  The intra
+# suite does build: test/kernel/ascend/device_api.asc provides the launchers
+# for the cases that need neither peer memory nor an atomic, and the switches
+# below compile out the ones this hardware cannot satisfy.  Each switch names
+# its reason at the site it guards; the point is that a skipped case never
+# reaches the report as a pass.
+ifeq ($(KERNEL_PLATFORM), ascend)
+  SKIPPED_TARGETS := $(notdir $(filter-out $(BINDIR)/test_device_api_intra,\
+                       $(IR_TARGETS) $(API_TARGETS)))
+  IR_TARGETS      :=
+  API_TARGETS     := $(BINDIR)/test_device_api_intra
+  CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
+              -DFLAGCX_TEST_NO_INTRA_BARRIER
+endif
+
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
 .PHONY: all unit mpi clean require-compile-kernel run-unit run-mpi run-mpi-intra run-mpi-inter \
