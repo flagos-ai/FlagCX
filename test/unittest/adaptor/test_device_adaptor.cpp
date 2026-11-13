@@ -3,10 +3,14 @@
  * Single device adaptor test - no multi-GPU or MPI required
  ************************************************************************/
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <thread>
+#include <vector>
 
 #include "adaptor.h"
 #include "flagcx.h"
@@ -759,6 +763,176 @@ TEST_F(DeviceAdaptorTest, DeviceToDeviceMemcpy) {
   devHandle->deviceFree(hostDst, flagcxMemHost, stream);
   devHandle->deviceFree(devSrc, flagcxMemDevice, stream);
   devHandle->deviceFree(devDst, flagcxMemDevice, stream);
+}
+
+struct IluvatarCallbackGate {
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  std::atomic<bool> expired{false};
+  std::atomic<bool> exited{false};
+};
+
+static void iluvatarWaitForProxyCopy(void *arg) {
+  auto *gate = static_cast<IluvatarCallbackGate *>(arg);
+  gate->entered.store(true, std::memory_order_release);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (!gate->release.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  gate->expired.store(!gate->release.load(std::memory_order_acquire),
+                      std::memory_order_release);
+  gate->exited.store(true, std::memory_order_release);
+}
+
+// Isolate the SendRecv dependency: a user-stream callback waits for a copy on
+// a second stream, while a D2H copy is queued behind the callback.
+TEST_F(DeviceAdaptorTest, IluvatarCrossStreamCallbackProgress) {
+  if (std::strcmp(deviceAdaptor->name, "IXCUDA") != 0)
+    GTEST_SKIP() << "Iluvatar CoreX stream progress probe";
+  ASSERT_NE(deviceAdaptor->launchHostFunc, nullptr);
+
+  constexpr size_t kBytes = 4 * 1024 * 1024;
+  std::vector<unsigned char> source(kBytes, 0x5a);
+  void *src = nullptr;
+  void *dst = nullptr;
+  void *hostResult = nullptr;
+  flagcxStream_t userStream = nullptr;
+  flagcxStream_t proxyStream = nullptr;
+  flagcxEvent_t inputReady = nullptr;
+  flagcxEvent_t baselineDone = nullptr;
+  flagcxEvent_t proxyDone = nullptr;
+  flagcxEvent_t userDone = nullptr;
+
+  ASSERT_EQ(devHandle->deviceMalloc(&src, kBytes, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMalloc(&dst, kBytes, flagcxMemDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(
+      devHandle->deviceMalloc(&hostResult, kBytes, flagcxMemHost, nullptr),
+      flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(src, source.data(), kBytes,
+                                    flagcxMemcpyHostToDevice, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->streamCreate(&userStream), flagcxSuccess);
+  ASSERT_EQ(devHandle->streamCreate(&proxyStream), flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&inputReady, flagcxEventDisableTiming),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&baselineDone, flagcxEventDisableTiming),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&proxyDone, flagcxEventDisableTiming),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->eventCreate(&userDone, flagcxEventDisableTiming),
+            flagcxSuccess);
+
+  auto queryUntil = [&](flagcxEvent_t event, std::chrono::milliseconds limit) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    flagcxResult_t result = flagcxInProgress;
+    do {
+      result = devHandle->eventQuery(event);
+      if (result != flagcxInProgress)
+        break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return result;
+  };
+
+  // First prove that the same two streams can complete a D2D copy without a
+  // waiting host callback.
+  ASSERT_EQ(devHandle->eventRecord(inputReady, userStream), flagcxSuccess);
+  ASSERT_EQ(devHandle->streamWaitEvent(proxyStream, inputReady), flagcxSuccess);
+  ASSERT_EQ(devHandle->deviceMemcpy(dst, src, kBytes,
+                                    flagcxMemcpyDeviceToDevice, proxyStream),
+            flagcxSuccess);
+  ASSERT_EQ(devHandle->eventRecord(baselineDone, proxyStream), flagcxSuccess);
+  const flagcxResult_t baseline =
+      queryUntil(baselineDone, std::chrono::seconds(2));
+  ASSERT_EQ(baseline, flagcxSuccess)
+      << "Two-stream D2D copy failed before adding the callback";
+
+  // The callback never calls a device API. Its own deadline releases the
+  // stream even if CoreX cannot progress the other stream while it waits.
+  auto *gate = new IluvatarCallbackGate;
+  ASSERT_EQ(
+      deviceAdaptor->launchHostFunc(userStream, iluvatarWaitForProxyCopy, gate),
+      flagcxSuccess);
+  const auto entryDeadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!gate->entered.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < entryDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const bool callbackEntered = gate->entered.load(std::memory_order_acquire);
+
+  flagcxResult_t copySubmit = flagcxSuccess;
+  flagcxResult_t copyRecord = flagcxSuccess;
+  flagcxResult_t readSubmit = flagcxSuccess;
+  flagcxResult_t readRecord = flagcxSuccess;
+  flagcxResult_t beforeRelease = flagcxInProgress;
+  if (callbackEntered) {
+    copySubmit = devHandle->deviceMemcpy(
+        dst, src, kBytes, flagcxMemcpyDeviceToDevice, proxyStream);
+    if (copySubmit == flagcxSuccess)
+      copyRecord = devHandle->eventRecord(proxyDone, proxyStream);
+    readSubmit = devHandle->deviceMemcpy(hostResult, dst, kBytes,
+                                         flagcxMemcpyDeviceToHost, userStream);
+    if (readSubmit == flagcxSuccess)
+      readRecord = devHandle->eventRecord(userDone, userStream);
+    if (copySubmit == flagcxSuccess && copyRecord == flagcxSuccess)
+      beforeRelease = queryUntil(proxyDone, std::chrono::seconds(1));
+  }
+  gate->release.store(true, std::memory_order_release);
+  const auto exitDeadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(4);
+  while (!gate->exited.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < exitDeadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const bool callbackExited = gate->exited.load(std::memory_order_acquire);
+  const bool callbackExpired = gate->expired.load(std::memory_order_acquire);
+  const flagcxResult_t afterRelease =
+      copyRecord == flagcxSuccess && callbackEntered
+          ? queryUntil(proxyDone, std::chrono::seconds(2))
+          : flagcxInProgress;
+  const flagcxResult_t readResult =
+      readRecord == flagcxSuccess && callbackEntered
+          ? queryUntil(userDone, std::chrono::seconds(2))
+          : flagcxInProgress;
+
+  std::cerr << "Iluvatar stream probe: baseline=" << baseline
+            << " callback_entered=" << callbackEntered
+            << " copy_submit=" << copySubmit
+            << " copy_before_release=" << beforeRelease
+            << " callback_expired=" << callbackExpired
+            << " copy_after_release=" << afterRelease
+            << " user_d2h=" << readResult << std::endl;
+  EXPECT_TRUE(callbackEntered);
+  EXPECT_EQ(copySubmit, flagcxSuccess);
+  EXPECT_EQ(copyRecord, flagcxSuccess);
+  EXPECT_EQ(readSubmit, flagcxSuccess);
+  EXPECT_EQ(readRecord, flagcxSuccess);
+  EXPECT_TRUE(callbackExited);
+  EXPECT_FALSE(callbackExpired);
+  EXPECT_EQ(beforeRelease, flagcxSuccess)
+      << "Proxy copy made no progress until the user-stream callback exited";
+  EXPECT_EQ(afterRelease, flagcxSuccess);
+  EXPECT_EQ(readResult, flagcxSuccess);
+  if (readResult == flagcxSuccess)
+    EXPECT_EQ(std::memcmp(hostResult, source.data(), kBytes), 0);
+
+  // Pending GPU work may still reference these objects after a failed probe.
+  if (callbackExited && (!callbackEntered || (afterRelease == flagcxSuccess &&
+                                              readResult == flagcxSuccess))) {
+    devHandle->eventDestroy(userDone);
+    devHandle->eventDestroy(proxyDone);
+    devHandle->eventDestroy(baselineDone);
+    devHandle->eventDestroy(inputReady);
+    devHandle->streamDestroy(proxyStream);
+    devHandle->streamDestroy(userStream);
+    devHandle->deviceFree(hostResult, flagcxMemHost, nullptr);
+    devHandle->deviceFree(dst, flagcxMemDevice, nullptr);
+    devHandle->deviceFree(src, flagcxMemDevice, nullptr);
+  }
+  if (callbackExited)
+    delete gate;
 }
 
 // Test: Stream copy and free lifecycle
