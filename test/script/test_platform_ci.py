@@ -2530,6 +2530,11 @@ class MetaXEnvironmentTest(unittest.TestCase):
         self.assertEqual(overridden.returncode, 0, overridden.stderr)
         self.assertEqual(overridden.stdout.strip(), "7|ucx|self,vader")
 
+    def test_meta_x_pxn_uses_first_four_container_devices(self):
+        source = METAX_ENV.read_text()
+        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,2,3", source)
+        self.assertNotIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,4,7", source)
+
     def test_validator_checks_gid_network_device_visibility(self):
         source = METAX_ENV.read_text()
         validator = source[source.index("flagcx_ci_validate_gid_netdev() {") :]
