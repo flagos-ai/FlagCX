@@ -21,9 +21,6 @@ FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
 # Temporarily disable VMM-only scenarios until the IXCUDA VMM/LSA callbacks
 # are implemented. Keep IPC, NET fallback and route-capability checks enabled.
 export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
-# The selected net adaptor does not advertise GPU MR on CoreX, so the GPU
-# one-sided cases may report a runtime capability skip.
-export FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional
 export NP=4
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
@@ -48,9 +45,6 @@ flagcx_ci_configure_suite() {
       ;;
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
-      # Temporary, case-specific exclusions for PR #670 TODO T-3/T-4.
-      # Set to 0 to run the affected cases during backend diagnosis.
-      export FLAGCX_CI_ILUVATAR_QUARANTINE=${FLAGCX_CI_ILUVATAR_QUARANTINE:-1}
       ;;
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)

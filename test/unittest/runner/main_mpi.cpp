@@ -7,6 +7,7 @@
 #include "runner_fixtures.hpp"
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 
 // ---------- MPIEnvironment ----------
 
@@ -142,17 +143,44 @@ void FlagCXCollTest::SetUp() {
 }
 
 flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
+  const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
+  const ::testing::TestInfo *testInfo =
+      ::testing::UnitTest::GetInstance()->current_test_info();
+  const bool traceSendRecv = expectedRunnerMode != nullptr &&
+                             std::strcmp(expectedRunnerMode, "HYBRID") == 0 &&
+                             testInfo != nullptr &&
+                             std::strcmp(testInfo->name(), "SendRecv") == 0;
+  if (traceSendRecv)
+    std::cerr << "SendRecv rank=" << rank << " phase=sync-stream-begin"
+              << std::endl;
   flagcxResult_t localError = devHandle->streamSynchronize(stream);
+  if (traceSendRecv)
+    std::cerr << "SendRecv rank=" << rank
+              << " phase=sync-stream-end result=" << localError << std::endl;
   flagcxResult_t asyncError = flagcxSuccess;
   if (localError == flagcxSuccess) {
+    if (traceSendRecv)
+      std::cerr << "SendRecv rank=" << rank << " phase=async-error-begin"
+                << std::endl;
     flagcxResult_t queryResult = flagcxCommGetAsyncError(comm, &asyncError);
+    if (traceSendRecv)
+      std::cerr << "SendRecv rank=" << rank
+                << " phase=async-error-end result=" << queryResult
+                << " async_error=" << asyncError << std::endl;
     localError = queryResult != flagcxSuccess ? queryResult : asyncError;
   }
 
   int localErrorCode = static_cast<int>(localError);
   int globalErrorCode = static_cast<int>(flagcxSuccess);
+  if (traceSendRecv)
+    std::cerr << "SendRecv rank=" << rank << " phase=sync-allreduce-begin"
+              << std::endl;
   MPI_Allreduce(&localErrorCode, &globalErrorCode, 1, MPI_INT, MPI_MAX,
                 MPI_COMM_WORLD);
+  if (traceSendRecv)
+    std::cerr << "SendRecv rank=" << rank
+              << " phase=sync-allreduce-end result=" << globalErrorCode
+              << std::endl;
   if (globalErrorCode != static_cast<int>(flagcxSuccess)) {
     runnerTransportFailureObserved = true;
     return static_cast<flagcxResult_t>(globalErrorCode);

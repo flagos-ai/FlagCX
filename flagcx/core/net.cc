@@ -1017,12 +1017,46 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
   return flagcxSuccess;
 }
 
+// Log receive progress at stage changes and at most once per second while a
+// stage remains pending. This keeps TRACE useful for a stalled proxy loop.
+static void flagcxTraceNetRecv(recvNetResources *resources,
+                               flagcxProxyArgs *args, uint8_t stageId,
+                               const char *stage, void *request,
+                               flagcxResult_t result, int done,
+                               int advanced = -1, const void *source = NULL,
+                               const void *destination = NULL,
+                               size_t bytes = 0) {
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) < FLAGCX_LOG_TRACE ||
+      (flagcxDebugMask & FLAGCX_NET) == 0)
+    return;
+  const uint64_t now = flagcxRelayMonotonicNs();
+  if (args->netRecvTraceStage == stageId && now != 0 &&
+      now - args->netRecvTraceTimeNs < 1000000000ULL)
+    return;
+  args->netRecvTraceStage = stageId;
+  args->netRecvTraceTimeNs = now;
+  TRACE(FLAGCX_NET,
+        "NET proxy recv rank=%d peer=%d channel=%d op_id=%d step=%d "
+        "stage=%s req=%p result=%d done=%d advanced=%d posted=%d "
+        "post_flush=%d wait_copy=%d copied=%d chunk_steps=%d reg_buf=%d "
+        "src=%p dst=%p bytes=%zu cp_stream=%p",
+        resources->commPtr == NULL ? resources->tpRank
+                                   : resources->commPtr->rank,
+        resources->tpRemoteRank, resources->channelId, args->opId, args->step,
+        stage, request, result, done, advanced, args->posted, args->postFlush,
+        args->waitCopy, args->copied, args->chunkSteps, args->regBufFlag,
+        const_cast<void *>(source), const_cast<void *>(destination), bytes,
+        resources->cpStream);
+}
+
 flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                                size_t size, flagcxProxyArgs *args) {
   if (args->done) {
     return flagcxSuccess;
   }
   if (!args->semaphore->pollStart(args->opId, args->step)) {
+    flagcxTraceNetRecv(resources, args, 1, "wait-start", NULL, flagcxInProgress,
+                       0);
     return flagcxSuccess;
   }
   if (args->copied < args->chunkSteps) {
@@ -1066,6 +1100,7 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         args->subs[slot].requests[0] = req;
         args->totalPostSize += args->subs[slot].stepSize;
         args->posted++;
+        flagcxTraceNetRecv(resources, args, 2, "recv-post", req, recvRes, 0);
         return flagcxSuccess;
       }
       FLAGCXCHECK(flagcxCollProxyCancel(&args->collTransport, submit));
@@ -1080,6 +1115,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
       void *req = args->subs[slot].requests[0];
       int done = 0, sizes = 0;
       flagcxResult_t testRes = resources->netAdaptor->test(req, &done, &sizes);
+      flagcxTraceNetRecv(resources, args, done ? 4 : 3,
+                         done ? "recv-done" : "recv-wait", req, testRes, done);
       if (testRes != flagcxSuccess && testRes != flagcxInProgress)
         return testRes;
       if (done) {
@@ -1097,6 +1134,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                                                                &flushRequired));
           if (!flushRequired) {
             args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
+            flagcxTraceNetRecv(resources, args, 5, "flush-skip", NULL,
+                               flagcxSuccess, 1);
             return flagcxSuccess;
           }
           void *req = NULL;
@@ -1114,8 +1153,12 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
             // pipeline instead of retrying the same completed step forever.
             args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
           }
+          flagcxTraceNetRecv(resources, args, 6, "flush-post", req, flushRes,
+                             req == NULL && flushRes == flagcxSuccess);
         } else if (resources->netAdaptor == getNetAdaptor(SOCKET)) {
           args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
+          flagcxTraceNetRecv(resources, args, 5, "flush-skip", NULL,
+                             flagcxSuccess, 1);
         } else {
           if (resources->ptrSupport & FLAGCX_PTR_CUDA) {
             // RDMA-style: flush
@@ -1125,6 +1168,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
             if (!flushRequired) {
               args->subs[args->postFlush++ & stepMask].requests[0] =
                   (void *)0x1;
+              flagcxTraceNetRecv(resources, args, 5, "flush-skip", NULL,
+                                 flagcxSuccess, 1);
               return flagcxSuccess;
             }
             void *req = NULL;
@@ -1142,9 +1187,13 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
               args->subs[args->postFlush++ & stepMask].requests[0] =
                   (void *)0x1;
             }
+            flagcxTraceNetRecv(resources, args, 6, "flush-post", req, flushRes,
+                               req == NULL && flushRes == flagcxSuccess);
           } else {
             // Host-only: skip flush
             args->subs[args->postFlush++ & stepMask].requests[0] = (void *)0x1;
+            flagcxTraceNetRecv(resources, args, 5, "flush-skip", NULL,
+                               flagcxSuccess, 1);
           }
         }
         return flagcxSuccess;
@@ -1159,13 +1208,25 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
         done = 1;
         sizes = 0;
       } else {
+        if (args->netRecvFlushTestChunk != args->waitCopy + 1) {
+          args->netRecvFlushTestChunk = args->waitCopy + 1;
+          flagcxTraceNetRecv(resources, args, 15, "flush-test-enter", req,
+                             flagcxInProgress, 0);
+        }
         flagcxResult_t testRes =
             resources->netAdaptor->test(req, &done, &sizes);
+        flagcxTraceNetRecv(resources, args, done ? 8 : 7,
+                           done ? "flush-done" : "flush-wait", req, testRes,
+                           done);
         if (testRes != flagcxSuccess && testRes != flagcxInProgress)
           return testRes;
       }
       if (done) {
         if (!args->regBufFlag) {
+          flagcxTraceNetRecv(resources, args, 9, "copy-submit", req,
+                             flagcxInProgress, 0, -1, args->subs[step].stepBuff,
+                             (char *)data + args->totalCopySize,
+                             args->subs[step].stepSize);
           if (resources->netAdaptor == getNetAdaptor(RDMA)) {
             FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
                 (char *)data + args->totalCopySize, args->subs[step].stepBuff,
@@ -1187,6 +1248,10 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
           }
           FLAGCXCHECK(deviceAdaptor->eventRecord(resources->cpEvents[step],
                                                  resources->cpStream));
+          flagcxTraceNetRecv(
+              resources, args, 10, "copy-recorded", resources->cpEvents[step],
+              flagcxSuccess, 0, -1, args->subs[step].stepBuff,
+              (char *)data + args->totalCopySize, args->subs[step].stepSize);
         }
         args->totalCopySize += args->subs[step].stepSize;
         args->waitCopy++;
@@ -1198,8 +1263,23 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
       int step = args->copied & stepMask;
       if (!args->regBufFlag) {
         int completed = 0;
-        FLAGCXCHECK(flagcxTransportClassifyCompletion(
-            deviceAdaptor->eventQuery(resources->cpEvents[step]), &completed));
+        if (args->netRecvEventQueryChunk != args->copied + 1) {
+          args->netRecvEventQueryChunk = args->copied + 1;
+          flagcxTraceNetRecv(resources, args, 16, "event-query-enter",
+                             resources->cpEvents[step], flagcxInProgress, 0);
+        }
+        flagcxResult_t eventResult =
+            deviceAdaptor->eventQuery(resources->cpEvents[step]);
+        flagcxResult_t classified =
+            flagcxTransportClassifyCompletion(eventResult, &completed);
+        if (!completed || args->netRecvCopyDoneChunk != args->copied + 1) {
+          flagcxTraceNetRecv(resources, args, completed ? 12 : 11,
+                             completed ? "copy-done" : "copy-wait",
+                             resources->cpEvents[step], eventResult, completed);
+          if (completed)
+            args->netRecvCopyDoneChunk = args->copied + 1;
+        }
+        FLAGCXCHECK(classified);
         if (completed) {
           uint32_t advanced = 0;
           FLAGCXCHECK(flagcxCollProxyComplete(
@@ -1208,6 +1288,8 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                    .contexts[args->copied % args->collTransport.capacity],
               flagcxSuccess, &advanced));
           args->copied += advanced;
+          flagcxTraceNetRecv(resources, args, 13, "scoreboard", NULL,
+                             flagcxSuccess, 1, advanced);
         }
       } else {
         uint32_t advanced = 0;
@@ -1217,10 +1299,14 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                  .contexts[args->copied % args->collTransport.capacity],
             flagcxSuccess, &advanced));
         args->copied += advanced;
+        flagcxTraceNetRecv(resources, args, 13, "scoreboard", NULL,
+                           flagcxSuccess, 1, advanced);
       }
     }
   } else {
     if (args->done != 1) {
+      flagcxTraceNetRecv(resources, args, 14, "complete", NULL, flagcxSuccess,
+                         1);
       args->semaphore->subCounter(args->opId);
       args->done = 1;
     }
@@ -1390,11 +1476,11 @@ static flagcxResult_t netRegisterBuffer(flagcxHeteroComm *comm,
           found = true;
           outHandle[p] = it->first.handle;
           *outRegBufFlag = 1;
-          INFO(FLAGCX_REG,
-               "rank %d - NET reuse buffer %p size %ld (baseAddr %p size %ld) "
-               "handle %p",
-               comm->rank, userbuff, buffSize, (void *)regRecord->beginAddr,
-               regRecord->endAddr - regRecord->beginAddr, it->first.handle);
+          TRACE(FLAGCX_REG,
+                "rank %d - NET reuse buffer %p size %ld (baseAddr %p size %ld) "
+                "handle %p",
+                comm->rank, userbuff, buffSize, (void *)regRecord->beginAddr,
+                regRecord->endAddr - regRecord->beginAddr, it->first.handle);
           break;
         }
       }
@@ -1429,8 +1515,8 @@ flagcxResult_t flagcxNetRegisterBuffer(flagcxHeteroComm *comm,
                                        struct flagcxConnector **peerConns,
                                        int nPeers, int *outRegBufFlag,
                                        void **outHandle) {
-  INFO(FLAGCX_REG, "comm = %p, userbuff = %p, buffSize = %ld, nPeers = %d",
-       comm, userbuff, buffSize, nPeers);
+  TRACE(FLAGCX_REG, "comm = %p, userbuff = %p, buffSize = %ld, nPeers = %d",
+        comm, userbuff, buffSize, nPeers);
   *outRegBufFlag = 0;
   if (comm && userbuff && buffSize > 0 && nPeers > 0) {
     flagcxRegItem *reg = globalRegPool.getItem(reinterpret_cast<void *>(comm),
