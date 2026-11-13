@@ -165,6 +165,29 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                         self.assertEqual(f"SKIPPED {marker}" in result.stdout,
                                          (suite, phase) in ignored)
 
+    def test_kunlunxin_device_suite_dependency_gap_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_script = Path(temp_dir) / "kunlunxin.sh"
+            env_script.write_text(
+                "MPI_HOME=/tmp\n"
+                "FLAGCX_CI_PROJECT_MAKE_ARGS=()\n"
+                "FLAGCX_CI_TEST_MAKE_ARGS=()\n"
+                "flagcx_ci_prepare() { :; }\n"
+                "flagcx_ci_build_suite_override() {\n"
+                "  FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1\n"
+                "}\n"
+            )
+            result = subprocess.run(
+                ["bash", str(REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"),
+                 str(env_script), "device_api"],
+                cwd=REPO_ROOT,
+                env={**os.environ, "GITHUB_WORKSPACE": str(REPO_ROOT)},
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SKIPPED device_api:", result.stdout)
+
     def test_kunlunxin_job_container_provides_host_namespace_mount(self):
         result = subprocess.run(
             ["ruby", ".github/scripts/ci/load_platform_config.rb", "kunlunxin"],

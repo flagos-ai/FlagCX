@@ -192,7 +192,9 @@ if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]] &&
   if [[ "$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
     flagcx_ci_report_skipped_suite "$SUITE" \
       "required KunlunXin device toolchain or XSHMEM headers are unavailable in the CI image"
-    exit 0
+    # These suites are required for KunlunXin coverage. A missing toolchain is
+    # an infrastructure failure, not a supported test exclusion.
+    exit 1
   fi
 fi
 
