@@ -1975,13 +1975,13 @@ run_suite
         self.assertIn("FLAGCX_IB_TIMEOUT=14", runner_case)
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
-        self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 5
-        )
+        self.assertEqual(runner_case.count("./build/bin/runner_mpi_tests"), 7)
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 6
         )
+        self.assertIn('if [[ "$platform_name" == iluvatar ]]; then', runner_case)
+        self.assertIn('FLAGCX_CI_RUNNER_BYTES=1048576', runner_case)
         self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
         cuda_experimental = (
             REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"

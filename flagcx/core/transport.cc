@@ -7,6 +7,7 @@
 #include "proxy.h"
 #include "shmutils.h"
 #include "topo.h"
+#include <string.h>
 #define ENABLE_TIMER 0
 #include "timer.h"
 
@@ -186,12 +187,24 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
           conn->proxyConn.connection->transportResources = (void *)resources;
           resources->commPtr = comm;
+          resources->tpRemoteRank = peer;
+          resources->channelId = c;
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           FLAGCXCHECK(deviceAdaptor->streamCreate(&resources->cpStream));
           for (int s = 0; s < flagcxNetChunks; s++) {
             FLAGCXCHECK(deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                                    flagcxEventDisableTiming));
+            if (strcmp(deviceAdaptor->name, "IXCUDA") == 0 &&
+                __atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
+                    FLAGCX_LOG_TRACE &&
+                (flagcxDebugMask & FLAGCX_NET) != 0) {
+              flagcxResult_t markerResult = deviceAdaptor->eventCreate(
+                  &resources->cpStartEvents[s], flagcxEventDisableTiming);
+              if (markerResult != flagcxSuccess)
+                WARN("NET recv copy marker creation failed slot=%d result=%d",
+                     s, markerResult);
+            }
           }
           resources->buffSizes[0] = flagcxNetBufferSize;
           if (comm->netAdaptor == getNetAdaptor(SOCKET)) {
@@ -353,6 +366,8 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             FLAGCXCHECK(flagcxCalloc(&resources, 1));
             conn->proxyConn.connection->transportResources = resources;
             resources->commPtr = comm;
+            resources->tpRemoteRank = peer;
+            resources->channelId = c;
             FLAGCXCHECK(flagcxNetInitSendResources(comm->netAdaptor, sendNetDev,
                                                    resources));
           } else {

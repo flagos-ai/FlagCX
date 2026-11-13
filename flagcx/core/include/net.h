@@ -197,6 +197,8 @@ struct recvNetResources {
   flagcxNetDeviceHandle_t *netDeviceHandle;
   flagcxStream_t cpStream;
   flagcxEvent_t cpEvents[FLAGCX_NET_MAX_STEPS];
+  flagcxEvent_t cpStartEvents[FLAGCX_NET_MAX_STEPS];
+  uint8_t cpStartRecorded[FLAGCX_NET_MAX_STEPS];
 };
 
 enum flagcxIbCommState {
