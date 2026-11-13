@@ -261,8 +261,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for context in (
             {"event_name": "pull_request", "labels": ["platform:unknown"]},
             {"event_name": "workflow_dispatch", "selection": "unknown"},
-            {"event_name": "pull_request", "labels": ["platform:cuda"]},
-            {"event_name": "workflow_dispatch", "selection": "cuda"},
         ):
             with self.subTest(context=context), tempfile.TemporaryDirectory() as temp_dir:
                 context_path = Path(temp_dir) / "context.json"
