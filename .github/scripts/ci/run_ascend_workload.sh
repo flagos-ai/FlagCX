@@ -59,6 +59,71 @@ case "$workload" in
       "$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .
     )
 
+    # Run HCCL-name tests first, with route settings isolated from the generic suite.
+    (
+      log_dir="${FLAGCX_CI_LOG_DIR:-$project_root/.ci-logs}/hccl-comm-name"
+      mkdir -p "$log_dir"
+      {
+        git -C "$project_root" rev-parse HEAD
+        git -C "$project_root" diff --stat
+        "$PYTHON_BIN" - "$project_root" <<'PYTHON'
+import hashlib
+import pathlib
+import sys
+from importlib.metadata import distribution
+
+import torch
+import torch_npu
+import flagcx
+import flagcx._C
+
+root = pathlib.Path(sys.argv[1]).resolve()
+package = distribution("flagcx").locate_file("flagcx").resolve()
+for module in (flagcx, flagcx._C):
+    path = pathlib.Path(module.__file__).resolve()
+    print(module.__name__, path)
+    assert path.is_relative_to(package), path
+extension = pathlib.Path(flagcx._C.__file__).resolve()
+extension_hash = hashlib.sha256(extension.read_bytes()).hexdigest()
+assert any(
+    hashlib.sha256(path.read_bytes()).hexdigest() == extension_hash
+    for path in root.glob(f"build/lib*/flagcx/{extension.name}")
+), extension
+print("extension sha256", extension_hash)
+libraries = {
+    pathlib.Path(line.split()[-1]).resolve()
+    for line in pathlib.Path("/proc/self/maps").read_text().splitlines()
+    if line.split()[-1].endswith("/libflagcx.so")
+}
+print("loaded FlagCX libraries", sorted(map(str, libraries)))
+assert libraries == {(root / "build/lib/libflagcx.so").resolve()}, libraries
+print("Python", sys.version)
+print("torch", torch.__version__, "torch_npu", torch_npu.__version__)
+PYTHON
+        sha256sum "$project_root/build/lib/libflagcx.so" \
+          "$project_root/plugin/torch/tests/distributed_smoke.py"
+      } 2>&1 | tee "$log_dir/versions.log"
+
+      unset FLAGCX_USE_HOST_COMM FLAGCX_USE_HETERO_COMM FLAGCX_USE_TUNER
+      unset FLAGCX_CLUSTER_SPLIT_LIST
+      for ranks in 2 4; do
+        for route in default host; do
+          if [[ "$route" == host ]]; then
+            export FLAGCX_USE_HOST_COMM=1
+          else
+            unset FLAGCX_USE_HOST_COMM
+          fi
+          timeout --signal=TERM --kill-after="${FLAGCX_CI_TEST_KILL_AFTER:-30s}" \
+            "${FLAGCX_CI_HCCL_COMM_NAME_TIMEOUT:-10m}" \
+            "$PYTHON_BIN" -m torch.distributed.run --standalone --local-addr=127.0.0.1 \
+            --nproc-per-node="$ranks" \
+            "$project_root/plugin/torch/tests/distributed_smoke.py" \
+            --adaptor ascend --hccl-comm-name \
+            2>&1 | tee "$log_dir/${ranks}-ranks-${route}.log"
+        done
+      done
+    )
+
     export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1
     unset FLAGCX_SKIP_HETERO
     # Match the Ascend runner quarantine: C2C refresh deviceMemset fails for

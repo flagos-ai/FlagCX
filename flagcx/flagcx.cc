@@ -2928,6 +2928,27 @@ flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo) {
   return flagcxSuccess;
 }
 
+flagcxResult_t flagcxCommGetHcclCommName(flagcxComm_t comm, char *name,
+                                         size_t capacity) {
+  if (comm == nullptr || name == nullptr || capacity == 0)
+    return flagcxInvalidArgument;
+  name[0] = '\0';
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (!useHomoComm(comm) || useHeteroComm() || comm->tuner != nullptr)
+    return flagcxNotSupported;
+  auto *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+  if (adaptor == nullptr || adaptor->commGetName == nullptr)
+    return flagcxNotSupported;
+  if (comm->homoComm == nullptr)
+    return flagcxInternalError;
+  int rank, size;
+  FLAGCXCHECK(adaptor->commUserRank(comm->homoComm, &rank));
+  FLAGCXCHECK(adaptor->commCount(comm->homoComm, &size));
+  if (rank != comm->rank || size != comm->nranks)
+    return flagcxNotSupported;
+  return adaptor->commGetName(comm->homoComm, name, capacity);
+}
+
 flagcxResult_t flagcxGetVersion(int *version) {
   // TODO: implement a method to retrieve global verison
   return flagcxHeteroGetVersion(version);

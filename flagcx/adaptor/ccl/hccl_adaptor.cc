@@ -6,9 +6,13 @@
 #include "alloc.h"
 #include "comm.h"
 #include "debug.h"
+#include <cstring>
 #include <map>
 #include <stdint.h>
 #include <vector>
+
+// Keep communicator-name lookup optional even with non-weak SDK declarations.
+#pragma weak HcclGetCommName
 
 static_assert(sizeof(HcclRootInfo) <= sizeof(flagcxInnerUniqueId),
               "HcclRootInfo does not fit inside flagcxInnerUniqueId");
@@ -67,6 +71,15 @@ std::map<flagcxResult_t, HcclResult> f2h_ret_map = {
     {flagcxInvalidArgument, HCCL_E_PARA},
     {flagcxRemoteError, HCCL_E_REMOTE},
     {flagcxUnhandledDeviceError, HCCL_E_RESERVED}};
+
+static flagcxResult_t hcclResultToFlagcx(HcclResult result) {
+  if (result == HCCL_SUCCESS)
+    return flagcxSuccess;
+  auto it = h2f_ret_map.find(result);
+  return it != h2f_ret_map.end() && it->second != flagcxSuccess
+             ? it->second
+             : flagcxUnhandledCCLError;
+}
 
 struct HcclSendRecvItemEx {
   flagcxInnerComm_t comm;
@@ -136,8 +149,7 @@ flagcxResult_t hcclAdaptorCommSuspend(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t hcclAdaptorCommCount(const flagcxInnerComm_t comm, int *count) {
-  return (flagcxResult_t)
-      h2f_ret_map[HcclGetRankSize(comm->base, (uint32_t *)count)];
+  return hcclResultToFlagcx(HcclGetRankSize(comm->base, (uint32_t *)count));
 }
 
 // TODO: unsupported
@@ -148,8 +160,7 @@ flagcxResult_t hcclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
 
 flagcxResult_t hcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
                                        int *rank) {
-  return (
-      flagcxResult_t)h2f_ret_map[HcclGetRankId(comm->base, (uint32_t *)rank)];
+  return hcclResultToFlagcx(HcclGetRankId(comm->base, (uint32_t *)rank));
 }
 
 flagcxResult_t hcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
@@ -420,6 +431,24 @@ flagcxResult_t hcclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
   return flagcxNotSupported;
 }
 
+flagcxResult_t hcclAdaptorCommGetName(flagcxInnerComm_t comm, char *name,
+                                      size_t capacity) {
+  if (capacity < COMM_NAME_MAX_LENGTH)
+    return flagcxInvalidArgument;
+  if (HcclGetCommName == nullptr)
+    return flagcxNotSupported;
+  char commName[COMM_NAME_MAX_LENGTH] = {};
+  auto result = hcclResultToFlagcx(HcclGetCommName(comm->base, commName));
+  if (result != flagcxSuccess)
+    return result;
+  auto end =
+      static_cast<const char *>(std::memchr(commName, '\0', sizeof(commName)));
+  if (end == nullptr || end == commName)
+    return flagcxInternalError;
+  std::memcpy(name, commName, end - commName + 1);
+  return flagcxSuccess;
+}
+
 struct flagcxCCLAdaptor hcclAdaptor = {
     "HCCL",
     // Basic functions
@@ -442,6 +471,8 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
     // Device API
     hcclAdaptorDevCommReqsInit, hcclAdaptorDevCommCreate,
-    hcclAdaptorDevCommDestroy};
+    hcclAdaptorDevCommDestroy,
+    // Optional communicator-name query
+    hcclAdaptorCommGetName};
 
 #endif // USE_ASCEND_ADAPTOR

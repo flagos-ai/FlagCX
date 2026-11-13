@@ -49,7 +49,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
     cclPluginDlHandle = NULL;
     return flagcxSuccess;
   }
-  // Upgrade v1 to latest — new fields (devComm*) will be NULL.
+  // Upgrade v1 to latest — all fields added after v1 are zero-initialized.
   cclUpgradedPlugin =
       (struct flagcxCCLAdaptor *)malloc(sizeof(struct flagcxCCLAdaptor));
   if (cclUpgradedPlugin == NULL) {
@@ -60,7 +60,7 @@ flagcxResult_t flagcxCCLAdaptorPluginLoad() {
   flagcxCCLAdaptorUpgradeV1(v1, cclUpgradedPlugin);
   struct flagcxCCLAdaptor *plugin = cclUpgradedPlugin;
 
-  // Validate all 34 function pointers
+  // Validate required adaptor metadata and function pointers.
   if (plugin->name == NULL || plugin->getVersion == NULL ||
       plugin->getUniqueId == NULL || plugin->getErrorString == NULL ||
       plugin->getLastError == NULL || plugin->getStagedBuffer == NULL ||
