@@ -214,8 +214,8 @@ static inline void perfReduceCheckOutput(const unsigned char *actual,
         fprintf(stderr,
                 "%s rank=%d datatype=%s op=%s element=%zu expected=%u "
                 "actual_bits=0x%llx\n",
-                operation, rank, test_typenames[static_cast<int>(datatype)],
-                test_opnames[static_cast<int>(op)], index, expectedValue,
+                operation, rank, perfDataTypeName(datatype), perfRedOpName(op),
+                index, expectedValue,
                 static_cast<unsigned long long>(actualBits));
         perfAbort("reduction data mismatch", __FILE__, __LINE__);
       }

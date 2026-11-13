@@ -814,6 +814,28 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn('"$BUILD_BIN/symmem_mpi_tests"', symmem_runner)
         self.assertIn('run-mpi-net', unit_runner)
 
+    def test_cuda_device_traits_suite_runs_kernel(self):
+        cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
+        cuda_env = (REPO_ROOT / ".github/scripts/set_env/cuda.sh").read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        kernel_makefile = (REPO_ROOT / "test/kernel/nvidia/Makefile").read_text()
+
+        suites = cuda_config[cuda_config.index("unit_test_suites:") :]
+        self.assertIn("  - device_traits", suites)
+        self.assertIn(
+            "device_api|device_api_host|device_api_unified_ir|device_traits)",
+            cuda_env,
+        )
+        self.assertIn('"$SUITE" == device_traits', unit_runner)
+        self.assertIn('"$PROJECT_ROOT/test/kernel/nvidia"', unit_runner)
+        self.assertIn('          device_traits "${args[@]}"', unit_runner)
+        self.assertIn(
+            "device_traits: $(BINDIR)/test_device_api_traits", kernel_makefile
+        )
+        self.assertIn("@$(BINDIR)/test_device_api_traits", kernel_makefile)
+
     def test_ascend_p2p_write_runs_in_default_and_shared_engines(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
@@ -918,6 +940,16 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ENABLED_PLATFORMS,
         )
+        selected = subprocess.run(
+            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
+            ["hygon"],
+        )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -956,6 +988,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "device_api",
                 "device_api_host",
                 "device_api_unified_ir",
+                "device_traits",
                 "p2p",
                 "rma",
                 "runner",
@@ -2217,6 +2250,12 @@ run_suite
         self.assertEqual(
             runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
         )
+        self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
+        cuda_extended = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
+        ).read_text()
+        self.assertIn("UniRunnerDagAlgorithmsRejectOuterGroup", cuda_extended)
+        self.assertIn("FLAGCX_UNIRUNNER_ALGO=8", cuda_extended)
         self.assertIn('"${FLAGCX_CI_ENABLE_PXN:-1}" == "1"', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)

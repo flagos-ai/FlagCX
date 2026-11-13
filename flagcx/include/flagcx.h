@@ -300,12 +300,10 @@ flagcxResult_t flagcxGetVersion(int *version);
  * The caller must provide a valid pointer to a flagcxUniqueId struct. */
 flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId);
 
-/* Creates a new communicator (multi thread/process version).
+/* Creates a communicator for this process's rank.
  * rank must be between 0 and nranks-1 and unique within a communicator clique.
  * Each rank is associated to a device, which has to be set before calling
- * flagcxCommInitRank. flagcxCommInitRank implicitly syncronizes with other
- * ranks, so it must be called by different threads/processes or use
- * flagcxGroupStart/flagcxGroupEnd. */
+ * flagcxCommInitRank. The call may synchronize with other rank processes. */
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank);
 
@@ -357,9 +355,8 @@ flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank);
  *
  * They return when operations have been enqueued on the FlagCX stream.
  *
- * Since they may perform inter-CPU synchronization, each call has to be done
- * from a different thread or process, or need to use Group Semantics (see
- * below).
+ * Calls may synchronize with peer processes, so each participating rank
+ * process must call the matching collective operation.
  */
 
 /*
@@ -469,6 +466,30 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
                                size_t sendcount, flagcxDataType_t datatype,
                                flagcxComm_t comm, flagcxStream_t stream);
+
+/*
+ * Synchronously gathers row-major FP32 input matrices in rank order and
+ * multiplies the gathered matrix by the rank-local row-major weight matrix.
+ * All ranks must pass matching dimensions, datatype, algorithm settings, and
+ * K-slice settings. In-place and overlapping buffers are not supported.
+ */
+flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
+                                   void *output, size_t mPerRank, size_t n,
+                                   size_t k, flagcxDataType_t datatype,
+                                   flagcxComm_t comm, flagcxStream_t stream);
+
+/*
+ * Synchronously multiplies row-major FP32 rank-local K partitions, sums the
+ * local products, and scatters contiguous row blocks. Only flagcxSum is
+ * supported. All ranks must pass matching arguments and fusion settings.
+ * In-place and overlapping buffers are not supported.
+ */
+flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
+                                       void *output, size_t m, size_t n,
+                                       size_t kPerRank,
+                                       flagcxDataType_t datatype,
+                                       flagcxRedOp_t op, flagcxComm_t comm,
+                                       flagcxStream_t stream);
 
 /*
  * All-to-all
@@ -660,40 +681,39 @@ flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target);
 /*
  * Group semantics
  *
- * When managing multiple APUs from a single thread, and since FLAGCX collective
- * calls may perform inter-CPU synchronization, we need to "group" calls for
- * different ranks/devices into a single call.
+ * FlagCX currently supports one rank per process. Concurrent API calls from
+ * multiple application threads are not supported. A group batches supported
+ * operations issued by this process for its rank. In particular, use a group
+ * when multiple sends and receives must be submitted together to make progress.
  *
- * Grouping FLAGCX calls as being part of the same collective operation is done
- * using flagcxGroupStart and flagcxGroupEnd. flagcxGroupStart will enqueue all
- * collective calls until the flagcxGroupEnd call, which will wait for all calls
- * to be complete. Note that for collective communication, flagcxGroupEnd only
- * guarantees that the operations are enqueued on the FlagCX streams, not that
- * the operation is effectively done.
+ * flagcxGroupStart begins a group, and flagcxGroupEnd submits its batched
+ * operations. GroupEnd does not guarantee device completion; synchronize the
+ * stream to wait for completion.
  *
- * Both collective communication and flagcxCommInitRank can be used in
- * conjunction of flagcxGroupStart/flagcxGroupEnd, but not together.
+ * Do not mix communicator initialization and communication operations in the
+ * same group.
  *
- * Group semantics also allow to fuse multiple operations on the same device
- * to improve performance (for aggregated collective calls), or to permit
- * concurrent progress of multiple send/receive operations.
+ * With UniRunner (FLAGCX_USE_HETERO_COMM=1), DAG collectives return
+ * flagcxInvalidUsage inside a user group. AllGather inside a user group
+ * requires the P2P algorithm (FLAGCX_UNIRUNNER_ALGO=8).
+ * HybridRunner's C2C-planned collectives also return flagcxInvalidUsage
+ * inside a user group; direct Send/Recv calls can be grouped.
  */
 
 /*
  * Group Start
  *
- * Start a group call. All calls to FLAGCX until flagcxGroupEnd will be fused
- * into a single FLAGCX operation. Nothing will be started on the FlagCX stream
- * until flagcxGroupEnd.
+ * Begin batching supported communication operations for this process's rank.
+ * The batched operations are submitted by flagcxGroupEnd.
  */
 flagcxResult_t flagcxGroupStart(flagcxComm_t comm);
 
 /*
  * Group End
  *
- * End a group call. Start a fused FLAGCX operation consisting of all calls
- * since flagcxGroupStart. Operations on the FlagCX stream depending on the
- * FLAGCX operations need to be called after flagcxGroupEnd.
+ * Submit the operations batched since flagcxGroupStart. This does not
+ * guarantee device completion; dependent stream operations must be submitted
+ * after flagcxGroupEnd.
  */
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm);
 

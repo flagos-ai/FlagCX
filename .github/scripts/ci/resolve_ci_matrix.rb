@@ -28,7 +28,7 @@ abort "Platform registry not found: #{registry_path}" unless File.file?(registry
 registry = load_yaml.call(registry_path)
 settings = registry.fetch("platforms", {})
 abort "#{registry_path}: platforms must be a map" unless settings.is_a?(Hash)
-platforms = settings.filter_map do |name, value|
+platforms = settings.map do |name, value|
   next if value.is_a?(Hash) && value.fetch("enabled", true) == false
 
   config_path = File.join(config_dir, "#{name}.yml")
@@ -43,7 +43,7 @@ platforms = settings.filter_map do |name, value|
     "display_name" => config.fetch("display_name"),
     "patterns" => patterns
   }
-end
+end.compact
 platform_names = platforms.map { |entry| entry.fetch("platform") }
 abort "No enabled platform configs found in #{config_dir}" if platforms.empty?
 
@@ -69,9 +69,9 @@ select_paths = lambda do
 
   selected_names = []
   files.each do |path|
-    affected = platforms.filter_map do |entry|
+    affected = platforms.map do |entry|
       entry.fetch("platform") if match_paths.call(entry.fetch("patterns"), [path])
-    end
+    end.compact
     # Even one unknown file makes the diff shared, including mixed diffs.
     if affected.empty?
       selected_names = platform_names

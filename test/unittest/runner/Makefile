@@ -8,12 +8,17 @@ UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/runner_unit_tests
 
-# [mpi] tests: coll_*.cpp + main_mpi.cpp — requires MPI + GPUs
-MPI_SRCS   := $(wildcard coll_*.cpp) main_mpi.cpp
+# [mpi] tests: keep UniRunner-specific GPU cases in the CUDA extended suite.
+CUDA_EXTENDED_ONLY_SRCS := coll_allgather_gemm.cpp coll_gemm_reducescatter.cpp \
+                           coll_uni_runner_group.cpp
+MPI_SRCS   := $(filter-out $(CUDA_EXTENDED_ONLY_SRCS),$(wildcard coll_*.cpp)) main_mpi.cpp
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/runner_mpi_tests
+CUDA_EXTENDED_MPI_SRCS := $(CUDA_EXTENDED_ONLY_SRCS) main_mpi.cpp
+CUDA_EXTENDED_MPI_OBJS := $(CUDA_EXTENDED_MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
+CUDA_EXTENDED_MPI_TARGET := $(BINDIR)/runner_cuda_extended_mpi_tests
 
-.PHONY: all clean run-unit run-mpi run
+.PHONY: all clean run-unit run-mpi run cuda-extended
 
 ALL_TARGETS :=
 ifneq ($(UNIT_SRCS),)
@@ -31,6 +36,11 @@ $(UNIT_TARGET): $(UNIT_OBJS)
 	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
 
 $(MPI_TARGET): $(MPI_OBJS)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK)
+
+$(CUDA_EXTENDED_MPI_TARGET): $(CUDA_EXTENDED_MPI_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(MPI_LINK)
@@ -58,5 +68,7 @@ run-unit: $(UNIT_TARGET)
 
 run-mpi: $(MPI_TARGET)
 	@mpirun --allow-run-as-root -np 8 $(MPI_TARGET)
+
+cuda-extended: $(CUDA_EXTENDED_MPI_TARGET)
 
 run: run-unit run-mpi
