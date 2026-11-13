@@ -3,10 +3,12 @@
 #include "coll_proxy_transport.h"
 #include "comm.h"
 #include "global_comm.h"
+#include "graph.h"
 #include "net.h"
 #include "runner_fixtures.hpp"
 #include "transport.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -72,6 +74,36 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
         if (comm->clusterIds[member] !=
             (member < ranksPerGroup ? firstGroup : secondGroup))
           ++localLayoutErrors;
+      }
+    }
+  }
+
+  // A relay is only a valid expectation when this rank has a NIC-local GPU
+  // reachable through the same topology policy used by the route selector.
+  // In particular, a GPU-to-NIC PHB path cannot provide PXN on this host.
+  int localRelayEligibleByGroup[2] = {0, 0};
+  if (enabled && traffic != FlagCXPxnTraffic::ConnectedCollective &&
+      localLayoutErrors == 0) {
+    auto *topo = hcomm->topoServer;
+    int sourceIndex = -1;
+    for (int i = 0; i < topo->nodes[APU].count; ++i) {
+      if (topo->nodes[APU].nodes[i].apu.rank == rank) {
+        sourceIndex = i;
+        break;
+      }
+    }
+    if (sourceIndex < 0 || topo->nodes[NET].count == 0) {
+      ++localLayoutErrors;
+    } else {
+      for (int netIndex = 0; netIndex < topo->nodes[NET].count; ++netIndex) {
+        int relayRank = rank;
+        if (flagcxTopoSelectPxnRelay(topo, sourceIndex, netIndex, &relayRank,
+                                     ranksPerGroup) != flagcxSuccess) {
+          ++localLayoutErrors;
+          break;
+        }
+        if (relayRank != rank)
+          localRelayEligibleByGroup[rank < ranksPerGroup ? 0 : 1] = 1;
       }
     }
   }
@@ -250,6 +282,7 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   int globalRouteErrors = 0;
   int globalRelayed = 0;
   int globalRelayedByGroup[2] = {0, 0};
+  int globalRelayEligibleByGroup[2] = {0, 0};
   int globalCompletionErrors = 0;
   MPI_Allreduce(&localLayoutErrors, &globalLayoutErrors, 1, MPI_INT, MPI_SUM,
                 MPI_COMM_WORLD);
@@ -265,6 +298,8 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
                 MPI_COMM_WORLD);
   MPI_Allreduce(localRelayedByGroup, globalRelayedByGroup, 2, MPI_INT, MPI_SUM,
                 MPI_COMM_WORLD);
+  MPI_Allreduce(localRelayEligibleByGroup, globalRelayEligibleByGroup, 2,
+                MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   MPI_Allreduce(&localCompletionErrors, &globalCompletionErrors, 1, MPI_INT,
                 MPI_SUM, MPI_COMM_WORLD);
   EXPECT_EQ(globalLayoutErrors, 0) << operation << " has an invalid PXN layout";
@@ -278,10 +313,23 @@ inline void flagcxRunnerAssertPxnTraffic(flagcxComm_t comm, int rank,
   EXPECT_EQ(globalCompletionErrors, 0)
       << operation << " has no completed relay chunk on a relaying source";
   if (enabled && traffic != FlagCXPxnTraffic::ConnectedCollective) {
-    EXPECT_GT(globalRelayedByGroup[0], 0)
-        << operation << " did not relay from the first logical node";
-    EXPECT_GT(globalRelayedByGroup[1], 0)
-        << operation << " did not relay from the second logical node";
+    for (int group = 0; group < 2; ++group) {
+      if (globalRelayEligibleByGroup[group] > 0) {
+        EXPECT_GT(globalRelayedByGroup[group], 0)
+            << operation << " did not relay from logical node " << group;
+      } else {
+        EXPECT_EQ(globalRelayedByGroup[group], 0)
+            << operation
+            << " relayed without an eligible topology on logical node "
+            << group;
+        if (rank == 0)
+          std::fprintf(stderr,
+                       "%s PXN relay coverage skipped on logical node %d: "
+                       "no eligible GPU-to-NIC path; direct NET fallback "
+                       "and data correctness were checked\n",
+                       operation, group);
+      }
+    }
   } else if (!enabled) {
     EXPECT_EQ(globalRelayed, 0) << operation << " unexpectedly used PXN";
   }
