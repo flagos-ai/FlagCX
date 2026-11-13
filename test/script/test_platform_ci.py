@@ -5,10 +5,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METAX_ENV = REPO_ROOT / ".github/scripts/set_env/metax.sh"
 HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
+PLATFORM_REGISTRY = yaml.safe_load(
+    (REPO_ROOT / ".github/configs/platforms.yml").read_text()
+)["platforms"]
+ENABLED_PLATFORMS = [
+    name for name, settings in PLATFORM_REGISTRY.items()
+    if not isinstance(settings, dict) or settings.get("enabled", True)
+]
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
@@ -295,24 +304,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
+        all_platforms = ENABLED_PLATFORMS
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            ["cuda"] if "cuda" in ENABLED_PLATFORMS else all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            ["hygon"] if "hygon" in ENABLED_PLATFORMS else all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            ["ascend"] if "ascend" in ENABLED_PLATFORMS else all_platforms,
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,7 +714,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ENABLED_PLATFORMS,
         )
         selected = subprocess.run(
             ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
@@ -935,19 +944,29 @@ class PlatformCiRegressionTest(unittest.TestCase):
             (perf_workflow, "perf"),
             (torch_workflow, "torch-api"),
         ):
-            self.assertNotIn("container:", workflow)
             self.assertNotIn("image: harbor.baai.ac.cn", workflow)
+            # Only the MetaX Kubernetes runner uses a job container; the other
+            # platforms launch the CI image through Docker explicitly.
+            self.assertEqual(workflow.count("container: "), 1)
+            self.assertIn(
+                "container: ${{ needs.load-hardware-container-configs"
+                ".outputs.metax_job_container_image }}",
+                workflow,
+            )
+            self.assertNotIn("metax_docker_args", workflow)
+            self.assertIn(f'run_hardware_workload.sh" \\\n            metax {workload}', workflow)
             for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
                 with self.subTest(workload=workload, platform=platform):
                     self.assertIn(
                         f"ruby .github/scripts/ci/load_platform_config.rb {platform}",
                         workflow,
                     )
-                    self.assertIn(
-                        f"FLAGCX_CI_IMAGE: "
-                        f"${{{{ needs.load-hardware-container-configs.outputs.{platform}_ci_image }}}}",
-                        workflow,
-                    )
+                    if platform != "metax":
+                        self.assertIn(
+                            f"FLAGCX_CI_IMAGE: "
+                            f"${{{{ needs.load-hardware-container-configs.outputs.{platform}_ci_image }}}}",
+                            workflow,
+                        )
                     self.assertIn(f"{platform} {workload}", workflow)
                     self.assertIn(
                         f"runs-on: "
@@ -1113,6 +1132,84 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ).read_text()
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
+
+    def test_only_job_container_platforms_skip_the_docker_launcher(self):
+        unit_workflow = (
+            REPO_ROOT / ".github/workflows/unit_tests_common.yml"
+        ).read_text()
+        self.assertIn(
+            "container: ${{ needs.load_config.outputs.job_container_image }}",
+            unit_workflow,
+        )
+        self.assertIn(
+            "if: needs.load_config.outputs.job_container_image != ''",
+            unit_workflow,
+        )
+        self.assertEqual(
+            unit_workflow.count(
+                "needs.load_config.outputs.job_container_image == ''"
+            ),
+            3,
+        )
+
+        for platform in ("cuda", "metax", "hygon", "ppu", "ascend", "iluvatar"):
+            with self.subTest(platform=platform):
+                result = subprocess.run(
+                    ["ruby", ".github/scripts/ci/load_platform_config.rb", platform],
+                    cwd=REPO_ROOT,
+                    env={k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"},
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                outputs = json.loads(result.stdout)
+                expected = outputs["ci_image"] if platform == "metax" else ""
+                self.assertEqual(outputs["job_container_image"], expected)
+                if platform == "metax":
+                    self.assertEqual(outputs["docker_args"], "")
+                else:
+                    self.assertTrue(outputs["docker_args"])
+
+    def test_platform_loader_requires_docker_settings_only_for_docker_jobs(self):
+        loader = REPO_ROOT / ".github/scripts/ci/load_platform_config.rb"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_dir = root / ".github/configs"
+            config_dir.mkdir(parents=True)
+            (root / "set_env.sh").write_text("#!/usr/bin/env bash\n")
+            config = {
+                "hardware_name": "fixture", "display_name": "Fixture",
+                "ci_image": "ci:test", "runner_labels": ["test-runner"],
+                "set_env": "set_env.sh", "unit_test_suites": ["core"],
+            }
+            for job_container, docker_settings, success in (
+                (True, {}, True),
+                (True, {"docker_volumes": ["/host:/container"],
+                        "docker_options": ["--privileged"]}, True),
+                (False, {}, False),
+                (False, {"docker_volumes": ["/host:/container"],
+                         "docker_options": ["--privileged"]}, True),
+            ):
+                with self.subTest(job_container=job_container,
+                                  docker_settings=docker_settings):
+                    path = config_dir / "fixture.yml"
+                    path.write_text(yaml.safe_dump(dict(
+                        config, job_container=job_container, **docker_settings)))
+                    result = subprocess.run(
+                        ["ruby", str(loader), "fixture"], cwd=root,
+                        env={k: v for k, v in os.environ.items()
+                             if k != "GITHUB_OUTPUT"},
+                        capture_output=True, text=True, check=False,
+                    )
+                    if success:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        outputs = json.loads(result.stdout)
+                        self.assertEqual(outputs["docker_args"], "" if job_container
+                                         else "--privileged\n--volume=/host:/container")
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("missing required keys: docker_volumes, docker_options",
+                                      result.stderr)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
@@ -2365,9 +2462,69 @@ class MetaXEnvironmentTest(unittest.TestCase):
         selector = source[source.index("flagcx_ci_select_rdma() {") :]
         selector = selector[: selector.index("flagcx_ci_validate_rdma() {")]
 
-        self.assertIn("/sys/class/infiniband/bnxt_roce*", selector)
-        self.assertIn("/sys/class/infiniband/bnxt_re_bond*", selector)
+        self.assertIn('"$rdma_sysfs_root"/*', selector)
+        self.assertIn('"$hca_path"/ports/*', selector)
+        self.assertIn(
+            'FLAGCX_CI_METAX_RDMA_SYSFS_ROOT:-/sys/class/infiniband',
+            selector,
+        )
+        self.assertNotIn("bnxt_roce*", selector)
+        self.assertNotIn("bnxt_re_bond*", selector)
         self.assertIn("export FLAGCX_IB_HCA", selector)
+
+    def test_selector_discovers_generic_rdma_names_and_pxn_defaults(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "infiniband"
+            for hca in ("bnxt_roce0", "mlx5_0", "bnxt_re_bond2"):
+                (root / hca / "ports" / "1").mkdir(parents=True)
+
+            result = self.run_metax_shell(
+                'unset FLAGCX_IB_HCA FLAGCX_CI_PXN_HCAS; '
+                'flagcx_ci_select_rdma test; '
+                'printf "%s|%s|%s\\n" "$FLAGCX_IB_HCA" "$FLAGCX_CI_PXN_HCAS" "$FLAGCX_CI_METAX_RDMA_PATTERN"',
+                extra_env={"FLAGCX_CI_METAX_RDMA_SYSFS_ROOT": str(root)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.stdout.strip(),
+                f"bnxt_re_bond2,bnxt_roce0,mlx5_0|bnxt_roce0,mlx5_0|{root}/*",
+            )
+
+    def test_meta_x_uses_rocev2_gid_and_tcp_mpi_bootstrap_defaults(self):
+        result = self.run_metax_shell(
+            'printf "%s|%s|%s\\n" "$FLAGCX_IB_GID_INDEX" '
+            '"$OMPI_MCA_pml" "$OMPI_MCA_btl"'
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "3|ob1|self,tcp")
+
+        overridden = self.run_metax_shell(
+            'printf "%s|%s|%s\\n" "$FLAGCX_IB_GID_INDEX" '
+            '"$OMPI_MCA_pml" "$OMPI_MCA_btl"',
+            extra_env={
+                "FLAGCX_IB_GID_INDEX": "7",
+                "OMPI_MCA_pml": "ucx",
+                "OMPI_MCA_btl": "self,vader",
+            },
+        )
+        self.assertEqual(overridden.returncode, 0, overridden.stderr)
+        self.assertEqual(overridden.stdout.strip(), "7|ucx|self,vader")
+
+    def test_meta_x_pxn_uses_first_four_container_devices(self):
+        source = METAX_ENV.read_text()
+        self.assertIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,2,3", source)
+        self.assertNotIn("FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,4,7", source)
+
+    def test_validator_checks_gid_network_device_visibility(self):
+        source = METAX_ENV.read_text()
+        validator = source[source.index("flagcx_ci_validate_gid_netdev() {") :]
+        validator = validator[: validator.index("flagcx_ci_validate_rdma() {")]
+
+        self.assertIn('gid_attrs/ndevs/$gid_index', validator)
+        self.assertIn('"/sys/class/net/$ndev"', validator)
+        self.assertIn("hostNetwork or an RDMA/Multus network attachment", validator)
 
     def test_prepare_does_not_select_rdma_hca(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2391,8 +2548,8 @@ class MetaXEnvironmentTest(unittest.TestCase):
     def test_validator_propagates_static_preflight_failure(self):
         result = self.run_metax_shell(
             'flagcx_ci_select_rdma() { '
-            'export FLAGCX_IB_HCA=bnxt_roce0; '
-            'FLAGCX_CI_METAX_RDMA_PATTERN=/sys/class/infiniband/bnxt_roce\\*; '
+            'export FLAGCX_IB_HCA=rdma0; '
+            'FLAGCX_CI_METAX_RDMA_PATTERN=/sys/class/infiniband/\\*; '
             '}; '
             'flagcx_ci_validate_rdma_static() { return 17; }; '
             'unset FLAGCX_IB_HCA; set +e; '

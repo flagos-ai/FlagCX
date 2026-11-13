@@ -28,8 +28,7 @@ jobs:
       cuda_docker_args: ${{ steps.cuda.outputs.docker_args }}
       cuda_set_env: ${{ steps.cuda.outputs.set_env }}
       cuda_runs_on: ${{ steps.cuda.outputs.runs_on }}
-      metax_ci_image: ${{ steps.metax.outputs.ci_image }}
-      metax_docker_args: ${{ steps.metax.outputs.docker_args }}
+      metax_job_container_image: ${{ steps.metax.outputs.job_container_image }}
       metax_set_env: ${{ steps.metax.outputs.set_env }}
       metax_runs_on: ${{ steps.metax.outputs.runs_on }}
       hygon_ci_image: ${{ steps.hygon.outputs.ci_image }}
@@ -225,6 +224,9 @@ jobs:
     needs: load-hardware-container-configs
     runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.metax_runs_on) }}
     timeout-minutes: 240
+    # The MetaX Kubernetes runner cannot expose accelerators to `docker run`;
+    # the job Pod runs the CI image with cluster-provided device access.
+    container: ${{ needs.load-hardware-container-configs.outputs.metax_job_container_image }}
 
     steps:
       - name: Checkout Code
@@ -236,27 +238,14 @@ jobs:
           persist-credentials: false
           set-safe-directory: true
 
-      - name: Check Docker
-        shell: bash
-        run: docker version
-
-      - name: Run perf-test (metax) in configured container
+      - name: Run perf-test (metax) in job container
         shell: bash
         env:
-          FLAGCX_CI_CONTAINER_NAME: flagcx-metax-perf-${{ github.run_id }}-${{ github.run_attempt }}
-          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load-hardware-container-configs.outputs.metax_docker_args }}
-          FLAGCX_CI_IMAGE: ${{ needs.load-hardware-container-configs.outputs.metax_ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load-hardware-container-configs.outputs.metax_set_env }}
-        run: >-
-          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
-          metax perf
-
-      - name: Cleanup perf-test (metax) container
-        if: always()
-        shell: bash
-        env:
-          FLAGCX_CI_CONTAINER_NAME: flagcx-metax-perf-${{ github.run_id }}-${{ github.run_attempt }}
-        run: docker rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
+        run: |
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_workload.sh" \
+            metax perf "$FLAGCX_CI_SET_ENV" ""
 
       - name: Upload test attempt logs
         if: always()

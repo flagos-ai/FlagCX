@@ -24,6 +24,9 @@ ALL_ENABLED_PLATFORMS = [
 ]
 
 
+SELECTED_PLATFORM = ALL_ENABLED_PLATFORMS[0]
+
+
 def enabled_platform_or_matrix(platform):
     if platform in ALL_ENABLED_PLATFORMS:
         return [platform]
@@ -76,9 +79,18 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cuda_adaptor.cc",
                 enabled_platform_or_matrix("cuda"),
             ),
-            ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
-            ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
-            ("flagcx/adaptor/device/cann_adaptor.cc", ["ascend"]),
+            (
+                "flagcx/adaptor/device/ixcuda_adaptor.cc",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
+                "docker/iluvatar-ci/Dockerfile",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
+                "flagcx/adaptor/device/cann_adaptor.cc",
+                enabled_platform_or_matrix("ascend"),
+            ),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
                 enabled_platform_or_matrix("ppu"),
@@ -135,11 +147,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:iluvatar"],
+                "labels": [f"platform:{SELECTED_PLATFORM}"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["iluvatar"])
+        self.assertEqual(outputs["platforms"], [SELECTED_PLATFORM])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -187,7 +199,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:iluvatar"],
+            "ref": "a" * 40, "labels": [f"platform:{SELECTED_PLATFORM}"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -195,10 +207,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:iluvatar"],
+            "is_pull_request": True, "labels": [f"platform:{SELECTED_PLATFORM}"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["iluvatar"])
+        self.assertEqual(outputs["platforms"], [SELECTED_PLATFORM])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -209,15 +221,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
+            ("workflow_dispatch", {"selection": SELECTED_PLATFORM}, [SELECTED_PLATFORM]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test iluvatar",
+                    "comment": f"/test {SELECTED_PLATFORM}",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["iluvatar"],
+                [SELECTED_PLATFORM],
             ),
             (
                 "issue_comment",
@@ -236,7 +248,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["cuda"],
+                enabled_platform_or_matrix("cuda"),
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
@@ -256,10 +268,22 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], [])
 
     def test_unknown_label_and_selection_fail_closed(self):
-        for context in (
-            {"event_name": "pull_request", "labels": ["platform:unknown"]},
-            {"event_name": "workflow_dispatch", "selection": "unknown"},
-        ):
+        rejected = ["unknown"] + [
+            name for name in PLATFORM_REGISTRY if name not in ALL_ENABLED_PLATFORMS
+        ]
+        contexts = [
+            context
+            for platform in rejected
+            for context in (
+                {"event_name": "pull_request", "labels": [f"platform:{platform}"]},
+                {"event_name": "workflow_dispatch", "selection": platform},
+                {
+                    "event_name": "issue_comment", "comment": f"/test {platform}",
+                    "permission": "write", "is_pull_request": True,
+                },
+            )
+        ]
+        for context in contexts:
             with self.subTest(context=context), tempfile.TemporaryDirectory() as temp_dir:
                 context_path = Path(temp_dir) / "context.json"
                 context_path.write_text(json.dumps(context))
@@ -272,6 +296,24 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     env=env,
                 )
                 self.assertNotEqual(result.returncode, 0)
+
+    def test_coverage_matrix_rejects_explicitly_disabled_platforms(self):
+        loader = CONFIG_DIR.parent / "scripts/ci/load_platform_matrix.rb"
+        for platform in PLATFORM_REGISTRY:
+            with self.subTest(platform=platform):
+                result = subprocess.run(
+                    ["ruby", str(loader), str(CONFIG_DIR), platform],
+                    capture_output=True, text=True,
+                )
+                if platform in ALL_ENABLED_PLATFORMS:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        [entry["platform"] for entry in json.loads(result.stdout)["include"]],
+                        [platform],
+                    )
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("temporarily disabled", result.stderr)
 
 
 class CiRetryTest(unittest.TestCase):
@@ -465,13 +507,26 @@ class CiWorkflowWiringTest(unittest.TestCase):
                 self.assertEqual(upload["with"]["report_path"], report)
                 self.assertEqual(upload["with"]["fail_on_error"], "false")
                 self.assertIn("FLAGCICD_TOKEN_SET == 'true'", upload["if"])
-                self.assertIn(f"hashFiles('{report}')", upload["if"])
                 self.assertIn("github.event.issue.number", upload["with"]["pr_id"])
-                self.assertNotIn("container", job)
                 self.assertIn("Collect Python coverage report", steps)
                 self.assertIn(report, steps["Collect Python coverage report"]["run"])
                 self.assertEqual(steps["Archive Python coverage report"]["with"]["path"], report)
-                workload = steps[f"Run torch-api-test ({platform}) in configured container"]
+                if platform == "metax":
+                    # The job container's report is invisible to the runner's
+                    # hashFiles(), so the collect step reports it as an output.
+                    self.assertIn("metax_job_container_image", job["container"])
+                    found = "steps.torch_coverage.outputs.found == 'true'"
+                    self.assertIn(found, upload["if"])
+                    self.assertIn(found, steps["Archive Python coverage report"]["if"])
+                    self.assertIn('echo "found=true" >> "$GITHUB_OUTPUT"',
+                                  steps["Collect Python coverage report"]["run"])
+                    workload = steps["Run torch-api-test (metax) in job container"]
+                    self.assertIn("/coverage-metax-gpu-torch.json",
+                                  workload["env"]["FLAGCX_CI_COVERAGE_REPORT"])
+                else:
+                    self.assertIn(f"hashFiles('{report}')", upload["if"])
+                    self.assertNotIn("container", job)
+                    workload = steps[f"Run torch-api-test ({platform}) in configured container"]
                 self.assertEqual(workload["env"]["FLAGCX_CI_TORCH_COVERAGE"], "1")
                 runner = (REPO_ROOT / f".github/scripts/ci/run_{platform}_workload.sh").read_text()
                 self.assertIn('bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"', runner)

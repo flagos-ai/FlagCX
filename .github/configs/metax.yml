@@ -8,33 +8,22 @@ paths_watch:
   - .github/scripts/set_env/metax.sh
   - .github/scripts/ci/run_metax_workload.sh
   - .github/scripts/ci/check_metax_devices.py
+  - .github/scripts/ci/check_metax_torch_results.py
+  - docker/metax-ci/**
   - flagcx/adaptor/device/maca_adaptor.cc
   - test/kernel/maca/**/*
   - flagcx/adaptor/ccl/mccl_adaptor.cc
   - flagcx/adaptor/include/metax_adaptor.h
   - flagcx/adaptor/tuner/mccl_tuner.cc
 
-# TODO(metax-torch): Provide a CI image with working mcPyTorch before enabling Torch API jobs.
-ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:3016346-metax-dev
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx-metax-maca3.8.1.3:2.3.0@sha256:e9b511953d3e8675b1e8d215b7d2f4777a5d7898bd2cee9e7e58a6663c56e575
 
 runner_labels:
-  - mx-8g-cicd-flagcx
+  - mx-k8s-cicd-flagcx
 
-docker_volumes:
-  - /opt/mxdriver:/opt/mxdriver:ro
-
-docker_options:
-  - --network=host
-  - --hostname=te-cicd
-  - --ipc=host
-  - --privileged=true
-  - --shm-size=500g
-  - --ulimit=memlock=-1
-  - --ulimit=stack=67108864
-  - --ulimit=nofile=65535:65535
-  - --group-add=video
-  - --env=PLATFORM=metax
-  - --env=TORCH_DISTRIBUTED_BACKEND=mccl
+# ARC creates the job Pod from ci_image. Device access and Pod settings are
+# provided by the Kubernetes runner configuration.
+job_container: true
 
 set_env: .github/scripts/set_env/metax.sh
 

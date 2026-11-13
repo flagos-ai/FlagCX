@@ -6,6 +6,12 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
+During the Kubernetes migration, only MetaX is enabled in
+`.github/configs/platforms.yml`. Automatic unit, performance, Torch API and
+scheduled C++ coverage runs select MetaX only. Explicit requests for disabled
+platforms are rejected. The standalone Iluvatar workflow is also paused;
+restore its job condition when re-enabling Iluvatar in the registry.
+
 PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
@@ -60,7 +66,33 @@ Each test invocation has a timeout and at most one retry. Cancellation and
 missing/non-executable commands do not retry. Builds and container orchestration
 are not retried. Recovered tests emit a flaky warning and Step Summary entry.
 The `attempts-*` artifacts preserve both attempts for seven days, including
-tests executed in explicitly managed Docker containers.
+tests executed in explicitly managed Docker containers or Kubernetes job Pods.
+
+## Kubernetes Job Pods
+
+A platform opts in with `job_container: true` in its configuration; it is
+currently enabled only for MetaX (`mx-k8s-cicd-flagcx`). Its unit-test, C++
+coverage, perf and Torch API jobs run in the platform CI image as the
+job-level `container:`. The job Pod runs checkout, submodule checkout, build,
+tests and artifact collection directly in `$GITHUB_WORKSPACE`; it does not
+start a nested Docker container, because `docker run` on these runners cannot
+access accelerators. Other platforms keep the explicit Docker launcher.
+
+The MetaX image is built from [docker/metax-ci/Dockerfile](../docker/metax-ci/Dockerfile).
+It retains the MACA runtime's vendor Torch in `/flagos` and exposes Open MPI at
+`/usr/local/mpi`. Before the Torch build, CI checks native MACA and Torch device
+counts and reads/writes tensors on four GPUs. The two four-rank collective
+runs fail if they skip work or any rank fails to reach the last collective.
+
+The selected Runner Scale Set must use ARC `kubernetes-novolume` and provide
+the platform-specific device resources, driver and SDK mounts, RDMA access,
+host network and IPC, shared memory, memlock, a root user, image-pull
+credentials, node scheduling, and device exclusivity in its job Pod
+configuration. These settings are cluster-owned; the platform's
+`docker_options` and `docker_volumes` are not applied in this mode. CI images
+must include Git and the tools needed by `actions/checkout`, build, and test
+steps. RPM packaging remains an independent builder workflow and is not part
+of the hardware job Pod migration.
 
 ## Python Coverage
 

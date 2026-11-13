@@ -53,6 +53,13 @@ selected_platforms = if selection.nil? || selection.empty? || selection == "all"
                        requested
                      end
 
+Array(selected_platforms).each do |platform|
+  settings = registered_platforms[platform]
+  if settings.is_a?(Hash) && settings.fetch("enabled", true) == false
+    abort "Platform is temporarily disabled in #{registry_path}: #{platform}"
+  end
+end
+
 config_files = if selected_platforms.nil?
                  Dir.glob(File.join(config_dir, "*.yml")).reject do |path|
                    File.basename(path) == "platforms.yml"

@@ -26,6 +26,14 @@ fi
 export PATH="/opt/maca/mxgpu_llvm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBRARY_PATH:-}"
 
+# The MetaX RoCEv2 GID is index 3 on the CI Broadcom adapters. MPI is used
+# only for process coordination by these single-node perf jobs; keep its
+# bootstrap on the container-visible TCP interface instead of UCX's default
+# RoCE GID 0, which is not routable from the job Pod network namespace.
+export FLAGCX_IB_GID_INDEX=${FLAGCX_IB_GID_INDEX:-3}
+export OMPI_MCA_pml=${OMPI_MCA_pml:-ob1}
+export OMPI_MCA_btl=${OMPI_MCA_btl:-self,tcp}
+
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_METAX=1)
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
@@ -33,10 +41,8 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 export NP=4
-FLAGCX_CI_PXN_VISIBLE_DEVICES=0,2,4,7
-# Keep GPU 0 off its directly adjacent bnxt_roce0 during PXN so GPU 2 can
-# relay through bnxt_roce1 on both three- and four-HCA runners.
-FLAGCX_CI_PXN_HCAS=bnxt_roce1,bnxt_roce2,bnxt_roce3
+# The job container receives the first four accelerator ordinals.
+FLAGCX_CI_PXN_VISIBLE_DEVICES=0,1,2,3
 
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x FLAGCX_HOSTID=node0
@@ -92,32 +98,82 @@ flagcx_ci_prepare() {
 
 flagcx_ci_select_rdma() {
   local suite=$1
+  local rdma_sysfs_root=${FLAGCX_CI_METAX_RDMA_SYSFS_ROOT:-/sys/class/infiniband}
   local -a hca_paths=()
   local -a hca_names=()
+  local -a pxn_hca_names=()
+  local -a port_paths=()
   local hca_path
 
   shopt -s nullglob
-  # Prefer the native RoCE devices while retaining compatibility with MetaX
-  # runners that expose the same links through the bonded RDMA driver.
-  hca_paths=(/sys/class/infiniband/bnxt_roce*)
-  FLAGCX_CI_METAX_RDMA_PATTERN="/sys/class/infiniband/bnxt_roce*"
-  if [[ ${#hca_paths[@]} -eq 0 ]]; then
-    hca_paths=(/sys/class/infiniband/bnxt_re_bond*)
-    FLAGCX_CI_METAX_RDMA_PATTERN="/sys/class/infiniband/bnxt_re_bond*"
-  fi
+  # HCA names are driver- and platform-specific (for example bnxt_roce and
+  # mlx5). Discover every HCA that exposes at least one port instead of
+  # assuming a vendor name.
+  for hca_path in "$rdma_sysfs_root"/*; do
+    [[ -d "$hca_path" ]] || continue
+    port_paths=("$hca_path"/ports/*)
+    [[ ${#port_paths[@]} -gt 0 ]] || continue
+    hca_paths+=("$hca_path")
+  done
   shopt -u nullglob
 
   if [[ ${#hca_paths[@]} -eq 0 ]]; then
-    echo "MetaX $suite tests require bnxt_roce* or bnxt_re_bond* RDMA devices." >&2
+    echo "MetaX $suite tests require an RDMA HCA with at least one port under $rdma_sysfs_root." >&2
     return 1
   fi
 
+  for hca_path in "${hca_paths[@]}"; do
+    hca_names+=("${hca_path##*/}")
+  done
+  local IFS=,
   if [[ -z "${FLAGCX_IB_HCA:-}" ]]; then
-    for hca_path in "${hca_paths[@]}"; do
-      hca_names+=("${hca_path##*/}")
-    done
-    local IFS=,
     export FLAGCX_IB_HCA="${hca_names[*]}"
+  fi
+  # Keep an explicit PXN override working, while deriving the default from
+  # the same discovered HCA set used by FLAGCX_IB_HCA.
+  if [[ -z "${FLAGCX_CI_PXN_HCAS:-}" ]]; then
+    # The first HCA is directly adjacent to GPU 0 on these runners. Keep it
+    # out of PXN so the configured GPU topology can relay through the others.
+    if [[ ${#hca_names[@]} -gt 1 ]]; then
+      pxn_hca_names=("${hca_names[@]:1}")
+    else
+      pxn_hca_names=("${hca_names[@]}")
+    fi
+    FLAGCX_CI_PXN_HCAS="${pxn_hca_names[*]}"
+  fi
+  export FLAGCX_CI_METAX_RDMA_PATTERN="$rdma_sysfs_root/*"
+}
+
+flagcx_ci_validate_gid_netdev() {
+  local suite=$1
+  local gid_index=${FLAGCX_IB_GID_INDEX:-}
+  local hca port state link_layer ndev
+  local missing=0
+
+  [[ "$gid_index" =~ ^[0-9]+$ ]] || return 0
+
+  while IFS= read -r hca; do
+    [[ -n "$hca" ]] || continue
+    while IFS= read -r port; do
+      [[ -n "$port" ]] || continue
+      state=$(<"$port/state" 2>/dev/null || true)
+      [[ "$state" == 4:* ]] || continue
+      link_layer=$(<"$port/link_layer" 2>/dev/null || true)
+      case "${link_layer,,}" in
+        ethernet|infiniband) ;;
+        *) continue ;;
+      esac
+      ndev=$(<"$port/gid_attrs/ndevs/$gid_index" 2>/dev/null || true)
+      if [[ -z "$ndev" || ! -e "/sys/class/net/$ndev" ]]; then
+        echo "MetaX $suite RDMA GID $gid_index for ${hca##*/} port ${port##*/} maps to network device ${ndev:-<unset>}, which is absent from this container." >&2
+        missing=1
+      fi
+    done < <(compgen -G "$hca/ports/*" || true)
+  done < <(compgen -G "$FLAGCX_CI_METAX_RDMA_PATTERN" || true)
+
+  if ((missing)); then
+    echo "MetaX $suite requires hostNetwork or an RDMA/Multus network attachment exposing every GID network device inside the Pod." >&2
+    return 1
   fi
 }
 
@@ -126,6 +182,7 @@ flagcx_ci_validate_rdma() {
   flagcx_ci_select_rdma "$suite" || return
   flagcx_ci_validate_rdma_static MetaX "$suite" \
     "$FLAGCX_CI_METAX_RDMA_PATTERN" || return
+  flagcx_ci_validate_gid_netdev "$suite" || return
   echo "MetaX RDMA selection: FLAGCX_IB_HCA=$FLAGCX_IB_HCA"
 }
 

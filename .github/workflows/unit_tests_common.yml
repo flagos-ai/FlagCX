@@ -31,6 +31,7 @@ jobs:
     outputs:
       display_name: ${{ steps.config.outputs.display_name }}
       ci_image: ${{ steps.config.outputs.ci_image }}
+      job_container_image: ${{ steps.config.outputs.job_container_image }}
       runs_on: ${{ steps.config.outputs.runs_on }}
       docker_args: ${{ steps.config.outputs.docker_args }}
       set_env: ${{ steps.config.outputs.set_env }}
@@ -58,6 +59,10 @@ jobs:
       matrix:
         suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
+    # Platforms with job_container run in the CI image as the job container
+    # (Kubernetes runners). An empty value runs on the host, which launches the
+    # CI image through the explicit Docker launcher below.
+    container: ${{ needs.load_config.outputs.job_container_image }}
     steps:
       - name: Install Git for repository checkout
         shell: bash
@@ -102,11 +107,28 @@ jobs:
           persist-credentials: false
           set-safe-directory: true
 
+      - name: Run unit-test suite in job container
+        if: needs.load_config.outputs.job_container_image != ''
+        shell: bash
+        env:
+          FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
+          FLAGCX_CI_PLATFORM: ${{ inputs.platform }}
+          FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
+          FLAGCX_CI_CPP_COVERAGE_REPORT: ${{ env.FLAGCX_CI_LOG_DIR }}/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
+          FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+          FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+        run: |
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_unit_test.sh" \
+            "$FLAGCX_CI_SET_ENV" "${{ matrix.suite }}"
+
       - name: Check Docker
+        if: needs.load_config.outputs.job_container_image == ''
         shell: bash
         run: docker version
 
       - name: Run unit-test suite in container
+        if: needs.load_config.outputs.job_container_image == ''
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
@@ -122,7 +144,7 @@ jobs:
           "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
 
       - name: Cleanup unit-test container
-        if: always()
+        if: always() && needs.load_config.outputs.job_container_image == ''
         shell: bash
         env:
           FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}

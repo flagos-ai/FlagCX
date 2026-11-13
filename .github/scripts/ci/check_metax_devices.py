@@ -3,6 +3,7 @@
 
 import argparse
 import ctypes
+import importlib.metadata
 import os
 from pathlib import Path
 import re
@@ -80,10 +81,32 @@ def check_mccl_alltoall():
     log(f"mcclAllToAll declaration={header}, symbol=present")
 
 
-def main():
+def check_torch_devices():
+    import torch
+
+    metadata = importlib.metadata.distribution("torch")
+    print(f"Torch: {torch.__version__}, path={torch.__file__}", flush=True)
+    print(f"Torch direct_url: {metadata.read_text('direct_url.json')}", flush=True)
+    # init() gives the actual driver/runtime error instead of only False/zero.
+    torch.cuda.init()
+    visible = torch.cuda.device_count()
+    print(f"Torch available={torch.cuda.is_available()}, count={visible}", flush=True)
+    if not torch.cuda.is_available() or visible < REQUIRED_DEVICES:
+        raise RuntimeError("MetaX CI requires at least four Torch-visible devices")
+    for index in range(REQUIRED_DEVICES):
+        with torch.cuda.device(index):
+            value = torch.arange(16, device=f"cuda:{index}")
+            result = value.sum().item()
+            if result != 120:
+                raise RuntimeError(f"cuda:{index} read/write check failed: {result}")
+            torch.cuda.synchronize(index)
+            print(f"cuda:{index}: {torch.cuda.get_device_name(index)}, sum={result}: PASS", flush=True)
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("workload", choices=("perf",))
-    args = parser.parse_args()
+    parser.add_argument("workload", choices=("perf", "torch-api"))
+    args = parser.parse_args(argv)
 
     log(f"workload={args.workload}, Python={sys.executable}")
     for name in ("CUDA_VISIBLE_DEVICES", "MACA_VISIBLE_DEVICES", "MACA_PATH"):
@@ -107,9 +130,12 @@ def main():
     except Exception as error:
         failures.append(f"MACA runtime: {error}")
     try:
-        check_mccl_alltoall()
+        if args.workload == "perf":
+            check_mccl_alltoall()
+        else:
+            check_torch_devices()
     except Exception as error:
-        failures.append(f"MCCL: {error}")
+        failures.append(f"{args.workload}: {error}")
     if failures:
         for failure in failures:
             log(f"FAILED: {failure}")
