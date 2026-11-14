@@ -965,6 +965,8 @@ xshmemGridArrive(Coop &coop, volatile XSHMEM_FGP uint64_t *state, int worldBase,
   int nclusters = FLAGCX_GRID_DIM_X;
   volatile XSHMEM_FGP uint64_t *localArrive = state;
   volatile XSHMEM_FGP uint64_t *arriveRelease = state + FLAGCX_DEVICE_CTA_COUNT;
+  volatile XSHMEM_FGP uint64_t *arriveSlots =
+      state + 2 * FLAGCX_DEVICE_CTA_COUNT;
   // This PE's own slot; its symmetric offset selects the same slot in the peer.
   XSHMEM_FGP uint64_t *myArriveSlot =
       (XSHMEM_FGP uint64_t *)(state + 2 * FLAGCX_DEVICE_CTA_COUNT + teamRank);
@@ -972,7 +974,12 @@ xshmemGridArrive(Coop &coop, volatile XSHMEM_FGP uint64_t *state, int worldBase,
   // Complete operations issued by this cluster before publishing arrival.
   for (int member = 0; member < teamSize; ++member) {
     int pe = teamPeMap ? teamPeMap[member] : worldBase + member * teamStride;
-    flagcxXshmemDevice::quietForCoop(coop, pe);
+    // P800's device XSHMEM path does not require a network operation for the
+    // local PE.  In particular, avoid routing a cluster quiet through the
+    // local PE before the arrival ticket is published; some XRE/XCCL builds
+    // treat that loopback target as an invalid remote endpoint.
+    if (pe != flagcxXshmemDevice::myPe())
+      flagcxXshmemDevice::quietForCoop(coop, pe);
   }
   coop.sync();
   if (coop.threadRank() == 0)
@@ -991,8 +998,15 @@ xshmemGridArrive(Coop &coop, volatile XSHMEM_FGP uint64_t *state, int worldBase,
       for (int member = 0; member < teamSize; ++member) {
         int pe =
             teamPeMap ? teamPeMap[member] : worldBase + member * teamStride;
-        flagcxXshmemDevice::signalOp(myArriveSlot, expected, XSHMEM_SIGNAL_SET,
-                                     pe);
+        if (pe == flagcxXshmemDevice::myPe()) {
+          // The local PE already owns this slot.  Store it locally instead of
+          // issuing a self-targeted signal operation, which is not supported
+          // consistently by the P800 XSHMEM device runtime.
+          arriveSlots[teamRank] = expected;
+        } else {
+          flagcxXshmemDevice::signalOp(myArriveSlot, expected,
+                                       XSHMEM_SIGNAL_SET, pe);
+        }
       }
     }
     coop.sync();
