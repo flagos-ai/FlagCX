@@ -288,7 +288,12 @@ flagcxResult_t musaAdaptorStreamFree(flagcxStream_t stream) {
 
 flagcxResult_t musaAdaptorStreamSynchronize(flagcxStream_t stream) {
   if (stream != NULL) {
-    DEVCHECK(musaStreamSynchronize(stream->base));
+    const musaError_t error = musaStreamSynchronize(stream->base);
+    if (error != musaSuccess) {
+      WARN("musaStreamSynchronize: native=%d (%s)",
+           (int)error, musaGetErrorString(error));
+      return flagcxUnhandledDeviceError;
+    }
   }
   return flagcxMusaCheckFifoErrors();
 }

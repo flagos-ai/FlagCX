@@ -672,6 +672,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       Atomic::store(slotFst, fstVal, flagcxDeviceMemoryOrderRelaxed);
       Atomic::store(slotSnd, sndVal, flagcxDeviceMemoryOrderRelaxed);
 
+#ifdef USE_MUSA_ADAPTOR
+      // Explicitly complete payload publication before exposing the valid
+      // header to the CPU proxy. A zero/stale snd must never look committed.
+      Intrin::threadfenceSystem();
+#endif
       // 5. Write trd with valid bit (release ensures payload visible before
       // control)
       Atomic::store(slotTrd, trdVal | flagcxDeviceTriggerValidMask,
@@ -931,6 +936,38 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     FLAGCX_DEVICE_INLINE_DECORATOR static void
     validateCompletionBits(int bits) {
       CompletionStorage::validateBits(bits);
+    }
+
+    // Conservative MUSA path: rendezvous only the supplied Coop, never the
+    // entire grid. Thread/warp callers need not have other CTAs participating.
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void publicationSync(Coop coop) const {
+#ifdef USE_MUSA_ADAPTOR
+      Intrin::threadfenceSystem();
+#endif
+      coop.sync();
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void completeMusaProxy() const {
+#ifdef USE_MUSA_ADAPTOR
+      if (fifoBuffer != nullptr) {
+        const flagcxResult_t status = ProxyProvider::fifoFlush(fifoBuffer);
+        _dc.require(status == flagcxSuccess, status);
+      }
+#endif
+    }
+
+    template <typename Coop>
+    FLAGCX_DEVICE_INLINE_DECORATOR void completionSync(Coop coop) const {
+#ifdef USE_MUSA_ADAPTOR
+      if (coop.threadRank() == 0)
+        completeMusaProxy();
+#endif
+      coop.sync();
+#ifdef USE_MUSA_ADAPTOR
+      // Every participating lane acquires after the leader's completion wait.
+      Intrin::threadfenceSystem();
+#endif
     }
 
     // ---- Two-sided FIFO encoders ----
@@ -1235,7 +1272,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       (void)ar;
       (void)es;
       int worldPeer = teamRankToWorld(team, peer);
-      coop.sync();
+      publicationSync(coop);
       if (coop.threadRank() == 0) {
         size_t srcDataOff = toDataOffset(src, srcOff);
         size_t dstDataOff = toDataOffset(dst, dstOff);
@@ -1254,7 +1291,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         if (isCounter(la))
           enqueueFifoSignal(getCounterIdx(la), 1, 0, 1);
       }
-      coop.sync();
+      completionSync(coop);
     }
 
     // ---- One-sided: get (Coop-scope, Default only) ----
@@ -1301,7 +1338,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       (void)ar;
       (void)es;
       int worldPeer = teamRankToWorld(team, peer);
-      coop.sync();
+      publicationSync(coop);
       if (coop.threadRank() == 0) {
         size_t dstDataOff = toDataOffset(dst, dstOff);
         enqueueFifoPutValue(dstDataOff, (uint64_t)value, worldPeer,
@@ -1311,7 +1348,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           enqueueFifoSignalAction(ra, worldPeer, 0);
         }
       }
-      coop.sync();
+      completionSync(coop);
     }
 
     // ---- One-sided: signal ----
@@ -1331,7 +1368,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       (void)ar;
       (void)es;
       int worldPeer = teamRankToWorld(team, peer);
-      coop.sync();
+      publicationSync(coop);
       if (coop.threadRank() == 0) {
         if (isSignal(ra)) {
           validateCompletionValue(getSignalValue(ra));
@@ -1343,16 +1380,29 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                   : nullptr;
           bool useDirect = CompletionStorage::useDirectSignal(
               peerSignal != nullptr, _dc.usesDirectP2pSignals());
-          if (useDirect)
-            Atomic::fetchAdd(
-                peerSignal,
-                CompletionStorage::completionValue(getSignalValue(ra)),
-                flagcxDeviceMemoryOrderRelease);
-          else
+#ifdef USE_MUSA_ADAPTOR
+          // When Host Proxy signal transport is ready, avoid a GPU RMW to a
+          // peer's mapped signal plane. Waits already observe the combined
+          // local/network planes. Intra-only comms without Net keep direct
+          // delivery; do not turn a working local path into NotSupported.
+          if (fifoBuffer != nullptr && _dc.netSignalReady != 0 &&
+              _dc.isOneSidedTransportReady())
+            useDirect = false;
+#endif
+          if (useDirect) {
+            // A direct signal must not overtake this context's queued writes.
+            completeMusaProxy();
+            if (!_dc.hasDeviceError())
+              Atomic::fetchAdd(
+                  peerSignal,
+                  CompletionStorage::completionValue(getSignalValue(ra)),
+                  flagcxDeviceMemoryOrderRelease);
+          } else {
             enqueueFifoSignalAction(ra, worldPeer, 0);
+          }
         }
       }
-      coop.sync();
+      completionSync(coop);
     }
 
     // ---- flush: drain FIFO (snapshot-spin, no PrimWait) ----
@@ -1404,6 +1454,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         }
       }
       coop.sync();
+#ifdef USE_MUSA_ADAPTOR
+      Intrin::threadfenceSystem();
+#endif
     }
 
     template <typename Coop>
@@ -1469,6 +1522,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     proxyResetSignal(flagcxDevSignal_t signalId) const {
+      completeMusaProxy();
       int idx = _contextId * signalCount + (int)signalId;
       Atomic::store(&_dc.getCompletionSignalBuffer()[idx], CompletionWord{0},
                     flagcxDeviceMemoryOrderRelease);
@@ -1479,6 +1533,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           signalBuffer, idx, flagcxDeviceMemoryOrderRelease);
       Atomic::store(&shadowBuffer[idx], (uint64_t)0,
                     flagcxDeviceMemoryOrderRelease);
+#ifdef USE_MUSA_ADAPTOR
+      Intrin::threadfenceSystem();
+#endif
     }
 
     // ---- Counter: GPU spin on counterBuffer[ctx*N+id] ----
@@ -1510,6 +1567,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         }
       }
       coop.sync();
+#ifdef USE_MUSA_ADAPTOR
+      Intrin::threadfenceSystem();
+#endif
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
@@ -1535,11 +1595,15 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_DEVICE_INLINE_DECORATOR void
     proxyResetCounter(flagcxDevCounter_t counterId) const {
+      completeMusaProxy();
       int idx = _contextId * counterCount + (int)counterId;
       Atomic::store(&_dc.getCompletionCounterBuffer()[idx], CompletionWord{0},
                     flagcxDeviceMemoryOrderRelease);
       CompletionStorage::template resetProxy<Atomic>(
           counterBuffer, idx, flagcxDeviceMemoryOrderRelease);
+#ifdef USE_MUSA_ADAPTOR
+      Intrin::threadfenceSystem();
+#endif
     }
   };
 };
@@ -1656,6 +1720,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   using SignalOp = typename Net::SignalOp;
   using WaitSignalOp = typename Net::WaitSignalOp;
   using FlushOp = typename Net::FlushOp;
+  using Intrin = typename PlatformTraits<P>::Intrin;
 
   const Comm *_errorComm;
   Coop _coop;
@@ -1747,7 +1812,16 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
     // Complete this context's earlier puts before publishing arrival. The
     // Proxy FIFO also orders release signals after prior requests, but GDA
     // providers must provide an equivalent FlushOp before enabling Put.
-    if (flagcxDevNetFenceHas(fence, flagcxDevNetFenceLevel::Put)) {
+#ifdef USE_MUSA_ADAPTOR
+    // MUSA's conservative path completes earlier context work even for a
+    // Relaxed barrier before announcing arrival to a remote rank.
+    const bool completeBeforeArrival = true;
+    Intrin::threadfenceSystem();
+#else
+    const bool completeBeforeArrival =
+        flagcxDevNetFenceHas(fence, flagcxDevNetFenceLevel::Put);
+#endif
+    if (completeBeforeArrival) {
       _coop.sync();
       if (_coop.threadRank() == 0)
         DefaultNetDispatch<P>::template call<FlushOp>(
@@ -1802,6 +1876,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
           flagcxDeviceMemoryOrderAcquire);
     }
     _coop.sync();
+#ifdef USE_MUSA_ADAPTOR
+    Intrin::threadfenceSystem();
+#endif
   }
 
   // Legacy split operations are kept for existing Relaxed callers. Strong
@@ -1942,6 +2019,12 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
     rankCtaSync();
     if (_nInterPeers > 0) {
+#ifdef USE_MUSA_ADAPTOR
+      // All local ranks enter the same WORLD phase before any announces
+      // remote arrival. The existing per-context Inter wait then completes,
+      // followed by the local rendezvous below. No new grid spin is added.
+      _intra.sync(order);
+#endif
       // Phase 1: inter signal+wait (rank-to-rank across nodes)
       _inter.sync(order, fence);
       // Phase 2: intra sync (broadcast inter completion to local ranks)
