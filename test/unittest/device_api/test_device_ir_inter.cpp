@@ -38,6 +38,11 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+extern "C" void flagcxDushmemSyncDeviceState();
+extern "C" void flagcxDushmemFinalizeDeviceState();
+#endif
 #include <vector>
 
 // ===========================================================================
@@ -93,6 +98,9 @@ int main(int argc, char *argv[]) {
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemSyncDeviceState();
+#endif
 
   // Reserve a disjoint row per rank/context for the explicit multi-context
   // transport test. The fixed CTA stride keeps the device-side layout stable
@@ -540,6 +548,9 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemFinalizeDeviceState();
+#endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
