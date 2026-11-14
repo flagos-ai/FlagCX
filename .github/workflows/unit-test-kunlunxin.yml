@@ -1,0 +1,22 @@
+name: KunlunXin P800 Unit Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [kunlunxin-pr]
+    paths:
+      - .github/workflows/unit-test-kunlunxin.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kunlunxin-unit-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  kunlunxin_unit_tests:
+    name: KunlunXin P800 unit tests in job containers
+    uses: ./.github/workflows/unit_tests_common.yml
+    with:
+      platform: kunlunxin

@@ -33,6 +33,11 @@ extern struct flagcxNetAdaptor flagcxNetIb;
 
 namespace {
 
+bool gdrAllocationUnavailable() {
+  const char *supported = std::getenv("FLAGCX_CI_GDR_ALLOC_SUPPORTED");
+  return supported != nullptr && std::strcmp(supported, "0") == 0;
+}
+
 bool gpuReadVisibilityUnavailable() {
 #ifdef USE_ACCL_BAREX
   const char *transport = std::getenv("FLAGCX_P2P_TRANSPORT");
@@ -470,6 +475,9 @@ private:
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsWholeRegisteredGpuBufferAfterMetadataHandshake) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   if (gpuReadVisibilityUnavailable())
     GTEST_SKIP()
         << "GPU READ visibility flush is unavailable on this transport";
@@ -579,6 +587,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   if (gpuReadVisibilityUnavailable())
     GTEST_SKIP()
         << "GPU READ visibility flush is unavailable on this transport";
@@ -784,6 +795,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 }
 
 TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsReadBeforeSubmission) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kBytes = 4096;
@@ -1011,6 +1025,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 #endif
 
 TEST_F(FlagcxP2pEngineReadTest, RejectsInvalidRegistrationAndDescriptorRanges) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   constexpr size_t kBytes = 4096;
   ScopedAllocation allocation;
   allocGpuBufferOnDevice(&allocation, kBytes, kClientGpuIdx, clientStream);
@@ -1041,6 +1058,9 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsInvalidRegistrationAndDescriptorRanges) {
 
 #ifdef USE_SHARED_P2P_ENGINE
 TEST_F(FlagcxP2pEngineReadTest, AcceptsZeroLengthDescriptorAtRegistrationEnd) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   constexpr size_t kBytes = 4096;
   ScopedAllocation allocation;
   allocGpuBufferOnDevice(&allocation, kBytes, kClientGpuIdx, clientStream);
@@ -1060,6 +1080,9 @@ TEST_F(FlagcxP2pEngineReadTest, AcceptsZeroLengthDescriptorAtRegistrationEnd) {
 #endif
 
 TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsWriteBeforeSubmission) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kBytes = 4096;
@@ -1118,6 +1141,9 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsWriteBeforeSubmission) {
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow) {
+  if (gdrAllocationUnavailable())
+    GTEST_SKIP()
+        << "GDR allocation requires SYNC_MEMOPS, unavailable in this SDK";
   if (gpuReadVisibilityUnavailable())
     GTEST_SKIP()
         << "GPU READ visibility flush is unavailable on this transport";

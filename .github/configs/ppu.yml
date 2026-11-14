@@ -67,3 +67,17 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+ignore_test:
+  gtest:
+    - suite: p2p
+      tests:
+        - P2pAdaptorStruct.*
+        - P2pAdaptorTest.*
+        - P2pLoopbackTest.*
+        - P2pEngineRpcTransportTest.ConnectAcceptIsLocalSameHost
+      reason: These tests directly target the IBRC vtable; PPU CI validates the BAREX transport through P2P Engine tests
+  phases:
+    - suite: symmem
+      name: vmm-net-data
+      reason: PPU BAREX has no validated VMM-capable MR route

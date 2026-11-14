@@ -28,8 +28,7 @@ case "$workload" in
       USE_METAX=1 MPI_HOME="$MPI_HOME" CCL_HOME=/opt/maca
 
     export FLAGCX_CI_PERF_PLATFORM=MetaX
-    # Diagnose the remaining cases while AllReduce and ReduceScatter fail data verification.
-    export FLAGCX_CI_PERF_SKIP_OPERATIONS="allreduce reducescatter"
+    # Continue after configured exclusions so remaining operations still run.
     export FLAGCX_CI_PERF_CONTINUE_ON_FAILURE=1
     perf_bin="$project_root/test/perf/host_api/build/bin"
     perf_result=0

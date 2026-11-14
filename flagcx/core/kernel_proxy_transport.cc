@@ -4,6 +4,12 @@
 
 #include "kernel_proxy_transport.h"
 
+// FLAGCXCHECK is used unconditionally below. Include its definition directly
+// rather than relying on the comm_traits chain: that chain only reaches
+// check.h through default_comm_traits.h -> sym_heap.h, and a SHMEM build
+// selects xshmem_comm_traits.h instead, which does not.
+#include "check.h"
+
 #include "device_api/completion_word.h"
 #include "device_api/fifo_producer_gate.h"
 #include "flagcx_kernel_core.h"

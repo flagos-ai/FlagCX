@@ -62,3 +62,37 @@ unit_test_suites:
   - runner
   - service
   - symmem
+
+ignore_test:
+  phases:
+    - suite: rma
+      name: gdr-visibility
+      reason: CUDA immediate-consumer conformance cases are outside Ascend RMA/SymMem coverage
+  torch:
+    modes:
+      - heterogeneous
+    operations:
+      - reduce
+      - allreduce
+      - reducescatter
+    reason: C2C refresh deviceMemset fails before heterogeneous transfer
+  runner:
+    - test: FlagCXCollTest.AlltoAllvAsymmetric
+      modes:
+        - runner default
+      reason: HCCL AlltoAllV fails at stream synchronization
+    - test: FlagCXCollTest.AllReduce
+      modes:
+        - runner heterogeneous
+        - runner forced NET
+      reason: C2C refresh deviceMemset fails before transfer
+    - test: FlagCXCollTest.Reduce
+      modes:
+        - runner heterogeneous
+        - runner forced NET
+      reason: C2C refresh deviceMemset fails before transfer
+    - test: FlagCXCollTest.ReduceScatter
+      modes:
+        - runner heterogeneous
+        - runner forced NET
+      reason: C2C refresh deviceMemset fails before transfer

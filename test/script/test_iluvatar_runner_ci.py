@@ -55,6 +55,17 @@ def requires_proc():
 
 
 class IluvatarRunnerCiTest(unittest.TestCase):
+    @staticmethod
+    def ignore_config(enabled=True):
+        if not enabled:
+            return "{}"
+        return (
+            '{"runner":[{"test":"FlagCXCollTest.SendRecv",'
+            '"modes":["HYBRID","forced-NET","PXN"],"reason":"T-3"},'
+            '{"test":"FlagCXCollTest.AlltoAll","modes":["PXN"],'
+            '"reason":"T-4"}]}'
+        )
+
     def script(self, path, body):
         path.write_text("#!/usr/bin/env bash\nset -eu\n" + body)
         path.chmod(0o755)
@@ -64,9 +75,12 @@ class IluvatarRunnerCiTest(unittest.TestCase):
         reason = timeout_wrapper_unsupported()
         if reason:
             self.skipTest(reason)
-        for mode, pxn in (("HOMO", "0"), ("HYBRID", "0"), ("HYBRID", "1")):
+        for mode, pxn, transport in (
+            ("HOMO", "0", "P2P"), ("HYBRID", "0", "P2P"),
+            ("HYBRID", "0", "NET"), ("HYBRID", "1", "NET"),
+        ):
             for enabled in ("0", "1"):
-                with self.subTest(mode=mode, pxn=pxn, enabled=enabled):
+                with self.subTest(mode=mode, pxn=pxn, transport=transport, enabled=enabled):
                     with tempfile.TemporaryDirectory() as directory:
                         root = Path(directory)
                         binary = self.script(root / "runner_mpi_tests", '''
@@ -79,9 +93,10 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
                         result = subprocess.run(
                             ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
                              "-x", f"FLAGCX_CI_EXPECT_RUNNER_MODE={mode}",
-                             "-x", f"FLAGCX_CI_EXPECT_PXN={pxn}", str(binary)],
+                             "-x", f"FLAGCX_CI_EXPECT_PXN={pxn}",
+                             "-x", f"FLAGCX_CI_EXPECT_PEER_TRANSPORT={transport}", str(binary)],
                             env={**os.environ, "BASH_ENV": "",
-                                 "FLAGCX_CI_ILUVATAR_QUARANTINE": enabled,
+                                 "FLAGCX_CI_IGNORE_TEST": self.ignore_config(enabled == "1"),
                                  "FLAGCX_CI_MPI_LABEL": "arbitrary stage label",
                                  "FLAGCX_CI_MPIRUN": str(launcher),
                                  "FLAGCX_CI_LOG_DIR": str(root / "logs"),
@@ -91,7 +106,7 @@ printf '%s\n' "$*" >> "$COMMAND_LOG"
                         )
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         calls = (root / "calls").read_text()
-                        skip_sendrecv = enabled == "1" and mode == "HYBRID"
+                        skip_sendrecv = enabled == "1" and mode != "HOMO"
                         skip_alltoall = skip_sendrecv and pxn == "1"
                         self.assertEqual("--gtest_filter=FlagCXCollTest.SendRecv" in calls,
                                          not skip_sendrecv)
@@ -130,7 +145,7 @@ exit 7
                         ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
                          "-x", "FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID", str(binary)],
                         env={**os.environ, "BASH_ENV": "",
-                             "FLAGCX_CI_ILUVATAR_QUARANTINE": "1",
+                             "FLAGCX_CI_IGNORE_TEST": self.ignore_config(),
                              "FLAGCX_CI_MPIRUN": str(launcher),
                              "FLAGCX_CI_LOG_DIR": str(root / "logs"),
                              "COMMAND_LOG": str(root / "calls")},
@@ -146,24 +161,11 @@ exit 7
                         self.assertFalse((root / "calls").exists())
                         self.assertIn("all selected cases are quarantined", result.stderr)
 
-    def test_platform_enables_quarantine_only_for_runner_and_allows_restoration(self):
-        for override, suite, expected in (("", "runner", "1"),
-                                          ("0", "runner", "0"),
-                                          ("", "adaptor", "")):
-            with self.subTest(override=override, suite=suite):
-                env = {**os.environ, "BASH_ENV": ""}
-                env.pop("FLAGCX_CI_ILUVATAR_QUARANTINE", None)
-                if override:
-                    env["FLAGCX_CI_ILUVATAR_QUARANTINE"] = override
-                result = subprocess.run(
-                    ["bash", "-c",
-                     'source "$1"; flagcx_ci_configure_suite "$2"; '
-                     'printf "%s" "${FLAGCX_CI_ILUVATAR_QUARANTINE:-}"',
-                     "bash", str(ROOT / ".github/scripts/set_env/iluvatar.sh"), suite],
-                    env=env, capture_output=True, text=True, timeout=5,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout, expected)
+    def test_platform_runner_exclusions_are_in_yaml(self):
+        config = (ROOT / ".github/configs/iluvatar.yml").read_text()
+        self.assertIn("ignore_test:", config)
+        self.assertIn("FlagCXCollTest.SendRecv", config)
+        self.assertIn("FlagCXCollTest.AlltoAll", config)
 
     def test_timeout_does_not_hide_failures_or_prevent_later_cases(self):
         reason = timeout_wrapper_unsupported()

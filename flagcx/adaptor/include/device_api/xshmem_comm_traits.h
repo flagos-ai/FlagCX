@@ -972,7 +972,14 @@ xshmemGridArrive(Coop &coop, volatile XSHMEM_FGP uint64_t *state, int worldBase,
   // Complete operations issued by this cluster before publishing arrival.
   for (int member = 0; member < teamSize; ++member) {
     int pe = teamPeMap ? teamPeMap[member] : worldBase + member * teamStride;
-    flagcxXshmemDevice::quietForCoop(coop, pe);
+    if (pe == flagcxXshmemDevice::myPe()) {
+      // A self-targeted XSHMEM quiet can fault on P800. There are no remote
+      // operations to drain for the local PE, but its prior stores still need
+      // ordering before this cluster publishes its arrival ticket.
+      flagcxXshmemDevice::threadFence();
+    } else {
+      flagcxXshmemDevice::quietForCoop(coop, pe);
+    }
   }
   coop.sync();
   if (coop.threadRank() == 0)
@@ -991,8 +998,14 @@ xshmemGridArrive(Coop &coop, volatile XSHMEM_FGP uint64_t *state, int worldBase,
       for (int member = 0; member < teamSize; ++member) {
         int pe =
             teamPeMap ? teamPeMap[member] : worldBase + member * teamStride;
-        flagcxXshmemDevice::signalOp(myArriveSlot, expected, XSHMEM_SIGNAL_SET,
-                                     pe);
+        if (pe == flagcxXshmemDevice::myPe()) {
+          // The local PE owns this slot; publish it directly instead of
+          // issuing a self-targeted XSHMEM signal operation.
+          state[2 * FLAGCX_DEVICE_CTA_COUNT + teamRank] = expected;
+        } else {
+          flagcxXshmemDevice::signalOp(myArriveSlot, expected,
+                                       XSHMEM_SIGNAL_SET, pe);
+        }
       }
     }
     coop.sync();

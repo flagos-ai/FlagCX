@@ -33,8 +33,11 @@ jobs:
       ci_image: ${{ steps.config.outputs.ci_image }}
       runs_on: ${{ steps.config.outputs.runs_on }}
       docker_args: ${{ steps.config.outputs.docker_args }}
+      container_options: ${{ steps.config.outputs.container_options }}
+      container_volumes: ${{ steps.config.outputs.container_volumes }}
       set_env: ${{ steps.config.outputs.set_env }}
       unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
+      ignore_test: ${{ steps.config.outputs.ignore_test }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -52,6 +55,7 @@ jobs:
   unit_test:
     name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
     needs: load_config
+    if: inputs.platform != 'kunlunxin'
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -98,9 +102,14 @@ jobs:
         with:
           repository: ${{ inputs.repository || github.repository }}
           ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
+          submodules: ${{ inputs.platform != 'cuda' && 'recursive' || 'false' }}
           persist-credentials: false
           set-safe-directory: true
+
+      - name: Checkout CUDA submodules with retries
+        if: inputs.platform == 'cuda'
+        shell: bash
+        run: bash .github/scripts/ci/checkout_submodules.sh
 
       - name: Check Docker
         shell: bash
@@ -113,6 +122,7 @@ jobs:
           FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_config.outputs.docker_args }}
           FLAGCX_CI_IMAGE: ${{ needs.load_config.outputs.ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
+          FLAGCX_CI_IGNORE_TEST: ${{ needs.load_config.outputs.ignore_test }}
           FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
           FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
           FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
@@ -144,6 +154,83 @@ jobs:
         with:
           name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
           path: ${{ env.FLAGCX_CI_LOG_DIR }}/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  kunlunxin_unit_test:
+    name: ${{ needs.load_config.outputs.display_name }} / ${{ matrix.suite }}
+    needs: load_config
+    if: inputs.platform == 'kunlunxin'
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
+    runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
+    container:
+      image: ${{ needs.load_config.outputs.ci_image }}
+      options: ${{ needs.load_config.outputs.container_options }}
+      volumes: ${{ fromJSON(needs.load_config.outputs.container_volumes) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+      FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
+      FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
+      FLAGCX_CI_CPP_COVERAGE_REPORT: ${{ github.workspace }}/.ci-logs/cpp-coverage/kunlunxin/${{ matrix.suite }}
+      FLAGCX_CI_IGNORE_TEST: ${{ needs.load_config.outputs.ignore_test }}
+    steps:
+      - name: Trust workspace and submodules for checkout
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/googletest"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/third-party/json"
+
+      - name: Checkout code in job container
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository || github.repository }}
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+          persist-credentials: false
+          set-safe-directory: true
+
+      - name: Clean build artifacts in job container
+        run: |
+          git clean -ffdX
+          git submodule foreach --recursive 'git clean -ffdX'
+          mkdir -p "$FLAGCX_CI_LOG_DIR"
+
+      - name: Run unit-test suite in job container
+        env:
+          FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
+          FLAGCX_CI_SUITE: ${{ matrix.suite }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/ci/run_in_host_network.sh \
+            bash .github/scripts/ci/run_unit_test.sh \
+            "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE" 2>&1 \
+            | tee "$FLAGCX_CI_LOG_DIR/suite.log"
+
+      - name: Upload unit-test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: attempts-unit_test-${{ github.run_attempt }}-kunlunxin-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload C++ coverage report
+        if: ${{ always() && inputs.cpp_coverage }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cpp-coverage-kunlunxin-${{ matrix.suite }}
+          path: ${{ env.FLAGCX_CI_CPP_COVERAGE_REPORT }}/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

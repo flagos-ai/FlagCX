@@ -66,6 +66,16 @@ fi
 if declare -F flagcx_ci_configure_suite >/dev/null; then
   flagcx_ci_configure_suite "$SUITE"
 fi
+ignore_filter=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+  gtest "$SUITE")
+if [[ -n "$ignore_filter" ]]; then
+  if [[ "${GTEST_FILTER:-}" == *-* ]]; then
+    GTEST_FILTER+=":$ignore_filter"
+  else
+    GTEST_FILTER="${GTEST_FILTER:-*}-$ignore_filter"
+  fi
+  export GTEST_FILTER
+fi
 if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
   # GoogleTest gives the --gtest_filter flag precedence over GTEST_FILTER, so
   # this export only reaches invocations that pass no filter of their own.
@@ -116,7 +126,7 @@ flagcx_ci_require_rdma() {
 
   platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
   case "$platform_name" in
-    cuda|iluvatar|metax|hygon|ppu|ascend) ;;
+    cuda|iluvatar|metax|hygon|ppu|ascend|kunlunxin) ;;
     *) return 0 ;;
   esac
 
@@ -124,6 +134,13 @@ flagcx_ci_require_rdma() {
     adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
+
+  if [[ "$platform_name" == kunlunxin &&
+        "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 &&
+        ( "$suite" == device_api || "$suite" == device_api_unified_ir ) ]]; then
+    echo "RDMA preflight is unnecessary for KunlunXin XSHMEM intra-node tests"
+    return 0
+  fi
 
   echo "Running $platform_name static RDMA preflight for unit-test suite: $suite"
   if ! declare -F flagcx_ci_validate_rdma >/dev/null; then
@@ -138,6 +155,49 @@ flagcx_ci_require_rdma() {
 if declare -F flagcx_ci_prepare >/dev/null; then
   flagcx_ci_prepare "$SUITE"
 fi
+
+# A suite the image cannot build or run still reports success so one missing
+# toolchain does not block the rest of the platform, but the gap has to stay
+# visible. A bare `exit 0` renders as a green check that is indistinguishable
+# from a suite whose cases all passed, which hides the lost coverage from
+# everyone reading the run.
+flagcx_ci_report_skipped_suite() {
+  local suite=$1
+  local reason=$2
+  echo "SKIPPED $suite: $reason"
+  echo "::warning title=FlagCX CI suite did not run::$suite was skipped: $reason"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf -- '- **Suite skipped (no coverage):** `%s` — %s\n' \
+      "$suite" "$reason" >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+
+# A platform can exclude a phase with a documented backend/SDK limitation.
+# Other platforms run every phase by default. Unit coverage remains separate.
+flagcx_ci_phase_supported() {
+  local phase=$1 reason
+  reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+    phase "$SUITE" "$phase")
+  if [[ -n "$reason" ]]; then
+    flagcx_ci_report_skipped_suite "$SUITE/$phase" "$reason"
+    return 1
+  fi
+  return 0
+}
+
+if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]] &&
+   declare -F flagcx_ci_build_suite_override >/dev/null; then
+  FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0
+  flagcx_ci_build_suite_override "$SUITE"
+  if [[ "$FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
+    flagcx_ci_report_skipped_suite "$SUITE" \
+      "required KunlunXin device toolchain or XSHMEM headers are unavailable in the CI image"
+    # These suites are required for KunlunXin coverage. A missing toolchain is
+    # an infrastructure failure, not a supported test exclusion.
+    exit 1
+  fi
+fi
+
 # RMA has separate IPC and network invocations. Its RDMA preflight runs only
 # before the network invocation so missing RDMA cannot hide IPC regressions.
 if [[ "$SUITE" != rma ]]; then
@@ -152,6 +212,12 @@ build_googletest() {
 
 build_project() {
   local -a args=("${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}")
+  if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin &&
+        ( "$SUITE" == device_api || "$SUITE" == device_api_unified_ir ||
+          "$SUITE" == kernel ) ]]; then
+    rm -f "$PROJECT_ROOT/test/kernel/klx/build/obj/device_ir.o" \
+      "$PROJECT_ROOT/build/obj/flagcx/adaptor/kernel/kunlunxin/device_api_host_helpers.o"
+  fi
   make -C "$PROJECT_ROOT" --jobs="$(nproc)" "${args[@]}"
 }
 
@@ -193,6 +259,17 @@ run_device_api_host() {
 
 run_device_api() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local platform_name
+  platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+  # KunlunXin intentionally builds only the unified-IR device API targets;
+  # its legacy test_device_api_* launchers are not part of the backend.
+  # Reuse the unified-IR coverage for the device_api matrix entry instead of
+  # failing on a binary that cannot be produced by the platform Makefile.
+  if [[ "$platform_name" == kunlunxin ]]; then
+    echo "Legacy device_api targets are unavailable; running unified-IR coverage for $SUITE"
+    run_device_api_unified_ir
+    return
+  fi
   local -a common_env=(
     -x FLAGCX_USE_HETERO_COMM=1
     -x FLAGCX_MEM_ENABLE=1
@@ -289,6 +366,20 @@ run_device_api_unified_ir() {
 
   # Keep P2P enabled so the intra test covers signal/counter buffers and their
   # shadows. The INTER team below crosses the two logical nodes through NET.
+  if [[ "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 ]]; then
+    intra_env+=(-x XSHMEM_SYMMETRIC_SIZE)
+    # S23 fans each payload out across 18 combinations. Keep the XSHMEM test
+    # bounded: a 64 MiB payload allocates and initializes over 1 GiB per buffer
+    # on every rank, which exceeds the CI runtime budget without adding useful
+    # coverage over a few representative sizes.
+    intra_flags=(-b 1M -e 4M -f 2 -R 1)
+    echo "Skipping unified IR inter and forced NET fallback: KunlunXin XSHMEM supports intra-node communication only"
+    FLAGCX_CI_MPI_LABEL="unified IR intra" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
+      build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
+    return
+  fi
+
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
     "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
@@ -329,6 +420,8 @@ run_suite() {
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"
     if [[ "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED" == 1 ]]; then
+      flagcx_ci_report_skipped_suite "$SUITE" \
+        "the platform set_env script reported this suite as unrunnable on this image"
       return
     fi
   fi
@@ -354,9 +447,12 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      if ((unit_status == 0)); then
+      if ((unit_status == 0)) &&
+         [[ "${FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS:-1}" == 1 ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
+      elif ((unit_status == 0)); then
+        echo "Skipping mandatory adaptor GPU one-sided check: platform runtime does not provide the required GDR contract"
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -402,6 +498,19 @@ run_suite() {
       # problem cannot hide device IPC coverage. Disable VMM to exercise the
       # same IPC-exportable GDR allocation used by the RMA suite.
       local ipc_mpi_env="-x FLAGCX_VMM_ENABLE=0"
+      local ipc_exclude
+      ipc_exclude=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" gtest adaptor)
+      if [[ -n "$ipc_exclude" ]]; then
+        local ipc_filter=${GTEST_FILTER:-*}
+        if [[ "$ipc_filter" == *-* ]]; then
+          ipc_filter+=":$ipc_exclude"
+        else
+          ipc_filter+="-$ipc_exclude"
+        fi
+        flagcx_ci_report_skipped_suite "$SUITE/IPC GDR cases" \
+          "GDR allocation is unavailable; excluded cases: $ipc_exclude"
+        ipc_mpi_env+=" -x GTEST_FILTER=$ipc_filter"
+      fi
       if [[ "$platform_name" == ascend ]]; then
         ipc_mpi_env="$ipc_mpi_env -x FLAGCX_CI_REQUIRE_IPC=1"
       fi
@@ -479,11 +588,13 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="p2p unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
-        FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
-        make -C "$suite_dir" run-mpi "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      if flagcx_ci_phase_supported p2p-write-mpi; then
+        FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          FLAGCX_CI_MPI_LABEL="p2p Engine WRITE MPI tests" \
+          make -C "$suite_dir" run-mpi "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" \
+          MPI_ENV="$p2p_mpi_env" || mpi_status=$?
+      fi
       # Keep the production/default artifact on the legacy Engine. Platforms
       # build the shared implementation in isolated output trees and run the
       # same unit and WRITE MPI tests against it.
@@ -517,7 +628,7 @@ run_suite() {
             "$TEST_RUNNER" make -C "$suite_dir" run-unit \
               "${shared_test_args[@]}" || shared_status=$?
         fi
-        if ((shared_status == 0)); then
+        if ((shared_status == 0)) && flagcx_ci_phase_supported p2p-write-mpi; then
           LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
             FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
             FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
@@ -540,6 +651,9 @@ run_suite() {
       local visibility_status=0
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
+      if ! flagcx_ci_phase_supported rma-mpi; then
+        return "$unit_status"
+      fi
       # Keep these as separate invocations so each transport has its own
       # timeout. Collect both statuses so a failure in one path cannot prevent
       # the other path from running and producing a useful result.
@@ -556,6 +670,7 @@ run_suite() {
         # general RMA suite: requirement overrides and VMM route selection are
         # cached once, and each case must exercise one unambiguous policy.
         local platform_name visibility_filter base_rma_platform_env
+        local run_visibility=1
         local expected_read=success expected_write=success
         local expected_read_required=1 expected_write_required=
         platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -602,7 +717,18 @@ run_suite() {
             ;;
         esac
 
-        local -a visibility_common_env=(
+        local -a visibility_common_env=()
+        local visibility_skip_reason
+        visibility_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase rma gdr-visibility)
+        if [[ -n "$visibility_skip_reason" ]]; then
+          run_visibility=0
+          echo "Skipping $platform_name GDR visibility conformance: $visibility_skip_reason"
+        fi
+        if ((run_visibility == 0)); then
+          :
+        else
+        visibility_common_env=(
           -x FLAGCX_CI_GDR_VISIBILITY_RUN=1
           -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_READ="$expected_read"
           -x FLAGCX_CI_GDR_VISIBILITY_EXPECT_WRITE="$expected_write"
@@ -614,8 +740,8 @@ run_suite() {
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
           )
         fi
-        if [[ "$platform_name" != "hygon" &&
-              "$platform_name" != "ascend" ]]; then
+        if ((run_visibility != 0)) &&
+           [[ "$platform_name" != "hygon" && "$platform_name" != "ascend" ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
@@ -624,7 +750,7 @@ run_suite() {
             visibility_status=$?
         fi
 
-        if [[ "$platform_name" == "cuda" ]]; then
+        if ((run_visibility != 0)) && [[ "$platform_name" == "cuda" ]]; then
           # CUDA validates a VMM route when available. Some runners cannot
           # export DMA-BUF even though VA registration works; the fixture
           # records a capability note and skips that route on those machines.
@@ -652,7 +778,7 @@ run_suite() {
               RMA_PLATFORM_ENV="$base_rma_platform_env ${cuda_vmm_env[*]}" || \
               visibility_status=$?
           done
-        elif [[ "$platform_name" == "hygon" ]]; then
+        elif ((run_visibility != 0)) && [[ "$platform_name" == "hygon" ]]; then
           # SHCA VMM VA must fail closed. If DMA-BUF is available, GetSmall
           # checks its data path; otherwise the fixture records a capability
           # note. DU has no separate consumer kernel in this test suite.
@@ -678,7 +804,7 @@ run_suite() {
               RMA_PLATFORM_ENV="$base_rma_platform_env ${hygon_vmm_env[*]}" || \
               visibility_status=$?
           done
-        elif [[ "$platform_name" == "ppu" ]]; then
+        elif ((run_visibility != 0)) && [[ "$platform_name" == "ppu" ]]; then
           # Forcing READ turns the temporary NONE policy into a hard contract.
           # BAREX has no real READ flush capability, so completion must fail
           # closed before a consumer kernel is launched.
@@ -701,6 +827,7 @@ run_suite() {
             RMA_VMM_ENABLE=0 \
             RMA_PLATFORM_ENV="$base_rma_platform_env ${ppu_forced_read_env[*]}" || \
             visibility_status=$?
+        fi
         fi
       else
         network_status=$?
@@ -732,6 +859,9 @@ run_suite() {
       fi
       FLAGCX_CI_TEST_LABEL="runner unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
+      if ! flagcx_ci_phase_supported runner-mpi; then
+        return "$unit_status"
+      fi
       cd "$suite_dir"
       FLAGCX_CI_MPI_LABEL="runner default" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
@@ -828,7 +958,21 @@ run_suite() {
         return 1
       fi
       ;;
+    kernel)
+      FLAGCX_CI_TEST_LABEL="kernel unit tests" \
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      FLAGCX_CI_MPI_LABEL="kernel MPI tests" \
+        "$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP" \
+        -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
+        -x FLAGCX_VMM_ENABLE=0 -x LD_LIBRARY_PATH \
+        "$suite_dir/build/bin/kernel_mpi_tests"
+      ;;
     symmem)
+      if ! flagcx_ci_phase_supported symmem-mpi; then
+        FLAGCX_CI_TEST_LABEL="symmem unit tests" \
+          "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests"
+        return
+      fi
       bash "$PROJECT_ROOT/test/script/symmem_test.sh"
       : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
       declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
@@ -850,15 +994,12 @@ run_suite() {
         expected_adaptor=BAREX
         symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
       fi
-      # PPU has no VMM-capable BAREX MR route. SHCA's unsafe VMM VA route is
-      # disabled and Hygon's DMA-BUF route is independently exercised by the
-      # RMA immediate-consumer job. Keep the broader multi-node symmem VMM data
-      # matrix disabled until that hardware job establishes a supported route.
-      if [[ "$platform_name" == "ppu" || "$platform_name" == "hygon" ]]; then
+      if [[ -n "$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem vmm-net-data)" ]]; then
         symmem_run_vmm_net_data=0
       fi
-      if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 0 ]]; then
-        symmem_run_vmm_net_data=0
+      if [[ -n "$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem vmm-local-and-remote-without-net)" ]]; then
         symmem_run_vmm_local=0
       fi
       symmem_common_env=(
@@ -904,7 +1045,10 @@ run_suite() {
           "$symmem_bin" \
           --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow
       else
-        echo "Skipping $platform_name VMM-local and remote-without-NET tests: VMM is unavailable"
+        local vmm_local_reason
+        vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase symmem vmm-local-and-remote-without-net)
+        echo "Skipping $platform_name VMM-local and remote-without-NET tests: $vmm_local_reason"
       fi
 
       FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback" \
@@ -949,7 +1093,10 @@ run_suite() {
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter"
       else
-        echo "Skipping $platform_name VMM + NET data tests: no validated VMM MR data route"
+        local vmm_net_reason
+        vmm_net_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase symmem vmm-net-data)
+        echo "Skipping $platform_name VMM + NET data tests: $vmm_net_reason"
       fi
 
       local -a symmem_route_union_env=()
@@ -978,7 +1125,10 @@ run_suite() {
         --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion
 
       if ((symmem_run_vmm_local == 0)); then
-        echo "Skipping $platform_name VMM flat-map data tests: VMM is unavailable; route capability was tested above"
+        local vmm_local_reason
+        vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase symmem vmm-local-and-remote-without-net)
+        echo "Skipping $platform_name VMM flat-map data tests: ${vmm_local_reason:-VMM is unavailable}; route capability was tested above"
         return 0
       fi
       ;;
@@ -1036,7 +1186,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|kernel|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)
