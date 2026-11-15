@@ -276,11 +276,30 @@ int main() {
   barrierComm.shadowBuffer = barrierShadows;
   barrierComm.signalCount = 8;
   barrierComm.interBarrierCount = 3;
+  barrierComm.nRanks = 2;
+  barrierComm.rank = 0;
   barrierComm.nTeamRanks = 2;
   barrierComm.teamRank = 0;
   barrierComm.intraSize = 1;
   barrierComm.intraRank = 0;
   MockGdaApi::Net barrierNet(barrierComm, 1);
+  MockGdaApi::Comm gdaWorldComm = barrierComm;
+  gdaWorldComm.rank = 1;
+  gdaWorldComm.nRanks = 4;
+  gdaWorldComm.nTeamRanks = 1;
+  gdaWorldComm.teamRank = 0;
+  uint64_t gdaWorldEpochs[FLAGCX_DEVICE_CTA_COUNT] = {};
+  gdaWorldComm.epochBuffer = gdaWorldEpochs;
+  gdaWorldComm.nBarriers = FLAGCX_DEVICE_CTA_COUNT;
+  MockGdaApi::Net gdaWorldNet(gdaWorldComm, 0);
+  typedef MockGdaApi::Barrier<flagcxTeamTagWorld, MockGdaApi::CoopThread>
+      MockWorldBarrier;
+  MockWorldBarrier gdaWorld(MockGdaApi::CoopThread{}, flagcxTeamTagWorld{},
+                            gdaWorldNet, gdaWorldComm, 0, false, 0);
+  assert(gdaWorld._nInterPeers == 3);
+  assert(gdaWorld._inter._nTeamRanks == 4);
+  assert(gdaWorld._inter._teamRank == 1);
+  assert(gdaWorld._inter._stride == 1);
   typedef MockGdaApi::Barrier<flagcxTeamTagInter, MockGdaApi::CoopThread>
       MockBarrier;
   MockBarrier barrier(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
@@ -320,6 +339,7 @@ int main() {
 
   mockBarrierCallCount = 0;
   barrierComm.nTeamRanks = 1;
+  barrierComm.nRanks = 1;
   MockGdaApi::Net singleNet(barrierComm, 1);
   MockBarrier singleBarrier(MockGdaApi::CoopThread{}, singleNet, barrierComm,
                             MockGdaApi::Team{1, 0, 1}, 2, 0);
@@ -359,12 +379,13 @@ int main() {
   mockBarrierCallCount = 0;
   subgroupSyncCalls = 0;
   barrierComm.nTeamRanks = 4;
+  barrierComm.nRanks = 4;
   barrierComm.interBarrierCount = 2;
   MockGdaApi::Net subgroupNet(barrierComm, 1);
   SubgroupBarrier multiPeerBarrier(nonleader, subgroupNet, barrierComm,
                                    MockGdaApi::Team{4, 0, 1}, 0, 3);
   multiPeerBarrier.sync();
-  assert(subgroupSyncCalls == 4);
+  assert(subgroupSyncCalls == 5);
   assert(mockBarrierCallCount == 2);
   assert(*mockBarrierCalls[0].operation == typeid(MockGdaApi::Net::SignalOp));
   assert(*mockBarrierCalls[1].operation ==
