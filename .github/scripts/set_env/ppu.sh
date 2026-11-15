@@ -44,6 +44,7 @@ FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
+FLAGCX_CI_PPU_FOUR_GPU_DEVICES=0,1,2,3
 export NP=4
 FLAGCX_CI_PXN_VISIBLE_DEVICES=0,3,4,7
 
@@ -62,6 +63,11 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
+    perf-test-experimental)
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PPU_FOUR_GPU_DEVICES"
+      ;;
     adaptor)
       # Fail rather than silently falling back to IBRC/socket: this suite is
       # the integration coverage for the BAREX one-sided contract.

@@ -7,12 +7,16 @@ paths_watch:
   - .github/configs/ppu.yml
   - .github/scripts/set_env/ppu.sh
   - .github/scripts/ci/run_ppu_workload.sh
+  - .github/scripts/ci/run_ppu_perf_experimental.sh
   - flagcx/adaptor/device/ptpu_adaptor.cc
   - flagcx/adaptor/device/ppu_cuda_adaptor.cc
   - flagcx/adaptor/ccl/ppu_nccl_adaptor.cc
   - flagcx/adaptor/include/ppu_adaptor.h
+  - flagcx/adaptor/include/device_api/ppu_*
+  - flagcx/adaptor/kernel/ppu/**
   - flagcx/adaptor/include/barex_runtime.h
   - flagcx/adaptor/net/barex_adaptor.cc
+  - makefiles/ppu.mk
 
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:manual-20260827-ppu-dev
 
