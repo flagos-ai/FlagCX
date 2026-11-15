@@ -79,11 +79,10 @@ __global__ void flagcxXshmemIntraAllReduceKernel(flagcxDevMem devMem,
   // scratch holds the peers' contributions only: (nRanks-1) slots of `count`.
   int nSlots = nRanks - 1;
 
-  // Segment owned by this cluster, 64B-aligned so puts stay on the aligned
-  // (cluster-collective) path. Every rank derives it from the same count, so
-  // the empty-segment case is symmetric and needs no extra agreement.
+  // Segment owned by this cluster, tile-aligned (kTileElems) so puts stay on the
+  // aligned path and local reduction GM2LM never encounters partial tiles.
   int segElems = (count + cluster_num() - 1) / cluster_num();
-  segElems = (segElems + 15) & ~15;
+  segElems = (segElems + kTileElems - 1) & ~(kTileElems - 1);
   int segStart = segElems * cluster_id();
   int segEnd = segStart + segElems;
   if (segStart > count)
@@ -129,16 +128,26 @@ __global__ void flagcxXshmemIntraAllReduceKernel(flagcxDevMem devMem,
       int n = segEnd - base;
       if (n > kTileElems)
         n = kTileElems;
-      GM2LM(myData + base, acc, n * sizeof(T));
-      // Every slot belongs to a peer, so all of them are summed in; the local
-      // addend came from myData above.
-      for (int slot = 0; slot < nSlots; ++slot) {
-        GM2LM(scratch + (size_t)slot * (size_t)count + base, tmp,
-              n * sizeof(T));
-        for (int i = 0; i < n; ++i)
-          acc[i] += tmp[i];
+      if (n == kTileElems) {
+        GM2LM(myData + base, acc, n * sizeof(T));
+        // Every slot belongs to a peer, so all of them are summed in; the local
+        // addend came from myData above.
+        for (int slot = 0; slot < nSlots; ++slot) {
+          GM2LM(scratch + (size_t)slot * (size_t)count + base, tmp,
+                n * sizeof(T));
+          for (int i = 0; i < n; ++i)
+            acc[i] += tmp[i];
+        }
+        LM2GM(acc, myData + base, n * sizeof(T));
+      } else if (n > 0) {
+        for (int i = 0; i < n; ++i) {
+          T val = myData[base + i];
+          for (int slot = 0; slot < nSlots; ++slot) {
+            val += scratch[(size_t)slot * (size_t)count + base + i];
+          }
+          myData[base + i] = val;
+        }
       }
-      LM2GM(acc, myData + base, n * sizeof(T));
     }
   }
 }

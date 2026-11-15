@@ -961,10 +961,23 @@ run_suite() {
     kernel)
       FLAGCX_CI_TEST_LABEL="kernel unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      local -a kernel_mpi_env=(
+        -x FLAGCX_USE_HETERO_COMM=1
+        -x FLAGCX_MEM_ENABLE=1
+        -x FLAGCX_VMM_ENABLE=0
+        -x LD_LIBRARY_PATH
+      )
+      local platform_name
+      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == "kunlunxin" ]]; then
+        kernel_mpi_env+=(
+          -x XPU_VISIBLE_DEVICES=4,5,6,7
+          -x XSHMEM_SYMMETRIC_SIZE=17179869184
+        )
+      fi
       FLAGCX_CI_MPI_LABEL="kernel MPI tests" \
         "$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP" \
-        -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_VMM_ENABLE=0 -x LD_LIBRARY_PATH \
+        "${kernel_mpi_env[@]}" \
         "$suite_dir/build/bin/kernel_mpi_tests"
       ;;
     symmem)
