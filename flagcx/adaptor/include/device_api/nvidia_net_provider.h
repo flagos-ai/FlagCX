@@ -84,4 +84,8 @@ struct DefaultNetProviderPolicy<NvidiaPlatform> {
   }
 };
 
+#if defined(FLAGCX_USE_XPU_NETIO)
+#include "nvidia_xpu_netio_gda.h"
+#endif
+
 #endif // FLAGCX_NVIDIA_NET_PROVIDER_H_

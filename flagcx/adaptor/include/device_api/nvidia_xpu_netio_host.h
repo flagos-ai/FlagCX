@@ -20,6 +20,11 @@ flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
                             flagcxDevMem_t devMem, size_t bytes,
                             void *deviceWindow);
 flagcxResult_t destroyWindow(flagcxDevMem_t devMem);
+flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
+                         uint32_t **deviceErrorFlag, uint64_t *maxChunkBytes,
+                         unsigned *requiredAlignment);
+flagcxResult_t clearError(flagcxDevComm_t devComm);
+flagcxResult_t pollError(flagcxDevComm_t devComm);
 
 } // namespace DefaultNvidiaGda
 
