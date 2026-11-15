@@ -3437,9 +3437,28 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
   int kernelSupported = 0;
   flagcxResult_t probeResult = flagcxSuccess;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
-    (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR))
+    (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                 \
+     defined(USE_PPU_ADAPTOR))
   kernelSupported = 1;
   probeResult = flagcxStreamValueSupported(&localSupported);
+#if defined(USE_PPU_ADAPTOR)
+  // PPU's CUDA-compatible runtime may expose stream values without supporting
+  // the cooperative executor used by static UniRunner kernels.
+  if (probeResult == flagcxSuccess && localSupported) {
+    size_t maxExecutorBlocks = 0;
+    flagcxResult_t kernelResult =
+        flagcxGetStaticCollectiveKernelMaxExecutorBlocks(256,
+                                                         &maxExecutorBlocks);
+    if (kernelResult == flagcxNotSupported ||
+        (kernelResult == flagcxSuccess && maxExecutorBlocks == 0)) {
+      kernelSupported = 0;
+    } else if (kernelResult != flagcxSuccess) {
+      probeResult = kernelResult;
+    }
+  } else {
+    kernelSupported = 0;
+  }
+#endif
 #endif
   capabilities[comm->rank] = {static_cast<int>(probeResult),
                               localSupported ? 1 : 0, kernelSupported};
