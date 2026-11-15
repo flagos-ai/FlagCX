@@ -627,6 +627,18 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
         passed = subprocess.run(args, capture_output=True, text=True)
         self.assertEqual(passed.returncode, 0, passed.stderr)
 
+    def test_ppu_experimental_perf_is_required(self):
+        script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")
+        args = ["bash", script, '["ppu"]', "success", "skipped",
+                "skipped", "skipped", "skipped", "skipped", "success",
+                "failure", "skipped"]
+        failed = subprocess.run(args, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("PPU experimental workload", failed.stderr)
+        args[10] = "success"
+        passed = subprocess.run(args, capture_output=True, text=True)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
+
     def test_selected_platform_jobs_must_succeed(self):
         self.assertEqual(
             self.check('["cuda"]', "success", "success", "success", "skipped", "skipped", "skipped").returncode,

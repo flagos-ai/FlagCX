@@ -1346,8 +1346,11 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("hygon perf-test-experimental", perf_workflow)
         self.assertIn("name: perf-test-experimental (cuda)", perf_workflow)
         self.assertIn("name: perf-test-experimental (hygon)", perf_workflow)
+        self.assertIn("name: perf-test-experimental (ppu)", perf_workflow)
         self.assertIn("HYGON_EXPERIMENTAL_RESULT:", perf_workflow)
+        self.assertIn("PPU_EXPERIMENTAL_RESULT:", perf_workflow)
         self.assertIn('"$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT"', perf_workflow)
+        self.assertIn('"$PPU_RESULT" "$PPU_EXPERIMENTAL_RESULT"', perf_workflow)
         self.assertNotIn("cuda_legacy_perf_runs_on", perf_workflow)
         experimental_perf_job = perf_workflow.split("  perf-test-experimental-cuda:\n", 1)[1].split(
             "\n  perf-test-hygon:", 1
@@ -1362,6 +1365,11 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         )[1].split("\n  perf-test-cuda:", 1)[0]
         self.assertIn("hygon perf-test-experimental", hygon_experimental_job)
         self.assertIn("timeout-minutes: 240", hygon_experimental_job)
+        ppu_experimental_job = perf_workflow.split(
+            "  perf-test-experimental-ppu:\n", 1
+        )[1].split("\n  perf-test-ascend:", 1)[0]
+        self.assertIn("ppu perf-test-experimental", ppu_experimental_job)
+        self.assertIn("timeout-minutes: 240", ppu_experimental_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
@@ -1375,6 +1383,13 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn(
             'source "$project_root/.github/scripts/ci/run_cuda_perf_experimental.sh"',
             cuda_handler,
+        )
+        ppu_handler = (
+            REPO_ROOT / ".github/scripts/ci/run_ppu_workload.sh"
+        ).read_text()
+        self.assertIn(
+            'source "$project_root/.github/scripts/ci/run_ppu_perf_experimental.sh"',
+            ppu_handler,
         )
 
     def test_experimental_p2p_perf_keeps_write_and_runs_shared_read(self):
