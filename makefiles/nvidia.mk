@@ -36,6 +36,9 @@ ifeq ($(USE_SHMEM), 1)
   # backends. Add future NVIDIA/NVSHMEM sources here deliberately.
   PLATFORM_EXTRA_SRCS := flagcx/adaptor/shmem/nvshmem_adaptor.cc \
                          flagcx/adaptor/device_api/nvshmem_dev_api_backend.cc
+else ifeq ($(USE_XPUNETIO), 1)
+  ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT -DFLAGCX_USE_XPU_NETIO
+  PLATFORM_EXTRA_SRCS := flagcx/adaptor/device_api/default_dev_api_backend.cc
 else ifeq ($(FORCE_DEFAULT_PATH), 1)
   ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
   PLATFORM_EXTRA_SRCS := flagcx/adaptor/device_api/default_dev_api_backend.cc
@@ -57,4 +60,15 @@ endif
 
 # --- Kernel sources ---
 PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/nvidia
-PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
+PLATFORM_KERNEL_SRCS := $(filter-out $(PLATFORM_KERNEL_DIR)/net_gda_alltoall.cu,$(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION)))
+
+ifeq ($(USE_XPUNETIO), 1)
+  ifeq ($(USE_SHMEM), 1)
+    $(error USE_XPUNETIO=1 requires the NVIDIA default Device API backend)
+  endif
+  XPU_NETIO_HOME ?= /usr/local
+  XPU_NETIO_LIBDIR ?= $(XPU_NETIO_HOME)/lib
+  DEVICE_INCLUDE += $(XPU_NETIO_HOME)/include
+  DEVICE_LINK += -L$(XPU_NETIO_LIBDIR) -Wl,-rpath,$(XPU_NETIO_LIBDIR) -lxpu_netio
+  PLATFORM_KERNEL_SRCS += $(PLATFORM_KERNEL_DIR)/net_gda_alltoall.cu
+endif

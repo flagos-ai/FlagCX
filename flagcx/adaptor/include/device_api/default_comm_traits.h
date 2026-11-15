@@ -105,13 +105,23 @@ struct DefaultNetGdaProvider {
 template <typename PlatformTag>
 FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetProviderKind
 defaultNetSelectProvider(unsigned providerId, unsigned gdaCapabilities,
-                         bool resourcesReady) {
+                         unsigned requiredCapabilities, bool resourcesReady) {
   return DefaultNetGdaProvider<PlatformTag>::compiled(providerId) &&
                  resourcesReady &&
-                 (gdaCapabilities & DefaultNetGdaRequiredCapabilities) ==
-                     DefaultNetGdaRequiredCapabilities
+                 (gdaCapabilities & requiredCapabilities) ==
+                     requiredCapabilities
              ? DefaultNetProviderGda
              : DefaultNetProviderProxy;
+}
+
+// Preserve the original full-Net selection rule for existing callers.
+template <typename PlatformTag>
+FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetProviderKind
+defaultNetSelectProvider(unsigned providerId, unsigned gdaCapabilities,
+                         bool resourcesReady) {
+  return defaultNetSelectProvider<PlatformTag>(
+      providerId, gdaCapabilities, DefaultNetGdaRequiredCapabilities,
+      resourcesReady);
 }
 
 template <typename PlatformTag>
