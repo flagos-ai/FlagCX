@@ -5,6 +5,7 @@
 #include "comm.h"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
+#include "transport.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -105,6 +106,41 @@ void FlagCXCollTest::SetUp() {
         << "Runner expected communicator mode " << expectedRunnerMode
         << " on every rank, but rank " << rank << " initialized mode "
         << static_cast<int>(comm->commType);
+  }
+
+  if (std::getenv("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL") != nullptr) {
+    const char *selectedRunner = std::getenv("FLAGCX_USE_HETERO_COMM");
+    int localSupported = selectedRunner != nullptr &&
+                         std::strcmp(selectedRunner, "1") == 0 &&
+                         comm->uniRunnerKernelSupported;
+    int allSupported = 0;
+    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allSupported, 1) << "UniRunner device kernels are unavailable";
+  }
+  if (std::getenv("FLAGCX_CI_EXPECT_STREAM_VALUE") != nullptr) {
+    int localSupported = comm->streamValueSupported ? 1 : 0;
+    int allSupported = 0;
+    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allSupported, 1) << "stream value operations are unavailable";
+  }
+  if (std::getenv("FLAGCX_CI_EXPECT_LOCAL_P2P") != nullptr) {
+    int localMatches =
+        comm->heteroComm != nullptr && comm->heteroComm->peerInfo != nullptr;
+    const char *p2pDisable = std::getenv("FLAGCX_P2P_DISABLE");
+    localMatches = localMatches && p2pDisable != nullptr &&
+                   std::strcmp(p2pDisable, "0") == 0;
+    if (localMatches) {
+      for (int peer = 0; peer < nranks; ++peer)
+        localMatches =
+            localMatches && comm->heteroComm->peerInfo[peer].hostHash ==
+                                comm->heteroComm->peerInfo[rank].hostHash;
+    }
+    int allMatch = 0;
+    MPI_Allreduce(&localMatches, &allMatch, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allMatch, 1) << "local P2P routing prerequisites are missing";
   }
 
   // Forced-NET CI invocations must prove that they selected the intended

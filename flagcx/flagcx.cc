@@ -3436,7 +3436,8 @@ static flagcxResult_t initUniRunnerCapabilities(flagcxComm_t comm) {
   bool localSupported = false;
   int kernelSupported = 0;
   flagcxResult_t probeResult = flagcxSuccess;
-#if defined(COMPILE_KERNEL_HOST) && defined(USE_NVIDIA_ADAPTOR)
+#if defined(COMPILE_KERNEL_HOST) &&                                            \
+    (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR))
   kernelSupported = 1;
   probeResult = flagcxStreamValueSupported(&localSupported);
 #endif
