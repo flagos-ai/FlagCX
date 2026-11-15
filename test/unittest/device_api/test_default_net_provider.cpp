@@ -199,6 +199,15 @@ int main() {
   assert(defaultNetSelectProvider<MockGdaPlatform>(
              8, DefaultNetGdaRequiredCapabilities, true) ==
          DefaultNetProviderProxy);
+  const unsigned putBarrier =
+      DefaultNetGdaPut | DefaultNetGdaFlush | DefaultNetGdaBarrier;
+  assert(defaultNetSelectProvider<MockGdaPlatform>(
+             7, putBarrier, putBarrier, true) == DefaultNetProviderGda);
+  assert(defaultNetSelectProvider<MockGdaPlatform>(
+             7, putBarrier & ~DefaultNetGdaBarrier, putBarrier, true) ==
+         DefaultNetProviderProxy);
+  assert(defaultNetSelectProvider<MockGdaPlatform>(
+             7, putBarrier, putBarrier, false) == DefaultNetProviderProxy);
   DefaultNetContext gdaContext{DefaultNetProviderGda, 7,
                                reinterpret_cast<void *>(0x1000), 0};
   assert(DefaultNetGdaProvider<NvidiaPlatform>::supportsBarrierFence(
