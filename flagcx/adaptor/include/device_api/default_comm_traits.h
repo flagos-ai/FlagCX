@@ -1635,9 +1635,22 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
       : _coop(coop), _fifoBuffer(net.fifoBuffer),
         _signalBuffer(net.signalBuffer), _shadowBuffer(net.shadowBuffer),
         _signalCount(net.signalCount), _contextId(net.getContextId()),
-        _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
-        _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
-        _stride(dc.intraSize), _localRank(dc.intraRank) {
+        _teamRank(net.context().provider == DefaultNetProviderGda
+                      ? dc.rank
+                      : net.teamRank),
+        _nTeamRanks(net.context().provider == DefaultNetProviderGda
+                        ? dc.nRanks
+                        : net.nTeamRanks),
+        _barrierSignal0(net.barrierSignalBase +
+                        (int)index *
+                            (net.context().provider == DefaultNetProviderGda
+                                 ? dc.nRanks
+                                 : net.nTeamRanks)),
+        _stride(net.context().provider == DefaultNetProviderGda ? 1
+                                                                : dc.intraSize),
+        _localRank(net.context().provider == DefaultNetProviderGda
+                       ? 0
+                       : dc.intraRank) {
     DefaultNetProviderPolicy<P>::initBarrier(*this, net.context());
     assert(index < FLAGCX_DEVICE_CTA_COUNT);
   }
@@ -1808,7 +1821,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
       : _coop(coop),
         _intra(coop, dc, Team{dc.intraSize, dc.intraRank, 1}, index),
         _inter(coop, net, dc, Team{}, index, nInterPeers),
-        _nInterPeers(nInterPeers) {}
+        _nInterPeers(net.context().provider == DefaultNetProviderGda
+                         ? dc.nRanks - 1
+                         : nInterPeers) {}
 
   // Intra-only barrier: inter is default constructed (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
