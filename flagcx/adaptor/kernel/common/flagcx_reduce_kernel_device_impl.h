@@ -1886,7 +1886,8 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   int device = -1;
   int cooperativeLaunch = 0;
   int concurrentKernels = 0;
@@ -1907,6 +1908,15 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
   if (smCount < 0 || maxThreadsPerBlock < 0) {
     return flagcxInternalError;
   }
+#if defined(USE_PPU_ADAPTOR)
+  int warpSize = 0;
+  if (cudaDeviceGetAttribute(&warpSize, cudaDevAttrWarpSize, device) !=
+      cudaSuccess) {
+    return flagcxUnhandledDeviceError;
+  }
+  if (warpSize != FLAGCX_SIMT_WIDTH)
+    return flagcxNotSupported;
+#endif
   if (nthreads > static_cast<size_t>(maxThreadsPerBlock)) {
     return flagcxInvalidArgument;
   }
@@ -1983,7 +1993,8 @@ flagcxResult_t flagcxLaunchStaticReduceKernel(
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   uint64_t *words = static_cast<uint64_t *>(redFifoDeviceBuffer);
   flagcxReduceTrigger *triggers =
       reinterpret_cast<flagcxReduceTrigger *>(words + flagcxFifoIdxData);
@@ -2050,7 +2061,8 @@ flagcxResult_t flagcxLaunchStaticCollectiveKernel(
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   uint64_t *redWords = static_cast<uint64_t *>(redFifoDeviceBuffer);
   uint64_t *ipcWords = static_cast<uint64_t *>(ipcFifoDeviceBuffer);
   flagcxReduceTrigger *redTriggers =
@@ -2135,7 +2147,8 @@ flagcxResult_t flagcxLaunchStaticRingDagKernel(
           uint64_t(1) + static_cast<uint64_t>(ipcControl->localRanks)) {
     return flagcxInvalidArgument;
   }
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   flagcxDevMem scratch(*scratchMem);
   flagcxDevMem progress(*progressMem);
   flagcxDevMem ready(*readyMem);
@@ -2176,7 +2189,8 @@ flagcxLaunchStaticIpcRecoveryKernel(flagcxDevMem_t readyMem,
     return flagcxInvalidArgument;
   }
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
+    defined(USE_PPU_ADAPTOR)
   flagcxDevMem ready(*readyMem);
   flagcxStaticIpcControl control = *ipcControl;
   void *args[] = {&ready, &control};
