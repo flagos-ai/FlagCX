@@ -195,6 +195,11 @@ endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
+GDA_TARGET :=
+ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
+GDA_TARGET := $(BINDIR)/test_net_gda_alltoall
+endif
+
 .PHONY: all unit mpi clean require-compile-kernel run-unit run-mpi run-mpi-intra run-mpi-inter \
         run-mpi-unified-intra run-mpi-unified-inter run
 
@@ -208,7 +213,7 @@ unit: $(UNIT_TARGET) $(PROVIDER_UNIT_TARGET)
 require-compile-kernel:
 	$(REQUIRE_COMPILE_KERNEL)
 
-mpi: require-compile-kernel $(MPI_TARGETS)
+mpi: require-compile-kernel $(MPI_TARGETS) $(GDA_TARGET)
 
 $(ALL_DEVICE_TEST_TARGETS) $(DEVICE_API_OBJ) $(DEVICE_IR_OBJ) \
     $(DLINK_API_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ): | require-compile-kernel
@@ -305,6 +310,16 @@ $(BINDIR)/test_device_ir_intra_enflame: $(OBJDIR)/test_device_ir_intra_enflame.o
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+
+ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
+$(OBJDIR)/test_net_gda_alltoall.o: test_net_gda_alltoall.cpp | require-compile-kernel
+	@mkdir -p $(OBJDIR)
+	@$(CXX) $(CXXFLAGS) $(ADAPTOR_FLAG) -c -o $@ $< $(ALL_INCLUDES)
+
+$(BINDIR)/test_net_gda_alltoall: $(OBJDIR)/test_net_gda_alltoall.o
+	@mkdir -p $(BINDIR)
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+endif
 
 clean:
 	@rm -rf $(BUILDDIR)
@@ -425,5 +440,18 @@ endif
 
 run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra \
          run-mpi-unified-inter
+
+# Explicit hardware test: requires an installed XPU NetIO provider and two
+# NVIDIA ranks with working NIC connectivity. It is not part of generic run.
+.PHONY: run-mpi-gda
+ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
+run-mpi-gda: $(GDA_TARGET)
+	$(MPIRUN) $(MPI_ROOT_ARGS) \
+		-n 1 $(HETERO_ENV) $(INTER_NODE0_ENV) $(GDA_TARGET) \
+		: -n 1 $(HETERO_ENV) $(INTER_NODE1_ENV) $(GDA_TARGET)
+else
+run-mpi-gda:
+	@echo "Net GDA test requires USE_NVIDIA=1 USE_XPUNETIO=1"
+endif
 
 run: require-compile-kernel run-unit run-mpi
