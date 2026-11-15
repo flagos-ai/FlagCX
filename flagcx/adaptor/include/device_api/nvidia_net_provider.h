@@ -37,12 +37,18 @@ struct DefaultNetProviderPolicy<NvidiaPlatform> {
     static_cast<WindowState &>(win).netDeviceHandle = nullptr;
   }
 
-  template <typename Comm>
-  FLAGCX_HOST_DEVICE_INLINE static void initComm(Comm &comm) {
+  template <typename Window>
+  FLAGCX_HOST_DEVICE_INLINE static bool hasWindowAccess(const Window &win) {
+    return static_cast<const WindowState &>(win).netDeviceHandle != nullptr;
+  }
+
+  template <typename Comm, typename HostComm>
+  FLAGCX_HOST_DEVICE_INLINE static void initComm(Comm &comm,
+                                                 const HostComm &host) {
     CommState &state = static_cast<CommState &>(comm);
-    state.netProvider = defaultNetSelectProvider<NvidiaPlatform>(0, 0, false);
-    state.netProviderId = 0;
-    state.gdaDeviceContext = nullptr;
+    state.netProvider = static_cast<DefaultNetProviderKind>(host.gdaProvider);
+    state.netProviderId = host.gdaProviderId;
+    state.gdaDeviceContext = host.gdaDeviceContext;
   }
 
   template <typename Comm>

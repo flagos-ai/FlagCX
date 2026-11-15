@@ -28,6 +28,25 @@ typedef struct flagcxDevCommInternal *flagcxDevComm_t;
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
+// One-sided GDA selection is opt-in. A preferred provider may fall back to
+// Proxy before publication; a required provider makes creation fail instead.
+typedef enum flagcxDevNetGdaPolicy {
+  flagcxDevNetGdaDisabled = 0,
+  flagcxDevNetGdaPreferred = 1,
+  flagcxDevNetGdaRequired = 2,
+} flagcxDevNetGdaPolicy_t;
+
+typedef enum flagcxDevNetGdaOperation {
+  flagcxDevNetGdaOpPut = 1u << 0,
+  flagcxDevNetGdaOpGet = 1u << 1,
+  flagcxDevNetGdaOpPutValue = 1u << 2,
+  flagcxDevNetGdaOpSignal = 1u << 3,
+  flagcxDevNetGdaOpFlush = 1u << 4,
+  flagcxDevNetGdaOpSignalCompletion = 1u << 5,
+  flagcxDevNetGdaOpCounterCompletion = 1u << 6,
+  flagcxDevNetGdaOpBarrier = 1u << 7,
+} flagcxDevNetGdaOperation_t;
+
 // Requirements for creating a device communicator. Existing fields form a
 // frozen ABI prefix: do not reorder, resize, or change their meaning. New
 // fields may only be appended, and are consumed only when the caller-provided
@@ -51,6 +70,12 @@ typedef struct flagcxDevCommRequirements {
 
   // Symmetric scratch bytes per rank, reachable by every intra-node peer.
   size_t intraScratchBytes;
+
+  // The GDA operation set is a creation-time contract. An adapter may be
+  // selected only if it implements every requested operation. The barrier
+  // operation covers Relaxed only unless its fence capability is verified.
+  flagcxDevNetGdaPolicy_t netGdaPolicy;
+  unsigned netGdaOperations;
 } flagcxDevCommRequirements;
 
 #define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
@@ -58,9 +83,10 @@ typedef struct flagcxDevCommRequirements {
     false,       /* intraMulticast */                                          \
         0, 0, 0, /* barrierCount, intraBarrierCount, interBarrierCount */      \
         0, 0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */               \
-        false, 4, 0, 0, /* interForceEnable, interContextCount,                \
-                           interSignalCount, interCounterCount */              \
-        0               /* intraScratchBytes */                                \
+        false, 4, 0, 0,            /* interForceEnable, interContextCount,     \
+                                      interSignalCount, interCounterCount */   \
+        0,                         /* intraScratchBytes */                     \
+        flagcxDevNetGdaDisabled, 0 /* netGdaPolicy, netGdaOperations */        \
   }
 
 #ifdef __cplusplus

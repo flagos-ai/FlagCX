@@ -512,6 +512,9 @@ ifeq ($(USE_DU),1)
   LINKER := $(DEVICE_LINKER)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
 endif
+ifeq ($(USE_XPUNETIO),1)
+  LINKER_FLAGS += -Wl,-rpath,$(XPU_NETIO_LIBDIR)
+endif
 
 BUILD_CONFIG_CHANGED := $(shell printf '%s\n' '$(BUILD_CONFIG_SIGNATURE)' | cmp -s - '$(BUILD_CONFIG_FILE)' || echo 1)
 ifneq ($(BUILD_CONFIG_CHANGED),)
