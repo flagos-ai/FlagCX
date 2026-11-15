@@ -535,6 +535,9 @@ ifeq ($(USE_DU),1)
   LINKER := $(DEVICE_LINKER)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
 endif
+ifeq ($(USE_XPUNETIO),1)
+  LINKER_FLAGS += -Wl,-rpath,$(XPU_NETIO_LIBDIR)
+endif
 
 # MUSA's generated image symbol is WEAK DEFAULT. Without local binding, a
 # device-enabled executable can preempt it and make this library register the

@@ -247,15 +247,15 @@ int main() {
   MockGdaApi::CoopThread gdaThread;
   MockGdaApi::Window gdaWindow{};
   assert(gdaNet.send(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
-         flagcxNotSupported);
+         flagcxInvalidUsage);
   assert(gdaNet.recv(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
-         flagcxNotSupported);
-  assert(gdaNet.term(gdaThread) == flagcxNotSupported);
-  assert(gdaNet.wait(gdaThread) == flagcxNotSupported);
+         flagcxInvalidUsage);
+  assert(gdaNet.term(gdaThread) == flagcxInvalidUsage);
+  assert(gdaNet.wait(gdaThread) == flagcxInvalidUsage);
   gdaComm.fifoBuffers[0] = &fifo;
   MockGdaApi::Net gdaWithProxyFifo(gdaComm, 0);
-  assert(gdaWithProxyFifo.fifoBuffer == nullptr);
-  assert(gdaWithProxyFifo.term(gdaThread) == flagcxNotSupported);
+  assert(gdaWithProxyFifo.fifoBuffer == &fifo);
+  assert(gdaWithProxyFifo.requireProxyFifo() == flagcxSuccess);
   gdaComm.fifoBuffers[0] = nullptr;
   gdaComm.gdaDeviceContext = nullptr;
   assert(!MockGdaApi::Net(gdaComm, 0).isValid());
@@ -389,7 +389,12 @@ int main() {
   } hostComm;
   struct HostWindow : Policy::WindowState {
   } hostWindow;
-  Policy::initComm(hostComm);
+  struct HostInput {
+    int gdaProvider;
+    unsigned gdaProviderId;
+    void *gdaDeviceContext;
+  } hostInput{0, 0, nullptr};
+  Policy::initComm(hostComm, hostInput);
   Policy::initWindow(hostWindow);
   assert(hostComm.netProvider == DefaultNetProviderProxy);
   assert(hostComm.netProviderId == 0);
@@ -397,5 +402,9 @@ int main() {
   assert(hostWindow.netDeviceHandle == nullptr);
   assert(Policy::makeContext(hostComm, reinterpret_cast<void *>(0x1000), 2)
              .handle == reinterpret_cast<void *>(0x1000));
+  hostInput = {DefaultNetProviderGda, 7, reinterpret_cast<void *>(0x2000)};
+  Policy::initComm(hostComm, hostInput);
+  assert(Policy::makeContext(hostComm, reinterpret_cast<void *>(0x1000), 2)
+             .handle == reinterpret_cast<void *>(0x2000));
   return 0;
 }

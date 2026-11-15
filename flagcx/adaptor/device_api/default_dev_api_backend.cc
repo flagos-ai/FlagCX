@@ -26,6 +26,9 @@
 #include "shmutils.h"
 #include "sym_heap.h"
 #include "utils.h"
+#if defined(FLAGCX_USE_XPU_NETIO)
+#include "device_api/nvidia_xpu_netio_host.h"
+#endif
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -500,8 +503,17 @@ static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         size_t reqsSize, flagcxDevComm_t devComm) {
-  // The default backend consumes only fields in the frozen prefix.
-  (void)reqsSize;
+  flagcxDevNetGdaPolicy_t gdaPolicy = flagcxDevNetGdaDisabled;
+  unsigned gdaOperations = 0;
+  if (reqsSize >= offsetof(flagcxDevCommRequirements, netGdaOperations) +
+                      sizeof(reqs->netGdaOperations)) {
+    gdaPolicy = reqs->netGdaPolicy;
+    gdaOperations = reqs->netGdaOperations;
+  }
+#if !defined(FLAGCX_USE_XPU_NETIO)
+  if (gdaPolicy == flagcxDevNetGdaRequired)
+    return flagcxNotSupported;
+#endif
   if (reqs->interBarrierCount < 0)
     return flagcxInvalidArgument;
   devComm->interBarrierCount = reqs->interBarrierCount;
@@ -581,15 +593,21 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // Expand signalCount to include barrier slots:
       // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
-      if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0 ||
+      int barrierRanks = gdaPolicy == flagcxDevNetGdaDisabled
+                             ? devComm->nTeamRanks
+                             : comm->nranks;
+      if (barrierRanks < 0 || reqs->interBarrierCount < 0 ||
           (reqs->interBarrierCount > 0 &&
-           devComm->nTeamRanks >
+           barrierRanks >
                std::numeric_limits<int>::max() / reqs->interBarrierCount)) {
-        WARN("barrierSignalBase overflow: nTeamRanks=%d interBarrierCount=%d",
-             devComm->nTeamRanks, reqs->interBarrierCount);
+        WARN("barrierSignalBase overflow: barrierRanks=%d interBarrierCount=%d",
+             barrierRanks, reqs->interBarrierCount);
         return flagcxInternalError;
       }
-      int barrierSlots = devComm->nTeamRanks * reqs->interBarrierCount;
+      // A requested dense GDA World barrier needs one source slot per rank.
+      // A preferred request may still fall back to Proxy; extra slots are
+      // harmless and the Proxy team layout remains unchanged.
+      int barrierSlots = barrierRanks * reqs->interBarrierCount;
       if (userSignals < 0 || barrierSlots < 0 ||
           userSignals > std::numeric_limits<int>::max() - barrierSlots ||
           bufCtxCount <= 0 ||
@@ -879,7 +897,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
             : (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0);
   }
 
-  if (devComm->signalBuffer &&
+#if defined(FLAGCX_USE_XPU_NETIO)
+  FLAGCXCHECK(
+      DefaultNvidiaGda::createComm(comm, devComm, gdaPolicy, gdaOperations));
+#endif
+  if (devComm->signalBuffer && devComm->gdaProvider == 0 &&
       (devComm->nInterPeers > 0 || !devComm->useP2pSignals ||
        forceOneSidedNet) &&
       !devComm->netSignalReady) {
@@ -887,7 +909,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
          "available");
     return flagcxNotSupported;
   }
-  if (oneSidedRequested && forceOneSidedNet && !devComm->netPutValueReady) {
+  if (oneSidedRequested && forceOneSidedNet && devComm->gdaProvider == 0 &&
+      !devComm->netPutValueReady) {
     WARN("defaultDevApiCommCreate: forced Net fallback requested but "
          "PutValue staging is not registered");
     return flagcxNotSupported;
@@ -918,8 +941,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     WARN("defaultDevApiCommCreate: Net one-sided full mesh/FIFO is not ready");
     return flagcxNotSupported;
   }
-  if (reqs->interBarrierCount > 0 && devComm->nInterPeers > 0 &&
-      !devComm->netOneSidedReady) {
+  if (reqs->interBarrierCount > 0 && devComm->gdaProvider == 0 &&
+      devComm->nInterPeers > 0 && !devComm->netOneSidedReady) {
     WARN("defaultDevApiCommCreate: Inter barrier Proxy FIFO is not ready");
     return flagcxNotSupported;
   }
@@ -940,6 +963,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
+#if defined(FLAGCX_USE_XPU_NETIO)
+  FLAGCXCHECK(DefaultNvidiaGda::destroyComm(devComm));
+#endif
   // Deregister communicator-level MRs before freeing their backing buffers.
   // Check handle identity so rollback cannot remove a registration owned by
   // another DevComm.
@@ -1227,8 +1253,10 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                           comm->heteroComm->nNodes > 1;
     bool needsNetFallback = !hasP2pAccess || hasRemotePeers;
     if (win != nullptr && win->isSymmetricDefault && needsNetFallback) {
-      bool netFallbackReady = dc != nullptr && dc->netOneSidedReady &&
-                              dc->netPutValueReady && devMem->mrIndex >= 0;
+      bool netFallbackReady =
+          dc != nullptr && (dc->gdaProvider != 0 ||
+                            (dc->netOneSidedReady && dc->netPutValueReady &&
+                             devMem->mrIndex >= 0));
       if (!netFallbackReady) {
         WARN("flagcxDevMemCreate: Net fallback is required but incomplete "
              "(mrIndex=%d, net=%d, putValue=%d)",
@@ -1239,7 +1267,8 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       }
     }
     devMem->window = kWin;
-    devMem->hasWindow = kWin->hasAccess();
+    devMem->hasWindow =
+        kWin->hasAccess() || (dc != nullptr && dc->gdaProvider != 0);
 
     if (!devMem->hasWindow && win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
@@ -1257,8 +1286,9 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     }
 
     if (flagcxParamDeviceOneSidedForceNet()) {
-      if (devMem->mrIndex < 0 || dc == nullptr || !dc->netOneSidedReady ||
-          !dc->netPutValueReady) {
+      if (dc == nullptr || (dc->gdaProvider == 0 &&
+                            (devMem->mrIndex < 0 || !dc->netOneSidedReady ||
+                             !dc->netPutValueReady))) {
         WARN("flagcxDevMemCreate: forced Net fallback is incomplete for buff "
              "%p (mrIndex=%d, net=%d, putValue=%d)",
              buff, devMem->mrIndex, dc ? dc->netOneSidedReady : 0,
@@ -1312,6 +1342,23 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       kWin->symPeerLayouts = (typename DeviceAPI::SymPeerLayout *)deviceLayouts;
       devMem->segmentedPeerLayouts = deviceLayouts;
     }
+#if defined(FLAGCX_USE_XPU_NETIO)
+    if (dc != nullptr && dc->gdaProvider != 0) {
+      flagcxResult_t gdaResult =
+          DefaultNvidiaGda::createWindow(comm, dc, devMem, size, kWin);
+      if (gdaResult != flagcxSuccess) {
+        if (devMem->segmentedPeerLayouts != nullptr) {
+          deviceAdaptor->deviceFree(devMem->segmentedPeerLayouts,
+                                    flagcxMemDevice, nullptr);
+          devMem->segmentedPeerLayouts = nullptr;
+        }
+        delete kWin;
+        devMem->window = nullptr;
+        return gdaResult;
+      }
+      devMem->hasWindow = kWin->hasAccess();
+    }
+#endif
   }
 
   return flagcxSuccess;
@@ -1323,6 +1370,9 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
 
 static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
+#if defined(FLAGCX_USE_XPU_NETIO)
+  FLAGCXCHECK(DefaultNvidiaGda::destroyWindow(devMem));
+#endif
   // Free window allocation if present
   if (devMem->window != nullptr) {
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);

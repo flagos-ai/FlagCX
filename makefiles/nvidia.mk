@@ -69,6 +69,9 @@ ifeq ($(USE_XPUNETIO), 1)
   XPU_NETIO_HOME ?= /usr/local
   XPU_NETIO_LIBDIR ?= $(XPU_NETIO_HOME)/lib
   DEVICE_INCLUDE += $(XPU_NETIO_HOME)/include
-  DEVICE_LINK += -L$(XPU_NETIO_LIBDIR) -Wl,-rpath,$(XPU_NETIO_LIBDIR) -lxpu_netio
+  DEVICE_LINK += -L$(XPU_NETIO_LIBDIR) -lxpu_netio
+  DEVICE_COMPILE_FLAG += -std=c++17
+  HOST_CXX_STANDARD += -std=c++17
+  PLATFORM_EXTRA_SRCS += flagcx/adaptor/device_api/nvidia_xpu_netio_host.cc
   PLATFORM_KERNEL_SRCS += $(PLATFORM_KERNEL_DIR)/net_gda_alltoall.cu
 endif

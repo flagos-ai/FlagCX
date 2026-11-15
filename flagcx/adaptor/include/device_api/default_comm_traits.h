@@ -133,8 +133,13 @@ struct DefaultNetProviderPolicy {
   template <typename Window>
   FLAGCX_HOST_DEVICE_INLINE static void initWindow(Window &) {}
 
-  template <typename Comm>
-  FLAGCX_HOST_DEVICE_INLINE static void initComm(Comm &) {}
+  template <typename Window>
+  FLAGCX_HOST_DEVICE_INLINE static bool hasWindowAccess(const Window &) {
+    return false;
+  }
+
+  template <typename Comm, typename HostComm>
+  FLAGCX_HOST_DEVICE_INLINE static void initComm(Comm &, const HostComm &) {}
 
   template <typename Comm>
   FLAGCX_HOST_DEVICE_INLINE static DefaultNetContext
@@ -327,7 +332,8 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     FLAGCX_HOST_DEVICE_INLINE bool hasAccess() const {
       return (mode == SYMMETRIC && flatBasePtr != nullptr) ||
-             (mode == ASYMMETRIC && ipcBasePtrs != nullptr) || mrIndex >= 0;
+             (mode == ASYMMETRIC && ipcBasePtrs != nullptr) || mrIndex >= 0 ||
+             DefaultNetProviderPolicy<PlatformTag>::hasWindowAccess(*this);
     }
     FLAGCX_HOST_DEVICE_INLINE void *getRawPtr() const { return rawPtr; }
     FLAGCX_HOST_DEVICE_INLINE void **getDevPeerPtrs() const {
@@ -482,7 +488,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     template <typename DI>
     static FLAGCX_HOST_DEVICE_INLINE void populateFromInternal(Comm &dc,
                                                                const DI &di) {
-      DefaultNetProviderPolicy<PlatformTag>::initComm(dc);
+      DefaultNetProviderPolicy<PlatformTag>::initComm(dc, di);
       dc.rank = di.rank;
       dc.nRanks = di.nRanks;
       dc.intraRank = di.intraRank;
@@ -805,7 +811,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           signalCount(dc.signalCount), counterCount(dc.counterCount) {
       int cnt = (dc.contextCount > 0) ? dc.contextCount : 1;
       _contextId = contextIndex % cnt;
-      if (dc.contextCount > 0 && context().provider == DefaultNetProviderProxy)
+      if (dc.contextCount > 0)
         fifoBuffer = dc.fifoBuffers[_contextId];
       teamRank = dc.teamRank;
       nTeamRanks = dc.nTeamRanks;
@@ -920,11 +926,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           ProxyProvider::buildTrd(flagcxDevicePrimTerm, 0, 0));
     }
 
-    // Two-sided operations belong to Proxy. A GDA context must not use the
-    // Proxy FIFO, even if this Net happens to carry one.
+    // The one-sided provider choice does not alter the two-sided transport.
+    // Every send/recv/term/wait still uses the Proxy FIFO.
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t requireProxyFifo() const {
-      if (context().provider != DefaultNetProviderProxy)
-        return flagcxNotSupported;
       return fifoBuffer != nullptr ? flagcxSuccess : flagcxInvalidUsage;
     }
 
