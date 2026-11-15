@@ -28,6 +28,11 @@ namespace {
 
 static constexpr unsigned kProviderId = 1;
 static constexpr uint64_t kTimeoutNs = UINT64_C(30000000000);
+static_assert(flagcxDevNetGdaOpPut == DefaultNetGdaPut &&
+                  flagcxDevNetGdaOpPutValue == DefaultNetGdaPutValue &&
+                  flagcxDevNetGdaOpFlush == DefaultNetGdaFlush &&
+                  flagcxDevNetGdaOpBarrier == DefaultNetGdaBarrier,
+              "public and default GDA operation bits must match");
 
 flagcxResult_t result(xpu_netio_status_t status) {
   switch (status) {
@@ -399,6 +404,11 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
         comm->nranks >
             INT_MAX / static_cast<int>(sizeof(xpu_netio_connect_blob_t)))
       local = flagcxNotSupported;
+    if (local == flagcxSuccess &&
+        defaultNetSelectProvider<NvidiaPlatform>(
+            kProviderId, owner->capabilities, requiredOperations, true) !=
+            DefaultNetProviderGda)
+      local = flagcxNotSupported;
   }
   flagcxResult_t common = stage(comm, local);
   if (common != flagcxSuccess)
@@ -642,6 +652,54 @@ flagcxResult_t destroyWindow(flagcxDevMem_t devMem) {
   devMem->gdaWindowOwner = nullptr;
   --owner->liveWindows;
   return flagcxSuccess;
+}
+
+flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
+                         uint32_t **deviceErrorFlag, uint64_t *maxChunkBytes,
+                         unsigned *requiredAlignment) {
+  if (devComm == nullptr || devComm->gdaProvider == 0 ||
+      devComm->gdaHostOwner == nullptr || capabilities == nullptr ||
+      deviceErrorFlag == nullptr || maxChunkBytes == nullptr ||
+      requiredAlignment == nullptr)
+    return flagcxInvalidArgument;
+  const CommOwner *owner =
+      static_cast<const CommOwner *>(devComm->gdaHostOwner);
+  *capabilities = owner->capabilities;
+  *deviceErrorFlag = owner->errorFlag;
+  *maxChunkBytes = std::min(owner->caps.max_transfer_bytes,
+                            owner->caps.max_write_chunk_bytes);
+  *requiredAlignment = owner->caps.required_alignment;
+  return flagcxSuccess;
+}
+
+flagcxResult_t clearError(flagcxDevComm_t devComm) {
+  if (devComm == nullptr || devComm->gdaProvider == 0 ||
+      devComm->gdaHostOwner == nullptr)
+    return flagcxInvalidArgument;
+  CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  return deviceAdaptor->deviceMemset(owner->errorFlag, 0, sizeof(uint32_t),
+                                     flagcxMemDevice, nullptr);
+}
+
+flagcxResult_t pollError(flagcxDevComm_t devComm) {
+  if (devComm == nullptr || devComm->gdaProvider == 0 ||
+      devComm->gdaHostOwner == nullptr)
+    return flagcxInvalidArgument;
+  CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  if (owner->published.needs_host_progress) {
+    uint32_t progressed = 0;
+    FLAGCXCHECK(result(xpu_netio_progress(&owner->published, 32, &progressed)));
+  }
+  xpu_netio_error_info_t info{};
+  xpu_netio_error_info_init(&info);
+  FLAGCXCHECK(result(xpu_netio_query_error(&owner->published, &info)));
+  if (info.category != XPU_NETIO_SUCCESS)
+    return result(info.category);
+  uint32_t deviceStatus = 0;
+  FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+      &deviceStatus, owner->errorFlag, sizeof(deviceStatus),
+      flagcxMemcpyDeviceToHost, nullptr, nullptr));
+  return result(static_cast<xpu_netio_status_t>(deviceStatus));
 }
 
 } // namespace DefaultNvidiaGda

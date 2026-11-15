@@ -1700,6 +1700,15 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
       return;
     int nPeers = _nTeamRanks - 1;
     _coop.sync();
+    // The GDA Barrier writes the same monotonically increasing epoch to each
+    // target's source slot. The local source slot is never waited on by self.
+    if (context().provider == DefaultNetProviderGda &&
+        _coop.threadRank() == 0) {
+      const int ownSlot =
+          _contextId * _signalCount + _barrierSignal0 + _teamRank;
+      ++_shadowBuffer[ownSlot];
+    }
+    _coop.sync();
     // Each thread handles a subset of peers (cooperative distribution)
     for (int i = _coop.threadRank(); i < nPeers; i += _coop.size()) {
       int peerIdx = (1 + _teamRank + i) % _nTeamRanks;
