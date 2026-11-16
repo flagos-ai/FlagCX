@@ -323,11 +323,21 @@ flagcxIsPeerLocal(const flagcxDevComm &comm, const flagcxTeam &team, int peer) {
 // Validate team semantics and return whether the peer is a P2P candidate.
 // Callers must still check the actual peer pointer: topology alone does not
 // guarantee that IPC/VMM setup succeeded.
+//
+// There is deliberately no caller-name parameter here. It used to be an
+// unused `const char *funcName`, and that argument could not bind at all on
+// address-space-disjoint compilers: measured on Ascend 910C (bisheng
+// 9.1.0-beta.3, probe r139), a string literal in this pass has type
+// `const __gm__ char[N]`, and the device image's generic addrspace pass
+// rejects the cross-space binding at every call site -- in an extern "C"
+// (non-template) inline body, which is type-checked at parse regardless of
+// any dead-code elimination. Dropping the dead argument keeps the behaviour
+// identical on every platform and makes the whole shared surface bindable
+// where literals live in a named address space.
 static FLAGCX_DEVICE_INLINE_DECORATOR bool
 flagcxValidateAndDispatch(const flagcxDevComm &comm, const flagcxTeam &team,
                           int peer, flagcxDevTeamKind_t teamKind,
-                          const char *funcName, bool &shouldReturn) {
-  (void)funcName;
+                          bool &shouldReturn) {
   shouldReturn = false;
   bool isPeerLocal = flagcxIsPeerLocal(comm, team, peer);
 
@@ -361,7 +371,7 @@ flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut", shouldReturn);
+                                          shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -399,7 +409,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigInc(
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut_RSigInc", shouldReturn);
+                                          shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -448,7 +458,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigAdd(
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut_RSigAdd", shouldReturn);
+                                          shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -497,7 +507,7 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_LCtrInc(
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPut_LCtrInc", shouldReturn);
+                                          shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -549,7 +559,7 @@ flagcxDevPut_RSigInc_LCtrInc(
   bool shouldReturn;
   bool useP2P =
       flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                "flagcxDevPut_RSigInc_LCtrInc", shouldReturn);
+                                shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -602,7 +612,7 @@ flagcxDevPut_RSigAdd_LCtrInc(
   bool shouldReturn;
   bool useP2P =
       flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                "flagcxDevPut_RSigAdd_LCtrInc", shouldReturn);
+                                shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -658,7 +668,7 @@ flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevGet", shouldReturn);
+                                          shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -697,7 +707,7 @@ flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          "flagcxDevPutValue", shouldReturn);
+                                          shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -740,7 +750,7 @@ flagcxDevPutValue_RSigInc(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(
-      *comm, team, peer, teamKind, "flagcxDevPutValue_RSigInc", shouldReturn);
+      *comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -784,7 +794,7 @@ flagcxDevPutValue_RSigAdd(
 
   bool shouldReturn;
   bool useP2P = flagcxValidateAndDispatch(
-      *comm, team, peer, teamKind, "flagcxDevPutValue_RSigAdd", shouldReturn);
+      *comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =

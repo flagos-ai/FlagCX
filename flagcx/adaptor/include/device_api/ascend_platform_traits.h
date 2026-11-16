@@ -364,6 +364,38 @@ struct PlatformTraits<AscendPlatform> {
       asc_dcci_entire_out();
     }
 
+    // Plain-pointer 64-bit overloads of the same ordered pair, added when the
+    // unified backend contract met this platform (probe r139, Stage B). The
+    // shared INTRA barrier (default_comm_traits.h:1494-1570) hands
+    // non-__gm__ uint64_t* inbox and epoch slots to
+    // PlatformTraits<P>::Atomic::load/store, whose device path delegates
+    // here; with only __gm__ overloads, flagcx_device_scalar_ir_impl.h's
+    // extern "C" (non-template) barrier wrappers type-checked at parse and
+    // the entire unified surface was uninstantiable on this pass.
+    //
+    // What is unchanged: the fences are the measured dcci pair, and dcci is
+    // whole-cache control - it does not depend on the declared space of the
+    // pointer it surrounds. Plain addressing reaches GM on this pass
+    // (probes RP and K4, and the local-pointer kernel in
+    // test/kernel/ascend/device_api.asc runs it).
+    //
+    // What is new and NOT yet measured: (1) the 64-bit access width, which
+    // the __gm__ pair deliberately kept absent (:341-345); (2) visibility
+    // across AI cores over IPC-mapped peer memory, which the barrier's
+    // arrive/wait loop is the first thing to exercise. The first
+    // test_device_ir_unified_intra run is the gate for both - until that
+    // log exists this overload is wiring, not evidence.
+    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+    load(const volatile uint64_t *p) {
+      asc_dcci_entire_all();
+      return *p;
+    }
+    static FLAGCX_DEVICE_INLINE_DECORATOR void
+    store(volatile uint64_t *p, uint64_t v) {
+      *p = v;
+      asc_dcci_entire_out();
+    }
+
     // Read-modify-write is a declared-absent capability on this toolchain,
     // not an implementation. Three independent measurements on Ascend 910C /
     // __NPU_ARCH__ 2201 / CANN 9.1.0-beta.3 say the device atomic channel is
@@ -387,7 +419,16 @@ struct PlatformTraits<AscendPlatform> {
     //      it: "function type 'unsigned long (__gm__ void *, unsigned long,
     //      unsigned int) noexcept' of '__builtin_cce_atom_add_G_u64' does not
     //      support the given target feature" (probe F0). That is also why the
-    //      reduce variants are u32/s32/f32 only, with no u64.
+    //      reduce variants are u32/s32/f32 only, with no u64. Probe r137p
+    //      (910C, 2026-11-16) closed the last width loophole — the completion
+    //      word this backend needs on Ascend is 32-bit, so _G_u32 was the one
+    //      spelling that could have rescued S20-S25 — and it refused the same
+    //      way: "function type 'unsigned int (__gm__ void *, unsigned int,
+    //      unsigned int) noexcept' of '__builtin_cce_atom_add_G_u32' does not
+    //      support the given target feature". The refusal is family-wide, not
+    //      u64-specific; the only route left to a real read-modify-write is a
+    //      CANN release that gates 2201 in (or the pipe/fixpipe path, which is
+    //      what the review's item 4 covers and which nothing here rules out).
     //   3. every vendor surface above the builtins is arch-gated away from
     //      2201: simt_api/device_atomic_functions.h:21 and
     //      basic_api/kernel_operator_atomic_intf.h:30 both key on
