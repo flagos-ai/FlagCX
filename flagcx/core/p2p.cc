@@ -268,65 +268,6 @@ flagcxP2pProgressProxyOp(struct flagcxProxyConnection *connection,
                                                 __ATOMIC_ACQUIRE),
             (unsigned long long)__atomic_load_n(&own->recvTail,
                                                 __ATOMIC_ACQUIRE));
-        if (!connection->send && strcmp(deviceAdaptor->name, "IXCUDA") == 0 &&
-            op->args.p2pPlan == flagcxP2pPlanFifo &&
-            op->args.transmitted < op->args.copied) {
-          const int chunk = op->args.transmitted;
-          const int slot = chunk & op->args.sendStepMask;
-          int startResult = -1;
-          if (resources->proxyInfo.copyStartRecorded[slot] &&
-              resources->proxyInfo.copyStartEvents[slot] != NULL) {
-            TRACE(FLAGCX_P2P,
-                  "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                  "slot=%d stage=start-query-enter event=%p",
-                  op->rank, op->root, op->args.opId, chunk, slot,
-                  resources->proxyInfo.copyStartEvents[slot]);
-            startResult = deviceAdaptor->eventQuery(
-                resources->proxyInfo.copyStartEvents[slot]);
-            TRACE(FLAGCX_P2P,
-                  "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                  "slot=%d stage=start-query-return result=%d",
-                  op->rank, op->root, op->args.opId, chunk, slot, startResult);
-          }
-          TRACE(FLAGCX_P2P,
-                "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                "slot=%d stage=done-query-enter event=%p",
-                op->rank, op->root, op->args.opId, chunk, slot,
-                resources->proxyInfo.events[slot]);
-          const int doneResult =
-              deviceAdaptor->eventQuery(resources->proxyInfo.events[slot]);
-          TRACE(FLAGCX_P2P,
-                "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                "slot=%d stage=done-query-return result=%d",
-                op->rank, op->root, op->args.opId, chunk, slot, doneResult);
-          int streamResult = -1;
-          if (deviceAdaptor->streamQuery != NULL) {
-            TRACE(FLAGCX_P2P,
-                  "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                  "slot=%d stage=stream-query-enter stream=%p",
-                  op->rank, op->root, op->args.opId, chunk, slot,
-                  resources->proxyInfo.stream);
-            streamResult =
-                deviceAdaptor->streamQuery(resources->proxyInfo.stream);
-            TRACE(FLAGCX_P2P,
-                  "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                  "slot=%d stage=stream-query-return result=%d",
-                  op->rank, op->root, op->args.opId, chunk, slot, streamResult);
-          }
-          TRACE(FLAGCX_P2P,
-                "P2P proxy copy-state rank=%d peer=%d op_id=%d chunk=%d "
-                "slot=%d start_event=%p start_result=%d done_event=%p "
-                "done_result=%d stream=%p stream_result=%d "
-                "send_head=%llu recv_tail=%llu",
-                op->rank, op->root, op->args.opId, chunk, slot,
-                resources->proxyInfo.copyStartEvents[slot], startResult,
-                resources->proxyInfo.events[slot], doneResult,
-                resources->proxyInfo.stream, streamResult,
-                (unsigned long long)__atomic_load_n(&peer->sendHead,
-                                                    __ATOMIC_ACQUIRE),
-                (unsigned long long)__atomic_load_n(&own->recvTail,
-                                                    __ATOMIC_ACQUIRE));
-        }
         op->args.p2pTraceTimeNs = nowNs;
       }
     }
@@ -725,25 +666,6 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
               args->opId, args->copied, step, args->subs[step].stepBuff,
               (char *)data + args->totalCopySize, args->subs[step].stepSize,
               resources->proxyInfo.stream);
-        if (resources->proxyInfo.copyStartEvents[step] != NULL) {
-          TRACE(FLAGCX_P2P,
-                "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
-                "slot=%d stage=start-record-enter event=%p stream=%p",
-                args->opId, args->copied, step,
-                resources->proxyInfo.copyStartEvents[step],
-                resources->proxyInfo.stream);
-          flagcxResult_t markerResult = deviceAdaptor->eventRecord(
-              resources->proxyInfo.copyStartEvents[step],
-              resources->proxyInfo.stream);
-          resources->proxyInfo.copyStartRecorded[step] =
-              markerResult == flagcxSuccess;
-          TRACE(FLAGCX_P2P,
-                "P2P proxy copy-start op_id=%d chunk=%d slot=%d event=%p "
-                "result=%d stream=%p",
-                args->opId, args->copied, step,
-                resources->proxyInfo.copyStartEvents[step], markerResult,
-                resources->proxyInfo.stream);
-        }
         TRACE(FLAGCX_P2P,
               "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
               "slot=%d stage=copy-enter src=%p dst=%p bytes=%zu stream=%p",
@@ -1008,16 +930,6 @@ flagcxP2pRecvProxyConnect(struct flagcxProxyConnection *connection,
   for (int i = 0; i < flagcxP2pChunks; i++) {
     FLAGCXCHECK(deviceAdaptor->eventCreate(&resources->proxyInfo.events[i],
                                            flagcxEventDisableTiming));
-    if (strcmp(deviceAdaptor->name, "IXCUDA") == 0 &&
-        __atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
-            FLAGCX_LOG_TRACE &&
-        (flagcxDebugMask & FLAGCX_P2P) != 0) {
-      flagcxResult_t markerResult = deviceAdaptor->eventCreate(
-          &resources->proxyInfo.copyStartEvents[i], flagcxEventDisableTiming);
-      if (markerResult != flagcxSuccess)
-        WARN("P2P recv copy marker creation failed slot=%d result=%d", i,
-             markerResult);
-    }
   }
 
   *done = 1;
@@ -1735,14 +1647,6 @@ flagcxResult_t flagcxP2pRecvProxyFree(struct flagcxP2pResources *resources) {
 
   // Destroy events
   for (int s = 0; s < flagcxP2pChunks; s++) {
-    if (resources->proxyInfo.copyStartEvents[s] != NULL) {
-      flagcxResult_t cleanupResult =
-          deviceAdaptor->eventDestroy(resources->proxyInfo.copyStartEvents[s]);
-      if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-          cleanupResult != flagcxInProgress)
-        result = cleanupResult;
-      resources->proxyInfo.copyStartEvents[s] = NULL;
-    }
     if (resources->proxyInfo.events[s] != NULL) {
       flagcxResult_t cleanupResult =
           deviceAdaptor->eventDestroy(resources->proxyInfo.events[s]);

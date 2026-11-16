@@ -195,16 +195,6 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           for (int s = 0; s < flagcxNetChunks; s++) {
             FLAGCXCHECK(deviceAdaptor->eventCreate(&resources->cpEvents[s],
                                                    flagcxEventDisableTiming));
-            if (strcmp(deviceAdaptor->name, "IXCUDA") == 0 &&
-                __atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
-                    FLAGCX_LOG_TRACE &&
-                (flagcxDebugMask & FLAGCX_NET) != 0) {
-              flagcxResult_t markerResult = deviceAdaptor->eventCreate(
-                  &resources->cpStartEvents[s], flagcxEventDisableTiming);
-              if (markerResult != flagcxSuccess)
-                WARN("NET recv copy marker creation failed slot=%d result=%d",
-                     s, markerResult);
-            }
           }
           resources->buffSizes[0] = flagcxNetBufferSize;
           if (comm->netAdaptor == getNetAdaptor(SOCKET)) {

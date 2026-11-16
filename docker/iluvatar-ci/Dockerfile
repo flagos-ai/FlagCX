@@ -6,6 +6,7 @@ ENV MPI_HOME=/usr/local/openmpi
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
       cmake \
+      gdb \
       git \
       libgoogle-perftools-dev \
       libibumad-dev \

@@ -71,6 +71,29 @@ if ((${#tests[@]} == 0)); then
   exit 1
 fi
 
+# The published CI image may predate the Dockerfile's gdb dependency. Install
+# it for this runner job so a SendRecv timeout yields user-space thread stacks.
+# Diagnostics remain best effort if the package mirror is unavailable.
+needs_sendrecv_diagnostics=0
+for test in "${tests[@]}"; do
+  if [[ "$test" == *.SendRecv || "$test" == *.SendRecvProbe ]]; then
+    needs_sendrecv_diagnostics=1
+    break
+  fi
+done
+if ((needs_sendrecv_diagnostics)) &&
+   [[ "${FLAGCX_CI_INSTALL_GDB:-0}" == 1 ]] &&
+   ! command -v gdb >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    if ! timeout --signal=TERM --kill-after=5s 90s bash -c \
+      'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb'; then
+      echo 'Iluvatar runner: gdb installation failed; timeout diagnostics will use /proc only' >&2
+    fi
+  else
+    echo 'Iluvatar runner: apt-get unavailable; timeout diagnostics will use /proc only' >&2
+  fi
+fi
+
 status=0
 label=${FLAGCX_CI_MPI_LABEL:-Iluvatar runner}
 executed=0
@@ -89,13 +112,14 @@ for index in "${!tests[@]}"; do
   test_status=0
   require_pass=0
   if [[ "$test" == FlagCXCollTest.SendRecv ||
+        "$test" == FlagCXCollTest.SendRecvProbe ||
         "$test" == FlagCXCollTest.AlltoAll ]]; then
     # GTest returns zero for an all-skipped case. These restored cases must
     # report an actual pass, not merely a successful MPI exit.
     require_pass=1
   fi
-  if [[ "$test" == *.SendRecv ]]; then
-    # Give a stuck P2P case a short timeout and collect pre-timeout stacks.
+  if [[ "$test" == *.SendRecv || "$test" == *.SendRecvProbe ]]; then
+    # Bound a stuck case and collect pre-timeout stacks.
     FLAGCX_CI_MPI_TIMEOUT="$sendrecv_timeout" \
       FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="$diagnostics_after" \
       FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \

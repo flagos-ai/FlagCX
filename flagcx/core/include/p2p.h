@@ -96,8 +96,6 @@ struct flagcxP2pShmProxyInfo {
   char *recvFifo;
   flagcxStream_t stream;
   flagcxEvent_t events[FLAGCX_P2P_MAX_STEPS];
-  flagcxEvent_t copyStartEvents[FLAGCX_P2P_MAX_STEPS];
-  uint8_t copyStartRecorded[FLAGCX_P2P_MAX_STEPS];
 };
 
 struct flagcxP2pResources {

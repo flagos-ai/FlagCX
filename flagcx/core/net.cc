@@ -1201,47 +1201,6 @@ static void flagcxTraceNetRecv(recvNetResources *resources,
         args->postFlush, args->waitCopy, args->copied, args->chunkSteps,
         args->regBufFlag, const_cast<void *>(source),
         const_cast<void *>(destination), bytes, resources->cpStream);
-  if (stageId == 11 && slot >= 0 &&
-      strcmp(deviceAdaptor->name, "IXCUDA") == 0) {
-    const int rank = resources->commPtr == NULL ? resources->tpRank
-                                                : resources->commPtr->rank;
-    int startResult = -1;
-    if (resources->cpStartRecorded[slot] &&
-        resources->cpStartEvents[slot] != NULL) {
-      TRACE(FLAGCX_NET,
-            "NET proxy recv copy-state rank=%d peer=%d channel=%d op_id=%d "
-            "chunk=%d slot=%d stage=start-query-enter event=%p",
-            rank, resources->tpRemoteRank, resources->channelId, args->opId,
-            chunk, slot, resources->cpStartEvents[slot]);
-      startResult = deviceAdaptor->eventQuery(resources->cpStartEvents[slot]);
-      TRACE(FLAGCX_NET,
-            "NET proxy recv copy-state rank=%d peer=%d channel=%d op_id=%d "
-            "chunk=%d slot=%d stage=start-query-return result=%d",
-            rank, resources->tpRemoteRank, resources->channelId, args->opId,
-            chunk, slot, startResult);
-    }
-    int streamResult = -1;
-    if (deviceAdaptor->streamQuery != NULL) {
-      TRACE(FLAGCX_NET,
-            "NET proxy recv copy-state rank=%d peer=%d channel=%d op_id=%d "
-            "chunk=%d slot=%d stage=stream-query-enter stream=%p",
-            rank, resources->tpRemoteRank, resources->channelId, args->opId,
-            chunk, slot, resources->cpStream);
-      streamResult = deviceAdaptor->streamQuery(resources->cpStream);
-      TRACE(FLAGCX_NET,
-            "NET proxy recv copy-state rank=%d peer=%d channel=%d op_id=%d "
-            "chunk=%d slot=%d stage=stream-query-return result=%d",
-            rank, resources->tpRemoteRank, resources->channelId, args->opId,
-            chunk, slot, streamResult);
-    }
-    TRACE(FLAGCX_NET,
-          "NET proxy recv copy-state rank=%d peer=%d channel=%d op_id=%d "
-          "chunk=%d slot=%d start_event=%p start_result=%d "
-          "done_event=%p done_result=%d stream=%p stream_result=%d",
-          rank, resources->tpRemoteRank, resources->channelId, args->opId,
-          chunk, slot, resources->cpStartEvents[slot], startResult,
-          resources->cpEvents[slot], result, resources->cpStream, streamResult);
-  }
 }
 
 flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
@@ -1422,28 +1381,6 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                              flagcxInProgress, 0, -1, args->subs[step].stepBuff,
                              (char *)data + args->totalCopySize,
                              args->subs[step].stepSize);
-          if (resources->cpStartEvents[step] != NULL) {
-            TRACE(FLAGCX_NET,
-                  "NET proxy recv rank=%d peer=%d channel=%d op_id=%d "
-                  "stage=start-record-enter chunk=%d slot=%d event=%p "
-                  "stream=%p",
-                  resources->commPtr == NULL ? resources->tpRank
-                                             : resources->commPtr->rank,
-                  resources->tpRemoteRank, resources->channelId, args->opId,
-                  args->waitCopy, step, resources->cpStartEvents[step],
-                  resources->cpStream);
-            flagcxResult_t markerResult = deviceAdaptor->eventRecord(
-                resources->cpStartEvents[step], resources->cpStream);
-            resources->cpStartRecorded[step] = markerResult == flagcxSuccess;
-            TRACE(FLAGCX_NET,
-                  "NET proxy recv copy-start rank=%d peer=%d channel=%d "
-                  "op_id=%d chunk=%d slot=%d event=%p result=%d stream=%p",
-                  resources->commPtr == NULL ? resources->tpRank
-                                             : resources->commPtr->rank,
-                  resources->tpRemoteRank, resources->channelId, args->opId,
-                  args->waitCopy, step, resources->cpStartEvents[step],
-                  markerResult, resources->cpStream);
-          }
           flagcxMemcpyType_t copyType =
               resources->netAdaptor == getNetAdaptor(RDMA) ||
                       (resources->netAdaptor != getNetAdaptor(SOCKET) &&
@@ -1677,11 +1614,6 @@ flagcxResult_t flagcxRecvProxyFree(recvNetResources *resources) {
 
   flagcxResult_t result = flagcxSuccess;
   for (int s = 0; s < flagcxNetChunks; s++) {
-    if (resources->cpStartEvents[s] != NULL) {
-      flagcxProxyCleanupResult(
-          deviceAdaptor->eventDestroy(resources->cpStartEvents[s]), &result);
-      resources->cpStartEvents[s] = NULL;
-    }
     if (resources->cpEvents[s] != NULL) {
       flagcxProxyCleanupResult(
           deviceAdaptor->eventDestroy(resources->cpEvents[s]), &result);
