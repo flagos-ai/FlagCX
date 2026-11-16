@@ -90,7 +90,7 @@ flagcxResult_t ecclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ecclAdaptorMemAlloc(void **ptr, size_t size) {
-  return (flagcxResult_t)ecclMemAlloc(ptr, 2*size);
+  return (flagcxResult_t)ecclMemAlloc(ptr, size);
 }
 
 flagcxResult_t ecclAdaptorMemFree(void *ptr) {
@@ -116,7 +116,7 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
   }
   ecclWindow_t ecclWin = NULL;
   flagcxResult_t res = (flagcxResult_t)ecclCommWindowRegister(
-      comm->base, buff, 2*size, &ecclWin, winFlags);
+      comm->base, buff, size, &ecclWin, winFlags);
   if (res == flagcxSuccess) {
     (*win)->base = ecclWin;
     (*win)->winFlags = winFlags;

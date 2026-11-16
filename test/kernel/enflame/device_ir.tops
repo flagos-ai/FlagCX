@@ -223,8 +223,9 @@ void launchKernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output,
-                    int count) {
+                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+                    float *output, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
   int nRanks = comm->getIntraSize();
@@ -252,7 +253,7 @@ kernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   // Phase 1: Write my data to peer's helper region
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetIntraPointerS(devMemPtr, i * sizeof(float), myRank);
-    float *peerPtr = (float *)flagcxGetIntraPointerS(devMemPtr, (count + i) * sizeof(float), peer);
+    float *peerPtr = (float *)flagcxGetIntraPointerS(helperMemPtr, i * sizeof(float), peer);
     *peerPtr = *myPtr;
   }
 
@@ -260,7 +261,7 @@ kernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
   // Phase 2: Read from local helper region
   for (int i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetIntraPointerS(devMemPtr, (count + i) * sizeof(float), myRank);
+    float *myPtr = (float *)flagcxGetIntraPointerS(helperMemPtr, i * sizeof(float), myRank);
     output[i] = *myPtr;
   }
 }
@@ -268,6 +269,7 @@ kernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 FLAGCX_GLOBAL_DECORATOR void
 kernelIntraPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                               float *output, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
@@ -294,7 +296,7 @@ kernelIntraPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetIntraPointerS(devMemPtr, i * sizeof(float), myRank);
     float *peerPtr = (float *)flagcxGetIntraPointerWithAccessS(
-        devMemPtr, (count + i) * sizeof(float), peer, flagcxDevPeerAccessReadOnly);
+        helperMemPtr, i * sizeof(float), peer, flagcxDevPeerAccessReadOnly);
     *peerPtr = *myPtr;
   }
 
@@ -302,20 +304,21 @@ kernelIntraPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetIntraPointerWithAccessS(
-        devMemPtr, (count + i) * sizeof(float), myRank, flagcxDevPeerAccessReadOnly);
+        helperMemPtr, i * sizeof(float), myRank, flagcxDevPeerAccessReadOnly);
     output[i] = *myPtr;
   }
 }
 
 void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                                float *devOutput, int count,
                                flagcxStream_t stream) {
-  if (!devCommPtr || !devMemPtr || !devOutput) return;
+  if (!devCommPtr || !devMemPtr || !helperMemPtr || !devOutput) return;
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelIntraPointerS, stream, devCommPtr, devMemPtr, devOutput, count);
+      kernelIntraPointerS, stream, devCommPtr, devMemPtr, helperMemPtr, devOutput, count);
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelIntraPointerWithAccessS, stream, devCommPtr, devMemPtr, devOutput, count);
+      kernelIntraPointerWithAccessS, stream, devCommPtr, devMemPtr, helperMemPtr, devOutput, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +328,7 @@ void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 FLAGCX_GLOBAL_DECORATOR void
 kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                         const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                        const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                         float *buffer, float *output, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
@@ -356,14 +360,14 @@ kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   // ECCL LSA write-only adaptation
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
-    float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
+    float *peerPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
     *peerPtr = *myPtr;
   }
 
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (int i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    float *myPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
     output[i] = *myPtr;
   }
 
@@ -372,11 +376,12 @@ kernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                                   const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                                    float *buffer, float *output, int count,
                                    flagcxStream_t stream) {
-  if (!devCommPtr || !devMemPtr || !buffer || !output) return;
+  if (!devCommPtr || !devMemPtr || !helperMemPtr || !buffer || !output) return;
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelIntraBarrierSyncS, stream, devCommPtr, devMemPtr, buffer, output, count);
+      kernelIntraBarrierSyncS, stream, devCommPtr, devMemPtr, helperMemPtr, buffer, output, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -386,6 +391,7 @@ void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 FLAGCX_GLOBAL_DECORATOR void
 kernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                               float *buffer, float *output, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
@@ -420,14 +426,14 @@ kernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   // ECCL LSA write-only adaptation
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
-    float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
+    float *peerPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer);
     *peerPtr = *myPtr;
   }
 
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (int i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
+    float *myPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank);
     output[i] = *myPtr;
   }
 
@@ -436,11 +442,13 @@ kernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 void launchKernelIntraBarrierArriveWaitS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+    float *buffer, float *output,
     int count, flagcxStream_t stream) {
-  if (!devCommPtr || !devMemPtr || !buffer || !output) return;
+  if (!devCommPtr || !devMemPtr || !helperMemPtr || !buffer || !output) return;
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelIntraBarrierArriveWaitS, stream, devCommPtr, devMemPtr, buffer, output, count);
+      kernelIntraBarrierArriveWaitS, stream, devCommPtr, devMemPtr, helperMemPtr, buffer, output, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -449,8 +457,9 @@ void launchKernelIntraBarrierArriveWaitS(
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *output,
-                   int count) {
+                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                   const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+                   float *output, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
   int nRanks = comm->getIntraSize();
@@ -477,7 +486,7 @@ kernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
                                                    devCommPtr, FLAGCX_TEAM_INTRA, myRank);
-    float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+    float *peerPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float),
                                                      devCommPtr, FLAGCX_TEAM_INTRA, peer);
     *peerPtr = *myPtr;
   }
@@ -485,7 +494,7 @@ kernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (int i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+    float *myPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float),
                                                    devCommPtr, FLAGCX_TEAM_INTRA, myRank);
     output[i] = *myPtr;
   }
@@ -494,6 +503,7 @@ kernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 FLAGCX_GLOBAL_DECORATOR void
 kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                             const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                              float *output, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
@@ -522,7 +532,7 @@ kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
                                                    devCommPtr, FLAGCX_TEAM_INTRA, myRank);
     float *peerPtr = (float *)flagcxGetPeerPointerWithAccessS(
-        devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer,
+        helperMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, peer,
         flagcxDevPeerAccessReadOnly);
     *peerPtr = *myPtr;
   }
@@ -531,7 +541,7 @@ kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
   for (int i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointerWithAccessS(
-        devMemPtr, (count + i) * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank,
+        helperMemPtr, i * sizeof(float), devCommPtr, FLAGCX_TEAM_INTRA, myRank,
         flagcxDevPeerAccessReadOnly);
     output[i] = *myPtr;
   }
@@ -539,13 +549,14 @@ kernelPeerPointerWithAccessS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                               float *devOutput, int count,
                               flagcxStream_t stream) {
-  if (!devCommPtr || !devMemPtr || !devOutput) return;
+  if (!devCommPtr || !devMemPtr || !helperMemPtr || !devOutput) return;
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelPeerPointerS, stream, devCommPtr, devMemPtr, devOutput, count);
+      kernelPeerPointerS, stream, devCommPtr, devMemPtr, helperMemPtr, devOutput, count);
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelPeerPointerWithAccessS, stream, devCommPtr, devMemPtr, devOutput, count);
+      kernelPeerPointerWithAccessS, stream, devCommPtr, devMemPtr, helperMemPtr, devOutput, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -554,8 +565,9 @@ void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 FLAGCX_GLOBAL_DECORATOR void
 kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                      const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
-                      int count) {
+                      const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                      const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+                      float *buffer, int count) {
   const flagcxDevComm *comm = (const flagcxDevComm *)devCommPtr;
   int myRank = comm->getIntraRank();
   int nRanks = comm->getIntraSize();
@@ -601,7 +613,7 @@ kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
       for (int i = tid; i < count; i += nthreads) {
         float *myPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
                                                        devCommPtr, FLAGCX_TEAM_INTRA, myRank);
-        float *peerPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+        float *peerPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float),
                                                          devCommPtr, FLAGCX_TEAM_INTRA, 0);
         *peerPtr = *myPtr;
       }
@@ -611,7 +623,7 @@ kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
     if (myRank == 0) {
       for (int i = tid; i < count; i += nthreads) {
-        float *helperPtr = (float *)flagcxGetPeerPointerS(devMemPtr, (count + i) * sizeof(float),
+        float *helperPtr = (float *)flagcxGetPeerPointerS(helperMemPtr, i * sizeof(float),
                                                            devCommPtr, FLAGCX_TEAM_INTRA, 0);
         float *dataPtr = (float *)flagcxGetPeerPointerS(devMemPtr, i * sizeof(float),
                                                          devCommPtr, FLAGCX_TEAM_INTRA, 0);
@@ -645,11 +657,12 @@ kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                  const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
                                  float *buffer, int count,
                                  flagcxStream_t stream) {
-  if (!devCommPtr || !devMemPtr || !buffer) return;
+  if (!devCommPtr || !devMemPtr || !helperMemPtr || !buffer) return;
   launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      kernelIntraAllReduceS, stream, devCommPtr, devMemPtr, buffer, count);
+      kernelIntraAllReduceS, stream, devCommPtr, devMemPtr, helperMemPtr, buffer, count);
 }
 
 // ---------------------------------------------------------------------------

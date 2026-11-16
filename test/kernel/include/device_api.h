@@ -12,10 +12,19 @@
 #include "flagcx_kernel.h"
 
 // Intra-node AllReduce using FlagCX Device API.
+#if defined(USE_ENFLAME_ADAPTOR)
+flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem,
+                                          flagcxDevMem_t helperMem,
+                                          size_t count,
+                                          flagcxDataType_t datatype,
+                                          flagcxDevComm_t devComm,
+                                          flagcxStream_t stream);
+#else
 flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxDataType_t datatype,
                                           flagcxDevComm_t devComm,
                                           flagcxStream_t stream);
+#endif
 
 // Inter-node one-sided AlltoAll (put + waitSignal + flush).
 flagcxResult_t
@@ -92,27 +101,57 @@ flagcxResult_t launchKernelLocalPointer(flagcxDevMem_t devMem, void *rawPtr,
 
 // K2: Intra Pointer — read peer's buffer via flagcxGetIntraPointer
 // Writes peer's data into output buffer
+#if defined(USE_ENFLAME_ADAPTOR)
+flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
+                                        flagcxDevMem_t helperMem,
+                                        flagcxDevComm_t devComm, float *output,
+                                        size_t count, flagcxStream_t stream);
+#else
 flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
                                         flagcxDevComm_t devComm, float *output,
                                         size_t count, flagcxStream_t stream);
+#endif
 
 // K3: Peer Pointer (team) — read peer via flagcxGetPeerPointer(mem, off, team,
 // peer)
+#if defined(USE_ENFLAME_ADAPTOR)
+flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,
+                                       flagcxDevMem_t helperMem,
+                                       flagcxDevComm_t devComm, float *output,
+                                       size_t count, flagcxStream_t stream);
+#else
 flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,
                                        flagcxDevComm_t devComm, float *output,
                                        size_t count, flagcxStream_t stream);
+#endif
 
 // K5: Intra Barrier Sync — write local, barrier, read peer
+#if defined(USE_ENFLAME_ADAPTOR)
+flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,
+                                            flagcxDevMem_t helperMem,
+                                            flagcxDevComm_t devComm,
+                                            float *output, size_t count,
+                                            flagcxStream_t stream);
+#else
 flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,
                                             flagcxDevComm_t devComm,
                                             float *output, size_t count,
                                             flagcxStream_t stream);
+#endif
 
 // K6: Intra Barrier Arrive/Wait — write local, arrive, wait, read peer
+#if defined(USE_ENFLAME_ADAPTOR)
+flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
+                                                  flagcxDevMem_t helperMem,
+                                                  flagcxDevComm_t devComm,
+                                                  float *output, size_t count,
+                                                  flagcxStream_t stream);
+#else
 flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
                                                   flagcxDevComm_t devComm,
                                                   float *output, size_t count,
                                                   flagcxStream_t stream);
+#endif
 
 // K7: SymPtr — test flagcxSymPtr<float> localPtr/intraPtr + arithmetic
 // results[0] = all checks pass ? 1 : 0

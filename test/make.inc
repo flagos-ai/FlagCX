@@ -159,6 +159,12 @@ ifeq ($(USE_ILUVATAR), 1)
 # widths as the library. Other platforms pass HOST_ADAPTOR_DEFINE per target.
 CXXFLAGS += $(HOST_ADAPTOR_DEFINE) -I$(DEVICE_HOME)/include
 endif
+ifeq ($(USE_ENFLAME), 1)
+# Define USE_ENFLAME_ADAPTOR for every host translation unit so host tests
+# see the same adaptor layout and dual-buffer kernel signatures as the library.
+# Also expose the TOPS headers so device_utils.h can find tops/tops_runtime.h.
+CXXFLAGS += $(HOST_ADAPTOR_DEFINE) -I$(DEVICE_HOME)/include
+endif
 # PLATFORM_IR_DIR is derived from KERNEL_PLATFORM further down, once
 # DEVICE_PLATFORM is known to be non-empty. Do not define it twice.
 

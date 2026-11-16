@@ -235,7 +235,8 @@ flagcxResult_t launchKernelLocalPointer(flagcxDevMem_t devMem, void *rawPtr,
 
 // K2: Intra Pointer
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxIntraTestIntraPointerKernel(flagcxDevMem devMem, flagcxDevComm devComm,
+    flagcxIntraTestIntraPointerKernel(flagcxDevMem devMem, flagcxDevMem helperMem,
+                                     flagcxDevComm devComm,
                                      float *output, size_t count) {
   int myRank = devComm.getIntraRank();
   int nRanks = devComm.getIntraSize();
@@ -258,7 +259,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // ECCL LSA write-only, cannot read peers' send buffers.
   for (size_t i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetIntraPointer(devMem, i * sizeof(float), myRank);
-    float *peerPtr = (float *)flagcxGetIntraPointer(devMem, (count + i ) * sizeof(float), peer);
+    float *peerPtr = (float *)flagcxGetIntraPointer(helperMem, i * sizeof(float), peer);
     // write my data to peer helper mem
     *peerPtr = *myPtr;
   }
@@ -266,27 +267,30 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (size_t i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetIntraPointer(devMem, (count + i ) * sizeof(float), myRank);
+    float *myPtr = (float *)flagcxGetIntraPointer(helperMem, i * sizeof(float), myRank);
     // read data from local helper mem
     output[i] = *myPtr;
   }
 }
 
 flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
+                                        flagcxDevMem_t helperMem,
                                         flagcxDevComm_t devComm, float *output,
                                         size_t count, flagcxStream_t stream) {
-  if (!devMem || !devComm || !output) return flagcxInternalError;
+  if (!devMem || !helperMem || !devComm || !output) return flagcxInternalError;
 
   flagcxDevMem dm(*devMem);
+  flagcxDevMem hm(*helperMem);
   flagcxDevComm dc(*devComm);
 
   return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-    flagcxIntraTestIntraPointerKernel, stream, dm, dc, output, count);
+    flagcxIntraTestIntraPointerKernel, stream, dm, hm, dc, output, count);
 }
 
 // K3: Peer Pointer (team-based)
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxIntraTestPeerPointerKernel(flagcxDevMem devMem, flagcxDevComm devComm,
+    flagcxIntraTestPeerPointerKernel(flagcxDevMem devMem, flagcxDevMem helperMem,
+                                    flagcxDevComm devComm,
                                     float *output, size_t count) {
   int myRank = devComm.getIntraRank();
   int nRanks = devComm.getIntraSize();
@@ -309,7 +313,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // ECCL LSA write-only, cannot read peers' send buffers.
   for (size_t i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointer(devMem, i * sizeof(float), myRank);
-    float *peerPtr = (float *)flagcxGetPeerPointer(devMem, (count + i ) * sizeof(float), peer);
+    float *peerPtr = (float *)flagcxGetPeerPointer(helperMem, i * sizeof(float), peer);
     // write my data to peer helper mem
     *peerPtr = *myPtr;
   }
@@ -317,25 +321,28 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (size_t i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetPeerPointer(devMem, (count + i ) * sizeof(float), myRank);
+    float *myPtr = (float *)flagcxGetPeerPointer(helperMem, i * sizeof(float), myRank);
     // read data from local helper mem
     output[i] = *myPtr;
   }
 }
 
 flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,
+                                       flagcxDevMem_t helperMem,
                                        flagcxDevComm_t devComm, float *output,
                                        size_t count, flagcxStream_t stream) {
-  if (!devMem || !devComm || !output) return flagcxInternalError;
+  if (!devMem || !helperMem || !devComm || !output) return flagcxInternalError;
   flagcxDevMem dm(*devMem);
+  flagcxDevMem hm(*helperMem);
   flagcxDevComm dc(*devComm);
   return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      flagcxIntraTestPeerPointerKernel, stream, dm, dc, output, count);
+      flagcxIntraTestPeerPointerKernel, stream, dm, hm, dc, output, count);
 }
 
 // K5: Intra Barrier Sync
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxIntraTestBarrierSyncKernel(flagcxDevMem devMem, flagcxDevComm devComm,
+    flagcxIntraTestBarrierSyncKernel(flagcxDevMem devMem, flagcxDevMem helperMem,
+                                     flagcxDevComm devComm,
                                      float *output, size_t count) {
   int myRank = devComm.getIntraRank();
   int nRanks = devComm.getIntraSize();
@@ -358,7 +365,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // ECCL LSA write-only, cannot read peers' send buffers.
   for (size_t i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointer(devMem, i * sizeof(float), myRank);
-    float *peerPtr = (float *)flagcxGetPeerPointer(devMem, (count + i ) * sizeof(float), peer);
+    float *peerPtr = (float *)flagcxGetPeerPointer(helperMem, i * sizeof(float), peer);
     // write my data to peer helper mem
     *peerPtr = *myPtr;
   }
@@ -366,7 +373,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (size_t i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetPeerPointer(devMem, (count + i ) * sizeof(float), myRank);
+    float *myPtr = (float *)flagcxGetPeerPointer(helperMem, i * sizeof(float), myRank);
     // read data from local helper mem
     output[i] = *myPtr;
   }
@@ -375,19 +382,22 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 }
 
 flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,
+                                            flagcxDevMem_t helperMem,
                                             flagcxDevComm_t devComm,
                                             float *output, size_t count,
                                             flagcxStream_t stream) {
-  if (!devMem || !devComm || !output) return flagcxInternalError;
+  if (!devMem || !helperMem || !devComm || !output) return flagcxInternalError;
   flagcxDevMem dm(*devMem);
+  flagcxDevMem hm(*helperMem);
   flagcxDevComm dc(*devComm);
   return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      flagcxIntraTestBarrierSyncKernel, stream, dm, dc, output, count);
+      flagcxIntraTestBarrierSyncKernel, stream, dm, hm, dc, output, count);
 }
 
 // K6: Intra Barrier Arrive/Wait
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxIntraTestBarrierArriveWaitKernel(flagcxDevMem devMem,
+                                           flagcxDevMem helperMem,
                                            flagcxDevComm devComm, float *output,
                                            size_t count) {
   int myRank = devComm.getIntraRank();
@@ -417,7 +427,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // ECCL LSA write-only, cannot read peers' send buffers.
   for (size_t i = tid; i < count; i += nthreads) {
     float *myPtr = (float *)flagcxGetPeerPointer(devMem, i * sizeof(float), myRank);
-    float *peerPtr = (float *)flagcxGetPeerPointer(devMem, (count + i ) * sizeof(float), peer);
+    float *peerPtr = (float *)flagcxGetPeerPointer(helperMem, i * sizeof(float), peer);
     // write my data to peer helper mem
     *peerPtr = *myPtr;
   }
@@ -425,7 +435,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   bar.sync(flagcxDeviceMemoryOrderAcquire);
 
   for (size_t i = tid; i < count; i += nthreads) {
-    float *myPtr = (float *)flagcxGetPeerPointer(devMem, (count + i ) * sizeof(float), myRank);
+    float *myPtr = (float *)flagcxGetPeerPointer(helperMem, i * sizeof(float), myRank);
     // read data from local helper mem
     output[i] = *myPtr;
   }
@@ -434,14 +444,16 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 }
 
 flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
+                                                  flagcxDevMem_t helperMem,
                                                   flagcxDevComm_t devComm,
                                                   float *output, size_t count,
                                                   flagcxStream_t stream) {
-  if (!devMem || !devComm || !output) return flagcxInternalError;
+  if (!devMem || !helperMem || !devComm || !output) return flagcxInternalError;
   flagcxDevMem dm(*devMem);
+  flagcxDevMem hm(*helperMem);
   flagcxDevComm dc(*devComm);
   return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-      flagcxIntraTestBarrierArriveWaitKernel, stream, dm, dc, output, count);
+      flagcxIntraTestBarrierArriveWaitKernel, stream, dm, hm, dc, output, count);
 }
 
 // ==========================================================================
@@ -461,18 +473,19 @@ flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
 //     Each round, rank 0 writes its fully-reduced data into one receiver's
 //     data region.
 //
-// Buffer layout (per rank, same registered buffer):
-//   [0 .. count)           — data   (input / output)
-//   [count .. 2*count)     — helper (scratch for reduce phase)
+// Buffer layout (per rank, separate buffers):
+//   mem[0 .. count)        — data   (input / output)
+//   helperMem[0 .. count)  — helper (scratch for reduce phase)
 //
 // Barrier count: 2*(N-1) + (N-1) + 2 = 3N - 1
 // Communication: 2*(N-1)*count elements total (optimal for small N)
 template <typename T>
 __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxIntraAllReduceKernel(flagcxDevComm devComm, flagcxDevMem mem,
+                               flagcxDevMem helperMem,
                                size_t offset, size_t count) {
   // AllReduce requires peer pointer access (window or IPC)
-  if (!mem.hasWindow())
+  if (!mem.hasWindow() || !helperMem.hasWindow())
     return;
 
   const int rank   = devComm.getIntraRank();
@@ -506,9 +519,9 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   // Phase 1: Reduce to rank 0  (N-1 rounds)
   //
   // Round s: sender = s + 1
-  //   1) sender writes data[0..count) → rank 0's helper[count..2*count)
+  //   1) sender writes data[0..count) → rank 0's helperMem[0..count)
   //   2) barrier (acquire)
-  //   3) rank 0: data[i] += helper[i]  (read local helper, accumulate)
+  //   3) rank 0: data[i] += helperMem[i]  (read local helper, accumulate)
   //   4) barrier (acquire) — ensure accumulation done before next round
   // ==================================================================
   for (int step = 0; step < nRanks - 1; step++) {
@@ -518,7 +531,7 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
       // Write my data into rank 0's helper region
       for (size_t i = tid; i < count; i += nthreads) {
         T *myPtr   = (T *)flagcxGetPeerPointer(mem, offset + i * sizeof(T), rank);
-        T *peerPtr = (T *)flagcxGetPeerPointer(mem, offset + (count + i) * sizeof(T), 0);
+        T *peerPtr = (T *)flagcxGetPeerPointer(helperMem, offset + i * sizeof(T), 0);
         *peerPtr = *myPtr;
       }
     }
@@ -526,9 +539,9 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     bar.sync(flagcxDeviceMemoryOrderAcquire);
 
     if (rank == 0) {
-      // Accumulate: data[i] += helper[i]  (both are local reads/writes)
+      // Accumulate: data[i] += helperMem[i]  (both are local reads/writes)
       for (size_t i = tid; i < count; i += nthreads) {
-        T *helperPtr = (T *)flagcxGetPeerPointer(mem, offset + (count + i) * sizeof(T), 0);
+        T *helperPtr = (T *)flagcxGetPeerPointer(helperMem, offset + i * sizeof(T), 0);
         T *dataPtr   = (T *)flagcxGetPeerPointer(mem, offset + i * sizeof(T), 0);
         *dataPtr += *helperPtr;
       }
@@ -565,21 +578,24 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
 // Host-side function — launches the kernel using the caller-provided
 // registered buffer and device communicator.
-flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
+flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem,
+                                          flagcxDevMem_t helperMem,
+                                          size_t count,
                                           flagcxDataType_t datatype,
                                           flagcxDevComm_t devComm,
                                           flagcxStream_t stream) {
-  if (!devMem || !devComm) return flagcxInternalError;
+  if (!devMem || !helperMem || !devComm) return flagcxInternalError;
   flagcxDevMem dm(*devMem);
+  flagcxDevMem hm(*helperMem);
   flagcxDevComm dc(*devComm);
   size_t offset = 0;
   switch (datatype) {
     case flagcxFloat32:
       return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-          flagcxIntraAllReduceKernel<float>, stream, dc, dm, offset, count);
+          flagcxIntraAllReduceKernel<float>, stream, dc, dm, hm, offset, count);
     case flagcxFloat64:
       return launchKernelExC<ECCL_DEVICE_GRID_DIM, ECCL_DEVICE_BLOCK_DIM, ECCL_DEVICE_THREAD_DIM>(
-          flagcxIntraAllReduceKernel<double>, stream, dc, dm, offset, count);
+          flagcxIntraAllReduceKernel<double>, stream, dc, dm, hm, offset, count);
     default:
       return flagcxInvalidArgument;
   }
