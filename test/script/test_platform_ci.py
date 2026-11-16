@@ -745,6 +745,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "adaptor",
                 "device_api",
                 "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",

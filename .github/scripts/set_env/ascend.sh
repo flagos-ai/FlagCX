@@ -44,9 +44,18 @@ FLAGCX_CI_NODE2_MPI_ARGS=(
 FLAGCX_CI_DEVICE_API_IR=0
 FLAGCX_CI_DEVICE_API_INTER=0
 
+# The unified IR suite runs INTRA only on Ascend.  The Device IR bindings
+# declare the NET transport arm absent (FLAGCX_DEVICE_HAS_NET_TRANSPORT=0 in
+# the shared impl), so the inter product is not built and neither the inter
+# step nor the FORCE_NET fallback runs have a transport to exercise here;
+# cross-node unified IR is deferred to the T2 inter stage.  Both gates default
+# to 1 elsewhere, so this only narrows Ascend.
+FLAGCX_CI_UNIFIED_IR_INTER=0
+FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA=0
+
 flagcx_ci_configure_suite() {
   case "$1" in
-    device_api)
+    device_api|device_api_unified_ir)
       # The intra device kernels live in test/kernel/ascend and the library's
       # device-API helpers (flagcxDevNetLaunchConstruct et al.) are only
       # emitted with COMPILE_KERNEL=1; same contract as cuda/hygon.
