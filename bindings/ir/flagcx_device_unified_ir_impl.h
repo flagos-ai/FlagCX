@@ -176,6 +176,7 @@ flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                flagcxDevMemoryOrder_t order) {
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
 
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
   // A communicator may use IPC for one memory object and Net fallback for
   // another, so flush both domains.  Flushing an empty FIFO is harmless.
   DeviceAPI::Intrin::threadfenceSystem();
@@ -184,6 +185,30 @@ flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxDevNetFlushS(FLAGCX_IR_NET_ARG(net), coopKind, order);
   }
+#else
+  // No device net transport on this platform (Ascend 2201 today).  Both
+  // statements above reference capabilities this pass declares absent:
+  // Intrin::threadfenceSystem is the never-defined trap call (measured:
+  // the same undefined-symbol class that killed probe r144 N2 through the
+  // put arm), and the net flush arm sits behind a runtime predicate, which
+  // DCE cannot remove at instantiation time (probe r145 named the inlined
+  // kernel as the referrer; r146 then showed only caller-side CONSTANT
+  // scope/kind arguments fold out of flagcxScopedFence - a runtime bool
+  // guard is not one).  What cannot run is irrelevant: an IPC-only comm
+  // has no net contexts, so the FIFO this flushes is empty by
+  // construction.  What flush must still do here is order the calling
+  // core's earlier peer stores ahead of the kernel's result-store, and
+  // the measured dcci pair behind Intrin::threadfenceDevice is the
+  // ordering primitive for exactly that envelope (device scope, single
+  // chip; see the fence note in device_utils.h and the rendezvous record
+  // in ascend_platform_traits.h, whose two-card peer visibility gate is
+  // the hardware premise for the same choice made for put at r144/r146).
+  (void)comm;
+  (void)contextId;
+  (void)coopKind;
+  (void)order;
+  DeviceAPI::Intrin::threadfenceDevice();
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -705,10 +730,19 @@ flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
         order == flagcxDeviceMemoryOrderAcqRel)
       flagcxScopedFence(scope);
   } else {
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).get(team, peer, *src, srcOffset, *dst, dstOffset,
                                bytes, coop);
+#else
+    // Same gate and reasoning as flagcxDevPut.  On Ascend 2201 today this
+    // instantiation never happens - the S19 launcher is deliberately not
+    // defined there (see test/kernel/ascend/device_ir.asc) - the arm is
+    // pruned so the put/get/putValue family stays consistent for any
+    // future platform that shares the flag.
+    FLAGCX_DEVICE_TRAP();
+#endif
   }
 }
 
@@ -748,10 +782,19 @@ flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
     }
     coop.sync();
   } else {
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).putValue(team, peer, *dst, dstOffset, value,
                                     flagcxDevNet_None{}, coop);
+#else
+    // Same gate and same reasoning as the plain flagcxDevPut above (probe
+    // r144/r145: the runtime useP2P guard does not spare these references
+    // from codegen on a pass where the net glue's ops are never-defined
+    // symbols). An INTRA-team peer is IPC-mapped, so this arm is not
+    // reached; reaching it is UB by construction, documented at put.
+    FLAGCX_DEVICE_TRAP();
+#endif
   }
 }
 

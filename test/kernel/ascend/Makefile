@@ -32,9 +32,10 @@ ASCEND_TEST_FLAGS := -x asc --npu-soc=$(ASCEND_SOC) \
 .PHONY: all clean device_api.o device_ir.o gdr_visibility.o dlink.o \
 	dlink_api.o dlink_ir.o
 
-all: $(OBJDIR)/device_api.o
+all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
+device_ir.o: $(OBJDIR)/device_ir.o
 
 $(OBJDIR)/device_api.o: device_api.asc
 	@mkdir -p $(OBJDIR)
@@ -42,11 +43,21 @@ $(OBJDIR)/device_api.o: device_api.asc
 	@$(DEVICE_COMPILER) $(ASCEND_TEST_FLAGS) -o $@ $< $(ALL_INCLUDES) \
 		-DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
+# Device IR launchers for test_device_ir_unified_intra (S16-S18; the file
+# itself records why S19-S25 stay undefined). Same flags as the device_api
+# object: the bisheng pass links the device image inside -c, so an
+# undefined trap reference fails HERE, not at test link.
+$(OBJDIR)/device_ir.o: device_ir.asc
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling device_ir.asc (Ascend/CANN)"
+	@$(DEVICE_COMPILER) $(ASCEND_TEST_FLAGS) -o $@ $< $(ALL_INCLUDES) \
+		-DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
+
 # Not implemented on Ascend yet, and requested only by suites that this
 # platform does not run. Fail loudly instead of producing an empty object.
-device_ir.o gdr_visibility.o:
-	@echo "Ascend: $@ is not implemented (Device IR needs bindings/ir/ascend;" \
-		"GDR visibility belongs to the peer-memory stage)" && false
+gdr_visibility.o:
+	@echo "Ascend: $@ is not implemented (GDR visibility belongs to the" \
+		"peer-memory stage)" && false
 
 # bisheng embeds the device image in each object (.aicore_binary section), so
 # there is no separate device-link product.
