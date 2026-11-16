@@ -6,6 +6,7 @@
  * flagcxAlltoAll runner.
  ************************************************************************/
 
+#include "device_api/default_comm_traits.h"
 #include "device_api/net_gda_alltoall.h"
 #include "device_api/nvidia_xpu_netio_host.h"
 #include "flagcx.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <vector>
 
@@ -68,23 +70,54 @@ int main(int argc, char **argv) {
   flagcxStream_t stream = nullptr;
   CHECK(device->streamCreate(&stream));
 
-  // Get is a valid Device API operation that this GDA adapter does not yet
-  // implement. Preferred must select Proxy on every rank; Required must fail.
+  // AUTO keeps the complete public Net contract on Proxy while the MLX5 GDA
+  // adapter supports only the operations required by this AllToAll kernel.
+  if (setenv("FLAGCX_DEVNET_ENABLE", "1", 1) != 0 ||
+      setenv("FLAGCX_DEVNET_TYPE", "-1", 1) != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
   flagcxDevCommRequirements probe = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   probe.intraBarrierCount = 1;
   probe.interBarrierCount = 1;
   probe.interContextCount = 1;
-  probe.netGdaOperations = flagcxDevNetGdaOpGet;
-  probe.netGdaPolicy = flagcxDevNetGdaPreferred;
   flagcxDevComm_t probeComm = nullptr;
   CHECK(flagcxDevCommCreate(comm, &probe, &probeComm));
   if (probeComm->gdaProvider != 0)
     MPI_Abort(MPI_COMM_WORLD, 3);
   CHECK(flagcxDevCommDestroy(comm, probeComm));
-  probe.netGdaPolicy = flagcxDevNetGdaRequired;
+
+  if (setenv("FLAGCX_DEVNET_TYPE", "0", 1) != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+  probeComm = nullptr;
+  CHECK(flagcxDevCommCreate(comm, &probe, &probeComm));
+  if (probeComm->gdaProvider != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+  CHECK(flagcxDevCommDestroy(comm, probeComm));
+
+  if (setenv("FLAGCX_DEVNET_TYPE", "invalid", 1) != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+  probeComm = nullptr;
+  if (flagcxDevCommCreate(comm, &probe, &probeComm) != flagcxInvalidArgument ||
+      probeComm != nullptr)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+
+  if (setenv("FLAGCX_DEVNET_TYPE", worldRank == 0 ? "0" : "-1", 1) != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+  probeComm = nullptr;
+  if (flagcxDevCommCreate(comm, &probe, &probeComm) != flagcxInvalidUsage ||
+      probeComm != nullptr)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+
+  if (setenv("FLAGCX_DEVNET_ENABLE", "0", 1) != 0 ||
+      setenv("FLAGCX_DEVNET_TYPE", "-1", 1) != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+  probe.interForceEnable = true;
   probeComm = nullptr;
   if (flagcxDevCommCreate(comm, &probe, &probeComm) != flagcxNotSupported ||
       probeComm != nullptr)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+
+  if (setenv("FLAGCX_DEVNET_ENABLE", "1", 1) != 0 ||
+      setenv("FLAGCX_DEVNET_TYPE", "1", 1) != 0)
     MPI_Abort(MPI_COMM_WORLD, 4);
 
   flagcxDevCommRequirements requirements =
@@ -93,12 +126,10 @@ int main(int argc, char **argv) {
   requirements.interBarrierCount = 1;
   requirements.interContextCount = 1;
   requirements.interForceEnable = true;
-  requirements.netGdaPolicy = flagcxDevNetGdaRequired;
-  requirements.netGdaOperations =
-      flagcxDevNetGdaOpPut | flagcxDevNetGdaOpPutValue |
-      flagcxDevNetGdaOpFlush | flagcxDevNetGdaOpBarrier;
   flagcxDevComm_t devComm = nullptr;
   CHECK(flagcxDevCommCreate(comm, &requirements, &devComm));
+  if (devComm->gdaProvider == 0)
+    MPI_Abort(MPI_COMM_WORLD, 4);
 
   unsigned capabilities = 0;
   uint32_t *errorFlag = nullptr;
@@ -106,8 +137,10 @@ int main(int argc, char **argv) {
   unsigned alignment = 0;
   CHECK(DefaultNvidiaGda::queryComm(devComm, &capabilities, &errorFlag,
                                     &maxChunkBytes, &alignment));
-  if ((capabilities & requirements.netGdaOperations) !=
-          requirements.netGdaOperations ||
+  const unsigned requiredCapabilities =
+      DefaultNetGdaPut | DefaultNetGdaPutValue | DefaultNetGdaFlush |
+      DefaultNetGdaBarrier;
+  if ((capabilities & requiredCapabilities) != requiredCapabilities ||
       errorFlag == nullptr || alignment == 0 || alignment > (1u << 20) ||
       maxChunkBytes < alignment) {
     std::fprintf(stderr, "[rank %d] invalid GDA capability profile\n",

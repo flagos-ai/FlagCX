@@ -28,11 +28,9 @@ namespace {
 
 static constexpr unsigned kProviderId = 1;
 static constexpr uint64_t kTimeoutNs = UINT64_C(30000000000);
-static_assert(flagcxDevNetGdaOpPut == DefaultNetGdaPut &&
-                  flagcxDevNetGdaOpPutValue == DefaultNetGdaPutValue &&
-                  flagcxDevNetGdaOpFlush == DefaultNetGdaFlush &&
-                  flagcxDevNetGdaOpBarrier == DefaultNetGdaBarrier,
-              "public and default GDA operation bits must match");
+static constexpr unsigned kAllToAllCapabilities =
+    DefaultNetGdaPut | DefaultNetGdaPutValue | DefaultNetGdaFlush |
+    DefaultNetGdaBarrier;
 
 flagcxResult_t result(xpu_netio_status_t status) {
   switch (status) {
@@ -276,23 +274,23 @@ flagcxResult_t registerWindow(flagcxComm_t comm, CommOwner *owner,
 unsigned operationCapabilities(const xpu_netio_caps_t &caps) {
   unsigned supported = 0;
   if (caps.operation_bits & XPU_NETIO_OP_WRITE)
-    supported |= flagcxDevNetGdaOpPut;
+    supported |= DefaultNetGdaPut;
   if (caps.operation_bits & XPU_NETIO_OP_INLINE)
-    supported |= flagcxDevNetGdaOpPutValue;
+    supported |= DefaultNetGdaPutValue;
   if (caps.operation_bits & XPU_NETIO_OP_FLUSH_ASYNC)
-    supported |= flagcxDevNetGdaOpFlush;
+    supported |= DefaultNetGdaFlush;
   // This adapter implements a single-writer Barrier slot using inline writes.
   // It does not implement the public multi-writer SignalInc/Add contract.
-  if ((supported & (flagcxDevNetGdaOpPutValue | flagcxDevNetGdaOpFlush)) ==
-          (flagcxDevNetGdaOpPutValue | flagcxDevNetGdaOpFlush) &&
+  if ((supported & (DefaultNetGdaPutValue | DefaultNetGdaFlush)) ==
+          (DefaultNetGdaPutValue | DefaultNetGdaFlush) &&
       (caps.ordering_bits & XPU_NETIO_ORDERED_TRANSPORT))
-    supported |= flagcxDevNetGdaOpBarrier;
+    supported |= DefaultNetGdaBarrier;
   return supported;
 }
 
 struct Candidate {
   xpu_netio_abi_header_t provider;
-  uint32_t policy;
+  int32_t netType;
   uint32_t required;
   uint32_t capabilities;
   uint32_t reserved;
@@ -312,33 +310,14 @@ bool sameProvider(const xpu_netio_abi_header_t &a,
 } // namespace
 
 flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
-                                 flagcxDevNetGdaPolicy_t policy,
-                                 unsigned requiredOperations) {
+                                 int netType) {
   if (comm == nullptr || devComm == nullptr)
     return flagcxInvalidArgument;
-  struct Request {
-    uint32_t policy;
-    uint32_t operations;
-  } request{static_cast<uint32_t>(policy), requiredOperations};
-  std::vector<Request> requests;
-  FLAGCXCHECK(gather(comm, request, requests));
-  for (const Request &peer : requests)
-    if (peer.policy != request.policy || peer.operations != request.operations)
-      return flagcxInvalidUsage;
-  if (policy == flagcxDevNetGdaDisabled)
-    return flagcxSuccess;
-  if (policy != flagcxDevNetGdaPreferred && policy != flagcxDevNetGdaRequired)
+  if (netType != -1 && netType != 1)
     return flagcxInvalidArgument;
-  const unsigned known =
-      flagcxDevNetGdaOpPut | flagcxDevNetGdaOpGet | flagcxDevNetGdaOpPutValue |
-      flagcxDevNetGdaOpSignal | flagcxDevNetGdaOpFlush |
-      flagcxDevNetGdaOpSignalCompletion | flagcxDevNetGdaOpCounterCompletion |
-      flagcxDevNetGdaOpBarrier;
-  if (requiredOperations == 0 || (requiredOperations & ~known) != 0)
-    return flagcxInvalidArgument;
-  const unsigned implemented =
-      flagcxDevNetGdaOpPut | flagcxDevNetGdaOpPutValue |
-      flagcxDevNetGdaOpFlush | flagcxDevNetGdaOpBarrier;
+  const unsigned requiredOperations =
+      netType == 1 ? kAllToAllCapabilities : DefaultNetGdaRequiredCapabilities;
+  const unsigned implemented = kAllToAllCapabilities;
   if ((requiredOperations & ~implemented) != 0)
     return flagcxNotSupported;
 
@@ -423,7 +402,7 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
 
   Candidate candidate{};
   candidate.provider = owner->ops->hdr;
-  candidate.policy = policy;
+  candidate.netType = netType;
   candidate.required = requiredOperations;
   candidate.capabilities = owner->capabilities;
   std::vector<Candidate> candidates;
@@ -431,7 +410,7 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   for (const Candidate &peer : candidates)
     if (!sameProvider(peer.provider, candidate.provider) ||
         peer.required != candidate.required ||
-        peer.policy != candidate.policy ||
+        peer.netType != candidate.netType ||
         (peer.capabilities & requiredOperations) != requiredOperations)
       return flagcxNotSupported;
 
@@ -587,17 +566,15 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
 }
 
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
-                          flagcxDevNetGdaPolicy_t policy,
-                          unsigned requiredOperations) {
+                          int netType) {
   if (comm == nullptr || devComm == nullptr)
     return flagcxInvalidArgument;
-  flagcxResult_t status =
-      createCommAttempt(comm, devComm, policy, requiredOperations);
+  flagcxResult_t status = createCommAttempt(comm, devComm, netType);
   if (status == flagcxSuccess)
     return status;
 
   // A failed allocation can leave an owner on only some ranks. Every rank
-  // must converge after local cleanup before Preferred may choose Proxy.
+  // must converge after local cleanup before AUTO may choose Proxy.
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
   flagcxResult_t cleanup = owner ? releaseComm(owner) : flagcxSuccess;
   if (cleanup == flagcxSuccess)
@@ -606,7 +583,7 @@ flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
   if (commonCleanup != flagcxSuccess)
     return commonCleanup;
 
-  if (policy == flagcxDevNetGdaPreferred && status != flagcxInvalidUsage &&
+  if (netType == -1 && status != flagcxInvalidUsage &&
       status != flagcxInvalidArgument)
     return flagcxSuccess;
   return status;
