@@ -96,6 +96,24 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_DEVICE_REQUIRES_LOCAL_NET_DESCRIPTOR 0
 #endif
 
+// Does this device pass accept a non-allocating placement new
+// (::new (ptr) T(args))? On the Ascend bisheng aicore pass it does not, and
+// that was measured, not assumed: probe r140 (910C, CANN 9.1.0-beta.3)
+// compiled flagcx_device_wrapper_impl.h with <new> already on the include
+// line (:14) and every placement site still rejected as
+// "no matching 'operator new' function for non-allocating placement new
+// expression; include <new>" - the placement overload simply does not match
+// on that pass. Where the flag is 0, the wrappers construct a temporary and
+// copy-assign it into the opaque slot instead; for the trivially copyable
+// types behind these slots (flagcxCoopAny, Barrier, flagcxDevNet value
+// objects) the observable result is the same value in the same storage.
+// The flag exists so every other pass keeps the exact construction spelling.
+#if defined(__CCE_IS_AICORE__)
+#define FLAGCX_DEVICE_HAS_PLACEMENT_NEW 0
+#else
+#define FLAGCX_DEVICE_HAS_PLACEMENT_NEW 1
+#endif
+
 #define FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)                               \
   ((FLAGCX_DEVICE_GLOBAL_PTR type *)(ptr))
 
