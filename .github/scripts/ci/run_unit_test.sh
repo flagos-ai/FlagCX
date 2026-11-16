@@ -362,6 +362,13 @@ run_suite() {
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
       fi
+      if ((unit_status == 0)) && [[ "$platform_name" == iluvatar ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case DeviceAdaptorTest.StreamWaitWriteValue64 \
+          --case DeviceAdaptorTest.HostRegisterUnregister \
+          --case NetAdaptorLoopback.RegisterDmaBufMr \
+          "$gpu_result_xml" || unit_status=$?
+      fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
         # IBUC is another implementation of the net-adaptor contract, not an
@@ -542,6 +549,11 @@ run_suite() {
       local ipc_status=0
       local network_status=0
       local visibility_status=0
+      local rma_platform_name ipc_xml_dir=""
+      rma_platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$rma_platform_name" == iluvatar ]]; then
+        ipc_xml_dir=$(mktemp -d "$suite_dir/build/rma-pr2.XXXXXX")
+      fi
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
       # Keep these as separate invocations so each transport has its own
@@ -550,7 +562,14 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
+        IPC_XML_DIR="$ipc_xml_dir" \
         IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+      if ((ipc_status == 0)) && [[ "$rma_platform_name" == iluvatar ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case RmaTest.GetAsyncOffsets \
+          --case RmaTest.IpcGetCounterFollowsCopy \
+          "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
+      fi
       if flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
@@ -567,9 +586,9 @@ run_suite() {
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
         case "$platform_name" in
           iluvatar)
-            # IXCUDA currently declares WRITE-only flush requirements. Keep
-            # the READ consumer data check and verify that the public WRITE
-            # wait rejects the unimplemented stream wait-value operation.
+            # IXCUDA now has a local stream wait but has not established the
+            # stronger remote-payload acquire guarantee. Keep the READ data
+            # check and require the public WRITE wait to reject that request.
             expected_read_required=0
             expected_write_required=1
             expected_write=unsupported

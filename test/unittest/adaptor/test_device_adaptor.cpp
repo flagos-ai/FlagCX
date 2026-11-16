@@ -4,9 +4,13 @@
  ************************************************************************/
 
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <memory>
+#include <unistd.h>
 
 #include "adaptor.h"
 #include "flagcx.h"
@@ -550,6 +554,20 @@ TEST_F(DeviceAdaptorTest, StreamWaitWriteValue64) {
                   stream, static_cast<char *>(deviceValue) + 1, expected,
                   FLAGCX_STREAM_WAIT_VALUE_DEFAULT),
               flagcxUnhandledDeviceError);
+  } else if (strcmp(deviceAdaptor->name, "IXCUDA") == 0) {
+    EXPECT_EQ(
+        deviceAdaptor->streamWaitValue64(nullptr, deviceValue, expected,
+                                         FLAGCX_STREAM_WAIT_VALUE_DEFAULT),
+        flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->streamWaitValue64(
+                  stream, static_cast<char *>(deviceValue) + 1, expected,
+                  FLAGCX_STREAM_WAIT_VALUE_DEFAULT),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->streamWriteValue64(stream, nullptr, expected, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(
+        deviceAdaptor->streamWriteValue64(stream, deviceValue, expected, 1),
+        flagcxInvalidArgument);
   }
 
   uint64_t actual = 0;
@@ -823,37 +841,55 @@ TEST_F(DeviceAdaptorTest, HostRegisterUnregister) {
     GTEST_SKIP() << "hostRegister/hostUnregister not implemented";
   }
 
-  const size_t sz = 4096;
-  void *hostPtr = malloc(sz);
-  ASSERT_NE(hostPtr, nullptr);
+  const long pageSize = sysconf(_SC_PAGESIZE);
+  ASSERT_GT(pageSize, 0);
+  const size_t sz = static_cast<size_t>(pageSize);
+  void *allocation = nullptr;
+  ASSERT_EQ(posix_memalign(&allocation, sz, sz), 0);
+  std::unique_ptr<void, decltype(&free)> hostPtr(allocation, &free);
+  ASSERT_NE(hostPtr.get(), nullptr);
+  constexpr uint64_t expected = 0x123456789abcdef0ULL;
+  memcpy(hostPtr.get(), &expected, sizeof(expected));
+
+  // Check bad arguments while hostPtr still names a live allocation.
+  auto nullResult = deviceAdaptor->hostRegister(NULL, sz);
+  if (nullResult != flagcxNotSupported)
+    EXPECT_EQ(nullResult, flagcxInvalidArgument);
+  auto zeroResult = deviceAdaptor->hostRegister(hostPtr.get(), 0);
+  if (zeroResult != flagcxNotSupported)
+    EXPECT_EQ(zeroResult, flagcxInvalidArgument);
+  auto unregNullResult = deviceAdaptor->hostUnregister(NULL);
+  if (unregNullResult != flagcxNotSupported)
+    EXPECT_EQ(unregNullResult, flagcxInvalidArgument);
 
   // Register host memory as pinned (page-locked) memory.
-  auto result = deviceAdaptor->hostRegister(hostPtr, sz);
+  auto result = deviceAdaptor->hostRegister(hostPtr.get(), sz);
   if (result == flagcxNotSupported) {
-    free(hostPtr);
     GTEST_SKIP() << "hostRegister not supported on this backend";
   }
   EXPECT_EQ(result, flagcxSuccess);
 
   if (result == flagcxSuccess) {
+    // IXCUDA registers mapped host memory. Other backends may only pin it.
+    if (strcmp(deviceAdaptor->name, "IXCUDA") == 0) {
+      void *devicePtr = nullptr;
+      EXPECT_EQ(devHandle->hostGetDevicePointer(&devicePtr, hostPtr.get()),
+                flagcxSuccess);
+      EXPECT_NE(devicePtr, nullptr);
+      if (devicePtr != nullptr) {
+        uint64_t actual = 0;
+        EXPECT_EQ(devHandle->deviceMemcpy(&actual, devicePtr, sizeof(actual),
+                                          flagcxMemcpyDeviceToHost, nullptr),
+                  flagcxSuccess);
+        EXPECT_EQ(actual, expected);
+      }
+    }
     // Unregister
-    auto r2 = deviceAdaptor->hostUnregister(hostPtr);
+    auto r2 = deviceAdaptor->hostUnregister(hostPtr.get());
     EXPECT_EQ(r2, flagcxSuccess);
-  }
-  free(hostPtr);
-
-  // Verify invalid arguments are rejected (only if backend has real impl)
-  auto nullResult = deviceAdaptor->hostRegister(NULL, sz);
-  if (nullResult != flagcxNotSupported) {
-    EXPECT_EQ(nullResult, flagcxInvalidArgument);
-  }
-  auto zeroResult = deviceAdaptor->hostRegister(hostPtr, 0);
-  if (zeroResult != flagcxNotSupported) {
-    EXPECT_EQ(zeroResult, flagcxInvalidArgument);
-  }
-  auto unregNullResult = deviceAdaptor->hostUnregister(NULL);
-  if (unregNullResult != flagcxNotSupported) {
-    EXPECT_EQ(unregNullResult, flagcxInvalidArgument);
+    if (r2 != flagcxSuccess &&
+        deviceAdaptor->hostUnregister(hostPtr.get()) != flagcxSuccess)
+      hostPtr.release(); // Never free a buffer that the driver still pins.
   }
 }
 

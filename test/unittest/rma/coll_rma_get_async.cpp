@@ -106,22 +106,14 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
   ASSERT_EQ(collectiveFailed(setup), 0) << "IPC Get gate setup failed";
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Only the counter-ordering check requires a stream gate. GetAsyncOffsets
-  // independently exercises IPC Get and validates its data without this gate.
+  // GetAsyncOffsets independently validates the IPC Get payload. This test
+  // additionally requires the stream gate to prove counter ordering.
   flagcxResult_t gateResult = flagcxSuccess;
   if (rank == 1)
     gateResult = deviceAdaptor->streamWaitValue64(
         stream, gate, 1, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
-  int localGateUnsupported = 0;
-#if defined(USE_ILUVATAR_ADAPTOR)
-  localGateUnsupported = gateResult == flagcxNotSupported ? 1 : 0;
-#endif
-  int anyGateUnsupported = 0;
-  MPI_Allreduce(&localGateUnsupported, &anyGateUnsupported, 1, MPI_INT, MPI_MAX,
-                MPI_COMM_WORLD);
-  int anyGateError =
-      collectiveFailed(localGateUnsupported ? flagcxSuccess : gateResult);
-  if (anyGateUnsupported || anyGateError) {
+  int anyGateError = collectiveFailed(gateResult);
+  if (anyGateError) {
     if (rank == 1) {
       EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
       EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
@@ -131,9 +123,6 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
         << "IPC Get counter-ordering gate failed at streamWaitValue64 on "
            "at least one rank; local result="
         << static_cast<int>(gateResult);
-    GTEST_SKIP() << "CoreX streamWaitValue64 is unsupported; only IPC Get "
-                    "counter ordering is unavailable. GetAsyncOffsets "
-                    "independently validates IPC Get";
   }
 
   flagcxResult_t op = flagcxSuccess;
@@ -161,6 +150,14 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
     flagcxResult_t release =
         deviceAdaptor->streamWriteValue64(releaseStream, gate, 1, 0);
     runStage("streamWriteValue64(release)", [&] { return release; });
+    if (release != flagcxSuccess) {
+      // A failed release must not strand the already queued wait while the
+      // failure is reported and resources are destroyed.
+      uint64_t open = 1;
+      EXPECT_EQ(devHandle->deviceMemcpy(gate, &open, sizeof(open),
+                                        flagcxMemcpyHostToDevice, nullptr),
+                flagcxSuccess);
+    }
     if (release == flagcxSuccess) {
       release = devHandle->streamSynchronize(releaseStream);
       runStage("streamSynchronize(release)", [&] { return release; });
