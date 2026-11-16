@@ -15,6 +15,9 @@ FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=2
 FLAGCX_CI_RUNNER_NP=4
 export FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL=1
+# The shared multi-node SymMem runner also uses this capability to gate its
+# remote VMM data matrices when RDMA is present.
+export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
 export NP=4
 
 FLAGCX_CI_NODE1_MPI_ARGS=(

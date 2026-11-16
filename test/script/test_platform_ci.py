@@ -1098,10 +1098,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("TOPS device-kernel test backend is not present", enflame_env)
         self.assertIn("FLAGCX_CI_HAS_RDMA=1", enflame_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
         self.assertIn("FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1", enflame_env)
         self.assertIn("Skipping P2P Engine WRITE MPI tests", unit_runner)
         self.assertIn("Skipping RMA network MPI and visibility tests", unit_runner)
         self.assertIn("Skipping runner forced NET, multi-QP and PXN MPI tests", unit_runner)
+        runner_no_rdma_start = unit_runner.index(
+            'if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then',
+            unit_runner.index('    runner)\n'),
+        )
+        runner_no_rdma_end = unit_runner.index("      fi", runner_no_rdma_start)
+        runner_no_rdma = unit_runner[runner_no_rdma_start:runner_no_rdma_end]
+        self.assertIn("unit_status != 0 || default_status != 0 || hybrid_status != 0", runner_no_rdma)
+        self.assertIn("return 1", runner_no_rdma)
         self.assertIn("Skipping symmem remote NET/VMM+NET MPI tests", unit_runner)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',

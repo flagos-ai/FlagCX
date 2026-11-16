@@ -788,6 +788,10 @@ run_suite() {
       fi
       if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
         echo "Skipping runner forced NET, multi-QP and PXN MPI tests: no ACTIVE RDMA HCA is available"
+        if ((unit_status != 0 || default_status != 0 || hybrid_status != 0)); then
+          echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=skipped striping=skipped PXN=skipped" >&2
+          return 1
+        fi
         return 0
       fi
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
