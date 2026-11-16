@@ -264,14 +264,29 @@ struct PlatformTraits<AscendPlatform> {
     // ship it, and why shipping a volatile access as an acquire would be worse
     // than shipping nothing.
     //
-    // The absence is enforced the same way as the read-modify-write members
-    // below: a call to a function that is declared and defined nowhere, which
-    // bisheng refuses at BUILD time because it links the device image inside
-    // -c. The consequence is the one the reviewer asked for - a shared
-    // template that passes a plain device pointer still cannot be
-    // instantiated on Ascend; the ordered version that unblocks such paths
-    // is the __gm__ channel below, and widening it to plain pointers needs
-    // its own hardware measurement first (it is NOT extrapolated here).
+    // The remaining absences are enforced the same way as the read-modify-
+    // write members below: a call to a function that is declared and defined
+    // nowhere, which bisheng refuses at BUILD time because it links the
+    // device image inside -c.
+    //
+    // That mechanism fired on an unintended path at probe r143: the unified
+    // INTRA barrier (default_comm_traits.h:1494-1570) hands plain uint64_t*
+    // inbox and epoch slots to the trap pair below, sema ACCEPTED the call
+    // (the trap is declared, so it binds), codegen emitted the reference,
+    // and the device link inside -c failed with "undefined symbol:
+    // flagcxAscendDeviceOpUnsupported.cube/.vector". An earlier version of
+    // this comment claimed plain-pointer templates "cannot be instantiated"
+    // on Ascend - wrong on the sema layer; the refusal lands at link, one
+    // round later than designed.
+    //
+    // So the uint64_t pair below flips to the plain+dcci shapes measured
+    // RC=0 under -c on 2026-11-10 (note above this template). What the flip
+    // still does NOT claim: the 64-bit access width, and visibility across
+    // AI cores over IPC-mapped peer memory. The first hardware run of
+    // test_device_ir_unified_intra is the gate for both - until that log
+    // exists the pair is wiring, not evidence. u32/i32/i64 stay trap:
+    // nothing on the INTRA contract reaches them, and flipping a spelling
+    // without a caller would be the extrapolation this note forbids.
     template <typename T>
     static FLAGCX_DEVICE_INLINE_DECORATOR T noOrderedLoad() {
       FLAGCX_ASCEND_UNSUPPORTED(
@@ -288,8 +303,8 @@ struct PlatformTraits<AscendPlatform> {
       return noOrderedLoad<int32_t>();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t load(const uint64_t *p) {
-      (void)p;
-      return noOrderedLoad<uint64_t>();
+      asc_dcci_entire_all();
+      return *p;
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR int64_t load(const int64_t *p) {
       (void)p;
@@ -308,10 +323,8 @@ struct PlatformTraits<AscendPlatform> {
           "CceAtomic: device store has no hardware-verified release on 2201");
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(uint64_t *p, uint64_t v) {
-      (void)p;
-      (void)v;
-      FLAGCX_ASCEND_UNSUPPORTED(
-          "CceAtomic: device store has no hardware-verified release on 2201");
+      *p = v;
+      asc_dcci_entire_out();
     }
     static FLAGCX_DEVICE_INLINE_DECORATOR void store(int64_t *p, int64_t v) {
       (void)p;
@@ -328,21 +341,25 @@ struct PlatformTraits<AscendPlatform> {
     // by store + asc_dcci_entire_out() and acquired by asc_dcci_entire_all()
     // + volatile load - which is exactly what these bodies are.
     //
-    // Why this channel is __gm__-only, and the plain overloads above STAY
-    // absent rather than learning to call these: the pointer-binding matrix
-    // measured the same day showed (F1) a __gm__ pointer cannot bind to a
-    // plain parameter ("parameter must be in Local Memory"), (F3) no cast
-    // from __gm__ to plain is allowed inside an aicore function, and (F5)
-    // therefore shared templates that carry plain device pointers reach only
-    // the absent overloads and fail loudly at build time - the ordered
-    // surface is reachable exclusively by device code that carries __gm__
-    // pointers end to end (F4 showed uintptr_t is the one legal bridge, in
-    // case a pointer must cross storage that cannot hold the qualifier).
+    // Why this channel is __gm__-only, and why the plain pair above spells
+    // dcci itself instead of calling these (a plain pointer cannot bind
+    // here): the pointer-binding matrix measured the same day showed (F1) a
+    // __gm__ pointer cannot bind to a plain parameter ("parameter must be
+    // in Local Memory"), (F3) no cast from __gm__ to plain is allowed
+    // inside an aicore function, and (F5) therefore shared templates that
+    // carry plain device pointers reach only the plain overloads above -
+    // never this channel - the ordered __gm__ surface is reachable
+    // exclusively by device code that carries __gm__ pointers end to end
+    // (F4 showed uintptr_t is the one legal bridge, in case a pointer must
+    // cross storage that cannot hold the qualifier; r142 measured that the
+    // bridge then dies in bisheng's BACKEND, "error pointer address space
+    // cast", so it is not a launcher route either).
     //
-    // Width: 32-bit only, on purpose. The rendezvous measured uint32 words;
-    // the completion word this backend needs on Ascend is 32-bit (maintainer
-    // decision, 2026-11-10); 64-bit ordered access is unmeasured and stays
-    // declared absent above.
+    // Width: this channel is 32-bit only, on purpose. The rendezvous
+    // measured uint32 words; the completion word this backend needs on
+    // Ascend is 32-bit (maintainer decision, 2026-11-10). The 64-bit
+    // ordered pair lives in the plain overloads above, unmeasured as
+    // described there.
     static FLAGCX_DEVICE_INLINE_DECORATOR uint32_t
     load(__gm__ const volatile uint32_t *p) {
       asc_dcci_entire_all();
@@ -364,37 +381,14 @@ struct PlatformTraits<AscendPlatform> {
       asc_dcci_entire_out();
     }
 
-    // Plain-pointer 64-bit overloads of the same ordered pair, added when the
-    // unified backend contract met this platform (probe r139, Stage B). The
-    // shared INTRA barrier (default_comm_traits.h:1494-1570) hands
-    // non-__gm__ uint64_t* inbox and epoch slots to
-    // PlatformTraits<P>::Atomic::load/store, whose device path delegates
-    // here; with only __gm__ overloads, flagcx_device_scalar_ir_impl.h's
-    // extern "C" (non-template) barrier wrappers type-checked at parse and
-    // the entire unified surface was uninstantiable on this pass.
-    //
-    // What is unchanged: the fences are the measured dcci pair, and dcci is
-    // whole-cache control - it does not depend on the declared space of the
-    // pointer it surrounds. Plain addressing reaches GM on this pass
-    // (probes RP and K4, and the local-pointer kernel in
-    // test/kernel/ascend/device_api.asc runs it).
-    //
-    // What is new and NOT yet measured: (1) the 64-bit access width, which
-    // the __gm__ pair deliberately kept absent (:341-345); (2) visibility
-    // across AI cores over IPC-mapped peer memory, which the barrier's
-    // arrive/wait loop is the first thing to exercise. The first
-    // test_device_ir_unified_intra run is the gate for both - until that
-    // log exists this overload is wiring, not evidence.
-    static FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
-    load(const volatile uint64_t *p) {
-      asc_dcci_entire_all();
-      return *p;
-    }
-    static FLAGCX_DEVICE_INLINE_DECORATOR void
-    store(volatile uint64_t *p, uint64_t v) {
-      *p = v;
-      asc_dcci_entire_out();
-    }
+    // (3fe81db added a plain-volatile uint64_t pair here under the premise
+    // that no plain uint64_t overload existed. The premise was wrong: the
+    // trap pair above was always the better match for the barrier's plain
+    // uint64_t* - fewer cv-qualifiers wins overload resolution - so the
+    // volatile spellings were never bound, and r143's N1 link failure
+    // landed on the traps. The flip above supersedes them; this dead
+    // spelling is removed rather than left to rot next to the live one.
+    // No shared template passes a volatile plain pointer today.)
 
     // Read-modify-write is a declared-absent capability on this toolchain,
     // not an implementation. Three independent measurements on Ascend 910C /
