@@ -182,11 +182,10 @@ flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
   const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
   const ::testing::TestInfo *testInfo =
       ::testing::UnitTest::GetInstance()->current_test_info();
-  const bool traceSendRecv =
-      expectedRunnerMode != nullptr &&
-      std::strcmp(expectedRunnerMode, "HYBRID") == 0 && testInfo != nullptr &&
-      (std::strcmp(testInfo->name(), "SendRecv") == 0 ||
-       std::strcmp(testInfo->name(), "SendRecvProbe") == 0);
+  const bool traceSendRecv = expectedRunnerMode != nullptr &&
+                             std::strcmp(expectedRunnerMode, "HYBRID") == 0 &&
+                             testInfo != nullptr &&
+                             std::strcmp(testInfo->name(), "SendRecv") == 0;
   const char *traceName = testInfo == nullptr ? "SendRecv" : testInfo->name();
   if (traceSendRecv)
     std::cerr << traceName << " rank=" << rank << " phase=sync-stream-begin"

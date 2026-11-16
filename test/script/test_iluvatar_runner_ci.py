@@ -76,15 +76,19 @@ printf 'FlagCXCollTest.\n  SendRecv\n  AlltoAll\n  AllReduce\nOtherSuite.\n  Sen
 printf '%s\n' "$*" >> "$COMMAND_LOG"
 printf '[  PASSED  ] 1 test.\n'
 ''')
+                    run_env = {**os.environ, "BASH_ENV": "",
+                               "FLAGCX_CI_MPI_LABEL": "arbitrary stage label",
+                               "FLAGCX_CI_MPIRUN": str(launcher),
+                               "FLAGCX_CI_LOG_DIR": str(root / "logs"),
+                               "COMMAND_LOG": str(root / "calls")}
+                    run_env.pop("FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H", None)
+                    if mode == "HYBRID":
+                        run_env["FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H"] = "1"
                     result = subprocess.run(
                         ["bash", str(CI / "run_iluvatar_runner_mpi.sh"),
                          "-x", f"FLAGCX_CI_EXPECT_RUNNER_MODE={mode}",
                          "-x", f"FLAGCX_CI_EXPECT_PXN={pxn}", str(binary)],
-                        env={**os.environ, "BASH_ENV": "",
-                             "FLAGCX_CI_MPI_LABEL": "arbitrary stage label",
-                             "FLAGCX_CI_MPIRUN": str(launcher),
-                             "FLAGCX_CI_LOG_DIR": str(root / "logs"),
-                             "COMMAND_LOG": str(root / "calls")},
+                        env=run_env,
                         capture_output=True, text=True, timeout=10,
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -93,6 +97,12 @@ printf '[  PASSED  ] 1 test.\n'
                                  "FlagCXCollTest.AlltoAll",
                                  "FlagCXCollTest.AllReduce", "OtherSuite.SendRecv"):
                         self.assertIn(f"--gtest_filter={case}", calls)
+                    if mode == "HYBRID":
+                        self.assertIn(
+                            "-x FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H=1", calls
+                        )
+                    else:
+                        self.assertNotIn("FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H", calls)
                     self.assertIn("executed=4 result=0", result.stdout)
                     self.assertNotIn("SKIPPED", result.stdout)
                     self.assertFalse((root / "logs/iluvatar-runner-quarantine.tsv").exists())

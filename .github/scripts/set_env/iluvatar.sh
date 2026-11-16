@@ -43,8 +43,9 @@ flagcx_ci_configure_suite() {
     adaptor)
       export FLAGCX_VMM_ENABLE=0
       ;;
-    runner|sendrecv_probe)
+    runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      export FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H=1
       ;;
     device_api|device_api_host|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)

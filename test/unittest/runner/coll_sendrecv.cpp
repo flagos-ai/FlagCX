@@ -71,15 +71,14 @@ TEST_F(FlagCXCollTest, SendRecv) {
                 MPI_COMM_WORLD);
   ASSERT_EQ(globalGroupResult, static_cast<int>(flagcxSuccess));
 
-#if defined(USE_ILUVATAR_ADAPTOR)
-  if (comm->commType == flagcxCommunicatorHybrid) {
-    // The Iluvatar probe completes only when the cross-cluster proxy work
-    // finishes before the user stream receives the D2H copy.
+  const char *syncBeforeD2H = std::getenv("FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H");
+  if (comm->commType == flagcxCommunicatorHybrid && syncBeforeD2H != nullptr &&
+      std::strcmp(syncBeforeD2H, "1") == 0) {
+    // Drain cross-cluster proxy work before queuing D2H on the user stream.
     tracePhase("before-communication-sync");
     ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
     tracePhase("after-communication-sync");
   }
-#endif
 
   devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
                           flagcxMemcpyDeviceToHost, stream);

@@ -6,6 +6,12 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 binary=
 filter=${GTEST_FILTER:-*}
 args=()
+mpi_env=()
+if [[ -n "${FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H:-}" ]]; then
+  mpi_env+=(
+    -x "FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H=$FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H"
+  )
+fi
 for arg in "$@"; do
   if [[ "$arg" == --gtest_filter=* ]]; then
     filter=${arg#--gtest_filter=}
@@ -76,7 +82,7 @@ fi
 # Diagnostics remain best effort if the package mirror is unavailable.
 needs_sendrecv_diagnostics=0
 for test in "${tests[@]}"; do
-  if [[ "$test" == *.SendRecv || "$test" == *.SendRecvProbe ]]; then
+  if [[ "$test" == *.SendRecv ]]; then
     needs_sendrecv_diagnostics=1
     break
   fi
@@ -112,26 +118,25 @@ for index in "${!tests[@]}"; do
   test_status=0
   require_pass=0
   if [[ "$test" == FlagCXCollTest.SendRecv ||
-        "$test" == FlagCXCollTest.SendRecvProbe ||
         "$test" == FlagCXCollTest.AlltoAll ]]; then
     # GTest returns zero for an all-skipped case. These restored cases must
     # report an actual pass, not merely a successful MPI exit.
     require_pass=1
   fi
-  if [[ "$test" == *.SendRecv || "$test" == *.SendRecvProbe ]]; then
+  if [[ "$test" == *.SendRecv ]]; then
     # Bound a stuck case and collect pre-timeout stacks.
     FLAGCX_CI_MPI_TIMEOUT="$sendrecv_timeout" \
       FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="$diagnostics_after" \
       FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
       FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
       FLAGCX_CI_MPI_LABEL="$label $test" \
-      "$script_dir/run_mpi_with_timeout.sh" "${args[@]}" \
+      "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
       --gtest_filter="$test" || test_status=$?
   else
     FLAGCX_CI_MPI_TIMEOUT="$per_test_timeout" \
       FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
       FLAGCX_CI_MPI_LABEL="$label $test" \
-      "$script_dir/run_mpi_with_timeout.sh" "${args[@]}" \
+      "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
       --gtest_filter="$test" || test_status=$?
   fi
   echo "$label $test result=$test_status"

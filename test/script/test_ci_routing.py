@@ -53,7 +53,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["iluvatar"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -119,7 +119,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                ALL_ENABLED_PLATFORMS,
+                ["cuda", "hygon"],
             ),
             (
                 "test/kernel/nvidia/nested/foo.cu",
@@ -152,11 +152,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:iluvatar"],
+                "labels": ["platform:hygon"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["iluvatar"])
+        self.assertEqual(outputs["platforms"], ["hygon"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -204,7 +204,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:iluvatar"],
+            "ref": "a" * 40, "labels": ["platform:hygon"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -212,10 +212,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:iluvatar"],
+            "is_pull_request": True, "labels": ["platform:hygon"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["iluvatar"])
+        self.assertEqual(outputs["platforms"], ["hygon"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -226,15 +226,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
+            ("workflow_dispatch", {"selection": "hygon"}, ["hygon"]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test iluvatar",
+                    "comment": "/test hygon",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["iluvatar"],
+                ["hygon"],
             ),
             (
                 "issue_comment",
@@ -253,7 +253,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                enabled_platform_or_matrix("cuda"),
+                ["cuda"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):

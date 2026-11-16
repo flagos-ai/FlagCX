@@ -92,8 +92,7 @@ export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
 if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar &&
-      ( "$SUITE" == adaptor || "$SUITE" == runner ||
-        "$SUITE" == sendrecv_probe ) ]]; then
+      ( "$SUITE" == adaptor || "$SUITE" == runner ) ]]; then
   export FLAGCX_DEBUG=TRACE
 fi
 
@@ -126,7 +125,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|sendrecv_probe|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -1021,15 +1020,6 @@ run_suite() {
         return 0
       fi
       ;;
-    sendrecv_probe)
-      : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
-      : "${FLAGCX_CI_NODE_NP:?The platform set_env script must define FLAGCX_CI_NODE_NP}"
-      cd "$suite_dir"
-      bash "$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_sendrecv_probe.sh" \
-        ./build/bin/sendrecv_probe_mpi_tests \
-        "$FLAGCX_CI_RUNNER_NP" "$FLAGCX_CI_NODE_NP" \
-        "${FLAGCX_CI_PXN_VISIBLE_DEVICES:-}"
-      ;;
     device_api)
       run_device_api
       ;;
@@ -1084,7 +1074,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|sendrecv_probe|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)

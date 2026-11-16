@@ -295,24 +295,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["iluvatar"]
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            all_platforms,
+            ["cuda"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            all_platforms,
+            ["hygon"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            all_platforms,
+            ["ascend"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,8 +705,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["iluvatar"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
+        for platform in ("cuda", "hygon"):
+            selected = subprocess.run(
+                ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
+                [platform],
+            )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -765,7 +776,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "iluvatar": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
                 "runner",
+                "service",
+                "symmem",
             ],
             "metax": [
                 "adaptor",
@@ -1115,7 +1135,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn(
-            'adaptor|p2p|rma|runner|sendrecv_probe|symmem|device_api|device_api_unified_ir)',
+            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
             unit_runner,
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
