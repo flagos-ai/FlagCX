@@ -665,8 +665,17 @@ flagcxResult_t cannAdaptorIpcMemHandleGet(flagcxIpcMemHandle_t handle,
   size_t allocationSize = 0;
   flagcxResult_t rangeResult =
       cannAdaptorGetAddressRange(devPtr, &allocationBase, &allocationSize);
-  if (rangeResult != flagcxSuccess || allocationBase != allocation->ptr ||
-      allocationSize < allocation->size) {
+  if (rangeResult == flagcxNotSupported) {
+    // aclrtMemGetAddressRange is not implemented on this platform (measured:
+    // ACL error 207000 = ACL_ERROR_RT_FEATURE_NOT_SUPPORT on Ascend910_9382
+    // with CANN 9.1.0-beta.3), while aclrtIpcMemGetExportKey accepts the
+    // allocation base with the requested size (measured ACL_SUCCESS). Fall
+    // back to the bookkeeping recorded when the allocation was tracked.
+    allocationBase = allocation->ptr;
+    allocationSize = allocation->size;
+  } else if (rangeResult != flagcxSuccess ||
+             allocationBase != allocation->ptr ||
+             allocationSize < allocation->size) {
     pthread_mutex_unlock(&cannIpcAllocationLock);
     return rangeResult == flagcxSuccess ? flagcxNotSupported : rangeResult;
   }
