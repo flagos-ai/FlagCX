@@ -7,6 +7,7 @@
 
 #include <cstdio>
 
+#include "adaptor.h"
 #include "flagcx.h"
 #include "flagcx_net.h"
 #include "flagcx_net_adaptor.h"
@@ -29,10 +30,36 @@ inline flagcxResult_t getLocalNetDevice(struct flagcxNetAdaptor *netAdaptor,
     return flagcxInternalError;
   }
 
+  const bool pciTopologyAvailable =
+      deviceAdaptor != nullptr && deviceAdaptor->getDevicePciBusId != nullptr &&
+      deviceAdaptor->getDeviceByPciBusId != nullptr;
   int gpuDev = 0;
-  result = deviceHandle->getDevice(&gpuDev);
-  if (result != flagcxSuccess) {
-    flagcxDeviceHandleFree(deviceHandle);
+  if (pciTopologyAvailable) {
+    result = deviceHandle->getDevice(&gpuDev);
+    if (result != flagcxSuccess) {
+      flagcxDeviceHandleFree(deviceHandle);
+      return result;
+    }
+  }
+
+  if (!pciTopologyAvailable) {
+    int gpuCount = 0;
+    result = deviceHandle->getDeviceCount(&gpuCount);
+    if (result == flagcxSuccess && gpuCount > 0) {
+      gpuDev = 0;
+      *netDev = 0;
+    } else if (result == flagcxSuccess) {
+      result = flagcxInternalError;
+    }
+    const flagcxResult_t deviceFreeResult =
+        flagcxDeviceHandleFree(deviceHandle);
+    if (result == flagcxSuccess)
+      result = deviceFreeResult;
+    if (result == flagcxSuccess && selectedGpu != nullptr)
+      *selectedGpu = gpuDev;
+    if (result == flagcxSuccess)
+      fprintf(stderr, "Adaptor tests selected first local accelerator/NIC; "
+                      "PCI proximity is unavailable or disabled.\n");
     return result;
   }
 

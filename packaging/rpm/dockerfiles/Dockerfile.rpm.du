@@ -1,0 +1,72 @@
+# Build FlagCX Hygon (DU adaptor) RPM packages on openEuler 24.03.
+#
+# DTK is a plain tarball: it unpacks under /opt and carries its own hipcc, which
+# du.mk needs to compile the .hip kernels. Nothing in it runs a package
+# manager, so an ordinary openEuler image hosts the build, and the tarball's
+# "Ubuntu22.04" file name is a label on the build host, not a requirement --
+# its libraries ask for nothing newer than glibc 2.29.
+
+ARG BASE_IMAGE=openeuler/openeuler
+ARG BASE_IMAGE_VERSION=24.03-lts
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+ARG FILE_STORE=https://resource.flagos.net/repository/flagos-filestore/hygon
+ARG SDK_PACKAGE=DTK-26.04-Ubuntu22.04-x86_64.tar.gz
+
+WORKDIR /workspace
+
+RUN dnf install -y curl tar gzip && dnf clean all
+
+RUN set -eux; \
+    curl -fsSL --retry 5 --connect-timeout 15 -o /tmp/dtk.tar.gz \
+        "${FILE_STORE}/${SDK_PACKAGE}"; \
+    tar xzf /tmp/dtk.tar.gz -C /opt; \
+    ln -sf /opt/dtk-26.04 /opt/dtk; \
+    rm -f /tmp/dtk.tar.gz; \
+    test -x /opt/dtk/bin/hipcc; \
+    test -e /opt/dtk/include/rccl/rccl.h; \
+    test -e /opt/dtk/lib/librccl.so.1
+
+# The source is copied after the SDK: a layer that fetches hundreds of MB
+# from the file store must not be invalidated by a packaging edit.
+COPY . /workspace/
+
+# DTK is reached through its own env.sh: it exports ROCM_PATH/HIP_PATH and puts
+# the hip headers on CPLUS_INCLUDE_PATH, which is how `#include <hip/...>` in
+# flagcx/adaptor/include/device_utils.h resolves. Without it the build stops at
+# that header even with DEVICE_HOME set, because the DTK tree reaches the hip
+# headers through symlinks the compiler is never told about.
+#
+# DEVICE_HOME / CCL_HOME are pinned rather than left to the Makefile's ladder,
+# which resolves them from HIP_PATH: an unset value there is
+# defined-but-empty and silently becomes /lib64. The DTK root is the value
+# du.mk wants, not the cuda-12 compat tree the deb line uses -- hipcc,
+# include/hip, include/rccl and librccl all hang off /opt/dtk.
+#
+# The official openEuler image leaves %dist empty (its .oe* tags come from
+# EulerMaker), so reconstruct it the way the CANN line does -- without it the
+# package is Release 1 and cannot be told apart from another distribution's.
+# A bash -c wrapper rather than a SHELL instruction: env.sh reads BASH_SOURCE,
+# and a SHELL line here would sit above the SDK layer and invalidate it.
+# DTK's clang (llvm/bin/dcc) only knows the GCC triples of the distributions
+# the SDK ships for, and openEuler's is x86_64-openEuler-linux: without being
+# pointed at the install directory it reports 'cmath' file not found, then
+# fails the link on crtbeginS.o, -lstdc++ and -lgcc. The directory is found
+# rather than spelled out, so a GCC bump in the base image does not break it.
+# gcc is installed here rather than in the dnf layer above: that layer sits on
+# top of the SDK fetch, and touching it would re-download the tarball.
+RUN bash -c 'set -a && . /opt/dtk/env.sh && set +a \
+    && dnf install -y gcc-c++ && dnf clean all \
+    && gccdir="" \
+    && for d in /usr/lib/gcc/*/*; do [ -e "${d}/crtbeginS.o" ] && gccdir="${d}"; done \
+    && if [ -z "${gccdir}" ]; then echo "no GCC installation to point dcc at" >&2; exit 1; fi \
+    && export HIPCC_COMPILE_FLAGS_APPEND="--gcc-install-dir=${gccdir}" \
+    && export HIPCC_LINK_FLAGS_APPEND="--gcc-install-dir=${gccdir}" \
+    && . /etc/os-release \
+    && case "${ID}" in \
+           openEuler) export RPM_DIST_TAG=".oe$(echo "${VERSION_ID}" | tr -d .)" ;; \
+       esac \
+    && DEVICE_HOME=/opt/dtk CCL_HOME=/opt/dtk \
+       bash packaging/rpm/dockerfiles/build-rpm-common.sh du'
+
+CMD ["/bin/bash"]

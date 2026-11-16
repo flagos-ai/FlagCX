@@ -316,8 +316,14 @@ class PpuCiRegressionTest(unittest.TestCase):
 
         # BAREX needs host networking. GitHub Actions job containers reject
         # --network, so the PPU jobs must launch Docker explicitly.
-        self.assertNotIn("container:", perf_workflow[perf_workflow.index("perf-test-ppu:"):])
-        self.assertNotIn("container:", torch_workflow[torch_workflow.index("torch-api-test-ppu:"):])
+        ppu_perf_job = perf_workflow.split("perf-test-ppu:", 1)[1].split(
+            "\n  perf-test-mthreads:", 1
+        )[0]
+        ppu_torch_job = torch_workflow.split("torch-api-test-ppu:", 1)[1].split(
+            "\n  torch-api-test-ascend:", 1
+        )[0]
+        self.assertNotIn("container:", ppu_perf_job)
+        self.assertNotIn("container:", ppu_torch_job)
 
         container_runner = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"

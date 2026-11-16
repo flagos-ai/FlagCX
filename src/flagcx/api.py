@@ -191,6 +191,9 @@ class flagcxDataTypeEnum:
             return cls.flagcxFloat64
         if dtype == torch.bfloat16:
             return cls.flagcxBfloat16
+        # Same convention as PyTorch's NCCL backend (bool -> ncclUint8).
+        if dtype == torch.bool:
+            return cls.flagcxUint8
         raise ValueError(f"Unsupported dtype: {dtype}")
 
 
@@ -556,11 +559,10 @@ class FLAGCXLibrary:
     def flagcxGetVersion(self) -> str:
         version = ctypes.c_int()
         self.FLAGCX_CHECK(self._funcs["flagcxGetVersion"](ctypes.byref(version)))
-        version_str = str(version.value)
-        # something like 21903 --> "2.19.3"
-        major = version_str[0].lstrip("0")
-        minor = version_str[1:3].lstrip("0")
-        patch = version_str[3:].lstrip("0")
+        code = version.value
+        major = code // 10000
+        minor = (code // 100) % 100
+        patch = code % 100
         return f"{major}.{minor}.{patch}"
 
     def flagcxGetUniqueId(self) -> flagcxUniqueId:

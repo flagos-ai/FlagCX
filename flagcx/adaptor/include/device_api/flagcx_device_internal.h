@@ -79,9 +79,10 @@ struct flagcxDevCommInternal {
   int teamRank;          // this rank's position in the inter-node team
   int nTeamRanks;        // total number of nodes (team size for barrier)
   int barrierSignalBase; // first signal slot index used for barriers
+  int interBarrierCount; // allocated Inter barrier channels
 
-  // ---- One-sided Default layer (set if interSignalCount/interCounterCount >
-  // 0)
+  // ---- One-sided Default layer (set if signals, counters, or Inter barriers
+  // are requested)
   // ----
   uint64_t *signalBuffer;      // GPU-visible network signal words
   uint64_t *localSignalBuffer; // GPU-visible local signal words (host SHM mode)
@@ -213,6 +214,22 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
 //   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
 //   window != nullptr        → Window available (Vendor or default)
 // ============================================================
+// Host-only resources attached to a Window after communicator creation. The
+// callback must leave the resource owned by this node when it returns an error
+// so communicator teardown can retry it.
+struct flagcxDevMemDeferredResource {
+  void *resource;
+  flagcxResult_t (*release)(void *resource);
+  struct flagcxDevMemDeferredResource *next;
+};
+
+struct flagcxUniRunnerIpcBinding {
+  int slot;
+  uint64_t generation;
+  size_t boundSize;
+  bool ownsTableReference;
+};
+
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
   void *rawPtr; // = buff parameter
@@ -231,9 +248,11 @@ struct flagcxDevMemInternal {
   int mrIndex; // index into heteroComm->oneSideHandles (-1 if not registered)
   uintptr_t mrBase; // handles[mrIndex]->baseVas[myRank] (cached for device)
 
-  // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
+  // ---- IPC layer (ipcIndex >= 0 when IPC exchange succeeds) ----
   int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
   int intraRank; // this rank's local rank index (for IPC local pointer)
+  // Allocated only by the uniRunner IPC Ring AllReduce DevMem entry point.
+  struct flagcxUniRunnerIpcBinding *uniRunnerIpc;
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
@@ -244,11 +263,17 @@ struct flagcxDevMemInternal {
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
+  struct flagcxDevMemDeferredResource *deferredResources; // Host-only ownership
   struct flagcxDevMemInternal *deferredNext; // Host-only deferred-free link
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
+
+// Internal entry point: ordinary Device API callers use flagcxDevMemCreate.
+flagcxResult_t flagcxUniRunnerIpcDevMemCreate(flagcxComm_t comm, void *buff,
+                                              size_t size,
+                                              flagcxDevMem_t *devMem);
 
 #endif // FLAGCX_DEVICE_API_INTERNAL_H_

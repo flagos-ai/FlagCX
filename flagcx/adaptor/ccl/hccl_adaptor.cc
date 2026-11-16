@@ -5,7 +5,9 @@
 #include "adaptor.h"
 #include "alloc.h"
 #include "comm.h"
+#include "debug.h"
 #include <map>
+#include <stdint.h>
 #include <vector>
 
 static_assert(sizeof(HcclRootInfo) <= sizeof(flagcxInnerUniqueId),
@@ -150,10 +152,38 @@ flagcxResult_t hcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
       flagcxResult_t)h2f_ret_map[HcclGetRankId(comm->base, (uint32_t *)rank)];
 }
 
-// TODO: unsupported
 flagcxResult_t hcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
                                             flagcxResult_t *asyncError) {
-  return flagcxNotSupported;
+  if (comm == NULL || comm->base == NULL || asyncError == NULL)
+    return flagcxInvalidArgument;
+
+  *asyncError = flagcxSuccess;
+  HcclResult hcclAsyncError = HCCL_SUCCESS;
+  HcclResult queryResult = HcclGetCommAsyncError(comm->base, &hcclAsyncError);
+  std::map<HcclResult, flagcxResult_t>::const_iterator mapped =
+      h2f_ret_map.find(queryResult);
+  if (mapped == h2f_ret_map.end()) {
+    WARN("HcclGetCommAsyncError returned unknown status %d",
+         static_cast<int>(queryResult));
+    return flagcxUnhandledDeviceError;
+  }
+  if (mapped->second != flagcxSuccess) {
+    WARN("HcclGetCommAsyncError failed with status %d",
+         static_cast<int>(queryResult));
+    return mapped->second;
+  }
+
+  mapped = h2f_ret_map.find(hcclAsyncError);
+  if (mapped == h2f_ret_map.end()) {
+    WARN("HcclGetCommAsyncError reported unknown asynchronous error %d",
+         static_cast<int>(hcclAsyncError));
+    return flagcxUnhandledDeviceError;
+  }
+  *asyncError = mapped->second;
+  if (*asyncError != flagcxSuccess)
+    WARN("HcclGetCommAsyncError reported asynchronous error %d",
+         static_cast<int>(hcclAsyncError));
+  return flagcxSuccess;
 }
 
 // TODO: unsupported
@@ -242,10 +272,17 @@ flagcxResult_t hcclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
                                     int root, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
 
+  const size_t typeSize = getFlagcxDataTypeSize(datatype);
+  if (typeSize == 0 || count > SIZE_MAX / typeSize)
+    return flagcxInvalidArgument;
+
   uint32_t rank;
-  HcclGetRankId(comm->base, &rank);
-  if (rank == root) {
-    aclrtMemcpy(recvbuff, count, sendbuff, count, ACL_MEMCPY_DEVICE_TO_DEVICE);
+  if (HcclGetRankId(comm->base, &rank) != HCCL_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  if (rank == root && sendbuff != recvbuff && count != 0) {
+    const size_t bytes = count * typeSize;
+    DEVCHECK(aclrtMemcpy(recvbuff, bytes, sendbuff, bytes,
+                         ACL_MEMCPY_DEVICE_TO_DEVICE));
   }
   void *buffer = (rank == root) ? const_cast<void *>(sendbuff) : recvbuff;
   return (flagcxResult_t)h2f_ret_map[HcclBroadcast(

@@ -13,7 +13,70 @@
 #include "flagcx_device_wrapper.h"
 #include <new>
 
-#if FLAGCX_CHECK_DEVICE_CC
+#if defined(USE_KUNLUNXIN_ADAPTOR) && defined(__clang_llvm_bitcode_lib__)
+
+/* ================================================================
+ * KunlunXin / XPU Device IR boundary.
+ *
+ * XTDK's C++ frontend cannot call generic-address-space member functions on
+ * address-space-1 pointers, so the six FlagTree-linked entry points delegate
+ * to KunlunXin-specific views that read the SHMEM Comm / Window fields
+ * directly.  The full C++ wrapper is not compiled for this translation unit.
+ * ================================================================ */
+
+#include "kunlunxin/ir_views.h"
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
+flagcxDevCommGetIntraRank(const void FLAGCX_IR_GLOBAL_PTR *opaque) {
+  return KlxCommView{static_cast<KlxCommPtr>(opaque)}.intraRank();
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
+flagcxDevCommGetIntraSize(const void FLAGCX_IR_GLOBAL_PTR *opaque) {
+  return KlxCommView{static_cast<KlxCommPtr>(opaque)}.intraSize();
+}
+
+FLAGCX_IR_EXTERN_C
+FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
+flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *opaque,
+                       FLAGCX_IR_OFFSET_TYPE offset, int peer) {
+  return KlxMemView{static_cast<KlxMemPtr>(opaque)}.intraPointer(offset, peer);
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierArriveS(const void FLAGCX_IR_GLOBAL_PTR *opaque,
+                          flagcxCoopKind_t coopKind, uint32_t index,
+                          bool multimem, flagcxDeviceMemoryOrder_t order) {
+  (void)index;
+  (void)multimem;
+  (void)order;
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  KlxCommView{static_cast<KlxCommPtr>(opaque)}.arrive(coop);
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierWaitS(const void FLAGCX_IR_GLOBAL_PTR *opaque,
+                        flagcxCoopKind_t coopKind, uint32_t index,
+                        bool multimem, flagcxDeviceMemoryOrder_t order) {
+  (void)index;
+  (void)multimem;
+  (void)order;
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  KlxCommView{static_cast<KlxCommPtr>(opaque)}.wait(coop);
+}
+
+FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *opaque,
+                        flagcxCoopKind_t coopKind, uint32_t index,
+                        bool multimem, flagcxDeviceMemoryOrder_t order) {
+  (void)index;
+  (void)multimem;
+  (void)order;
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  KlxCommView{static_cast<KlxCommPtr>(opaque)}.sync(coop);
+}
+
+#elif FLAGCX_CHECK_DEVICE_CC
 
 /* ================================================================
  * Category 1: Comm Queries (4)
@@ -175,7 +238,7 @@ flagcxGetLocalPointerC(const void FLAGCX_IR_GLOBAL_PTR *memOpaque,
 FLAGCX_IR_EXTERN_C
 FLAGCX_DEVICE_INLINE_DECORATOR FLAGCX_IR_GLOBAL_RETURN_PTR void *
 flagcxGetIntraPointerC(const void FLAGCX_IR_GLOBAL_PTR *memOpaque,
-                       size_t offset, int peer) {
+                       FLAGCX_IR_OFFSET_TYPE offset, int peer) {
   const flagcxDevMem *mem = (const flagcxDevMem *)memOpaque;
   return FLAGCX_IR_GLOBAL_PTR_CAST(void,
                                    flagcxGetIntraPointer(*mem, offset, peer));

@@ -24,18 +24,41 @@ flagcxResult_t xmlGetChar(FILE *file, char *c) {
   return flagcxSuccess;
 }
 
-#define BUSID_SIZE (sizeof("0000:00:00.0"))
-#define BUSID_REDUCED_SIZE (sizeof("0000:00"))
-static void memcpylower(char *dst, const char *src, const size_t size) {
-  for (int i = 0; i < size; i++)
-    dst[i] = tolower(src[i]);
+static int pciBusIdDomainDigits(const char *busId) {
+  if (busId == NULL)
+    return 0;
+  size_t length = strlen(busId);
+  int domainDigits = length == 12 ? 4 : (length == 16 ? 8 : 0);
+  if (domainDigits == 0 || busId[domainDigits] != ':' ||
+      busId[domainDigits + 3] != ':' || busId[domainDigits + 6] != '.')
+    return 0;
+  for (size_t i = 0; i < length; i++) {
+    if (i == (size_t)domainDigits || i == (size_t)domainDigits + 3 ||
+        i == (size_t)domainDigits + 6)
+      continue;
+    if (!isxdigit((unsigned char)busId[i]))
+      return 0;
+  }
+  return domainDigits;
 }
 static flagcxResult_t getPciPath(const char *busId, char **path) {
-  char busPath[] = "/sys/class/pci_bus/0000:00/../../0000:00:00.0";
-  memcpylower(busPath + sizeof("/sys/class/pci_bus/") - 1, busId,
-              BUSID_REDUCED_SIZE - 1);
-  memcpylower(busPath + sizeof("/sys/class/pci_bus/0000:00/../../") - 1, busId,
-              BUSID_SIZE - 1);
+  if (path == NULL)
+    return flagcxInvalidArgument;
+  *path = NULL;
+  int domainDigits = pciBusIdDomainDigits(busId);
+  if (domainDigits == 0)
+    return flagcxInvalidArgument;
+  char lower[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
+  size_t length = strlen(busId);
+  for (size_t i = 0; i < length; i++)
+    lower[i] = (char)tolower((unsigned char)busId[i]);
+  lower[length] = '\0';
+  char busPath[128];
+  int written =
+      snprintf(busPath, sizeof(busPath), "/sys/class/pci_bus/%.*s/../../%s",
+               domainDigits + 3, lower, lower);
+  if (written < 0 || (size_t)written >= sizeof(busPath))
+    return flagcxInvalidArgument;
   *path = realpath(busPath, NULL);
   if (*path == NULL) {
     WARN("Could not find real path of %s", busPath);
@@ -236,22 +259,8 @@ flagcxResult_t flagcxTopoGetPciNode(struct flagcxXml *xml, const char *busId,
   return flagcxSuccess;
 }
 
-// Check whether a string is in BDF format or not.
-// BDF (Bus-Device-Function) is "BBBB:BB:DD.F" where B, D and F are hex digits.
-// There can be trailing chars.
-int isHex(char c) {
-  return ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-          (c >= 'A' && c <= 'F'));
-}
-int checkBDFFormat(char *bdf) {
-  if (bdf[4] != ':' || bdf[7] != ':' || bdf[10] != '.')
-    return 0;
-  if (isHex(bdf[0]) == 0 || isHex(bdf[1] == 0) || isHex(bdf[2] == 0) ||
-      isHex(bdf[3] == 0) || isHex(bdf[5] == 0) || isHex(bdf[6] == 0) ||
-      isHex(bdf[8] == 0) || isHex(bdf[9] == 0) || isHex(bdf[11] == 0))
-    return 0;
-  return 1;
-}
+// Check whether a path component is a four- or eight-digit-domain BDF.
+int checkBDFFormat(char *bdf) { return pciBusIdDomainDigits(bdf) != 0; }
 
 // TODO: it would be better if we have a device handle and can call APIs to get
 // Apu information using that device handle
@@ -279,11 +288,13 @@ flagcxResult_t flagcxTopoGetXmlFromCpu(struct flagcxXmlNode *cpuNode,
       WARN("GetXmlFromCpu : could not find CPU numa ID.");
       return flagcxInternalError;
     }
-    // Set affinity
-    char cpumaskPath[] = "/sys/devices/system/node/node0000";
-    sprintf(cpumaskPath, "/sys/devices/system/node/node%s", numaId);
-    FLAGCXCHECK(
-        flagcxTopoSetAttrFromSys(cpuNode, cpumaskPath, "cpumap", "affinity"));
+    // Unknown NUMA has no node cpumap; leave affinity unspecified.
+    if (strcmp(numaId, "-1") != 0) {
+      char cpumaskPath[] = "/sys/devices/system/node/node0000";
+      sprintf(cpumaskPath, "/sys/devices/system/node/node%s", numaId);
+      FLAGCXCHECK(
+          flagcxTopoSetAttrFromSys(cpuNode, cpumaskPath, "cpumap", "affinity"));
+    }
   }
 
   FLAGCXCHECK(xmlGetAttrIndex(cpuNode, "arch", &index));
@@ -526,11 +537,13 @@ flagcxResult_t flagcxTopoFillNet(struct flagcxXml *xml, const char *pciPath,
   struct flagcxXmlNode *parent = NULL;
   if (pciSysPath) {
     INFO(FLAGCX_INIT, "getting parent pci node for nic");
-    int offset;
-    for (offset = strlen(pciSysPath) - 1; pciSysPath[offset] != '/'; offset--)
-      ;
     char busId[FLAGCX_DEVICE_PCI_BUSID_BUFFER_SIZE];
-    strcpy(busId, pciSysPath + offset + 1);
+    const char *basename = strrchr(pciSysPath, '/');
+    if (basename == NULL)
+      return flagcxInvalidArgument;
+    int written = snprintf(busId, sizeof(busId), "%s", basename + 1);
+    if (written < 0 || (size_t)written >= sizeof(busId))
+      return flagcxInvalidArgument;
     INFO(FLAGCX_INIT, "busId for parent pci node is [%s]", busId);
     FLAGCXCHECK(flagcxTopoGetPciNode(xml, busId, &parent));
     FLAGCXCHECK(flagcxTopoGetXmlFromSys(parent, xml));

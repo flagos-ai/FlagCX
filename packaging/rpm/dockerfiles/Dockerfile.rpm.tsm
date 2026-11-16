@@ -1,0 +1,49 @@
+# Build FlagCX TsingMicro RPM packages on openEuler 24.03.
+#
+# There is no vendor base image to start from here. The TSM SDK ships as
+# self-extracting installers that unpack into /usr/local/kuiper and call no
+# package manager, so an ordinary openEuler image can host the build; only the
+# runtime and the CCL installer are fetched, because the driver and firmware
+# ones address the host kernel and the build reads headers and libraries only.
+
+ARG BASE_IMAGE=openeuler/openeuler
+ARG BASE_IMAGE_VERSION=24.03-lts
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+ARG FILE_STORE=https://resource.flagos.net/repository/flagos-filestore/tsingmicro
+ARG SDK_RELEASE=260610164501
+
+WORKDIR /workspace
+
+# curl fetches the installers; the makeself wrappers call tar and sudo.
+RUN dnf install -y curl sudo tar && dnf clean all
+
+RUN set -eux; \
+    for pkg in Tsm_runtime Tsm_ccl; do \
+        fn="${pkg}_${SDK_RELEASE}_x86_64_installer.run"; \
+        curl -fsSL --retry 5 --connect-timeout 15 -o "/tmp/${fn}" "${FILE_STORE}/${fn}"; \
+        chmod +x "/tmp/${fn}"; \
+        "/tmp/${fn}"; \
+        rm -f "/tmp/${fn}"; \
+    done; \
+    test -e /usr/local/kuiper/include/tccl.h; \
+    test -e /usr/local/kuiper/lib/libtccl.so
+
+# The source is copied after the SDK: a layer that fetches hundreds of MB
+# from the file store must not be invalidated by a packaging edit.
+COPY . /workspace/
+
+# DEVICE_HOME / CCL_HOME are pinned rather than left to the Makefile's ladder:
+# an unset value there is defined-but-empty and silently becomes /lib64.
+#
+# The official openEuler image leaves %dist empty (its .oe* tags come from
+# EulerMaker), so reconstruct it the way the CANN line does -- without it the
+# package is Release 1 and cannot be told apart from another distribution's.
+RUN . /etc/os-release \
+    && case "${ID}" in \
+           openEuler) export RPM_DIST_TAG=".oe$(echo "${VERSION_ID}" | tr -d '.')" ;; \
+       esac \
+    && DEVICE_HOME=/usr/local/kuiper CCL_HOME=/usr/local/kuiper \
+       bash packaging/rpm/dockerfiles/build-rpm-common.sh tsm
+
+CMD ["/bin/bash"]

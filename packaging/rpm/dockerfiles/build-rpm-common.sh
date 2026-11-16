@@ -9,7 +9,7 @@ if [ -z "${BACKEND}" ]; then
 fi
 
 case "${BACKEND}" in
-    nvidia|metax|ascend)
+    nvidia|metax|ascend|tsm|sunrise|du)
         ;;
     *)
         echo "ERROR: unsupported backend: ${BACKEND}" >&2

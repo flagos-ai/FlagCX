@@ -106,42 +106,87 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
   ASSERT_EQ(collectiveFailed(setup), 0) << "IPC Get gate setup failed";
   MPI_Barrier(MPI_COMM_WORLD);
 
+  // Only the counter-ordering check requires a stream gate. GetAsyncOffsets
+  // independently exercises IPC Get and validates its data without this gate.
+  flagcxResult_t gateResult = flagcxSuccess;
+  if (rank == 1)
+    gateResult = deviceAdaptor->streamWaitValue64(
+        stream, gate, 1, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
+  int localGateUnsupported = 0;
+#if defined(USE_ILUVATAR_ADAPTOR)
+  localGateUnsupported = gateResult == flagcxNotSupported ? 1 : 0;
+#endif
+  int anyGateUnsupported = 0;
+  MPI_Allreduce(&localGateUnsupported, &anyGateUnsupported, 1, MPI_INT, MPI_MAX,
+                MPI_COMM_WORLD);
+  int anyGateError =
+      collectiveFailed(localGateUnsupported ? flagcxSuccess : gateResult);
+  if (anyGateUnsupported || anyGateError) {
+    if (rank == 1) {
+      EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
+      EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    ASSERT_EQ(anyGateError, 0)
+        << "IPC Get counter-ordering gate failed at streamWaitValue64 on "
+           "at least one rank; local result="
+        << static_cast<int>(gateResult);
+    GTEST_SKIP() << "CoreX streamWaitValue64 is unsupported; only IPC Get "
+                    "counter ordering is unavailable. GetAsyncOffsets "
+                    "independently validates IPC Get";
+  }
+
   flagcxResult_t op = flagcxSuccess;
+  const char *failedStage = "none";
+  auto runStage = [&](const char *name, auto operation) {
+    if (op == flagcxSuccess) {
+      op = operation();
+      if (op != flagcxSuccess)
+        failedStage = name;
+    }
+  };
   uint64_t before = 0;
   uint64_t pending = 0;
   if (rank == 1) {
-    op = deviceAdaptor->streamWaitValue64(stream, gate, 1,
-                                          FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
-    if (op == flagcxSuccess)
-      op = flagcxReadCounter(comm, &before);
-    if (op == flagcxSuccess)
-      op = flagcxGetAsync(dataBuff, 64, flagcxUint8, 0, dataWin, 0, 0, comm,
-                          stream);
-    if (op == flagcxSuccess)
-      op = flagcxReadCounter(comm, &pending);
+    runStage("flagcxReadCounter(before)",
+             [&] { return flagcxReadCounter(comm, &before); });
+    runStage("flagcxGetAsync", [&] {
+      return flagcxGetAsync(dataBuff, 64, flagcxUint8, 0, dataWin, 0, 0, comm,
+                            stream);
+    });
+    runStage("flagcxReadCounter(pending)",
+             [&] { return flagcxReadCounter(comm, &pending); });
     // Release the gate on a different stream even when the operation fails,
     // so the test cannot leave the RMA progress thread waiting forever.
     flagcxResult_t release =
         deviceAdaptor->streamWriteValue64(releaseStream, gate, 1, 0);
-    if (release == flagcxSuccess)
+    runStage("streamWriteValue64(release)", [&] { return release; });
+    if (release == flagcxSuccess) {
       release = devHandle->streamSynchronize(releaseStream);
-    if (op == flagcxSuccess)
-      op = release;
-    if (op == flagcxSuccess)
-      op = flagcxWaitCounter(comm, before + 1);
-    if (op == flagcxSuccess)
-      op = devHandle->streamSynchronize(stream);
+      runStage("streamSynchronize(release)", [&] { return release; });
+    }
+    runStage("flagcxWaitCounter",
+             [&] { return flagcxWaitCounter(comm, before + 1); });
+    runStage("streamSynchronize(copy)",
+             [&] { return devHandle->streamSynchronize(stream); });
   }
-  ASSERT_EQ(collectiveFailed(op), 0) << "IPC Get operation failed";
+  int anyOperationError = collectiveFailed(op);
   if (rank == 1) {
-    EXPECT_EQ(pending, before) << "IPC Get completed before its D2D copy";
-    std::vector<uint8_t> actual(64);
-    EXPECT_EQ(devHandle->deviceMemcpy(actual.data(), dataBuff, actual.size(),
-                                      flagcxMemcpyDeviceToHost, nullptr),
-              flagcxSuccess);
-    EXPECT_EQ(actual, std::vector<uint8_t>(64, 0xA5));
+    if (op == flagcxSuccess) {
+      EXPECT_EQ(pending, before) << "IPC Get completed before its D2D copy";
+      std::vector<uint8_t> actual(64);
+      EXPECT_EQ(devHandle->deviceMemcpy(actual.data(), dataBuff, actual.size(),
+                                        flagcxMemcpyDeviceToHost, nullptr),
+                flagcxSuccess);
+      EXPECT_EQ(actual, std::vector<uint8_t>(64, 0xA5));
+    }
     EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
     EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
   }
   MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_EQ(anyOperationError, 0)
+      << "IPC Get counter-ordering operation failed on at least one rank; "
+         "local rank="
+      << rank << ", stage=" << failedStage
+      << ", result=" << static_cast<int>(op);
 }

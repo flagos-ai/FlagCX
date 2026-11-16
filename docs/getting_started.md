@@ -25,20 +25,18 @@ the flag and pip installs it for you.
 **Device bitcode and headers (optional):**
 
 A wheel that will be an input to a Device API kernel build also carries the device bitcode and the
-headers a consumer compiles against. Both are opt-in, because building the bitcode needs a clang
-that targets CUDA:
+headers a consumer compiles against. Both are opt-in because building bitcode needs a
+compiler and LLVM tools for the target GPU. CUDA, Iluvatar, and Hygon are supported; see
+[Device API bitcode](device_api_bitcode.md) for build commands. For CUDA:
 
 ```shell
-FLAGCX_BITCODE_ARCH=sm_90 \
-FLAGCX_BITCODE_ADAPTOR_FLAGS="-DUSE_NVIDIA_ADAPTOR -DFLAGCX_COMM_TRAITS_CCL" \
+FLAGCX_ADAPTOR=nvidia FLAGCX_BITCODE_ARCH=sm_90 \
 pip install . -v --no-build-isolation
 ```
 
-`FLAGCX_BITCODE_ARCH` (`sm_90`, `sm_120`, …) is the switch: unset, nothing is built and the wheel
-is the plain library wheel. `FLAGCX_BITCODE_ADAPTOR_FLAGS` is the `ADAPTOR_FLAG` this build's
-`makefiles/nvidia.mk` derived — the bitcode's own Makefile does not read `nccl.h`, so its
-comm-traits branch has to be handed to it. The two branches differ by a factor of seven in the
-size of the result, so the wrong one is not a build failure; it is simply the wrong bitcode.
+`FLAGCX_BITCODE_ARCH` (`sm_90`, `ivcore11`, `gfx906`, etc.) enables the BC build.
+The root Makefile passes its selected adaptor and CommTraits flags to the BC build.
+Without this variable, the wheel contains only the ordinary library.
 
 The files land in the package as `flagcx/lib/libflagcx_device.bc` and `flagcx/include/*.h`.
 

@@ -2329,6 +2329,11 @@ flagcxResult_t flagcxC2cPlanner::execute(const void *sendbuff, void *recvbuff,
                                          flagcxStream_t stream,
                                          size_t *sendCounts, size_t *sDispls,
                                          size_t *recvCounts, size_t *rDispls) {
+  // Planner stages synchronize before continuing, but an outer group defers
+  // their Hetero work until after execute returns.
+  if (flagcxGetGroupDepth() > 0)
+    return flagcxInvalidUsage;
+
   // redOp validation
   if (redOp_ != flagcxRedNoOp) {
     if (redOp_ != flagcxSum && redOp_ != flagcxMax && redOp_ != flagcxMin) {

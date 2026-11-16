@@ -174,6 +174,8 @@ class flagcxWorkerPool;
 
 struct flagcxHeteroComm {
   uint64_t startMagic;
+  bool destroyProxyComplete;
+  flagcxResult_t destroyProxyResult;
   struct flagcxMemoryStack memPermanent, memScoped;
   // List of destructors to run when comm is destructed
   struct flagcxDestructor *destructorHead;

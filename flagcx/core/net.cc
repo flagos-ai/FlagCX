@@ -554,6 +554,13 @@ flagcxResult_t flagcxNetPrepareProxyOp(struct flagcxHeteroComm *comm,
       flagcxCollProxyOrderingKey(op->channelId, srcRank, dstRank);
   const uint32_t submitFlags =
       op->channelId == 0 ? 0 : FLAGCX_NET_SUBMIT_INDEPENDENT;
+  TRACE(FLAGCX_NET,
+        "NET proxy rank=%d peer=%d channel=%d direction=%s buffer=%p "
+        "bytes=%zu chunks=%d chunk_size=%lld ordering_key=%llu flags=0x%x",
+        comm->rank, peer, op->channelId,
+        op->pattern == flagcxPatternRecv ? "recv" : "send", buffer, size,
+        op->args.chunkSteps, (long long)flagcxNetChunkSize,
+        (unsigned long long)orderingKey, submitFlags);
   const uint64_t generation =
       __atomic_add_fetch(&op->connection->collGeneration, 1, __ATOMIC_RELAXED);
   FLAGCXCHECK(flagcxCollProxyTransportInit(

@@ -25,6 +25,7 @@
 
 #define FLAGCX_P2P_MSG_SIZE 256
 #define FLAGCX_P2P_DESC_SIZE 64
+// Serialized IPC info: 72-byte handle, 32-byte metadata, 24-byte reserve.
 #define FLAGCX_P2P_IPC_INFO_SIZE 128
 
 constexpr int kFlagcxP2pMaxQpsPerEngine = 8;

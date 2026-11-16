@@ -17,6 +17,8 @@ struct DuPlatform {};
 
 template <>
 struct PlatformTraits<DuPlatform> {
+  struct CoopOps {};
+  struct Clock {};
 
   // ==============================================================
   // Intrin — HIP wavefront intrinsics

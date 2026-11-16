@@ -13,6 +13,19 @@
 
 struct IluvatarPlatform {};
 
+// Volatile view of a device pointer, kept backend-private on purpose: this fix
+// must not require editing the shared device_utils.h. The address-space
+// annotation has to stay on the pointer - a cast that drops it (including
+// const_cast to a plain volatile T *) does not compile, because there is no
+// address_space(1) <-> generic conversion.
+#if defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                               \
+  ((volatile FLAGCX_IR_GLOBAL_PTR type *)(ptr))
+#else
+#define FLAGCX_ILUVATAR_VOLATILE_CAST(type, ptr)                               \
+  (FLAGCX_DEVICE_GLOBAL_PTR_CAST(volatile type, ptr))
+#endif
+
 template <>
 struct PlatformCompletionWord<IluvatarPlatform> {
   using type = uint32_t;
@@ -20,6 +33,8 @@ struct PlatformCompletionWord<IluvatarPlatform> {
 
 template <>
 struct PlatformTraits<IluvatarPlatform> {
+  struct CoopOps {};
+  struct Clock {};
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
 
@@ -148,41 +163,111 @@ struct PlatformTraits<IluvatarPlatform> {
     }
   };
 
+  // Block-scope fence, kept backend-private on purpose: this fix must not
+  // require editing shared device_utils.h. On the device pass
+  // __threadfence_block lowers to a bare sl_wait (measured on ivcore11); on the
+  // host pass it must vanish, mirroring the host branch of the shared macro.
+#if defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)
+#define FLAGCX_ILUVATAR_BLOCK_FENCE() __threadfence_block()
+#else
+#define FLAGCX_ILUVATAR_BLOCK_FENCE() ((void)0)
+#endif
+
   struct Atomic {
     // FlagTree PR 1184 validates aligned load/store and 32-bit CoreX RMW.
-    // Acquire polling therefore uses volatile loads, release publication
-    // fences before the volatile store, and RMW is deliberately restricted
-    // to uint32_t. DefaultBackend selects this width at compile time; no
-    // unsupported 64-bit RMW is emitted for ivcore11.
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    // RMW is deliberately restricted to uint32_t. DefaultBackend selects this
+    // width at compile time; no unsupported 64-bit RMW is emitted for ivcore11.
+    //
+    // The relaxed/release path used to call __atomic_load_n / __atomic_store_n.
+    // ivcore11 has no pattern for AtomicLoad/AtomicStore in address space 1, so
+    // that crashed llc with "Cannot select: AtomicLoad ... addrspace 1" for
+    // BOTH i32 and i64; every polling loop in a real kernel died with it. Every
+    // access is therefore a plain volatile load/store, which carries no
+    // ordering of its own: volatile only keeps volatile accesses from being
+    // reordered against each other, and does nothing to stop the compiler from
+    // hoisting an ordinary payload read above the flag read. The ordering is
+    // therefore emitted explicitly, on the side the requested order names:
+    // release before the store, acquire after the load.
+    //
+    // Scope dispatch. A scope names how far a fence has to reach, so the
+    // cheapest correct fence differs per level: threads inside one CTA share an
+    // L1 (the compiler is the only remaining reordering agent), CTAs on one
+    // device share L2, and nothing on this target can order across devices.
+    //
+    // System is rejected at compile time rather than silently served at device
+    // strength. ivcore11 cannot select llvm.nvvm.membar.sys, so a System fence
+    // is not a slow fence here -- it is an absent one, and a caller that
+    // believes it got cross-device ordering is the exact failure mode this
+    // whole file is supposed to prevent. Cross-device ordering must go through
+    // the FIFO/Net signalling path instead.
+    //
+    // The default is Device, matching what this backend can actually deliver.
+    // It used to default to System, which promised a level the implementation
+    // never provided.
+    template <flagcxDeviceScope_t Scope>
+    FLAGCX_DEVICE_INLINE_DECORATOR static void scopedFence() {
+      static_assert(Scope != flagcxDeviceScopeSystem,
+                    "Iluvatar has no system-scope fence: ivcore11 cannot "
+                    "select llvm.nvvm.membar.sys and __threadfence_system "
+                    "aborts llc. Order cross-device accesses through the "
+                    "FIFO/Net signalling path instead of a fence.");
+      if (Scope == flagcxDeviceScopeThread) {
+        // Same thread: no cache is involved, only instruction scheduling.
+        asm volatile("" ::: "memory");
+      } else if (Scope == flagcxDeviceScopeBlock) {
+        // Measured on ivcore11: __threadfence_block lowers to a bare sl_wait
+        // (wait for the wave's outstanding LSA operations) and never to
+        // ml_lsa_wbinv, so block scope costs no L2 writeback/invalidate. Warps
+        // in one CTA share an L1, so the cache hierarchy plus that wait carries
+        // the ordering. A sl_wait issued directly after another one coalesces,
+        // which is why an acquire load shows no block/thread split in the ISA
+        // while a store does. Only the device level pays for a wbinv.
+        FLAGCX_ILUVATAR_BLOCK_FENCE();
+      } else {
+        FLAGCX_DEVICE_THREAD_FENCE();
+      }
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR static bool
+    hasAcquire(flagcxDeviceMemoryOrder_t order) {
+      return order == flagcxDeviceMemoryOrderAcquire ||
+             order == flagcxDeviceMemoryOrderAcqRel ||
+             order == flagcxDeviceMemoryOrderSeqCst;
+    }
+
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     load(T *ptr, flagcxDeviceMemoryOrder_t order) {
-      (void)Scope;
-      switch (order) {
-        case flagcxDeviceMemoryOrderRelaxed:
-        case flagcxDeviceMemoryOrderRelease:
-          return __atomic_load_n(ptr, __ATOMIC_RELAXED);
-        case flagcxDeviceMemoryOrderAcquire:
-        case flagcxDeviceMemoryOrderAcqRel:
-        case flagcxDeviceMemoryOrderSeqCst:
-        default:
-          return *const_cast<volatile T *>(ptr);
+      const T value = *FLAGCX_ILUVATAR_VOLATILE_CAST(T, ptr);
+      // The read has to come first: a fence ahead of it would be a release on a
+      // load, which orders nothing. The acquire edge only exists after the read
+      // whose result the caller is about to act on.
+      if (hasAcquire(order)) {
+        scopedFence<Scope>();
       }
+      return value;
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static void
     store(T *ptr, const T &value, flagcxDeviceMemoryOrder_t order) {
-      (void)Scope;
-      if (order == flagcxDeviceMemoryOrderRelaxed) {
-        __atomic_store_n(ptr, value, __ATOMIC_RELAXED);
-        return;
+      // Release publication is the fence plus the volatile store. The condition
+      // stays "anything but Relaxed" instead of "Release-or-stronger": a store
+      // asked for Acquire then gets a fence it does not strictly need, and
+      // serving a stronger edge is allowed where serving a weaker one would not
+      // be. Narrowing it would weaken a path that works today for no gain.
+      if (order != flagcxDeviceMemoryOrderRelaxed) {
+        scopedFence<Scope>();
       }
-      FLAGCX_DEVICE_THREAD_FENCE();
-      *const_cast<volatile T *>(ptr) = value;
+      *FLAGCX_ILUVATAR_VOLATILE_CAST(T, ptr) = value;
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    // The six RMW members below still ignore both Scope and order: they lower
+    // to __atomic_*_fetch_*(..., __ATOMIC_SEQ_CST), which is device scope on
+    // this target. SeqCst is never weaker than what the caller asked for, so
+    // this is not a correctness gap in the ordering dimension -- but it cannot
+    // express system scope either, and that stays tracked separately.
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     fetchAdd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
       static_assert(sizeof(T) == sizeof(uint32_t),
@@ -191,7 +276,7 @@ struct PlatformTraits<IluvatarPlatform> {
       return __atomic_fetch_add(ptr, value, __ATOMIC_SEQ_CST);
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     fetchSub(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
       static_assert(sizeof(T) == sizeof(uint32_t),
@@ -200,7 +285,7 @@ struct PlatformTraits<IluvatarPlatform> {
       return __atomic_fetch_sub(ptr, value, __ATOMIC_SEQ_CST);
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T fetchOr(T *ptr, const T &value,
                                                     flagcxDeviceMemoryOrder_t) {
       static_assert(sizeof(T) == sizeof(uint32_t),
@@ -209,7 +294,7 @@ struct PlatformTraits<IluvatarPlatform> {
       return __atomic_fetch_or(ptr, value, __ATOMIC_SEQ_CST);
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     fetchAnd(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
       static_assert(sizeof(T) == sizeof(uint32_t),
@@ -218,7 +303,7 @@ struct PlatformTraits<IluvatarPlatform> {
       return __atomic_fetch_and(ptr, value, __ATOMIC_SEQ_CST);
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static T
     exchange(T *ptr, const T &value, flagcxDeviceMemoryOrder_t) {
       static_assert(sizeof(T) == sizeof(uint32_t),
@@ -227,7 +312,7 @@ struct PlatformTraits<IluvatarPlatform> {
       return __atomic_exchange_n(ptr, value, __ATOMIC_SEQ_CST);
     }
 
-    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeDevice>
     FLAGCX_DEVICE_INLINE_DECORATOR static bool
     compareExchange(T *ptr, T &expected, const T &desired,
                     flagcxDeviceMemoryOrder_t) {

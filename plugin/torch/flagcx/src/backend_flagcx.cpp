@@ -6,8 +6,11 @@
 #include "backend_flagcx.hpp"
 #include "utils_flagcx.hpp"
 #include <algorithm>
+#include <c10/util/ScopeExit.h>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -157,6 +160,13 @@ void copyTensorOnStream(at::Tensor dst, const at::Tensor &src,
                     std::nullopt);
 #else
   flagcxStreamGuard guard(stream, deviceId);
+  // Register both buffers with the current Torch stream before queuing the
+  // copy. Sunrise selects a pool stream here, which differs from the FlagCX
+  // submission stream; the retained batch covers that stream separately.
+  auto *guardImpl = c10::impl::getDeviceGuardImpl(dst.device().type());
+  const auto copyStream = guardImpl->getStream(dst.device());
+  guardImpl->recordDataPtrOnStream(src.storage().data_ptr(), copyStream);
+  guardImpl->recordDataPtrOnStream(dst.storage().data_ptr(), copyStream);
   dst.copy_(src, true);
 #endif
 }
@@ -322,12 +332,30 @@ void recordFlagcxTuneObject(const flagcxBackend::TuneObjectKey &key,
 
 } // namespace
 
-bool flagcxWork::isCompleted() { return future_->completed(); }
+bool flagcxWork::isCompleted() {
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ASCEND_ADAPTOR)
+  int previousDevice = 0;
+  C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+  bool complete = false;
+  try {
+    complete = event_->query();
+  } catch (...) {
+    devHandle_->setDevice(previousDevice);
+    throw;
+  }
+  C10D_FLAGCX_CHECK(devHandle_->setDevice(previousDevice), std::nullopt);
+  return complete;
+#else
+  return future_->completed();
+#endif
+}
 
 bool flagcxWork::isSuccess() const { return future_->hasValue(); }
 
 bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
-#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) &&                                    \
+    (defined(USE_ENFLAME_ADAPTOR) || defined(USE_ASCEND_ADAPTOR))
   int previousDevice = 0;
   C10D_FLAGCX_CHECK(devHandle_->getDevice(&previousDevice), std::nullopt);
   C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
@@ -348,7 +376,8 @@ bool flagcxWork::wait(std::chrono::milliseconds /* unused */) {
 }
 
 c10::intrusive_ptr<c10::ivalue::Future> flagcxWork::getFuture() {
-#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+#if defined(FLAGCX_TORCH_BACKEND_FLAGOS) &&                                    \
+    (defined(USE_ENFLAME_ADAPTOR) || defined(USE_ASCEND_ADAPTOR))
   wait();
 #endif
   return future_;
@@ -395,6 +424,65 @@ flagcxBackend::flagcxBackend(const c10::intrusive_ptr<::c10d::Store> &store,
 #endif
 
 flagcxBackend::~flagcxBackend() {
+  abortPairCoalescing();
+  abortHeteroCoalescing();
+  {
+    std::lock_guard<std::mutex> lock(tensorReaperMutex_);
+    stopTensorReaper_ = true;
+  }
+  tensorReaperCv_.notify_all();
+  if (tensorReaperThread_.joinable()) {
+    tensorReaperThread_.join();
+  }
+  // Only this thread accesses either list after the reaper has stopped.
+  inflightTensorBatches_.splice(inflightTensorBatches_.end(),
+                                reapingTensorBatches_);
+  int previousDevice = -1;
+  const bool restoreDevice =
+      devHandle_->getDevice(&previousDevice) == flagcxSuccess;
+  bool retainedUnconfirmedBatch = false;
+  // A caller can drop the Work without waiting. Keep tensor storage alive until
+  // the device has completed each submitted tensor batch.
+  for (auto it = inflightTensorBatches_.begin();
+       it != inflightTensorBatches_.end();) {
+    auto batch = it++;
+    auto result = flagcxUnhandledDeviceError;
+    if (!batch->completionUncertain) {
+      result = devHandle_->setDevice(batch->deviceId);
+      if (result == flagcxSuccess) {
+        result = batch->recorded ? devHandle_->eventSynchronize(batch->event)
+                                 : devHandle_->streamSynchronize(batch->stream);
+      }
+    }
+    if (result == flagcxSuccess) {
+      discardTensorBatch(batch);
+    } else {
+      // Completion is unknown; do not return the tensors to the allocator.
+      retainedUnconfirmedBatch = true;
+      static auto *quarantine = new std::list<inflightTensorBatch>();
+      quarantine->splice(quarantine->end(), inflightTensorBatches_, batch);
+      try {
+        TORCH_WARN(
+            "Could not confirm completion of a FlagCX tensor batch before "
+            "backend destruction; retaining its tensors");
+      } catch (...) {
+      }
+    }
+  }
+  if (restoreDevice) {
+    devHandle_->setDevice(previousDevice);
+  }
+  if (retainedUnconfirmedBatch) {
+    // The retained batches may still be using these resources. Leave them
+    // allocated along with their tensors rather than destroy active handles.
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+    // A failed HCCL group can also retain a pointer to an aclStreams_ slot.
+    // Moving the map preserves the addresses of its elements.
+    static auto *quarantinedStreams = new std::list<decltype(aclStreams_)>();
+    quarantinedStreams->emplace_back(std::move(aclStreams_));
+#endif
+    return;
+  }
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
   // On Ascend, flagcxStreams_ holds pointers into aclStreams_. The streams
   // themselves are owned by PyTorch and were never produced by streamCreate(),
@@ -427,6 +515,7 @@ flagcxBackend::~flagcxBackend() {
 }
 
 flagcxStream_t flagcxBackend::getStreamByIndex(int streamId) {
+  checkSubmissionHealthy();
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
   // Always resolve PyTorch's *current* NPU stream; never cache it.
   //
@@ -447,14 +536,9 @@ flagcxStream_t flagcxBackend::getStreamByIndex(int streamId) {
   // call from an explicit side stream failed on 59 of 60. HCCL under identical
   // conditions had no failures.
   //
-  // While a coalesced pair-comm batch is open the slot is pinned. The deferred
-  // send and recv lambdas each hold a pointer to this one slot, so refreshing
-  // it here would silently move the operations enqueued earlier in the batch
-  // onto whichever stream the last one resolved, losing their ordering against
-  // the kernels that produced their data. startCoalescing() resolves the slot
-  // once and endCoalescing() releases it, so a batch is submitted on a single
-  // stream - the same guarantee the NCCL backend gives for coalesced
-  // operations.
+  // Keep one submission stream for every coalesced P2P batch. In particular,
+  // the completion event must be recorded on the stream used by the first
+  // operation, even if PyTorch changes its current stream before groupEnd().
   if (!coalescedStreamPinned_ ||
       aclStreams_.find(streamId) == aclStreams_.end()) {
     aclStreams_[streamId] = c10_npu::getCurrentNPUStream().stream(true);
@@ -646,43 +730,302 @@ void flagcxBackend::groupStart() {
 }
 
 void flagcxBackend::groupEnd() {
-  initComm();
-  C10D_FLAGCX_CHECK(flagcxGroupEnd(comm_), std::nullopt);
-  --activeGroupCounter_;
+  TORCH_CHECK(activeGroupCounter_ > 0, "FlagCX groupEnd without groupStart");
+  auto clearGroup =
+      c10::make_scope_exit([&]() noexcept { --activeGroupCounter_; });
+  flagcxResult_t result;
+  try {
+    result = flagcxGroupEnd(comm_);
+  } catch (...) {
+    submissionUnsafe_ = true;
+    throw;
+  }
+  if (result != flagcxSuccess) {
+    submissionUnsafe_ = true;
+  }
+  C10D_FLAGCX_CHECK(result, std::nullopt);
+}
+
+void flagcxBackend::abortPairCoalescing() noexcept {
+  if (!pairCoalesce_.active) {
+    return;
+  }
+  // Pair operations are deferred until endCoalescing(), so a send/recv failure
+  // before that point has not submitted any of these callbacks.
+  pairCoalesce_.pendingOps.clear();
+  pairCoalesce_.deviceId = -1;
+  pairCoalesce_.active = false;
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  coalescedStreamPinned_ = false;
+#endif
+}
+
+void flagcxBackend::abortHeteroCoalescing() noexcept {
+  if (!heteroCoalesce_.active) {
+    return;
+  }
+  if (heteroCoalesce_.groupOpen) {
+    // Even a send/recv validation failure must close the FlagCX group. Earlier
+    // operations may already have been queued inside it.
+    auto result = flagcxInternalError;
+    try {
+      result = flagcxGroupEnd(comm_);
+    } catch (...) {
+      // Preserve the exception that triggered this cleanup.
+    }
+    --activeGroupCounter_;
+    heteroCoalesce_.groupOpen = false;
+    if (result != flagcxSuccess) {
+      submissionUnsafe_ = true;
+    }
+  }
+  if (heteroCoalesce_.batch) {
+    finishTensorBatchOnError(*heteroCoalesce_.batch,
+                             heteroCoalesce_.mayHaveSubmitted);
+    heteroCoalesce_.batch.reset();
+  }
+  heteroCoalesce_.active = false;
+  heteroCoalesce_.mayHaveSubmitted = false;
+  heteroCoalesce_.deviceId = -1;
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  coalescedStreamPinned_ = false;
+#endif
+}
+
+void flagcxBackend::checkSubmissionHealthy() {
+  TORCH_CHECK(!submissionUnsafe_,
+              "A previous FlagCX batch failed after submission; this "
+              "backend cannot safely submit more work");
+}
+
+void flagcxBackend::runTensorReaper() noexcept {
+  int previousDevice = -1;
+  const bool restoreDevice =
+      devHandle_->getDevice(&previousDevice) == flagcxSuccess;
+  std::unique_lock<std::mutex> lock(tensorReaperMutex_);
+  while (!stopTensorReaper_) {
+    tensorReaperCv_.wait_for(lock, std::chrono::milliseconds(10), [&] {
+      return stopTensorReaper_ || !reapingTensorBatches_.empty();
+    });
+    if (stopTensorReaper_) {
+      break;
+    }
+    for (auto it = reapingTensorBatches_.begin();
+         it != reapingTensorBatches_.end();) {
+      if (it->completionUncertain) {
+        ++it;
+        continue;
+      }
+      flagcxResult_t result = devHandle_->setDevice(it->deviceId);
+      if (result == flagcxSuccess) {
+        result = devHandle_->eventQuery(it->event);
+      }
+      if (result == flagcxSuccess) {
+        auto completed = it++;
+        // The event has completed. Move the batch out before releasing its
+        // tensors, since allocator cleanup may call back into device code.
+        std::list<inflightTensorBatch> ready;
+        ready.splice(ready.end(), reapingTensorBatches_, completed);
+        lock.unlock();
+        auto &batch = ready.front();
+        if (batch.event != nullptr) {
+          devHandle_->eventDestroy(batch.event);
+        }
+        if (batch.ownsStreamWrapper && batch.stream != nullptr) {
+          devHandle_->streamFree(batch.stream);
+        }
+        ready.clear();
+        lock.lock();
+      } else if (result == flagcxInProgress) {
+        ++it;
+      } else {
+        it->completionUncertain = true;
+        submissionUnsafe_ = true;
+        ++it;
+      }
+    }
+    // Do not spin when an event is pending. The next poll happens shortly
+    // even if the caller never performs another P2P operation.
+    if (!stopTensorReaper_) {
+      tensorReaperCv_.wait_for(lock, std::chrono::milliseconds(10));
+    }
+  }
+  lock.unlock();
+  if (restoreDevice) {
+    devHandle_->setDevice(previousDevice);
+  }
+}
+
+flagcxBackend::inflightTensorIter
+flagcxBackend::prepareTensorBatch(int deviceId, flagcxStream_t stream) {
+  checkSubmissionHealthy();
+  inflightTensorIter batch;
+  {
+    std::lock_guard<std::mutex> lock(tensorReaperMutex_);
+    batch = inflightTensorBatches_.emplace(inflightTensorBatches_.end());
+  }
+  batch->deviceId = deviceId;
+  batch->stream = stream;
+  try {
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+    // The original wrapper points into a mutable aclStreams_ slot. Keep an
+    // independent wrapper for completion tracking after the slot is unpinned.
+    auto nativeStream = *reinterpret_cast<aclrtStream *>(stream);
+    C10D_FLAGCX_CHECK(
+        devHandle_->streamCopy(&batch->stream,
+                               reinterpret_cast<void *>(nativeStream)),
+        std::nullopt);
+    batch->ownsStreamWrapper = true;
+#endif
+    C10D_FLAGCX_CHECK(
+        devHandle_->eventCreate(&batch->event, flagcxEventDisableTiming),
+        std::nullopt);
+  } catch (...) {
+    discardTensorBatch(batch);
+    throw;
+  }
+  return batch;
+}
+
+void flagcxBackend::discardTensorBatch(inflightTensorIter batch) noexcept {
+  std::lock_guard<std::mutex> lock(tensorReaperMutex_);
+  if (batch->event != nullptr) {
+    devHandle_->eventDestroy(batch->event);
+  }
+  if (batch->ownsStreamWrapper && batch->stream != nullptr) {
+    devHandle_->streamFree(batch->stream);
+  }
+  inflightTensorBatches_.erase(batch);
+}
+
+void flagcxBackend::finishTensorBatch(inflightTensorIter batch) {
+  const auto result = devHandle_->eventRecord(batch->event, batch->stream);
+  if (result == flagcxSuccess) {
+    batch->recorded = true;
+    try {
+      std::lock_guard<std::mutex> lock(tensorReaperMutex_);
+      if (!tensorReaperThread_.joinable()) {
+        tensorReaperThread_ = std::thread([this] { runTensorReaper(); });
+      }
+      reapingTensorBatches_.splice(reapingTensorBatches_.end(),
+                                   inflightTensorBatches_, batch);
+    } catch (...) {
+      // The event is still valid; the destructor can synchronize it. Prevent
+      // another operation from depending on an unserviced retention entry.
+      submissionUnsafe_ = true;
+      throw;
+    }
+    tensorReaperCv_.notify_one();
+    return;
+  }
+  if (devHandle_->streamSynchronize(batch->stream) == flagcxSuccess) {
+    discardTensorBatch(batch);
+  } else {
+    submissionUnsafe_ = true;
+  }
+  C10D_FLAGCX_CHECK(result, std::nullopt);
+}
+
+void flagcxBackend::finishTensorBatchOnError(inflightTensorIter batch,
+                                             bool mayHaveSubmitted) noexcept {
+  if (!mayHaveSubmitted) {
+    discardTensorBatch(batch);
+    return;
+  }
+  // The failed call may leave tasks queued outside the submission stream.
+  // A stream event cannot prove those tasks will never access the tensor.
+  batch->completionUncertain = true;
+  submissionUnsafe_ = true;
+}
+
+flagcxBackend::retainedTensorBatch::retainedTensorBatch(flagcxBackend &backend,
+                                                        int deviceId,
+                                                        flagcxStream_t stream)
+    : backend_(backend), batch_(backend.prepareTensorBatch(deviceId, stream)) {}
+
+flagcxBackend::retainedTensorBatch::~retainedTensorBatch() noexcept {
+  if (!finished_) {
+    backend_.finishTensorBatchOnError(batch_, mayHaveSubmitted_);
+  }
+}
+
+void flagcxBackend::retainedTensorBatch::add(const at::Tensor &tensor) {
+  batch_->storages.push_back(tensor.storage());
+}
+
+void flagcxBackend::retainedTensorBatch::add(
+    const std::vector<at::Tensor> &tensors) {
+  for (const auto &tensor : tensors) {
+    add(tensor);
+  }
+}
+
+void flagcxBackend::retainedTensorBatch::finish() {
+  finished_ = true;
+  backend_.finishTensorBatch(batch_);
 }
 
 void flagcxBackend::startCoalescing() {
+  TORCH_CHECK(!pairCoalesce_.active && !heteroCoalesce_.active,
+              "Nested coalescing is not supported for FlagCX P2P operations");
+  checkSubmissionHealthy();
   if (usePairComm_) {
     // Pair communicators are initialized lazily by the participating peers.
     // Initializing comm_ here would reintroduce the subgroup P2P deadlock that
     // pair communicators are intended to avoid.
-    TORCH_CHECK(!pairCoalesce_.active,
-                "Nested coalescing is not supported for pair P2P operations");
-    pairCoalesce_.active = true;
     pairCoalesce_.pendingOps.clear();
-#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-    // Pin the submission stream for the whole batch. The operations below are
-    // deferred until endCoalescing() and all refer to the same slot, so the
-    // slot is resolved once, here, rather than on every send/recv.
-    aclStreams_[0] = c10_npu::getCurrentNPUStream().stream(true);
-    coalescedStreamPinned_ = true;
-#endif
+    pairCoalesce_.deviceId = -1;
+    pairCoalesce_.active = true;
   } else {
     TORCH_CHECK(status_ == 1,
                 "Heterogeneous P2P communicator was not eagerly initialized");
     groupStart();
+    heteroCoalesce_.active = true;
+    heteroCoalesce_.groupOpen = true;
+    heteroCoalesce_.mayHaveSubmitted = false;
+    heteroCoalesce_.deviceId = -1;
+    heteroCoalesce_.batch.reset();
   }
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  // Both pair and heterogeneous groups must submit on the same NPU stream
+  // from their first operation through completion-event recording.
+  try {
+    aclStreams_[0] = c10_npu::getCurrentNPUStream().stream(true);
+    coalescedStreamPinned_ = true;
+  } catch (...) {
+    if (usePairComm_) {
+      abortPairCoalescing();
+    } else {
+      abortHeteroCoalescing();
+    }
+    throw;
+  }
+#endif
 }
 
 c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
   if (usePairComm_) {
     TORCH_CHECK(pairCoalesce_.active,
                 "endCoalescing called without matching startCoalescing");
+  } else {
+    TORCH_CHECK(heteroCoalesce_.active,
+                "endCoalescing called without matching startCoalescing");
+  }
+  // Keep the Ascend vendor stream pinned through the Work event recording.
+  // Reset batch state even when submission or Work setup throws.
+  auto cleanup = c10::make_scope_exit([&]() noexcept {
+    if (usePairComm_) {
+      abortPairCoalescing();
+    } else {
+      abortHeteroCoalescing();
+    }
+  });
 
+  if (usePairComm_) {
     // Sort by peer ascending: canonical (min,max) order avoids deadlock.
     std::stable_sort(
         pairCoalesce_.pendingOps.begin(), pairCoalesce_.pendingOps.end(),
-        [](const auto &a, const auto &b) { return a.first < b.first; });
+        [](const auto &a, const auto &b) { return a.peer < b.peer; });
     // Submit the pending operations of each peer inside one group.
     //
     // Without a group the HCCL adaptor takes its groupDepth == 0 path and calls
@@ -698,28 +1041,52 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
     // already wraps its operations in groupStart()/groupEnd().
     //
     // pendingOps is already sorted by peer, so group each run of equal peers.
-    {
+    if (!pairCoalesce_.pendingOps.empty()) {
+      deviceId_ = pairCoalesce_.deviceId;
+      C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
+      auto stream = getStreamByIndex(0);
+      auto batch = prepareTensorBatch(pairCoalesce_.deviceId, stream);
+      bool mayHaveSubmitted = false;
+      bool finalized = false;
+      auto finishOnError = c10::make_scope_exit([&]() noexcept {
+        if (!finalized) {
+          finishTensorBatchOnError(batch, mayHaveSubmitted);
+        }
+      });
+      batch->storages.reserve(pairCoalesce_.pendingOps.size());
+      for (const auto &op : pairCoalesce_.pendingOps) {
+        batch->storages.push_back(op.tensor.storage());
+      }
       size_t i = 0;
       const size_t n = pairCoalesce_.pendingOps.size();
       while (i < n) {
-        const int peer = pairCoalesce_.pendingOps[i].first;
+        const int peer = pairCoalesce_.pendingOps[i].peer;
         size_t j = i;
-        while (j < n && pairCoalesce_.pendingOps[j].first == peer) {
+        while (j < n && pairCoalesce_.pendingOps[j].peer == peer) {
           ++j;
         }
         auto pairComm = getOrCreatePairComm(peer);
-        C10D_FLAGCX_CHECK(flagcxGroupStart(pairComm), std::nullopt);
+        flagcxGroupGuard group(pairComm);
+        mayHaveSubmitted = true;
         for (size_t k = i; k < j; ++k) {
-          pairCoalesce_.pendingOps[k].second();
+          pairCoalesce_.pendingOps[k].submit();
         }
-        C10D_FLAGCX_CHECK(flagcxGroupEnd(pairComm), std::nullopt);
+        C10D_FLAGCX_CHECK(group.close(), std::nullopt);
         i = j;
       }
+      finalized = true;
+      finishTensorBatch(batch);
     }
-    pairCoalesce_.pendingOps.clear();
-    pairCoalesce_.active = false;
   } else {
+    // groupEnd may submit the entire heterogeneous batch. Keep the retained
+    // tensors until an event on the pinned submission stream completes.
+    heteroCoalesce_.groupOpen = false;
     groupEnd();
+    if (heteroCoalesce_.batch) {
+      auto batch = *heteroCoalesce_.batch;
+      heteroCoalesce_.batch.reset();
+      finishTensorBatch(batch);
+    }
   }
 
   auto stream = getStreamByIndex(0);
@@ -735,11 +1102,6 @@ c10::intrusive_ptr<Work> flagcxBackend::endCoalescing() {
   work->future_ = c10::make_intrusive<c10::ivalue::Future>(
       c10::ListType::create(c10::TensorType::get()));
   work->future_->markCompleted(c10::IValue(0));
-#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
-  // Released only now: the Work above represents the batch, and its completion
-  // event has to be recorded on the same stream the batch was submitted on.
-  coalescedStreamPinned_ = false;
-#endif
   return work;
 }
 
@@ -761,8 +1123,12 @@ flagcxBackend::collectiveCoalesced(std::vector<at::Tensor> &inputs,
 
   // First let default flagcx stream wait for input tensor allocation stream
   syncStream(device);
+  auto collectiveStream = getStreamByIndex(0);
+  retainedTensorBatch retained(*this, device.index(), collectiveStream);
+  retained.add(inputs);
+  retained.add(outputs);
   auto work =
-      c10::make_intrusive<flagcxWork>(opType, getStreamByIndex(0), devHandle_);
+      c10::make_intrusive<flagcxWork>(opType, collectiveStream, devHandle_);
 
   {
     // isHomo decides whether the batch is grouped at all, and
@@ -790,14 +1156,16 @@ flagcxBackend::collectiveCoalesced(std::vector<at::Tensor> &inputs,
     // flagcxStream_t stream;
     flagcxStream_t stream = getStreamByIndex(0);
 
+    retained.markSubmitted();
+
     for (const auto i : c10::irange(inputs.size())) {
       // if (isHomo) {
       //   stream = getStreamByIndex(0);
       // } else {
       //   stream = getStreamByIndex(i + 1);
       // }
-      // TODO: we need to record these input/output to prevent being freed
-      // before the collective finished.
+      // The retained batch above keeps both storage allocations alive until
+      // its completion event has finished.
       auto inputTensor = inputs[i];
       auto outputTensor = outputs[i];
       // Perform the collective operation
@@ -829,6 +1197,7 @@ flagcxBackend::collectiveCoalesced(std::vector<at::Tensor> &inputs,
   }
 
   work->event_->record(getStreamByIndex(0), deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   work->isBarrierOp_ = false;
   // Create a future to track the coalesced operation
@@ -851,9 +1220,13 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
   check_device(inputTensor.device(), outputTensorsTmp[0].device());
   initComm(device);
   syncStream(device);
+  retainedTensorBatch retained(*this, device.index(), stream);
+  retained.add(inputTensor);
+  retained.add(outputTensorsTmp);
 
   if (!check_same_size(outputTensorsTmp)) {
     // Implement allgather with different sizes using broadcast
+    retained.markSubmitted();
     const auto num_reduces = outputTensorsTmp.size();
     for (const int64_t i : c10::irange(static_cast<int64_t>(num_reduces))) {
       auto &output = outputTensorsTmp[i];
@@ -868,6 +1241,8 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
     // Flatten a vector of tensors into a single, stacked tensor.
     at::Tensor outputFlattened =
         newLikeFlatOnStream(outputTensorsTmp, stream, device.index());
+    retained.add(outputFlattened);
+    retained.markSubmitted();
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
@@ -896,6 +1271,7 @@ flagcxBackend::allgather(std::vector<std::vector<at::Tensor>> &outputTensors,
   auto work =
       c10::make_intrusive<flagcxWork>(OpType::ALLGATHER, stream, devHandle_);
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the allgather operation
   std::vector<at::Device> devices{inputTensor.device()};
@@ -916,6 +1292,9 @@ flagcxBackend::_allgather_base(at::Tensor &outputTensor,
   check_device(inputTensor.device(), outputTensor.device());
   initComm(inputTensor.device());
   syncStream(inputTensor.device());
+  retainedTensorBatch retained(*this, inputTensor.device().index(), stream);
+  retained.add(inputTensor);
+  retained.add(outputTensor);
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
@@ -927,12 +1306,14 @@ flagcxBackend::_allgather_base(at::Tensor &outputTensor,
 #endif
 
   // Perform the allgather operation
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(
       flagcxAllGather(inputTensor.data_ptr(), outputTensor.data_ptr(),
                       inputTensor.numel(), flagcxDataType, comm_, stream),
       std::nullopt);
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the allgather operation
   std::vector<at::Device> devices{inputTensor.device()};
@@ -980,6 +1361,8 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
       c10::make_intrusive<flagcxWork>(OpType::ALLREDUCE, stream, devHandle_);
   initComm(tensor.device());
   syncStream(tensor.device());
+  retainedTensorBatch retained(*this, tensor.device().index(), stream);
+  retained.add(tensor);
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
@@ -990,12 +1373,14 @@ flagcxBackend::allreduce(std::vector<at::Tensor> &tensors,
 #endif
 
   // Perform the allreduce operation
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(flagcxAllReduce(tensor.data_ptr(), tensor.data_ptr(),
                                     tensor.numel(), flagcxDataType,
                                     flagcxReduceOp, comm_, stream),
                     std::nullopt);
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the allreduce operation
   std::vector<at::Device> devices{tensor.device()};
@@ -1066,12 +1451,18 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
 
   initComm(device);
   syncStream(device);
+  retainedTensorBatch retained(*this, device.index(), stream);
+  retained.add(inputTensors);
+  retained.add(outputTensors);
 
   // Flatten a vector of tensors into a single, stacked tensor.
   at::Tensor inputFlattened =
       newLikeFlatOnStream(inputTensors, stream, device.index());
   at::Tensor outputFlattened =
       newLikeFlatOnStream(outputTensors, stream, device.index());
+  retained.add(inputFlattened);
+  retained.add(outputFlattened);
+  retained.markSubmitted();
 
   // Copy the input tensors to the flattened tensor.
   {
@@ -1106,6 +1497,7 @@ flagcxBackend::alltoall(std::vector<at::Tensor> &outputTensors,
   }
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the alltoall operation
   std::vector<at::Device> devices{device};
@@ -1150,6 +1542,9 @@ flagcxBackend::alltoall_base(at::Tensor &outputTensor, at::Tensor &inputTensor,
 
   initComm(device);
   syncStream(device);
+  retainedTensorBatch retained(*this, device.index(), stream);
+  retained.add(inputTensor);
+  retained.add(outputTensor);
 
   if (isEqualSize) {
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1160,6 +1555,7 @@ flagcxBackend::alltoall_base(at::Tensor &outputTensor, at::Tensor &inputTensor,
 
 #endif
     // Perform the alltoall operation
+    retained.markSubmitted();
     C10D_FLAGCX_CHECK(flagcxAlltoAll(inputTensor.data_ptr(),
                                      outputTensor.data_ptr(), count,
                                      flagcxDataType, comm_, stream),
@@ -1167,6 +1563,7 @@ flagcxBackend::alltoall_base(at::Tensor &outputTensor, at::Tensor &inputTensor,
   } else {
     // currently, we do not support recording alltoallv operations for
     // flagcxTuner Perform the alltoallv operation
+    retained.markSubmitted();
     C10D_FLAGCX_CHECK(flagcxAlltoAllv(inputTensor.data_ptr(), inLengths.data(),
                                       inOffsets.data(), outputTensor.data_ptr(),
                                       outLengths.data(), outOffsets.data(),
@@ -1175,6 +1572,7 @@ flagcxBackend::alltoall_base(at::Tensor &outputTensor, at::Tensor &inputTensor,
   }
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the alltoall operation
   std::vector<at::Device> devices{device};
@@ -1212,6 +1610,8 @@ flagcxBackend::broadcast(std::vector<at::Tensor> &tensors,
       c10::make_intrusive<flagcxWork>(OpType::BROADCAST, stream, devHandle_);
   initComm(tensor.device());
   syncStream(tensor.device());
+  retainedTensorBatch retained(*this, tensor.device().index(), stream);
+  retained.add(tensor);
 
   const auto root = opts.rootRank + opts.rootTensor;
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1221,12 +1621,14 @@ flagcxBackend::broadcast(std::vector<at::Tensor> &tensors,
   }
 
 #endif
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(flagcxBroadcast(tensor.data_ptr(), tensor.data_ptr(),
                                     tensor.numel(), flagcxDataType, root, comm_,
                                     stream),
                     std::nullopt);
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the broadcast operation
   std::vector<at::Device> devices{tensor.device()};
@@ -1248,6 +1650,8 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
       c10::make_intrusive<flagcxWork>(OpType::GATHER, stream, devHandle_);
   initComm(device);
   syncStream(device);
+  retainedTensorBatch retained(*this, device.index(), stream);
+  retained.add(inputTensor);
 
   auto root = opts.rootRank;
   std::vector<at::Tensor> outputTensorsTmp;
@@ -1258,6 +1662,7 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
     outputTensorsTmp.emplace_back(
         at::ones({1}, at::TensorOptions().device(inputTensor.device())));
   }
+  retained.add(outputTensorsTmp);
 
   // Flatten a vector of tensors into a single, stacked tensor.
 #if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
@@ -1271,6 +1676,7 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
   at::Tensor outputFlattened =
       newLikeFlatOnStream(outputTensorsTmp, stream, device.index());
 #endif
+  retained.add(outputFlattened);
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
     defined(TORCH_VER_GE_250)
@@ -1283,11 +1689,13 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
   // the root receive buffer for gather, so use its working all-gather primitive
   // and expose the result only on the root, preserving PyTorch semantics.
 #if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(
       flagcxAllGather(inputTensor.data_ptr(), outputFlattened.data_ptr(),
                       inputTensor.numel(), flagcxDataType, comm_, stream),
       std::nullopt);
 #else
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(
       flagcxGather(inputTensor.data_ptr(), outputFlattened.data_ptr(),
                    inputTensor.numel(), flagcxDataType, root, comm_, stream),
@@ -1304,6 +1712,7 @@ flagcxBackend::gather(std::vector<std::vector<at::Tensor>> &outputTensors,
   }
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the gather operation
   std::vector<at::Device> devices{inputTensor.device()};
@@ -1324,6 +1733,8 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce(std::vector<at::Tensor> &tensors,
       c10::make_intrusive<flagcxWork>(OpType::REDUCE, stream, devHandle_);
   initComm(tensor.device());
   syncStream(tensor.device());
+  retainedTensorBatch retained(*this, tensor.device().index(), stream);
+  retained.add(tensor);
 
   const auto root = opts.rootRank + opts.rootTensor;
 
@@ -1335,12 +1746,14 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce(std::vector<at::Tensor> &tensors,
 
 #endif
 
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(flagcxReduce(tensor.data_ptr(), tensor.data_ptr(),
                                  tensor.numel(), flagcxDataType, flagcxReduceOp,
                                  root, comm_, stream),
                     std::nullopt);
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the reduce operation
   std::vector<at::Device> devices{tensor.device()};
@@ -1366,6 +1779,9 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
   check_device(outputTensor.device(), inputTensorsTmp[0].device());
   initComm(device);
   syncStream(device);
+  retainedTensorBatch retained(*this, device.index(), stream);
+  retained.add(outputTensor);
+  retained.add(inputTensorsTmp);
 
   if (!check_same_size(inputTensorsTmp)) {
     throw std::runtime_error(
@@ -1374,6 +1790,8 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
     // Flatten a vector of tensors into a single, stacked tensor.
     at::Tensor inputFlattened =
         newLikeFlatOnStream(inputTensorsTmp, stream, device.index());
+    retained.add(inputFlattened);
+    retained.markSubmitted();
 
     // Copy the input tensors to the flattened tensor.
     {
@@ -1402,6 +1820,7 @@ c10::intrusive_ptr<Work> flagcxBackend::reduce_scatter(
   }
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the reducescatter operation
   std::vector<at::Device> devices{outputTensor.device()};
@@ -1424,6 +1843,9 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
   check_device(outputTensor.device(), inputTensor.device());
   initComm(outputTensor.device());
   syncStream(outputTensor.device());
+  retainedTensorBatch retained(*this, outputTensor.device().index(), stream);
+  retained.add(inputTensor);
+  retained.add(outputTensor);
 
   if (inputTensor.numel() != outputTensor.numel() * size_) {
     throw std::runtime_error(
@@ -1438,6 +1860,7 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
 
 #endif
     // Perform the reducescatter operation
+    retained.markSubmitted();
     C10D_FLAGCX_CHECK(flagcxReduceScatter(inputTensor.data_ptr(),
                                           outputTensor.data_ptr(),
                                           outputTensor.numel(), flagcxDataType,
@@ -1446,6 +1869,7 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
   }
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the reducescatter operation
   std::vector<at::Device> devices{outputTensor.device()};
@@ -1498,6 +1922,8 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
       c10::make_intrusive<flagcxWork>(OpType::SCATTER, stream, devHandle_);
   initComm(device);
   syncStream(device);
+  retainedTensorBatch retained(*this, device.index(), stream);
+  retained.add(outputTensor);
 
   auto root = opts.rootRank;
   std::vector<at::Tensor> inputTensorsTmp;
@@ -1508,6 +1934,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
     inputTensorsTmp.emplace_back(
         at::ones({1}, at::TensorOptions().device(outputTensor.device())));
   }
+  retained.add(inputTensorsTmp);
 
   // Flatten a vector of tensors into a single, stacked tensor.
 #if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
@@ -1521,9 +1948,11 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
   at::Tensor inputFlattened =
       newLikeFlatOnStream(inputTensorsTmp, stream, device.index());
 #endif
+  retained.add(inputFlattened);
 
   // Copy the input tensors to the flattened tensor.
   if (rank_ == root) {
+    retained.markSubmitted();
     flagcxStreamGuard guard(stream, device.index());
     for (const auto j : c10::irange(inputTensorsTmp.size())) {
       copyTensorOnStream(inputFlattened[j], inputTensorsTmp[j], stream,
@@ -1542,6 +1971,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
   // Perform the scatter operation. The tested ECCL runtime does not populate
   // scatter outputs, so broadcast each root input and retain this rank's slot.
 #if defined(FLAGCX_TORCH_BACKEND_FLAGOS) && defined(USE_ENFLAME_ADAPTOR)
+  retained.markSubmitted();
   for (const auto peer : c10::irange(size_)) {
     C10D_FLAGCX_CHECK(flagcxBroadcast(inputFlattened[peer].data_ptr(),
                                       inputFlattened[peer].data_ptr(),
@@ -1552,6 +1982,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
   copyTensorOnStream(outputTensor, inputFlattened[rank_], stream, devHandle_,
                      device.index());
 #else
+  retained.markSubmitted();
   C10D_FLAGCX_CHECK(flagcxScatter(inputFlattened.data_ptr(),
                                   outputTensor.data_ptr(), outputTensor.numel(),
                                   flagcxDataType, root, comm_, stream),
@@ -1559,6 +1990,7 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
 #endif
 
   work->event_->record(stream, deviceId_);
+  retained.finish();
   work->deviceId_ = deviceId_;
   // Create a future to track the scatter operation
   std::vector<at::Device> devices{outputTensor.device()};
@@ -1570,11 +2002,34 @@ flagcxBackend::scatter(std::vector<at::Tensor> &outputTensors,
 
 c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
                                              int dstRank, int tag) {
+  const bool inPairBatch = usePairComm_ && pairCoalesce_.active;
+  const bool inHeteroBatch = !usePairComm_ && heteroCoalesce_.active;
+  const int uncaught = std::uncaught_exceptions();
+  auto abortOnError = c10::make_scope_exit([&]() noexcept {
+    if (std::uncaught_exceptions() > uncaught) {
+      if (inPairBatch) {
+        abortPairCoalescing();
+      } else if (inHeteroBatch) {
+        abortHeteroCoalescing();
+      }
+    }
+  });
+  if (!inPairBatch && !inHeteroBatch) {
+    checkSubmissionHealthy();
+  }
   TORCH_CHECK(tensors.size() == 1, "FlagCX send expects a single tensor");
+  TORCH_CHECK(dstRank >= 0 && dstRank < size_, "Invalid FlagCX send peer ",
+              dstRank, " for group size ", size_);
   auto &tensor = tensors.back();
+  if (inPairBatch && pairCoalesce_.deviceId != -1) {
+    TORCH_CHECK(tensor.device().index() == pairCoalesce_.deviceId,
+                "A coalesced FlagCX P2P batch must use one device");
+  }
+  if (inHeteroBatch && heteroCoalesce_.deviceId != -1) {
+    TORCH_CHECK(tensor.device().index() == heteroCoalesce_.deviceId,
+                "A coalesced FlagCX P2P batch must use one device");
+  }
   auto flagcxDataType = getFlagcxDataType(tensor.scalar_type());
-  auto stream = getStreamByIndex(0);
-  auto work = c10::make_intrusive<flagcxWork>(OpType::SEND, stream, devHandle_);
   if (usePairComm_) {
     // Only the sender and receiver participate in pair-comm initialization.
     deviceId_ = tensor.device().index();
@@ -1584,6 +2039,8 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
     // collective and only validates that the tensor uses the same device.
     initComm(tensor.device());
   }
+  auto stream = getStreamByIndex(0);
+  auto work = c10::make_intrusive<flagcxWork>(OpType::SEND, stream, devHandle_);
   syncStream(tensor.device());
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1603,17 +2060,55 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
                         std::nullopt);
     };
     if (pairCoalesce_.active) {
-      pairCoalesce_.pendingOps.emplace_back(dstRank, std::move(doSend));
+      pairCoalesce_.pendingOps.push_back({dstRank, tensor, std::move(doSend)});
+      pairCoalesce_.deviceId = deviceId_;
       return nullptr;
     }
-    doSend();
+    auto pairComm = getOrCreatePairComm(dstRank);
+    auto batch = prepareTensorBatch(deviceId_, stream);
+    bool mayHaveSubmitted = false;
+    bool finalized = false;
+    auto finishOnError = c10::make_scope_exit([&]() noexcept {
+      if (!finalized) {
+        finishTensorBatchOnError(batch, mayHaveSubmitted);
+      }
+    });
+    batch->storages.push_back(tensor.storage());
+    const int peerRank = (rank_ < dstRank) ? 1 : 0;
+    mayHaveSubmitted = true;
+    C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
+                                 flagcxDataType, peerRank, pairComm, stream),
+                      std::nullopt);
+    finalized = true;
+    finishTensorBatch(batch);
   } else {
+    if (inHeteroBatch) {
+      if (!heteroCoalesce_.batch) {
+        heteroCoalesce_.batch = prepareTensorBatch(deviceId_, stream);
+        heteroCoalesce_.deviceId = deviceId_;
+      }
+      (*heteroCoalesce_.batch)->storages.push_back(tensor.storage());
+      heteroCoalesce_.mayHaveSubmitted = true;
+      C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
+                                   flagcxDataType, dstRank, comm_, stream),
+                        std::nullopt);
+      return nullptr;
+    }
+    auto batch = prepareTensorBatch(deviceId_, stream);
+    bool mayHaveSubmitted = false;
+    bool finalized = false;
+    auto finishOnError = c10::make_scope_exit([&]() noexcept {
+      if (!finalized) {
+        finishTensorBatchOnError(batch, mayHaveSubmitted);
+      }
+    });
+    batch->storages.push_back(tensor.storage());
+    mayHaveSubmitted = true;
     C10D_FLAGCX_CHECK(flagcxSend(tensor.data_ptr(), tensor.numel(),
                                  flagcxDataType, dstRank, comm_, stream),
                       std::nullopt);
-    if (activeGroupCounter_ > 0) {
-      return nullptr;
-    }
+    finalized = true;
+    finishTensorBatch(batch);
   }
 
   work->event_->record(stream, deviceId_);
@@ -1627,17 +2122,42 @@ c10::intrusive_ptr<Work> flagcxBackend::send(std::vector<at::Tensor> &tensors,
 
 c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
                                              int srcRank, int tag) {
+  const bool inPairBatch = usePairComm_ && pairCoalesce_.active;
+  const bool inHeteroBatch = !usePairComm_ && heteroCoalesce_.active;
+  const int uncaught = std::uncaught_exceptions();
+  auto abortOnError = c10::make_scope_exit([&]() noexcept {
+    if (std::uncaught_exceptions() > uncaught) {
+      if (inPairBatch) {
+        abortPairCoalescing();
+      } else if (inHeteroBatch) {
+        abortHeteroCoalescing();
+      }
+    }
+  });
+  if (!inPairBatch && !inHeteroBatch) {
+    checkSubmissionHealthy();
+  }
   TORCH_CHECK(tensors.size() == 1, "FlagCX recv expects a single tensor");
+  TORCH_CHECK(srcRank >= 0 && srcRank < size_, "Invalid FlagCX recv peer ",
+              srcRank, " for group size ", size_);
   auto &tensor = tensors.back();
+  if (inPairBatch && pairCoalesce_.deviceId != -1) {
+    TORCH_CHECK(tensor.device().index() == pairCoalesce_.deviceId,
+                "A coalesced FlagCX P2P batch must use one device");
+  }
+  if (inHeteroBatch && heteroCoalesce_.deviceId != -1) {
+    TORCH_CHECK(tensor.device().index() == heteroCoalesce_.deviceId,
+                "A coalesced FlagCX P2P batch must use one device");
+  }
   auto flagcxDataType = getFlagcxDataType(tensor.scalar_type());
-  auto stream = getStreamByIndex(0);
-  auto work = c10::make_intrusive<flagcxWork>(OpType::RECV, stream, devHandle_);
   if (usePairComm_) {
     deviceId_ = tensor.device().index();
     C10D_FLAGCX_CHECK(devHandle_->setDevice(deviceId_), std::nullopt);
   } else {
     initComm(tensor.device());
   }
+  auto stream = getStreamByIndex(0);
+  auto work = c10::make_intrusive<flagcxWork>(OpType::RECV, stream, devHandle_);
   syncStream(tensor.device());
 
 #if (defined(USE_NVIDIA_ADAPTOR) || defined(USE_METAX_ADAPTOR)) &&             \
@@ -1657,17 +2177,55 @@ c10::intrusive_ptr<Work> flagcxBackend::recv(std::vector<at::Tensor> &tensors,
                         std::nullopt);
     };
     if (pairCoalesce_.active) {
-      pairCoalesce_.pendingOps.emplace_back(srcRank, std::move(doRecv));
+      pairCoalesce_.pendingOps.push_back({srcRank, tensor, std::move(doRecv)});
+      pairCoalesce_.deviceId = deviceId_;
       return nullptr;
     }
-    doRecv();
+    auto pairComm = getOrCreatePairComm(srcRank);
+    auto batch = prepareTensorBatch(deviceId_, stream);
+    bool mayHaveSubmitted = false;
+    bool finalized = false;
+    auto finishOnError = c10::make_scope_exit([&]() noexcept {
+      if (!finalized) {
+        finishTensorBatchOnError(batch, mayHaveSubmitted);
+      }
+    });
+    batch->storages.push_back(tensor.storage());
+    const int peerRank = (rank_ < srcRank) ? 1 : 0;
+    mayHaveSubmitted = true;
+    C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
+                                 flagcxDataType, peerRank, pairComm, stream),
+                      std::nullopt);
+    finalized = true;
+    finishTensorBatch(batch);
   } else {
+    if (inHeteroBatch) {
+      if (!heteroCoalesce_.batch) {
+        heteroCoalesce_.batch = prepareTensorBatch(deviceId_, stream);
+        heteroCoalesce_.deviceId = deviceId_;
+      }
+      (*heteroCoalesce_.batch)->storages.push_back(tensor.storage());
+      heteroCoalesce_.mayHaveSubmitted = true;
+      C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
+                                   flagcxDataType, srcRank, comm_, stream),
+                        std::nullopt);
+      return nullptr;
+    }
+    auto batch = prepareTensorBatch(deviceId_, stream);
+    bool mayHaveSubmitted = false;
+    bool finalized = false;
+    auto finishOnError = c10::make_scope_exit([&]() noexcept {
+      if (!finalized) {
+        finishTensorBatchOnError(batch, mayHaveSubmitted);
+      }
+    });
+    batch->storages.push_back(tensor.storage());
+    mayHaveSubmitted = true;
     C10D_FLAGCX_CHECK(flagcxRecv(tensor.data_ptr(), tensor.numel(),
                                  flagcxDataType, srcRank, comm_, stream),
                       std::nullopt);
-    if (activeGroupCounter_ > 0) {
-      return nullptr;
-    }
+    finalized = true;
+    finishTensorBatch(batch);
   }
 
   work->event_->record(stream, deviceId_);

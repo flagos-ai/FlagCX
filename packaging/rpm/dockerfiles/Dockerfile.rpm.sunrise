@@ -1,0 +1,48 @@
+# Build FlagCX Sunrise RPM packages on openEuler 24.03.
+#
+# Like the TSM line, there is no vendor base image: the two installers are
+# makeself archives. `--toolkit` is what keeps the tangtk one to copying a
+# directory tree -- its other paths install the host kernel driver, the only
+# part that reaches for a package manager, and the build needs headers and
+# libraries only.
+
+ARG BASE_IMAGE=openeuler/openeuler
+ARG BASE_IMAGE_VERSION=24.03-lts
+FROM ${BASE_IMAGE}:${BASE_IMAGE_VERSION}
+
+ARG FILE_STORE=https://resource.flagos.net/repository/flagos-filestore/sunrise
+ARG TANGRT_VERSION=v1.2.0
+
+WORKDIR /workspace
+
+RUN dnf install -y curl tar && dnf clean all
+
+RUN set -eux; \
+    curl -fsSL --retry 5 --connect-timeout 15 -o /tmp/tangtk.run \
+        "${FILE_STORE}/tangtk-${TANGRT_VERSION}-linux-x86_64.run"; \
+    bash /tmp/tangtk.run -y --toolkit; \
+    curl -fsSL --retry 5 --connect-timeout 15 -o /tmp/pccl.run \
+        "${FILE_STORE}/pccl-${TANGRT_VERSION}-linux_x86_64.run"; \
+    bash /tmp/pccl.run; \
+    rm -f /tmp/tangtk.run /tmp/pccl.run; \
+    test -e /usr/local/tangrt/include/tang_runtime.h; \
+    test -e /usr/local/pccl/include/pccl.h
+
+# The source is copied after the SDK: a layer that fetches hundreds of MB
+# from the file store must not be invalidated by a packaging edit.
+COPY . /workspace/
+
+# DEVICE_HOME / CCL_HOME are pinned rather than left to the Makefile's ladder:
+# an unset value there is defined-but-empty and silently becomes /lib64.
+#
+# The official openEuler image leaves %dist empty (its .oe* tags come from
+# EulerMaker), so reconstruct it the way the CANN line does -- without it the
+# package is Release 1 and cannot be told apart from another distribution's.
+RUN . /etc/os-release \
+    && case "${ID}" in \
+           openEuler) export RPM_DIST_TAG=".oe$(echo "${VERSION_ID}" | tr -d '.')" ;; \
+       esac \
+    && DEVICE_HOME=/usr/local/tangrt CCL_HOME=/usr/local/pccl \
+       bash packaging/rpm/dockerfiles/build-rpm-common.sh sunrise
+
+CMD ["/bin/bash"]

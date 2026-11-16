@@ -40,18 +40,25 @@ MPI_SRCS   := $(wildcard coll_*.cpp) flagcx_kernel_test.cpp deviceapi_test.cpp m
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/kernel_mpi_tests
 
-.PHONY: all clean run-unit run-mpi run device-api-obj
+.PHONY: all clean require-compile-kernel run-unit run-mpi run device-api-obj
 
 # Only build targets that have sources
 ALL_TARGETS :=
-ifneq ($(UNIT_SRCS),)
-ALL_TARGETS += $(UNIT_TARGET)
-endif
+ifeq ($(COMPILE_KERNEL),1)
 ifneq ($(MPI_SRCS),)
 ALL_TARGETS += $(MPI_TARGET)
 endif
+endif
+ifneq ($(UNIT_SRCS),)
+ALL_TARGETS += $(UNIT_TARGET)
+endif
 
 all: $(ALL_TARGETS)
+
+require-compile-kernel:
+	$(REQUIRE_COMPILE_KERNEL)
+
+$(MPI_TARGET) $(MPI_OBJS) device-api-obj run-mpi: | require-compile-kernel
 
 # Build device_api.o (and dlink_api.o if USE_SHMEM) from test/kernel/
 DEVICE_API_TARGETS := device_api.o
@@ -62,10 +69,12 @@ endif
 device-api-obj:
 	@$(MAKE) -C $(KERNEL_DIR) $(DEVICE_API_TARGETS)
 
+ifneq ($(UNIT_SRCS),)
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
 	@$(CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK)
+endif
 
 $(MPI_TARGET): device-api-obj $(MPI_OBJS)
 	@mkdir -p $(BINDIR)
@@ -85,10 +94,19 @@ $(OBJDIR)/%.o: %.cpp
 clean:
 	@rm -rf $(BUILDDIR)
 
+ifneq ($(UNIT_SRCS),)
 run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
+else
+run-unit:
+	@echo "No unit tests found in kernel"
+endif
 
 run-mpi: $(MPI_TARGET)
 	@$(HETERO_ENV) mpirun --allow-run-as-root -np 4 $(MPI_TARGET)
 
+ifeq ($(COMPILE_KERNEL),1)
 run: run-unit run-mpi
+else
+run: run-unit
+endif

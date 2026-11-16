@@ -24,6 +24,10 @@ jobs:
   # neither the internal h20 runner nor a real GPU. This keeps PR checks green
   # without depending on the internal network's flaky public egress.
   #
+  # tsm, sunrise and du have no vendor base image: they start from the plain
+  # openEuler one and fetch their SDK installers from the FlagOS file store,
+  # which a hosted runner reaches as well.
+  #
   # ascend targets aarch64 (the CANN 910 base image is arm64), so it runs on an
   # arm64 runner; the other targets build x86_64 packages.
   build-rpm-packages:
@@ -61,6 +65,31 @@ jobs:
             base_image: ascendai/cann
             base_image_version: 8.5.0-910-openeuler24.03-py3.11
             runner: ubuntu-24.04-arm
+          # These three filter the vendor sonames out of the generated
+          # requires, so their packages install in a plain openEuler container
+          # and the install can be asserted here; install_image is what asks
+          # for it.
+          - target: tsm-openeuler2403
+            backend: tsm
+            distro: openeuler2403
+            base_image: openeuler/openeuler
+            base_image_version: 24.03-lts
+            runner: ubuntu-latest
+            install_image: openeuler/openeuler:24.03-lts
+          - target: sunrise-openeuler2403
+            backend: sunrise
+            distro: openeuler2403
+            base_image: openeuler/openeuler
+            base_image_version: 24.03-lts
+            runner: ubuntu-latest
+            install_image: openeuler/openeuler:24.03-lts
+          - target: du-openeuler2403
+            backend: du
+            distro: openeuler2403
+            base_image: openeuler/openeuler
+            base_image_version: 24.03-lts
+            runner: ubuntu-latest
+            install_image: openeuler/openeuler:24.03-lts
     runs-on: ${{ matrix.runner }}
 
     steps:
@@ -74,6 +103,24 @@ jobs:
           RPM_DISTRO: ${{ matrix.distro }}
           BASE_IMAGE: ${{ matrix.base_image }}
         run: ./packaging/rpm/build-flagcx-rpm.sh ${{ matrix.backend }} ${{ matrix.base_image_version }}
+
+      - name: Install ${{ matrix.target }} RPM packages in a clean container
+        if: matrix.install_image != ''
+        env:
+          INSTALL_IMAGE: ${{ matrix.install_image }}
+          TARGET: ${{ matrix.target }}
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          docker run --rm \
+            -v "${PWD}/rpm-packages/${TARGET}/RPMS:/rpms:ro" \
+            -e BACKEND \
+            "${INSTALL_IMAGE}" \
+            bash -c '
+              set -eux
+              dnf install -y /rpms/*/libflagcx-"${BACKEND}"-*.rpm
+              rpm -q "libflagcx-${BACKEND}" "libflagcx-${BACKEND}-devel"
+              test -e /usr/lib64/libflagcx.so
+            '
 
       - name: Upload ${{ matrix.target }} RPM packages
         uses: actions/upload-artifact@v7

@@ -26,7 +26,7 @@ else
 NVCC_RDC_FLAG := -c
 endif
 
-.PHONY: all clean device_api.o device_ir.o gdr_visibility.o nvshmem_adaptor_kernel.o dlink.o dlink_api.o dlink_ir.o
+.PHONY: all clean device_api.o device_ir.o gdr_visibility.o nvshmem_adaptor_kernel.o dlink.o dlink_api.o dlink_ir.o device_traits
 
 all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
@@ -34,6 +34,16 @@ device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
 gdr_visibility.o: $(OBJDIR)/gdr_visibility.o
 nvshmem_adaptor_kernel.o: $(OBJDIR)/nvshmem_adaptor_kernel.o
+
+# Standalone single-GPU coverage for the NVIDIA default PlatformTraits API.
+$(BINDIR)/test_device_api_traits: device_api_traits.cu
+	@mkdir -p $(BINDIR)
+	@$(DEVICE_COMPILER) -std=c++11 -rdc=true $(DEVICE_COMPILER_GENCODE) -o $@ $< \
+		$(ALL_INCLUDES) -DUSE_NVIDIA_ADAPTOR -DFLAGCX_FORCE_DEFAULT_PATH \
+		-DFLAGCX_COMM_TRAITS_DEFAULT -DCOMPILE_KERNEL
+
+device_traits: $(BINDIR)/test_device_api_traits
+	@$(BINDIR)/test_device_api_traits
 
 $(OBJDIR)/gdr_visibility.o: gdr_visibility.cu \
 	../include/gdr_visibility_test.h \

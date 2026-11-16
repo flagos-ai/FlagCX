@@ -10,6 +10,7 @@
  ************************************************************************/
 
 #include "adaptor.h"
+#include "alloc.h"
 #include "bootstrap.h"
 #include "dev_api_backend.h"
 #include "device_api/completion_word.h"
@@ -81,8 +82,11 @@ registrationMatchesBuffer(flagcxComm_t comm,
 static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
                                                 flagcxDevComm_t devComm) {
   struct flagcxHeteroComm *hetero = comm->heteroComm;
-  if (hetero == nullptr)
+  if (hetero == nullptr) {
+    devComm->teamRank = 0;
+    devComm->nTeamRanks = 1;
     return flagcxSuccess;
+  }
 
   int myRank = comm->rank;
   int nRanks = comm->nranks;
@@ -90,6 +94,9 @@ static flagcxResult_t setupInterNodeSignalRelay(flagcxComm_t comm,
   int nNodes = hetero->nNodes;
 
   if (nNodes <= 1) {
+    // A singleton Inter team has one rank, even though it has no remote peers.
+    devComm->teamRank = 0;
+    devComm->nTeamRanks = 1;
     devComm->nInterPeers = 0;
     return flagcxSuccess;
   }
@@ -497,6 +504,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                         size_t reqsSize, flagcxDevComm_t devComm) {
   // The default backend consumes only fields in the frozen prefix.
   (void)reqsSize;
+  if (reqs->interBarrierCount < 0)
+    return flagcxInvalidArgument;
+  devComm->interBarrierCount = reqs->interBarrierCount;
   const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
   const bool hostMappedSignals =
       flagcxParamSignalHostEnable() != 0 &&
@@ -516,7 +526,16 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res = setupInterNodeSignalRelay(comm, devComm);
     if (res != flagcxSuccess) {
       devComm->nInterPeers = 0;
+      if (reqs->interBarrierCount > 0)
+        return res;
     }
+  }
+  if (reqs->interBarrierCount > 0 && comm->heteroComm != nullptr &&
+      comm->heteroComm->nNodes > 1 &&
+      (devComm->nInterPeers <= 0 || devComm->nTeamRanks <= 1)) {
+    WARN("defaultDevApiCommCreate: Inter barrier requested without a valid "
+         "inter-node team");
+    return flagcxInternalError;
   }
 
   // Allocate epoch buffer
@@ -540,14 +559,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: epochBuffer OK");
   }
 
-  // One-sided buffers: signals, counters, staging
-  // Allocated when signal/counter slots are requested — needed for both
-  // inter-node (Net FIFO) and intra-node (P2P atomic) paths.
+  // One-sided buffers: signals, counters, staging. Inter barriers need signal
+  // slots even when no user-visible signals were requested.
   INFO(FLAGCX_INIT,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
        "interCounterCount=%d",
        devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0) {
+  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0 ||
+      reqs->interBarrierCount > 0) {
     int bufCtxCount =
         (comm->heteroComm != nullptr && comm->heteroComm->proxyState != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
@@ -560,9 +579,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res;
 
     // Signal buffer (host-pinned or GDR device memory)
-    if (reqs->interSignalCount > 0) {
+    if (reqs->interSignalCount > 0 || reqs->interBarrierCount > 0) {
       // Expand signalCount to include barrier slots:
-      // barrier needs nTeamRanks slots per barrier instance (one per CTA)
+      // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
       if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0 ||
           (reqs->interBarrierCount > 0 &&
@@ -890,6 +909,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     WARN("defaultDevApiCommCreate: Net one-sided full mesh/FIFO is not ready");
     return flagcxNotSupported;
   }
+  if (reqs->interBarrierCount > 0 && devComm->nInterPeers > 0 &&
+      !devComm->netOneSidedReady) {
+    WARN("defaultDevApiCommCreate: Inter barrier Proxy FIFO is not ready");
+    return flagcxNotSupported;
+  }
 
   INFO(FLAGCX_INIT,
        "defaultDevApiCommCreate: one-sided paths p2pSignal=%d net=%d "
@@ -1124,6 +1148,49 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
 // DevMem Create
 // ==========================================================================
 
+struct uniRunnerIpcReuseChoice {
+  int canReuse;
+  int canBuild;
+};
+
+static flagcxResult_t agreeUniRunnerIpcReuse(flagcxComm_t comm,
+                                             bool localCanReuse,
+                                             bool localCanBuild,
+                                             bool *allCanReuse,
+                                             bool *allCanBuild) {
+  if (comm == nullptr || comm->bootstrap == nullptr || allCanReuse == nullptr ||
+      allCanBuild == nullptr || comm->nranks <= 0 || comm->rank < 0 ||
+      comm->rank >= comm->nranks)
+    return flagcxInvalidArgument;
+  *allCanReuse = false;
+  *allCanBuild = false;
+  uniRunnerIpcReuseChoice *choices = nullptr;
+  flagcxResult_t allocationResult =
+      flagcxCalloc(&choices, static_cast<size_t>(comm->nranks));
+  flagcxResult_t commonPrepare = flagcxSuccess;
+  flagcxResult_t result =
+      flagcxConvergeBootstrapStatus(comm, allocationResult, &commonPrepare);
+  if (result != flagcxSuccess || commonPrepare != flagcxSuccess) {
+    free(choices);
+    return result != flagcxSuccess ? result : commonPrepare;
+  }
+  choices[comm->rank] = {localCanReuse ? 1 : 0, localCanBuild ? 1 : 0};
+  result = bootstrapCollAllGather(comm->bootstrap, choices,
+                                  sizeof(uniRunnerIpcReuseChoice));
+  if (result == flagcxSuccess) {
+    *allCanReuse = true;
+    *allCanBuild = true;
+    for (int rank = 0; rank < comm->nranks; ++rank) {
+      if (choices[rank].canReuse == 0)
+        *allCanReuse = false;
+      if (choices[rank].canBuild == 0)
+        *allCanBuild = false;
+    }
+  }
+  free(choices);
+  return result;
+}
+
 static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t devMem) {
@@ -1181,11 +1248,61 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
       devMem->winHandle = (void *)win;
     }
-    // ---- Priority 4 & 5: No window — IPC ----
+    // ---- Priority 4 & 5: No window — uniRunner IPC Ring AR ----
+    else if (win == nullptr && devMem->uniRunnerIpc != nullptr) {
+      int existingIdx = -1;
+      uint64_t newestGeneration = 0;
+      const bool localCanBuild = !flagcxParamDeviceOneSidedForceNet();
+      if (localCanBuild) {
+        for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; ++i) {
+          const struct flagcxIpcTableEntry &entry = comm->ipcTable[i];
+          if (entry.inUse && entry.basePtr == buff && entry.size >= size &&
+              entry.hostPeerPtrs != nullptr && entry.devPeerPtrs != nullptr &&
+              entry.refCount > 0 &&
+              entry.refCount < std::numeric_limits<size_t>::max() &&
+              entry.bindingGeneration > newestGeneration) {
+            existingIdx = i;
+            newestGeneration = entry.bindingGeneration;
+          }
+        }
+      }
+      bool allCanReuse = false;
+      bool allCanBuild = false;
+      FLAGCXCHECK(agreeUniRunnerIpcReuse(comm, existingIdx >= 0, localCanBuild,
+                                         &allCanReuse, &allCanBuild));
+      if (allCanReuse) {
+        struct flagcxIpcTableEntry &entry = comm->ipcTable[existingIdx];
+        ++entry.refCount;
+        devMem->ipcIndex = existingIdx;
+      } else if (allCanBuild) {
+        int idx = buildIpcPeerPointers(comm, buff, size);
+        if (idx >= 0) {
+          struct flagcxIpcTableEntry &entry = comm->ipcTable[idx];
+          entry.size = size;
+          entry.refCount = 1;
+          entry.bindingGeneration = ++comm->ipcTableGeneration;
+          if (entry.bindingGeneration == 0)
+            entry.bindingGeneration = ++comm->ipcTableGeneration;
+          devMem->ipcIndex = idx;
+        } else {
+          WARN("flagcxDevMemCreate: uniRunner IPC peer setup failed");
+        }
+      }
+      if (devMem->ipcIndex >= 0) {
+        const struct flagcxIpcTableEntry &entry =
+            comm->ipcTable[devMem->ipcIndex];
+        devMem->uniRunnerIpc->slot = devMem->ipcIndex;
+        devMem->uniRunnerIpc->generation = entry.bindingGeneration;
+        devMem->uniRunnerIpc->boundSize = entry.size;
+        devMem->uniRunnerIpc->ownsTableReference = true;
+      }
+    }
+    // ---- Priority 4 & 5: No window — ordinary Device API IPC ----
     else if (win == nullptr && !flagcxParamDeviceOneSidedForceNet()) {
       int existingIdx = -1;
       for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++) {
-        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff) {
+        if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff &&
+            comm->ipcTable[i].bindingGeneration == 0) {
           existingIdx = i;
           break;
         }
@@ -1261,6 +1378,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
                ? (void *)comm->ipcTable[devMem->ipcIndex].devPeerPtrs
                : nullptr);
       delete kWin;
+      devMem->window = nullptr;
       return flagcxInvalidUsage;
     }
 
@@ -1332,14 +1450,15 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
 static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
   // Mark IPC table entry as no longer in use
-  if (comm != nullptr && devMem->ipcIndex >= 0 &&
-      devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
+  if (comm != nullptr && devMem->uniRunnerIpc == nullptr &&
+      devMem->ipcIndex >= 0 && devMem->ipcIndex < FLAGCX_MAX_IPC_ENTRIES) {
     comm->ipcTable[devMem->ipcIndex].inUse = false;
   }
 
   // Free window allocation if present
   if (devMem->window != nullptr) {
     delete static_cast<typename DeviceAPI::Window *>(devMem->window);
+    devMem->window = nullptr;
   }
 
   // The outer DevMem lifecycle defers cached device state and segmented peer

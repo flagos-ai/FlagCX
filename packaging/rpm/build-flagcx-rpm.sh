@@ -32,7 +32,7 @@ if [ -z "$BACKEND" ]; then
     echo ""
     echo "Usage: $0 <backend> [base_image_version]"
     echo ""
-    echo "Supported backends: nvidia, metax, ascend"
+    echo "Supported backends: nvidia, metax, ascend, tsm, sunrise, du"
     echo ""
     echo "Examples:"
     echo "  $0 nvidia"
@@ -80,9 +80,33 @@ case "$BACKEND" in
         [ -z "$RPM_DISTRO" ] && RPM_DISTRO="openeuler2403"
         DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.ascend"
         ;;
+    tsm)
+        # These three need no vendor base image: the SDK comes from the file
+        # store and installs into a plain openEuler one.
+        [ -z "$BASE_IMAGE" ] && BASE_IMAGE="openeuler/openeuler"
+        [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="24.03-lts"
+        [ -z "$RPM_DISTRO" ] && RPM_DISTRO="openeuler2403"
+        DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.tsm"
+        OUTPUT_TARGET="tsm-openeuler2403"
+        ;;
+    sunrise)
+        [ -z "$BASE_IMAGE" ] && BASE_IMAGE="openeuler/openeuler"
+        [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="24.03-lts"
+        [ -z "$RPM_DISTRO" ] && RPM_DISTRO="openeuler2403"
+        DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.sunrise"
+        OUTPUT_TARGET="sunrise-openeuler2403"
+        ;;
+    du)
+        # Hygon's adaptor is named du (makefiles/du.mk); the package follows it.
+        [ -z "$BASE_IMAGE" ] && BASE_IMAGE="openeuler/openeuler"
+        [ -z "$BASE_IMAGE_VERSION" ] && BASE_IMAGE_VERSION="24.03-lts"
+        [ -z "$RPM_DISTRO" ] && RPM_DISTRO="openeuler2403"
+        DOCKERFILE="${SCRIPT_DIR}/dockerfiles/Dockerfile.rpm.du"
+        OUTPUT_TARGET="du-openeuler2403"
+        ;;
     *)
         log_error "Invalid backend: $BACKEND"
-        echo "Supported backends: nvidia, metax, ascend"
+        echo "Supported backends: nvidia, metax, ascend, tsm, sunrise, du"
         exit 1
         ;;
 esac

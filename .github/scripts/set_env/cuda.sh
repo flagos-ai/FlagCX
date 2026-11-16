@@ -7,6 +7,8 @@ FLAGCX_CI_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=/dev/null
 source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
+export FLAGCX_ADAPTOR=nvidia
+
 FLAGCX_CI_MPI_BASE_HOME=${MPI_HOME:-/usr/local/mpi}
 
 # The FlagScale training image ships a launcher wrapper that passes "$@" as a
@@ -77,7 +79,7 @@ flagcx_ci_configure_suite() {
     runner)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
-    device_api|device_api_host|device_api_unified_ir)
+    device_api|device_api_host|device_api_unified_ir|device_traits)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1 FORCE_DEFAULT_PATH=1)
       ;;

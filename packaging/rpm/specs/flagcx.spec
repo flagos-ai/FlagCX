@@ -28,9 +28,24 @@
 # external_vendor_runtime expresses for the NVIDIA libraries.
 %global __requires_exclude ^lib(ascendcl|hccl)\\.so
 %endif
+%if "%{backend}" == "tsm"
+# Same contract as ascend above, for the backends whose SDK is a self-extracting
+# installer under /usr/local or /opt: no repository can ever provide these
+# sonames, and deployment supplies them. One backend per build, so one global
+# each.
+%global __requires_exclude ^lib(tccl|hpgr)\\.so
+%endif
+%if "%{backend}" == "sunrise"
+%global __requires_exclude ^lib(tangrt_shared|pccl)\\.so
+%endif
+%if "%{backend}" == "du"
+# DTK ships its own HIP under a renamed soname (libgalaxyhip), which is what
+# the library ends up linking -- not the libamdhip64 the adaptor names.
+%global __requires_exclude ^lib(galaxyhip|amdhip64|rccl)\\.so
+%endif
 
-# Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend'
-%{!?backend: %{error: backend must be defined (nvidia, metax, or ascend)}}
+# Backend must be specified via: rpmbuild --define 'backend nvidia|metax|ascend|tsm|sunrise|du'
+%{!?backend: %{error: backend must be defined (nvidia, metax, ascend, tsm, sunrise, or du)}}
 
 # Derive uppercase backend name for make flag (USE_NVIDIA=1, etc.)
 %global backend_upper %(echo %{backend} | tr a-z A-Z)

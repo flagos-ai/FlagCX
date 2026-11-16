@@ -13,10 +13,18 @@
 #include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/python.h>
 
+#include <c10/core/Storage.h>
+
+#include <atomic>
+#include <condition_variable>
 #include <functional>
+#include <list>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <pybind11/chrono.h>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -272,7 +280,11 @@ public:
 #elif USE_KUNLUNXIN_ADAPTOR
     devName = "cuda";
 #elif USE_TSM_ADAPTOR
+#ifdef FLAGCX_TORCH_BACKEND_FLAGOS
+    devName = "flagos";
+#else
     devName = "txda";
+#endif
 #elif USE_ENFLAME_ADAPTOR
 #ifdef FLAGCX_TORCH_BACKEND_FLAGOS
     devName = "flagos";
@@ -329,7 +341,7 @@ protected:
   // flagcxStreams_ stored a pointer to it, so different stream ids aliased the
   // same storage.
   std::unordered_map<int, aclrtStream> aclStreams_;
-  // Set while a coalesced pair-comm batch is open, so that getStreamByIndex()
+  // Set while any coalesced P2P batch is open, so that getStreamByIndex()
   // keeps returning the stream the batch started on.
   bool coalescedStreamPinned_ = false;
 #endif
@@ -341,9 +353,69 @@ protected:
   std::unordered_map<std::string, flagcxComm_t> pairComms_;
   struct pairCoalesceCtx {
     bool active = false;
-    std::vector<std::pair<int, std::function<void()>>> pendingOps;
+    int deviceId = -1;
+    struct PendingOp {
+      int peer;
+      at::Tensor tensor;
+      std::function<void()> submit;
+    };
+    std::vector<PendingOp> pendingOps;
   };
   pairCoalesceCtx pairCoalesce_;
+  struct inflightTensorBatch {
+    flagcxEvent_t event = nullptr;
+    flagcxStream_t stream = nullptr;
+    int deviceId = -1;
+    bool recorded = false;
+    bool completionUncertain = false;
+    bool ownsStreamWrapper = false;
+    // Storage keeps queued buffers alive without retaining Python Tensor
+    // wrappers that would need the GIL when released by the reaper.
+    std::vector<c10::Storage> storages;
+  };
+  std::list<inflightTensorBatch> inflightTensorBatches_;
+  std::list<inflightTensorBatch> reapingTensorBatches_;
+  std::mutex tensorReaperMutex_;
+  std::condition_variable tensorReaperCv_;
+  std::thread tensorReaperThread_;
+  bool stopTensorReaper_ = false;
+  std::atomic<bool> submissionUnsafe_{false};
+  using inflightTensorIter = std::list<inflightTensorBatch>::iterator;
+  struct heteroCoalesceCtx {
+    bool active = false;
+    bool groupOpen = false;
+    bool mayHaveSubmitted = false;
+    int deviceId = -1;
+    std::optional<inflightTensorIter> batch;
+  };
+  heteroCoalesceCtx heteroCoalesce_;
+  inflightTensorIter prepareTensorBatch(int deviceId, flagcxStream_t stream);
+  void checkSubmissionHealthy();
+  void runTensorReaper() noexcept;
+  void discardTensorBatch(inflightTensorIter batch) noexcept;
+  void finishTensorBatch(inflightTensorIter batch);
+  void finishTensorBatchOnError(inflightTensorIter batch,
+                                bool mayHaveSubmitted) noexcept;
+  class retainedTensorBatch {
+  public:
+    retainedTensorBatch(flagcxBackend &backend, int deviceId,
+                        flagcxStream_t stream);
+    ~retainedTensorBatch() noexcept;
+    retainedTensorBatch(const retainedTensorBatch &) = delete;
+    retainedTensorBatch &operator=(const retainedTensorBatch &) = delete;
+    void add(const at::Tensor &tensor);
+    void add(const std::vector<at::Tensor> &tensors);
+    void markSubmitted() noexcept { mayHaveSubmitted_ = true; }
+    void finish();
+
+  private:
+    flagcxBackend &backend_;
+    inflightTensorIter batch_;
+    bool mayHaveSubmitted_ = false;
+    bool finished_ = false;
+  };
+  void abortPairCoalescing() noexcept;
+  void abortHeteroCoalescing() noexcept;
   flagcxComm_t getOrCreatePairComm(int peer);
 
 private:

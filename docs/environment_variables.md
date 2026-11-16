@@ -129,13 +129,34 @@ This document provides a comprehensive reference for all environment variables u
 |----------|---------|-------------|
 | `FLAGCX_P2P_EVENT_POOL_SIZE` | 1024 | Size of P2P event pool |
 | `FLAGCX_UNIRUNNER_NSLICES` | 1 | Number of slices for uniRunner |
-| `FLAGCX_UNIRUNNER_NTHREADS` | 32 | Number of threads per block for uniRunner |
-| `FLAGCX_UNIRUNNER_NBLOCKS` | 1 | Number of blocks for uniRunner |
-| `FLAGCX_UNIRUNNER_USE_LOCRED` | 0 | When set to 1, uses local reduction in uniRunner |
-| `FLAGCX_UNIRUNNER_USE_RINGAG` | 0 | When set to 1, uses ring allgather in uniRunner |
-| `FLAGCX_UNIRUNNER_USE_SLICEDAR` | 0 | When set to 1, uses sliced allreduce in uniRunner |
+| `FLAGCX_UNIRUNNER_MAX_THREADS` | 512 | Maximum threads per block for the uniRunner RED/IPC executor kernel; the DAG-derived launch uses a power of two and at least 32 threads |
+| `FLAGCX_UNIRUNNER_MAX_BLOCKS` | 32 | Maximum total RED and IPC blocks for a uniRunner launch; the DAG-derived launch may use fewer blocks |
+| `FLAGCX_UNIRUNNER_NIPCBLOCKS` | 0 | Legacy IPC block setting; DAG-derived static IPC launches override it |
+| `FLAGCX_UNIRUNNER_IPCCHUNKSIZE` | 262144 | IPC transfer chunk size in bytes; static IPC blocks own chunks by chunk index modulo the derived IPC block count |
+| `FLAGCX_UNIRUNNER_ALGO` | unset | Selects the algorithm for the benchmark collective. AllReduce: 0 RingAR, 1 GroupedAR, 2 IPC Ring AR, 3 LocRed, 4 RingAG, 5 hierarchical SlicedAR, 6 SlicedAR. AllGather: 7 GroupedAG, 8 P2P. AllGatherGemm: 9 built-in, 10 DSL. GemmReduceScatter: 11 built-in, 12 DSL. Unset preserves each operation's previous default (RingAR, GroupedAG, or built-in). A value for another operation is an error. |
 | `FLAGCX_UNIRUNNER_NREDSLICES` | 0 | Number of reduction slices for uniRunner (0 = auto) |
 | `FLAGCX_UNIRUNNER_REDSLICESIZE` | 65536 | Reduction slice size in bytes for uniRunner |
+
+The former `FLAGCX_UNIRUNNER_USE_*` and fused `*_ALGO` selectors no longer
+select algorithms. `FLAGCX_UNIRUNNER_ALGO_PATH` still specifies the DSL cache
+directory independently of the numeric selector.
+
+UniRunner DAG execution, including the fused collectives and DSL algorithms,
+currently requires `USE_NVIDIA=1 COMPILE_KERNEL=1` on every rank. Other platforms
+return `flagcxNotSupported` for these execution paths. AllGather retains its
+ordinary P2P fallback when the GroupedAG execution requirements are unavailable;
+ordinary P2P operations and the other runners remain available.
+
+When `FLAGCX_USE_HETERO_COMM=1`, UniRunner DAG algorithms reject calls made
+between `flagcxGroupStart` and `flagcxGroupEnd` with `flagcxInvalidUsage`.
+Use `FLAGCX_UNIRUNNER_ALGO=8` for AllGather inside a user group; the default
+GroupedAG algorithm (7) does not switch to P2P automatically in that case.
+UniRunner exchanges kernel and stream-value capabilities once during
+communicator initialization and uses the saved all-rank results when selecting
+an execution path. Stream-value group synchronization is limited to DAG-owned
+groups; ordinary groups retain their host/device semaphore selection. Algorithm
+settings and group depth are checked locally during collective calls; configure
+the same algorithm and group size on all ranks.
 
 ---
 
@@ -213,7 +234,7 @@ This document provides a comprehensive reference for all environment variables u
 | `FLAGCX_DEVICE_ADAPTOR_PLUGIN` | None | Path to device adaptor plugin shared library |
 | `FLAGCX_NET_ADAPTOR_PLUGIN` | None | Path to network adaptor plugin shared library |
 | `FLAGCX_CCL_ADAPTOR_PLUGIN` | None | Path to CCL adaptor plugin shared library |
-| `FLAGCX_TORCH_BACKEND` | `vendor` | Torch plugin backend. `vendor` uses the adaptor's native Torch package; `flagos` uses torch-fl and currently supports only Ascend and Enflame |
+| `FLAGCX_TORCH_BACKEND` | `vendor` | Torch plugin backend. `vendor` uses the adaptor's native Torch package; `flagos` uses torch-fl and currently supports only Ascend, Enflame and TsingMicro |
 | `FLAGOS_INSTALL_PATH` | None | torch-fl package root containing `include/flagos.h` and `lib/libflagos.so` for `FLAGCX_TORCH_BACKEND=flagos` builds |
 | `FLAGOS_INCLUDE_DIR` | None | Explicit directory containing `flagos.h`; overrides the include path derived from `FLAGOS_INSTALL_PATH` |
 | `FLAGOS_LIBRARY_DIR` | None | Explicit directory containing `libflagos.so`; overrides the library path derived from `FLAGOS_INSTALL_PATH` |
@@ -226,6 +247,7 @@ The Torch plugin supports the following backend matrix:
 |---------|----------|----------|
 | `ascend` | `torch_npu`, device type `npu` | `torch_fl`, device type `flagos` |
 | `enflame` | `torch_gcu`, device type `gcu` | `torch_fl`, device type `flagos` |
+| `tsm` | `torch_txda`, device type `txda` | `torch_fl`, device type `flagos` |
 
 The default `vendor` mode preserves the existing Torch integration. Select the
 same backend when building and running the plugin. For example:
@@ -256,7 +278,8 @@ FLAGCX_TORCH_BACKEND=flagos torchrun --nproc_per_node=2 \
   plugin/torch/tests/distributed_smoke.py --adaptor ascend
 ```
 
-Replace `ascend` with `enflame` to test GCU hardware.
+Replace `ascend` with `enflame` to test GCU hardware, or with `tsm` to test
+TsingMicro hardware.
 
 ---
 

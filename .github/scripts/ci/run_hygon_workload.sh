@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 <torch-api|perf>" >&2
+  echo "Usage: $0 <torch-api|perf|perf-test-experimental>" >&2
   exit 2
 fi
 
@@ -35,17 +35,22 @@ case "$workload" in
   torch-api)
     export FLAGCX_DEBUG=INFO
     export FLAGCX_DEBUG_SUBSYS=ALL
+    export PYTHON_BIN=python3
     build_flagcx
-    python3 -m pip install 'setuptools_scm>=8'
+    "$PYTHON_BIN" -m pip install 'setuptools_scm>=8'
     (
       cd "$project_root"
       export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-      python3 setup.py build_ext --inplace
+      "$PYTHON_BIN" setup.py build_ext --inplace
     )
 
     export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
     unset FLAGCX_SKIP_HETERO
     bash "$project_root/test/script/torch_api_test.sh"
+    if [[ "${FLAGCX_CI_TORCH_COVERAGE:-0}" == 1 ]]; then
+      "$PYTHON_BIN" -m pip install --quiet coverage==7.10.7
+      bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"
+    fi
     ;;
   perf)
     build_flagcx
@@ -56,6 +61,9 @@ case "$workload" in
     perf_bin="$project_root/test/perf/host_api/build/bin"
     "$perf_runner" homogeneous "$perf_bin"
     "$perf_runner" heterogeneous "$perf_bin"
+    ;;
+  perf-test-experimental)
+    source "$project_root/.github/scripts/ci/run_hygon_perf_experimental.sh"
     ;;
   *)
     echo "Unknown Hygon workload: $workload" >&2

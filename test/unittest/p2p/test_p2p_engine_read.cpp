@@ -48,6 +48,11 @@ bool gpuReadVisibilityUnavailable() {
           flagcxNetIb.iflush == nullptr);
 }
 
+bool usesCannAdaptor() {
+  return deviceAdaptor != nullptr && deviceAdaptor->name != nullptr &&
+         std::strcmp(deviceAdaptor->name, "CANN") == 0;
+}
+
 struct ParsedEngineMetadata {
   std::string ip;
   int rdmaPort = -1;
@@ -671,6 +676,9 @@ TEST_F(FlagcxP2pEngineReadTest, TwoIndependent2KiBReadsCover4KiBBuffer) {
 }
 
 TEST_F(FlagcxP2pEngineReadTest, ReadsWholeRegisteredHostBuffer) {
+  if (usesCannAdaptor())
+    GTEST_SKIP()
+        << "Current Ascend CI mlx5 rejects aclrtMallocHost MR (EINVAL)";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata());
 
   constexpr size_t kBytes = 4096;
@@ -717,6 +725,9 @@ TEST_F(FlagcxP2pEngineReadTest, ReadsWholeRegisteredHostBuffer) {
 
 TEST_F(FlagcxP2pEngineReadTest,
        ReadsHostBufferRegisteredAfterNonemptyMetadataHandshake) {
+  if (usesCannAdaptor())
+    GTEST_SKIP()
+        << "Current Ascend CI mlx5 rejects aclrtMallocHost MR (EINVAL)";
   constexpr size_t kBytes = 4096;
   ScopedAllocation advertisedRemote;
   allocHostBuffer(&advertisedRemote, kBytes, kClientGpuIdx, clientStream);
@@ -825,6 +836,9 @@ TEST_F(FlagcxP2pEngineReadTest, RejectsOutOfBoundsReadBeforeSubmission) {
 #ifdef USE_SHARED_P2P_ENGINE
 TEST_F(FlagcxP2pEngineReadTest,
        SameProcessCopyValidatesBothRangesAndLocalMrIdentity) {
+  if (usesCannAdaptor())
+    GTEST_SKIP()
+        << "Current Ascend CI mlx5 rejects aclrtMallocHost MR (EINVAL)";
   ASSERT_NO_FATAL_FAILURE(connectViaClientMetadata(true));
 
   constexpr size_t kBytes = 4096;
@@ -905,6 +919,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 
 TEST_F(FlagcxP2pEngineReadTest,
        DescriptorExchangePublishesOnlyConnectionEngineRegistrations) {
+  if (usesCannAdaptor())
+    GTEST_SKIP()
+        << "Current Ascend CI mlx5 rejects aclrtMallocHost MR (EINVAL)";
   constexpr size_t kBytes = 4096;
   ScopedAllocation serverBuffer;
   ScopedAllocation clientBuffer;
@@ -949,6 +966,9 @@ TEST_F(FlagcxP2pEngineReadTest,
 
 TEST_F(FlagcxP2pEngineReadTest,
        DestroyingOneEnginePreservesOtherRegistrationsAndDuplicateRefs) {
+  if (usesCannAdaptor())
+    GTEST_SKIP()
+        << "Current Ascend CI mlx5 rejects aclrtMallocHost MR (EINVAL)";
   constexpr size_t kBytes = 4096;
   ScopedAllocation serverBuffer;
   ScopedAllocation clientBuffer;

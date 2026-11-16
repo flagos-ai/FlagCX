@@ -1,0 +1,14 @@
+FROM harbor.baai.ac.cn/flagos-runtime/flagos-runtime-ascend-cann9.0.0-910c:2.3.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ibverbs-providers \
+        gdb \
+        libc6-dbg \
+        libibverbs-dev \
+        libibverbs1 \
+        libopenmpi-dev \
+        openmpi-bin && \
+    rm -rf /var/lib/apt/lists/*

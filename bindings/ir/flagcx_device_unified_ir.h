@@ -296,11 +296,14 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_DECORATOR void flagcxDevWaitSignalMeetShadow(
  * Transport-transparent barrier. Dispatches based on teamKind:
  *   INTRA → P2P IPC atomic barrier
  *   INTER → Net signal barrier
- *   WORLD → Intra arrive → Inter arrive → Inter wait → Intra wait
+ *   WORLD → Inter sync → Intra sync (or Intra sync on one node)
  *
  * @param comm      Opaque pointer to flagcxDevComm.
  * @param teamKind  Barrier scope (INTRA/INTER/WORLD).
- * @param index     Barrier channel index (typically blockIdx.x).
+ * @param index     Barrier channel index, unique for each simultaneously
+ *                  active Coop group on a rank. Corresponding groups on peer
+ *                  ranks use the same index. blockIdx.x works when each CTA
+ *                  has one participating Coop group.
  * @param contextId Context identifier.
  * @param coopKind  Cooperation level.
  * @param order     Memory ordering semantics.

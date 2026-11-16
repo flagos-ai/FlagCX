@@ -44,11 +44,19 @@ struct flagcxGroupGuard final {
   flagcxGroupGuard(flagcxComm_t comm) : comm_(comm) {
     C10D_FLAGCX_CHECK(flagcxGroupStart(comm_), std::nullopt);
   }
-  ~flagcxGroupGuard() {
-    if (close() != flagcxSuccess) {
-      TORCH_WARN("flagcxGroupEnd failed while ending a group that was left "
-                 "open; the operations grouped in it may not have been "
-                 "submitted");
+  flagcxGroupGuard(const flagcxGroupGuard &) = delete;
+  flagcxGroupGuard &operator=(const flagcxGroupGuard &) = delete;
+  flagcxGroupGuard(flagcxGroupGuard &&) = delete;
+  flagcxGroupGuard &operator=(flagcxGroupGuard &&) = delete;
+  ~flagcxGroupGuard() noexcept {
+    try {
+      if (close() != flagcxSuccess) {
+        TORCH_WARN("flagcxGroupEnd failed while ending a group that was left "
+                   "open; the operations grouped in it may not have been "
+                   "submitted");
+      }
+    } catch (...) {
+      // Preserve the exception that caused the group to be left open.
     }
   }
   // Ends the group and returns the result of submitting it. Reports success

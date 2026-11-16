@@ -40,6 +40,8 @@ template <>
 struct CommTraits<NvshmemBackend> {
   using Intrin = PlatformTraits<NvidiaPlatform>::Intrin;
   using Atomic = PlatformTraits<NvidiaPlatform>::Atomic;
+  using CoopOps = PlatformTraits<NvidiaPlatform>::CoopOps;
+  using Clock = PlatformTraits<NvidiaPlatform>::Clock;
 
   // ---- Multimem ----
   struct Multimem {
@@ -568,6 +570,14 @@ struct CommTraits<NvshmemBackend> {
 // nvshmemx_barrier_block PE-level barrier, then releases others.
 // ============================================================
 
+FLAGCX_DEVICE_INLINE_DECORATOR void
+flagcxNvshmemRequireRelaxedFence(flagcxDevNetFenceLevel fence) {
+  // A single block enters the native PE barrier. Its completion contract for
+  // operations issued by the other blocks has not been established here.
+  if (fence != flagcxDevNetFenceLevel::Relaxed)
+    FLAGCX_DEVICE_TRAP();
+}
+
 template <typename Coop>
 FLAGCX_DEVICE_INLINE_DECORATOR void
 nvshmemGridArrive(Coop &coop, nvshmem_team_t team, volatile uint64_t *arrive,
@@ -695,14 +705,16 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-         flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+         flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxNvshmemRequireRelaxedFence(fence);
     nvshmemGridArrive(_coop, _team, _gridSyncState,
                       _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
-       flagcxDevNetFenceLevel = flagcxDevNetFenceLevel::Relaxed) {
+       flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxNvshmemRequireRelaxedFence(fence);
     nvshmemGridWait(_coop, _team, _gridSyncState,
                     _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
@@ -710,6 +722,7 @@ struct Barrier<NvshmemBackend, flagcxTeamTagInter, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxNvshmemRequireRelaxedFence(fence);
     nvshmemGridArrive(_coop, _team, _gridSyncState,
                       _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
     nvshmemGridWait(_coop, _team, _gridSyncState,
@@ -760,6 +773,7 @@ struct Barrier<NvshmemBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxNvshmemRequireRelaxedFence(fence);
     nvshmemGridArrive(_coop, _team, _gridSyncState,
                       _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
@@ -767,6 +781,7 @@ struct Barrier<NvshmemBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxNvshmemRequireRelaxedFence(fence);
     nvshmemGridWait(_coop, _team, _gridSyncState,
                     _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
   }
@@ -774,6 +789,7 @@ struct Barrier<NvshmemBackend, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+    flagcxNvshmemRequireRelaxedFence(fence);
     nvshmemGridArrive(_coop, _team, _gridSyncState,
                       _gridSyncState + FLAGCX_DEVICE_CTA_COUNT);
     nvshmemGridWait(_coop, _team, _gridSyncState,

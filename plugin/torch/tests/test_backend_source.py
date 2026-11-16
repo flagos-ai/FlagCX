@@ -95,6 +95,21 @@ class BackendSourceRegressionTest(unittest.TestCase):
         self.assertIn("flagcxMemcpyDeviceToDevice", helper)
         self.assertEqual(SOURCE.count("copyTensorOnStream("), 8)
 
+    def test_tsm_flagos_event_uses_native_tx_runtime(self):
+        self.assertIn("#include <tx_runtime.h>", EVENT_HEADER)
+        self.assertIn(
+            "!defined(USE_TSM_ADAPTOR)", STREAM_GUARD_HEADER
+        )
+        tsm_event = function_body(
+            EVENT_HEADER, "class flagcxTxdaEvent", "#elif USE_ENFLAME_ADAPTOR"
+        )
+        self.assertIn("#ifdef FLAGCX_TORCH_BACKEND_FLAGOS", tsm_event)
+        self.assertIn("txEventCreate", tsm_event)
+        self.assertIn("txStreamWaitEvent", tsm_event)
+        self.assertIn("GetCurrentStreamForDevice", tsm_event)
+        # The vendor path stays intact for FLAGCX_TORCH_BACKEND=vendor.
+        self.assertIn("torch_txda::TXDAEvent", tsm_event)
+
     def test_enflame_gather_and_scatter_avoid_broken_eccl_primitives(self):
         gather = function_body(
             SOURCE,

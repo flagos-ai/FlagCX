@@ -7,6 +7,8 @@
  * Provides PlatformTraits<NvidiaPlatform> with:
  *   - Intrin: lane(), activemask(), syncwarp(), popc(), spinBackoff(), ...
  *   - Atomic: load(), store(), fetchAdd(), compareExchange(), ...
+ *   - CoopOps: per-thread and cooperative single-device memory operations
+ *   - Clock: device nanosecond timer
  *
  * Both __CUDACC__ (device) and host-compiler paths are NVIDIA-specific;
  * the #ifdef __CUDACC__ split is device-vs-host, NOT vendor-vs-fallback.
@@ -15,14 +17,19 @@
 #ifndef FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
 #define FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
 
+#include "nvidia_ptx_memory.h"
 #include <cassert>
 #include <cstdint>
 #include <cuda/atomic>
+#include <type_traits>
+#include <utility>
 
 struct NvidiaPlatform {};
 
 template <>
 struct PlatformTraits<NvidiaPlatform> {
+  struct CoopOps;
+  struct Clock;
 
   // ==============================================================
   // Intrin — CUDA SIMT intrinsics
@@ -94,15 +101,15 @@ struct PlatformTraits<NvidiaPlatform> {
       __threadfence();
     }
 
-    // Cooperative strided copy between two device-memory buffers.
+    // Internal strided byte-copy core shared by the legacy and new entries.
     //
     // Cascades from 16B vectors (int4) down to byte level so that aligned
     // regions move in the widest available store. Pattern adopted from NVSHMEM
     // for stronger memory ordering guarantees.
     template <typename DstPtr, typename SrcPtr>
     static FLAGCX_DEVICE_INLINE_DECORATOR void
-    coopCopyBytes(DstPtr dstIn, SrcPtr srcIn, size_t bytes, int rank,
-                  int size) {
+    copyBytesStridedImpl(DstPtr dstIn, SrcPtr srcIn, size_t bytes, int rank,
+                         int size) {
       void *dst = (void *)dstIn;
       const void *src = (const void *)srcIn;
 
@@ -164,6 +171,22 @@ struct PlatformTraits<NvidiaPlatform> {
         d[i] = s[i];
     }
 
+    template <typename DstPtr, typename SrcPtr>
+    FLAGCX_DEVICE_API_DEPRECATED("use CoopOps::copy for cooperative copies")
+    static FLAGCX_DEVICE_INLINE_DECORATOR
+        void coopCopyBytes(DstPtr dst, SrcPtr src, size_t bytes, int rank,
+                           int size) {
+      copyBytesStridedImpl(dst, src, bytes, rank, size);
+    }
+
+    // One issuing thread copies the entire byte range.  coopCopyBytes above
+    // retains its legacy rank/size partitioning and tail behavior.
+    template <typename DstPtr, typename SrcPtr>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void copyBytes(DstPtr dst, SrcPtr src,
+                                                         size_t bytes) {
+      copyBytesStridedImpl(dst, src, bytes, 0, 1);
+    }
+
 #else
     // Host-compiler stubs (allow template instantiation, never called at
     // runtime)
@@ -208,10 +231,111 @@ struct PlatformTraits<NvidiaPlatform> {
       assert(false && "threadfenceDevice() called on host");
     }
     template <typename DstPtr, typename SrcPtr>
-    static inline void coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
-      assert(false && "coopCopyBytes() called on host");
+    static inline void copyBytesStridedImpl(DstPtr, SrcPtr, size_t, int, int) {
+      assert(false && "copyBytesStridedImpl() called on host");
+    }
+    template <typename DstPtr, typename SrcPtr>
+    FLAGCX_DEVICE_API_DEPRECATED("use CoopOps::copy for cooperative copies")
+    static inline void coopCopyBytes(DstPtr dst, SrcPtr src, size_t bytes,
+                                     int rank, int size) {
+      copyBytesStridedImpl(dst, src, bytes, rank, size);
+    }
+    template <typename DstPtr, typename SrcPtr>
+    static inline void copyBytes(DstPtr, SrcPtr, size_t) {
+      assert(false && "copyBytes() called on host");
     }
 #endif // __CUDACC__
+
+    template <typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+              flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+              flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+              flagcxDeviceMemoryAccessKind_t Kind =
+                  flagcxDeviceMemoryAccessKindNormal,
+              flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary,
+              flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone>
+    static FLAGCX_DEVICE_INLINE_DECORATOR T load(const T *src) {
+      return flagcxNvidiaMemory::Load<T, Shape, Space, Order, Scope, Kind,
+                                      Intent, CacheHint>::run(src);
+    }
+
+    template <typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+              flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+              flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+              flagcxDeviceMemoryAccessKind_t Kind =
+                  flagcxDeviceMemoryAccessKindNormal,
+              flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(T *dst, T value) {
+      flagcxNvidiaMemory::Store<T, Shape, Space, Order, Scope, Kind,
+                                CacheHint>::run(dst, value);
+    }
+
+    // One issuing thread moves one complete T value. No asynchronous completion
+    // mechanism is involved; each endpoint chooses its own PTX load/store form.
+    template <
+        typename T, typename SrcShape, typename DstShape,
+        flagcxDeviceMemorySpace_t SrcSpace, flagcxDeviceMemorySpace_t DstSpace,
+        flagcxDeviceMemoryOrder_t SrcOrder = flagcxDeviceMemoryOrderWeak,
+        flagcxDeviceMemoryOrder_t DstOrder = flagcxDeviceMemoryOrderWeak,
+        flagcxDeviceScope_t SrcScope = flagcxDeviceScopeSystem,
+        flagcxDeviceScope_t DstScope = flagcxDeviceScopeSystem,
+        flagcxDeviceMemoryAccessKind_t SrcKind =
+            flagcxDeviceMemoryAccessKindNormal,
+        flagcxDeviceMemoryAccessKind_t DstKind =
+            flagcxDeviceMemoryAccessKindNormal,
+        flagcxDeviceLoadIntent_t SrcIntent = flagcxDeviceLoadIntentOrdinary,
+        flagcxDeviceCacheHint_t SrcCacheHint = flagcxDeviceCacheHintNone,
+        flagcxDeviceCacheHint_t DstCacheHint = flagcxDeviceCacheHintNone>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void copy(T *dst, const T *src) {
+      T value = load<T, SrcShape, SrcSpace, SrcOrder, SrcScope, SrcKind,
+                     SrcIntent, SrcCacheHint>(src);
+      store<T, DstShape, DstSpace, DstOrder, DstScope, DstKind, DstCacheHint>(
+          dst, value);
+    }
+
+    template <typename T>
+    static FLAGCX_HOST_DEVICE_INLINE T byteSwap(T value) {
+      static_assert(std::is_integral<T>::value && std::is_unsigned<T>::value &&
+                        !std::is_same<T, bool>::value &&
+                        (sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 ||
+                         sizeof(T) == 8),
+                    "byteSwap requires an unsigned 8/16/32/64-bit integer");
+      T result = 0;
+      for (unsigned i = 0; i < sizeof(T); ++i) {
+        result = static_cast<T>((result << 8) | (value & T{0xff}));
+        value = static_cast<T>(value >> 8);
+      }
+      return result;
+    }
+
+    template <typename T,
+              flagcxDeviceFunnelShiftMode_t Mode = flagcxDeviceFunnelShiftWrap>
+    static FLAGCX_HOST_DEVICE_INLINE T funnelShiftRight(T lo, T hi,
+                                                        unsigned shift) {
+      static_assert(std::is_integral<T>::value && std::is_unsigned<T>::value &&
+                        (sizeof(T) == 4 || sizeof(T) == 8),
+                    "funnelShiftRight requires an unsigned 32/64-bit integer");
+      static_assert(Mode == flagcxDeviceFunnelShiftWrap ||
+                        Mode == flagcxDeviceFunnelShiftClamp,
+                    "invalid funnel shift mode");
+      constexpr unsigned bits = sizeof(T) * 8;
+#if defined(__CUDA_ARCH__)
+      if (sizeof(T) == 4) {
+        const uint32_t lo32 = static_cast<uint32_t>(lo);
+        const uint32_t hi32 = static_cast<uint32_t>(hi);
+        return static_cast<T>(Mode == flagcxDeviceFunnelShiftWrap
+                                  ? __funnelshift_r(lo32, hi32, shift)
+                                  : __funnelshift_rc(lo32, hi32, shift));
+      }
+#endif
+      const unsigned amount = Mode == flagcxDeviceFunnelShiftWrap
+                                  ? shift % bits
+                                  : (shift < bits ? shift : bits);
+      if (amount == 0)
+        return lo;
+      if (amount == bits)
+        return hi;
+      return static_cast<T>((lo >> amount) | (hi << (bits - amount)));
+    }
   };
 
   // ==============================================================
@@ -262,6 +386,32 @@ struct PlatformTraits<NvidiaPlatform> {
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static FLAGCX_DEVICE_INLINE_DECORATOR T
+    fetchMax(T *ptr, T val, flagcxDeviceMemoryOrder_t order) {
+      static_assert(std::is_integral<T>::value &&
+                        !std::is_same<T, bool>::value &&
+                        (sizeof(T) == 4 || sizeof(T) == 8),
+                    "fetchMax requires a 32/64-bit integer");
+      if (order < flagcxDeviceMemoryOrderRelaxed ||
+          order > flagcxDeviceMemoryOrderSeqCst) {
+#if defined(__CUDA_ARCH__)
+        __trap();
+#else
+        assert(false && "invalid fetchMax order");
+#endif
+      }
+      using ref_t = typename ScopeHelper<T, Scope>::atomic_ref_t;
+      ref_t ref{*ptr};
+      T old = ref.load(cuda::memory_order_relaxed);
+      for (;;) {
+        const T desired = old < val ? val : old;
+        if (ref.compare_exchange_weak(old, desired, toOrder(order),
+                                      cuda::memory_order_relaxed))
+          return old;
+      }
+    }
+
+    template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+    static FLAGCX_DEVICE_INLINE_DECORATOR T
     exchange(T *ptr, const T &val, flagcxDeviceMemoryOrder_t order) {
       using ref_t = typename ScopeHelper<T, Scope>::atomic_ref_t;
       return ref_t{*ptr}.exchange(val, toOrder(order));
@@ -279,12 +429,25 @@ struct PlatformTraits<NvidiaPlatform> {
   private:
     static FLAGCX_DEVICE_INLINE_DECORATOR cuda::memory_order
     toOrder(flagcxDeviceMemoryOrder_t o) {
-      FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR
-          cuda::memory_order map[] = {
-              cuda::memory_order_relaxed, cuda::memory_order_acquire,
-              cuda::memory_order_release, cuda::memory_order_acq_rel,
-              cuda::memory_order_seq_cst};
-      return map[o];
+      switch (o) {
+        case flagcxDeviceMemoryOrderRelaxed:
+          return cuda::memory_order_relaxed;
+        case flagcxDeviceMemoryOrderAcquire:
+          return cuda::memory_order_acquire;
+        case flagcxDeviceMemoryOrderRelease:
+          return cuda::memory_order_release;
+        case flagcxDeviceMemoryOrderAcqRel:
+          return cuda::memory_order_acq_rel;
+        case flagcxDeviceMemoryOrderSeqCst:
+          return cuda::memory_order_seq_cst;
+        default:
+#if defined(__CUDA_ARCH__)
+          __trap();
+#else
+          __builtin_trap();
+#endif
+          return cuda::memory_order_relaxed;
+      }
     }
 
   public:
@@ -399,6 +562,497 @@ struct PlatformTraits<NvidiaPlatform> {
   };
 
   using CoopAny = PlatformCoop;
+};
+
+namespace flagcxNvidiaDetail {
+template <typename...>
+using FlagcxNvidiaVoidT = void;
+
+template <typename T, typename = void>
+struct FlagcxNvidiaHasLaneMask : std::false_type {};
+template <typename T>
+struct FlagcxNvidiaHasLaneMask<
+    T, FlagcxNvidiaVoidT<decltype(std::declval<const T &>().laneMask())>>
+    : std::true_type {};
+template <typename T, typename = void>
+struct FlagcxNvidiaHasLmask : std::false_type {};
+template <typename T>
+struct FlagcxNvidiaHasLmask<
+    T, FlagcxNvidiaVoidT<decltype(std::declval<const T &>().getLmask())>>
+    : std::true_type {};
+template <typename T>
+struct FlagcxNvidiaWarpCoop
+    : std::integral_constant<bool, FlagcxNvidiaHasLaneMask<T>::value ||
+                                       FlagcxNvidiaHasLmask<T>::value> {};
+
+template <typename Ptr>
+struct FlagcxNvidiaPointee {
+  using type =
+      typename std::remove_cv<typename std::remove_pointer<Ptr>::type>::type;
+};
+
+} // namespace flagcxNvidiaDetail
+
+struct PlatformTraits<NvidiaPlatform>::Clock {
+  using tick_t = uint64_t;
+
+  static FLAGCX_DEVICE_INLINE_DECORATOR tick_t now() {
+#if defined(__CUDA_ARCH__)
+    // PTX defines nanoseconds, but documents this register as target-specific.
+    tick_t value;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(value));
+    return value;
+#else
+    assert(false && "Clock::now() called on host");
+    return 0;
+#endif
+  }
+
+  static FLAGCX_HOST_DEVICE_INLINE tick_t elapsedNs(tick_t start, tick_t end) {
+    return end - start;
+  }
+};
+
+struct PlatformTraits<NvidiaPlatform>::CoopOps {
+  using Platform = PlatformTraits<NvidiaPlatform>;
+
+  // MMIO additionally requires a caller-verified mapped I/O address and
+  // access permissions; no enum can establish pointer provenance by itself.
+
+  // One batch belongs to one issuing thread. It does not represent a Coop-wide
+  // completion event and cannot be used to wait for storeAsync.
+  struct AsyncCopyBatch {
+    bool issued = false;
+    bool committed = false;
+  };
+
+  // T is the entire value; Shape selects its PTX register decomposition.
+  // Each caller performs its own load/store, including for Local addresses.
+  template <
+      typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+      flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+      flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+      flagcxDeviceMemoryAccessKind_t Kind = flagcxDeviceMemoryAccessKindNormal,
+      flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary,
+      flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone,
+      typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T load(Coop coop, const T *src) {
+    (void)coop;
+    return Platform::Intrin::template load<T, Shape, Space, Order, Scope, Kind,
+                                           Intent, CacheHint>(src);
+  }
+
+  template <
+      typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+      flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+      flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+      flagcxDeviceMemoryAccessKind_t Kind = flagcxDeviceMemoryAccessKindNormal,
+      flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone,
+      typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void store(Coop coop, T *dst, T value) {
+    (void)coop;
+    Platform::Intrin::template store<T, Shape, Space, Order, Scope, Kind,
+                                     CacheHint>(dst, value);
+  }
+
+  // Count is a number of T values. Each rank copies its own strided subset.
+  template <typename T, typename SrcShape, typename DstShape,
+            flagcxDeviceMemorySpace_t SrcSpace,
+            flagcxDeviceMemorySpace_t DstSpace,
+            flagcxDeviceMemoryOrder_t SrcOrder = flagcxDeviceMemoryOrderWeak,
+            flagcxDeviceMemoryOrder_t DstOrder = flagcxDeviceMemoryOrderWeak,
+            flagcxDeviceScope_t SrcScope = flagcxDeviceScopeSystem,
+            flagcxDeviceScope_t DstScope = flagcxDeviceScopeSystem,
+            flagcxDeviceMemoryAccessKind_t SrcKind =
+                flagcxDeviceMemoryAccessKindNormal,
+            flagcxDeviceMemoryAccessKind_t DstKind =
+                flagcxDeviceMemoryAccessKindNormal,
+            flagcxDeviceLoadIntent_t SrcIntent = flagcxDeviceLoadIntentOrdinary,
+            flagcxDeviceCacheHint_t SrcCacheHint = flagcxDeviceCacheHintNone,
+            flagcxDeviceCacheHint_t DstCacheHint = flagcxDeviceCacheHintNone,
+            typename Coop, typename Count>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void copy(Coop coop, T *dst,
+                                                  const T *src, Count count) {
+    static_assert(std::is_integral<Count>::value, "count must be integral");
+    static_assert((SrcSpace != flagcxDeviceMemoryLocal &&
+                   DstSpace != flagcxDeviceMemoryLocal) ||
+                      std::is_same<Coop, Platform::CoopThread>::value,
+                  "Local cooperative copy requires CoopThread");
+    if (negativeCount(count, typename std::is_signed<Count>::type()))
+      reject();
+    const size_t n = static_cast<size_t>(count);
+    if (n > SIZE_MAX / sizeof(T) || coop.size() <= 0 || coop.threadRank() < 0 ||
+        coop.threadRank() >= coop.size())
+      reject();
+    const size_t step = static_cast<size_t>(coop.size());
+    for (size_t i = static_cast<size_t>(coop.threadRank()); i < n;) {
+      Platform::Intrin::template copy<T, SrcShape, DstShape, SrcSpace, DstSpace,
+                                      SrcOrder, DstOrder, SrcScope, DstScope,
+                                      SrcKind, DstKind, SrcIntent, SrcCacheHint,
+                                      DstCacheHint>(dst + i, src + i);
+      if (n - i <= step)
+        break;
+      i += step;
+    }
+  }
+
+  // Preserve the existing arbitrary-size byte-copy form for callers that do
+  // not select a PTX shape. New typed copies use Intrin::copy above.
+  template <typename Coop, typename DstPtr, typename SrcPtr, typename Count>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void copy(Coop coop, DstPtr dst,
+                                                  SrcPtr src, Count count) {
+    static_assert(std::is_pointer<DstPtr>::value &&
+                      std::is_pointer<SrcPtr>::value,
+                  "copy requires typed source and destination pointers");
+    using Dst = typename std::remove_cv<
+        typename std::remove_pointer<DstPtr>::type>::type;
+    using Src = typename std::remove_cv<
+        typename std::remove_pointer<SrcPtr>::type>::type;
+    static_assert(std::is_same<Dst, Src>::value &&
+                      std::is_trivially_copyable<Dst>::value,
+                  "copy requires equal, trivially copyable element types");
+    static_assert(std::is_integral<Count>::value, "count must be integral");
+    static_assert(
+        !std::is_const<typename std::remove_pointer<DstPtr>::type>::value &&
+            !std::is_volatile<
+                typename std::remove_pointer<DstPtr>::type>::value &&
+            !std::is_volatile<
+                typename std::remove_pointer<SrcPtr>::type>::value,
+        "copy requires non-const, non-volatile destination and source");
+    if (negativeCount(count, typename std::is_signed<Count>::type()))
+      reject();
+    const size_t n = static_cast<size_t>(count);
+    if (n > SIZE_MAX / sizeof(Dst) || coop.size() <= 0 ||
+        coop.threadRank() < 0 || coop.threadRank() >= coop.size())
+      reject();
+    Platform::Intrin::copyBytesStridedImpl(dst, src, n * sizeof(Dst),
+                                           coop.threadRank(), coop.size());
+  }
+
+  template <typename Coop, typename T>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T broadcast(Coop coop, T value,
+                                                    int root) {
+    static_assert(std::is_trivially_copyable<T>::value && sizeof(T) <= 8,
+                  "broadcast supports trivially copyable values up to 8 bytes");
+    return broadcastImpl(coop, value, root,
+                         flagcxNvidiaDetail::FlagcxNvidiaWarpCoop<Coop>());
+  }
+
+  template <typename Coop, typename T, typename RedOp>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T reduce(Coop coop, T value, RedOp op) {
+    return reduceImpl(coop, value, op,
+                      flagcxNvidiaDetail::FlagcxNvidiaWarpCoop<Coop>());
+  }
+
+  template <typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void
+  fence(Coop coop, flagcxDeviceMemoryOrder_t order, flagcxDeviceScope_t scope) {
+    (void)coop;
+    if (scope < flagcxDeviceScopeSystem || scope > flagcxDeviceScopeThread)
+      reject();
+    if (order == flagcxDeviceMemoryOrderRelaxed)
+      return;
+    if (order < flagcxDeviceMemoryOrderAcquire ||
+        order > flagcxDeviceMemoryOrderSeqCst)
+      reject();
+#if defined(__CUDA_ARCH__)
+    switch (scope) {
+      case flagcxDeviceScopeSystem:
+        __threadfence_system();
+        return;
+      case flagcxDeviceScopeDevice:
+        __threadfence();
+        return;
+      case flagcxDeviceScopeBlock:
+        __threadfence_block();
+        return;
+      case flagcxDeviceScopeThread:
+        asm volatile("" ::: "memory");
+        return;
+      default:
+        reject();
+    }
+#else
+    reject();
+#endif
+  }
+
+  // The only first-version async copy is CTA shared -> global bulk copy.
+  // Callers synchronize shared-memory producers before issuing, and synchronize
+  // the Coop separately after every issuing thread has waited on its batch.
+  template <typename Coop, typename DstPtr, typename SrcPtr, typename Count,
+            flagcxDeviceMemorySpace_t DstSpace = flagcxDeviceMemoryGlobal,
+            flagcxDeviceMemorySpace_t SrcSpace = flagcxDeviceMemoryScratchpad>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void
+  copyAsync(Coop coop, AsyncCopyBatch &batch, DstPtr dst, SrcPtr src,
+            Count count) {
+    static_assert(DstSpace == flagcxDeviceMemoryGlobal &&
+                      SrcSpace == flagcxDeviceMemoryScratchpad,
+                  "copyAsync supports Scratchpad to Global only");
+    static_assert(std::is_pointer<DstPtr>::value &&
+                      std::is_pointer<SrcPtr>::value &&
+                      std::is_integral<Count>::value,
+                  "copyAsync requires pointers and an integral count");
+    using Dst = typename std::remove_cv<
+        typename std::remove_pointer<DstPtr>::type>::type;
+    using Src = typename std::remove_cv<
+        typename std::remove_pointer<SrcPtr>::type>::type;
+    static_assert(std::is_same<Dst, Src>::value &&
+                      std::is_trivially_copyable<Dst>::value,
+                  "copyAsync element types must match");
+    static_assert(
+        !std::is_const<typename std::remove_pointer<DstPtr>::type>::value,
+        "copyAsync destination must be writable");
+    static_assert(
+        !std::is_volatile<typename std::remove_pointer<DstPtr>::type>::value &&
+            !std::is_volatile<
+                typename std::remove_pointer<SrcPtr>::type>::value,
+        "copyAsync does not accept volatile pointers");
+#if defined(__CUDA_ARCH__)
+    static_assert(__CUDA_ARCH__ >= 900 || sizeof(Coop) == 0,
+                  "copyAsync bulk_group requires sm_90 or newer");
+#endif
+    if (negativeCount(count, typename std::is_signed<Count>::type()))
+      reject();
+    const size_t n = static_cast<size_t>(count);
+    if (n > SIZE_MAX / sizeof(Dst) || batch.committed || coop.size() <= 0 ||
+        coop.threadRank() < 0 || coop.threadRank() >= coop.size())
+      reject();
+    const size_t bytes = n * sizeof(Dst);
+    if ((bytes & 15) != 0 || (reinterpret_cast<uintptr_t>(dst) & 15) != 0 ||
+        (reinterpret_cast<uintptr_t>(src) & 15) != 0)
+      reject();
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    const char *s = reinterpret_cast<const char *>(src);
+    char *d = reinterpret_cast<char *>(dst);
+    asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+    for (size_t chunk = static_cast<size_t>(coop.threadRank());
+         chunk < bytes / 16; chunk += static_cast<size_t>(coop.size())) {
+      const uint32_t sharedAddr =
+          static_cast<uint32_t>(__cvta_generic_to_shared(s + chunk * 16));
+      asm volatile("cp.async.bulk.global.shared::cta.bulk_group "
+                   "[%0], [%1], 16;"
+                   :
+                   : "l"(d + chunk * 16), "r"(sharedAddr)
+                   : "memory");
+      batch.issued = true;
+    }
+#else
+    reject();
+#endif
+  }
+
+  template <typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void
+  commitAsync(Coop coop, AsyncCopyBatch &batch) {
+    (void)coop;
+    if (batch.committed)
+      reject();
+#if defined(__CUDA_ARCH__)
+    static_assert(__CUDA_ARCH__ >= 900 || sizeof(Coop) == 0,
+                  "commitAsync bulk_group requires sm_90 or newer");
+    asm volatile("cp.async.bulk.commit_group;" ::: "memory");
+    batch.committed = true;
+#else
+    reject();
+#endif
+  }
+
+  template <typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void waitAsync(Coop coop,
+                                                       AsyncCopyBatch &batch) {
+    (void)coop;
+    if (!batch.committed)
+      reject();
+#if defined(__CUDA_ARCH__)
+    static_assert(__CUDA_ARCH__ >= 900 || sizeof(Coop) == 0,
+                  "waitAsync bulk_group requires sm_90 or newer");
+    asm volatile("cp.async.bulk.wait_group 0;" ::: "memory");
+    batch.issued = false;
+    batch.committed = false;
+#else
+    reject();
+#endif
+  }
+
+  // st.async.global has no bulk-group completion and is not waitAsync-able.
+  template <
+      typename Coop, typename Ptr, typename T,
+      flagcxDeviceMemorySpace_t Space = flagcxDeviceMemoryGlobal,
+      flagcxDeviceMemoryAccessKind_t Kind = flagcxDeviceMemoryAccessKindNormal,
+      flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void
+  storeAsync(Coop coop, Ptr dst, T value, flagcxDeviceMemoryOrder_t order) {
+    (void)coop;
+    (void)dst;
+    (void)value;
+    static_assert(Space == flagcxDeviceMemoryGlobal &&
+                      Scope == flagcxDeviceScopeSystem,
+                  "storeAsync supports system-scoped Global addresses only");
+    static_assert(Kind == flagcxDeviceMemoryAccessKindNormal ||
+                      Kind == flagcxDeviceMemoryAccessKindMmio,
+                  "invalid storeAsync access kind");
+    static_assert(std::is_pointer<Ptr>::value &&
+                      (std::is_same<T, uint32_t>::value ||
+                       std::is_same<T, uint64_t>::value),
+                  "storeAsync supports uint32_t and uint64_t values");
+    static_assert(
+        std::is_same<typename std::remove_pointer<Ptr>::type, T>::value,
+        "storeAsync destination and value types must match");
+#if defined(__CUDA_ARCH__)
+    static_assert(__CUDA_ARCH__ >= 1000 || sizeof(Ptr) == 0,
+                  "global storeAsync requires sm_100 or newer");
+#if __CUDACC_VER_MAJOR__ < 12 ||                                               \
+    (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ < 8)
+    static_assert(sizeof(Ptr) == 0,
+                  "global storeAsync requires a toolkit with PTX ISA 8.7");
+#endif
+#endif
+    if (order != flagcxDeviceMemoryOrderRelease)
+      reject();
+    if ((reinterpret_cast<uintptr_t>(dst) & (sizeof(T) - 1)) != 0)
+      reject();
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
+    if (Kind == flagcxDeviceMemoryAccessKindMmio) {
+      if (sizeof(T) == 4)
+        asm volatile("st.async.mmio.release.sys.global.u32 [%0], %1;"
+                     :
+                     : "l"(dst), "r"(static_cast<uint32_t>(value))
+                     : "memory");
+      else
+        asm volatile("st.async.mmio.release.sys.global.u64 [%0], %1;"
+                     :
+                     : "l"(dst), "l"(static_cast<uint64_t>(value))
+                     : "memory");
+    } else {
+      if (sizeof(T) == 4)
+        asm volatile("st.async.release.sys.global.u32 [%0], %1;"
+                     :
+                     : "l"(dst), "r"(static_cast<uint32_t>(value))
+                     : "memory");
+      else
+        asm volatile("st.async.release.sys.global.u64 [%0], %1;"
+                     :
+                     : "l"(dst), "l"(static_cast<uint64_t>(value))
+                     : "memory");
+    }
+#else
+    reject();
+#endif
+  }
+
+  template <
+      typename Coop, typename Ptr, typename T,
+      flagcxDeviceMemorySpace_t Space = flagcxDeviceMemoryGlobal,
+      flagcxDeviceMemoryAccessKind_t Kind = flagcxDeviceMemoryAccessKindNormal,
+      flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+      flagcxDeviceMemoryOrder_t Order>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void
+  storeAsync(Coop coop, Ptr dst, T value,
+             std::integral_constant<flagcxDeviceMemoryOrder_t, Order>) {
+    static_assert(Order == flagcxDeviceMemoryOrderRelease,
+                  "storeAsync requires release order");
+    storeAsync<Coop, Ptr, T, Space, Kind, Scope>(coop, dst, value, Order);
+  }
+
+private:
+  static FLAGCX_DEVICE_INLINE_DECORATOR void reject() {
+#if defined(__CUDA_ARCH__)
+    __trap();
+#else
+    assert(false && "unsupported NVIDIA CoopOps operation");
+#endif
+  }
+
+  template <typename Count>
+  static FLAGCX_HOST_DEVICE_INLINE bool negativeCount(Count count,
+                                                      std::true_type) {
+    return count < 0;
+  }
+
+  template <typename Count>
+  static FLAGCX_HOST_DEVICE_INLINE bool negativeCount(Count, std::false_type) {
+    return false;
+  }
+
+  template <typename Coop, typename T>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T broadcastImpl(Coop coop, T value,
+                                                        int root,
+                                                        std::true_type) {
+    if (root < 0 || root >= coop.size())
+      reject();
+#if defined(__CUDA_ARCH__)
+    const uint32_t mask = static_cast<uint32_t>(groupMask(coop));
+    const int sourceLane = laneAtRank(mask, root);
+    uint32_t words[2] = {0, 0};
+    __builtin_memcpy(words, &value, sizeof(T));
+    words[0] = __shfl_sync(mask, words[0], sourceLane);
+    if (sizeof(T) > 4)
+      words[1] = __shfl_sync(mask, words[1], sourceLane);
+    T result;
+    __builtin_memcpy(&result, words, sizeof(T));
+    return result;
+#else
+    reject();
+    return value;
+#endif
+  }
+
+  template <typename Coop, typename T>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T broadcastImpl(Coop, T value, int,
+                                                        std::false_type) {
+    // TODO: multi-warp register exchange needs caller-provided scratch.
+    // In particular, CoopAny exposes only rank, size and sync.
+    reject();
+    return value;
+  }
+
+  template <typename Coop, typename T, typename RedOp>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T reduceImpl(Coop coop, T value,
+                                                     RedOp op, std::true_type) {
+    T result = broadcast(coop, value, 0);
+    for (int root = 1; root < coop.size(); ++root)
+      result = op(result, broadcast(coop, value, root));
+    return result;
+  }
+
+  template <typename Coop, typename T, typename RedOp>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T reduceImpl(Coop, T value, RedOp,
+                                                     std::false_type) {
+    // TODO: implement an explicit-scratch overload for multi-warp groups.
+    reject();
+    return value;
+  }
+
+  template <typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t groupMask(Coop coop) {
+    return groupMaskImpl(coop,
+                         flagcxNvidiaDetail::FlagcxNvidiaHasLaneMask<Coop>());
+  }
+
+  template <typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t
+  groupMaskImpl(Coop coop, std::true_type) {
+    return coop.laneMask();
+  }
+
+  template <typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t
+  groupMaskImpl(Coop coop, std::false_type) {
+    return coop.getLmask();
+  }
+
+  static FLAGCX_DEVICE_INLINE_DECORATOR int laneAtRank(uint32_t mask,
+                                                       int rank) {
+    for (int lane = 0; lane < 32; ++lane) {
+      if (mask & (uint32_t{1} << lane)) {
+        if (rank-- == 0)
+          return lane;
+      }
+    }
+    reject();
+    return 0;
+  }
 };
 
 #endif // FLAGCX_NVIDIA_PLATFORM_TRAITS_H_

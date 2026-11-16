@@ -23,6 +23,8 @@ struct DefaultPlatform {};
 
 template <>
 struct PlatformTraits<DefaultPlatform> {
+  struct CoopOps {};
+  struct Clock {};
   // ==============================================================
   // Intrin — assert-false stubs (IPC fallback never calls these)
   // ==============================================================

@@ -415,6 +415,17 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, win, memAllocator));
   FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+#if defined(USE_NVIDIA_ADAPTOR) && defined(FLAGCX_COMM_TRAITS_DEFAULT)
+  // A singleton Inter team still reserves one signal slot per requested
+  // barrier channel. Exercise the Barrier-only creation path without user
+  // signal or counter resources.
+  flagcxDevCommRequirements interOnlyReqs =
+      FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  interOnlyReqs.interBarrierCount = 1;
+  flagcxDevComm_t interOnlyComm = nullptr;
+  FLAGCXCHECK(flagcxDevCommCreate(comm, &interOnlyReqs, &interOnlyComm));
+  FLAGCXCHECK(flagcxDevCommDestroy(comm, interOnlyComm));
+#endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));

@@ -36,6 +36,8 @@ typedef struct flagcxDevCommRequirements {
   bool intraMulticast;
 
   int barrierCount;
+  // Barrier indices are channels: simultaneous Coop groups need distinct
+  // indices, and corresponding groups on peer ranks use the same index.
   int intraBarrierCount;
   int interBarrierCount;
 

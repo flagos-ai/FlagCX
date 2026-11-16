@@ -14,6 +14,20 @@ MATRIX_SCRIPT = REPO_ROOT / ".github/scripts/ci/resolve_ci_matrix.rb"
 TIMEOUT_SCRIPT = REPO_ROOT / ".github/scripts/ci/run_with_timeout.sh"
 GATE_SCRIPT = REPO_ROOT / ".github/scripts/ci/check_ci_results.sh"
 CONFIG_DIR = REPO_ROOT / ".github/configs"
+PLATFORM_REGISTRY = yaml.safe_load(
+    (CONFIG_DIR / "platforms.yml").read_text(encoding="utf-8")
+)["platforms"]
+ALL_ENABLED_PLATFORMS = [
+    name
+    for name, settings in PLATFORM_REGISTRY.items()
+    if not isinstance(settings, dict) or settings.get("enabled", True)
+]
+
+
+def enabled_platform_or_matrix(platform):
+    if platform in ALL_ENABLED_PLATFORMS:
+        return [platform]
+    return ALL_ENABLED_PLATFORMS
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
@@ -37,34 +51,100 @@ class CiMatrixRoutingTest(unittest.TestCase):
             return outputs, result.stdout
 
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
+        self.assertEqual(
+            ALL_ENABLED_PLATFORMS,
+            ["mthreads"],
+        )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
                 outputs, _ = self.resolve({"event_name": event_name})
-                self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+                self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_common_changes_select_all_platforms(self):
         outputs, _ = self.resolve(
             {"event_name": "pull_request", "files": ["flagcx/core/group.cc"]}
         )
-        self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_platform_specific_changes_select_only_matching_platform(self):
         for path, expected in (
-            ("test/kernel/maca/device_api_host_helpers.cu", ["metax"]),
-            ("flagcx/adaptor/device/cuda_adaptor.cc", ["cuda"]),
-            ("flagcx/adaptor/device/musa_adaptor.cc", ["mthreads"]),
-            (".github/scripts/ci/run_ppu_workload.sh", ["ppu"]),
-            ("flagcx/adaptor/device/duhip_adaptor.cc", ["hygon"]),
-            ("flagcx/adaptor/ccl/durccl_adaptor.cc", ["hygon"]),
-            ("test/kernel/du/device_ir.hip", ["hygon"]),
-            ("test/kernel/du/nested/device_ir.hip", ["hygon"]),
-            ("flagcx/adaptor/kernel/du/nested/kernel.hip", ["hygon"]),
-            ("test/kernel/maca/nested/foo.cu", ["metax"]),
-            ("flagcx/adaptor/kernel/nvidia/nested/foo.cu", ["cuda"]),
-            ("test/kernel/nvidia/nested/foo.cu", ["cuda"]),
-            (".github/scripts/ci/run_cuda_workload.sh", ["cuda"]),
-            (".github/scripts/ci/run_cuda_legacy_perf.sh", ["cuda"]),
-            (".github/scripts/ci/run_metax_workload.sh", ["metax"]),
+            (
+                "test/kernel/maca/device_api_host_helpers.cu",
+                enabled_platform_or_matrix("metax"),
+            ),
+            (
+                "flagcx/adaptor/device/cuda_adaptor.cc",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                "flagcx/adaptor/device/musa_adaptor.cc",
+                enabled_platform_or_matrix("mthreads"),
+            ),
+            (
+                "flagcx/adaptor/device/ixcuda_adaptor.cc",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
+                "docker/iluvatar-ci/Dockerfile",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
+                "flagcx/adaptor/device/cann_adaptor.cc",
+                enabled_platform_or_matrix("ascend"),
+            ),
+            (
+                ".github/scripts/ci/run_ppu_workload.sh",
+                enabled_platform_or_matrix("ppu"),
+            ),
+            (
+                "flagcx/adaptor/device/duhip_adaptor.cc",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                "flagcx/adaptor/ccl/durccl_adaptor.cc",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            ("test/kernel/du/device_ir.hip", enabled_platform_or_matrix("hygon")),
+            (
+                "test/kernel/du/nested/device_ir.hip",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                "flagcx/adaptor/kernel/du/nested/kernel.hip",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                "test/kernel/maca/nested/foo.cu",
+                enabled_platform_or_matrix("metax"),
+            ),
+            (
+                "flagcx/adaptor/kernel/nvidia/nested/foo.cu",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                "flagcx/adaptor/kernel/common/nested/foo.h",
+                ["mthreads"],
+            ),
+            (
+                "test/kernel/nvidia/nested/foo.cu",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_cuda_workload.sh",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_cuda_perf_experimental.sh",
+                enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_hygon_perf_experimental.sh",
+                enabled_platform_or_matrix("hygon"),
+            ),
+            (
+                ".github/scripts/ci/run_metax_workload.sh",
+                enabled_platform_or_matrix("metax"),
+            ),
         ):
             with self.subTest(path=path):
                 outputs, _ = self.resolve(
@@ -72,21 +152,21 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 )
                 self.assertEqual(outputs["platforms"], expected)
 
-    def test_platform_labels_override_paths_and_can_select_multiple_platforms(self):
+    def test_platform_labels_override_paths_for_enabled_platforms(self):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:ppu", "platform:hygon"],
+                "labels": ["platform:mthreads"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["hygon", "ppu"])
+        self.assertEqual(outputs["platforms"], ["mthreads"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
             {"event_name": "pull_request", "labels": ["platform:all"]}
         )
-        self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_empty_pr_changes_skip_hardware_matrix(self):
         outputs, _ = self.resolve(
@@ -99,7 +179,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
         outputs, _ = self.resolve(
             {"event_name": "pull_request", "files": ["README.md"]}
         )
-        self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_unmapped_ci_source_change_falls_back_to_all_platforms(self):
         outputs, _ = self.resolve(
@@ -108,7 +188,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "files": [".github/scripts/ci/new_backend_ci.sh"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_mixed_platform_and_unknown_changes_run_all_platforms(self):
         outputs, _ = self.resolve(
@@ -116,19 +196,19 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cuda_adaptor.cc", "new/shared/file.cc"
             ]}
         )
-        self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_unregistered_vendor_paths_use_full_matrix(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request",
-            "files": ["flagcx/adaptor/device/ixcuda_adaptor.cc"],
+            "files": ["flagcx/adaptor/device/mlu_adaptor.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["cuda", "hygon", "metax", "mthreads", "ppu"])
+        self.assertEqual(outputs["platforms"], ALL_ENABLED_PLATFORMS)
 
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:cuda"],
+            "ref": "a" * 40, "labels": ["platform:mthreads"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -136,13 +216,13 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:ppu"],
+            "is_pull_request": True, "labels": ["platform:mthreads"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["ppu"])
+        self.assertEqual(outputs["platforms"], ["mthreads"])
 
     def test_every_platform_config_has_watch_patterns(self):
-        for platform in ("cuda", "hygon", "metax", "mthreads", "ppu"):
+        for platform in ALL_ENABLED_PLATFORMS:
             with self.subTest(platform=platform):
                 config = (CONFIG_DIR / f"{platform}.yml").read_text()
                 self.assertIn("paths_watch:", config)
@@ -150,15 +230,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "cuda,ppu"}, ["cuda", "ppu"]),
+            ("workflow_dispatch", {"selection": "mthreads"}, ["mthreads"]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test metax",
+                    "comment": "/test mthreads",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["metax"],
+                ["mthreads"],
             ),
             (
                 "issue_comment",
@@ -167,7 +247,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "permission": "maintain",
                     "is_pull_request": True,
                 },
-                ["cuda", "hygon", "metax", "mthreads", "ppu"],
+                ALL_ENABLED_PLATFORMS,
             ),
             (
                 "issue_comment",
@@ -177,7 +257,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                     "files": ["flagcx/adaptor/device/cuda_adaptor.cc"],
                 },
-                ["cuda"],
+                ["mthreads"],
             ),
         ):
             with self.subTest(event=event_name, extra=extra):
@@ -394,23 +474,31 @@ class CiWorkflowWiringTest(unittest.TestCase):
         caller = yaml.safe_load((REPO_ROOT / ".github/workflows/unit-test.yml").read_text())
         token = caller["jobs"]["torch_api_tests"]["secrets"]["FLAGCICD_API_TOKEN"]
         self.assertIn("needs.prepare.outputs.repository == github.repository", token)
-        job = workflow["jobs"]["torch-api-test-cuda"]
-        steps = {step.get("name"): step for step in job["steps"]}
-        upload = steps["Upload coverage report to FlagCICD"]
-        self.assertTrue(upload["continue-on-error"])
-        self.assertEqual(upload["with"]["file_type"], "coverage")
-        self.assertEqual(upload["with"]["job_name"], "coverage-cuda-gpu-torch")
-        self.assertEqual(upload["with"]["report_path"], "coverage-cuda-gpu-torch.json")
-        self.assertEqual(upload["with"]["fail_on_error"], "false")
-        self.assertIn("FLAGCICD_TOKEN_SET == 'true'", upload["if"])
-        self.assertIn("hashFiles('coverage-cuda-gpu-torch.json')", upload["if"])
-        self.assertIn("github.event.issue.number", upload["with"]["pr_id"])
-        self.assertNotIn("container", job)
-        self.assertIn("Collect Python coverage report", steps)
-        workload = steps["Run torch-api-test (cuda) in configured container"]
-        self.assertEqual(workload["env"]["FLAGCX_CI_TORCH_COVERAGE"], "1")
-        cuda_runner = (REPO_ROOT / ".github/scripts/ci/run_cuda_workload.sh").read_text()
-        self.assertIn('bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"', cuda_runner)
+        for platform in ("cuda", "hygon", "metax", "ppu"):
+            with self.subTest(platform=platform):
+                job = workflow["jobs"][f"torch-api-test-{platform}"]
+                steps = {step.get("name"): step for step in job["steps"]}
+                report = f"coverage-{platform}-gpu-torch.json"
+                upload = steps["Upload coverage report to FlagCICD"]
+                self.assertTrue(upload["continue-on-error"])
+                self.assertEqual(upload["with"]["file_type"], "coverage")
+                self.assertEqual(upload["with"]["job_name"], report.removesuffix(".json"))
+                self.assertEqual(upload["with"]["report_path"], report)
+                self.assertEqual(upload["with"]["fail_on_error"], "false")
+                self.assertIn("FLAGCICD_TOKEN_SET == 'true'", upload["if"])
+                self.assertIn(f"hashFiles('{report}')", upload["if"])
+                self.assertIn("github.event.issue.number", upload["with"]["pr_id"])
+                self.assertNotIn("container", job)
+                self.assertIn("Collect Python coverage report", steps)
+                self.assertIn(report, steps["Collect Python coverage report"]["run"])
+                self.assertEqual(steps["Archive Python coverage report"]["with"]["path"], report)
+                workload = steps[f"Run torch-api-test ({platform}) in configured container"]
+                self.assertEqual(workload["env"]["FLAGCX_CI_TORCH_COVERAGE"], "1")
+                runner = (REPO_ROOT / f".github/scripts/ci/run_{platform}_workload.sh").read_text()
+                self.assertIn('bash "$project_root/.github/scripts/ci/run_torch_coverage.sh"', runner)
+
+        container_runner = (REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh").read_text()
+        self.assertIn('coverage-${platform}-gpu-torch.json', container_runner)
         runner = (REPO_ROOT / ".github/scripts/ci/run_torch_coverage.sh").read_text()
         self.assertIn("-m coverage run -m unittest discover", runner)
 
@@ -455,7 +543,7 @@ class CiCompletionGateTest(unittest.TestCase):
 
 
 class PlatformWorkflowCompletionTest(unittest.TestCase):
-    def check(self, platforms, config, cuda_base, cuda, hygon, metax, ppu, mthreads="skipped"):
+    def check(self, platforms, config, cuda_base, cuda, hygon, metax, ppu, ascend="skipped"):
         return subprocess.run(
             [
                 "bash",
@@ -467,11 +555,23 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
                 hygon,
                 metax,
                 ppu,
-                mthreads,
+                ascend,
             ],
             capture_output=True,
             text=True,
         )
+
+    def test_hygon_experimental_perf_is_required(self):
+        script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")
+        args = ["bash", script, '["hygon"]', "success", "skipped",
+                "skipped", "success", "failure", "skipped", "skipped",
+                "skipped"]
+        failed = subprocess.run(args, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Hygon experimental workload", failed.stderr)
+        args[7] = "success"
+        passed = subprocess.run(args, capture_output=True, text=True)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
 
     def test_selected_platform_jobs_must_succeed(self):
         self.assertEqual(
@@ -483,14 +583,14 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
             0,
         )
         self.assertEqual(
-            self.check('["mthreads"]', "success", "skipped", "skipped", "skipped", "skipped", "skipped", "success").returncode,
+            self.check('["ascend"]', "success", "skipped", "skipped", "skipped", "skipped", "skipped", "success").returncode,
             0,
         )
         for result in (
             ("[\"cuda\"]", "skipped", "success", "skipped", "skipped", "skipped", "skipped"),
             ("[\"hygon\"]", "skipped", "skipped", "skipped", "failure", "skipped", "skipped"),
             ("[\"ppu\"]", "success", "skipped", "skipped", "skipped", "skipped", "cancelled"),
-            ("[\"mthreads\"]", "success", "skipped", "skipped", "skipped", "skipped", "skipped", "failure"),
+            ("[\"ascend\"]", "success", "skipped", "skipped", "skipped", "skipped", "skipped", "failure"),
         ):
             with self.subTest(result=result):
                 self.assertNotEqual(self.check(*result).returncode, 0)

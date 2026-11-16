@@ -12,16 +12,19 @@
 
 extern struct flagcxDeviceAdaptor *deviceAdaptor;
 
-flagcxResult_t flagcxP2pDetectPointerType(void *ptr, int *ptrType,
+flagcxResult_t flagcxP2pDetectPointerType(void *ptr, size_t size, int *ptrType,
                                           char *ipcHandleBuf,
-                                          uint32_t *ipcHandleSize) {
-  if (ptr == NULL || ptrType == NULL)
+                                          uint32_t *ipcHandleSize,
+                                          uintptr_t *ipcAllocationBase) {
+  if (ptr == NULL || size == 0 || ptrType == NULL)
     return flagcxInvalidArgument;
 
   if (ipcHandleBuf)
     memset(ipcHandleBuf, 0, FLAGCX_P2P_IPC_HANDLE_BYTES);
   if (ipcHandleSize)
     *ipcHandleSize = 0;
+  if (ipcAllocationBase)
+    *ipcAllocationBase = 0;
 
   // Pointer classification and IPC export answer different questions. In
   // particular, DU can export an IPC handle for mapped host memory. Latest
@@ -72,6 +75,32 @@ flagcxResult_t flagcxP2pDetectPointerType(void *ptr, int *ptrType,
     return flagcxNotSupported;
   }
 
+  void *exportBase = ptr;
+  if (deviceAdaptor->getAddressRange != NULL) {
+    void *allocationBase = NULL;
+    size_t allocationSize = 0;
+    const flagcxResult_t rangeResult =
+        deviceAdaptor->getAddressRange(ptr, &allocationBase, &allocationSize);
+    if (rangeResult == flagcxSuccess) {
+      const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+      const uintptr_t base = reinterpret_cast<uintptr_t>(allocationBase);
+      if (allocationBase == NULL || address < base ||
+          address - base > allocationSize ||
+          size > allocationSize - (address - base)) {
+        WARN("P2P Reg: IPC registration exceeds allocation range");
+        if (!typeKnown)
+          *ptrType = FLAGCX_PTR_HOST;
+        return flagcxSuccess;
+      }
+      exportBase = allocationBase;
+    } else if (rangeResult != flagcxNotSupported) {
+      WARN("P2P Reg: IPC allocation range query failed: %d", rangeResult);
+      if (!typeKnown)
+        *ptrType = FLAGCX_PTR_HOST;
+      return flagcxSuccess;
+    }
+  }
+
   flagcxIpcMemHandle_t handle = NULL;
   size_t handleSize = 0;
   if (deviceAdaptor->ipcMemHandleCreate(&handle, &handleSize) !=
@@ -80,7 +109,8 @@ flagcxResult_t flagcxP2pDetectPointerType(void *ptr, int *ptrType,
     return flagcxSuccess;
   }
 
-  const flagcxResult_t getRes = deviceAdaptor->ipcMemHandleGet(handle, ptr);
+  const flagcxResult_t getRes =
+      deviceAdaptor->ipcMemHandleGet(handle, exportBase);
   if (getRes == flagcxSuccess) {
     if (!typeKnown)
       *ptrType = FLAGCX_PTR_CUDA;
@@ -89,6 +119,8 @@ flagcxResult_t flagcxP2pDetectPointerType(void *ptr, int *ptrType,
         memcpy(ipcHandleBuf, handle, handleSize);
       if (ipcHandleSize)
         *ipcHandleSize = (uint32_t)handleSize;
+      if (ipcAllocationBase)
+        *ipcAllocationBase = reinterpret_cast<uintptr_t>(exportBase);
     }
   } else {
     if (deviceAdaptor->getLastError)
