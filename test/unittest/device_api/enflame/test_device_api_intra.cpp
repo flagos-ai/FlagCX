@@ -164,6 +164,7 @@ int main(int argc, char *argv[]) {
     allPass &= k1Ok;
 
     // K2: Coop Groups
+    // Expected: [1, -1, 1, -1, -1] for block, warp, thread, Tile<8>, lanes
     MPI_Barrier(MPI_COMM_WORLD);
     FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 16 * sizeof(int),
                                         flagcxMemDevice, stream));
@@ -173,14 +174,24 @@ int main(int argc, char *argv[]) {
                                         16 * sizeof(int),
                                         flagcxMemcpyDeviceToHost, stream));
 
-    printResultWithSkip("K2 CoopGroups", hostResults, 5, proc);
+    // Check each sub-test with detailed output
+    const char *k2Names[5] = {"block", "warp", "thread", "Tile<8>", "lanes"};
+    const int expectedK2[5] = {1, -1, 1, -1, -1};
     bool k2Ok = true;
     for (int i = 0; i < 5; i++) {
-      if (hostResults[i] != 1 && hostResults[i] != -1) {
-        k2Ok = false;
-        break;
+      const char *status;
+      if (expectedK2[i] == 1) {
+        // Supported feature: expect 1
+        status = (hostResults[i] == 1) ? "pass" : "fail";
+        if (hostResults[i] != 1) k2Ok = false;
+      } else {
+        // Unsupported feature: expect -1
+        status = (hostResults[i] == -1) ? "skip (unsupported)" : "fail";
+        if (hostResults[i] != -1) k2Ok = false;
       }
+      printf("[rank %d] K2  CoopGroups %-12s: %s\n", proc, k2Names[i], status);
     }
+    printResult("K2 CoopGroups", k2Ok, proc);
     allPass &= k2Ok;
 
     // K3: Team

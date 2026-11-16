@@ -148,31 +148,34 @@ int main(int argc, char *argv[]) {
     allPass &= s1Pass;
 
     // S2: Coop Groups
-    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 3 * sizeof(int),
+    // Expected: [1, 1, -1, -1] for block, thread, tile-span, lanes
+    FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, 4 * sizeof(int),
                                         flagcxMemDevice, stream));
     launchKernelCoopGroupsS(devCommPtr, devResults, stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
-    int hostS2[3];
-    FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, devResults, 3 * sizeof(int),
+    int hostS2[4];
+    FLAGCXCHECK(devHandle->deviceMemcpy(hostS2, devResults, 4 * sizeof(int),
                                         flagcxMemcpyDeviceToHost, stream));
 
+    // Check each sub-test with detailed output
+    const char *s2Names[4] = {"block", "thread", "tile-span", "lanes"};
+    const int expectedS2[4] = {1, 1, -1, -1};
     bool s2Pass = true;
-    bool s2AnySkip = false;
-    for (int i = 0; i < 3; i++) {
-      if (hostS2[i] == -1) {
-        s2AnySkip = true;
-      } else if (hostS2[i] != 1) {
-        s2Pass = false;
+    for (int i = 0; i < 4; i++) {
+      const char *status;
+      if (expectedS2[i] == 1) {
+        // Supported feature: expect 1
+        status = (hostS2[i] == 1) ? "pass" : "fail";
+        if (hostS2[i] != 1) s2Pass = false;
+      } else {
+        // Unsupported feature: expect -1
+        status = (hostS2[i] == -1) ? "skip (unsupported)" : "fail";
+        if (hostS2[i] != -1) s2Pass = false;
       }
+      RPRINTF("S2  CoopGroups %-12s: %s\n", s2Names[i], status);
     }
-    if (!s2Pass) {
-      RPRINTF("S2  CoopGroups(Scalar): %s\n", "FAIL");
-    } else if (s2AnySkip) {
-      RPRINTF("S2  CoopGroups(Scalar): %s\n", "SKIP (partial)");
-    } else {
-      RPRINTF("S2  CoopGroups(Scalar): %s\n", "PASS");
-    }
+    RPRINTF("S2  CoopGroups(Scalar): %s\n", s2Pass ? "PASS" : "FAIL");
     allPass &= s2Pass;
 
     // S3: Team Queries
