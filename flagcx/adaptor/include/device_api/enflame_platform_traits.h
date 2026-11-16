@@ -86,14 +86,17 @@ struct PlatformTraits<EnflamePlatform> {
   struct Intrin {
     static constexpr int simtWidth = FLAGCX_SIMT_WIDTH;
 
-    static FLAGCX_HOST_DEVICE_INLINE flagcxLaneMask_t fullMask() {
-      __builtin_trap();
-      return 0xffffffffull;
+    // Enflame models a block as a single "thread" with threadDim.x sub-threads.
+    // CoopBlock lane-mask queries must return the full SIMT-width mask rather
+    // than trapping, so that flagcxCoopGetLaneMask(flagcxCoopBlock) works.
+    static FLAGCX_HOST_DEVICE_INLINE constexpr flagcxLaneMask_t fullMask() {
+      return (simtWidth >= 64) ? ~flagcxLaneMask_t{0}
+                               : (flagcxLaneMask_t{1} << simtWidth) - 1;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR static void
-    validateMask(flagcxLaneMask_t) {
-      __builtin_trap();
+    validateMask(flagcxLaneMask_t mask) {
+      (void)mask;
     }
 
 #if FLAGCX_CHECK_DEVICE_CC

@@ -268,38 +268,18 @@ ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
     return flagcxSystemError;
 
   ecclDevCommRequirements_t ecclReqs = ECCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
-//  ecclReqs.barrierCount = reqs->barrierCount;
+  ecclReqs.barrierCount = reqs->barrierCount;
   ecclReqs.lsaBarrierCount = reqs->intraBarrierCount;
   ecclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
   ecclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
-//  ecclReqs.railGinBarrierCount = reqs->interBarrierCount;
-//  ecclReqs.ginSignalCount = reqs->interSignalCount;
-//  ecclReqs.ginContextCount = reqs->interContextCount;
-//  ecclReqs.ginCounterCount = reqs->interCounterCount;
-
-  int nRanks = -1;
-  (flagcxResult_t)ecclCommCount(comm->base, &nRanks);
-
-  printf("\necclAdaptorDevCommCreate nRanks %d\n", nRanks);
-
-  ecclReqs.barrierCount = 1;         // one combined LSA + GIN world barrier (index 0)
-  ecclReqs.lareContextCount = 1;     // one LARE context (intra-node put + signal)
-  ecclReqs.lareSignalCount = 1;      // one LARE signal slot (intra-node arrival counter)
-  ecclReqs.ginSignalCount = 2*nRanks;  // per-peer GIN signal slot (slot == sender world rank)
-  ecclReqs.ginContextCount = 1;      // single GIN context per rank
-  ecclReqs.ginConnectionType = ECCL_GIN_CONNECTION_FULL;  // cross-node ibgda, non-railed
-
-
-//  // Connection-type decision mirrors NCCL >= 2.29.7. ginForceEnable stays
-//  // false: ECCL deprecates it in favor of an explicit ginConnectionType.
-//  const bool needsFullGin = reqs->interForceEnable ||
-//                            reqs->interSignalCount > 0 ||
-//                            reqs->interCounterCount > 0;
-//  const bool needsRailGin =
-//      reqs->barrierCount > 0 || reqs->interBarrierCount > 0;
-//  ecclReqs.ginConnectionType = needsFullGin   ? ECCL_GIN_CONNECTION_FULL
-//                               : needsRailGin ? ECCL_GIN_CONNECTION_RAIL
-//                                              : ECCL_GIN_CONNECTION_NONE;
+  // GIN (inter-node) resources: pass through from requirements so the
+  // allocated count matches what flagcx_device.cc publishes and what
+  // device-side code consumes. NOTE: GIN path is not yet validated on
+  // Enflame; these fields are wired for correctness but remain untested.
+  ecclReqs.ginContextCount = reqs->interContextCount;
+  ecclReqs.railGinBarrierCount = reqs->interBarrierCount;
+  ecclReqs.ginCounterCount = reqs->interCounterCount;
+  ecclReqs.ginConnectionType = ECCL_GIN_CONNECTION_FULL;
 
   flagcxResult_t ret =
       (flagcxResult_t)ecclDevCommCreate(comm->base, &ecclReqs, &inner->base);
