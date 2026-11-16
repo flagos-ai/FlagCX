@@ -845,6 +845,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
         self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
         self.assertIn('GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"', enflame_env)
+        self.assertIn("unset FLAGCX_CI_RMA_IPC_FILTER", enflame_env)
+        self.assertIn(
+            "unset FLAGCX_CI_RUNNER_MPI_FILTER FLAGCX_CI_SKIP_RUNNER_HYBRID",
+            enflame_env,
+        )
 
         ascend_env = (
             REPO_ROOT / ".github/scripts/set_env/ascend.sh"

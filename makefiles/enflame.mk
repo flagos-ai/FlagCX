@@ -10,6 +10,8 @@ DEVICE_COMPILER := /usr/bin/topscc
 DEVICE_COMPILE_FLAG :=
 DEVICE_LINK_FLAG :=
 DEVICE_FILE_EXTENSION :=
+# The Enflame library currently contributes no top-level device kernel objects.
+DEVICE_NEEDS_DLINK := 0
 
 CCL_HOME    ?= /usr
 CCL_LIB     := $(CCL_HOME)/lib

@@ -51,15 +51,10 @@ flagcx_ci_configure_suite() {
       fi
       ;;
     rma)
-      # TOPS 1.9.10 IPC Get MPI cases fail on this S60 runtime; retain IPC
-      # Put, setup, and counter tests that pass on the platform.
-      export FLAGCX_CI_RMA_IPC_FILTER="-RmaTest.IpcGetCounterFollowsCopy:RmaTest.GetSmall:RmaTest.GetLarge:RmaTest.GetBidirectional"
+      unset FLAGCX_CI_RMA_IPC_FILTER
       ;;
     runner)
-      # These two collectives currently fail their data checks on the S60
-      # ECCL homogeneous path; keep the remaining homogeneous runner MPI cases.
-      export FLAGCX_CI_RUNNER_MPI_FILTER="--gtest_filter=-FlagCXCollTest.Gather:FlagCXCollTest.Scatter"
-      export FLAGCX_CI_SKIP_RUNNER_HYBRID=1
+      unset FLAGCX_CI_RUNNER_MPI_FILTER FLAGCX_CI_SKIP_RUNNER_HYBRID
       ;;
     device_api|device_api_unified_ir)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
