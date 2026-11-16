@@ -60,6 +60,10 @@ struct CommTraits<DushmemBackend> {
     void *symBase;
     size_t allocSize;
     void *rawPtr;
+    // World PE of this node's first rank (== rank - intraRank). Set at DevMem
+    // creation; used to translate an intra-node local rank passed to
+    // getIntraPointer into a DUSHMEM world PE before the symmetric lookup.
+    int worldPeBase = 0;
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *
     getPeerPointer(size_t offset, const Team &team, int peer) const {
@@ -87,7 +91,11 @@ struct CommTraits<DushmemBackend> {
     }
     FLAGCX_DEVICE_INLINE_DECORATOR void *getIntraPointer(size_t offset,
                                                          int peer) const {
-      return dushmem_ptr((char *)symBase + offset, peer);
+      // `peer` is an intra-node rank, but dushmem_ptr takes a world PE.
+      // Translate via this node's base so a nonzero node does not read PE
+      // 0..intraSize-1 (another node's data) on a multi-node run.
+      int worldPeer = worldPeBase + peer;
+      return dushmem_ptr((char *)symBase + offset, worldPeer);
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR void *

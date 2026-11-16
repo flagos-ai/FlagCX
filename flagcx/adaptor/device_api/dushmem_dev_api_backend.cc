@@ -144,7 +144,6 @@ static flagcxResult_t dushmemDevApiCommDestroy(flagcxComm_t comm,
 static flagcxResult_t dushmemDevApiMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t devMem) {
-  (void)comm;
   (void)win;
   if (!devMem->allocationTracked || devMem->allocator != flagcxMemSHMEM ||
       devMem->allocBackend != flagcxMemAllocBackendShmem) {
@@ -158,6 +157,11 @@ static flagcxResult_t dushmemDevApiMemCreate(flagcxComm_t comm, void *buff,
   w->symBase = buff;
   w->allocSize = size;
   w->rawPtr = buff;
+  // DUSHMEM world PE == comm->homoRank (see dushmem_adaptor::devCommCreate,
+  // which sets sc->rank = homoRank, sc->intraRank = localRank). The first PE
+  // of this node is homoRank - localRank; getIntraPointer adds a local rank
+  // to this base to obtain the world PE for dushmem_ptr.
+  w->worldPeBase = comm->homoRank - comm->localRank;
   devMem->window = (void *)w;
   devMem->hasWindow = true;
   devMem->isSymmetric = true;
