@@ -87,13 +87,15 @@ int main(int argc, char *argv[]) {
   flagcxWindow_t helperWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(
       comm, regBuff, bufSize, &win, FLAGCX_WIN_COLL_SYMMETRIC, memAllocator));
-  FLAGCXCHECK(flagcxCommWindowRegister(
-      comm, helperBuff, bufSize, &helperWin, FLAGCX_WIN_COLL_SYMMETRIC, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, helperBuff, bufSize, &helperWin,
+                                       FLAGCX_WIN_COLL_SYMMETRIC,
+                                       memAllocator));
 
   flagcxDevMem_t devMem = nullptr;
   flagcxDevMem_t helperMem = nullptr;
   FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, bufSize, win, &devMem));
-  FLAGCXCHECK(flagcxDevMemCreate(comm, helperBuff, bufSize, helperWin, &helperMem));
+  FLAGCXCHECK(
+      flagcxDevMemCreate(comm, helperBuff, bufSize, helperWin, &helperMem));
 
   void *devCommPtr = nullptr;
   FLAGCXCHECK(flagcxDevCommGetDevicePtr(devComm, &devCommPtr));
@@ -167,11 +169,13 @@ int main(int argc, char *argv[]) {
       if (expectedS2[i] == 1) {
         // Supported feature: expect 1
         status = (hostS2[i] == 1) ? "pass" : "fail";
-        if (hostS2[i] != 1) s2Pass = false;
+        if (hostS2[i] != 1)
+          s2Pass = false;
       } else {
         // Unsupported feature: expect -1
         status = (hostS2[i] == -1) ? "skip (unsupported)" : "fail";
-        if (hostS2[i] != -1) s2Pass = false;
+        if (hostS2[i] != -1)
+          s2Pass = false;
       }
       RPRINTF("S2  CoopGroups %-12s: %s\n", s2Names[i], status);
     }
@@ -301,13 +305,15 @@ int main(int argc, char *argv[]) {
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    // S9: two full scalar barriers (Enflame: pass both devMemPtr and helperMemPtr)
+    // S9: two full scalar barriers (Enflame: pass both devMemPtr and
+    // helperMemPtr)
     FLAGCXCHECK(devHandle->deviceMemset(regBuff, 0, count * sizeof(float),
                                         flagcxMemDevice, stream));
     FLAGCXCHECK(devHandle->deviceMemset(devOutput, 0, count * sizeof(float),
                                         flagcxMemDevice, stream));
     launchKernelIntraBarrierArriveWaitS(devCommPtr, devMemPtr, helperMemPtr,
-                                        (float *)regBuff, devOutput, count, stream);
+                                        (float *)regBuff, devOutput, count,
+                                        stream);
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, devOutput,

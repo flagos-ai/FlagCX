@@ -26,8 +26,8 @@ static void printResult(const char *name, bool ok, int rank) {
 
 // Print result with SKIP support: -1 means the sub-test is not supported.
 // allExpected is the number of sub-tests to check.
-static void printResultWithSkip(const char *name, const int *results,
-                                int count, int rank) {
+static void printResultWithSkip(const char *name, const int *results, int count,
+                                int rank) {
   bool allPass = true;
   bool anySkip = false;
   for (int i = 0; i < count; i++) {
@@ -110,13 +110,15 @@ int main(int argc, char *argv[]) {
   flagcxWindow_t helperWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(
       comm, regBuff, bufSize, &win, FLAGCX_WIN_COLL_SYMMETRIC, memAllocator));
-  FLAGCXCHECK(flagcxCommWindowRegister(
-      comm, helperBuff, bufSize, &helperWin, FLAGCX_WIN_COLL_SYMMETRIC, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, helperBuff, bufSize, &helperWin,
+                                       FLAGCX_WIN_COLL_SYMMETRIC,
+                                       memAllocator));
 
   flagcxDevMem_t devMem = nullptr;
   flagcxDevMem_t helperMem = nullptr;
   FLAGCXCHECK(flagcxDevMemCreate(comm, regBuff, bufSize, win, &devMem));
-  FLAGCXCHECK(flagcxDevMemCreate(comm, helperBuff, bufSize, helperWin, &helperMem));
+  FLAGCXCHECK(
+      flagcxDevMemCreate(comm, helperBuff, bufSize, helperWin, &helperMem));
 
   int *devResults = nullptr;
   FLAGCXCHECK(devHandle->deviceMalloc((void **)&devResults, 64 * sizeof(int),
@@ -183,11 +185,13 @@ int main(int argc, char *argv[]) {
       if (expectedK2[i] == 1) {
         // Supported feature: expect 1
         status = (hostResults[i] == 1) ? "pass" : "fail";
-        if (hostResults[i] != 1) k2Ok = false;
+        if (hostResults[i] != 1)
+          k2Ok = false;
       } else {
         // Unsupported feature: expect -1
         status = (hostResults[i] == -1) ? "skip (unsupported)" : "fail";
-        if (hostResults[i] != -1) k2Ok = false;
+        if (hostResults[i] != -1)
+          k2Ok = false;
       }
       printf("[rank %d] K2  CoopGroups %-12s: %s\n", proc, k2Names[i], status);
     }
@@ -345,8 +349,8 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
     MPI_Barrier(MPI_COMM_WORLD);
 
-    FLAGCXCHECK(launchKernelIntraAllReduce(devMem, helperMem, count, flagcxFloat,
-                                           devComm, stream));
+    FLAGCXCHECK(launchKernelIntraAllReduce(devMem, helperMem, count,
+                                           flagcxFloat, devComm, stream));
     FLAGCXCHECK(devHandle->streamSynchronize(stream));
 
     FLAGCXCHECK(devHandle->deviceMemcpy(hostBuf, regBuff, count * sizeof(float),

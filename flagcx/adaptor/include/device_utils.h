@@ -8,8 +8,9 @@
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) \
-    || defined(__TOPSCC__)
+    (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    defined(__TOPSCC__)
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
@@ -24,8 +25,9 @@
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) \
-    || defined(__TOPSCC__)
+    (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    defined(__TOPSCC__)
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
 #define FLAGCX_CHECK_DEVICE_CC 0
@@ -340,7 +342,8 @@
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
 #define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
-#define FLAGCX_HOST_DEVICE_INLINE __host__ __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 #define FLAGCX_DEVICE_THREAD_FENCE __threadfence
 #define FLAGCX_DEVICE_SYNC_THREADS __syncsubthreads

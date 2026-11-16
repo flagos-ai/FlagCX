@@ -105,11 +105,11 @@ void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 
 // S8: Intra Barrier Sync — write buffer, barrier, read peer
 #if defined(USE_ENFLAME_ADAPTOR)
-void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
-                                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
-                                   const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
-                                   float *buffer, float *output, int N,
-                                   flagcxStream_t stream);
+void launchKernelIntraBarrierSyncS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr, float *buffer, float *output,
+    int N, flagcxStream_t stream);
 #else
 void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
@@ -122,8 +122,7 @@ void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 void launchKernelIntraBarrierArriveWaitS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
-    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
-    float *buffer, float *output,
+    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr, float *buffer, float *output,
     int N, flagcxStream_t stream);
 #else
 void launchKernelIntraBarrierArriveWaitS(

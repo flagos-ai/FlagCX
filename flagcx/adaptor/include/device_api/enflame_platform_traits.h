@@ -33,47 +33,56 @@
 #include <cstddef>
 #include <cstdint>
 
-
 #if FLAGCX_CHECK_DEVICE_CC
 
 namespace tops {
-  enum thread_scope {
-    thread_scope_thread  = 0,
-    thread_scope_block   = 1,
-    thread_scope_device  = 2,
-    thread_scope_system  = 3,
-  };
+enum thread_scope {
+  thread_scope_thread = 0,
+  thread_scope_block = 1,
+  thread_scope_device = 2,
+  thread_scope_system = 3,
+};
 
-  enum memory_order {
-    memory_order_relaxed = __ATOMIC_RELAXED,
-    memory_order_consume = __ATOMIC_CONSUME,
-    memory_order_acquire = __ATOMIC_ACQUIRE,
-    memory_order_release = __ATOMIC_RELEASE,
-    memory_order_acq_rel = __ATOMIC_ACQ_REL,
-    memory_order_seq_cst = __ATOMIC_SEQ_CST,
-  };
+enum memory_order {
+  memory_order_relaxed = __ATOMIC_RELAXED,
+  memory_order_consume = __ATOMIC_CONSUME,
+  memory_order_acquire = __ATOMIC_ACQUIRE,
+  memory_order_release = __ATOMIC_RELEASE,
+  memory_order_acq_rel = __ATOMIC_ACQ_REL,
+  memory_order_seq_cst = __ATOMIC_SEQ_CST,
+};
 
-  template <typename T, thread_scope Scope = thread_scope_system>
-  struct atomic_ref {
-    T &ref_;
+template <typename T, thread_scope Scope = thread_scope_system>
+struct atomic_ref {
+  T &ref_;
 
-    FLAGCX_DEVICE_INLINE_DECORATOR explicit atomic_ref(T &r) : ref_(r) {}
+  FLAGCX_DEVICE_INLINE_DECORATOR explicit atomic_ref(T &r) : ref_(r) {}
 
-    FLAGCX_DEVICE_INLINE_DECORATOR T load(memory_order) const { return T{}; }
-    FLAGCX_DEVICE_INLINE_DECORATOR void store(const T &, memory_order) {}
-    FLAGCX_DEVICE_INLINE_DECORATOR T fetch_add(const T &, memory_order) { return T{}; }
-    FLAGCX_DEVICE_INLINE_DECORATOR T fetch_sub(const T &, memory_order) { return T{}; }
-    FLAGCX_DEVICE_INLINE_DECORATOR T fetch_or(const T &, memory_order) { return T{}; }
-    FLAGCX_DEVICE_INLINE_DECORATOR T fetch_and(const T &, memory_order) { return T{}; }
-    FLAGCX_DEVICE_INLINE_DECORATOR T exchange(const T &, memory_order) { return T{}; }
-    FLAGCX_DEVICE_INLINE_DECORATOR bool compare_exchange_strong(T &, const T &, memory_order, memory_order) {
-      return false;
-    }
-  };
+  FLAGCX_DEVICE_INLINE_DECORATOR T load(memory_order) const { return T{}; }
+  FLAGCX_DEVICE_INLINE_DECORATOR void store(const T &, memory_order) {}
+  FLAGCX_DEVICE_INLINE_DECORATOR T fetch_add(const T &, memory_order) {
+    return T{};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR T fetch_sub(const T &, memory_order) {
+    return T{};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR T fetch_or(const T &, memory_order) {
+    return T{};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR T fetch_and(const T &, memory_order) {
+    return T{};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR T exchange(const T &, memory_order) {
+    return T{};
+  }
+  FLAGCX_DEVICE_INLINE_DECORATOR bool
+  compare_exchange_strong(T &, const T &, memory_order, memory_order) {
+    return false;
+  }
+};
 } // namespace tops
 
 #endif
-
 
 struct EnflamePlatform {};
 
@@ -120,8 +129,7 @@ struct PlatformTraits<EnflamePlatform> {
       return 0;
     }
 
-    FLAGCX_DEVICE_INLINE_DECORATOR static void
-    syncwarp(flagcxLaneMask_t) {
+    FLAGCX_DEVICE_INLINE_DECORATOR static void syncwarp(flagcxLaneMask_t) {
       __builtin_trap();
     }
 
@@ -142,8 +150,8 @@ struct PlatformTraits<EnflamePlatform> {
     }
 
     template <typename DstPtr, typename SrcPtr>
-    static FLAGCX_DEVICE_INLINE_DECORATOR void
-    coopCopyBytes(DstPtr, SrcPtr, size_t, int, int) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR void coopCopyBytes(DstPtr, SrcPtr,
+                                                             size_t, int, int) {
       __builtin_trap();
     }
 #else
@@ -194,8 +202,8 @@ struct PlatformTraits<EnflamePlatform> {
   struct Atomic {
 #if FLAGCX_CHECK_DEVICE_CC
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static FLAGCX_DEVICE_INLINE_DECORATOR T
-    load(T *, flagcxDeviceMemoryOrder_t) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T load(T *,
+                                                 flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T{};
     }
@@ -221,8 +229,8 @@ struct PlatformTraits<EnflamePlatform> {
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
-    static FLAGCX_DEVICE_INLINE_DECORATOR T
-    fetchOr(T *, const T &, flagcxDeviceMemoryOrder_t) {
+    static FLAGCX_DEVICE_INLINE_DECORATOR T fetchOr(T *, const T &,
+                                                    flagcxDeviceMemoryOrder_t) {
       __builtin_trap();
       return T{};
     }
@@ -307,9 +315,7 @@ struct PlatformTraits<EnflamePlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
       return FLAGCX_BLOCK_DIM_X;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      FLAGCX_DEVICE_SYNC_THREADS();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { FLAGCX_DEVICE_SYNC_THREADS(); }
   };
 
   template <int N>
@@ -326,9 +332,7 @@ struct PlatformTraits<EnflamePlatform> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
   };
 
   using CoopThread = CoopTile<1>;
@@ -348,9 +352,7 @@ struct PlatformTraits<EnflamePlatform> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
     // ECCL's ecclCoopAny requires the snake_case spellings; comm_traits.h hands
     // this type to it without unwrapping, so both spellings must exist.
     FLAGCX_DEVICE_INLINE_DECORATOR int thread_rank() const {
@@ -373,9 +375,7 @@ struct PlatformTraits<EnflamePlatform> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
       __builtin_trap();
       return 0;

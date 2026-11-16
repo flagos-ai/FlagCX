@@ -239,9 +239,8 @@ flagcxResult_t ecclAdaptorGroupStart() {
 
 flagcxResult_t ecclAdaptorGroupEnd() { return (flagcxResult_t)ecclGroupEnd(); }
 
-flagcxResult_t
-ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
-                           flagcxDevCommRequirements *reqs) {
+flagcxResult_t ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
+                                          flagcxDevCommRequirements *reqs) {
   ecclCommProperties_t props = ECCL_COMM_PROPERTIES_INITIALIZER;
   flagcxResult_t ret =
       (flagcxResult_t)ecclCommQueryProperties(comm->base, &props);
@@ -258,10 +257,9 @@ ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
   return flagcxSuccess;
 }
 
-flagcxResult_t
-ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
-                         const flagcxDevCommRequirements *reqs,
-                         flagcxInnerDevComm_t *devComm) {
+flagcxResult_t ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
+                                        const flagcxDevCommRequirements *reqs,
+                                        flagcxInnerDevComm_t *devComm) {
   flagcxInnerDevComm_t inner =
       (flagcxInnerDevComm_t)malloc(sizeof(struct flagcxInnerDevComm));
   if (!inner)

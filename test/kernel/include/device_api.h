@@ -13,12 +13,10 @@
 
 // Intra-node AllReduce using FlagCX Device API.
 #if defined(USE_ENFLAME_ADAPTOR)
-flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem,
-                                          flagcxDevMem_t helperMem,
-                                          size_t count,
-                                          flagcxDataType_t datatype,
-                                          flagcxDevComm_t devComm,
-                                          flagcxStream_t stream);
+flagcxResult_t
+launchKernelIntraAllReduce(flagcxDevMem_t devMem, flagcxDevMem_t helperMem,
+                           size_t count, flagcxDataType_t datatype,
+                           flagcxDevComm_t devComm, flagcxStream_t stream);
 #else
 flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
                                           flagcxDataType_t datatype,

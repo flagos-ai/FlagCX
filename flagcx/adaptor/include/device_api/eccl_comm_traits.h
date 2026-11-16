@@ -41,7 +41,8 @@
 // ============================================================
 struct EcclBackend {};
 
-template <> struct CommTraits<EcclBackend> {
+template <>
+struct CommTraits<EcclBackend> {
   // Platform capabilities (via using, not inheritance)
   using Intrin = PlatformTraits<EnflamePlatform>::Intrin;
   using Atomic = PlatformTraits<EnflamePlatform>::Atomic;
@@ -249,9 +250,7 @@ template <> struct CommTraits<EcclBackend> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
 
     FLAGCX_DEVICE_INLINE_DECORATOR int thread_rank() const {
       return threadRank();
@@ -303,9 +302,7 @@ template <> struct CommTraits<EcclBackend> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
 
     FLAGCX_DEVICE_INLINE_DECORATOR int thread_rank() const {
       return threadRank();
@@ -317,9 +314,7 @@ template <> struct CommTraits<EcclBackend> {
     flagcxLaneMask_t lmask;
 
     FLAGCX_DEVICE_INLINE_DECORATOR
-    CoopLanes(flagcxLaneMask_t lmask) : lmask(lmask) {
-      __builtin_trap();
-    }
+    CoopLanes(flagcxLaneMask_t lmask) : lmask(lmask) { __builtin_trap(); }
 
     FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
       __builtin_trap();
@@ -329,9 +324,7 @@ template <> struct CommTraits<EcclBackend> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxLaneMask_t getLmask() const {
       __builtin_trap();
       return 0;
@@ -369,9 +362,7 @@ template <> struct CommTraits<EcclBackend> {
       __builtin_trap();
       return 0;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      __builtin_trap();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { __builtin_trap(); }
   };
 #endif // FLAGCX_CHECK_DEVICE_CC
 
@@ -394,8 +385,7 @@ template <> struct CommTraits<EcclBackend> {
   // (eccl_device/utility.h) -- the types the ecclGin entry points take;
   // FlagCX's own tops:: shim in enflame_platform_traits.h is not involved
   // here.
-  FLAGCX_DEVICE_INLINE_DECORATOR static ecclGin_None
-  toEccl(flagcxDevNet_None) {
+  FLAGCX_DEVICE_INLINE_DECORATOR static ecclGin_None toEccl(flagcxDevNet_None) {
     return {};
   }
   // GCU400 does not support cross-NIC RDMA atomics (AMO_SIGNAL_ADD).
@@ -404,7 +394,7 @@ template <> struct CommTraits<EcclBackend> {
   // Callers must use per-sender slots and wait on each slot individually.
   FLAGCX_DEVICE_INLINE_DECORATOR static ecclGin_SignalSet
   toEccl(flagcxDevNet_SignalInc a) {
-    return {a.signal, 1};  // write value 1 to the slot
+    return {a.signal, 1}; // write value 1 to the slot
   }
   FLAGCX_DEVICE_INLINE_DECORATOR static ecclGin_SignalAdd
   toEccl(flagcxDevNet_SignalAdd a) {
@@ -735,7 +725,8 @@ struct Barrier<EcclBackend, flagcxTeamTagInter, Coop> {
           int nInterPeers)
       : _coop(coop), _nInterPeers(nInterPeers) {
     new (_implStorage) ecclGinBarrierSession<ecclCoopCta>(
-        ecclCoopCta(), net._gin, (ecclTeam_t)team, dc._impl.railGinBarrier, index);
+        ecclCoopCta(), net._gin, (ecclTeam_t)team, dc._impl.railGinBarrier,
+        index);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR
