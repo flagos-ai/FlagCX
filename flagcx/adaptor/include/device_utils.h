@@ -114,6 +114,25 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_DEVICE_HAS_PLACEMENT_NEW 1
 #endif
 
+// Whether a one-sided op can reach a non-P2P peer through the device net
+// transport (FIFO/proxy atomics). Declared absence on Ascend 2201: that
+// path bottoms out in fetchAdd/exchange calls to
+// flagcxAscendDeviceOpUnsupported - declared, defined nowhere. And since
+// bisheng links the device image inside -c, an INSTANTIATED reference
+// fails the build even when the branch cannot run at runtime: probe r144
+// N2 lost the link on exactly such a reference, and r145's ld.lld context
+// named the referrer as the inlined kernel itself (n2k_mix_aic/.aiv).
+// Where this flag is 0 the shared IR net branches compile to
+// FLAGCX_DEVICE_TRAP (the no-symbol spelling; the T0/T1 record further
+// down in this file is why __builtin_trap cannot be used on that pass)
+// instead of emitting the trap-symbol reference; other passes keep the
+// net arm verbatim.
+#if defined(__CCE_IS_AICORE__)
+#define FLAGCX_DEVICE_HAS_NET_TRANSPORT 0
+#else
+#define FLAGCX_DEVICE_HAS_NET_TRANSPORT 1
+#endif
+
 #define FLAGCX_DEVICE_GLOBAL_PTR_CAST(type, ptr)                               \
   ((FLAGCX_DEVICE_GLOBAL_PTR type *)(ptr))
 

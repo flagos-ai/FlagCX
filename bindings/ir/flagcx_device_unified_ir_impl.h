@@ -387,11 +387,32 @@ flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
       flagcxScopedFence(scope);
     flagcxCoopMemcpy(coopKind, peerPtr, localSrc, bytes);
   } else {
+#if FLAGCX_DEVICE_HAS_NET_TRANSPORT
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
     flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
     FLAGCX_IR_NET_REF(net).put(team, peer, *dst, dstOffset, *src, srcOffset,
                                bytes, flagcxDevNet_None{}, flagcxDevNet_None{},
                                coop);
+#else
+    // No device net transport on this platform (Ascend 2201 today). The
+    // compiler cannot prune this arm - useP2P is a runtime bool - and its
+    // never-defined trap calls would fail the in--c device link of EVERY
+    // put kernel even though the arm cannot run there: probe r144 N2 lost
+    // on exactly that reference and r145's ld.lld context named the
+    // referrer as the inlined kernel (n2k_mix_aic / .aiv). __builtin_trap
+    // is not an option on that pass (lowers to abort; verifier refuses -
+    // T0/T1 in device_utils.h), so the arm lands on the no-symbol
+    // FLAGCX_DEVICE_TRAP, the same spelling the GDA provider-switch
+    // fallbacks already accept. Why that is defensible rather than a
+    // silent no-op: an INTRA-team peer is IPC-mapped, so peerPtr is
+    // non-null and this arm is not reached; if the mapping itself failed
+    // that is the open T2 alias defect, caught by every test's host-side
+    // check of the results buffers, and the Ascend unified runner gates
+    // the net-forcing fallback off (Stage D). Reaching it is UB by
+    // construction - the same trade, documented in the same header, that
+    // the provider-switch sites already make.
+    FLAGCX_DEVICE_TRAP();
+#endif
   }
 }
 
