@@ -316,16 +316,24 @@ bool sameProvider(const xpu_netio_abi_header_t &a,
 } // namespace
 
 flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
+                                 const flagcxDevCommRequirements *reqs,
                                  int netType) {
-  if (comm == nullptr || devComm == nullptr)
+  if (comm == nullptr || devComm == nullptr || reqs == nullptr)
     return flagcxInvalidArgument;
   if (netType != -1 && netType != 1)
     return flagcxInvalidArgument;
-  const unsigned requiredOperations =
+  unsigned requiredOperations =
       netType == 1 ? kAllToAllCapabilities : DefaultNetGdaRequiredCapabilities;
+  if (reqs->interSignalCount > 0)
+    requiredOperations |= DefaultNetGdaSignal | DefaultNetGdaSignalCompletion;
+  if (reqs->interCounterCount > 0)
+    requiredOperations |= DefaultNetGdaCounterCompletion;
   const unsigned implemented = kAllToAllCapabilities;
-  if ((requiredOperations & ~implemented) != 0)
-    return flagcxNotSupported;
+  flagcxResult_t support =
+      stage(comm, (requiredOperations & ~implemented) != 0 ? flagcxNotSupported
+                                                           : flagcxSuccess);
+  if (support != flagcxSuccess)
+    return support;
 
   CommOwner *owner = new (std::nothrow) CommOwner;
   flagcxResult_t allocation =
@@ -580,10 +588,10 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
 }
 
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
-                          int netType) {
-  if (comm == nullptr || devComm == nullptr)
+                          const flagcxDevCommRequirements *reqs, int netType) {
+  if (comm == nullptr || devComm == nullptr || reqs == nullptr)
     return flagcxInvalidArgument;
-  flagcxResult_t status = createCommAttempt(comm, devComm, netType);
+  flagcxResult_t status = createCommAttempt(comm, devComm, reqs, netType);
   if (status == flagcxSuccess)
     return status;
 

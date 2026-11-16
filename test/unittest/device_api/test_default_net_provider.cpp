@@ -229,6 +229,7 @@ int main() {
   assert(DeviceAPI::Net(proxyComm, 0).term(DeviceAPI::CoopThread{}) ==
          flagcxInvalidUsage);
   proxyComm.fifoBuffers[0] = &fifo;
+  assert(DeviceAPI::Net(proxyComm, 0).requireProxyFifo() == flagcxSuccess);
   proxyComm.signalBuffer = nullptr;
   assert(!DeviceAPI::Net(proxyComm, 0).isValid());
   proxyComm.signalBuffer = &signal;
@@ -247,15 +248,21 @@ int main() {
   MockGdaApi::CoopThread gdaThread;
   MockGdaApi::Window gdaWindow{};
   assert(gdaNet.send(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
-         flagcxInvalidUsage);
+         flagcxNotSupported);
   assert(gdaNet.recv(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
-         flagcxInvalidUsage);
-  assert(gdaNet.term(gdaThread) == flagcxInvalidUsage);
-  assert(gdaNet.wait(gdaThread) == flagcxInvalidUsage);
+         flagcxNotSupported);
+  assert(gdaNet.term(gdaThread) == flagcxNotSupported);
+  assert(gdaNet.wait(gdaThread) == flagcxNotSupported);
   gdaComm.fifoBuffers[0] = &fifo;
   MockGdaApi::Net gdaWithProxyFifo(gdaComm, 0);
   assert(gdaWithProxyFifo.fifoBuffer == &fifo);
-  assert(gdaWithProxyFifo.requireProxyFifo() == flagcxSuccess);
+  assert(gdaWithProxyFifo.requireProxyFifo() == flagcxNotSupported);
+  assert(gdaWithProxyFifo.send(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
+         flagcxNotSupported);
+  assert(gdaWithProxyFifo.recv(gdaThread, gdaWindow, 0, 0, flagcxInt32, 0) ==
+         flagcxNotSupported);
+  assert(gdaWithProxyFifo.term(gdaThread) == flagcxNotSupported);
+  assert(gdaWithProxyFifo.wait(gdaThread) == flagcxNotSupported);
   gdaComm.fifoBuffers[0] = nullptr;
   gdaComm.gdaDeviceContext = nullptr;
   assert(!MockGdaApi::Net(gdaComm, 0).isValid());

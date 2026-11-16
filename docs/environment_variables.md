@@ -85,15 +85,15 @@ This document provides a comprehensive reference for all environment variables u
 
 ## Device API Net
 
-These variables apply only to the NVIDIA default Device API backend built with `USE_XPUNETIO=1` when creating a device communicator. Other platform and backend builds ignore them. They do not change the two-sided Proxy transport.
+These variables apply only to the NVIDIA default Device API backend built with `USE_XPUNETIO=1` when creating a device communicator. Other platform and backend builds ignore them. Each DevComm selects one Device API Net backend. Proxy supports its existing two-sided and one-sided operations; GDA does not offer two-sided `send`/`recv`/`term`/`wait`. The CCL adaptor is independent of this selection.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FLAGCX_DEVNET_ENABLE` | 1 | `0` disables device-initiated one-sided Net when the communicator requests it; `1` allows it. |
-| `FLAGCX_DEVNET_TYPE` | -1 | `-1`: automatic selection; `0`: one-sided Proxy; `1`: require the compiled GDA adapter when the DevComm requests one-sided Net. Automatic selection retains Proxy if GDA cannot provide the complete public Net contract. A required GDA fails communicator creation if unavailable. |
+| `FLAGCX_DEVNET_TYPE` | -1 | `-1`: automatic selection; `0`: Proxy; `1`: require the compiled GDA adapter when the DevComm requests Net. Automatic selection retains Proxy if GDA cannot provide the complete public Net contract. A required GDA fails communicator creation if unavailable. |
 | `FLAGCX_XPU_NETIO_PROVIDER` | `mlx5` | XPU NetIO SDK provider passed to `xpu_netio_load_provider` when the NVIDIA default GDA adapter is built and selected. This does not choose between Proxy and GDA. |
 
-The current XPU NetIO MLX5 GDA adapter implements only the Put, PutValue, Flush and indexed Barrier operations used by the standalone Device API AllToAll test. Use `FLAGCX_DEVNET_TYPE=1` for that test, and check its reported capabilities before launching the kernel. VA signals are not implemented.
+The current XPU NetIO MLX5 GDA adapter implements only the Put, PutValue, Flush and indexed Barrier operations used by the standalone Device API AllToAll test. Use `FLAGCX_DEVNET_TYPE=1` for that test, and check its reported capabilities before launching the kernel. Public Signal/Counter operations and VA signals are not implemented; requesting public Signal/Counter resources with this GDA adapter fails DevComm creation.
 
 ---
 

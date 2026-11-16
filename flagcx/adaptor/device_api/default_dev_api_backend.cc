@@ -570,6 +570,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       sizeof(DefaultCompletionWord) == sizeof(uint64_t);
   const bool oneSidedRequested =
       reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
+  const bool needsCompletionResources =
+      oneSidedRequested || reqs->interBarrierCount > 0;
   // IPC barrier layer
   if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, devComm);
@@ -622,8 +624,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
        "interCounterCount=%d",
        devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0 ||
-      reqs->interBarrierCount > 0) {
+  if (needsCompletionResources) {
     int bufCtxCount =
         (comm->heteroComm != nullptr && comm->heteroComm->proxyState != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
@@ -791,10 +792,18 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       }
     }
 
-    // Prepare the Net fallback even on a single node.  IPC setup can fail for
-    // an otherwise valid local allocation, and PutValue then needs this
-    // registered staging source to make the fallback complete.
-    if (comm->heteroComm != nullptr) {
+#if defined(FLAGCX_USE_GDA)
+    // Select the DevComm's one Net backend before preparing Proxy-only MRs.
+    // AUTO may fall back here, before the device view or a request is
+    // published.
+    if (attemptGda)
+      FLAGCXCHECK(
+          flagcxDevNetGda.createComm(comm, devComm, reqs, netConfig.type));
+#endif
+
+    // Proxy PutValue needs a registered staging source when IPC is unavailable.
+    // GDA owns its own Window and signal registrations.
+    if (comm->heteroComm != nullptr && devComm->gdaProvider == 0) {
       devComm->putValueStagingSlotCount = FLAGCX_KERNEL_PROXY_PUT_VALUE_SLOTS;
       devComm->putValueStagingContextCount = bufCtxCount;
       size_t stagingSize = 0;
@@ -900,6 +909,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
          devComm->signalCount, devComm->counterCount, devComm->contextCount);
   }
 
+#if defined(FLAGCX_USE_GDA)
+  // An explicit GDA request without signal or Barrier resources must still
+  // reach capability validation; it cannot silently become a Proxy DevComm.
+  if (attemptGda && !needsCompletionResources)
+    FLAGCXCHECK(
+        flagcxDevNetGda.createComm(comm, devComm, reqs, netConfig.type));
+#endif
+
   // ==========================================================================
   // P2P signal/counter IPC setup (intra-node direct atomic fast path)
   // The direct completion plane is ordinary device memory so it can be
@@ -946,10 +963,6 @@ defaultDevApiCommCreate(flagcxComm_t comm,
             : (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0);
   }
 
-#if defined(FLAGCX_USE_GDA)
-  if (attemptGda)
-    FLAGCXCHECK(flagcxDevNetGda.createComm(comm, devComm, netConfig.type));
-#endif
   if (devComm->signalBuffer && devComm->gdaProvider == 0 &&
       (devComm->nInterPeers > 0 || !devComm->useP2pSignals ||
        forceOneSidedNet) &&
@@ -965,17 +978,19 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     return flagcxNotSupported;
   }
 
-  // Pre-establish full-mesh connections from main thread
-  INFO(FLAGCX_INIT, "defaultDevApiCommCreate: calling preconnectFullMesh");
-  {
+  // The Proxy backend needs the host transport mesh. GDA creates its own
+  // connections and never sends two-sided requests through this FIFO.
+  if (devComm->gdaProvider == 0) {
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: calling preconnectFullMesh");
     flagcxResult_t res = preconnectFullMesh(comm);
     if (res != flagcxSuccess) {
       WARN("defaultDevApiCommCreate: preconnectFullMesh failed (%d)", res);
       return res;
     }
+    INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
   }
-  INFO(FLAGCX_INIT, "defaultDevApiCommCreate: preconnectFullMesh OK");
-  if (comm->heteroComm != nullptr && comm->heteroComm->oneSideHandleCount > 0 &&
+  if (devComm->gdaProvider == 0 && comm->heteroComm != nullptr &&
+      comm->heteroComm->oneSideHandleCount > 0 &&
       comm->heteroComm->oneSideHandles[0] != nullptr &&
       comm->heteroComm->oneSideHandles[0]->fullSendComms != nullptr) {
     devComm->netOneSidedReady = 1;
@@ -986,7 +1001,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       }
     }
   }
-  if (oneSidedRequested && forceOneSidedNet && !devComm->netOneSidedReady) {
+  if (devComm->gdaProvider == 0 && oneSidedRequested && forceOneSidedNet &&
+      !devComm->netOneSidedReady) {
     WARN("defaultDevApiCommCreate: Net one-sided full mesh/FIFO is not ready");
     return flagcxNotSupported;
   }

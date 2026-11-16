@@ -13,7 +13,8 @@
 struct flagcxDevNetAdaptor {
   // createComm performs capability checks and collective selection before
   // publishing a device context. There is no separate probe lifecycle.
-  flagcxResult_t (*createComm)(flagcxComm_t, flagcxDevComm_t, int);
+  flagcxResult_t (*createComm)(flagcxComm_t, flagcxDevComm_t,
+                               const flagcxDevCommRequirements *, int);
   flagcxResult_t (*destroyComm)(flagcxDevComm_t);
   flagcxResult_t (*createWindow)(flagcxComm_t, flagcxDevComm_t, flagcxDevMem_t,
                                  size_t, void *);

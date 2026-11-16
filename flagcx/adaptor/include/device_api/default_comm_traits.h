@@ -710,7 +710,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
   };
 
   // ============================================================
-  // Net: FIFO-based two-sided + one-sided + GPU-spin signal/counter
+  // Net: a DevComm selects Proxy FIFO or a platform GDA provider.
   // ============================================================
   struct Net {
     Comm _dc;
@@ -927,9 +927,11 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
           ProxyProvider::buildTrd(flagcxDevicePrimTerm, 0, 0));
     }
 
-    // The one-sided provider choice does not alter the two-sided transport.
-    // Every send/recv/term/wait still uses the Proxy FIFO.
+    // A DevComm selects one Net backend. Two-sided operations belong only to
+    // Proxy; GDA does not silently submit them through the Proxy FIFO.
     FLAGCX_DEVICE_INLINE_DECORATOR flagcxResult_t requireProxyFifo() const {
+      if (context().provider != DefaultNetProviderProxy)
+        return flagcxNotSupported;
       return fifoBuffer != nullptr ? flagcxSuccess : flagcxInvalidUsage;
     }
 
@@ -1815,7 +1817,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop> _inter;
   int _nInterPeers;
 
-  // World barrier: intra (IPC) + inter (FIFO Signal)
+  // World barrier: intra (IPC) + inter (selected Net provider)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
           uint32_t index, bool multimem, int nInterPeers)
