@@ -299,6 +299,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             ("nvidia", "nvidia_adaptor.h"),
             ("du", "du_adaptor.h"),
             ("iluvatar", "iluvatar_adaptor.h"),
+            ("ppu", "ppu_adaptor.h"),
         ):
             suffix = "hip" if platform == "du" else "cu"
             for kernel in (f"device_api.{suffix}", f"device_ir.{suffix}"):
@@ -472,6 +473,59 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             self.assertIn("2 4 0,1,6,7 shca_0,shca_3", configured.stdout)
             self.assertIn("COMPILE_KERNEL=1", configured.stdout)
             self.assertTrue(configured.stdout.endswith(" 0 0"))
+
+    def test_ppu_device_api_build_and_suite_configuration(self):
+        suite_dir = REPO_ROOT / "test/unittest/device_api"
+        build = subprocess.run(
+            [
+                "make", "-n", "-B", "-C", str(suite_dir), "mpi",
+                "USE_PPU=1", "USE_ACCL_BAREX=1", "COMPILE_KERNEL=1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for target in (
+            "test_device_api_intra", "test_device_api_inter",
+            "test_device_ir_intra", "test_device_ir_inter",
+            "test_device_ir_unified_intra", "test_device_ir_unified_inter",
+        ):
+            self.assertIn(f"/bin/{target}", build.stdout)
+        for source in ("device_api.cu", "device_ir.cu"):
+            self.assertIn(f"test/kernel/ppu {source[:-3]}.o", build.stdout)
+        self.assertIn("-DUSE_PPU_ADAPTOR", build.stdout)
+        self.assertIn("-DFLAGCX_COMM_TRAITS_DEFAULT", build.stdout)
+
+        rma = subprocess.run(
+            [
+                "make", "-n", "-B", "-C",
+                str(REPO_ROOT / "test/unittest/rma"),
+                "USE_PPU=1", "USE_ACCL_BAREX=1",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("test/kernel/ppu gdr_visibility.o", rma.stdout)
+
+        configured = subprocess.run(
+            [
+                "bash", "-c",
+                'source "$1"; flagcx_ci_configure_suite "$2"; '
+                'printf "%s %s %s %s" '
+                '"${FLAGCX_CI_PROJECT_MAKE_ARGS[*]}" '
+                '"${FLAGCX_CI_TEST_MAKE_ARGS[*]}" '
+                '"${CUDA_VISIBLE_DEVICES:-}" '
+                '"${FLAGCX_CI_DEVICE_API_MPI_ARGS[*]-}"',
+                "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh"),
+                "device_api",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("COMPILE_KERNEL=1", configured.stdout)
+        self.assertIn("0,3,4,7 -x CUDA_VISIBLE_DEVICES", configured.stdout)
 
     def test_device_test_targets_require_kernel_mode(self):
         cases = (
@@ -1072,6 +1126,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "ppu": [
                 "adaptor",
                 "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",

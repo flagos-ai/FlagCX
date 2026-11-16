@@ -152,6 +152,8 @@ struct Barrier;
 // Vendor specializations + DeviceAPI selection
 #if defined(USE_NVIDIA_ADAPTOR)
 #include "nvidia_comm_traits.h"
+#elif defined(USE_PPU_ADAPTOR)
+#include "ppu_comm_traits.h"
 #elif defined(USE_DU_ADAPTOR)
 #include "du_comm_traits.h"
 #elif defined(USE_SUNRISE_ADAPTOR)

@@ -85,6 +85,15 @@ flagcx_ci_configure_suite() {
   local suite=$1
 
   case "$suite" in
+    device_api|device_api_host|device_api_unified_ir)
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      if [[ "$suite" != device_api_host ]]; then
+        export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"
+        FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x CUDA_VISIBLE_DEVICES)
+        FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x CUDA_VISIBLE_DEVICES)
+      fi
+      ;;
     adaptor)
       # Fail rather than silently falling back to IBRC/socket: this suite is
       # the integration coverage for the BAREX one-sided contract.

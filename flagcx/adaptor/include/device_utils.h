@@ -361,7 +361,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_SIMT_WIDTH 64
 #define FLAGCX_DEVICE_STREAM_PTR hipStream_t *
 
-#elif defined(USE_NVIDIA_ADAPTOR)
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
 
@@ -387,11 +387,11 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
 
-// SIMT lockstep width (32 lanes on NVIDIA/CUDA)
+// CUDA-compatible SIMT width (NVIDIA and PPU).
 #define FLAGCX_SIMT_WIDTH 32
 #define FLAGCX_SHARED_DECORATOR __shared__
 #else
-// Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
+// Host compiler (g++/clang++) on CUDA-compatible platforms.
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR

@@ -8,8 +8,8 @@
  *   - Atomic: GCC built-in atomics (__atomic_*)
  *   - Coop*:  single-thread no-op implementations
  *
- * Used by CommTraits<DefaultBackend<DefaultPlatform>> when neither
- * USE_NVIDIA_ADAPTOR nor USE_DU_ADAPTOR is defined.
+ * Used by CommTraits<DefaultBackend<DefaultPlatform>> when no device-capable
+ * platform traits are selected.
  ************************************************************************/
 
 #ifndef FLAGCX_DEFAULT_PLATFORM_TRAITS_H_

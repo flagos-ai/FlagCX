@@ -113,6 +113,8 @@ private:
 // Include platform specializations
 #if defined(USE_NVIDIA_ADAPTOR)
 #include "nvidia_platform_traits.h"
+#elif defined(USE_PPU_ADAPTOR)
+#include "ppu_platform_traits.h"
 #elif defined(USE_DU_ADAPTOR)
 #include "du_platform_traits.h"
 #elif defined(USE_KUNLUNXIN_ADAPTOR)
