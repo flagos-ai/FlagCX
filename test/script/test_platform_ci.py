@@ -145,25 +145,17 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     capture_output=True, text=True, check=True,
                 )
                 self.assertIn("RUN ordinary-ipc", result.stdout)
-                if platform == "kunlunxin":
-                    for suite, phase in (("p2p", "p2p-write-mpi"),
-                                         ("rma", "rma-mpi"),
-                                         ("symmem", "symmem-mpi"),
-                                         ("runner", "runner-mpi")):
-                        self.assertIn(f"SKIPPED {suite}/{phase}", result.stdout)
-                        self.assertNotIn(f"RUN {phase}", result.stdout)
-                else:
-                    config = yaml.safe_load(
-                        (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
-                    ).get("ignore_test", {}).get("phases", [])
-                    ignored = {(item["suite"], item["name"]) for item in config}
-                    for suite, phase in (("p2p", "p2p-write-mpi"),
-                                         ("rma", "rma-mpi"),
-                                         ("symmem", "symmem-mpi"),
-                                         ("runner", "runner-mpi")):
-                        marker = f"{suite}/{phase}"
-                        self.assertEqual(f"SKIPPED {marker}" in result.stdout,
-                                         (suite, phase) in ignored)
+                config = yaml.safe_load(
+                    (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+                ).get("ignore_test", {}).get("phases", [])
+                ignored = {(item["suite"], item["name"]) for item in config}
+                for suite, phase in (("p2p", "p2p-write-mpi"),
+                                     ("rma", "rma-mpi"),
+                                     ("symmem", "symmem-mpi"),
+                                     ("runner", "runner-mpi")):
+                    marker = f"{suite}/{phase}"
+                    self.assertEqual(f"SKIPPED {marker}" in result.stdout,
+                                     (suite, phase) in ignored)
 
     def test_kunlunxin_device_suite_dependency_gap_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2582,8 +2574,8 @@ run_suite
             run_unit.index("    symmem)\n", run_unit.index("run_suite() {"))
         ]
         kernel_config = (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
-        self.assertIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_config)
-        self.assertIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_config)
+        self.assertNotIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_config)
+        self.assertNotIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_config)
         self.assertIn('ignore_test.py" \\\n  gtest "$SUITE"', run_unit)
         self.assertFalse(
             (REPO_ROOT / "test/unittest/device_api/kernel").exists(),
