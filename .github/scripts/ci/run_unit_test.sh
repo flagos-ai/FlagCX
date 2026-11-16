@@ -121,7 +121,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|symmem|device_api|device_api_shmem|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -158,6 +158,7 @@ build_project() {
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   if [[ "$SUITE" == device_api_host ||
+        "$SUITE" == device_api_shmem ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
@@ -174,6 +175,7 @@ build_suite() {
   if [[ "$SUITE" == device_api_host ]]; then
     make -C "$suite_dir" --jobs="$(nproc)" unit "${args[@]}"
   elif [[ "$SUITE" == device_api ||
+          "$SUITE" == device_api_shmem ||
           "$SUITE" == device_api_unified_ir ]]; then
     make -C "$suite_dir" --jobs="$(nproc)" mpi "${args[@]}"
   else
@@ -317,6 +319,7 @@ run_device_api_unified_ir() {
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   if [[ "$SUITE" == device_api_host ||
+        "$SUITE" == device_api_shmem ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
@@ -985,7 +988,7 @@ run_suite() {
         return 0
       fi
       ;;
-    device_api)
+    device_api|device_api_shmem)
       run_device_api
       ;;
     device_api_host)
@@ -1033,7 +1036,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_shmem|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   *)
