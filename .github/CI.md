@@ -1,9 +1,10 @@
 # FlagCX CI
 
-This branch temporarily enables only `kunlunxin` in `configs/platforms.yml`.
-Automatic unit, performance, and Torch API jobs select only KunlunXin; common
-checks still run. Restore the other platforms' `enabled: true` entries to
-resume the full hardware matrix.
+The hardware CI matrix currently enables all seven platforms: CUDA, Hygon,
+Iluvatar, MetaX, KunlunXin, PPU, and Ascend. PR runs select platforms from
+changed paths and PR labels; push and scheduled runs select all enabled
+platforms. Unit, performance, and Torch API jobs run for the selected platforms
+alongside common checks. See `configs/platforms.yml` for the active registry.
 
 `unit-test.yml` is the automatic controller for PRs to `main`/`devops`, pushes
 to those branches, and the daily schedule. It runs the selected platforms'
