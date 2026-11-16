@@ -1908,15 +1908,6 @@ getStaticKernelMaxExecutorBlocks(const void *kernel, const char *kernelName,
   if (smCount < 0 || maxThreadsPerBlock < 0) {
     return flagcxInternalError;
   }
-#if defined(USE_PPU_ADAPTOR)
-  int warpSize = 0;
-  if (cudaDeviceGetAttribute(&warpSize, cudaDevAttrWarpSize, device) !=
-      cudaSuccess) {
-    return flagcxUnhandledDeviceError;
-  }
-  if (warpSize != FLAGCX_SIMT_WIDTH)
-    return flagcxNotSupported;
-#endif
   if (nthreads > static_cast<size_t>(maxThreadsPerBlock)) {
     return flagcxInvalidArgument;
   }
