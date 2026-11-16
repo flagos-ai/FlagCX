@@ -36,6 +36,9 @@
 #include <new>
 #include <sched.h>
 #include <unistd.h>
+#if defined(FLAGCX_USE_XPU_NETIO)
+#include <vector>
+#endif
 
 using DefaultCompletionWord = typename DeviceAPI::CompletionWord;
 
@@ -501,19 +504,63 @@ static flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 // DevComm Create — full default backend implementation
 // ==========================================================================
 
+#if defined(FLAGCX_USE_XPU_NETIO)
+struct flagcxDevNetConfig {
+  int enabled;
+  int type; // -1: auto, 0: Proxy, 1: the compiled GDA adapter.
+  int wantsNet;
+  int valid;
+};
+
+static flagcxResult_t readFlagcxDevNetConfig(flagcxComm_t comm, bool wantsNet,
+                                             flagcxDevNetConfig *config) {
+  if (comm == nullptr || config == nullptr)
+    return flagcxInvalidArgument;
+  flagcxDevNetConfig local{1, -1, wantsNet ? 1 : 0, 0};
+  local.valid =
+      flagcxReadDevNetConfig(&local.enabled, &local.type) == flagcxSuccess;
+  std::vector<flagcxDevNetConfig> all;
+  flagcxResult_t allocation = flagcxSuccess;
+  try {
+    all.resize(comm->nranks);
+  } catch (const std::bad_alloc &) {
+    allocation = flagcxSystemError;
+  }
+  flagcxResult_t common = flagcxSuccess;
+  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, allocation, &common));
+  if (common != flagcxSuccess)
+    return common;
+  all[comm->rank] = local;
+  FLAGCXCHECK(
+      bootstrapCollAllGather(comm->bootstrap, all.data(), sizeof(local)));
+  for (const flagcxDevNetConfig &peer : all) {
+    if (!peer.valid)
+      return flagcxInvalidArgument;
+    if (peer.enabled != local.enabled || peer.type != local.type ||
+        peer.wantsNet != local.wantsNet)
+      return flagcxInvalidUsage;
+  }
+  *config = local;
+  return flagcxSuccess;
+}
+#endif
+
 static flagcxResult_t
 defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         size_t reqsSize, flagcxDevComm_t devComm) {
-  flagcxDevNetGdaPolicy_t gdaPolicy = flagcxDevNetGdaDisabled;
-  unsigned gdaOperations = 0;
-  if (reqsSize >= offsetof(flagcxDevCommRequirements, netGdaOperations) +
-                      sizeof(reqs->netGdaOperations)) {
-    gdaPolicy = reqs->netGdaPolicy;
-    gdaOperations = reqs->netGdaOperations;
-  }
-#if !defined(FLAGCX_USE_XPU_NETIO)
-  if (gdaPolicy == flagcxDevNetGdaRequired)
+  (void)reqsSize; // Older callers may pass a larger requirements tail.
+#if defined(FLAGCX_USE_XPU_NETIO)
+  const bool needsInterNet =
+      reqs->interForceEnable ||
+      (comm->heteroComm != nullptr && comm->heteroComm->nNodes > 1 &&
+       (reqs->interBarrierCount > 0 || reqs->interSignalCount > 0 ||
+        reqs->interCounterCount > 0));
+  flagcxDevNetConfig netConfig{};
+  FLAGCXCHECK(readFlagcxDevNetConfig(comm, needsInterNet, &netConfig));
+  const bool attemptGda =
+      netConfig.enabled != 0 && netConfig.type != 0 && needsInterNet;
+  if (netConfig.enabled == 0 && needsInterNet)
     return flagcxNotSupported;
 #endif
   if (reqs->interBarrierCount < 0)
@@ -595,9 +642,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // Expand signalCount to include barrier slots:
       // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
-      int barrierRanks = gdaPolicy == flagcxDevNetGdaDisabled
-                             ? devComm->nTeamRanks
-                             : comm->nranks;
+      int barrierRanks = devComm->nTeamRanks;
+#if defined(FLAGCX_USE_XPU_NETIO)
+      if (attemptGda)
+        barrierRanks = comm->nranks;
+#endif
       if (barrierRanks < 0 || reqs->interBarrierCount < 0 ||
           (reqs->interBarrierCount > 0 &&
            barrierRanks >
@@ -900,8 +949,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   }
 
 #if defined(FLAGCX_USE_XPU_NETIO)
-  FLAGCXCHECK(
-      DefaultNvidiaGda::createComm(comm, devComm, gdaPolicy, gdaOperations));
+  if (attemptGda)
+    FLAGCXCHECK(DefaultNvidiaGda::createComm(comm, devComm, netConfig.type));
 #endif
   if (devComm->signalBuffer && devComm->gdaProvider == 0 &&
       (devComm->nInterPeers > 0 || !devComm->useP2pSignals ||

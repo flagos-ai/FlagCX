@@ -10,6 +10,9 @@
 #include "core.h"
 #include "flagcx_common.h"
 #include "param.h"
+#if defined(FLAGCX_USE_XPU_NETIO)
+#include <cerrno>
+#endif
 #include <fstream>
 #include <stdexcept>
 #include <stdlib.h>
@@ -158,6 +161,34 @@ uint64_t getHostHash(void) {
 FLAGCX_PARAM(TopoDetectionDisable, "TOPO_DETECTION_DISABLE", 0);
 FLAGCX_PARAM(SignalHostEnable, "SIGNAL_HOST_ENABLE", 0);
 FLAGCX_PARAM(DeviceOneSidedForceNet, "DEVICE_ONE_SIDED_FORCE_NET", 0);
+
+#if defined(FLAGCX_USE_XPU_NETIO)
+static bool flagcxReadDevNetInteger(const char *name, int fallback, int low,
+                                    int high, int *value) {
+  const char *setting = flagcxGetEnv(name);
+  if (setting == nullptr || setting[0] == '\0') {
+    *value = fallback;
+    return true;
+  }
+  char *end = nullptr;
+  errno = 0;
+  long long parsed = strtoll(setting, &end, 10);
+  if (errno != 0 || end == setting || *end != '\0' || parsed < low ||
+      parsed > high)
+    return false;
+  *value = static_cast<int>(parsed);
+  return true;
+}
+
+flagcxResult_t flagcxReadDevNetConfig(int *enabled, int *type) {
+  if (enabled == nullptr || type == nullptr)
+    return flagcxInvalidArgument;
+  if (!flagcxReadDevNetInteger("FLAGCX_DEVNET_ENABLE", 1, 0, 1, enabled) ||
+      !flagcxReadDevNetInteger("FLAGCX_DEVNET_TYPE", -1, -1, 1, type))
+    return flagcxInvalidArgument;
+  return flagcxSuccess;
+}
+#endif
 
 /* Generate a hash of the unique identifying string for this process
  * that will be unique for both bare-metal and container instances
