@@ -24,6 +24,14 @@ fi
 # shellcheck source=/dev/null
 source "$SET_ENV_SCRIPT"
 
+# Keep one complete transcript per suite. Individual timeout wrappers also
+# write attempt logs; this aggregate captures direct MPI/runner invocations
+# that do not pass through a wrapper.
+suite_log_dir="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/suites"
+mkdir -p "$suite_log_dir"
+safe_suite=$(printf '%s' "$SUITE" | tr -c 'A-Za-z0-9_.-' '_')
+exec > >(tee -a "$suite_log_dir/$safe_suite.log") 2>&1
+
 if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
   coverage_build_dir="$PROJECT_ROOT"
   report_dir=${FLAGCX_CI_CPP_COVERAGE_REPORT:-"$PROJECT_ROOT/.ci-coverage/$SUITE"}
@@ -86,8 +94,49 @@ if [[ "${FLAGCX_CI_COVERAGE:-0}" != 1 ]]; then
     "${GTEST_FILTER:-*}" exclude)
   export GTEST_FILTER
 fi
+
+flagcx_ci_record_capability_skip() {
+  local label=$1
+  local reason=$2
+  local safe_label
+  local skip_dir="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/capability-skips"
+  safe_label=$(printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_')
+  mkdir -p "$skip_dir"
+  {
+    echo "label=$label"
+    echo "reason=$reason"
+    echo "platform=${SET_ENV_SCRIPT##*/}"
+    echo "suite=$SUITE"
+    echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo
+    echo "Known failure evidence:"
+    echo "$reason"
+    echo
+    echo "Environment:"
+    env | LC_ALL=C sort | grep -E '^(FLAGCX|MUSA|CUDA|HIP|NCCL|MCCl|MPI|LD_LIBRARY_PATH|PATH)=' || true
+    echo
+    echo "Device inventory:"
+    command -v mthreads-gmi >/dev/null 2>&1 && mthreads-gmi || true
+    ls -l /dev/mtgpu* /dev/musa* /dev/mthreads* 2>/dev/null || true
+    echo
+    echo "Call stack: no live workload remained when this capability skip was recorded."
+    echo "For timeout/hang cases, run_with_timeout.sh stores pre-timeout /proc stacks and gdb backtraces."
+    if [[ "${SET_ENV_SCRIPT##*/}" == "mthreads.sh" &&
+          -f "$PROJECT_ROOT/.github/configs/mthreads-known-issues.md" ]]; then
+      echo
+      echo "Known issue record:"
+      sed -n '1,240p' "$PROJECT_ROOT/.github/configs/mthreads-known-issues.md"
+    fi
+  } > "$skip_dir/$safe_label.log"
+  echo "Capability skip recorded: $skip_dir/$safe_label.log"
+}
 if declare -F flagcx_ci_skip_suite >/dev/null &&
   flagcx_ci_skip_suite "$SUITE"; then
+  if [[ "$SUITE" == device_api || "$SUITE" == device_api_unified_ir ]]; then
+    flagcx_ci_record_capability_skip \
+      "device-api-$SUITE" \
+      "Mthreads MUSA test kernel target is unavailable; device API workload cannot build"
+  fi
   if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
     export FLAGCX_CI_COVERAGE_SKIP_REASON="platform configuration marks suite unsupported"
   fi
@@ -757,6 +806,10 @@ run_suite() {
       # Keep these as separate invocations so each transport has its own
       # timeout. Collect both statuses so a failure in one path cannot prevent
       # the other path from running and producing a useful result.
+      if [[ "${FLAGCX_CI_RMA_IPC_SUPPORTED:-1}" == 0 ]]; then
+        flagcx_ci_record_capability_skip "rma-ipc-mpi" \
+          "Mthreads MUSA IPC data window and ipcMemHandleCreate are unavailable"
+      else
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
@@ -767,6 +820,7 @@ run_suite() {
           --case RmaTest.GetAsyncOffsets \
           --case RmaTest.IpcGetSameStreamCompletion \
           "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
+      fi
       fi
       if flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
@@ -804,6 +858,12 @@ run_suite() {
           hygon)
             # DU uses the existing RMA correctness tests. No separate device
             # consumer kernel is built for this platform.
+            ;;
+          mthreads)
+            run_visibility=0
+            flagcx_ci_record_capability_skip \
+              "rma-gdr-visibility" \
+              "Mthreads MUSA direct-consumer RMA visibility is unavailable; observed ipcMemHandleCreate/data-window setup failure"
             ;;
           ascend)
             # The existing immediate-consumer cases are deliberately outside
@@ -978,14 +1038,19 @@ run_suite() {
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
         ./build/bin/runner_mpi_tests || default_status=$?
-      FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
-        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_P2P_DISABLE=0 \
-        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
-        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-        ./build/bin/runner_mpi_tests || hybrid_status=$?
+      if [[ "${FLAGCX_CI_RUNNER_HYBRID_SUPPORTED:-1}" == 0 ]]; then
+        flagcx_ci_record_capability_skip \
+          "runner-heterogeneous-p2p" \
+          "Mthreads MUSA ipcMemHandleCreate fails in local P2P setup; AllGather/AllReduce/AlltoAll/AlltoAllvAsymmetric cannot complete"
+      else
+        FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
+          FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="${FLAGCX_CI_RUNNER_DIAGNOSTICS_AFTER:-120}" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+          ./build/bin/runner_mpi_tests || hybrid_status=$?
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -1337,7 +1402,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device|device_api_host|p2p|rma|runner|service|symmem|topo)
+  adaptor|core|device|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem|topo)
     build_googletest
     ;;
   device_traits)
