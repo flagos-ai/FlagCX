@@ -810,7 +810,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "mthreads": [
                 "adaptor",
                 "core",
+                "device_api",
                 "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
