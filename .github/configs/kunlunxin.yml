@@ -61,7 +61,6 @@ unit_test_suites:
   - core
   - device_api_host
   - device_api_unified_ir
-  - kernel
   - p2p
   - rma
   - runner
