@@ -329,10 +329,17 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
     return flagcxSuccess;
   if (policy != flagcxDevNetGdaPreferred && policy != flagcxDevNetGdaRequired)
     return flagcxInvalidArgument;
+  const unsigned known =
+      flagcxDevNetGdaOpPut | flagcxDevNetGdaOpGet | flagcxDevNetGdaOpPutValue |
+      flagcxDevNetGdaOpSignal | flagcxDevNetGdaOpFlush |
+      flagcxDevNetGdaOpSignalCompletion | flagcxDevNetGdaOpCounterCompletion |
+      flagcxDevNetGdaOpBarrier;
+  if (requiredOperations == 0 || (requiredOperations & ~known) != 0)
+    return flagcxInvalidArgument;
   const unsigned implemented =
       flagcxDevNetGdaOpPut | flagcxDevNetGdaOpPutValue |
       flagcxDevNetGdaOpFlush | flagcxDevNetGdaOpBarrier;
-  if (requiredOperations == 0 || (requiredOperations & ~implemented) != 0)
+  if ((requiredOperations & ~implemented) != 0)
     return flagcxNotSupported;
 
   CommOwner *owner = new (std::nothrow) CommOwner;
@@ -582,15 +589,23 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
                           flagcxDevNetGdaPolicy_t policy,
                           unsigned requiredOperations) {
+  if (comm == nullptr || devComm == nullptr)
+    return flagcxInvalidArgument;
   flagcxResult_t status =
       createCommAttempt(comm, devComm, policy, requiredOperations);
-  if (status == flagcxSuccess || devComm->gdaHostOwner == nullptr)
+  if (status == flagcxSuccess)
     return status;
-  flagcxResult_t cleanup =
-      releaseComm(static_cast<CommOwner *>(devComm->gdaHostOwner));
-  if (cleanup != flagcxSuccess)
-    return cleanup;
-  devComm->gdaHostOwner = nullptr;
+
+  // A failed allocation can leave an owner on only some ranks. Every rank
+  // must converge after local cleanup before Preferred may choose Proxy.
+  CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  flagcxResult_t cleanup = owner ? releaseComm(owner) : flagcxSuccess;
+  if (cleanup == flagcxSuccess)
+    devComm->gdaHostOwner = nullptr;
+  flagcxResult_t commonCleanup = stage(comm, cleanup);
+  if (commonCleanup != flagcxSuccess)
+    return commonCleanup;
+
   if (policy == flagcxDevNetGdaPreferred && status != flagcxInvalidUsage &&
       status != flagcxInvalidArgument)
     return flagcxSuccess;
@@ -632,7 +647,10 @@ flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
                                     flagcxMemcpyHostToDevice, nullptr, nullptr);
   flagcxResult_t common = stage(comm, local);
   if (common != flagcxSuccess) {
-    (void)releaseWindow(window);
+    if (releaseWindow(window) != flagcxSuccess) {
+      window->orphanNext = owner->orphanWindows;
+      owner->orphanWindows = window;
+    }
     return common;
   }
   static_cast<DeviceAPI::Window *>(deviceWindow)->netDeviceHandle =

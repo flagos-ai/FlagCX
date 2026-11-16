@@ -68,6 +68,25 @@ int main(int argc, char **argv) {
   flagcxStream_t stream = nullptr;
   CHECK(device->streamCreate(&stream));
 
+  // Get is a valid Device API operation that this GDA adapter does not yet
+  // implement. Preferred must select Proxy on every rank; Required must fail.
+  flagcxDevCommRequirements probe = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  probe.intraBarrierCount = 1;
+  probe.interBarrierCount = 1;
+  probe.interContextCount = 1;
+  probe.netGdaOperations = flagcxDevNetGdaOpGet;
+  probe.netGdaPolicy = flagcxDevNetGdaPreferred;
+  flagcxDevComm_t probeComm = nullptr;
+  CHECK(flagcxDevCommCreate(comm, &probe, &probeComm));
+  if (probeComm->gdaProvider != 0)
+    MPI_Abort(MPI_COMM_WORLD, 3);
+  CHECK(flagcxDevCommDestroy(comm, probeComm));
+  probe.netGdaPolicy = flagcxDevNetGdaRequired;
+  probeComm = nullptr;
+  if (flagcxDevCommCreate(comm, &probe, &probeComm) != flagcxNotSupported ||
+      probeComm != nullptr)
+    MPI_Abort(MPI_COMM_WORLD, 4);
+
   flagcxDevCommRequirements requirements =
       FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   requirements.intraBarrierCount = 1;
