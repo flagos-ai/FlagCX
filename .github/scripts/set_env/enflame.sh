@@ -99,14 +99,6 @@ flagcx_ci_prepare() {
   topscc --version
   efsmi || true
 
-  case "$suite" in
-    device_api|device_api_unified_ir)
-      if [[ ! -d "${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}/test/kernel/tops" ]]; then
-        export FLAGCX_CI_SKIP_SUITE=1
-        export FLAGCX_CI_SKIP_REASON="TOPS device-kernel test backend is not present (test/kernel/tops)"
-      fi
-      ;;
-  esac
   if flagcx_ci_has_rdma; then
     export FLAGCX_CI_HAS_RDMA=1
   else

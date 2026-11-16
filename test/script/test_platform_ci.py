@@ -295,24 +295,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"]
+        all_platforms = ["enflame"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            ["enflame"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            ["enflame"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            ["enflame"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,33 +705,26 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"],
+            ["enflame"],
         )
         selected = subprocess.run(
-            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
+            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "enflame"],
             check=True,
             capture_output=True,
             text=True,
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
-            ["hygon"],
+            ["enflame"],
         )
-        selected_cuda = subprocess.run(
-            [
-                "ruby",
-                str(matrix_loader),
-                str(REPO_ROOT / ".github/configs"),
-                "cuda",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            [entry["platform"] for entry in json.loads(selected_cuda.stdout)["include"]],
-            ["cuda"],
-        )
+        for platform in ("cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"):
+            disabled = subprocess.run(
+                ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(disabled.returncode, 0)
+            self.assertIn("Disabled platform selection", disabled.stderr)
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -1096,7 +1089,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("Skipping Enflame GDR visibility consumer tests", rma_case)
 
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
-        self.assertIn("TOPS device-kernel test backend is not present", enflame_env)
+        self.assertNotIn("FLAGCX_CI_SKIP_SUITE", enflame_env)
         self.assertIn("FLAGCX_CI_HAS_RDMA=1", enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
         self.assertIn("FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1", enflame_env)
@@ -1165,8 +1158,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
         ).read_text()
-        self.assertIn("run_hardware_container.sh\"", unit_workflow)
-        self.assertIn('unittest "${{ matrix.suite }}"', unit_workflow)
+        self.assertIn("container:\n      image:", unit_workflow)
+        self.assertNotIn("run_hardware_container.sh", unit_workflow)
+        self.assertIn('unittest "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"', unit_workflow)
         self.assertIn("export FLAGCX_DEBUG=INFO", unit_runner)
         self.assertIn("export FLAGCX_DEBUG_SUBSYS=ALL", unit_runner)
         self.assertIn("export FLAGCX_VMM_ENABLE=0", unit_runner)
