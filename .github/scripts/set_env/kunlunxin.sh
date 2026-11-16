@@ -11,6 +11,7 @@ CCL_HOME=${CCL_HOME:-/usr/local/xccl_Linux_x86_64}
 DEVICE_HOME=${DEVICE_HOME:-/opt/flagcx-sdk/xre}
 export XCCL_HOME="$CCL_HOME"
 export XRE_HOME="$DEVICE_HOME"
+export FLAGCX_ADAPTOR=klx
 
 export MPI_HOME CCL_HOME DEVICE_HOME
 export OMPI_MCA_plm=isolated
@@ -27,8 +28,11 @@ FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS=1
 FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional
 # XSHMEM on P800 is limited to intra-node communication within one four-XPU group.
 export FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY=1
-export XSHMEM_SYMMETRIC_SIZE=17179869184
-FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x XPU_VISIBLE_DEVICES=4,5,6,7)
+export XSHMEM_SYMMETRIC_SIZE=${XSHMEM_SYMMETRIC_SIZE:-17179869184}
+# Keep one physical four-XPU group consistent across the device, kernel and
+# performance workloads, and allow another runner to select its own group.
+export FLAGCX_CI_KUNLUNXIN_DEVICES=${FLAGCX_CI_KUNLUNXIN_DEVICES:-4,5,6,7}
+FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x XPU_VISIBLE_DEVICES="$FLAGCX_CI_KUNLUNXIN_DEVICES")
 FLAGCX_CI_INTRA_NP=4
 FLAGCX_CI_NODE_NP=4
 FLAGCX_CI_RUNNER_NP=4

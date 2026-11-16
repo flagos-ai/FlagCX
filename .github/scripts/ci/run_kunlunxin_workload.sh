@@ -34,7 +34,7 @@ case "$workload" in
     make -C "$project_root/test/perf/host_api" --jobs="$(nproc)" \
       "${FLAGCX_CI_TEST_MAKE_ARGS[@]}" USE_SHMEM=1
     export FLAGCX_CI_PERF_PLATFORM=KunlunXin
-    export XPU_VISIBLE_DEVICES=4,5,6,7
+    export XPU_VISIBLE_DEVICES="$FLAGCX_CI_KUNLUNXIN_DEVICES"
     perf_bin="$project_root/test/perf/host_api/build/bin"
     perf_status=0
     for operation in allreduce alltoall; do

@@ -27,6 +27,15 @@ class HostNetworkCiTest(unittest.TestCase):
                 config = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text())
                 job_config = config["jobs"][job]
                 self.assertIn("container", job_config)
+                image_output = (
+                    ".outputs.ci_image" if workflow == "unit_tests_common.yml"
+                    else ".outputs.kunlunxin_ci_image"
+                )
+                self.assertIn(image_output, job_config["container"]["image"])
+                for item in job_config["steps"]:
+                    self.assertNotIn("docker run", item.get("run", ""))
+                    self.assertNotIn("docker container run", item.get("run", ""))
+                    self.assertNotIn("run_hardware_container.sh", item.get("run", ""))
                 command = next(item["run"] for item in job_config["steps"]
                                if item.get("name") == step)
                 self.assertIn("run_in_host_network.sh", command)

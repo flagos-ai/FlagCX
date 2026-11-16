@@ -70,25 +70,10 @@ unit_test_suites:
 
 ignore_test:
   gtest:
-    - suite: kernel
-      tests:
-        - DevicePtrArgs.DevCommFreeDevicePtrNull
-        - DevicePtrArgs.DevMemFreeDevicePtrNull
-      reason: XSHMEM returns success for null-handle release; current API tests expect flagcxInvalidArgument
     - suite: adaptor
       tests:
         - IpcMemHandleMpiTest.*Gdr*
       reason: KunlunXin GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
-    - suite: p2p
-      tests:
-        - FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake
-        - FlagcxP2pEngineReadTest.TwoIndependent2KiBReadsCover4KiBBuffer
-        - FlagcxP2pEngineReadTest.RejectsOutOfBoundsReadBeforeSubmission
-        - FlagcxP2pEngineReadTest.RejectsInvalidRegistrationAndDescriptorRanges
-        - FlagcxP2pEngineReadTest.AcceptsZeroLengthDescriptorAtRegistrationEnd
-        - FlagcxP2pEngineReadTest.RejectsOutOfBoundsWriteBeforeSubmission
-        - FlagcxP2pEngineReadTest.ReadsRetargetedRemoteGpuSubrangeIntoLocalWindow
-      reason: These cases require GDR allocation with SYNC_MEMOPS, unavailable in the current XRE
     - suite: adaptor
       tests:
         - DeviceAdaptorTest.GetManagedPointerType
@@ -97,18 +82,6 @@ ignore_test:
     - suite: perf
       name: heterogeneous
       reason: XRE cudaLaunchHostFunc is unsupported
-    - suite: p2p
-      name: p2p-write-mpi
-      reason: GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
-    - suite: rma
-      name: rma-mpi
-      reason: GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
-    - suite: symmem
-      name: symmem-mpi
-      reason: GDR allocation fails at cuPointerSetAttribute(SYNC_MEMOPS)
-    - suite: runner
-      name: runner-mpi
-      reason: XRE rejects cudaHostAlloc(Mapped, 4 MiB)
     - suite: device_api_unified_ir
       name: inter-and-forced-net
       reason: XSHMEM supports intra-node communication only

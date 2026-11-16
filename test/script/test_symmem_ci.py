@@ -36,6 +36,7 @@ class SymmemCiTest(unittest.TestCase):
                 ("du", False),
                 ("ppu", True),
                 ("metax", True),
+                ("klx", False),
             ):
                 with self.subTest(adaptor=adaptor):
                     capture = root / f"{adaptor}.calls"

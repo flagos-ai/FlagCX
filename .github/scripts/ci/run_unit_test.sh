@@ -579,6 +579,7 @@ run_suite() {
       local mpi_status=0
       local shared_status=0
       local shared_mpi_status=0
+      local shared_built=0
       local p2p_mpi_env=""
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
@@ -620,6 +621,7 @@ run_suite() {
             "${shared_test_args[@]}" || shared_status=$?
         fi
         if ((shared_status == 0)); then
+          shared_built=1
           LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
             FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
             FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 \
@@ -628,7 +630,7 @@ run_suite() {
             "$TEST_RUNNER" make -C "$suite_dir" run-unit \
               "${shared_test_args[@]}" || shared_status=$?
         fi
-        if ((shared_status == 0)) && flagcx_ci_phase_supported p2p-write-mpi; then
+        if ((shared_built != 0)) && flagcx_ci_phase_supported p2p-write-mpi; then
           LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH" \
             FLAGCX_P2P_QPS_PER_CONN=2 FLAGCX_IB_QPS_PER_CONNECTION=2 \
             FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests" \
@@ -676,6 +678,9 @@ run_suite() {
         platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
         visibility_filter="RmaTest.DirectConsumerReadVisibility:RmaTest.DirectConsumerWriteVisibility"
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
+        local visibility_skip_reason
+        visibility_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+          phase rma gdr-visibility)
         case "$platform_name" in
           iluvatar)
             # IXCUDA currently declares WRITE-only flush requirements. Keep
@@ -712,15 +717,14 @@ run_suite() {
             # and GPU/NIC/CPU topology, so do not hard-code a pre-Hopper bit.
             ;;
           *)
-            echo "Unsupported visibility conformance platform: $platform_name" >&2
-            visibility_status=1
+            if [[ -z "$visibility_skip_reason" ]]; then
+              echo "Unsupported visibility conformance platform: $platform_name" >&2
+              visibility_status=1
+            fi
             ;;
         esac
 
         local -a visibility_common_env=()
-        local visibility_skip_reason
-        visibility_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
-          phase rma gdr-visibility)
         if [[ -n "$visibility_skip_reason" ]]; then
           run_visibility=0
           echo "Skipping $platform_name GDR visibility conformance: $visibility_skip_reason"
@@ -959,8 +963,9 @@ run_suite() {
       fi
       ;;
     kernel)
+      local unit_status=0 mpi_status=0
       FLAGCX_CI_TEST_LABEL="kernel unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
       local -a kernel_mpi_env=(
         -x FLAGCX_USE_HETERO_COMM=1
         -x FLAGCX_MEM_ENABLE=1
@@ -971,14 +976,18 @@ run_suite() {
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
       if [[ "$platform_name" == "kunlunxin" ]]; then
         kernel_mpi_env+=(
-          -x XPU_VISIBLE_DEVICES=4,5,6,7
-          -x XSHMEM_SYMMETRIC_SIZE=17179869184
+          -x XPU_VISIBLE_DEVICES="$FLAGCX_CI_KUNLUNXIN_DEVICES"
+          -x XSHMEM_SYMMETRIC_SIZE
         )
       fi
       FLAGCX_CI_MPI_LABEL="kernel MPI tests" \
         "$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP" \
         "${kernel_mpi_env[@]}" \
-        "$suite_dir/build/bin/kernel_mpi_tests"
+        "$suite_dir/build/bin/kernel_mpi_tests" || mpi_status=$?
+      if ((unit_status != 0 || mpi_status != 0)); then
+        echo "Kernel failures: unit=$unit_status MPI=$mpi_status" >&2
+        return 1
+      fi
       ;;
     symmem)
       if ! flagcx_ci_phase_supported symmem-mpi; then
@@ -986,7 +995,8 @@ run_suite() {
           "$TEST_RUNNER" "$suite_dir/build/bin/symmem_unit_tests"
         return
       fi
-      bash "$PROJECT_ROOT/test/script/symmem_test.sh"
+      local symmem_status=0
+      bash "$PROJECT_ROOT/test/script/symmem_test.sh" || symmem_status=$?
       : "${FLAGCX_CI_SYMMEM_NODE_NP:=2}"
       declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
         echo "symmem NET tests require FLAGCX_CI_NODE1_MPI_ARGS" >&2
@@ -1056,7 +1066,7 @@ run_suite() {
           -x LD_LIBRARY_PATH \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" \
-          --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow
+          --gtest_filter=SymMemTest.RemotePeersWithoutNetworkDoNotPublishWindow || symmem_status=$?
       else
         local vmm_local_reason
         vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
@@ -1071,7 +1081,7 @@ run_suite() {
         -x FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1 \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
         "$symmem_bin" \
-        --gtest_filter=SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback:SymMemTest.P2pDisabledLocalWindowAcquiresNetworkMrBeforePublish
+        --gtest_filter=SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback:SymMemTest.P2pDisabledLocalWindowAcquiresNetworkMrBeforePublish || symmem_status=$?
 
       FLAGCX_CI_MPI_LABEL="symmem IPC + NET" \
         "$MPI_RUNNER" --allow-run-as-root \
@@ -1084,7 +1094,7 @@ run_suite() {
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
         -x FLAGCX_DMABUF_ENABLE=1 \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-        "$symmem_bin" "$symmem_filter"
+        "$symmem_bin" "$symmem_filter" || symmem_status=$?
 
       if ((symmem_run_vmm_net_data != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto" \
@@ -1104,7 +1114,7 @@ run_suite() {
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
           -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-          "$symmem_bin" "$symmem_filter"
+          "$symmem_bin" "$symmem_filter" || symmem_status=$?
       else
         local vmm_net_reason
         vmm_net_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
@@ -1135,15 +1145,16 @@ run_suite() {
         "${symmem_route_union_env[@]}" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" \
-        --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion
+        --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion || symmem_status=$?
 
       if ((symmem_run_vmm_local == 0)); then
         local vmm_local_reason
         vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
           phase symmem vmm-local-and-remote-without-net)
         echo "Skipping $platform_name VMM flat-map data tests: ${vmm_local_reason:-VMM is unavailable}; route capability was tested above"
-        return 0
+        return "$symmem_status"
       fi
+      return "$symmem_status"
       ;;
     device_api)
       run_device_api

@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 from pathlib import Path
 import shutil
@@ -7,12 +8,145 @@ import sys
 import tempfile
 import unittest
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HANDLER = REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
 
 
 class KunlunXinUnitDispatchTest(unittest.TestCase):
+    def test_device_group_and_heap_size_can_be_overridden(self):
+        result = subprocess.run(
+            ["bash", "-c", 'set -euo pipefail; source "$1"; '
+             'printf "%s\\n" "$FLAGCX_ADAPTOR" "$XSHMEM_SYMMETRIC_SIZE"; '
+             'printf "%s\\n" "${FLAGCX_CI_UNIFIED_IR_MPI_ARGS[@]}"',
+             "bash", str(REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh")],
+            env={**os.environ, "FLAGCX_CI_KUNLUNXIN_DEVICES": "0,1,2,3",
+                 "XSHMEM_SYMMETRIC_SIZE": "8589934592"},
+            check=True, capture_output=True, text=True,
+        )
+        self.assertEqual(
+            result.stdout.splitlines(),
+            ["klx", "8589934592", "-x", "XPU_VISIBLE_DEVICES=0,1,2,3"],
+        )
+
+    def run_mock_suite(self, suite, failed_label):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ci = root / ".github/scripts/ci"
+            ci.mkdir(parents=True)
+            for name in ("run_unit_test.sh", "filter_supplemental_tests.sh",
+                         "ignore_test.py"):
+                shutil.copyfile(REPO_ROOT / ".github/scripts/ci" / name, ci / name)
+            symmem_script = root / "test/script/symmem_test.sh"
+            symmem_script.parent.mkdir(parents=True)
+            shutil.copyfile(REPO_ROOT / "test/script/symmem_test.sh", symmem_script)
+            binaries = root / "bin"
+            binaries.mkdir()
+            probe = (
+                '#!/bin/bash\n'
+                'label=${FLAGCX_CI_MPI_LABEL:-${FLAGCX_CI_TEST_LABEL:-build}}\n'
+                'printf "%s|%s\\n" "$label" "$*" >> "$CALL_LOG"\n'
+                'if [[ "$label" == "$FAIL_LABEL" ]]; then exit 7; fi\n'
+            )
+            for executable in (binaries / "make", binaries / "cmake",
+                               ci / "run_mpi_with_timeout.sh",
+                               root / "test/unittest/symmem/build/bin/symmem_unit_tests"):
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text(probe)
+                executable.chmod(0o755)
+            (ci / "run_with_timeout.sh").write_text('#!/bin/bash\nexec "$@"\n')
+            (ci / "run_with_timeout.sh").chmod(0o755)
+            platform = root / "kunlunxin.sh"
+            (root / "test/unittest" / suite).mkdir(parents=True, exist_ok=True)
+            platform.write_text(
+                'MPI_HOME="$GITHUB_WORKSPACE/mpi"\n'
+                'FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_KUNLUNXIN=1)\n'
+                'FLAGCX_CI_TEST_MAKE_ARGS=(USE_KUNLUNXIN=1)\n'
+                'FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1\n'
+                'FLAGCX_CI_RUNNER_NP=4\n'
+                'FLAGCX_CI_NODE_NP=4\n'
+                'FLAGCX_CI_INTRA_NP=4\n'
+                'FLAGCX_CI_KUNLUNXIN_DEVICES=0,1,2,3\n'
+                'export XSHMEM_SYMMETRIC_SIZE=8589934592\n'
+                'FLAGCX_CI_NODE1_MPI_ARGS=(-x FLAGCX_HOSTID=node0)\n'
+                'FLAGCX_CI_NODE2_MPI_ARGS=(-x FLAGCX_HOSTID=node1)\n'
+                'export FLAGCX_ADAPTOR=klx\n'
+                'flagcx_ci_validate_rdma() { return 0; }\n'
+            )
+            config = yaml.safe_load(
+                (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+            )
+            log = root / "calls"
+            env = {**os.environ, "GITHUB_WORKSPACE": str(root),
+                   "PATH": f"{binaries}:{os.environ['PATH']}",
+                   "CALL_LOG": str(log), "FAIL_LABEL": failed_label,
+                   "FLAGCX_CI_COVERAGE": "0", "GTEST_FILTER": "*",
+                   "FLAGCX_CI_IGNORE_TEST": json.dumps(config["ignore_test"])}
+            result = subprocess.run(
+                ["bash", str(ci / "run_unit_test.sh"), str(platform), suite],
+                cwd=root, env=env, capture_output=True, text=True, timeout=15,
+            )
+            return result, log.read_text()
+
+    def test_independent_phases_run_after_failures(self):
+        for suite, failed, required in (
+            ("symmem", "symmem IPC local", (
+                "symmem local IPC + NET fallback", "symmem IPC + NET",
+                "symmem VMM + NET route union")),
+            ("symmem", "symmem local IPC + NET fallback", (
+                "symmem IPC + NET", "symmem VMM + NET route union")),
+            ("p2p", "p2p shared-engine unit tests", (
+                "p2p Engine WRITE MPI tests", "p2p shared-engine WRITE MPI tests")),
+            ("runner", "runner default", (
+                "runner heterogeneous", "runner forced NET")),
+            ("rma", "rma IPC MPI tests", ("rma network MPI tests",)),
+            ("kernel", "kernel unit tests", ("kernel MPI tests",)),
+        ):
+            with self.subTest(suite=suite, failed=failed):
+                result, calls = self.run_mock_suite(suite, failed)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"{failed}|", calls)
+                for label in required:
+                    self.assertIn(f"{label}|", calls)
+
+    def test_restored_phases_succeed_when_commands_succeed(self):
+        for suite in ("symmem", "p2p", "rma", "runner", "kernel"):
+            with self.subTest(suite=suite):
+                result, _ = self.run_mock_suite(suite, "no matching label")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_hardware_mpi_phases_are_not_blanket_skipped(self):
+        config_path = REPO_ROOT / ".github/configs/kunlunxin.yml"
+        config = yaml.safe_load(config_path.read_text())["ignore_test"]
+        skipped_phases = {
+            (entry["suite"], entry["name"])
+            for entry in config.get("phases", [])
+        }
+        for phase in (
+            ("p2p", "p2p-write-mpi"),
+            ("rma", "rma-mpi"),
+            ("runner", "runner-mpi"),
+            ("symmem", "symmem-mpi"),
+        ):
+            with self.subTest(phase=phase):
+                self.assertNotIn(phase, skipped_phases)
+
+        excluded_gtests = {
+            test
+            for entry in config.get("gtest", [])
+            for test in entry.get("tests", [])
+        }
+        self.assertFalse(
+            any(
+                test.startswith("FlagcxP2pEngineReadTest.")
+                for test in excluded_gtests
+            )
+        )
+        self.assertNotIn("DevicePtrArgs.DevCommFreeDevicePtrNull", excluded_gtests)
+        self.assertNotIn("DevicePtrArgs.DevMemFreeDevicePtrNull", excluded_gtests)
+
     def test_device_suites_enable_kernel_build_without_affecting_host_suites(self):
         env_script = REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
         for suite in ("device_api", "device_api_unified_ir", "kernel", "core", "device_api_host"):
@@ -90,6 +224,7 @@ class KunlunXinWorkloadTest(unittest.TestCase):
             (root / "platform.sh").write_text(
                 "FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_KUNLUNXIN=1)\n"
                 "FLAGCX_CI_TEST_MAKE_ARGS=(USE_KUNLUNXIN=1)\n"
+                "FLAGCX_CI_KUNLUNXIN_DEVICES=0,1,2,3\n"
                 'DEVICE_HOME="$GITHUB_WORKSPACE/xpu"\n'
                 "flagcx_ci_prepare() { :; }\n"
                 "flagcx_ci_validate_rdma() { :; }\n"
