@@ -424,12 +424,97 @@ static flagcxResult_t cannIpcFreeAllocation(void *ptr) {
   return flagcxSuccess;
 }
 
+/*
+ * aclrtMallocHost memory is host-visible only until aclrtHostRegister maps
+ * it into the device address space: aclrtHostGetDevicePointer answers
+ * ACL_SUCCESS with a null alias for unregistered memory (measured on 910C,
+ * CANN 9.1.0-beta.3), and the registered alias survives for the lifetime of
+ * the allocation. Register at allocation time and keep the ptr -> alias pair
+ * so the adaptor slot, which carries no size, can answer by lookup alone.
+ */
+struct cannHostMapping {
+  void *hostPtr;
+  void *devAlias;
+  struct cannHostMapping *next;
+};
+
+static pthread_mutex_t cannHostMappingLock = PTHREAD_MUTEX_INITIALIZER;
+static struct cannHostMapping *cannHostMappings = NULL;
+
+static void cannHostMapRegister(void *ptr, size_t size) {
+  void *devAlias = NULL;
+  aclError result =
+      aclrtHostRegister(ptr, size, ACL_HOST_REGISTER_MAPPED, &devAlias);
+  if (result != ACL_SUCCESS || devAlias == NULL) {
+    WARN("CANN host register failed for %p size %zu: ACL error %d", ptr, size,
+         result);
+    return;
+  }
+  struct cannHostMapping *entry =
+      (struct cannHostMapping *)calloc(1, sizeof(*entry));
+  if (entry == NULL) {
+    (void)aclrtHostUnregister(ptr);
+    return;
+  }
+  entry->hostPtr = ptr;
+  entry->devAlias = devAlias;
+  pthread_mutex_lock(&cannHostMappingLock);
+  entry->next = cannHostMappings;
+  cannHostMappings = entry;
+  pthread_mutex_unlock(&cannHostMappingLock);
+}
+
+static void cannHostMapUnregister(void *ptr) {
+  pthread_mutex_lock(&cannHostMappingLock);
+  struct cannHostMapping **link = &cannHostMappings;
+  while (*link != NULL && (*link)->hostPtr != ptr)
+    link = &(*link)->next;
+  struct cannHostMapping *entry = *link;
+  if (entry != NULL) {
+    *link = entry->next;
+    aclError result = aclrtHostUnregister(ptr);
+    if (result != ACL_SUCCESS)
+      WARN("CANN host unregister failed for %p: ACL error %d", ptr, result);
+    free(entry);
+  }
+  pthread_mutex_unlock(&cannHostMappingLock);
+}
+
+flagcxResult_t cannAdaptorHostGetDevicePointer(void **pDevice, void *pHost) {
+  if (pDevice == NULL || pHost == NULL)
+    return flagcxInvalidArgument;
+  pthread_mutex_lock(&cannHostMappingLock);
+  for (struct cannHostMapping *entry = cannHostMappings; entry != NULL;
+       entry = entry->next) {
+    if (entry->hostPtr == pHost) {
+      *pDevice = entry->devAlias;
+      pthread_mutex_unlock(&cannHostMappingLock);
+      return flagcxSuccess;
+    }
+  }
+  pthread_mutex_unlock(&cannHostMappingLock);
+  // Not one of ours: the runtime still knows memory registered directly
+  // through aclrtHostRegister/V2 by other components.
+  aclError result = aclrtHostGetDevicePointer(pHost, pDevice, 0);
+  if (result != ACL_SUCCESS) {
+    WARN("CANN host device pointer query failed for %p: ACL error %d", pHost,
+         result);
+    return flagcxUnhandledDeviceError;
+  }
+  if (*pDevice == NULL) {
+    WARN("CANN host memory %p is not registered for device access", pHost);
+    return flagcxNotSupported;
+  }
+  return flagcxSuccess;
+}
+
 flagcxResult_t cannAdaptorDeviceMalloc(void **ptr, size_t size,
                                        flagcxMemType_t type,
                                        flagcxStream_t stream) {
 
   if (type == flagcxMemHost) {
     DEVCHECK(aclrtMallocHost(ptr, size));
+    cannHostMapRegister(*ptr, size);
   } else {
     DEVCHECK(aclrtMalloc(ptr, size, ACL_MEM_MALLOC_HUGE_FIRST));
     flagcxResult_t result = cannIpcTrackAllocation(*ptr, size);
@@ -445,6 +530,7 @@ flagcxResult_t cannAdaptorDeviceMalloc(void **ptr, size_t size,
 flagcxResult_t cannAdaptorDeviceFree(void *ptr, flagcxMemType_t type,
                                      flagcxStream_t stream) {
   if (type == flagcxMemHost) {
+    cannHostMapUnregister(ptr);
     DEVCHECK(aclrtFreeHost(ptr));
   } else {
     FLAGCXCHECK(cannIpcFreeAllocation(ptr));
@@ -1101,7 +1187,7 @@ struct flagcxDeviceAdaptor cannAdaptor {
       cannAdaptorDeviceSynchronize, cannAdaptorDeviceMemcpy,
       cannAdaptorDeviceMemset, cannAdaptorDeviceMalloc, cannAdaptorDeviceFree,
       cannAdaptorSetDevice, cannAdaptorGetDevice, cannAdaptorGetDeviceCount,
-      cannAdaptorGetVendor, NULL,
+      cannAdaptorGetVendor, cannAdaptorHostGetDevicePointer,
       // GDR functions
       NULL, // flagcxResult_t (*memHandleInit)(int dev_id, void **memHandle);
       NULL, // flagcxResult_t (*memHandleDestroy)(int dev, void *memHandle);
