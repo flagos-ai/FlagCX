@@ -5,10 +5,13 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 binary=
 filter=${GTEST_FILTER:-*}
-runner_mode=HOMO
-pxn_enabled=0
-quarantine=${FLAGCX_CI_ILUVATAR_QUARANTINE:-0}
 args=()
+mpi_env=()
+if [[ -n "${FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H:-}" ]]; then
+  mpi_env+=(
+    -x "FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H=$FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H"
+  )
+fi
 for arg in "$@"; do
   if [[ "$arg" == --gtest_filter=* ]]; then
     filter=${arg#--gtest_filter=}
@@ -18,15 +21,7 @@ for arg in "$@"; do
   if [[ "${arg##*/}" == runner_mpi_tests ]]; then
     binary=$arg
   fi
-  case "$arg" in
-    FLAGCX_CI_EXPECT_RUNNER_MODE=*) runner_mode=${arg#*=} ;;
-    FLAGCX_CI_EXPECT_PXN=*) pxn_enabled=${arg#*=} ;;
-  esac
 done
-if [[ "$quarantine" != 0 && "$quarantine" != 1 ]]; then
-  echo 'FLAGCX_CI_ILUVATAR_QUARANTINE must be 0 or 1' >&2
-  exit 2
-fi
 if [[ -z "$binary" || ! -x "$binary" ]]; then
   echo 'Iluvatar runner binary is missing' >&2
   exit 1
@@ -82,37 +77,35 @@ if ((${#tests[@]} == 0)); then
   exit 1
 fi
 
+# The published CI image may predate the Dockerfile's gdb dependency. Install
+# it for this runner job so a SendRecv timeout yields user-space thread stacks.
+# Diagnostics remain best effort if the package mirror is unavailable.
+needs_sendrecv_diagnostics=0
+for test in "${tests[@]}"; do
+  if [[ "$test" == *.SendRecv ]]; then
+    needs_sendrecv_diagnostics=1
+    break
+  fi
+done
+if ((needs_sendrecv_diagnostics)) &&
+   [[ "${FLAGCX_CI_INSTALL_GDB:-0}" == 1 ]] &&
+   ! command -v gdb >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    if ! timeout --signal=TERM --kill-after=5s 90s bash -c \
+      'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb'; then
+      echo 'Iluvatar runner: gdb installation failed; timeout diagnostics will use /proc only' >&2
+    fi
+  else
+    echo 'Iluvatar runner: apt-get unavailable; timeout diagnostics will use /proc only' >&2
+  fi
+fi
+
 status=0
 label=${FLAGCX_CI_MPI_LABEL:-Iluvatar runner}
 executed=0
-skipped=0
 start=$SECONDS
 for index in "${!tests[@]}"; do
   test=${tests[index]}
-  # These are known failures, not unsupported hardware capabilities. Match
-  # exact cases and modes; leave the default HOMO and NET striping coverage on.
-  # See .github/configs/iluvatar-known-issues.md for evidence and restoration.
-  reason=
-  if [[ "$quarantine" == 1 && "$runner_mode" == HYBRID ]]; then
-    if [[ "$test" == FlagCXCollTest.SendRecv ]]; then
-      reason='T-3: known heterogeneous SendRecv hang; backend diagnosis pending'
-    elif [[ "$test" == FlagCXCollTest.AlltoAll && "$pxn_enabled" == 1 ]]; then
-      reason='T-4: expected PXN relay absent; topology and routing diagnosis pending'
-    fi
-  fi
-  if [[ -n "$reason" ]]; then
-    echo "::warning title=Iluvatar known-issue quarantine::$label $test SKIPPED: $reason (PR #670)"
-    quarantine_log_root=${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}
-    mkdir -p "$quarantine_log_root"
-    printf '%s\t%s\t%s\n' "$label" "$test" "$reason" \
-      >> "$quarantine_log_root/iluvatar-runner-quarantine.tsv"
-    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-      printf -- '- **Temporarily skipped:** %s / `%s` — %s (PR #670)\n' \
-        "$label" "$test" "$reason" >> "$GITHUB_STEP_SUMMARY"
-    fi
-    skipped=$((skipped + 1))
-    continue
-  fi
   if ((SECONDS - start >= stage_budget)); then
     echo "$label exhausted its ${stage_budget}s stage budget; these cases did" \
       "not run: ${tests[*]:index}" >&2
@@ -123,19 +116,27 @@ for index in "${!tests[@]}"; do
   fi
   executed=$((executed + 1))
   test_status=0
+  require_pass=0
+  if [[ "$test" == FlagCXCollTest.SendRecv ||
+        "$test" == FlagCXCollTest.AlltoAll ]]; then
+    # GTest returns zero for an all-skipped case. These restored cases must
+    # report an actual pass, not merely a successful MPI exit.
+    require_pass=1
+  fi
   if [[ "$test" == *.SendRecv ]]; then
-    # This case currently hangs in CoreX stream synchronization. Still run
-    # it and fail on timeout, but do not repeat a known deterministic hang.
+    # Bound a stuck case and collect pre-timeout stacks.
     FLAGCX_CI_MPI_TIMEOUT="$sendrecv_timeout" \
       FLAGCX_CI_TEST_DIAGNOSTICS_AFTER="$diagnostics_after" \
       FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
+      FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
       FLAGCX_CI_MPI_LABEL="$label $test" \
-      "$script_dir/run_mpi_with_timeout.sh" "${args[@]}" \
+      "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
       --gtest_filter="$test" || test_status=$?
   else
     FLAGCX_CI_MPI_TIMEOUT="$per_test_timeout" \
+      FLAGCX_CI_REQUIRE_GTEST_PASS="$require_pass" \
       FLAGCX_CI_MPI_LABEL="$label $test" \
-      "$script_dir/run_mpi_with_timeout.sh" "${args[@]}" \
+      "$script_dir/run_mpi_with_timeout.sh" "${mpi_env[@]}" "${args[@]}" \
       --gtest_filter="$test" || test_status=$?
   fi
   echo "$label $test result=$test_status"
@@ -146,9 +147,5 @@ for index in "${!tests[@]}"; do
     status=$test_status
   fi
 done
-if ((executed == 0 && skipped > 0)); then
-  echo "$label ran no tests: all selected cases are quarantined" >&2
-  status=1
-fi
-echo "$label summary: executed=$executed quarantined=$skipped result=$status"
+echo "$label summary: executed=$executed result=$status"
 exit "$status"
