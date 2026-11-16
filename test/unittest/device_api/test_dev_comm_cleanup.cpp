@@ -1013,6 +1013,30 @@ TEST(DevCommCreateTest, PreservesCreateErrorWhenRollbackFails) {
   devApiBackend = savedBackend;
 }
 
+TEST(DevCommCreateTest, IpcTableFullIsRejectedWithoutOutOfBoundsAccess) {
+  flagcxComm comm = {};
+  comm.rank = 0;
+  comm.nranks = 1;
+  comm.localRank = 0;
+  comm.localRanks = 1;
+
+  // Fill every slot so slot selection fails. The old code warned and fell
+  // through with slot == -1, later indexing ipcTable[-1]; the fixed path must
+  // report the failure and leave every entry untouched.
+  static int sentinel = 0;
+  void **sentinelPtr = reinterpret_cast<void **>(&sentinel);
+  for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++)
+    comm.ipcTable[i].hostPeerPtrs = sentinelPtr;
+
+  flagcxResult_t status = flagcxSuccess;
+  int slot = buildIpcPeerPointersWithStatus(&comm, &sentinel, sizeof(sentinel),
+                                            &status);
+  EXPECT_EQ(slot, -1);
+  EXPECT_EQ(status, flagcxSystemError);
+  for (int i = 0; i < FLAGCX_MAX_IPC_ENTRIES; i++)
+    EXPECT_EQ(comm.ipcTable[i].hostPeerPtrs, sentinelPtr);
+}
+
 int devMemCreateCalls = 0;
 flagcxMemAllocationInfo capturedAllocation = {};
 bool capturedTracked = false;

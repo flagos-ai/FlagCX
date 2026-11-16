@@ -115,13 +115,15 @@ else ifeq ($(USE_ENFLAME), 1)
   include $(PROJECT_ROOT)/makefiles/enflame.mk
 else ifeq ($(USE_METAX), 1)
   include $(PROJECT_ROOT)/makefiles/metax.mk
+else ifeq ($(USE_MUSA), 1)
+  include $(PROJECT_ROOT)/makefiles/musa.mk
 else ifeq ($(USE_PPU), 1)
   include $(PROJECT_ROOT)/makefiles/ppu.mk
 else ifeq ($(USE_AMD), 1)
   include $(PROJECT_ROOT)/makefiles/amd.mk
 else
   ifneq ($(MAKECMDGOALS),clean)
-    $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, USE_ENFLAME=1, etc.)
+    $(error No platform selected. Set one of USE_NVIDIA=1, USE_DU=1, USE_ASCEND=1, USE_METAX=1, USE_MUSA=1, USE_ENFLAME=1, etc.)
   endif
 endif
 

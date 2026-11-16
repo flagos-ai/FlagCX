@@ -165,10 +165,30 @@ KERNEL_API_TARGETS += dlink_api.o
 KERNEL_IR_TARGETS  += dlink_ir.o
 endif
 
-$(DEVICE_API_OBJ) $(DLINK_API_OBJ):
+# Files whose change must re-enter the kernel make, and through it relink the
+# test binaries. These rules used to have no prerequisites at all, so an
+# existing object made them a no-op: editing the traits headers or a kernel
+# source left the stale object and the stale test binary in place, and the
+# suite then ran kernels that were never rebuilt. mcc emits no usable
+# dependency files here, so enumerate the inputs explicitly.
+KERNEL_DEP_FILES := $(wildcard \
+	$(KERNEL_DIR)/Makefile \
+	$(KERNEL_DIR)/$(KERNEL_PLATFORM)/Makefile \
+	$(KERNEL_DIR)/$(KERNEL_PLATFORM)/*.mu \
+	$(KERNEL_DIR)/$(KERNEL_PLATFORM)/*.h \
+	$(KERNEL_DIR)/$(KERNEL_PLATFORM)/*.cu \
+	$(KERNEL_DIR)/include/*.h \
+	$(KERNEL_DIR)/nvidia/*.cu \
+	$(PROJECT_ROOT)/test/make.inc \
+	$(PROJECT_ROOT)/flagcx/adaptor/include/*.h \
+	$(PROJECT_ROOT)/flagcx/adaptor/include/device_api/*.h \
+	$(PROJECT_ROOT)/bindings/ir/*.h \
+	$(PROJECT_ROOT)/bindings/ir/$(KERNEL_PLATFORM)/*.h)
+
+$(DEVICE_API_OBJ) $(DLINK_API_OBJ): $(KERNEL_DEP_FILES)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_API_TARGETS)
 
-$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ):
+$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ): $(KERNEL_DEP_FILES)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_IR_TARGETS)
 
 $(TOOLS_OBJ): $(TOOLS_SRC)
@@ -184,7 +204,7 @@ $(UNIT_OBJ): $(UNIT_SRC)
 $(UNIT_TARGET): $(UNIT_OBJ)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"
-	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(DEVICE_LINK) $(UNIT_RPATH) $(GTEST_LINK)
+	@$(HOST_CXX) $^ -o $@ $(FLAGCX_LINK) $(GTEST_LINK) $(DEVICE_LINK) $(UNIT_RPATH)
 
 # HIPCC treats object files as HIP source when a .cpp input is present in the
 # same link invocation. Compile each test entry point first so links receive
