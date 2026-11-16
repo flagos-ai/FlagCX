@@ -168,11 +168,16 @@ endif
 # at the site it guards; the point is that a skipped case never reaches
 # the report as a pass.
 ifeq ($(KERNEL_PLATFORM), ascend)
-  ASCEND_IR_TARGETS := $(BINDIR)/test_device_ir_unified_intra
-  SKIPPED_TARGETS := $(notdir $(filter-out $(ASCEND_IR_TARGETS),\
+  ASCEND_IR_TARGETS  := $(BINDIR)/test_device_ir_unified_intra
+  ASCEND_API_TARGETS := $(BINDIR)/test_device_api_intra
+  # The skip list is the original universe minus everything this platform
+  # actually builds.  Ascend keeps ONE IR suite (unified_intra) AND the
+  # legacy api_intra suite, so filter out both - not just the IR target -
+  # or the report falsely names api_intra as skipped while `mpi` builds it.
+  SKIPPED_TARGETS := $(notdir $(filter-out $(ASCEND_IR_TARGETS) $(ASCEND_API_TARGETS),\
                        $(IR_TARGETS) $(API_TARGETS)))
   IR_TARGETS      := $(ASCEND_IR_TARGETS)
-  API_TARGETS     := $(BINDIR)/test_device_api_intra
+  API_TARGETS     := $(ASCEND_API_TARGETS)
   CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
               -DFLAGCX_TEST_NO_INTRA_BARRIER \
               -DFLAGCX_TEST_NO_REMOTE_READ \
