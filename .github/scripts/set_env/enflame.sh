@@ -33,11 +33,8 @@ flagcx_ci_configure_suite() {
   local suite=$1
   case "$suite" in
     adaptor)
-      # TOPS 1.9.10 returns SystemError for invalid hostGetDevicePointer
-      # arguments; the common test expects InvalidArgument.
-      export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"
       if ! flagcx_ci_has_rdma; then
-        export GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"
+        export GTEST_FILTER="-NetAdaptorLoopback.*"
         export FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=0
       else
         export FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1

@@ -843,8 +843,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
-        self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
-        self.assertIn('GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"', enflame_env)
+        self.assertNotIn("HostGetDevicePointer", enflame_env)
+        self.assertIn('export GTEST_FILTER="-NetAdaptorLoopback.*"', enflame_env)
         self.assertIn("unset FLAGCX_CI_RMA_IPC_FILTER", enflame_env)
         self.assertIn(
             "unset FLAGCX_CI_RUNNER_MPI_FILTER FLAGCX_CI_SKIP_RUNNER_HYBRID",
@@ -1180,8 +1180,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
-        self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
-        self.assertIn('GTEST_FILTER="${GTEST_FILTER}:NetAdaptorLoopback.*"', enflame_env)
+        self.assertNotIn("HostGetDevicePointer", enflame_env)
+        self.assertIn('export GTEST_FILTER="-NetAdaptorLoopback.*"', enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL=1", enflame_env)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
