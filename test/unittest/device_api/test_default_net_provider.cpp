@@ -5,7 +5,7 @@
  ************************************************************************/
 
 #include "device_api/comm_traits.h"
-#include "device_api/nvidia_net_provider.h"
+#include "device_api/devnet/nvidia_net_provider.h"
 
 #include <cassert>
 #include <cstdint>

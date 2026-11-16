@@ -1,15 +1,17 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * XPU NetIO host ownership for the NVIDIA default one-sided GDA provider.
+ * XPU NetIO host ownership for the build-selected GPU platform.
  ************************************************************************/
 
-#include "device_api/nvidia_xpu_netio_host.h"
+#include "device_api/devnet/xpu_netio_gda_host.h"
 
 #include "adaptor.h"
 #include "bootstrap.h"
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
+#include "device_api/devnet/xpu_netio_gda_runtime.h"
+#include "device_api/devnet/xpu_netio_gda_view.h"
 #include "device_api/flagcx_device.h"
-#include "device_api/nvidia_xpu_netio_view.h"
 #include "flagcx_kernel_internal.h"
 #include "utils.h"
 
@@ -23,7 +25,7 @@
 #include <new>
 #include <vector>
 
-namespace DefaultNvidiaGda {
+namespace XpuNetioGda {
 namespace {
 
 static constexpr unsigned kProviderId = 1;
@@ -197,7 +199,10 @@ flagcxResult_t registerWindow(flagcxComm_t comm, CommOwner *owner,
   xpu_netio_mr_attr_init(&attr);
   attr.address = address;
   attr.length = bytes;
-  attr.memory_type = XPU_NETIO_MEMORY_TYPE_CUDA;
+  const XpuNetioGdaRuntime runtime = flagcxXpuNetioGdaRuntime();
+  attr.memory_type = runtime.memoryType;
+  if (runtime.memoryType == XPU_NETIO_MEMORY_TYPE_XPU)
+    attr.gpu_platform_id = runtime.platformId;
   attr.access_bits =
       XPU_NETIO_MR_ACCESS_LOCAL_WRITE | XPU_NETIO_MR_ACCESS_REMOTE_WRITE;
   attr.flags = XPU_NETIO_MR_FLAG_STRICT_ORDERING;
@@ -277,7 +282,8 @@ unsigned operationCapabilities(const xpu_netio_caps_t &caps) {
     supported |= DefaultNetGdaPut;
   if (caps.operation_bits & XPU_NETIO_OP_INLINE)
     supported |= DefaultNetGdaPutValue;
-  if (caps.operation_bits & XPU_NETIO_OP_FLUSH_ASYNC)
+  if ((caps.operation_bits & (XPU_NETIO_OP_FLUSH | XPU_NETIO_OP_FLUSH_ASYNC)) ==
+      (XPU_NETIO_OP_FLUSH | XPU_NETIO_OP_FLUSH_ASYNC))
     supported |= DefaultNetGdaFlush;
   // This adapter implements a single-writer Barrier slot using inline writes.
   // It does not implement the public multi-writer SignalInc/Add contract.
@@ -372,8 +378,8 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
         result(xpu_netio_query_caps(owner->ops, owner->device, &owner->caps));
   if (local == flagcxSuccess) {
     owner->capabilities = operationCapabilities(owner->caps);
-    const uint64_t requiredOps =
-        XPU_NETIO_OP_WRITE | XPU_NETIO_OP_INLINE | XPU_NETIO_OP_FLUSH_ASYNC;
+    const uint64_t requiredOps = XPU_NETIO_OP_WRITE | XPU_NETIO_OP_INLINE |
+                                 XPU_NETIO_OP_FLUSH | XPU_NETIO_OP_FLUSH_ASYNC;
     const uint64_t requiredOrder = XPU_NETIO_ORDERED_TRANSPORT |
                                    XPU_NETIO_ORDER_SOURCE_REUSE |
                                    XPU_NETIO_ORDER_SYSTEM_FENCE;
@@ -391,7 +397,7 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
             INT_MAX / static_cast<int>(sizeof(xpu_netio_connect_blob_t)))
       local = flagcxNotSupported;
     if (local == flagcxSuccess &&
-        defaultNetSelectProvider<NvidiaPlatform>(
+        defaultNetSelectProvider<typename DeviceAPI::Platform>(
             kProviderId, owner->capabilities, requiredOperations, true) !=
             DefaultNetProviderGda)
       local = flagcxNotSupported;
@@ -417,15 +423,23 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   xpu_netio_context_attr_t attr{};
   xpu_netio_context_attr_init(&attr);
   attr.device = owner->device;
-  attr.runtime_ops = xpu_netio_cuda_runtime();
+  const XpuNetioGdaRuntime runtime = flagcxXpuNetioGdaRuntime();
+  local = runtime.ops != nullptr && runtime.memoryCapability != 0
+              ? flagcxSuccess
+              : flagcxNotSupported;
+  common = stage(comm, local);
+  if (common != flagcxSuccess)
+    return common;
+  attr.runtime_ops = runtime.ops;
   attr.device_context_count = 1;
   attr.endpoints_per_context = comm->nranks;
   attr.required_operation_bits = XPU_NETIO_OP_WRITE | XPU_NETIO_OP_WRITE_ASYNC |
-                                 XPU_NETIO_OP_INLINE | XPU_NETIO_OP_FLUSH_ASYNC;
+                                 XPU_NETIO_OP_INLINE | XPU_NETIO_OP_FLUSH |
+                                 XPU_NETIO_OP_FLUSH_ASYNC;
   attr.required_ordering_bits = XPU_NETIO_ORDERED_TRANSPORT |
                                 XPU_NETIO_ORDER_SOURCE_REUSE |
                                 XPU_NETIO_ORDER_SYSTEM_FENCE;
-  attr.required_memory_bits = XPU_NETIO_MEMORY_CUDA |
+  attr.required_memory_bits = runtime.memoryCapability |
                               XPU_NETIO_MEMORY_REMOTE_WRITE |
                               XPU_NETIO_MEMORY_STRICT_ORDERING;
   attr.required_completion_bits = XPU_NETIO_COMPLETION_LOCAL_SEND |
@@ -630,8 +644,8 @@ flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
     }
     return common;
   }
-  static_cast<DeviceAPI::Window *>(deviceWindow)->netDeviceHandle =
-      window->deviceView;
+  DefaultNetProviderPolicy<typename DeviceAPI::Platform>::publishWindow(
+      *static_cast<DeviceAPI::Window *>(deviceWindow), window->deviceView);
   devMem->gdaWindowOwner = window;
   ++owner->liveWindows;
   return flagcxSuccess;
@@ -697,4 +711,8 @@ flagcxResult_t pollError(flagcxDevComm_t devComm) {
   return result(static_cast<xpu_netio_status_t>(deviceStatus));
 }
 
-} // namespace DefaultNvidiaGda
+} // namespace XpuNetioGda
+
+const flagcxDevNetAdaptor flagcxDevNetGda = {
+    XpuNetioGda::createComm, XpuNetioGda::destroyComm,
+    XpuNetioGda::createWindow, XpuNetioGda::destroyWindow};

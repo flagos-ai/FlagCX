@@ -8,7 +8,7 @@
 #ifndef FLAGCX_DEVICE_API_NET_GDA_ALLTOALL_H_
 #define FLAGCX_DEVICE_API_NET_GDA_ALLTOALL_H_
 
-#include "flagcx_device.h"
+#include "device_api/flagcx_device.h"
 
 #if defined(FLAGCX_COMM_TRAITS_DEFAULT)
 

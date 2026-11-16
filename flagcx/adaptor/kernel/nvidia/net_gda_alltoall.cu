@@ -6,7 +6,7 @@
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
-#include "device_api/net_gda_alltoall.h"
+#include "device_api/devnet/net_gda_alltoall.h"
 
 #if defined(FLAGCX_COMM_TRAITS_DEFAULT)
 

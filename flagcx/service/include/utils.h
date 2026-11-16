@@ -42,7 +42,7 @@ flagcxResult_t getRandomData(void *buffer, size_t bytes);
 int64_t flagcxParamTopoDetectionDisable();
 int64_t flagcxParamSignalHostEnable();
 int64_t flagcxParamDeviceOneSidedForceNet();
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
 // Read DevComm one-sided Net selection. Invalid text or out-of-range values
 // return flagcxInvalidArgument; callers converge that result across ranks.
 flagcxResult_t flagcxReadDevNetConfig(int *enabled, int *type);

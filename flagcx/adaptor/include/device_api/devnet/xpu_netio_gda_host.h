@@ -1,16 +1,16 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Host lifecycle hooks for the NVIDIA default GDA adapter.
+ * Host lifecycle and diagnostics for the XPU NetIO GDA adapter.
  ************************************************************************/
 
-#ifndef FLAGCX_NVIDIA_XPU_NETIO_HOST_H_
-#define FLAGCX_NVIDIA_XPU_NETIO_HOST_H_
+#ifndef FLAGCX_XPU_NETIO_GDA_HOST_H_
+#define FLAGCX_XPU_NETIO_GDA_HOST_H_
 
+#include "device_api/flagcx_device_internal.h"
 #include "flagcx_device_api.h"
-#include "flagcx_device_internal.h"
 
-namespace DefaultNvidiaGda {
+namespace XpuNetioGda {
 
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
                           int netType);
@@ -25,6 +25,6 @@ flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
 flagcxResult_t clearError(flagcxDevComm_t devComm);
 flagcxResult_t pollError(flagcxDevComm_t devComm);
 
-} // namespace DefaultNvidiaGda
+} // namespace XpuNetioGda
 
-#endif // FLAGCX_NVIDIA_XPU_NETIO_HOST_H_
+#endif // FLAGCX_XPU_NETIO_GDA_HOST_H_

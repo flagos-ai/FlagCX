@@ -7,7 +7,7 @@
 #ifndef FLAGCX_NVIDIA_XPU_NETIO_GDA_H_
 #define FLAGCX_NVIDIA_XPU_NETIO_GDA_H_
 
-#include "nvidia_xpu_netio_view.h"
+#include "xpu_netio_gda_view.h"
 
 #if defined(__CUDACC__)
 #include <xpu_netio/device_api.cuh>

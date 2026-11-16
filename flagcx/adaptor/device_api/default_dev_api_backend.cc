@@ -25,8 +25,8 @@
 #include "shmutils.h"
 #include "sym_heap.h"
 #include "utils.h"
-#if defined(FLAGCX_USE_XPU_NETIO)
-#include "device_api/nvidia_xpu_netio_host.h"
+#if defined(FLAGCX_USE_GDA)
+#include "device_api/devnet/flagcx_dev_net_adaptor.h"
 #endif
 #include <algorithm>
 #include <cstddef>
@@ -36,7 +36,7 @@
 #include <new>
 #include <sched.h>
 #include <unistd.h>
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
 #include <vector>
 #endif
 
@@ -504,7 +504,7 @@ static flagcxResult_t preconnectFullMesh(flagcxComm_t comm) {
 // DevComm Create — full default backend implementation
 // ==========================================================================
 
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
 struct flagcxDevNetConfig {
   int enabled;
   int type; // -1: auto, 0: Proxy, 1: the compiled GDA adapter.
@@ -550,7 +550,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         size_t reqsSize, flagcxDevComm_t devComm) {
   (void)reqsSize; // Older callers may pass a larger requirements tail.
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
   const bool needsInterNet =
       reqs->interForceEnable ||
       (comm->heteroComm != nullptr && comm->heteroComm->nNodes > 1 &&
@@ -643,7 +643,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
       int barrierRanks = devComm->nTeamRanks;
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
       if (attemptGda)
         barrierRanks = comm->nranks;
 #endif
@@ -948,9 +948,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
             : (devComm->nInterPeers == 0 && devComm->signalIpcSlot >= 0);
   }
 
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
   if (attemptGda)
-    FLAGCXCHECK(DefaultNvidiaGda::createComm(comm, devComm, netConfig.type));
+    FLAGCXCHECK(flagcxDevNetGda.createComm(comm, devComm, netConfig.type));
 #endif
   if (devComm->signalBuffer && devComm->gdaProvider == 0 &&
       (devComm->nInterPeers > 0 || !devComm->useP2pSignals ||
@@ -1014,8 +1014,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
-#if defined(FLAGCX_USE_XPU_NETIO)
-  FLAGCXCHECK(DefaultNvidiaGda::destroyComm(devComm));
+#if defined(FLAGCX_USE_GDA)
+  FLAGCXCHECK(flagcxDevNetGda.destroyComm(devComm));
 #endif
   // Deregister communicator-level MRs before freeing their backing buffers.
   // Check handle identity so rollback cannot remove a registration owned by
@@ -1371,10 +1371,10 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       kWin->symPeerLayouts = (typename DeviceAPI::SymPeerLayout *)deviceLayouts;
       devMem->segmentedPeerLayouts = deviceLayouts;
     }
-#if defined(FLAGCX_USE_XPU_NETIO)
+#if defined(FLAGCX_USE_GDA)
     if (dc != nullptr && dc->gdaProvider != 0) {
       flagcxResult_t gdaResult =
-          DefaultNvidiaGda::createWindow(comm, dc, devMem, size, kWin);
+          flagcxDevNetGda.createWindow(comm, dc, devMem, size, kWin);
       if (gdaResult != flagcxSuccess) {
         if (devMem->segmentedPeerLayouts != nullptr) {
           deviceAdaptor->deviceFree(devMem->segmentedPeerLayouts,
@@ -1399,8 +1399,8 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
 
 static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
-#if defined(FLAGCX_USE_XPU_NETIO)
-  FLAGCXCHECK(DefaultNvidiaGda::destroyWindow(devMem));
+#if defined(FLAGCX_USE_GDA)
+  FLAGCXCHECK(flagcxDevNetGda.destroyWindow(devMem));
 #endif
   // Free window allocation if present
   if (devMem->window != nullptr) {
