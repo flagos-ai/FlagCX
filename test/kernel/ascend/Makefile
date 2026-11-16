@@ -16,9 +16,18 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
 	$(CCL_INCLUDE) \
 	$(DEVICE_INCLUDE)
 
+# -DNDEBUG is load-bearing on this pass, not hygiene: probe r141 measured
+# that assert() in the instantiated shared templates (default_comm_traits.h
+# :1525/:1621, the barrier index checks) lowers to a __assert_fail call that
+# has no matching declaration on the bisheng aicore pass - four
+# "no matching function for call to '__assert_fail'" errors, one per assert
+# site per compilation pass, with everything else about the include chain
+# clean. Other vendor passes bind their libc's assert normally, so the flag
+# lives in this file only, and the checks these asserts encode stay enforced
+# by the host side of every test that reads the results buffers back.
 ASCEND_TEST_FLAGS := -x asc --npu-soc=$(ASCEND_SOC) \
 	--cce-auto-infer-kernel-type=false -std=c++17 -O2 -c -fPIC \
-	-DFLAGCX_ASCEND_DEVICE_COMPILE=1
+	-DFLAGCX_ASCEND_DEVICE_COMPILE=1 -DNDEBUG
 
 .PHONY: all clean device_api.o device_ir.o gdr_visibility.o dlink.o \
 	dlink_api.o dlink_ir.o
