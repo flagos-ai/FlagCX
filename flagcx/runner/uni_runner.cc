@@ -72,6 +72,16 @@ static int resolveUniRunnerHierarchicalSlicedARGroupSize(flagcxComm_t comm) {
   return static_cast<int>(groupSize);
 }
 
+static flagcxResult_t
+ensureUniRunnerReduceTypeSupported(flagcxDataType_t datatype) {
+#if defined(USE_DU_ADAPTOR)
+  // The DU static executor has no half or bfloat16 reduction specialization.
+  if (datatype == flagcxFloat16 || datatype == flagcxBfloat16)
+    return flagcxNotSupported;
+#endif
+  return flagcxSuccess;
+}
+
 flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, int root, flagcxComm_t comm,
@@ -86,6 +96,7 @@ flagcxResult_t uniRunnerReduce(const void *sendbuff, void *recvbuff,
   void *scratchbuff = nullptr;
   bool initialized = false;
   size_t scratchBytes = 0;
+  FLAGCXCHECK(ensureUniRunnerReduceTypeSupported(datatype));
   FLAGCXCHECK(validateUniRunnerReduceArgs(count, datatype, op));
   FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpReduce));
   FLAGCXCHECK(checkedUniRunnerTypeBytes(count, 2, datatype, &scratchBytes));
@@ -200,6 +211,7 @@ flagcxResult_t uniRunnerAllReduce(const void *sendbuff, void *recvbuff,
   void *scratchbuff = nullptr;
   size_t scratchBytes = 0;
   UniRunnerAlgorithm algorithm = uniRunnerAlgorithmRingAR;
+  FLAGCXCHECK(ensureUniRunnerReduceTypeSupported(datatype));
   flagcxResult_t selectionResult = resolveUniRunnerAlgorithm(
       uniRunnerAlgorithmRingAR, uniRunnerAlgorithmRingAR,
       uniRunnerAlgorithmSlicedAR, &algorithm);
@@ -311,6 +323,7 @@ flagcxResult_t uniRunnerReduceScatter(const void *sendbuff, void *recvbuff,
   void *scratchbuff = nullptr;
   bool initialized = false;
   size_t scratchBytes = 0;
+  FLAGCXCHECK(ensureUniRunnerReduceTypeSupported(datatype));
   FLAGCXCHECK(validateUniRunnerReduceArgs(recvcount, datatype, op));
   FLAGCXCHECK(validateUniRunnerLaunchConfig(flagcxCommOpReduceScatter));
   FLAGCXCHECK(checkedUniRunnerTypeBytes(recvcount, comm->nranks, datatype,

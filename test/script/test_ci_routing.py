@@ -76,9 +76,18 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "flagcx/adaptor/device/cuda_adaptor.cc",
                 enabled_platform_or_matrix("cuda"),
             ),
-            ("flagcx/adaptor/device/ixcuda_adaptor.cc", ["iluvatar"]),
-            ("docker/iluvatar-ci/Dockerfile", ["iluvatar"]),
-            ("flagcx/adaptor/device/cann_adaptor.cc", ["ascend"]),
+            (
+                "flagcx/adaptor/device/ixcuda_adaptor.cc",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
+                "docker/iluvatar-ci/Dockerfile",
+                enabled_platform_or_matrix("iluvatar"),
+            ),
+            (
+                "flagcx/adaptor/device/cann_adaptor.cc",
+                enabled_platform_or_matrix("ascend"),
+            ),
             (".github/scripts/set_env/enflame.sh", ["enflame"]),
             (
                 ".github/scripts/ci/run_ppu_workload.sh",
@@ -110,6 +119,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
+                "flagcx/adaptor/kernel/common/nested/foo.h",
+                ["cuda", "hygon"],
+            ),
+            (
                 "test/kernel/nvidia/nested/foo.cu",
                 enabled_platform_or_matrix("cuda"),
             ),
@@ -118,8 +131,12 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 enabled_platform_or_matrix("cuda"),
             ),
             (
-                ".github/scripts/ci/run_cuda_legacy_perf.sh",
+                ".github/scripts/ci/run_cuda_perf_experimental.sh",
                 enabled_platform_or_matrix("cuda"),
+            ),
+            (
+                ".github/scripts/ci/run_hygon_perf_experimental.sh",
+                enabled_platform_or_matrix("hygon"),
             ),
             (
                 ".github/scripts/ci/run_metax_workload.sh",
@@ -136,11 +153,11 @@ class CiMatrixRoutingTest(unittest.TestCase):
         outputs, _ = self.resolve(
             {
                 "event_name": "pull_request",
-                "labels": ["platform:iluvatar"],
+                "labels": ["platform:hygon"],
                 "files": ["README.md"],
             }
         )
-        self.assertEqual(outputs["platforms"], ["iluvatar"])
+        self.assertEqual(outputs["platforms"], ["hygon"])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -188,7 +205,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_fork_repository_and_immutable_ref_are_forwarded(self):
         outputs, _ = self.resolve({
             "event_name": "pull_request", "repository": "contributor/FlagCX",
-            "ref": "a" * 40, "labels": ["platform:iluvatar"],
+            "ref": "a" * 40, "labels": ["platform:hygon"],
         })
         self.assertEqual(outputs["repository"], "contributor/FlagCX")
         self.assertEqual(outputs["ref"], "a" * 40)
@@ -196,10 +213,10 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_comment_without_platform_respects_labels(self):
         outputs, _ = self.resolve({
             "event_name": "issue_comment", "comment": "/test", "permission": "admin",
-            "is_pull_request": True, "labels": ["platform:iluvatar"],
+            "is_pull_request": True, "labels": ["platform:hygon"],
             "files": ["flagcx/core/group.cc"],
         })
-        self.assertEqual(outputs["platforms"], ["iluvatar"])
+        self.assertEqual(outputs["platforms"], ["hygon"])
 
     def test_every_platform_config_has_watch_patterns(self):
         for platform in ALL_ENABLED_PLATFORMS:
@@ -211,15 +228,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (
-            ("workflow_dispatch", {"selection": "iluvatar"}, ["iluvatar"]),
+            ("workflow_dispatch", {"selection": "hygon"}, ["hygon"]),
             (
                 "issue_comment",
                 {
-                    "comment": "/test iluvatar",
+                    "comment": "/test hygon",
                     "permission": "write",
                     "is_pull_request": True,
                 },
-                ["iluvatar"],
+                ["hygon"],
             ),
             (
                 "issue_comment",
@@ -541,6 +558,18 @@ class PlatformWorkflowCompletionTest(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_hygon_experimental_perf_is_required(self):
+        script = str(REPO_ROOT / ".github/scripts/ci/check_platform_workflow.sh")
+        args = ["bash", script, '["hygon"]', "success", "skipped",
+                "skipped", "success", "failure", "skipped", "skipped",
+                "skipped"]
+        failed = subprocess.run(args, capture_output=True, text=True)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("Hygon experimental workload", failed.stderr)
+        args[7] = "success"
+        passed = subprocess.run(args, capture_output=True, text=True)
+        self.assertEqual(passed.returncode, 0, passed.stderr)
 
     def test_selected_platform_jobs_must_succeed(self):
         self.assertEqual(

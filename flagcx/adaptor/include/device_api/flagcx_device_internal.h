@@ -248,10 +248,9 @@ struct flagcxDevMemInternal {
   int mrIndex; // index into heteroComm->oneSideHandles (-1 if not registered)
   uintptr_t mrBase; // handles[mrIndex]->baseVas[myRank] (cached for device)
 
-  // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
-  int ipcIndex;          // index into comm->ipcTable (-1 if no IPC)
-  int intraRank;         // this rank's local rank index (for IPC local pointer)
-  void **ipcDevPeerPtrs; // device pointer to the local-rank peer base table
+  // ---- IPC layer (ipcIndex >= 0 when IPC exchange succeeds) ----
+  int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
+  int intraRank; // this rank's local rank index (for IPC local pointer)
   // Allocated only by the uniRunner IPC Ring AllReduce DevMem entry point.
   struct flagcxUniRunnerIpcBinding *uniRunnerIpc;
 

@@ -368,6 +368,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 32
 #endif
 
 #endif // FLAGCX_ADAPTOR_DEVICE_UTILS_H_
