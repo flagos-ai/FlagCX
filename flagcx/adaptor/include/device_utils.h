@@ -31,14 +31,15 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
+#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__MUSACC__) ||        \
+    defined(__xpu__) ||                                                        \
     (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
 // Unreachable device path. CUDA requires its device intrinsic; the other
 // supported device compilers and host compilers accept __builtin_trap().
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__MUSACC__)
 #define FLAGCX_DEVICE_TRAP() __trap()
 #else
 #define FLAGCX_DEVICE_TRAP() __builtin_trap()
@@ -46,7 +47,8 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
-#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
+#if defined(__CUDACC__) || defined(__HIPCC__) || defined(__MUSACC__) ||        \
+    defined(__xpu__) ||                                                        \
     (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
@@ -256,6 +258,54 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #endif // FLAGCX_ILUVATAR_DEVICE_COMPILE
 
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+
+#elif defined(USE_MUSA_ADAPTOR)
+// Moore Threads MUSA. mcc is a clang derived toolchain that defines
+// __MUSACC__ for the device pass. The execution model is CUDA-like: 32-lane
+// warps, threadIdx/blockIdx builtins, __syncthreads, __threadfence.
+//
+// Caveat, measured on MTT S5000 (mcc 5.1.0): __threadfence_system() is an
+// alias of __threadfence() and therefore only orders at device scope. There is
+// no stronger fence exposed by this SDK, so FLAGCX_DEVICE_THREAD_FENCE maps to
+// __threadfence() and cross-device ordering has to come from the transport.
+#include <musa.h>
+#include <musa_runtime.h>
+
+#if defined(__MUSACC__)
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ inline __attribute__((always_inline))
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+#define FLAGCX_DEVICE_THREAD_FENCE __threadfence
+#define FLAGCX_DEVICE_SYNC_THREADS __syncthreads
+#define FLAGCX_THREAD_IDX_X threadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X blockDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SHARED_DECORATOR __shared__
+#else
+// Host pass: retain layout constants and erase device-only qualifiers.
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SHARED_DECORATOR static
+#endif // __MUSACC__
+
+// MTT S5000 reports warpSize == 32.
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_DEVICE_STREAM_PTR musaStream_t *
 
 #elif defined(USE_DU_ADAPTOR)
 #include <hip/hip_runtime.h>

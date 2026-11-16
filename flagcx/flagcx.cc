@@ -1291,6 +1291,11 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
         if (result != flagcxSuccess && result != flagcxNotSupported)
           return result;
       }
+      INFO(FLAGCX_REG,
+           "flagcxOneSideRegisterMr: dma-buf gate ptrType=%d netDev=%d "
+           "propsRes=%d ptrSupport=0x%x dmaSupport=%d",
+           ptrType, heteroComm->netDev, (int)result,
+           (unsigned)properties.ptrSupport, (int)supported);
       if (supported) {
         void *exportBase = nullptr;
         size_t exportSize = 0;
@@ -1298,6 +1303,11 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
         int fd = -1;
         result = flagcxOneSideGetDmaBufExportRange(buff, size, &exportBase,
                                                    &exportSize, &offset);
+        TRACE(FLAGCX_REG,
+              "flagcxOneSideRegisterMr: dma-buf export range buff=%p size=%zu "
+              "res=%d exportBase=%p exportSize=%zu offset=%llu",
+              buff, size, (int)result, exportBase, exportSize,
+              (unsigned long long)offset);
         if (result == flagcxSuccess)
           result = deviceAdaptor->getHandleForAddressRange(&fd, exportBase,
                                                            exportSize, 0);
@@ -1306,13 +1316,19 @@ flagcxResult_t flagcxOneSideRegisterMr(struct flagcxHeteroComm *heteroComm,
         if (result == flagcxSuccess)
           result = net->regMrDmaBuf(regComm, buff, size, ptrType, offset, fd,
                                     mrFlags, mrHandle);
-        if (fd >= 0)
-          close(fd);
         result = flagcxOneSideValidateRegisteredMr(result, *mrHandle);
         if (result == flagcxSuccess) {
+          INFO(FLAGCX_REG,
+               "flagcxOneSideRegisterMr: DMA-BUF MR registered buff=%p "
+               "size=%zu offset=%llu fd=%d",
+               buff, size, (unsigned long long)offset, fd);
+          if (fd >= 0)
+            close(fd);
           *selectedRoute = FLAGCX_VMM_MR_ROUTE_DMABUF;
           return flagcxSuccess;
         }
+        if (fd >= 0)
+          close(fd);
         if (result != flagcxNotSupported)
           return result;
         if (*mrHandle != NULL) {

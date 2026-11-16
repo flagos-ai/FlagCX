@@ -23,3 +23,6 @@ plugin/*/*.egg-info
 .vscode
 # Ignore gtest recorder output file
 Recorder.out
+
+# MUSA device-fault core dumps produced by crashed test kernels
+core_*.mudmp

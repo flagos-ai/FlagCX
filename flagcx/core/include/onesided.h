@@ -86,5 +86,11 @@ flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
                                            size_t userOffset, size_t userSize,
                                            void **peerPtr);
 int buildIpcPeerPointers(struct flagcxComm *comm, void *buff, size_t size);
+// Same as buildIpcPeerPointers, but reports the exact failure result.
+// Returns the IPC table slot on success. On failure returns -1 and sets
+// *status to the precise error (e.g. flagcxNotSupported when the platform has
+// no IPC support), allowing capability probing without losing the cause.
+int buildIpcPeerPointersWithStatus(struct flagcxComm *comm, void *buff,
+                                   size_t size, flagcxResult_t *status);
 
 #endif // FLAGCX_ONESIDED_H_

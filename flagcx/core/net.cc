@@ -516,6 +516,9 @@ flagcxResult_t flagcxNetInitSendResources(struct flagcxNetAdaptor *netAdaptor,
     if (resources->buffers[0] == NULL)
       return flagcxSystemError;
   } else if (resources->netAdaptor == getNetAdaptor(RDMA)) {
+    flagcxNetProperties_t props = {};
+    FLAGCXCHECK(resources->netAdaptor->getProperties(netDev, &props));
+    resources->ptrSupport = props.ptrSupport;
     FLAGCXCHECK(deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                            resources->buffSizes[0], NULL));
   } else {
@@ -651,16 +654,15 @@ struct flagcxNetAdaptor *flagcxNetAdaptors[3] = {nullptr, getNetAdaptor(RDMA),
 enum flagcxNetState flagcxNetStates[3] = {
     flagcxNetStateInit, flagcxNetStateInit, flagcxNetStateInit};
 
-static bool flagcxNetCanUseDmaBuf(struct flagcxNetAdaptor *netAdaptor,
-                                  const flagcxNetProperties_t *properties) {
-  if (netAdaptor == NULL || properties == NULL)
+bool flagcxNetCanUseDmaBuf(struct flagcxNetAdaptor *netAdaptor,
+                           int ptrSupport) {
+  if (netAdaptor == NULL)
     return false;
   // DMA-BUF is an alternate GDR route only when this process will actually
   // export device buffers through it. A property bit by itself is insufficient.
   const char *enabled = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
   if (netAdaptor != getNetAdaptor(RDMA) || enabled == NULL ||
-      strcmp(enabled, "1") != 0 ||
-      (properties->ptrSupport & FLAGCX_PTR_DMABUF) == 0 ||
+      strcmp(enabled, "1") != 0 || (ptrSupport & FLAGCX_PTR_DMABUF) == 0 ||
       deviceAdaptor == NULL || deviceAdaptor->dmaSupport == NULL ||
       deviceAdaptor->getHandleForAddressRange == NULL)
     return false;
@@ -672,7 +674,7 @@ bool flagcxNetCanUseDeviceMemory(struct flagcxNetAdaptor *netAdaptor,
                                  const flagcxNetProperties_t *properties) {
   return netAdaptor != NULL && properties != NULL &&
          ((properties->ptrSupport & FLAGCX_PTR_CUDA) != 0 ||
-          flagcxNetCanUseDmaBuf(netAdaptor, properties));
+          flagcxNetCanUseDmaBuf(netAdaptor, properties->ptrSupport));
 }
 
 flagcxResult_t flagcxGpuGdrSupport(struct flagcxHeteroComm *comm,
@@ -745,7 +747,7 @@ flagcxResult_t flagcxGpuGdrSupport(struct flagcxHeteroComm *comm,
         }
 #endif
       }
-      if (flagcxNetCanUseDmaBuf(comm->netAdaptor, &props)) {
+      if (flagcxNetCanUseDmaBuf(comm->netAdaptor, props.ptrSupport)) {
         int dmaBufFd = -1;
         if (deviceAdaptor->getHandleForAddressRange(
                 &dmaBufFd, gpuPtr, 64 * 1024, 0) == flagcxSuccess &&

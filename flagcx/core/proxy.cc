@@ -1090,15 +1090,6 @@ void flagcxProxyForgetResponse(struct flagcxHeteroComm *comm, void *opId) {
   pthread_mutex_unlock(&comm->proxyState->rpcMutex);
 }
 
-static bool flagcxProxyDmaBufferSupport() {
-  const char *dmaBufEnable = flagcxGetEnv("FLAGCX_DMABUF_ENABLE");
-  bool enabled = dmaBufEnable != NULL && strcmp(dmaBufEnable, "1") == 0;
-  bool supported = false;
-  if (deviceAdaptor->dmaSupport != NULL)
-    deviceAdaptor->dmaSupport(&supported);
-  return enabled && supported;
-}
-
 static flagcxResult_t
 flagcxNetSendProxySetup(struct flagcxProxyConnection *connection,
                         struct flagcxProxyState *proxyState, void *reqBuff,
@@ -1143,7 +1134,6 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
       done == NULL)
     return flagcxInvalidArgument;
 
-  bool dmaBufferSupport = flagcxProxyDmaBufferSupport();
   if (connection->send) {
     struct sendNetResources *resources =
         (struct sendNetResources *)connection->transportResources;
@@ -1153,6 +1143,8 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
     } else if (respSize != 0) {
       return flagcxInvalidArgument;
     }
+    bool dmaBufferSupport =
+        flagcxNetCanUseDmaBuf(resources->netAdaptor, resources->ptrSupport);
     // PXN always exports the gdrMemAlloc buffer through device IPC and
     // registers that same allocation through regMr. CI runs with VMM off.
     if (resources->relayIpcBuffer)
@@ -1166,15 +1158,23 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
 
     auto registerSendBuffer = [&]() -> flagcxResult_t {
       if (dmaBufferSupport && resources->netAdaptor == getNetAdaptor(RDMA)) {
-        int dmabufFd;
-        FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-            &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0));
-        flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
-            resources->netSendComm, resources->buffers[0],
-            resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
-            &resources->mhandles[0]);
-        (void)close(dmabufFd);
-        return result;
+        int dmabufFd = -1;
+        flagcxResult_t exp = deviceAdaptor->getHandleForAddressRange(
+            &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0);
+        if (exp == flagcxSuccess) {
+          flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
+              resources->netSendComm, resources->buffers[0],
+              resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
+              &resources->mhandles[0]);
+          (void)close(dmabufFd);
+          if (result != flagcxNotSupported)
+            return result;
+        } else if (exp != flagcxNotSupported) {
+          return exp;
+        }
+        // The range cannot be exported (or this transport rejected it): fall
+        // back to a plain VA registration instead of failing the connection.
+        resources->useDmaBuf = false;
       }
       int type = resources->netAdaptor == getNetAdaptor(SOCKET)
                      ? FLAGCX_PTR_HOST
@@ -1209,6 +1209,8 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
   } else {
     struct recvNetResources *resources =
         (struct recvNetResources *)connection->transportResources;
+    bool dmaBufferSupport =
+        flagcxNetCanUseDmaBuf(resources->netAdaptor, resources->ptrSupport);
     resources->useDmaBuf = dmaBufferSupport;
     if (resources->netRecvComm == NULL) {
       FLAGCXCHECK(resources->netAdaptor->accept(resources->netListenComm,
@@ -1217,16 +1219,29 @@ flagcxNetProxyConnect(struct flagcxProxyConnection *connection,
     }
 
     if (dmaBufferSupport) {
-      int dmabufFd;
-      FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-          &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0));
-      flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
-          resources->netRecvComm, resources->buffers[0],
-          resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
-          &resources->mhandles[0]);
-      (void)close(dmabufFd);
-      FLAGCXCHECK(result);
-    } else {
+      int dmabufFd = -1;
+      flagcxResult_t exp = deviceAdaptor->getHandleForAddressRange(
+          &dmabufFd, resources->buffers[0], resources->buffSizes[0], 0);
+      if (exp == flagcxSuccess) {
+        flagcxResult_t result = resources->netAdaptor->regMrDmaBuf(
+            resources->netRecvComm, resources->buffers[0],
+            resources->buffSizes[0], FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0,
+            &resources->mhandles[0]);
+        (void)close(dmabufFd);
+        if (result == flagcxSuccess) {
+          *done = 1;
+          return flagcxSuccess;
+        }
+        if (result != flagcxNotSupported)
+          return result;
+      } else if (exp != flagcxNotSupported) {
+        return exp;
+      }
+      // The range cannot be exported (or this transport rejected it): fall
+      // back to a plain VA registration instead of failing the connection.
+      resources->useDmaBuf = false;
+    }
+    {
       int type = resources->netAdaptor == getNetAdaptor(SOCKET)
                      ? FLAGCX_PTR_HOST
                      : ((resources->netAdaptor == getNetAdaptor(RDMA) ||
@@ -1255,7 +1270,6 @@ flagcxNetProxyRegister(struct flagcxProxyConnection *connection,
 
   struct netRegInfo *info = (struct netRegInfo *)reqBuff;
   void *handle = NULL;
-  bool dmaBufferSupport = flagcxProxyDmaBufferSupport();
   void *netComm =
       connection->send
           ? ((struct sendNetResources *)connection->transportResources)
@@ -1268,20 +1282,40 @@ flagcxNetProxyRegister(struct flagcxProxyConnection *connection,
                 ->netAdaptor
           : ((struct recvNetResources *)connection->transportResources)
                 ->netAdaptor;
+  int netDev =
+      connection->send
+          ? ((struct sendNetResources *)connection->transportResources)->netDev
+          : ((struct recvNetResources *)connection->transportResources)->netDev;
+  int ptrSupport = 0;
+  flagcxNetProperties_t properties = {};
+  if (netAdaptor->getProperties != NULL &&
+      netAdaptor->getProperties(netDev, &properties) == flagcxSuccess)
+    ptrSupport = properties.ptrSupport;
+  bool dmaBufferSupport = flagcxNetCanUseDmaBuf(netAdaptor, ptrSupport);
 
   if (dmaBufferSupport) {
-    int dmabufFd;
-    FLAGCXCHECK(deviceAdaptor->getHandleForAddressRange(
-        &dmabufFd, (void *)info->buffer, info->size, 0));
-    flagcxResult_t result =
-        netAdaptor->regMrDmaBuf(netComm, (void *)info->buffer, info->size,
-                                FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0, &handle);
-    (void)close(dmabufFd);
-    FLAGCXCHECK(result);
-  } else {
-    FLAGCXCHECK(netAdaptor->regMr(netComm, (void *)info->buffer, info->size,
-                                  FLAGCX_PTR_CUDA, 0, &handle));
+    int dmabufFd = -1;
+    flagcxResult_t exp = deviceAdaptor->getHandleForAddressRange(
+        &dmabufFd, (void *)info->buffer, info->size, 0);
+    if (exp == flagcxSuccess) {
+      flagcxResult_t result =
+          netAdaptor->regMrDmaBuf(netComm, (void *)info->buffer, info->size,
+                                  FLAGCX_PTR_CUDA, 0ULL, dmabufFd, 0, &handle);
+      (void)close(dmabufFd);
+      if (result == flagcxSuccess) {
+        memcpy(respBuff, &handle, sizeof(handle));
+        *done = 1;
+        return flagcxSuccess;
+      }
+      if (result != flagcxNotSupported)
+        return result;
+    } else if (exp != flagcxNotSupported) {
+      return exp;
+    }
+    // Fall back to VA registration when DMA-BUF export is unavailable.
   }
+  FLAGCXCHECK(netAdaptor->regMr(netComm, (void *)info->buffer, info->size,
+                                FLAGCX_PTR_CUDA, 0, &handle));
   memcpy(respBuff, &handle, sizeof(handle));
   *done = 1;
   return flagcxSuccess;

@@ -2,8 +2,12 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Default Device API backend for flagcxDevComm/DevMem lifecycle.
- * Linked when FLAGCX_COMM_TRAITS_DEFAULT is defined (NCCL < 2.29 or
- * FORCE_DEFAULT_PATH=1).
+ *
+ * Selected by each platform makefile through PLATFORM_EXTRA_SRCS (it is the
+ * fallback backend for DU, MUSA, AMD, Ascend, Metax, Enflame, Iluvatar,
+ * Sunrise, ... and for NVIDIA when FLAGCX_COMM_TRAITS_DEFAULT /
+ * FORCE_DEFAULT_PATH is set). It is published as devApiBackend when the
+ * platform does not ship a specialized host backend.
  *
  * Uses IPC barriers + inter-node signal relay + one-sided buffers.
  * Absorbs all default-path-specific code previously in flagcx_device.cc.
@@ -200,10 +204,16 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     if (res != flagcxSuccess)
       return res;
 
-    int slot =
-        buildIpcPeerPointers(comm, devComm->localBarrierFlags, barrierSize);
-    if (slot < 0)
-      return flagcxSystemError;
+    flagcxResult_t ipcStatus = flagcxSuccess;
+    int slot = buildIpcPeerPointersWithStatus(comm, devComm->localBarrierFlags,
+                                              barrierSize, &ipcStatus);
+    if (slot < 0) {
+      if (ipcStatus == flagcxSuccess)
+        ipcStatus = flagcxSystemError;
+      WARN("setupIpcBarriers(IPC): rank %d peer IPC unavailable (%d)", myRank,
+           ipcStatus);
+      return ipcStatus;
+    }
 
     devComm->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
     devComm->barrierIpcIndex = slot;
@@ -221,6 +231,13 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   } else {
     // ── flagcxShm + mapped host-memory barrier path ──
+    // This path needs a host->device VA translation. Platforms without
+    // hostGetDevicePointer (e.g. MUSA before host registration lands) must
+    // fail cleanly here instead of calling a NULL vtable slot later.
+    if (deviceAdaptor->hostGetDevicePointer == nullptr) {
+      WARN("setupIpcBarriers(SHM): hostGetDevicePointer not supported");
+      return flagcxNotSupported;
+    }
     flagcxResult_t res = flagcxSuccess;
     void **peerCpuPtrs = nullptr;
     flagcxShmHandle_t *peerShmHandles = nullptr;
@@ -526,7 +543,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res = setupInterNodeSignalRelay(comm, devComm);
     if (res != flagcxSuccess) {
       devComm->nInterPeers = 0;
-      if (reqs->interBarrierCount > 0)
+      // A failed relay is not a "no inter peers" condition: silently
+      // continuing would make every inter operation fall back to a
+      // non-existent local path (or hang). Surface the error when this
+      // communicator actually needs the inter path.
+      WARN("defaultDevApiCommCreate: inter-node signal relay setup failed "
+           "(%d)",
+           res);
+      if (reqs->interBarrierCount > 0 || oneSidedRequested)
         return res;
     }
   }
@@ -563,10 +587,15 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   // slots even when no user-visible signals were requested.
   INFO(FLAGCX_INIT,
        "defaultDevApiCommCreate: nInterPeers=%d interSignalCount=%d "
-       "interCounterCount=%d",
-       devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount);
-  if (reqs->interSignalCount > 0 || reqs->interCounterCount > 0 ||
-      reqs->interBarrierCount > 0) {
+       "interCounterCount=%d interBarrierCount=%d",
+       devComm->nInterPeers, reqs->interSignalCount, reqs->interCounterCount,
+       reqs->interBarrierCount);
+  // An inter barrier stores its arrive flags in the dedicated signal plane, so
+  // it needs that plane even when the caller requested no user signal slots.
+  const bool needsInterSignalPlane =
+      reqs->interSignalCount > 0 ||
+      (reqs->interBarrierCount > 0 && devComm->nTeamRanks > 1);
+  if (needsInterSignalPlane || reqs->interCounterCount > 0) {
     int bufCtxCount =
         (comm->heteroComm != nullptr && comm->heteroComm->proxyState != nullptr)
             ? comm->heteroComm->proxyState->kernelState.contextCount
@@ -579,20 +608,32 @@ defaultDevApiCommCreate(flagcxComm_t comm,
     flagcxResult_t res;
 
     // Signal buffer (host-pinned or GDR device memory)
-    if (reqs->interSignalCount > 0 || reqs->interBarrierCount > 0) {
-      // Expand signalCount to include barrier slots:
-      // Each barrier channel reserves one signal slot per Inter team rank.
+    if (needsInterSignalPlane) {
+      // Expand signalCount to include barrier slots: every barrier instance
+      // owns nTeamRanks slots, and a kernel may build one instance per CTA with
+      // index < FLAGCX_DEVICE_CTA_COUNT (see both Barrier ctors). Reserve at
+      // least CTA_COUNT instances so any legal index is addressable even when
+      // the caller only requested a small interBarrierCount.
       int userSignals = reqs->interSignalCount;
-      if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0 ||
-          (reqs->interBarrierCount > 0 &&
-           devComm->nTeamRanks >
-               std::numeric_limits<int>::max() / reqs->interBarrierCount)) {
-        WARN("barrierSignalBase overflow: nTeamRanks=%d interBarrierCount=%d",
+      if (devComm->nTeamRanks < 0 || reqs->interBarrierCount < 0) {
+        WARN("defaultDevApiCommCreate: invalid barrier geometry "
+             "nTeamRanks=%d interBarrierCount=%d",
              devComm->nTeamRanks, reqs->interBarrierCount);
         return flagcxInternalError;
       }
-      int barrierSlots = devComm->nTeamRanks * reqs->interBarrierCount;
-      if (userSignals < 0 || barrierSlots < 0 ||
+      int barrierSlots = 0;
+      if (devComm->nTeamRanks > 1) {
+        int barrierInstances =
+            std::max(reqs->interBarrierCount, (int)FLAGCX_DEVICE_CTA_COUNT);
+        if (devComm->nTeamRanks >
+            std::numeric_limits<int>::max() / barrierInstances) {
+          WARN("barrierSignalBase overflow: nTeamRanks=%d barrierInstances=%d",
+               devComm->nTeamRanks, barrierInstances);
+          return flagcxInternalError;
+        }
+        barrierSlots = devComm->nTeamRanks * barrierInstances;
+      }
+      if (userSignals < 0 ||
           userSignals > std::numeric_limits<int>::max() - barrierSlots ||
           bufCtxCount <= 0 ||
           (size_t)(userSignals + barrierSlots) >
@@ -695,10 +736,30 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       if (hostMappedSignals) {
         if (deviceAdaptor->hostGetDevicePointer == nullptr)
           return flagcxNotSupported;
-        res = deviceAdaptor->hostGetDevicePointer(
-            (void **)&devComm->counterDeviceBuffer, devComm->counterBuffer);
-        if (res != flagcxSuccess)
-          return res;
+      }
+      // The counter plane is host-pinned, but a kernel cannot always
+      // dereference a registered host pointer directly: MUSA reports
+      // MU_DEVICE_ATTRIBUTE_CAN_USE_HOST_POINTER_FOR_REGISTERED_MEM == 0 and
+      // the Device IR counter RMW then faults with an illegal memory access.
+      // Ask the adaptor for the device alias whenever it can provide one; on
+      // backends whose alias equals the host address (CUDA) nothing changes.
+      if (deviceAdaptor->hostGetDevicePointer != nullptr) {
+        void *counterAlias = nullptr;
+        res = deviceAdaptor->hostGetDevicePointer(&counterAlias,
+                                                  devComm->counterBuffer);
+        if (res != flagcxSuccess) {
+          // Some backends export the entry point but refuse the call (the
+          // TSMicro stub returns flagcxNotSupported). That means "this backend
+          // has no device alias", not "communication cannot be created": keep
+          // the host pointer, which is what unaliased backends already use,
+          // and leave the decision to the kernel path that consumes it.
+          WARN("defaultDevApiCommCreate: no counter device alias (%d); keeping "
+               "the host pointer",
+               res);
+        } else if (counterAlias != nullptr &&
+                   counterAlias != (void *)devComm->counterBuffer) {
+          devComm->counterDeviceBuffer = (uint64_t *)counterAlias;
+        }
       }
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: counterBuffer OK");
       if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
@@ -717,7 +778,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         if (res != flagcxSuccess)
           return res;
       } else {
-        devComm->completionCounterBuffer = hostMappedSignals
+        devComm->completionCounterBuffer = devComm->counterDeviceBuffer
                                                ? devComm->counterDeviceBuffer
                                                : devComm->counterBuffer;
       }
@@ -961,7 +1022,7 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     struct flagcxIpcTableEntry *e = &comm->ipcTable[devComm->barrierIpcIndex];
     if (e->hostPeerBasePtrs) {
       for (int i = 0; i < e->nPeers; i++) {
-        if (e->hostPeerBasePtrs[i])
+        if (e->hostPeerBasePtrs[i] && deviceAdaptor->ipcMemHandleClose)
           deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
       }
       free(e->hostPeerBasePtrs);
@@ -986,7 +1047,7 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
     if (e->hostPeerBasePtrs) {
       for (int i = 0; i < e->nPeers; i++) {
-        if (e->hostPeerBasePtrs[i])
+        if (e->hostPeerBasePtrs[i] && deviceAdaptor->ipcMemHandleClose)
           deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
       }
       free(e->hostPeerBasePtrs);

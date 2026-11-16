@@ -418,7 +418,7 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
     // Close IPC handles
     if (e->hostPeerBasePtrs) {
       for (int i = 0; i < e->nPeers; i++) {
-        if (e->hostPeerBasePtrs[i])
+        if (e->hostPeerBasePtrs[i] && deviceAdaptor->ipcMemHandleClose)
           deviceAdaptor->ipcMemHandleClose(e->hostPeerBasePtrs[i]);
       }
       free(e->hostPeerBasePtrs);
@@ -642,7 +642,16 @@ flagcxResult_t flagcxConvergeBootstrapStatus(flagcxComm_t comm,
   return flagcxSuccess;
 }
 
-int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
+// Shared implementation. `status` (when non-null) receives the precise failure
+// result so callers can distinguish "this platform has no IPC support" from a
+// genuine runtime error instead of collapsing both into a system error.
+static int buildIpcPeerPointersImpl(flagcxComm_t comm, void *buff, size_t size,
+                                    flagcxResult_t *status) {
+  flagcxResult_t localStatus = flagcxSuccess;
+  if (status == nullptr)
+    status = &localStatus;
+  *status = flagcxSuccess;
+
   int slot = -1;
   for (int k = 0; k < FLAGCX_MAX_IPC_ENTRIES; k++) {
     if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
@@ -655,6 +664,17 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   if (slot < 0) {
     WARN("buildIpcPeerPointers: IPC table full (max %d entries)",
          FLAGCX_MAX_IPC_ENTRIES);
+    // Every peer enters the converge collective below, so this rank must take
+    // part before giving up instead of returning immediately. `common` can only
+    // be an error here, because this rank reports one.
+    flagcxResult_t common = flagcxSuccess;
+    flagcxResult_t converged =
+        flagcxConvergeBootstrapStatus(comm, flagcxSystemError, &common);
+    *status = flagcxSystemError;
+    if (converged != flagcxSuccess && converged != flagcxInvalidArgument)
+      WARN("buildIpcPeerPointers: cannot converge table-full status (%d)",
+           converged);
+    return -1;
   }
 
   int myRank = comm->rank;
@@ -692,16 +712,26 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   if (res == flagcxSuccess) {
     size_t ipcSize = 0;
     flagcxIpcMemHandle_t handlePtr = NULL;
-    res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+    if (deviceAdaptor->ipcMemHandleCreate == nullptr) {
+      WARN("buildIpcPeerPointers: ipcMemHandleCreate not supported");
+      res = flagcxNotSupported;
+    } else {
+      res = deviceAdaptor->ipcMemHandleCreate(&handlePtr, &ipcSize);
+    }
     if (res != flagcxSuccess) {
       WARN("buildIpcPeerPointers: ipcMemHandleCreate failed");
-      if (handlePtr != NULL)
+      if (handlePtr != NULL && deviceAdaptor->ipcMemHandleFree != nullptr)
         deviceAdaptor->ipcMemHandleFree(handlePtr);
     } else if (handlePtr == NULL || ipcSize == 0 ||
                ipcSize > sizeof(myIpcDesc.handleData)) {
       WARN("buildIpcPeerPointers: IPC handle size %zu exceeds storage %zu",
            ipcSize, sizeof(myIpcDesc.handleData));
-      if (handlePtr != NULL)
+      if (handlePtr != NULL && deviceAdaptor->ipcMemHandleFree != nullptr)
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
+      res = flagcxNotSupported;
+    } else if (deviceAdaptor->ipcMemHandleGet == nullptr) {
+      WARN("buildIpcPeerPointers: ipcMemHandleGet not supported");
+      if (deviceAdaptor->ipcMemHandleFree != nullptr)
         deviceAdaptor->ipcMemHandleFree(handlePtr);
       res = flagcxNotSupported;
     } else {
@@ -720,7 +750,8 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
           myIpcDesc.valid = true;
         }
       }
-      deviceAdaptor->ipcMemHandleFree(handlePtr);
+      if (deviceAdaptor->ipcMemHandleFree != nullptr)
+        deviceAdaptor->ipcMemHandleFree(handlePtr);
     }
   }
 
@@ -728,11 +759,12 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   allDescs = (struct flagcxIpcPeerDesc *)malloc(
       nRanks * sizeof(struct flagcxIpcPeerDesc));
   // Converge every rank-local preparation result before any rank enters the
-  // descriptor metadata exchange. In particular, a failed export must not be
-  // represented as an invalid descriptor while peers proceed to all-gather.
+  // descriptor metadata exchange. In particular, a failed export or a full
+  // local IPC table must not be represented as an invalid descriptor while
+  // peers proceed to all-gather (they would block in the collective).
   flagcxResult_t localPrepare = res;
   if (localPrepare == flagcxSuccess && slot < 0)
-    localPrepare = flagcxNotSupported;
+    localPrepare = flagcxSystemError;
   if (localPrepare == flagcxSuccess && allDescs == nullptr)
     localPrepare = flagcxSystemError;
   flagcxResult_t commonPrepare = flagcxSuccess;
@@ -797,7 +829,16 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
       hostPeerPtrs[lr] = buff;
     } else {
       struct flagcxIpcPeerDesc *pd = &allDescs[globalR];
-      if (pd->valid && deviceAdaptor->ipcMemHandleOpen) {
+      if (!pd->valid) {
+        res = flagcxNotSupported;
+        goto fail;
+      }
+      if (deviceAdaptor->ipcMemHandleOpen == nullptr) {
+        WARN("buildIpcPeerPointers: ipcMemHandleOpen not supported");
+        res = flagcxNotSupported;
+        goto fail;
+      }
+      {
         void *peerPtr = nullptr;
         flagcxIpcMemHandle_t handlePtr = (flagcxIpcMemHandle_t)&pd->handleData;
         res = deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerPtr);
@@ -811,8 +852,6 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
                             peerPtr, pd->allocationSize, pd->userOffset,
                             pd->userSize, &hostPeerPtrs[lr]),
                         res, fail);
-      } else {
-        hostPeerPtrs[lr] = nullptr;
       }
     }
   }
@@ -855,7 +894,7 @@ fail:
   free(allDescs);
   if (hostPeerBasePtrs) {
     for (int i = 0; i < localRanks; i++) {
-      if (hostPeerBasePtrs[i])
+      if (hostPeerBasePtrs[i] && deviceAdaptor->ipcMemHandleClose != nullptr)
         deviceAdaptor->ipcMemHandleClose(hostPeerBasePtrs[i]);
     }
     free(hostPeerBasePtrs);
@@ -866,7 +905,17 @@ fail:
   if (devPeerPtrs) {
     deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
   }
+  *status = (res == flagcxSuccess) ? flagcxSystemError : res;
   return -1;
+}
+
+int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
+  return buildIpcPeerPointersImpl(comm, buff, size, nullptr);
+}
+
+int buildIpcPeerPointersWithStatus(flagcxComm_t comm, void *buff, size_t size,
+                                   flagcxResult_t *status) {
+  return buildIpcPeerPointersImpl(comm, buff, size, status);
 }
 
 flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm) {
@@ -877,7 +926,7 @@ flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm) {
         flagcxIntruQueueDequeue(&comm->deferredIpcQueue);
     if (d->hostPeerBasePtrs) {
       for (int j = 0; j < d->nPeers; j++) {
-        if (d->hostPeerBasePtrs[j])
+        if (d->hostPeerBasePtrs[j] && deviceAdaptor->ipcMemHandleClose)
           deviceAdaptor->ipcMemHandleClose(d->hostPeerBasePtrs[j]);
       }
       free(d->hostPeerBasePtrs);

@@ -200,6 +200,10 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
               return flagcxSystemError;
             }
           } else if (comm->netAdaptor == getNetAdaptor(RDMA)) {
+            flagcxNetProperties_t props = {};
+            FLAGCXCHECK(
+                comm->netAdaptor->getProperties(resources->netDev, &props));
+            resources->ptrSupport = props.ptrSupport;
             FLAGCXCHECK(
                 deviceAdaptor->gdrMemAlloc((void **)&resources->buffers[0],
                                            resources->buffSizes[0], NULL));

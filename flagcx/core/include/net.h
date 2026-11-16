@@ -37,6 +37,9 @@ flagcxResult_t flagcxGpuGdrSupport(struct flagcxHeteroComm *comm,
                                    int *gdrSupport);
 bool flagcxNetCanUseDeviceMemory(struct flagcxNetAdaptor *netAdaptor,
                                  const flagcxNetProperties_t *properties);
+// DMA-BUF is an alternate GDR route only when this process will actually export
+// device buffers through it and the selected transport advertises support.
+bool flagcxNetCanUseDmaBuf(struct flagcxNetAdaptor *netAdaptor, int ptrSupport);
 
 // Network adaptor declarations
 extern struct flagcxNetAdaptor flagcxNetSocket;
