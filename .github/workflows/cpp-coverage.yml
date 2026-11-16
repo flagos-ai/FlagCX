@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Platform name, all, or comma-separated names
+        description: Enabled platform name, all, or comma-separated enabled names
         required: true
         type: string
         default: all

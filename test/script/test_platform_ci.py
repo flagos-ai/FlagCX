@@ -294,25 +294,25 @@ class PlatformCiRegressionTest(unittest.TestCase):
             )
             return json.loads(outputs["platforms"])
 
-    def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
+    def test_unified_ci_only_selects_iluvatar_for_platform_and_shared_changes(self):
+        all_platforms = ["iluvatar"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            all_platforms,
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,19 +705,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
+            ["iluvatar"],
         )
-        for platform in ("cuda", "hygon"):
+        for platform in ("cuda", "hygon", "metax", "ppu", "ascend"):
             selected = subprocess.run(
                 ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
-                check=True,
                 capture_output=True,
                 text=True,
             )
-            self.assertEqual(
-                [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
-                [platform],
-            )
+            self.assertNotEqual(selected.returncode, 0)
+            self.assertIn("Disabled platform selection", selected.stderr)
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
