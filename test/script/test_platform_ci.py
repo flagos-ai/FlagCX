@@ -1040,7 +1040,6 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "core",
                 "device_api_host",
                 "device_api_unified_ir",
-                "kernel",
                 "p2p",
                 "rma",
                 "runner",
@@ -2554,10 +2553,9 @@ run_suite
         self.assertIn("test_deviceptr_args.cpp", result.stdout)
         self.assertIn("build/bin/kernel_unit_tests", result.stdout)
 
-    def test_kernel_suite_builds_and_is_wired_only_into_kunlunxin(self):
-        # KunlunXin explicitly builds and runs the standalone kernel suite.
-        # Other platforms keep their mainline selection; no device_api job may
-        # launch a binary through the obsolete nested kernel directory.
+    def test_kernel_suite_builds_without_standalone_platform_dispatch(self):
+        # The kernel test binary remains available to suites that use it, but
+        # no platform dispatches a separate standalone kernel suite.
         kernel_dir = REPO_ROOT / "test/unittest/kernel"
         result = subprocess.run(
             ["make", "-n", "-C", str(kernel_dir), "all", "USE_NVIDIA=1", "COMPILE_KERNEL=1"],
@@ -2582,10 +2580,7 @@ run_suite
             "the relative path only resolves while kernel lives under device_api",
         )
         for config in (REPO_ROOT / ".github/configs").glob("*.yml"):
-            if config.stem == "kunlunxin":
-                self.assertIn("\n  - kernel\n", config.read_text())
-            else:
-                self.assertNotIn("\n  - kernel\n", config.read_text(), config.name)
+            self.assertNotIn("\n  - kernel\n", config.read_text(), config.name)
 
         idx = run_unit.rindex('case "$SUITE" in')
         googletest_branch = run_unit[idx : run_unit.index("build_project", idx)]
