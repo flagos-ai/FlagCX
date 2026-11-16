@@ -403,6 +403,31 @@ int main(int argc, char *argv[]) {
 #endif
 
     // =======================================================================
+    // S20-S25 capability gate.  Each of these cases ends in a fetchAdd-
+    // based completion (remote signal or local counter).  On platforms
+    // whose device pass has no global-memory RMW instruction the
+    // capability is declared absent in the platform traits, the matching
+    // device_ir launchers stay declared-but-not-defined, and this macro
+    // compiles the call sites out: a leftover reference would fail the
+    // link instead of reporting a pass, and per this suite's contract a
+    // skipped case never reaches the report as a pass.
+    // =======================================================================
+#ifdef FLAGCX_TEST_NO_ATOMIC_COMPLETION
+    RPRINTF("S20 DevSignalStandalone(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S21 DevPutSignalWait(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S22 DevPut_RSig(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S23 DevPutCounter(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S24 DevPutValue_RSig(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    RPRINTF("S25 DevSignalShadowFlush(INTRA+WORLD): SKIP (no RMW "
+            "completion atomic on this device)\n");
+    MPI_Barrier(MPI_COMM_WORLD);
+#else
+    // =======================================================================
     // S20: DevSignalStandalone — 3 coop × 2 teams × 2 actions = 12 cases
     //      — INTRA + WORLD
     // =======================================================================
@@ -675,6 +700,7 @@ int main(int argc, char *argv[]) {
       allPass &= s25Pass;
       MPI_Barrier(MPI_COMM_WORLD);
     }
+#endif
 
     if (proc == 0)
       printf("\n");

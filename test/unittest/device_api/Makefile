@@ -147,21 +147,36 @@ ifeq ($(KERNEL_PLATFORM), enflame)
   UNIT_TARGET :=
 endif
 
-# Ascend/CANN: there is no Device IR backend (bindings/ir/ascend does not
-# exist), and the inter-node suite drives the one-sided net path (put/signal/
-# flush), which is a later stage than this platform has reached.  The intra
-# suite does build: test/kernel/ascend/device_api.asc provides the launchers
-# for the cases that need neither peer memory nor an atomic, and the switches
-# below compile out the ones this hardware cannot satisfy.  Each switch names
-# its reason at the site it guards; the point is that a skipped case never
-# reaches the report as a pass.
+# Ascend/CANN.  Two suites build.  test_device_api_intra keeps its launchers
+# in test/kernel/ascend/device_api.asc and the switches that compile out the
+# cases this hardware cannot satisfy (peer memory, coop groups, the block
+# barrier).  test_device_ir_unified_intra is the Device IR suite: its
+# launchers live in test/kernel/ascend/device_ir.asc (S16-S18), which is
+# build-gated by the in--c device link - an undefined trap reference fails
+# the object, not the test.  The unified INTER product stays out of scope:
+# it drives the one-sided net path, which this platform declares absent
+# (the shared IR arms are pruned behind FLAGCX_DEVICE_HAS_NET_TRANSPORT).
+# NO_REMOTE_READ compiles the S19 call sites out (IPC read-back of peer GM
+# is not a measured path here; the reference file itself states the same
+# rule for P800).  NO_ATOMIC_COMPLETION compiles S20-S25 out: 2201 exposes
+# no global-memory RMW that survives this pass (u32 fetchAdd is refused
+# even under a target-feature spelling, and the plain-u64 loads/stores
+# bound first are the dcci pair, not an add), so the completion-based
+# cases have no implementation to exercise - and their launchers remain
+# declared-but-not-defined, which turns any resurrected call site into a
+# link failure instead of a reportable pass.  Each switch names its reason
+# at the site it guards; the point is that a skipped case never reaches
+# the report as a pass.
 ifeq ($(KERNEL_PLATFORM), ascend)
-  SKIPPED_TARGETS := $(notdir $(filter-out $(BINDIR)/test_device_api_intra,\
+  ASCEND_IR_TARGETS := $(BINDIR)/test_device_ir_unified_intra
+  SKIPPED_TARGETS := $(notdir $(filter-out $(ASCEND_IR_TARGETS),\
                        $(IR_TARGETS) $(API_TARGETS)))
-  IR_TARGETS      :=
+  IR_TARGETS      := $(ASCEND_IR_TARGETS)
   API_TARGETS     := $(BINDIR)/test_device_api_intra
   CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
-              -DFLAGCX_TEST_NO_INTRA_BARRIER
+              -DFLAGCX_TEST_NO_INTRA_BARRIER \
+              -DFLAGCX_TEST_NO_REMOTE_READ \
+              -DFLAGCX_TEST_NO_ATOMIC_COMPLETION
 endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
