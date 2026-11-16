@@ -644,13 +644,21 @@ dushmemGridWait(Coop &coop, dushmem_team_t team, volatile uint64_t *arrive,
       dushmemi_barrier_threadgroup<DUSHMEMI_THREADGROUP_BLOCK>(team);
 #endif
     coop.sync();
+    // Publish the current arrival generation rather than incrementing.
+    // Combined with the level-triggered wait below this avoids the
+    // missed-edge race where a fast block samples release[] after block 0
+    // has already advanced it and then waits forever for the next edge.
+    uint64_t expected = arrive[0];
     for (int i = coop.threadRank(); i < numBlocks; i += FLAGCX_BLOCK_DIM_X) {
-      release[i]++;
+      release[i] = expected;
     }
   } else {
     if (coop.threadRank() == 0) {
-      uint64_t cur = release[FLAGCX_BLOCK_IDX_X];
-      while (release[FLAGCX_BLOCK_IDX_X] == cur) {
+      // Level-triggered: wait until release reaches this block's own
+      // arrival generation. Safe even if block 0 published it before we
+      // got here (release is monotonically set to each round's generation).
+      uint64_t expected = arrive[FLAGCX_BLOCK_IDX_X];
+      while (release[FLAGCX_BLOCK_IDX_X] < expected) {
       }
     }
   }
