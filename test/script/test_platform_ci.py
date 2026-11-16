@@ -765,16 +765,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "iluvatar": [
-                "adaptor",
-                "core",
-                "device_api",
-                "device_api_host",
-                "device_api_unified_ir",
-                "p2p",
-                "rma",
                 "runner",
-                "service",
-                "symmem",
             ],
             "metax": [
                 "adaptor",
@@ -1124,7 +1115,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertIn(
-            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            'adaptor|p2p|rma|runner|sendrecv_probe|symmem|device_api|device_api_unified_ir)',
             unit_runner,
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)

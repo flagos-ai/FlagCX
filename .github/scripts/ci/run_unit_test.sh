@@ -92,7 +92,8 @@ export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
 if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar &&
-      ( "$SUITE" == adaptor || "$SUITE" == runner ) ]]; then
+      ( "$SUITE" == adaptor || "$SUITE" == runner ||
+        "$SUITE" == sendrecv_probe ) ]]; then
   export FLAGCX_DEBUG=TRACE
 fi
 
@@ -125,7 +126,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|sendrecv_probe|symmem|device_api|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -718,7 +719,7 @@ run_suite() {
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       local platform_name
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
-      local p2p_1m_status=0 net_1m_status=0 probe_build_status=0 probe_status=0
+      local p2p_1m_status=0 net_1m_status=0
       local runner_mpi_runner="$MPI_RUNNER"
       local -a runner_net_platform_env=()
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -798,17 +799,6 @@ run_suite() {
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
           --gtest_filter=FlagCXCollTest.SendRecv || net_1m_status=$?
-
-        FLAGCX_CI_TEST_LABEL="Iluvatar SendRecv probe build" \
-          "$TEST_RUNNER" make -C "$suite_dir" sendrecv-probe "${args[@]}" || \
-          probe_build_status=$?
-        if ((probe_build_status == 0)); then
-          FLAGCX_CI_ENABLE_PXN="${FLAGCX_CI_ENABLE_PXN:-1}" \
-            bash "$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_sendrecv_probe.sh" \
-              ./build/bin/runner_sendrecv_probe_mpi_tests \
-              "$FLAGCX_CI_RUNNER_NP" "$FLAGCX_CI_NODE_NP" \
-              "${FLAGCX_CI_PXN_VISIBLE_DEVICES:-}" || probe_status=$?
-        fi
       fi
       FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
@@ -872,9 +862,8 @@ run_suite() {
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
            net_status != 0 || p2p_1m_status != 0 || net_1m_status != 0 ||
-           stripe_status != 0 || pxn_status != 0 ||
-           probe_build_status != 0 || probe_status != 0)); then
-        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status P2P_1MiB=$p2p_1m_status NET_1MiB=$net_1m_status striping=$stripe_status PXN=$pxn_status probe_build=$probe_build_status probe=$probe_status" >&2
+           stripe_status != 0 || pxn_status != 0)); then
+        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status P2P_1MiB=$p2p_1m_status NET_1MiB=$net_1m_status striping=$stripe_status PXN=$pxn_status" >&2
         return 1
       fi
       ;;
@@ -1032,6 +1021,15 @@ run_suite() {
         return 0
       fi
       ;;
+    sendrecv_probe)
+      : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
+      : "${FLAGCX_CI_NODE_NP:?The platform set_env script must define FLAGCX_CI_NODE_NP}"
+      cd "$suite_dir"
+      bash "$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_sendrecv_probe.sh" \
+        ./build/bin/sendrecv_probe_mpi_tests \
+        "$FLAGCX_CI_RUNNER_NP" "$FLAGCX_CI_NODE_NP" \
+        "${FLAGCX_CI_PXN_VISIBLE_DEVICES:-}"
+      ;;
     device_api)
       run_device_api
       ;;
@@ -1086,7 +1084,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|sendrecv_probe|service|symmem)
     build_googletest
     ;;
   device_traits)

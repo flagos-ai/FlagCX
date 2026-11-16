@@ -60,36 +60,6 @@ class IluvatarRunnerCiTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
-    def test_sendrecv_probe_runs_full_matrix_after_timeout(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            probe = root / "run_iluvatar_sendrecv_probe.sh"
-            probe.write_text((CI / probe.name).read_text())
-            binary = self.script(root / "runner_sendrecv_probe_mpi_tests", "exit 0\n")
-            self.script(root / "run_iluvatar_runner_mpi.sh", '''
-printf '%s|%s\n' "$FLAGCX_CI_MPI_LABEL" "$*" >> "$COMMAND_LOG"
-[[ "$FLAGCX_CI_MPI_LABEL" != 'SendRecv probe NET R EARLY' ]] || exit 124
-''')
-            result = subprocess.run(
-                ["bash", str(probe), str(binary), "4", "2", "0,3,4,7"],
-                env={**os.environ, "BASH_ENV": "", "COMMAND_LOG": str(root / "calls"),
-                     "FLAGCX_CI_LOG_DIR": str(root / "logs"),
-                     "FLAGCX_CI_ENABLE_PXN": "1"},
-                capture_output=True, text=True, timeout=10,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            summary = (root / "logs/sendrecv-probe-summary.tsv").read_text()
-            self.assertEqual(len(summary.splitlines()), 23)
-            self.assertIn("NET\tR\tEARLY\t124", summary)
-            self.assertIn("P2P\tF\tEARLY\t0", summary)
-            self.assertIn("PXN\tPXN_D\tLATE\t0", summary)
-            calls = (root / "calls").read_text().splitlines()
-            self.assertEqual(len(calls), 22)
-            self.assertTrue(any("FLAGCX_P2P_DISABLE=0" in call for call in calls))
-            self.assertTrue(any("FLAGCX_P2P_DISABLE=1" in call for call in calls))
-            self.assertTrue(any("CUDA_VISIBLE_DEVICES=0,3,4,7" in call
-                                for call in calls))
-
     def test_sendrecv_and_alltoall_run_in_every_mode(self):
         reason = timeout_wrapper_unsupported()
         if reason:

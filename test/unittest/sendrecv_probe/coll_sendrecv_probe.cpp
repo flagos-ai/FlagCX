@@ -1,5 +1,5 @@
 // Isolate the group shape, cross-cluster direction, and D2H submission order
-// involved in Iluvatar HYBRID SendRecv timeouts. Built only on request.
+// involved in Iluvatar HYBRID SendRecv timeouts.
 
 #include "comm.h"
 #include "global_comm.h"
@@ -132,8 +132,9 @@ TEST_F(FlagCXCollTest, SendRecvProbe) {
     trace("d2h-return", recvPeer, result);
     return result;
   };
-  if (earlyCopy)
+  if (earlyCopy) {
     ASSERT_EQ(copyToHost(), flagcxSuccess);
+  }
 
   trace("first-sync-enter");
   flagcxResult_t syncResult = synchronizeAndCheckAsyncError();

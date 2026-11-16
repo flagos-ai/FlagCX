@@ -43,7 +43,7 @@ flagcx_ci_configure_suite() {
     adaptor)
       export FLAGCX_VMM_ENABLE=0
       ;;
-    runner)
+    runner|sendrecv_probe)
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       ;;
     device_api|device_api_host|device_api_unified_ir)
