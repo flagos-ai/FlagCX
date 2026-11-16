@@ -30,7 +30,8 @@ source "$SET_ENV_SCRIPT"
 suite_log_dir="${FLAGCX_CI_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/flagcx-ci-attempts}/suites"
 mkdir -p "$suite_log_dir"
 safe_suite=$(printf '%s' "$SUITE" | tr -c 'A-Za-z0-9_.-' '_')
-exec > >(tee -a "$suite_log_dir/$safe_suite.log") 2>&1
+exec > >(tee -a "$suite_log_dir/$safe_suite.log") \
+  2> >(tee -a "$suite_log_dir/$safe_suite.log" >&2)
 
 if [[ "${FLAGCX_CI_COVERAGE:-0}" == 1 ]]; then
   coverage_build_dir="$PROJECT_ROOT"
