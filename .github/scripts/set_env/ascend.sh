@@ -38,8 +38,21 @@ FLAGCX_CI_NODE2_MPI_ARGS=(
   -x NCCL_HOSTID=node1
 )
 
+# Ascend builds only test_device_api_intra for now (test/unittest/device_api
+# compiles the IR and inter cases out until the device peer-memory and atomic
+# layers land), so the device_api suite runs the intra step only.
+FLAGCX_CI_DEVICE_API_IR=0
+FLAGCX_CI_DEVICE_API_INTER=0
+
 flagcx_ci_configure_suite() {
   case "$1" in
+    device_api)
+      # The intra device kernels live in test/kernel/ascend and the library's
+      # device-API helpers (flagcxDevNetLaunchConstruct et al.) are only
+      # emitted with COMPILE_KERNEL=1; same contract as cuda/hygon.
+      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
+      ;&
     core|adaptor|device_api_host|p2p|rma|runner|service|symmem|perf|torch-api) ;;
     *) echo "Ascend CI does not enable suite: $1" >&2; return 1 ;;
   esac

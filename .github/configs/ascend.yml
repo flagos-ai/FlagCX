@@ -18,6 +18,10 @@ paths_watch:
   - test/make.inc
   - test/unittest/adaptor/net_test_utils.h
   - flagcx/core/p2p_topo.cc
+  - flagcx/adaptor/include/device_api/ascend_*
+  - flagcx/adaptor/kernel/ascend/*
+  - test/kernel/ascend/*
+  - test/unittest/device_api/*
 ci_image: harbor.baai.ac.cn/flagos-dev/flagcx:ascend-dev-fixed-20261028-debug
 runner_labels:
   - flagcicd-910c
@@ -56,6 +60,7 @@ set_env: .github/scripts/set_env/ascend.sh
 unit_test_suites:
   - core
   - adaptor
+  - device_api
   - device_api_host
   - p2p
   - rma

@@ -743,6 +743,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "ascend": [
                 "core",
                 "adaptor",
+                "device_api",
                 "device_api_host",
                 "p2p",
                 "rma",

@@ -226,22 +226,29 @@ run_device_api() {
   FLAGCX_CI_MPI_LABEL="device_api intra" \
     "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
     build/bin/test_device_api_intra "${flags[@]}"
-  FLAGCX_CI_MPI_LABEL="device IR intra" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
-    build/bin/test_device_ir_intra "${flags[@]}"
+  # A platform whose test Makefile compiles the unified-IR or cross-node
+  # cases out (no build/bin entry produced) opts out per step instead of
+  # failing on a binary it deliberately does not build. Both default to 1.
+  if [[ "${FLAGCX_CI_DEVICE_API_IR:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="device IR intra" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
+      build/bin/test_device_ir_intra "${flags[@]}"
+  fi
 
-  FLAGCX_CI_MPI_LABEL="device_api inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_api_inter "${flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_api_inter "${flags[@]}"
-  FLAGCX_CI_MPI_LABEL="device IR inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_inter "${flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_inter "${flags[@]}"
+  if [[ "${FLAGCX_CI_DEVICE_API_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="device_api inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_api_inter "${flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_api_inter "${flags[@]}"
+    FLAGCX_CI_MPI_LABEL="device IR inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_inter "${flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_inter "${flags[@]}"
+  fi
 }
 
 run_device_api_unified_ir() {
