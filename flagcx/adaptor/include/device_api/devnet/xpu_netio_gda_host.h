@@ -13,7 +13,7 @@
 namespace XpuNetioGda {
 
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
-                          int netType);
+                          const flagcxDevCommRequirements *reqs, int netType);
 flagcxResult_t destroyComm(flagcxDevComm_t devComm);
 flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
                             flagcxDevMem_t devMem, size_t bytes,
