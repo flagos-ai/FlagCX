@@ -1,12 +1,12 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * NVIDIA default Net GDA views. Host owners publish these PODs only after
- * XPU NetIO QPs and memory regions are ready on every participating rank.
+ * Default Net GDA views for XPU NetIO. Host owners publish these PODs only
+ *after XPU NetIO QPs and memory regions are ready on every participating rank.
  ************************************************************************/
 
-#ifndef FLAGCX_NVIDIA_XPU_NETIO_VIEW_H_
-#define FLAGCX_NVIDIA_XPU_NETIO_VIEW_H_
+#ifndef FLAGCX_XPU_NETIO_GDA_VIEW_H_
+#define FLAGCX_XPU_NETIO_GDA_VIEW_H_
 
 #include <xpu_netio/device.h>
 
@@ -28,4 +28,4 @@ struct flagcxXpuNetioDeviceContext {
   uint32_t signalCount;
 };
 
-#endif // FLAGCX_NVIDIA_XPU_NETIO_VIEW_H_
+#endif // FLAGCX_XPU_NETIO_GDA_VIEW_H_

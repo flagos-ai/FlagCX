@@ -37,7 +37,7 @@ ifeq ($(USE_SHMEM), 1)
   PLATFORM_EXTRA_SRCS := flagcx/adaptor/shmem/nvshmem_adaptor.cc \
                          flagcx/adaptor/device_api/nvshmem_dev_api_backend.cc
 else ifeq ($(USE_XPUNETIO), 1)
-  ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT -DFLAGCX_USE_XPU_NETIO
+  ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT -DFLAGCX_USE_GDA -DFLAGCX_USE_XPU_NETIO
   PLATFORM_EXTRA_SRCS := flagcx/adaptor/device_api/default_dev_api_backend.cc
 else ifeq ($(FORCE_DEFAULT_PATH), 1)
   ADAPTOR_FLAG += -DFLAGCX_COMM_TRAITS_DEFAULT
@@ -66,12 +66,12 @@ ifeq ($(USE_XPUNETIO), 1)
   ifeq ($(USE_SHMEM), 1)
     $(error USE_XPUNETIO=1 requires the NVIDIA default Device API backend)
   endif
-  XPU_NETIO_HOME ?= /usr/local
-  XPU_NETIO_LIBDIR ?= $(XPU_NETIO_HOME)/lib
-  DEVICE_INCLUDE += $(XPU_NETIO_HOME)/include
-  DEVICE_LINK += -L$(XPU_NETIO_LIBDIR) -lxpu_netio
+  GDA_PROVIDER_HOME ?= /usr/local
+  DEVICE_INCLUDE += $(GDA_PROVIDER_HOME)/include
+  DEVICE_LINK += -L$(GDA_PROVIDER_HOME)/lib -L$(GDA_PROVIDER_HOME)/lib64 -lxpu_netio
   DEVICE_COMPILE_FLAG += -std=c++17
   HOST_CXX_STANDARD += -std=c++17
-  PLATFORM_EXTRA_SRCS += flagcx/adaptor/device_api/nvidia_xpu_netio_host.cc
+  PLATFORM_EXTRA_SRCS += flagcx/adaptor/device_api/devnet/xpu_netio_gda_host.cc \
+                         flagcx/adaptor/device_api/devnet/nvidia_xpu_netio_runtime.cc
   PLATFORM_KERNEL_SRCS += $(PLATFORM_KERNEL_DIR)/net_gda_alltoall.cu
 endif

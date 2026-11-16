@@ -201,6 +201,7 @@ struct DefaultNetDispatch {
 template <typename PlatformTag>
 struct CommTraits<DefaultBackend<PlatformTag>> {
   // Platform capabilities (resolved via PlatformTag)
+  using Platform = PlatformTag;
   using Intrin = typename PlatformTraits<PlatformTag>::Intrin;
   using Atomic = typename PlatformTraits<PlatformTag>::Atomic;
   using CoopOps = typename PlatformTraits<PlatformTag>::CoopOps;

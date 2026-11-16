@@ -1,24 +1,19 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * NVIDIA resources for the shared DefaultBackend Net provider contract.
+ * Device-view storage shared by DefaultBackend platforms with GDA support.
+ * Include after default_comm_traits.h; the platform opts in by specializing
+ * DefaultNetProviderPolicy<PlatformTag> with this base.
  ************************************************************************/
 
-#ifndef FLAGCX_NVIDIA_NET_PROVIDER_H_
-#define FLAGCX_NVIDIA_NET_PROVIDER_H_
+#ifndef FLAGCX_DEFAULT_NET_GDA_POLICY_H_
+#define FLAGCX_DEFAULT_NET_GDA_POLICY_H_
 
-#include "default_comm_traits.h"
+#include "device_api/default_comm_traits.h"
 
-struct NvidiaPlatform;
-
-// A future NVIDIA GDA implementation specializes
-// DefaultNetGdaProvider<NvidiaPlatform>. Its providerId distinguishes native
-// implementations while the common Net API remains unchanged.
-template <>
-struct DefaultNetProviderPolicy<NvidiaPlatform> {
+struct DefaultNetGdaPolicy {
   struct WindowState {
-    // Published before the Window device view is materialized. Its host owner
-    // releases it through the existing deferred DevMem resource mechanism.
+    // Host publishes this only after the Window's GDA resources are ready.
     const void *netDeviceHandle;
   };
   struct CommState {
@@ -40,6 +35,12 @@ struct DefaultNetProviderPolicy<NvidiaPlatform> {
   template <typename Window>
   FLAGCX_HOST_DEVICE_INLINE static bool hasWindowAccess(const Window &win) {
     return static_cast<const WindowState &>(win).netDeviceHandle != nullptr;
+  }
+
+  template <typename Window>
+  FLAGCX_HOST_DEVICE_INLINE static void publishWindow(Window &win,
+                                                      const void *handle) {
+    static_cast<WindowState &>(win).netDeviceHandle = handle;
   }
 
   template <typename Comm, typename HostComm>
@@ -84,8 +85,4 @@ struct DefaultNetProviderPolicy<NvidiaPlatform> {
   }
 };
 
-#if defined(FLAGCX_USE_XPU_NETIO)
-#include "nvidia_xpu_netio_gda.h"
-#endif
-
-#endif // FLAGCX_NVIDIA_NET_PROVIDER_H_
+#endif // FLAGCX_DEFAULT_NET_GDA_POLICY_H_

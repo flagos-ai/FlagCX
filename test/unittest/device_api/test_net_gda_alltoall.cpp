@@ -7,8 +7,8 @@
  ************************************************************************/
 
 #include "device_api/default_comm_traits.h"
-#include "device_api/net_gda_alltoall.h"
-#include "device_api/nvidia_xpu_netio_host.h"
+#include "device_api/devnet/net_gda_alltoall.h"
+#include "device_api/devnet/xpu_netio_gda_host.h"
 #include "flagcx.h"
 
 #include <mpi.h>
@@ -135,8 +135,8 @@ int main(int argc, char **argv) {
   uint32_t *errorFlag = nullptr;
   uint64_t maxChunkBytes = 0;
   unsigned alignment = 0;
-  CHECK(DefaultNvidiaGda::queryComm(devComm, &capabilities, &errorFlag,
-                                    &maxChunkBytes, &alignment));
+  CHECK(XpuNetioGda::queryComm(devComm, &capabilities, &errorFlag,
+                               &maxChunkBytes, &alignment));
   const unsigned requiredCapabilities =
       DefaultNetGdaPut | DefaultNetGdaPutValue | DefaultNetGdaFlush |
       DefaultNetGdaBarrier;
@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
   CHECK(device->deviceMemcpy(recvBuffer, recv.data(), totalBytes,
                              flagcxMemcpyHostToDevice, stream));
   CHECK(device->streamSynchronize(stream));
-  CHECK(DefaultNvidiaGda::clearError(devComm));
+  CHECK(XpuNetioGda::clearError(devComm));
 
   void *commDevice = nullptr;
   void *sendDevice = nullptr;
@@ -205,7 +205,7 @@ int main(int argc, char **argv) {
   work.fence = flagcxDevNetFenceLevel::Relaxed;
   CHECK(flagcxNetGdaAlltoAllLaunch(work, stream));
   CHECK(device->streamSynchronize(stream));
-  CHECK(DefaultNvidiaGda::pollError(devComm));
+  CHECK(XpuNetioGda::pollError(devComm));
   CHECK(device->deviceMemcpy(recv.data(), recvBuffer, totalBytes,
                              flagcxMemcpyDeviceToHost, stream));
   CHECK(device->streamSynchronize(stream));

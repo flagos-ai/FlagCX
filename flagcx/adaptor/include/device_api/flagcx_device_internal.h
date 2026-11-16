@@ -138,8 +138,8 @@ struct flagcxDevCommInternal {
   int netPutValueReady;
   int useP2pSignals;
 
-  // One-sided provider selection. Only the NVIDIA default backend populates
-  // these fields; two-sided FIFO ownership remains with heteroComm.
+  // One-sided provider selection. Populated by a GDA-enabled DefaultBackend;
+  // two-sided FIFO ownership remains with heteroComm.
   int gdaProvider;
   unsigned gdaProviderId;
   void *gdaDeviceContext;
@@ -266,7 +266,7 @@ struct flagcxDevMemInternal {
   void *winHandle; // Host-side handle for cleanup
   flagcxWindow_t boundWindow; // prevents deregistration while this view exists
   void *segmentedPeerLayouts; // Device array owned by default Device API
-  void *gdaWindowOwner; // NVIDIA default GDA MR owner (null on other paths)
+  void *gdaWindowOwner;       // Default GDA MR owner (null on other paths)
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr

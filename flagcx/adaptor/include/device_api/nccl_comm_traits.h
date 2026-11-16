@@ -786,7 +786,7 @@ using DeviceAPI = CommTraits<NcclBackend>;
 
 #else
 // NCCL version too old — fall back to default
-#include "nvidia_net_provider.h"
+#include "devnet/nvidia_net_provider.h"
 #undef FLAGCX_DEVICE_API_VENDOR
 using DeviceAPI = CommTraits<DefaultBackend<NvidiaPlatform>>;
 

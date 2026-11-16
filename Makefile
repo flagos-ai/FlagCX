@@ -536,7 +536,7 @@ ifeq ($(USE_DU),1)
   LINKER_FLAGS := $(DEVICE_LINK_FLAG)
 endif
 ifeq ($(USE_XPUNETIO),1)
-  LINKER_FLAGS += -Wl,-rpath,$(XPU_NETIO_LIBDIR)
+  LINKER_FLAGS += -Wl,-rpath,$(GDA_PROVIDER_HOME)/lib -Wl,-rpath,$(GDA_PROVIDER_HOME)/lib64
 endif
 
 # MUSA's generated image symbol is WEAK DEFAULT. Without local binding, a
