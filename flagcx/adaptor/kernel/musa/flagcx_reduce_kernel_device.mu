@@ -9,6 +9,7 @@
 #include "device_api/comm_traits.h"
 #include "flagcx.h"
 #include "flagcx_kernel_internal.h"
+#include "musa_adaptor.h"
 #include <limits>
 
 #define SLOT_IDX 4
