@@ -294,25 +294,25 @@ class PlatformCiRegressionTest(unittest.TestCase):
             )
             return json.loads(outputs["platforms"])
 
-    def test_unified_ci_only_selects_iluvatar_for_platform_and_shared_changes(self):
-        all_platforms = ["iluvatar"]
+    def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
+        all_platforms = ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"]
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            all_platforms,
+            ["cuda"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            all_platforms,
+            ["hygon"],
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            all_platforms,
+            ["ascend"],
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -705,16 +705,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            ["iluvatar"],
+            ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
-        for platform in ("cuda", "hygon", "metax", "ppu", "ascend"):
+        for platform in ("cuda", "hygon"):
             selected = subprocess.run(
                 ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
+                check=True,
                 capture_output=True,
                 text=True,
             )
-            self.assertNotEqual(selected.returncode, 0)
-            self.assertIn("Disabled platform selection", selected.stderr)
+            self.assertEqual(
+                [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
+                [platform],
+            )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()

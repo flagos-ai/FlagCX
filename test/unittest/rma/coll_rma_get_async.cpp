@@ -111,8 +111,8 @@ TEST_F(RmaTest, IpcGetSameStreamCompletion) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // Match the production IPC Get's single copy stream. Write before waiting
-  // so the stream can release its own gate. This checks completion and data;
-  // the independent cross-stream probe checks for premature counters.
+  // so the stream can release its own gate. This checks completion and data
+  // without requiring a second stream to release a blocked copy.
   flagcxResult_t gateResult = flagcxSuccess;
   if (rank == 1) {
     gateResult = deviceAdaptor->streamWriteValue64(stream, gate, 1, 0);

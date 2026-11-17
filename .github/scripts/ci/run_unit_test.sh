@@ -144,7 +144,7 @@ if declare -F flagcx_ci_prepare >/dev/null; then
 fi
 # RMA has separate IPC and network invocations. Its RDMA preflight runs only
 # before the network invocation so missing RDMA cannot hide IPC regressions.
-if [[ "$SUITE" != rma && "$SUITE" != probe ]]; then
+if [[ "$SUITE" != rma ]]; then
   flagcx_ci_require_rdma "$SUITE"
 fi
 
@@ -321,39 +321,6 @@ run_device_api_unified_ir() {
     build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
 }
 
-run_probe_suite() {
-  local suite_dir="$PROJECT_ROOT/test/unittest/probe"
-  if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" != iluvatar ]]; then
-    echo "The probe suite currently supports Iluvatar only" >&2
-    return 2
-  fi
-  echo "Running independent Iluvatar IPC Get probes; full hardware CI remains required"
-  local ipc_xml_dir probe mpi_status status=0
-  # Separate MPI launches preserve the control result if the ordering probe
-  # hangs. Run the same-stream control before the cross-stream gate.
-  for probe in RmaTest.IpcGetSameStreamProbe RmaTest.IpcGetCounterOrderProbe; do
-    mpi_status=0
-    ipc_xml_dir=$(mktemp -d "$suite_dir/build/probe-ipc.XXXXXX")
-    FLAGCX_CI_MPI_LABEL="Iluvatar $probe" \
-      FLAGCX_CI_MPI_TIMEOUT=5m \
-      FLAGCX_CI_TEST_MAX_ATTEMPTS=1 \
-      FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=90 \
-      FLAGCX_CI_REQUIRE_GTEST_PASS=1 \
-      make -C "$suite_dir" run-mpi-ipc \
-        "${FLAGCX_CI_TEST_MAKE_ARGS[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        IPC_XML_DIR="$ipc_xml_dir" \
-        IPC_FILTER="$probe" || mpi_status=$?
-    if ((mpi_status == 0)); then
-      python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
-        --case "$probe" \
-        "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || mpi_status=$?
-    fi
-    if ((mpi_status != 0)); then status=1; fi
-  done
-  return "$status"
-}
-
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   if [[ "$SUITE" == device_api_host ||
@@ -371,9 +338,6 @@ run_suite() {
   fi
 
   case "$SUITE" in
-    probe)
-      run_probe_suite
-      ;;
     adaptor)
       local unit_status=0
       local ibuc_status=0
@@ -1140,7 +1104,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|probe|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)
