@@ -209,6 +209,11 @@ if [[ "$SUITE" != rma ]]; then
 fi
 
 build_googletest() {
+  # Persistent workspaces can move between /__w and /workspace mounts.
+  # CMake caches and generated files contain absolute paths.
+  rm -rf -- "$PROJECT_ROOT/third-party/googletest/build"
+  rm -rf -- "$PROJECT_ROOT/third-party/googletest/CMakeCache.txt" \
+    "$PROJECT_ROOT/third-party/googletest/CMakeFiles"
   cmake -S "$PROJECT_ROOT/third-party/googletest" \
     -B "$PROJECT_ROOT/third-party/googletest/build"
   cmake --build "$PROJECT_ROOT/third-party/googletest/build" --parallel "$(nproc)"
