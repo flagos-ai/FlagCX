@@ -7,11 +7,13 @@ LOCAL_INCLUDE := -I$(abspath include)
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/core_unit_tests
+UNIT_DEPS   := $(UNIT_OBJS:.o=.d)
 
 # [mpi] tests: coll_*.cpp + main_mpi.cpp — requires MPI + GPUs
 MPI_SRCS   := $(wildcard coll_*.cpp) main_mpi.cpp
 MPI_OBJS   := $(MPI_SRCS:%.cpp=$(OBJDIR)/%.o)
 MPI_TARGET := $(BINDIR)/core_mpi_tests
+MPI_DEPS   := $(MPI_OBJS:.o=.d)
 
 .PHONY: all clean run-unit run-mpi run
 
@@ -39,17 +41,17 @@ $(MPI_TARGET): $(MPI_OBJS)
 $(OBJDIR)/test_%.o: test_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(LOCAL_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(LOCAL_INCLUDE) -MMD -MP -MF $(@:.o=.d)
 
 $(OBJDIR)/coll_%.o: coll_%.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE) -MMD -MP -MF $(@:.o=.d)
 
 $(OBJDIR)/main_mpi.o: main_mpi.cpp
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(FLAGCX_INCLUDES) $(GTEST_INCLUDE) $(FIXTURE_INCLUDE) $(UNITTEST_INCLUDE) $(LOCAL_INCLUDE) $(MPI_INCLUDE) -MMD -MP -MF $(@:.o=.d)
 
 clean:
 	@rm -rf $(BUILDDIR)
@@ -61,3 +63,5 @@ run-mpi: $(MPI_TARGET)
 	@mpirun --allow-run-as-root -np 8 $(MPI_TARGET)
 
 run: run-unit run-mpi
+
+-include $(UNIT_DEPS) $(MPI_DEPS)
