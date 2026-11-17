@@ -7,6 +7,7 @@
 #include "proxy.h"
 #include "shmutils.h"
 #include "topo.h"
+#include <string.h>
 #define ENABLE_TIMER 0
 #include "timer.h"
 
@@ -186,6 +187,8 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
           FLAGCXCHECK(flagcxCalloc(&resources, 1));
           conn->proxyConn.connection->transportResources = (void *)resources;
           resources->commPtr = comm;
+          resources->tpRemoteRank = peer;
+          resources->channelId = c;
           resources->netDev = comm->netDev;
           resources->netAdaptor = comm->netAdaptor;
           FLAGCXCHECK(deviceAdaptor->streamCreate(&resources->cpStream));
@@ -353,6 +356,8 @@ flagcxResult_t flagcxTransportP2pSetup(struct flagcxHeteroComm *comm,
             FLAGCXCHECK(flagcxCalloc(&resources, 1));
             conn->proxyConn.connection->transportResources = resources;
             resources->commPtr = comm;
+            resources->tpRemoteRank = peer;
+            resources->channelId = c;
             FLAGCXCHECK(flagcxNetInitSendResources(comm->netAdaptor, sendNetDev,
                                                    resources));
           } else {
