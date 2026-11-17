@@ -1960,8 +1960,11 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
   // collective and remains valid when the RDMA provider is unavailable.
   const bool isVmm = ptrType == FLAGCX_PTR_CUDA && isVmmAllocation;
   int ipcSlot = -1;
-  if (ptrType == FLAGCX_PTR_CUDA && !isVmm)
+  if (ptrType == FLAGCX_PTR_CUDA && !isVmm) {
     ipcSlot = buildIpcPeerPointers(comm, buff, size);
+    if (ipcSlot >= 0)
+      comm->ipcTable[ipcSlot].ownerHeld = true;
+  }
   heteroComm->rmaSignalBase = buff;
   heteroComm->rmaSignalSize = size;
   heteroComm->rmaSignalIpcSlot = ipcSlot;
@@ -4043,7 +4046,7 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
     // views are destroyed later by its own state cleanup.
     for (flagcxDevMem_t mem = comm->activeDevMems; mem != nullptr;) {
       flagcxDevMem_t next = mem->activeNext;
-      if (mem->uniRunnerIpc == nullptr)
+      if (!mem->runnerOwned)
         FLAGCXCHECK(flagcxDevMemDestroy(comm, mem));
       mem = next;
     }

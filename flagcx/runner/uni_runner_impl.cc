@@ -172,8 +172,7 @@ static flagcxResult_t releaseOrphanUniRunnerIpcWindow(flagcxComm_t comm,
     return flagcxSuccess;
   for (int slot = 0; slot < comm->ipcTableCapacity; ++slot) {
     const auto &entry = comm->ipcTable[slot];
-    if (entry.inUse && entry.basePtr == buffer &&
-        entry.bindingGeneration != 0) {
+    if (entry.inUse && entry.basePtr == buffer && !entry.ownerHeld) {
       if (entry.refCount != 0)
         return flagcxInvalidUsage;
       FLAGCXCHECK(releaseIpcTableSlot(comm, slot));
@@ -241,15 +240,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   }
   result = flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
       comm, scratch, scratchBytes, &scratchMem);
-  if (result == flagcxSuccess && scratchMem == NULL)
-    result = flagcxSystemError;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
-                                              &ignoredReuse, &collectiveResult),
-                  result, fail);
-  if (collectiveResult != flagcxSuccess) {
-    result = collectiveResult;
+  if (result != flagcxSuccess)
     goto fail;
-  }
 
   result = deviceAdaptor->deviceMalloc(&progress, progressBytes,
                                        flagcxMemDevice, NULL);
@@ -264,24 +256,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   }
   result = flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
       comm, progress, progressBytes, &progressMem);
-  if (result == flagcxSuccess && progressMem == NULL)
-    result = flagcxSystemError;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
-                                              &ignoredReuse, &collectiveResult),
-                  result, fail);
-  if (collectiveResult != flagcxSuccess) {
-    result = collectiveResult;
+  if (result != flagcxSuccess)
     goto fail;
-  }
-  result = scratchMem->hasWindow && progressMem->hasWindow ? flagcxSuccess
-                                                           : flagcxNotSupported;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
-                                              &ignoredReuse, &collectiveResult),
-                  result, fail);
-  if (collectiveResult != flagcxSuccess) {
-    result = collectiveResult;
-    goto fail;
-  }
   result = deviceAdaptor->deviceMemset(scratch, 0, scratchBytes,
                                        flagcxMemDevice, NULL);
   if (result == flagcxSuccess)
@@ -5420,24 +5396,8 @@ ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
   // DevMem view is constructed.
   res = flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(comm, newBuffer, bytes,
                                                         &newMem);
-  if (res == flagcxSuccess && newMem == NULL) {
-    res = flagcxSystemError;
-  }
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
-                                              &collectiveResult),
-                  res, fail);
-  if (collectiveResult != flagcxSuccess) {
-    res = collectiveResult;
+  if (res != flagcxSuccess)
     goto fail;
-  }
-  res = newMem->hasWindow ? flagcxSuccess : flagcxNotSupported;
-  FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, res, &allCanReuse,
-                                              &collectiveResult),
-                  res, fail);
-  if (collectiveResult != flagcxSuccess) {
-    res = collectiveResult;
-    goto fail;
-  }
 
   runnerState->ipcReadyMem = newMem;
   runnerState->ipcReadyBuffer = newBuffer;

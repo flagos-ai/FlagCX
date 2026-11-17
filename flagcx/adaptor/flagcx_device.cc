@@ -201,24 +201,21 @@ extern "C" flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm,
 // ==========================================================================
 
 static void freeUnboundDevMem(flagcxDevMem_t handle) {
-  free(handle->uniRunnerIpc);
   pthread_mutex_destroy(&handle->cachedPtrMutex);
   free(handle);
 }
 
 static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
-                                             bool uniRunnerIpc,
+                                             int preparedIpcSlot,
                                              flagcxDevMem_t *devMem) {
-  if (devMem == nullptr && !uniRunnerIpc)
+  if (devMem == nullptr)
     return flagcxInvalidArgument;
-  if (devMem != nullptr)
-    *devMem = nullptr;
+  *devMem = nullptr;
   if (comm == nullptr)
     return flagcxInvalidArgument;
   flagcxResult_t localPrepare =
-      devMem == nullptr || buff == nullptr || size == 0 ? flagcxInvalidArgument
-                                                        : flagcxSuccess;
+      buff == nullptr || size == 0 ? flagcxInvalidArgument : flagcxSuccess;
   flagcxDevMem_t handle = nullptr;
   if (localPrepare == flagcxSuccess) {
     handle = (flagcxDevMem_t)malloc(sizeof(struct flagcxDevMemInternal));
@@ -236,11 +233,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   if (localPrepare == flagcxSuccess) {
     handle->rawPtr = buff;
     handle->ipcIndex = -1;
-    if (uniRunnerIpc) {
-      localPrepare = flagcxCalloc(&handle->uniRunnerIpc, 1);
-      if (localPrepare == flagcxSuccess)
-        handle->uniRunnerIpc->slot = -1;
-    }
+    handle->runnerOwned = preparedIpcSlot >= 0;
   }
 
   // A subrange is valid only when its complete byte range lies inside the
@@ -270,6 +263,10 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
       freeUnboundDevMem(handle);
     return localPrepare;
   }
+  if (preparedIpcSlot >= 0 && win != nullptr) {
+    freeUnboundDevMem(handle);
+    return flagcxInvalidUsage;
+  }
   if (win != nullptr) {
     if ((win->ownerComm != nullptr && win->ownerComm != comm) ||
         (win->vendorBase == nullptr && win->defaultBase == nullptr) ||
@@ -279,6 +276,21 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
     }
     ++win->devMemRefs;
     handle->boundWindow = win;
+  }
+  if (preparedIpcSlot >= 0) {
+    if (preparedIpcSlot >= comm->ipcTableCapacity) {
+      freeUnboundDevMem(handle);
+      return flagcxInvalidUsage;
+    }
+    auto &entry = comm->ipcTable[preparedIpcSlot];
+    if (!entry.inUse || entry.ownerHeld || entry.basePtr != buff ||
+        entry.size < size || entry.hostPeerPtrs == nullptr ||
+        entry.devPeerPtrs == nullptr || entry.refCount == SIZE_MAX) {
+      freeUnboundDevMem(handle);
+      return flagcxInvalidUsage;
+    }
+    ++entry.refCount;
+    handle->ipcIndex = preparedIpcSlot;
   }
   handle->activeNext = comm->activeDevMems;
   comm->activeDevMems = handle;
@@ -305,7 +317,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
 extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
                                              size_t size, flagcxWindow_t win,
                                              flagcxDevMem_t *devMem) {
-  return flagcxDevMemCreateImpl(comm, buff, size, win, false, devMem);
+  return flagcxDevMemCreateImpl(comm, buff, size, win, -1, devMem);
 }
 
 flagcxResult_t flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
@@ -319,9 +331,11 @@ flagcxResult_t flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
   flagcxResult_t common = flagcxSuccess;
   FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
   if (common == flagcxSuccess)
-    local = flagcxDevMemCreateImpl(comm, buff, size, nullptr, true, devMem);
+    local = flagcxDevMemCreateImpl(comm, buff, size, nullptr, slot, devMem);
   else
     local = common;
+  if (local == flagcxSuccess && (*devMem == nullptr || !(*devMem)->hasWindow))
+    local = *devMem == nullptr ? flagcxSystemError : flagcxNotSupported;
   FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
   if (common == flagcxSuccess)
     return flagcxSuccess;
@@ -349,19 +363,6 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
                           devMem->segmentedPeerLayouts))
     return flagcxInvalidArgument;
 
-  struct flagcxIpcTableEntry *ipcEntry = nullptr;
-  if (devMem->uniRunnerIpc != nullptr &&
-      devMem->uniRunnerIpc->ownsTableReference) {
-    const int slot = devMem->uniRunnerIpc->slot;
-    if (comm == nullptr || slot < 0 || slot >= comm->ipcTableCapacity)
-      return flagcxInvalidUsage;
-    ipcEntry = &comm->ipcTable[slot];
-    if (ipcEntry->bindingGeneration != devMem->uniRunnerIpc->generation ||
-        ipcEntry->size != devMem->uniRunnerIpc->boundSize ||
-        ipcEntry->refCount == 0)
-      return flagcxInvalidUsage;
-  }
-
   if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
     FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
   if (!devMem->backendDestroyed) {
@@ -372,8 +373,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   if (devMem->ipcIndex >= 0) {
     if (comm == nullptr || devMem->ipcIndex >= comm->ipcTableCapacity)
       return flagcxInvalidUsage;
-    if (ipcEntry == nullptr)
-      ipcEntry = &comm->ipcTable[devMem->ipcIndex];
+    struct flagcxIpcTableEntry *ipcEntry = &comm->ipcTable[devMem->ipcIndex];
     if (ipcEntry->refCount == 0)
       return flagcxInvalidUsage;
     if (ipcEntry->refCount == 1 && !ipcEntry->ownerHeld) {
@@ -388,8 +388,6 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     }
   }
   devMem->ipcIndex = -1;
-  free(devMem->uniRunnerIpc);
-  devMem->uniRunnerIpc = nullptr;
   if (devMem->cachedDevicePtr != nullptr) {
     FLAGCXCHECK(deviceAdaptor->deviceFree(devMem->cachedDevicePtr,
                                           flagcxMemDevice, nullptr));
@@ -504,7 +502,6 @@ flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   e->size = 0;
   e->nPeers = 0;
   e->refCount = 0;
-  e->bindingGeneration = 0;
   e->inUse = false;
   e->ownerHeld = false;
   return flagcxSuccess;
@@ -844,7 +841,6 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   comm->ipcTable[slot].basePtr = buff;
   comm->ipcTable[slot].size = size;
   comm->ipcTable[slot].refCount = 0;
-  comm->ipcTable[slot].bindingGeneration = 0;
   comm->ipcTable[slot].inUse = true;
   comm->ipcTable[slot].ownerHeld = false;
 
@@ -894,12 +890,6 @@ flagcxResult_t flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
   if (*slot < 0)
     return flagcxNotSupported;
   comm->ipcTable[*slot].ownerHeld = !uniRunnerIpc;
-  if (uniRunnerIpc) {
-    auto &entry = comm->ipcTable[*slot];
-    entry.bindingGeneration = ++comm->ipcTableGeneration;
-    if (entry.bindingGeneration == 0)
-      entry.bindingGeneration = ++comm->ipcTableGeneration;
-  }
   return flagcxSuccess;
 }
 

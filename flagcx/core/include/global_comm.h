@@ -13,8 +13,8 @@
 /* Opaque handle to flagcxInnerComm */
 typedef struct flagcxInnerComm *flagcxInnerComm_t;
 
-// IPC peer pointer table entry — owned by its local Window or DevComm and
-// referenced by DevMem. Communicator destroy closes any leftover entry.
+// IPC peer pointer table entry — owned by a local registration or a DevMem
+// reference. Communicator destroy closes any leftover entry.
 #define FLAGCX_MAX_IPC_ENTRIES 16
 
 struct flagcxIpcTableEntry {
@@ -25,9 +25,8 @@ struct flagcxIpcTableEntry {
   void *basePtr;           // own user-buffer pointer
   size_t size;
   size_t refCount;
-  uint64_t bindingGeneration;
-  bool inUse;     // true while a devMem references this entry
-  bool ownerHeld; // Window or DevComm owns this entry until its destruction
+  bool inUse;     // true after IPC mapping creation until local cleanup
+  bool ownerHeld; // local Window, DevComm, or signal registration owns the slot
 };
 
 /* Opaque handle to flagcxHeteroComm */
@@ -95,7 +94,6 @@ struct flagcxComm {
   struct flagcxIpcTableEntry ipcTableInline[FLAGCX_MAX_IPC_ENTRIES];
   struct flagcxIpcTableEntry *ipcTable = ipcTableInline;
   int ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
-  uint64_t ipcTableGeneration;
 
   flagcxWindow_t publicWindows; // includes empty reusable public handles
   flagcxDevMem_t activeDevMems;

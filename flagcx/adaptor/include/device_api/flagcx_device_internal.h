@@ -216,13 +216,6 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
 //   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
 //   window != nullptr        → Window available (Vendor or default)
 // ============================================================
-struct flagcxUniRunnerIpcBinding {
-  int slot;
-  uint64_t generation;
-  size_t boundSize;
-  bool ownsTableReference;
-};
-
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
   void *rawPtr; // = buff parameter
@@ -244,8 +237,8 @@ struct flagcxDevMemInternal {
   // ---- IPC layer (ipcIndex >= 0 when IPC exchange succeeds) ----
   int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
   int intraRank; // this rank's local rank index (for IPC local pointer)
-  // Allocated only by the uniRunner IPC Ring AllReduce DevMem entry point.
-  struct flagcxUniRunnerIpcBinding *uniRunnerIpc;
+  // UniRunner tears down this view with its persistent state at CommDestroy.
+  bool runnerOwned;
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window

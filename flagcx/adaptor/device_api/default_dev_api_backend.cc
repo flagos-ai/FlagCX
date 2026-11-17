@@ -1170,41 +1170,16 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
       devMem->winHandle = (void *)win;
     }
-    // ---- Priority 4 & 5: No window — uniRunner IPC Ring AR ----
-    else if (win == nullptr && devMem->uniRunnerIpc != nullptr) {
-      int existingIdx = -1;
-      for (int i = 0; i < comm->ipcTableCapacity; ++i) {
-        const auto &entry = comm->ipcTable[i];
-        if (entry.inUse && entry.basePtr == buff && entry.size >= size &&
-            entry.hostPeerPtrs != nullptr && entry.devPeerPtrs != nullptr &&
-            entry.bindingGeneration != 0) {
-          existingIdx = i;
-          break;
-        }
-      }
-      if (existingIdx >= 0) {
-        auto &entry = comm->ipcTable[existingIdx];
-        if (entry.refCount == SIZE_MAX)
-          return flagcxInvalidUsage;
-        ++entry.refCount;
-        devMem->ipcIndex = existingIdx;
-      }
-      if (devMem->ipcIndex >= 0) {
-        const struct flagcxIpcTableEntry &entry =
-            comm->ipcTable[devMem->ipcIndex];
-        devMem->uniRunnerIpc->slot = devMem->ipcIndex;
-        devMem->uniRunnerIpc->generation = entry.bindingGeneration;
-        devMem->uniRunnerIpc->boundSize = entry.size;
-        devMem->uniRunnerIpc->ownsTableReference = true;
-      }
-    }
-    // ---- No window: attach only to a previously registered IPC mapping. ----
-    else if (win == nullptr && !flagcxParamDeviceOneSidedForceNet()) {
+    // A prepared IPC slot already owns one reference. Otherwise, attach only
+    // to a previously registered owned IPC mapping.
+    else if (win == nullptr && devMem->ipcIndex < 0 &&
+             !flagcxParamDeviceOneSidedForceNet()) {
       int existingIdx = -1;
       for (int i = 0; i < comm->ipcTableCapacity; i++) {
         if (comm->ipcTable[i].inUse && comm->ipcTable[i].basePtr == buff &&
-            comm->ipcTable[i].size >= size &&
-            comm->ipcTable[i].bindingGeneration == 0) {
+            comm->ipcTable[i].size >= size && comm->ipcTable[i].ownerHeld &&
+            comm->ipcTable[i].hostPeerPtrs != nullptr &&
+            comm->ipcTable[i].devPeerPtrs != nullptr) {
           existingIdx = i;
           break;
         }
