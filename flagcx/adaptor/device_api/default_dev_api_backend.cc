@@ -1294,6 +1294,18 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     flagcxDevComm_t dc = (comm != nullptr && comm->heteroComm != nullptr)
                              ? comm->heteroComm->devCommHandle
                              : nullptr;
+#if defined(FLAGCX_USE_GDA)
+    if (comm != nullptr && comm->devNetCommHandle != nullptr)
+      dc = comm->devNetCommHandle;
+    if (flagcxParamDeviceOneSidedForceNet() && dc != nullptr &&
+        dc->gdaProvider != 0 && win == nullptr) {
+      WARN("flagcxDevMemCreate: forced GDA Net requires a registered Window "
+           "for buff %p",
+           buff);
+      delete kWin;
+      return flagcxInvalidUsage;
+    }
+#endif
     bool hasRemotePeers = comm != nullptr && comm->heteroComm != nullptr &&
                           comm->heteroComm->nNodes > 1;
     bool needsNetFallback = !hasP2pAccess || hasRemotePeers;
@@ -1312,8 +1324,12 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       }
     }
     devMem->window = kWin;
-    devMem->hasWindow =
-        kWin->hasAccess() || (dc != nullptr && dc->gdaProvider != 0);
+    devMem->hasWindow = kWin->hasAccess();
+#if defined(FLAGCX_USE_GDA)
+    if (dc != nullptr && dc->gdaProvider != 0 && win != nullptr &&
+        win->gdaWindowOwner != nullptr)
+      devMem->hasWindow = true;
+#endif
 
     if (!devMem->hasWindow && win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
@@ -1388,9 +1404,9 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
       devMem->segmentedPeerLayouts = deviceLayouts;
     }
 #if defined(FLAGCX_USE_GDA)
-    if (dc != nullptr && dc->gdaProvider != 0) {
+    if (dc != nullptr && dc->gdaProvider != 0 && win != nullptr) {
       flagcxResult_t gdaResult =
-          flagcxDevNetGda.createWindow(comm, dc, devMem, size, kWin);
+          flagcxDevNetGda.bindDevMem(win, devMem, size, kWin);
       if (gdaResult != flagcxSuccess) {
         if (devMem->segmentedPeerLayouts != nullptr) {
           deviceAdaptor->deviceFree(devMem->segmentedPeerLayouts,
@@ -1416,7 +1432,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
 static flagcxResult_t defaultDevApiMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
 #if defined(FLAGCX_USE_GDA)
-  FLAGCXCHECK(flagcxDevNetGda.destroyWindow(devMem));
+  FLAGCXCHECK(flagcxDevNetGda.unbindDevMem(devMem));
 #endif
   // Free window allocation if present
   if (devMem->window != nullptr) {

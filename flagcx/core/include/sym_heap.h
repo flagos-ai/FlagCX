@@ -26,6 +26,16 @@ struct flagcxWindow {
   flagcxComm_t ownerComm;
   flagcxWindow_t nextOwned;
   uint32_t devMemRefs;
+#if defined(FLAGCX_USE_GDA)
+  void *userBase; // canonical Window allocation, not a DevMem subrange
+  size_t userSize;
+  void *gdaWindowOwner; // build-selected GDA provider's MR owner
+  const void *gdaDeviceView;
+  bool gdaRegistrationActive; // kept until local release succeeds
+  unsigned gdaDevMemRefs;     // local DevMem views borrowing this registration
+  struct flagcxDevMemInternal *devMemViews; // local views of this Window
+  struct flagcxWindow *devNetNext;
+#endif
 };
 
 enum flagcxSymWindowState {

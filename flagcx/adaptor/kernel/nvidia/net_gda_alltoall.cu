@@ -31,6 +31,8 @@ flagcxNetGdaAlltoAllKernel(flagcxNetGdaAlltoAllWork work) {
   const int nranks = comm.getSize();
   if (nranks <= 0 || rank < 0 || rank >= nranks ||
       work.contextIndex >= comm.getContextCount() ||
+      comm.interBarrierCount <= 0 ||
+      work.barrierIndex >= static_cast<unsigned>(comm.interBarrierCount) ||
       work.bytesPerPeer > SIZE_MAX / static_cast<size_t>(nranks) ||
       (work.bytesPerPeer != 0 &&
        (work.send == nullptr || work.recv == nullptr))) {

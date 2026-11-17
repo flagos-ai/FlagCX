@@ -447,8 +447,8 @@ run-mpi: run-mpi-intra run-mpi-inter run-mpi-unified-intra \
 ifeq ($(USE_XPUNETIO)$(KERNEL_PLATFORM),1nvidia)
 run-mpi-gda: $(GDA_TARGET)
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 1 $(HETERO_ENV) $(INTER_NODE0_ENV) $(GDA_TARGET) \
-		: -n 1 $(HETERO_ENV) $(INTER_NODE1_ENV) $(GDA_TARGET)
+		-n 1 $(INTER_ENV) $(INTER_NODE0_ENV) $(GDA_TARGET) \
+		: -n 1 $(INTER_ENV) $(INTER_NODE1_ENV) $(GDA_TARGET)
 else
 run-mpi-gda:
 	@echo "Net GDA test requires USE_NVIDIA=1 USE_XPUNETIO=1"

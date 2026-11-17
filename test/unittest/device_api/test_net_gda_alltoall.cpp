@@ -164,9 +164,9 @@ int main(int argc, char **argv) {
   flagcxWindow_t sendWindow = nullptr;
   flagcxWindow_t recvWindow = nullptr;
   CHECK(flagcxCommWindowRegister(comm, sendBuffer, totalBytes, &sendWindow,
-                                 FLAGCX_WIN_COLL_SYMMETRIC, flagcxMemCCL));
+                                 FLAGCX_WIN_ASYMMETRIC, flagcxMemCCL));
   CHECK(flagcxCommWindowRegister(comm, recvBuffer, totalBytes, &recvWindow,
-                                 FLAGCX_WIN_COLL_SYMMETRIC, flagcxMemCCL));
+                                 FLAGCX_WIN_ASYMMETRIC, flagcxMemCCL));
 
   flagcxDevMem_t sendMem = nullptr;
   flagcxDevMem_t recvMem = nullptr;
