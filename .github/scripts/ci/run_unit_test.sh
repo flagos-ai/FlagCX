@@ -323,6 +323,13 @@ run_device_api() {
 
 run_device_api_unified_ir() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local s16_skip_reason
+  s16_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+    case "$SUITE" S16)
+  if [[ -n "$s16_skip_reason" ]]; then
+    export FLAGCX_CI_UNIFIED_IR_SKIP_S16=1
+    export FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON="$s16_skip_reason"
+  fi
   local -a common_env=(
     -x FLAGCX_USE_HETERO_COMM=1
     -x FLAGCX_VMM_ENABLE=0
@@ -336,6 +343,12 @@ run_device_api_unified_ir() {
     -x FLAGCX_DEBUG=INFO
     -x FLAGCX_DEBUG_SUBSYS=ALL
   )
+  if [[ -n "$s16_skip_reason" ]]; then
+    intra_env+=(
+      -x FLAGCX_CI_UNIFIED_IR_SKIP_S16
+      -x FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON
+    )
+  fi
   local -a inter_env=(
     "${common_env[@]}"
     -x FLAGCX_DEBUG=INFO

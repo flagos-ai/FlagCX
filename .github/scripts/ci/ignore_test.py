@@ -20,12 +20,14 @@ def config():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("kind", choices=("gtest", "phase", "perf", "torch", "runner"))
+    parser.add_argument(
+        "kind", choices=("gtest", "phase", "case", "perf", "torch", "runner")
+    )
     parser.add_argument("suite", nargs="?")
     parser.add_argument("mode", nargs="?")
     parser.add_argument("name", nargs="?")
     args = parser.parse_args()
-    section = "phases" if args.kind == "phase" else args.kind
+    section = {"phase": "phases", "case": "cases"}.get(args.kind, args.kind)
     data = config().get(section, {})
 
     if args.kind == "gtest":
@@ -42,6 +44,19 @@ def main():
         match = next(
             (entry for entry in data
              if entry.get("suite") == args.suite and entry.get("name") == args.mode),
+            None,
+        )
+        print(match.get("reason", "") if match else "")
+        return
+
+    if args.kind == "case":
+        match = next(
+            (
+                entry
+                for entry in data
+                if entry.get("suite") == args.suite
+                and args.mode in entry.get("tests", [])
+            ),
             None,
         )
         print(match.get("reason", "") if match else "")

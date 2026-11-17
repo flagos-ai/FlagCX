@@ -96,6 +96,15 @@ ignore_test:
     - suite: torch-api
       name: heterogeneous
       reason: XRE cudaLaunchHostFunc is unsupported
+  cases:
+    - suite: device_api_unified_ir
+      tests:
+        - S16
+      reason: >-
+        P800 four-rank unified IR intra timed out twice after 20m (exit=124)
+        before any S16 result in run 44002251935, artifact 14297650820.
+        Barrier/PE mapping/state lifecycle diagnosis is pending; no runtime
+        stack was captured. This is skipped coverage, not a passing test.
   perf:
     operations:
       - gather

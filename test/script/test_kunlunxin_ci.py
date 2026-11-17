@@ -16,6 +16,31 @@ HANDLER = REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
 
 
 class KunlunXinUnitDispatchTest(unittest.TestCase):
+    def test_unified_ir_ignore_test_only_matches_s16(self):
+        config = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+        )["ignore_test"]
+        env = {
+            **os.environ,
+            "FLAGCX_CI_IGNORE_TEST": json.dumps(config),
+        }
+        helper = REPO_ROOT / ".github/scripts/ci/ignore_test.py"
+        s16 = subprocess.run(
+            [sys.executable, str(helper), "case", "device_api_unified_ir", "S16"],
+            env=env, check=True, capture_output=True, text=True,
+        )
+        s17 = subprocess.run(
+            [sys.executable, str(helper), "case", "device_api_unified_ir", "S17"],
+            env=env, check=True, capture_output=True, text=True,
+        )
+        self.assertIn("timed out twice", s16.stdout)
+        self.assertEqual(s17.stdout, "\n")
+        self.assertFalse(any(
+            entry.get("suite") == "device_api_unified_ir"
+            and entry.get("name") == "whole-suite"
+            for entry in config["phases"]
+        ))
+
     def test_device_group_and_heap_size_can_be_overridden(self):
         result = subprocess.run(
             ["bash", "-c", 'set -euo pipefail; source "$1"; '
