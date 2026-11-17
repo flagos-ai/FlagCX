@@ -39,8 +39,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ("nvidia", "nvidia_adaptor.h"),
             ("du", "du_adaptor.h"),
             ("iluvatar", "iluvatar_adaptor.h"),
+            ("musa", "musa_adaptor.h"),
         ):
-            suffix = "hip" if platform == "du" else "cu"
+            suffix = {"du": "hip", "musa": "mu"}.get(platform, "cu")
             for kernel in (f"device_api.{suffix}", f"device_ir.{suffix}"):
                 source = (REPO_ROOT / "test/kernel" / platform / kernel).read_text()
                 self.assertIn(f'#include "{adaptor}"', source)
@@ -581,6 +582,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"$BUILD_BIN/symmem_mpi_tests"', symmem_runner)
         self.assertIn('run-mpi-net', unit_runner)
 
+    def test_cuda_device_traits_suite_runs_kernel(self):
+        cuda_config = (REPO_ROOT / ".github/configs/cuda.yml").read_text()
+        cuda_env = (REPO_ROOT / ".github/scripts/set_env/cuda.sh").read_text()
+        unit_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        kernel_makefile = (REPO_ROOT / "test/kernel/nvidia/Makefile").read_text()
+
+        suites = cuda_config[cuda_config.index("unit_test_suites:") :]
+        self.assertIn("  - device_traits", suites)
+        self.assertIn(
+            "device_api|device_api_host|device_api_unified_ir|device_traits)",
+            cuda_env,
+        )
+        self.assertIn('"$SUITE" == device_traits', unit_runner)
+        self.assertIn('"$PROJECT_ROOT/test/kernel/nvidia"', unit_runner)
+        self.assertIn('          device_traits "${args[@]}"', unit_runner)
+        self.assertIn(
+            "device_traits: $(BINDIR)/test_device_api_traits", kernel_makefile
+        )
+        self.assertIn("@$(BINDIR)/test_device_api_traits", kernel_makefile)
+
     def test_ascend_p2p_write_runs_in_default_and_shared_engines(self):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
@@ -597,7 +620,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests"', p2p_case)
         self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", ascend_env)
         self.assertIn("FLAGCX_CI_ENABLE_IBUC=1", ascend_env)
-        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required", ascend_env)
+        self.assertNotIn("FLAGCX_CI_GPU_MR_POLICY=", ascend_env)
 
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
@@ -685,6 +708,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ["cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"],
         )
+        for platform in ("cuda", "hygon"):
+            selected = subprocess.run(
+                ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
+                [platform],
+            )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -723,6 +757,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "device_api",
                 "device_api_host",
                 "device_api_unified_ir",
+                "device_traits",
                 "p2p",
                 "rma",
                 "runner",
@@ -793,7 +828,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_INTRA_NP=4", ascend_env)
         self.assertIn("FLAGCX_CI_NODE_NP=2", ascend_env)
         self.assertIn("FLAGCX_CI_RUNNER_NP=4", ascend_env)
-        self.assertIn("FLAGCX_CI_ENABLE_PXN=0", ascend_env)
+        self.assertIn("FLAGCX_CI_ENABLE_PXN=${FLAGCX_CI_ENABLE_PXN:-0}", ascend_env)
         self.assertIn("FLAGCX_CI_NODE1_MPI_ARGS=(", ascend_env)
         self.assertIn("FLAGCX_CI_NODE2_MPI_ARGS=(", ascend_env)
         self.assertNotIn("flagcx_ci_build_suite_additional", ascend_env)
@@ -816,38 +851,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             (REPO_ROOT / "test/unittest/kernel/Makefile").exists()
         )
         self.assertFalse((REPO_ROOT / "test/unittest/device").exists())
-        self.assertIn("flagcx_ci_run_suite_override", ascend_env)
+        self.assertNotIn("flagcx_ci_run_suite_override", ascend_env)
         self.assertIn("check_ascend_pci_runtime.py", ascend_env)
-        ascend_override = ascend_env[
-            ascend_env.index("flagcx_ci_run_suite_override() {") :
-            ascend_env.index("flagcx_ci_prepare() {")
-        ]
-        # The override takes over rma, runner and symmem: their multi-rank
-        # phases are skipped while each single-process phase still runs. Any
-        # other suite must fall through to the shared runner.
-        self.assertIn("rma | runner | symmem) ;;", ascend_override)
-        self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1', ascend_override)
-        self.assertIn('FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0', ascend_override)
-        self.assertIn('"$suite_dir/build/bin/symmem_unit_tests"', ascend_override)
-        self.assertIn('make -C "$suite_dir" run-unit', ascend_override)
-        self.assertIn('unit_status=$?', ascend_override)
-        self.assertIn('return "$unit_status"', ascend_override)
-        # A skipped phase must name the capability it waits on, so a silent
-        # coverage drop cannot pass review.
-        for marker in (
-            "GPU MR and IPC are now exercised by adaptor/perf CI",
-            "hcclAdaptorCommGetAsyncError",
-            "flagcxProxyService",
-            "cannAdaptorSymPhysAlloc",
-        ):
-            self.assertIn(marker, ascend_override)
-        # The multi-rank binaries must no longer be launched.
-        self.assertNotIn("symmem_mpi_tests", ascend_override)
-        self.assertNotIn("run-mpi", ascend_override)
-        self.assertNotIn('FLAGCX_CI_REQUIRE_VMM=1', ascend_override)
-        self.assertIn('run_ascend_runner_mpi.sh', (
-            REPO_ROOT / '.github/scripts/ci/run_unit_test.sh'
-        ).read_text())
+        shared_runner = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        self.assertIn('bash "$PROJECT_ROOT/test/script/symmem_test.sh"', shared_runner)
+        self.assertIn('run-mpi-ipc', shared_runner)
+        self.assertIn('run-mpi-net', shared_runner)
+        self.assertIn('run_ascend_runner_mpi.sh', shared_runner)
 
         for workflow_name in (
             "test.yml",
@@ -897,59 +907,26 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn("ascend torch-api", torch_workflow)
         self.assertIn("import torch, torch_npu", ascend_handler)
-        self.assertIn('"$PYTHON_BIN" setup.py build_ext --inplace', ascend_handler)
-        self.assertIn(
-            'FLAGCX_SKIP_HETERO=1 bash "$project_root/test/script/torch_api_test.sh"',
-            ascend_handler,
-        )
+        self.assertIn('"$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .',
+                      ascend_handler)
+        self.assertIn('export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1', ascend_handler)
+        self.assertIn('export FLAGCX_TORCH_HETERO_SKIP_OPS=reduce,allreduce,reducescatter',
+                      ascend_handler)
+        self.assertIn('bash "$project_root/test/script/torch_api_test.sh"', ascend_handler)
+        self.assertNotIn('FLAGCX_SKIP_HETERO=1', ascend_handler)
 
-    def test_ascend_override_runs_single_process_phases_only(self):
-        def run_override(suite):
-            return subprocess.run(
-                [
-                    os.environ.get("BASH", "bash"),
-                    "-c",
-                    'source "$1"; TEST_RUNNER=echo MPI_RUNNER=echo; '
-                    'flagcx_ci_run_suite_override "$2" "test/unittest/$2"; '
-                    'printf "handled=%s\\n" "$FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED"',
-                    "bash",
-                    ".github/scripts/set_env/ascend.sh",
-                    suite,
-                ],
-                cwd=REPO_ROOT,
-                env={**os.environ, "BASH_ENV": ""},
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+    def test_ascend_rma_runner_and_symmem_use_shared_multi_rank_path(self):
+        ascend_env = (REPO_ROOT / ".github/scripts/set_env/ascend.sh").read_text()
+        self.assertNotIn("flagcx_ci_run_suite_override", ascend_env)
 
-        # Each handled suite keeps its single-process phase and prints the
-        # capability its skipped multi-rank phases wait on.
-        for suite, unit_marker, reason_marker in (
-            ("symmem", "symmem_unit_tests", "flagcxProxyService"),
-            ("rma", "run-unit", "RMA visibility still needs"),
-            ("runner", "run-unit", "hcclAdaptorCommGetAsyncError"),
-        ):
-            with self.subTest(suite=suite):
-                result = run_override(suite)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("handled=1", result.stdout)
-                self.assertIn(unit_marker, result.stdout)
-                self.assertIn("Ascend coverage gap", result.stdout)
-                self.assertIn(reason_marker, result.stdout)
-                self.assertIn("multi-rank phases skipped", result.stdout)
-                # No multi-rank launch may happen for these suites.
-                self.assertNotIn("symmem_mpi_tests", result.stdout)
-                self.assertNotIn("run-mpi", result.stdout)
+        shared_runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        self.assertIn("    rma)", shared_runner)
+        self.assertIn("    runner)", shared_runner)
+        self.assertIn("    symmem)", shared_runner)
+        self.assertIn("run_ascend_runner_mpi.sh", shared_runner)
 
-        # Suites the override does not claim must fall through untouched, so
-        # the shared runner keeps driving them.
-        for suite in ("core", "adaptor", "p2p", "service"):
-            with self.subTest(suite=suite):
-                result = run_override(suite)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn("handled=0", result.stdout)
-                self.assertNotIn("Ascend coverage gap", result.stdout)
+        hccl_adaptor = (REPO_ROOT / "flagcx/adaptor/ccl/hccl_adaptor.cc").read_text()
+        self.assertIn("HcclGetCommAsyncError(comm->base, &hcclAsyncError)", hccl_adaptor)
 
     def test_perf_and_torch_jobs_use_platform_configured_images(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
@@ -980,17 +957,28 @@ class PlatformCiRegressionTest(unittest.TestCase):
                         workflow,
                     )
 
-        self.assertIn("  perf-test:\n", perf_workflow)
-        self.assertIn("cuda perf-legacy", perf_workflow)
+        self.assertIn("  perf-test-experimental-cuda:\n", perf_workflow)
+        self.assertIn("cuda perf-test-experimental", perf_workflow)
+        self.assertIn("  perf-test-experimental-hygon:\n", perf_workflow)
+        self.assertIn("hygon perf-test-experimental", perf_workflow)
+        self.assertIn("name: perf-test-experimental (cuda)", perf_workflow)
+        self.assertIn("name: perf-test-experimental (hygon)", perf_workflow)
+        self.assertIn("HYGON_EXPERIMENTAL_RESULT:", perf_workflow)
+        self.assertIn('"$HYGON_RESULT" "$HYGON_EXPERIMENTAL_RESULT"', perf_workflow)
         self.assertNotIn("cuda_legacy_perf_runs_on", perf_workflow)
-        legacy_perf_job = perf_workflow.split("  perf-test:\n", 1)[1].split(
+        experimental_perf_job = perf_workflow.split("  perf-test-experimental-cuda:\n", 1)[1].split(
             "\n  perf-test-hygon:", 1
         )[0]
         self.assertIn(
             "runs-on: ${{ fromJSON(needs.load-hardware-container-configs.outputs.cuda_runs_on) }}",
-            legacy_perf_job,
+            experimental_perf_job,
         )
-        self.assertIn("timeout-minutes: 240", legacy_perf_job)
+        self.assertIn("timeout-minutes: 240", experimental_perf_job)
+        hygon_experimental_job = perf_workflow.split(
+            "  perf-test-experimental-hygon:\n", 1
+        )[1].split("\n  perf-test-cuda:", 1)[0]
+        self.assertIn("hygon perf-test-experimental", hygon_experimental_job)
+        self.assertIn("timeout-minutes: 240", hygon_experimental_job)
         self.assertNotIn("\n  torch-api-test:\n", torch_workflow)
 
         for platform in ("cuda", "metax", "hygon", "ppu"):
@@ -1002,31 +990,31 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_cuda_workload.sh"
         ).read_text()
         self.assertIn(
-            'source "$project_root/.github/scripts/ci/run_cuda_legacy_perf.sh"',
+            'source "$project_root/.github/scripts/ci/run_cuda_perf_experimental.sh"',
             cuda_handler,
         )
 
-    def test_p2p_perf_keeps_legacy_write_and_runs_shared_read(self):
+    def test_experimental_p2p_perf_keeps_write_and_runs_shared_read(self):
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
-        legacy_perf = (
-            REPO_ROOT / ".github/scripts/ci/run_cuda_legacy_perf.sh"
+        experimental_perf = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"
         ).read_text()
-        self.assertIn("cuda perf-legacy", perf_workflow)
-        self.assertNotIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', legacy_perf)
-        self.assertIn('"$perf_bin/perf_allreduce"', legacy_perf)
-        self.assertIn("for operation in put get", legacy_perf)
-        self.assertIn('"$perf_bin/perf_$operation"', legacy_perf)
-        self.assertIn('"$device_api_bin/perf_allreduce_intranode"', legacy_perf)
-        self.assertIn('"$device_api_bin/perf_internode_onesided"', legacy_perf)
-        self.assertIn("FLAGCX_P2P_PERF_OP=write", legacy_perf)
-        self.assertIn("USE_SHARED_P2P_ENGINE=1", legacy_perf)
-        self.assertIn('FLAGCX_LIB="$shared_project_build/lib"', legacy_perf)
-        self.assertIn("FLAGCX_P2P_PERF_OP=read", legacy_perf)
-        self.assertIn("run_mpi_with_timeout.sh", legacy_perf)
-        self.assertNotIn("mpirun ", legacy_perf)
-        self.assertIn('"$shared_test_build/bin/perf_p2p_engine"', legacy_perf)
-        self.assertIn('LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH"', legacy_perf)
-        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", legacy_perf)
+        self.assertIn("cuda perf-test-experimental", perf_workflow)
+        self.assertNotIn('run_host_perf_suite.sh" homogeneous "$perf_bin"', experimental_perf)
+        self.assertIn('"$perf_bin/perf_allreduce"', experimental_perf)
+        self.assertIn("for operation in put get", experimental_perf)
+        self.assertIn('"$perf_bin/perf_$operation"', experimental_perf)
+        self.assertIn('"$device_api_bin/perf_allreduce_intranode"', experimental_perf)
+        self.assertIn('"$device_api_bin/perf_internode_onesided"', experimental_perf)
+        self.assertIn("FLAGCX_P2P_PERF_OP=write", experimental_perf)
+        self.assertIn("USE_SHARED_P2P_ENGINE=1", experimental_perf)
+        self.assertIn('FLAGCX_LIB="$shared_project_build/lib"', experimental_perf)
+        self.assertIn("FLAGCX_P2P_PERF_OP=read", experimental_perf)
+        self.assertIn("run_mpi_with_timeout.sh", experimental_perf)
+        self.assertNotIn("mpirun ", experimental_perf)
+        self.assertIn('"$shared_test_build/bin/perf_p2p_engine"', experimental_perf)
+        self.assertIn('LD_LIBRARY_PATH="$shared_project_build/lib:$LD_LIBRARY_PATH"', experimental_perf)
+        self.assertNotIn("FLAGCX_GDR_READ_REQUIRES_FLUSH=0", experimental_perf)
 
     def test_rma_visibility_conformance_covers_supported_routes_and_policies(self):
         unit_runner = (
@@ -1380,9 +1368,8 @@ run_suite
         self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED", unit_runner)
         self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED", unit_runner)
         self.assertNotIn("flagcx_ci_skip_suite", iluvatar_env)
-        # The GPU MR capability is declared by the platform, not by a vendor
-        # name baked into the shared runner or the checker.
-        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional", iluvatar_env)
+        # Iluvatar and Ascend use the shared required-by-default GPU MR gate.
+        self.assertNotIn("FLAGCX_CI_GPU_MR_POLICY=", iluvatar_env)
         self.assertIn(
             "gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}", unit_runner
         )
@@ -2000,13 +1987,19 @@ run_suite
         self.assertIn("FLAGCX_IB_TIMEOUT=14", runner_case)
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
-        self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 5
-        )
+        self.assertEqual(runner_case.count("./build/bin/runner_mpi_tests"), 7)
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 6
         )
+        self.assertIn('if [[ "$platform_name" == iluvatar ]]; then', runner_case)
+        self.assertIn('FLAGCX_CI_RUNNER_BYTES=1048576', runner_case)
+        self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
+        cuda_experimental = (
+            REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"
+        ).read_text()
+        self.assertIn("UniRunnerDagAlgorithmsRejectOuterGroup", cuda_experimental)
+        self.assertIn("FLAGCX_UNIRUNNER_ALGO=8", cuda_experimental)
         self.assertIn('"${FLAGCX_CI_ENABLE_PXN:-1}" == "1"', runner_case)
         self.assertIn('FLAGCX_CI_EXPECT_PXN=1', runner_case)
         self.assertIn('FLAGCX_PXN_DISABLE=1', runner_case)
@@ -2022,6 +2015,8 @@ run_suite
         self.assertIn('pxn_visible_devices_var=MACA_VISIBLE_DEVICES', pxn_case)
         self.assertIn('elif [[ "$platform_name" == "hygon" ]]; then', pxn_case)
         self.assertIn('pxn_visible_devices_var=HIP_VISIBLE_DEVICES', pxn_case)
+        self.assertIn('elif [[ "$platform_name" == "ascend" ]]; then', pxn_case)
+        self.assertIn('pxn_visible_devices_var=ASCEND_RT_VISIBLE_DEVICES', pxn_case)
         self.assertIn('pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")', pxn_case)
         self.assertIn('-x "$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES"', pxn_case)
         self.assertIn('"$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP"', pxn_case)
@@ -2113,7 +2108,6 @@ run_suite
         ]
         self.assertIn("          ascend)", rma_case)
         self.assertIn('"$platform_name" != "ascend"', rma_case)
-        self.assertIn("CANN has no stream wait/write-value support", rma_case)
 
     def test_rma_registration_failure_runs_in_two_rank_network_ci(self):
         rma_makefile = (

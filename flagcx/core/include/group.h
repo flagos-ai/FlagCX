@@ -53,10 +53,14 @@ struct flagcxGroupJob {
   struct flagcxIntruQueue<struct flagcxAsyncJob, &flagcxAsyncJob::next>
       *asyncJobsPtr;
   bool initialized;
+  bool useStreamValue;
 };
 
 flagcxResult_t flagcxGroupStartInternal();
-flagcxResult_t flagcxGroupEndInternal();
+// Only DAG-owned groups opt into stream-value completion at the outermost End.
+flagcxResult_t flagcxGroupEndInternal(bool useStreamValue = false);
+// Group nesting belongs to the calling thread.
+int flagcxGetGroupDepth();
 flagcxResult_t flagcxAsyncJobComplete(struct flagcxAsyncJob *job);
 
 ////////////////////////////////////////////////////////////////////////////////

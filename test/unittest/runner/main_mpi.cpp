@@ -5,10 +5,10 @@
 #include "comm.h"
 #include "global_comm.h"
 #include "runner_fixtures.hpp"
-#include <chrono>
+#include "transport.h"
 #include <cstdlib>
 #include <cstring>
-#include <thread>
+#include <iostream>
 
 // ---------- MPIEnvironment ----------
 
@@ -109,6 +109,41 @@ void FlagCXCollTest::SetUp() {
         << static_cast<int>(comm->commType);
   }
 
+  if (std::getenv("FLAGCX_CI_EXPECT_UNIRUNNER_KERNEL") != nullptr) {
+    const char *selectedRunner = std::getenv("FLAGCX_USE_HETERO_COMM");
+    int localSupported = selectedRunner != nullptr &&
+                         std::strcmp(selectedRunner, "1") == 0 &&
+                         comm->uniRunnerKernelSupported;
+    int allSupported = 0;
+    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allSupported, 1) << "UniRunner device kernels are unavailable";
+  }
+  if (std::getenv("FLAGCX_CI_EXPECT_STREAM_VALUE") != nullptr) {
+    int localSupported = comm->streamValueSupported ? 1 : 0;
+    int allSupported = 0;
+    MPI_Allreduce(&localSupported, &allSupported, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allSupported, 1) << "stream value operations are unavailable";
+  }
+  if (std::getenv("FLAGCX_CI_EXPECT_LOCAL_P2P") != nullptr) {
+    int localMatches =
+        comm->heteroComm != nullptr && comm->heteroComm->peerInfo != nullptr;
+    const char *p2pDisable = std::getenv("FLAGCX_P2P_DISABLE");
+    localMatches = localMatches && p2pDisable != nullptr &&
+                   std::strcmp(p2pDisable, "0") == 0;
+    if (localMatches) {
+      for (int peer = 0; peer < nranks; ++peer)
+        localMatches =
+            localMatches && comm->heteroComm->peerInfo[peer].hostHash ==
+                                comm->heteroComm->peerInfo[rank].hostHash;
+    }
+    int allMatch = 0;
+    MPI_Allreduce(&localMatches, &allMatch, 1, MPI_INT, MPI_MIN,
+                  MPI_COMM_WORLD);
+    ASSERT_EQ(allMatch, 1) << "local P2P routing prerequisites are missing";
+  }
+
   // Forced-NET CI invocations must prove that they selected the intended
   // hardware adaptor. FLAGCX_P2P_DISABLE only disables the IPC transport; it
   // does not prevent flagcxNetInit() from falling back to Socket when RDMA is
@@ -144,17 +179,45 @@ void FlagCXCollTest::SetUp() {
 }
 
 flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
+  const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
+  const ::testing::TestInfo *testInfo =
+      ::testing::UnitTest::GetInstance()->current_test_info();
+  const bool traceSendRecv = expectedRunnerMode != nullptr &&
+                             std::strcmp(expectedRunnerMode, "HYBRID") == 0 &&
+                             testInfo != nullptr &&
+                             std::strcmp(testInfo->name(), "SendRecv") == 0;
+  const char *traceName = testInfo == nullptr ? "SendRecv" : testInfo->name();
+  if (traceSendRecv)
+    std::cerr << traceName << " rank=" << rank << " phase=sync-stream-begin"
+              << std::endl;
   flagcxResult_t localError = devHandle->streamSynchronize(stream);
+  if (traceSendRecv)
+    std::cerr << traceName << " rank=" << rank
+              << " phase=sync-stream-end result=" << localError << std::endl;
   flagcxResult_t asyncError = flagcxSuccess;
   if (localError == flagcxSuccess) {
+    if (traceSendRecv)
+      std::cerr << traceName << " rank=" << rank << " phase=async-error-begin"
+                << std::endl;
     flagcxResult_t queryResult = flagcxCommGetAsyncError(comm, &asyncError);
+    if (traceSendRecv)
+      std::cerr << traceName << " rank=" << rank
+                << " phase=async-error-end result=" << queryResult
+                << " async_error=" << asyncError << std::endl;
     localError = queryResult != flagcxSuccess ? queryResult : asyncError;
   }
 
   int localErrorCode = static_cast<int>(localError);
   int globalErrorCode = static_cast<int>(flagcxSuccess);
+  if (traceSendRecv)
+    std::cerr << traceName << " rank=" << rank << " phase=sync-allreduce-begin"
+              << std::endl;
   MPI_Allreduce(&localErrorCode, &globalErrorCode, 1, MPI_INT, MPI_MAX,
                 MPI_COMM_WORLD);
+  if (traceSendRecv)
+    std::cerr << traceName << " rank=" << rank
+              << " phase=sync-allreduce-end result=" << globalErrorCode
+              << std::endl;
   if (globalErrorCode != static_cast<int>(flagcxSuccess)) {
     runnerTransportFailureObserved = true;
     return static_cast<flagcxResult_t>(globalErrorCode);
@@ -163,9 +226,6 @@ flagcxResult_t FlagCXCollTest::synchronizeAndCheckAsyncError() {
 }
 
 void FlagCXCollTest::TearDown() {
-  if (teardownDelayMs > 0)
-    std::this_thread::sleep_for(std::chrono::milliseconds(teardownDelayMs));
-
   // Collective work is asynchronous with respect to the host.  Drain the
   // stream before communicator teardown so no runtime callback can retain an
   // IPC mapping after the communicator starts releasing transport resources.

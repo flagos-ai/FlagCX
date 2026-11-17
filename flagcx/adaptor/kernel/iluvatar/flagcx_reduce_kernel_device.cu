@@ -98,7 +98,7 @@ flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
 }
 
 FLAGCX_GLOBAL_DECORATOR void flagcxCollectiveKernel(void *fifoBuffer) {
-  FLAGCX_SHARED uint64_t shm[16];
+  FLAGCX_SHARED_DECORATOR uint64_t shm[16];
   uint64_t *vBuf = static_cast<uint64_t *>(fifoBuffer);
   int emptyIter = 0;
   int cap = -1;

@@ -7,7 +7,9 @@ export FLAGCX_DEBUG_SUBSYS="${FLAGCX_DEBUG_SUBSYS:-INIT}"
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 TEST_RUNNER=${FLAGCX_TORCH_TEST_RUNNER:-$REPO_ROOT/.github/scripts/ci/run_with_timeout.sh}
-export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+if [[ "${FLAGCX_TORCH_USE_INSTALLED_PACKAGE:-0}" != "1" ]]; then
+    export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+fi
 
 hash -r
 
@@ -37,6 +39,7 @@ readonly HETERO_MEM_ENABLE=${FLAGCX_MEM_ENABLE:-1}
 readonly HETERO_VMM_ENABLE=${FLAGCX_VMM_ENABLE-}
 readonly HETERO_P2P_TRANSPORT=${FLAGCX_P2P_TRANSPORT-}
 readonly HETERO_P2P_DISABLE=${FLAGCX_P2P_DISABLE-}
+readonly HETERO_SKIP_OPS=${FLAGCX_TORCH_HETERO_SKIP_OPS-}
 
 # Always remove mode-selecting variables before constructing either child
 # environment. This prevents a platform setup script (PPU in particular) from
@@ -50,6 +53,7 @@ MODE_ENV=(
     -u FLAGCX_VMM_ENABLE
     -u FLAGCX_P2P_TRANSPORT
     -u FLAGCX_P2P_DISABLE
+    -u FLAGCX_TORCH_SKIP_OPS
 )
 
 HETERO_ENV=(
@@ -64,6 +68,8 @@ HETERO_ENV=(
     HETERO_ENV+=("FLAGCX_P2P_TRANSPORT=$HETERO_P2P_TRANSPORT")
 [[ -z "$HETERO_P2P_DISABLE" ]] || \
     HETERO_ENV+=("FLAGCX_P2P_DISABLE=$HETERO_P2P_DISABLE")
+[[ -z "$HETERO_SKIP_OPS" ]] || \
+    HETERO_ENV+=("FLAGCX_TORCH_SKIP_OPS=$HETERO_SKIP_OPS")
 
 find_free_port() {
     "$PYTHON_BIN" -c \

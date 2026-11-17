@@ -368,15 +368,18 @@ def test_alltoall():
         print(f"rank {MY_RANK} after all_to_all_single with FLAGCX_GROUP1 (with splits): x = {x}, y = {y}")
 
 def test_all():
-    test_broadcast()
-    test_reduce()
-    test_allreduce()
-    test_sendrecv()
-    test_allgather()
-    test_reducescatter()
-    test_gather()
-    test_scatter()
-    test_alltoall()
+    skipped = skipped_operations()
+    for name, operation in (
+        ("broadcast", test_broadcast), ("reduce", test_reduce),
+        ("allreduce", test_allreduce), ("sendrecv", test_sendrecv),
+        ("allgather", test_allgather), ("reducescatter", test_reducescatter),
+        ("gather", test_gather), ("scatter", test_scatter),
+        ("alltoall", test_alltoall),
+    ):
+        if name in skipped:
+            print(f"[SKIP] PyTorch API operation {name} is excluded for this run", flush=True)
+            continue
+        operation()
 
 dict_op_to_test = {
     "broadcast": test_broadcast,
@@ -391,6 +394,17 @@ dict_op_to_test = {
     "all": test_all
 }
 
+def skipped_operations():
+    skipped = {
+        name.strip().lower()
+        for name in os.environ.get("FLAGCX_TORCH_SKIP_OPS", "").split(",")
+        if name.strip()
+    }
+    unknown = skipped - (dict_op_to_test.keys() - {"all"})
+    if unknown:
+        raise ValueError(f"Unknown PyTorch API operations in FLAGCX_TORCH_SKIP_OPS: {sorted(unknown)}")
+    return skipped
+
 if __name__ == "__main__":
     if skip_if_accelerator_unavailable():
         raise SystemExit(0)
@@ -399,7 +413,10 @@ if __name__ == "__main__":
 
     args = get_args()
 
-    dict_op_to_test.get(args.op, test_all)()
+    if args.op in skipped_operations():
+        print(f"[SKIP] PyTorch API operation {args.op} is excluded for this run", flush=True)
+    else:
+        dict_op_to_test.get(args.op, test_all)()
 
     destroy_pg()
     

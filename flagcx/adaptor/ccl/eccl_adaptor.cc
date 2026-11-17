@@ -90,19 +90,11 @@ flagcxResult_t ecclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
 }
 
 flagcxResult_t ecclAdaptorMemAlloc(void **ptr, size_t size) {
-  topsError_t err = topsMalloc(ptr, size);
-  if (err != topsSuccess) {
-    return flagcxUnhandledDeviceError;
-  }
-  return flagcxSuccess;
+  return (flagcxResult_t)ecclMemAlloc(ptr, size);
 }
 
 flagcxResult_t ecclAdaptorMemFree(void *ptr) {
-  topsError_t err = topsFree(ptr);
-  if (err != topsSuccess) {
-    return flagcxUnhandledDeviceError;
-  }
-  return flagcxSuccess;
+  return (flagcxResult_t)ecclMemFree(ptr);
 }
 
 flagcxResult_t ecclAdaptorCommRegister(const flagcxInnerComm_t comm, void *buff,
@@ -119,12 +111,28 @@ flagcxResult_t ecclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
                                              size_t size,
                                              flagcxInnerWindow_t *win,
                                              int winFlags) {
-  return flagcxNotSupported;
+  if (*win == NULL) {
+    FLAGCXCHECK(flagcxCalloc(win, 1));
+  }
+  ecclWindow_t ecclWin = NULL;
+  flagcxResult_t res = (flagcxResult_t)ecclCommWindowRegister(
+      comm->base, buff, size, &ecclWin, winFlags);
+  if (res == flagcxSuccess) {
+    (*win)->base = ecclWin;
+    (*win)->winFlags = winFlags;
+  } else {
+    free(*win);
+    *win = NULL;
+  }
+  return res;
 }
 
 flagcxResult_t ecclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
-  return flagcxNotSupported;
+  flagcxResult_t res =
+      (flagcxResult_t)ecclCommWindowDeregister(comm->base, win->base);
+  free(win);
+  return res;
 }
 
 flagcxResult_t ecclAdaptorReduce(const void *sendbuff, void *recvbuff,
@@ -231,22 +239,65 @@ flagcxResult_t ecclAdaptorGroupStart() {
 
 flagcxResult_t ecclAdaptorGroupEnd() { return (flagcxResult_t)ecclGroupEnd(); }
 
-flagcxResult_t
-ecclAdaptorDevCommReqsInit(flagcxInnerComm_t /*comm*/,
-                           flagcxDevCommRequirements * /*reqs*/) {
-  return flagcxNotSupported;
+flagcxResult_t ecclAdaptorDevCommReqsInit(flagcxInnerComm_t comm,
+                                          flagcxDevCommRequirements *reqs) {
+  ecclCommProperties_t props = ECCL_COMM_PROPERTIES_INITIALIZER;
+  flagcxResult_t ret =
+      (flagcxResult_t)ecclCommQueryProperties(comm->base, &props);
+  if (ret != flagcxSuccess) {
+    return ret;
+  }
+  if (!props.deviceApiSupport) {
+    return flagcxNotSupported;
+  }
+
+  *reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  reqs->intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
+  reqs->intraMulticast = props.multimemSupport;
+  return flagcxSuccess;
 }
 
-flagcxResult_t
-ecclAdaptorDevCommCreate(flagcxInnerComm_t /*comm*/,
-                         const flagcxDevCommRequirements * /*reqs*/,
-                         flagcxInnerDevComm_t * /*devComm*/) {
-  return flagcxNotSupported;
+flagcxResult_t ecclAdaptorDevCommCreate(flagcxInnerComm_t comm,
+                                        const flagcxDevCommRequirements *reqs,
+                                        flagcxInnerDevComm_t *devComm) {
+  flagcxInnerDevComm_t inner =
+      (flagcxInnerDevComm_t)malloc(sizeof(struct flagcxInnerDevComm));
+  if (!inner)
+    return flagcxSystemError;
+
+  ecclDevCommRequirements_t ecclReqs = ECCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  ecclReqs.barrierCount = reqs->barrierCount;
+  ecclReqs.lsaBarrierCount = reqs->intraBarrierCount;
+  ecclReqs.lsaLLA2ABlockCount = reqs->intraLLA2ABlockCount;
+  ecclReqs.lsaLLA2ASlotCount = reqs->intraLLA2ASlotCount;
+  // GIN (inter-node) resources: pass through from requirements so the
+  // allocated count matches what flagcx_device.cc publishes and what
+  // device-side code consumes. NOTE: GIN path is not yet validated on
+  // Enflame; these fields are wired for correctness but remain untested.
+  ecclReqs.ginContextCount = reqs->interContextCount;
+  ecclReqs.railGinBarrierCount = reqs->interBarrierCount;
+  ecclReqs.ginCounterCount = reqs->interCounterCount;
+  ecclReqs.ginConnectionType = ECCL_GIN_CONNECTION_FULL;
+
+  flagcxResult_t ret =
+      (flagcxResult_t)ecclDevCommCreate(comm->base, &ecclReqs, &inner->base);
+  if (ret != flagcxSuccess) {
+    free(inner);
+    return ret;
+  }
+
+  *devComm = inner;
+  return flagcxSuccess;
 }
 
-flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t /*comm*/,
-                                         flagcxInnerDevComm_t /*devComm*/) {
-  return flagcxNotSupported;
+flagcxResult_t ecclAdaptorDevCommDestroy(flagcxInnerComm_t comm,
+                                         flagcxInnerDevComm_t devComm) {
+  if (!devComm)
+    return flagcxSuccess;
+  flagcxResult_t ret =
+      (flagcxResult_t)ecclDevCommDestroy(comm->base, &devComm->base);
+  free(devComm);
+  return ret;
 }
 
 struct flagcxCCLAdaptor ecclAdaptor = {

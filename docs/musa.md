@@ -110,3 +110,8 @@ concurrent progress, and no concurrent kernels sharing the counter. It is not
 a general grid barrier for arbitrary launches. Memory
 allocation/free, IPC close, registration and error-word ownership retain their
 separate lifetimes. Device/FIFO errors propagate to Host completion checks.
+
+The MUSA collective launcher follows the current RED/IPC launcher signature
+and implements dynamic float/Sum RED execution. IPC executor blocks and
+averaging return `flagcxNotSupported`. UniRunner static and fused execution
+remain gated to the platforms supported by the common runner.
