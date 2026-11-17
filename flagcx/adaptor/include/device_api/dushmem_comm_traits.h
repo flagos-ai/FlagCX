@@ -210,6 +210,8 @@ struct CommTraits<DushmemBackend> {
   };
 
   // ---- Coop types: aliased from PlatformTraits ----
+  using CoopOps = PlatformTraits<DuPlatform>::CoopOps;
+  using Clock = PlatformTraits<DuPlatform>::Clock;
   using CoopBlock = typename PlatformTraits<DuPlatform>::CoopBlock;
   template <int N>
   using CoopTile = typename PlatformTraits<DuPlatform>::template CoopTile<N>;
