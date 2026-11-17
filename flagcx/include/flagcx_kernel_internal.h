@@ -180,37 +180,22 @@ struct flagcxCommProperties {
 };
 typedef struct flagcxCommProperties flagcxCommProperties_t;
 
-// Clean up IPC peer pointer table on comm.
-// Must be called after homoComm destroy.
-// so that cudaFree does not deadlock on device synchronization.
+// Close any IPC table entries left when the communicator is destroyed.
 flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 
-// Release an IPC table slot at runtime — moves resources to a deferred queue
-// so the slot can be reused by buildIpcPeerPointers. Actual cleanup at destroy.
-void releaseIpcTableSlot(flagcxComm_t comm, int slot);
+// Release a local IPC table slot and its imported mappings immediately.
+flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot);
+// Internal collective preparation for a peer-visible allocation. DevMemCreate
+// only attaches to the resulting local IPC table entry.
+flagcxResult_t flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
+                                                   void *buff, size_t size,
+                                                   bool uniRunnerIpc,
+                                                   int *slot);
 
 // Agree on rank-local errors before entering another bootstrap collective.
 flagcxResult_t flagcxConvergeBootstrapStatus(flagcxComm_t comm,
                                              flagcxResult_t local,
                                              flagcxResult_t *common);
-
-// Drain deferred IPC entries queued by releaseIpcTableSlot.
-flagcxResult_t flagcxCommDrainDeferredIpc(flagcxComm_t comm);
-
-// Release Window-scoped resources before the transport and vendor communicator
-// are destroyed. A failed callback leaves ownership in place for retry.
-flagcxResult_t flagcxCommDrainDeferredWindowResources(flagcxComm_t comm);
-
-// Drain cached device allocations retained by retired DevComm/DevMem owners.
-flagcxResult_t flagcxCommDrainDeferredFree(flagcxComm_t comm);
-flagcxResult_t flagcxCommDeferFree(flagcxComm_t comm, void *ptr, int memType);
-void flagcxCommDeferFreeReserved(flagcxComm_t comm,
-                                 struct flagcxDeferredFree *entry, void *ptr,
-                                 int memType);
-
-// Drain deferred DevComm buffer queue (localBarrierFlags, epoch, signal, etc.).
-// Called at flagcxCommDestroy time when all peers are guaranteed done.
-flagcxResult_t flagcxCommDrainDeferredBuffers(flagcxComm_t comm);
 
 // Release data buffer resources (MR, network connections, handle arrays).
 flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm);

@@ -759,6 +759,53 @@ TEST_F(SymMemTest, RepeatedRegisterDeregister) {
   }
 }
 
+TEST_F(SymMemTest, LocalDeregisterAndReusePublicHandle) {
+  flagcxWindow_t win = nullptr;
+  ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
+                                     FLAGCX_WIN_COLL_SYMMETRIC),
+            flagcxSuccess);
+  ASSERT_NE(win, nullptr);
+  flagcxWindow_t original = win;
+
+  // Rank zero must finish without waiting for another rank to enter
+  // deregistration. The following barrier exposes an accidental collective.
+  if (rank == 0) {
+    ASSERT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+    EXPECT_EQ(win->defaultBase, nullptr);
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (rank != 0)
+    ASSERT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff2, size, &win,
+                                     FLAGCX_WIN_COLL_SYMMETRIC),
+            flagcxSuccess);
+  EXPECT_EQ(win, original);
+  ASSERT_NE(win->defaultBase, nullptr);
+  EXPECT_EQ(win->defaultBase->localBase, devBuff2);
+  ASSERT_EQ(deviceAdaptor->deviceMemset(devBuff2, rank + 11, 1, flagcxMemDevice,
+                                        nullptr),
+            flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  if (comm->localRanks > 1 && win->defaultBase->ipcSlot >= 0) {
+    const int peer =
+        comm->localRankToRank[(comm->localRank + 1) % comm->localRanks];
+    void *peerPtr = nullptr;
+    ASSERT_EQ(flagcxSymWindowResolveIpcPeerPtr(
+                  comm->heteroComm, win->defaultBase, peer, 0, 1, &peerPtr),
+              flagcxSuccess);
+    unsigned char value = 0;
+    ASSERT_EQ(deviceAdaptor->deviceMemcpy(&value, peerPtr, 1,
+                                          flagcxMemcpyDeviceToHost, nullptr,
+                                          nullptr),
+              flagcxSuccess);
+    EXPECT_EQ(value, peer + 11);
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_EQ(flagcxCommWindowDeregister(comm, win), flagcxSuccess);
+}
+
 TEST_F(SymMemTest,
        RankLocalVmmPrepareFailureConvergesBeforeFdExchangeAndRetries) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_VMM") ||
@@ -1016,23 +1063,19 @@ TEST_F(SymMemTest, RankLocalMrFailureDoesNotPublishPartialWindow) {
   result = flagcxCommWindowDeregister(testComm, retryWindow);
   if (rank == 1)
     net->deregMr = originalDeregMr;
-  allRankResultRange(result, &minimum, &maximum);
-  EXPECT_EQ(minimum, static_cast<int>(flagcxSystemError));
-  EXPECT_EQ(maximum, static_cast<int>(flagcxSystemError));
-
-  // The public operation is collective: every rank reports the same failure
-  // and retries the same window. Ranks whose local MR was already released
-  // retain the mapping but skip the MR release on retry; the failing rank
-  // retains the exact MR handle and releases it after fault injection clears.
-  ASSERT_NE(retryWindow->defaultBase, nullptr);
+  EXPECT_EQ(result, rank == 1 ? flagcxSystemError : flagcxSuccess);
+  // A local failure retains only this rank's resources for retry.
   if (rank == 1) {
+    ASSERT_NE(retryWindow->defaultBase, nullptr);
     EXPECT_TRUE(retryWindow->defaultBase->hasNetworkMrRef);
+    EXPECT_EQ(testComm->heteroComm->symWindows, retryWindow->defaultBase);
   } else {
-    EXPECT_FALSE(retryWindow->defaultBase->hasNetworkMrRef);
+    EXPECT_EQ(retryWindow->defaultBase, nullptr);
+    EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
   }
-  EXPECT_EQ(testComm->heteroComm->symWindows, retryWindow->defaultBase);
   flagcxResult_t retryResult =
-      flagcxCommWindowDeregister(testComm, retryWindow);
+      rank == 1 ? flagcxCommWindowDeregister(testComm, retryWindow)
+                : flagcxSuccess;
   ASSERT_TRUE(allRanksSucceeded(retryResult));
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
@@ -1239,7 +1282,7 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
   }
 }
 
-TEST_F(SymMemTest, AsymmetricDeregisterUsesCollectivePublishSlot) {
+TEST_F(SymMemTest, AsymmetricLocalDeregisterUsesCommonPublishSlot) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
     GTEST_SKIP() << "Runs in the required NET invocations";
 
@@ -1278,9 +1321,7 @@ TEST_F(SymMemTest, AsymmetricDeregisterUsesCollectivePublishSlot) {
     net->deregMr = originalDeregMr;
   int minimum = 0;
   int maximum = 0;
-  allRankResultRange(result, &minimum, &maximum);
-  ASSERT_EQ(minimum, static_cast<int>(flagcxSystemError));
-  ASSERT_EQ(maximum, static_cast<int>(flagcxSystemError));
+  ASSERT_EQ(result, rank == 1 ? flagcxSystemError : flagcxSuccess);
 
   // The failed rank still owns slot 1 while the other rank has released it.
   // Public/non-window registration must converge that mismatch instead of
@@ -1305,7 +1346,9 @@ TEST_F(SymMemTest, AsymmetricDeregisterUsesCollectivePublishSlot) {
   EXPECT_EQ(minimumSlot, maximumSlot);
   EXPECT_EQ(minimumSlot, 2);
 
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, victim)));
+  result =
+      rank == 1 ? flagcxCommWindowDeregister(testComm, victim) : flagcxSuccess;
+  ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_TRUE(
       allRanksSucceeded(flagcxCommWindowDeregister(testComm, replacement)));
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, anchor)));
@@ -1637,7 +1680,7 @@ TEST_F(SymMemTest, VmmRollbackFailureConvergesBeforeMrMetadataExchange) {
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
-TEST_F(SymMemTest, CrossNodeCleanupFailureConvergesBeforeRelease) {
+TEST_F(SymMemTest, CrossNodeLocalCleanupFailureRetries) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_VMM") ||
       !envEnabled("FLAGCX_CI_REQUIRE_NET_MR"))
     GTEST_SKIP() << "Runs in the required VMM + NET invocation";
@@ -1670,19 +1713,20 @@ TEST_F(SymMemTest, CrossNodeCleanupFailureConvergesBeforeRelease) {
   flagcxResult_t result = flagcxCommWindowDeregister(testComm, window);
   deviceAdaptor->symFlatMappingUnmapSegments = savedSymSegmentUnmap;
 
-  int minimum = 0;
-  int maximum = 0;
-  allRankResultRange(result, &minimum, &maximum);
-  EXPECT_EQ(minimum, static_cast<int>(flagcxRemoteError));
-  EXPECT_EQ(maximum, static_cast<int>(flagcxRemoteError));
-  ASSERT_NE(window->defaultBase, nullptr);
-  EXPECT_TRUE(window->defaultBase->published);
-  EXPECT_EQ(testComm->heteroComm->symWindows, window->defaultBase);
+  EXPECT_EQ(result, rank == 0 ? flagcxRemoteError : flagcxSuccess);
   if (rank == 0) {
+    ASSERT_NE(window->defaultBase, nullptr);
+    EXPECT_TRUE(window->defaultBase->published);
+    EXPECT_EQ(testComm->heteroComm->symWindows, window->defaultBase);
     EXPECT_NE(window->defaultBase->flatBase, nullptr);
+  } else {
+    EXPECT_EQ(window->defaultBase, nullptr);
+    EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
   }
 
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
+  result =
+      rank == 0 ? flagcxCommWindowDeregister(testComm, window) : flagcxSuccess;
+  ASSERT_TRUE(allRanksSucceeded(result));
   EXPECT_EQ(testComm->heteroComm->symWindows, nullptr);
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);

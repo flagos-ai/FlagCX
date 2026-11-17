@@ -159,20 +159,24 @@ flagcxResult_t flagcxSymConvergeStatus(flagcxHeteroComm_t comm,
 
 static flagcxResult_t flagcxSymLsaFindOffset(const flagcxSymLsaArena *arena,
                                              size_t span, size_t alignment,
-                                             size_t *offset) {
+                                             size_t minOffset, size_t *offset) {
   if (arena == nullptr || offset == nullptr || span == 0 || alignment == 0 ||
       span > arena->rankStride)
     return flagcxInvalidArgument;
   for (std::map<size_t, size_t>::const_iterator it = arena->freeRanges.begin();
        it != arena->freeRanges.end(); ++it) {
-    const size_t start = it->first;
+    const size_t rangeStart = it->first;
     const size_t length = it->second;
-    if (start > arena->rankStride || length > arena->rankStride - start ||
-        start > std::numeric_limits<size_t>::max() - (alignment - 1))
+    if (rangeStart > arena->rankStride ||
+        length > arena->rankStride - rangeStart)
       return flagcxInternalError;
+    const size_t start = std::max(rangeStart, minOffset);
+    if (start > rangeStart + length ||
+        start > std::numeric_limits<size_t>::max() - (alignment - 1))
+      continue;
     const size_t aligned = ((start + alignment - 1) / alignment) * alignment;
-    if (aligned >= start && aligned - start <= length &&
-        span <= length - (aligned - start)) {
+    if (aligned >= start && aligned - rangeStart <= length &&
+        span <= length - (aligned - rangeStart)) {
       *offset = aligned;
       return flagcxSuccess;
     }
@@ -622,38 +626,46 @@ static flagcxResult_t flagcxSymLsaAllocateWindow(flagcxHeteroComm_t comm,
           ? arena->mcGranularity
           : window->slotAlignment;
   size_t offset = 0;
-  flagcxResult_t local =
-      flagcxSymLsaFindOffset(arena, span, alignment, &offset);
+  size_t minOffset = 0;
+  flagcxResult_t local = flagcxSuccess;
   flagcxResult_t common = flagcxSuccess;
-  FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5987, &common));
-  if (common != flagcxSuccess)
-    return common;
-
   const int root = comm->localRankToRank[0];
-  size_t agreedOffset = offset;
-  if (comm->localRank == 0) {
-    for (int peer = 1; peer < comm->localRanks; peer++) {
-      size_t remote = 0;
-      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[peer],
-                                0x5988, &remote, sizeof(remote)));
-      if (remote != offset)
-        agreedOffset = std::numeric_limits<size_t>::max();
+  struct Choice {
+    size_t nextOffset;
+    bool agreed;
+  } choice = {};
+  for (;;) {
+    local = flagcxSymLsaFindOffset(arena, span, alignment, minOffset, &offset);
+    FLAGCXCHECK(flagcxSymLocalConverge(comm, local, 0x5987, &common));
+    if (common != flagcxSuccess)
+      return common;
+    if (comm->localRank == 0) {
+      size_t maximum = offset;
+      size_t minimum = offset;
+      for (int peer = 1; peer < comm->localRanks; peer++) {
+        size_t remote = 0;
+        FLAGCXCHECK(bootstrapRecv(comm->bootstrap, comm->localRankToRank[peer],
+                                  0x5988, &remote, sizeof(remote)));
+        maximum = std::max(maximum, remote);
+        minimum = std::min(minimum, remote);
+      }
+      choice = {maximum, minimum == maximum};
+      for (int peer = 1; peer < comm->localRanks; peer++)
+        FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
+                                  0x5989, &choice, sizeof(choice)));
+    } else {
+      FLAGCXCHECK(bootstrapSend(comm->bootstrap, root, 0x5988, &offset,
+                                sizeof(offset)));
+      FLAGCXCHECK(bootstrapRecv(comm->bootstrap, root, 0x5989, &choice,
+                                sizeof(choice)));
     }
-    for (int peer = 1; peer < comm->localRanks; peer++)
-      FLAGCXCHECK(bootstrapSend(comm->bootstrap, comm->localRankToRank[peer],
-                                0x5989, &agreedOffset, sizeof(agreedOffset)));
-  } else {
-    FLAGCXCHECK(
-        bootstrapSend(comm->bootstrap, root, 0x5988, &offset, sizeof(offset)));
-    FLAGCXCHECK(bootstrapRecv(comm->bootstrap, root, 0x5989, &agreedOffset,
-                              sizeof(agreedOffset)));
+    if (choice.agreed)
+      break;
+    minOffset = choice.nextOffset;
   }
-  if (agreedOffset == std::numeric_limits<size_t>::max())
-    return flagcxInvalidUsage;
-
-  local = flagcxSymLsaMarkOffset(arena, offset, span);
+  local = flagcxSymLsaMarkOffset(arena, choice.nextOffset, span);
   if (local == flagcxSuccess) {
-    window->lsaWindowOffset = offset;
+    window->lsaWindowOffset = choice.nextOffset;
     window->lsaWindowSpan = span;
     window->lsaOffsetOwned = true;
     window->slotStride = arena->rankStride;
@@ -1097,11 +1109,8 @@ static flagcxResult_t flagcxSymReleaseAllocationLease(flagcxSymWindow_t d) {
   return result;
 }
 
-// Mapping teardown is ordered among local peers because multicast and flat VA
-// ownership are node-local. Public deregistration is nevertheless a
-// communicator-wide collective: no rank may detach/free its window until all
-// nodes report that their local teardown completed. Communicator destruction
-// uses local mode and deliberately skips this rendezvous.
+// Published Window teardown is local. Registration rollback may use the
+// collective mode to converge errors before another registration step.
 static flagcxResult_t
 flagcxSymCleanupMappingsConverged(flagcxHeteroComm_t comm, flagcxSymWindow_t d,
                                   flagcxSymCleanupMode mode) {
@@ -2655,11 +2664,14 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
       return cleanup;
     }
     flagcxResult_t lease = flagcxSymReleaseAllocationLease(d);
-    if (lease != flagcxSuccess) {
+    flagcxResult_t commonLease = lease;
+    if (mode == flagcxSymCleanupCollective)
+      FLAGCXCHECK(flagcxSymConvergeStatus(comm, lease, &commonLease));
+    if (commonLease != flagcxSuccess) {
       WARN("flagcxSymWindowDeregister: allocation lease release failed "
            "rank=%d resourcePath=%d result=%d",
            comm != nullptr ? comm->rank : -1, (int)d->resourcePath, (int)lease);
-      return lease;
+      return commonLease;
     }
 
     // Only detach after all fallible cleanup has completed. A failure above
@@ -2685,7 +2697,8 @@ flagcxResult_t flagcxSymWindowDeregister(flagcxHeteroComm_t comm,
     win->defaultBase = nullptr;
   }
 
-  free(win);
+  if (win->ownerComm == nullptr)
+    free(win);
   return flagcxSuccess;
 }
 
@@ -2721,7 +2734,8 @@ flagcxSymWindow_t flagcxSymWindowFind(flagcxHeteroComm_t comm, const void *ptr,
   uintptr_t address = (uintptr_t)ptr;
   for (flagcxSymWindow_t window = comm->symWindows; window != nullptr;
        window = window->next) {
-    if (window->state != flagcxSymWindowPublished)
+    if (__atomic_load_n(&window->state, __ATOMIC_ACQUIRE) !=
+        flagcxSymWindowPublished)
       continue;
     uintptr_t base = (uintptr_t)window->localBase;
     if (address < base)

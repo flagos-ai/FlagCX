@@ -7,7 +7,7 @@
 /* FlagCX API version — compile-time checks for consumers.
  * Bump MAJOR for breaking changes, MINOR for new APIs, PATCH for fixes. */
 #define FLAGCX_VERSION_MAJOR 0
-#define FLAGCX_VERSION_MINOR 13
+#define FLAGCX_VERSION_MINOR 14
 #define FLAGCX_VERSION_PATCH 0
 #define FLAGCX_VERSION_CODE                                                    \
   (FLAGCX_VERSION_MAJOR * 10000 + FLAGCX_VERSION_MINOR * 100 +                 \
@@ -261,7 +261,12 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
 #define FLAGCX_WIN_DEFAULT 0x00
 #define FLAGCX_WIN_COLL_SYMMETRIC 0x01
 
-/* Register/Deregister user buffer for symmetric operation */
+/* Register/Deregister user buffer for symmetric operation. Registration is
+ * collective. Deregistration releases this rank's Window resources locally;
+ * callers must finish local device work and ensure remote accesses to this
+ * rank's buffer have completed before deregistration. A successfully
+ * deregistered Window handle is empty and may be passed to a later register
+ * call on the same communicator. */
 #ifdef __cplusplus
 flagcxResult_t
 flagcxCommWindowRegister(flagcxComm_t comm, void *buff, size_t size,
@@ -554,7 +559,10 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
  *
  * These operations require prior registration via flagcxOneSideRegister or
  * flagcxCommWindowRegister. They are only supported on heterogeneous
- * communicators backed by an RDMA-capable net adaptor.
+ * communicators backed by an RDMA-capable net adaptor. For raw MR-index APIs,
+ * callers must stop submitting work that references a Window before that
+ * Window is deregistered. Direct device access to its peer mapping must also
+ * be complete before local Window deregistration.
  */
 
 /* Register a signal buffer for one-sided RDMA operations.
@@ -590,9 +598,9 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
  * makes the destination device-visible. A successful operation also advances
  * the RMA completion counter once, after data movement has completed.
  * localbuff must belong to a live symmetric window. flags is reserved (0).
- * Keep both windows registered until stream completion (or the corresponding
- * completion-counter advance); the peer must likewise keep its source window
- * valid until the read has finished. */
+ * The local and peer backing allocations must remain valid until the read
+ * finishes. All such operations must complete before either rank deregisters
+ * its Window. */
 flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
                               flagcxDataType_t datatype, int peer,
                               flagcxWindow_t peerWin, size_t peerWinOffset,

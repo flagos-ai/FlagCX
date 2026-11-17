@@ -21,6 +21,11 @@ struct flagcxWindow {
       defaultBase;        // default symmetric-heap state (NULL on vendor path)
   int isSymmetricDefault; // 1 if using default path, 0 if using vendor path
   int winFlags;           // flags passed at registration time
+  // Public handles stay allocated until communicator destruction so an empty
+  // handle can be filled by a later collective registration.
+  flagcxComm_t ownerComm;
+  flagcxWindow_t nextOwned;
+  uint32_t devMemRefs;
 };
 
 enum flagcxSymWindowState {
@@ -92,15 +97,15 @@ struct flagcxSymWindow {
   flagcxSymResourcePath resourcePath;
   bool hasFlatMapping; // true while a VMM flat mapping is active
   bool published;      // linked into comm->symWindows only after full commit
+  volatile uint32_t inSubmit; // local callers still enqueueing this window
   flagcxSymWindowState state;
   struct flagcxSymWindow *next; // intrusive link in comm->symWindows
   struct flagcxSymWindow
       *cleanupNext; // unpublished rollback retained for retry
 };
 
-// Public window deregistration is collective so every rank reports the same
-// MR/cleanup result. Communicator destruction is deliberately rank-local and
-// must not enter bootstrap rendezvous while another rank is still live.
+// Registration rollback may converge across ranks. Published public windows
+// are destroyed locally; communicator destruction also uses local cleanup.
 enum flagcxSymCleanupMode {
   flagcxSymCleanupCollective = 0,
   flagcxSymCleanupLocal = 1,
@@ -130,6 +135,23 @@ flagcxSymWindowCanUseLegacyIpc(const struct flagcxSymWindow *window) {
 flagcxResult_t flagcxSymWindowDeregister(
     flagcxHeteroComm_t comm, flagcxWindow_t win,
     flagcxSymCleanupMode mode = flagcxSymCleanupCollective);
+
+// Hold a published window while its local caller validates and enqueues work.
+static inline bool flagcxSymWindowBeginSubmit(flagcxSymWindow_t window) {
+  if (window == nullptr)
+    return false;
+  __atomic_add_fetch(&window->inSubmit, 1, __ATOMIC_ACQ_REL);
+  if (__atomic_load_n(&window->state, __ATOMIC_ACQUIRE) ==
+      flagcxSymWindowPublished)
+    return true;
+  __atomic_sub_fetch(&window->inSubmit, 1, __ATOMIC_ACQ_REL);
+  return false;
+}
+
+static inline void flagcxSymWindowEndSubmit(flagcxSymWindow_t window) {
+  if (window != nullptr)
+    __atomic_sub_fetch(&window->inSubmit, 1, __ATOMIC_ACQ_REL);
+}
 
 // Publish only after every collective setup phase, including IPC fallback,
 // has converged successfully on all ranks.

@@ -143,6 +143,8 @@ struct flagcxDevCommInternal {
   // ---- Vendor device comm (set if adaptor->devCommCreate succeeds, else NULL)
   // ----
   flagcxInnerDevComm_t devComm; // Typed vendor handle (per-adaptor struct)
+  int devCommId; // 1-based stack ID within the outer communicator
+  struct flagcxDevCommInternal *previousActive;
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr;      // Lazily allocated by flagcxDevCommGetDevicePtr
@@ -150,7 +152,7 @@ struct flagcxDevCommInternal {
   void *cachedGridBarrierPtr; // Device memory for grid sync state (2 x uint32)
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
-  struct flagcxDevCommInternal *deferredNext; // Host-only deferred-free link
+  bool backendDestroyed; // Retry cached frees without calling backend twice
 };
 
 // The first nRanks slots preserve the existing host-RMA PutValue layout
@@ -214,15 +216,6 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
 //   ASYMMETRIC + ipcBasePtrs → IPC peer pointers available
 //   window != nullptr        → Window available (Vendor or default)
 // ============================================================
-// Host-only resources attached to a Window after communicator creation. The
-// callback must leave the resource owned by this node when it returns an error
-// so communicator teardown can retry it.
-struct flagcxDevMemDeferredResource {
-  void *resource;
-  flagcxResult_t (*release)(void *resource);
-  struct flagcxDevMemDeferredResource *next;
-};
-
 struct flagcxUniRunnerIpcBinding {
   int slot;
   uint64_t generation;
@@ -258,22 +251,22 @@ struct flagcxDevMemInternal {
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
                    // (fallback)
   void *winHandle; // Host-side handle for cleanup
+  flagcxWindow_t boundWindow; // prevents deregistration while this view exists
   void *segmentedPeerLayouts; // Device array owned by default Device API
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr
-  struct flagcxDevMemDeferredResource *deferredResources; // Host-only ownership
-  struct flagcxDevMemInternal *deferredNext; // Host-only deferred-free link
+  bool backendDestroyed; // Retry cached frees without calling backend twice
+  struct flagcxDevMemInternal *activeNext;
 };
 #ifndef FLAGCX_DEV_MEM_T_DEFINED
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
-// Internal entry point: ordinary Device API callers use flagcxDevMemCreate.
-flagcxResult_t flagcxUniRunnerIpcDevMemCreate(flagcxComm_t comm, void *buff,
-                                              size_t size,
-                                              flagcxDevMem_t *devMem);
+// Collective internal Window registration followed by a local DevMem view.
+flagcxResult_t flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
+    flagcxComm_t comm, void *buff, size_t size, flagcxDevMem_t *devMem);
 
 #endif // FLAGCX_DEVICE_API_INTERNAL_H_

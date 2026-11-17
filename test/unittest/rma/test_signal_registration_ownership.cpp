@@ -333,9 +333,8 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
 }
 
 TEST_F(RmaSignalRegistrationOwnershipTest,
-       DeferredIpcCleanupClosesRawMappingBase) {
+       IpcSlotReleaseClosesRawMappingBaseImmediately) {
   flagcxComm comm = {};
-  flagcxIntruQueueConstruct(&comm.deferredIpcQueue);
   struct flagcxIpcTableEntry *entry = &comm.ipcTable[0];
   entry->hostPeerPtrs = static_cast<void **>(calloc(2, sizeof(void *)));
   entry->hostPeerBasePtrs = static_cast<void **>(calloc(2, sizeof(void *)));
@@ -349,10 +348,9 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   entry->basePtr = entry->hostPeerPtrs[0];
   entry->inUse = true;
 
-  releaseIpcTableSlot(&comm, 0);
+  ASSERT_EQ(releaseIpcTableSlot(&comm, 0), flagcxSuccess);
   EXPECT_EQ(entry->hostPeerPtrs, nullptr);
   EXPECT_EQ(entry->hostPeerBasePtrs, nullptr);
-  ASSERT_EQ(flagcxCommDrainDeferredIpc(&comm), flagcxSuccess);
   ASSERT_EQ(closedIpcMappingCount, 1);
   EXPECT_EQ(closedIpcMappings[0], reinterpret_cast<void *>(0x100000));
 }

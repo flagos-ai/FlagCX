@@ -213,7 +213,8 @@ flagcxResult_t ncclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
   flagcxResult_t res = flagcxSuccess;
   res = (flagcxResult_t)ncclCommWindowDeregister(comm->base, win->base);
-  free(win);
+  if (res == flagcxSuccess)
+    free(win);
   return res;
 #else
   return flagcxNotSupported;
