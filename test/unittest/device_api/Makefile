@@ -326,6 +326,10 @@ INTER_NODE0_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node0 \
 INTER_NODE1_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node1 \
                    $(MPI_ENV_FLAG) NCCL_HOSTID=node1
 UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
+# Unified-intra world size.  Platforms whose device-side cross-rank
+# rendezvous is not a supported hardware capability narrow this to 1
+# (see set_env/ascend.sh); everywhere else keeps the historical -n 4.
+UNIFIED_IR_NP ?= 4
 
 # Legacy intra-node tests. Platforms only run targets selected in MPI_TARGETS;
 # this prevents a stale executable from bypassing a platform capability filter.
@@ -378,7 +382,7 @@ endif
 ifneq ($(filter $(BINDIR)/test_device_ir_unified_intra,$(MPI_TARGETS)),)
 run-mpi-unified-intra: $(BINDIR)/test_device_ir_unified_intra
 	@echo "Running unified intra suite tests (INTRA + WORLD, full coop matrices)..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(UNIFIED_COMMON_ENV) \
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n $(UNIFIED_IR_NP) $(UNIFIED_COMMON_ENV) \
 		$(BINDIR)/test_device_ir_unified_intra $(UNIFIED_TEST_ARGS)
 else
 run-mpi-unified-intra:

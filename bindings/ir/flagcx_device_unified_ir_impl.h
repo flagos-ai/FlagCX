@@ -45,6 +45,13 @@ static FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxStoreVolatile64Internal(Ptr ptr, uint64_t value) {
   auto dst = FLAGCX_IR_GLOBAL_PTR_CAST(volatile uint64_t, ptr);
   *dst = value;
+#if defined(__CCE_IS_AICORE__) && defined(USE_ASCEND_ADAPTOR)
+  // Ascend spells the store-release as plain STG + dirty-line sweep; the
+  // platform's CceAtomic::store uses the identical pair and the same
+  // measured rationale (2026-11-17 host-readback probe, 910C): a bare
+  // STG is not guaranteed at a coherent point by kernel tail.
+  asc_dcci_entire_out();
+#endif
 }
 
 // Prefer a platform's optimized cooperative copy when available.

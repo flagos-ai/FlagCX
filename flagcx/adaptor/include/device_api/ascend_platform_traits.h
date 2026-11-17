@@ -168,6 +168,11 @@ struct PlatformTraits<AscendPlatform> {
       const uint8_t *s = reinterpret_cast<const uint8_t *>(src);
       for (size_t i = 0; i < bytes; ++i)
         d[i] = s[i];
+      // Release the copied bytes to GM before the group's completion is
+      // observed.  Measured on 910C (2026-11-17): without this tail sweep
+      // the host D2H of freshly copied data reads stale zeros on a small
+      // fraction of runs; CceAtomic::store below spells the same pair.
+      asc_dcci_entire_out();
     }
 #else
     static FLAGCX_DEVICE_INLINE_DECORATOR int lane() {
@@ -766,7 +771,50 @@ struct PlatformTraits<AscendPlatform> {
       return Intrin::fullMask();
     }
   };
-  using CoopAny = PlatformCoop;
+  // CoopAny dispatches by tagged construction, not through the PlatformCoop
+  // function-pointer vtable: an indirect call through a device-resident
+  // function pointer faults on the 2201 AI core -- the same fault that
+  // forced explicit CoopAny overrides in kunlunxin_platform_traits.h:294
+  // and iluvatar_platform_traits.h:411.  Lane/warp teams have no hardware
+  // counterpart on this chip, so their sync() stays the declared-absent
+  // capability (trap on call, never a silent no-op).
+  struct CoopAny {
+    enum SyncKind : uint32_t { SyncNone = 0, SyncTrap = 1 };
+    int _rank;
+    int _size;
+    SyncKind _kind;
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    CoopAny() : _rank(0), _size(1), _kind(SyncNone) {}
+    CoopAny(CoopAny const &) = default;
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    explicit CoopAny(CoopBlock g)
+        : _rank(g.threadRank()), _size(g.size()),
+          _kind(SyncNone) {}
+    template <int N>
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    explicit CoopAny(CoopTile<N> g)
+        : _rank(g.threadRank()), _size(g.size()),
+          _kind(SyncNone) {
+      static_assert(N == 1, "Ascend has one logical lane");
+    }
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    explicit CoopAny(CoopTileSpan g)
+        : _rank(g.threadRank()), _size(g.size()),
+          _kind(SyncTrap) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    explicit CoopAny(CoopLanes g)
+        : _rank(g.threadRank()), _size(g.size()),
+          _kind(SyncTrap) {}
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    int threadRank() const { return _rank; }
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    int size() const { return _size; }
+    FLAGCX_DEVICE_INLINE_DECORATOR
+    void sync() {
+      if (_kind == SyncTrap)
+        __builtin_trap();
+    }
+  };
 };
 
 #endif // FLAGCX_ASCEND_PLATFORM_TRAITS_H_

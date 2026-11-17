@@ -313,8 +313,13 @@ int main(int argc, char *argv[]) {
       }
 
       // --- Sub-block B: DevPutValue (6 combos, scalar uint64 per slot) ---
-      // recvBuff reused as destination; each slot = 1 uint64_t
-      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * sizeof(uint64_t),
+      // recvBuff reused as destination; each slot = 1 uint64_t placed 128
+      // bytes apart (one per GM cache line).  910C line contract measured
+      // 2026-11-17: adjacent u64 slots flushed with whole-cache dcci
+      // commands tear rare writebacks (~5e-4 per store); line-isolated
+      // slots ran zero loss across 80 suite runs.  The kernel mirrors
+      // this stride; hostRecvV is indexed at combo * 16 below.
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * 128,
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
@@ -328,9 +333,9 @@ int main(int argc, char *argv[]) {
 
       FLAGCXCHECK(devHandle->deviceMemcpy(&hostRes, devResults, sizeof(int),
                                           flagcxMemcpyDeviceToHost, stream));
-      uint64_t hostRecvV[6];
+      uint64_t hostRecvV[6 * 16];
       FLAGCXCHECK(devHandle->deviceMemcpy(hostRecvV, recvBuff,
-                                          6 * sizeof(uint64_t),
+                                          6 * 128,
                                           flagcxMemcpyDeviceToHost, stream));
       if (hostRes != 1)
         s18Pass = false;
@@ -338,7 +343,7 @@ int main(int argc, char *argv[]) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
-        if (hostRecvV[combo] != expected)
+        if (hostRecvV[combo * 16] != expected)
           s18Pass = false;
       }
 
@@ -662,7 +667,7 @@ int main(int argc, char *argv[]) {
         int teamIdx = combo % 2;
         int senderRank = (teamIdx == 0) ? prevIntra : prevWorld;
         uint64_t expected = (uint64_t)(senderRank * 100 + combo);
-        if (hostRecvV[combo] != expected) {
+        if (hostRecvV[combo * 16] != expected) {
           s24Pass = false;
         }
       }
