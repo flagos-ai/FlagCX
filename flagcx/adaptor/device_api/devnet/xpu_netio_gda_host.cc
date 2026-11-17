@@ -13,6 +13,7 @@
 #include "device_api/devnet/xpu_netio_gda_view.h"
 #include "device_api/flagcx_device.h"
 #include "flagcx_kernel_internal.h"
+#include "sym_heap.h"
 #include "utils.h"
 
 #include <xpu_netio/provider.h>
@@ -85,6 +86,7 @@ struct WindowOwner {
 };
 
 struct CommOwner {
+  flagcxComm_t comm = nullptr;
   const xpu_netio_provider_ops_t *ops = nullptr;
   xpu_netio_device_t *device = nullptr;
   xpu_netio_context_t *context = nullptr;
@@ -170,7 +172,7 @@ flagcxResult_t releaseComm(CommOwner *owner) {
   return flagcxSuccess;
 }
 
-flagcxResult_t registerWindow(flagcxComm_t comm, CommOwner *owner,
+flagcxResult_t registerRegion(flagcxComm_t comm, CommOwner *owner,
                               void *address, size_t bytes,
                               WindowOwner **output) {
   *output = nullptr;
@@ -320,6 +322,9 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
                                  int netType) {
   if (comm == nullptr || devComm == nullptr || reqs == nullptr)
     return flagcxInvalidArgument;
+  FLAGCXCHECK(stage(comm, comm->devNetCommHandle == nullptr
+                              ? flagcxSuccess
+                              : flagcxInvalidUsage));
   if (netType != -1 && netType != 1)
     return flagcxInvalidArgument;
   unsigned requiredOperations =
@@ -343,6 +348,7 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
     return allocation;
   }
   devComm->gdaHostOwner = owner;
+  owner->comm = comm;
   xpu_netio_device_handle_init(&owner->published);
 
   flagcxResult_t local = flagcxSuccess;
@@ -543,13 +549,14 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
        owner->published.device_contexts == nullptr ||
        owner->published.host_device_contexts == nullptr ||
        owner->published.host_device_contexts[0].provider_id !=
-           owner->ops->hdr.provider_id))
+           owner->ops->hdr.provider_id ||
+       owner->published.needs_host_progress != 0))
     local = flagcxNotSupported;
   common = stage(comm, local);
   if (common != flagcxSuccess)
     return common;
 
-  FLAGCXCHECK(registerWindow(comm, owner, devComm->signalBuffer,
+  FLAGCXCHECK(registerRegion(comm, owner, devComm->signalBuffer,
                              static_cast<size_t>(devComm->signalCount) *
                                  devComm->contextCount * sizeof(uint64_t),
                              &owner->signals));
@@ -587,20 +594,33 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   return flagcxSuccess;
 }
 
+static flagcxResult_t registerExistingWindows(flagcxComm_t comm,
+                                              flagcxDevComm_t devComm);
+static flagcxResult_t detachOwnedWindows(CommOwner *owner);
+
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
                           const flagcxDevCommRequirements *reqs, int netType) {
   if (comm == nullptr || devComm == nullptr || reqs == nullptr)
     return flagcxInvalidArgument;
   flagcxResult_t status = createCommAttempt(comm, devComm, reqs, netType);
+  if (status == flagcxSuccess && devComm->gdaProvider != 0)
+    status = registerExistingWindows(comm, devComm);
   if (status == flagcxSuccess)
     return status;
 
   // A failed allocation can leave an owner on only some ranks. Every rank
   // must converge after local cleanup before AUTO may choose Proxy.
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
-  flagcxResult_t cleanup = owner ? releaseComm(owner) : flagcxSuccess;
-  if (cleanup == flagcxSuccess)
+  flagcxResult_t cleanup =
+      owner != nullptr ? detachOwnedWindows(owner) : flagcxSuccess;
+  if (cleanup == flagcxSuccess && owner != nullptr)
+    cleanup = releaseComm(owner);
+  if (cleanup == flagcxSuccess) {
     devComm->gdaHostOwner = nullptr;
+    devComm->gdaDeviceContext = nullptr;
+    devComm->gdaProvider = 0;
+    devComm->gdaProviderId = 0;
+  }
   flagcxResult_t commonCleanup = stage(comm, cleanup);
   if (commonCleanup != flagcxSuccess)
     return commonCleanup;
@@ -614,8 +634,9 @@ flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
 flagcxResult_t destroyComm(flagcxDevComm_t devComm) {
   if (devComm == nullptr || devComm->gdaHostOwner == nullptr)
     return flagcxSuccess;
-  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
-  FLAGCXCHECK(releaseComm(static_cast<CommOwner *>(devComm->gdaHostOwner)));
+  CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
+  FLAGCXCHECK(detachOwnedWindows(owner));
+  FLAGCXCHECK(releaseComm(owner));
   devComm->gdaHostOwner = nullptr;
   devComm->gdaDeviceContext = nullptr;
   devComm->gdaProvider = 0;
@@ -623,21 +644,39 @@ flagcxResult_t destroyComm(flagcxDevComm_t devComm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
-                            flagcxDevMem_t devMem, size_t bytes,
-                            void *deviceWindow) {
+flagcxResult_t registerWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
+                              flagcxWindow_t hostWindow) {
   if (devComm == nullptr || devComm->gdaProvider == 0)
     return flagcxSuccess;
-  if (comm == nullptr || devMem == nullptr || deviceWindow == nullptr)
+  if (comm == nullptr)
     return flagcxInvalidArgument;
+  flagcxResult_t local =
+      hostWindow != nullptr && hostWindow->userBase != nullptr &&
+              hostWindow->userSize != 0 && hostWindow->gdaWindowOwner == nullptr
+          ? flagcxSuccess
+          : flagcxInvalidArgument;
+  FLAGCXCHECK(stage(comm, local));
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
   WindowOwner *window = nullptr;
-  FLAGCXCHECK(registerWindow(comm, owner, devMem->rawPtr, bytes, &window));
+  WindowOwner *previousOrphans = owner->orphanWindows;
+  flagcxResult_t registration = registerRegion(
+      comm, owner, hostWindow->userBase, hostWindow->userSize, &window);
+  if (registration != flagcxSuccess) {
+    hostWindow->gdaRegistrationActive = true;
+    if (owner->orphanWindows != previousOrphans) {
+      WindowOwner *orphan = owner->orphanWindows;
+      owner->orphanWindows = orphan->orphanNext;
+      orphan->orphanNext = nullptr;
+      hostWindow->gdaWindowOwner = orphan;
+      ++owner->liveWindows;
+    }
+    return registration;
+  }
   flagcxXpuNetioDeviceWindow view{};
   view.local = window->local;
   view.remote = window->deviceRegions;
-  view.bytes = bytes;
-  flagcxResult_t local = deviceAdaptor->deviceMalloc(
+  view.bytes = hostWindow->userSize;
+  local = deviceAdaptor->deviceMalloc(
       reinterpret_cast<void **>(&window->deviceView), sizeof(view),
       flagcxMemDevice, nullptr);
   if (local == flagcxSuccess)
@@ -647,27 +686,160 @@ flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
   flagcxResult_t common = stage(comm, local);
   if (common != flagcxSuccess) {
     if (releaseWindow(window) != flagcxSuccess) {
-      window->orphanNext = owner->orphanWindows;
-      owner->orphanWindows = window;
+      hostWindow->gdaWindowOwner = window;
+      ++owner->liveWindows;
     }
+    hostWindow->gdaRegistrationActive = true;
     return common;
   }
-  DefaultNetProviderPolicy<typename DeviceAPI::Platform>::publishWindow(
-      *static_cast<DeviceAPI::Window *>(deviceWindow), window->deviceView);
-  devMem->gdaWindowOwner = window;
+  hostWindow->gdaWindowOwner = window;
+  hostWindow->gdaDeviceView = window->deviceView;
+  hostWindow->gdaRegistrationActive = true;
   ++owner->liveWindows;
   return flagcxSuccess;
 }
 
-flagcxResult_t destroyWindow(flagcxDevMem_t devMem) {
-  if (devMem == nullptr || devMem->gdaWindowOwner == nullptr)
+flagcxResult_t prepareWindowDeregister(flagcxWindow_t hostWindow) {
+  if (hostWindow == nullptr)
     return flagcxSuccess;
-  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
-  WindowOwner *window = static_cast<WindowOwner *>(devMem->gdaWindowOwner);
+  if (hostWindow->gdaDevMemRefs != 0)
+    return flagcxInvalidUsage;
+  if (hostWindow->gdaWindowOwner == nullptr)
+    return flagcxSuccess;
+  return deviceAdaptor->deviceSynchronize();
+}
+
+flagcxResult_t deregisterWindow(flagcxWindow_t hostWindow) {
+  if (hostWindow == nullptr || hostWindow->gdaWindowOwner == nullptr)
+    return flagcxSuccess;
+  if (hostWindow->gdaDevMemRefs != 0)
+    return flagcxInvalidUsage;
+  WindowOwner *window = static_cast<WindowOwner *>(hostWindow->gdaWindowOwner);
   CommOwner *owner = window->comm;
   FLAGCXCHECK(releaseWindow(window));
-  devMem->gdaWindowOwner = nullptr;
+  hostWindow->gdaWindowOwner = nullptr;
+  hostWindow->gdaDeviceView = nullptr;
   --owner->liveWindows;
+  return flagcxSuccess;
+}
+
+flagcxResult_t bindDevMem(flagcxWindow_t hostWindow, flagcxDevMem_t devMem,
+                          size_t bytes, void *deviceWindow) {
+  if (hostWindow == nullptr || devMem == nullptr || deviceWindow == nullptr ||
+      hostWindow->gdaWindowOwner == nullptr ||
+      hostWindow->gdaDeviceView == nullptr ||
+      hostWindow->gdaDevMemRefs == UINT_MAX)
+    return flagcxInvalidUsage;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(hostWindow->userBase);
+  const uintptr_t ptr = reinterpret_cast<uintptr_t>(devMem->rawPtr);
+  // Remote offsets are relative to each peer's registered Window. A local
+  // subview offset cannot describe an independently created peer subview.
+  if (ptr != base || bytes != hostWindow->userSize)
+    return flagcxNotSupported;
+  DefaultNetProviderPolicy<typename DeviceAPI::Platform>::publishWindow(
+      *static_cast<DeviceAPI::Window *>(deviceWindow),
+      hostWindow->gdaDeviceView);
+  devMem->gdaWindowOwner = hostWindow;
+  devMem->hasWindow = true;
+  ++hostWindow->gdaDevMemRefs;
+  return flagcxSuccess;
+}
+
+flagcxResult_t unbindDevMem(flagcxDevMem_t devMem) {
+  if (devMem == nullptr || devMem->gdaWindowOwner == nullptr)
+    return flagcxSuccess;
+  flagcxWindow_t hostWindow =
+      static_cast<flagcxWindow_t>(devMem->gdaWindowOwner);
+  if (hostWindow->gdaDevMemRefs == 0)
+    return flagcxInternalError;
+  --hostWindow->gdaDevMemRefs;
+  devMem->gdaWindowOwner = nullptr;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t registerExistingWindows(flagcxComm_t comm,
+                                              flagcxDevComm_t devComm) {
+  std::vector<flagcxWindow_t> windows;
+  flagcxResult_t local = flagcxSuccess;
+  try {
+    for (flagcxWindow_t window = comm->devNetWindows; window != nullptr;
+         window = window->devNetNext)
+      windows.push_back(window);
+  } catch (const std::bad_alloc &) {
+    local = flagcxSystemError;
+  }
+  FLAGCXCHECK(stage(comm, local));
+  std::vector<size_t> counts;
+  FLAGCXCHECK(gather(comm, windows.size(), counts));
+  for (size_t count : counts)
+    if (count != windows.size())
+      return flagcxInvalidUsage;
+
+  // The list is head-inserted. Replay collective registrations in the
+  // original Window order on every rank.
+  std::reverse(windows.begin(), windows.end());
+  for (flagcxWindow_t window : windows)
+    FLAGCXCHECK(registerWindow(comm, devComm, window));
+
+  // Preexisting DevMem views may already have device snapshots. Drain work
+  // before replacing their copied Window state with the new GDA handle.
+  FLAGCXCHECK(stage(comm, deviceAdaptor->deviceSynchronize()));
+  local = flagcxSuccess;
+  for (flagcxWindow_t window : windows) {
+    for (flagcxDevMem_t view = window->devMemViews; view != nullptr;
+         view = view->gdaWindowNext) {
+      if (view->window == nullptr)
+        continue;
+      local = bindDevMem(window, view, view->viewSize, view->window);
+      if (local == flagcxSuccess && view->cachedDevicePtr != nullptr) {
+        flagcxDevMem hostCopy(*view);
+        local = deviceAdaptor->deviceMemcpy(
+            view->cachedDevicePtr, &hostCopy, sizeof(hostCopy),
+            flagcxMemcpyHostToDevice, nullptr, nullptr);
+      }
+      if (local != flagcxSuccess)
+        break;
+    }
+    if (local != flagcxSuccess)
+      break;
+  }
+  return stage(comm, local);
+}
+
+static flagcxResult_t detachOwnedWindows(CommOwner *owner) {
+  if (owner == nullptr || owner->comm == nullptr)
+    return flagcxSuccess;
+  FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+  for (flagcxWindow_t window = owner->comm->devNetWindows; window != nullptr;
+       window = window->devNetNext) {
+    WindowOwner *registration =
+        static_cast<WindowOwner *>(window->gdaWindowOwner);
+    if (registration == nullptr || registration->comm != owner)
+      continue;
+    for (flagcxDevMem_t view = window->devMemViews; view != nullptr;
+         view = view->gdaWindowNext) {
+      if (view->window == nullptr)
+        continue;
+      DefaultNetProviderPolicy<typename DeviceAPI::Platform>::initWindow(
+          *static_cast<DeviceAPI::Window *>(view->window));
+      view->hasWindow =
+          static_cast<DeviceAPI::Window *>(view->window)->hasAccess();
+      if (view->gdaWindowOwner != nullptr)
+        FLAGCXCHECK(unbindDevMem(view));
+      if (view->cachedDevicePtr != nullptr) {
+        flagcxDevMem hostCopy(*view);
+        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+            view->cachedDevicePtr, &hostCopy, sizeof(hostCopy),
+            flagcxMemcpyHostToDevice, nullptr, nullptr));
+      }
+    }
+    FLAGCXCHECK(deregisterWindow(window));
+    window->gdaRegistrationActive = false;
+  }
+  for (flagcxWindow_t window = owner->comm->devNetWindows; window != nullptr;
+       window = window->devNetNext)
+    if (window->gdaWindowOwner == nullptr)
+      window->gdaRegistrationActive = false;
   return flagcxSuccess;
 }
 
@@ -703,10 +875,6 @@ flagcxResult_t pollError(flagcxDevComm_t devComm) {
       devComm->gdaHostOwner == nullptr)
     return flagcxInvalidArgument;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
-  if (owner->published.needs_host_progress) {
-    uint32_t progressed = 0;
-    FLAGCXCHECK(result(xpu_netio_progress(&owner->published, 32, &progressed)));
-  }
   xpu_netio_error_info_t info{};
   xpu_netio_error_info_init(&info);
   FLAGCXCHECK(result(xpu_netio_query_error(&owner->published, &info)));
@@ -722,5 +890,7 @@ flagcxResult_t pollError(flagcxDevComm_t devComm) {
 } // namespace XpuNetioGda
 
 const flagcxDevNetAdaptor flagcxDevNetGda = {
-    XpuNetioGda::createComm, XpuNetioGda::destroyComm,
-    XpuNetioGda::createWindow, XpuNetioGda::destroyWindow};
+    XpuNetioGda::createComm,       XpuNetioGda::destroyComm,
+    XpuNetioGda::registerWindow,   XpuNetioGda::prepareWindowDeregister,
+    XpuNetioGda::deregisterWindow, XpuNetioGda::bindDevMem,
+    XpuNetioGda::unbindDevMem};

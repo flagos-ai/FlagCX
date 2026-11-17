@@ -16,9 +16,16 @@ struct flagcxDevNetAdaptor {
   flagcxResult_t (*createComm)(flagcxComm_t, flagcxDevComm_t,
                                const flagcxDevCommRequirements *, int);
   flagcxResult_t (*destroyComm)(flagcxDevComm_t);
-  flagcxResult_t (*createWindow)(flagcxComm_t, flagcxDevComm_t, flagcxDevMem_t,
-                                 size_t, void *);
-  flagcxResult_t (*destroyWindow)(flagcxDevMem_t);
+  // Registration is collective and belongs to the public Window lifecycle.
+  flagcxResult_t (*registerWindow)(flagcxComm_t, flagcxDevComm_t,
+                                   flagcxWindow_t);
+  // Check local references and quiesce device work before any rank releases
+  // its registration. This phase must not release resources.
+  flagcxResult_t (*prepareWindowDeregister)(flagcxWindow_t);
+  flagcxResult_t (*deregisterWindow)(flagcxWindow_t);
+  // Binding a local DevMem view must never exchange peer metadata.
+  flagcxResult_t (*bindDevMem)(flagcxWindow_t, flagcxDevMem_t, size_t, void *);
+  flagcxResult_t (*unbindDevMem)(flagcxDevMem_t);
 };
 
 // Supplied by the single GDA implementation selected at build time.

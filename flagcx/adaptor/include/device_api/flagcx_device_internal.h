@@ -239,6 +239,7 @@ flagcxKernelPutValueStagingOffset(const struct flagcxDevCommInternal *devComm,
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
   void *rawPtr; // = buff parameter
+  size_t viewSize;
   // Exact allocation provenance when rawPtr belongs to a flagcxMemAlloc
   // allocation. External CCL user buffers remain valid and untracked.
   bool allocationTracked;
@@ -266,7 +267,8 @@ struct flagcxDevMemInternal {
   void *winHandle; // Host-side handle for cleanup
   flagcxWindow_t boundWindow; // prevents deregistration while this view exists
   void *segmentedPeerLayouts; // Device array owned by default Device API
-  void *gdaWindowOwner;       // Default GDA MR owner (null on other paths)
+  void *gdaWindowOwner;       // borrowed public Window, not the GDA MR owner
+  struct flagcxDevMemInternal *gdaWindowNext; // Window's local view list
 
   // ---- Device pointer cache (for Triton integration) ----
   void *cachedDevicePtr; // Lazily allocated by flagcxDevMemGetDevicePtr

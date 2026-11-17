@@ -15,10 +15,13 @@ namespace XpuNetioGda {
 flagcxResult_t createComm(flagcxComm_t comm, flagcxDevComm_t devComm,
                           const flagcxDevCommRequirements *reqs, int netType);
 flagcxResult_t destroyComm(flagcxDevComm_t devComm);
-flagcxResult_t createWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
-                            flagcxDevMem_t devMem, size_t bytes,
-                            void *deviceWindow);
-flagcxResult_t destroyWindow(flagcxDevMem_t devMem);
+flagcxResult_t registerWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
+                              flagcxWindow_t window);
+flagcxResult_t prepareWindowDeregister(flagcxWindow_t window);
+flagcxResult_t deregisterWindow(flagcxWindow_t window);
+flagcxResult_t bindDevMem(flagcxWindow_t window, flagcxDevMem_t devMem,
+                          size_t bytes, void *deviceWindow);
+flagcxResult_t unbindDevMem(flagcxDevMem_t devMem);
 flagcxResult_t queryComm(flagcxDevComm_t devComm, unsigned *capabilities,
                          uint32_t **deviceErrorFlag, uint64_t *maxChunkBytes,
                          unsigned *requiredAlignment);
