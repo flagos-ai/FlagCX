@@ -484,8 +484,8 @@ struct flagcxCoopLanes {
 struct flagcxCoopAny {
   typename DeviceAPI::CoopAny _base;
 
-  flagcxCoopAny() = default;
-  flagcxCoopAny(flagcxCoopAny const &) = default;
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny() = default;
+  FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopAny const &) = default;
 
   FLAGCX_DEVICE_INLINE_DECORATOR flagcxCoopAny(flagcxCoopBlock b)
       : _base(b._base) {}
@@ -618,9 +618,8 @@ struct flagcxDevBarrier<flagcxTeamTagIntra, Coop> {
 // ============================================================
 // Section 8: Pointer Access Functions (Inline Wrappers)
 //
-// All functions delegate to _winBase member functions — no #ifdef branches.
-// On Vendor: forwards to vendor pointer functions via _winBase.
-// On default: uses IPC peerPtrs / rawPtr fallback.
+// Peer access delegates to Window, which owns any IPC peer mapping. Local
+// access retains a raw-pointer fallback for non-XPU backends without a window.
 //
 // Return type is deduced so the xpu3 device pass keeps the vendor's
 // __global_ptr__ (address-space 1) pointer type instead of forcing a
@@ -671,6 +670,10 @@ flagcxGetPeerPointerWithAccess(const flagcxDevMem &mem, size_t offset,
 
 FLAGCX_DEVICE_INLINE_DECORATOR auto
 flagcxGetLocalPointer(const flagcxDevMem &mem, size_t offset) {
+#if !defined(__xpu__)
+  if (!mem._winBase.hasAccess())
+    return static_cast<void *>(static_cast<char *>(mem._rawPtr) + offset);
+#endif
   return mem._winBase.getLocalPointer(offset);
 }
 

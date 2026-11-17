@@ -31,8 +31,6 @@
 #include "global_comm.h"
 #include "flagcx_kernel.h"
 #include <musa_runtime.h>
-#include <cstdio>
-#include <cstdlib>
 
 // Datatype size helper (moved from flagcx/kernels/flagcx_kernel_device.cu)
 FLAGCX_DEVICE_DECORATOR size_t
@@ -1298,9 +1296,6 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   }
 }
 
-// Defined after all kernels so the diagnostic queries their actual host stubs.
-extern "C" int flagcxMusaDiagnoseDeviceApiImage();
-
 flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
                                           flagcxDevComm_t devComm,
                                           int *results,
@@ -1308,37 +1303,9 @@ flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
   if (!devMem || !devComm || !results) return flagcxInternalError;
   flagcxDevMem dm(*devMem);
   flagcxDevComm dc(*devComm);
-  const char *diagnostic = std::getenv("FLAGCX_MUSA_K1_DIAG");
-  const bool diagnose = diagnostic && diagnostic[0] == '1';
-  if (diagnose) {
-    (void)flagcxMusaDiagnoseDeviceApiImage();
-    int device = -1;
-    const musaError_t deviceError = musaGetDevice(&device);
-    musaFuncAttributes attr{};
-    const musaError_t attrError = musaFuncGetAttributes(
-        &attr, reinterpret_cast<const void *>(flagcxIntraTestCommQueriesKernel));
-    std::fprintf(stderr,
-        "MUSA K1: device=%d getDevice=%d func=%p attributes=%d (%s) "
-        "maxThreadsPerBlock=%d numRegs=%d sharedBytes=%zu localBytes=%zu "
-        "launchThreads=32 stream=%p\n",
-        device, static_cast<int>(deviceError),
-        reinterpret_cast<const void *>(flagcxIntraTestCommQueriesKernel),
-        static_cast<int>(attrError), musaGetErrorString(attrError),
-        attr.maxThreadsPerBlock, attr.numRegs,
-        static_cast<size_t>(attr.sharedSizeBytes),
-        static_cast<size_t>(attr.localSizeBytes),
-        reinterpret_cast<void *>(*(musaStream_t *)stream));
-    std::fflush(stderr);
-    if (attrError != musaSuccess) return flagcxUnhandledDeviceError;
-  }
   flagcxIntraTestCommQueriesKernel
       <<<1, 32, 0, *(musaStream_t *)stream>>>(dm, dc, results);
   musaError_t err = musaGetLastError();
-  if (diagnose) {
-    std::fprintf(stderr, "MUSA K1: launch=%d (%s)\n",
-                 static_cast<int>(err), musaGetErrorString(err));
-    std::fflush(stderr);
-  }
   return err == musaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
@@ -1618,45 +1585,4 @@ flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,
       <<<1, 1, 0, *(musaStream_t *)stream>>>(dc, results);
   musaError_t err = musaGetLastError();
   return err == musaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
-}
-
-// Query existing kernels only: do not add a smoke kernel to the image being
-// investigated. This entry point also works before Comm/IPC initialization.
-extern "C" int flagcxMusaDiagnoseDeviceApiImage() {
-  int device = -1;
-  const musaError_t deviceError = musaGetDevice(&device);
-  if (deviceError != musaSuccess) {
-    std::fprintf(stderr, "MUSA image diagnostic: getDevice=%d (%s)\n",
-                 static_cast<int>(deviceError), musaGetErrorString(deviceError));
-    return 1;
-  }
-  struct Entry { const char *name; const void *function; };
-  const Entry entries[] = {
-      {"AllReduceFloat", reinterpret_cast<const void *>(flagcxIntraAllReduceFloatKernel)},
-      {"AllReduceDouble", reinterpret_cast<const void *>(flagcxIntraAllReduceDoubleKernel)},
-      {"CommQueries", reinterpret_cast<const void *>(flagcxIntraTestCommQueriesKernel)},
-      {"SymPtr", reinterpret_cast<const void *>(flagcxIntraTestSymPtrKernel)},
-      {"CoopGroups", reinterpret_cast<const void *>(flagcxIntraTestCoopGroupsKernel)},
-      {"NetGetFromComm", reinterpret_cast<const void *>(flagcxDevNetGetFromCommKernel)},
-  };
-  int failures = 0;
-  for (const auto &entry : entries) {
-    // Record and clear a prior runtime error so it cannot silently contaminate
-    // interpretation of the next attribute query. No work is enqueued here.
-    const musaError_t prior = musaGetLastError();
-    musaFuncAttributes attr{};
-    const musaError_t result = musaFuncGetAttributes(&attr, entry.function);
-    std::fprintf(stderr,
-        "MUSA image diagnostic: device=%d kernel=%s func=%p prior=%d "
-        "attributes=%d (%s) maxThreadsPerBlock=%d numRegs=%d "
-        "sharedBytes=%zu localBytes=%zu\n",
-        device, entry.name, entry.function, static_cast<int>(prior),
-        static_cast<int>(result), musaGetErrorString(result),
-        attr.maxThreadsPerBlock, attr.numRegs,
-        static_cast<size_t>(attr.sharedSizeBytes),
-        static_cast<size_t>(attr.localSizeBytes));
-    if (result != musaSuccess) ++failures;
-  }
-  std::fflush(stderr);
-  return failures ? 1 : 0;
 }

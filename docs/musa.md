@@ -22,7 +22,7 @@ make -B -C test/unittest/device_api PROJECT_ROOT="$PWD" \
   "$bin/test_device_ir_unified_intra" "$bin/test_device_ir_unified_inter"
 ```
 
-Main-library `.cu` files use compiler-managed independent device images. The
+Main-library `.mu` files use compiler-managed independent device images. The
 linker map keeps generated image symbols local to `libflagcx.so`. The public
 test kernel objects use linked RDC images. Rebuild the library, device objects
 and Host test executables together after changing Device API headers.
@@ -54,9 +54,9 @@ ranks 0-7 to devices 0-7.
 
 The runner records and exports the MUSA runtime configuration, including
 `FLAGCX_USE_HETERO_COMM=1`, `FLAGCX_VMM_ENABLE=0`, DMA-BUF, mapped Host signals,
-and the rank CTA rendezvous. FlagCX IB is enabled for T2/T4 and disabled for
-T1/T3; MCCL IB is disabled. `FLAGCX_MUSA_SYNC_D2H=0` leaves the production
-asynchronous copy behavior enabled. Explicit `FLAGCX_IB_HCA`,
+and default MUSA rank-local CTA synchronization. FlagCX IB is enabled for
+T2/T4 and disabled for T1/T3; MCCL IB is disabled. Copies submitted with a
+stream use asynchronous MUSA copies. Explicit `FLAGCX_IB_HCA`,
 `FLAGCX_IB_GID_INDEX`, and `FLAGCX_SOCKET_IFNAME` selections are forwarded;
 choose them for the actual NIC topology.
 
@@ -89,29 +89,6 @@ a build or tests:
 METADATA_ONLY=1 bash test/unittest/device_api/musa_all_acceptance.sh "$PWD"
 ```
 
-The operator reported the following complete regression:
-
-| Test | Range | Consecutive runs | Result |
-| --- | --- | --- | --- |
-| T1 / K10 | 1K-16M, factor 2 | 3 | PASS |
-| T2 / K14 | 1K-16M, factor 2 | 3 | PASS |
-| T3 / S16-S25 | 1K-16M, factor 2 | 3 | PASS |
-| T4 / S16-S25 | 1K-16M, factor 2 | 3 | PASS |
-
-The reported launcher/script exit was 0. The evidence directory is:
-
-```text
-/workspace/yx/FlagCX/test/unittest/device_api/all-results-20261114_173150.6dQJUL44
-```
-
-That run used base commit `5bc11fb` with the FIFO diagnostics and conservative
-MUSA synchronization patches applied. Its `source-sha256.txt`, source diff,
-commands, binaries and complete logs identify the tested tree. The cleanup
-delivery preserves the tested synchronization implementation and public cases;
-it removes investigation files and adds environment-report collection.
-Attach the original evidence directory to the delivery separately. It has not
-been copied into Git or independently downloaded for this cleanup.
-
 ## Supported path and constraints
 
 The Default path provides native IPC, mapped Host registration, DMA-BUF export,
@@ -127,8 +104,14 @@ uses local, Inter, then local phases. These conservative waits trade throughput
 for ordering; they are not a replacement for the existing network visibility
 flushes or caller participation rules.
 
-The optional rank CTA rendezvous requires every CTA to enter in the same order,
-full-CTA participation, concurrent progress, and no concurrent kernels sharing
-the counter. It is not a general grid barrier for arbitrary launches. Memory
+The MUSA WORLD barrier includes rank-local CTA synchronization by default.
+This requires every CTA to enter in the same order, full-CTA participation,
+concurrent progress, and no concurrent kernels sharing the counter. It is not
+a general grid barrier for arbitrary launches. Memory
 allocation/free, IPC close, registration and error-word ownership retain their
 separate lifetimes. Device/FIFO errors propagate to Host completion checks.
+
+The MUSA collective launcher follows the current RED/IPC launcher signature
+and implements dynamic float/Sum RED execution. IPC executor blocks and
+averaging return `flagcxNotSupported`. UniRunner static and fused execution
+remain gated to the platforms supported by the common runner.

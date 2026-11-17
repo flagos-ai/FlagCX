@@ -5,6 +5,30 @@
 #ifndef FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 #define FLAGCX_ADAPTOR_DEVICE_UTILS_H_
 
+#include <stdint.h>
+
+#if defined(__cplusplus)
+// Register operand shapes for one complete value. For example, Vector4 on
+// uint32_t selects four byte operands (.v4.b8).
+struct Scalar {};
+struct Vector2 {};
+struct Vector4 {};
+struct Vector8 {};
+
+struct alignas(16) Bulk16 {
+  uint32_t words[4];
+};
+
+struct alignas(32) Bulk32 {
+  uint32_t words[8];
+};
+
+static_assert(sizeof(Bulk16) == 16 && alignof(Bulk16) == 16,
+              "Bulk16 must occupy and align to 16 bytes");
+static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
+              "Bulk32 must occupy and align to 32 bytes");
+#endif
+
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
 #if defined(USE_MUSA_ADAPTOR) &&                                           \
@@ -15,7 +39,9 @@
 
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
     defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
+    (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    defined(__TOPSCC__)
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
@@ -35,7 +61,9 @@
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
     defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                \
-    (defined(USE_ILUVATAR_ADAPTOR) && defined(FLAGCX_ILUVATAR_DEVICE_COMPILE))
+    (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
+     defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
+    defined(__TOPSCC__)
 #define FLAGCX_CHECK_DEVICE_CC 1
 #else
 #define FLAGCX_CHECK_DEVICE_CC 0
@@ -172,7 +200,7 @@
 // the logical SIMT width; wider XPU launches need a wider public lane mask and
 // matching cooperative-group support first.
 #define FLAGCX_SIMT_WIDTH 16
-#define FLAGCX_SHARED __local__
+#define FLAGCX_SHARED_DECORATOR __local__
 #define FLAGCX_DEVICE_STREAM_PTR XPUStream *
 
 #else
@@ -191,7 +219,7 @@
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
 #define FLAGCX_SIMT_WIDTH 16
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #define FLAGCX_DEVICE_STREAM_PTR void **
 #endif // __xpu__
 
@@ -206,8 +234,13 @@
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
 #define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#if defined(__clang_llvm_bitcode_lib__)
 #define FLAGCX_HOST_DEVICE_INLINE                                              \
   __host__ __device__ __attribute__((always_inline))
+#else
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ inline __attribute__((always_inline))
+#endif
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 // ivcore11 cannot select llvm.nvvm.membar.sys. The device-wide fence lowers
 // to the CoreX cache writeback/invalidate operation used by peer-visible P2P
@@ -219,7 +252,7 @@
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
 #define FLAGCX_SIMT_WIDTH 64
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 // Host pass: retain layout constants and erase device-only qualifiers.
 #define FLAGCX_HOST_DECORATOR
@@ -235,7 +268,7 @@
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
 #define FLAGCX_SIMT_WIDTH 64
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif // FLAGCX_ILUVATAR_DEVICE_COMPILE
 
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
@@ -314,7 +347,7 @@
 #define FLAGCX_BLOCK_IDX_X blockIdx.x
 #define FLAGCX_BLOCK_DIM_X blockDim.x
 #define FLAGCX_GRID_DIM_X gridDim.x
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
@@ -328,7 +361,7 @@
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif
 #define FLAGCX_SIMT_WIDTH 64
 #define FLAGCX_DEVICE_STREAM_PTR hipStream_t *
@@ -361,7 +394,7 @@
 
 // SIMT lockstep width (32 lanes on NVIDIA/CUDA)
 #define FLAGCX_SIMT_WIDTH 32
-#define FLAGCX_SHARED __shared__
+#define FLAGCX_SHARED_DECORATOR __shared__
 #else
 // Host compiler (g++/clang++) on NVIDIA platform — no CUDA qualifiers
 #define FLAGCX_HOST_DECORATOR
@@ -379,11 +412,51 @@
 
 // SIMT width (same as device, for template instantiation)
 #define FLAGCX_SIMT_WIDTH 32
-#define FLAGCX_SHARED static
+#define FLAGCX_SHARED_DECORATOR static
 #endif // __CUDACC__
 
 // CUDA runtime macros — available from both nvcc and host compiler
 #define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+
+#elif defined(USE_ENFLAME_ADAPTOR)
+#include <tops/tops_runtime.h>
+
+#if FLAGCX_CHECK_DEVICE_CC
+// Device pass — full TOPS qualifiers.
+#define FLAGCX_HOST_DECORATOR __host__
+#define FLAGCX_DEVICE_DECORATOR __device__
+#define FLAGCX_GLOBAL_DECORATOR __global__
+#define FLAGCX_DEVICE_INLINE_DECORATOR __device__ __attribute__((always_inline))
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
+  __host__ __device__ __attribute__((always_inline))
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
+#define FLAGCX_DEVICE_THREAD_FENCE __threadfence
+#define FLAGCX_DEVICE_SYNC_THREADS __syncsubthreads
+#define FLAGCX_THREAD_IDX_X subThreadIdx.x
+#define FLAGCX_BLOCK_IDX_X blockIdx.x
+#define FLAGCX_BLOCK_DIM_X threadDim.x
+#define FLAGCX_GRID_DIM_X gridDim.x
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_SHARED __local__
+#else
+// Host pass: retain layout constants and erase device-only qualifiers.
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR
+#define FLAGCX_GLOBAL_DECORATOR
+#define FLAGCX_DEVICE_INLINE_DECORATOR inline
+#define FLAGCX_HOST_DEVICE_INLINE inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
+#define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)
+#define FLAGCX_THREAD_IDX_X 0
+#define FLAGCX_BLOCK_IDX_X 0
+#define FLAGCX_BLOCK_DIM_X 1
+#define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 32
+#define FLAGCX_SHARED static
+#endif // FLAGCX_CHECK_DEVICE_CC
+
+#define FLAGCX_DEVICE_STREAM_PTR topsStream_t *
 
 #else
 // Non-NVIDIA platform
@@ -400,6 +473,7 @@
 #define FLAGCX_BLOCK_IDX_X 0
 #define FLAGCX_BLOCK_DIM_X 1
 #define FLAGCX_GRID_DIM_X 1
+#define FLAGCX_SIMT_WIDTH 32
 #endif
 
 #endif // FLAGCX_ADAPTOR_DEVICE_UTILS_H_

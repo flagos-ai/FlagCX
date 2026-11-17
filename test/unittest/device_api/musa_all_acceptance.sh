@@ -37,12 +37,12 @@ device_home=${DEVICE_HOME:-/usr/local/musa}
 arch=${MUSA_ARCH:-mp_31}
 export LD_LIBRARY_PATH="$root/build/lib:$device_home/lib:$device_home/lib64:${LD_LIBRARY_PATH:-}"
 unset LD_PRELOAD LD_DEBUG LD_DEBUG_OUTPUT FLAGCX_DEBUG_FILE PRELOAD
-unset FLAGCX_MUSA_K1_DIAG FLAGCX_MUSA_IR_CASE FLAGCX_MUSA_IR_DIAG FLAGCX_DEVICE_ADAPTOR_PLUGIN
+unset FLAGCX_DEVICE_ADAPTOR_PLUGIN
 export FLAGCX_USE_HETERO_COMM=1 FLAGCX_MEM_ENABLE=1 FLAGCX_VMM_ENABLE=0
 export FLAGCX_P2P_DISABLE=0 FLAGCX_DMABUF_ENABLE=1 FLAGCX_SIGNAL_HOST_ENABLE=1
-export FLAGCX_MUSA_FORCE_CTA_SYNC=1 FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=0
-export FLAGCX_MUSA_SYNC_D2H=0 MCCL_TOPO_ENHANCE=0 MCCL_IB_DISABLE=1
-export FLAGCX_DEBUG=INFO FLAGCX_DEBUG_SUBSYS=ALL
+export FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=0
+export MCCL_TOPO_ENHANCE=0 MCCL_IB_DISABLE=1
+export FLAGCX_DEBUG=${FLAGCX_DEBUG:-WARN} FLAGCX_DEBUG_SUBSYS=${FLAGCX_DEBUG_SUBSYS:-ALL}
 {
   printf 'root=%s\nrounds=%s\nbuild=%s\narch=%s\nsuites=%s\n' \
     "$root" "$rounds" "$build" "$arch" "${suites[*]}"
@@ -52,7 +52,7 @@ export FLAGCX_DEBUG=INFO FLAGCX_DEBUG_SUBSYS=ALL
 git diff --binary > "$out/source-diff.patch" 2>/dev/null || true
 for source in flagcx/adaptor/include/device_api/default_comm_traits.h \
   flagcx/adaptor/device/musa_adaptor.cc flagcx/core/flagcx_kernel_host.cc \
-  flagcx/core/proxy.cc test/kernel/musa/device_api.cu test/kernel/musa/device_ir.cu; do
+  flagcx/core/proxy.cc test/kernel/musa/device_api.mu test/kernel/musa/device_ir.mu; do
   sha256sum "$source"
 done > "$out/source-sha256.txt"
 
@@ -219,7 +219,7 @@ fi
 mpi_env=()
 for name in LD_LIBRARY_PATH FLAGCX_USE_HETERO_COMM FLAGCX_MEM_ENABLE FLAGCX_VMM_ENABLE \
   FLAGCX_IB_DISABLE FLAGCX_P2P_DISABLE FLAGCX_DMABUF_ENABLE FLAGCX_SIGNAL_HOST_ENABLE \
-  FLAGCX_MUSA_FORCE_CTA_SYNC FLAGCX_DEVICE_ONE_SIDED_FORCE_NET FLAGCX_MUSA_SYNC_D2H \
+  FLAGCX_DEVICE_ONE_SIDED_FORCE_NET \
   MCCL_TOPO_ENHANCE MCCL_IB_DISABLE FLAGCX_DEBUG FLAGCX_DEBUG_SUBSYS; do
   mpi_env+=(-x "$name")
 done

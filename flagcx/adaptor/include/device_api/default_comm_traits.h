@@ -394,7 +394,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     // IPC barriers
     uint64_t **barrierPeers;
-    uint64_t *rankCtaBarrier; // Experimental, null unless explicitly enabled.
+    uint64_t *rankCtaBarrier; // Rank-local CTA rendezvous on MUSA; null otherwise.
     uint64_t *deviceErrorStatus;
     uint64_t
         *epochBuffer; // Device pointer: [intra live, inter live] × CTA_COUNT
@@ -1990,9 +1990,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
     }
   }
 
-  // Opt-in experiment: every CTA in the grid must enter in the same order.
-  // A spinning grid barrier also requires concurrent residency/progress of
-  // all CTAs. This is not a general replacement for a cooperative grid launch.
+  // MUSA WORLD barriers synchronize the rank-local CTAs before inter-node
+  // signaling. Every participating CTA must enter in the same order and make
+  // concurrent progress; this is not a general-purpose grid barrier.
   FLAGCX_DEVICE_INLINE_DECORATOR void rankCtaSync() {
 #if defined(USE_MUSA_ADAPTOR) && defined(FLAGCX_DEVICE_COMPILE)
     if (_rankCtaBarrier == nullptr) return;

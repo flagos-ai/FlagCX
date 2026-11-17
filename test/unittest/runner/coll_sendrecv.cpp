@@ -18,6 +18,14 @@
 
 TEST_F(FlagCXCollTest, SendRecv) {
 
+  const char *expectedRunnerMode = std::getenv("FLAGCX_CI_EXPECT_RUNNER_MODE");
+  const bool traceHybrid = expectedRunnerMode != nullptr &&
+                           std::strcmp(expectedRunnerMode, "HYBRID") == 0;
+  auto tracePhase = [&](const char *phase) {
+    if (traceHybrid)
+      std::cerr << "SendRecv rank=" << rank << " phase=" << phase << std::endl;
+  };
+
   const char *expectPxn = std::getenv("FLAGCX_CI_EXPECT_PXN");
   const bool pxnCrossPairs = expectPxn != nullptr &&
                              std::strcmp(expectPxn, "1") == 0 && nranks >= 4 &&
@@ -41,6 +49,7 @@ TEST_F(FlagCXCollTest, SendRecv) {
   const uint64_t relayChunksBefore = flagcxRunnerRelayChunks(comm);
 
   // Use group API for concurrent send/recv
+  tracePhase("before-group");
   flagcxResult_t groupResult = flagcxGroupStart(comm);
   if (flagcxRunnerResultAccepted(groupResult)) {
     groupResult =
@@ -55,15 +64,27 @@ TEST_F(FlagCXCollTest, SendRecv) {
     flagcxRunnerRecordFirstError(groupEndResult, &firstError);
     groupResult = firstError;
   }
+  tracePhase("after-group");
   int localGroupResult = static_cast<int>(groupResult);
   int globalGroupResult = static_cast<int>(flagcxSuccess);
   MPI_Allreduce(&localGroupResult, &globalGroupResult, 1, MPI_INT, MPI_MAX,
                 MPI_COMM_WORLD);
   ASSERT_EQ(globalGroupResult, static_cast<int>(flagcxSuccess));
 
+  const char *syncBeforeD2H = std::getenv("FLAGCX_CI_SENDRECV_SYNC_BEFORE_D2H");
+  if (comm->commType == flagcxCommunicatorHybrid && syncBeforeD2H != nullptr &&
+      std::strcmp(syncBeforeD2H, "1") == 0) {
+    // Drain cross-cluster proxy work before queuing D2H on the user stream.
+    tracePhase("before-communication-sync");
+    ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+    tracePhase("after-communication-sync");
+  }
+
   devHandle->deviceMemcpy(hostrecvbuff, recvbuff, size,
                           flagcxMemcpyDeviceToHost, stream);
+  tracePhase("before-stream-sync");
   ASSERT_EQ(synchronizeAndCheckAsyncError(), flagcxSuccess);
+  tracePhase("after-stream-sync");
 
   flagcxRunnerAssertPxnTraffic(comm, rank, nranks, FlagCXPxnTraffic::RingP2P,
                                relayChunksBefore, "SendRecv");

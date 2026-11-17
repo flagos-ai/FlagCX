@@ -9,6 +9,7 @@
 #include "device_api/comm_traits.h"
 #include "flagcx.h"
 #include "flagcx_kernel_internal.h"
+#include <limits>
 
 #define SLOT_IDX 4
 #define FST_IDX 5
@@ -18,6 +19,8 @@
 #define NTHREADS_IDX 9
 #define DATATYPE_IDX 10
 #define REDOP_IDX 11
+#define FLAG_IN_IDX 12
+#define FLAG_OUT_IDX 13
 
 FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getInput1() {
   return value[0];
@@ -48,13 +51,36 @@ FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getState() {
   return value[3] >> flagcxReduceTriggerOffState &
          flagcxTriggerMask(flagcxReduceTriggerBitsState);
 }
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagIn() {
+  return value[4];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxReduceTrigger::getFlagOut() {
+  return value[5];
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::publishOutputDone() {
+  const uint64_t flagOut = getFlagOut();
+  if (flagOut != 0) {
+    auto *word = reinterpret_cast<uint64_t *>(flagOut);
+    const uint64_t state =
+        DeviceAPI::Atomic::load(word, flagcxDeviceMemoryOrderAcquire);
+    if (state == flagcxStreamFlagIdle || state == flagcxStreamFlagPend)
+      DeviceAPI::Atomic::store(word, uint64_t{flagcxStreamFlagDone},
+                               flagcxDeviceMemoryOrderRelease);
+  }
+}
+FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::recycle() {
+  uint64_t state =
+      DeviceAPI::Atomic::load(value + 3, flagcxDeviceMemoryOrderAcquire);
+  state &= ~(flagcxTriggerMask(flagcxReduceTriggerBitsState)
+             << flagcxReduceTriggerOffState);
+  state |= (uint64_t{flagcxReduceTriggerAvailable}
+            & flagcxTriggerMask(flagcxReduceTriggerBitsState))
+           << flagcxReduceTriggerOffState;
+  DeviceAPI::Atomic::store(value + 3, state, flagcxDeviceMemoryOrderRelease);
+}
 FLAGCX_DEVICE_INLINE_DECORATOR void flagcxReduceTrigger::setComplete() {
-  DeviceAPI::Atomic::fetchOr(
-      reinterpret_cast<uint64_t *>(value) + 3,
-      (uint64_t)((flagcxReduceTriggerComplete &
-                  flagcxTriggerMask(flagcxReduceTriggerBitsState))
-                 << flagcxReduceTriggerOffState),
-      flagcxDeviceMemoryOrderRelease);
+  publishOutputDone();
+  recycle();
 }
 
 // Match the host's MUSA DefaultBackend control-word width. Do not inherit
@@ -101,7 +127,7 @@ flagcxReduceKernel(uint64_t fst, uint64_t snd, uint64_t out, uint64_t count,
     outPtr[i] = fstPtr[i] + sndPtr[i];
 }
 
-FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1024) flagcxCollectiveKernel(void *fifoBuffer) {
+FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1024) flagcxMusaReduceExecutorKernel(void *fifoBuffer) {
   FLAGCX_SHARED uint64_t shm[16];
   uint64_t *vBuf = static_cast<uint64_t *>(fifoBuffer);
   int emptyIter = 0;
@@ -160,6 +186,8 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1024) flagcxCollectiveKernel(void
         shm[NTHREADS_IDX] = trigger->getNThreads();
         shm[DATATYPE_IDX] = trigger->getDatatype();
         shm[REDOP_IDX] = trigger->getRedop();
+        shm[FLAG_IN_IDX] = trigger->getFlagIn();
+        shm[FLAG_OUT_IDX] = trigger->getFlagOut();
       }
     }
     FLAGCX_DEVICE_SYNC_THREADS();
@@ -171,6 +199,23 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1024) flagcxCollectiveKernel(void
       DeviceAPI::Intrin::spinBackoff(++emptyIter);
       continue;
     }
+
+    if (tid == 0 && shm[FLAG_OUT_IDX] != 0) {
+      auto *flag = reinterpret_cast<uint64_t *>(shm[FLAG_OUT_IDX]);
+      if (DeviceAPI::Atomic::load(flag, flagcxDeviceMemoryOrderAcquire) ==
+          flagcxStreamFlagIdle)
+        DeviceAPI::Atomic::store(flag, uint64_t{flagcxStreamFlagPend},
+                                 flagcxDeviceMemoryOrderRelease);
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
+    if (shm[FLAG_IN_IDX] != 0) {
+      auto *flag = reinterpret_cast<uint64_t *>(shm[FLAG_IN_IDX]);
+      int iter = 0;
+      while (DeviceAPI::Atomic::load(flag, flagcxDeviceMemoryOrderAcquire) !=
+             flagcxStreamFlagDone)
+        DeviceAPI::Intrin::spinBackoff(iter++);
+    }
+    FLAGCX_DEVICE_SYNC_THREADS();
 
     emptyIter = 0;
     flagcxReduceKernel(shm[FST_IDX], shm[SND_IDX], shm[OUT_IDX], shm[COUNT_IDX],
@@ -187,8 +232,27 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1024) flagcxCollectiveKernel(void
   }
 }
 
-void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
-                                  size_t nblocks, flagcxStream_t stream) {
-  flagcxCollectiveKernel<<<nblocks, nthreads, 0,
-                           *(FLAGCX_DEVICE_STREAM_PTR)stream>>>(fifoBuffer);
+flagcxResult_t flagcxLaunchCollectiveKernel(
+    void *redFifoBuffer, void *ipcFifoBuffer, flagcxDevMem_t inputMem,
+    flagcxDevMem_t outputMem, flagcxDevMem_t readyMem,
+    const uint64_t *ipcParentFlags, size_t nthreads, size_t nRedBlocks,
+    size_t nIpcBlocks, uint64_t avgDivisor, flagcxStream_t stream) {
+  (void)ipcFifoBuffer;
+  (void)inputMem;
+  (void)outputMem;
+  (void)readyMem;
+  (void)ipcParentFlags;
+  if (nRedBlocks == 0 && nIpcBlocks == 0)
+    return flagcxSuccess;
+  // MUSA currently provides the dynamic RED-only float/Sum executor.
+  if (nIpcBlocks != 0 || avgDivisor != 1)
+    return flagcxNotSupported;
+  if (redFifoBuffer == nullptr || stream == nullptr || nthreads == 0 ||
+      nthreads > 1024 ||
+      nRedBlocks > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return flagcxInvalidArgument;
+  flagcxMusaReduceExecutorKernel<<<nRedBlocks, nthreads, 0, stream->base>>>(
+      redFifoBuffer);
+  return musaGetLastError() == musaSuccess ? flagcxSuccess
+                                           : flagcxUnhandledDeviceError;
 }

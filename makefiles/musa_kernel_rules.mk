@@ -7,7 +7,7 @@ MUSA_KERNEL_INCLUDES := $(foreach dir,$(INCLUDEDIR),-I$(dir)) \
 MUSA_KERNEL_DEFINES := $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) \
         $(NET_ADAPTOR_FLAG) $(COMPILE_KERNEL_FLAG)
 
-$(DEVOBJ): $(OBJDIR)/%.o: %.cu Makefile makefiles/musa.mk makefiles/musa_kernel_rules.mk $(BUILD_CONFIG_FILE)
+$(DEVOBJ): $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION) Makefile makefiles/musa.mk makefiles/musa_kernel_rules.mk $(BUILD_CONFIG_FILE)
 	@mkdir -p $(dir $@)
 	$(DEVICE_COMPILER) $(filter-out -fgpu-rdc,$(DEVICE_COMPILE_FLAG)) \
 	        $(MUSA_KERNEL_INCLUDES) $(MUSA_KERNEL_DEFINES) -o $@ $<

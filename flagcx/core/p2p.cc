@@ -19,6 +19,30 @@ int64_t flagcxP2pChunks;
 
 FLAGCX_PARAM(P2pTeardownTimeout, "P2P_TEARDOWN_TIMEOUT", 30);
 
+static bool flagcxP2pTraceEventQuery(flagcxProxyArgs *args, bool send) {
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) < FLAGCX_LOG_TRACE ||
+      (flagcxDebugMask & FLAGCX_P2P) == 0)
+    return false;
+  const int chunk = args->transmitted + 1;
+  int *lastChunk =
+      send ? &args->p2pSendEventQueryChunk : &args->p2pRecvEventQueryChunk;
+  uint64_t *lastTime =
+      send ? &args->p2pSendEventQueryTimeNs : &args->p2pRecvEventQueryTimeNs;
+  struct timespec now = {};
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    const bool firstQuery = *lastChunk != chunk;
+    *lastChunk = chunk;
+    return firstQuery;
+  }
+  const uint64_t nowNs = uint64_t(now.tv_sec) * 1000000000ULL + now.tv_nsec;
+  if (*lastChunk == chunk && nowNs >= *lastTime &&
+      nowNs - *lastTime < 1000000000ULL)
+    return false;
+  *lastChunk = chunk;
+  *lastTime = nowNs;
+  return true;
+}
+
 size_t computeP2pChunkSize(size_t nbytes) {
   size_t dynamicBufferSize = flagcxP2pBufferSize;
   if (nbytes < (size_t)flagcxP2pBufferSize) {
@@ -148,6 +172,7 @@ flagcxResult_t flagcxP2pPrepareProxyOp(struct flagcxHeteroComm *comm,
   if (comm == NULL || op == NULL || op->connection == NULL)
     return flagcxInvalidArgument;
 
+  op->rank = comm->rank;
   const int isRecv = op->pattern == flagcxPatternRecv;
   op->args.chunkSize = computeP2pChunkSize(size);
   op->args.chunkSteps = (size + op->args.chunkSize - 1) / op->args.chunkSize;
@@ -183,10 +208,71 @@ flagcxP2pProgressProxyOp(struct flagcxProxyConnection *connection,
   if (op->selfCopy)
     return flagcxP2pProxySelfCopy(resources, op->sendbuff, op->recvbuff,
                                   op->nbytes, &op->args);
-  return connection->send ? flagcxP2pProxySend(resources, op->recvbuff,
-                                               op->nbytes, &op->args)
-                          : flagcxP2pProxyRecv(resources, op->recvbuff,
-                                               op->nbytes, &op->args);
+  const int oldPlan = op->args.p2pPlan;
+  const int oldCopied = op->args.copied;
+  const int oldTransmitted = op->args.transmitted;
+  const int oldDone = op->args.done;
+  flagcxResult_t result =
+      connection->send
+          ? flagcxP2pProxySend(resources, op->recvbuff, op->nbytes, &op->args)
+          : flagcxP2pProxyRecv(resources, op->recvbuff, op->nbytes, &op->args);
+  if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) >=
+          FLAGCX_LOG_TRACE &&
+      (flagcxDebugMask & FLAGCX_P2P) != 0) {
+    struct timespec now = {};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+      const uint64_t nowNs = uint64_t(now.tv_sec) * 1000000000ULL + now.tv_nsec;
+      if (op->args.p2pTraceTimeNs == 0 ||
+          nowNs - op->args.p2pTraceTimeNs >= 1000000000ULL ||
+          oldPlan != op->args.p2pPlan || oldCopied != op->args.copied ||
+          oldTransmitted != op->args.transmitted || oldDone != op->args.done ||
+          (result != flagcxSuccess && result != flagcxInProgress)) {
+        struct flagcxP2pSyncSlot *own =
+            &resources->proxyInfo.shm->slots[op->args.p2pSlotIdx];
+        struct flagcxP2pSyncSlot *peer =
+            &resources->proxyInfo.shm->slots[op->args.p2pPeerSlotIdx];
+        struct p2pRegInfo *ownOffer =
+            &resources->proxyInfo.shm->regInfos[op->args.p2pSlotIdx];
+        struct p2pRegInfo *peerOffer =
+            &resources->proxyInfo.shm->regInfos[op->args.p2pPeerSlotIdx];
+        TRACE(
+            FLAGCX_P2P,
+            "P2P proxy rank=%d peer=%d direction=%s op_id=%d step=%d "
+            "result=%d plan=%d copied=%d transmitted=%d chunks=%d done=%d "
+            "own_hash=%llu expected_hash=%llu peer_hash=%llu "
+            "expected_peer_hash=%llu own_done=%d own_peer_done=%d "
+            "peer_done=%d peer_peer_done=%d offer=%d peer_offer=%d "
+            "copy_started=%d peer_copy_started=%d copy_done=%d "
+            "peer_copy_done=%d "
+            "send_head=%llu recv_tail=%llu",
+            op->rank, op->root, connection->send ? "send" : "recv",
+            op->args.opId, op->args.step, result, op->args.p2pPlan,
+            op->args.copied, op->args.transmitted, op->args.chunkSteps,
+            op->args.done,
+            (unsigned long long)__atomic_load_n(&own->opHash, __ATOMIC_ACQUIRE),
+            (unsigned long long)op->args.p2pOpHash,
+            (unsigned long long)__atomic_load_n(&peer->opHash,
+                                                __ATOMIC_ACQUIRE),
+            (unsigned long long)op->args.p2pPeerOpHash,
+            __atomic_load_n(&own->done, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&own->peerDone, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&peer->done, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&peer->peerDone, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&ownOffer->offerReady, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&peerOffer->offerReady, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&ownOffer->copyStarted, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&peerOffer->copyStarted, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&ownOffer->copyDone, __ATOMIC_ACQUIRE),
+            __atomic_load_n(&peerOffer->copyDone, __ATOMIC_ACQUIRE),
+            (unsigned long long)__atomic_load_n(&own->sendHead,
+                                                __ATOMIC_ACQUIRE),
+            (unsigned long long)__atomic_load_n(&own->recvTail,
+                                                __ATOMIC_ACQUIRE));
+        op->args.p2pTraceTimeNs = nowNs;
+      }
+    }
+  }
+  return result;
 }
 
 flagcxResult_t
@@ -209,6 +295,8 @@ static flagcxResult_t
 p2pPublishOfferAndResolvePlan(struct flagcxProxyArgs *args,
                               struct p2pRegInfo *ownOffer,
                               struct p2pRegInfo *peerOffer, bool isSender) {
+  if (args->p2pPlan != flagcxP2pPlanPending)
+    return flagcxSuccess;
   if (__atomic_load_n(&ownOffer->offerReady, __ATOMIC_ACQUIRE) == 0) {
     int registered = args->regBufFlag && args->p2pRmtAddr != NULL;
     __atomic_store_n(&ownOffer->registered, registered, __ATOMIC_RELAXED);
@@ -292,6 +380,10 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
     if (args->transmitted < args->chunkSteps) {
       if (args->copied == 0) {
         __atomic_store_n(&regInfoPtr->copyStarted, 1, __ATOMIC_RELEASE);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=write op_id=%d src=%p "
+              "dst=%p bytes=%zu stream=%p",
+              args->opId, data, rmtAddr, size, resources->proxyInfo.stream);
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             rmtAddr, data, size, flagcxMemcpyDeviceToDevice,
             resources->proxyInfo.stream, NULL));
@@ -364,12 +456,34 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
         args->subs[step].stepBuff =
             resources->proxyInfo.recvFifo + (args->chunkSize * step);
 
-        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=copy-enter src=%p dst=%p bytes=%zu stream=%p",
+              args->opId, args->copied, step,
+              (char *)data + args->totalCopySize, args->subs[step].stepBuff,
+              args->subs[step].stepSize, resources->proxyInfo.stream);
+        flagcxResult_t copyResult = deviceAdaptor->deviceMemcpy(
             args->subs[step].stepBuff, (char *)data + args->totalCopySize,
             args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
-            resources->proxyInfo.stream, args->subs[step].copyArgs));
-        FLAGCXCHECK(deviceAdaptor->eventRecord(
-            resources->proxyInfo.events[step], resources->proxyInfo.stream));
+            resources->proxyInfo.stream, args->subs[step].copyArgs);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=copy-return result=%d stream=%p",
+              args->opId, args->copied, step, copyResult,
+              resources->proxyInfo.stream);
+        FLAGCXCHECK(copyResult);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-record-enter event=%p stream=%p",
+              args->opId, args->copied, step, resources->proxyInfo.events[step],
+              resources->proxyInfo.stream);
+        flagcxResult_t recordResult = deviceAdaptor->eventRecord(
+            resources->proxyInfo.events[step], resources->proxyInfo.stream);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-record-return result=%d",
+              args->opId, args->copied, step, recordResult);
+        FLAGCXCHECK(recordResult);
 
         args->totalCopySize += args->subs[step].stepSize;
         args->copied++;
@@ -379,14 +493,32 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
     if (args->transmitted < args->copied) {
       int step = args->transmitted & args->sendStepMask;
       int completed = 0;
-      FLAGCXCHECK(flagcxTransportClassifyCompletion(
-          deviceAdaptor->eventQuery(resources->proxyInfo.events[step]),
-          &completed));
+      const bool traceQuery = flagcxP2pTraceEventQuery(args, true);
+      if (traceQuery)
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-query-enter event=%p stream=%p",
+              args->opId, args->transmitted, step,
+              resources->proxyInfo.events[step], resources->proxyInfo.stream);
+      flagcxResult_t eventResult =
+          deviceAdaptor->eventQuery(resources->proxyInfo.events[step]);
+      flagcxResult_t classified =
+          flagcxTransportClassifyCompletion(eventResult, &completed);
+      if (traceQuery || completed || classified != flagcxSuccess)
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-query-return result=%d completed=%d",
+              args->opId, args->transmitted, step, eventResult, completed);
+      FLAGCXCHECK(classified);
       if (completed) {
         args->transmitted++;
         // Update sendHead in the shared slot
         volatile uint64_t *sendHead = &slotPtr->sendHead;
         __atomic_store_n(sendHead, args->transmitted, __ATOMIC_RELEASE);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=send-head-published send_head=%d",
+              args->opId, args->transmitted - 1, step, args->transmitted);
       }
     }
   } else {
@@ -477,6 +609,10 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
     if (args->transmitted < args->chunkSteps) {
       if (args->copied == 0) {
         __atomic_store_n(&regInfoPtr->copyStarted, 1, __ATOMIC_RELEASE);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=read op_id=%d src=%p "
+              "dst=%p bytes=%zu stream=%p",
+              args->opId, rmtAddr, data, size, resources->proxyInfo.stream);
         FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
             data, rmtAddr, size, flagcxMemcpyDeviceToDevice,
             resources->proxyInfo.stream, NULL));
@@ -524,12 +660,39 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
         args->subs[step].stepBuff =
             resources->proxyInfo.recvFifo + (args->chunkSize * step);
 
-        FLAGCXCHECK(deviceAdaptor->deviceMemcpy(
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d src=%p dst=%p bytes=%zu stream=%p",
+              args->opId, args->copied, step, args->subs[step].stepBuff,
+              (char *)data + args->totalCopySize, args->subs[step].stepSize,
+              resources->proxyInfo.stream);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=copy-enter src=%p dst=%p bytes=%zu stream=%p",
+              args->opId, args->copied, step, args->subs[step].stepBuff,
+              (char *)data + args->totalCopySize, args->subs[step].stepSize,
+              resources->proxyInfo.stream);
+        flagcxResult_t copyResult = deviceAdaptor->deviceMemcpy(
             (char *)data + args->totalCopySize, args->subs[step].stepBuff,
             args->subs[step].stepSize, flagcxMemcpyDeviceToDevice,
-            resources->proxyInfo.stream, args->subs[step].copyArgs));
-        FLAGCXCHECK(deviceAdaptor->eventRecord(
-            resources->proxyInfo.events[step], resources->proxyInfo.stream));
+            resources->proxyInfo.stream, args->subs[step].copyArgs);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=copy-return result=%d",
+              args->opId, args->copied, step, copyResult);
+        FLAGCXCHECK(copyResult);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-record-enter event=%p stream=%p",
+              args->opId, args->copied, step, resources->proxyInfo.events[step],
+              resources->proxyInfo.stream);
+        flagcxResult_t recordResult = deviceAdaptor->eventRecord(
+            resources->proxyInfo.events[step], resources->proxyInfo.stream);
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-record-return result=%d",
+              args->opId, args->copied, step, recordResult);
+        FLAGCXCHECK(recordResult);
 
         args->totalCopySize += args->subs[step].stepSize;
         args->copied++;
@@ -539,9 +702,23 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
     if (args->transmitted < args->copied) {
       int step = args->transmitted & args->sendStepMask;
       int completed = 0;
-      FLAGCXCHECK(flagcxTransportClassifyCompletion(
-          deviceAdaptor->eventQuery(resources->proxyInfo.events[step]),
-          &completed));
+      const bool traceQuery = flagcxP2pTraceEventQuery(args, false);
+      if (traceQuery)
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-query-enter event=%p stream=%p",
+              args->opId, args->transmitted, step,
+              resources->proxyInfo.events[step], resources->proxyInfo.stream);
+      flagcxResult_t eventResult =
+          deviceAdaptor->eventQuery(resources->proxyInfo.events[step]);
+      flagcxResult_t classified =
+          flagcxTransportClassifyCompletion(eventResult, &completed);
+      if (traceQuery || completed || classified != flagcxSuccess)
+        TRACE(FLAGCX_P2P,
+              "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
+              "slot=%d stage=event-query-return result=%d completed=%d",
+              args->opId, args->transmitted, step, eventResult, completed);
+      FLAGCXCHECK(classified);
       if (completed) {
         args->transmitted++;
         // Update recvTail in the shared slot

@@ -17,6 +17,7 @@
 #ifndef FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
 #define FLAGCX_NVIDIA_PLATFORM_TRAITS_H_
 
+#include "nvidia_ptx_memory.h"
 #include <cassert>
 #include <cstdint>
 #include <cuda/atomic>
@@ -245,6 +246,52 @@ struct PlatformTraits<NvidiaPlatform> {
     }
 #endif // __CUDACC__
 
+    template <typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+              flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+              flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+              flagcxDeviceMemoryAccessKind_t Kind =
+                  flagcxDeviceMemoryAccessKindNormal,
+              flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary,
+              flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone>
+    static FLAGCX_DEVICE_INLINE_DECORATOR T load(const T *src) {
+      return flagcxNvidiaMemory::Load<T, Shape, Space, Order, Scope, Kind,
+                                      Intent, CacheHint>::run(src);
+    }
+
+    template <typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+              flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+              flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+              flagcxDeviceMemoryAccessKind_t Kind =
+                  flagcxDeviceMemoryAccessKindNormal,
+              flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void store(T *dst, T value) {
+      flagcxNvidiaMemory::Store<T, Shape, Space, Order, Scope, Kind,
+                                CacheHint>::run(dst, value);
+    }
+
+    // One issuing thread moves one complete T value. No asynchronous completion
+    // mechanism is involved; each endpoint chooses its own PTX load/store form.
+    template <
+        typename T, typename SrcShape, typename DstShape,
+        flagcxDeviceMemorySpace_t SrcSpace, flagcxDeviceMemorySpace_t DstSpace,
+        flagcxDeviceMemoryOrder_t SrcOrder = flagcxDeviceMemoryOrderWeak,
+        flagcxDeviceMemoryOrder_t DstOrder = flagcxDeviceMemoryOrderWeak,
+        flagcxDeviceScope_t SrcScope = flagcxDeviceScopeSystem,
+        flagcxDeviceScope_t DstScope = flagcxDeviceScopeSystem,
+        flagcxDeviceMemoryAccessKind_t SrcKind =
+            flagcxDeviceMemoryAccessKindNormal,
+        flagcxDeviceMemoryAccessKind_t DstKind =
+            flagcxDeviceMemoryAccessKindNormal,
+        flagcxDeviceLoadIntent_t SrcIntent = flagcxDeviceLoadIntentOrdinary,
+        flagcxDeviceCacheHint_t SrcCacheHint = flagcxDeviceCacheHintNone,
+        flagcxDeviceCacheHint_t DstCacheHint = flagcxDeviceCacheHintNone>
+    static FLAGCX_DEVICE_INLINE_DECORATOR void copy(T *dst, const T *src) {
+      T value = load<T, SrcShape, SrcSpace, SrcOrder, SrcScope, SrcKind,
+                     SrcIntent, SrcCacheHint>(src);
+      store<T, DstShape, DstSpace, DstOrder, DstScope, DstKind, DstCacheHint>(
+          dst, value);
+    }
+
     template <typename T>
     static FLAGCX_HOST_DEVICE_INLINE T byteSwap(T value) {
       static_assert(std::is_integral<T>::value && std::is_unsigned<T>::value &&
@@ -382,12 +429,25 @@ struct PlatformTraits<NvidiaPlatform> {
   private:
     static FLAGCX_DEVICE_INLINE_DECORATOR cuda::memory_order
     toOrder(flagcxDeviceMemoryOrder_t o) {
-      FLAGCX_MAYBE_UNUSED static FLAGCX_DEVICE_CONSTANT_DECORATOR
-          cuda::memory_order map[] = {
-              cuda::memory_order_relaxed, cuda::memory_order_acquire,
-              cuda::memory_order_release, cuda::memory_order_acq_rel,
-              cuda::memory_order_seq_cst};
-      return map[o];
+      switch (o) {
+        case flagcxDeviceMemoryOrderRelaxed:
+          return cuda::memory_order_relaxed;
+        case flagcxDeviceMemoryOrderAcquire:
+          return cuda::memory_order_acquire;
+        case flagcxDeviceMemoryOrderRelease:
+          return cuda::memory_order_release;
+        case flagcxDeviceMemoryOrderAcqRel:
+          return cuda::memory_order_acq_rel;
+        case flagcxDeviceMemoryOrderSeqCst:
+          return cuda::memory_order_seq_cst;
+        default:
+#if defined(__CUDA_ARCH__)
+          __trap();
+#else
+          __builtin_trap();
+#endif
+          return cuda::memory_order_relaxed;
+      }
     }
 
   public:
@@ -556,10 +616,8 @@ struct PlatformTraits<NvidiaPlatform>::Clock {
 struct PlatformTraits<NvidiaPlatform>::CoopOps {
   using Platform = PlatformTraits<NvidiaPlatform>;
 
-  // The short load/store forms use Global/Normal/System with no cache hint.
-  // Private and Scratchpad addresses require an explicit policy form. MMIO
-  // additionally requires a caller-verified mapped I/O address and access
-  // permissions; no enum can establish pointer provenance by itself.
+  // MMIO additionally requires a caller-verified mapped I/O address and
+  // access permissions; no enum can establish pointer provenance by itself.
 
   // One batch belongs to one issuing thread. It does not represent a Coop-wide
   // completion event and cannot be used to wait for storeAsync.
@@ -568,132 +626,84 @@ struct PlatformTraits<NvidiaPlatform>::CoopOps {
     bool committed = false;
   };
 
-  template <typename Coop, typename Ptr,
-            flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      load(Coop coop, Ptr src, flagcxDeviceMemoryOrder_t order) {
-    return loadImpl<flagcxDeviceMemoryGlobal,
-                    flagcxDeviceMemoryAccessKindNormal, flagcxDeviceScopeSystem,
-                    flagcxDeviceCacheL1, flagcxDeviceCacheHintNone, Intent>(
-        coop, src, order);
-  }
-
-  template <typename Coop, typename Ptr,
-            flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary,
-            flagcxDeviceMemoryOrder_t Order>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      load(Coop coop, Ptr src,
-           std::integral_constant<flagcxDeviceMemoryOrder_t, Order>) {
-    static_assert(Order == flagcxDeviceMemoryOrderRelaxed ||
-                      Order == flagcxDeviceMemoryOrderAcquire ||
-                      Order == flagcxDeviceMemoryOrderSeqCst,
-                  "invalid load order");
-    static_assert(Intent != flagcxDeviceLoadIntentImmutable ||
-                      Order == flagcxDeviceMemoryOrderRelaxed,
-                  "immutable load must be relaxed");
-    return load<Coop, Ptr, Intent>(coop, src, Order);
-  }
-
-  // Policy form: when selecting a policy explicitly, spell every preceding
-  // template argument. Intent remains the final template argument.
-  template <typename Coop, typename Ptr, flagcxDeviceMemorySpace_t Space,
-            flagcxDeviceMemoryAccessKind_t Kind, flagcxDeviceScope_t Scope,
-            flagcxDeviceCacheLevel_t CacheLevel,
-            flagcxDeviceCacheHint_t CacheHint,
-            flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      load(Coop coop, Ptr src, flagcxDeviceMemoryOrder_t order) {
-    return loadImpl<Space, Kind, Scope, CacheLevel, CacheHint, Intent>(
-        coop, src, order);
-  }
-
-  template <typename Coop, typename Ptr, flagcxDeviceMemorySpace_t Space,
-            flagcxDeviceMemoryAccessKind_t Kind, flagcxDeviceScope_t Scope,
-            flagcxDeviceCacheLevel_t CacheLevel,
-            flagcxDeviceCacheHint_t CacheHint,
-            flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary,
-            flagcxDeviceMemoryOrder_t Order>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      load(Coop coop, Ptr src,
-           std::integral_constant<flagcxDeviceMemoryOrder_t, Order>) {
-    static_assert(Order == flagcxDeviceMemoryOrderRelaxed ||
-                      Order == flagcxDeviceMemoryOrderAcquire ||
-                      Order == flagcxDeviceMemoryOrderSeqCst,
-                  "invalid load order");
-    static_assert(Intent != flagcxDeviceLoadIntentImmutable ||
-                      Order == flagcxDeviceMemoryOrderRelaxed,
-                  "immutable load must be relaxed");
-    static_assert(Kind != flagcxDeviceMemoryAccessKindMmio ||
-                      Order == flagcxDeviceMemoryOrderRelaxed,
-                  "MMIO load must be relaxed");
-    static_assert(Space == flagcxDeviceMemoryGlobal ||
-                      Order == flagcxDeviceMemoryOrderRelaxed,
-                  "Private/Scratchpad load must be relaxed");
-    return load<Coop, Ptr, Space, Kind, Scope, CacheLevel, CacheHint, Intent>(
-        coop, src, Order);
-  }
-
-  template <typename Coop, typename Ptr, typename T>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  store(Coop coop, Ptr dst, T value, flagcxDeviceMemoryOrder_t order) {
-    storeImpl<flagcxDeviceMemoryGlobal, flagcxDeviceMemoryAccessKindNormal,
-              flagcxDeviceScopeSystem, flagcxDeviceCacheL1,
-              flagcxDeviceCacheHintNone>(coop, dst, value, order);
-  }
-
-  template <typename Coop, typename Ptr, typename T,
-            flagcxDeviceMemoryOrder_t Order>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  store(Coop coop, Ptr dst, T value,
-        std::integral_constant<flagcxDeviceMemoryOrder_t, Order>) {
-    static_assert(Order == flagcxDeviceMemoryOrderRelaxed ||
-                      Order == flagcxDeviceMemoryOrderRelease ||
-                      Order == flagcxDeviceMemoryOrderSeqCst,
-                  "invalid store order");
-    store(coop, dst, value, Order);
+  // T is the entire value; Shape selects its PTX register decomposition.
+  // Each caller performs its own load/store, including for Local addresses.
+  template <
+      typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+      flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+      flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+      flagcxDeviceMemoryAccessKind_t Kind = flagcxDeviceMemoryAccessKindNormal,
+      flagcxDeviceLoadIntent_t Intent = flagcxDeviceLoadIntentOrdinary,
+      flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone,
+      typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR T load(Coop coop, const T *src) {
+    (void)coop;
+    return Platform::Intrin::template load<T, Shape, Space, Order, Scope, Kind,
+                                           Intent, CacheHint>(src);
   }
 
   template <
-      typename Coop, typename Ptr, typename T, flagcxDeviceMemorySpace_t Space,
-      flagcxDeviceMemoryAccessKind_t Kind, flagcxDeviceScope_t Scope,
-      flagcxDeviceCacheLevel_t CacheLevel, flagcxDeviceCacheHint_t CacheHint>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  store(Coop coop, Ptr dst, T value, flagcxDeviceMemoryOrder_t order) {
-    storeImpl<Space, Kind, Scope, CacheLevel, CacheHint>(coop, dst, value,
-                                                         order);
+      typename T, typename Shape, flagcxDeviceMemorySpace_t Space,
+      flagcxDeviceMemoryOrder_t Order = flagcxDeviceMemoryOrderWeak,
+      flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem,
+      flagcxDeviceMemoryAccessKind_t Kind = flagcxDeviceMemoryAccessKindNormal,
+      flagcxDeviceCacheHint_t CacheHint = flagcxDeviceCacheHintNone,
+      typename Coop>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void store(Coop coop, T *dst, T value) {
+    (void)coop;
+    Platform::Intrin::template store<T, Shape, Space, Order, Scope, Kind,
+                                     CacheHint>(dst, value);
   }
 
-  template <typename Coop, typename Ptr, typename T,
-            flagcxDeviceMemorySpace_t Space,
-            flagcxDeviceMemoryAccessKind_t Kind, flagcxDeviceScope_t Scope,
-            flagcxDeviceCacheLevel_t CacheLevel,
-            flagcxDeviceCacheHint_t CacheHint, flagcxDeviceMemoryOrder_t Order>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  store(Coop coop, Ptr dst, T value,
-        std::integral_constant<flagcxDeviceMemoryOrder_t, Order>) {
-    static_assert(Order == flagcxDeviceMemoryOrderRelaxed ||
-                      Order == flagcxDeviceMemoryOrderRelease ||
-                      (Order == flagcxDeviceMemoryOrderSeqCst &&
-                       Kind == flagcxDeviceMemoryAccessKindNormal),
-                  "invalid store order for this access kind");
-    static_assert(Space == flagcxDeviceMemoryGlobal ||
-                      Order == flagcxDeviceMemoryOrderRelaxed,
-                  "Private/Scratchpad store must be relaxed");
-    store<Coop, Ptr, T, Space, Kind, Scope, CacheLevel, CacheHint>(
-        coop, dst, value, Order);
+  // Count is a number of T values. Each rank copies its own strided subset.
+  template <typename T, typename SrcShape, typename DstShape,
+            flagcxDeviceMemorySpace_t SrcSpace,
+            flagcxDeviceMemorySpace_t DstSpace,
+            flagcxDeviceMemoryOrder_t SrcOrder = flagcxDeviceMemoryOrderWeak,
+            flagcxDeviceMemoryOrder_t DstOrder = flagcxDeviceMemoryOrderWeak,
+            flagcxDeviceScope_t SrcScope = flagcxDeviceScopeSystem,
+            flagcxDeviceScope_t DstScope = flagcxDeviceScopeSystem,
+            flagcxDeviceMemoryAccessKind_t SrcKind =
+                flagcxDeviceMemoryAccessKindNormal,
+            flagcxDeviceMemoryAccessKind_t DstKind =
+                flagcxDeviceMemoryAccessKindNormal,
+            flagcxDeviceLoadIntent_t SrcIntent = flagcxDeviceLoadIntentOrdinary,
+            flagcxDeviceCacheHint_t SrcCacheHint = flagcxDeviceCacheHintNone,
+            flagcxDeviceCacheHint_t DstCacheHint = flagcxDeviceCacheHintNone,
+            typename Coop, typename Count>
+  static FLAGCX_DEVICE_INLINE_DECORATOR void copy(Coop coop, T *dst,
+                                                  const T *src, Count count) {
+    static_assert(std::is_integral<Count>::value, "count must be integral");
+    static_assert((SrcSpace != flagcxDeviceMemoryLocal &&
+                   DstSpace != flagcxDeviceMemoryLocal) ||
+                      std::is_same<Coop, Platform::CoopThread>::value,
+                  "Local cooperative copy requires CoopThread");
+    if (negativeCount(count, typename std::is_signed<Count>::type()))
+      reject();
+    const size_t n = static_cast<size_t>(count);
+    if (n > SIZE_MAX / sizeof(T) || coop.size() <= 0 || coop.threadRank() < 0 ||
+        coop.threadRank() >= coop.size())
+      reject();
+    const size_t step = static_cast<size_t>(coop.size());
+    for (size_t i = static_cast<size_t>(coop.threadRank()); i < n;) {
+      Platform::Intrin::template copy<T, SrcShape, DstShape, SrcSpace, DstSpace,
+                                      SrcOrder, DstOrder, SrcScope, DstScope,
+                                      SrcKind, DstKind, SrcIntent, SrcCacheHint,
+                                      DstCacheHint>(dst + i, src + i);
+      if (n - i <= step)
+        break;
+      i += step;
+    }
   }
 
+  // Preserve the existing arbitrary-size byte-copy form for callers that do
+  // not select a PTX shape. New typed copies use Intrin::copy above.
   template <typename Coop, typename DstPtr, typename SrcPtr, typename Count>
   static FLAGCX_DEVICE_INLINE_DECORATOR void copy(Coop coop, DstPtr dst,
                                                   SrcPtr src, Count count) {
     static_assert(std::is_pointer<DstPtr>::value &&
                       std::is_pointer<SrcPtr>::value,
                   "copy requires typed source and destination pointers");
-    static_assert(std::is_integral<Count>::value, "count must be integral");
     using Dst = typename std::remove_cv<
         typename std::remove_pointer<DstPtr>::type>::type;
     using Src = typename std::remove_cv<
@@ -701,14 +711,14 @@ struct PlatformTraits<NvidiaPlatform>::CoopOps {
     static_assert(std::is_same<Dst, Src>::value &&
                       std::is_trivially_copyable<Dst>::value,
                   "copy requires equal, trivially copyable element types");
+    static_assert(std::is_integral<Count>::value, "count must be integral");
     static_assert(
-        !std::is_const<typename std::remove_pointer<DstPtr>::type>::value,
-        "copy destination must be writable");
-    static_assert(
-        !std::is_volatile<typename std::remove_pointer<DstPtr>::type>::value &&
+        !std::is_const<typename std::remove_pointer<DstPtr>::type>::value &&
+            !std::is_volatile<
+                typename std::remove_pointer<DstPtr>::type>::value &&
             !std::is_volatile<
                 typename std::remove_pointer<SrcPtr>::type>::value,
-        "copy does not accept volatile pointers");
+        "copy requires non-const, non-volatile destination and source");
     if (negativeCount(count, typename std::is_signed<Count>::type()))
       reject();
     const size_t n = static_cast<size_t>(count);
@@ -1042,271 +1052,6 @@ private:
     }
     reject();
     return 0;
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      loadByMode(Ptr src, flagcxDeviceMemoryOrder_t order,
-                 std::integral_constant<int, 0>) {
-    using T = typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type;
-    static_assert(std::is_same<T, uint32_t>::value ||
-                      std::is_same<T, uint64_t>::value,
-                  "MMIO load supports uint32_t and uint64_t");
-    if (order != flagcxDeviceMemoryOrderRelaxed)
-      reject();
-#if defined(__CUDA_ARCH__)
-    static_assert(__CUDA_ARCH__ >= 700 || sizeof(Ptr) == 0,
-                  "MMIO requires sm_70 or newer");
-#if __CUDACC_VER_MAJOR__ < 12 ||                                               \
-    (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ < 2)
-    static_assert(sizeof(Ptr) == 0, "MMIO requires a toolkit with PTX ISA 8.2");
-#endif
-    if (sizeof(T) == 4) {
-      uint32_t result;
-      asm volatile("ld.global.mmio.relaxed.sys.u32 %0, [%1];"
-                   : "=r"(result)
-                   : "l"(src)
-                   : "memory");
-      return static_cast<T>(result);
-    }
-    uint64_t result;
-    asm volatile("ld.global.mmio.relaxed.sys.u64 %0, [%1];"
-                 : "=l"(result)
-                 : "l"(src)
-                 : "memory");
-    return static_cast<T>(result);
-#else
-    reject();
-    return T{};
-#endif
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      loadByMode(Ptr src, flagcxDeviceMemoryOrder_t order,
-                 std::integral_constant<int, 1>) {
-    using T = typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type;
-    if (order != flagcxDeviceMemoryOrderRelaxed)
-      reject();
-#if defined(__CUDA_ARCH__)
-    return __ldg(src);
-#else
-    reject();
-    return T{};
-#endif
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      loadByMode(Ptr src, flagcxDeviceMemoryOrder_t order,
-                 std::integral_constant<int, 2>) {
-    if (order != flagcxDeviceMemoryOrderRelaxed)
-      reject();
-    return *src;
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      loadByMode(Ptr src, flagcxDeviceMemoryOrder_t order,
-                 std::integral_constant<int, 3>) {
-    using T = typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type;
-    if (order == flagcxDeviceMemoryOrderRelease ||
-        order == flagcxDeviceMemoryOrderAcqRel ||
-        order < flagcxDeviceMemoryOrderRelaxed ||
-        order > flagcxDeviceMemoryOrderSeqCst)
-      reject();
-    // CUDA cache-policy loads cannot express the requested ordering. Hints
-    // are advisory; keep the atomic ordering for concurrently updated data.
-    return Platform::Atomic::template load<T, Scope>(const_cast<T *>(src),
-                                                     order);
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr, typename T>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  storeByMode(Ptr dst, T value, flagcxDeviceMemoryOrder_t order,
-              std::integral_constant<int, 0>) {
-    static_assert(std::is_same<T, uint32_t>::value ||
-                      std::is_same<T, uint64_t>::value,
-                  "MMIO store supports uint32_t and uint64_t");
-    if (order != flagcxDeviceMemoryOrderRelaxed &&
-        order != flagcxDeviceMemoryOrderRelease)
-      reject();
-#if defined(__CUDA_ARCH__)
-    static_assert(__CUDA_ARCH__ >= 700 || sizeof(Ptr) == 0,
-                  "MMIO requires sm_70 or newer");
-#if __CUDACC_VER_MAJOR__ < 12 ||                                               \
-    (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ < 2)
-    static_assert(sizeof(Ptr) == 0, "MMIO requires a toolkit with PTX ISA 8.2");
-#endif
-    if (order == flagcxDeviceMemoryOrderRelease)
-      __threadfence_system();
-    if (sizeof(T) == 4)
-      asm volatile("st.global.mmio.relaxed.sys.u32 [%0], %1;"
-                   :
-                   : "l"(dst), "r"(static_cast<uint32_t>(value))
-                   : "memory");
-    else
-      asm volatile("st.global.mmio.relaxed.sys.u64 [%0], %1;"
-                   :
-                   : "l"(dst), "l"(static_cast<uint64_t>(value))
-                   : "memory");
-#else
-    reject();
-#endif
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr, typename T>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  storeByMode(Ptr dst, T value, flagcxDeviceMemoryOrder_t order,
-              std::integral_constant<int, 1>) {
-    if (order != flagcxDeviceMemoryOrderRelaxed)
-      reject();
-    *dst = value;
-  }
-
-  template <flagcxDeviceScope_t Scope, typename Ptr, typename T>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  storeByMode(Ptr dst, T value, flagcxDeviceMemoryOrder_t order,
-              std::integral_constant<int, 2>) {
-    if (order == flagcxDeviceMemoryOrderAcquire ||
-        order == flagcxDeviceMemoryOrderAcqRel ||
-        order < flagcxDeviceMemoryOrderRelaxed ||
-        order > flagcxDeviceMemoryOrderSeqCst)
-      reject();
-    // cuda::atomic_ref keeps the requested ordering; cache hints are advisory.
-    Platform::Atomic::template store<T, Scope>(dst, value, order);
-  }
-
-  template <flagcxDeviceMemorySpace_t Space,
-            flagcxDeviceMemoryAccessKind_t Kind, flagcxDeviceScope_t Scope,
-            flagcxDeviceCacheLevel_t CacheLevel,
-            flagcxDeviceCacheHint_t CacheHint, flagcxDeviceLoadIntent_t Intent,
-            typename Coop, typename Ptr>
-  static FLAGCX_DEVICE_INLINE_DECORATOR
-      typename flagcxNvidiaDetail::FlagcxNvidiaPointee<Ptr>::type
-      loadImpl(Coop coop, Ptr src, flagcxDeviceMemoryOrder_t order) {
-    (void)coop;
-    (void)src;
-    static_assert(std::is_pointer<Ptr>::value, "load requires a typed pointer");
-    using T =
-        typename std::remove_cv<typename std::remove_pointer<Ptr>::type>::type;
-    static_assert(std::is_arithmetic<T>::value &&
-                      !std::is_same<T, bool>::value &&
-                      (sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 ||
-                       sizeof(T) == 8),
-                  "load requires an arithmetic 8/16/32/64-bit value");
-    static_assert(
-        !std::is_volatile<typename std::remove_pointer<Ptr>::type>::value,
-        "load does not accept volatile pointers");
-    static_assert(Space == flagcxDeviceMemoryPrivate ||
-                      Space == flagcxDeviceMemoryScratchpad ||
-                      Space == flagcxDeviceMemoryGlobal,
-                  "invalid device memory space");
-    static_assert(Kind == flagcxDeviceMemoryAccessKindNormal ||
-                      Kind == flagcxDeviceMemoryAccessKindMmio,
-                  "invalid device access kind");
-    static_assert(CacheLevel == flagcxDeviceCacheL1 ||
-                      CacheLevel == flagcxDeviceCacheL2 ||
-                      CacheLevel == flagcxDeviceCacheLLC,
-                  "invalid cache level");
-    static_assert(CacheHint >= flagcxDeviceCacheHintNone &&
-                      CacheHint <= flagcxDeviceCacheHintEvictLast,
-                  "invalid cache hint");
-    static_assert(Scope >= flagcxDeviceScopeSystem &&
-                      Scope <= flagcxDeviceScopeThread,
-                  "invalid device scope");
-    static_assert(Intent == flagcxDeviceLoadIntentOrdinary ||
-                      Intent == flagcxDeviceLoadIntentImmutable,
-                  "invalid load intent");
-    static_assert(
-        Kind != flagcxDeviceMemoryAccessKindMmio ||
-            (Space == flagcxDeviceMemoryGlobal &&
-             Scope == flagcxDeviceScopeSystem &&
-             CacheHint == flagcxDeviceCacheHintNone &&
-             Intent == flagcxDeviceLoadIntentOrdinary),
-        "MMIO load requires ordinary Global/System and no cache hint");
-    static_assert(Intent != flagcxDeviceLoadIntentImmutable ||
-                      (Space == flagcxDeviceMemoryGlobal &&
-                       Kind == flagcxDeviceMemoryAccessKindNormal),
-                  "immutable load requires ordinary Global memory");
-    static_assert(CacheHint == flagcxDeviceCacheHintNone ||
-                      Space == flagcxDeviceMemoryGlobal,
-                  "cache hints require Global memory");
-    if ((reinterpret_cast<uintptr_t>(src) & (alignof(T) - 1)) != 0)
-      reject();
-
-    using Dispatch = std::integral_constant<
-        int, Kind == flagcxDeviceMemoryAccessKindMmio
-                 ? 0
-                 : (Intent == flagcxDeviceLoadIntentImmutable
-                        ? 1
-                        : (Space != flagcxDeviceMemoryGlobal ? 2 : 3))>;
-    return loadByMode<Scope>(src, order, Dispatch());
-  }
-
-  template <flagcxDeviceMemorySpace_t Space,
-            flagcxDeviceMemoryAccessKind_t Kind, flagcxDeviceScope_t Scope,
-            flagcxDeviceCacheLevel_t CacheLevel,
-            flagcxDeviceCacheHint_t CacheHint, typename Coop, typename Ptr,
-            typename T>
-  static FLAGCX_DEVICE_INLINE_DECORATOR void
-  storeImpl(Coop coop, Ptr dst, T value, flagcxDeviceMemoryOrder_t order) {
-    (void)coop;
-    (void)dst;
-    (void)value;
-    static_assert(std::is_pointer<Ptr>::value,
-                  "store requires a typed pointer");
-    using Dst =
-        typename std::remove_cv<typename std::remove_pointer<Ptr>::type>::type;
-    static_assert(std::is_convertible<T, Dst>::value &&
-                      std::is_arithmetic<Dst>::value &&
-                      !std::is_same<Dst, bool>::value &&
-                      (sizeof(Dst) == 1 || sizeof(Dst) == 2 ||
-                       sizeof(Dst) == 4 || sizeof(Dst) == 8),
-                  "store requires a matching arithmetic 8/16/32/64-bit value");
-    static_assert(
-        !std::is_const<typename std::remove_pointer<Ptr>::type>::value,
-        "store destination must be writable");
-    static_assert(
-        !std::is_volatile<typename std::remove_pointer<Ptr>::type>::value,
-        "store does not accept volatile pointers");
-    static_assert(Space == flagcxDeviceMemoryPrivate ||
-                      Space == flagcxDeviceMemoryScratchpad ||
-                      Space == flagcxDeviceMemoryGlobal,
-                  "invalid device memory space");
-    static_assert(Kind == flagcxDeviceMemoryAccessKindNormal ||
-                      Kind == flagcxDeviceMemoryAccessKindMmio,
-                  "invalid device access kind");
-    static_assert(CacheLevel == flagcxDeviceCacheL1 ||
-                      CacheLevel == flagcxDeviceCacheL2 ||
-                      CacheLevel == flagcxDeviceCacheLLC,
-                  "invalid cache level");
-    static_assert(CacheHint >= flagcxDeviceCacheHintNone &&
-                      CacheHint <= flagcxDeviceCacheHintEvictLast,
-                  "invalid cache hint");
-    static_assert(Scope >= flagcxDeviceScopeSystem &&
-                      Scope <= flagcxDeviceScopeThread,
-                  "invalid device scope");
-    static_assert(Kind != flagcxDeviceMemoryAccessKindMmio ||
-                      (Space == flagcxDeviceMemoryGlobal &&
-                       Scope == flagcxDeviceScopeSystem &&
-                       CacheHint == flagcxDeviceCacheHintNone),
-                  "MMIO store requires Global/System and no cache hint");
-    static_assert(CacheHint == flagcxDeviceCacheHintNone ||
-                      Space == flagcxDeviceMemoryGlobal,
-                  "cache hints require Global memory");
-    if ((reinterpret_cast<uintptr_t>(dst) & (alignof(Dst) - 1)) != 0)
-      reject();
-
-    using Dispatch = std::integral_constant<
-        int, Kind == flagcxDeviceMemoryAccessKindMmio
-                 ? 0
-                 : (Space != flagcxDeviceMemoryGlobal ? 1 : 2)>;
-    storeByMode<Scope>(dst, static_cast<Dst>(value), order, Dispatch());
   }
 };
 

@@ -1,0 +1,69 @@
+/*************************************************************************
+ * Copyright (c) 2026 BAAI. All rights reserved.
+ *
+ * Enflame/TOPS host-side helpers for the Device API and the collective-kernel
+ * launcher.
+ *
+ * This is the counterpart of nvidia/du/iluvatar `device_api_host_helpers.cu`
+ * plus the `flagcxLaunchCollectiveKernel` half of
+ * `flagcx_reduce_kernel_device.cu`. Those files are compiled by the platform
+ * device compiler and linked into libflagcx.so via PLATFORM_KERNEL_SRCS
+ * (Makefile: `$(LIBDIR)/$(TARGET): $(LIBOBJ) $(DEVOBJS)`), so Enflame needs an
+ * equivalent or the library ends up with undefined symbols.
+ *
+ * Why the symbols must exist at all -- note they are only *declared*, never
+ * defined, elsewhere on this path:
+ *   - `device_api/eccl_dev_api_backend.cc:22` is `#ifdef COMPILE_KERNEL_HOST`,
+ *     so with COMPILE_KERNEL=1 the file keeps the two extern "C" declarations
+ *     and calls, and drops its `static ... { return 0; }` fallbacks.
+ *   - `runner/uni_runner_impl.cc:1871` calls flagcxLaunchCollectiveKernel
+ *     under the same COMPILE_KERNEL_HOST guard.
+ * A shared object may carry undefined symbols, so `make USE_ENFLAME=1
+ * COMPILE_KERNEL=1` reports success and only the *test executable* link fails.
+ *
+ * The bodies are deliberately minimal because Enflame has neither a device-side
+ * net nor a device collective kernel yet:
+ *   * `flagcxDevNetSizeOf()` returns 0 -- the same value
+ *     eccl_dev_api_backend.cc's own non-kernel fallback returns (line 27), and
+ *     exactly what makes its
+ *     `if (hostCopy._contextCount > 0 && flagcxDevNetSizeOf() > 0)` guard skip
+ *     both the net-array allocation and the construct launch.
+ *   * `flagcxLaunchCollectiveKernel()` is a no-op, matching KunlunXin
+ *     (`kunlunxin/device_api_host_helpers.xpu`), whose comment records the same
+ *     reasoning: the only call site is under COMPILE_KERNEL_HOST, and the
+ *     platform schedules collectives from the host, so a no-op satisfies the
+ *     link.
+ *
+ * This file intentionally does NOT include the device headers
+ * (flagcx_device_internal.h / flagcx_device_core.h / flagcx_kernel_internal.h).
+ * Nothing here needs a device type or `sizeof(flagcxDevNet)`, and pulling them
+ * in would drag the ECCL device path -- whose GIN cannot be compiled on TOPS --
+ * into a translation unit that has no reason to see it.
+ ************************************************************************/
+
+#include <cstddef>
+
+#include "flagcx.h" // flagcxStream_t
+
+// extern "C" spelling copied from eccl_dev_api_backend.cc:23-24 and from
+// nvidia/device_api_host_helpers.cu, so the names match at link time.
+extern "C" size_t flagcxDevNetSizeOf() { return 0; }
+
+extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
+                                            int count, void *stream) {
+  (void)devNets;
+  (void)devComm;
+  (void)count;
+  (void)stream;
+}
+
+// Declared in flagcx/include/flagcx_kernel_internal.h:61 with plain C++
+// linkage (no extern "C"), so the parameter list must match exactly for the
+// mangled name to line up with the call in uni_runner_impl.cc:1873.
+void flagcxLaunchCollectiveKernel(void *fifoBuffer, size_t nthreads,
+                                  size_t nblocks, flagcxStream_t stream) {
+  (void)fifoBuffer;
+  (void)nthreads;
+  (void)nblocks;
+  (void)stream;
+}

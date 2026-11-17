@@ -7,8 +7,8 @@ static void bufSizeFn(PerfContext &ctx, size_t &sBuf, size_t &rBuf) {
 
 static void collFn(PerfContext &ctx, size_t count) {
   PERF_CHECK(flagcxReduceScatter(ctx.sendbuff, ctx.recvbuff,
-                                 count / ctx.totalProcs, ctx.datatype, ctx.op,
-                                 ctx.comm, ctx.stream));
+                                 count / ctx.totalProcs, ctx.datatype,
+                                 ctx.redOp, ctx.comm, ctx.stream));
 }
 
 static double bwFactorFn(int totalProcs) {
@@ -20,7 +20,7 @@ static void dataInitFn(PerfContext &ctx, size_t, size_t count) {
   const size_t activeCount = recvCount * ctx.totalProcs;
   const size_t typeSize = getFlagcxDataTypeSize(ctx.datatype);
   perfReduceFillInput(static_cast<unsigned char *>(ctx.hello), activeCount,
-                      ctx.proc, ctx.totalProcs, ctx.datatype, ctx.op);
+                      ctx.proc, ctx.totalProcs, ctx.datatype, ctx.redOp);
   PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.sendbuff, ctx.hello,
                                          activeCount * typeSize,
                                          flagcxMemcpyHostToDevice, NULL));
@@ -30,12 +30,13 @@ static void dataInitFn(PerfContext &ctx, size_t, size_t count) {
 
 static void postIterFn(PerfContext &ctx, size_t, size_t count) {
   const size_t recvCount = count / ctx.totalProcs;
+  perfPrintBuffer(ctx, recvCount, "recvbuff");
   const size_t bytes = recvCount * getFlagcxDataTypeSize(ctx.datatype);
   PERF_CHECK(ctx.devHandle->deviceMemcpy(ctx.hello, ctx.recvbuff, bytes,
                                          flagcxMemcpyDeviceToHost, NULL));
   perfReduceCheckOutput(static_cast<const unsigned char *>(ctx.hello),
                         recvCount, static_cast<size_t>(ctx.proc) * recvCount,
-                        ctx.proc, ctx.totalProcs, ctx.datatype, ctx.op,
+                        ctx.proc, ctx.totalProcs, ctx.datatype, ctx.redOp,
                         "ReduceScatter");
   if (ctx.proc == 0)
     printf("ReduceScatter data verified: %zu bytes per rank\n", bytes);
@@ -46,6 +47,7 @@ int main(int argc, char *argv[]) {
   perfSetup(ctx, argc, argv, bufSizeFn);
   perfWarmup(ctx, collFn);
   perfBenchmarkLoop(ctx, collFn, bwFactorFn, dataInitFn, postIterFn);
+  const int result = ctx.accuracyFailed ? 1 : 0;
   perfTeardown(ctx);
-  return 0;
+  return result;
 }

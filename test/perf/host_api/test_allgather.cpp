@@ -35,6 +35,7 @@ static void postIterFn(PerfContext &ctx, size_t size, size_t count) {
   for (int peer = 0; peer < ctx.totalProcs; ++peer)
     perfDataCheck(host + peer * peerBytes, peerBytes, ctx.proc, peer, 0,
                   peer * peerBytes, size, "AllGather");
+  perfPrintBuffer(ctx, count, "recvbuff");
   const size_t transferredBytes = peerBytes * ctx.totalProcs;
   perfAlltoallCheckEmpty(host + transferredBytes, size - transferredBytes,
                          ctx.proc, transferredBytes, "AllGather");
@@ -48,6 +49,7 @@ int main(int argc, char *argv[]) {
   perfSetup(ctx, argc, argv, bufSizeFn);
   perfWarmup(ctx, collFn);
   perfBenchmarkLoop(ctx, collFn, bwFactorFn, dataInitFn, postIterFn, false);
+  const int result = ctx.accuracyFailed ? 1 : 0;
   perfTeardown(ctx);
-  return 0;
+  return result;
 }
