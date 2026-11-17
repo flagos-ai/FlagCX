@@ -189,12 +189,15 @@ flagcxResult_t ncclAdaptorCommWindowRegister(flagcxInnerComm_t comm, void *buff,
                                              flagcxInnerWindow_t *win,
                                              int winFlags) {
 #if NCCL_VERSION_CODE > NCCL_VERSION(2, 27, 0)
+  if (winFlags != FLAGCX_WIN_SYMMETRIC)
+    return flagcxNotSupported;
+  const int vendorFlags = NCCL_WIN_COLL_SYMMETRIC;
   if (*win == NULL) {
     FLAGCXCHECK(flagcxCalloc(win, 1));
   }
   ncclWindow_t ncclWin = NULL;
   flagcxResult_t res = (flagcxResult_t)ncclCommWindowRegister(
-      comm->base, buff, size, &ncclWin, winFlags);
+      comm->base, buff, size, &ncclWin, vendorFlags);
   if (res == flagcxSuccess) {
     (*win)->base = ncclWin;
     (*win)->winFlags = winFlags;

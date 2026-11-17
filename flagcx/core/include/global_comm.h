@@ -38,6 +38,9 @@ typedef enum {
   flagcxCommunicatorHybrid = 2 // Hybrid Communicator
 } flagcxCommunicatorType_t;
 
+// Whether the user selected the hetero execution path, even on homo hardware.
+bool useHeteroComm();
+
 enum flagcxInternalBufferKind {
   flagcxInternalBufferDevice,
   flagcxInternalBufferHost,

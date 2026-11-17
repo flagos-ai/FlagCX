@@ -233,10 +233,10 @@ int main(int argc, char *argv[]) {
 
   if (localRegister == 2) {
     FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         flagcxTestWindowFlags(),
                                          memAllocator));
     FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, recvBuffSize, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
+                                         flagcxTestWindowFlags(),
                                          memAllocator));
   } else {
     FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,

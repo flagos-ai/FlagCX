@@ -92,7 +92,7 @@ flagcxResult_t failLsaMulticastUnbindOnLocalRankZero(void *handle,
 TEST_F(SymMemTest, CrossGpuReadViaIpcPeerPtr) {
   flagcxWindow_t win = nullptr;
   flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                                FLAGCX_WIN_COLL_SYMMETRIC);
+                                                flagcxTestWindowFlags());
   ASSERT_TRUE(allRanksSucceeded(res));
 
   const bool requireNetMr = envEnabled("FLAGCX_CI_REQUIRE_NET_MR");
@@ -142,7 +142,7 @@ TEST_F(SymMemTest, CrossGpuReadViaIpcPeerPtr) {
 TEST_F(SymMemTest, CrossGpuWriteViaIpcPeerPtr) {
   flagcxWindow_t win = nullptr;
   flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                                FLAGCX_WIN_COLL_SYMMETRIC);
+                                                flagcxTestWindowFlags());
   ASSERT_TRUE(allRanksSucceeded(res));
 
   const bool requireNetMr = envEnabled("FLAGCX_CI_REQUIRE_NET_MR");
@@ -204,7 +204,7 @@ TEST_F(SymMemTest, CrossGpuReadViaPeerPtr) {
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                     FLAGCX_WIN_COLL_SYMMETRIC),
+                                     flagcxTestWindowFlags()),
             flagcxSuccess);
   ASSERT_NE(win, nullptr);
   ASSERT_NE(win->defaultBase, nullptr);
@@ -285,7 +285,7 @@ TEST_F(SymMemTest, CrossGpuWriteViaPeerPtr) {
   flagcxWindow_t win = nullptr;
 
   ASSERT_EQ(flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                     FLAGCX_WIN_COLL_SYMMETRIC),
+                                     flagcxTestWindowFlags()),
             flagcxSuccess);
   ASSERT_NE(win, nullptr);
   ASSERT_NE(win->defaultBase, nullptr);
@@ -375,7 +375,7 @@ TEST_F(SymMemTest, HybridLocalAndRemoteAccess) {
 
   flagcxWindow_t win = nullptr;
   flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                                FLAGCX_WIN_COLL_SYMMETRIC);
+                                                flagcxTestWindowFlags());
   ASSERT_TRUE(allRanksSucceeded(res));
   ASSERT_NE(win, nullptr);
   ASSERT_NE(win->defaultBase, nullptr);
@@ -483,7 +483,7 @@ TEST_F(SymMemTest, HybridLocalAndRemoteAccess) {
 TEST_F(SymMemTest, MulticastMappingWhenSupported) {
   flagcxWindow_t win = nullptr;
   flagcxResult_t res = flagcxCommWindowRegister(comm, devBuff, size, &win,
-                                                FLAGCX_WIN_COLL_SYMMETRIC);
+                                                flagcxTestWindowFlags());
   ASSERT_TRUE(allRanksSucceeded(res));
   ASSERT_NE(win, nullptr);
   ASSERT_NE(win->defaultBase, nullptr);
@@ -530,7 +530,7 @@ TEST_F(SymMemTest, LsaMulticastOffsetsReuseAndBindFailureFallsBack) {
     GTEST_SKIP() << "requires VMM LSA";
   flagcxWindow_t first = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
-      comm, devBuff, size, &first, FLAGCX_WIN_COLL_SYMMETRIC)));
+      comm, devBuff, size, &first, flagcxTestWindowFlags())));
   ASSERT_NE(first, nullptr);
   if (!allRanksReady(first->defaultBase->mcLsaBound)) {
     ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, first)));
@@ -541,7 +541,7 @@ TEST_F(SymMemTest, LsaMulticastOffsetsReuseAndBindFailureFallsBack) {
 
   flagcxWindow_t second = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
-      comm, devBuff2, size, &second, FLAGCX_WIN_COLL_SYMMETRIC)));
+      comm, devBuff2, size, &second, flagcxTestWindowFlags())));
   ASSERT_NE(second, nullptr);
   ASSERT_TRUE(allRanksReady(second->defaultBase->mcLsaBound));
   const size_t firstOffset = first->defaultBase->lsaWindowOffset;
@@ -560,7 +560,7 @@ TEST_F(SymMemTest, LsaMulticastOffsetsReuseAndBindFailureFallsBack) {
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, first)));
   first = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
-      comm, devBuff, size, &first, FLAGCX_WIN_COLL_SYMMETRIC)));
+      comm, devBuff, size, &first, flagcxTestWindowFlags())));
   ASSERT_NE(first, nullptr);
   ASSERT_TRUE(allRanksReady(first->defaultBase->mcLsaBound));
   EXPECT_EQ(first->defaultBase->lsaWindowOffset, firstOffset);
@@ -574,7 +574,7 @@ TEST_F(SymMemTest, LsaMulticastOffsetsReuseAndBindFailureFallsBack) {
   deviceAdaptor->symLsaMulticastBind = failLsaMulticastBindOnLocalRankZero;
   flagcxWindow_t fallback = nullptr;
   flagcxResult_t result = flagcxCommWindowRegister(
-      comm, devBuff, size, &fallback, FLAGCX_WIN_COLL_SYMMETRIC);
+      comm, devBuff, size, &fallback, flagcxTestWindowFlags());
   deviceAdaptor->symLsaMulticastBind = savedLsaMulticastBind;
   savedLsaMulticastBind = nullptr;
   failThisLocalRankLsaMulticastBind = false;
@@ -592,7 +592,7 @@ TEST_F(SymMemTest, LsaMulticastUnbindFailureRetainsWindowForRetry) {
     GTEST_SKIP() << "requires VMM LSA";
   flagcxWindow_t window = nullptr;
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
-      comm, devBuff, size, &window, FLAGCX_WIN_COLL_SYMMETRIC)));
+      comm, devBuff, size, &window, flagcxTestWindowFlags())));
   ASSERT_NE(window, nullptr);
   if (!allRanksReady(window->defaultBase->mcLsaBound)) {
     ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));

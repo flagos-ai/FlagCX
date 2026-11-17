@@ -107,6 +107,9 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
+  if (devApiBackend->kind == flagcxDevApiDefault &&
+      comm->commType == flagcxCommunicatorHomo && !useHeteroComm())
+    return flagcxNotSupported;
   // Select this before rank-local allocation can fail. Pure vendor backends
   // keep their own resource lifetime; mixed communicators must agree even on
   // ranks that do not themselves allocate default-backend exporter storage.
@@ -337,6 +340,8 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   if (win != nullptr) {
     if ((win->ownerComm != nullptr && win->ownerComm != comm) ||
         (win->vendorBase == nullptr && win->defaultBase == nullptr) ||
+        (win->defaultBase != nullptr &&
+         win->defaultBase->state == flagcxSymWindowCleanupRequired) ||
         win->devMemRefs == UINT32_MAX) {
       freeUnboundDevMem(handle);
       return flagcxInvalidUsage;

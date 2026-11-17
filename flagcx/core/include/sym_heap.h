@@ -3,7 +3,7 @@
  *
  * Symmetric memory helpers for the default (non-vendor) path.
  * Called from flagcx.cc when flagcxCommWindowRegister/Deregister/Grow
- * is invoked on the non-homo path with FLAGCX_WIN_COLL_SYMMETRIC.
+ * prepares symmetric or IPC-backed Windows on the hetero Default path.
  ************************************************************************/
 
 #ifndef FLAGCX_SYM_HEAP_H_
@@ -131,6 +131,12 @@ flagcxSymWindowCanUseLegacyIpc(const struct flagcxSymWindow *window) {
   return window != nullptr && !window->isVmmAllocation &&
          !window->hasFlatMapping;
 }
+
+// Shared local/collective teardown; collective mode is used only by rollback.
+flagcxResult_t
+flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
+                                   flagcxMemAllocator_t allocator,
+                                   flagcxSymCleanupMode cleanupMode);
 
 flagcxResult_t flagcxSymWindowDeregister(
     flagcxHeteroComm_t comm, flagcxWindow_t win,

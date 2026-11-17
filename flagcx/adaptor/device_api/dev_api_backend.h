@@ -10,6 +10,12 @@
 
 #include "device_api/flagcx_device.h"
 
+enum flagcxDevApiBackendKind {
+  flagcxDevApiDefault = 0,
+  flagcxDevApiVendor,
+  flagcxDevApiShmem
+};
+
 struct flagcxDevApiBackend {
   const char *name;
 
@@ -38,6 +44,7 @@ struct flagcxDevApiBackend {
 
   // Destructive comm-level cleanup after all MRs have been deregistered.
   flagcxResult_t (*commCleanup)(flagcxComm_t comm);
+  flagcxDevApiBackendKind kind = flagcxDevApiDefault;
 };
 
 extern struct flagcxDevApiBackend *devApiBackend;

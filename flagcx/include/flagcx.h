@@ -258,10 +258,16 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
 #endif
 
 /* Window registration flags */
-#define FLAGCX_WIN_DEFAULT 0x00
-#define FLAGCX_WIN_COLL_SYMMETRIC 0x01
+#define FLAGCX_WIN_ASYMMETRIC 0x00
+#define FLAGCX_WIN_SYMMETRIC 0x01
+// Compatibility name for the symmetric mode.
+#define FLAGCX_WIN_COLL_SYMMETRIC FLAGCX_WIN_SYMMETRIC
 
-/* Register/Deregister user buffer for symmetric operation. Registration is
+/* Window modes are mutually exclusive values, not independent capability bits.
+ * ASYMMETRIC uses node-local IPC peer pointers on the hetero Default backend;
+ * SYMMETRIC requires node-local symmetric mappings. Both prepare NET for remote
+ * nodes. Homo vendor backends support only SYMMETRIC. No automatic downgrade
+ * between modes is performed. Registration is
  * collective. Deregistration releases this rank's Window resources locally;
  * callers must finish local device work and ensure remote accesses to this
  * rank's buffer have completed before deregistration. Deregistration does not

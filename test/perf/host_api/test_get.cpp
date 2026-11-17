@@ -144,7 +144,7 @@ int main(int argc, char *argv[]) {
   // Register data buffer as window for one-sided operations
   flagcxWindow_t dataWin = nullptr;
   res = flagcxCommWindowRegister(comm, dataWindow, data_bytes, &dataWin,
-                                 FLAGCX_WIN_COLL_SYMMETRIC);
+                                 flagcxTestWindowFlags());
   if (res == flagcxNotSupported || dataWin == nullptr) {
     if (proc == 0)
       printf("Skipping get benchmark: net adaptor does not support iget.\n");

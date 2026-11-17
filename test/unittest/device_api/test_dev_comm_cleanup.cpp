@@ -1031,6 +1031,7 @@ flagcxResult_t recordCustomOpStackDestroy(flagcxComm_t,
 TEST_F(DefaultDevCommCleanupTest, CommDestroyUnwindsNewerCustomOpDevComms) {
   flagcxDevApiBackend captureBackend = {};
   captureBackend.name = "custom-op-stack";
+  captureBackend.kind = flagcxDevApiVendor;
   captureBackend.devCommCreate = captureDevCommCreate;
   captureBackend.devCommDestroy = recordCustomOpStackDestroy;
   DevApiBackendGuard guard(&captureBackend);

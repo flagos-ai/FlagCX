@@ -229,8 +229,7 @@ struct flagcxDevMemInternal {
   flagcxMemAllocator_t allocator;
   flagcxMemAllocBackend_t allocBackend;
   bool hasWindow; // true if any window layer is available (basic or symmetric)
-  bool isSymmetric; // true only for FLAGCX_WIN_COLL_SYMMETRIC (enables
-                    // one-sided)
+  bool isSymmetric; // true for the SYMMETRIC mode or a SHMEM symmetric heap
 
   // ---- Per-comm MR layer (set by flagcxDevMemCreate from handle table) ----
   int mrIndex; // index into heteroComm->oneSideHandles (-1 if not registered)

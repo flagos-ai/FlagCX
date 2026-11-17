@@ -1118,7 +1118,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     if (win != nullptr && win->isSymmetricDefault) {
       flagcxSymWindow_t d = win->defaultBase;
       devMem->hasWindow = true;
-      devMem->isSymmetric = true;
+      devMem->isSymmetric = win->winFlags == FLAGCX_WIN_SYMMETRIC;
       devMem->winHandle = (void *)win;
       if (d != nullptr && d->mrIndex >= 0) {
         devMem->mrIndex = d->mrIndex;
@@ -1146,7 +1146,7 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
     // ---- Priority 3: Vendor native window ----
     else if (win != nullptr && !win->isSymmetricDefault) {
       devMem->hasWindow = true;
-      devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC);
+      devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_SYMMETRIC);
       devMem->winHandle = (void *)win;
     }
     // A prepared IPC slot already owns one reference. Otherwise, attach only

@@ -7,9 +7,9 @@
  ************************************************************************/
 
 #include "device_api.h"
+#include "device_api_window.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "tools.h"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -121,14 +121,16 @@ static bool runAlltoAll(flagcxComm_t comm, flagcxDeviceHandle_t devHandle,
 }
 
 int main(int argc, char *argv[]) {
-  parser args(argc, argv);
+  parser args(argc, argv, 2);
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
   int stepFactor = args.getStepFactor();
   int numWarmupIters = args.getWarmupIters();
   int numIters = args.getTestIters();
   uint64_t splitMask = args.getSplitMask();
-  int localRegister = args.getLocalRegister();
+  int winFlags;
+  if (!deviceApiWindowMode(args, &winFlags))
+    return 1;
 
   if (stepFactor <= 1) {
     fprintf(stderr,
@@ -150,14 +152,6 @@ int main(int argc, char *argv[]) {
   initMpiEnv(argc, argv, worldRank, worldSize, proc, totalProcs, color,
              splitComm, splitMask);
 
-  if (localRegister == 0) {
-    if (proc == 0)
-      printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
-    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
-    MPI_Finalize();
-    return 0;
-  }
-
   // Ensure enough data for all CTAs to get work
   size_t minElemBytes = (size_t)FLAGCX_DEVICE_CTA_COUNT * 32 * sizeof(float);
   if (minBytes < minElemBytes)
@@ -175,10 +169,12 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
+  if (proc == 0 && color == 0)
+    FLAGCXCHECK(deviceApiReportWindowMode(comm, winFlags));
 
-  // SHMEM allocations require an initialized runtime. Keep one lightweight
-  // DevComm alive while the benchmark recreates DevComms for each context
-  // count.
+    // SHMEM allocations require an initialized runtime. Keep one lightweight
+    // DevComm alive while the benchmark recreates DevComms for each context
+    // count.
 #ifdef FLAGCX_TEST_ALLOCATOR_SHMEM
   flagcxDevComm_t shmemLifetimeComm = nullptr;
   flagcxDevCommRequirements lifetimeReqs =
@@ -196,25 +192,15 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(devHandle->streamCreate(&stream));
 
   void *sendBuff = nullptr, *recvBuff = nullptr;
-  void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
   FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
   FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
 
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-  } else {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
-                                   memAllocator));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle,
-                                   memAllocator));
-  }
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                       winFlags, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
+                                       winFlags, memAllocator));
 
   void *hello = malloc(maxBytes);
   memset(hello, 0, maxBytes);
@@ -240,7 +226,8 @@ int main(int argc, char *argv[]) {
   if (proc == 0) {
     printf("\n# Multi-FIFO benchmark: one-sided AlltoAll, %d ranks\n",
            totalProcs);
-    printf("# regMode: %s\n", localRegister == 2 ? "window" : "ipc");
+    printf("# regMode: %s\n",
+           winFlags == FLAGCX_WIN_SYMMETRIC ? "symmetric" : "asymmetric");
     printf("# Columns: contextCount, size, latency, bandwidth, correctness\n");
     printf("# FLAGCX_DEVICE_CTA_COUNT = %d\n\n", FLAGCX_DEVICE_CTA_COUNT);
   }
@@ -261,15 +248,9 @@ int main(int argc, char *argv[]) {
   if (proc == 0)
     printf("\nOverall: %s\n", anyFail ? "FAIL" : "PASS");
 
+  FLAGCXCHECK(deviceApiCloseWindows(comm, splitComm, devHandle, stream, {},
+                                    {&sendWin, &recvWin}, memAllocator));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
-
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
-  } else {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
-  }
 
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));

@@ -1908,9 +1908,15 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
   d->localRanks = localRanks;
   d->heapSize = size;
 
-  res =
-      flagcxSymTrySegmentLayout(comm, d, buff, size, &segmentCallbacksUsed,
-                                &ordinaryIpcEligible, &segmentedCleanupFailed);
+  if (winFlags == FLAGCX_WIN_SYMMETRIC) {
+    res = flagcxSymTrySegmentLayout(comm, d, buff, size, &segmentCallbacksUsed,
+                                    &ordinaryIpcEligible,
+                                    &segmentedCleanupFailed);
+  } else {
+    ordinaryIpcEligible = true;
+    if (isVmmAllocation)
+      localPrepareStatus = flagcxNotSupported;
+  }
   if (res != flagcxSuccess) {
     prepareRollbackConverged = true;
     retainCleanupForRetry = segmentedCleanupFailed;
@@ -2508,6 +2514,10 @@ flagcxResult_t flagcxSymWindowRegisterInternal(flagcxHeteroComm_t comm,
       }
     }
   }
+
+  if (winFlags == FLAGCX_WIN_SYMMETRIC && !d->hasFlatMapping &&
+      localPrepareStatus == flagcxSuccess)
+    localPrepareStatus = flagcxNotSupported;
 
   // VMM preparation and its local rollback complete independently on each
   // node. Converge the outcome across the whole communicator before any rank
