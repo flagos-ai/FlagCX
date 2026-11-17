@@ -175,10 +175,10 @@ int main(int argc, char *argv[]) {
     const char *skipS16 = std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16");
     if (skipS16 != nullptr && skipS16[0] != '\0' && skipS16[0] != '0') {
       if (proc == 0) {
-        const char *reason = std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON");
-        printf(
-            "S16 DevBarrier(INTRA+WORLD): SKIP (CI ignore_test: %s)\n",
-            reason != nullptr ? reason : "temporarily blacklisted");
+        const char *reason =
+            std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON");
+        printf("S16 DevBarrier(INTRA+WORLD): SKIP (CI ignore_test: %s)\n",
+               reason != nullptr ? reason : "temporarily blacklisted");
         fflush(stdout);
       }
       MPI_Barrier(MPI_COMM_WORLD);
