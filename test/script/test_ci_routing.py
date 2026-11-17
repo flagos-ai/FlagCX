@@ -53,7 +53,15 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["enflame"],
+            [
+                "cuda",
+                "hygon",
+                "iluvatar",
+                "metax",
+                "ppu",
+                "ascend",
+                "enflame",
+            ],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -278,8 +286,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
         for context in (
             {"event_name": "pull_request", "labels": ["platform:unknown"]},
             {"event_name": "workflow_dispatch", "selection": "unknown"},
-            {"event_name": "pull_request", "labels": ["platform:cuda"]},
-            {"event_name": "workflow_dispatch", "selection": "cuda"},
         ):
             with self.subTest(context=context), tempfile.TemporaryDirectory() as temp_dir:
                 context_path = Path(temp_dir) / "context.json"

@@ -6,7 +6,8 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:ppu`, and `platform:ascend`
+PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
+`platform:metax`, `platform:ppu`, `platform:ascend`, and `platform:enflame`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
@@ -18,9 +19,11 @@ one of these exact commands on a PR:
 /test
 /test cuda
 /test hygon
+/test iluvatar
 /test metax
 /test ppu
 /test ascend
+/test enflame
 /test all
 ```
 
