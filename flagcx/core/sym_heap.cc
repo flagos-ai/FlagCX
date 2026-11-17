@@ -1162,6 +1162,21 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   return flagcxSymCleanupMappingsConverged(comm, d, mode);
 }
 
+static void flagcxSymFinishPendingCleanup(flagcxSymWindow_t d) {
+  flagcxWindow_t owner = d->owner;
+  const bool publicOwner = owner != nullptr && owner->ownerComm != nullptr;
+  if (publicOwner) {
+    // Registration may return a cleanup token that the public Window list
+    // owns. Keep that handle reusable after its pending resources are gone.
+    owner->defaultBase = nullptr;
+    owner->isSymmetricDefault = 0;
+    owner->winFlags = 0;
+  }
+  flagcxSymFreeWindowState(d);
+  if (!publicOwner)
+    free(owner);
+}
+
 flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
                                             flagcxSymCleanupMode mode) {
   if (comm == nullptr)
@@ -1172,9 +1187,7 @@ flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
       FLAGCXCHECK(flagcxSymCleanupUnpublished(comm, d, mode));
       FLAGCXCHECK(flagcxSymReleaseAllocationLease(d));
       comm->pendingSymCleanup = d->cleanupNext;
-      flagcxWindow_t owner = d->owner;
-      flagcxSymFreeWindowState(d);
-      free(owner);
+      flagcxSymFinishPendingCleanup(d);
     }
     return flagcxSuccess;
   }
@@ -1195,9 +1208,7 @@ flagcxResult_t flagcxSymRetryPendingCleanup(flagcxHeteroComm_t comm,
     if (d != nullptr) {
       FLAGCXCHECK(flagcxSymReleaseAllocationLease(d));
       comm->pendingSymCleanup = d->cleanupNext;
-      flagcxWindow_t owner = d->owner;
-      flagcxSymFreeWindowState(d);
-      free(owner);
+      flagcxSymFinishPendingCleanup(d);
     }
   }
   return flagcxSuccess;

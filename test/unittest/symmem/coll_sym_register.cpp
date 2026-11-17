@@ -1541,10 +1541,21 @@ TEST_F(SymMemTest, AsymmetricPendingCleanupWithoutLocalTokenConverges) {
     free(token);
     FAIL() << "Could not retain the pending cleanup token";
   }
+  if (hetero->rank == 0) {
+    // A failed public registration also links its cleanup token here.
+    token->ownerComm = comm;
+    token->nextOwned = comm->publicWindows;
+    comm->publicWindows = token;
+  }
 
   EXPECT_EQ(flagcxSymRetryPendingCleanup(hetero, flagcxSymCleanupCollective),
             flagcxSuccess);
   EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
+  if (hetero->rank == 0) {
+    EXPECT_EQ(comm->publicWindows, token);
+    EXPECT_EQ(token->defaultBase, nullptr);
+    EXPECT_EQ(token->ownerComm, comm);
+  }
 }
 
 TEST_F(SymMemTest, FlatMapRollbackFailureRetainsOwnershipForRetry) {

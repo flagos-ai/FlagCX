@@ -38,10 +38,31 @@ typedef enum {
   flagcxCommunicatorHybrid = 2 // Hybrid Communicator
 } flagcxCommunicatorType_t;
 
+enum flagcxInternalBufferKind {
+  flagcxInternalBufferDevice,
+  flagcxInternalBufferHost,
+  flagcxInternalBufferGdr
+};
+
+// One record per allocation, including buffers whose creation rolled back.
+// Device views borrow these pointers; only CommDestroy frees the allocation.
+struct flagcxInternalBuffer {
+  void *pointer;
+  flagcxInternalBufferKind kind;
+  flagcxInternalBuffer *next;
+};
+
+flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
+                                             size_t size,
+                                             flagcxInternalBufferKind kind);
+flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
+
 struct flagcxComm {
   // TODO: adjust code format
-  // 0: active, 1: backend stopped, 2: homo comms destroyed,
-  // 3: hetero resources prepared, 4: IPC table cleanup completed.
+  // 0: active, 1: locally quiescent, 2: transport cleanup completed,
+  // 3: local owners destroyed, 4: homo comms destroyed,
+  // 5: hetero resources prepared, 6: IPC imports closed,
+  // 7: peer closure acknowledged; remaining buffer frees are local.
   // Failures before final host-state release resume at the last completed
   // stage.
   int destroyPhase;
@@ -94,6 +115,10 @@ struct flagcxComm {
   struct flagcxIpcTableEntry ipcTableInline[FLAGCX_MAX_IPC_ENTRIES];
   struct flagcxIpcTableEntry *ipcTable = ipcTableInline;
   int ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+
+  flagcxInternalBuffer *internalBuffers = nullptr;
+  // Set by collective creation, including ranks where allocation later fails.
+  bool internalBuffersNeedPeerClose = false;
 
   flagcxWindow_t publicWindows; // includes empty reusable public handles
   flagcxDevMem_t activeDevMems;

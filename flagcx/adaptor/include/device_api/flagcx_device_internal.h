@@ -54,9 +54,8 @@ struct flagcxDevCommInternal {
                           // epochs]
   int nBarriers;          // = FLAGCX_DEVICE_CTA_COUNT (needed in kernel)
   // Host-side cleanup bookkeeping (not passed to kernel)
-  bool localBarrierFlagsDeviceAllocated; // true only when localBarrierFlags is
-                                         // owned device memory, not an SHM
-                                         // device-visible alias
+  bool localBarrierFlagsDeviceAllocated; // Comm-owned allocation when true;
+                                         // otherwise an SHM device alias
   int barrierIpcIndex;  // index into comm->ipcTable (-1 if no IPC barrier)
   int *localRankToRank; // intra-node rank mapping (for IPC exchange)
   int nLocalRanks;
@@ -84,6 +83,9 @@ struct flagcxDevCommInternal {
   // ---- One-sided Default layer (set if signals, counters, or Inter barriers
   // are requested)
   // ----
+  // Exporter allocations below belong to Comm; SHM aliases retain their SHM
+  // handle ownership. DevCommDestroy closes imports and drops borrowed
+  // pointers.
   uint64_t *signalBuffer;      // GPU-visible network signal words
   uint64_t *localSignalBuffer; // GPU-visible local signal words (host SHM mode)
   void *signalHostBuffer; // CPU mapping of both local and network signal planes

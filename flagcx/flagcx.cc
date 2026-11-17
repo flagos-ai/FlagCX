@@ -3999,32 +3999,19 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  flagcxResult_t destroyResult = flagcxSuccess;
-  TRACE(FLAGCX_INIT,
-        "flagcxCommDestroy begin comm=%p rank=%d tuner=%p homoComm=%p "
-        "homoCommMapSize=%zu commMapSize=%zu",
-        comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
-        comm->commMap.size());
-
-  if (comm->destroyPhase == 0) {
-    // Stop new producers and drain device FIFOs plus the RMA proxy before any
-    // MR deregistration can close a connection. Quiesce is idempotent so a
-    // failed deregistration leaves this communicator in a retryable, owned
-    // state.
+static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
+                                                    int stage) {
+  if (stage == 0) {
+    // Drain local producers before any rank enters transport shutdown.
     if (!useHomoComm(comm) || useHeteroComm())
       FLAGCXCHECK(flagcxCommQuiesce(comm));
-
-    // Retained fused buffers may still be referenced by unfinished stream work.
-    // Keep the communicator retryable if the device cannot be drained.
     FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
-
-    // Preserve transport-specific shutdown coordination before any DevComm or
-    // one-sided registration can release remotely accessible memory.
+  }
+  if (stage == 1) {
     if (!useHomoComm(comm) || useHeteroComm())
       FLAGCXCHECK(flagcxCommCleanup(comm));
-
+  }
+  if (stage == 2) {
     // A failed create rollback can exist for any Device API backend. Retry it
     // while the outer communicator and its vendor communicator are still live.
     flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
@@ -4097,10 +4084,9 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     }
-    comm->destroyPhase = 1;
   }
 
-  if (comm->destroyPhase == 1) {
+  if (stage == 3) {
     // Keep the existing homo-before-hetero teardown order. Clear each owner
     // only after its destruction succeeds so a later stage can be retried.
     free(comm->clusterIds);
@@ -4136,23 +4122,57 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
       comm->homoComm = nullptr;
     }
     TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
-    comm->destroyPhase = 2;
   }
 
-  if (comm->destroyPhase == 2) {
+  if (stage == 4) {
     if (!useHomoComm(comm) || useHeteroComm())
       FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
     while (comm->activeDevMems != nullptr)
       FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
-    comm->destroyPhase = 3;
   }
 
-  if (comm->destroyPhase == 3) {
+  if (stage == 5) {
     // The proxy and UniRunner state are drained before the remaining IPC
     // table entries are closed.
     FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
-    comm->destroyPhase = 4;
   }
+
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  flagcxResult_t destroyResult = flagcxSuccess;
+  TRACE(FLAGCX_INIT,
+        "flagcxCommDestroy begin comm=%p rank=%d tuner=%p homoComm=%p "
+        "homoCommMapSize=%zu commMapSize=%zu",
+        comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
+        comm->commMap.size());
+
+  if (comm->destroyPhase < 7) {
+    // TODO: internal IPC (including UniRunner ready/scratch/progress) currently
+    // requires a temporary cross-rank shutdown rendezvous. Ranks that entered
+    // collective internal-resource creation must enter destroy concurrently,
+    // including retries after a reported cleanup failure. Replace this with a
+    // lifetime protocol supporting the public local-destroy contract.
+    for (int stage = 0; stage < 6; ++stage) {
+      flagcxResult_t local = flagcxSuccess;
+      if (comm->destroyPhase <= stage) {
+        local = flagcxCommPrepareDestroyStage(comm, stage);
+        if (local == flagcxSuccess)
+          comm->destroyPhase = stage + 1;
+      }
+      flagcxResult_t common = local;
+      if (comm->internalBuffersNeedPeerClose)
+        FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+      if (common != flagcxSuccess)
+        return common;
+    }
+    // Every participating rank has now closed all imports successfully.
+    // A later allocation-free failure needs only a local destroy retry.
+    comm->destroyPhase = 7;
+  }
+  FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
 
   if (!useHomoComm(comm) || useHeteroComm()) {
     // The proxy and UniRunner resources were prepared above.

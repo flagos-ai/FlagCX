@@ -336,6 +336,8 @@ typedef struct {
   const void *ipcInputBase;
   void *ipcOutputBase;
   size_t ipcDataBytes;
+  // Borrowed Comm-owned exporter storage, including retained create failures.
+  // Persistent-state cleanup closes views; CommDestroy releases allocations.
   void *ipcReadyBuffer;
   size_t ipcReadyCapacity;
   size_t ipcReadySlots;

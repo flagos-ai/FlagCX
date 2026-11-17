@@ -190,6 +190,7 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
       numChannels > std::numeric_limits<size_t>::max() /
                         sizeof(flagcxRingChannelProgress))
     return flagcxInvalidArgument;
+  comm->internalBuffersNeedPeerClose = true;
   const size_t scratchBytes = numChannels * simpleBufferBytes;
   const size_t progressBytes = numChannels * sizeof(flagcxRingChannelProgress);
   const bool completeMatch =
@@ -227,8 +228,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   void *progress = NULL;
   flagcxDevMem_t scratchMem = NULL;
   flagcxDevMem_t progressMem = NULL;
-  result = deviceAdaptor->deviceMalloc(&scratch, scratchBytes, flagcxMemDevice,
-                                       NULL);
+  result = flagcxCommAllocInternalBuffer(comm, &scratch, scratchBytes,
+                                         flagcxInternalBufferDevice);
   if (result == flagcxSuccess && scratch == NULL)
     result = flagcxSystemError;
   FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
@@ -243,8 +244,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   if (result != flagcxSuccess)
     goto fail;
 
-  result = deviceAdaptor->deviceMalloc(&progress, progressBytes,
-                                       flagcxMemDevice, NULL);
+  result = flagcxCommAllocInternalBuffer(comm, &progress, progressBytes,
+                                         flagcxInternalBufferDevice);
   if (result == flagcxSuccess && progress == NULL)
     result = flagcxSystemError;
   FLAGCXCHECKGOTO(agreeUniRunnerResourceState(comm, false, result,
@@ -302,36 +303,18 @@ fail : {
     cleanup = releaseOrphanUniRunnerIpcWindow(comm, scratch);
   bool ignored = false;
   flagcxResult_t commonCleanup = flagcxSuccess;
-  FLAGCXCHECK(agreeUniRunnerResourceState(comm, false, cleanup, &ignored,
-                                          &commonCleanup));
-  if (commonCleanup != flagcxSuccess) {
+  flagcxResult_t agreement = agreeUniRunnerResourceState(
+      comm, false, cleanup, &ignored, &commonCleanup);
+  if (agreement != flagcxSuccess || commonCleanup != flagcxSuccess) {
     runnerState->ipcOwner = comm;
     runnerState->ipcRingScratchMem = scratchMem;
     runnerState->ipcRingProgressMem = progressMem;
     runnerState->ipcRingScratchBuffer = scratch;
     runnerState->ipcRingProgressBuffer = progress;
-    return commonCleanup;
+    return agreement != flagcxSuccess ? agreement : commonCleanup;
   }
 }
-  if (progress != NULL) {
-    flagcxResult_t freeResult =
-        deviceAdaptor->deviceFree(progress, flagcxMemDevice, NULL);
-    if (freeResult != flagcxSuccess) {
-      runnerState->ipcOwner = comm;
-      runnerState->ipcRingProgressBuffer = progress;
-      runnerState->ipcRingScratchBuffer = scratch;
-      return freeResult;
-    }
-  }
-  if (scratch != NULL) {
-    flagcxResult_t freeResult =
-        deviceAdaptor->deviceFree(scratch, flagcxMemDevice, NULL);
-    if (freeResult != flagcxSuccess) {
-      runnerState->ipcOwner = comm;
-      runnerState->ipcRingScratchBuffer = scratch;
-      return freeResult;
-    }
-  }
+  // Comm retains both allocations even after a successful rollback.
   return result;
 }
 
@@ -5173,16 +5156,6 @@ static flagcxResult_t notifyChildrenScheduled(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-static flagcxResult_t allocUniRunnerIpcReadyBuffer(void **ptr, size_t bytes) {
-  return deviceAdaptor->deviceMalloc(ptr, bytes, flagcxMemDevice, NULL);
-}
-
-static flagcxResult_t freeUniRunnerIpcReadyBuffer(void *ptr) {
-  if (ptr == NULL)
-    return flagcxSuccess;
-  return deviceAdaptor->deviceFree(ptr, flagcxMemDevice, NULL);
-}
-
 struct uniRunnerResourceAgreement {
   uint64_t canReuse;
   int result;
@@ -5356,6 +5329,7 @@ destroyUniRunnerIpcDataViews(flagcxUniRunnerState *runnerState) {
 static flagcxResult_t
 ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                flagcxComm_t comm, size_t requiredSlots) {
+  comm->internalBuffersNeedPeerClose = true;
   if (requiredSlots == 0)
     return flagcxSuccess;
   if (requiredSlots > std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
@@ -5380,7 +5354,8 @@ ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
   flagcxResult_t collectiveResult = flagcxSuccess;
   void *newBuffer = NULL;
   flagcxDevMem_t newMem = NULL;
-  res = allocUniRunnerIpcReadyBuffer(&newBuffer, bytes);
+  res = flagcxCommAllocInternalBuffer(comm, &newBuffer, bytes,
+                                      flagcxInternalBufferDevice);
   if (res == flagcxSuccess) {
     res =
         deviceAdaptor->deviceMemset(newBuffer, 0, bytes, flagcxMemDevice, NULL);
@@ -5415,25 +5390,17 @@ fail : {
     cleanup = releaseOrphanUniRunnerIpcWindow(comm, newBuffer);
   bool ignored = false;
   flagcxResult_t commonCleanup = flagcxSuccess;
-  FLAGCXCHECK(agreeUniRunnerResourceState(comm, false, cleanup, &ignored,
-                                          &commonCleanup));
-  if (commonCleanup != flagcxSuccess) {
+  flagcxResult_t agreement = agreeUniRunnerResourceState(
+      comm, false, cleanup, &ignored, &commonCleanup);
+  if (agreement != flagcxSuccess || commonCleanup != flagcxSuccess) {
     runnerState->ipcOwner = comm;
     runnerState->ipcReadyMem = newMem;
     runnerState->ipcReadyBuffer = newBuffer;
     runnerState->ipcReadyCapacity = requiredSlots;
-    return commonCleanup;
+    return agreement != flagcxSuccess ? agreement : commonCleanup;
   }
 }
-  if (newBuffer != NULL) {
-    flagcxResult_t freeResult = freeUniRunnerIpcReadyBuffer(newBuffer);
-    if (freeResult != flagcxSuccess) {
-      runnerState->ipcOwner = comm;
-      runnerState->ipcReadyBuffer = newBuffer;
-      runnerState->ipcReadyCapacity = requiredSlots;
-      return freeResult;
-    }
-  }
+  // The allocation remains in Comm's ownership list until final teardown.
   return res;
 }
 
@@ -7261,12 +7228,6 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   runnerState->ipcReadyMem = NULL;
   FLAGCXCHECK(
       releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcReadyBuffer));
-  if (runnerState->ipcReadyBuffer != NULL) {
-    if (comm == NULL) {
-      return flagcxInternalError;
-    }
-    FLAGCXCHECK(freeUniRunnerIpcReadyBuffer(runnerState->ipcReadyBuffer));
-  }
   runnerState->ipcReadyBuffer = NULL;
   runnerState->ipcReadyCapacity = 0;
   runnerState->ipcReadySlots = 0;
@@ -7291,16 +7252,11 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
       comm == NULL) {
     return flagcxInternalError;
   }
-  if (runnerState->ipcRingScratchBuffer != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->ipcRingScratchBuffer,
-                                          flagcxMemDevice, NULL));
-    runnerState->ipcRingScratchBuffer = NULL;
-  }
-  if (runnerState->ipcRingProgressBuffer != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->ipcRingProgressBuffer,
-                                          flagcxMemDevice, NULL));
-    runnerState->ipcRingProgressBuffer = NULL;
-  }
+  // Only drop borrowed pointers here. Comm frees the exporter allocations
+  // after every rank has closed its imports. TODO: remove the temporary
+  // shutdown rendezvous when internal IPC supports local communicator teardown.
+  runnerState->ipcRingScratchBuffer = NULL;
+  runnerState->ipcRingProgressBuffer = NULL;
   runnerState->ipcRingScratchBytes = 0;
   runnerState->ipcRingProgressBytes = 0;
   runnerState->ipcRingChannels = 0;

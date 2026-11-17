@@ -264,9 +264,13 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
 /* Register/Deregister user buffer for symmetric operation. Registration is
  * collective. Deregistration releases this rank's Window resources locally;
  * callers must finish local device work and ensure remote accesses to this
- * rank's buffer have completed before deregistration. A successfully
- * deregistered Window handle is empty and may be passed to a later register
- * call on the same communicator. */
+ * rank's buffer have completed before deregistration. Deregistration does not
+ * close IPC mappings held by other ranks. The caller must keep the backing
+ * allocation alive until every rank that imported it has closed its mapping.
+ * Participating ranks can deregister locally, then use an application-level
+ * barrier before releasing their backing allocations.
+ * A successfully deregistered Window handle is empty and may be passed to a
+ * later register call on the same communicator. */
 #ifdef __cplusplus
 flagcxResult_t
 flagcxCommWindowRegister(flagcxComm_t comm, void *buff, size_t size,

@@ -24,6 +24,61 @@
 #include <climits>
 #include <cstdint>
 
+// Internal exporter allocations outlive their device views and local imports.
+flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
+                                             size_t size,
+                                             flagcxInternalBufferKind kind) {
+  if (comm == nullptr || pointer == nullptr || size == 0)
+    return flagcxInvalidArgument;
+  *pointer = nullptr;
+  auto *record =
+      static_cast<flagcxInternalBuffer *>(malloc(sizeof(flagcxInternalBuffer)));
+  if (record == nullptr)
+    return flagcxSystemError;
+  record->pointer = nullptr;
+  record->kind = kind;
+  flagcxResult_t result =
+      kind == flagcxInternalBufferGdr
+          ? deviceAdaptor->gdrMemAlloc(&record->pointer, size, nullptr)
+          : deviceAdaptor->deviceMalloc(&record->pointer, size,
+                                        kind == flagcxInternalBufferHost
+                                            ? flagcxMemHost
+                                            : flagcxMemDevice,
+                                        nullptr);
+  if (record->pointer != nullptr) {
+    // Retain even a provider's partial allocation on error for final cleanup.
+    record->next = comm->internalBuffers;
+    comm->internalBuffers = record;
+  } else {
+    free(record);
+    return result == flagcxSuccess ? flagcxSystemError : result;
+  }
+  if (result == flagcxSuccess)
+    *pointer = record->pointer;
+  return result;
+}
+
+flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm) {
+  if (comm == nullptr || comm->destroyPhase < 7)
+    return flagcxInvalidUsage;
+  while (comm->internalBuffers != nullptr) {
+    auto *record = comm->internalBuffers;
+    flagcxResult_t result =
+        record->kind == flagcxInternalBufferGdr
+            ? deviceAdaptor->gdrMemFree(record->pointer, nullptr)
+            : deviceAdaptor->deviceFree(record->pointer,
+                                        record->kind == flagcxInternalBufferHost
+                                            ? flagcxMemHost
+                                            : flagcxMemDevice,
+                                        nullptr);
+    if (result != flagcxSuccess)
+      return result;
+    comm->internalBuffers = record->next;
+    free(record);
+  }
+  return flagcxSuccess;
+}
+
 // ==========================================================================
 // DevComm lifecycle
 // ==========================================================================
@@ -46,6 +101,12 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
+  // Select this before rank-local allocation can fail. Pure vendor backends
+  // keep their own resource lifetime; mixed communicators must agree even on
+  // ranks that do not themselves allocate default-backend exporter storage.
+  if (comm->commType != flagcxCommunicatorHomo || comm->heteroComm != nullptr ||
+      strcmp(devApiBackend->name, "default") == 0)
+    comm->internalBuffersNeedPeerClose = true;
   FLAGCXCHECK(flagcxDevCommRetryPendingCleanup(comm));
   if (comm->devCommCount == INT_MAX)
     return flagcxInvalidUsage;

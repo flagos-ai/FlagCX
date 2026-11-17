@@ -189,9 +189,9 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
 
   if (flagcxParamSignalHostEnable() == 0) {
     // ── IPC device memory path (default) ─────────────────────────────────
-    flagcxResult_t res =
-        deviceAdaptor->deviceMalloc((void **)&devComm->localBarrierFlags,
-                                    barrierSize, flagcxMemDevice, NULL);
+    flagcxResult_t res = flagcxCommAllocInternalBuffer(
+        comm, (void **)&devComm->localBarrierFlags, barrierSize,
+        flagcxInternalBufferDevice);
     if (res == flagcxSuccess) {
       devComm->localBarrierFlagsDeviceAllocated = true;
       res = deviceAdaptor->deviceMemset(devComm->localBarrierFlags, 0,
@@ -618,8 +618,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
           return res;
         }
       } else if (flagcxParamSignalHostEnable()) {
-        res = deviceAdaptor->deviceMalloc((void **)&devComm->signalBuffer,
-                                          sigSize, flagcxMemHost, NULL);
+        res =
+            flagcxCommAllocInternalBuffer(comm, (void **)&devComm->signalBuffer,
+                                          sigSize, flagcxInternalBufferHost);
         if (res != flagcxSuccess) {
           WARN("defaultDevApiCommCreate: signalBuffer host malloc failed (%d)",
                res);
@@ -627,8 +628,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         }
         memset(devComm->signalBuffer, 0, sigSize);
       } else {
-        res = deviceAdaptor->gdrMemAlloc((void **)&devComm->signalBuffer,
-                                         sigSize, NULL);
+        res =
+            flagcxCommAllocInternalBuffer(comm, (void **)&devComm->signalBuffer,
+                                          sigSize, flagcxInternalBufferGdr);
         if (res != flagcxSuccess) {
           WARN("defaultDevApiCommCreate: signalBuffer gdrMemAlloc failed (%d)",
                res);
@@ -662,8 +664,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
         size_t directSigSize = (size_t)devComm->signalCount * bufCtxCount *
                                sizeof(DefaultCompletionWord);
-        res = deviceAdaptor->deviceMalloc(&devComm->completionSignalBuffer,
-                                          directSigSize, flagcxMemDevice, NULL);
+        res = flagcxCommAllocInternalBuffer(
+            comm, &devComm->completionSignalBuffer, directSigSize,
+            flagcxInternalBufferDevice);
         if (res != flagcxSuccess) {
           WARN("defaultDevApiCommCreate: 32-bit completion signal allocation "
                "failed (%d)",
@@ -744,9 +747,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       }
       INFO(FLAGCX_INIT, "defaultDevApiCommCreate: stagingBuffer size=%zu",
            stagingSize);
-      res =
-          deviceAdaptor->deviceMalloc((void **)&devComm->putValueStagingBuffer,
-                                      stagingSize, flagcxMemHost, NULL);
+      res = flagcxCommAllocInternalBuffer(
+          comm, (void **)&devComm->putValueStagingBuffer, stagingSize,
+          flagcxInternalBufferHost);
       if (res != flagcxSuccess) {
         WARN("defaultDevApiCommCreate: stagingBuffer malloc failed (%d)", res);
         devComm->putValueStagingBuffer = nullptr;
@@ -928,12 +931,11 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 }
 
 // ==========================================================================
-// DevComm Destroy — immediate cleanup, no deferral
+// DevComm Destroy — close local imports; Comm owns exporter allocations
 // ==========================================================================
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
-  const bool hostSignalShm = devComm->signalHostBuffer != nullptr;
   // Deregister communicator-level MRs before freeing their backing buffers.
   // Check handle identity so rollback cannot remove a registration owned by
   // another DevComm.
@@ -1036,43 +1038,19 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     devComm->signalDevPeerPtrsRaw = nullptr;
   }
 
-  // ── Free one-sided buffers immediately ────────────────────────────────
-  if (devComm->localBarrierFlags) {
-    if (devComm->localBarrierFlagsDeviceAllocated) {
-      FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->localBarrierFlags,
-                                            flagcxMemDevice, NULL));
-    }
-    devComm->localBarrierFlags = nullptr;
-  }
+  // Exported storage belongs to Comm, including partial-create allocations.
+  // Peers may still hold IPC imports after this local DevCommDestroy.
+  devComm->localBarrierFlags = nullptr;
   devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
     FLAGCXCHECK(
         deviceAdaptor->deviceFree(devComm->epochBuffer, flagcxMemDevice, NULL));
     devComm->epochBuffer = nullptr;
   }
-  if (devComm->signalBuffer && !hostSignalShm) {
-    flagcxResult_t result = flagcxSuccess;
-    if (flagcxParamSignalHostEnable())
-      result =
-          deviceAdaptor->deviceFree(devComm->signalBuffer, flagcxMemHost, NULL);
-    else
-      result = deviceAdaptor->gdrMemFree(devComm->signalBuffer, NULL);
-    // Preserve the buffer ownership record when provider teardown fails so a
-    // subsequent communicator-destroy attempt can retry it.
-    if (result != flagcxSuccess)
-      return result;
-  }
   devComm->signalBuffer = nullptr;
   devComm->signalBufferIsVmm = false;
-  if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
-    if (devComm->completionSignalBuffer) {
-      FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->completionSignalBuffer,
-                                            flagcxMemDevice, NULL));
-      devComm->completionSignalBuffer = nullptr;
-    }
-  } else {
-    devComm->completionSignalBuffer = nullptr;
-  }
+  // In the 64-bit path this aliases signalBuffer; Comm records it only once.
+  devComm->completionSignalBuffer = nullptr;
   if (devComm->shadowBuffer) {
     FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->shadowBuffer,
                                           flagcxMemDevice, NULL));
@@ -1092,11 +1070,7 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   } else {
     devComm->completionCounterBuffer = nullptr;
   }
-  if (devComm->putValueStagingBuffer) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->putValueStagingBuffer,
-                                          flagcxMemHost, NULL));
-    devComm->putValueStagingBuffer = nullptr;
-  }
+  devComm->putValueStagingBuffer = nullptr;
   devComm->putValueStagingSlotCount = 0;
   devComm->putValueStagingContextCount = 0;
   devComm->putValueStagingKernelBaseSlot = 0;
