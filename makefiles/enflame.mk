@@ -40,9 +40,6 @@ CCL_LIB     := $(CCL_HOME)/lib
 CCL_INCLUDE := $(CCL_HOME)/include
 CCL_LINK    := -leccl
 ADAPTOR_FLAG := -DUSE_ENFLAME_ADAPTOR
-# TOPS 1.9.10 names the runtime property type topsDeviceProp_t; keep the
-# legacy adaptor spelling source-compatible without changing backend sources.
-ADAPTOR_FLAG += -DtopsDeviceProp=topsDeviceProp_t
 
 # --- Optional device API backend selection ---
 # The public ECCL runtime package does not ship the ECCL device headers.

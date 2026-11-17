@@ -225,7 +225,6 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 config = (CONFIG_DIR / f"{platform}.yml").read_text()
                 self.assertIn("paths_watch:", config)
                 self.assertIn(f".github/configs/{platform}.yml", config)
-        self.assertTrue((REPO_ROOT / ".github/workflows/unit-test-enflame.yml").is_file())
 
     def test_dispatch_selection_and_comment_commands(self):
         for event_name, extra, expected in (

@@ -21,17 +21,16 @@ case "${FLAGCX_ADAPTOR:-}" in
   nvidia|metax|ppu|ascend)
     run_multi_segment=1
     ;;
-  enflame)
-    # S60 currently has no validated provider VMM/multi-segment route.
-    ;;
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
     ;;
   "")
     ;;
   *)
-    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, or ascend" >&2
-    exit 2
+    if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" != 0 ]]; then
+      echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, or ascend" >&2
+      exit 2
+    fi
     ;;
 esac
 
@@ -67,9 +66,7 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
 
 echo ""
-if [[ "${FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL:-0}" == 1 ]]; then
-  echo "Skipping symmem VMM-local MPI tests: this platform does not expose a validated cross-GPU flat VMM mapping"
-elif [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
+if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
   echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
   FLAGCX_CI_MPI_LABEL="symmem VMM local" \
     "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
@@ -104,8 +101,7 @@ fi
 
 if [[ -n "${FLAGCX_ADAPTOR:-}" &&
       "${FLAGCX_ADAPTOR}" != ascend &&
-      "${FLAGCX_ADAPTOR}" != enflame &&
-      "${FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL:-0}" != 1 ]]; then
+      "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \

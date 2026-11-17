@@ -844,6 +844,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
         self.assertIn('export GTEST_FILTER+=":NetAdaptorLoopback.*"', enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
+        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0", enflame_env)
+        self.assertNotIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL", enflame_env)
         self.assertIn("FLAGCX_CI_SKIP_RUNNER_HYBRID=1", enflame_env)
         self.assertIn("FLAGCX_CI_RUNNER_MPI_FILTER=", enflame_env)
         self.assertIn("ECCL device API SDK headers are not available", enflame_env)
@@ -1059,8 +1061,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("$(KERNEL_INCLUDE)", rma_makefile)
         self.assertIn("RMA_VMM_ENABLE ?= 0", rma_makefile)
         self.assertIn("NET_FILTER ?= *", rma_makefile)
-        for platform in ("iluvatar)", "metax)", "hygon|enflame)", "ppu)", "cuda)"):
+        for platform in ("iluvatar)", "metax)", "ppu)", "cuda)"):
             self.assertIn(platform, rma_case)
+        self.assertIn('platform_name" == "hygon"', rma_case)
+        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1", rma_case)
+        self.assertNotIn('platform_name" == "enflame"', rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
         visibility_platform = rma_makefile[
@@ -1079,17 +1084,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        visibility_start = rma_case.index(
-            'if [[ "$platform_name" != "hygon" &&'
-        )
-        visibility_run_condition = rma_case[
-            visibility_start : rma_case.index("RMA_VMM_ENABLE=0", visibility_start)
-        ]
         self.assertIn(
-            '"$platform_name" != "hygon" &&\n              "$platform_name" != "ascend"',
-            visibility_run_condition,
+            'if [[ "${FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1}" == 1 ]]; then',
+            rma_case,
         )
-        self.assertNotIn('"$platform_name" != "iluvatar"', visibility_run_condition)
+        self.assertNotIn('platform_name" != "enflame"', rma_case)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -1158,8 +1157,16 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("flagcx_ci_validate_rdma_static", source)
 
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
-        self.assertIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL=1", enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
+        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0", enflame_env)
+        for platform in ("hygon", "ascend"):
+            platform_env = (
+                REPO_ROOT / f".github/scripts/set_env/{platform}.sh"
+            ).read_text()
+            self.assertIn(
+                "FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0",
+                platform_env,
+            )
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
@@ -1362,6 +1369,40 @@ run_suite
                 self.assertNotIn("-x FLAGCX_GDR_WRITE_REQUIRES_FLUSH=", call)
                 if visibility_status:
                     self.assertIn("visibility=23", result.stderr)
+
+    def test_rma_visibility_consumer_capability_allows_enflame(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=rma
+SET_ENV_SCRIPT=enflame.sh
+PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
+FLAGCX_CI_TEST_MAKE_ARGS=(USE_ENFLAME=1)
+FLAGCX_CI_HAS_RDMA=1
+FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0
+TEST_RUNNER=mock_test_runner
+MPI_RUNNER=mock_mpi_runner
+mock_test_runner() { "$@"; }
+mock_mpi_runner() { :; }
+flagcx_ci_require_rdma() { return 0; }
+make() { printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled} $*"; }
+run_suite
+'''
+        result = subprocess.run(
+            [os.environ.get("BASH", "bash"), "-euc", harness],
+            cwd=REPO_ROOT,
+            env={**os.environ, "BASH_ENV": "", "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("rma network MPI tests", result.stdout)
+        self.assertNotIn("rma GDR visibility ordinary", result.stdout)
+        self.assertIn("platform does not enable the consumer kernel", result.stdout)
 
     def test_iluvatar_keeps_ipc_and_vmm_capability_coverage(self):
         iluvatar_env = (
@@ -2140,8 +2181,10 @@ run_suite
             unit_runner.index("    rma)\n") :
             unit_runner.index("    runner)\n")
         ]
-        self.assertIn("          ascend)", rma_case)
-        self.assertIn('"$platform_name" != "ascend"', rma_case)
+        ascend_env = (
+            REPO_ROOT / ".github/scripts/set_env/ascend.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0", ascend_env)
 
     def test_rma_registration_failure_runs_in_two_rank_network_ci(self):
         rma_makefile = (
@@ -2484,6 +2527,12 @@ run_suite
         self.assertNotIn("symmem VMM + NET auto", result.stdout)
         self.assertIn("symmem VMM + NET route union", result.stdout)
         self.assertIn("VMM is unavailable", result.stdout)
+
+    def test_enflame_symmem_script_uses_only_vmm_capability(self):
+        script = (REPO_ROOT / "test/script/symmem_test.sh").read_text()
+        self.assertNotIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL", script)
+        self.assertNotIn('"${FLAGCX_ADAPTOR}" != enflame', script)
+        self.assertIn('"${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1', script)
 
 
 class MetaXEnvironmentTest(unittest.TestCase):

@@ -592,15 +592,6 @@ run_suite() {
             expected_write=unsupported
             expected_write_required=1
             ;;
-          hygon|enflame)
-            # These backends run the existing RMA correctness suite without a
-            # separate immediate device-consumer visibility kernel.
-            ;;
-          ascend)
-            # The existing immediate-consumer cases are deliberately outside
-            # this Ascend RMA/SymMem change. IPC and NET correctness still run.
-            echo "Ascend RMA scope: running existing IPC and NET cases without the CUDA immediate-consumer conformance cases"
-            ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
             # READ consumer runs; WRITE records a capability note if BAREX
@@ -613,8 +604,10 @@ run_suite() {
             # and GPU/NIC/CPU topology, so do not hard-code a pre-Hopper bit.
             ;;
           *)
-            echo "Unsupported visibility conformance platform: $platform_name" >&2
-            visibility_status=1
+            if [[ "${FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1}" == 1 ]]; then
+              echo "Unsupported visibility conformance platform: $platform_name" >&2
+              visibility_status=1
+            fi
             ;;
         esac
 
@@ -630,17 +623,15 @@ run_suite() {
             -x FLAGCX_CI_EXPECT_GDR_WRITE_REQUIRED="$expected_write_required"
           )
         fi
-        if [[ "$platform_name" != "hygon" &&
-              "$platform_name" != "ascend" &&
-              "$platform_name" != "enflame" ]]; then
+        if [[ "${FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1}" == 1 ]]; then
           FLAGCX_CI_MPI_LABEL="rma GDR visibility ordinary" \
             make -C "$suite_dir" run-mpi-net "${args[@]}" \
             MPIRUN="$MPI_RUNNER" NET_FILTER="$visibility_filter" \
             RMA_VMM_ENABLE=0 \
             RMA_PLATFORM_ENV="$base_rma_platform_env ${visibility_common_env[*]} -x FLAGCX_DMABUF_ENABLE=0" || \
             visibility_status=$?
-        elif [[ "$platform_name" == "enflame" ]]; then
-          echo "Skipping Enflame GDR visibility consumer tests: no Enflame consumer kernel is built"
+        else
+          echo "Skipping $platform_name GDR visibility consumer tests: platform does not enable the consumer kernel"
         fi
 
         if [[ "$platform_name" == "cuda" ]]; then
