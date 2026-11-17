@@ -19,7 +19,7 @@ DEVICE_LINK_FLAG := -mtgpu --musa-path=$(DEVICE_HOME) \
     --offload-arch=$(MUSA_ARCH) -fgpu-rdc -fPIC
 # MUSA uses image embedding rather than an nvcc-style separate dlink object.
 DEVICE_NEEDS_DLINK := 0
-DEVICE_FILE_EXTENSION := cu
+DEVICE_FILE_EXTENSION := mu
 
 CCL_HOME    ?= /usr/local/musa
 CCL_LIB     := $(CCL_HOME)/lib

@@ -2584,12 +2584,8 @@ static flagcxResult_t flagcxKernelProxyPost(
     }
   }
   if (res != flagcxSuccess && res != flagcxInProgress) {
-    WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d "
-         "context=%d srcMr=%d dstMr=%d srcOff=%llu dstOff=%llu size=%zu "
-         "srcHandles=%p dstHandles=%p",
-         peer, type, (int)res, contextId, srcMrIdx, dstMrIdx,
-         (unsigned long long)srcOff, (unsigned long long)dstOff, size,
-         (void *)srcHandles, (void *)dstHandles);
+    WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d", peer,
+         type, (int)res);
     flagcxKernelProxyPublishTerminal(state, comm, res);
   }
   return res;

@@ -36,7 +36,7 @@
 
 using DefaultCompletionWord = typename DeviceAPI::CompletionWord;
 
-// Host-visible helpers from device_api_host_helpers.cu
+// Host-visible helpers from the platform device_api_host_helpers source
 #ifdef COMPILE_KERNEL_HOST
 extern "C" size_t flagcxDevNetSizeOf();
 extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
@@ -556,9 +556,14 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
   // Allocate epoch buffer
   {
-    const char *forceCta = getenv("FLAGCX_MUSA_FORCE_CTA_SYNC");
-    const bool forceCtaSync = forceCta != nullptr && strcmp(forceCta, "1") == 0;
-    size_t epochBufSize = (2 * FLAGCX_DEVICE_CTA_COUNT + (forceCtaSync ? 1 : 0)) * sizeof(uint64_t);
+#ifdef USE_MUSA_ADAPTOR
+    // MUSA WORLD barriers always include the rank-local CTA rendezvous.
+    constexpr size_t kRankCtaBarrierWords = 1;
+#else
+    constexpr size_t kRankCtaBarrierWords = 0;
+#endif
+    size_t epochBufSize =
+        (2 * FLAGCX_DEVICE_CTA_COUNT + kRankCtaBarrierWords) * sizeof(uint64_t);
     INFO(FLAGCX_INIT,
          "defaultDevApiCommCreate: allocating epochBuffer size=%zu",
          epochBufSize);
@@ -574,10 +579,12 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       WARN("defaultDevApiCommCreate: epochBuffer memset failed (%d)", res);
       return res;
     }
-    devComm->rankCtaBarrier = forceCtaSync
-        ? devComm->epochBuffer + 2 * FLAGCX_DEVICE_CTA_COUNT : nullptr;
-    if (forceCtaSync)
-      WARN("EXPERIMENTAL rank CTA rendezvous enabled: all grid CTAs must participate with concurrent progress");
+#ifdef USE_MUSA_ADAPTOR
+    devComm->rankCtaBarrier =
+        devComm->epochBuffer + 2 * FLAGCX_DEVICE_CTA_COUNT;
+#else
+    devComm->rankCtaBarrier = nullptr;
+#endif
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: epochBuffer OK");
   }
 

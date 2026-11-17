@@ -92,13 +92,6 @@ flagcxResult_t musaAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
   } else {
     DEVCHECK(
         musaMemcpyAsync(dst, src, size, memcpy_type_map[type], stream->base));
-    // Diagnostic only: retain the asynchronous public contract by default.
-    const char *syncD2h = std::getenv("FLAGCX_MUSA_SYNC_D2H");
-    if (type == flagcxMemcpyDeviceToHost && syncD2h != nullptr &&
-        std::strcmp(syncD2h, "1") == 0) {
-      DEVCHECK(musaStreamSynchronize(stream->base));
-      FLAGCXCHECK(flagcxMusaCheckFifoErrors());
-    }
   }
   return flagcxSuccess;
 }

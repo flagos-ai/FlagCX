@@ -1,0 +1,8 @@
+# Bind the main library's combined image inside libflagcx.so. Test executables
+# carry a different __mt_fatbin with default visibility; ELF interposition must
+# not substitute that image into this library's registration wrappers.
+# Leave every other symbol's export policy unchanged.
+{
+  local:
+    __mt_fatbin;
+};

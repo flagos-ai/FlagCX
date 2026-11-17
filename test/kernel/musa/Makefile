@@ -34,7 +34,7 @@ device_ir.o: $(OBJDIR)/device_ir.o
 # Keep intermediate images; do not rebuild them on every incremental make.
 .SECONDARY: $(DEVICE_OBJECTS) $(DEVICE_IMAGES)
 
-$(DEVICE_OBJECTS): $(OBJDIR)/%.device.o: %.cu Makefile $(PROJECT_ROOT)/makefiles/musa.mk
+$(DEVICE_OBJECTS): $(OBJDIR)/%.device.o: %.$(DEVICE_FILE_EXTENSION) Makefile $(PROJECT_ROOT)/makefiles/musa.mk
 	@mkdir -p $(OBJDIR)
 	$(DEVICE_COMPILER) $(MUSA_KERNEL_FLAGS) $(ALL_INCLUDES) \
 		--cuda-device-only -Wno-deprecated-declarations -o $@ $<
@@ -44,7 +44,7 @@ $(DEVICE_IMAGES): $(OBJDIR)/%.mubin: $(OBJDIR)/%.device.o $(MUSA_TRAP_HANDLER) M
 		-plugin $(MUSA_LTO_PLUGIN) -plugin-opt=mcpu=$(MUSA_ARCH) -plugin-opt=O2 \
 		$< $(MUSA_TRAP_HANDLER) -o $@
 
-$(KERNEL_OBJECTS): $(OBJDIR)/%.o: %.cu $(OBJDIR)/%.mubin Makefile $(PROJECT_ROOT)/makefiles/musa.mk
+$(KERNEL_OBJECTS): $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION) $(OBJDIR)/%.mubin Makefile $(PROJECT_ROOT)/makefiles/musa.mk
 	$(DEVICE_COMPILER) $(MUSA_KERNEL_FLAGS) $(ALL_INCLUDES) \
 		--cuda-host-only -Wno-deprecated-declarations \
 		-Xclang -fcuda-include-gpubinary -Xclang $(OBJDIR)/$*.mubin \
