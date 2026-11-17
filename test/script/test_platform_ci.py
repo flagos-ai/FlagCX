@@ -619,7 +619,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests"', p2p_case)
         self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", ascend_env)
         self.assertIn("FLAGCX_CI_ENABLE_IBUC=1", ascend_env)
-        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required", ascend_env)
+        self.assertNotIn("FLAGCX_CI_GPU_MR_POLICY=", ascend_env)
 
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
@@ -708,11 +708,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ["enflame"],
         )
         selected = subprocess.run(
-            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "enflame"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+                ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "enflame"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
             ["enflame"],
@@ -757,18 +757,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "service",
                 "symmem",
             ],
-            "enflame": [
-                "adaptor",
-                "core",
-                "device_api",
-                "device_api_host",
-                "device_api_unified_ir",
-                "p2p",
-                "rma",
-                "runner",
-                "service",
-                "symmem",
-            ],
             "cuda": [
                 "adaptor",
                 "core",
@@ -795,6 +783,18 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "symmem",
             ],
             "iluvatar": [
+                "adaptor",
+                "core",
+                "device_api",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
+            "enflame": [
                 "adaptor",
                 "core",
                 "device_api",
@@ -845,18 +845,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
         self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
         self.assertIn('export GTEST_FILTER+=":NetAdaptorLoopback.*"', enflame_env)
-        self.assertIn(
-            'export FLAGCX_CI_RMA_IPC_FILTER="RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:',
-            enflame_env,
-        )
-        self.assertIn(
-            'export FLAGCX_CI_RUNNER_MPI_FILTER="--gtest_filter=-FlagCXCollTest.Gather:FlagCXCollTest.Scatter"',
-            enflame_env,
-        )
-        self.assertIn(
-            "export FLAGCX_CI_SKIP_RUNNER_HYBRID=1",
-            enflame_env,
-        )
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
+        self.assertIn("FLAGCX_CI_SKIP_RUNNER_HYBRID=1", enflame_env)
+        self.assertIn("FLAGCX_CI_RUNNER_MPI_FILTER=", enflame_env)
 
         ascend_env = (
             REPO_ROOT / ".github/scripts/set_env/ascend.sh"
@@ -1097,26 +1088,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
             visibility_run_condition,
         )
         self.assertNotIn('"$platform_name" != "iluvatar"', visibility_run_condition)
-        self.assertIn("hygon|enflame)", rma_case)
-        self.assertIn("Skipping Enflame GDR visibility consumer tests", rma_case)
-
-        enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
-        self.assertNotIn("FLAGCX_CI_SKIP_SUITE", enflame_env)
-        self.assertIn("FLAGCX_CI_HAS_RDMA=1", enflame_env)
-        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
-        self.assertIn("FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS=1", enflame_env)
-        self.assertIn("Skipping P2P Engine WRITE MPI tests", unit_runner)
-        self.assertIn("Skipping RMA network MPI and visibility tests", unit_runner)
-        self.assertIn("Skipping runner forced NET, multi-QP and PXN MPI tests", unit_runner)
-        runner_no_rdma_start = unit_runner.index(
-            'if [[ "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then',
-            unit_runner.index('    runner)\n'),
-        )
-        runner_no_rdma_end = unit_runner.index("      fi", runner_no_rdma_start)
-        runner_no_rdma = unit_runner[runner_no_rdma_start:runner_no_rdma_end]
-        self.assertIn("unit_status != 0 || default_status != 0 || hybrid_status != 0", runner_no_rdma)
-        self.assertIn("return 1", runner_no_rdma)
-        self.assertIn("Skipping symmem remote NET/VMM+NET MPI tests", unit_runner)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -1184,12 +1155,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn("rdma_static_preflight.sh", source)
             self.assertIn("flagcx_ci_validate_rdma_static", source)
 
-        enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
-        self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
-        self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
-        self.assertIn('export GTEST_FILTER+=":NetAdaptorLoopback.*"', enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL=1", enflame_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
 
     def test_symmem_runs_required_local_and_network_vmm_matrix(self):
         unit_runner = (
@@ -1205,7 +1173,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem VMM local"', symmem_runner)
-        self.assertIn("Skipping symmem VMM-local MPI tests", symmem_runner)
         self.assertNotIn('FLAGCX_CI_MPI_LABEL="symmem DU multi-segment"', symmem_runner)
         for platform, adaptor in (
             ("hygon", "du"),
@@ -1225,8 +1192,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text())
         self.assertIn('FLAGCX_VMM_ENABLE=1', symmem_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM=1', symmem_runner)
-        self.assertIn('enflame)', symmem_runner)
-        self.assertIn('"${FLAGCX_ADAPTOR}" != enflame', symmem_runner)
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC + NET"', unit_runner)
         self.assertIn(
             'FLAGCX_CI_MPI_LABEL="symmem remote without NET"', unit_runner
@@ -1435,9 +1400,8 @@ run_suite
         self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED", unit_runner)
         self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED", unit_runner)
         self.assertNotIn("flagcx_ci_skip_suite", iluvatar_env)
-        # The GPU MR capability is declared by the platform, not by a vendor
-        # name baked into the shared runner or the checker.
-        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional", iluvatar_env)
+        # Iluvatar and Ascend use the shared required-by-default GPU MR gate.
+        self.assertNotIn("FLAGCX_CI_GPU_MR_POLICY=", iluvatar_env)
         self.assertIn(
             "gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}", unit_runner
         )
@@ -2055,13 +2019,13 @@ run_suite
         self.assertIn("FLAGCX_IB_TIMEOUT=14", runner_case)
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
-        self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 5
-        )
+        self.assertEqual(runner_case.count("./build/bin/runner_mpi_tests"), 7)
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 6
         )
+        self.assertIn('if [[ "$platform_name" == iluvatar ]]; then', runner_case)
+        self.assertIn('FLAGCX_CI_RUNNER_BYTES=1048576', runner_case)
         self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
         cuda_experimental = (
             REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"

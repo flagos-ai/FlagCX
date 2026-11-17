@@ -91,6 +91,10 @@ fi
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
+if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar &&
+      ( "$SUITE" == adaptor || "$SUITE" == runner ) ]]; then
+  export FLAGCX_DEBUG=TRACE
+fi
 
 : "${MPI_HOME:?The platform set_env script must define MPI_HOME}"
 declare -p FLAGCX_CI_PROJECT_MAKE_ARGS >/dev/null 2>&1 || {
@@ -731,6 +735,7 @@ run_suite() {
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       local platform_name
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
+      local p2p_1m_status=0 net_1m_status=0
       local runner_mpi_runner="$MPI_RUNNER"
       local -a runner_net_platform_env=()
       local -a runner_mpi_filter=()
@@ -742,6 +747,7 @@ run_suite() {
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_ascend_runner_mpi.sh"
       elif [[ "$platform_name" == iluvatar ]]; then
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_runner_mpi.sh"
+        export FLAGCX_CI_INSTALL_GDB=1
       fi
       if [[ "$platform_name" == "hygon" ]]; then
         # A broken SHCA route otherwise consumes the default RC retry budget
@@ -795,6 +801,37 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_PXN=0 \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests || net_status=$?
+      if [[ "$platform_name" == iluvatar ]]; then
+        FLAGCX_CI_MPI_LABEL="runner heterogeneous SendRecv 1 MiB" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+          -x FLAGCX_CI_RUNNER_BYTES=1048576 \
+          ./build/bin/runner_mpi_tests \
+          --gtest_filter=FlagCXCollTest.SendRecv || p2p_1m_status=$?
+        FLAGCX_CI_MPI_LABEL="runner forced NET SendRecv 1 MiB" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=1 \
+          -x FLAGCX_PXN_DISABLE=1 \
+          -x FLAGCX_VMM_ENABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
+          -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+          -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
+          -x FLAGCX_IBUC_SPLIT_DATA_ON_QPS=0 \
+          -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
+          -x FLAGCX_CI_EXPECT_PXN=0 \
+          -x FLAGCX_CI_RUNNER_BYTES=1048576 \
+          "${runner_net_platform_env[@]}" \
+          ./build/bin/runner_mpi_tests \
+          --gtest_filter=FlagCXCollTest.SendRecv || net_1m_status=$?
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -856,8 +893,9 @@ run_suite() {
           --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
-           net_status != 0 || stripe_status != 0 || pxn_status != 0)); then
-        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status striping=$stripe_status PXN=$pxn_status" >&2
+           net_status != 0 || p2p_1m_status != 0 || net_1m_status != 0 ||
+           stripe_status != 0 || pxn_status != 0)); then
+        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status P2P_1MiB=$p2p_1m_status NET_1MiB=$net_1m_status striping=$stripe_status PXN=$pxn_status" >&2
         return 1
       fi
       ;;
