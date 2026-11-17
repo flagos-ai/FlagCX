@@ -63,10 +63,6 @@ flagcx_ci_configure_suite() {
       export FLAGCX_CI_RUNNER_MPI_FILTER="--gtest_filter=-FlagCXCollTest.Gather:FlagCXCollTest.Scatter"
       export FLAGCX_CI_SKIP_RUNNER_HYBRID=1
       ;;
-    device_api|device_api_unified_ir)
-      FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
-      FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
-      ;;
   esac
 }
 
@@ -74,10 +70,8 @@ flagcx_ci_skip_suite() {
   local suite=$1
   case "$suite" in
     device_api|device_api_unified_ir)
-      if [[ ! -f "$FLAGCX_CI_ENFLAME_ROOT/test/kernel/tops/Makefile" ]]; then
-        echo "Skipping $suite: TOPS device API test kernels are absent (test/kernel/tops/Makefile)"
-        return 0
-      fi
+      echo "Skipping $suite: ECCL device API SDK headers are not available in the CI image"
+      return 0
       ;;
   esac
   return 1

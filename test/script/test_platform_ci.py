@@ -797,9 +797,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "enflame": [
                 "adaptor",
                 "core",
-                "device_api",
                 "device_api_host",
-                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
@@ -848,6 +846,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
         self.assertIn("FLAGCX_CI_SKIP_RUNNER_HYBRID=1", enflame_env)
         self.assertIn("FLAGCX_CI_RUNNER_MPI_FILTER=", enflame_env)
+        self.assertIn("ECCL device API SDK headers are not available", enflame_env)
+        enflame_make = (REPO_ROOT / "makefiles/enflame.mk").read_text()
+        self.assertIn("ENFLAME_DEVICE_API ?= 0", enflame_make)
+        self.assertIn("default_dev_api_backend.cc", enflame_make)
 
         ascend_env = (
             REPO_ROOT / ".github/scripts/set_env/ascend.sh"

@@ -161,7 +161,12 @@ struct Barrier;
 #elif defined(USE_ILUVATAR_ADAPTOR)
 #include "iluvatar_comm_traits.h"
 #elif defined(USE_ENFLAME_ADAPTOR)
+#ifdef FLAGCX_ENFLAME_DEVICE_API
 #include "enflame_comm_traits.h"
+#else
+#include "default_comm_traits.h"
+using DeviceAPI = CommTraits<DefaultBackend<EnflamePlatform>>;
+#endif
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<DefaultBackend<DefaultPlatform>>;
