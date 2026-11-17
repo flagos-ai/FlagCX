@@ -3104,16 +3104,40 @@ static flagcxResult_t flagcxDevCommStateDeregisterWindow(
   return result;
 }
 
-static flagcxResult_t flagcxDevCommStateFreeBuffer(void **buffer,
-                                                   bool usesGdrAllocator) {
-  if (buffer == nullptr || *buffer == nullptr)
-    return flagcxSuccess;
-  flagcxResult_t result =
-      usesGdrAllocator ? deviceAdaptor->gdrMemFree(*buffer, nullptr)
-                       : cclAdaptors[flagcxCCLAdaptorDevice]->memFree(*buffer);
-  if (result == flagcxSuccess)
-    *buffer = nullptr;
-  return result;
+static flagcxResult_t flagcxDevCommStateCreateStagedView(flagcxComm_t comm,
+                                                         void *buffer,
+                                                         size_t size,
+                                                         flagcxWindow_t window,
+                                                         flagcxDevMem_t *view) {
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  if (window == nullptr)
+    return flagcxIpcWindowRegisterAndDevMemCreate(comm, buffer, size, view);
+  if (window->isSymmetricDefault) {
+    flagcxSymWindow_t sym = window->defaultBase;
+    flagcxResult_t eligible = flagcxSuccess;
+    FLAGCXCHECK(flagcxConvergeBootstrapStatus(
+        comm,
+        flagcxSymWindowCanUseLegacyIpc(sym) ? flagcxSuccess
+                                            : flagcxNotSupported,
+        &eligible));
+    if (eligible == flagcxSuccess && sym->ipcSlot < 0) {
+      int slot = -1;
+      flagcxResult_t local =
+          flagcxCommWindowRegisterIpcInternal(comm, buffer, size, false, &slot);
+      // Retain a successful local slot before convergence: peers can fail.
+      if (slot >= 0)
+        sym->ipcSlot = slot;
+      flagcxResult_t common = flagcxSuccess;
+      FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+      if (common != flagcxSuccess)
+        return common;
+    }
+  }
+#endif
+  flagcxResult_t local = flagcxDevMemCreate(comm, buffer, size, window, view);
+  flagcxResult_t common = flagcxSuccess;
+  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+  return common;
 }
 
 static flagcxResult_t flagcxDevCommStatePublishWindow(flagcxComm_t comm,
@@ -3126,15 +3150,7 @@ static flagcxResult_t flagcxDevCommStatePublishWindow(flagcxComm_t comm,
     return flagcxInvalidArgument;
 
   flagcxSymWindow_t d = window->defaultBase;
-  // DevMem creates the IPC mapping for a non-VMM staged allocation. Transfer
-  // its ownership before route validation, but do not publish the window until
-  // every rank reports a usable route.
-  if (flagcxSymWindowCanUseLegacyIpc(d) && d->ipcSlot < 0 &&
-      devMem->ipcIndex >= 0) {
-    d->ipcSlot = devMem->ipcIndex;
-    devMem->ipcIndex = -1;
-  }
-
+  // Registration prepared the mapping before any local DevMem view.
   flagcxResult_t localResult =
       flagcxSymWindowValidateDataRoutes(comm->heteroComm, d);
   flagcxResult_t commonResult = flagcxSuccess;
@@ -3163,6 +3179,7 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
   bool vendorReqs = false;
   flagcxResult_t res = flagcxSuccess;
+#ifdef FLAGCX_DEVICE_API_VENDOR
   if (cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit != NULL) {
     res = cclAdaptors[flagcxCCLAdaptorDevice]->devCommReqsInit(comm->homoComm,
                                                                &reqs);
@@ -3176,6 +3193,7 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
       return flagcxSuccess; // non-fatal
     }
   }
+#endif
   if (!vendorReqs) {
     // Default path: IPC barriers are sufficient for LSA allreduce
     reqs.intraBarrierCount = FLAGCX_DEVICE_CTA_COUNT;
@@ -3218,27 +3236,27 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   }
 #endif
 
-  if (useGdrAllocator) {
-    // Record ownership before the first fallible allocation so rollback uses
-    // the matching deallocator even if only one staged buffer is created.
-    state->stagedUsesGdrAllocator = true;
-    state->stagedAllocationIsVmm = flagcxDeviceAdaptorNativeAllocIsVmm(
-        deviceAdaptor, flagcxParamVmmEnable());
-    FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->sendStagedBuff,
-                                               state->stagedBuffSize, nullptr),
-                    res, fail);
-    FLAGCXCHECKGOTO(deviceAdaptor->gdrMemAlloc(&state->recvStagedBuff,
-                                               state->stagedBuffSize, nullptr),
-                    res, fail);
-  } else {
-    FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(
-                        &state->sendStagedBuff, state->stagedBuffSize),
-                    res, fail);
-    FLAGCXCHECKGOTO(cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(
-                        &state->recvStagedBuff, state->stagedBuffSize),
-                    res, fail);
+  state->stagedAllocationIsVmm =
+      useGdrAllocator && flagcxDeviceAdaptorNativeAllocIsVmm(
+                             deviceAdaptor, flagcxParamVmmEnable());
+  {
+    const auto kind =
+        useGdrAllocator ? flagcxInternalBufferGdr : flagcxInternalBufferCcl;
+    res = flagcxCommAllocInternalBuffer(comm, &state->sendStagedBuff,
+                                        state->stagedBuffSize, kind);
+    if (res == flagcxSuccess)
+      res = flagcxCommAllocInternalBuffer(comm, &state->recvStagedBuff,
+                                          state->stagedBuffSize, kind);
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECKGOTO(flagcxConvergeBootstrapStatus(comm, res, &common), res,
+                    fail);
+    if (common != flagcxSuccess) {
+      res = common;
+      goto fail;
+    }
   }
 
+#ifdef FLAGCX_DEVICE_API_VENDOR
   // 4. Register windows (symmetric) — skip if adaptor doesn't support it
   if (cclAdaptors[flagcxCCLAdaptorDevice]->commWindowRegister != NULL) {
     FLAGCXCHECKGOTO(flagcxCalloc(&state->sendStagedWin, 1), res, fail);
@@ -3267,6 +3285,8 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
     }
   }
 
+#endif
+
   // Default path: if vendor didn't provide windows and multicast is supported,
   // register staged buffers via sym heap path
   if (state->sendStagedWin == nullptr && state->recvStagedWin == nullptr) {
@@ -3292,21 +3312,42 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
   }
 
   // 5. Create DevMem (for kernel parameters)
-  res = flagcxDevMemCreate(comm, state->sendStagedBuff, state->stagedBuffSize,
-                           state->sendStagedWin, &state->sendStagedMem);
+  res = flagcxDevCommStateCreateStagedView(
+      comm, state->sendStagedBuff, state->stagedBuffSize, state->sendStagedWin,
+      &state->sendStagedMem);
   if (res != flagcxSuccess)
     goto fail;
-  res = flagcxDevMemCreate(comm, state->recvStagedBuff, state->stagedBuffSize,
-                           state->recvStagedWin, &state->recvStagedMem);
+  res = flagcxDevCommStateCreateStagedView(
+      comm, state->recvStagedBuff, state->stagedBuffSize, state->recvStagedWin,
+      &state->recvStagedMem);
   if (res != flagcxSuccess)
     goto fail;
 
-  // The internal staged-window path deliberately bypasses the public window
-  // registration wrapper. For a non-VMM allocation, DevMem creation above is
-  // therefore the operation that establishes the IPC route. Transfer that
-  // slot's ownership to the window before publishing it: the window remains a
-  // valid route owner for its complete lifetime and DevMem teardown cannot
-  // release the slot early (or release it a second time).
+    // Both views must provide the peer access used by the custom kernels.
+#ifndef FLAGCX_DEVICE_API_VENDOR
+  for (flagcxDevMem_t view : {state->sendStagedMem, state->recvStagedMem}) {
+    auto *window = static_cast<DeviceAPI::Window *>(view->window);
+    const bool hasPeerAccess =
+        window != nullptr && ((window->mode == DeviceAPI::SYMMETRIC &&
+                               window->flatBasePtr != nullptr) ||
+                              (window->mode == DeviceAPI::ASYMMETRIC &&
+                               window->ipcBasePtrs != nullptr));
+    if (!hasPeerAccess) {
+      res = flagcxNotSupported;
+      break;
+    }
+  }
+  {
+    flagcxResult_t common = flagcxSuccess;
+    FLAGCXCHECKGOTO(flagcxConvergeBootstrapStatus(comm, res, &common), res,
+                    fail);
+    if (common != flagcxSuccess) {
+      res = common;
+      goto fail;
+    }
+  }
+#endif
+  // Publish only after registration and local view construction have succeeded.
   if (state->sendStagedWin != nullptr &&
       state->sendStagedWin->isSymmetricDefault) {
     FLAGCXCHECKGOTO(flagcxDevCommStatePublishWindow(comm, state->sendStagedWin,
@@ -3371,11 +3412,11 @@ fail:
     state->sendStagedMem = nullptr;
   }
   {
-    flagcxResult_t cleanupResult =
-        flagcxDevCommStateDeregisterWindow(comm, &state->recvStagedWin);
+    flagcxResult_t cleanupResult = flagcxDevCommStateDeregisterWindow(
+        comm, &state->recvStagedWin, flagcxSymCleanupLocal);
     if (cleanupResult == flagcxSuccess)
-      cleanupResult =
-          flagcxDevCommStateDeregisterWindow(comm, &state->sendStagedWin);
+      cleanupResult = flagcxDevCommStateDeregisterWindow(
+          comm, &state->sendStagedWin, flagcxSymCleanupLocal);
     if (cleanupResult != flagcxSuccess) {
       // Do not free a staged buffer while a failed MR/VMM teardown still owns
       // it. Communicator teardown can retry through the published state.
@@ -3383,17 +3424,8 @@ fail:
       return cleanupResult;
     }
   }
-  {
-    flagcxResult_t cleanupResult = flagcxDevCommStateFreeBuffer(
-        &state->recvStagedBuff, state->stagedUsesGdrAllocator);
-    if (cleanupResult == flagcxSuccess)
-      cleanupResult = flagcxDevCommStateFreeBuffer(
-          &state->sendStagedBuff, state->stagedUsesGdrAllocator);
-    if (cleanupResult != flagcxSuccess) {
-      comm->devCommState = state;
-      return cleanupResult;
-    }
-  }
+  state->sendStagedBuff = nullptr;
+  state->recvStagedBuff = nullptr;
   free(state);
   comm->devCommState = nullptr;
   INFO(FLAGCX_INIT, "Custom allreduce: init failed, disabled");
@@ -3433,14 +3465,8 @@ static flagcxResult_t flagcxDevCommStateDestroy(flagcxComm_t comm) {
                                               flagcxSymCleanupLocal);
   if (result != flagcxSuccess)
     return result;
-  result = flagcxDevCommStateFreeBuffer(&state->sendStagedBuff,
-                                        state->stagedUsesGdrAllocator);
-  if (result != flagcxSuccess)
-    return result;
-  result = flagcxDevCommStateFreeBuffer(&state->recvStagedBuff,
-                                        state->stagedUsesGdrAllocator);
-  if (result != flagcxSuccess)
-    return result;
+  state->sendStagedBuff = nullptr;
+  state->recvStagedBuff = nullptr;
   free(state);
   comm->devCommState = nullptr;
   return flagcxSuccess;
@@ -4023,6 +4049,15 @@ static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
     // below cannot free a handle still referenced by devCommState.
     TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p",
           comm);
+    if (comm->devCommState != nullptr &&
+        comm->devCommState->devComm != nullptr) {
+      const flagcxDevComm_t owner = comm->devCommState->devComm;
+      while (comm->activeDevComms != owner) {
+        if (comm->activeDevComms == nullptr)
+          return flagcxInvalidUsage;
+        FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
+      }
+    }
     cleanupResult = flagcxDevCommStateDestroy(comm);
     if (cleanupResult != flagcxSuccess)
       return cleanupResult;

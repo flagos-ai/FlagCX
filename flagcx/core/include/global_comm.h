@@ -41,7 +41,8 @@ typedef enum {
 enum flagcxInternalBufferKind {
   flagcxInternalBufferDevice,
   flagcxInternalBufferHost,
-  flagcxInternalBufferGdr
+  flagcxInternalBufferGdr,
+  flagcxInternalBufferCcl
 };
 
 // One record per allocation, including buffers whose creation rolled back.

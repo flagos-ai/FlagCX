@@ -37,14 +37,17 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
     return flagcxSystemError;
   record->pointer = nullptr;
   record->kind = kind;
-  flagcxResult_t result =
-      kind == flagcxInternalBufferGdr
-          ? deviceAdaptor->gdrMemAlloc(&record->pointer, size, nullptr)
-          : deviceAdaptor->deviceMalloc(&record->pointer, size,
-                                        kind == flagcxInternalBufferHost
-                                            ? flagcxMemHost
-                                            : flagcxMemDevice,
-                                        nullptr);
+  flagcxResult_t result;
+  if (kind == flagcxInternalBufferCcl)
+    result =
+        cclAdaptors[flagcxCCLAdaptorDevice]->memAlloc(&record->pointer, size);
+  else if (kind == flagcxInternalBufferGdr)
+    result = deviceAdaptor->gdrMemAlloc(&record->pointer, size, nullptr);
+  else
+    result = deviceAdaptor->deviceMalloc(
+        &record->pointer, size,
+        kind == flagcxInternalBufferHost ? flagcxMemHost : flagcxMemDevice,
+        nullptr);
   if (record->pointer != nullptr) {
     // Retain even a provider's partial allocation on error for final cleanup.
     record->next = comm->internalBuffers;
@@ -63,14 +66,17 @@ flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm) {
     return flagcxInvalidUsage;
   while (comm->internalBuffers != nullptr) {
     auto *record = comm->internalBuffers;
-    flagcxResult_t result =
-        record->kind == flagcxInternalBufferGdr
-            ? deviceAdaptor->gdrMemFree(record->pointer, nullptr)
-            : deviceAdaptor->deviceFree(record->pointer,
-                                        record->kind == flagcxInternalBufferHost
-                                            ? flagcxMemHost
-                                            : flagcxMemDevice,
-                                        nullptr);
+    flagcxResult_t result;
+    if (record->kind == flagcxInternalBufferCcl)
+      result = cclAdaptors[flagcxCCLAdaptorDevice]->memFree(record->pointer);
+    else if (record->kind == flagcxInternalBufferGdr)
+      result = deviceAdaptor->gdrMemFree(record->pointer, nullptr);
+    else
+      result = deviceAdaptor->deviceFree(
+          record->pointer,
+          record->kind == flagcxInternalBufferHost ? flagcxMemHost
+                                                   : flagcxMemDevice,
+          nullptr);
     if (result != flagcxSuccess)
       return result;
     comm->internalBuffers = record->next;
@@ -381,8 +387,9 @@ extern "C" flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff,
   return flagcxDevMemCreateImpl(comm, buff, size, win, -1, devMem);
 }
 
-flagcxResult_t flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
-    flagcxComm_t comm, void *buff, size_t size, flagcxDevMem_t *devMem) {
+flagcxResult_t flagcxIpcWindowRegisterAndDevMemCreate(flagcxComm_t comm,
+                                                      void *buff, size_t size,
+                                                      flagcxDevMem_t *devMem) {
   if (comm == nullptr || devMem == nullptr)
     return flagcxInvalidArgument;
   *devMem = nullptr;

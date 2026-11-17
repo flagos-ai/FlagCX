@@ -1130,7 +1130,12 @@ static flagcxResult_t defaultDevApiMemCreate(flagcxComm_t comm, void *buff,
         // mapping without another cross-rank operation.
         if (d != nullptr && d->ipcSlot >= 0) {
           auto &entry = comm->ipcTable[d->ipcSlot];
-          if (!entry.ownerHeld || entry.refCount == SIZE_MAX)
+          const uintptr_t base = reinterpret_cast<uintptr_t>(entry.basePtr);
+          const uintptr_t view = reinterpret_cast<uintptr_t>(buff);
+          if (!entry.inUse || !entry.ownerHeld ||
+              entry.basePtr != d->localBase || entry.refCount == SIZE_MAX ||
+              view < base || view - base > entry.size ||
+              size > entry.size - (view - base))
             return flagcxInvalidUsage;
           ++entry.refCount;
           devMem->ipcIndex = d->ipcSlot;

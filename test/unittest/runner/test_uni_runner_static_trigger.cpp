@@ -5,6 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include "adaptor.h"
+#include "dev_api_backend.h"
+#include "device_api/flagcx_device.h"
+#include "global_comm.h"
 #include "uni_runner_impl.h"
 
 namespace {
@@ -780,3 +784,140 @@ TEST(UniRunnerStaticIpcTrigger, ValidatesConfigAndStorageBoundaries) {
                   nullptr));
   }
 }
+
+// Exercise retained failed bindings through the real lifecycle and IPC table.
+
+namespace {
+flagcxDevApiBackend *readySavedBackend = nullptr;
+bool failReadyCreate = false;
+bool failReadyFree = false;
+int readyViewCreates = 0;
+flagcxResult_t readyMalloc(void **pointer, size_t bytes, flagcxMemType_t,
+                           flagcxStream_t) {
+  *pointer = calloc(1, bytes);
+  return *pointer != nullptr ? flagcxSuccess : flagcxSystemError;
+}
+flagcxResult_t readyFree(void *pointer, flagcxMemType_t, flagcxStream_t) {
+  if (failReadyFree)
+    return flagcxRemoteError;
+  free(pointer);
+  return flagcxSuccess;
+}
+flagcxResult_t readyCopy(void *dst, void *src, size_t bytes, flagcxMemcpyType_t,
+                         flagcxStream_t, void *) {
+  memcpy(dst, src, bytes);
+  return flagcxSuccess;
+}
+flagcxResult_t readyMemset(void *pointer, int value, size_t bytes,
+                           flagcxMemType_t, flagcxStream_t) {
+  memset(pointer, value, bytes);
+  return flagcxSuccess;
+}
+flagcxResult_t readySync() { return flagcxSuccess; }
+flagcxResult_t readyCreateHandle(flagcxIpcMemHandle_t *handle, size_t *bytes) {
+  *bytes = sizeof(void *);
+  *handle = reinterpret_cast<flagcxIpcMemHandle_t>(calloc(1, *bytes));
+  return *handle != nullptr ? flagcxSuccess : flagcxSystemError;
+}
+flagcxResult_t readyGetHandle(flagcxIpcMemHandle_t handle, void *pointer) {
+  memcpy(handle, &pointer, sizeof(pointer));
+  return flagcxSuccess;
+}
+flagcxResult_t readyFreeHandle(flagcxIpcMemHandle_t handle) {
+  free(handle);
+  return flagcxSuccess;
+}
+flagcxResult_t failReadyViewCreate(flagcxComm_t comm, void *pointer,
+                                   size_t bytes, flagcxWindow_t window,
+                                   flagcxDevMem_t view) {
+  ++readyViewCreates;
+  flagcxResult_t result =
+      readySavedBackend->devMemCreate(comm, pointer, bytes, window, view);
+  if (result == flagcxSuccess && failReadyCreate) {
+    failReadyCreate = false;
+    failReadyFree = true;
+    return flagcxSystemError;
+  }
+  return result;
+}
+
+class UniRunnerReadyRetryTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    if (strcmp(devApiBackend->name, "default") != 0)
+      GTEST_SKIP() << "requires the default backend";
+    savedDevice = deviceAdaptor;
+    device = *deviceAdaptor;
+    device.deviceMalloc = readyMalloc;
+    device.deviceFree = readyFree;
+    device.deviceMemcpy = readyCopy;
+    device.deviceMemset = readyMemset;
+    device.deviceSynchronize = readySync;
+    device.getAddressRange = nullptr;
+    device.ipcMemHandleCreate = readyCreateHandle;
+    device.ipcMemHandleGet = readyGetHandle;
+    device.ipcMemHandleFree = readyFreeHandle;
+    deviceAdaptor = &device;
+    readySavedBackend = devApiBackend;
+    backend = *devApiBackend;
+    backend.devMemCreate = failReadyViewCreate;
+    devApiBackend = &backend;
+    failReadyCreate = true;
+    failReadyFree = false;
+    readyViewCreates = 0;
+    coll.nranks = 1;
+    bootstrap.mode = FLAGCX_BOOTSTRAP_COLL;
+    bootstrap.coll = &coll;
+    comm.bootstrap = &bootstrap;
+    comm.nranks = comm.localRanks = 1;
+    comm.localRankToRank = &localRank;
+    runner.ipcOwner = &comm;
+  }
+  void TearDown() override {
+    if (savedDevice == nullptr)
+      return;
+    failReadyFree = false;
+    EXPECT_EQ(cleanupUniRunnerPersistentState(&runner), flagcxSuccess);
+    EXPECT_EQ(flagcxCommCleanupIpcTable(&comm), flagcxSuccess);
+    comm.destroyPhase = 7;
+    EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+    devApiBackend = readySavedBackend;
+    deviceAdaptor = savedDevice;
+  }
+  flagcxDeviceAdaptor *savedDevice = nullptr;
+  flagcxDeviceAdaptor device = {};
+  flagcxDevApiBackend backend = {};
+  bootstrapCollState coll = {};
+  bootstrapState bootstrap = {};
+  flagcxComm comm = {};
+  flagcxUniRunnerState runner = {};
+  int localRank = 0;
+};
+
+TEST_F(UniRunnerReadyRetryTest, PendingCleanupCannotBeReusedAsReadyStorage) {
+  EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
+            flagcxRemoteError);
+  ASSERT_TRUE(runner.ipcReadyCleanupPending);
+  ASSERT_NE(runner.ipcReadyMem, nullptr);
+  EXPECT_TRUE(runner.ipcReadyMem->backendDestroyed);
+  EXPECT_EQ(runner.ipcReadyMem->window, nullptr);
+  void *oldBuffer = runner.ipcReadyBuffer;
+  EXPECT_EQ(readyViewCreates, 1);
+  EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
+            flagcxRemoteError);
+  EXPECT_TRUE(runner.ipcReadyCleanupPending);
+  EXPECT_EQ(readyViewCreates, 1);
+  failReadyFree = false;
+  ASSERT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4), flagcxSuccess);
+  EXPECT_FALSE(runner.ipcReadyCleanupPending);
+  ASSERT_NE(runner.ipcReadyMem, nullptr);
+  EXPECT_FALSE(runner.ipcReadyMem->backendDestroyed);
+  EXPECT_NE(runner.ipcReadyMem->window, nullptr);
+  EXPECT_NE(runner.ipcReadyBuffer, oldBuffer);
+  EXPECT_EQ(readyViewCreates, 2);
+  size_t exporters = 0;
+  for (auto *record = comm.internalBuffers; record; record = record->next)
+    ++exporters;
+  EXPECT_EQ(exporters, 2u); // Both buffers remain owned by Comm.
+}
+} // namespace

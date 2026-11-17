@@ -239,8 +239,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
     result = collectiveResult;
     goto fail;
   }
-  result = flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
-      comm, scratch, scratchBytes, &scratchMem);
+  result = flagcxIpcWindowRegisterAndDevMemCreate(comm, scratch, scratchBytes,
+                                                  &scratchMem);
   if (result != flagcxSuccess)
     goto fail;
 
@@ -255,8 +255,8 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
     result = collectiveResult;
     goto fail;
   }
-  result = flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
-      comm, progress, progressBytes, &progressMem);
+  result = flagcxIpcWindowRegisterAndDevMemCreate(comm, progress, progressBytes,
+                                                  &progressMem);
   if (result != flagcxSuccess)
     goto fail;
   result = deviceAdaptor->deviceMemset(scratch, 0, scratchBytes,
@@ -346,9 +346,9 @@ resetDirtyUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-static flagcxResult_t
-ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
-                               flagcxComm_t comm, size_t requiredSlots);
+flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
+                                              flagcxComm_t comm,
+                                              size_t requiredSlots);
 static flagcxResult_t
 agreeUniRunnerInvocationState(flagcxComm_t comm, uint64_t localSignature,
                               flagcxResult_t localResult,
@@ -5326,10 +5326,37 @@ destroyUniRunnerIpcDataViews(flagcxUniRunnerState *runnerState) {
   return result;
 }
 
+// Local, retryable import cleanup. Comm retains the exporter allocation.
 static flagcxResult_t
-ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
-                               flagcxComm_t comm, size_t requiredSlots) {
+closeUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
+                              flagcxComm_t comm) {
+  if (runnerState->ipcReadyMem != NULL) {
+    FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
+    runnerState->ipcReadyMem = NULL;
+  }
+  FLAGCXCHECK(
+      releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcReadyBuffer));
+  runnerState->ipcReadyBuffer = NULL;
+  runnerState->ipcReadyCapacity = 0;
+  runnerState->ipcReadyCleanupPending = false;
+  return flagcxSuccess;
+}
+
+flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
+                                              flagcxComm_t comm,
+                                              size_t requiredSlots) {
   comm->internalBuffersNeedPeerClose = true;
+  if (runnerState->ipcReadyCleanupPending) {
+    bool allIgnoredReuse = false;
+    flagcxResult_t local = closeUniRunnerIpcReadyStorage(runnerState, comm);
+    flagcxResult_t common = flagcxSuccess;
+    flagcxResult_t agreement = agreeUniRunnerResourceState(
+        comm, false, local, &allIgnoredReuse, &common);
+    if (agreement != flagcxSuccess || common != flagcxSuccess) {
+      runnerState->ipcReadyCleanupPending = true;
+      return agreement != flagcxSuccess ? agreement : common;
+    }
+  }
   if (requiredSlots == 0)
     return flagcxSuccess;
   if (requiredSlots > std::numeric_limits<size_t>::max() / sizeof(uint64_t)) {
@@ -5369,8 +5396,7 @@ ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
   }
   // The internal Window registration exchanges IPC handles before the local
   // DevMem view is constructed.
-  res = flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(comm, newBuffer, bytes,
-                                                        &newMem);
+  res = flagcxIpcWindowRegisterAndDevMemCreate(comm, newBuffer, bytes, &newMem);
   if (res != flagcxSuccess)
     goto fail;
 
@@ -5397,6 +5423,7 @@ fail : {
     runnerState->ipcReadyMem = newMem;
     runnerState->ipcReadyBuffer = newBuffer;
     runnerState->ipcReadyCapacity = requiredSlots;
+    runnerState->ipcReadyCleanupPending = true;
     return agreement != flagcxSuccess ? agreement : commonCleanup;
   }
 }
@@ -6045,7 +6072,10 @@ static flagcxResult_t prepareStaticCollectiveExecution(
 
   const bool hasReadyMem = runnerState->ipcReadyMem != NULL;
   const bool hasReadyBuffer = runnerState->ipcReadyBuffer != NULL;
-  if (!hasReadyMem && !hasReadyBuffer && runnerState->ipcReadyCapacity == 0) {
+  if (runnerState->ipcReadyCleanupPending) {
+    readyState = 4; // All ranks retry cleanup before creating a new binding.
+  } else if (!hasReadyMem && !hasReadyBuffer &&
+             runnerState->ipcReadyCapacity == 0) {
     readyState = 0; // Empty: every rank must enter initial creation.
   } else if (hasReadyMem && hasReadyBuffer) {
     readyState = runnerState->ipcReadyCapacity >= requiredReadySlots ? 1 : 2;
@@ -6058,7 +6088,10 @@ static flagcxResult_t prepareStaticCollectiveExecution(
   preflightSignature =
       mixUniRunnerInvocationSignature(preflightSignature, readyState);
   preflightSignature = mixUniRunnerInvocationSignature(
-      preflightSignature, static_cast<uint64_t>(runnerState->ipcReadyCapacity));
+      preflightSignature,
+      runnerState->ipcReadyCleanupPending
+          ? uint64_t{0}
+          : static_cast<uint64_t>(runnerState->ipcReadyCapacity));
 
   // Everything above is rank-local, while ready DevMem creation below is a
   // bootstrap collective. Agree once before entering it so an occupancy,
@@ -7222,14 +7255,7 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
        runnerState->ipcRingProgressBuffer != NULL))
     return flagcxInternalError;
   FLAGCXCHECK(destroyUniRunnerIpcDataViews(runnerState));
-  if (comm != NULL && runnerState->ipcReadyMem != NULL) {
-    FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcReadyMem));
-  }
-  runnerState->ipcReadyMem = NULL;
-  FLAGCXCHECK(
-      releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcReadyBuffer));
-  runnerState->ipcReadyBuffer = NULL;
-  runnerState->ipcReadyCapacity = 0;
+  FLAGCXCHECK(closeUniRunnerIpcReadyStorage(runnerState, comm));
   runnerState->ipcReadySlots = 0;
   if (runnerState->ipcRingScratchMem != NULL) {
     if (comm == NULL)

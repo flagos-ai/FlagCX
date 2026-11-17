@@ -239,7 +239,8 @@ struct flagcxDevMemInternal {
   // ---- IPC layer (ipcIndex >= 0 when IPC exchange succeeds) ----
   int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
   int intraRank; // this rank's local rank index (for IPC local pointer)
-  // UniRunner tears down this view with its persistent state at CommDestroy.
+  // The internal owner (UniRunner or custom-op) explicitly tears down this
+  // view.
   bool runnerOwned;
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
@@ -261,7 +262,8 @@ typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
 
 // Collective internal Window registration followed by a local DevMem view.
-flagcxResult_t flagcxUniRunnerIpcWindowRegisterAndDevMemCreate(
-    flagcxComm_t comm, void *buff, size_t size, flagcxDevMem_t *devMem);
+flagcxResult_t flagcxIpcWindowRegisterAndDevMemCreate(flagcxComm_t comm,
+                                                      void *buff, size_t size,
+                                                      flagcxDevMem_t *devMem);
 
 #endif // FLAGCX_DEVICE_API_INTERNAL_H_

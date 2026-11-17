@@ -76,6 +76,18 @@ flagcxResult_t queryTestAddressRange(const void *, void **base, size_t *size) {
   return flagcxSuccess;
 }
 
+flagcxResult_t retainSignalBuffer(flagcxComm_t comm, void *pointer) {
+  auto *record = static_cast<flagcxInternalBuffer *>(
+      calloc(1, sizeof(flagcxInternalBuffer)));
+  if (record == nullptr)
+    return flagcxSystemError;
+  record->pointer = pointer;
+  record->kind = flagcxInternalBufferGdr;
+  record->next = comm->internalBuffers;
+  comm->internalBuffers = record;
+  return flagcxSuccess;
+}
+
 class RmaSignalRegistrationOwnershipTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -126,6 +138,7 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
 
   flagcxComm comm = {};
   comm.heteroComm = &heteroComm;
+  ASSERT_EQ(retainSignalBuffer(&comm, signalBuffer), flagcxSuccess);
   comm.ipcTable[ipcSlot].inUse = true;
 
   flagcxDevCommInternal devComm = {};
@@ -142,8 +155,12 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   EXPECT_EQ(heteroComm.rmaSignalIpcSlot, -1);
   EXPECT_FALSE(comm.ipcTable[ipcSlot].inUse);
   EXPECT_EQ(devComm.ownedSignalBuffer, nullptr);
-  EXPECT_EQ(freedSignalBuffer, signalBuffer);
+  EXPECT_EQ(freedSignalBuffer, nullptr);
+  EXPECT_EQ(signalBufferFreeCount, 0);
+  comm.destroyPhase = 7;
+  ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(signalBufferFreeCount, 1);
+  EXPECT_EQ(freedSignalBuffer, signalBuffer);
   EXPECT_TRUE(signalStateClearedBeforeFree);
 
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
@@ -174,6 +191,7 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
 
   flagcxComm comm = {};
   comm.heteroComm = &heteroComm;
+  ASSERT_EQ(retainSignalBuffer(&comm, signalBuffer), flagcxSuccess);
 
   flagcxDevCommInternal devComm = {};
   devComm.barrierIpcIndex = -1;
@@ -197,6 +215,9 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   EXPECT_EQ(heteroComm.rmaSignalBase, nullptr);
   EXPECT_EQ(devComm.ownedSignalBuffer, nullptr);
   EXPECT_EQ(devComm.ownedSignalRegistration, nullptr);
+  EXPECT_EQ(signalBufferFreeCount, 0);
+  comm.destroyPhase = 7;
+  ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(signalBufferFreeCount, 1);
   EXPECT_EQ(freedSignalBuffer, signalBuffer);
   EXPECT_TRUE(signalStateClearedBeforeFree);
@@ -225,6 +246,7 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
 
   flagcxComm comm = {};
   comm.heteroComm = &heteroComm;
+  ASSERT_EQ(retainSignalBuffer(&comm, signalBuffer), flagcxSuccess);
 
   flagcxDevCommInternal *devComm = static_cast<flagcxDevCommInternal *>(
       calloc(1, sizeof(flagcxDevCommInternal)));
@@ -246,6 +268,9 @@ TEST_F(RmaSignalRegistrationOwnershipTest,
   EXPECT_EQ(flagcxDevCommDestroy(&comm, devComm), flagcxSuccess);
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
   EXPECT_EQ(heteroComm.signalHandle, nullptr);
+  EXPECT_EQ(signalBufferFreeCount, 0);
+  comm.destroyPhase = 7;
+  ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(signalBufferFreeCount, 1);
 }
 
