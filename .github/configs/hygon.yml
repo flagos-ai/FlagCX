@@ -55,6 +55,7 @@ unit_test_suites:
   - device_api_shmem
   - device_api_host
   - device_api_unified_ir
+  - device_api_unified_ir_shmem
   - p2p
   - rma
   - runner

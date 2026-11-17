@@ -94,8 +94,11 @@ flagcx_ci_configure_suite() {
       # Each logical node sees two GPUs next to its SHCA rail.
       FLAGCX_CI_NODE_NP=2
       ;;
-    device_api_shmem)
+    device_api_shmem|device_api_unified_ir_shmem)
       # Same device_api tests, built with the DUSHMEM one-sided backend.
+      # device_api_unified_ir_shmem runs the S16-S25 Unified IR cases (incl.
+      # the INTER+WORLD putValue paths) against DUSHMEM, closing the backend
+      # coverage gap left by device_api_shmem (which only runs K1-K14/S1-S14).
       export HIP_VISIBLE_DEVICES="$FLAGCX_CI_HYGON_FOUR_GPU_DEVICES"
       export FLAGCX_IB_HCA="$FLAGCX_CI_HYGON_CONNECTED_HCAS"
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1 USE_SHMEM=1)
