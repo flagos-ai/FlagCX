@@ -2584,8 +2584,12 @@ static flagcxResult_t flagcxKernelProxyPost(
     }
   }
   if (res != flagcxSuccess && res != flagcxInProgress) {
-    WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d", peer,
-         type, (int)res);
+    WARN("flagcxKernelProxyPost: post failed peer=%d type=%d res=%d "
+         "context=%d srcMr=%d dstMr=%d srcOff=%llu dstOff=%llu size=%zu "
+         "srcHandles=%p dstHandles=%p",
+         peer, type, (int)res, contextId, srcMrIdx, dstMrIdx,
+         (unsigned long long)srcOff, (unsigned long long)dstOff, size,
+         (void *)srcHandles, (void *)dstHandles);
     flagcxKernelProxyPublishTerminal(state, comm, res);
   }
   return res;
@@ -2648,6 +2652,12 @@ static flagcxResult_t flagcxKernelWorkerInit(void *state) {
   flagcxResult_t res = flagcxSuccess;
   flagcxResult_t existingTerminal = flagcxSuccess;
   uint64_t generation = 1;
+
+  if (deviceAdaptor->hostGetDevicePointer == nullptr) {
+    WARN("flagcxKernelWorkerInit: hostGetDevicePointer not supported");
+    res = flagcxNotSupported;
+    goto done;
+  }
 
   // Set device context
   FLAGCXCHECKGOTO(deviceAdaptor->setDevice(comm->cudaDev), res, done);
@@ -2737,6 +2747,19 @@ static flagcxResult_t flagcxKernelWorkerProgressOnce(void *state, bool stopping,
   }
 
   flagcxKernelProxyPoll(kproxyState, comm);
+#ifdef USE_MUSA_ADAPTOR
+  // Device-side validation uses the same sticky terminal word as transport
+  // failures. Feed it back into the proxy's normal failure/drain lifecycle.
+  const uint64_t deviceTerminal = __atomic_load_n(
+      &fifo->buffer[flagcxFifoIdxTerminalStatus], __ATOMIC_ACQUIRE);
+  if (deviceTerminal != flagcxSuccess) {
+    flagcxKernelProxyPublishTerminal(
+        kproxyState, comm,
+        deviceTerminal < flagcxNumResults && deviceTerminal != flagcxInProgress
+            ? static_cast<flagcxResult_t>(deviceTerminal)
+            : flagcxInternalError);
+  }
+#endif
   flagcxResult_t terminal = __atomic_load_n(
       &comm->proxyState->kernelState.terminalResult, __ATOMIC_ACQUIRE);
   if (terminal != flagcxSuccess) {

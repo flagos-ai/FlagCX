@@ -2,6 +2,7 @@
 #include "device_api/completion_word.h"
 #include "flagcx.h"
 #include "flagcx_kernel_internal.h"
+#include "musa_fifo_errors.h"
 
 FLAGCX_PARAM(KernelFifoCapacity, "KERNEL_FIFO_CAPACITY", FLAGCX_FIFO_CAPACITY);
 
@@ -133,12 +134,27 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   buffer[flagcxFifoIdxProducerState] = 0;
   memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
+#ifdef USE_MUSA_ADAPTOR
+  flagcxResult_t registerResult = flagcxMusaRegisterFifoError(
+      &buffer[flagcxFifoIdxTerminalStatus]);
+  if (registerResult != flagcxSuccess) {
+    deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL);
+    buffer = nullptr;
+    return registerResult;
+  }
+#endif
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxFifo::flagcxFifoDestroy() {
   INFO(FLAGCX_KERNEL, "flagcxFifoDestroy called");
+  if (buffer == nullptr)
+    return flagcxSuccess;
+#ifdef USE_MUSA_ADAPTOR
+  flagcxMusaUnregisterFifoError(&buffer[flagcxFifoIdxTerminalStatus]);
+#endif
   FLAGCXCHECK(deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL));
+  buffer = nullptr;
   return flagcxSuccess;
 }
 
@@ -184,6 +200,24 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
   trigger->fst = __atomic_load_n(slotFst, __ATOMIC_RELAXED);
   trigger->snd = __atomic_load_n(slotSnd, __ATOMIC_RELAXED);
   trigger->trd = trd & ~flagcxDeviceTriggerValidMask;
+
+#ifdef USE_MUSA_ADAPTOR
+  if (trigger->getPrim() == flagcxDevicePrimPut && trigger->getSize() == 0) {
+    // Keep the original descriptor: do not retry or hide a zero-length PUT.
+    // The slot cannot be reused until consumed advances in the worker. If a
+    // second read changes here, payload publication/visibility needs scrutiny.
+    const uint64_t sndAgain = __atomic_load_n(slotSnd, __ATOMIC_ACQUIRE);
+    const uint64_t trdAgain = __atomic_load_n(slotTrd, __ATOMIC_ACQUIRE);
+    WARN("MUSA FIFO zero-size PUT: fifo=%p prod=%llu cons=%llu slot=%llu "
+         "capacity=%llu fst=0x%llx snd=0x%llx trd=0x%llx "
+         "sndAgain=0x%llx trdAgain=0x%llx",
+         fifoBuffer, (unsigned long long)prod, (unsigned long long)cons,
+         (unsigned long long)idx, (unsigned long long)capacity,
+         (unsigned long long)trigger->fst, (unsigned long long)trigger->snd,
+         (unsigned long long)trd, (unsigned long long)sndAgain,
+         (unsigned long long)trdAgain);
+  }
+#endif
 
   TRACE(FLAGCX_P2P,
         "dequeue: got entry prod=%lu cons=%lu prim=%lu peer=%lu "

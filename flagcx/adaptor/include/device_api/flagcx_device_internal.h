@@ -49,6 +49,9 @@ struct flagcxDevCommInternal {
       *barrierPeers; // device pointer to array of nLocalRanks device pointers
   uint64_t
       *localBarrierFlags; // this rank's inbox buffer (nLocalRanks × CTA_COUNT)
+  uint64_t *rankCtaBarrier; // Alias into epochBuffer; no separate ownership.
+  uint64_t *deviceErrorHost; // MUSA pinned owner, independent of Proxy FIFOs.
+  uint64_t *deviceErrorStatus; // GPU alias of deviceErrorHost.
   uint64_t *epochBuffer;  // Device memory: per-CTA epoch counters
                           // Layout: [CTA_COUNT intra epochs, CTA_COUNT inter
                           // epochs]

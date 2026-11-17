@@ -1889,6 +1889,10 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   hcomm->uniRunnerFifoBuffer = nullptr;
 
   // Create FIFO
+  if (deviceAdaptor->hostGetDevicePointer == nullptr) {
+    WARN("uniRunner FIFO: hostGetDevicePointer not supported");
+    return flagcxNotSupported;
+  }
   runnerState->fifo = new (std::nothrow) flagcxFifo();
   if (runnerState->fifo == nullptr)
     return flagcxSystemError;

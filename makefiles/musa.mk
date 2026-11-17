@@ -1,14 +1,8 @@
 # makefiles/platforms/musa.mk
 # MUSA platform configuration (MTT S5000 / MUSA 4.3 / mcc 5.1.0).
 #
-# Device toolchain verified on the target container:
-#   mcc -c probe.cu -o probe.o -mtgpu --musa-path=/usr/local/musa \
-#       --offload-arch=mp_31 -fgpu-rdc -fPIC
-#   -> ELF64 relocatable containing .mtFatBinSegment and
-#      __CLANG_OFFLOAD_BUNDLE__musa-mtgpu-mt-musa-mp_31, i.e. the device
-#      image is embedded and self-registered in each object. This observation
-#      alone does not prove that an arbitrary device image is fully linked;
-#      test/kernel/musa explicitly links its images before host embedding.
+# Main-library kernel objects use compiler-managed image registration.
+# The public test kernel objects explicitly link their RDC device images.
 
 DEVICE_HOME  ?= /usr/local/musa
 DEVICE_LIB   := $(DEVICE_HOME)/lib

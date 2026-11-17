@@ -20,6 +20,175 @@
 #include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 
 #include "device_ir.h"
+#include <cstdio>
+#include <cstdlib>
+
+// Opt-in S16 diagnostics. Query and synchronization failures remain fatal;
+// never clear a native launch failure and let the test report success.
+static bool musaIrBeforeLaunch(const char *name, const void *kernel,
+                               flagcxStream_t stream) {
+  const char *enabled = std::getenv("FLAGCX_MUSA_IR_DIAG");
+  if (!enabled || enabled[0] != '1') return false;
+  const musaError_t prior = musaGetLastError();
+  int device = -1;
+  const musaError_t deviceError = musaGetDevice(&device);
+  musaFuncAttributes attr{};
+  const musaError_t error = musaFuncGetAttributes(&attr, kernel);
+  std::fprintf(stderr,
+      "MUSA IR %s: device=%d getDevice=%d prior=%d func=%p "
+      "attributes=%d (%s) maxThreadsPerBlock=%d numRegs=%d "
+      "sharedBytes=%zu localBytes=%zu blocks=4 threads=128 stream=%p\n",
+      name, device, static_cast<int>(deviceError), static_cast<int>(prior),
+      kernel, static_cast<int>(error), musaGetErrorString(error),
+      attr.maxThreadsPerBlock, attr.numRegs,
+      static_cast<size_t>(attr.sharedSizeBytes),
+      static_cast<size_t>(attr.localSizeBytes),
+      stream ? reinterpret_cast<void *>(stream->base) : nullptr);
+  std::fflush(stderr);
+  if (prior != musaSuccess || deviceError != musaSuccess || error != musaSuccess)
+    std::_Exit(EXIT_FAILURE);
+  return true;
+}
+
+static void musaIrAfterLaunch(const char *name, flagcxStream_t stream) {
+  const musaError_t launch = musaGetLastError();
+  std::fprintf(stderr, "MUSA IR %s: launch=%d (%s)\n", name,
+               static_cast<int>(launch), musaGetErrorString(launch));
+  std::fflush(stderr);
+  if (launch != musaSuccess) std::_Exit(EXIT_FAILURE);
+  // The public test synchronizes immediately after this launcher anyway.
+  // Doing so here in diagnostic mode exposes the original MUSA error code.
+  const musaError_t sync = musaStreamSynchronize(stream->base);
+  std::fprintf(stderr, "MUSA IR %s: synchronize=%d (%s)\n", name,
+               static_cast<int>(sync), musaGetErrorString(sync));
+  std::fflush(stderr);
+  if (sync != musaSuccess) std::_Exit(EXIT_FAILURE);
+}
+
+// Separate diagnostic kernels: never replace an S16-S25 acceptance case.
+// Every process runs just one mode; an illegal access cannot poison the next.
+__global__ void musaIrReadCommDiagnostic(const void *opaque, int *out) {
+  if (threadIdx.x != 0) return;
+  const flagcxDevComm &comm = *static_cast<const flagcxDevComm *>(opaque);
+  int *result = out + blockIdx.x * 16;
+  result[1] = comm.getRank();
+  result[2] = comm.getSize();
+  result[3] = comm.getIntraRank();
+  result[4] = comm.getIntraSize();
+  result[5] = comm.getContextCount();
+  result[6] = sizeof(flagcxDevComm);
+  result[7] = comm._netContexts != nullptr;
+  result[0] = 1;
+}
+
+__global__ void musaIrReadNetDiagnostic(const void *opaque, int *out) {
+  if (threadIdx.x != 0) return;
+  const flagcxDevComm &comm = *static_cast<const flagcxDevComm *>(opaque);
+  int *result = out + blockIdx.x * 16;
+  auto nets = flagcxDevCommNetContexts(comm);
+  int count = comm.getContextCount();
+  result[5] = count;
+  result[6] = sizeof(flagcxDevNet);
+  if (!nets || count <= 0 || count > 4) return;
+  for (int i = 0; i < count; ++i) {
+    result[8 + i * 2] = nets[i]._dc.getRank();
+    result[9 + i * 2] = nets[i]._dc.getSize();
+  }
+  result[0] = 1;
+}
+
+__global__ void musaIrValueIntraDiagnostic(flagcxDevComm comm, int *out) {
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar(
+      flagcxCoopBlock(), comm, flagcxTeamIntra(comm), blockIdx.x);
+  bar.sync(flagcxDeviceMemoryOrderAcqRel);
+  if (threadIdx.x == 0) out[blockIdx.x * 16] = 1;
+}
+
+__global__ void musaIrPointerIntraDiagnostic(const void *opaque, int *out) {
+  const flagcxDevComm &comm = *static_cast<const flagcxDevComm *>(opaque);
+  flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopBlock> bar(
+      flagcxCoopBlock(), comm, flagcxTeamIntra(comm), blockIdx.x);
+  bar.sync(flagcxDeviceMemoryOrderAcqRel);
+  if (threadIdx.x == 0) out[blockIdx.x * 16] = 1;
+}
+
+__global__ void musaIrUnifiedIntraDiagnostic(const void *opaque, int *out) {
+  const flagcxDevComm &comm = *static_cast<const flagcxDevComm *>(opaque);
+  int count = comm.getContextCount();
+  flagcxDevBarrierSync(opaque, FLAGCX_TEAM_INTRA, blockIdx.x,
+      count > 0 ? blockIdx.x % count : 0, FLAGCX_COOP_BLOCK,
+      flagcxDeviceMemoryOrderAcqRel, flagcxDeviceScopeSystem);
+  if (threadIdx.x == 0) out[blockIdx.x * 16] = 1;
+}
+
+__global__ void musaIrUnifiedWorldDiagnostic(const void *opaque, int *out) {
+  const flagcxDevComm &comm = *static_cast<const flagcxDevComm *>(opaque);
+  int count = comm.getContextCount();
+  flagcxDevBarrierSync(opaque, FLAGCX_TEAM_WORLD, blockIdx.x,
+      count > 0 ? blockIdx.x % count : 0, FLAGCX_COOP_BLOCK,
+      flagcxDeviceMemoryOrderAcqRel, flagcxDeviceScopeSystem);
+  if (threadIdx.x == 0) out[blockIdx.x * 16] = 1;
+}
+
+extern "C" flagcxResult_t flagcxMusaIrRunDiagnostic(
+    int mode, flagcxDevComm_t handle, const void *opaque, int *out,
+    flagcxStream_t stream) {
+  if (!handle || !opaque || !out || !stream || mode < 1 || mode > 6)
+    return flagcxInvalidArgument;
+  const void *functions[] = {
+      reinterpret_cast<const void *>(musaIrReadCommDiagnostic),
+      reinterpret_cast<const void *>(musaIrReadNetDiagnostic),
+      reinterpret_cast<const void *>(musaIrValueIntraDiagnostic),
+      reinterpret_cast<const void *>(musaIrPointerIntraDiagnostic),
+      reinterpret_cast<const void *>(musaIrUnifiedIntraDiagnostic),
+      reinterpret_cast<const void *>(musaIrUnifiedWorldDiagnostic)};
+  musaFuncAttributes attr{};
+  musaError_t error = musaFuncGetAttributes(&attr, functions[mode - 1]);
+  int device = -1;
+  musaGetDevice(&device);
+  std::fprintf(stderr, "IR DIAG mode=%d device=%d attributes=%d (%s) "
+      "maxThreads=%d regs=%d localBytes=%zu hostCommBytes=%zu hostNetBytes=%zu\n",
+      mode, device, int(error), musaGetErrorString(error), attr.maxThreadsPerBlock,
+      attr.numRegs, size_t(attr.localSizeBytes), sizeof(flagcxDevComm), sizeof(flagcxDevNet));
+  std::fflush(stderr);
+  if (error != musaSuccess) return flagcxUnhandledDeviceError;
+  switch (mode) {
+    case 1: musaIrReadCommDiagnostic<<<4, 128, 0, stream->base>>>(opaque, out); break;
+    case 2: musaIrReadNetDiagnostic<<<4, 128, 0, stream->base>>>(opaque, out); break;
+    case 3: {
+      flagcxDevComm value(*handle);
+      musaIrValueIntraDiagnostic<<<4, 128, 0, stream->base>>>(value, out);
+      break;
+    }
+    case 4: musaIrPointerIntraDiagnostic<<<4, 128, 0, stream->base>>>(opaque, out); break;
+    case 5: musaIrUnifiedIntraDiagnostic<<<4, 128, 0, stream->base>>>(opaque, out); break;
+    case 6: musaIrUnifiedWorldDiagnostic<<<4, 128, 0, stream->base>>>(opaque, out); break;
+  }
+  error = musaGetLastError();
+  std::fprintf(stderr, "IR DIAG mode=%d device=%d launch=%d (%s)\n",
+      mode, device, int(error), musaGetErrorString(error));
+  std::fflush(stderr);
+  if (error != musaSuccess) return flagcxUnhandledDeviceError;
+  error = musaStreamSynchronize(stream->base);
+  std::fprintf(stderr, "IR DIAG mode=%d device=%d sync=%d (%s)\n",
+      mode, device, int(error), musaGetErrorString(error));
+  std::fflush(stderr);
+  if (error != musaSuccess) return flagcxUnhandledDeviceError;
+  if (mode == 1 || mode == 2) {
+    int sample[64] = {};
+    error = musaMemcpy(sample, out, sizeof(sample), musaMemcpyDeviceToHost);
+    if (error != musaSuccess) return flagcxUnhandledDeviceError;
+    const size_t expected = mode == 1 ? sizeof(flagcxDevComm) : sizeof(flagcxDevNet);
+    for (int block = 0; block < 4; ++block) {
+      if (sample[block * 16 + 6] != int(expected)) {
+        std::fprintf(stderr, "IR DIAG mode=%d layout mismatch host=%zu device=%d\n",
+            mode, expected, sample[block * 16 + 6]);
+        return flagcxInternalError;
+      }
+    }
+  }
+  return flagcxSuccess;
+}
 
 // Resolve the selected backend completion width without inspecting backend storage.
 static constexpr int kCompletionBits =
@@ -1849,8 +2018,11 @@ __global__ void kernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *dev
 
 void launchKernelDevBarrierIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr, int *devResult,
                                         flagcxStream_t stream) {
+  const bool diagnose = musaIrBeforeLaunch("S16 BarrierSync",
+      reinterpret_cast<const void *>(kernelDevBarrierIntraWorldS), stream);
   kernelDevBarrierIntraWorldS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devResult);
+  if (diagnose) musaIrAfterLaunch("S16 BarrierSync", stream);
 }
 
 // ---------------------------------------------------------------------------
@@ -1891,8 +2063,11 @@ __global__ void kernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBA
 void launchKernelDevBarrierArriveWaitIntraWorldS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                                  int *devResult,
                                                  flagcxStream_t stream) {
+  const bool diagnose = musaIrBeforeLaunch("S16 BarrierArriveWait",
+      reinterpret_cast<const void *>(kernelDevBarrierArriveWaitIntraWorldS), stream);
   kernelDevBarrierArriveWaitIntraWorldS<<<4, 128, 0,
                                          stream->base>>>(devCommPtr, devResult);
+  if (diagnose) musaIrAfterLaunch("S16 BarrierArriveWait", stream);
 }
 
 // ---------------------------------------------------------------------------
