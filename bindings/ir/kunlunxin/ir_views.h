@@ -70,44 +70,171 @@ struct KlxMemView {
 };
 
 // flagcxMakeTeamFromKind, which lives in flagcx_device_scalar_ir_impl.h and is
-// not visible in this branch.
+// not visible in this branch. Reads the address-space-1 comm directly; the
+// arithmetic is the one in flagcx_device_core.h's team accessors.
 static FLAGCX_DEVICE_INLINE_DECORATOR flagcxTeam
-klxTeamFromKind(const flagcxDevComm &comm, flagcxDevTeamKind_t kind) {
+klxTeamFromKind(KlxCommPtr p, flagcxDevTeamKind_t kind) {
+  int rank = p->_commBase.rank;
+  int nRanks = p->_commBase.nRanks;
+  int intraSize = p->_commBase.intraSize;
   switch (kind) {
     case FLAGCX_TEAM_WORLD:
-      return flagcxTeamWorld(comm);
+      return flagcxTeam(nRanks, rank, 1);
     case FLAGCX_TEAM_INTER:
-      return flagcxTeamInter(comm);
+      return flagcxTeam(nRanks / intraSize, rank / intraSize, intraSize);
     case FLAGCX_TEAM_INTRA:
     default:
-      return flagcxTeamIntra(comm);
+      return flagcxTeam(intraSize, p->_commBase.intraRank, 1);
   }
 }
 
-// Stage the comm into local memory so the generic flagcxDevNet works here: XTDK
-// cannot construct it from the address-space-1 descriptor. Raw storage, because
-// GM2LM overwrites all of it and a default-constructed comm zeroes it first.
-#define KLX_NET_PROLOGUE(opaque, contextId, coopKind)                          \
-  alignas(flagcxDevComm) char klxStagedStorage[sizeof(flagcxDevComm)];         \
-  GM2LM((opaque), klxStagedStorage, sizeof(flagcxDevComm));                    \
-  const flagcxDevComm &klxStagedComm =                                         \
-      *reinterpret_cast<const flagcxDevComm *>(klxStagedStorage);              \
-  flagcxDevNet net(klxStagedComm, (int)(contextId));                           \
-  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind)
+// The signal / counter half of DeviceAPI::Net, driven straight from the
+// address-space-1 comm so nothing has to be staged in local memory. One for one
+// with the private members of CommTraits<XshmemBackend>::Net in
+// xshmem_comm_traits.h: that slot layout is the ABI, keep both sides in step.
+struct KlxNetView {
+  KlxCommPtr p;
+  int contextId;
+
+  FLAGCX_DEVICE_INLINE_DECORATOR
+  KlxNetView(const void FLAGCX_IR_GLOBAL_PTR *opaque, int context)
+      : p(static_cast<KlxCommPtr>(opaque)),
+        contextId(p->_contextCount > 0 ? context % p->_contextCount : 0) {}
+
+  FLAGCX_DEVICE_INLINE_DECORATOR int nRanks() const {
+    return p->_commBase.nRanks;
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR XSHMEM_FGP uint64_t *
+  signalSlot(flagcxDevSignal_t signal, int index) const {
+    int base = (contextId * p->_commBase.signalCount + (int)signal) *
+               FLAGCX_XSHMEM_SIGNAL_SLOTS(nRanks());
+    return &p->_commBase.signalBuffer[base + index];
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR XSHMEM_FGP uint64_t *
+  counterSlot(flagcxDevCounter_t counter, int index) const {
+    int base = (contextId * p->_commBase.counterCount + (int)counter) *
+               FLAGCX_XSHMEM_SIGNAL_SLOTS(nRanks());
+    return &p->_commBase.counterBuffer[base + index];
+  }
+
+  // Logical value: every source's ticket, less what a local reset wrote off,
+  // plus this PE's own slot.
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+  sumSignal(flagcxDevSignal_t signal) const {
+    int n = nRanks();
+    uint64_t total = 0;
+    for (int src = 0; src < n; ++src)
+      total += *(XshmemGMWord *)signalSlot(signal, src);
+    total -=
+        *(XshmemGMWord *)signalSlot(signal,
+                                    FLAGCX_XSHMEM_RESET_BASELINE_INDEX(n));
+    return total + *(XshmemGMWord *)signalSlot(signal, 2 * n);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR uint64_t
+  sumCounter(flagcxDevCounter_t counter) const {
+    int n = nRanks();
+    uint64_t total = 0;
+    for (int src = 0; src < n; ++src)
+      total += *(XshmemGMWord *)counterSlot(counter, src);
+    total -=
+        *(XshmemGMWord *)counterSlot(counter,
+                                     FLAGCX_XSHMEM_RESET_BASELINE_INDEX(n));
+    return total + *(XshmemGMWord *)counterSlot(counter, 2 * n);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR int resolvePE(flagcxTeam team,
+                                               int peer) const {
+    XSHMEM_FGP int *map = p->_commBase.intraPeMap;
+    if (map != nullptr && team.nRanks() == p->_commBase.intraSize &&
+        team.rank() == p->_commBase.intraRank && team.stride() == 1)
+      return map[peer];
+    int base = p->_commBase.rank - team.rank() * team.stride();
+    return base + peer * team.stride();
+  }
+
+  // SET is the only signal op P800 has, so publish the running total this PE
+  // owes `pe`. That ticket slot has a single writer, hence the plain
+  // read-add-write.
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  sendTicket(XSHMEM_FGP uint64_t *sentSlot, XSHMEM_FGP uint64_t *ownSlot,
+             uint64_t delta, int pe) const {
+    XshmemGMWord *sent = (XshmemGMWord *)sentSlot;
+    uint64_t ticket = *sent + delta;
+    *sent = ticket;
+    flagcxXshmemDevice::signalOp(ownSlot, ticket, XSHMEM_SIGNAL_SET, pe);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void signal(flagcxCoopAny &coop,
+                                             flagcxTeam team, int peer,
+                                             flagcxDevSignal_t slot,
+                                             uint64_t delta) const {
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      int pe = resolvePE(team, peer);
+      sendTicket(signalSlot(slot, nRanks() + pe),
+                 signalSlot(slot, p->_commBase.rank), delta, pe);
+    }
+    coop.sync();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void spinSignal(flagcxDevSignal_t slot,
+                                                 uint64_t least) const {
+    int iter = 0;
+    while (sumSignal(slot) < least)
+      DeviceAPI::Intrin::spinBackoff(iter++);
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  waitSignal(flagcxCoopAny &coop, flagcxDevSignal_t slot,
+             uint64_t least) const {
+    coop.sync();
+    if (coop.threadRank() == 0)
+      spinSignal(slot, least);
+    coop.sync();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  waitSignalMeetShadow(flagcxCoopAny &coop, flagcxDevSignal_t slot) const {
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      XSHMEM_FGP uint64_t *shadow =
+          &p->_commBase.shadowBuffer[contextId * p->_commBase.signalCount +
+                                     (int)slot];
+      spinSignal(slot, *(XshmemGMWord *)shadow);
+    }
+    coop.sync();
+  }
+
+  FLAGCX_DEVICE_INLINE_DECORATOR void
+  waitCounter(flagcxCoopAny &coop, flagcxDevCounter_t counter,
+              uint64_t least) const {
+    coop.sync();
+    if (coop.threadRank() == 0) {
+      int iter = 0;
+      while (sumCounter(counter) < least)
+        DeviceAPI::Intrin::spinBackoff(iter++);
+    }
+    coop.sync();
+  }
+};
 
 // Signal / counter entry points. Defined here and not in the shared
 // flagcx_device_wrapper_impl.h, which includes this header; only the symbols
-// listed in kunlunxin/Makefile leave the bitcode.
+// listed in kunlunxin/Makefile leave the bitcode. bits and order are unused
+// because the generic xshmem Net discards them too.
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevSignalInc(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                    flagcxDevTeamKind_t teamKind, int peer,
                    flagcxDevSignal_t signal, flagcxDevContext_t contextId,
                    flagcxDevCoopKind_t coopKind, flagcxDevMemoryScope_t scope) {
   (void)scope;
-  KLX_NET_PROLOGUE(opaque, contextId, coopKind);
-  net.signal(
-      klxTeamFromKind(klxStagedComm, teamKind), peer,
-      flagcxDevNet_SignalInc{signal}, coop);
+  KlxNetView net(opaque, (int)contextId);
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  net.signal(coop, klxTeamFromKind(net.p, teamKind), peer, signal,
+             (uint64_t)1);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -117,10 +244,9 @@ flagcxDevSignalAdd(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                    flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                    flagcxDevMemoryScope_t scope) {
   (void)scope;
-  KLX_NET_PROLOGUE(opaque, contextId, coopKind);
-  net.signal(
-      klxTeamFromKind(klxStagedComm, teamKind), peer,
-      flagcxDevNet_SignalAdd{signal, value}, coop);
+  KlxNetView net(opaque, (int)contextId);
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  net.signal(coop, klxTeamFromKind(net.p, teamKind), peer, signal, value);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -128,8 +254,11 @@ flagcxDevWaitSignal(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                     flagcxDevSignal_t signal, uint64_t least, int bits,
                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                     flagcxDevMemoryOrder_t order) {
-  KLX_NET_PROLOGUE(opaque, contextId, coopKind);
-  net.waitSignal(coop, signal, least, bits, order);
+  (void)bits;
+  (void)order;
+  KlxNetView net(opaque, (int)contextId);
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  net.waitSignal(coop, signal, least);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -138,8 +267,11 @@ flagcxDevWaitSignalMeetShadow(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                               flagcxDevSignal_t slot, int bits,
                               flagcxDevCoopKind_t coopKind,
                               flagcxDevMemoryOrder_t order) {
-  KLX_NET_PROLOGUE(opaque, contextId, coopKind);
-  net.waitSignalMeetShadow(coop, slot, bits, order);
+  (void)bits;
+  (void)order;
+  KlxNetView net(opaque, (int)contextId);
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  net.waitSignalMeetShadow(coop, slot);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -147,18 +279,21 @@ flagcxDevWaitCounter(const void FLAGCX_IR_GLOBAL_PTR *opaque,
                      flagcxDevCounter_t counter, uint64_t least, int bits,
                      flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryOrder_t order) {
-  KLX_NET_PROLOGUE(opaque, contextId, coopKind);
-  net.waitCounter(coop, counter, least, bits, order);
+  (void)bits;
+  (void)order;
+  KlxNetView net(opaque, (int)contextId);
+  flagcxCoopAny coop = klxMakeCoopFromKind(coopKind);
+  net.waitCounter(coop, counter, least);
 }
 
 // One bind per kernel, per the vendor contract. XTDK's __local__ is only an
 // alignment attribute, so the LM scratch must be an alloca in the kernel's own
 // frame and the caller passes it in; only the shared halves can be statics.
-static __shared__ __simd__ xshmemi_device_host_state_t klxXshmemState;
-static __shared__ __simd__ char klxXshmemFcWindow[XSHMEMI_FC_BUFFER_LEN];
-
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxDevInit(const void FLAGCX_IR_GLOBAL_PTR *opaque, char *localBuf) {
+  static __shared__ __simd__ xshmemi_device_host_state_t klxXshmemState;
+  static __shared__ __simd__ char klxXshmemFcWindow[XSHMEMI_FC_BUFFER_LEN];
+
   static_assert(XSHMEMI_LOCAL_BUF_LEN == 4096,
                 "device_init lowering allocates XSHMEMI_LOCAL_BUF_LEN bytes");
   KlxCommPtr comm = static_cast<KlxCommPtr>(opaque);
