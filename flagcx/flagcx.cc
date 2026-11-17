@@ -2910,9 +2910,17 @@ flagcxCommWindowDeregisterInternal(flagcxComm_t comm, flagcxWindow_t win,
   while (sym != nullptr &&
          __atomic_load_n(&sym->inSubmit, __ATOMIC_ACQUIRE) != 0)
     sched_yield();
+  flagcxResult_t syncResult = flagcxSuccess;
   if (sym != nullptr && deviceAdaptor != nullptr &&
       deviceAdaptor->deviceSynchronize != nullptr)
-    FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
+    syncResult = deviceAdaptor->deviceSynchronize();
+  flagcxResult_t commonSyncResult = syncResult;
+  // Failed collective registration must keep every rank in the same rollback
+  // sequence, including ranks with no synchronization callback to execute.
+  if (cleanupMode == flagcxSymCleanupCollective)
+    FLAGCXCHECK(flagcxSymConvergeStatus(hetero, syncResult, &commonSyncResult));
+  if (commonSyncResult != flagcxSuccess)
+    return commonSyncResult;
 
   // Any rank may have queued RMA work targeting this window, including an
   // ordinary-allocation rank when another node owns an LSA mapping. Drain

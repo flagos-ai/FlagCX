@@ -1,13 +1,15 @@
 // MPI tests for symmetric window register / deregister.
-// Requires MPI + GPUs.
+// SymMemTest cases require MPI + GPUs; SymWindowRollback uses host mocks.
 
 #include "adaptor.h"
 #include "flagcx_hetero.h"
 #include "flagcx_net_adaptor.h"
 #include "global_comm.h"
+#include "mem_alloc_registry.h"
 #include "onesided.h"
 #include "sym_heap.h"
 #include "symmem_test.hpp"
+#include "transport.h"
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -3122,3 +3124,163 @@ TEST_F(SymMemTest, DuSegmentedAllocFailureRollsBackAndCanRetry) {
   EXPECT_EQ(deviceAdaptor->gdrMemFree(allocation, nullptr), flagcxSuccess);
 }
 #endif
+
+namespace {
+bool rollbackSyncFailureArmed = false;
+int rollbackSyncCalls = 0;
+int rollbackBufferFrees = 0;
+
+flagcxResult_t rollbackSyncForTest() {
+  ++rollbackSyncCalls;
+  return rollbackSyncFailureArmed ? flagcxRemoteError : flagcxSuccess;
+}
+flagcxResult_t rollbackUnsupportedIpc(flagcxIpcMemHandle_t *handle,
+                                      size_t *bytes) {
+  *handle = nullptr;
+  *bytes = 0;
+  return flagcxNotSupported;
+}
+flagcxResult_t rollbackFreeForTest(void *buffer, void *) {
+  ++rollbackBufferFrees;
+  free(buffer);
+  return flagcxSuccess;
+}
+
+struct ScopedRollbackBootstrap {
+  bootstrapState *state = nullptr;
+  ~ScopedRollbackBootstrap() {
+    if (state != nullptr)
+      EXPECT_EQ(bootstrapClose(state), flagcxSuccess);
+  }
+};
+struct ScopedRollbackAdaptor {
+  flagcxDeviceAdaptor *saved = deviceAdaptor;
+  flagcxDeviceAdaptor mock = {};
+  ScopedRollbackAdaptor() {
+    mock.ipcMemHandleCreate = rollbackUnsupportedIpc;
+    mock.deviceSynchronize = rollbackSyncForTest;
+    mock.gdrMemFree = rollbackFreeForTest;
+    deviceAdaptor = &mock;
+  }
+  ~ScopedRollbackAdaptor() { deviceAdaptor = saved; }
+};
+struct ScopedRollbackResources {
+  flagcxComm_t comm;
+  void *buffer = nullptr;
+  ~ScopedRollbackResources() {
+    rollbackSyncFailureArmed = false;
+    while (comm->publicWindows != nullptr) {
+      flagcxWindow_t window = comm->publicWindows;
+      if (window->defaultBase != nullptr) {
+        flagcxResult_t result = flagcxCommWindowDeregister(comm, window);
+        EXPECT_EQ(result, flagcxSuccess);
+        if (result != flagcxSuccess)
+          return; // Keep the cleanup token alive on an unexpected failure.
+      }
+      comm->publicWindows = window->nextOwned;
+      free(window);
+    }
+    if (buffer != nullptr)
+      EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
+  }
+};
+} // namespace
+
+// Uses real multi-rank bootstrap with mock resources: no accelerator is needed.
+TEST(SymWindowRollback, RankLocalSynchronizeFailureConvergesAndRetries) {
+  int rank = 0, nranks = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &nranks);
+  if (nranks < 2)
+    GTEST_SKIP() << "Requires at least two ranks";
+  if (flagcxParamP2pDisable() || flagcxParamDeviceOneSidedForceNet())
+    GTEST_SKIP() << "Requires the ordinary-memory IPC preparation path";
+  ASSERT_TRUE(allRanksSucceeded(bootstrapNetInit()));
+  flagcxUniqueId id = {};
+  ASSERT_TRUE(
+      allRanksSucceeded(rank == 0 ? flagcxGetUniqueId(&id) : flagcxSuccess));
+  MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD);
+  flagcxBootstrapHandle handle = {};
+  memcpy(&handle, &id, sizeof(handle));
+  uint32_t abortFlag = 0;
+  ScopedRollbackBootstrap bootstrap;
+  ASSERT_TRUE(allRanksSucceeded(bootstrapCollInit(
+      &handle, rank, nranks, handle.magic, &abortFlag, &bootstrap.state)));
+
+  std::vector<int> ranks(nranks), nodes(nranks, 0);
+  for (int i = 0; i < nranks; ++i)
+    ranks[i] = i;
+  flagcxComm testComm = {};
+  flagcxHeteroComm hetero = {};
+  testComm.commType = flagcxCommunicatorHybrid;
+  testComm.rank = testComm.localRank = rank;
+  testComm.nranks = testComm.localRanks = nranks;
+  testComm.localRankToRank = ranks.data();
+  testComm.bootstrap = bootstrap.state;
+  testComm.heteroComm = &hetero;
+  hetero.rank = hetero.localRank = rank;
+  hetero.nRanks = hetero.localRanks = nranks;
+  hetero.nNodes = 1;
+  hetero.rankToNode = nodes.data();
+  hetero.rankToLocalRank = hetero.localRankToRank = ranks.data();
+  hetero.bootstrap = bootstrap.state;
+  hetero.ipcTable = testComm.ipcTable;
+  hetero.ipcTableSize = testComm.ipcTableCapacity;
+  ScopedRollbackAdaptor adaptor;
+  ScopedRollbackResources resources{&testComm};
+  resources.buffer = malloc(64);
+  ASSERT_TRUE(allRanksSucceeded(
+      resources.buffer != nullptr ? flagcxSuccess : flagcxSystemError));
+  ASSERT_TRUE(allRanksSucceeded(
+      globalMemAllocRegistry.insert({resources.buffer, 64, flagcxMemCCL,
+                                     flagcxMemAllocBackendNative, false})));
+  rollbackSyncCalls = rollbackBufferFrees = 0;
+  rollbackSyncFailureArmed = rank == 1;
+  if (rank == 0)
+    adaptor.mock.deviceSynchronize =
+        nullptr; // A no-op rank still participates.
+
+  flagcxWindow_t window = nullptr;
+  flagcxResult_t result = flagcxCommWindowRegister(
+      &testComm, resources.buffer, 64, &window, FLAGCX_WIN_COLL_SYMMETRIC);
+  int minimum = 0, maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxRemoteError));
+  EXPECT_EQ(maximum, static_cast<int>(flagcxRemoteError));
+  EXPECT_EQ(rollbackSyncCalls, rank == 0 ? 0 : 1);
+  ASSERT_TRUE(
+      allRanksSucceeded(window != nullptr && window->defaultBase != nullptr
+                            ? flagcxSuccess
+                            : flagcxInternalError));
+  EXPECT_EQ(window->defaultBase->state, flagcxSymWindowCleanupRequired);
+  EXPECT_TRUE(window->defaultBase->hasAllocationLease);
+  EXPECT_NE(hetero.pendingSymCleanup, nullptr);
+  EXPECT_EQ(hetero.symWindows, nullptr);
+  EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
+  EXPECT_EQ(rollbackBufferFrees, 0);
+
+  // Only rank zero retries a failing public deregistration; peers do not join.
+  adaptor.mock.deviceSynchronize = rollbackSyncForTest;
+  rollbackSyncFailureArmed = rank == 0;
+  result =
+      rank == 0 ? flagcxCommWindowDeregister(&testComm, window) : flagcxSuccess;
+  EXPECT_EQ(result, rank == 0 ? flagcxRemoteError : flagcxSuccess);
+  rollbackSyncFailureArmed = false;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(&testComm, window)));
+  EXPECT_EQ(window->defaultBase, nullptr);
+  EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
+
+  // The deliberate lack of IPC/NET routes still rejects registration, but
+  // recovered synchronization now lets every rank finish rollback normally.
+  result = flagcxCommWindowRegister(&testComm, resources.buffer, 64, &window,
+                                    FLAGCX_WIN_COLL_SYMMETRIC);
+  allRankResultRange(result, &minimum, &maximum);
+  EXPECT_EQ(minimum, static_cast<int>(flagcxNotSupported));
+  EXPECT_EQ(maximum, static_cast<int>(flagcxNotSupported));
+  EXPECT_EQ(window->defaultBase, nullptr);
+  EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
+  EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);
+  resources.buffer = nullptr;
+  EXPECT_EQ(rollbackBufferFrees, 1);
+  MPI_Barrier(MPI_COMM_WORLD);
+}
