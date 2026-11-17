@@ -1352,9 +1352,13 @@ run_suite
         self.assertIn("collectiveFailed(gateResult)", rma_ipc_test)
         self.assertIn("--case DeviceAdaptorTest.StreamWaitWriteValue64", unit_runner)
         self.assertIn("--case DeviceAdaptorTest.HostRegisterUnregister", unit_runner)
-        self.assertIn("--case NetAdaptorLoopback.RegisterDmaBufMr", unit_runner)
+        self.assertNotIn("--case NetAdaptorLoopback.RegisterDmaBufMr", unit_runner)
+        self.assertIn(
+            "adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr",
+            unit_runner,
+        )
         self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
-        self.assertIn("--case RmaTest.IpcGetCounterFollowsCopy", unit_runner)
+        self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
@@ -2074,7 +2078,7 @@ run_suite
         self.assertIn('std::getenv("FLAGCX_IB_DISABLE")', rma_fixture)
         self.assertIn('std::getenv("FLAGCX_P2P_DISABLE")', rma_fixture)
         self.assertIn("RmaTest.GetAsyncOffsets", rma_makefile)
-        self.assertIn("RmaTest.IpcGetCounterFollowsCopy", rma_makefile)
+        self.assertIn("RmaTest.IpcGetSameStreamCompletion", rma_makefile)
         self.assertIn("run-mpi-ipc", rma_makefile)
         self.assertIn("run-mpi-net", rma_makefile)
 

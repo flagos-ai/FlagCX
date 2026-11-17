@@ -20,6 +20,11 @@ on:
         required: false
         type: boolean
         default: false
+      probe_only:
+        description: Run Iluvatar IPC probe, adaptor, and RMA suites
+        required: false
+        type: boolean
+        default: false
 
 env:
   FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
@@ -56,7 +61,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
+        suite: ${{ fromJSON(inputs.probe_only && '["probe","adaptor","rma"]' || needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
     steps:
       - name: Install Git for repository checkout

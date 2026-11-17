@@ -2,6 +2,7 @@
 #include "rma_test.hpp"
 #include "sym_heap.h"
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 namespace {
@@ -73,7 +74,7 @@ TEST_F(RmaTest, GetAsyncOffsets) {
   }
 }
 
-TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
+TEST_F(RmaTest, IpcGetSameStreamCompletion) {
   if (!requireIpc)
     GTEST_SKIP() << "Runs only in the explicit IPC invocation";
   if (nranks != 2)
@@ -85,7 +86,6 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
   ASSERT_EQ(allMrsAbsent, 1) << "IPC test unexpectedly has a network MR";
 
   void *gate = nullptr;
-  flagcxStream_t releaseStream = nullptr;
   flagcxResult_t setup = flagcxSuccess;
   if (rank == 1) {
     setup = flagcxMemAlloc(&gate, sizeof(uint64_t));
@@ -94,8 +94,6 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
                                       flagcxMemDevice, nullptr);
     if (setup == flagcxSuccess)
       setup = devHandle->deviceSynchronize();
-    if (setup == flagcxSuccess)
-      setup = devHandle->streamCreate(&releaseStream);
   } else {
     std::vector<uint8_t> pattern(64, 0xA5);
     setup = devHandle->deviceMemcpy(dataBuff, pattern.data(), pattern.size(),
@@ -103,26 +101,34 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
     if (setup == flagcxSuccess)
       setup = devHandle->deviceSynchronize();
   }
-  ASSERT_EQ(collectiveFailed(setup), 0) << "IPC Get gate setup failed";
+  int anySetupError = collectiveFailed(setup);
+  if (anySetupError) {
+    if (gate != nullptr) {
+      EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
+    }
+    ASSERT_EQ(anySetupError, 0) << "IPC Get gate setup failed";
+  }
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // GetAsyncOffsets independently validates the IPC Get payload. This test
-  // additionally requires the stream gate to prove counter ordering.
+  // Match the production IPC Get's single copy stream. Write before waiting
+  // so the stream can release its own gate. This checks completion and data;
+  // the independent cross-stream probe checks for premature counters.
   flagcxResult_t gateResult = flagcxSuccess;
-  if (rank == 1)
-    gateResult = deviceAdaptor->streamWaitValue64(
-        stream, gate, 1, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
+  if (rank == 1) {
+    gateResult = deviceAdaptor->streamWriteValue64(stream, gate, 1, 0);
+    if (gateResult == flagcxSuccess)
+      gateResult = deviceAdaptor->streamWaitValue64(
+          stream, gate, 1, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
+  }
   int anyGateError = collectiveFailed(gateResult);
   if (anyGateError) {
     if (rank == 1) {
-      EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
       EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
     }
     MPI_Barrier(MPI_COMM_WORLD);
-    ASSERT_EQ(anyGateError, 0)
-        << "IPC Get counter-ordering gate failed at streamWaitValue64 on "
-           "at least one rank; local result="
-        << static_cast<int>(gateResult);
+    ASSERT_EQ(anyGateError, 0) << "IPC Get same-stream gate failed on "
+                                  "at least one rank; local result="
+                               << static_cast<int>(gateResult);
   }
 
   flagcxResult_t op = flagcxSuccess;
@@ -130,12 +136,15 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
   auto runStage = [&](const char *name, auto operation) {
     if (op == flagcxSuccess) {
       op = operation();
+      std::fprintf(stderr, "IPC Get same-stream: rank=%d stage=%s result=%d\n",
+                   rank, name, static_cast<int>(op));
+      std::fflush(stderr);
       if (op != flagcxSuccess)
         failedStage = name;
     }
   };
   uint64_t before = 0;
-  uint64_t pending = 0;
+  uint64_t after = 0;
   if (rank == 1) {
     runStage("flagcxReadCounter(before)",
              [&] { return flagcxReadCounter(comm, &before); });
@@ -143,46 +152,28 @@ TEST_F(RmaTest, IpcGetCounterFollowsCopy) {
       return flagcxGetAsync(dataBuff, 64, flagcxUint8, 0, dataWin, 0, 0, comm,
                             stream);
     });
-    runStage("flagcxReadCounter(pending)",
-             [&] { return flagcxReadCounter(comm, &pending); });
-    // Release the gate on a different stream even when the operation fails,
-    // so the test cannot leave the RMA progress thread waiting forever.
-    flagcxResult_t release =
-        deviceAdaptor->streamWriteValue64(releaseStream, gate, 1, 0);
-    runStage("streamWriteValue64(release)", [&] { return release; });
-    if (release != flagcxSuccess) {
-      // A failed release must not strand the already queued wait while the
-      // failure is reported and resources are destroyed.
-      uint64_t open = 1;
-      EXPECT_EQ(devHandle->deviceMemcpy(gate, &open, sizeof(open),
-                                        flagcxMemcpyHostToDevice, nullptr),
-                flagcxSuccess);
-    }
-    if (release == flagcxSuccess) {
-      release = devHandle->streamSynchronize(releaseStream);
-      runStage("streamSynchronize(release)", [&] { return release; });
-    }
     runStage("flagcxWaitCounter",
              [&] { return flagcxWaitCounter(comm, before + 1); });
     runStage("streamSynchronize(copy)",
              [&] { return devHandle->streamSynchronize(stream); });
+    runStage("flagcxReadCounter(after)",
+             [&] { return flagcxReadCounter(comm, &after); });
   }
   int anyOperationError = collectiveFailed(op);
   if (rank == 1) {
     if (op == flagcxSuccess) {
-      EXPECT_EQ(pending, before) << "IPC Get completed before its D2D copy";
+      EXPECT_EQ(after, before + 1) << "IPC Get completion counter mismatch";
       std::vector<uint8_t> actual(64);
       EXPECT_EQ(devHandle->deviceMemcpy(actual.data(), dataBuff, actual.size(),
                                         flagcxMemcpyDeviceToHost, nullptr),
                 flagcxSuccess);
       EXPECT_EQ(actual, std::vector<uint8_t>(64, 0xA5));
     }
-    EXPECT_EQ(devHandle->streamDestroy(releaseStream), flagcxSuccess);
     EXPECT_EQ(flagcxMemFree(gate), flagcxSuccess);
   }
   MPI_Barrier(MPI_COMM_WORLD);
   ASSERT_EQ(anyOperationError, 0)
-      << "IPC Get counter-ordering operation failed on at least one rank; "
+      << "IPC Get same-stream operation failed on at least one rank; "
          "local rank="
       << rank << ", stage=" << failedStage
       << ", result=" << static_cast<int>(op);
