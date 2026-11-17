@@ -396,16 +396,28 @@ void freeRegistration(flagcxOneSideHandleInfo *registration) {
   free(registration);
 }
 
+flagcxResult_t hostDeviceSynchronize() { return flagcxSuccess; }
+
 class DevApiBackendGuard {
 public:
   explicit DevApiBackendGuard(flagcxDevApiBackend *replacement)
-      : saved_(devApiBackend) {
+      : saved_(devApiBackend), savedDevice_(deviceAdaptor) {
     devApiBackend = replacement;
+    if (savedDevice_ != nullptr) {
+      device_ = *savedDevice_;
+      device_.deviceSynchronize = hostDeviceSynchronize;
+      deviceAdaptor = &device_;
+    }
   }
-  ~DevApiBackendGuard() { devApiBackend = saved_; }
+  ~DevApiBackendGuard() {
+    devApiBackend = saved_;
+    deviceAdaptor = savedDevice_;
+  }
 
 private:
   flagcxDevApiBackend *saved_;
+  flagcxDeviceAdaptor *savedDevice_;
+  flagcxDeviceAdaptor device_ = {};
 };
 
 flagcxResult_t (*savedDefaultDevCommDestroy)(flagcxComm_t,
@@ -444,6 +456,7 @@ protected:
     }
     savedDeviceAdaptor = deviceAdaptor;
     testDeviceAdaptor = *deviceAdaptor;
+    testDeviceAdaptor.deviceSynchronize = hostDeviceSynchronize;
     testDeviceAdaptor.hostUnregister = recordHostUnregister;
     testDeviceAdaptor.deviceFree = recordDeviceFree;
     testDeviceAdaptor.gdrMemFree = recordGdrFree;
@@ -1119,8 +1132,7 @@ TEST(DevCommCreateTest, PreservesCreateErrorWhenRollbackFails) {
   failingBackend.devCommCreate = failDevCommCreate;
   failingBackend.devCommDestroy = recordDevCommRollback;
 
-  struct flagcxDevApiBackend *savedBackend = devApiBackend;
-  devApiBackend = &failingBackend;
+  DevApiBackendGuard backendGuard(&failingBackend);
   rollbackCallCount = 0;
   rollbackResult = flagcxInternalError;
 
@@ -1142,7 +1154,6 @@ TEST(DevCommCreateTest, PreservesCreateErrorWhenRollbackFails) {
   EXPECT_EQ(flagcxDevCommRetryPendingCleanup(&comm), flagcxSuccess);
   EXPECT_EQ(rollbackCallCount, 2);
   EXPECT_EQ(comm.pendingDevCommCleanup, nullptr);
-  devApiBackend = savedBackend;
 }
 
 int devMemCreateCalls = 0;
@@ -1479,3 +1490,64 @@ TEST(DevMemProvenanceTest, DefaultBackendAllowsExternalCclUserBuffer) {
 #endif
 
 } // namespace
+
+namespace {
+int hostSyncCalls = 0;
+flagcxResult_t failHostSynchronizeOnce() {
+  return ++hostSyncCalls == 1 ? flagcxRemoteError : flagcxSuccess;
+}
+int synchronizedBackendDestroys = 0;
+flagcxResult_t countSynchronizedDevCommDestroy(flagcxComm_t, flagcxDevComm_t) {
+  ++synchronizedBackendDestroys;
+  return flagcxSuccess;
+}
+flagcxResult_t countSynchronizedDevMemDestroy(flagcxComm_t, flagcxDevMem_t) {
+  ++synchronizedBackendDestroys;
+  return flagcxSuccess;
+}
+} // namespace
+
+TEST(DevCommRequirementsTest, SynchronizeFailureRetainsOwnerForRetry) {
+  flagcxDevApiBackend backend = {};
+  backend.name = "sync-retry";
+  backend.devCommCreate = captureDevCommCreate;
+  backend.devCommDestroy = countSynchronizedDevCommDestroy;
+  DevApiBackendGuard guard(&backend);
+  flagcxComm comm = {};
+  comm.nranks = comm.localRanks = 1;
+  flagcxDevCommRequirements reqs = FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER;
+  flagcxDevComm_t handle = nullptr;
+  ASSERT_EQ(flagcxDevCommCreate(&comm, &reqs, &handle), flagcxSuccess);
+  deviceAdaptor->deviceSynchronize = failHostSynchronizeOnce;
+  hostSyncCalls = synchronizedBackendDestroys = 0;
+  EXPECT_EQ(flagcxDevCommDestroy(&comm, handle), flagcxRemoteError);
+  EXPECT_EQ(synchronizedBackendDestroys, 0);
+  EXPECT_EQ(comm.activeDevComms, handle);
+  EXPECT_EQ(comm.devCommCount, 1);
+  ASSERT_EQ(flagcxDevCommDestroy(&comm, handle), flagcxSuccess);
+  EXPECT_EQ(synchronizedBackendDestroys, 1);
+  EXPECT_EQ(comm.activeDevComms, nullptr);
+  EXPECT_EQ(comm.devCommCount, 0);
+}
+
+TEST(DevMemApiHostTest, SynchronizeFailureRetainsViewForRetry) {
+  flagcxDevApiBackend backend = {};
+  backend.name = "sync-retry";
+  backend.devMemCreate = captureDevMemCreate;
+  backend.devMemDestroy = countSynchronizedDevMemDestroy;
+  DevApiBackendGuard guard(&backend);
+  flagcxComm comm = {};
+  char buffer[16] = {};
+  flagcxDevMem_t handle = nullptr;
+  ASSERT_EQ(flagcxDevMemCreate(&comm, buffer, sizeof(buffer), nullptr, &handle),
+            flagcxSuccess);
+  deviceAdaptor->deviceSynchronize = failHostSynchronizeOnce;
+  hostSyncCalls = synchronizedBackendDestroys = 0;
+  EXPECT_EQ(flagcxDevMemDestroy(&comm, handle), flagcxRemoteError);
+  EXPECT_EQ(synchronizedBackendDestroys, 0);
+  EXPECT_EQ(comm.activeDevMems, handle);
+  EXPECT_FALSE(handle->backendDestroyed);
+  ASSERT_EQ(flagcxDevMemDestroy(&comm, handle), flagcxSuccess);
+  EXPECT_EQ(synchronizedBackendDestroys, 1);
+  EXPECT_EQ(comm.activeDevMems, nullptr);
+}

@@ -357,6 +357,7 @@ typedef struct {
   flagcxDataType_t ipcRingDatatype;
   flagcxRedOp_t ipcRingRedOp;
   bool ipcRingResourcesDirty;
+  bool ipcRingCleanupPending = false;
 
   flagcxRingStepTrigger *ipcRingTriggersDevice;
   size_t ipcRingTriggerCount;
@@ -494,6 +495,10 @@ flagcxResult_t populateUniRunnerStaticRingDag(
 
 // Collective internal preparation; failed bindings must finish cleanup before
 // reuse.
+flagcxResult_t
+ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
+                                flagcxComm_t comm, size_t channels,
+                                size_t bytes);
 flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                               flagcxComm_t comm, size_t slots);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);

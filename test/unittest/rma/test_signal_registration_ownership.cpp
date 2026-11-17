@@ -40,6 +40,8 @@ flagcxResult_t retryableDeregisterMr(void *, void *) {
   return result;
 }
 
+flagcxResult_t hostSignalSynchronize() { return flagcxSuccess; }
+
 flagcxResult_t recordCloseSend(void *) {
   closeSendCalls++;
   return flagcxSuccess;
@@ -96,6 +98,7 @@ protected:
 
     savedDeviceAdaptor_ = deviceAdaptor;
     testDeviceAdaptor_ = *deviceAdaptor;
+    testDeviceAdaptor_.deviceSynchronize = hostSignalSynchronize;
     testDeviceAdaptor_.gdrMemFree = recordSignalGdrFree;
     testDeviceAdaptor_.ipcMemHandleClose = recordIpcMemHandleClose;
     deviceAdaptor = &testDeviceAdaptor_;

@@ -180,7 +180,38 @@ static flagcxResult_t releaseOrphanUniRunnerIpcWindow(flagcxComm_t comm,
   }
   return flagcxSuccess;
 }
+// Close both bindings even if one fails. Exporter allocations remain in Comm.
 static flagcxResult_t
+closeUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
+                               flagcxComm_t comm) {
+  flagcxResult_t result = flagcxSuccess;
+  for (flagcxDevMem_t *view :
+       {&runnerState->ipcRingProgressMem, &runnerState->ipcRingScratchMem}) {
+    if (*view != NULL) {
+      flagcxResult_t cleanup = flagcxDevMemDestroy(comm, *view);
+      if (cleanup == flagcxSuccess)
+        *view = NULL;
+      else if (result == flagcxSuccess)
+        result = cleanup;
+    }
+  }
+  for (void *buffer : {runnerState->ipcRingProgressBuffer,
+                       runnerState->ipcRingScratchBuffer}) {
+    flagcxResult_t cleanup = releaseOrphanUniRunnerIpcWindow(comm, buffer);
+    if (result == flagcxSuccess)
+      result = cleanup;
+  }
+  if (result != flagcxSuccess)
+    return result;
+  runnerState->ipcRingScratchBuffer = NULL;
+  runnerState->ipcRingProgressBuffer = NULL;
+  runnerState->ipcRingScratchBytes = 0;
+  runnerState->ipcRingProgressBytes = 0;
+  runnerState->ipcRingCleanupPending = false;
+  return flagcxSuccess;
+}
+
+flagcxResult_t
 ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
                                 flagcxComm_t comm, size_t numChannels,
                                 size_t simpleBufferBytes) {
@@ -191,6 +222,17 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
                         sizeof(flagcxRingChannelProgress))
     return flagcxInvalidArgument;
   comm->internalBuffersNeedPeerClose = true;
+  if (runnerState->ipcRingCleanupPending) {
+    flagcxResult_t local = closeUniRunnerIpcRingResources(runnerState, comm);
+    flagcxResult_t common = flagcxSuccess;
+    bool ignoredReuse = false;
+    flagcxResult_t agreement =
+        agreeUniRunnerResourceState(comm, false, local, &ignoredReuse, &common);
+    if (agreement != flagcxSuccess || common != flagcxSuccess) {
+      runnerState->ipcRingCleanupPending = true;
+      return agreement != flagcxSuccess ? agreement : common;
+    }
+  }
   const size_t scratchBytes = numChannels * simpleBufferBytes;
   const size_t progressBytes = numChannels * sizeof(flagcxRingChannelProgress);
   const bool completeMatch =
@@ -284,33 +326,18 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 
 fail : {
-  flagcxResult_t cleanup = flagcxSuccess;
-  if (progressMem != NULL) {
-    cleanup = flagcxDevMemDestroy(comm, progressMem);
-    if (cleanup == flagcxSuccess)
-      progressMem = NULL;
-  }
-  if (scratchMem != NULL) {
-    flagcxResult_t scratchCleanup = flagcxDevMemDestroy(comm, scratchMem);
-    if (scratchCleanup == flagcxSuccess)
-      scratchMem = NULL;
-    else if (cleanup == flagcxSuccess)
-      cleanup = scratchCleanup;
-  }
-  if (cleanup == flagcxSuccess)
-    cleanup = releaseOrphanUniRunnerIpcWindow(comm, progress);
-  if (cleanup == flagcxSuccess)
-    cleanup = releaseOrphanUniRunnerIpcWindow(comm, scratch);
+  runnerState->ipcOwner = comm;
+  runnerState->ipcRingScratchMem = scratchMem;
+  runnerState->ipcRingProgressMem = progressMem;
+  runnerState->ipcRingScratchBuffer = scratch;
+  runnerState->ipcRingProgressBuffer = progress;
+  flagcxResult_t cleanup = closeUniRunnerIpcRingResources(runnerState, comm);
   bool ignored = false;
   flagcxResult_t commonCleanup = flagcxSuccess;
   flagcxResult_t agreement = agreeUniRunnerResourceState(
       comm, false, cleanup, &ignored, &commonCleanup);
   if (agreement != flagcxSuccess || commonCleanup != flagcxSuccess) {
-    runnerState->ipcOwner = comm;
-    runnerState->ipcRingScratchMem = scratchMem;
-    runnerState->ipcRingProgressMem = progressMem;
-    runnerState->ipcRingScratchBuffer = scratch;
-    runnerState->ipcRingProgressBuffer = progress;
+    runnerState->ipcRingCleanupPending = true;
     return agreement != flagcxSuccess ? agreement : commonCleanup;
   }
 }
@@ -4858,12 +4885,14 @@ flagcxResult_t initUniRunnerStateIpcRingAR(flagcxUniRunnerState *runnerState,
   const size_t resourceChannels =
       comm->nranks > 1 ? static_cast<size_t>(comm->heteroComm->collChannels)
                        : 0;
-  if (result == flagcxSuccess && runnerState->ipcRingScratchMem != NULL &&
+  if (result == flagcxSuccess && !runnerState->ipcRingCleanupPending &&
+      runnerState->ipcRingScratchMem != NULL &&
       (runnerState->ipcRingChannels != resourceChannels ||
        runnerState->ipcRingSimpleBufferBytes != simpleBufferBytes)) {
     result = flagcxInvalidUsage;
   }
-  if (runnerState->ipcRingScratchMem == NULL) {
+  if (runnerState->ipcRingCleanupPending ||
+      runnerState->ipcRingScratchMem == NULL) {
     runnerState->ipcRingChannels = resourceChannels;
     runnerState->ipcRingSimpleBufferBytes = simpleBufferBytes;
   }
@@ -7257,34 +7286,10 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   FLAGCXCHECK(destroyUniRunnerIpcDataViews(runnerState));
   FLAGCXCHECK(closeUniRunnerIpcReadyStorage(runnerState, comm));
   runnerState->ipcReadySlots = 0;
-  if (runnerState->ipcRingScratchMem != NULL) {
-    if (comm == NULL)
-      return flagcxInternalError;
-    FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcRingScratchMem));
-    runnerState->ipcRingScratchMem = NULL;
-  }
-  if (runnerState->ipcRingProgressMem != NULL) {
-    if (comm == NULL)
-      return flagcxInternalError;
-    FLAGCXCHECK(flagcxDevMemDestroy(comm, runnerState->ipcRingProgressMem));
-    runnerState->ipcRingProgressMem = NULL;
-  }
-  FLAGCXCHECK(
-      releaseOrphanUniRunnerIpcWindow(comm, runnerState->ipcRingScratchBuffer));
-  FLAGCXCHECK(releaseOrphanUniRunnerIpcWindow(
-      comm, runnerState->ipcRingProgressBuffer));
-  if ((runnerState->ipcRingScratchBuffer != NULL ||
-       runnerState->ipcRingProgressBuffer != NULL) &&
-      comm == NULL) {
-    return flagcxInternalError;
-  }
-  // Only drop borrowed pointers here. Comm frees the exporter allocations
-  // after every rank has closed its imports. TODO: remove the temporary
-  // shutdown rendezvous when internal IPC supports local communicator teardown.
-  runnerState->ipcRingScratchBuffer = NULL;
-  runnerState->ipcRingProgressBuffer = NULL;
-  runnerState->ipcRingScratchBytes = 0;
-  runnerState->ipcRingProgressBytes = 0;
+  // Only close imports here; Comm frees exporters after peer acknowledgment.
+  // TODO: replace the temporary cross-rank shutdown rendezvous with a lifetime
+  // protocol supporting local communicator teardown.
+  FLAGCXCHECK(closeUniRunnerIpcRingResources(runnerState, comm));
   runnerState->ipcRingChannels = 0;
   runnerState->ipcRingSimpleBufferBytes = 0;
   runnerState->ipcRingDatatype = flagcxInt8;

@@ -792,13 +792,18 @@ flagcxDevApiBackend *readySavedBackend = nullptr;
 bool failReadyCreate = false;
 bool failReadyFree = false;
 int readyViewCreates = 0;
+bool failRingInitialization = false;
+bool failOnlyProgressFree = false;
+void *blockedPeerArray = nullptr;
+void *lastPeerArray = nullptr;
 flagcxResult_t readyMalloc(void **pointer, size_t bytes, flagcxMemType_t,
                            flagcxStream_t) {
   *pointer = calloc(1, bytes);
   return *pointer != nullptr ? flagcxSuccess : flagcxSystemError;
 }
 flagcxResult_t readyFree(void *pointer, flagcxMemType_t, flagcxStream_t) {
-  if (failReadyFree)
+  if (failReadyFree &&
+      (blockedPeerArray == nullptr || pointer == blockedPeerArray))
     return flagcxRemoteError;
   free(pointer);
   return flagcxSuccess;
@@ -810,6 +815,12 @@ flagcxResult_t readyCopy(void *dst, void *src, size_t bytes, flagcxMemcpyType_t,
 }
 flagcxResult_t readyMemset(void *pointer, int value, size_t bytes,
                            flagcxMemType_t, flagcxStream_t) {
+  if (failRingInitialization && readyViewCreates == 2) {
+    failRingInitialization = false;
+    failReadyFree = true;
+    blockedPeerArray = failOnlyProgressFree ? lastPeerArray : nullptr;
+    return flagcxSystemError;
+  }
   memset(pointer, value, bytes);
   return flagcxSuccess;
 }
@@ -833,6 +844,8 @@ flagcxResult_t failReadyViewCreate(flagcxComm_t comm, void *pointer,
   ++readyViewCreates;
   flagcxResult_t result =
       readySavedBackend->devMemCreate(comm, pointer, bytes, window, view);
+  if (result == flagcxSuccess && view->ipcIndex >= 0)
+    lastPeerArray = comm->ipcTable[view->ipcIndex].devPeerPtrs;
   if (result == flagcxSuccess && failReadyCreate) {
     failReadyCreate = false;
     failReadyFree = true;
@@ -841,7 +854,7 @@ flagcxResult_t failReadyViewCreate(flagcxComm_t comm, void *pointer,
   return result;
 }
 
-class UniRunnerReadyRetryTest : public ::testing::Test {
+class UniRunnerIpcRetryTest : public ::testing::Test {
 protected:
   void SetUp() override {
     if (strcmp(devApiBackend->name, "default") != 0)
@@ -865,6 +878,9 @@ protected:
     failReadyCreate = true;
     failReadyFree = false;
     readyViewCreates = 0;
+    failRingInitialization = false;
+    failOnlyProgressFree = false;
+    blockedPeerArray = lastPeerArray = nullptr;
     coll.nranks = 1;
     bootstrap.mode = FLAGCX_BOOTSTRAP_COLL;
     bootstrap.coll = &coll;
@@ -884,6 +900,54 @@ protected:
     devApiBackend = readySavedBackend;
     deviceAdaptor = savedDevice;
   }
+  void checkRingRecovery(bool partialCleanup) {
+    failReadyCreate = false;
+    failRingInitialization = true;
+    failOnlyProgressFree = partialCleanup;
+    // Match the request metadata established by normal ring DAG initialization.
+    runner.ipcRingChannels = 1;
+    runner.ipcRingSimpleBufferBytes = 64;
+    EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxRemoteError);
+    ASSERT_TRUE(runner.ipcRingCleanupPending);
+    ASSERT_NE(runner.ipcRingProgressMem, nullptr);
+    EXPECT_TRUE(runner.ipcRingProgressMem->backendDestroyed);
+    EXPECT_EQ(runner.ipcRingProgressMem->window, nullptr);
+    if (partialCleanup) {
+      EXPECT_EQ(runner.ipcRingScratchMem, nullptr);
+    } else {
+      ASSERT_NE(runner.ipcRingScratchMem, nullptr);
+      EXPECT_TRUE(runner.ipcRingScratchMem->backendDestroyed);
+      EXPECT_EQ(runner.ipcRingScratchMem->window, nullptr);
+    }
+    void *oldScratch = runner.ipcRingScratchBuffer;
+    void *oldProgress = runner.ipcRingProgressBuffer;
+    EXPECT_EQ(readyViewCreates, 2);
+    EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxRemoteError);
+    EXPECT_TRUE(runner.ipcRingCleanupPending);
+    EXPECT_EQ(readyViewCreates, 2);
+    failReadyFree = false;
+    ASSERT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxSuccess);
+    EXPECT_FALSE(runner.ipcRingCleanupPending);
+    ASSERT_NE(runner.ipcRingScratchMem, nullptr);
+    ASSERT_NE(runner.ipcRingProgressMem, nullptr);
+    EXPECT_FALSE(runner.ipcRingScratchMem->backendDestroyed);
+    EXPECT_FALSE(runner.ipcRingProgressMem->backendDestroyed);
+    EXPECT_NE(runner.ipcRingScratchMem->window, nullptr);
+    EXPECT_NE(runner.ipcRingProgressMem->window, nullptr);
+    EXPECT_NE(runner.ipcRingScratchBuffer, oldScratch);
+    EXPECT_NE(runner.ipcRingProgressBuffer, oldProgress);
+    EXPECT_EQ(readyViewCreates, 4);
+    size_t exporters = 0;
+    for (auto *record = comm.internalBuffers; record; record = record->next)
+      ++exporters;
+    EXPECT_EQ(exporters, 4u);
+    ASSERT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxSuccess);
+    EXPECT_EQ(readyViewCreates, 4); // Fully initialized storage is reusable.
+  }
   flagcxDeviceAdaptor *savedDevice = nullptr;
   flagcxDeviceAdaptor device = {};
   flagcxDevApiBackend backend = {};
@@ -894,7 +958,7 @@ protected:
   int localRank = 0;
 };
 
-TEST_F(UniRunnerReadyRetryTest, PendingCleanupCannotBeReusedAsReadyStorage) {
+TEST_F(UniRunnerIpcRetryTest, PendingCleanupCannotBeReusedAsReadyStorage) {
   EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4),
             flagcxRemoteError);
   ASSERT_TRUE(runner.ipcReadyCleanupPending);
@@ -920,4 +984,12 @@ TEST_F(UniRunnerReadyRetryTest, PendingCleanupCannotBeReusedAsReadyStorage) {
     ++exporters;
   EXPECT_EQ(exporters, 2u); // Both buffers remain owned by Comm.
 }
+TEST_F(UniRunnerIpcRetryTest, RingRetriesBothPartiallyDestroyedBindings) {
+  checkRingRecovery(false);
+}
+
+TEST_F(UniRunnerIpcRetryTest, RingRetriesAfterOnlyOneBindingClosed) {
+  checkRingRecovery(true);
+}
+
 } // namespace
