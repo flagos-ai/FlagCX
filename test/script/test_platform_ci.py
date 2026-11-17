@@ -844,7 +844,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn('FLAGCX_CI_MPI_LABEL="p2p shared-engine WRITE MPI tests"', p2p_case)
         self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", ascend_env)
         self.assertIn("FLAGCX_CI_ENABLE_IBUC=1", ascend_env)
-        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-required", ascend_env)
+        self.assertNotIn("FLAGCX_CI_GPU_MR_POLICY=", ascend_env)
 
     def test_ibuc_retransmission_is_separate_from_data_receive_queues(self):
         common = (
@@ -932,31 +932,17 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ENABLED_PLATFORMS,
         )
-        selected = subprocess.run(
-            ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "hygon"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
-            ["hygon"],
-        )
-        selected_cuda = subprocess.run(
-            [
-                "ruby",
-                str(matrix_loader),
-                str(REPO_ROOT / ".github/configs"),
-                "cuda",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(
-            [entry["platform"] for entry in json.loads(selected_cuda.stdout)["include"]],
-            ["cuda"],
-        )
+        for platform in ("cuda", "hygon"):
+            selected = subprocess.run(
+                ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
+                [platform],
+            )
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit-test.yml"
         ).read_text()
@@ -1640,9 +1626,8 @@ run_suite
         self.assertNotIn("FLAGCX_CI_RUNNER_HETERO_SUPPORTED", unit_runner)
         self.assertNotIn("FLAGCX_CI_RUNNER_NET_SUPPORTED", unit_runner)
         self.assertNotIn("flagcx_ci_skip_suite", iluvatar_env)
-        # The GPU MR capability is declared by the platform, not by a vendor
-        # name baked into the shared runner or the checker.
-        self.assertIn("FLAGCX_CI_GPU_MR_POLICY=gpu-mr-optional", iluvatar_env)
+        # Iluvatar and Ascend use the shared required-by-default GPU MR gate.
+        self.assertNotIn("FLAGCX_CI_GPU_MR_POLICY=", iluvatar_env)
         self.assertIn(
             "gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}", unit_runner
         )
@@ -2260,13 +2245,13 @@ run_suite
         self.assertIn("FLAGCX_IB_TIMEOUT=14", runner_case)
         self.assertIn("FLAGCX_IB_RETRY_CNT=1", runner_case)
         self.assertIn('"${runner_net_platform_env[@]}"', runner_case)
-        self.assertEqual(
-            runner_case.count("./build/bin/runner_mpi_tests"), 5
-        )
+        self.assertEqual(runner_case.count("./build/bin/runner_mpi_tests"), 7)
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", runner_case)
         self.assertEqual(
-            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 4
+            runner_case.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 6
         )
+        self.assertIn('if [[ "$platform_name" == iluvatar ]]; then', runner_case)
+        self.assertIn('FLAGCX_CI_RUNNER_BYTES=1048576', runner_case)
         self.assertNotIn("UniRunnerDagAlgorithmsRejectOuterGroup", runner_case)
         cuda_experimental = (
             REPO_ROOT / ".github/scripts/ci/run_cuda_perf_experimental.sh"

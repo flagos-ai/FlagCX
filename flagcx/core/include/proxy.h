@@ -137,6 +137,21 @@ struct flagcxProxyArgs {
   int sharedSize[FLAGCX_STEPS];
 
   int idle;
+  // Rate-limit receive progress diagnostics when TRACE is enabled.
+  uint8_t netRecvTraceStage = 0;
+  uint64_t netRecvTraceTimeNs = 0;
+  int netRecvFlushTestChunk = 0;
+  int netRecvEventQueryChunk = 0;
+  uint64_t netRecvEventQueryTimeNs = 0;
+  int netRecvCopyDoneChunk = 0;
+  uint8_t netSendTraceStage = 0;
+  int netSendTraceChunk = -1;
+  uint64_t netSendTraceTimeNs = 0;
+  int p2pSendEventQueryChunk = 0;
+  uint64_t p2pSendEventQueryTimeNs = 0;
+  int p2pRecvEventQueryChunk = 0;
+  uint64_t p2pRecvEventQueryTimeNs = 0;
+  uint64_t p2pTraceTimeNs = 0;
 
   // Element linking
   struct flagcxProxyArgs *next;
