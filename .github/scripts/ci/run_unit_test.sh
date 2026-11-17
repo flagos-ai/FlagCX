@@ -157,6 +157,9 @@ build_project() {
 
 build_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
+  if [[ "$SUITE" == device_traits ]]; then
+    return 0
+  fi
   if [[ "$SUITE" == device_api_host ||
         "$SUITE" == device_api_shmem ||
         "$SUITE" == device_api_unified_ir ||
@@ -389,9 +392,6 @@ run_suite() {
       local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
       local platform_name
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
-      if [[ "$platform_name" == ascend ]]; then
-        export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-      fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
@@ -518,9 +518,6 @@ run_suite() {
       local shared_status=0
       local shared_mpi_status=0
       local p2p_mpi_env=""
-      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ascend ]]; then
-        export FLAGCX_CI_FORCE_FIRST_LOCAL_DEVICE=1
-      fi
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
@@ -631,11 +628,9 @@ run_suite() {
             # consumer kernel is built for this platform.
             ;;
           ascend)
-            # CANN has no stream wait/write-value support, and the RMA
-            # device-consumer kernel is not built for Ascend. Keep the
-            # platform's IPC/NET correctness runs without this conformance
-            # matrix.
-            echo "Ascend coverage gap: RMA visibility requires cannAdaptorStreamWaitValue64/StreamWriteValue64 (both return flagcxNotSupported) and an Ascend device-consumer kernel, so this conformance matrix is not run"
+            # The existing immediate-consumer cases are deliberately outside
+            # this Ascend RMA/SymMem change. IPC and NET correctness still run.
+            echo "Ascend RMA scope: running existing IPC and NET cases without the CUDA immediate-consumer conformance cases"
             ;;
           ppu)
             # BAREX intentionally retains a temporary no-op/NONE policy. The
@@ -849,6 +844,8 @@ run_suite() {
             pxn_visible_devices_var=MACA_VISIBLE_DEVICES
           elif [[ "$platform_name" == "hygon" ]]; then
             pxn_visible_devices_var=HIP_VISIBLE_DEVICES
+          elif [[ "$platform_name" == "ascend" ]]; then
+            pxn_visible_devices_var=ASCEND_RT_VISIBLE_DEVICES
           fi
           pxn_launcher+=("$pxn_visible_devices_var=$FLAGCX_CI_PXN_VISIBLE_DEVICES")
           pxn_platform_env+=(
@@ -1044,6 +1041,12 @@ run_suite() {
     device_api_unified_ir_shmem)
       run_device_api_unified_ir_shmem
       ;;
+    device_traits)
+      local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+      FLAGCX_CI_TEST_LABEL="NVIDIA device traits" \
+        "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/kernel/nvidia" \
+          device_traits "${args[@]}"
+      ;;
     *)
       echo "Unsupported unit test suite: $SUITE" >&2
       exit 2
@@ -1085,6 +1088,8 @@ run_supplemental_unit_tests() {
 case "$SUITE" in
   adaptor|core|device_api|device_api_shmem|device_api_host|device_api_unified_ir|device_api_unified_ir_shmem|p2p|rma|runner|service|symmem)
     build_googletest
+    ;;
+  device_traits)
     ;;
   *)
     echo "Unsupported unit test suite: $SUITE" >&2

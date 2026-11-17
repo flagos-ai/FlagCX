@@ -190,7 +190,7 @@ jobs:
           TORCH_RESULT: ${{ needs.torch_api_tests.result }}
           FORMAT_RESULT: ${{ needs.format-check.result }}
         shell: bash
-        run: >-
-          bash .github/scripts/ci/check_ci_results.sh
-          "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT"
-          "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"
+        run: |
+          bash .github/scripts/ci/check_ci_results.sh \
+            "$ACTIVE" "$HAS_PLATFORMS" "$PREPARE_RESULT" "$UNIT_RESULT" \
+            "$PERF_RESULT" "$TORCH_RESULT" "$FORMAT_RESULT"

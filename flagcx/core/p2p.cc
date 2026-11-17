@@ -209,6 +209,8 @@ static flagcxResult_t
 p2pPublishOfferAndResolvePlan(struct flagcxProxyArgs *args,
                               struct p2pRegInfo *ownOffer,
                               struct p2pRegInfo *peerOffer, bool isSender) {
+  if (args->p2pPlan != flagcxP2pPlanPending)
+    return flagcxSuccess;
   if (__atomic_load_n(&ownOffer->offerReady, __ATOMIC_ACQUIRE) == 0) {
     int registered = args->regBufFlag && args->p2pRmtAddr != NULL;
     __atomic_store_n(&ownOffer->registered, registered, __ATOMIC_RELAXED);

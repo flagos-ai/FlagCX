@@ -1519,11 +1519,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
           const Multimem & = {})
       : _coop(coop), _peerBuffers(dc.barrierPeers), _nRanks(team.nRanks),
         _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
-        _epochBuffer(dc.epochBuffer), _epoch(0) {
-    if (dc.nBarriers <= 0 || index >= static_cast<uint32_t>(dc.nBarriers))
-      FLAGCX_DEVICE_TRAP();
-    _epoch =
-        Atomic::load(&dc.epochBuffer[index], flagcxDeviceMemoryOrderAcquire);
+        _epochBuffer(dc.epochBuffer),
+        _epoch(Atomic::load(&dc.epochBuffer[index],
+                            flagcxDeviceMemoryOrderAcquire)) {
+    assert(index < FLAGCX_DEVICE_CTA_COUNT);
   }
 
   // arrive: thread-striped store epoch+1 to each peer's inbox slot for me
@@ -1616,15 +1615,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
         _signalBuffer(net.signalBuffer), _shadowBuffer(net.shadowBuffer),
         _signalCount(net.signalCount), _contextId(net.getContextId()),
         _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
-        _barrierSignal0(0), _stride(dc.intraSize), _localRank(dc.intraRank) {
+        _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
+        _stride(dc.intraSize), _localRank(dc.intraRank) {
     DefaultNetProviderPolicy<P>::initBarrier(*this, net.context());
-    if (nInterPeers > 0 &&
-        (net._dc.interBarrierCount <= 0 ||
-         index >= static_cast<uint32_t>(net._dc.interBarrierCount)))
-      FLAGCX_DEVICE_TRAP();
-    if (nInterPeers > 0)
-      _barrierSignal0 =
-          net.barrierSignalBase + static_cast<int>(index) * net.nTeamRanks;
+    assert(index < FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR DefaultNetContext context() const {

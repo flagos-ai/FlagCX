@@ -223,6 +223,13 @@ struct flagcxDevMemDeferredResource {
   struct flagcxDevMemDeferredResource *next;
 };
 
+struct flagcxUniRunnerIpcBinding {
+  int slot;
+  uint64_t generation;
+  size_t boundSize;
+  bool ownsTableReference;
+};
+
 struct flagcxDevMemInternal {
   // ---- Baseline (always set) ----
   void *rawPtr; // = buff parameter
@@ -241,9 +248,11 @@ struct flagcxDevMemInternal {
   int mrIndex; // index into heteroComm->oneSideHandles (-1 if not registered)
   uintptr_t mrBase; // handles[mrIndex]->baseVas[myRank] (cached for device)
 
-  // ---- IPC layer (set if IPC exchange succeeds, else nullptr) ----
+  // ---- IPC layer (ipcIndex >= 0 when IPC exchange succeeds) ----
   int ipcIndex;  // index into comm->ipcTable (-1 if no IPC)
   int intraRank; // this rank's local rank index (for IPC local pointer)
+  // Allocated only by the uniRunner IPC Ring AllReduce DevMem entry point.
+  struct flagcxUniRunnerIpcBinding *uniRunnerIpc;
 
   // ---- Window layer (opaque pointer to DeviceAPI::Window) ----
   void *window;    // Points to vendor Window or defaultDeviceImpl::Window
@@ -261,5 +270,10 @@ struct flagcxDevMemInternal {
 #define FLAGCX_DEV_MEM_T_DEFINED
 typedef struct flagcxDevMemInternal *flagcxDevMem_t;
 #endif
+
+// Internal entry point: ordinary Device API callers use flagcxDevMemCreate.
+flagcxResult_t flagcxUniRunnerIpcDevMemCreate(flagcxComm_t comm, void *buff,
+                                              size_t size,
+                                              flagcxDevMem_t *devMem);
 
 #endif // FLAGCX_DEVICE_API_INTERNAL_H_

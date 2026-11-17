@@ -13,6 +13,11 @@
 
 using NvidiaTraits = PlatformTraits<NvidiaPlatform>;
 using Ops = DeviceAPI::CoopOps;
+static_assert(FLAGCX_DEVICE_IR_ABI_VERSION == 1, "Device IR ABI version");
+static_assert(flagcxDeviceMemoryOrderWeak == 0 &&
+                  flagcxDeviceMemoryOrderRelaxed == 1,
+              "Device memory order values");
+static_assert(flagcxDeviceMemoryLocal == 0, "Device Local space value");
 static_assert(
     std::is_same<DeviceAPI, CommTraits<DefaultBackend<NvidiaPlatform>>>::value,
     "this test must use the NVIDIA default backend");
@@ -34,8 +39,8 @@ static_assert(defaultNetSelectProvider<NvidiaPlatform>(
 
 // Compile every NVIDIA default Net dispatch entry and the Inter Barrier
 // path without requiring an NIC in this single-GPU test executable.
-__global__ void compileDefaultNetProvider(DeviceAPI::Comm comm,
-                                          DeviceAPI::Window window) {
+FLAGCX_GLOBAL_DECORATOR void
+compileDefaultNetProvider(DeviceAPI::Comm comm, DeviceAPI::Window window) {
   DeviceAPI::Net net(comm, 0);
   (void)net.isValid();
   DeviceAPI::Team team{1, 0, 1};
@@ -68,13 +73,15 @@ __global__ void compileDefaultNetProvider(DeviceAPI::Comm comm,
 }
 
 struct Sum {
-  __device__ uint32_t operator()(uint32_t a, uint32_t b) const { return a + b; }
+  FLAGCX_DEVICE_DECORATOR uint32_t operator()(uint32_t a, uint32_t b) const {
+    return a + b;
+  }
 };
 
-__global__ void testTraits(uint32_t *src, uint32_t *dst, uint32_t *dstWarp,
-                           uint32_t *dstThread, uint32_t *dstSingle,
-                           uint32_t *dstLegacy, uint32_t *results,
-                           uint32_t *atomicWord, uint64_t *elapsed) {
+FLAGCX_GLOBAL_DECORATOR void
+testTraits(uint32_t *src, uint32_t *dst, uint32_t *dstWarp, uint32_t *dstThread,
+           uint32_t *dstSingle, uint32_t *dstLegacy, uint32_t *results,
+           uint32_t *atomicWord, uint64_t *elapsed) {
   const int lane = NvidiaTraits::Intrin::lane();
   NvidiaTraits::CoopBlock block;
   NvidiaTraits::CoopWarp warp;
@@ -129,7 +136,8 @@ __global__ void testTraits(uint32_t *src, uint32_t *dst, uint32_t *dstWarp,
     lanes.sync();
   }
 
-  Ops::copy(block, dst, src, 67u);
+  Ops::copy<uint32_t, Vector4, Vector4, flagcxDeviceMemoryGlobal,
+            flagcxDeviceMemoryGlobal>(block, dst, src, 67u);
   Ops::copy(warp, dstWarp, src, 67u);
   NvidiaTraits::Intrin::coopCopyBytes(dstLegacy, src, 67u * sizeof(uint32_t),
                                       lane, 32);
@@ -144,31 +152,39 @@ __global__ void testTraits(uint32_t *src, uint32_t *dst, uint32_t *dstWarp,
        dstLegacy[lane] != src[lane]))
     results[lane] |= 32u;
 
-  __shared__ uint32_t scratch[32];
+  uint32_t localCopy = src[lane];
+  Ops::copy<uint32_t, Scalar, Scalar, flagcxDeviceMemoryLocal,
+            flagcxDeviceMemoryGlobal>(thread, &dstThread[lane], &localCopy, 1u);
+  if (dstThread[lane] != src[lane])
+    results[lane] |= 64u;
+
+  FLAGCX_SHARED_DECORATOR uint32_t scratch[32];
   scratch[lane] = uint32_t(lane);
   block.sync();
-  using ScratchPtr = uint32_t *;
   const uint32_t local =
-      Ops::load<decltype(thread), ScratchPtr, flagcxDeviceMemoryScratchpad,
-                flagcxDeviceMemoryAccessKindNormal, flagcxDeviceScopeBlock,
-                flagcxDeviceCacheL1, flagcxDeviceCacheHintNone>(
-          thread, &scratch[lane], flagcxDeviceMemoryOrderRelaxed);
-  Ops::store<decltype(thread), ScratchPtr, uint32_t,
-             flagcxDeviceMemoryScratchpad, flagcxDeviceMemoryAccessKindNormal,
-             flagcxDeviceScopeBlock, flagcxDeviceCacheL1,
-             flagcxDeviceCacheHintNone>(thread, &scratch[lane], local + 1,
-                                        flagcxDeviceMemoryOrderRelaxed);
+      Ops::load<uint32_t, Scalar, flagcxDeviceMemoryScratchpad,
+                flagcxDeviceMemoryOrderRelaxed, flagcxDeviceScopeBlock>(
+          thread, &scratch[lane]);
+  Ops::store<uint32_t, Scalar, flagcxDeviceMemoryScratchpad,
+             flagcxDeviceMemoryOrderRelaxed, flagcxDeviceScopeBlock>(
+      thread, &scratch[lane], local + 1);
+  Ops::store<uint32_t, Scalar, flagcxDeviceMemoryScratchpad,
+             flagcxDeviceMemoryOrderRelease, flagcxDeviceScopeBlock>(
+      thread, &scratch[lane], local + 1);
+  const uint32_t sharedAcquire =
+      Ops::load<uint32_t, Scalar, flagcxDeviceMemoryScratchpad,
+                flagcxDeviceMemoryOrderAcquire, flagcxDeviceScopeBlock>(
+          thread, &scratch[lane]);
   uint32_t privateValue = local;
-  Ops::store<decltype(thread), ScratchPtr, uint32_t, flagcxDeviceMemoryPrivate,
-             flagcxDeviceMemoryAccessKindNormal, flagcxDeviceScopeThread,
-             flagcxDeviceCacheL1, flagcxDeviceCacheHintNone>(
-      thread, &privateValue, local + 2, flagcxDeviceMemoryOrderRelaxed);
+  Ops::store<uint32_t, Scalar, flagcxDeviceMemoryLocal,
+             flagcxDeviceMemoryOrderWeak, flagcxDeviceScopeThread>(
+      thread, &privateValue, local + 2);
   const uint32_t privateRead =
-      Ops::load<decltype(thread), ScratchPtr, flagcxDeviceMemoryPrivate,
-                flagcxDeviceMemoryAccessKindNormal, flagcxDeviceScopeThread,
-                flagcxDeviceCacheL1, flagcxDeviceCacheHintNone>(
-          thread, &privateValue, flagcxDeviceMemoryOrderRelaxed);
-  if (scratch[lane] != uint32_t(lane + 1) || privateRead != uint32_t(lane + 2))
+      Ops::load<uint32_t, Scalar, flagcxDeviceMemoryLocal,
+                flagcxDeviceMemoryOrderWeak, flagcxDeviceScopeThread>(
+          thread, &privateValue);
+  if (scratch[lane] != uint32_t(lane + 1) ||
+      sharedAcquire != uint32_t(lane + 1) || privateRead != uint32_t(lane + 2))
     results[lane] |= 64u;
 
   if (lane == 0) {
@@ -188,21 +204,34 @@ __global__ void testTraits(uint32_t *src, uint32_t *dst, uint32_t *dstWarp,
             0x99aabbccddeeff00ull)
       results[0] |= 128u;
 
-    using Relaxed = std::integral_constant<flagcxDeviceMemoryOrder_t,
-                                           flagcxDeviceMemoryOrderRelaxed>;
     const uint32_t immutable =
-        Ops::load<decltype(thread), const uint32_t *,
-                  flagcxDeviceLoadIntentImmutable>(thread, src, Relaxed{});
+        Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                  flagcxDeviceMemoryOrderWeak, flagcxDeviceScopeSystem,
+                  flagcxDeviceMemoryAccessKindNormal,
+                  flagcxDeviceLoadIntentImmutable>(thread, src);
+    const uint32_t vectorBytes =
+        Ops::load<uint32_t, Vector4, flagcxDeviceMemoryGlobal>(thread, src);
     const uint32_t noAllocate =
-        Ops::load<decltype(thread), const uint32_t *, flagcxDeviceMemoryGlobal,
-                  flagcxDeviceMemoryAccessKindNormal, flagcxDeviceScopeSystem,
-                  flagcxDeviceCacheL1, flagcxDeviceCacheHintNoAllocate>(
-            thread, src, Relaxed{});
-    if (immutable != src[0] || noAllocate != src[0])
+        Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                  flagcxDeviceMemoryOrderRelaxed, flagcxDeviceScopeSystem,
+                  flagcxDeviceMemoryAccessKindNormal,
+                  flagcxDeviceLoadIntentOrdinary,
+                  flagcxDeviceCacheHintNoAllocate>(thread, src);
+    if (immutable != src[0] || vectorBytes != src[0] || noAllocate != src[0])
       results[0] |= 256u;
 
-    Ops::store(thread, atomicWord, uint32_t{1}, flagcxDeviceMemoryOrderRelaxed);
-    if (Ops::load(thread, atomicWord, flagcxDeviceMemoryOrderAcquire) != 1u)
+    Ops::store<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+               flagcxDeviceMemoryOrderRelaxed>(thread, atomicWord, uint32_t{1});
+    if (Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                  flagcxDeviceMemoryOrderAcquire>(thread, atomicWord) != 1u)
+      results[0] |= 512u;
+    Ops::store<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+               flagcxDeviceMemoryOrderRelease, flagcxDeviceScopeSystem,
+               flagcxDeviceMemoryAccessKindNormal,
+               flagcxDeviceCacheHintNoAllocate>(thread, atomicWord,
+                                                uint32_t{1});
+    if (Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                  flagcxDeviceMemoryOrderAcquire>(thread, atomicWord) != 1u)
       results[0] |= 512u;
     if (DeviceAPI::Atomic::fetchAdd(atomicWord, uint32_t{2},
                                     flagcxDeviceMemoryOrderAcqRel) != 1u ||
@@ -225,15 +254,20 @@ __global__ void testTraits(uint32_t *src, uint32_t *dst, uint32_t *dstWarp,
         DeviceAPI::Atomic::load(atomicWord, flagcxDeviceMemoryOrderAcquire) !=
             9u)
       results[0] |= 2048u;
+    Ops::store<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+               flagcxDeviceMemoryOrderSeqCst>(thread, atomicWord, uint32_t{9});
+    if (Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                  flagcxDeviceMemoryOrderSeqCst>(thread, atomicWord) != 9u)
+      results[0] |= 4096u;
     (void)DeviceAPI::Atomic::toNativeOrder(flagcxDeviceMemoryOrderAcquire);
     (void)DeviceAPI::Atomic::toNativeScope(flagcxDeviceScopeSystem);
     Ops::fence(thread, flagcxDeviceMemoryOrderRelease, flagcxDeviceScopeSystem);
   }
 }
 
-__global__ void testBulkCopy(uint32_t *dst, int *ran) {
+FLAGCX_GLOBAL_DECORATOR void testBulkCopy(uint32_t *dst, int *ran) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
-  __shared__ alignas(16) uint32_t scratch[64];
+  alignas(16) FLAGCX_SHARED_DECORATOR uint32_t scratch[64];
   const int lane = threadIdx.x;
   scratch[lane] = uint32_t(lane + 1);
   scratch[lane + 32] = uint32_t(lane + 33);
@@ -253,7 +287,7 @@ __global__ void testBulkCopy(uint32_t *dst, int *ran) {
 #endif
 }
 
-__global__ void testAsyncStore(uint32_t *dst, int *ran) {
+FLAGCX_GLOBAL_DECORATOR void testAsyncStore(uint32_t *dst, int *ran) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000 &&                         \
     (__CUDACC_VER_MAJOR__ > 12 ||                                              \
      (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 8))
@@ -271,20 +305,27 @@ __global__ void testAsyncStore(uint32_t *dst, int *ran) {
 
 // Compile-only probe. A real NIC BAR mapping is required before either MMIO
 // branch may be executed; this kernel is deliberately never launched.
-__global__ void compileMmio(uint32_t *mappedBar, bool enabled) {
+FLAGCX_GLOBAL_DECORATOR void compileMmio(uint32_t *mappedBar, bool enabled) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700 &&                          \
     (__CUDACC_VER_MAJOR__ > 12 ||                                              \
      (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 2))
   if (enabled && threadIdx.x == 0) {
-    using Coop = NvidiaTraits::CoopThread;
-    Ops::store<Coop, uint32_t *, uint32_t, flagcxDeviceMemoryGlobal,
-               flagcxDeviceMemoryAccessKindMmio, flagcxDeviceScopeSystem,
-               flagcxDeviceCacheL1, flagcxDeviceCacheHintNone>(
-        Coop{}, mappedBar, uint32_t{1}, flagcxDeviceMemoryOrderRelease);
-    (void)Ops::load<Coop, uint32_t *, flagcxDeviceMemoryGlobal,
-                    flagcxDeviceMemoryAccessKindMmio, flagcxDeviceScopeSystem,
-                    flagcxDeviceCacheL1, flagcxDeviceCacheHintNone>(
-        Coop{}, mappedBar, flagcxDeviceMemoryOrderRelaxed);
+    Ops::store<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+               flagcxDeviceMemoryOrderRelease, flagcxDeviceScopeSystem,
+               flagcxDeviceMemoryAccessKindMmio>(NvidiaTraits::CoopThread{},
+                                                 mappedBar, uint32_t{1});
+    (void)Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                    flagcxDeviceMemoryOrderRelaxed, flagcxDeviceScopeSystem,
+                    flagcxDeviceMemoryAccessKindMmio>(
+        NvidiaTraits::CoopThread{}, mappedBar);
+#if __CUDA_ARCH__ >= 750 &&                                                    \
+    (__CUDACC_VER_MAJOR__ > 13 ||                                              \
+     (__CUDACC_VER_MAJOR__ == 13 && __CUDACC_VER_MINOR__ >= 3))
+    (void)Ops::load<uint32_t, Scalar, flagcxDeviceMemoryGlobal,
+                    flagcxDeviceMemoryOrderAcquire, flagcxDeviceScopeSystem,
+                    flagcxDeviceMemoryAccessKindMmio>(
+        NvidiaTraits::CoopThread{}, mappedBar);
+#endif
   }
 #else
   (void)mappedBar;
@@ -292,34 +333,95 @@ __global__ void compileMmio(uint32_t *mappedBar, bool enabled) {
 #endif
 }
 
-__global__ void unsupportedBlockBroadcast(uint32_t *dst) {
-  NvidiaTraits::CoopBlock block;
-  dst[threadIdx.x] = Ops::broadcast(block, uint32_t{1}, 0);
+// Exercise each supported value format with real device memory. The 16/32-byte
+// paths are guarded by the target and toolkit that can assemble their PTX.
+FLAGCX_GLOBAL_DECORATOR void testPtxShapes(uint8_t *bytes, uint16_t *halves,
+                                           uint64_t *wide, float *floats,
+                                           Bulk16 *b16, Bulk32 *b32, int *ran) {
+  if (threadIdx.x != 0)
+    return;
+  NvidiaTraits::CoopThread thread;
+  uint8_t byte =
+      NvidiaTraits::Intrin::load<uint8_t, Scalar, flagcxDeviceMemoryGlobal>(
+          bytes);
+  NvidiaTraits::Intrin::store<uint8_t, Scalar, flagcxDeviceMemoryGlobal>(
+      bytes + 1, byte);
+  Ops::store<uint8_t, Scalar, flagcxDeviceMemoryGlobal>(
+      thread, bytes + 2,
+      Ops::load<uint8_t, Scalar, flagcxDeviceMemoryGlobal>(thread, bytes));
+  uint16_t half =
+      NvidiaTraits::Intrin::load<uint16_t, Vector2, flagcxDeviceMemoryGlobal>(
+          halves);
+  NvidiaTraits::Intrin::store<uint16_t, Vector2, flagcxDeviceMemoryGlobal>(
+      halves + 1, half);
+  Ops::store<uint16_t, Vector2, flagcxDeviceMemoryGlobal>(
+      thread, halves + 2,
+      Ops::load<uint16_t, Vector2, flagcxDeviceMemoryGlobal>(thread, halves));
+  uint64_t word =
+      NvidiaTraits::Intrin::load<uint64_t, Scalar, flagcxDeviceMemoryGlobal>(
+          wide);
+  NvidiaTraits::Intrin::store<uint64_t, Scalar, flagcxDeviceMemoryGlobal>(
+      wide + 1, word);
+  NvidiaTraits::Intrin::copy<uint64_t, Scalar, Scalar, flagcxDeviceMemoryGlobal,
+                             flagcxDeviceMemoryGlobal>(wide + 2, wide);
+  float value =
+      NvidiaTraits::Intrin::load<float, Vector4, flagcxDeviceMemoryGlobal>(
+          floats);
+  NvidiaTraits::Intrin::store<float, Vector4, flagcxDeviceMemoryGlobal>(
+      floats + 1, value);
+  Ops::store<float, Vector4, flagcxDeviceMemoryGlobal>(
+      thread, floats + 2,
+      Ops::load<float, Vector4, flagcxDeviceMemoryGlobal>(thread, floats));
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700 &&                          \
+    (__CUDACC_VER_MAJOR__ > 12 ||                                              \
+     (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 3))
+  Bulk16 block =
+      NvidiaTraits::Intrin::load<Bulk16, Scalar, flagcxDeviceMemoryGlobal>(b16);
+  NvidiaTraits::Intrin::store<Bulk16, Scalar, flagcxDeviceMemoryGlobal>(b16 + 1,
+                                                                        block);
+  NvidiaTraits::Intrin::copy<Bulk16, Scalar, Vector4, flagcxDeviceMemoryGlobal,
+                             flagcxDeviceMemoryGlobal>(b16 + 2, b16);
+  Ops::copy<Bulk16, Vector4, Scalar, flagcxDeviceMemoryGlobal,
+            flagcxDeviceMemoryGlobal>(thread, b16 + 3, b16, 1u);
+  Ops::store<Bulk16, Scalar, flagcxDeviceMemoryGlobal>(
+      thread, b16 + 4,
+      Ops::load<Bulk16, Scalar, flagcxDeviceMemoryGlobal>(thread, b16));
+  FLAGCX_SHARED_DECORATOR Bulk16 sharedBlock;
+  NvidiaTraits::Intrin::copy<Bulk16, Scalar, Scalar, flagcxDeviceMemoryGlobal,
+                             flagcxDeviceMemoryScratchpad>(&sharedBlock, b16);
+  NvidiaTraits::Intrin::copy<Bulk16, Scalar, Scalar,
+                             flagcxDeviceMemoryScratchpad,
+                             flagcxDeviceMemoryGlobal>(b16 + 5, &sharedBlock);
+  Bulk16 localBlock = block;
+  NvidiaTraits::Intrin::copy<Bulk16, Scalar, Scalar, flagcxDeviceMemoryGlobal,
+                             flagcxDeviceMemoryLocal>(&localBlock, b16);
+  NvidiaTraits::Intrin::copy<Bulk16, Scalar, Scalar, flagcxDeviceMemoryLocal,
+                             flagcxDeviceMemoryGlobal>(b16 + 6, &localBlock);
+  ran[0] = 1;
+#else
+  ran[0] = 0;
+#endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000 &&                         \
+    (__CUDACC_VER_MAJOR__ > 12 ||                                              \
+     (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 9))
+  Bulk32 wideBlock =
+      NvidiaTraits::Intrin::load<Bulk32, Vector8, flagcxDeviceMemoryGlobal>(
+          b32);
+  NvidiaTraits::Intrin::store<Bulk32, Vector4, flagcxDeviceMemoryGlobal>(
+      b32 + 1, wideBlock);
+  Ops::copy<Bulk32, Vector8, Vector4, flagcxDeviceMemoryGlobal,
+            flagcxDeviceMemoryGlobal>(thread, b32 + 2, b32, 1u);
+  Ops::store<Bulk32, Vector4, flagcxDeviceMemoryGlobal>(
+      thread, b32 + 3,
+      Ops::load<Bulk32, Vector8, flagcxDeviceMemoryGlobal>(thread, b32));
+  ran[1] = 1;
+#else
+  (void)b32;
+  ran[1] = 0;
+#endif
 }
 
-__global__ void unsupportedBlockReduce(uint32_t *dst) {
-  NvidiaTraits::CoopBlock block;
-  dst[threadIdx.x] = Ops::reduce(block, uint32_t{1}, Sum{});
-}
-
-__global__ void unsupportedSpanBroadcast(uint32_t *dst) {
-  NvidiaTraits::CoopTileSpan span(0, 1, 0);
-  dst[threadIdx.x] = Ops::broadcast(span, uint32_t{1}, 0);
-}
-
-__global__ void unsupportedAnyReduce(uint32_t *dst) {
-  NvidiaTraits::CoopBlock block;
-  NvidiaTraits::CoopAny any(block);
-  dst[threadIdx.x] = Ops::reduce(any, uint32_t{1}, Sum{});
-}
-
-__global__ void invalidRuntimeOrder(uint32_t *src,
-                                    flagcxDeviceMemoryOrder_t order) {
-  if (threadIdx.x == 0)
-    (void)Ops::load(NvidiaTraits::CoopThread{}, src, order);
-}
-
-__global__ void testFetchMaxContention(uint32_t *word) {
+FLAGCX_GLOBAL_DECORATOR void testFetchMaxContention(uint32_t *word) {
   DeviceAPI::Atomic::fetchMax(word, uint32_t(threadIdx.x),
                               flagcxDeviceMemoryOrderAcqRel);
 }
@@ -331,7 +433,7 @@ static bool cudaOk(cudaError_t result, const char *operation) {
   return false;
 }
 
-int main(int argc, char **argv) {
+int main() {
   int count = 0;
   if (!cudaOk(cudaGetDeviceCount(&count), "cudaGetDeviceCount") || count == 0)
     return 77;
@@ -344,6 +446,13 @@ int main(int argc, char **argv) {
   uint32_t *dstLegacy = nullptr, *results = nullptr, *atomicWord = nullptr;
   uint64_t *elapsed = nullptr;
   int *bulkRan = nullptr;
+  uint8_t *bytes8 = nullptr;
+  uint16_t *halves16 = nullptr;
+  uint64_t *wide64 = nullptr;
+  float *floats32 = nullptr;
+  Bulk16 *blocks16 = nullptr;
+  Bulk32 *blocks32 = nullptr;
+  int *formatRan = nullptr;
   const size_t bytes = 67 * sizeof(uint32_t);
   if (!cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&src), bytes),
               "src allocation") ||
@@ -368,7 +477,28 @@ int main(int argc, char **argv) {
               "clock allocation") ||
       !cudaOk(
           cudaMallocManaged(reinterpret_cast<void **>(&bulkRan), sizeof(int)),
-          "bulk flag allocation"))
+          "bulk flag allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&bytes8),
+                                3 * sizeof(uint8_t)),
+              "byte format allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&halves16),
+                                3 * sizeof(uint16_t)),
+              "half format allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&wide64),
+                                3 * sizeof(uint64_t)),
+              "wide format allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&floats32),
+                                3 * sizeof(float)),
+              "float format allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&blocks16),
+                                7 * sizeof(Bulk16)),
+              "Bulk16 allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&blocks32),
+                                4 * sizeof(Bulk32)),
+              "Bulk32 allocation") ||
+      !cudaOk(cudaMallocManaged(reinterpret_cast<void **>(&formatRan),
+                                2 * sizeof(int)),
+              "format capability allocation"))
     return 1;
 
   for (int i = 0; i < 67; ++i)
@@ -382,27 +512,21 @@ int main(int argc, char **argv) {
   *atomicWord = 0;
   *elapsed = 0;
   *bulkRan = 0;
-
-  if (argc > 1 && std::strcmp(argv[1], "--expect-block-trap") == 0) {
-    unsupportedBlockBroadcast<<<1, 32>>>(results);
-    return cudaDeviceSynchronize() == cudaSuccess ? 1 : 0;
-  }
-  if (argc > 1 && std::strcmp(argv[1], "--expect-reduce-trap") == 0) {
-    unsupportedBlockReduce<<<1, 32>>>(results);
-    return cudaDeviceSynchronize() == cudaSuccess ? 1 : 0;
-  }
-  if (argc > 1 && std::strcmp(argv[1], "--expect-span-trap") == 0) {
-    unsupportedSpanBroadcast<<<1, 32>>>(results);
-    return cudaDeviceSynchronize() == cudaSuccess ? 1 : 0;
-  }
-  if (argc > 1 && std::strcmp(argv[1], "--expect-any-trap") == 0) {
-    unsupportedAnyReduce<<<1, 32>>>(results);
-    return cudaDeviceSynchronize() == cudaSuccess ? 1 : 0;
-  }
-  if (argc > 1 && std::strcmp(argv[1], "--expect-order-trap") == 0) {
-    invalidRuntimeOrder<<<1, 32>>>(src, flagcxDeviceMemoryOrderRelease);
-    return cudaDeviceSynchronize() == cudaSuccess ? 1 : 0;
-  }
+  bytes8[0] = 0xa5;
+  halves16[0] = 0xb53d;
+  wide64[0] = 0x0123456789abcdefull;
+  floats32[0] = 3.25f;
+  std::memset(bytes8 + 1, 0, 2 * sizeof(uint8_t));
+  std::memset(halves16 + 1, 0, 2 * sizeof(uint16_t));
+  std::memset(wide64 + 1, 0, 2 * sizeof(uint64_t));
+  std::memset(floats32 + 1, 0, 2 * sizeof(float));
+  std::memset(blocks16, 0, 7 * sizeof(Bulk16));
+  std::memset(blocks32, 0, 4 * sizeof(Bulk32));
+  for (int i = 0; i < 4; ++i)
+    blocks16[0].words[i] = uint32_t(0x10203040u + i * 0x11111111u);
+  for (int i = 0; i < 8; ++i)
+    blocks32[0].words[i] = uint32_t(0x01020304u + i * 0x10101010u);
+  formatRan[0] = formatRan[1] = 0;
 
   testTraits<<<1, 32>>>(src, dst, dstWarp, dstThread, dstSingle, dstLegacy,
                         results, atomicWord, elapsed);
@@ -431,6 +555,54 @@ int main(int argc, char **argv) {
   if (*elapsed == 0) {
     std::fputs("Clock did not advance during the test\n", stderr);
     return 1;
+  }
+
+  testPtxShapes<<<1, 1>>>(bytes8, halves16, wide64, floats32, blocks16,
+                          blocks32, formatRan);
+  if (!cudaOk(cudaDeviceSynchronize(), "testPtxShapes"))
+    return 1;
+  if (bytes8[1] != bytes8[0] || bytes8[2] != bytes8[0] ||
+      halves16[1] != halves16[0] || halves16[2] != halves16[0] ||
+      wide64[1] != wide64[0] || wide64[2] != wide64[0] ||
+      floats32[1] != floats32[0] || floats32[2] != floats32[0]) {
+    std::fputs("scalar/vector load-store or Intrin copy failed\n", stderr);
+    return 1;
+  }
+#if __CUDACC_VER_MAJOR__ > 12 ||                                               \
+    (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 3)
+  if (prop.major >= 7 && !formatRan[0]) {
+    std::fputs("Bulk16 PTX path unexpectedly skipped\n", stderr);
+    return 1;
+  }
+#endif
+  if (formatRan[0]) {
+    for (int slot = 1; slot < 7; ++slot)
+      for (int word = 0; word < 4; ++word)
+        if (blocks16[slot].words[word] != blocks16[0].words[word]) {
+          std::fprintf(stderr, "Bulk16 copy failed at slot %d word %d\n", slot,
+                       word);
+          return 1;
+        }
+  } else {
+    std::puts("Bulk16 PTX test skipped: target or toolkit lacks b128");
+  }
+#if __CUDACC_VER_MAJOR__ > 12 ||                                               \
+    (__CUDACC_VER_MAJOR__ == 12 && __CUDACC_VER_MINOR__ >= 9)
+  if (prop.major >= 10 && !formatRan[1]) {
+    std::fputs("Bulk32 PTX path unexpectedly skipped\n", stderr);
+    return 1;
+  }
+#endif
+  if (formatRan[1]) {
+    for (int slot = 1; slot < 4; ++slot)
+      for (int word = 0; word < 8; ++word)
+        if (blocks32[slot].words[word] != blocks32[0].words[word]) {
+          std::fprintf(stderr, "Bulk32 copy failed at slot %d word %d\n", slot,
+                       word);
+          return 1;
+        }
+  } else {
+    std::puts("Bulk32 PTX test skipped: target or toolkit lacks 32B vectors");
   }
 
 #if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ >= 12
@@ -464,6 +636,13 @@ int main(int argc, char **argv) {
   cudaFree(atomicWord);
   cudaFree(elapsed);
   cudaFree(bulkRan);
+  cudaFree(bytes8);
+  cudaFree(halves16);
+  cudaFree(wide64);
+  cudaFree(floats32);
+  cudaFree(blocks16);
+  cudaFree(blocks32);
+  cudaFree(formatRan);
   std::puts("NVIDIA default PlatformTraits passed");
   return 0;
 }
