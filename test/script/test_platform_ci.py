@@ -2390,6 +2390,101 @@ run_suite
         )
         self.assertEqual(res_swallow.stdout.strip(), "0")
 
+    def test_runner_no_rdma_skip_preserves_prior_failures(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=runner
+SET_ENV_SCRIPT=enflame.sh
+PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
+FLAGCX_CI_TEST_MAKE_ARGS=()
+FLAGCX_CI_RUNNER_NP=2
+FLAGCX_CI_HAS_RDMA=0
+FLAGCX_CI_SKIP_RUNNER_HYBRID=1
+TEST_RUNNER=mock_test_runner
+MPI_RUNNER=mock_mpi_runner
+mock_test_runner() { return "$UNIT_STATUS"; }
+mock_mpi_runner() { return "$DEFAULT_STATUS"; }
+set +e
+run_suite
+status=$?
+printf 'suite_status=%s\n' "$status"
+'''
+        for unit_status, default_status, expected in (
+            (0, 0, 0),
+            (23, 0, 1),
+            (0, 24, 1),
+        ):
+            with self.subTest(
+                unit_status=unit_status, default_status=default_status
+            ):
+                result = subprocess.run(
+                    [os.environ.get("BASH", "bash"), "-euc", harness],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "BASH_ENV": "",
+                        "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
+                        "UNIT_STATUS": str(unit_status),
+                        "DEFAULT_STATUS": str(default_status),
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"suite_status={expected}", result.stdout)
+                if expected:
+                    self.assertIn("NET=skipped", result.stderr)
+                    self.assertIn("Runner failures:", result.stderr)
+                else:
+                    self.assertIn("no ACTIVE RDMA HCA is available", result.stdout)
+                    self.assertNotIn("Runner failures:", result.stderr)
+
+    def test_enflame_symmem_vmm_capability_skips_remote_vmm_data(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=symmem
+SET_ENV_SCRIPT=enflame.sh
+PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
+FLAGCX_CI_TEST_MAKE_ARGS=()
+FLAGCX_CI_HAS_RDMA=1
+FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
+FLAGCX_CI_SYMMEM_NODE_NP=1
+FLAGCX_CI_NODE1_MPI_ARGS=()
+FLAGCX_CI_NODE2_MPI_ARGS=()
+MPI_RUNNER=mock_mpi_runner
+bash() { return 0; }
+mock_mpi_runner() {
+  printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled}"
+}
+run_suite
+'''
+        result = subprocess.run(
+            [os.environ.get("BASH", "bash"), "-euc", harness],
+            cwd=REPO_ROOT,
+            env={
+                **os.environ,
+                "BASH_ENV": "",
+                "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
+            },
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("symmem remote without NET", result.stdout)
+        self.assertNotIn("symmem VMM + NET auto", result.stdout)
+        self.assertIn("symmem VMM + NET route union", result.stdout)
+        self.assertIn("VMM is unavailable", result.stdout)
+
 
 class MetaXEnvironmentTest(unittest.TestCase):
     def run_metax_shell(self, body, *, extra_env=None):
