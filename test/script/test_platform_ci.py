@@ -391,7 +391,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         workflow = (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
         checkout = workflow[workflow.index("      - name: Checkout code") :]
         self.assertIn("submodules: false", checkout)
-        self.assertNotIn("    container:\n", workflow)
+        self.assertIn("  unit_test_enflame:\n", workflow)
+        self.assertIn("    container:\n      image:", workflow)
         trust = checkout.index("      - name: Trust workspace and submodules")
         submodules = checkout.index("      - name: Checkout submodules")
         workload = checkout.index("      - name: Run unit-test suite in host-managed container")
@@ -1176,7 +1177,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
         ).read_text()
-        self.assertNotIn("container:\n      image:", unit_workflow)
+        self.assertNotIn("    container:\n      image:", unit_workflow.split("  unit_test_enflame:\n", 1)[0])
+        enflame_job = unit_workflow.split("  unit_test_enflame:\n", 1)[1]
+        self.assertIn("    container:\n      image:", enflame_job)
+        self.assertIn("options: ${{ needs.load_config.outputs.container_options }}", enflame_job)
         self.assertIn("run_hardware_container.sh", unit_workflow)
         hardware_launcher = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
@@ -1188,7 +1192,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/load_platform_config.rb"
         ).read_text()
         self.assertIn('"docker_args" => docker_args.join("\\n")', config_loader)
-        self.assertNotIn("container_options", config_loader)
+        self.assertIn("container_options", config_loader)
         for platform in ("cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"):
             config = (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
             self.assertIn("--network=host", config)
