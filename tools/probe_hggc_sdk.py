@@ -65,6 +65,16 @@ pcclCommCuDevice pcclCommUserRank pcclCommGetAsyncError pcclGetErrorString pcclG
 pcclReduce pcclBroadcast pcclAllReduce pcclReduceScatter pcclAllGather
 pcclSend pcclRecv pcclGroupStart pcclGroupEnd'''.split()
 
+# These names also have typed template wrappers in HGGC headers. Match the
+# adaptor's call sites so overload resolution selects the supported interface.
+# Bare `auto symbol = &name` cannot resolve an overload set.
+REQUIRED_CALLS = {
+    'hggcMalloc': 'hggcMalloc(&ptr, 1)',
+    'hggcHostAlloc': 'hggcHostAlloc(&ptr, 1, hggcHostAllocMapped)',
+    'hggcHostGetDevicePointer':
+        'hggcHostGetDevicePointer(&ptr, static_cast<void *>(nullptr), 0)',
+}
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -86,15 +96,24 @@ def main():
             return subprocess.run(command, capture_output=True, text=True)
 
         # Volatile globals keep mandatory symbol references alive at link time.
-        declarations = '\n'.join('auto volatile symbol_' + name + ' = &' + name + ';' for name in REQUIRED)
+        declarations = '\n'.join(
+            'auto volatile symbol_' + name + ' = &' + name + ';'
+            for name in REQUIRED if name not in REQUIRED_CALLS
+        )
+        calls = '\n'.join('  result |= int(' + call + ');'
+                          for call in REQUIRED_CALLS.values())
+        # The binary is linked but never executed. Keep the call results in a
+        # volatile local to retain the selected SDK entry points at link time.
         result = compile_probe(declarations + '''
 int main() {
   void *ptr = nullptr;
-  return int(hggcMallocAsync(&ptr, 1, nullptr, hggcStream_t{}));
+  volatile int result = 0;
+''' + calls + '''
+  return result | int(hggcMallocAsync(&ptr, 1, nullptr, hggcStream_t{}));
 }
 ''')
         if result.returncode:
-            raise SystemExit('HGGC/PCCL SDK is missing a required adaptor interface:\n' + result.stderr)
+            raise SystemExit('HGGC/PCCL required interface compile/link check failed:\n' + result.stderr)
         values = {}
         for name, body in PROBES.items():
             result = compile_probe('int main() { ' + body + ' }\n')

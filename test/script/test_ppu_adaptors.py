@@ -62,11 +62,28 @@ inline hggcError_t hggcMalloc(void **p, size_t) {
 inline hggcError_t hggcHostAlloc(void **p, size_t size, unsigned) {
   return hggcMalloc(p, size);
 }
+inline hggcError_t hggcHostGetDevicePointer(void **device, void *host, unsigned) {
+  *device = host; return hggcSuccess;
+}
 inline hggcError_t hggcMallocAsync(void **p, size_t, hggcMemPool_t pool, hggcStream_t stream) {
   ++mallocCalls; seenPool = pool; seenStream = stream;
   *p = reinterpret_cast<void *>(3); return mallocStatus;
 }
 
+"""
+
+RUNTIME_TEMPLATES = r"""
+// HGGC headers also expose typed wrappers. Taking their addresses with auto
+// must not be used to determine whether the SDK provides these APIs.
+template <class T> inline hggcError_t hggcMalloc(T **p, size_t size) {
+  return hggcMalloc(reinterpret_cast<void **>(p), size);
+}
+template <class T> inline hggcError_t hggcHostAlloc(T **p, size_t size, unsigned flags) {
+  return hggcHostAlloc(reinterpret_cast<void **>(p), size, flags);
+}
+template <class T> inline hggcError_t hggcHostGetDevicePointer(T **device, void *host, unsigned flags) {
+  return hggcHostGetDevicePointer(reinterpret_cast<void **>(device), host, flags);
+}
 """
 
 DRIVER = r"""
@@ -143,7 +160,7 @@ class PpuAdaptorTest(unittest.TestCase):
     def compile_and_run(self, source):
         with tempfile.TemporaryDirectory() as folder:
             tmp = Path(folder)
-            (tmp / "hggc_runtime.h").write_text(RUNTIME)
+            (tmp / "hggc_runtime.h").write_text(RUNTIME + RUNTIME_TEMPLATES)
             (tmp / "hggc.h").write_text(DRIVER)
             pccl = PCCL + "\n".join(
                 f"inline pcclResult_t {name}({args}) {{ return pcclStatus; }}"
@@ -259,7 +276,8 @@ int main() {
         with tempfile.TemporaryDirectory() as folder:
             tmp = Path(folder)
             # A runtime call would abort. The capability tool must only link.
-            runtime = '#include <cstdlib>\n' + RUNTIME.replace("++mallocCalls;", "std::abort(); ++mallocCalls;")
+            runtime_base = '#include <cstdlib>\n' + RUNTIME.replace("++mallocCalls;", "std::abort(); ++mallocCalls;")
+            runtime = runtime_base + RUNTIME_TEMPLATES
             pccl = PCCL + "\n".join(
                 f"inline pcclResult_t {name}({args}) {{ return pcclStatus; }}"
                 for name, args in PCCL_SIGNATURES.items()
@@ -286,6 +304,22 @@ int main() {
             result = subprocess.run(command, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("#define FLAGCX_HGGC_HAS_MANAGED 0", output.read_text())
+
+            # Also accept public APIs exposed only as function templates,
+            # forwarding to underlying runtime entry points.
+            template_runtime = runtime_base
+            templates = RUNTIME_TEMPLATES
+            for name in ("hggcMalloc", "hggcHostAlloc", "hggcHostGetDevicePointer"):
+                template_runtime = re.sub(r"\b" + name + r"(?=\()",
+                                          "sdk_" + name, template_runtime)
+                templates = templates.replace("return " + name + "(",
+                                              "return sdk_" + name + "(")
+            (tmp / "hggc_runtime.h").write_text(template_runtime + templates + "\n".join(
+                f"inline int {name}() {{ return 0; }}" for name in required_stubs
+            ))
+            result = subprocess.run(command, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
             # Removing a mandatory IPC entry point must stop configuration.
             output.unlink()
             (tmp / "hggc_runtime.h").write_text(runtime + "\n".join(
@@ -294,7 +328,25 @@ int main() {
             ))
             result = subprocess.run(command, text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("missing a required adaptor interface", result.stderr)
+            self.assertIn("required interface compile/link check failed", result.stderr)
+            self.assertIn("hggcIpcOpenMemHandle", result.stderr)
+            self.assertFalse(output.exists())
+
+            # A declaration without its library definition must fail linking,
+            # including for the overloaded APIs checked using call expressions.
+            missing_symbol_runtime = runtime.replace(
+                "inline hggcError_t hggcHostGetDevicePointer(void **device, void *host, unsigned) {\n"
+                "  *device = host; return hggcSuccess;\n}",
+                "hggcError_t hggcHostGetDevicePointer(void **device, void *host, unsigned);",
+            )
+            (tmp / "hggc_runtime.h").write_text(missing_symbol_runtime + "\n".join(
+                f"inline int {name}() {{ return 0; }}" for name in required_stubs
+            ))
+            result = subprocess.run(command, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("required interface compile/link check failed", result.stderr)
+            self.assertIn("hggcHostGetDevicePointer", result.stderr)
+            self.assertIn("undefined", result.stderr.lower())
             self.assertFalse(output.exists())
 
 
