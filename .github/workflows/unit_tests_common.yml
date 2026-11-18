@@ -33,8 +33,6 @@ jobs:
       ci_image: ${{ steps.config.outputs.ci_image }}
       runs_on: ${{ steps.config.outputs.runs_on }}
       docker_args: ${{ steps.config.outputs.docker_args }}
-      container_options: ${{ steps.config.outputs.container_options }}
-      container_volumes: ${{ steps.config.outputs.container_volumes }}
       set_env: ${{ steps.config.outputs.set_env }}
       unit_test_suites: ${{ steps.config.outputs.unit_test_suites }}
     steps:
@@ -60,13 +58,6 @@ jobs:
       matrix:
         suite: ${{ fromJSON(needs.load_config.outputs.unit_test_suites) }}
     runs-on: ${{ fromJSON(needs.load_config.outputs.runs_on) }}
-    container:
-      image: ${{ needs.load_config.outputs.ci_image }}
-      options: ${{ needs.load_config.outputs.container_options }}
-      volumes: ${{ fromJSON(needs.load_config.outputs.container_volumes) }}
-    defaults:
-      run:
-        shell: bash
     steps:
       - name: Install Git for repository checkout
         shell: bash
@@ -120,18 +111,26 @@ jobs:
       - name: Checkout submodules
         run: bash .github/scripts/ci/checkout_submodules.sh
 
-      - name: Run unit-test suite in job container
+      - name: Run unit-test suite in host-managed container
         env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.load_config.outputs.docker_args }}
+          FLAGCX_CI_IMAGE: ${{ needs.load_config.outputs.ci_image }}
           FLAGCX_CI_SET_ENV: ${{ needs.load_config.outputs.set_env }}
-          FLAGCX_CI_SUITE: ${{ matrix.suite }}
           FLAGCX_CI_COVERAGE: ${{ inputs.cpp_coverage && '1' || '0' }}
           FLAGCX_CI_CPP_COVERAGE_REPORT: /ci-logs/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}
           FLAGCX_CI_TEST_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
           FLAGCX_CI_MPI_TIMEOUT: ${{ inputs.cpp_coverage && '80m' || '20m' }}
-        run: |
-          set -euo pipefail
-          bash .github/scripts/ci/run_hardware_workload.sh \
-            "${{ inputs.platform }}" unittest "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"
+        run: >-
+          bash "$GITHUB_WORKSPACE/.github/scripts/ci/run_hardware_container.sh"
+          "${{ inputs.platform }}" unittest "${{ matrix.suite }}"
+
+      - name: Cleanup unit-test container
+        if: always()
+        shell: bash
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-unit-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
+        run: docker container rm --force "$FLAGCX_CI_CONTAINER_NAME" >/dev/null 2>&1 || true
 
       - name: Upload test attempt logs
         if: always()

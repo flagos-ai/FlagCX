@@ -387,16 +387,20 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("needs: prepare", pipeline)
         self.assertIn("needs.prepare.outputs.has_platforms == 'true'", pipeline)
 
-    def test_job_container_checks_out_submodules_after_safe_directory_setup(self):
+    def test_unit_tests_use_host_docker_launcher_after_submodule_checkout(self):
         workflow = (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
         checkout = workflow[workflow.index("      - name: Checkout code") :]
         self.assertIn("submodules: false", checkout)
+        self.assertNotIn("    container:\n", workflow)
         trust = checkout.index("      - name: Trust workspace and submodules")
         submodules = checkout.index("      - name: Checkout submodules")
-        workload = checkout.index("      - name: Run unit-test suite in job container")
+        workload = checkout.index("      - name: Run unit-test suite in host-managed container")
         self.assertLess(trust, submodules)
         self.assertLess(submodules, workload)
         self.assertIn("bash .github/scripts/ci/checkout_submodules.sh", checkout)
+        self.assertIn("FLAGCX_CI_DOCKER_ARGS:", workflow)
+        self.assertIn("outputs.docker_args", workflow)
+        self.assertIn("run_hardware_container.sh", workflow)
 
     def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
@@ -1165,16 +1169,29 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertNotIn("FLAGCX_VMM_MR_CAP_VA", shca_caps)
 
-    def test_common_launcher_and_static_rdma_preflight_cover_all_platforms(self):
+    def test_common_launcher_preserves_host_network_and_ascend_lock(self):
         unit_workflow = (
             REPO_ROOT / ".github/workflows/unit_tests_common.yml"
         ).read_text()
         unit_runner = (
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
         ).read_text()
-        self.assertIn("container:\n      image:", unit_workflow)
-        self.assertNotIn("run_hardware_container.sh", unit_workflow)
-        self.assertIn('unittest "$FLAGCX_CI_SET_ENV" "$FLAGCX_CI_SUITE"', unit_workflow)
+        self.assertNotIn("container:\n      image:", unit_workflow)
+        self.assertIn("run_hardware_container.sh", unit_workflow)
+        hardware_launcher = (
+            REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
+        ).read_text()
+        self.assertIn('if [[ "$platform" == "ascend" ]]; then', hardware_launcher)
+        self.assertIn("flock --exclusive --wait 7200 9", hardware_launcher)
+        self.assertIn('docker container run --rm', hardware_launcher)
+        config_loader = (
+            REPO_ROOT / ".github/scripts/ci/load_platform_config.rb"
+        ).read_text()
+        self.assertIn('"docker_args" => docker_args.join("\\n")', config_loader)
+        self.assertNotIn("container_options", config_loader)
+        for platform in ("cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"):
+            config = (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+            self.assertIn("--network=host", config)
         self.assertIn("export FLAGCX_DEBUG=INFO", unit_runner)
         self.assertIn("export FLAGCX_DEBUG_SUBSYS=ALL", unit_runner)
         self.assertIn("export FLAGCX_VMM_ENABLE=0", unit_runner)
