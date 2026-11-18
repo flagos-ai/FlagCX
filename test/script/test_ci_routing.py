@@ -29,6 +29,21 @@ def enabled_platform_or_matrix(platform):
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
+    def test_musa_alias_routes_to_mthreads(self):
+        for context in (
+            {"event_name": "pull_request", "labels": ["platform:musa"]},
+            {"event_name": "pull_request", "labels": ["platform:musa", "platform:mthreads"]},
+            {"event_name": "workflow_dispatch", "selection": "musa,mthreads"},
+            {"event_name": "issue_comment", "comment": "/test musa",
+             "is_pull_request": True, "permission": "write"},
+            {"event_name": "issue_comment", "comment": "/test",
+             "labels": ["platform:musa"], "is_pull_request": True,
+             "permission": "write"},
+        ):
+            with self.subTest(context=context):
+                outputs, _ = self.resolve(context)
+                self.assertEqual(outputs["platforms"], ["mthreads"])
+
     def resolve(self, context):
         with tempfile.TemporaryDirectory() as temp_dir:
             context_path = Path(temp_dir) / "context.json"
