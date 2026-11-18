@@ -1616,6 +1616,10 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
         deviceAdaptor->deviceMemcpy(netCtxField, &netDevPtr, sizeof(void *),
                                     flagcxMemcpyHostToDevice, NULL, NULL),
         res, fail);
+    // The copy above is pageable-sourced and may still be staged when
+    // deviceMemcpy returns, so the handle must not be published (or cached)
+    // until it is complete; otherwise _netContexts can still read as null.
+    FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
   }
 
   devComm->cachedDevicePtr = dPtr;
@@ -1691,6 +1695,9 @@ static flagcxResult_t defaultDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
       deviceAdaptor->deviceMemcpy(dPtr, &hostCopy, sizeof(flagcxDevMem),
                                   flagcxMemcpyHostToDevice, NULL, NULL),
       res, fail);
+  // Same publication rule as flagcxDevCommGetDevicePtr: the copy is
+  // pageable-sourced, so complete it before the pointer becomes visible.
+  FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
 
   devMem->cachedDevicePtr = dPtr;
   *devPtr = dPtr;
