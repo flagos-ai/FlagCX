@@ -559,7 +559,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
   {
 #ifdef USE_MUSA_ADAPTOR
     // MUSA WORLD barriers always include the rank-local CTA rendezvous.
-    constexpr size_t kRankCtaBarrierWords = 1;
+    // Two words: [0] arrival counter for the current round, [1] generation.
+    constexpr size_t kRankCtaBarrierWords = 2;
 #else
     constexpr size_t kRankCtaBarrierWords = 0;
 #endif
@@ -583,8 +584,24 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 #ifdef USE_MUSA_ADAPTOR
     devComm->rankCtaBarrier =
         devComm->epochBuffer + 2 * FLAGCX_DEVICE_CTA_COUNT;
+    // Participant set for the rank-local rendezvous. A caller that only has a
+    // subset of CTAs entering the barrier declares it here; the field sits
+    // after the frozen requirements prefix, so it is read only when the
+    // caller-provided size reaches it. 0 keeps "every local CTA".
+    int declaredParticipants = 0;
+    if (reqsSize >=
+        offsetof(struct flagcxDevCommRequirements, rankCtaParticipants) +
+            sizeof(reqs->rankCtaParticipants)) {
+      declaredParticipants = reqs->rankCtaParticipants;
+    }
+    if (declaredParticipants < 0)
+      return flagcxInvalidArgument;
+    devComm->rankCtaParticipants = declaredParticipants > 0
+                                       ? declaredParticipants
+                                       : FLAGCX_DEVICE_CTA_COUNT;
 #else
     devComm->rankCtaBarrier = nullptr;
+    devComm->rankCtaParticipants = 0;
 #endif
     INFO(FLAGCX_INIT, "defaultDevApiCommCreate: epochBuffer OK");
   }

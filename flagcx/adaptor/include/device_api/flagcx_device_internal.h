@@ -154,6 +154,10 @@ struct flagcxDevCommInternal {
   pthread_mutex_t cachedPtrMutex; // Protects lazy init of cachedDevicePtr and
                                   // cachedNetContextsPtr
   struct flagcxDevCommInternal *deferredNext; // Host-only deferred-free link
+
+  // Declared rank-local CTA participants for the MUSA WORLD rendezvous
+  // (0 = unset). Kept last so existing field offsets are unchanged.
+  int rankCtaParticipants;
 };
 
 // The first nRanks slots preserve the existing host-RMA PutValue layout
