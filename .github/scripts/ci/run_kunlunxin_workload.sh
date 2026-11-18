@@ -60,7 +60,12 @@ case "$workload" in
     exit "$perf_status"
     ;;
   torch-api)
-    export CUDA_VISIBLE_DEVICES=0,1,2,3
+    # Keep Torch, XRE and FlagCX on the same physical four-XPU group. The
+    # platform setup owns the default group and allows the runner to override
+    # it without hard-coding a potentially unhealthy device.
+    : "${FLAGCX_CI_KUNLUNXIN_DEVICES:?KunlunXin device group is not configured}"
+    export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_KUNLUNXIN_DEVICES"
+    export XPU_VISIBLE_DEVICES="$FLAGCX_CI_KUNLUNXIN_DEVICES"
     # PyTorch's CUDA-facing headers require the complete CUDA SDK, including
     # cuda_fp16.h. The plugin's legacy /opt/kunlun paths do not exist in the
     # CI image. Link to the image's XPU compatibility runtime.

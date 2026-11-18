@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import yaml
 
@@ -93,7 +94,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                 'FLAGCX_CI_RUNNER_NP=4\n'
                 'FLAGCX_CI_NODE_NP=4\n'
                 'FLAGCX_CI_INTRA_NP=4\n'
-                'FLAGCX_CI_KUNLUNXIN_DEVICES=0,1,2,3\n'
+                'FLAGCX_CI_KUNLUNXIN_DEVICES=${FLAGCX_CI_KUNLUNXIN_DEVICES:-0,1,2,3}\n'
                 'export XSHMEM_SYMMETRIC_SIZE=8589934592\n'
                 'FLAGCX_CI_NODE1_MPI_ARGS=(-x FLAGCX_HOSTID=node0)\n'
                 'FLAGCX_CI_NODE2_MPI_ARGS=(-x FLAGCX_HOSTID=node1)\n'
@@ -283,7 +284,7 @@ class KunlunXinWorkloadTest(unittest.TestCase):
             (root / "platform.sh").write_text(
                 "FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_KUNLUNXIN=1)\n"
                 "FLAGCX_CI_TEST_MAKE_ARGS=(USE_KUNLUNXIN=1)\n"
-                "FLAGCX_CI_KUNLUNXIN_DEVICES=0,1,2,3\n"
+                "FLAGCX_CI_KUNLUNXIN_DEVICES=${FLAGCX_CI_KUNLUNXIN_DEVICES:-0,1,2,3}\n"
                 'DEVICE_HOME="$GITHUB_WORKSPACE/xpu"\n'
                 "flagcx_ci_prepare() { :; }\n"
                 "flagcx_ci_validate_rdma() { :; }\n"
@@ -322,7 +323,9 @@ class KunlunXinWorkloadTest(unittest.TestCase):
                 'printf "CPATH=%s\\nLIBRARY_PATH=%s\\nHOST_CXXFLAGS=%s\\n" '
                 '"${CPATH:-}" "${LIBRARY_PATH:-}" "${HOST_CXXFLAGS:-}" '
                 '>> "$CALL_LOG"\n'
-                'if [[ "${1:-}" == - ]]; then cat >/dev/null; fi\n'
+                'if [[ "${1:-}" == - ]]; then '
+                'printf "VISIBLE=%s|%s\\n" "${CUDA_VISIBLE_DEVICES:-}" '
+                '"${XPU_VISIBLE_DEVICES:-}" >> "$CALL_LOG"; cat >/dev/null; fi\n'
             )
             for executable in binaries.iterdir():
                 executable.chmod(0o755)
@@ -386,6 +389,16 @@ class KunlunXinWorkloadTest(unittest.TestCase):
         self.assertIn("HOST_CXXFLAGS=-O2 -include cstddef\n", calls)
         self.assertIn("python setup.py build_ext --inplace\n", calls)
         self.assertIn("torch-tests skip-gather=1 skip-hetero=1\n", calls)
+
+    def test_torch_uses_configured_kunlunxin_device_group(self):
+        result, calls, _ = self.run_workload("torch-api")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("VISIBLE=0,1,2,3|0,1,2,3\n", calls)
+
+        with patch.dict(os.environ, {"FLAGCX_CI_KUNLUNXIN_DEVICES": "4,5,6,7"}):
+            result, calls, _ = self.run_workload("torch-api")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("VISIBLE=4,5,6,7|4,5,6,7\n", calls)
 
     def test_missing_cuda_headers_fail_before_torch_build(self):
         result, calls, _ = self.run_workload("torch-api", sdk=False)
