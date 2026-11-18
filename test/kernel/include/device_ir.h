@@ -69,16 +69,32 @@ void launchKernelLocalPointerS(const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                flagcxStream_t stream);
 
 // S5: Intra Pointer — reads peer's data via intra pointer
+#if defined(USE_ENFLAME_ADAPTOR)
+void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                               const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+                               float *devOutput, int count,
+                               flagcxStream_t stream);
+#else
 void launchKernelIntraPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                float *devOutput, int count,
                                flagcxStream_t stream);
+#endif
 
 // S6: Peer Pointer — team-based peer memory access
+#if defined(USE_ENFLAME_ADAPTOR)
+void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                              const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+                              float *devOutput, int count,
+                              flagcxStream_t stream);
+#else
 void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                               const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                               float *devOutput, int count,
                               flagcxStream_t stream);
+#endif
 
 // S7: Multicast Pointer — NVLS-dependent, commented out
 // void launchKernelMulticastPointerS(const void FLAGCX_IR_GLOBAL_PTR
@@ -88,22 +104,46 @@ void launchKernelPeerPointerS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
 //                                    int nThreads, flagcxStream_t stream);
 
 // S8: Intra Barrier Sync — write buffer, barrier, read peer
+#if defined(USE_ENFLAME_ADAPTOR)
+void launchKernelIntraBarrierSyncS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr, float *buffer, float *output,
+    int N, flagcxStream_t stream);
+#else
 void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                    float *buffer, float *output, int N,
                                    flagcxStream_t stream);
+#endif
 
 // S9: two full scalar barriers — SyncS(Release) + read + SyncS(Acquire)
+#if defined(USE_ENFLAME_ADAPTOR)
+void launchKernelIntraBarrierArriveWaitS(
+    const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+    const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr, float *buffer, float *output,
+    int N, flagcxStream_t stream);
+#else
 void launchKernelIntraBarrierArriveWaitS(
     const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
     const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer, float *output,
     int N, flagcxStream_t stream);
+#endif
 
 // S10: Intra AllReduce — composite using barriers + pointers
+#if defined(USE_ENFLAME_ADAPTOR)
+void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
+                                 const void FLAGCX_IR_GLOBAL_PTR *helperMemPtr,
+                                 float *buffer, int count,
+                                 flagcxStream_t stream);
+#else
 void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                  const void FLAGCX_IR_GLOBAL_PTR *devMemPtr,
                                  float *buffer, int count,
                                  flagcxStream_t stream);
+#endif
 
 // =========================================================================
 // Inter-Node Transport Tests (S1–S15, aligned with device_api_inter K1–K15)
