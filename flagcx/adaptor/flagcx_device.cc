@@ -116,7 +116,14 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
   if (comm->commType != flagcxCommunicatorHomo || comm->heteroComm != nullptr ||
       strcmp(devApiBackend->name, "default") == 0)
     comm->internalBuffersNeedPeerClose = true;
-  FLAGCXCHECK(flagcxDevCommRetryPendingCleanup(comm));
+  flagcxResult_t pendingCleanup = flagcxDevCommRetryPendingCleanup(comm);
+  if (comm->internalBuffersNeedPeerClose && comm->bootstrap != nullptr) {
+    flagcxResult_t commonCleanup = flagcxSuccess;
+    FLAGCXCHECK(
+        flagcxConvergeBootstrapStatus(comm, pendingCleanup, &commonCleanup));
+    pendingCleanup = commonCleanup;
+  }
+  FLAGCXCHECK(pendingCleanup);
   if (comm->devCommCount == INT_MAX)
     return flagcxInvalidUsage;
 
@@ -398,11 +405,10 @@ flagcxResult_t flagcxIpcWindowRegisterAndDevMemCreate(flagcxComm_t comm,
   if (comm == nullptr || devMem == nullptr)
     return flagcxInvalidArgument;
   *devMem = nullptr;
-  int slot = -1;
-  flagcxResult_t local =
-      flagcxCommWindowRegisterIpcInternal(comm, buff, size, true, &slot);
-  flagcxResult_t common = flagcxSuccess;
-  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
+  auto ipc = flagcxCommWindowRegisterIpcInternal(comm, buff, size, true);
+  int slot = ipc.slot;
+  flagcxResult_t local = ipc.result();
+  flagcxResult_t common = local;
   if (common == flagcxSuccess)
     local = flagcxDevMemCreateImpl(comm, buff, size, nullptr, slot, devMem);
   else
@@ -420,7 +426,7 @@ flagcxResult_t flagcxIpcWindowRegisterAndDevMemCreate(flagcxComm_t comm,
     cleanup = flagcxDevMemDestroy(comm, *devMem);
     if (cleanup == flagcxSuccess)
       *devMem = nullptr;
-  } else if (slot >= 0 && comm->ipcTable[slot].inUse) {
+  } else if (slot >= 0) {
     cleanup = releaseIpcTableSlot(comm, slot);
   }
   flagcxResult_t commonCleanup = flagcxSuccess;
@@ -714,11 +720,15 @@ static flagcxResult_t flagcxGrowIpcTable(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
-int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
+flagcxIpcBuildResult buildIpcPeerPointers(flagcxComm_t comm, void *buff,
+                                          size_t size) {
   flagcxResult_t res = flagcxSuccess;
   int slot = -1;
   for (int k = 0; k < comm->ipcTableCapacity; k++) {
-    if (comm->ipcTable[k].hostPeerPtrs == nullptr &&
+    if (!comm->ipcTable[k].inUse && !comm->ipcTable[k].ownerHeld &&
+        comm->ipcTable[k].refCount == 0 &&
+        comm->ipcTable[k].basePtr == nullptr &&
+        comm->ipcTable[k].hostPeerPtrs == nullptr &&
         comm->ipcTable[k].hostPeerBasePtrs == nullptr &&
         comm->ipcTable[k].devPeerPtrs == nullptr) {
       slot = k;
@@ -729,6 +739,15 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
     res = flagcxGrowIpcTable(comm);
     if (res == flagcxSuccess)
       slot = comm->ipcTableCapacity / 2;
+  }
+
+  if (slot >= 0) {
+    auto &entry = comm->ipcTable[slot];
+    entry.basePtr = buff;
+    entry.size = size;
+    entry.nPeers = comm->localRanks;
+    // A reserved or partial entry is not a usable device view.
+    entry.inUse = false;
   }
 
   int myRank = comm->rank;
@@ -745,9 +764,10 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   struct flagcxIpcPeerDesc myIpcDesc;
   memset(&myIpcDesc, 0, sizeof(myIpcDesc));
   void *exportBase = buff;
-  res =
-      flagcxGetIpcExportRange(buff, size, &exportBase,
-                              &myIpcDesc.allocationSize, &myIpcDesc.userOffset);
+  if (res == flagcxSuccess)
+    res = flagcxGetIpcExportRange(buff, size, &exportBase,
+                                  &myIpcDesc.allocationSize,
+                                  &myIpcDesc.userOffset);
   if (res != flagcxSuccess) {
     WARN("buildIpcPeerPointers: cannot resolve allocation range for buff %p",
          buff);
@@ -864,6 +884,8 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
   }
   memset(hostPeerBasePtrs, 0, localRanks * sizeof(void *));
 
+  comm->ipcTable[slot].hostPeerPtrs = hostPeerPtrs;
+  comm->ipcTable[slot].hostPeerBasePtrs = hostPeerBasePtrs;
   for (int lr = 0; lr < localRanks; lr++) {
     int globalR = localRankToRank[lr];
     if (globalR == myRank) {
@@ -874,12 +896,12 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
         void *peerPtr = nullptr;
         flagcxIpcMemHandle_t handlePtr = (flagcxIpcMemHandle_t)&pd->handleData;
         res = deviceAdaptor->ipcMemHandleOpen(handlePtr, &peerPtr);
+        hostPeerBasePtrs[lr] = peerPtr;
         if (res != flagcxSuccess) {
           WARN("buildIpcPeerPointers: ipcMemHandleOpen failed for rank %d",
                globalR);
           goto fail;
         }
-        hostPeerBasePtrs[lr] = peerPtr;
         FLAGCXCHECKGOTO(flagcxResolveIpcPeerAddress(
                             peerPtr, pd->allocationSize, pd->userOffset,
                             pd->userSize, &hostPeerPtrs[lr]),
@@ -922,45 +944,66 @@ int buildIpcPeerPointers(flagcxComm_t comm, void *buff, size_t size) {
          "buildIpcPeerPointers:   hostPeerPtrs[%d]=%p mappingBase=%p", lr,
          hostPeerPtrs[lr], hostPeerBasePtrs[lr]);
   }
-  return slot;
+  return {flagcxSuccess, flagcxSuccess, slot};
 
 fail:
   free(allDescs);
-  if (hostPeerBasePtrs) {
-    for (int i = 0; i < localRanks; i++) {
-      if (hostPeerBasePtrs[i])
-        deviceAdaptor->ipcMemHandleClose(hostPeerBasePtrs[i]);
-    }
-    free(hostPeerBasePtrs);
+  flagcxResult_t cleanup = flagcxSuccess;
+  if (slot >= 0) {
+    auto &entry = comm->ipcTable[slot];
+    entry.hostPeerPtrs = hostPeerPtrs;
+    entry.hostPeerBasePtrs = hostPeerBasePtrs;
+    entry.devPeerPtrs = devPeerPtrs;
+    entry.inUse = false;
+    cleanup = releaseIpcTableSlot(comm, slot);
+    if (cleanup != flagcxSuccess)
+      WARN("buildIpcPeerPointers: build failed (%d), cleanup retained slot %d "
+           "(%d)",
+           res, slot, cleanup);
   }
-  if (hostPeerPtrs) {
-    free(hostPeerPtrs);
-  }
-  if (devPeerPtrs) {
-    deviceAdaptor->deviceFree(devPeerPtrs, flagcxMemDevice, NULL);
-  }
-  return -1;
+  return {res, cleanup, cleanup == flagcxSuccess ? -1 : slot};
 }
 
-flagcxResult_t flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
-                                                   void *buff, size_t size,
-                                                   bool uniRunnerIpc,
-                                                   int *slot) {
-  if (comm == nullptr || slot == nullptr)
-    return flagcxInvalidArgument;
-  *slot = -1;
+flagcxIpcBuildResult flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
+                                                         void *buff,
+                                                         size_t size,
+                                                         bool uniRunnerIpc) {
+  if (comm == nullptr)
+    return {flagcxInvalidArgument, flagcxSuccess, -1};
   flagcxResult_t common = flagcxSuccess;
-  FLAGCXCHECK(flagcxConvergeBootstrapStatus(
+  flagcxResult_t agreement = flagcxConvergeBootstrapStatus(
       comm,
       buff == nullptr || size == 0 ? flagcxInvalidArgument : flagcxSuccess,
-      &common));
-  if (common != flagcxSuccess)
-    return common;
-  *slot = buildIpcPeerPointers(comm, buff, size);
-  if (*slot < 0)
-    return flagcxNotSupported;
-  comm->ipcTable[*slot].ownerHeld = !uniRunnerIpc;
-  return flagcxSuccess;
+      &common);
+  if (agreement != flagcxSuccess || common != flagcxSuccess)
+    return {agreement != flagcxSuccess ? agreement : common,
+            agreement != flagcxSuccess ? agreement : flagcxSuccess, -1};
+
+  auto result = buildIpcPeerPointers(comm, buff, size);
+  agreement = flagcxConvergeBootstrapStatus(comm, result.buildStatus, &common);
+  if (agreement != flagcxSuccess || common != flagcxSuccess) {
+    // Successful ranks roll back too. A builder that already failed cleanup
+    // keeps its exact partial slot for the owner rather than discarding it.
+    if (result.buildStatus == flagcxSuccess && result.slot >= 0) {
+      result.cleanupStatus = releaseIpcTableSlot(comm, result.slot);
+      if (result.cleanupStatus == flagcxSuccess)
+        result.slot = -1;
+      else
+        comm->ipcTable[result.slot].inUse = false;
+    }
+    result.buildStatus = agreement != flagcxSuccess ? agreement : common;
+    if (agreement == flagcxSuccess) {
+      agreement =
+          flagcxConvergeBootstrapStatus(comm, result.cleanupStatus, &common);
+      result.cleanupStatus = agreement != flagcxSuccess ? agreement : common;
+    } else {
+      // Lost agreement cannot establish that peers closed their imports.
+      result.cleanupStatus = agreement;
+    }
+  }
+  if (result.slot >= 0)
+    comm->ipcTable[result.slot].ownerHeld = !uniRunnerIpc;
+  return result;
 }
 
 // ==========================================================================

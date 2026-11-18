@@ -185,12 +185,21 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm);
 
 // Release a local IPC table slot and its imported mappings immediately.
 flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot);
-// Internal collective preparation for a peer-visible allocation. DevMemCreate
-// only attaches to the resulting local IPC table entry.
-flagcxResult_t flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
-                                                   void *buff, size_t size,
-                                                   bool uniRunnerIpc,
-                                                   int *slot);
+// A failed build may retain a cleanup-only slot. cleanupStatus is separate
+// so optional transports cannot hide a failed rollback behind NET fallback.
+struct flagcxIpcBuildResult {
+  flagcxResult_t buildStatus;
+  flagcxResult_t cleanupStatus;
+  int slot;
+  flagcxResult_t result() const {
+    return cleanupStatus != flagcxSuccess ? cleanupStatus : buildStatus;
+  }
+};
+// Collective preparation and rollback; slot is local, statuses are common.
+flagcxIpcBuildResult flagcxCommWindowRegisterIpcInternal(flagcxComm_t comm,
+                                                         void *buff,
+                                                         size_t size,
+                                                         bool uniRunnerIpc);
 
 // Agree on rank-local errors before entering another bootstrap collective.
 flagcxResult_t flagcxConvergeBootstrapStatus(flagcxComm_t comm,

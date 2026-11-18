@@ -25,7 +25,8 @@ struct flagcxIpcTableEntry {
   void *basePtr;           // own user-buffer pointer
   size_t size;
   size_t refCount;
-  bool inUse;     // true after IPC mapping creation until local cleanup
+  bool inUse;     // true only for a fully prepared mapping; partial resources
+                  // reserve the slot
   bool ownerHeld; // local Window, DevComm, or signal registration owns the slot
 };
 

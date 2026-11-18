@@ -3166,6 +3166,8 @@ bool rollbackFailArrayFree = false;
 int rollbackClosedImports = 0, rollbackFreedArrays = 0;
 void *rollbackPeerArray = nullptr;
 int rollbackIpcCreates = 0;
+int rollbackIpcOpens = 0, rollbackFailOpenAt = -1;
+bool rollbackFailCopy = false;
 flagcxResult_t rollbackIpcCreate(flagcxIpcMemHandle_t *handle, size_t *bytes) {
   ++rollbackIpcCreates;
   *bytes = sizeof(void *);
@@ -3181,6 +3183,8 @@ flagcxResult_t rollbackIpcFree(flagcxIpcMemHandle_t handle) {
   return flagcxSuccess;
 }
 flagcxResult_t rollbackIpcOpen(flagcxIpcMemHandle_t, void **buffer) {
+  if (++rollbackIpcOpens == rollbackFailOpenAt)
+    return flagcxUnhandledDeviceError;
   *buffer = malloc(64);
   return *buffer != nullptr ? flagcxSuccess : flagcxSystemError;
 }
@@ -3207,6 +3211,8 @@ flagcxResult_t rollbackRelease(void *buffer, flagcxMemType_t, flagcxStream_t) {
 }
 flagcxResult_t rollbackCopy(void *to, void *from, size_t bytes,
                             flagcxMemcpyType_t, flagcxStream_t, void *) {
+  if (rollbackFailCopy)
+    return flagcxUnhandledDeviceError;
   memcpy(to, from, bytes);
   return flagcxSuccess;
 }
@@ -3293,6 +3299,8 @@ struct ScopedRollbackResources {
   ~ScopedRollbackResources() {
     rollbackSyncFailureArmed = rollbackFailClose = rollbackFailArrayFree =
         false;
+    rollbackFailCopy = false;
+    rollbackFailOpenAt = -1;
     while (comm->publicWindows != nullptr) {
       flagcxWindow_t window = comm->publicWindows;
       if (window->defaultBase != nullptr) {
@@ -3368,7 +3376,9 @@ protected:
     rollbackFailClose = rollbackFailArrayFree = false;
     rollbackClosedImports = rollbackFreedArrays = 0;
     rollbackPeerArray = nullptr;
-    rollbackIpcCreates = 0;
+    rollbackIpcCreates = rollbackIpcOpens = 0;
+    rollbackFailOpenAt = -1;
+    rollbackFailCopy = false;
     adaptor.mock.ipcMemHandleCreate = rollbackIpcCreate;
     adaptor.mock.ipcMemHandleGet = rollbackIpcGet;
     adaptor.mock.ipcMemHandleFree = rollbackIpcFree;
@@ -3741,3 +3751,190 @@ TEST_F(SymWindowRollback, AsymmetricDoesNotSelectAvailableSymmetricMapping) {
   ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(&testComm, window)));
 }
 #endif
+
+TEST_F(SymWindowRollback, PartialBuildCloseFailureRetainsSlotAndPreventsReuse) {
+  if (nranks < 3)
+    GTEST_SKIP() << "Requires two imports per rank";
+  EnableIpc();
+  rollbackFailOpenAt = 2;
+  rollbackFailClose = true;
+  auto failed = buildIpcPeerPointers(&testComm, resources.buffer, 64);
+  EXPECT_EQ(failed.buildStatus, flagcxUnhandledDeviceError);
+  EXPECT_EQ(failed.cleanupStatus, flagcxRemoteError);
+  ASSERT_GE(failed.slot, 0);
+  EXPECT_FALSE(testComm.ipcTable[failed.slot].inUse);
+  EXPECT_EQ(testComm.ipcTable[failed.slot].basePtr, resources.buffer);
+  EXPECT_EQ(rollbackClosedImports, 0);
+
+  // A new complete mapping must not overwrite the retained partial one.
+  rollbackFailOpenAt = -1;
+  rollbackFailClose = false;
+  auto next = buildIpcPeerPointers(&testComm, resources.buffer, 64);
+  ASSERT_EQ(next.result(), flagcxSuccess);
+  EXPECT_NE(next.slot, failed.slot);
+  ASSERT_EQ(releaseIpcTableSlot(&testComm, next.slot), flagcxSuccess);
+  ASSERT_EQ(releaseIpcTableSlot(&testComm, failed.slot), flagcxSuccess);
+  EXPECT_EQ(rollbackClosedImports,
+            nranks); // full next mapping plus one partial
+  ASSERT_EQ(releaseIpcTableSlot(&testComm, failed.slot), flagcxSuccess);
+  EXPECT_EQ(rollbackClosedImports, nranks);
+}
+
+TEST_F(SymWindowRollback, PartialBuildArrayFreeFailureDoesNotRecloseImports) {
+  EnableIpc();
+  rollbackFailCopy = rollbackFailArrayFree = true;
+  auto failed = buildIpcPeerPointers(&testComm, resources.buffer, 64);
+  EXPECT_EQ(failed.buildStatus, flagcxUnhandledDeviceError);
+  EXPECT_EQ(failed.cleanupStatus, flagcxRemoteError);
+  ASSERT_GE(failed.slot, 0);
+  EXPECT_FALSE(testComm.ipcTable[failed.slot].inUse);
+  EXPECT_EQ(testComm.ipcTable[failed.slot].hostPeerBasePtrs, nullptr);
+  EXPECT_NE(testComm.ipcTable[failed.slot].devPeerPtrs, nullptr);
+  EXPECT_EQ(rollbackClosedImports, nranks - 1);
+  EXPECT_EQ(rollbackFreedArrays, 0);
+  rollbackFailArrayFree = rollbackFailCopy = false;
+  ASSERT_EQ(releaseIpcTableSlot(&testComm, failed.slot), flagcxSuccess);
+  EXPECT_EQ(rollbackClosedImports, nranks - 1);
+  EXPECT_EQ(rollbackFreedArrays, 1);
+}
+
+TEST_F(SymWindowRollback, PartialBuildFailureConvergesCleanupBeforeContinuing) {
+  EnableIpc();
+  rollbackFailCopy = rollbackFailClose = rank == 1;
+  auto failed = flagcxCommWindowRegisterIpcInternal(&testComm, resources.buffer,
+                                                    64, false);
+  EXPECT_EQ(failed.buildStatus, flagcxUnhandledDeviceError);
+  EXPECT_EQ(failed.cleanupStatus, flagcxRemoteError);
+  EXPECT_EQ(failed.slot >= 0, rank == 1);
+  if (failed.slot >= 0) {
+    EXPECT_FALSE(testComm.ipcTable[failed.slot].inUse);
+    EXPECT_TRUE(testComm.ipcTable[failed.slot].ownerHeld);
+  }
+  rollbackFailCopy = rollbackFailClose = false;
+  if (failed.slot >= 0)
+    ASSERT_EQ(releaseIpcTableSlot(&testComm, failed.slot), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  auto next = flagcxCommWindowRegisterIpcInternal(&testComm, resources.buffer,
+                                                  64, false);
+  ASSERT_EQ(next.result(), flagcxSuccess);
+  EXPECT_TRUE(testComm.ipcTable[next.slot].inUse);
+  ASSERT_EQ(releaseIpcTableSlot(&testComm, next.slot), flagcxSuccess);
+}
+
+TEST_F(SymWindowRollback, PartialBuildCleanRollbackReturnsOriginalFailure) {
+  EnableIpc();
+  rollbackFailCopy = rank == 1;
+  auto failed = flagcxCommWindowRegisterIpcInternal(&testComm, resources.buffer,
+                                                    64, false);
+  EXPECT_EQ(failed.buildStatus, flagcxUnhandledDeviceError);
+  EXPECT_EQ(failed.cleanupStatus, flagcxSuccess);
+  EXPECT_EQ(failed.slot, -1);
+  EXPECT_EQ(rollbackClosedImports, nranks - 1);
+  EXPECT_EQ(rollbackFreedArrays, 1);
+}
+
+TEST_F(SymWindowRollback, PartialWindowBuildRetainsLeaseUntilLocalRetry) {
+  if (nranks < 3)
+    GTEST_SKIP() << "Requires two imports per rank";
+  EnableIpc();
+  rollbackFailOpenAt = rank == 1 ? 2 : -1;
+  rollbackFailClose = rank == 1;
+  flagcxWindow_t window = nullptr;
+  auto status = flagcxCommWindowRegister(&testComm, resources.buffer, 64,
+                                         &window, FLAGCX_WIN_ASYMMETRIC);
+  EXPECT_EQ(status, flagcxRemoteError);
+  EXPECT_EQ(hetero.symWindows, nullptr);
+  ASSERT_EQ(window != nullptr, rank == 1);
+  if (window != nullptr) {
+    EXPECT_TRUE(window->defaultBase->hasAllocationLease);
+    EXPECT_FALSE(testComm.ipcTable[window->defaultBase->ipcSlot].inUse);
+    EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
+  }
+  rollbackFailOpenAt = -1;
+  rollbackFailClose = false;
+  if (window != nullptr)
+    ASSERT_EQ(flagcxCommWindowDeregister(&testComm, window), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      &testComm, resources.buffer, 64, &window, FLAGCX_WIN_ASYMMETRIC)));
+  ASSERT_EQ(flagcxCommWindowDeregister(&testComm, window), flagcxSuccess);
+}
+
+TEST_F(SymWindowRollback, PartialSignalBuildCannotFallBackOrDeduplicate) {
+  EnableIpc();
+  hetero.rmaSignalIpcSlot = -1;
+  rollbackFailCopy = rollbackFailClose = rank == 1;
+  EXPECT_EQ(flagcxOneSideSignalRegisterInternal(&testComm, resources.buffer, 64,
+                                                FLAGCX_PTR_CUDA, false),
+            flagcxRemoteError);
+  EXPECT_EQ(hetero.signalHandle, nullptr);
+  EXPECT_EQ(hetero.rmaSignalIpcSlot >= 0, rank == 1);
+  // Even ranks with no remaining local import must reject a dirty retry.
+  EXPECT_EQ(flagcxOneSideSignalRegisterInternal(&testComm, resources.buffer, 64,
+                                                FLAGCX_PTR_CUDA, false),
+            flagcxInvalidUsage);
+  rollbackFailCopy = rollbackFailClose = false;
+  ASSERT_EQ(flagcxOneSideSignalDeregister(&testComm), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  ASSERT_EQ(flagcxOneSideSignalRegisterInternal(&testComm, resources.buffer, 64,
+                                                FLAGCX_PTR_CUDA, false),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxOneSideSignalDeregister(&testComm), flagcxSuccess);
+}
+
+TEST_F(SymWindowRollback, PartialDevCommBarrierBuildRetriesCollectively) {
+  EnableIpc();
+  adaptor.mock.deviceMemset = [](void *pointer, int value, size_t bytes,
+                                 flagcxMemType_t, flagcxStream_t) {
+    memset(pointer, value, bytes);
+    return flagcxSuccess;
+  };
+  flagcxDevCommRequirements reqs = {};
+  reqs.intraBarrierCount = 1;
+  flagcxDevComm_t view = nullptr;
+  rollbackFailCopy = rollbackFailArrayFree = rank == 1;
+  EXPECT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxRemoteError);
+  EXPECT_EQ(view, nullptr);
+  ASSERT_EQ(testComm.pendingDevCommCleanup != nullptr, rank == 1);
+  // Ranks with no pending local owner must not enter new IPC preparation alone.
+  EXPECT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxRemoteError);
+  rollbackFailCopy = rollbackFailArrayFree = false;
+  ASSERT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxSuccess);
+  ASSERT_NE(view, nullptr);
+  ASSERT_EQ(flagcxDevCommDestroy(&testComm, view), flagcxSuccess);
+  ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  testComm.destroyPhase = 7;
+  ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
+}
+
+TEST_F(SymWindowRollback, PartialDevCommSignalBuildRetainsFailedRegistration) {
+  EnableIpc();
+  adaptor.mock.deviceMemset = [](void *pointer, int value, size_t bytes,
+                                 flagcxMemType_t, flagcxStream_t) {
+    memset(pointer, value, bytes);
+    return flagcxSuccess;
+  };
+  adaptor.mock.gdrMemAlloc = [](void **pointer, size_t bytes, void *) {
+    return rollbackAllocate(pointer, bytes, flagcxMemDevice, nullptr);
+  };
+  flagcxDevCommRequirements reqs = {};
+  reqs.interSignalCount = 1;
+  flagcxDevComm_t view = nullptr;
+  rollbackFailCopy = rollbackFailArrayFree = rank == 1;
+  EXPECT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxRemoteError);
+  EXPECT_EQ(view, nullptr);
+  ASSERT_EQ(testComm.pendingDevCommCleanup != nullptr, rank == 1);
+  if (rank == 1) {
+    EXPECT_NE(testComm.pendingDevCommCleanup->ownedSignalBuffer, nullptr);
+    EXPECT_EQ(testComm.pendingDevCommCleanup->ownedSignalBuffer,
+              hetero.rmaSignalBase);
+  }
+  EXPECT_EQ(flagcxDevCommCreate(&testComm, &reqs, &view), flagcxRemoteError);
+  rollbackFailCopy = rollbackFailArrayFree = false;
+  ASSERT_EQ(flagcxDevCommRetryPendingCleanup(&testComm), flagcxSuccess);
+  ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  testComm.destroyPhase = 7;
+  ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
+}

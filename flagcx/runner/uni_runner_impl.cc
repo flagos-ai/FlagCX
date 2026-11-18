@@ -172,7 +172,7 @@ static flagcxResult_t releaseOrphanUniRunnerIpcWindow(flagcxComm_t comm,
     return flagcxSuccess;
   for (int slot = 0; slot < comm->ipcTableCapacity; ++slot) {
     const auto &entry = comm->ipcTable[slot];
-    if (entry.inUse && entry.basePtr == buffer && !entry.ownerHeld) {
+    if (entry.basePtr == buffer && !entry.ownerHeld) {
       if (entry.refCount != 0)
         return flagcxInvalidUsage;
       FLAGCXCHECK(releaseIpcTableSlot(comm, slot));

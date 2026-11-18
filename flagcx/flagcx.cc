@@ -1911,10 +1911,11 @@ flagcxResult_t flagcxOneSideDeregister(struct flagcxHeteroComm *heteroComm) {
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
-                                                   void *buff, size_t size,
-                                                   int ptrType,
-                                                   bool isVmmAllocation) {
+flagcxResult_t flagcxOneSideSignalRegisterInternal(
+    const flagcxComm_t comm, void *buff, size_t size, int ptrType,
+    bool isVmmAllocation, flagcxResult_t *ipcCleanupStatus) {
+  if (ipcCleanupStatus != nullptr)
+    *ipcCleanupStatus = flagcxSuccess;
   if (comm == NULL || buff == NULL || size == 0)
     return flagcxInvalidArgument;
   if (useHomoComm(comm) && !useHeteroComm()) {
@@ -1924,6 +1925,26 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
   struct flagcxHeteroComm *heteroComm = comm->heteroComm;
   if (heteroComm == NULL)
     return flagcxNotSupported;
+
+  if (ptrType == FLAGCX_PTR_CUDA && !isVmmAllocation &&
+      comm->bootstrap != nullptr) {
+    const int pendingSlot = heteroComm->rmaSignalIpcSlot;
+    flagcxResult_t local = heteroComm->rmaSignalBase != nullptr &&
+                                   pendingSlot >= 0 &&
+                                   !comm->ipcTable[pendingSlot].inUse
+                               ? flagcxInvalidUsage
+                               : flagcxSuccess;
+    flagcxResult_t common = flagcxSuccess;
+    flagcxResult_t agreement =
+        flagcxConvergeBootstrapStatus(comm, local, &common);
+    if (agreement != flagcxSuccess || common != flagcxSuccess) {
+      const auto error = agreement != flagcxSuccess ? agreement : common;
+      if (ipcCleanupStatus != nullptr)
+        *ipcCleanupStatus = error;
+      return error; // Retry signal deregistration before creating a new
+                    // binding.
+    }
+  }
 
   // Per-heteroComm dedup: signal IPC and network state share this local base,
   // but either transport may be absent.
@@ -1961,9 +1982,19 @@ flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
   const bool isVmm = ptrType == FLAGCX_PTR_CUDA && isVmmAllocation;
   int ipcSlot = -1;
   if (ptrType == FLAGCX_PTR_CUDA && !isVmm) {
-    ipcSlot = buildIpcPeerPointers(comm, buff, size);
-    if (ipcSlot >= 0)
-      comm->ipcTable[ipcSlot].ownerHeld = true;
+    auto ipc = flagcxCommWindowRegisterIpcInternal(comm, buff, size, false);
+    ipcSlot = ipc.slot;
+    if (ipc.cleanupStatus != flagcxSuccess) {
+      if (ipcCleanupStatus != nullptr)
+        *ipcCleanupStatus = ipc.cleanupStatus;
+      // Keep residual imports reachable by signal deregistration/CommDestroy.
+      if (ipcSlot >= 0) {
+        heteroComm->rmaSignalBase = buff;
+        heteroComm->rmaSignalSize = size;
+        heteroComm->rmaSignalIpcSlot = ipcSlot;
+      }
+      return ipc.cleanupStatus;
+    }
   }
   heteroComm->rmaSignalBase = buff;
   heteroComm->rmaSignalSize = size;
@@ -2707,14 +2738,10 @@ flagcxCommWindowRegisterFresh(flagcxComm_t comm, void *buff, size_t size,
           "IPC eligibility convergence failure");
     }
     if (commonIpcEligibility == flagcxSuccess) {
-      int ipcSlot = -1;
-      flagcxResult_t ipcBuild = flagcxCommWindowRegisterIpcInternal(
-          comm, buff, size, false, &ipcSlot);
-      flagcxResult_t commonIpcStatus = flagcxSuccess;
-      gatherRes =
-          flagcxSymConvergeStatus(comm->heteroComm, ipcBuild, &commonIpcStatus);
-      bool allIpcReady =
-          gatherRes == flagcxSuccess && commonIpcStatus == flagcxSuccess;
+      auto ipcBuild =
+          flagcxCommWindowRegisterIpcInternal(comm, buff, size, false);
+      const int ipcSlot = ipcBuild.slot;
+      bool allIpcReady = ipcBuild.result() == flagcxSuccess;
 
       if (allIpcReady) {
         (*win)->defaultBase->ipcSlot = ipcSlot;
@@ -2736,10 +2763,10 @@ flagcxCommWindowRegisterFresh(flagcxComm_t comm, void *buff, size_t size,
               cleanupGather != flagcxSuccess ? cleanupGather : commonCleanup,
               "IPC rollback failure");
         }
-        if (gatherRes != flagcxSuccess) {
+        if (ipcBuild.cleanupStatus != flagcxSuccess) {
           return flagcxRollbackWindowRegistration(
-              comm, win, allocator, flagcxSymCleanupLocal, gatherRes,
-              "IPC collective failure");
+              comm, win, allocator, flagcxSymCleanupLocal,
+              ipcBuild.cleanupStatus, "partial IPC cleanup failure");
         }
       }
     }
@@ -3174,16 +3201,12 @@ static flagcxResult_t flagcxDevCommStateCreateStagedView(flagcxComm_t comm,
                                             : flagcxNotSupported,
         &eligible));
     if (eligible == flagcxSuccess && sym->ipcSlot < 0) {
-      int slot = -1;
-      flagcxResult_t local =
-          flagcxCommWindowRegisterIpcInternal(comm, buffer, size, false, &slot);
-      // Retain a successful local slot before convergence: peers can fail.
-      if (slot >= 0)
-        sym->ipcSlot = slot;
-      flagcxResult_t common = flagcxSuccess;
-      FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
-      if (common != flagcxSuccess)
-        return common;
+      auto ipc = flagcxCommWindowRegisterIpcInternal(comm, buffer, size, false);
+      // Retain cleanup-only slots too; the staged Window owns rollback.
+      if (ipc.slot >= 0)
+        sym->ipcSlot = ipc.slot;
+      if (ipc.result() != flagcxSuccess)
+        return ipc.result();
     }
   }
 #endif

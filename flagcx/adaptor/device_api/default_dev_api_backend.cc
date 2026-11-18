@@ -202,12 +202,11 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     if (common != flagcxSuccess)
       return common;
 
-    int slot = -1;
-    FLAGCXCHECK(flagcxCommWindowRegisterIpcInternal(
-        comm, devComm->localBarrierFlags, barrierSize, false, &slot));
-
-    devComm->barrierPeers = (uint64_t **)comm->ipcTable[slot].devPeerPtrs;
-    devComm->barrierIpcIndex = slot;
+    auto ipc = flagcxCommWindowRegisterIpcInternal(
+        comm, devComm->localBarrierFlags, barrierSize, false);
+    devComm->barrierIpcIndex = ipc.slot;
+    FLAGCXCHECK(ipc.result());
+    devComm->barrierPeers = (uint64_t **)comm->ipcTable[ipc.slot].devPeerPtrs;
     devComm->localBarrierShmPtr = nullptr;
     devComm->peerBarrierShmPtrs = nullptr;
     devComm->barrierShmSize = 0;
@@ -217,7 +216,7 @@ static flagcxResult_t setupIpcBarriers(flagcxComm_t comm,
     INFO(FLAGCX_INIT,
          "setupIpcBarriers(IPC): rank %d slot %d localBarrierFlags=%p "
          "barrierPeers=%p nBarriers=%d",
-         myRank, slot, (void *)devComm->localBarrierFlags,
+         myRank, ipc.slot, (void *)devComm->localBarrierFlags,
          (void *)devComm->barrierPeers, devComm->nBarriers);
 
   } else {
@@ -771,10 +770,16 @@ defaultDevApiCommCreate(flagcxComm_t comm,
         INFO(FLAGCX_INIT,
              "defaultDevApiCommCreate: registering signalBuffer (ptrType=%d)",
              sigPtrType);
+        flagcxResult_t ipcCleanup = flagcxSuccess;
         res = flagcxOneSideSignalRegisterInternal(
             comm, signalRegistrationBuffer,
             (size_t)devComm->signalCount * bufCtxCount * sizeof(uint64_t),
-            sigPtrType, devComm->signalBufferIsVmm);
+            sigPtrType, devComm->signalBufferIsVmm, &ipcCleanup);
+        if (previousSignalBase == nullptr &&
+            comm->heteroComm->rmaSignalBase == signalRegistrationBuffer)
+          devComm->ownedSignalBuffer = (uint64_t *)signalRegistrationBuffer;
+        if (ipcCleanup != flagcxSuccess)
+          return ipcCleanup;
         struct flagcxOneSideHandleInfo *registration =
             comm->heteroComm->signalHandle;
         bool signalRegistered =
@@ -787,8 +792,6 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                "or retained another buffer (%d, handle=%p, buffer=%p)",
                res, (void *)registration, signalRegistrationBuffer);
         } else {
-          if (previousSignalBase == nullptr)
-            devComm->ownedSignalBuffer = (uint64_t *)signalRegistrationBuffer;
           if (networkSignalRegistered && previousRegistration == nullptr)
             devComm->ownedSignalRegistration = registration;
           devComm->netSignalReady = networkSignalRegistered ? 1 : 0;
@@ -842,10 +845,13 @@ defaultDevApiCommCreate(flagcxComm_t comm,
        !flagcxParamSignalHostEnable())) {
     size_t sigSize = (size_t)devComm->signalCount * devComm->contextCount *
                      sizeof(DefaultCompletionWord);
-    int slot = -1;
-    flagcxResult_t ipcResult = flagcxCommWindowRegisterIpcInternal(
-        comm, devComm->completionSignalBuffer, sigSize, false, &slot);
-    if (ipcResult == flagcxSuccess) {
+    auto ipc = flagcxCommWindowRegisterIpcInternal(
+        comm, devComm->completionSignalBuffer, sigSize, false);
+    const int slot = ipc.slot;
+    devComm->signalIpcSlot = slot;
+    if (ipc.cleanupStatus != flagcxSuccess)
+      return ipc.cleanupStatus;
+    if (ipc.buildStatus == flagcxSuccess) {
       devComm->completionSignalPeerPtrs = comm->ipcTable[slot].devPeerPtrs;
       devComm->signalIpcSlot = slot;
       if (sizeof(DefaultCompletionWord) == sizeof(uint64_t))

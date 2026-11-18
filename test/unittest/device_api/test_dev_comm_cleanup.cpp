@@ -909,6 +909,16 @@ TEST_F(DefaultDevCommCleanupTest,
   comm.localRanks = 1;
   comm.heteroComm = &heteroComm;
 
+  // IPC preparation is collective even when it is unavailable. Supply a
+  // valid single-rank bootstrap so this tests mismatched registrations,
+  // rather than an invalid communicator's inability to agree on cleanup.
+  bootstrapCollState coll = {};
+  coll.nranks = 1;
+  bootstrapState bootstrap = {};
+  bootstrap.mode = FLAGCX_BOOTSTRAP_COLL;
+  bootstrap.coll = &coll;
+  comm.bootstrap = &bootstrap;
+
   flagcxOneSideHandleInfo *existingSignal = makeRegistration(
       reinterpret_cast<void *>(0xa000), reinterpret_cast<void *>(0xa100));
   flagcxOneSideHandleInfo *existingStaging = makeRegistration(
