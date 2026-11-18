@@ -200,26 +200,6 @@ jobs:
           bash .github/scripts/ci/run_hardware_workload.sh \
             "${{ inputs.platform }}" unittest "$FLAGCX_CI_SET_ENV" "${{ matrix.suite }}"
 
-      - name: Upload Enflame test attempt logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: attempts-unit_test-${{ github.run_attempt }}-${{ inputs.platform }}-${{ matrix.suite }}
-          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
-          include-hidden-files: true
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Upload Enflame C++ coverage report
-        if: ${{ always() && inputs.cpp_coverage }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: cpp-coverage-${{ inputs.platform }}-${{ matrix.suite }}
-          path: ${{ env.FLAGCX_CI_LOG_DIR }}/cpp-coverage/${{ inputs.platform }}/${{ matrix.suite }}/
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 14
-
       - name: Upload test attempt logs
         if: always()
         uses: actions/upload-artifact@v7

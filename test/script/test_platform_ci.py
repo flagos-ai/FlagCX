@@ -879,6 +879,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_config = (REPO_ROOT / ".github/configs/enflame.yml").read_text()
         enflame_env = (REPO_ROOT / ".github/scripts/set_env/enflame.sh").read_text()
         self.assertIn("  - sy-8g-cicd-flagcx", enflame_config)
+        for mount in (
+            "/dev/infiniband:/dev/infiniband",
+            "/sys/class/infiniband:/sys/class/infiniband:ro",
+            "/sys/class/infiniband_verbs:/sys/class/infiniband_verbs:ro",
+            "/sys/bus/pci/devices:/sys/bus/pci/devices:ro",
+        ):
+            self.assertIn(f"  - {mount}", enflame_config)
         self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
         self.assertIn('export GTEST_FILTER+=":NetAdaptorLoopback.*"', enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
@@ -1181,6 +1188,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
         enflame_job = unit_workflow.split("  unit_test_enflame:\n", 1)[1]
         self.assertIn("    container:\n      image:", enflame_job)
         self.assertIn("options: ${{ needs.load_config.outputs.container_options }}", enflame_job)
+        self.assertEqual(enflame_job.count("name: attempts-unit_test-"), 1)
+        self.assertEqual(enflame_job.count("name: cpp-coverage-"), 1)
         self.assertIn("run_hardware_container.sh", unit_workflow)
         hardware_launcher = (
             REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
