@@ -79,9 +79,9 @@ struct flagcxHostSemaphore : public flagcxSemaphore {
     assert(it != stepInfo.end());
     int idx = it->second;
     __atomic_fetch_add(&signals[idx].first, 1, __ATOMIC_RELEASE);
-    INFO(FLAGCX_PROXY,
-         "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
-         signals[idx].first, opId, signals[idx].second, counter);
+    TRACE(FLAGCX_PROXY,
+          "SubCounter curStep[%d] = %d, nSteps[%d] = %d, counter %d", opId,
+          signals[idx].first, opId, signals[idx].second, counter);
   }
   void addCounter(int opId = 0) override {
     assert(!frozen); // must not mutate during execution phase

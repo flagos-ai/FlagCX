@@ -91,6 +91,10 @@ fi
 export FLAGCX_DEBUG=INFO
 export FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_VMM_ENABLE=0
+if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar &&
+      ( "$SUITE" == adaptor || "$SUITE" == runner ) ]]; then
+  export FLAGCX_DEBUG=TRACE
+fi
 
 : "${MPI_HOME:?The platform set_env script must define MPI_HOME}"
 declare -p FLAGCX_CI_PROJECT_MAKE_ARGS >/dev/null 2>&1 || {
@@ -345,11 +349,23 @@ run_suite() {
       local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
       local platform_name
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      local adaptor_gtest_filter=${GTEST_FILTER:-*}
+      if [[ "$platform_name" == iluvatar ]]; then
+        # This CoreX runner cannot export a DMA-BUF FD and mlx5_0 reports
+        # EOPNOTSUPP for ibv_reg_dmabuf_mr. Keep the test available for other
+        # platforms while excluding it from Iluvatar hardware CI.
+        if [[ "$adaptor_gtest_filter" == *-* ]]; then
+          adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr
+        else
+          adaptor_gtest_filter+=-NetAdaptorLoopback.RegisterDmaBufMr
+        fi
+      fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
       # layer can express QP selection together with ordering boundaries.
       FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        GTEST_FILTER="$adaptor_gtest_filter" \
         GTEST_OUTPUT="xml:$gpu_result_xml" \
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
@@ -357,6 +373,12 @@ run_suite() {
       if ((unit_status == 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
+      fi
+      if ((unit_status == 0)) && [[ "$platform_name" == iluvatar ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case DeviceAdaptorTest.StreamWaitWriteValue64 \
+          --case DeviceAdaptorTest.HostRegisterUnregister \
+          "$gpu_result_xml" || unit_status=$?
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -538,6 +560,11 @@ run_suite() {
       local ipc_status=0
       local network_status=0
       local visibility_status=0
+      local rma_platform_name ipc_xml_dir=""
+      rma_platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$rma_platform_name" == iluvatar ]]; then
+        ipc_xml_dir=$(mktemp -d "$suite_dir/build/rma-pr2.XXXXXX")
+      fi
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
       # Keep these as separate invocations so each transport has its own
@@ -546,7 +573,14 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
-        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+        IPC_XML_DIR="$ipc_xml_dir" \
+        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+      if ((ipc_status == 0)) && [[ "$rma_platform_name" == iluvatar ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case RmaTest.GetAsyncOffsets \
+          --case RmaTest.IpcGetSameStreamCompletion \
+          "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
+      fi
       if flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
@@ -563,9 +597,9 @@ run_suite() {
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
         case "$platform_name" in
           iluvatar)
-            # IXCUDA currently declares WRITE-only flush requirements. Keep
-            # the READ consumer data check and verify that the public WRITE
-            # wait rejects the unimplemented stream wait-value operation.
+            # IXCUDA now has a local stream wait but has not established the
+            # stronger remote-payload acquire guarantee. Keep the READ data
+            # check and require the public WRITE wait to reject that request.
             expected_read_required=0
             expected_write_required=1
             expected_write=unsupported
@@ -714,6 +748,7 @@ run_suite() {
       : "${FLAGCX_CI_RUNNER_NP:?The platform set_env script must define FLAGCX_CI_RUNNER_NP}"
       local platform_name
       local unit_status=0 default_status=0 hybrid_status=0 net_status=0 stripe_status=0 pxn_status=0
+      local p2p_1m_status=0 net_1m_status=0
       local runner_mpi_runner="$MPI_RUNNER"
       local -a runner_net_platform_env=()
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
@@ -721,6 +756,7 @@ run_suite() {
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_ascend_runner_mpi.sh"
       elif [[ "$platform_name" == iluvatar ]]; then
         runner_mpi_runner="$PROJECT_ROOT/.github/scripts/ci/run_iluvatar_runner_mpi.sh"
+        export FLAGCX_CI_INSTALL_GDB=1
       fi
       if [[ "$platform_name" == "hygon" ]]; then
         # A broken SHCA route otherwise consumes the default RC retry budget
@@ -762,6 +798,37 @@ run_suite() {
         -x FLAGCX_CI_EXPECT_PXN=0 \
         "${runner_net_platform_env[@]}" \
         ./build/bin/runner_mpi_tests || net_status=$?
+      if [[ "$platform_name" == iluvatar ]]; then
+        FLAGCX_CI_MPI_LABEL="runner heterogeneous SendRecv 1 MiB" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+          -x FLAGCX_CI_RUNNER_BYTES=1048576 \
+          ./build/bin/runner_mpi_tests \
+          --gtest_filter=FlagCXCollTest.SendRecv || p2p_1m_status=$?
+        FLAGCX_CI_MPI_LABEL="runner forced NET SendRecv 1 MiB" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=1 \
+          -x FLAGCX_PXN_DISABLE=1 \
+          -x FLAGCX_VMM_ENABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET \
+          -x FLAGCX_CI_EXPECT_NET_ADAPTOR=IB \
+          -x FLAGCX_IB_QPS_PER_CONNECTION=2 \
+          -x FLAGCX_IB_SPLIT_DATA_ON_QPS=0 \
+          -x FLAGCX_IBUC_SPLIT_DATA_ON_QPS=0 \
+          -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
+          -x FLAGCX_CI_EXPECT_PXN=0 \
+          -x FLAGCX_CI_RUNNER_BYTES=1048576 \
+          "${runner_net_platform_env[@]}" \
+          ./build/bin/runner_mpi_tests \
+          --gtest_filter=FlagCXCollTest.SendRecv || net_1m_status=$?
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET multi-QP striping" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -823,8 +890,9 @@ run_suite() {
           --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
-           net_status != 0 || stripe_status != 0 || pxn_status != 0)); then
-        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status striping=$stripe_status PXN=$pxn_status" >&2
+           net_status != 0 || p2p_1m_status != 0 || net_1m_status != 0 ||
+           stripe_status != 0 || pxn_status != 0)); then
+        echo "Runner failures: unit=$unit_status default=$default_status hybrid=$hybrid_status NET=$net_status P2P_1MiB=$p2p_1m_status NET_1MiB=$net_1m_status striping=$stripe_status PXN=$pxn_status" >&2
         return 1
       fi
       ;;

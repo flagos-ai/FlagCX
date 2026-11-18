@@ -134,6 +134,19 @@ ifeq ($(KERNEL_PLATFORM), klx)
               -DFLAGCX_TEST_NO_REMOTE_THREAD_PUT
 endif
 
+# Enflame: use platform-specific test files with dual-buffer pattern
+ifeq ($(KERNEL_PLATFORM), enflame)
+  ENFLAME_IR_TARGETS  := $(BINDIR)/test_device_ir_intra_enflame
+  ENFLAME_API_TARGETS := $(BINDIR)/test_device_api_intra_enflame
+  SKIPPED_TARGETS := $(notdir $(filter-out $(ENFLAME_IR_TARGETS) $(ENFLAME_API_TARGETS),\
+                       $(IR_TARGETS) $(API_TARGETS)))
+  IR_TARGETS      := $(ENFLAME_IR_TARGETS)
+  API_TARGETS     := $(ENFLAME_API_TARGETS)
+  ALL_DEVICE_TEST_TARGETS += $(ENFLAME_IR_TARGETS) $(ENFLAME_API_TARGETS)
+  # Skip host-only test: Enflame doesn't implement CommTraits/DefaultCompletionStorage
+  UNIT_TARGET :=
+endif
+
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
 
 .PHONY: all unit mpi clean require-compile-kernel run-unit run-mpi run-mpi-intra run-mpi-inter \
@@ -157,7 +170,9 @@ $(ALL_DEVICE_TEST_TARGETS) $(DEVICE_API_OBJ) $(DEVICE_IR_OBJ) \
 run-mpi run-mpi-intra run-mpi-inter run-mpi-unified-intra \
     run-mpi-unified-inter: | require-compile-kernel
 
-# Build device kernel objects via dispatcher
+KERNEL_API_SRCS := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/device_api.$(DEVICE_FILE_EXTENSION)
+KERNEL_IR_SRCS  := $(KERNEL_DIR)/$(KERNEL_PLATFORM)/device_ir.$(DEVICE_FILE_EXTENSION)
+
 KERNEL_API_TARGETS := device_api.o
 KERNEL_IR_TARGETS  := device_ir.o
 ifneq ($(DLINK_API_OBJ),)
@@ -165,10 +180,10 @@ KERNEL_API_TARGETS += dlink_api.o
 KERNEL_IR_TARGETS  += dlink_ir.o
 endif
 
-$(DEVICE_API_OBJ) $(DLINK_API_OBJ):
+$(DEVICE_API_OBJ) $(DLINK_API_OBJ): $(KERNEL_API_SRCS)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_API_TARGETS)
 
-$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ):
+$(DEVICE_IR_OBJ) $(DLINK_IR_OBJ): $(KERNEL_IR_SRCS)
 	@$(MAKE) -C $(KERNEL_DIR) $(KERNEL_IR_TARGETS)
 
 $(TOOLS_OBJ): $(TOOLS_SRC)
@@ -224,6 +239,27 @@ $(BINDIR)/test_device_api_inter: $(OBJDIR)/test_device_api_inter.o $(DEVICE_API_
 	@echo "Linking   $@"
 	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
 
+# Enflame-specific test targets (dual-buffer pattern)
+$(OBJDIR)/test_device_api_intra_enflame.o: enflame/test_device_api_intra.cpp | require-compile-kernel
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
+
+$(OBJDIR)/test_device_ir_intra_enflame.o: enflame/test_device_ir_intra.cpp | require-compile-kernel
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling $<"
+	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
+
+$(BINDIR)/test_device_api_intra_enflame: $(OBJDIR)/test_device_api_intra_enflame.o $(DEVICE_API_OBJ) $(DLINK_API_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+
+$(BINDIR)/test_device_ir_intra_enflame: $(OBJDIR)/test_device_ir_intra_enflame.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
+	@mkdir -p $(BINDIR)
+	@echo "Linking   $@"
+	@$(CXX) $(CXXFLAGS) -o $@ $^ $(ALL_LINK)
+
 clean:
 	@rm -rf $(BUILDDIR)
 
@@ -257,7 +293,9 @@ UNIFIED_TEST_ARGS := -b 1K -e 16M -f 2
 # Legacy intra-node tests. Platforms only run targets selected in MPI_TARGETS;
 # this prevents a stale executable from bypassing a platform capability filter.
 run-mpi-intra: $(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)) \
-               $(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS))
+               $(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)) \
+               $(filter $(BINDIR)/test_device_ir_intra_enflame,$(MPI_TARGETS)) \
+               $(filter $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS))
 
 ifneq ($(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)),)
 	@echo "Running intra-node tests..."
@@ -266,7 +304,15 @@ endif
 ifneq ($(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
 	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_api_intra
 endif
-ifeq ($(filter $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
+ifneq ($(filter $(BINDIR)/test_device_ir_intra_enflame,$(MPI_TARGETS)),)
+	@echo "Running Enflame intra-node IR tests..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_ir_intra_enflame
+endif
+ifneq ($(filter $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS)),)
+	@echo "Running Enflame intra-node API tests..."
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_api_intra_enflame
+endif
+ifeq ($(filter $(BINDIR)/test_device_ir_intra $(BINDIR)/test_device_api_intra $(BINDIR)/test_device_ir_intra_enflame $(BINDIR)/test_device_api_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Skipped legacy intra Device API/IR tests on $(KERNEL_PLATFORM)"
 endif
 

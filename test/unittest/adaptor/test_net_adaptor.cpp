@@ -184,9 +184,12 @@ struct TestWindow {
 
 // Keep the registration alive until after every request has completed. The
 // buffer is released after the MR, including when an ASSERT aborts a test.
+enum class GpuAllocation { Device, Gdr };
+
 struct GpuTestWindow {
-  GpuTestWindow(struct flagcxNetAdaptor *net, void *comm)
-      : net(net), comm(comm) {}
+  GpuTestWindow(struct flagcxNetAdaptor *net, void *comm,
+                GpuAllocation allocation = GpuAllocation::Device)
+      : net(net), comm(comm), allocation(allocation) {}
   GpuTestWindow(const GpuTestWindow &) = delete;
   GpuTestWindow &operator=(const GpuTestWindow &) = delete;
 
@@ -195,15 +198,22 @@ struct GpuTestWindow {
       EXPECT_EQ(net->deregMr(comm, mr), flagcxSuccess);
     }
     if (buffer != nullptr) {
-      EXPECT_EQ(deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
-                flagcxSuccess);
+      EXPECT_EQ(
+          allocation == GpuAllocation::Gdr
+              ? deviceAdaptor->gdrMemFree(buffer, nullptr)
+              : deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr),
+          flagcxSuccess);
     }
   }
 
   flagcxResult_t init(size_t bytes, int rank) {
     size = bytes;
-    FLAGCXCHECK(
-        deviceAdaptor->deviceMalloc(&buffer, size, flagcxMemDevice, nullptr));
+    if (allocation == GpuAllocation::Gdr) {
+      FLAGCXCHECK(deviceAdaptor->gdrMemAlloc(&buffer, size, nullptr));
+    } else {
+      FLAGCXCHECK(
+          deviceAdaptor->deviceMalloc(&buffer, size, flagcxMemDevice, nullptr));
+    }
     if (buffer == nullptr)
       return flagcxSystemError;
     FLAGCXCHECK(net->regMr(comm, buffer, size, FLAGCX_PTR_CUDA,
@@ -234,8 +244,21 @@ struct GpuTestWindow {
   void *buffer = nullptr;
   void *mr = nullptr;
   size_t size = 0;
+  GpuAllocation allocation = GpuAllocation::Device;
   TestWindow window;
 };
+
+void expectGpuBytesEqual(const std::vector<uint8_t> &actual,
+                         const std::vector<uint8_t> &expected) {
+  ASSERT_EQ(actual.size(), expected.size());
+  auto mismatch = std::mismatch(actual.begin(), actual.end(), expected.begin());
+  if (mismatch.first != actual.end()) {
+    const size_t offset = mismatch.first - actual.begin();
+    ADD_FAILURE() << "first GPU data mismatch at byte " << offset
+                  << ": actual=" << static_cast<int>(*mismatch.first)
+                  << " expected=" << static_cast<int>(*mismatch.second);
+  }
+}
 
 std::vector<ibv_mr *> deregisterCalls;
 ibv_mr *deregisterFailure = nullptr;
@@ -1273,31 +1296,111 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
       deviceAdaptor->gdrMemFree == nullptr ||
       deviceAdaptor->getHandleForAddressRange == nullptr)
     GTEST_SKIP() << "Selected device adaptor cannot export DMA-BUF memory";
+  const bool isIxcuda = strcmp(deviceAdaptor->name, "IXCUDA") == 0;
   ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
+  if (isIxcuda)
+    EXPECT_EQ(deviceAdaptor->dmaSupport(nullptr), flagcxInvalidArgument);
   bool supported = false;
   ASSERT_EQ(deviceAdaptor->dmaSupport(&supported), flagcxSuccess);
   if (!supported)
     GTEST_SKIP() << "Selected device does not support DMA-BUF export";
 
-  void *buffer = nullptr;
-  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&buffer, kBufferSize, nullptr),
+  const long pageSize = sysconf(_SC_PAGESIZE);
+  ASSERT_GT(pageSize, 0);
+  const size_t exportSize = std::max(kBufferSize, (size_t)pageSize);
+  std::vector<uint8_t> expected(exportSize);
+  std::vector<uint8_t> actual(exportSize, 0);
+  for (size_t i = 0; i < expected.size(); ++i)
+    expected[i] = static_cast<uint8_t>((i * 17 + 3) & 0xff);
+  struct Resources {
+    flagcxNetAdaptor *net;
+    void *sendComm;
+    void *recvComm;
+    void *buffer = nullptr;
+    void *dmaMr = nullptr;
+    void *recvMr = nullptr;
+    int fd = -1;
+    ~Resources() {
+      if (dmaMr != nullptr)
+        EXPECT_EQ(net->deregMr(sendComm, dmaMr), flagcxSuccess);
+      if (recvMr != nullptr)
+        EXPECT_EQ(net->deregMr(recvComm, recvMr), flagcxSuccess);
+      if (fd >= 0)
+        EXPECT_EQ(close(fd), 0);
+      if (buffer != nullptr)
+        EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
+    }
+  } resources{net_, sendComm_, recvComm_};
+
+  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&resources.buffer, exportSize, nullptr),
             flagcxSuccess);
-  ASSERT_NE(buffer, nullptr);
-  int fd = -1;
-  ASSERT_EQ(
-      deviceAdaptor->getHandleForAddressRange(&fd, buffer, kBufferSize, 0),
-      flagcxSuccess);
-  ASSERT_GE(fd, 0);
-  void *mr = nullptr;
-  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_CUDA,
-                              0, fd, FLAGCX_NET_MR_FLAG_NONE, &mr),
-            flagcxSuccess);
-  EXPECT_NE(mr, nullptr);
-  if (mr != nullptr) {
-    EXPECT_EQ(net_->deregMr(sendComm_, mr), flagcxSuccess);
+  ASSERT_NE(resources.buffer, nullptr);
+  if (isIxcuda) {
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(nullptr, resources.buffer,
+                                                      exportSize, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(
+                  &resources.fd, static_cast<char *>(resources.buffer) + 1,
+                  exportSize, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(&resources.fd,
+                                                      resources.buffer, 0, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(
+                  &resources.fd, resources.buffer, exportSize, 1),
+              flagcxInvalidArgument);
   }
-  close(fd);
-  EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->getHandleForAddressRange(
+                &resources.fd, resources.buffer, exportSize, 0),
+            flagcxSuccess);
+  ASSERT_GE(resources.fd, 0);
+  ASSERT_EQ(net_->regMrDmaBuf(sendComm_, resources.buffer, exportSize,
+                              FLAGCX_PTR_CUDA, 0, resources.fd,
+                              FLAGCX_NET_MR_FLAG_NONE, &resources.dmaMr),
+            flagcxSuccess);
+  ASSERT_NE(resources.dmaMr, nullptr);
+  if (!isIxcuda)
+    return;
+
+  ASSERT_NE(net_->regMr, nullptr);
+  ASSERT_NE(net_->isend, nullptr);
+  ASSERT_NE(net_->irecv, nullptr);
+  ASSERT_NE(net_->test, nullptr);
+
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(resources.buffer, expected.data(),
+                                        exportSize, flagcxMemcpyHostToDevice,
+                                        nullptr, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->deviceSynchronize(), flagcxSuccess);
+  ASSERT_EQ(net_->regMr(recvComm_, actual.data(), actual.size(),
+                        FLAGCX_PTR_HOST, FLAGCX_NET_MR_FLAG_NONE,
+                        &resources.recvMr),
+            flagcxSuccess);
+  ASSERT_NE(resources.recvMr, nullptr);
+
+  void *recvData[1] = {actual.data()};
+  size_t recvSizes[1] = {actual.size()};
+  int tags[1] = {37};
+  void *recvMrs[1] = {resources.recvMr};
+  void *recvRequest = nullptr;
+  ASSERT_EQ(net_->irecv(recvComm_, 1, recvData, recvSizes, tags, recvMrs,
+                        nullptr, &recvRequest),
+            flagcxSuccess);
+  ASSERT_NE(recvRequest, nullptr);
+  void *sendRequest = nullptr;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (sendRequest == nullptr &&
+         std::chrono::steady_clock::now() < deadline) {
+    ASSERT_EQ(net_->isend(sendComm_, resources.buffer, exportSize, tags[0],
+                          resources.dmaMr, nullptr, &sendRequest),
+              flagcxSuccess);
+    if (sendRequest == nullptr)
+      std::this_thread::yield();
+  }
+  ASSERT_NE(sendRequest, nullptr);
+  void *requests[2] = {sendRequest, recvRequest};
+  ASSERT_EQ(waitRequests(net_, 2, requests), flagcxSuccess);
+  EXPECT_EQ(actual, expected);
 }
 
 TEST_F(NetAdaptorLoopback, SendRecv) {
@@ -1637,7 +1740,7 @@ TEST_F(NetAdaptorLoopback, GpuIput) {
   ASSERT_EQ(remoteGpu.copyToHost(actual), flagcxSuccess);
   std::copy_n(source.begin() + sourceOffset, bytes,
               expected.begin() + remoteOffset);
-  EXPECT_EQ(actual, expected);
+  expectGpuBytesEqual(actual, expected);
 }
 
 TEST_F(NetAdaptorLoopback, GpuIget) {
@@ -1670,7 +1773,61 @@ TEST_F(NetAdaptorLoopback, GpuIget) {
   ASSERT_EQ(destinationGpu.copyToHost(actual), flagcxSuccess);
   std::copy_n(remote.begin() + remoteOffset, bytes,
               expected.begin() + destinationOffset);
-  EXPECT_EQ(actual, expected);
+  expectGpuBytesEqual(actual, expected);
+}
+
+TEST_F(NetAdaptorLoopback, GdrGpuIputAndIget) {
+  REQUIRE_GPU_ONE_SIDED();
+  SKIP_IF_CALLBACK_NULL(net_, iput);
+  SKIP_IF_CALLBACK_NULL(net_, iget);
+  if (deviceAdaptor->gdrMemAlloc == nullptr ||
+      deviceAdaptor->gdrMemFree == nullptr)
+    GTEST_SKIP() << "Selected device adaptor lacks GDR allocation";
+
+  std::vector<uint8_t> source(kBufferSize);
+  std::vector<uint8_t> expectedRemote(kBufferSize, 0x2a);
+  std::vector<uint8_t> expectedDestination(kBufferSize, 0x54);
+  std::vector<uint8_t> actual(kBufferSize);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>((i * 17 + 3) & 0xff);
+
+  GpuTestWindow sourceGpu(net_, sendComm_, GpuAllocation::Gdr);
+  GpuTestWindow remoteGpu(net_, recvComm_, GpuAllocation::Gdr);
+  GpuTestWindow destinationGpu(net_, sendComm_, GpuAllocation::Gdr);
+  ASSERT_EQ(sourceGpu.init(kBufferSize, kLocalRank), flagcxSuccess);
+  ASSERT_EQ(remoteGpu.init(kBufferSize, kRemoteRank), flagcxSuccess);
+  ASSERT_EQ(destinationGpu.init(kBufferSize, kLocalRank), flagcxSuccess);
+  ASSERT_EQ(sourceGpu.copyFromHost(source), flagcxSuccess);
+  ASSERT_EQ(remoteGpu.copyFromHost(expectedRemote), flagcxSuccess);
+  ASSERT_EQ(destinationGpu.copyFromHost(expectedDestination), flagcxSuccess);
+
+  constexpr uint64_t sourceOffset = 256;
+  constexpr uint64_t remoteOffset = 1536;
+  constexpr uint64_t destinationOffset = 2048;
+  constexpr size_t bytes = 768;
+  void *request = nullptr;
+  ASSERT_EQ(net_->iput(sendComm_, sourceOffset, remoteOffset, bytes, kLocalRank,
+                       kRemoteRank, sourceGpu.opaque(), remoteGpu.opaque(),
+                       &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+  ASSERT_EQ(remoteGpu.copyToHost(actual), flagcxSuccess);
+  std::copy_n(source.begin() + sourceOffset, bytes,
+              expectedRemote.begin() + remoteOffset);
+  expectGpuBytesEqual(actual, expectedRemote);
+
+  request = nullptr;
+  ASSERT_EQ(net_->iget(sendComm_, remoteOffset, destinationOffset, bytes,
+                       kRemoteRank, kLocalRank, remoteGpu.opaque(),
+                       destinationGpu.opaque(), &request),
+            flagcxSuccess);
+  ASSERT_NE(request, nullptr);
+  ASSERT_EQ(waitRequest(net_, request), flagcxSuccess);
+  ASSERT_EQ(destinationGpu.copyToHost(actual), flagcxSuccess);
+  std::copy_n(expectedRemote.begin() + remoteOffset, bytes,
+              expectedDestination.begin() + destinationOffset);
+  expectGpuBytesEqual(actual, expectedDestination);
 }
 
 TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
@@ -1736,7 +1893,7 @@ TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
                 expectedRemote.begin() + remoteOffsets[i]);
   }
   ASSERT_EQ(remoteGpu.copyToHost(actual), flagcxSuccess);
-  EXPECT_EQ(actual, expectedRemote);
+  expectGpuBytesEqual(actual, expectedRemote);
 
   void *readRequest = nullptr;
   ASSERT_EQ(net_->igetBatch(sendComm_, count, remoteOffsets, destinationOffsets,
@@ -1749,7 +1906,7 @@ TEST_F(NetAdaptorLoopback, GpuBatchPutAndGet) {
     std::copy_n(expectedRemote.begin() + remoteOffsets[i], sizes[i],
                 expectedDestination.begin() + destinationOffsets[i]);
   ASSERT_EQ(destinationGpu.copyToHost(actual), flagcxSuccess);
-  EXPECT_EQ(actual, expectedDestination);
+  expectGpuBytesEqual(actual, expectedDestination);
 }
 
 TEST_F(NetAdaptorLoopback, GpuBounds) {
