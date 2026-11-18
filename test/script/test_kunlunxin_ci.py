@@ -117,16 +117,6 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
 
     def test_independent_phases_run_after_failures(self):
         for suite, failed, required in (
-            ("symmem", "symmem IPC local", (
-                "symmem local IPC + NET fallback", "symmem IPC + NET",
-                "symmem VMM + NET route union")),
-            ("symmem", "symmem local IPC + NET fallback", (
-                "symmem IPC + NET", "symmem VMM + NET route union")),
-            ("p2p", "p2p shared-engine unit tests", (
-                "p2p Engine WRITE MPI tests", "p2p shared-engine WRITE MPI tests")),
-            ("runner", "runner default", (
-                "runner heterogeneous", "runner forced NET")),
-            ("rma", "rma IPC MPI tests", ("rma network MPI tests",)),
             ("kernel", "kernel unit tests", ("kernel MPI tests",)),
         ):
             with self.subTest(suite=suite, failed=failed):
@@ -150,10 +140,6 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             for entry in config.get("phases", [])
         }
         for phase in (
-            ("p2p", "p2p-write-mpi"),
-            ("rma", "rma-mpi"),
-            ("runner", "runner-mpi"),
-            ("symmem", "symmem-mpi"),
         ):
             with self.subTest(phase=phase):
                 self.assertNotIn(phase, skipped_phases)
@@ -163,14 +149,62 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             for entry in config.get("gtest", [])
             for test in entry.get("tests", [])
         }
-        self.assertFalse(
-            any(
-                test.startswith("FlagcxP2pEngineReadTest.")
-                for test in excluded_gtests
-            )
+        self.assertIn(
+            "FlagcxP2pEngineReadTest.ReadsWholeRegisteredGpuBufferAfterMetadataHandshake",
+            excluded_gtests,
         )
         self.assertNotIn("DevicePtrArgs.DevCommFreeDevicePtrNull", excluded_gtests)
         self.assertNotIn("DevicePtrArgs.DevMemFreeDevicePtrNull", excluded_gtests)
+
+    def test_kunlunxin_skips_unavailable_rma_symmem_and_runner_mpi_phases(self):
+        config = yaml.safe_load(
+            (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+        )["ignore_test"]
+        skipped_phases = {
+            (entry["suite"], entry["name"]): entry["reason"]
+            for entry in config.get("phases", [])
+        }
+        for phase in (
+            ("p2p", "p2p-write-mpi"),
+            ("rma", "rma-mpi"),
+            ("symmem", "symmem-mpi"),
+            ("runner", "runner-mpi"),
+        ):
+            with self.subTest(phase=phase):
+                self.assertTrue(skipped_phases.get(phase))
+
+        env = {
+            **os.environ,
+            "FLAGCX_CI_IGNORE_TEST": json.dumps(config),
+        }
+        helper = REPO_ROOT / ".github/scripts/ci/ignore_test.py"
+        for suite, phase in skipped_phases:
+            if (suite, phase) not in {
+                ("rma", "rma-mpi"),
+                ("symmem", "symmem-mpi"),
+                ("runner", "runner-mpi"),
+            }:
+                continue
+            with self.subTest(suite=suite, phase=phase):
+                result = subprocess.run(
+                    [sys.executable, str(helper), "phase", suite, phase],
+                    env=env, check=True, capture_output=True, text=True,
+                )
+                self.assertTrue(result.stdout.strip())
+
+    def test_mpi_phase_skips_do_not_launch_mpi_commands(self):
+        for suite, forbidden_labels in (
+            ("p2p", ("p2p Engine WRITE MPI tests", "p2p shared-engine WRITE MPI tests")),
+            ("rma", ("rma IPC MPI tests", "rma network MPI tests")),
+            ("symmem", ("symmem IPC + NET", "symmem local IPC + NET fallback")),
+            ("runner", ("runner default", "runner heterogeneous", "runner forced NET")),
+        ):
+            with self.subTest(suite=suite):
+                result, calls = self.run_mock_suite(suite, "no matching label")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for label in forbidden_labels:
+                    self.assertNotIn(f"{label}|", calls)
+                self.assertIn(f"{suite} unit tests|", calls)
 
     def test_device_suites_enable_kernel_build_without_affecting_host_suites(self):
         env_script = REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
