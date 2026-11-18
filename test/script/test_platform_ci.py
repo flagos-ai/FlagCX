@@ -387,6 +387,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn("needs: prepare", pipeline)
         self.assertIn("needs.prepare.outputs.has_platforms == 'true'", pipeline)
 
+    def test_job_container_checks_out_submodules_after_safe_directory_setup(self):
+        workflow = (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
+        checkout = workflow[workflow.index("      - name: Checkout code") :]
+        self.assertIn("submodules: false", checkout)
+        trust = checkout.index("      - name: Trust workspace and submodules")
+        submodules = checkout.index("      - name: Checkout submodules")
+        workload = checkout.index("      - name: Run unit-test suite in job container")
+        self.assertLess(trust, submodules)
+        self.assertLess(submodules, workload)
+        self.assertIn("bash .github/scripts/ci/checkout_submodules.sh", checkout)
+
     def test_hygon_builds_ibrc_with_shca_abi(self):
         hygon_env = HYGON_ENV.read_text()
         makefile = (REPO_ROOT / "Makefile").read_text()
