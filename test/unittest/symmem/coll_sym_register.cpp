@@ -1736,7 +1736,7 @@ TEST_F(SymMemTest, CrossNodeLocalCleanupFailureRetries) {
   EXPECT_EQ(flagcxMemFree(buffer), flagcxSuccess);
 }
 
-TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
+TEST_F(SymMemTest, CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_MIXED_NODE_VMM"))
     GTEST_SKIP() << "Requires a multi-node VMM + NET invocation";
   ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
@@ -1769,8 +1769,7 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   ASSERT_EQ(deviceAdaptor->symPhysFreeSegments(probeBundle), flagcxSuccess);
   ASSERT_EQ(deviceAdaptor->gdrMemFree(probe, nullptr), flagcxSuccess);
 
-  // Keep the required-success case within one physical segment. The separate
-  // multi-segment case checks whether this NET provider accepts the full VA.
+  // Use one segment for the mixed-backing rejection and subsequent IPC retry.
   const size_t allocationSize =
       granularity < (1U << 20) ? granularity : static_cast<size_t>(1U << 20);
   const std::string segmentSetting = std::to_string(granularity);
@@ -1783,37 +1782,48 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   ASSERT_TRUE(allRanksSucceeded(result));
   segmentSize.set(nullptr);
 
-  auto originalIpcGet = deviceAdaptor->ipcMemHandleGet;
-  if (!vmmNode)
-    deviceAdaptor->ipcMemHandleGet = failIpcMemHandleGet;
+  // SYMMETRIC is a strict request: an ordinary node cannot silently
+  // continue with a network-only Window while another node uses VMM.
   flagcxWindow_t window = nullptr;
   result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
-                                    flagcxTestWindowFlags());
-  if (!vmmNode)
-    deviceAdaptor->ipcMemHandleGet = originalIpcGet;
+                                    FLAGCX_WIN_SYMMETRIC);
+  int minimum = 0;
+  int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  ASSERT_EQ(minimum, maximum);
+  ASSERT_EQ(minimum, static_cast<int>(flagcxNotSupported));
+  EXPECT_EQ(window, nullptr);
+  EXPECT_EQ(hetero->symWindows, nullptr);
+  EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
+  EXPECT_EQ(hetero->pendingOneSideCleanup, nullptr);
+  EXPECT_EQ(hetero->pendingOneSideMeshCleanup, nullptr);
+
+  // Retry with ordinary backing on every node and an explicit IPC request.
+  // The failed registration must have released its allocation lease.
+  result = flagcxSuccess;
+  if (vmmNode) {
+    result = flagcxMemFree(buffer);
+    if (result == flagcxSuccess)
+      result = deviceAdaptor->deviceMalloc(&buffer, allocationSize,
+                                           flagcxMemDevice, nullptr);
+  }
+  ASSERT_TRUE(allRanksSucceeded(result));
+  result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
+                                    FLAGCX_WIN_ASYMMETRIC);
   ASSERT_TRUE(allRanksSucceeded(result));
   ASSERT_NE(window, nullptr);
   ASSERT_NE(window->defaultBase, nullptr);
-  EXPECT_EQ(window->defaultBase->ipcSlot, -1);
+  EXPECT_FALSE(window->defaultBase->hasFlatMapping);
   EXPECT_TRUE(window->defaultBase->hasNetworkMrRef);
-  EXPECT_EQ(window->defaultBase->resourcePath == flagcxSymResourceLsa ||
-                window->defaultBase->resourcePath == flagcxSymResourceLegacyV1,
-            vmmNode);
 
-  int localLsa =
-      vmmNode && window->defaultBase->resourcePath == flagcxSymResourceLsa ? 1
-                                                                           : 0;
-  int hasLsa = 0;
-  MPI_Allreduce(&localLsa, &hasLsa, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  if (hasLsa != 0) {
-    // The ordinary rank must finish its accepted PUT before any rank can
-    // release this window's MR or reuse the LSA offset on the other node.
+  {
+    // An accepted PUT must finish before the Window releases its MR.
     const bool sender = hetero->rank == 0;
     std::unique_ptr<ScopedMixedIputDelay> delayedPut;
     flagcxResult_t setupResult = flagcxSuccess;
     if (sender) {
       const int mrIndex = window->defaultBase->mrIndex;
-      if (vmmNode || hetero->netAdaptor == nullptr ||
+      if (hetero->netAdaptor == nullptr ||
           hetero->netAdaptor->iput == nullptr ||
           hetero->netAdaptor->deregMr == nullptr ||
           hetero->rmaProxy == nullptr || mrIndex < 0 ||
@@ -1905,9 +1915,6 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
       EXPECT_FALSE(timedOut);
     }
     EXPECT_FALSE(earlyDeregister);
-  } else {
-    ASSERT_TRUE(
-        allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
   }
 
   auto *net = hetero->netAdaptor;
@@ -1920,13 +1927,11 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   }
   window = nullptr;
   result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
-                                    flagcxTestWindowFlags());
+                                    FLAGCX_WIN_ASYMMETRIC);
   if (hetero->rank == 0) {
     net->regMr = originalRegMr;
     net->regMrDmaBuf = originalRegMrDmaBuf;
   }
-  int minimum = 0;
-  int maximum = 0;
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
   EXPECT_EQ(minimum, static_cast<int>(flagcxSystemError));
@@ -1934,13 +1939,11 @@ TEST_F(SymMemTest, CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc) {
   EXPECT_EQ(hetero->symWindows, nullptr);
 
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
-  result = vmmNode
-               ? flagcxMemFree(buffer)
-               : deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr);
+  result = deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr);
   EXPECT_EQ(result, flagcxSuccess);
 }
 
-TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
+TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm) {
   if (!envEnabled("FLAGCX_CI_REQUIRE_MIXED_NODE_VMM"))
     GTEST_SKIP() << "Requires a multi-node VMM + NET invocation";
   ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
@@ -2003,9 +2006,32 @@ TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
 
   flagcxWindow_t window = nullptr;
   result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
-                                    flagcxTestWindowFlags());
+                                    FLAGCX_WIN_SYMMETRIC);
   int minimum = 0;
   int maximum = 0;
+  allRankResultRange(result, &minimum, &maximum);
+  ASSERT_EQ(minimum, maximum);
+  ASSERT_EQ(minimum, static_cast<int>(flagcxNotSupported));
+  EXPECT_EQ(window, nullptr);
+  EXPECT_EQ(hetero->symWindows, nullptr);
+  EXPECT_EQ(hetero->pendingSymCleanup, nullptr);
+  EXPECT_EQ(hetero->pendingOneSideCleanup, nullptr);
+  EXPECT_EQ(hetero->pendingOneSideMeshCleanup, nullptr);
+
+  // Retain the multi-segment NET coverage with VMM backing on every node.
+  // Only the original ordinary nodes need to replace their allocation.
+  result = flagcxSuccess;
+  if (!vmmNode) {
+    result = deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr);
+    if (result == flagcxSuccess) {
+      segmentSize.set(segmentSetting.c_str());
+      result = flagcxMemAlloc(&buffer, allocationSize);
+      segmentSize.set(nullptr);
+    }
+  }
+  ASSERT_TRUE(allRanksSucceeded(result));
+  result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
+                                    FLAGCX_WIN_SYMMETRIC);
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
   EXPECT_TRUE(minimum == static_cast<int>(flagcxSuccess) ||
@@ -2032,7 +2058,7 @@ TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
     ScopedEnvVar noDmaBuf("FLAGCX_DMABUF_ENABLE", "0");
     window = nullptr;
     result = flagcxCommWindowRegister(testComm, buffer, allocationSize, &window,
-                                      flagcxTestWindowFlags());
+                                      FLAGCX_WIN_SYMMETRIC);
   }
   allRankResultRange(result, &minimum, &maximum);
   EXPECT_EQ(minimum, maximum);
@@ -2106,9 +2132,7 @@ TEST_F(SymMemTest, CrossNodeMixedMultiSegmentVmmConvergesMrFailure) {
   }
 
   ASSERT_TRUE(allRanksSucceeded(flagcxCommDestroy(testComm)));
-  result = vmmNode
-               ? flagcxMemFree(buffer)
-               : deviceAdaptor->deviceFree(buffer, flagcxMemDevice, nullptr);
+  result = flagcxMemFree(buffer);
   EXPECT_EQ(result, flagcxSuccess);
 }
 
@@ -2758,7 +2782,7 @@ TEST_F(SymMemTest, OrdinaryAllocationUsesIpcWithVmmEnabled) {
     auto originalSymPhysAlloc = deviceAdaptor->symPhysAlloc;
     deviceAdaptor->symPhysAlloc = failSymPhysAlloc;
     flagcxResult_t result = flagcxCommWindowRegister(
-        comm, requested, requestedSize, &window, flagcxTestWindowFlags());
+        comm, requested, requestedSize, &window, FLAGCX_WIN_ASYMMETRIC);
     deviceAdaptor->symPhysAlloc = originalSymPhysAlloc;
     ASSERT_TRUE(allRanksSucceeded(result));
     ASSERT_NE(window, nullptr);
@@ -3141,7 +3165,9 @@ bool rollbackFailClose = false;
 bool rollbackFailArrayFree = false;
 int rollbackClosedImports = 0, rollbackFreedArrays = 0;
 void *rollbackPeerArray = nullptr;
+int rollbackIpcCreates = 0;
 flagcxResult_t rollbackIpcCreate(flagcxIpcMemHandle_t *handle, size_t *bytes) {
+  ++rollbackIpcCreates;
   *bytes = sizeof(void *);
   *handle = static_cast<flagcxIpcMemHandle_t>(malloc(*bytes));
   return *handle != nullptr ? flagcxSuccess : flagcxSystemError;
@@ -3186,10 +3212,11 @@ flagcxResult_t rollbackCopy(void *to, void *from, size_t bytes,
 }
 
 #ifdef __linux__
-int rollbackFlatMaps = 0;
+int rollbackFlatMaps = 0, rollbackPhysicalCalls = 0;
 flagcxResult_t rollbackPhysical(void *, size_t bytes, void **physical,
                                 void *shareable, size_t *handleBytes,
                                 size_t *allocationBytes) {
+  ++rollbackPhysicalCalls;
   int fd = open("/dev/null", O_RDWR);
   if (fd < 0)
     return flagcxSystemError;
@@ -3219,6 +3246,28 @@ flagcxResult_t rollbackFlatFree(void *flat, size_t, int) {
   return flagcxSuccess;
 }
 #endif
+
+int rollbackVendorRegistrations = 0;
+struct ScopedRollbackBackend {
+  flagcxDevApiBackend *saved = devApiBackend;
+  flagcxCCLAdaptor *savedProvider = cclAdaptors[flagcxCCLAdaptorDevice];
+  flagcxDevApiBackend selected = *saved;
+  flagcxCCLAdaptor provider = *savedProvider;
+  ScopedRollbackBackend() {
+    rollbackVendorRegistrations = 0;
+    provider.commWindowRegister = [](flagcxInnerComm_t, void *, size_t,
+                                     flagcxInnerWindow_t *, int) {
+      ++rollbackVendorRegistrations;
+      return flagcxRemoteError;
+    };
+    devApiBackend = &selected;
+    cclAdaptors[flagcxCCLAdaptorDevice] = &provider;
+  }
+  ~ScopedRollbackBackend() {
+    devApiBackend = saved;
+    cclAdaptors[flagcxCCLAdaptorDevice] = savedProvider;
+  }
+};
 
 struct ScopedRollbackBootstrap {
   bootstrapState *state = nullptr;
@@ -3319,6 +3368,7 @@ protected:
     rollbackFailClose = rollbackFailArrayFree = false;
     rollbackClosedImports = rollbackFreedArrays = 0;
     rollbackPeerArray = nullptr;
+    rollbackIpcCreates = 0;
     adaptor.mock.ipcMemHandleCreate = rollbackIpcCreate;
     adaptor.mock.ipcMemHandleGet = rollbackIpcGet;
     adaptor.mock.ipcMemHandleFree = rollbackIpcFree;
@@ -3569,6 +3619,8 @@ TEST_F(SymWindowRollback, BenchmarkCleanupWaitsForAllImportsBeforeBufferFree) {
 }
 
 TEST_F(SymWindowRollback, VendorSymmetricUsesVendorWindow) {
+  if (!flagcxParamVmmEnable())
+    GTEST_SKIP() << "SYMMETRIC requests require VMM enabled";
   ScopedEnvVar homoPath("FLAGCX_USE_HETERO_COMM", "0");
   auto *savedBackend = devApiBackend;
   auto *savedProvider = cclAdaptors[flagcxCCLAdaptorDevice];
@@ -3624,3 +3676,68 @@ TEST_F(SymWindowRollback, AsymmetricRejectsVmmBackingInsteadOfChangingMode) {
   EXPECT_EQ(rollbackPeerArray, nullptr);
   EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
 }
+
+TEST_F(SymWindowRollback, DisabledVmmRejectsSymmetricBeforeEveryBackend) {
+  if (flagcxParamVmmEnable())
+    GTEST_SKIP() << "Requires the VMM-disabled MPI invocation";
+  EnableIpc();
+  ScopedEnvVar homoPath("FLAGCX_USE_HETERO_COMM", "0");
+  ScopedRollbackBackend backend;
+  for (auto kind :
+       {flagcxDevApiDefault, flagcxDevApiVendor, flagcxDevApiShmem}) {
+    backend.selected.kind = kind;
+    testComm.commType = kind == flagcxDevApiDefault ? flagcxCommunicatorHybrid
+                                                    : flagcxCommunicatorHomo;
+    auto allocator = kind == flagcxDevApiShmem ? flagcxMemSHMEM : flagcxMemCCL;
+    flagcxWindow_t window = nullptr;
+    EXPECT_EQ(flagcxCommWindowRegister(&testComm, resources.buffer, 64, &window,
+                                       FLAGCX_WIN_SYMMETRIC, allocator),
+              flagcxNotSupported);
+    EXPECT_EQ(window, nullptr);
+    EXPECT_EQ(rollbackVendorRegistrations, 0);
+    EXPECT_EQ(rollbackIpcCreates, 0);
+    EXPECT_EQ(hetero.symWindows, nullptr);
+    EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
+  }
+}
+
+TEST_F(SymWindowRollback, DisabledVmmOnOneRankConvergesBeforeVendorCalls) {
+  int enabled = flagcxParamVmmEnable() ? 1 : 0, minimum = 0, maximum = 0;
+  MPI_Allreduce(&enabled, &minimum, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+  MPI_Allreduce(&enabled, &maximum, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+  if (minimum == maximum)
+    GTEST_SKIP() << "Requires ranks with different VMM_ENABLE values";
+  ScopedEnvVar homoPath("FLAGCX_USE_HETERO_COMM", "0");
+  ScopedRollbackBackend backend;
+  backend.selected.kind = flagcxDevApiVendor;
+  testComm.commType = flagcxCommunicatorHomo;
+  flagcxWindow_t window = nullptr;
+  EXPECT_EQ(flagcxCommWindowRegister(&testComm, resources.buffer, 64, &window,
+                                     FLAGCX_WIN_SYMMETRIC),
+            flagcxNotSupported);
+  EXPECT_EQ(window, nullptr);
+  EXPECT_EQ(rollbackVendorRegistrations, 0);
+}
+
+#ifdef __linux__
+TEST_F(SymWindowRollback, AsymmetricDoesNotSelectAvailableSymmetricMapping) {
+  EnableIpc();
+  rollbackFlatMaps = rollbackPhysicalCalls = 0;
+  adaptor.mock.symPhysAlloc = rollbackPhysical;
+  adaptor.mock.symPhysFree = rollbackPhysicalFree;
+  adaptor.mock.symFlatMap = rollbackFlatMap;
+  adaptor.mock.symFlatMappingUnmap = rollbackFlatUnmap;
+  adaptor.mock.symFlatVaFree = rollbackFlatFree;
+  flagcxWindow_t window = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowRegister(
+      &testComm, resources.buffer, 64, &window, FLAGCX_WIN_ASYMMETRIC)));
+  ASSERT_NE(window, nullptr);
+  ASSERT_NE(window->defaultBase, nullptr);
+  EXPECT_GE(window->defaultBase->ipcSlot, 0);
+  EXPECT_FALSE(window->defaultBase->hasFlatMapping);
+  EXPECT_EQ(rollbackPhysicalCalls, 0);
+  EXPECT_EQ(rollbackFlatMaps, 0);
+  EXPECT_EQ(rollbackIpcCreates, 1);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(&testComm, window)));
+}
+#endif

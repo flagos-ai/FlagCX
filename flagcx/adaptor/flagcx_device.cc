@@ -432,8 +432,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
                                               flagcxDevMem_t devMem) {
   if (devMem == nullptr)
     return flagcxSuccess;
-  if (comm == nullptr && (devMem->ipcIndex >= 0 || devMem->cachedDevicePtr ||
-                          devMem->segmentedPeerLayouts))
+  if (comm == nullptr)
     return flagcxInvalidArgument;
 
   if (deviceAdaptor != nullptr && deviceAdaptor->deviceSynchronize != nullptr)
@@ -444,7 +443,7 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
   }
 
   if (devMem->ipcIndex >= 0) {
-    if (comm == nullptr || devMem->ipcIndex >= comm->ipcTableCapacity)
+    if (devMem->ipcIndex >= comm->ipcTableCapacity)
       return flagcxInvalidUsage;
     struct flagcxIpcTableEntry *ipcEntry = &comm->ipcTable[devMem->ipcIndex];
     if (ipcEntry->refCount == 0)
@@ -475,13 +474,11 @@ extern "C" flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm,
     --devMem->boundWindow->devMemRefs;
     devMem->boundWindow = nullptr;
   }
-  if (comm != nullptr) {
-    flagcxDevMem_t *link = &comm->activeDevMems;
-    while (*link != nullptr && *link != devMem)
-      link = &(*link)->activeNext;
-    if (*link == devMem)
-      *link = devMem->activeNext;
-  }
+  flagcxDevMem_t *link = &comm->activeDevMems;
+  while (*link != nullptr && *link != devMem)
+    link = &(*link)->activeNext;
+  if (*link == devMem)
+    *link = devMem->activeNext;
   pthread_mutex_destroy(&devMem->cachedPtrMutex);
   free(devMem);
   return flagcxSuccess;

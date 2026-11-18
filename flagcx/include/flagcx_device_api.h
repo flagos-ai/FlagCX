@@ -89,6 +89,8 @@ flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 // been registered by flagcxCommWindowRegister or an internal preparation step.
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem);
+// A non-null view must be destroyed with the communicator that created it.
+// A null view remains a successful no-op, including when comm is null.
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 
 flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,

@@ -267,7 +267,9 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
  * ASYMMETRIC uses node-local IPC peer pointers on the hetero Default backend;
  * SYMMETRIC requires node-local symmetric mappings. Both prepare NET for remote
  * nodes. Homo vendor backends support only SYMMETRIC. No automatic downgrade
- * between modes is performed. Registration is
+ * between modes is performed. FLAGCX_VMM_ENABLE=0 disables SYMMETRIC requests
+ * for every backend; enabling VMM does not select a mode or make an arbitrary
+ * backing allocation IPC-compatible. Registration is
  * collective. Deregistration releases this rank's Window resources locally;
  * callers must finish local device work and ensure remote accesses to this
  * rank's buffer have completed before deregistration. Deregistration does not

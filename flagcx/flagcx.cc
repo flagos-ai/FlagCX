@@ -2820,6 +2820,9 @@ flagcxValidateWindowRegistration(flagcxComm_t comm, int mode,
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (mode != FLAGCX_WIN_ASYMMETRIC && mode != FLAGCX_WIN_SYMMETRIC)
     local = flagcxInvalidArgument;
+  if (local == flagcxSuccess && mode == FLAGCX_WIN_SYMMETRIC &&
+      !flagcxParamVmmEnable())
+    local = flagcxNotSupported;
   const bool homo = useHomoComm(comm) && !useHeteroComm();
   if (local == flagcxSuccess) {
     if (devApiBackend == nullptr ||
@@ -3337,24 +3340,27 @@ static flagcxResult_t flagcxDevCommStateInit(flagcxComm_t comm) {
 
 #endif
 
-  // Default path: if vendor didn't provide windows and multicast is supported,
-  // register staged buffers via sym heap path
+  // Staging owns its mode selection. Ordinary allocations explicitly prepare
+  // IPC, even on multicast-capable devices; VMM allocations request symmetry.
   if (state->sendStagedWin == nullptr && state->recvStagedWin == nullptr) {
     int mcSupported = 0;
     if (deviceAdaptor->symMulticastSupported)
       deviceAdaptor->symMulticastSupported(&mcSupported);
     if (mcSupported && comm->heteroComm != nullptr) {
+      const int stagingMode = state->stagedAllocationIsVmm
+                                  ? FLAGCX_WIN_SYMMETRIC
+                                  : FLAGCX_WIN_ASYMMETRIC;
       // Register send staged buffer
       FLAGCXCHECKGOTO(flagcxSymWindowRegisterInternal(
                           comm->heteroComm, state->sendStagedBuff,
                           state->stagedBuffSize, &state->sendStagedWin,
-                          FLAGCX_WIN_SYMMETRIC, state->stagedAllocationIsVmm),
+                          stagingMode, state->stagedAllocationIsVmm),
                       res, fail);
       // Register recv staged buffer
       FLAGCXCHECKGOTO(flagcxSymWindowRegisterInternal(
                           comm->heteroComm, state->recvStagedBuff,
                           state->stagedBuffSize, &state->recvStagedWin,
-                          FLAGCX_WIN_SYMMETRIC, state->stagedAllocationIsVmm),
+                          stagingMode, state->stagedAllocationIsVmm),
                       res, fail);
     }
   }

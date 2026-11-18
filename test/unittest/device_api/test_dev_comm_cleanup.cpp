@@ -1240,6 +1240,19 @@ void checkDevMemLifecycle(flagcxWindow_t window) {
   EXPECT_EQ(devMemLifecycleCalls.initialRawPtr, buffer);
   EXPECT_EQ(devMemLifecycleCalls.initialIpcIndex, -1);
 
+  // Every view belongs to its Comm, even with no IPC/cache allocations.
+  // Invalid destruction must not synchronize, tear down or unlink the view.
+  auto savedSync = deviceAdaptor->deviceSynchronize;
+  deviceAdaptor->deviceSynchronize = []() { return flagcxRemoteError; };
+  EXPECT_EQ(flagcxDevMemDestroy(nullptr, devMem), flagcxInvalidArgument);
+  deviceAdaptor->deviceSynchronize = savedSync;
+  EXPECT_EQ(devMemLifecycleCalls.destroyCount, 0);
+  EXPECT_EQ(comm.activeDevMems, devMem);
+  EXPECT_FALSE(devMem->backendDestroyed);
+  EXPECT_EQ(devMem->rawPtr, buffer);
+  if (window != nullptr)
+    EXPECT_EQ(window->devMemRefs, 1u);
+
   EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
   EXPECT_EQ(comm.activeDevMems, nullptr);
   if (window != nullptr)
@@ -1257,6 +1270,29 @@ TEST(DevMemApiHostTest, CreateAndDestroyWithWindow) {
 
 TEST(DevMemApiHostTest, CreateAndDestroyWithoutWindow) {
   checkDevMemLifecycle(nullptr);
+}
+
+TEST(DevMemApiHostTest, NullCommRejectionLeavesViewForCommDestroy) {
+  flagcxDevApiBackend backend = {};
+  backend.name = "capture-dev-mem-lifecycle";
+  backend.devMemCreate = captureDevMemLifecycleCreate;
+  backend.devMemDestroy = captureDevMemLifecycleDestroy;
+  DevApiBackendGuard guard(&backend);
+  devMemLifecycleCalls = {};
+  flagcxComm_t comm = nullptr;
+  ASSERT_EQ(flagcxCalloc(&comm, 1), flagcxSuccess);
+  comm->commType = flagcxCommunicatorHomo;
+  comm->nranks = comm->localRanks = 1;
+  comm->ipcTable = comm->ipcTableInline;
+  comm->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+  char buffer[64] = {};
+  flagcxDevMem_t view = nullptr;
+  ASSERT_EQ(flagcxDevMemCreate(comm, buffer, sizeof(buffer), nullptr, &view),
+            flagcxSuccess);
+  EXPECT_EQ(flagcxDevMemDestroy(nullptr, view), flagcxInvalidArgument);
+  EXPECT_EQ(comm->activeDevMems, view);
+  ASSERT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(devMemLifecycleCalls.destroyCount, 1);
 }
 
 TEST_F(DefaultDevCommCleanupTest,
