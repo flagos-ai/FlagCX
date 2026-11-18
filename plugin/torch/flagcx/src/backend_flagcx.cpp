@@ -26,6 +26,21 @@
 namespace c10d {
 namespace {
 
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+// Older torch_npu allocators cannot identify their blocks. Retain the batch's
+// storage references on those builds.
+template <typename Allocator>
+auto ownsNativeBlock(Allocator *allocator, const c10::DataPtr &ptr, int)
+    -> decltype(allocator->getBlockPtr(ptr) != nullptr) {
+  return allocator->getBlockPtr(ptr) != nullptr;
+}
+
+template <typename Allocator>
+bool ownsNativeBlock(Allocator *, const c10::DataPtr &, long) {
+  return false;
+}
+#endif
+
 bool heteroP2pRequested() {
   const char *useHeteroComm = std::getenv("FLAGCX_USE_HETERO_COMM");
   if (useHeteroComm != nullptr && std::stoi(useHeteroComm) == 1) {
@@ -918,10 +933,16 @@ void flagcxBackend::discardTensorBatch(inflightTensorIter batch) noexcept {
   inflightTensorBatches_.erase(batch);
 }
 
-void flagcxBackend::finishTensorBatch(inflightTensorIter batch) {
+void flagcxBackend::finishTensorBatch(inflightTensorIter batch,
+                                      bool storageTrackedByAllocator) {
   const auto result = devHandle_->eventRecord(batch->event, batch->stream);
   if (result == flagcxSuccess) {
     batch->recorded = true;
+    // Only the storage lifetime transfers to the allocator. The recorded event
+    // stays with the batch for async error detection and communicator teardown.
+    if (storageTrackedByAllocator) {
+      batch->storages.clear();
+    }
     try {
       std::lock_guard<std::mutex> lock(tensorReaperMutex_);
       if (!tensorReaperThread_.joinable()) {
@@ -1003,7 +1024,7 @@ void flagcxBackend::retainedTensorBatch::finishBaseCollective() {
           const auto &p = s.data_ptr();
           return p.device().index() == batch_->deviceId && p.get() &&
                  p.get() == p.get_context() && p.get_deleter() == deleter &&
-                 allocator->getBlockPtr(p) != nullptr;
+                 ownsNativeBlock(allocator, p, 0);
         })) {
       // The collective and its Work event are already on this stream. Native
       // eraseStream leaves the record intact for blocks allocated on another
@@ -1013,7 +1034,7 @@ void flagcxBackend::retainedTensorBatch::finishBaseCollective() {
         allocator->eraseStream(s.data_ptr(), stream);
       }
       finished_ = true;
-      backend_.discardTensorBatch(batch_);
+      backend_.finishTensorBatch(batch_, /*storageTrackedByAllocator=*/true);
       return;
     }
   }

@@ -395,7 +395,8 @@ protected:
   void checkSubmissionHealthy();
   void runTensorReaper() noexcept;
   void discardTensorBatch(inflightTensorIter batch) noexcept;
-  void finishTensorBatch(inflightTensorIter batch);
+  void finishTensorBatch(inflightTensorIter batch,
+                         bool storageTrackedByAllocator = false);
   void finishTensorBatchOnError(inflightTensorIter batch,
                                 bool mayHaveSubmitted) noexcept;
   class retainedTensorBatch {

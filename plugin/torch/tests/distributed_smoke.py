@@ -186,6 +186,43 @@ def check_work_completion(rank, device):
         dist.destroy_process_group(control)
 
 
+def check_base_collective_teardown(rank, device, device_module):
+    """Drop the last Work and group while the peer has yet to submit."""
+    token = torch.ones(1, dtype=torch.int64)
+    for gather in (True, False):
+        group = dist.new_group(backend="flagcx")
+        n = 8192
+        x = torch.full((n if gather else 2 * n,), rank + 1,
+                       dtype=torch.bfloat16, device=device)
+        shape = (2 * n if gather else n,)
+        first = torch.empty(shape, dtype=x.dtype, device=device)
+        last = torch.empty_like(first)
+        op = dist.all_gather_into_tensor if gather else dist.reduce_scatter_tensor
+        op(first, x, group=group)
+        device_module.synchronize()
+        fence = device_module.Event()
+        if rank == 1:
+            dist.recv(token, src=0)
+            time.sleep(0.25)
+        work = op(first, x, group=group, async_op=True)
+        del work
+        # This event lies between two base collectives on the submission stream.
+        fence.record()
+        work = op(last, x, group=group, async_op=True)
+        del work, x
+        if rank == 0:
+            pending = not fence.query()
+            dist.send(token, dst=1)
+        dist.destroy_process_group(group)
+        del group
+        if rank == 0 and (not pending or not fence.query()):
+            raise AssertionError("Group teardown did not drain a pending collective")
+        expected = (torch.arange(1, 3).repeat_interleave(n) if gather
+                    else torch.full((n,), 3)).to(torch.bfloat16)
+        for output in (first, last):
+            assert_tensor_equal(output, expected)
+
+
 def check_hccl_comm_name(device, device_module):
     import flagcx
     from torch_npu import npu_all_gather_base_mm
@@ -428,6 +465,8 @@ def main():
             check_p2p_retention(rank, device, device_module)
         if args.tensor_retention:
             check_collective_retention(rank, device, device_module, world_size)
+            if args.adaptor == "ascend" and device_type == "npu":
+                check_base_collective_teardown(rank, device, device_module)
         if rank == 0:
             print(
                 f"PASS: adaptor={args.adaptor} "
