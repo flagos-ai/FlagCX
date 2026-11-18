@@ -201,6 +201,7 @@ run_device_api() {
     -x FLAGCX_USE_HETERO_COMM=1
     -x FLAGCX_MEM_ENABLE=1
     -x FLAGCX_VMM_ENABLE=0
+    -x FLAGCX_TEST_WIN_MODE=asymmetric
     -x FLAGCX_P2P_DISABLE=1
     -x FLAGCX_KERNEL_PROXY_PARALLELISM=4
     -x FLAGCX_IB_QPS_PER_CONNECTION=2
@@ -209,7 +210,7 @@ run_device_api() {
   if declare -p FLAGCX_CI_DEVICE_API_MPI_ARGS >/dev/null 2>&1; then
     common_env+=("${FLAGCX_CI_DEVICE_API_MPI_ARGS[@]}")
   fi
-  local -a flags=(-b 1M -e 4M -f 2 -R 1)
+  local -a flags=(-b 1M -e 4M -f 2 -R 2)
 
   declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
     echo "The platform set_env script must define FLAGCX_CI_NODE1_MPI_ARGS" >&2

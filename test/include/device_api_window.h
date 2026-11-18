@@ -12,7 +12,7 @@
 // cached.
 static bool deviceApiWindowMode(const parser &args, int *mode) {
   if (args.getLocalRegister() != 2) {
-    fprintf(stderr, "Device API benchmarks require -R 2.\n");
+    fprintf(stderr, "Device API tests and benchmarks require -R 2.\n");
     return false;
   }
   const char *name = std::getenv("FLAGCX_TEST_WIN_MODE");

@@ -2257,6 +2257,9 @@ run_suite
         ]
         self.assertIn("FLAGCX_KERNEL_PROXY_PARALLELISM=4", device_api_case)
         self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", device_api_case)
+        self.assertIn("-R 2", device_api_case)
+        self.assertIn("FLAGCX_TEST_WIN_MODE=asymmetric", device_api_case)
+        self.assertIn("FLAGCX_VMM_ENABLE=0", device_api_case)
         cuda_kernel = (
             REPO_ROOT / "test/kernel/nvidia/device_api.cu"
         ).read_text()
