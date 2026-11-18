@@ -1098,7 +1098,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertIn(platform, rma_case)
         self.assertIn('platform_name" == "hygon"', rma_case)
         self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1", rma_case)
-        self.assertNotIn('platform_name" == "enflame"', rma_case)
+        self.assertIn('platform_name" == "enflame"', rma_case)
 
         du_kernel_makefile = (REPO_ROOT / "test/kernel/du/Makefile").read_text()
         visibility_platform = rma_makefile[
@@ -1117,11 +1117,8 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn(
-            'if [[ "${FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED:-1}" == 1 ]]; then',
-            rma_case,
-        )
-        self.assertNotIn('platform_name" != "enflame"', rma_case)
+        self.assertIn('platform_name" == "enflame"', rma_case)
+        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED", rma_case)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -1355,6 +1352,10 @@ MPI_RUNNER=/mpi-runner
 RMA_PLATFORM_ENV="-x EXISTING_SETTING=kept"
 run_test() { "$@"; }
 flagcx_ci_require_rdma() { return 0; }
+# This harness checks suite orchestration; the required-case XML checker has
+# its own tests and cannot read reports from this simulated MPI runner.
+mktemp() { printf '/tmp/flagcx-rma-pr2-fixture\n'; }
+python3() { return 0; }
 make() {
   printf 'make %s\n' "$*"
   if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
@@ -1435,7 +1436,7 @@ run_suite
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("rma network MPI tests", result.stdout)
         self.assertNotIn("rma GDR visibility ordinary", result.stdout)
-        self.assertIn("platform does not enable the consumer kernel", result.stdout)
+        self.assertNotIn("Unsupported visibility conformance platform", result.stderr)
 
     def test_iluvatar_keeps_ipc_and_vmm_capability_coverage(self):
         iluvatar_env = (
@@ -1455,12 +1456,18 @@ run_suite
         rma_ipc_test = (
             REPO_ROOT / "test/unittest/rma/coll_rma_get_async.cpp"
         ).read_text()
-        self.assertIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
-        self.assertIn("gateResult == flagcxNotSupported", rma_ipc_test)
-        self.assertNotIn("op == flagcxNotSupported", rma_ipc_test)
+        self.assertNotIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
+        self.assertNotIn("CoreX streamWaitValue64 is unsupported", rma_ipc_test)
+        self.assertIn("collectiveFailed(gateResult)", rma_ipc_test)
+        self.assertIn("--case DeviceAdaptorTest.StreamWaitWriteValue64", unit_runner)
+        self.assertIn("--case DeviceAdaptorTest.HostRegisterUnregister", unit_runner)
+        self.assertNotIn("--case NetAdaptorLoopback.RegisterDmaBufMr", unit_runner)
         self.assertIn(
-            "CoreX streamWaitValue64 is unsupported", rma_ipc_test
+            "adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr",
+            unit_runner,
         )
+        self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
+        self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
@@ -2180,7 +2187,7 @@ run_suite
         self.assertIn('std::getenv("FLAGCX_IB_DISABLE")', rma_fixture)
         self.assertIn('std::getenv("FLAGCX_P2P_DISABLE")', rma_fixture)
         self.assertIn("RmaTest.GetAsyncOffsets", rma_makefile)
-        self.assertIn("RmaTest.IpcGetCounterFollowsCopy", rma_makefile)
+        self.assertIn("RmaTest.IpcGetSameStreamCompletion", rma_makefile)
         self.assertIn("run-mpi-ipc", rma_makefile)
         self.assertIn("run-mpi-net", rma_makefile)
 
@@ -2479,7 +2486,8 @@ PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
 FLAGCX_CI_TEST_MAKE_ARGS=()
 FLAGCX_CI_RUNNER_NP=2
 FLAGCX_CI_HAS_RDMA=0
-FLAGCX_CI_SKIP_RUNNER_HYBRID=1
+FLAGCX_CI_NODE_NP=1
+FLAGCX_CI_ENABLE_PXN=0
 TEST_RUNNER=mock_test_runner
 MPI_RUNNER=mock_mpi_runner
 mock_test_runner() { return "$UNIT_STATUS"; }
@@ -2514,10 +2522,8 @@ printf 'suite_status=%s\n' "$status"
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"suite_status={expected}", result.stdout)
                 if expected:
-                    self.assertIn("NET=skipped", result.stderr)
                     self.assertIn("Runner failures:", result.stderr)
                 else:
-                    self.assertIn("no ACTIVE RDMA HCA is available", result.stdout)
                     self.assertNotIn("Runner failures:", result.stderr)
 
     def test_enflame_symmem_vmm_capability_skips_remote_vmm_data(self):
