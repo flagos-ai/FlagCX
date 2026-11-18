@@ -1902,7 +1902,7 @@ run_suite
             "cuda_adaptor.cc",
             "maca_adaptor.cc",
             "duhip_adaptor.cc",
-            "ppu_cuda_adaptor.cc",
+            "hggc_adaptor.cc",
         )
         for filename in adaptor_sources:
             source = (
@@ -2123,7 +2123,7 @@ run_suite
             ("cuda_adaptor.cc", "cudaAdaptorSymMulticastImport"),
             ("maca_adaptor.cc", "macaAdaptorSymMulticastImport"),
             ("duhip_adaptor.cc", "duhipAdaptorSymMulticastImport"),
-            ("ppu_cuda_adaptor.cc", "ppucudaAdaptorSymMulticastImport"),
+            ("hggc_adaptor.cc", "hggcAdaptorSymMulticastImport"),
         ):
             source = (
                 REPO_ROOT / "flagcx/adaptor/device" / filename

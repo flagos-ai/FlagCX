@@ -30,7 +30,7 @@
 #include "ppu_adaptor.h"
 #include "global_comm.h"
 #include "flagcx_kernel.h"
-#include <cuda_runtime.h>
+#include <hggc_runtime.h>
 
 // Datatype size helper (moved from flagcx/kernels/flagcx_kernel_device.cu)
 FLAGCX_DEVICE_DECORATOR size_t
@@ -109,23 +109,23 @@ __global__ void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
 // Host-side launcher
 template <typename T>
-static cudaError_t launchFlagcxIntraAllReduce(flagcxDevComm devComm,
+static hggcError_t launchFlagcxIntraAllReduce(flagcxDevComm devComm,
                                               flagcxDevMem mem,
                                               size_t offset, size_t count,
-                                              cudaStream_t stream) {
+                                              hggcStream_t stream) {
   flagcxIntraAllReduceKernel<T>
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
          stream>>>(devComm, mem, offset, count);
-  return cudaGetLastError();
+  return hggcGetLastError();
 }
 
 // Explicit instantiations for common types
-template cudaError_t launchFlagcxIntraAllReduce<float>(flagcxDevComm,
+template hggcError_t launchFlagcxIntraAllReduce<float>(flagcxDevComm,
                                                        flagcxDevMem, size_t,
-                                                       size_t, cudaStream_t);
-template cudaError_t launchFlagcxIntraAllReduce<double>(flagcxDevComm,
+                                                       size_t, hggcStream_t);
+template hggcError_t launchFlagcxIntraAllReduce<double>(flagcxDevComm,
                                                         flagcxDevMem, size_t,
-                                                        size_t, cudaStream_t);
+                                                        size_t, hggcStream_t);
 
 // Host-side function — launches the kernel using caller-provided
 // registered buffer and device communicator.
@@ -137,27 +137,27 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
     return flagcxInternalError;
   }
 
-  cudaStream_t cudaStream = *(cudaStream_t *)stream;
+  hggcStream_t hggcStream = *(hggcStream_t *)stream;
 
   // Unified constructors — work for both Vendor and Default
   flagcxDevComm devCommKernel(*devComm);
   flagcxDevMem devMemKernel(*devMem);
 
-  cudaError_t err;
+  hggcError_t err;
   switch (datatype) {
   case flagcxFloat32:
     err = launchFlagcxIntraAllReduce<float>(devCommKernel, devMemKernel, 0,
-                                            count, cudaStream);
+                                            count, hggcStream);
     break;
   case flagcxFloat64:
     err = launchFlagcxIntraAllReduce<double>(devCommKernel, devMemKernel, 0,
-                                             count, cudaStream);
+                                             count, hggcStream);
     break;
   default:
     return flagcxInvalidArgument;
   }
 
-  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  return (err == hggcSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ==========================================================================
@@ -267,11 +267,11 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
 
   flagcxInterOneSidedAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
-  cudaError_t err = cudaGetLastError();
+  hggcError_t err = hggcGetLastError();
 
-  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  return (err == hggcSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // Host-side two-sided AlltoAll function.
@@ -289,11 +289,11 @@ flagcxResult_t launchKernelNetTwoSidedAlltoAll(flagcxDevMem_t sendMem,
 
   flagcxInterTwoSidedAlltoAllKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
 
-  cudaError_t err = cudaGetLastError();
+  hggcError_t err = hggcGetLastError();
 
-  return (err == cudaSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
+  return (err == hggcSuccess) ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 
@@ -810,9 +810,9 @@ flagcxResult_t launchKernelNetPutSignalInc(flagcxDevMem_t sendMem,
 
   flagcxInterTestPutSignalIncKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  hggcError_t err = hggcGetLastError();
+  if (err != hggcSuccess) {
     return flagcxUnhandledDeviceError;
   }
   return flagcxSuccess;
@@ -828,9 +828,9 @@ flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
   flagcxDevMem sm(*sendMem), rm(*recvMem);
   flagcxInterTestPutSignalAddDecoupledKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetMultiContextPutRelease(
@@ -843,9 +843,9 @@ flagcxResult_t launchKernelNetMultiContextPutRelease(
   flagcxDevMem sm(*sendMem), rm(*recvMem);
   flagcxInterTestMultiContextPutReleaseKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetCounterPipeline(flagcxDevMem_t sendMem,
@@ -860,9 +860,9 @@ flagcxResult_t launchKernelNetCounterPipeline(flagcxDevMem_t sendMem,
   flagcxDevMem sm(*sendMem), rm(*recvMem);
   flagcxInterTestCounterPipelineKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc, resultBuf);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc, resultBuf);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetPutValue(flagcxDevMem_t recvMem,
@@ -874,9 +874,9 @@ flagcxResult_t launchKernelNetPutValue(flagcxDevMem_t recvMem,
   flagcxDevMem rm(*recvMem);
   flagcxInterTestPutValueKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(rm, dc, putValBase);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(rm, dc, putValBase);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetSignal(flagcxDevComm_t devComm,
@@ -885,9 +885,9 @@ flagcxResult_t launchKernelNetSignal(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestSignalKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetFlushDecouple(flagcxDevMem_t sendMem,
@@ -901,9 +901,9 @@ flagcxResult_t launchKernelNetFlushDecouple(flagcxDevMem_t sendMem,
   flagcxDevMem sm(*sendMem), rm(*recvMem);
   flagcxInterTestFlushDecoupleKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetFollowShadow(flagcxDevComm_t devComm,
@@ -912,9 +912,9 @@ flagcxResult_t launchKernelNetFollowShadow(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestFollowShadowKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetMeetShadow(flagcxDevComm_t devComm,
@@ -923,9 +923,9 @@ flagcxResult_t launchKernelNetMeetShadow(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestMeetShadowKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 flagcxResult_t launchKernelNetReset(flagcxDevComm_t devComm,
@@ -935,9 +935,9 @@ flagcxResult_t launchKernelNetReset(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestResetKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc, resultBuf);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc, resultBuf);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ==========================================================================
@@ -1004,9 +1004,9 @@ flagcxResult_t launchKernelNetGet(flagcxDevMem_t sendMem,
   flagcxDevMem sm(*sendMem), rm(*recvMem);
   flagcxInterTestGetKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(sm, rm, count, datatype, dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ==========================================================================
@@ -1038,9 +1038,9 @@ flagcxResult_t launchKernelLocalPointer(flagcxDevMem_t devMem,
   if (!devMem || !results) return flagcxInternalError;
   flagcxDevMem dm(*devMem);
   flagcxIntraTestLocalPointerKernel
-      <<<1, 32, 0, *(cudaStream_t *)stream>>>(dm, rawPtr, results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+      <<<1, 32, 0, *(hggcStream_t *)stream>>>(dm, rawPtr, results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K2: Intra Pointer
@@ -1082,9 +1082,9 @@ flagcxResult_t launchKernelIntraPointer(flagcxDevMem_t devMem,
   flagcxDevComm dc(*devComm);
   flagcxIntraTestIntraPointerKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dm, dc, output, count);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dm, dc, output, count);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K3: Peer Pointer (team-based)
@@ -1115,9 +1115,9 @@ flagcxResult_t launchKernelPeerPointer(flagcxDevMem_t devMem,
   flagcxDevComm dc(*devComm);
   flagcxIntraTestPeerPointerKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dm, dc, output, count);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dm, dc, output, count);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K5: Intra Barrier Sync
@@ -1158,9 +1158,9 @@ flagcxResult_t launchKernelIntraBarrierSync(flagcxDevMem_t devMem,
   flagcxDevComm dc(*devComm);
   flagcxIntraTestBarrierSyncKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dm, dc, output, count);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dm, dc, output, count);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K6: Intra Barrier Arrive/Wait
@@ -1204,9 +1204,9 @@ flagcxResult_t launchKernelIntraBarrierArriveWait(flagcxDevMem_t devMem,
   flagcxDevComm dc(*devComm);
   flagcxIntraTestBarrierArriveWaitKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dm, dc, output, count);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dm, dc, output, count);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K7: SymPtr
@@ -1248,9 +1248,9 @@ flagcxResult_t launchKernelIntraSymPtr(flagcxDevMem_t devMem,
   flagcxDevMem dm(*devMem);
   flagcxDevComm dc(*devComm);
   flagcxIntraTestSymPtrKernel
-      <<<1, 32, 0, *(cudaStream_t *)stream>>>(dm, dc, results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+      <<<1, 32, 0, *(hggcStream_t *)stream>>>(dm, dc, results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K9: DevMem & Comm Queries
@@ -1281,9 +1281,9 @@ flagcxResult_t launchKernelCommQueries(flagcxDevMem_t devMem,
   flagcxDevMem dm(*devMem);
   flagcxDevComm dc(*devComm);
   flagcxIntraTestCommQueriesKernel
-      <<<1, 32, 0, *(cudaStream_t *)stream>>>(dm, dc, results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+      <<<1, 32, 0, *(hggcStream_t *)stream>>>(dm, dc, results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K10: Coop Groups
@@ -1356,9 +1356,9 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
 flagcxResult_t launchKernelCoopGroups(int *results, flagcxStream_t stream) {
   if (!results) return flagcxInternalError;
   flagcxIntraTestCoopGroupsKernel
-      <<<4, 256, 0, *(cudaStream_t *)stream>>>(results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+      <<<4, 256, 0, *(hggcStream_t *)stream>>>(results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // K11: Team
@@ -1391,9 +1391,9 @@ flagcxResult_t launchKernelTeam(flagcxDevComm_t devComm, int *results,
   if (!devComm || !results) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxIntraTestTeamKernel
-      <<<1, 32, 0, *(cudaStream_t *)stream>>>(dc, results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+      <<<1, 32, 0, *(hggcStream_t *)stream>>>(dc, results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ===========================================================================
@@ -1452,9 +1452,9 @@ flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestWaitSignalFlushKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,9 +1488,9 @@ flagcxResult_t launchKernelInterBarrier(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestInterBarrierKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc, results, nIters);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc, results, nIters);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ---------------------------------------------------------------------------
@@ -1534,9 +1534,9 @@ flagcxResult_t launchKernelWorldBarrier(flagcxDevComm_t devComm,
   flagcxDevComm dc(*devComm);
   flagcxInterTestWorldBarrierKernel
       <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(cudaStream_t *)stream>>>(dc, results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+         *(hggcStream_t *)stream>>>(dc, results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
 
 // ==========================================================================
@@ -1559,7 +1559,7 @@ flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,
   if (!devComm || !results) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevNetGetFromCommKernel
-      <<<1, 1, 0, *(cudaStream_t *)stream>>>(dc, results);
-  cudaError_t err = cudaGetLastError();
-  return err == cudaSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
+      <<<1, 1, 0, *(hggcStream_t *)stream>>>(dc, results);
+  hggcError_t err = hggcGetLastError();
+  return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }

@@ -8,13 +8,14 @@ paths_watch:
   - .github/scripts/set_env/ppu.sh
   - .github/scripts/ci/run_ppu_workload.sh
   - flagcx/adaptor/device/ptpu_adaptor.cc
-  - flagcx/adaptor/device/ppu_cuda_adaptor.cc
-  - flagcx/adaptor/ccl/ppu_nccl_adaptor.cc
+  - flagcx/adaptor/device/hggc_adaptor.cc
+  - flagcx/adaptor/ccl/ppu_pccl_adaptor.cc
   - flagcx/adaptor/include/ppu_adaptor.h
   - flagcx/adaptor/include/device_api/ppu_*.h
   - flagcx/adaptor/kernel/ppu/**/*
   - test/kernel/ppu/**/*
   - makefiles/ppu.mk
+  - tools/probe_hggc_sdk.py
   - flagcx/adaptor/include/barex_runtime.h
   - flagcx/adaptor/net/barex_adaptor.cc
 
@@ -60,7 +61,7 @@ docker_options:
 
 set_env: .github/scripts/set_env/ppu.sh
 
-# PPU validates Device API through the common DefaultBackend and CUDA-compatible
+# PPU validates Device API through the common DefaultBackend and native HGGC
 # kernels, in addition to the ACCL P2P/RMA suites.
 unit_test_suites:
   - adaptor

@@ -106,8 +106,8 @@ class PpuPlatformTraitsTest(unittest.TestCase):
     def compile_source(self, source, *, native=False, run=True, expect_success=True):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            (tmp / "cuda.h").write_text("")
-            (tmp / "cuda_runtime.h").write_text("")
+            (tmp / "hggc.h").write_text("")
+            (tmp / "hggc_runtime.h").write_text("")
             if native:
                 (tmp / "hggc_runtime.h").write_text(RUNTIME)
                 (tmp / "hggc").mkdir()

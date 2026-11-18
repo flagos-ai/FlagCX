@@ -8,8 +8,10 @@ source "$FLAGCX_CI_ENV_DIR/../ci/rdma_static_preflight.sh"
 
 export FLAGCX_ADAPTOR=ppu
 
-export PATH="/usr/local/PPU_SDK/bin:${PATH}"
-export LD_LIBRARY_PATH="/usr/local/PPU_SDK/CUDA_SDK/lib64:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
+export DEVICE_HOME="${DEVICE_HOME:-/usr/local/PPU_SDK}"
+export CCL_HOME="${CCL_HOME:-/usr/local/PPU_SDK}"
+export PATH="$DEVICE_HOME/bin:${PATH}"
+export LD_LIBRARY_PATH="$CCL_HOME/lib:$DEVICE_HOME/lib:$DEVICE_HOME/CUDA_SDK/lib64:${LD_LIBRARY_PATH:-}"
 FLAGCX_CI_PPU_ENV_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 FLAGCX_CI_PPU_DLOPEN_SHIM_SOURCE="$FLAGCX_CI_PPU_ENV_DIR/../ci/ppu_pccl_dlopen_shim.c"
 FLAGCX_CI_PPU_DLOPEN_SHIM_DIR="${RUNNER_TEMP:-/tmp}/flagcx-ci-ppu"
@@ -118,6 +120,9 @@ flagcx_ci_run_suite_override() {
   local -a args=("$@")
 
   if [[ "$suite" == device_api ]]; then
+    FLAGCX_CI_TEST_LABEL="PPU native/Torch stream interoperability" \
+      "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/kernel/ppu" \
+        stream_compat "${args[@]}"
     FLAGCX_CI_TEST_LABEL="PPU SDK platform traits" \
       "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/kernel/ppu" \
         device_traits "${args[@]}"
@@ -221,6 +226,7 @@ flagcx_ci_prepare() {
     *) export LD_PRELOAD="$FLAGCX_CI_PPU_DLOPEN_SHIM${LD_PRELOAD:+:$LD_PRELOAD}" ;;
   esac
   echo "PPU deep-bind shim: $FLAGCX_CI_PPU_DLOPEN_SHIM"
+  command -v hgcc
   command -v mpirun
   mpirun --version
 

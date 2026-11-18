@@ -6,7 +6,7 @@
 #include "device_api/comm_traits.h"
 
 #include <cstdio>
-#include <cuda_runtime.h>
+#include <hggc_runtime.h>
 #include <type_traits>
 
 using Traits = PlatformTraits<PpuPlatform>;
@@ -163,9 +163,9 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
 
 #define SDK_CHECK(call)                                                        \
   do {                                                                         \
-    cudaError_t err = (call);                                                  \
-    if (err != cudaSuccess) {                                                  \
-      fprintf(stderr, "%s: %s\n", #call, cudaGetErrorString(err));             \
+    hggcError_t err = (call);                                                  \
+    if (err != hggcSuccess) {                                                  \
+      fprintf(stderr, "%s: %s\n", #call, hggcGetErrorString(err));             \
       return 1;                                                                \
     }                                                                          \
   } while (0)
@@ -173,21 +173,31 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
 int main() {
   uint32_t *results = nullptr, *word32 = nullptr;
   uint64_t *word64 = nullptr, *mapped = nullptr, *mappedDevice = nullptr;
-  SDK_CHECK(cudaSetDevice(0));
+  SDK_CHECK(hggcSetDevice(0));
+  // Check the native default-pool contract on the installed SDK. Compile/link
+  // probes cannot establish whether a null pool works at runtime.
+  hggcStream_t allocationStream = nullptr;
+  void *asyncBuffer = nullptr;
+  SDK_CHECK(hggcStreamCreateWithFlags(&allocationStream, hggcStreamNonBlocking));
+  SDK_CHECK(hggcMallocAsync(&asyncBuffer, 64, nullptr, allocationStream));
+  SDK_CHECK(hggcMemsetAsync(asyncBuffer, 0, 64, allocationStream));
+  SDK_CHECK(hggcFreeAsync(asyncBuffer, allocationStream));
+  SDK_CHECK(hggcStreamSynchronize(allocationStream));
+  SDK_CHECK(hggcStreamDestroy(allocationStream));
   SDK_CHECK(
-      cudaMalloc(reinterpret_cast<void **>(&results), 128 * sizeof(uint32_t)));
-  SDK_CHECK(cudaMalloc(reinterpret_cast<void **>(&word32), sizeof(uint32_t)));
-  SDK_CHECK(cudaMalloc(reinterpret_cast<void **>(&word64), sizeof(uint64_t)));
-  SDK_CHECK(cudaHostAlloc(reinterpret_cast<void **>(&mapped), sizeof(uint64_t),
-                          cudaHostAllocMapped));
-  SDK_CHECK(cudaHostGetDevicePointer(reinterpret_cast<void **>(&mappedDevice),
+      hggcMalloc(reinterpret_cast<void **>(&results), 128 * sizeof(uint32_t)));
+  SDK_CHECK(hggcMalloc(reinterpret_cast<void **>(&word32), sizeof(uint32_t)));
+  SDK_CHECK(hggcMalloc(reinterpret_cast<void **>(&word64), sizeof(uint64_t)));
+  SDK_CHECK(hggcHostAlloc(reinterpret_cast<void **>(&mapped), sizeof(uint64_t),
+                          hggcHostAllocMapped));
+  SDK_CHECK(hggcHostGetDevicePointer(reinterpret_cast<void **>(&mappedDevice),
                                      mapped, 0));
   __atomic_store_n(mapped, uint64_t{0}, __ATOMIC_RELEASE);
   testPpuTraits<<<1, 128>>>(results, word32, word64, mappedDevice);
-  SDK_CHECK(cudaGetLastError());
-  SDK_CHECK(cudaDeviceSynchronize());
+  SDK_CHECK(hggcGetLastError());
+  SDK_CHECK(hggcDeviceSynchronize());
   uint32_t host[128];
-  SDK_CHECK(cudaMemcpy(host, results, sizeof(host), cudaMemcpyDeviceToHost));
+  SDK_CHECK(hggcMemcpy(host, results, sizeof(host), hggcMemcpyDeviceToHost));
   bool ok = __atomic_load_n(mapped, __ATOMIC_ACQUIRE) == 15;
   for (int i = 0; i < 128; ++i) {
     if (host[i] != 0) {
@@ -196,10 +206,10 @@ int main() {
     }
   }
   ok &= Traits::Clock::elapsedNs(100, 1600, 1500000) == 1000;
-  SDK_CHECK(cudaFree(results));
-  SDK_CHECK(cudaFree(word32));
-  SDK_CHECK(cudaFree(word64));
-  SDK_CHECK(cudaFreeHost(mapped));
+  SDK_CHECK(hggcFree(results));
+  SDK_CHECK(hggcFree(word32));
+  SDK_CHECK(hggcFree(word64));
+  SDK_CHECK(hggcFreeHost(mapped));
   printf("PPU SDK platform traits: %s\n", ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

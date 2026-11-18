@@ -362,14 +362,13 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_DEVICE_STREAM_PTR hipStream_t *
 
 #elif defined(USE_PPU_ADAPTOR)
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include <hggc.h>
+#include <hggc_runtime.h>
 
 // HGGC's native driver uses __HGGCCC__; its CUDA-compatible front end can
 // additionally expose __CUDACC__. Neither implies NVIDIA device semantics.
 #if defined(__HGGCCC__) || defined(__CUDACC__)
 #define FLAGCX_PPU_DEVICE_COMPILE 1
-#include <hggc_runtime.h>
 #define FLAGCX_HOST_DECORATOR __host__
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
@@ -405,7 +404,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_SHARED_DECORATOR static
 #endif
 #define FLAGCX_SIMT_WIDTH 32
-#define FLAGCX_DEVICE_STREAM_PTR cudaStream_t *
+#define FLAGCX_DEVICE_STREAM_PTR hggcStream_t *
 
 #elif defined(USE_NVIDIA_ADAPTOR)
 #include <cuda.h>

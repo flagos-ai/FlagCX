@@ -1,13 +1,13 @@
 /*************************************************************************
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
- * Device IR kernel implementations — CUDA kernels exercising FlagCX
+ * Device IR kernel implementations — HGGC kernels exercising FlagCX
  * Device API IR functions via device pointers.
  *
  * Intra-node (S1–S10): aligned with device_api_intra K1–K10.
  * Inter-node transport: separate section.
  *
- * Compiled by nvcc into device_ir.o, linked by g++ into test_device_ir.
+ * Compiled by hgcc into device_ir.o, linked by g++ into test_device_ir.
  ************************************************************************/
 
 #include "flagcx.h"
@@ -15,7 +15,7 @@
 #include "ppu_adaptor.h"
 #include "flagcx_device_internal.h"
 
-// IR wrapper declarations + implementations (needed for nvcc inline compilation)
+// IR wrapper declarations + implementations (needed for hgcc inline compilation)
 #include "flagcx_device_wrapper.h"
 #include "flagcx_device_wrapper_impl.h" // also pulls in scalar_ir_impl.h
 

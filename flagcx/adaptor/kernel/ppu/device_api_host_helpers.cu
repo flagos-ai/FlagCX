@@ -2,7 +2,7 @@
  * Copyright (c) 2026 BAAI. All rights reserved.
  *
  * Device-compiled helpers for device API host integration.
- * Compiled by nvcc, linked into libflagcx.so.
+ * Compiled by hgcc, linked into libflagcx.so.
  * Called from flagcx_device.cc via extern "C". PPU selects its own
  * DefaultBackend traits while using the CUDA-compatible launch syntax.
  *
@@ -33,6 +33,6 @@ extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
     return;
   int threads = (count < 256) ? count : 256;
   int blocks = (count + threads - 1) / threads;
-  flagcxDevNetConstructKernel<<<blocks, threads, 0, (cudaStream_t)stream>>>(
+  flagcxDevNetConstructKernel<<<blocks, threads, 0, (hggcStream_t)stream>>>(
       (flagcxDevNet *)devNets, (flagcxDevComm *)devComm, count);
 }
