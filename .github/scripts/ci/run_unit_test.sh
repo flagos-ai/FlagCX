@@ -265,6 +265,11 @@ run_device_api_host() {
     "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
 }
 
+flagcx_ci_device_api_intra_only() {
+  [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == ppu &&
+     "${FLAGCX_CI_DEVICE_API_INTRA_ONLY:-0}" == 1 ]]
+}
+
 run_device_api() {
   local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   local platform_name
@@ -315,6 +320,11 @@ run_device_api() {
     FLAGCX_CI_MPI_LABEL="device IR intra" \
       "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
       build/bin/test_device_ir_intra "${flags[@]}"
+  fi
+
+  if flagcx_ci_device_api_intra_only; then
+    echo "Skipping PPU Device API inter runs: BAREX remote signal atomic is unavailable"
+    return 0
   fi
 
   if [[ "${FLAGCX_CI_DEVICE_API_INTER:-1}" == 1 ]]; then
@@ -426,6 +436,11 @@ run_device_api_unified_ir() {
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
     "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
+
+  if flagcx_ci_device_api_intra_only; then
+    echo "Skipping PPU unified IR inter and forced-Net runs: BAREX remote signal atomic is unavailable"
+    return 0
+  fi
 
   # The inter steps exercise the one-sided NET transport across two logical
   # nodes.  A platform whose Device IR bindings declare the NET arm absent

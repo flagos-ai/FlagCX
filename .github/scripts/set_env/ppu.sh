@@ -89,6 +89,9 @@ flagcx_ci_configure_suite() {
       FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
       FLAGCX_CI_TEST_MAKE_ARGS+=(COMPILE_KERNEL=1)
       if [[ "$suite" != device_api_host ]]; then
+        # BAREX has no remote signal atomic for Device API inter tests yet.
+        # Keep the normal intra runs; forced-Net intra also needs that atomic.
+        FLAGCX_CI_DEVICE_API_INTRA_ONLY=1
         export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"
         FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x CUDA_VISIBLE_DEVICES)
         FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x CUDA_VISIBLE_DEVICES)
