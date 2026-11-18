@@ -4,6 +4,7 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "ixcuda_vmm.h"
 #include <cstdint>
 #include <unistd.h>
 
@@ -137,6 +138,12 @@ flagcxResult_t ixcudaAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxInvalidArgument;
   }
   *ptr = NULL;
+#if FLAGCX_ILUVATAR_HAS_VMM
+  if (flagcxParamVmmEnable())
+    return ixcudaVmmAllocate(ptr, size);
+#endif
+  // Match CUDA's legacy-SDK path: VMM_ENABLE selects VMM only when the
+  // allocation APIs were compiled in. Keep ordinary GDR allocations usable.
   DEVCHECK(cudaMalloc(ptr, size));
   if (ixcudaAdaptorSetSyncMemops(*ptr) != flagcxSuccess) {
     cudaFree(*ptr);
@@ -150,6 +157,12 @@ flagcxResult_t ixcudaAdaptorGdrMemFree(void *ptr, void *memHandle) {
   if (ptr == NULL) {
     return flagcxSuccess;
   }
+#if FLAGCX_ILUVATAR_HAS_VMM
+  bool vmm = false;
+  FLAGCXCHECK(ixcudaVmmFree(ptr, &vmm));
+  if (vmm)
+    return flagcxSuccess;
+#endif
   DEVCHECK(cudaFree(ptr));
   return flagcxSuccess;
 }
@@ -543,7 +556,8 @@ flagcxResult_t ixcudaAdaptorGetHandleForAddressRange(void *handleOut,
 #endif
 }
 
-// Symmetric memory VMM stubs (not supported)
+// Compile-time fallback for SDKs without VMM declarations.
+#if !FLAGCX_ILUVATAR_HAS_VMM
 flagcxResult_t ixcudaAdaptorSymPhysAlloc(void *, size_t, void **, void *,
                                          size_t *, size_t *) {
   return flagcxNotSupported;
@@ -556,6 +570,7 @@ flagcxResult_t ixcudaAdaptorSymFlatMap(void *[], int, int, void *, size_t,
 flagcxResult_t ixcudaAdaptorSymFlatUnmap(void *, size_t, int) {
   return flagcxNotSupported;
 }
+#endif
 flagcxResult_t ixcudaAdaptorSymMulticastSupported(int *supported) {
   if (supported)
     *supported = 0;
@@ -592,6 +607,18 @@ flagcxResult_t ixcudaAdaptorGetPointerType(const void *ptr, int *ptrType) {
   if (ptr == NULL || ptrType == NULL)
     return flagcxInvalidArgument;
 
+#if FLAGCX_ILUVATAR_HAS_VMM
+  void *allocationBase = nullptr;
+  size_t allocationBytes = 0;
+  const auto tracked =
+      IxcudaVmmAllocation::addressRange(ptr, &allocationBase, &allocationBytes);
+  if (tracked == flagcxSuccess) {
+    *ptrType = FLAGCX_PTR_CUDA;
+    return flagcxSuccess;
+  }
+  if (tracked != flagcxNotSupported)
+    return tracked;
+#endif
   cudaPointerAttributes attrs = {};
   cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
   if (err == cudaErrorInvalidValue) {
@@ -676,19 +703,38 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ixcudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
-      // Symmetric memory VMM functions (not supported)
+      // Symmetric memory VMM functions
       ixcudaAdaptorSymPhysAlloc, ixcudaAdaptorSymPhysFree,
       ixcudaAdaptorSymFlatMap, ixcudaAdaptorSymFlatUnmap,
       ixcudaAdaptorSymMulticastSupported, ixcudaAdaptorSymMulticastCreate,
       ixcudaAdaptorSymMulticastBind, ixcudaAdaptorSymMulticastTeardown,
       ixcudaAdaptorSymMulticastFree,
       ixcudaAdaptorGetLastError, // flagcxResult_t (*getLastError)();
-      ixcudaAdaptorGetPointerType,
-      flagcxDeviceAdaptorGetAddressRangeNotSupported, FLAGCX_VMM_MR_CAP_NONE,
-      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL, NULL, NULL, NULL,
+      ixcudaAdaptorGetPointerType, ixcudaAdaptorGetAddressRange,
+#if FLAGCX_ILUVATAR_HAS_VMM
+      FLAGCX_VMM_MR_CAP_VA, // Candidate only; CoreX CI remains gated.
+      FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL,
+      ixcudaAdaptorSymFlatMappingUnmap, ixcudaAdaptorSymFlatVaFree, NULL, NULL,
+#else
+      FLAGCX_VMM_MR_CAP_NONE, FLAGCX_DEVICE_ADAPTOR_INTERNAL_NONE, NULL, NULL,
+      NULL, NULL, NULL,
+#endif
       // Preserve the legacy collective receive acquire until this platform
       // explicitly documents a coherent GPUDirect WRITE path.
       FLAGCX_GDR_WRITE_REQUIRES_FLUSH, FLAGCX_GDR_DEVICE_ILUVATAR, NULL,
       ixcudaAdaptorCanAccessPeer,
+#if FLAGCX_ILUVATAR_HAS_VMM
+      ixcudaAdaptorSymPhysDescribe, ixcudaAdaptorSymPhysExportSegment,
+      ixcudaAdaptorSymPhysFreeSegments, ixcudaAdaptorSymFlatMapSegments,
+      ixcudaAdaptorSymFlatMappingUnmapSegments,
+      ixcudaAdaptorSymFlatVaFreeSegments, ixcudaAdaptorSymPhysSegmentCount,
+      ixcudaAdaptorSymFlatMapSegmentsBegin, ixcudaAdaptorSymFlatMapSegmentOne,
+      ixcudaAdaptorSymLsaGetCapacity, ixcudaAdaptorSymLsaVaReserve,
+      ixcudaAdaptorSymLsaVaFree, ixcudaAdaptorSymLsaMapBeginAt, NULL, NULL,
+      NULL, NULL,
+#else
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+      NULL, NULL, NULL, NULL, NULL,
+#endif
 };
 #endif // USE_ILUVATAR_ADAPTOR

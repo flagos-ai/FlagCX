@@ -1,0 +1,58 @@
+name: Iluvatar SymMem probes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iluvatar-symmem-probes-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLAGCX_CI_LOG_DIR: ${{ github.workspace }}/.ci-logs
+
+jobs:
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.config.outputs.ci_image }}
+      docker_args: ${{ steps.config.outputs.docker_args }}
+      set_env: ${{ steps.config.outputs.set_env }}
+      runs_on: ${{ steps.config.outputs.runs_on }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: config
+        run: ruby .github/scripts/ci/load_platform_config.rb iluvatar
+
+  probe:
+    name: Iluvatar / symmem_probe
+    needs: config
+    runs-on: ${{ fromJSON(needs.config.outputs.runs_on) }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Run independent SymMem probes
+        env:
+          FLAGCX_CI_CONTAINER_NAME: flagcx-symmem-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          FLAGCX_CI_IMAGE: ${{ needs.config.outputs.image }}
+          FLAGCX_CI_DOCKER_ARGS: ${{ needs.config.outputs.docker_args }}
+          FLAGCX_CI_SET_ENV: ${{ needs.config.outputs.set_env }}
+        run: bash .github/scripts/ci/run_hardware_container.sh iluvatar unittest symmem_probe
+      - name: Cleanup container
+        if: always()
+        run: docker rm --force flagcx-symmem-probe-${{ github.run_id }}-${{ github.run_attempt }} >/dev/null 2>&1 || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: iluvatar-symmem-probe-${{ github.run_attempt }}
+          path: ${{ env.FLAGCX_CI_LOG_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -160,4 +160,29 @@ TEST(SegmentedVmmAllocation, SplitsDeviceOperationsAtPhysicalBoundaries) {
   EXPECT_EQ(flagcxSuccess, Allocation::freeAllocation(ptr, &freed));
   EXPECT_TRUE(freed);
 }
+
+TEST(SegmentedVmmAllocation, InteriorRangeReportsWholeReservationAndDevice) {
+  using Allocation = flagcxSegmentedVmmAllocation<FakeVmmOps>;
+  FakeVmmOps::failMap = FakeVmmOps::failUnmap = false;
+  void *ptr = nullptr;
+  ASSERT_EQ(Allocation::allocate(&ptr, 16384, 4096, 4096, 0), flagcxSuccess);
+  void *base = nullptr;
+  size_t bytes = 0;
+  int device = -1;
+  EXPECT_EQ(Allocation::addressRange(static_cast<char *>(ptr) + 8193, &base,
+                                     &bytes, &device),
+            flagcxSuccess);
+  EXPECT_EQ(base, ptr);
+  EXPECT_EQ(bytes, 16384u);
+  EXPECT_EQ(device, 0);
+  EXPECT_EQ(
+      Allocation::addressRange(static_cast<char *>(ptr) + 16384, &base, &bytes),
+      flagcxNotSupported);
+  EXPECT_EQ(base, nullptr);
+  EXPECT_EQ(bytes, 0u);
+  bool found = false;
+  EXPECT_EQ(Allocation::freeAllocation(ptr, &found), flagcxSuccess);
+  EXPECT_TRUE(found);
+  EXPECT_EQ(Allocation::addressRange(ptr, &base, &bytes), flagcxNotSupported);
+}
 } // namespace
