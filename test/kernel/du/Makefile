@@ -16,9 +16,12 @@ ALL_INCLUDES := $(FLAGCX_INCLUDES) \
     -I$(PROJECT_ROOT)/test/kernel/include \
     $(PLATFORM_INCLUDES) \
     $(CCL_INCLUDE) \
-    $(DEVICE_INCLUDE)
+    $(DEVICE_INCLUDE) \
+    $(SHMEM_INCLUDE)
 
-DU_HIP_COMPILE_FLAGS := -c -fgpu-rdc -fPIC
+DU_HIP_COMPILE_FLAGS := -c -fgpu-rdc -fPIC -MMD -MP
+
+KERNEL_BUILD_DEPS := Makefile ../../make.inc $(PROJECT_ROOT)/makefiles/du.mk
 
 .PHONY: all clean device_api.o device_ir.o
 
@@ -26,21 +29,34 @@ all: $(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o
 
 device_api.o: $(OBJDIR)/device_api.o
 device_ir.o: $(OBJDIR)/device_ir.o
-$(OBJDIR)/device_api.o: device_api.hip
+$(OBJDIR)/device_api.o: device_api.hip $(KERNEL_BUILD_DEPS)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_api.hip (DU)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DU_HIP_COMPILE_FLAGS) -o $@ $< \
+	@$(DEVICE_COMPILER) -std=c++17 $(DU_HIP_COMPILE_FLAGS) -o $@ $(abspath $<) \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
-$(OBJDIR)/device_ir.o: device_ir.hip
+$(OBJDIR)/device_ir.o: device_ir.hip $(KERNEL_BUILD_DEPS)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling device_ir.hip (DU)"
-	@$(DEVICE_COMPILER) -std=c++17 $(DU_HIP_COMPILE_FLAGS) -o $@ $< \
+	@$(DEVICE_COMPILER) -std=c++17 $(DU_HIP_COMPILE_FLAGS) -o $@ $(abspath $<) \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
-# DU does not use SHMEM device-link targets
-dlink.o dlink_api.o dlink_ir.o:
-	@echo "DU: no device-link needed (no SHMEM support)"
+# DU has no separate device-link step. DUSHMEM ships device code in
+# libdushmem_device.a, which DEVICE_LINK passes to the final link as a plain
+# input file so amdgcn-link can resolve dushmemi_* symbols. The device_api
+# unittest Makefile still lists dlink_*.o as prerequisites when USE_SHMEM=1,
+# so emit empty placeholder objects to satisfy those build dependencies.
+.PHONY: dlink.o dlink_api.o dlink_ir.o
+dlink.o: $(OBJDIR)/dlink.o
+dlink_api.o: $(OBJDIR)/dlink_api.o
+dlink_ir.o: $(OBJDIR)/dlink_ir.o
+$(OBJDIR)/dlink.o $(OBJDIR)/dlink_api.o $(OBJDIR)/dlink_ir.o:
+	@mkdir -p $(OBJDIR)
+	@echo "Compiling empty dlink placeholder (DU, no device-link step)"
+	@echo "" | $(DEVICE_COMPILER) -x c -c - -o $@
 
 clean:
 	@rm -rf $(BUILDDIR)
+
+# Absolute source paths let consumer Makefiles include these dependencies too.
+-include $(OBJDIR)/device_api.d $(OBJDIR)/device_ir.d

@@ -36,6 +36,11 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+extern "C" void flagcxDushmemSyncDeviceState();
+extern "C" void flagcxDushmemFinalizeDeviceState();
+#endif
+
 constexpr int kUnifiedIrSignalComboCount = 12;
 constexpr int kUnifiedIrS23ComboCount = 18;
 constexpr int kUnifiedIrInterTeamResolutionComboCount = 9;
@@ -101,6 +106,9 @@ int main(int argc, char *argv[]) {
 
   flagcxDevComm_t devComm = nullptr;
   FLAGCXCHECK(flagcxDevCommCreate(comm, &reqs, &devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemSyncDeviceState();
+#endif
 
   // Allocate send/recv buffers for S23, the largest combination matrix.
   size_t bufSize = maxBytes * kUnifiedIrS23ComboCount;
@@ -752,6 +760,9 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+#if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_DU_ADAPTOR)
+  flagcxDushmemFinalizeDeviceState();
+#endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));
   FLAGCXCHECK(flagcxCommDestroy(comm));
 

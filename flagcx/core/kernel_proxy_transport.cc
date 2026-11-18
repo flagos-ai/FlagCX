@@ -4,6 +4,7 @@
 
 #include "kernel_proxy_transport.h"
 
+#include "check.h"
 #include "device_api/completion_word.h"
 #include "device_api/fifo_producer_gate.h"
 #include "flagcx_kernel_core.h"

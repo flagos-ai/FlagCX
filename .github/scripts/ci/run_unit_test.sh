@@ -125,7 +125,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|symmem|device_api|device_api_shmem|device_api_unified_ir|device_api_unified_ir_shmem) ;;
     *) return 0 ;;
   esac
 
@@ -165,7 +165,9 @@ build_suite() {
     return 0
   fi
   if [[ "$SUITE" == device_api_host ||
-        "$SUITE" == device_api_unified_ir ]]; then
+        "$SUITE" == device_api_shmem ||
+        "$SUITE" == device_api_unified_ir ||
+        "$SUITE" == device_api_unified_ir_shmem ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
@@ -181,7 +183,9 @@ build_suite() {
   if [[ "$SUITE" == device_api_host ]]; then
     make -C "$suite_dir" --jobs="$(nproc)" unit "${args[@]}"
   elif [[ "$SUITE" == device_api ||
-          "$SUITE" == device_api_unified_ir ]]; then
+          "$SUITE" == device_api_shmem ||
+          "$SUITE" == device_api_unified_ir ||
+          "$SUITE" == device_api_unified_ir_shmem ]]; then
     make -C "$suite_dir" --jobs="$(nproc)" mpi "${args[@]}"
   else
     make -C "$suite_dir" --jobs="$(nproc)" "${args[@]}"
@@ -321,10 +325,53 @@ run_device_api_unified_ir() {
     build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
 }
 
+run_device_api_unified_ir_shmem() {
+  local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local -a common_env=(
+    -x FLAGCX_USE_HETERO_COMM=1
+    -x FLAGCX_VMM_ENABLE=0
+    -x LD_LIBRARY_PATH
+  )
+  if declare -p FLAGCX_CI_UNIFIED_IR_MPI_ARGS >/dev/null 2>&1; then
+    common_env+=("${FLAGCX_CI_UNIFIED_IR_MPI_ARGS[@]}")
+  fi
+  # DUSHMEM is itself a one-sided NET/IBRC backend, so the forced-fallback
+  # runs (FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1) used by the canonical suite
+  # are not meaningful here. Keep the reduced size matrix that covers the
+  # INTER+WORLD putValue paths (S18/S24) without the extra full sweep.
+  local -a flags=(-b 1M -e 4M -f 2 -R 1)
+
+  declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
+    echo "The platform set_env script must define FLAGCX_CI_NODE1_MPI_ARGS" >&2
+    exit 1
+  }
+  declare -p FLAGCX_CI_NODE2_MPI_ARGS >/dev/null 2>&1 || {
+    echo "The platform set_env script must define FLAGCX_CI_NODE2_MPI_ARGS" >&2
+    exit 1
+  }
+  : "${FLAGCX_CI_INTRA_NP:?The platform set_env script must define FLAGCX_CI_INTRA_NP}"
+  : "${FLAGCX_CI_NODE_NP:?The platform set_env script must define FLAGCX_CI_NODE_NP}"
+
+  cd "$suite_dir"
+
+  FLAGCX_CI_MPI_LABEL="unified IR (SHMEM) intra" \
+    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
+    build/bin/test_device_ir_unified_intra "${flags[@]}"
+
+  FLAGCX_CI_MPI_LABEL="unified IR (SHMEM) inter" \
+    "$MPI_RUNNER" --allow-run-as-root \
+    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+    build/bin/test_device_ir_unified_inter "${flags[@]}" \
+    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+    build/bin/test_device_ir_unified_inter "${flags[@]}"
+}
+
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
   if [[ "$SUITE" == device_api_host ||
-        "$SUITE" == device_api_unified_ir ]]; then
+        "$SUITE" == device_api_shmem ||
+        "$SUITE" == device_api_unified_ir ||
+        "$SUITE" == device_api_unified_ir_shmem ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
@@ -1050,7 +1097,7 @@ run_suite() {
         return 0
       fi
       ;;
-    device_api)
+    device_api|device_api_shmem)
       run_device_api
       ;;
     device_api_host)
@@ -1058,6 +1105,9 @@ run_suite() {
       ;;
     device_api_unified_ir)
       run_device_api_unified_ir
+      ;;
+    device_api_unified_ir_shmem)
+      run_device_api_unified_ir_shmem
       ;;
     device_traits)
       local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
@@ -1104,7 +1154,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_shmem|device_api_host|device_api_unified_ir|device_api_unified_ir_shmem|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)

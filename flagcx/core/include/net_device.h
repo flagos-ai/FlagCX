@@ -7,7 +7,10 @@
 #ifndef FLAGCX_NET_DEVICE_H_
 #define FLAGCX_NET_DEVICE_H_
 
-#include <cstddef>
+// Must stay a C header: this file is pulled in from within the extern "C"
+// block in bootstrap.h. Including <cstddef> here declares C++ templates under
+// C linkage, which clang/hipcc rejects ("templates must have C++ linkage").
+#include <stddef.h>
 
 #define FLAGCX_NET_DEVICE_INVALID_VERSION 0x0
 #define FLAGCX_NET_MTU_SIZE 4096
