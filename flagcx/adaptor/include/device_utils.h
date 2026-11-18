@@ -462,6 +462,34 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // -DFLAGCX_ASCEND_DEVICE_COMPILE=1 so the branch does not depend on
 // compiler-provided names alone (same trick Iluvatar uses, because clang -x
 // ivcore does not guarantee __CUDACC__).
+//
+// Execution qualifiers are selected for the COMPILATION, device-only
+// behaviour for the PASS — the rule the CUDA branch above has always
+// followed (__CUDACC__ is set on both nvcc passes, behaviour keys on
+// __CUDA_ARCH__). Keying the qualifiers on __CCE_IS_AICORE__ alone erased
+// the ctor's annotation on the bisheng host pass while that same pass
+// still type-checked the __global__ kernel bodies that call it: in the CI
+// image (ascend-dev-fixed-20261028-debug) device_api and
+// device_api_unified_ir both died at "call to [host] function from
+// __global__ [aicore] function" on device_api_host_helpers.asc:96 before
+// any test executed (run of 2026-11-18). The same log's "unknown type name
+// '__aicore__'" shows the keyword spelling is not guaranteed on every
+// pass, while the [aicore] attribute is (the compiler names it in its own
+// diagnostic), so a guarded fallback maps the macro onto it. A keyword is
+// not a macro, so the fallback also fires on toolchains that know the
+// keyword — there it expands to the very spelling the keyword desugars
+// to; the hardware gate below re-runs every suite under that rewrite.
+#if defined(__CCE_IS_AICORE__) || defined(FLAGCX_ASCEND_DEVICE_COMPILE)
+#ifndef __aicore__
+#define __aicore__ __attribute__((aicore))
+#endif
+#define FLAGCX_HOST_DECORATOR
+#define FLAGCX_DEVICE_DECORATOR __aicore__
+#define FLAGCX_GLOBAL_DECORATOR __global__ __aicore__
+#define FLAGCX_DEVICE_INLINE_DECORATOR __aicore__ inline
+#define FLAGCX_HOST_DEVICE_INLINE __aicore__ inline
+#define FLAGCX_DEVICE_CONSTANT_DECORATOR __aicore__
+#endif
 #if defined(__CCE_IS_AICORE__)
 // Device pass. Ascend 910C gives FlagCX no usable SIMT lane model:
 //   * `--cce-enable-puresimt` rejects this soc ("NPU soc is not supported");
@@ -476,12 +504,11 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // rank-to-rank cooperation expressed through atomics on global memory.
 // FLAGCX_SIMT_WIDTH stays 1 — that is a measured statement about this
 // toolchain, not a defaulted width (adaptation doc §5.1).
-#define FLAGCX_HOST_DECORATOR
-#define FLAGCX_DEVICE_DECORATOR __aicore__
-#define FLAGCX_GLOBAL_DECORATOR __global__ __aicore__
-#define FLAGCX_DEVICE_INLINE_DECORATOR __aicore__ inline
-#define FLAGCX_HOST_DEVICE_INLINE __aicore__ inline
-#define FLAGCX_DEVICE_CONSTANT_DECORATOR __aicore__
+// The execution qualifiers are selected for BOTH passes above; what
+// follows is device-pass behaviour only, and the intrinsic header, the
+// fence, the never-defined capability functions and the capability
+// guards in ascend_platform_traits.h deliberately stay keyed on the pass
+// (a bisheng host pass must not see asc_dcci_* or __ubuf__).
 // Block-scope scratch lives in Unified Buffer. `__ub__` is not a keyword here
 // (it fails as "unknown type name"); `__ubuf__` is, and a kernel declaring an
 // `__ubuf__` array compiles with rc=0.
@@ -562,14 +589,20 @@ extern "C" FLAGCX_DEVICE_DECORATOR void flagcxAscendDeviceOpUnsupported();
 // here; only vendor collective kernels (not built on Ascend) use this macro.
 #define FLAGCX_DEVICE_STREAM_PTR void *
 #else
-// Host pass of an Ascend translation unit — keep the same logical platform
-// constants and erase device-only qualifiers.
+// Host half of a bisheng compilation, or a plain host compiler. Keep the
+// same logical platform constants with no-op device behaviour. On the
+// bisheng host pass the qualifiers were already selected above via
+// FLAGCX_ASCEND_DEVICE_COMPILE and must NOT be erased here — erasing them
+// is what failed both device suites in CI. A plain host compiler (which
+// defines neither macro) still gets neutral spellings.
+#ifndef FLAGCX_ASCEND_DEVICE_COMPILE
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR
 #define FLAGCX_GLOBAL_DECORATOR
 #define FLAGCX_DEVICE_INLINE_DECORATOR inline
 #define FLAGCX_HOST_DEVICE_INLINE inline
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR
+#endif
 #define FLAGCX_DEVICE_STREAM_PTR
 #define FLAGCX_DEVICE_THREAD_FENCE() ((void)0)
 #define FLAGCX_DEVICE_SYNC_THREADS() ((void)0)

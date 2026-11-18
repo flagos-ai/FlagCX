@@ -104,6 +104,12 @@ flagcx_ci_prepare() {
   ls -l /dev/davinci* /dev/infiniband
   command -v g++
   command -v python3
+  # Device-toolchain inventory (reviewer ask of 2026-11-18): the qualifier
+  # selection in device_utils.h keys on the makefile macro now, but the
+  # exact bisheng a job ran belongs in the log so a future build failure
+  # can be attributed without a re-run.
+  command -v bisheng || true
+  bisheng --version 2>&1 | sed -n '1,3p' || true
   python3 "$FLAGCX_CI_ENV_DIR/../ci/check_ascend_pci_runtime.py"
   if [[ "$suite" == core ]]; then
     flagcx_ci_validate_rdma core
