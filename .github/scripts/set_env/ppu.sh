@@ -117,6 +117,12 @@ flagcx_ci_run_suite_override() {
   shift 2
   local -a args=("$@")
 
+  if [[ "$suite" == device_api ]]; then
+    FLAGCX_CI_TEST_LABEL="PPU SDK platform traits" \
+      "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/kernel/ppu" \
+        device_traits "${args[@]}"
+  fi
+
   if [[ "$suite" == "runner" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
