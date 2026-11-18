@@ -1296,31 +1296,111 @@ TEST_F(NetAdaptorLoopback, RegisterDmaBufMr) {
       deviceAdaptor->gdrMemFree == nullptr ||
       deviceAdaptor->getHandleForAddressRange == nullptr)
     GTEST_SKIP() << "Selected device adaptor cannot export DMA-BUF memory";
+  const bool isIxcuda = strcmp(deviceAdaptor->name, "IXCUDA") == 0;
   ASSERT_EQ(deviceAdaptor->setDevice(gpuDev_), flagcxSuccess);
+  if (isIxcuda)
+    EXPECT_EQ(deviceAdaptor->dmaSupport(nullptr), flagcxInvalidArgument);
   bool supported = false;
   ASSERT_EQ(deviceAdaptor->dmaSupport(&supported), flagcxSuccess);
   if (!supported)
     GTEST_SKIP() << "Selected device does not support DMA-BUF export";
 
-  void *buffer = nullptr;
-  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&buffer, kBufferSize, nullptr),
+  const long pageSize = sysconf(_SC_PAGESIZE);
+  ASSERT_GT(pageSize, 0);
+  const size_t exportSize = std::max(kBufferSize, (size_t)pageSize);
+  std::vector<uint8_t> expected(exportSize);
+  std::vector<uint8_t> actual(exportSize, 0);
+  for (size_t i = 0; i < expected.size(); ++i)
+    expected[i] = static_cast<uint8_t>((i * 17 + 3) & 0xff);
+  struct Resources {
+    flagcxNetAdaptor *net;
+    void *sendComm;
+    void *recvComm;
+    void *buffer = nullptr;
+    void *dmaMr = nullptr;
+    void *recvMr = nullptr;
+    int fd = -1;
+    ~Resources() {
+      if (dmaMr != nullptr)
+        EXPECT_EQ(net->deregMr(sendComm, dmaMr), flagcxSuccess);
+      if (recvMr != nullptr)
+        EXPECT_EQ(net->deregMr(recvComm, recvMr), flagcxSuccess);
+      if (fd >= 0)
+        EXPECT_EQ(close(fd), 0);
+      if (buffer != nullptr)
+        EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
+    }
+  } resources{net_, sendComm_, recvComm_};
+
+  ASSERT_EQ(deviceAdaptor->gdrMemAlloc(&resources.buffer, exportSize, nullptr),
             flagcxSuccess);
-  ASSERT_NE(buffer, nullptr);
-  int fd = -1;
-  ASSERT_EQ(
-      deviceAdaptor->getHandleForAddressRange(&fd, buffer, kBufferSize, 0),
-      flagcxSuccess);
-  ASSERT_GE(fd, 0);
-  void *mr = nullptr;
-  EXPECT_EQ(net_->regMrDmaBuf(sendComm_, buffer, kBufferSize, FLAGCX_PTR_CUDA,
-                              0, fd, FLAGCX_NET_MR_FLAG_NONE, &mr),
-            flagcxSuccess);
-  EXPECT_NE(mr, nullptr);
-  if (mr != nullptr) {
-    EXPECT_EQ(net_->deregMr(sendComm_, mr), flagcxSuccess);
+  ASSERT_NE(resources.buffer, nullptr);
+  if (isIxcuda) {
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(nullptr, resources.buffer,
+                                                      exportSize, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(
+                  &resources.fd, static_cast<char *>(resources.buffer) + 1,
+                  exportSize, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(&resources.fd,
+                                                      resources.buffer, 0, 0),
+              flagcxInvalidArgument);
+    EXPECT_EQ(deviceAdaptor->getHandleForAddressRange(
+                  &resources.fd, resources.buffer, exportSize, 1),
+              flagcxInvalidArgument);
   }
-  close(fd);
-  EXPECT_EQ(deviceAdaptor->gdrMemFree(buffer, nullptr), flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->getHandleForAddressRange(
+                &resources.fd, resources.buffer, exportSize, 0),
+            flagcxSuccess);
+  ASSERT_GE(resources.fd, 0);
+  ASSERT_EQ(net_->regMrDmaBuf(sendComm_, resources.buffer, exportSize,
+                              FLAGCX_PTR_CUDA, 0, resources.fd,
+                              FLAGCX_NET_MR_FLAG_NONE, &resources.dmaMr),
+            flagcxSuccess);
+  ASSERT_NE(resources.dmaMr, nullptr);
+  if (!isIxcuda)
+    return;
+
+  ASSERT_NE(net_->regMr, nullptr);
+  ASSERT_NE(net_->isend, nullptr);
+  ASSERT_NE(net_->irecv, nullptr);
+  ASSERT_NE(net_->test, nullptr);
+
+  ASSERT_EQ(deviceAdaptor->deviceMemcpy(resources.buffer, expected.data(),
+                                        exportSize, flagcxMemcpyHostToDevice,
+                                        nullptr, nullptr),
+            flagcxSuccess);
+  ASSERT_EQ(deviceAdaptor->deviceSynchronize(), flagcxSuccess);
+  ASSERT_EQ(net_->regMr(recvComm_, actual.data(), actual.size(),
+                        FLAGCX_PTR_HOST, FLAGCX_NET_MR_FLAG_NONE,
+                        &resources.recvMr),
+            flagcxSuccess);
+  ASSERT_NE(resources.recvMr, nullptr);
+
+  void *recvData[1] = {actual.data()};
+  size_t recvSizes[1] = {actual.size()};
+  int tags[1] = {37};
+  void *recvMrs[1] = {resources.recvMr};
+  void *recvRequest = nullptr;
+  ASSERT_EQ(net_->irecv(recvComm_, 1, recvData, recvSizes, tags, recvMrs,
+                        nullptr, &recvRequest),
+            flagcxSuccess);
+  ASSERT_NE(recvRequest, nullptr);
+  void *sendRequest = nullptr;
+  const auto deadline = std::chrono::steady_clock::now() + kTimeout;
+  while (sendRequest == nullptr &&
+         std::chrono::steady_clock::now() < deadline) {
+    ASSERT_EQ(net_->isend(sendComm_, resources.buffer, exportSize, tags[0],
+                          resources.dmaMr, nullptr, &sendRequest),
+              flagcxSuccess);
+    if (sendRequest == nullptr)
+      std::this_thread::yield();
+  }
+  ASSERT_NE(sendRequest, nullptr);
+  void *requests[2] = {sendRequest, recvRequest};
+  ASSERT_EQ(waitRequests(net_, 2, requests), flagcxSuccess);
+  EXPECT_EQ(actual, expected);
 }
 
 TEST_F(NetAdaptorLoopback, SendRecv) {
