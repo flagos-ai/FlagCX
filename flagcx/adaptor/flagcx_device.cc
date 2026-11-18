@@ -554,9 +554,17 @@ flagcxResult_t flagcxCommCleanupIpcTable(flagcxComm_t comm) {
 flagcxResult_t releaseIpcTableSlot(flagcxComm_t comm, int slot) {
   if (comm == nullptr || slot < 0 || slot >= comm->ipcTableCapacity)
     return flagcxInvalidArgument;
-  struct flagcxIpcTableEntry *e = &comm->ipcTable[slot];
+  return releaseIpcTableEntry(&comm->ipcTable[slot]);
+}
+
+flagcxResult_t releaseIpcTableEntry(struct flagcxIpcTableEntry *e) {
+  if (e == nullptr)
+    return flagcxInvalidArgument;
   if (e->refCount != 0)
     return flagcxInvalidUsage;
+  // Once teardown starts, no caller may consume or deduplicate this mapping.
+  // Failed closes/frees retain ownership, but never restore readiness.
+  e->inUse = false;
   if (e->hostPeerBasePtrs != nullptr) {
     for (int i = 0; i < e->nPeers; i++) {
       if (e->hostPeerBasePtrs[i] != nullptr) {

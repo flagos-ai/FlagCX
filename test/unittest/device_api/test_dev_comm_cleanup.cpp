@@ -1330,6 +1330,8 @@ TEST_F(DefaultDevCommCleanupTest,
             flagcxSuccess);
   EXPECT_NE(view->window, nullptr);
   EXPECT_EQ(entry.refCount, 1u);
+  EXPECT_EQ(releaseIpcTableSlot(&comm, 0), flagcxInvalidUsage);
+  EXPECT_TRUE(entry.inUse); // Rejected teardown has not changed readiness.
   ASSERT_EQ(flagcxDevMemDestroy(&comm, view), flagcxSuccess);
   EXPECT_EQ(entry.refCount, 0u);
   EXPECT_TRUE(entry.inUse);

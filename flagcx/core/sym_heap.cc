@@ -11,6 +11,7 @@
 #include "bootstrap.h"
 #include "check.h"
 #include "comm.h"
+#include "flagcx_kernel_internal.h"
 #include "global_comm.h"
 #include "ipcsocket.h"
 #include "mem_alloc_registry.h"
@@ -1158,6 +1159,26 @@ static flagcxResult_t flagcxSymCleanupUnpublished(flagcxHeteroComm_t comm,
   // status convergence.
   if (retryingPendingNetworkCleanup)
     d->hasPendingNetworkCleanup = false;
+
+  // Failed public registration can retain IPC imports as well as MR/VMM
+  // resources. Close them before a pending retry can release the buffer lease.
+  local = flagcxSuccess;
+  if (d != nullptr && d->ipcSlot >= 0) {
+    if (comm->ipcTable == nullptr || d->ipcSlot >= comm->ipcTableSize)
+      local = flagcxInvalidUsage;
+    else
+      local = releaseIpcTableEntry(&comm->ipcTable[d->ipcSlot]);
+    if (local == flagcxSuccess)
+      d->ipcSlot = -1;
+  }
+  if (mode == flagcxSymCleanupCollective) {
+    // A rank with no local token still participates in the cleanup round.
+    FLAGCXCHECK(flagcxSymGlobalConverge(comm, local, &common));
+  } else {
+    common = local;
+  }
+  if (common != flagcxSuccess)
+    return common;
 
   return flagcxSymCleanupMappingsConverged(comm, d, mode);
 }

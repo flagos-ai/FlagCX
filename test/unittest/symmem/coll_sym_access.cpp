@@ -603,19 +603,26 @@ TEST_F(SymMemTest, LsaMulticastUnbindFailureRetainsWindowForRetry) {
 
   ASSERT_NE(deviceAdaptor->symLsaMulticastUnbind, nullptr);
   savedLsaMulticastUnbind = deviceAdaptor->symLsaMulticastUnbind;
-  failThisLocalRankLsaMulticastUnbind = comm->heteroComm->localRank == 0;
+  const bool injectFailure = comm->heteroComm->localRank == 0;
+  failThisLocalRankLsaMulticastUnbind = injectFailure;
   deviceAdaptor->symLsaMulticastUnbind = failLsaMulticastUnbindOnLocalRankZero;
   flagcxResult_t result = flagcxCommWindowDeregister(comm, window);
   deviceAdaptor->symLsaMulticastUnbind = savedLsaMulticastUnbind;
   savedLsaMulticastUnbind = nullptr;
   failThisLocalRankLsaMulticastUnbind = false;
 
-  int local = static_cast<int>(result);
-  int minimum = 0;
-  int maximum = 0;
-  MPI_Allreduce(&local, &minimum, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-  MPI_Allreduce(&local, &maximum, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-  EXPECT_EQ(minimum, maximum);
-  EXPECT_NE(result, flagcxSuccess);
-  ASSERT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+  EXPECT_EQ(result, injectFailure ? flagcxUnhandledDeviceError : flagcxSuccess);
+  if (injectFailure) {
+    EXPECT_NE(window->defaultBase, nullptr);
+    if (window->defaultBase != nullptr)
+      EXPECT_TRUE(window->defaultBase->mcLsaBound);
+  } else {
+    EXPECT_EQ(window->defaultBase, nullptr);
+  }
+  // Only a rank retaining resources retries the local deregistration.
+  result = window->defaultBase != nullptr
+               ? flagcxCommWindowDeregister(comm, window)
+               : flagcxSuccess;
+  ASSERT_TRUE(allRanksSucceeded(result));
+  EXPECT_EQ(window->defaultBase, nullptr);
 }
