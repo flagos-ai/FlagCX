@@ -57,7 +57,9 @@ docker_volumes.each { |volume| validate_argument.call(volume, "docker_volumes") 
 
 docker_args = docker_options + docker_volumes.map { |volume| "--volume=#{volume}" }
 container_options = docker_options.reject do |option|
-  option.match?(/\A--entrypoint(?:=|\s|\z)/)
+  # GitHub Actions creates a user-defined network for job containers. Passing
+  # --network=host as well makes Docker reject the container before startup.
+  option.match?(/\A--(?:network|entrypoint)(?:=|\s|\z)/)
 end
 
 suites = config.fetch("unit_test_suites")

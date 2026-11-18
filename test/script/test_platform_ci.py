@@ -1193,6 +1193,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
         self.assertIn('"docker_args" => docker_args.join("\\n")', config_loader)
         self.assertIn("container_options", config_loader)
+        self.assertIn("--(?:network|entrypoint)", config_loader)
         for platform in ("cuda", "hygon", "iluvatar", "metax", "ppu", "ascend", "enflame"):
             config = (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
             self.assertIn("--network=host", config)
