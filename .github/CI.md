@@ -8,6 +8,8 @@ enabled platform. Renames include both their old and new paths.
 
 PR labels `platform:cuda`, `platform:hygon`, `platform:metax`, `platform:mthreads`, `platform:ppu`, and `platform:ascend`
 override path selection. Multiple platform labels select their union;
+`platform:musa` is an alias for `platform:mthreads`; `musa` also works in
+workflow dispatch selection and `/test musa` commands.
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
 
