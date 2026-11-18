@@ -409,6 +409,7 @@ protected:
     void add(const std::vector<at::Tensor> &tensors);
     void markSubmitted() noexcept { mayHaveSubmitted_ = true; }
     void finish();
+    void finishBaseCollective();
 
   private:
     flagcxBackend &backend_;

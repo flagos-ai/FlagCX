@@ -5,6 +5,10 @@
  ************************************************************************/
 #include "backend_flagcx.hpp"
 #include "utils_flagcx.hpp"
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+#include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"
+#include "torch_npu/csrc/core/npu/NPUGraphsUtils.h"
+#endif
 #include <algorithm>
 #include <c10/util/ScopeExit.h>
 #include <chrono>
@@ -981,6 +985,42 @@ void flagcxBackend::retainedTensorBatch::finish() {
   backend_.finishTensorBatch(batch_);
 }
 
+void flagcxBackend::retainedTensorBatch::finishBaseCollective() {
+#if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
+  const auto stream = c10_npu::getCurrentNPUStream(batch_->deviceId);
+  auto *allocator = c10_npu::NPUCachingAllocator::get();
+  char commName[128];
+  if (!backend_.coalescedStreamPinned_ && backend_.activeGroupCounter_ == 0 &&
+      stream.stream(false) == *reinterpret_cast<aclrtStream *>(batch_->stream) &&
+      c10_npu::currentStreamCaptureStatusMayInitCtx() ==
+          c10_npu::CaptureStatus::None &&
+      allocator->name() == "native" &&
+      flagcxCommGetHcclCommName(backend_.comm_, commName, sizeof(commName)) ==
+          flagcxSuccess) {
+    const auto deleter = allocator->raw_deleter();
+    const auto &storages = batch_->storages;
+    if (std::all_of(storages.begin(), storages.end(), [&](const auto &s) {
+          const auto &p = s.data_ptr();
+          return p.device().index() == batch_->deviceId && p.get() &&
+                 p.get() == p.get_context() && p.get_deleter() == deleter &&
+                 allocator->getBlockPtr(p) != nullptr;
+        })) {
+      // The collective and its Work event are already on this stream. Native
+      // eraseStream leaves the record intact for blocks allocated on another
+      // stream. Keep every strong reference until all registrations succeed.
+      for (const auto &s : storages) {
+        allocator->recordStream(s.data_ptr(), stream);
+        allocator->eraseStream(s.data_ptr(), stream);
+      }
+      finished_ = true;
+      backend_.discardTensorBatch(batch_);
+      return;
+    }
+  }
+#endif
+  finish();
+}
+
 void flagcxBackend::startCoalescing() {
   TORCH_CHECK(!pairCoalesce_.active && !heteroCoalesce_.active,
               "Nested coalescing is not supported for FlagCX P2P operations");
@@ -1329,7 +1369,7 @@ flagcxBackend::_allgather_base(at::Tensor &outputTensor,
       std::nullopt);
 
   work->event_->record(stream, deviceId_);
-  retained.finish();
+  retained.finishBaseCollective();
   work->deviceId_ = deviceId_;
   // Create a future to track the allgather operation
   std::vector<at::Device> devices{inputTensor.device()};
@@ -1885,7 +1925,7 @@ flagcxBackend::_reduce_scatter_base(at::Tensor &outputTensor,
   }
 
   work->event_->record(stream, deviceId_);
-  retained.finish();
+  retained.finishBaseCollective();
   work->deviceId_ = deviceId_;
   // Create a future to track the reducescatter operation
   std::vector<at::Device> devices{outputTensor.device()};
