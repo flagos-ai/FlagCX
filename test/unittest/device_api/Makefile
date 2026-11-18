@@ -181,7 +181,16 @@ ifeq ($(KERNEL_PLATFORM), ascend)
   CXXFLAGS += -DFLAGCX_TEST_NO_COOP_GROUPS -DFLAGCX_TEST_NO_PEER_POINTER \
               -DFLAGCX_TEST_NO_INTRA_BARRIER \
               -DFLAGCX_TEST_NO_REMOTE_READ \
-              -DFLAGCX_TEST_NO_ATOMIC_COMPLETION
+              -DFLAGCX_TEST_NO_ATOMIC_COMPLETION \
+              -DFLAGCX_TEST_NO_CROSS_RANK_COMM \
+              -DFLAGCX_ASCEND_PUTVALUE_LINE_STRIDE
+  # NO_CROSS_RANK_COMM skips S16-S18 outright: the measured peer-store
+  # fault freeze (ascend.sh) makes cross-rank rendezvous inoperable, and
+  # at world size 1 those cases degenerate to zero-iteration peer loops /
+  # self copies whose PASS would be a fake certification (MC952 review
+  # P1).  PUTVALUE_LINE_STRIDE keeps the S18 oracle aligned with the
+  # 910C kernel's 128-byte line-isolated slots if that gate is ever
+  # lifted; every other platform keeps the packed 8-byte default.
 endif
 
 MPI_TARGETS := $(IR_TARGETS) $(API_TARGETS)
