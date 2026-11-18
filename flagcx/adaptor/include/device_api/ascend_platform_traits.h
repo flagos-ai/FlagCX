@@ -788,23 +788,18 @@ struct PlatformTraits<AscendPlatform> {
     CoopAny(CoopAny const &) = default;
     FLAGCX_DEVICE_INLINE_DECORATOR
     explicit CoopAny(CoopBlock g)
-        : _rank(g.threadRank()), _size(g.size()),
-          _kind(SyncNone) {}
+        : _rank(g.threadRank()), _size(g.size()), _kind(SyncNone) {}
     template <int N>
-    FLAGCX_DEVICE_INLINE_DECORATOR
-    explicit CoopAny(CoopTile<N> g)
-        : _rank(g.threadRank()), _size(g.size()),
-          _kind(SyncNone) {
+    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopAny(CoopTile<N> g)
+        : _rank(g.threadRank()), _size(g.size()), _kind(SyncNone) {
       static_assert(N == 1, "Ascend has one logical lane");
     }
     FLAGCX_DEVICE_INLINE_DECORATOR
     explicit CoopAny(CoopTileSpan g)
-        : _rank(g.threadRank()), _size(g.size()),
-          _kind(SyncTrap) {}
+        : _rank(g.threadRank()), _size(g.size()), _kind(SyncTrap) {}
     FLAGCX_DEVICE_INLINE_DECORATOR
     explicit CoopAny(CoopLanes g)
-        : _rank(g.threadRank()), _size(g.size()),
-          _kind(SyncTrap) {}
+        : _rank(g.threadRank()), _size(g.size()), _kind(SyncTrap) {}
     FLAGCX_DEVICE_INLINE_DECORATOR
     int threadRank() const { return _rank; }
     FLAGCX_DEVICE_INLINE_DECORATOR

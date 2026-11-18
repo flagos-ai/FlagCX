@@ -402,8 +402,8 @@ flagcxDevPut(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -461,8 +461,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigInc(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -510,8 +510,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_RSigAdd(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -559,8 +559,8 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevPut_LCtrInc(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -611,8 +611,7 @@ flagcxDevPut_RSigInc_LCtrInc(
 
   bool shouldReturn;
   bool useP2P =
-      flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                shouldReturn);
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -664,8 +663,7 @@ flagcxDevPut_RSigAdd_LCtrInc(
 
   bool shouldReturn;
   bool useP2P =
-      flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                shouldReturn);
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -720,8 +718,8 @@ flagcxDevGet(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -768,8 +766,8 @@ flagcxDevPutValue(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(*comm, team, peer, teamKind,
-                                          shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -820,8 +818,8 @@ flagcxDevPutValue_RSigInc(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(
-      *comm, team, peer, teamKind, shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =
@@ -864,8 +862,8 @@ flagcxDevPutValue_RSigAdd(
   flagcxTeam team = flagcxMakeTeamFromKind(*comm, teamKind);
 
   bool shouldReturn;
-  bool useP2P = flagcxValidateAndDispatch(
-      *comm, team, peer, teamKind, shouldReturn);
+  bool useP2P =
+      flagcxValidateAndDispatch(*comm, team, peer, teamKind, shouldReturn);
   if (shouldReturn)
     return;
   auto peerPtr =

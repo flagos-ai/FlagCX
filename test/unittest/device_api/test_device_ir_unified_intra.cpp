@@ -375,8 +375,8 @@ int main(int argc, char *argv[]) {
 #endif
       constexpr size_t kPutValueStrideWords =
           kPutValueStrideBytes / sizeof(uint64_t);
-      FLAGCXCHECK(devHandle->deviceMemset(
-          recvBuff, 0, 6 * kPutValueStrideBytes, flagcxMemDevice, stream));
+      FLAGCXCHECK(devHandle->deviceMemset(recvBuff, 0, 6 * kPutValueStrideBytes,
+                                          flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->deviceMemset(devResults, 0, sizeof(int),
                                           flagcxMemDevice, stream));
       FLAGCXCHECK(devHandle->streamSynchronize(stream));
