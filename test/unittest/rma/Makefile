@@ -1,6 +1,11 @@
 include ../../make.inc
 
 MPIRUN ?= mpirun
+IPC_XML_DIR ?=
+IPC_TEST_CMD = $(MPI_TARGET)
+ifneq ($(strip $(IPC_XML_DIR)),)
+IPC_TEST_CMD = bash $(PROJECT_ROOT)/.github/scripts/ci/run_gtest_rank_xml.sh $(IPC_XML_DIR) $(MPI_TARGET)
+endif
 
 # Local include directory for RMA test fixtures
 LOCAL_INCLUDE := -I$(abspath include) \
@@ -38,7 +43,7 @@ NET_FILTER ?= *
 HETERO_ENV := -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 -x FLAGCX_VMM_ENABLE=$(RMA_VMM_ENABLE) $(RMA_PLATFORM_ENV)
 IPC_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=1 -x FLAGCX_P2P_DISABLE=0
 NET_ENV := $(HETERO_ENV) -x FLAGCX_IB_DISABLE=0 -x FLAGCX_P2P_DISABLE=1
-IPC_FILTER := RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals
+IPC_FILTER := RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals
 
 .PHONY: all clean run-unit run-mpi-ipc run-mpi-net run-mpi run \
 	gdr-visibility-obj
@@ -90,7 +95,7 @@ run-unit: $(UNIT_TARGET)
 	@$(UNIT_TARGET)
 
 run-mpi-ipc: $(MPI_TARGET)
-	@$(MPIRUN) --allow-run-as-root -np 2 $(IPC_ENV) $(MPI_TARGET) --gtest_filter=$(IPC_FILTER)
+	@$(MPIRUN) --allow-run-as-root -np 2 $(IPC_ENV) $(IPC_TEST_CMD) --gtest_filter=$(IPC_FILTER)
 
 run-mpi-net: $(MPI_TARGET)
 	@$(MPIRUN) --allow-run-as-root -np 2 $(NET_ENV) -x GTEST_FILTER=$(NET_FILTER) $(MPI_TARGET)

@@ -5,11 +5,19 @@
 #ifdef USE_ENFLAME_ADAPTOR
 
 #include "eccl.h"
+#include "eccl_device.h"
 #include "flagcx.h"
 #include <map>
 #include <tops/tops_runtime.h>
 
-struct flagcxInnerDevComm {};
+struct flagcxInnerDevComm {
+  ecclDevComm_t base;
+};
+
+struct flagcxInnerWindow {
+  ecclWindow_t base;
+  int winFlags;
+};
 
 struct flagcxInnerComm {
   ecclComm_t base;

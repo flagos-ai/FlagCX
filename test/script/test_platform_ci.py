@@ -1538,6 +1538,10 @@ MPI_RUNNER=/mpi-runner
 RMA_PLATFORM_ENV="-x EXISTING_SETTING=kept"
 run_test() { "$@"; }
 flagcx_ci_require_rdma() { return 0; }
+# This harness checks suite orchestration; the required-case XML checker has
+# its own tests and cannot read reports from this simulated MPI runner.
+mktemp() { printf '/tmp/flagcx-rma-pr2-fixture\n'; }
+python3() { return 0; }
 make() {
   printf 'make %s\n' "$*"
   if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
@@ -1604,14 +1608,21 @@ run_suite
         rma_ipc_test = (
             REPO_ROOT / "test/unittest/rma/coll_rma_get_async.cpp"
         ).read_text()
-        self.assertIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
-        self.assertIn("gateResult == flagcxNotSupported", rma_ipc_test)
-        self.assertNotIn("op == flagcxNotSupported", rma_ipc_test)
+        self.assertNotIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
+        self.assertNotIn("CoreX streamWaitValue64 is unsupported", rma_ipc_test)
+        self.assertIn("collectiveFailed(gateResult)", rma_ipc_test)
+        self.assertIn("--case DeviceAdaptorTest.StreamWaitWriteValue64", unit_runner)
+        self.assertIn("--case DeviceAdaptorTest.HostRegisterUnregister", unit_runner)
+        self.assertNotIn("--case NetAdaptorLoopback.RegisterDmaBufMr", unit_runner)
         self.assertIn(
-            "CoreX streamWaitValue64 is unsupported", rma_ipc_test
+            "adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr",
+            unit_runner,
         )
         iluvatar_config = (REPO_ROOT / ".github/configs/iluvatar.yml").read_text()
         self.assertIn("vmm-local-and-remote-without-net", iluvatar_config)
+        self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
+        self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
+        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
         )
@@ -2330,7 +2341,7 @@ run_suite
         self.assertIn('std::getenv("FLAGCX_IB_DISABLE")', rma_fixture)
         self.assertIn('std::getenv("FLAGCX_P2P_DISABLE")', rma_fixture)
         self.assertIn("RmaTest.GetAsyncOffsets", rma_makefile)
-        self.assertIn("RmaTest.IpcGetCounterFollowsCopy", rma_makefile)
+        self.assertIn("RmaTest.IpcGetSameStreamCompletion", rma_makefile)
         self.assertIn("run-mpi-ipc", rma_makefile)
         self.assertIn("run-mpi-net", rma_makefile)
 
