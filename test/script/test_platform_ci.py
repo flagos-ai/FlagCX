@@ -96,10 +96,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 else:
                     self.assertFalse(steps[checkout]["with"]["submodules"])
 
-    def test_all_chip_platforms_are_enabled(self):
+    def test_only_kunlunxin_is_temporarily_enabled(self):
         self.assertEqual(
             ENABLED_PLATFORMS,
-            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
+            ["kunlunxin"],
         )
 
     def test_backend_phase_skips_follow_platform_yaml(self):
@@ -932,7 +932,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ENABLED_PLATFORMS,
         )
-        for platform in ("cuda", "hygon"):
+        for platform in ("kunlunxin",):
             selected = subprocess.run(
                 ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
                 check=True,

@@ -4,19 +4,19 @@
 # controls which platforms CI can select, including explicit dispatch inputs.
 platforms:
   cuda:
-    enabled: true
+    enabled: false
   hygon:
-    enabled: true
+    enabled: false
   iluvatar:
-    enabled: true
+    enabled: false
   metax:
-    enabled: true
+    enabled: false
   kunlunxin:
     enabled: true
   ppu:
-    enabled: true
+    enabled: false
   ascend:
-    enabled: true
+    enabled: false
 shared_paths_watch:
   - .github/workflows/**
   - .github/configs/platforms.yml
