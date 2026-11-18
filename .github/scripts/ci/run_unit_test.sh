@@ -300,8 +300,14 @@ run_device_api_unified_ir() {
 
   # Keep P2P enabled so the intra test covers signal/counter buffers and their
   # shadows. The INTER team below crosses the two logical nodes through NET.
+  # UNIFIED_IR_NP, when a platform set_env exports it, overrides the rank
+  # count for BOTH entries of the unified suite - this runner line and the
+  # Makefile recipe - so the two can never disagree (MC952 review P1:
+  # only the Makefile consumed the knob and CI kept running four ranks).
+  # Platforms that do not export it keep the historical
+  # $FLAGCX_CI_INTRA_NP invocation byte for byte.
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
+    "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
 
   # The inter steps exercise the one-sided NET transport across two logical
@@ -326,7 +332,7 @@ run_device_api_unified_ir() {
   # fallback follows the same INTER gate as above.
   if [[ "${FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA:-1}" == 1 ]]; then
     FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
-      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
+      "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root \
       "${intra_fallback_env[@]}" \
       build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
   fi

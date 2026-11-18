@@ -58,10 +58,18 @@ FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA=0
 # ACL_RT_IPC_MEM_IMPORT_FLAG_ENABLE_PEER_ACCESS set (bounded-wait probe:
 # the wait never runs; AICore idle while the stream stays active; the
 # import itself returns no error), so device-side cross-rank rendezvous
-# is NOT a supported capability on this backend.  The unified intra suite
-# therefore runs at world size 1, where every case is graded for real
-# (30/30 runs, line-split putValue contract); multi-rank device semantics
-# are deferred to an MTE/SSLL-based transport, tracked as follow-up.
+# is NOT a supported capability on this backend.  Support policy
+# (MC952 review P1): the cross-rank cases S16-S18 are capability-gated to
+# SKIP at compile time (FLAGCX_TEST_NO_CROSS_RANK_COMM in the ascend block
+# of test/unittest/device_api/Makefile) - a world-size-1 barrier iterates
+# over zero peers and a world-size-1 put resolves to self, so PASS there
+# would fake a certification this hardware cannot give.  UNIFIED_IR_NP=1
+# (now honored by BOTH the runner and the Makefile recipe) runs the suite
+# end-to-end as launch/init + skip-contract smoke: every cross-rank,
+# remote-read and atomic case reports SKIP, and the final verdict says
+# "NO CASES GRADED" instead of an empty ALL PASS.  The four-rank
+# communication certification target stays open and needs a working peer
+# transport (MTE/SSLL track), tracked as follow-up outside this PR.
 UNIFIED_IR_NP=1
 export UNIFIED_IR_NP
 
