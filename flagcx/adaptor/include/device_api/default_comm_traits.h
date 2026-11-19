@@ -1756,11 +1756,15 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
         _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
         _stride(dc.intraSize), _localRank(dc.intraRank) {
     DefaultNetProviderPolicy<P>::initBarrier(*this, net.context());
+#ifdef USE_ILUVATAR_ADAPTOR
+    assert(index < FLAGCX_DEVICE_CTA_COUNT);
+#else
     if (!dc.require(index < FLAGCX_DEVICE_CTA_COUNT,
                     flagcxInvalidArgument)) {
       _nTeamRanks = 0;
       _fifoBuffer = nullptr;
     }
+#endif
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR DefaultNetContext context() const {
@@ -1775,11 +1779,18 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
               typename PlatformTraits<P>::CoopThread, flagcxDevNet_None,
               flagcxDeviceScope_t, flagcxDeviceScope_t) const {
     int targetRank = peer * _stride + _localRank;
+#ifdef USE_ILUVATAR_ADAPTOR
+    if (ProxyProvider::enqueueSignal(_fifoBuffer, _contextId, _signalCount, 0,
+                                     (int)action.signal, 1, targetRank,
+                                     0) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
+#else
     const flagcxResult_t status = ProxyProvider::enqueueSignal(
         _fifoBuffer, _contextId, _signalCount, 0,
         (int)action.signal, 1, targetRank, 0);
     if (_errorComm != nullptr)
       _errorComm->require(status == flagcxSuccess, status);
+#endif
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -1789,20 +1800,33 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
     int absIdx = _contextId * _signalCount + (int)signalId;
     ProxyProvider::waitSignalValue(_fifoBuffer, _signalBuffer, absIdx,
                                    expected);
+#ifdef USE_ILUVATAR_ADAPTOR
+    if (_fifoBuffer != nullptr &&
+        ProxyProvider::fifoTerminalStatus(
+            static_cast<uint64_t *>(_fifoBuffer)) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
+#else
     if (_fifoBuffer != nullptr && _errorComm != nullptr) {
       const flagcxResult_t status = ProxyProvider::fifoTerminalStatus(
           static_cast<uint64_t *>(_fifoBuffer));
       _errorComm->require(status == flagcxSuccess, status);
     }
+#endif
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   proxyFlush(typename PlatformTraits<P>::CoopThread,
              flagcxDeviceMemoryOrder_t) const {
+#ifdef USE_ILUVATAR_ADAPTOR
+    if (_fifoBuffer != nullptr &&
+        ProxyProvider::fifoFlush(_fifoBuffer) != flagcxSuccess)
+      FLAGCX_DEVICE_TRAP();
+#else
     if (_fifoBuffer != nullptr && _errorComm != nullptr) {
       const flagcxResult_t status = ProxyProvider::fifoFlush(_fifoBuffer);
       _errorComm->require(status == flagcxSuccess, status);
     }
+#endif
   }
 
   // Internal phases for sync(). The fence is passed to both phases in the
@@ -1886,18 +1910,28 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+#ifdef USE_ILUVATAR_ADAPTOR
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
+#else
     if (_errorComm != nullptr && !_errorComm->require(
             fence == flagcxDevNetFenceLevel::Relaxed, flagcxNotSupported))
       return;
+#endif
     arriveImpl(order, fence);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+#ifdef USE_ILUVATAR_ADAPTOR
+    if (fence != flagcxDevNetFenceLevel::Relaxed)
+      FLAGCX_DEVICE_TRAP();
+#else
     if (_errorComm != nullptr && !_errorComm->require(
             fence == flagcxDevNetFenceLevel::Relaxed, flagcxNotSupported))
       return;
+#endif
     waitImpl(order, fence);
   }
 
@@ -1905,6 +1939,13 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
+#ifdef USE_ILUVATAR_ADAPTOR
+    if (!flagcxDevNetFenceValid(fence))
+      FLAGCX_DEVICE_TRAP();
+    if (context().provider == DefaultNetProviderGda &&
+        !DefaultNetGdaProvider<P>::supportsBarrierFence(context(), fence))
+      FLAGCX_DEVICE_TRAP();
+#else
     if (_errorComm != nullptr && !_errorComm->require(
             flagcxDevNetFenceValid(fence), flagcxInvalidArgument))
       return;
@@ -1912,6 +1953,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
     if (context().provider == DefaultNetProviderGda &&
         !DefaultNetGdaProvider<P>::supportsBarrierFence(context(), fence))
       FLAGCX_DEVICE_TRAP();
+#endif
 #endif
     arriveImpl(order, fence);
     waitImpl(order, fence);
