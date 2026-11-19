@@ -67,6 +67,9 @@ typedef struct flagcxDevCommRequirements {
 extern "C" {
 #endif
 
+// Requirements are evaluated when this DevComm is created. Each successful
+// create receives the next communicator-local ID; destroy active DevComms in
+// reverse creation order so IDs can be reused without collision.
 // Binary-compatible entry point retained for existing applications.
 flagcxResult_t flagcxDevCommCreate(flagcxComm_t comm,
                                    const struct flagcxDevCommRequirements *reqs,
@@ -82,8 +85,12 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
 
 flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 
+// Local view construction; cross-rank Window resources must already have
+// been registered by flagcxCommWindowRegister or an internal preparation step.
 flagcxResult_t flagcxDevMemCreate(flagcxComm_t comm, void *buff, size_t size,
                                   flagcxWindow_t win, flagcxDevMem_t *devMem);
+// A non-null view must be destroyed with the communicator that created it.
+// A null view remains a successful no-op, including when comm is null.
 flagcxResult_t flagcxDevMemDestroy(flagcxComm_t comm, flagcxDevMem_t devMem);
 
 flagcxResult_t flagcxDevCommGetDevicePtr(flagcxDevComm_t devComm,

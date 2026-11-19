@@ -86,7 +86,7 @@ static flagcxResult_t ncclDevApiMemCreate(flagcxComm_t comm, void *buff,
 
   if (win != nullptr && !win->isSymmetricDefault && win->vendorBase) {
     devMem->hasWindow = true;
-    devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_COLL_SYMMETRIC) != 0;
+    devMem->isSymmetric = (win->winFlags & FLAGCX_WIN_SYMMETRIC) != 0;
     devMem->winHandle = (void *)win;
   }
 
@@ -284,6 +284,7 @@ static struct flagcxDevApiBackend ncclBackend = {
     .devMemFreeDevicePtr = ncclDevApiMemFreeDevicePtr,
     .commQuiesce = ncclCommCleanup,
     .commCleanup = ncclCommCleanup,
+    .kind = flagcxDevApiVendor,
 };
 
 struct flagcxDevApiBackend *devApiBackend = &ncclBackend;

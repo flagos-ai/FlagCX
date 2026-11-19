@@ -162,7 +162,7 @@ class PpuCiRegressionTest(unittest.TestCase):
             "SymMemTest.DirectGdrVmmPreservesMrRoute", unit_runner
         )
         self.assertIn(
-            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            "SymMemTest.CrossNodeLocalCleanupFailureRetries",
             unit_runner,
         )
         self.assertIn(

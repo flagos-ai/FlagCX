@@ -30,9 +30,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
         self.assertNotIn("mpirun -np 8", perf_workflow)
         self.assertNotIn("-n 8", device_makefile)
-        self.assertNotIn("-n 4 $(HETERO_ENV)", device_makefile)
+        self.assertNotIn("-n 4 $(INTER_ENV)", device_makefile)
         self.assertIn("--nproc_per_node 4", torch_script)
-        self.assertIn("-n 2 $(HETERO_ENV)", device_makefile)
+        self.assertIn("-n 2 $(INTER_ENV)", device_makefile)
 
     def test_device_kernel_sources_use_the_selected_platform(self):
         for platform, adaptor in (
@@ -1219,7 +1219,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot",
+            "SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot",
             unit_runner,
         )
         self.assertIn(
@@ -1243,7 +1243,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            "SymMemTest.CrossNodeLocalCleanupFailureRetries",
             unit_runner,
         )
         self.assertIn(
@@ -1281,6 +1281,10 @@ MPI_RUNNER=/mpi-runner
 RMA_PLATFORM_ENV="-x EXISTING_SETTING=kept"
 run_test() { "$@"; }
 flagcx_ci_require_rdma() { return 0; }
+# This harness checks suite orchestration; the required-case XML checker has
+# its own tests and cannot read reports from this simulated MPI runner.
+mktemp() { printf '/tmp/flagcx-rma-pr2-fixture\n'; }
+python3() { return 0; }
 make() {
   printf 'make %s\n' "$*"
   if [[ "${FLAGCX_CI_MPI_LABEL:-}" == "rma GDR visibility ordinary" ]]; then
@@ -1347,12 +1351,18 @@ run_suite
         rma_ipc_test = (
             REPO_ROOT / "test/unittest/rma/coll_rma_get_async.cpp"
         ).read_text()
-        self.assertIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
-        self.assertIn("gateResult == flagcxNotSupported", rma_ipc_test)
-        self.assertNotIn("op == flagcxNotSupported", rma_ipc_test)
+        self.assertNotIn("#if defined(USE_ILUVATAR_ADAPTOR)", rma_ipc_test)
+        self.assertNotIn("CoreX streamWaitValue64 is unsupported", rma_ipc_test)
+        self.assertIn("collectiveFailed(gateResult)", rma_ipc_test)
+        self.assertIn("--case DeviceAdaptorTest.StreamWaitWriteValue64", unit_runner)
+        self.assertIn("--case DeviceAdaptorTest.HostRegisterUnregister", unit_runner)
+        self.assertNotIn("--case NetAdaptorLoopback.RegisterDmaBufMr", unit_runner)
         self.assertIn(
-            "CoreX streamWaitValue64 is unsupported", rma_ipc_test
+            "adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr",
+            unit_runner,
         )
+        self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
+        self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
@@ -2072,7 +2082,7 @@ run_suite
         self.assertIn('std::getenv("FLAGCX_IB_DISABLE")', rma_fixture)
         self.assertIn('std::getenv("FLAGCX_P2P_DISABLE")', rma_fixture)
         self.assertIn("RmaTest.GetAsyncOffsets", rma_makefile)
-        self.assertIn("RmaTest.IpcGetCounterFollowsCopy", rma_makefile)
+        self.assertIn("RmaTest.IpcGetSameStreamCompletion", rma_makefile)
         self.assertIn("run-mpi-ipc", rma_makefile)
         self.assertIn("run-mpi-net", rma_makefile)
 
@@ -2248,6 +2258,9 @@ run_suite
         ]
         self.assertIn("FLAGCX_KERNEL_PROXY_PARALLELISM=4", device_api_case)
         self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", device_api_case)
+        self.assertIn("-R 2", device_api_case)
+        self.assertIn("FLAGCX_TEST_WIN_MODE=asymmetric", device_api_case)
+        self.assertIn("FLAGCX_VMM_ENABLE=0", device_api_case)
         cuda_kernel = (
             REPO_ROOT / "test/kernel/nvidia/device_api.cu"
         ).read_text()

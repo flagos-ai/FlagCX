@@ -336,8 +336,11 @@ typedef struct {
   const void *ipcInputBase;
   void *ipcOutputBase;
   size_t ipcDataBytes;
+  // Borrowed Comm-owned exporter storage, including retained create failures.
+  // Persistent-state cleanup closes views; CommDestroy releases allocations.
   void *ipcReadyBuffer;
   size_t ipcReadyCapacity;
+  bool ipcReadyCleanupPending = false;
   size_t ipcReadySlots;
   uint64_t ipcEpoch;
   uint64_t *ipcParentFlagsDevice;
@@ -354,6 +357,7 @@ typedef struct {
   flagcxDataType_t ipcRingDatatype;
   flagcxRedOp_t ipcRingRedOp;
   bool ipcRingResourcesDirty;
+  bool ipcRingCleanupPending = false;
 
   flagcxRingStepTrigger *ipcRingTriggersDevice;
   size_t ipcRingTriggerCount;
@@ -489,6 +493,14 @@ flagcxResult_t populateUniRunnerStaticRingDag(
     flagcxRingStepTrigger *triggers, size_t triggerCapacity,
     flagcxRingLaneDesc *lanes, size_t laneCapacity);
 
+// Collective internal preparation; failed bindings must finish cleanup before
+// reuse.
+flagcxResult_t
+ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
+                                flagcxComm_t comm, size_t channels,
+                                size_t bytes);
+flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
+                                              flagcxComm_t comm, size_t slots);
 flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState);

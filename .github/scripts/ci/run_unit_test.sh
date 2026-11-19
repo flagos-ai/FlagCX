@@ -201,6 +201,7 @@ run_device_api() {
     -x FLAGCX_USE_HETERO_COMM=1
     -x FLAGCX_MEM_ENABLE=1
     -x FLAGCX_VMM_ENABLE=0
+    -x FLAGCX_TEST_WIN_MODE=asymmetric
     -x FLAGCX_P2P_DISABLE=1
     -x FLAGCX_KERNEL_PROXY_PARALLELISM=4
     -x FLAGCX_IB_QPS_PER_CONNECTION=2
@@ -209,7 +210,7 @@ run_device_api() {
   if declare -p FLAGCX_CI_DEVICE_API_MPI_ARGS >/dev/null 2>&1; then
     common_env+=("${FLAGCX_CI_DEVICE_API_MPI_ARGS[@]}")
   fi
-  local -a flags=(-b 1M -e 4M -f 2 -R 1)
+  local -a flags=(-b 1M -e 4M -f 2 -R 2)
 
   declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1 || {
     echo "The platform set_env script must define FLAGCX_CI_NODE1_MPI_ARGS" >&2
@@ -349,11 +350,23 @@ run_suite() {
       local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
       local platform_name
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      local adaptor_gtest_filter=${GTEST_FILTER:-*}
+      if [[ "$platform_name" == iluvatar ]]; then
+        # This CoreX runner cannot export a DMA-BUF FD and mlx5_0 reports
+        # EOPNOTSUPP for ibv_reg_dmabuf_mr. Keep the test available for other
+        # platforms while excluding it from Iluvatar hardware CI.
+        if [[ "$adaptor_gtest_filter" == *-* ]]; then
+          adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr
+        else
+          adaptor_gtest_filter+=-NetAdaptorLoopback.RegisterDmaBufMr
+        fi
+      fi
       rm -f "$gpu_result_xml"
       # Build more than one RC QP in every RDMA adaptor job. The current
       # one-sided API intentionally stays on one ordered QP until the transport
       # layer can express QP selection together with ordering boundaries.
       FLAGCX_IB_QPS_PER_CONNECTION=2 \
+        GTEST_FILTER="$adaptor_gtest_filter" \
         GTEST_OUTPUT="xml:$gpu_result_xml" \
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
@@ -361,6 +374,12 @@ run_suite() {
       if ((unit_status == 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
+      fi
+      if ((unit_status == 0)) && [[ "$platform_name" == iluvatar ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case DeviceAdaptorTest.StreamWaitWriteValue64 \
+          --case DeviceAdaptorTest.HostRegisterUnregister \
+          "$gpu_result_xml" || unit_status=$?
       fi
 
       if ((FLAGCX_CI_ENABLE_IBUC != 0)); then
@@ -542,6 +561,11 @@ run_suite() {
       local ipc_status=0
       local network_status=0
       local visibility_status=0
+      local rma_platform_name ipc_xml_dir=""
+      rma_platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$rma_platform_name" == iluvatar ]]; then
+        ipc_xml_dir=$(mktemp -d "$suite_dir/build/rma-pr2.XXXXXX")
+      fi
       FLAGCX_CI_TEST_LABEL="rma unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
       # Keep these as separate invocations so each transport has its own
@@ -550,7 +574,14 @@ run_suite() {
       FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
         make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
         MPIRUN="$MPI_RUNNER" \
-        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetCounterFollowsCopy:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+        IPC_XML_DIR="$ipc_xml_dir" \
+        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+      if ((ipc_status == 0)) && [[ "$rma_platform_name" == iluvatar ]]; then
+        python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+          --case RmaTest.GetAsyncOffsets \
+          --case RmaTest.IpcGetSameStreamCompletion \
+          "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
+      fi
       if flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
@@ -567,9 +598,9 @@ run_suite() {
         base_rma_platform_env="${RMA_PLATFORM_ENV:-}"
         case "$platform_name" in
           iluvatar)
-            # IXCUDA currently declares WRITE-only flush requirements. Keep
-            # the READ consumer data check and verify that the public WRITE
-            # wait rejects the unimplemented stream wait-value operation.
+            # IXCUDA now has a local stream wait but has not established the
+            # stronger remote-payload acquire guarantee. Keep the READ data
+            # check and require the public WRITE wait to reject that request.
             expected_read_required=0
             expected_write_required=1
             expected_write=unsupported
@@ -910,7 +941,7 @@ run_suite() {
         -x LD_LIBRARY_PATH
       )
       local symmem_bin="$PROJECT_ROOT/test/unittest/symmem/build/bin/symmem_mpi_tests"
-      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease:SymMemTest.CrossNodeMixedVmmAndOrdinarySkipsLegacyIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmConvergesMrFailure:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
+      local symmem_filter="--gtest_filter=SymMemTest.HybridLocalAndRemoteAccess:SymMemTest.RankLocalStatusFailureConvergesDeterministically:SymMemTest.FullMeshRoundFailureConvergesAndRetries:SymMemTest.RankLocalMrFailureDoesNotPublishPartialWindow:SymMemTest.MrRollbackFailureRetainsWindowLeaseUntilRetry:SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot:SymMemTest.PublicRegistrationUsesVmmMrRouting:SymMemTest.VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.SegmentedMapFailureDoesNotPublishNetworkOnlyWindow:SymMemTest.DirectGdrVmmPreservesMrRoute:SymMemTest.VmmRollbackFailureConvergesBeforeMrMetadataExchange:SymMemTest.CrossNodeLocalCleanupFailureRetries:SymMemTest.CrossNodeMixedVmmRejectsSymmetricAndRetriesIpc:SymMemTest.CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm:SymMemTest.SignalRegistrationUsesAllocationProvenance:SymMemTest.RankLocalSignalMrFailurePreservesErrorAndRetries:SymMemTest.RepeatedRegisterDeregister:SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset:SymMemTest.DuplicateWindowsShareMrUntilLastDeregister:SymMemTest.CommDestroyReleasesLiveWindow"
 
       if ((symmem_run_vmm_local != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem remote without NET" \

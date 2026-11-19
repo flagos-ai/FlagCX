@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include <cstdint>
+#include <unistd.h>
 
 std::map<flagcxMemcpyType_t, cudaMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, cudaMemcpyHostToDevice},
@@ -411,24 +413,134 @@ flagcxResult_t ixcudaAdaptorCanAccessPeer(int srcDev, int dstDev,
   return flagcxSuccess;
 }
 
-flagcxResult_t ixcudaAdaptorStreamWaitValue64(flagcxStream_t, void *, uint64_t,
-                                              int) {
-  return flagcxNotSupported;
+flagcxResult_t ixcudaAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
+                                              uint64_t value, int flags) {
+  if (stream == NULL || addr == NULL ||
+      (reinterpret_cast<uintptr_t>(addr) & (alignof(uint64_t) - 1)) != 0 ||
+      (flags & ~FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES) != 0)
+    return flagcxInvalidArgument;
+
+  // CoreX has not passed the remote-payload visibility test. A working local
+  // wait does not establish the stronger acquire guarantee.
+  if (flags & FLAGCX_STREAM_WAIT_VALUE_FLUSH_REMOTE_WRITES)
+    return flagcxNotSupported;
+
+  CUresult result =
+      cuStreamWaitValue64((CUstream)stream->base, (CUdeviceptr)addr, value,
+                          CU_STREAM_WAIT_VALUE_GEQ);
+  if (result == CUDA_SUCCESS)
+    return flagcxSuccess;
+  return result == CUDA_ERROR_NOT_SUPPORTED ? flagcxNotSupported
+                                            : flagcxUnhandledDeviceError;
 }
-flagcxResult_t ixcudaAdaptorStreamWriteValue64(flagcxStream_t, void *, uint64_t,
-                                               int) {
-  return flagcxNotSupported;
+
+flagcxResult_t ixcudaAdaptorStreamWriteValue64(flagcxStream_t stream,
+                                               void *addr, uint64_t value,
+                                               int flags) {
+  if (stream == NULL || addr == NULL || flags != 0 ||
+      (reinterpret_cast<uintptr_t>(addr) & (alignof(uint64_t) - 1)) != 0)
+    return flagcxInvalidArgument;
+  CUresult result =
+      cuStreamWriteValue64((CUstream)stream->base, (CUdeviceptr)addr, value,
+                           CU_STREAM_WRITE_VALUE_DEFAULT);
+  if (result == CUDA_SUCCESS)
+    return flagcxSuccess;
+  return result == CUDA_ERROR_NOT_SUPPORTED ? flagcxNotSupported
+                                            : flagcxUnhandledDeviceError;
 }
 flagcxResult_t ixcudaAdaptorEventElapsedTime(float *, flagcxEvent_t,
                                              flagcxEvent_t) {
   return flagcxNotSupported;
 }
 
-flagcxResult_t ixcudaAdaptorHostRegister(void *, size_t) {
-  return flagcxNotSupported;
+flagcxResult_t ixcudaAdaptorHostRegister(void *ptr, size_t size) {
+  if (ptr == NULL || size == 0)
+    return flagcxInvalidArgument;
+  DEVCHECK(cudaHostRegister(ptr, size, cudaHostRegisterMapped));
+  return flagcxSuccess;
 }
-flagcxResult_t ixcudaAdaptorHostUnregister(void *) {
+flagcxResult_t ixcudaAdaptorHostUnregister(void *ptr) {
+  if (ptr == NULL)
+    return flagcxInvalidArgument;
+  DEVCHECK(cudaHostUnregister(ptr));
+  return flagcxSuccess;
+}
+
+flagcxResult_t ixcudaAdaptorDmaSupport(bool *supported) {
+  if (supported == NULL)
+    return flagcxInvalidArgument;
+  *supported = false;
+#if CUDA_VERSION >= 11070
+  int runtimeDevice = -1;
+  if (cudaGetDevice(&runtimeDevice) != cudaSuccess)
+    return flagcxUnhandledDeviceError;
+  CUdevice device;
+  CUresult result = cuDeviceGet(&device, runtimeDevice);
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  int attribute = 0;
+  result = cuDeviceGetAttribute(&attribute,
+                                CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED, device);
+  if (result == CUDA_ERROR_NOT_SUPPORTED || result == CUDA_ERROR_INVALID_VALUE)
+    return flagcxSuccess;
+  if (result != CUDA_SUCCESS)
+    return flagcxUnhandledDeviceError;
+  *supported = attribute != 0;
+#endif
+  return flagcxSuccess;
+}
+
+flagcxResult_t ixcudaAdaptorGetHandleForAddressRange(void *handleOut,
+                                                     void *buffer, size_t size,
+                                                     unsigned long long flags) {
+  if (handleOut == NULL || buffer == NULL || size == 0 || flags != 0)
+    return flagcxInvalidArgument;
+  *static_cast<int *>(handleOut) = -1;
+  if (size > UINTPTR_MAX - reinterpret_cast<uintptr_t>(buffer))
+    return flagcxInvalidArgument;
+  const long pageSize = sysconf(_SC_PAGESIZE);
+  if (pageSize <= 0)
+    return flagcxSystemError;
+  if (reinterpret_cast<uintptr_t>(buffer) % (size_t)pageSize != 0 ||
+      size % (size_t)pageSize != 0)
+    return flagcxInvalidArgument;
+#if CUDA_VERSION >= 11070
+  cudaPointerAttributes attrs = {};
+  cudaError_t pointerError = cudaPointerGetAttributes(&attrs, buffer);
+  if (pointerError != cudaSuccess) {
+    cudaGetLastError();
+    return pointerError == cudaErrorInvalidValue ? flagcxInvalidArgument
+                                                 : flagcxUnhandledDeviceError;
+  }
+#if CUDART_VERSION >= 10000
+  if (attrs.type != cudaMemoryTypeDevice)
+#else
+  if (attrs.memoryType != cudaMemoryTypeDevice)
+#endif
+    return flagcxInvalidArgument;
+  int fd = -1;
+  CUresult result =
+      cuMemGetHandleForAddressRange(&fd, (CUdeviceptr)buffer, size,
+                                    CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, flags);
+  if (result == CUDA_SUCCESS && fd >= 0) {
+    *static_cast<int *>(handleOut) = fd;
+    return flagcxSuccess;
+  }
+  if (fd >= 0)
+    (void)close(fd);
+  if (result == CUDA_ERROR_NOT_SUPPORTED ||
+      result == CUDA_ERROR_INVALID_VALUE) {
+    INFO(FLAGCX_REG,
+         "IXCUDA DMA-BUF export unavailable: ptr=%p size=%zu result=%d", buffer,
+         size, static_cast<int>(result));
+    return flagcxNotSupported;
+  }
+  WARN("IXCUDA DMA-BUF export failed: ptr=%p size=%zu result=%d", buffer, size,
+       static_cast<int>(result));
+  return flagcxUnhandledDeviceError;
+#else
   return flagcxNotSupported;
+#endif
 }
 
 // Symmetric memory VMM stubs (not supported)
@@ -560,9 +672,7 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorLaunchHostFunc,
 
       // DMA buffer
-      NULL, // flagcxResult_t (*dmaSupport)(bool *dmaBufferSupport);
-      NULL, // flagcxResult_t (*memGetHandleForAddressRange)(void *handleOut,
-            // void *buffer, size_t size, unsigned long long flags);
+      ixcudaAdaptorDmaSupport, ixcudaAdaptorGetHandleForAddressRange,
       ixcudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ixcudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
