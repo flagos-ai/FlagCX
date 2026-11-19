@@ -140,7 +140,8 @@ flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
                                                flagcxInnerWindow_t win) {
   flagcxResult_t res = flagcxSuccess;
   res = (flagcxResult_t)mcclCommWindowDeregister(comm->base, win->base);
-  free(win);
+  if (res == flagcxSuccess)
+    free(win);
   return res;
 }
 #else  // MCCL_VERSION_CODE < MCCL_VERSION(2, 30, 4)

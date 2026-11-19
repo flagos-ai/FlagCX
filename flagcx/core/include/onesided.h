@@ -65,14 +65,12 @@ flagcxResult_t flagcxOneSideDeregisterInternal(flagcxHeteroComm_t comm,
 // knows the memory provenance even when the buffer is not in the public
 // flagcxMemAlloc registry. The public API keeps its existing signature and
 // treats untracked external CUDA allocations as the legacy ordinary-VA path.
-flagcxResult_t flagcxOneSideSignalRegisterInternal(const flagcxComm_t comm,
-                                                   void *buff, size_t size,
-                                                   int ptrType,
-                                                   bool isVmmAllocation);
+flagcxResult_t flagcxOneSideSignalRegisterInternal(
+    const flagcxComm_t comm, void *buff, size_t size, int ptrType,
+    bool isVmmAllocation, flagcxResult_t *ipcCleanupStatus = nullptr);
 
 // Build IPC peer pointer table for a user buffer (intra-node D2D bypass).
-// Stores results in comm->ipcTable and returns the table index.
-// Returns -1 on failure (IPC not available for this buffer).
+// Retains partial mappings in comm->ipcTable when rollback fails.
 struct flagcxComm;
 // Resolve the allocation exported by an IPC handle and the offset of the user
 // buffer within it. Backends without allocation-range introspection retain the
@@ -85,6 +83,8 @@ flagcxResult_t flagcxResolveIpcPeerAddress(void *importedBase,
                                            size_t allocationSize,
                                            size_t userOffset, size_t userSize,
                                            void **peerPtr);
-int buildIpcPeerPointers(struct flagcxComm *comm, void *buff, size_t size);
+struct flagcxIpcBuildResult;
+flagcxIpcBuildResult buildIpcPeerPointers(struct flagcxComm *comm, void *buff,
+                                          size_t size);
 
 #endif // FLAGCX_ONESIDED_H_

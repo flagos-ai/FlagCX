@@ -30,9 +30,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
         self.assertNotIn("mpirun -np 8", perf_workflow)
         self.assertNotIn("-n 8", device_makefile)
-        self.assertNotIn("-n 4 $(HETERO_ENV)", device_makefile)
+        self.assertNotIn("-n 4 $(INTER_ENV)", device_makefile)
         self.assertIn("--nproc_per_node 4", torch_script)
-        self.assertIn("-n 2 $(HETERO_ENV)", device_makefile)
+        self.assertIn("-n 2 $(INTER_ENV)", device_makefile)
 
     def test_device_kernel_sources_use_the_selected_platform(self):
         for platform, adaptor in (
@@ -1218,7 +1218,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot",
+            "SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot",
             unit_runner,
         )
         self.assertIn(
@@ -1242,7 +1242,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            "SymMemTest.CrossNodeLocalCleanupFailureRetries",
             unit_runner,
         )
         self.assertIn(
@@ -2257,6 +2257,9 @@ run_suite
         ]
         self.assertIn("FLAGCX_KERNEL_PROXY_PARALLELISM=4", device_api_case)
         self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", device_api_case)
+        self.assertIn("-R 2", device_api_case)
+        self.assertIn("FLAGCX_TEST_WIN_MODE=asymmetric", device_api_case)
+        self.assertIn("FLAGCX_VMM_ENABLE=0", device_api_case)
         cuda_kernel = (
             REPO_ROOT / "test/kernel/nvidia/device_api.cu"
         ).read_text()

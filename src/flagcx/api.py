@@ -37,8 +37,9 @@ flagcxP2pConn_t = ctypes.c_void_p
 flagcxP2pMr_t = ctypes.c_uint64
 
 # Window flags
-FLAGCX_WIN_DEFAULT = 0x00
-FLAGCX_WIN_COLL_SYMMETRIC = 0x01
+FLAGCX_WIN_ASYMMETRIC = 0x00
+FLAGCX_WIN_SYMMETRIC = 0x01
+FLAGCX_WIN_COLL_SYMMETRIC = FLAGCX_WIN_SYMMETRIC
 
 # This wrapper calls the legacy flagcxDevCommCreate symbol, so this ctypes
 # layout must remain the frozen legacy ABI prefix.
@@ -776,7 +777,7 @@ class FLAGCXLibrary:
         self.FLAGCX_CHECK(self._funcs["flagcxMemFree"](ptr, ctypes.c_int(allocator)))
 
     def flagcxCommWindowRegister(self, comm: flagcxComm_t, buff: int, size: int,
-                                  flags: int = 0, allocator: int = 0) -> flagcxWindow_t:
+                                  flags: int = FLAGCX_WIN_ASYMMETRIC, allocator: int = 0) -> flagcxWindow_t:
         win = flagcxWindow_t()
         self.FLAGCX_CHECK(self._funcs["flagcxCommWindowRegister"](
             comm, ctypes.c_void_p(buff), ctypes.c_size_t(size),
