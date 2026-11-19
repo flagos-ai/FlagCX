@@ -47,7 +47,7 @@ class SymmemProbeCiTest(unittest.TestCase):
             binary.mkdir(parents=True)
             for name in ('check_required_gtests.py', 'run_symmem_probe.sh',
                          'run_unit_test.sh', 'filter_supplemental_tests.sh',
-                         'rdma_static_preflight.sh'):
+                         'rdma_static_preflight.sh', 'ignore_test.py'):
                 shutil.copy(ROOT / '.github/scripts/ci' / name, ci)
             platform_dir = root / '.github/scripts/set_env'
             platform_dir.mkdir()
@@ -134,10 +134,23 @@ fi
     def test_runs_every_case_independently_with_dmabuf_disabled(self):
         result, calls = self.run_probe()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 14)
+        self.assertEqual(len(calls), 19)
         self.assertEqual(calls[0]['case'], 'SymmemProbePrerequisites.VmmCallbacks')
         self.assertEqual(sum(c['mpi'] for c in calls), 7)
         self.assertTrue(all(c['dmabuf'] == '0' and c['vmm'] == '1' for c in calls))
+
+    def test_mr_registration_controls_are_separate_invocations(self):
+        result, calls = self.run_probe(FAIL_CASE='VmmProbe.VaMrWholeMultiSegment')
+        self.assertNotEqual(result.returncode, 0)
+        expected = {
+            'VmmProbe.VaMrSingleSegmentSameSize',
+            'VmmProbe.VaMrEachPhysicalSegment',
+            'VmmProbe.VaMrCrossSegmentBoundary',
+            'VmmProbe.VaMrWholeMultiSegment',
+            'VmmProbe.VaMrMultiSegmentStrongOrdering',
+        }
+        self.assertTrue(expected.issubset(call['case'] for call in calls))
+        self.assertEqual(sum(call['mpi'] for call in calls), 7)
 
     def test_missing_vmm_prerequisite_blocks_components_and_mpi(self):
         result, calls = self.run_probe(FAIL_CASE='SymmemProbePrerequisites.VmmCallbacks')

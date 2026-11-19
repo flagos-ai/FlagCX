@@ -1,9 +1,10 @@
 # Iluvatar SymMem probes
 
 This diagnostic suite is independent of `adaptor`, `rma`, and `symmem`.
-The existing SymMem CI VMM gate remains enabled until hardware results justify
-restoring those tests. DMA-BUF is explicitly disabled; POSIX VMM allocation FDs
-are still required for local peer mappings.
+Iluvatar runs the same SymMem test phases and filters as CUDA, including VMM
+local mapping, segmented mapping, remote-without-NET, VMM+NET and route union.
+DMA-BUF is explicitly disabled and network registration must use VA MR;
+POSIX VMM allocation FDs are still required for local peer mappings.
 
 ## Run on CoreX
 
@@ -57,6 +58,11 @@ make USE_ILUVATAR=1 iluvatar-vmm-diagnostics \
 | `VmmProbe.LsaArenaOffsetsAndFdLifetime` | Map at reserved offsets, reuse, exported FD lifetime |
 | `VmmProbe.VaMrReadWrite` | Direct VA MR and RDMA GET/PUT, without a FlagCX communicator |
 | `VmmProbe.VaMrMultiSegmentReadWrite` | The same direct data path across physical segments |
+| `VmmProbe.VaMrSingleSegmentSameSize` | Register one physical segment with the same total size as the three-segment controls |
+| `VmmProbe.VaMrEachPhysicalSegment` | Register/deregister each of three physical segments independently; report every segment |
+| `VmmProbe.VaMrCrossSegmentBoundary` | Register two pages straddling the first physical boundary |
+| `VmmProbe.VaMrWholeMultiSegment` | Register/deregister the complete three-segment VA range |
+| `VmmProbe.VaMrMultiSegmentStrongOrdering` | Register the complete range with FORCE_SO to compare against relaxed ordering |
 | `MpiVmmProbe.LocalFdPeerMapping` | Two GPU processes, actual FD exchange and peer data, no FlagCX communicator |
 | `MpiVmmProbe.LocalArenaWindowReuse` | Communicator arena, concurrent windows, released offset reuse |
 | `MpiVmmProbe.MapFailureAndRetry` | Rank-local failure after actual mapping and successful retry |
@@ -67,9 +73,49 @@ make USE_ILUVATAR=1 iluvatar-vmm-diagnostics \
 
 The component suite uses topology-local `mlx5` selection through the existing
 net adaptor helper. A successful registration alone is not a data-path pass.
-The same MR is exercised by READ and WRITE before deregistration. No extra
+The GET/PUT probes exercise the same MR with READ and WRITE before
+deregistration. No extra
 `deviceSynchronize` is added after RMA completion to hide payload visibility
 problems.
+
+The five registration controls allocate exactly three VMM granules. The
+single-segment control uses one physical handle; the other four use three.
+They log GPU/HCA, the allocation and requested ranges, physical segment count,
+granularity, MR flags, return code and errno observed after registration.
+Registration failures remain failures, and each control runs independently so
+one unsupported range does not hide the other comparisons. These controls do
+not claim a passing RDMA data path; the existing GET/PUT probes check data.
+
+## Relationship to the SymMem acceptance suite
+
+Probes isolate failures. Final functional acceptance uses the corresponding
+`symmem` cases with their required modes actually enabled:
+
+| Capability / diagnostic probes | SymMem coverage |
+|---|---|
+| Allocation/range, alias, `LocalFdPeerMapping` | `RegisterSymmetricWindow`, `CrossGpuReadViaPeerPtr`, `CrossGpuWriteViaPeerPtr` |
+| `LsaArenaOffsetsAndFdLifetime`, `LocalArenaWindowReuse` | `LsaWindowsShareArenaAndReuseReleasedOffset`, repeated registration and window cleanup |
+| `VaMrReadWrite`, `WindowVaGetPut` | `VmmNetRouteCapabilityUnion`, `PublicRegistrationUsesVmmMrRouting`, `DirectGdrVmmPreservesMrRoute`, `HybridLocalAndRemoteAccess` |
+| `RemoteWithoutNetRollsBack` | `RemotePeersWithoutNetworkDoNotPublishWindow` |
+| `MapFailureAndRetry` | `VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow`, `VmmRollbackFailureConvergesBeforeMrMetadataExchange` |
+| `MrFailureAndRetry`, `DeregistrationFailureAndRetry` | `RankLocalMrFailureDoesNotPublishPartialWindow`, `MrRollbackFailureRetainsWindowLeaseUntilRetry`, `CrossNodeCleanupFailureConvergesBeforeRelease` |
+| `MultiSegmentSubrange` and the registration controls | Local segmented geometry tests and multi-segment registration/failure-convergence tests; not an unconditional requirement that one MR span all physical segments |
+
+The Iluvatar configuration enables the same SymMem phases as CUDA. Its
+VMM+NET auto invocation requires VA routing, and route union exercises the
+VA route only and requires successful registration. CUDA retains its existing
+DMA-BUF/VA route union. With the default allocation settings, the route-union
+case uses one physical segment.
+`CrossNodeMixedMultiSegmentVmmConvergesMrFailure` explicitly accepts a converged
+registration failure and validates cleanup, while
+`SegmentedMapFailureDoesNotPublishNetworkOnlyWindow` validates failure rollback.
+A successful whole-range multi-segment MR is therefore not an unconditional
+requirement of the existing SymMem suite. The controls diagnose this additional
+capability without adding a segmented MR metadata/data-path implementation.
+
+IXCUDA descriptions borrow original create handles, matching CUDA. The source
+allocation stays alive until its mappings and bundles have been released;
+describing an allocation does not create an export/import reference cycle.
 
 ## Real two-host verification
 
@@ -96,5 +142,6 @@ CoreX VMM peer-memory support. No DMA-BUF capability bit is added.
 CPU mapping/ownership tests and CI orchestration tests can run without GPUs.
 The provider and probe sources can be syntax-checked with CUDA-compatible
 headers, but only compilation against the target CoreX SDK and the real probe
-results establish CoreX compatibility. Until those results exist, VMM/LSA and
-VA MR hardware behavior remain unverified and regular SymMem CI stays gated.
+results establish CoreX compatibility. The regular SymMem VMM phases are now
+enabled for CI verification; enabling them does not establish a passing CoreX
+result. VMM/LSA and VA MR hardware behavior still require target CI results.

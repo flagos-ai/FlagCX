@@ -72,6 +72,8 @@ protected:
     ASSERT_GT(alignment, 0u);
   }
   void netReadWrite(bool multi);
+  enum class RegistrationRange { Whole, EachSegment, CrossBoundary };
+  void netRegisterRanges(bool multi, RegistrationRange range, int mrFlags);
   void *buffer = nullptr, *allocationBase = nullptr, *bundle = nullptr;
   void *flat = nullptr, *arena = nullptr;
   const flagcxSymSegmentMeta *segments = nullptr;

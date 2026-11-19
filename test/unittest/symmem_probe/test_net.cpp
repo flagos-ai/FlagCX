@@ -6,11 +6,13 @@
 #include "probe.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <unistd.h>
 
 namespace {
 constexpr auto kTimeout = std::chrono::seconds(30);
@@ -106,6 +108,31 @@ ConnectionResult connectLoopback(struct flagcxNetAdaptor *net, int dev,
   return result;
 }
 
+struct NetResources {
+  flagcxNetAdaptor *net;
+  void *listener = nullptr, *sender = nullptr, *receiver = nullptr;
+  void *sendMr = nullptr, *recvMr = nullptr, *destination = nullptr;
+  ~NetResources() {
+    // Keep connection/VA ownership if the provider cannot deregister.
+    if (sendMr && net->deregMr(sender, sendMr) != flagcxSuccess) {
+      ADD_FAILURE() << "source MR deregistration failed";
+      std::_Exit(1);
+    }
+    if (recvMr && net->deregMr(receiver, recvMr) != flagcxSuccess) {
+      ADD_FAILURE() << "destination MR deregistration failed";
+      std::_Exit(1);
+    }
+    if (sender)
+      EXPECT_EQ(net->closeSend(sender), flagcxSuccess);
+    if (receiver)
+      EXPECT_EQ(net->closeRecv(receiver), flagcxSuccess);
+    if (listener)
+      EXPECT_EQ(net->closeListen(listener), flagcxSuccess);
+    if (destination)
+      EXPECT_EQ(deviceAdaptor->gdrMemFree(destination, nullptr), flagcxSuccess);
+  }
+};
+
 struct TestWindow {
   struct flagcxOneSideHandleInfo info = {};
   uintptr_t baseVas[2] = {};
@@ -158,31 +185,7 @@ void VmmProbe::netReadWrite(bool multi) {
   PROBE(net->devices(&devices));
   ASSERT_GT(devices, 0);
   PROBE(flagcx_test::getLocalNetDevice(net, devices, &netDev));
-  struct Resources {
-    flagcxNetAdaptor *net;
-    void *listener = nullptr, *sender = nullptr, *receiver = nullptr;
-    void *sendMr = nullptr, *recvMr = nullptr, *destination = nullptr;
-    ~Resources() {
-      // Keep connection/VA ownership if the provider cannot deregister.
-      if (sendMr && net->deregMr(sender, sendMr) != flagcxSuccess) {
-        ADD_FAILURE() << "source MR deregistration failed";
-        std::_Exit(1);
-      }
-      if (recvMr && net->deregMr(receiver, recvMr) != flagcxSuccess) {
-        ADD_FAILURE() << "destination MR deregistration failed";
-        std::_Exit(1);
-      }
-      if (sender)
-        EXPECT_EQ(net->closeSend(sender), flagcxSuccess);
-      if (receiver)
-        EXPECT_EQ(net->closeRecv(receiver), flagcxSuccess);
-      if (listener)
-        EXPECT_EQ(net->closeListen(listener), flagcxSuccess);
-      if (destination)
-        EXPECT_EQ(deviceAdaptor->gdrMemFree(destination, nullptr),
-                  flagcxSuccess);
-    }
-  } r{net};
+  NetResources r{net};
   char handle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
   PROBE(net->listen(netDev, handle, &r.listener));
   auto connection = connectLoopback(net, netDev, handle, r.listener);
@@ -244,3 +247,124 @@ void VmmProbe::netReadWrite(bool multi) {
 
 TEST_F(VmmProbe, VaMrReadWrite) { netReadWrite(false); }
 TEST_F(VmmProbe, VaMrMultiSegmentReadWrite) { netReadWrite(true); }
+
+// Registration-only controls: the allocation size, GPU/NIC and connections
+// stay the same while physical segmentation, range and MR ordering vary.
+void VmmProbe::netRegisterRanges(bool multi, RegistrationRange range,
+                                 int mrFlags) {
+  size_t capacity = 0, granularity = 0;
+  PROBE(deviceAdaptor->symLsaGetCapacity(&capacity, &granularity));
+  ASSERT_GT(granularity, 0u);
+  ASSERT_LE(granularity, SIZE_MAX / 3);
+  if (multi) {
+    ASSERT_EQ(setenv("FLAGCX_VMM_SEGMENT_BYTES",
+                     std::to_string(granularity).c_str(), 1),
+              0);
+  } else {
+    ASSERT_EQ(unsetenv("FLAGCX_VMM_SEGMENT_BYTES"), 0);
+  }
+  allocate(3 * granularity, false);
+  ASSERT_FALSE(HasFatalFailure());
+  ASSERT_EQ(count, multi ? 3 : 1);
+  ASSERT_EQ(allocationBytes, 3 * granularity);
+
+  auto *net = getNetAdaptor(RDMA);
+  ASSERT_NE(net, nullptr);
+  PROBE(net->init());
+  int devices = 0, netDev = -1;
+  PROBE(net->devices(&devices));
+  ASSERT_GT(devices, 0);
+  PROBE(flagcx_test::getLocalNetDevice(net, devices, &netDev));
+  flagcxNetProperties_t properties = {};
+  PROBE(net->getProperties(netDev, &properties));
+  NetResources r{net};
+  char handle[FLAGCX_NET_HANDLE_MAXSIZE] = {};
+  PROBE(net->listen(netDev, handle, &r.listener));
+  auto connection = connectLoopback(net, netDev, handle, r.listener);
+  r.sender = connection.sendComm;
+  r.receiver = connection.recvComm;
+  ASSERT_EQ(connection.connectResult, flagcxSuccess);
+  ASSERT_EQ(connection.acceptResult, flagcxSuccess);
+  ASSERT_NE(r.sender, nullptr);
+  ASSERT_NE(r.receiver, nullptr);
+
+  size_t offset = 0, bytes = allocationBytes;
+  int attempts = 1, expectedTouched = multi ? 3 : 1;
+  if (range == RegistrationRange::EachSegment) {
+    ASSERT_TRUE(multi);
+    attempts = 3;
+    bytes = granularity;
+    expectedTouched = 1;
+  } else if (range == RegistrationRange::CrossBoundary) {
+    ASSERT_TRUE(multi);
+    const long pageBytes = sysconf(_SC_PAGESIZE);
+    ASSERT_GT(pageBytes, 0);
+    ASSERT_GE(granularity, static_cast<size_t>(pageBytes));
+    ASSERT_EQ(granularity % pageBytes, 0u);
+    offset = granularity - pageBytes;
+    bytes = 2 * static_cast<size_t>(pageBytes);
+    expectedTouched = 2;
+  }
+  for (int index = 0; index < attempts; ++index) {
+    if (range == RegistrationRange::EachSegment)
+      offset = static_cast<size_t>(index) * granularity;
+    void *address = static_cast<char *>(buffer) + offset;
+    int touched = 0;
+    PROBE(deviceAdaptor->symPhysSegmentCount(address, bytes, &touched));
+    ASSERT_EQ(touched, expectedTouched);
+    std::fprintf(stderr,
+                 "MR registration control: gpu=0 netDev=%d hca=%s base=%p "
+                 "allocationBytes=%zu physicalSegments=%d granularity=%zu "
+                 "offset=%zu bytes=%zu touched=%d mrFlags=%d\n",
+                 netDev, properties.name ? properties.name : "unknown", buffer,
+                 allocationBytes, count, granularity, offset, bytes, touched,
+                 mrFlags);
+    int observedErrno = 0;
+    auto result = probeCall("register VA control range", [&] {
+      errno = 0;
+      auto value = net->regMr(r.sender, address, bytes, FLAGCX_PTR_CUDA,
+                              mrFlags, &r.sendMr);
+      observedErrno = errno;
+      return value;
+    });
+    std::fprintf(stderr,
+                 "MR registration control result=%d handle=%p "
+                 "errno_after_call=%d (%s)\n",
+                 static_cast<int>(result), r.sendMr, observedErrno,
+                 std::strerror(observedErrno));
+    // Keep checking later physical segments after one registration fails.
+    EXPECT_EQ(result, flagcxSuccess)
+        << "offset=" << offset << " size=" << bytes;
+    if (result == flagcxSuccess)
+      EXPECT_NE(r.sendMr, nullptr);
+    if (r.sendMr) {
+      auto cleanup = probeCall("deregister VA control range", [&] {
+        return net->deregMr(r.sender, r.sendMr);
+      });
+      if (cleanup != flagcxSuccess) {
+        ADD_FAILURE() << "MR cleanup failed; retaining backing allocation";
+        std::_Exit(1);
+      }
+      r.sendMr = nullptr;
+    }
+  }
+}
+
+TEST_F(VmmProbe, VaMrSingleSegmentSameSize) {
+  netRegisterRanges(false, RegistrationRange::Whole, FLAGCX_NET_MR_FLAG_NONE);
+}
+TEST_F(VmmProbe, VaMrEachPhysicalSegment) {
+  netRegisterRanges(true, RegistrationRange::EachSegment,
+                    FLAGCX_NET_MR_FLAG_NONE);
+}
+TEST_F(VmmProbe, VaMrCrossSegmentBoundary) {
+  netRegisterRanges(true, RegistrationRange::CrossBoundary,
+                    FLAGCX_NET_MR_FLAG_NONE);
+}
+TEST_F(VmmProbe, VaMrWholeMultiSegment) {
+  netRegisterRanges(true, RegistrationRange::Whole, FLAGCX_NET_MR_FLAG_NONE);
+}
+TEST_F(VmmProbe, VaMrMultiSegmentStrongOrdering) {
+  netRegisterRanges(true, RegistrationRange::Whole,
+                    FLAGCX_NET_MR_FLAG_FORCE_SO);
+}

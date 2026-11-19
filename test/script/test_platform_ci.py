@@ -43,7 +43,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
                     (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
                 )
                 self.assertNotIn("ignore_test", config)
-                self.assertTrue(load_platform_ignore_config(platform))
+                ignore_config = load_platform_ignore_config(platform)
+                if platform == "iluvatar":
+                    self.assertEqual(ignore_config, {})
+                else:
+                    self.assertTrue(ignore_config)
         for filename in (
             "test.yml",
             "torch-api-test.yml",
@@ -1455,7 +1459,8 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"',
             unit_runner,
         )
-        self.assertIn('FLAGCX_DMABUF_ENABLE=1', unit_runner)
+        self.assertIn('symmem_dmabuf_enable=${FLAGCX_DMABUF_ENABLE:-1}', unit_runner)
+        self.assertIn('-x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable"', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1', unit_runner)
         self.assertIn(
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
@@ -1645,10 +1650,13 @@ run_suite
             unit_runner,
         )
         iluvatar_config = json.dumps(load_platform_ignore_config("iluvatar"))
-        self.assertIn("vmm-local-and-remote-without-net", iluvatar_config)
+        self.assertNotIn("vmm-local-and-remote-without-net", iluvatar_config)
+        self.assertNotIn("vmm-net-data", iluvatar_config)
         self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
         self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
-        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        self.assertIn("export FLAGCX_ADAPTOR=iluvatar", iluvatar_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_VA_ONLY=1", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
         )

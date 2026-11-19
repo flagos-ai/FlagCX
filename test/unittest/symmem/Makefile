@@ -3,7 +3,7 @@ include ../../make.inc
 # Local include directory for symmem test fixtures
 LOCAL_INCLUDE := -I$(abspath include) -I$(PROJECT_ROOT)/flagcx/adaptor/device_api
 
-ifneq ($(filter 1,$(USE_NVIDIA) $(USE_DU) $(USE_METAX) $(USE_PPU)),)
+ifneq ($(filter 1,$(USE_NVIDIA) $(USE_DU) $(USE_METAX) $(USE_PPU) $(USE_ILUVATAR)),)
 SYMMEM_MPI_DEVICE_FLAGS := $(HOST_ADAPTOR_DEFINE) $(DEVICE_INCLUDE)
 SYMMEM_MPI_DEVICE_LINK := $(DEVICE_LINK)
 endif

@@ -1076,6 +1076,7 @@ run_suite() {
         return 1
       }
       local platform_name expected_adaptor
+      local symmem_dmabuf_enable=${FLAGCX_DMABUF_ENABLE:-1}
       local symmem_run_vmm_net_data=1
       local symmem_run_vmm_local=1
       local -a symmem_common_env symmem_platform_env
@@ -1085,6 +1086,9 @@ run_suite() {
       if [[ "$platform_name" == "ppu" ]]; then
         expected_adaptor=BAREX
         symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
+      fi
+      if declare -p FLAGCX_CI_SYMMEM_MPI_ARGS >/dev/null 2>&1; then
+        symmem_platform_env+=("${FLAGCX_CI_SYMMEM_MPI_ARGS[@]}")
       fi
       if [[ -n "$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
         phase symmem vmm-net-data)" ]]; then
@@ -1156,12 +1160,12 @@ run_suite() {
         "$MPI_RUNNER" --allow-run-as-root \
         -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
+        -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter" \
         : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
+        -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" "$symmem_filter" || symmem_status=$?
 
@@ -1171,7 +1175,7 @@ run_suite() {
           -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
           -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
@@ -1179,7 +1183,7 @@ run_suite() {
           : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
           -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
@@ -1201,7 +1205,7 @@ run_suite() {
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
         -x FLAGCX_CI_REQUIRE_VMM=1 \
         -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
+        -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
         "${symmem_route_union_env[@]}" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
         "$symmem_bin" \
@@ -1210,7 +1214,7 @@ run_suite() {
         "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
         -x FLAGCX_CI_REQUIRE_VMM=1 \
         -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
+        -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
         "${symmem_route_union_env[@]}" \
         "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
         "$symmem_bin" \
