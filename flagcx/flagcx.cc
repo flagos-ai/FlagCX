@@ -4102,154 +4102,181 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
-                                                    int stage) {
-  if (stage == 0) {
-    // Drain local producers before any rank enters transport shutdown.
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxCommQuiesce(comm));
-    FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
-  }
-  if (stage == 1) {
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxCommCleanup(comm));
-  }
-  if (stage == 2) {
-    // A failed create rollback can exist for any Device API backend. Retry it
-    // while the outer communicator and its vendor communicator are still live.
-    flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
+static flagcxResult_t flagcxCommDrainLocalWork(flagcxComm_t comm) {
+  // Drain local producers before any rank enters transport shutdown.
+  if (!useHomoComm(comm) || useHeteroComm())
+    FLAGCXCHECK(flagcxCommQuiesce(comm));
+  FLAGCXCHECK(flagcxFusedDrainPendingBuffers(comm));
 
-    // Custom-op staged windows are also present in symWindows. Remove their
-    // device objects and explicit owners first so the generic live-window drain
-    // below cannot free a handle still referenced by devCommState.
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p",
-          comm);
-    if (comm->devCommState != nullptr &&
-        comm->devCommState->devComm != nullptr) {
-      const flagcxDevComm_t owner = comm->devCommState->devComm;
-      while (comm->activeDevComms != owner) {
-        if (comm->activeDevComms == nullptr)
-          return flagcxInvalidUsage;
-        FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
-      }
-    }
-    cleanupResult = flagcxDevCommStateDestroy(comm);
-    if (cleanupResult != flagcxSuccess)
-      return cleanupResult;
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
+  return flagcxSuccess;
+}
 
-    // Public Windows must have no remaining device views or borrowed IPC
-    // references before their local mappings are released. UniRunner-owned
-    // views are destroyed later by its own state cleanup.
-    for (flagcxDevMem_t mem = comm->activeDevMems; mem != nullptr;) {
-      flagcxDevMem_t next = mem->activeNext;
-      if (!mem->runnerOwned)
-        FLAGCXCHECK(flagcxDevMemDestroy(comm, mem));
-      mem = next;
-    }
-    while (comm->activeDevComms != nullptr)
+static flagcxResult_t flagcxCommCloseTransport(flagcxComm_t comm) {
+  if (!useHomoComm(comm) || useHeteroComm())
+    FLAGCXCHECK(flagcxCommCleanup(comm));
+
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
+  // A failed create rollback can exist for any Device API backend. Retry it
+  // while the outer communicator and its vendor communicator are still live.
+  flagcxResult_t cleanupResult = flagcxDevCommRetryPendingCleanup(comm);
+  if (cleanupResult != flagcxSuccess)
+    return cleanupResult;
+
+  // Custom-op staged windows are also present in symWindows. Remove their
+  // device objects and explicit owners first so the generic live-window drain
+  // below cannot free a handle still referenced by devCommState.
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup begin comm=%p", comm);
+  if (comm->devCommState != nullptr && comm->devCommState->devComm != nullptr) {
+    const flagcxDevComm_t owner = comm->devCommState->devComm;
+    while (comm->activeDevComms != owner) {
+      if (comm->activeDevComms == nullptr)
+        return flagcxInvalidUsage;
       FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
-
-    // Public vendor windows are not part of the symmetric-heap list.
-    for (flagcxWindow_t win = comm->publicWindows; win != nullptr;
-         win = win->nextOwned) {
-      if (win->vendorBase != nullptr) {
-        cleanupResult = flagcxCommWindowDeregisterInternal(
-            comm, win, flagcxMemCCL, flagcxSymCleanupLocal);
-        if (cleanupResult != flagcxSuccess)
-          return cleanupResult;
-      }
     }
+  }
+  cleanupResult = flagcxDevCommStateDestroy(comm);
+  if (cleanupResult != flagcxSuccess)
+    return cleanupResult;
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy custom-op cleanup end comm=%p", comm);
 
-    if (!useHomoComm(comm) || useHeteroComm()) {
-      // Each stage retains ownership on failure so the same rank can retry the
-      // call safely after transport shutdown coordination has completed.
-      cleanupResult = flagcxOneSideStagingDeregister(comm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      cleanupResult = flagcxOneSideSignalDeregister(comm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      cleanupResult =
-          flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      // Applications are allowed to destroy a communicator without explicitly
-      // deregistering every window. Release local mappings before the shared MR
-      // table and its connections disappear. Each window remains linked if a
-      // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
-      while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
-        flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
-        if (liveWindow == NULL)
-          return flagcxInternalError;
-        cleanupResult = flagcxCommWindowDeregisterInternal(
-            comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
-        if (cleanupResult != flagcxSuccess)
-          return cleanupResult;
-      }
-      cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
-      if (cleanupResult != flagcxSuccess)
-        return cleanupResult;
-      cleanupResult = flagcxSymLsaDestroy(comm->heteroComm);
+  // Public Windows must have no remaining device views or borrowed IPC
+  // references before their local mappings are released. UniRunner-owned
+  // views are destroyed later by its own state cleanup.
+  for (flagcxDevMem_t mem = comm->activeDevMems; mem != nullptr;) {
+    flagcxDevMem_t next = mem->activeNext;
+    if (!mem->runnerOwned)
+      FLAGCXCHECK(flagcxDevMemDestroy(comm, mem));
+    mem = next;
+  }
+  while (comm->activeDevComms != nullptr)
+    FLAGCXCHECK(flagcxDevCommDestroy(comm, comm->activeDevComms));
+
+  // Public vendor windows are not part of the symmetric-heap list.
+  for (flagcxWindow_t win = comm->publicWindows; win != nullptr;
+       win = win->nextOwned) {
+    if (win->vendorBase != nullptr) {
+      cleanupResult = flagcxCommWindowDeregisterInternal(
+          comm, win, flagcxMemCCL, flagcxSymCleanupLocal);
       if (cleanupResult != flagcxSuccess)
         return cleanupResult;
     }
   }
 
-  if (stage == 3) {
-    // Keep the existing homo-before-hetero teardown order. Clear each owner
-    // only after its destruction succeeds so a later stage can be retried.
-    free(comm->clusterIds);
-    comm->clusterIds = NULL;
-    free(comm->clusterSizes);
-    comm->clusterSizes = NULL;
-    free(comm->globalRank2HomoRank);
-    comm->globalRank2HomoRank = NULL;
-    free(comm->localRankToRank);
-    comm->localRankToRank = NULL;
-    free(comm->c2cSchedule);
-    comm->c2cSchedule = NULL;
-    free(comm->clusterInterRanks);
-    comm->clusterInterRanks = NULL;
-
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
-    if (comm->tuner) {
-      size_t homoCommIndex = 0;
-      for (auto &item : comm->homoCommMap) {
-        if (item.second != nullptr) {
-          TRACE(FLAGCX_INIT,
-                "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
-                comm, homoCommIndex, item.second);
-          FLAGCXCHECK(
-              cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
-          item.second = nullptr;
-        }
-        homoCommIndex++;
-      }
-    } else if (comm->homoComm != nullptr) {
-      FLAGCXCHECK(
-          cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
-      comm->homoComm = nullptr;
+  if (!useHomoComm(comm) || useHeteroComm()) {
+    // Each stage retains ownership on failure so the same rank can retry the
+    // call safely after transport shutdown coordination has completed.
+    cleanupResult = flagcxOneSideStagingDeregister(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    cleanupResult = flagcxOneSideSignalDeregister(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    cleanupResult =
+        flagcxSymRetryPendingCleanup(comm->heteroComm, flagcxSymCleanupLocal);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    // Applications are allowed to destroy a communicator without explicitly
+    // deregistering every window. Release local mappings before the shared MR
+    // table and its connections disappear. Each window remains linked if a
+    // fallible teardown step fails, so flagcxCommDestroy itself is retryable.
+    while (comm->heteroComm != NULL && comm->heteroComm->symWindows != NULL) {
+      flagcxWindow_t liveWindow = comm->heteroComm->symWindows->owner;
+      if (liveWindow == NULL)
+        return flagcxInternalError;
+      cleanupResult = flagcxCommWindowDeregisterInternal(
+          comm, liveWindow, flagcxMemCCL, flagcxSymCleanupLocal);
+      if (cleanupResult != flagcxSuccess)
+        return cleanupResult;
     }
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
-  }
-
-  if (stage == 4) {
-    if (!useHomoComm(comm) || useHeteroComm())
-      FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
-    while (comm->activeDevMems != nullptr)
-      FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
-  }
-
-  if (stage == 5) {
-    // The proxy and UniRunner state are drained before the remaining IPC
-    // table entries are closed.
-    FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+    cleanupResult = flagcxOneSideDeregister(comm->heteroComm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
+    cleanupResult = flagcxSymLsaDestroy(comm->heteroComm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
   }
 
   return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
+  // Keep the existing homo-before-hetero teardown order. Clear each owner
+  // only after its destruction succeeds so a later stage can be retried.
+  free(comm->clusterIds);
+  comm->clusterIds = NULL;
+  free(comm->clusterSizes);
+  comm->clusterSizes = NULL;
+  free(comm->globalRank2HomoRank);
+  comm->globalRank2HomoRank = NULL;
+  free(comm->localRankToRank);
+  comm->localRankToRank = NULL;
+  free(comm->c2cSchedule);
+  comm->c2cSchedule = NULL;
+  free(comm->clusterInterRanks);
+  comm->clusterInterRanks = NULL;
+
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
+  if (comm->tuner) {
+    size_t homoCommIndex = 0;
+    for (auto &item : comm->homoCommMap) {
+      if (item.second != nullptr) {
+        TRACE(FLAGCX_INIT,
+              "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
+              comm, homoCommIndex, item.second);
+        FLAGCXCHECK(
+            cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
+        item.second = nullptr;
+      }
+      homoCommIndex++;
+    }
+  } else if (comm->homoComm != nullptr) {
+    FLAGCXCHECK(
+        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
+    comm->homoComm = nullptr;
+  }
+  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
+
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommPrepareHeteroResources(flagcxComm_t comm) {
+  if (!useHomoComm(comm) || useHeteroComm())
+    FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
+  while (comm->activeDevMems != nullptr)
+    FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
+
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommCloseRemainingImports(flagcxComm_t comm) {
+  // The proxy and UniRunner state are drained before the remaining IPC
+  // table entries are closed.
+  FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
+
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
+                                                    int stage) {
+  switch (stage) {
+    case 0:
+      return flagcxCommDrainLocalWork(comm);
+    case 1:
+      return flagcxCommCloseTransport(comm);
+    case 2:
+      return flagcxCommCloseLocalOwners(comm);
+    case 3:
+      return flagcxCommDestroyHomoResources(comm);
+    case 4:
+      return flagcxCommPrepareHeteroResources(comm);
+    case 5:
+      return flagcxCommCloseRemainingImports(comm);
+    default:
+      return flagcxInvalidArgument;
+  }
 }
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {

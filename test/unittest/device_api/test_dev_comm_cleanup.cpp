@@ -733,6 +733,55 @@ TEST_F(DefaultDevCommCleanupTest, IpcBarrierAllocationIsFreedOnce) {
   EXPECT_EQ(deviceFreedPtrs.size(), 1u);
 }
 
+TEST_F(DefaultDevCommCleanupTest, PartialImportCloseRetainsExporterForRetry) {
+  static int closeCalls;
+  static std::vector<void *> closed;
+  closeCalls = 0;
+  closed.clear();
+  testDeviceAdaptor.ipcMemHandleClose = [](void *pointer) {
+    if (++closeCalls == 2)
+      return flagcxRemoteError;
+    closed.push_back(pointer);
+    return flagcxSuccess;
+  };
+  flagcxComm comm = {};
+  flagcxDevCommInternal devComm = {};
+  devComm.barrierIpcIndex = 0;
+  devComm.signalIpcSlot = -1;
+  devComm.localBarrierFlags = reinterpret_cast<uint64_t *>(0x5000);
+  devComm.localBarrierFlagsDeviceAllocated = true;
+  ASSERT_EQ(retainTestBuffer(&comm, devComm.localBarrierFlags,
+                             flagcxInternalBufferDevice),
+            flagcxSuccess);
+  flagcxIpcTableEntry *entry = &comm.ipcTable[0];
+  entry->nPeers = 2;
+  entry->inUse = entry->ownerHeld = true;
+  entry->hostPeerBasePtrs = static_cast<void **>(calloc(2, sizeof(void *)));
+  ASSERT_NE(entry->hostPeerBasePtrs, nullptr);
+  void *first = reinterpret_cast<void *>(0x1100);
+  void *second = reinterpret_cast<void *>(0x2200);
+  entry->hostPeerBasePtrs[0] = first;
+  entry->hostPeerBasePtrs[1] = second;
+
+  EXPECT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxRemoteError);
+  EXPECT_EQ(entry->hostPeerBasePtrs[0], nullptr);
+  EXPECT_EQ(entry->hostPeerBasePtrs[1], second);
+  EXPECT_FALSE(entry->inUse);
+  EXPECT_EQ(devComm.barrierIpcIndex, 0);
+  EXPECT_EQ(comm.internalBuffers->pointer, devComm.localBarrierFlags);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+
+  ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
+  EXPECT_EQ(closed, (std::vector<void *>{first, second}));
+  EXPECT_EQ(closeCalls, 3);
+  EXPECT_EQ(devComm.barrierIpcIndex, -1);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  comm.destroyPhase = 7;
+  ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(deviceFreedPtrs,
+            (std::vector<void *>{reinterpret_cast<void *>(0x5000)}));
+}
+
 TEST_F(DefaultDevCommCleanupTest, SignalBufferOwnershipSurvivesGdrFreeFailure) {
   testDeviceAdaptor.gdrMemFree = failGdrFreeOnce;
   flagcxComm comm = {};
