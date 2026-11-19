@@ -244,7 +244,7 @@ void launchKernelIntraBarrierSyncS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                         const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream) {
-  kernelIntraBarrierSyncS<<<4, 256, 0, stream->base>>>(
+  kernelIntraBarrierSyncS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devMemPtr, buffer, output, N);
 }
 
@@ -283,7 +283,7 @@ void launchKernelIntraBarrierArriveWaitS(const void FLAGCX_IR_GLOBAL_PTR *devCom
                                         const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                         float *output, int N,
                                         flagcxStream_t stream) {
-  kernelIntraBarrierArriveWaitS<<<4, 256, 0, stream->base>>>(
+  kernelIntraBarrierArriveWaitS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devMemPtr, buffer, output, N);
 }
 
@@ -381,7 +381,7 @@ __global__ void kernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPt
 void launchKernelIntraAllReduceS(const void FLAGCX_IR_GLOBAL_PTR *devCommPtr,
                                   const void FLAGCX_IR_GLOBAL_PTR *devMemPtr, float *buffer,
                                   int count, flagcxStream_t stream) {
-  kernelIntraAllReduceS<<<4, 256, 0, stream->base>>>(
+  kernelIntraAllReduceS<<<4, 128, 0, stream->base>>>(
       devCommPtr, devMemPtr, buffer, count);
 }
 

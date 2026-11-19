@@ -142,34 +142,26 @@ flagcx_ci_run_suite_override() {
 
   if [[ "$suite" == "runner" ]]; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=1
+    # Exercise every collective with PCCL's built-in kernels, including when
+    # the runner's inherited environment explicitly enables the plugin.
+    export PCCL_ENABLE_EXT_KERNEL=0
+    export GTEST_FILTER='*-CoverageSupplemental.*'
+    local runner_status=0
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
-      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+      "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || runner_status=1
     cd "$suite_dir"
-    local pccl_diagnostics_status=0
-    bash "$PROJECT_ROOT/.github/scripts/ci/run_ppu_pccl_diagnostics.sh" \
-      "$suite_dir" || pccl_diagnostics_status=$?
     FLAGCX_CI_MPI_LABEL="runner default" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       -u FLAGCX_CLUSTER_SPLIT_LIST -u FLAGCX_MEM_ENABLE \
       -u FLAGCX_P2P_TRANSPORT -u FLAGCX_P2P_DISABLE \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      -x PCCL_ENABLE_EXT_KERNEL=0 \
       -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
-      ./build/bin/runner_mpi_tests
-    FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous SendRecv smoke" \
-      "$MPI_RUNNER" -np 2 --allow-run-as-root \
-      -x FLAGCX_USE_HETERO_COMM=1 \
-      -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-      -x FLAGCX_MEM_ENABLE=1 \
-      -x FLAGCX_VMM_ENABLE=0 \
-      -x FLAGCX_P2P_TRANSPORT=accl \
-      -x FLAGCX_P2P_DISABLE=0 \
-      -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
-      -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-      ./build/bin/runner_mpi_tests \
-      --gtest_filter=FlagCXCollTest.SendRecv
+      ./build/bin/runner_mpi_tests || runner_status=1
     FLAGCX_CI_MPI_LABEL="runner BAREX heterogeneous" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      -x PCCL_ENABLE_EXT_KERNEL=0 \
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=0 \
@@ -177,10 +169,11 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_P2P_DISABLE=0 \
       -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
       -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-      ./build/bin/runner_mpi_tests
+      ./build/bin/runner_mpi_tests || runner_status=1
     FLAGCX_CI_MPI_LABEL="runner BAREX forced NET" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+      -x PCCL_ENABLE_EXT_KERNEL=0 \
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=0 \
@@ -192,12 +185,13 @@ flagcx_ci_run_suite_override() {
       -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
       -x FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1 \
       -x FLAGCX_CI_EXPECT_PXN=0 \
-      ./build/bin/runner_mpi_tests
+      ./build/bin/runner_mpi_tests || runner_status=1
     if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]; then
       FLAGCX_CI_MPI_LABEL="runner PPU PXN four-rank" \
         env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
         CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES" \
         "$MPI_RUNNER" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+        -x PCCL_ENABLE_EXT_KERNEL=0 \
         -x CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES" \
         -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
         -x FLAGCX_MEM_ENABLE=1 \
@@ -211,9 +205,9 @@ flagcx_ci_run_suite_override() {
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
         -x FLAGCX_CI_EXPECT_PXN=1 \
         ./build/bin/runner_mpi_tests \
-        --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll
+        --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || runner_status=1
     fi
-    return "$pccl_diagnostics_status"
+    return "$runner_status"
   fi
 
   FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0

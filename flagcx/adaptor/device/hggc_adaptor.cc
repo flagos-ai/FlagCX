@@ -3,105 +3,11 @@
 #ifdef USE_PPU_ADAPTOR
 
 #include "adaptor.h"
-#include "alloc.h"
 #include "hggc_sdk_features.h"
+#include "hggc_vmm.h"
 #include "param.h"
-#include "segmented_vmm_allocation.h"
-#include <cstdio>
-#include <limits>
-#include <mutex>
-#include <new>
+#include <stdio.h>
 #include <unistd.h>
-#include <unordered_map>
-
-struct hggcVmmAllocation {
-  size_t size;
-  bool mappingOwned;
-  bool vaOwned;
-};
-static std::mutex hggcVmmAllocationMutex;
-static std::unordered_map<void *, hggcVmmAllocation> hggcVmmAllocations;
-
-struct hggcSegmentOps {
-  typedef HGmemGenericAllocationHandle Handle;
-  typedef HGmemAllocationProp Prop;
-  static flagcxResult_t deviceOrdinal(int *device) {
-    return hggcGetDevice(device) == hggcSuccess ? flagcxSuccess
-                                                : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t createHandle(size_t size, const Prop &prop,
-                                     Handle *handle) {
-    return hgMemCreate(handle, size, &prop, 0) == HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t reserveAddress(size_t size, size_t alignment,
-                                       uintptr_t *base) {
-    HGdeviceptr address = 0;
-    if (hgMemAddressReserve(&address, size, alignment, 0, 0) != HGGC_SUCCESS)
-      return flagcxUnhandledDeviceError;
-    *base = static_cast<uintptr_t>(address);
-    return flagcxSuccess;
-  }
-  static flagcxResult_t freeAddress(uintptr_t base, size_t size) {
-    return hgMemAddressFree(static_cast<HGdeviceptr>(base), size) ==
-                   HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t mapSegment(uintptr_t address, size_t size,
-                                   Handle handle) {
-    return hgMemMap(static_cast<HGdeviceptr>(address), size, 0, handle, 0) ==
-                   HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t unmapSegment(uintptr_t address, size_t size) {
-    return hgMemUnmap(static_cast<HGdeviceptr>(address), size) == HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t setAccess(uintptr_t address, size_t size) {
-    int device = 0;
-    if (hggcGetDevice(&device) != hggcSuccess)
-      return flagcxUnhandledDeviceError;
-    HGmemAccessDesc access = {};
-    access.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
-    access.location.id = device;
-    access.flags = HG_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    return hgMemSetAccess(static_cast<HGdeviceptr>(address), size, &access,
-                          1) == HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t importHandle(int fd, Handle *handle) {
-    return hgMemImportFromShareableHandle(
-               handle, reinterpret_cast<void *>(static_cast<uintptr_t>(fd)),
-               HG_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) == HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t exportHandle(Handle handle, int *fd) {
-    return hgMemExportToShareableHandle(
-               fd, handle, HG_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR, 0) ==
-                   HGGC_SUCCESS
-               ? flagcxSuccess
-               : flagcxUnhandledDeviceError;
-  }
-  static flagcxResult_t releaseHandle(Handle handle) {
-    return hgMemRelease(handle) == HGGC_SUCCESS ? flagcxSuccess
-                                                : flagcxUnhandledDeviceError;
-  }
-};
-typedef flagcxSegmentedVmmAllocation<hggcSegmentOps> hggcSegmentAllocation;
-typedef flagcxSegmentedVmmMap<hggcSegmentOps> hggcSegmentMap;
-
-std::map<flagcxMemcpyType_t, decltype(hggcMemcpyHostToDevice)>
-    hggcMemcpyTypeMap = {
-        {flagcxMemcpyHostToDevice, hggcMemcpyHostToDevice},
-        {flagcxMemcpyDeviceToHost, hggcMemcpyDeviceToHost},
-        {flagcxMemcpyDeviceToDevice, hggcMemcpyDeviceToDevice},
-};
 
 flagcxResult_t hggcAdaptorDeviceSynchronize() {
   HGGCCHECK(hggcDeviceSynchronize());
@@ -111,11 +17,24 @@ flagcxResult_t hggcAdaptorDeviceSynchronize() {
 flagcxResult_t hggcAdaptorDeviceMemcpy(void *dst, void *src, size_t size,
                                        flagcxMemcpyType_t type,
                                        flagcxStream_t stream, void *args) {
+  enum hggcMemcpyKind kind;
+  switch (type) {
+    case flagcxMemcpyHostToDevice:
+      kind = hggcMemcpyHostToDevice;
+      break;
+    case flagcxMemcpyDeviceToHost:
+      kind = hggcMemcpyDeviceToHost;
+      break;
+    case flagcxMemcpyDeviceToDevice:
+      kind = hggcMemcpyDeviceToDevice;
+      break;
+    default:
+      return flagcxInvalidArgument;
+  }
   if (stream == NULL) {
-    HGGCCHECK(hggcMemcpy(dst, src, size, hggcMemcpyTypeMap[type]));
+    HGGCCHECK(hggcMemcpy(dst, src, size, kind));
   } else {
-    HGGCCHECK(
-        hggcMemcpyAsync(dst, src, size, hggcMemcpyTypeMap[type], stream->base));
+    HGGCCHECK(hggcMemcpyAsync(dst, src, size, kind, stream->base));
   }
   return flagcxSuccess;
 }
@@ -224,25 +143,19 @@ flagcxResult_t hggcAdaptorGdrMemAlloc(void **ptr, size_t size,
     return flagcxSuccess;
   }
 
-  size_t memGran = 0;
+  *ptr = NULL;
+  size_t memGran = 0, segmentBytes = 0, handleSize;
   HGdevice currentDev;
-  HGmemAllocationProp memprop = {};
-  HGmemGenericAllocationHandle handle = (HGmemGenericAllocationHandle)-1;
+  HGmemAllocationProp memprop;
+  memset(&memprop, 0, sizeof(memprop));
   int hggcDev;
-  HGresult hgRes;
-
   HGGCCHECK(hggcGetDevice(&hggcDev));
-  FLAGCXCHECK(hggcSegmentAllocation::retryPending(hggcDev));
+  FLAGCXCHECK(hggcVmmRetryPending(hggcDev));
   HGDRVCHECK(hgDeviceGet(&currentDev, hggcDev));
-
-  size_t handleSize = size;
-  int requestedHandleTypes = HG_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   memprop.type = HG_MEM_ALLOCATION_TYPE_PINNED;
   memprop.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
-  memprop.requestedHandleTypes =
-      (HGmemAllocationHandleType)requestedHandleTypes;
+  memprop.requestedHandleTypes = HG_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   memprop.location.id = currentDev;
-  // Query device to see if RDMA support is available
 #if FLAGCX_HGGC_HAS_VMM_RDMA
   int rdmaSupported = 0;
   if (hgDeviceGetAttribute(&rdmaSupported,
@@ -253,109 +166,42 @@ flagcxResult_t hggcAdaptorGdrMemAlloc(void **ptr, size_t size,
 #endif
   HGDRVCHECK(hgMemGetAllocationGranularity(
       &memGran, &memprop, HG_MEM_ALLOC_GRANULARITY_RECOMMENDED));
-  ALIGN_SIZE(handleSize, memGran);
-  size_t segmentBytes = 0;
-  FLAGCXCHECK(flagcxVmmSegmentBytes(memGran, &segmentBytes));
+  if (memGran == 0 || size == 0 || size > SIZE_MAX - (memGran - 1))
+    return flagcxInvalidArgument;
+  handleSize = ((size + memGran - 1) / memGran) * memGran;
+  FLAGCXCHECK(hggcVmmSegmentBytes(memGran, &segmentBytes));
   if (segmentBytes != 0 && segmentBytes < handleSize) {
-    bool multiSegmentEnabled = true;
-    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
-    if (!multiSegmentEnabled) {
-      *ptr = NULL;
+    int enabled;
+    FLAGCXCHECK(hggcVmmMultiSegmentEnabled(&enabled));
+    if (!enabled)
       return flagcxNotSupported;
-    }
-    return hggcSegmentAllocation::allocate(ptr, handleSize, memGran,
-                                           segmentBytes, memprop);
+  } else {
+    segmentBytes = handleSize;
   }
-  /* Allocate the physical memory on the device */
-  HGDRVCHECK(hgMemCreate(&handle, handleSize, &memprop, 0));
-  /* Reserve a virtual address range */
-  hgRes = hgMemAddressReserve((HGdeviceptr *)ptr, handleSize, memGran, 0, 0);
-  if (hgRes != HGGC_SUCCESS) {
-    hgMemRelease(handle);
-    return flagcxUnhandledDeviceError;
-  }
-  /* Map the virtual address range to the physical allocation */
-  hgRes = hgMemMap((HGdeviceptr)*ptr, handleSize, 0, handle, 0);
-  if (hgRes != HGGC_SUCCESS) {
-    hgMemAddressFree((HGdeviceptr)*ptr, handleSize);
-    hgMemRelease(handle);
-    *ptr = NULL;
-    return flagcxUnhandledDeviceError;
-  }
-  /* Set access for the current device */
-  HGmemAccessDesc accessDesc = {};
-  accessDesc.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
-  accessDesc.location.id = currentDev;
-  accessDesc.flags = HG_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  hgRes = hgMemSetAccess((HGdeviceptr)*ptr, handleSize, &accessDesc, 1);
-  if (hgRes != HGGC_SUCCESS) {
-    hgMemUnmap((HGdeviceptr)*ptr, handleSize);
-    hgMemAddressFree((HGdeviceptr)*ptr, handleSize);
-    hgMemRelease(handle);
-    *ptr = NULL;
-    return flagcxUnhandledDeviceError;
-  }
-  /* Release the create-time handle reference; the mapping holds its own. */
-  if (hgMemRelease(handle) != HGGC_SUCCESS) {
-    hgMemUnmap((HGdeviceptr)*ptr, handleSize);
-    hgMemAddressFree((HGdeviceptr)*ptr, handleSize);
-    *ptr = NULL;
-    return flagcxUnhandledDeviceError;
-  }
-  bool tracked = false;
-  try {
-    std::lock_guard<std::mutex> lock(hggcVmmAllocationMutex);
-    tracked = hggcVmmAllocations
-                  .emplace(*ptr, hggcVmmAllocation{handleSize, true, true})
-                  .second;
-  } catch (const std::bad_alloc &) {
-  }
-  if (!tracked) {
-    hgMemUnmap((HGdeviceptr)*ptr, handleSize);
-    hgMemAddressFree((HGdeviceptr)*ptr, handleSize);
-    *ptr = NULL;
-    return flagcxSystemError;
-  }
-  return flagcxSuccess;
+  return hggcVmmAllocate(ptr, handleSize, memGran, segmentBytes, &memprop,
+                         hggcDev);
 }
 
 flagcxResult_t hggcAdaptorGdrMemFree(void *ptr, void *memHandle) {
-  if (ptr == NULL) {
+  int found = 0;
+  if (ptr == NULL)
     return flagcxSuccess;
-  }
-  bool segmented = false;
-  FLAGCXCHECK(hggcSegmentAllocation::freeAllocation(ptr, &segmented));
-  if (segmented)
-    return flagcxSuccess;
-  std::lock_guard<std::mutex> lock(hggcVmmAllocationMutex);
-  auto it = hggcVmmAllocations.find(ptr);
-  if (it == hggcVmmAllocations.end()) {
+  FLAGCXCHECK(hggcVmmFreeAllocation(ptr, &found));
+  if (!found)
     HGGCCHECK(hggcFree(ptr));
-    return flagcxSuccess;
-  }
-  hggcVmmAllocation &allocation = it->second;
-  if (allocation.mappingOwned) {
-    if (hgMemUnmap((HGdeviceptr)ptr, allocation.size) != HGGC_SUCCESS)
-      return flagcxUnhandledDeviceError;
-    allocation.mappingOwned = false;
-  }
-  if (allocation.vaOwned) {
-    if (hgMemAddressFree((HGdeviceptr)ptr, allocation.size) != HGGC_SUCCESS)
-      return flagcxUnhandledDeviceError;
-    allocation.vaOwned = false;
-  }
-  hggcVmmAllocations.erase(it);
   return flagcxSuccess;
 }
 
 flagcxResult_t hggcAdaptorStreamCreate(flagcxStream_t *stream) {
   (*stream) = NULL;
-  FLAGCXCHECK(flagcxCalloc(stream, 1));
+  *stream = (flagcxStream_t)calloc(1, sizeof(**stream));
+  if (*stream == NULL)
+    return flagcxSystemError;
   const hggcError_t result =
       hggcStreamCreateWithFlags(&(*stream)->base, hggcStreamNonBlocking);
   if (result != hggcSuccess) {
     free(*stream);
-    *stream = nullptr;
+    *stream = NULL;
     return hggcResultToFlagcx(result);
   }
   return flagcxSuccess;
@@ -373,7 +219,9 @@ flagcxResult_t hggcAdaptorStreamDestroy(flagcxStream_t stream) {
 flagcxResult_t hggcAdaptorStreamCopy(flagcxStream_t *newStream,
                                      void *oldStream) {
   (*newStream) = NULL;
-  FLAGCXCHECK(flagcxCalloc(newStream, 1));
+  *newStream = (flagcxStream_t)calloc(1, sizeof(**newStream));
+  if (*newStream == NULL)
+    return flagcxSystemError;
   (*newStream)->base = (hggcStream_t)oldStream;
   return flagcxSuccess;
 }
@@ -432,9 +280,8 @@ flagcxResult_t hggcAdaptorStreamWaitValue64(flagcxStream_t stream, void *addr,
     return flagcxNotSupported;
 #endif
   }
-  return hggcDriverResultToFlagcx(
-      hgStreamWaitValue64(reinterpret_cast<HGstream>(stream->base),
-                          (HGdeviceptr)addr, value, waitFlags));
+  return hggcDriverResultToFlagcx(hgStreamWaitValue64(
+      (HGstream)(stream->base), (HGdeviceptr)addr, value, waitFlags));
 #else
   return flagcxNotSupported;
 #endif
@@ -446,9 +293,9 @@ flagcxResult_t hggcAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
   if (stream == NULL || addr == NULL)
     return flagcxInvalidArgument;
 #if FLAGCX_HGGC_HAS_WRITE_VALUE64
-  return hggcDriverResultToFlagcx(hgStreamWriteValue64(
-      reinterpret_cast<HGstream>(stream->base), (HGdeviceptr)addr, value,
-      HG_STREAM_WRITE_VALUE_DEFAULT));
+  return hggcDriverResultToFlagcx(
+      hgStreamWriteValue64((HGstream)(stream->base), (HGdeviceptr)addr, value,
+                           HG_STREAM_WRITE_VALUE_DEFAULT));
 #else
   return flagcxNotSupported;
 #endif
@@ -457,14 +304,16 @@ flagcxResult_t hggcAdaptorStreamWriteValue64(flagcxStream_t stream, void *addr,
 flagcxResult_t hggcAdaptorEventCreate(flagcxEvent_t *event,
                                       flagcxEventType_t eventType) {
   (*event) = NULL;
-  FLAGCXCHECK(flagcxCalloc(event, 1));
+  *event = (flagcxEvent_t)calloc(1, sizeof(**event));
+  if (*event == NULL)
+    return flagcxSystemError;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? hggcEventDefault
                                  : hggcEventDisableTiming;
   const hggcError_t result = hggcEventCreateWithFlags(&(*event)->base, flags);
   if (result != hggcSuccess) {
     free(*event);
-    *event = nullptr;
+    *event = NULL;
     return hggcResultToFlagcx(result);
   }
   return flagcxSuccess;
@@ -485,7 +334,7 @@ flagcxResult_t hggcAdaptorEventRecord(flagcxEvent_t event,
     if (stream != NULL) {
       HGGCCHECK(hggcEventRecord(event->base, stream->base));
     } else {
-      HGGCCHECK(hggcEventRecord(event->base, nullptr));
+      HGGCCHECK(hggcEventRecord(event->base, NULL));
     }
   }
   return flagcxSuccess;
@@ -530,7 +379,9 @@ flagcxResult_t hggcAdaptorEventElapsedTime(float *ms, flagcxEvent_t start,
 
 flagcxResult_t hggcAdaptorIpcMemHandleCreate(flagcxIpcMemHandle_t *handle,
                                              size_t *size) {
-  FLAGCXCHECK(flagcxCalloc(handle, 1));
+  *handle = (flagcxIpcMemHandle_t)calloc(1, sizeof(**handle));
+  if (*handle == NULL)
+    return flagcxSystemError;
   if (size != NULL) {
     *size = sizeof(hggcIpcMemHandle_t);
   }
@@ -625,7 +476,7 @@ flagcxResult_t hggcAdaptorGetDeviceProperties(struct flagcxDevProps *props,
   HGGCCHECK(hggcGetDeviceProperties(&devProp, dev));
   strncpy(props->name, devProp.name, sizeof(props->name) - 1);
   props->name[sizeof(props->name) - 1] = '\0';
-  char pci[32] = {};
+  char pci[32] = {0};
   HGGCCHECK(hggcDeviceGetPCIBusId(pci, sizeof(pci), dev));
   unsigned domain = 0, bus = 0, device = 0, function = 0;
   if (sscanf(pci, "%x:%x:%x.%x", &domain, &bus, &device, &function) != 4)
@@ -751,48 +602,17 @@ flagcxResult_t hggcAdaptorSymPhysDescribe(void *ptr, size_t size,
   *segments = NULL;
   *segmentCount = 0;
   *slotAlignment = 0;
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  if (size > std::numeric_limits<uintptr_t>::max() - address)
+  const uintptr_t address = (uintptr_t)ptr;
+  if (size > UINTPTR_MAX - address)
     return flagcxInvalidArgument;
 
-  hggcSegmentMap::Bundle *bundle = new (std::nothrow) hggcSegmentMap::Bundle();
+  struct hggcVmmBundle *bundle =
+      (struct hggcVmmBundle *)calloc(1, sizeof(*bundle));
   if (bundle == NULL)
     return flagcxSystemError;
   *segmentBundle = bundle;
-  bool found = false;
-  flagcxResult_t result =
-      hggcSegmentAllocation::describe(ptr, size, bundle, userOffset, &found);
-  if (result != flagcxSuccess)
-    return result;
-  if (!found) {
-    std::lock_guard<std::mutex> lock(hggcVmmAllocationMutex);
-    for (std::unordered_map<void *, hggcVmmAllocation>::const_iterator it =
-             hggcVmmAllocations.begin();
-         it != hggcVmmAllocations.end(); ++it) {
-      const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
-      const hggcVmmAllocation &allocation = it->second;
-      if (address < base || address - base > allocation.size ||
-          size > allocation.size - (address - base))
-        continue;
-      found = true;
-      if (!allocation.mappingOwned || !allocation.vaOwned)
-        return flagcxInvalidUsage;
-      HGmemGenericAllocationHandle handle = 0;
-      if (hgMemRetainAllocationHandle(&handle, ptr) != HGGC_SUCCESS)
-        return flagcxUnhandledDeviceError;
-      try {
-        bundle->segments.push_back(flagcxSymSegmentMeta{0, allocation.size});
-        bundle->handleOwned.push_back(1);
-        bundle->handles.push_back(handle);
-      } catch (const std::bad_alloc &) {
-        if (bundle->handles.empty())
-          hgMemRelease(handle);
-        return flagcxSystemError;
-      }
-      *userOffset = address - base;
-      break;
-    }
-  }
+  int found = 0;
+  FLAGCXCHECK(hggcVmmDescribe(ptr, size, bundle, userOffset, &found));
   if (!found) {
     // Only a successful legacy IPC export proves that an untracked pointer
     // may use that path. External VMM offsets are unknown, so no retain or
@@ -807,7 +627,7 @@ flagcxResult_t hggcAdaptorSymPhysDescribe(void *ptr, size_t size,
       hggcIpcMemHandle_t ipcHandle;
       if (hggcIpcGetMemHandle(&ipcHandle, (void *)allocationBase) ==
           hggcSuccess) {
-        delete bundle;
+        hggcVmmFreeBundle(bundle);
         *segmentBundle = NULL;
       } else {
         hggcGetLastError();
@@ -816,9 +636,9 @@ flagcxResult_t hggcAdaptorSymPhysDescribe(void *ptr, size_t size,
     // Keep an empty bundle for an unknown mapping to block IPC fallback.
     return flagcxNotSupported;
   }
-  if (bundle->segments.size() > 1) {
-    bool multiSegmentEnabled = true;
-    FLAGCXCHECK(flagcxVmmMultiSegmentEnabled(true, &multiSegmentEnabled));
+  if (bundle->count > 1) {
+    int multiSegmentEnabled = 1;
+    FLAGCXCHECK(hggcVmmMultiSegmentEnabled(&multiSegmentEnabled));
     if (!multiSegmentEnabled)
       return flagcxNotSupported;
   }
@@ -828,7 +648,8 @@ flagcxResult_t hggcAdaptorSymPhysDescribe(void *ptr, size_t size,
   if (hggcGetDevice(&device) != hggcSuccess ||
       hgDeviceGet(&hgDevice, device) != HGGC_SUCCESS)
     return flagcxUnhandledDeviceError;
-  HGmemAllocationProp prop = {};
+  HGmemAllocationProp prop;
+  memset(&prop, 0, sizeof(prop));
   prop.type = HG_MEM_ALLOCATION_TYPE_PINNED;
   prop.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
   prop.location.id = hgDevice;
@@ -838,64 +659,47 @@ flagcxResult_t hggcAdaptorSymPhysDescribe(void *ptr, size_t size,
           HGGC_SUCCESS ||
       *slotAlignment == 0)
     return flagcxUnhandledDeviceError;
-  if (bundle->segments.empty() ||
-      bundle->segments.size() >
-          static_cast<size_t>(std::numeric_limits<int>::max()))
+  if (bundle->count == 0 || bundle->count > INT_MAX)
     return flagcxInvalidUsage;
-  *segments = bundle->segments.data();
-  *segmentCount = static_cast<int>(bundle->segments.size());
+  *segments = bundle->segments;
+  *segmentCount = (int)bundle->count;
   return flagcxSuccess;
 }
 
 flagcxResult_t hggcAdaptorSymPhysExportSegment(void *bundle, int index,
                                                int *fd) {
-  return hggcSegmentMap::exportSegment(bundle, index, fd);
+  return hggcVmmExportSegment(bundle, index, fd);
 }
 flagcxResult_t hggcAdaptorSymPhysFreeSegments(void *bundle) {
-  return hggcSegmentMap::freeBundle(bundle);
+  return hggcVmmFreeBundle(bundle);
 }
 flagcxResult_t hggcAdaptorSymPhysSegmentCount(const void *ptr, size_t size,
                                               int *count) {
-  flagcxResult_t result = hggcSegmentAllocation::segmentCount(ptr, size, count);
-  if (result != flagcxNotSupported)
-    return result;
-  const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
-  std::lock_guard<std::mutex> lock(hggcVmmAllocationMutex);
-  for (std::unordered_map<void *, hggcVmmAllocation>::const_iterator it =
-           hggcVmmAllocations.begin();
-       it != hggcVmmAllocations.end(); ++it) {
-    const uintptr_t base = reinterpret_cast<uintptr_t>(it->first);
-    if (address < base || address - base > it->second.size ||
-        size > it->second.size - (address - base))
-      continue;
-    *count = 1;
-    return flagcxSuccess;
-  }
-  return flagcxNotSupported;
+  return hggcVmmSegmentCount(ptr, size, count);
 }
 flagcxResult_t hggcAdaptorSymFlatMapSegments(
     const int *fds, int nPeers, int self, void *bundle,
     const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
     int totalSegments, size_t stride, size_t alignment, void **flatBase) {
-  return hggcSegmentMap::map(fds, nPeers, self, bundle, layouts, segments,
-                             totalSegments, stride, alignment, flatBase);
+  return hggcVmmFlatMap(fds, nPeers, self, bundle, layouts, segments,
+                        totalSegments, stride, alignment, flatBase);
 }
 flagcxResult_t hggcAdaptorSymFlatMapSegmentsBegin(
     int nPeers, int self, void *bundle, const flagcxSymRankLayout *layouts,
     const flagcxSymSegmentMeta *segments, int totalSegments, size_t stride,
     size_t alignment, void **flatBase) {
-  return hggcSegmentMap::begin(nPeers, self, bundle, layouts, segments,
-                               totalSegments, stride, alignment, flatBase);
+  return hggcVmmFlatBegin(NULL, 1, nPeers, self, bundle, layouts, segments,
+                          totalSegments, stride, alignment, flatBase);
 }
 flagcxResult_t hggcAdaptorSymFlatMapSegmentOne(void *flatBase, int index,
                                                int fd) {
-  return hggcSegmentMap::mapOne(flatBase, index, fd);
+  return hggcVmmFlatMapOne(flatBase, index, fd);
 }
 flagcxResult_t hggcAdaptorSymFlatMappingUnmapSegments(void *flatBase) {
-  return hggcSegmentMap::unmap(flatBase);
+  return hggcVmmFlatUnmap(flatBase);
 }
 flagcxResult_t hggcAdaptorSymFlatVaFreeSegments(void *flatBase) {
-  return hggcSegmentMap::freeVa(flatBase);
+  return hggcVmmFlatFreeVa(flatBase);
 }
 
 flagcxResult_t hggcAdaptorSymLsaGetCapacity(size_t *totalBytes,
@@ -914,23 +718,22 @@ flagcxResult_t hggcAdaptorSymLsaVaReserve(size_t size, size_t alignment,
   if (base == NULL)
     return flagcxInvalidArgument;
   uintptr_t address = 0;
-  flagcxResult_t result =
-      hggcSegmentOps::reserveAddress(size, alignment, &address);
-  *base = result == flagcxSuccess ? reinterpret_cast<void *>(address) : NULL;
+  flagcxResult_t result = hggcVmmReserveAddress(size, alignment, &address);
+  *base = result == flagcxSuccess ? (void *)(address) : NULL;
   return result;
 }
 
 flagcxResult_t hggcAdaptorSymLsaVaFree(void *base, size_t size) {
-  return hggcSegmentOps::freeAddress(reinterpret_cast<uintptr_t>(base), size);
+  return hggcVmmFreeAddress((uintptr_t)(base), size);
 }
 
 flagcxResult_t hggcAdaptorSymLsaMapBeginAt(
     void *windowBase, int nPeers, int self, void *bundle,
     const flagcxSymRankLayout *layouts, const flagcxSymSegmentMeta *segments,
     int totalSegments, size_t stride, size_t alignment, void **mappingBase) {
-  return hggcSegmentMap::beginAt(windowBase, nPeers, self, bundle, layouts,
-                                 segments, totalSegments, stride, alignment,
-                                 mappingBase);
+  return hggcVmmFlatBegin(windowBase, 0, nPeers, self, bundle, layouts,
+                          segments, totalSegments, stride, alignment,
+                          mappingBase);
 }
 
 flagcxResult_t hggcAdaptorSymFlatMap(void *peerHandles[], int nPeers,
@@ -955,7 +758,8 @@ flagcxResult_t hggcAdaptorSymFlatMap(void *peerHandles[], int nPeers,
     hgMemAddressFree(base, totalSize);
     return flagcxUnhandledDeviceError;
   }
-  HGmemAccessDesc accessDesc = {};
+  HGmemAccessDesc accessDesc;
+  memset(&accessDesc, 0, sizeof(accessDesc));
   accessDesc.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = hggcDev;
   accessDesc.flags = HG_MEM_ACCESS_FLAGS_PROT_READWRITE;
@@ -1088,7 +892,8 @@ flagcxResult_t hggcAdaptorGetPointerType(const void *ptr, int *ptrType) {
   if (ptr == NULL || ptrType == NULL)
     return flagcxInvalidArgument;
 
-  hggcPointerAttributes attrs = {};
+  hggcPointerAttributes attrs;
+  memset(&attrs, 0, sizeof(attrs));
   hggcError_t err = hggcPointerGetAttributes(&attrs, ptr);
   if (err == hggcErrorInvalidValue) {
     hggcGetLastError();

@@ -51,6 +51,18 @@ inline hggcError_t hggcPointerGetAttributes(hggcPointerAttributes *a, const void
 #endif
   return pointerStatus;
 }
+enum hggcMemcpyKind { hggcMemcpyHostToDevice = 10, hggcMemcpyDeviceToHost,
+                      hggcMemcpyDeviceToDevice };
+static int memcpyCalls = 0;
+static hggcMemcpyKind seenMemcpyKind = hggcMemcpyHostToDevice;
+static hggcStream_t seenMemcpyStream = nullptr;
+static hggcError_t memcpyStatus = hggcSuccess;
+inline hggcError_t hggcMemcpy(void *, const void *, size_t, hggcMemcpyKind kind) {
+  ++memcpyCalls; seenMemcpyKind = kind; seenMemcpyStream = nullptr; return memcpyStatus;
+}
+inline hggcError_t hggcMemcpyAsync(void *, const void *, size_t, hggcMemcpyKind kind, hggcStream_t stream) {
+  ++memcpyCalls; seenMemcpyKind = kind; seenMemcpyStream = stream; return memcpyStatus;
+}
 enum { hggcHostAllocMapped = 1 };
 static int mallocCalls = 0;
 static int poolMallocCalls = 0;
@@ -169,7 +181,8 @@ inline size_t getFlagcxDataTypeSize(flagcxDataType_t) { return 4; }
 
 @unittest.skipUnless(CXX, "C++ compiler required")
 class PpuAdaptorTest(unittest.TestCase):
-    def compile_and_run(self, source, missing_pccl_symbol=None, fail_open=False):
+    def compile_and_run(self, source, missing_pccl_symbol=None, fail_open=False,
+                        runtime_env=None):
         with tempfile.TemporaryDirectory() as folder:
             tmp = Path(folder)
             (tmp / "hggc_runtime.h").write_text(RUNTIME + RUNTIME_TEMPLATES)
@@ -193,13 +206,18 @@ class PpuAdaptorTest(unittest.TestCase):
             cpp = tmp / "test.cc"
             cpp.write_text(r"""
 #include <cassert>
+#include <cstdlib>
 #include <dlfcn.h>
 static int openLibraryCalls = 0;
 static int seenLoadFlags = 0;
+static int kernelEnabledAtOpen = -1;
 void *flagcxOpenLib(const char *path, int flags,
                    void (*error_handler)(const char *, int, const char *)) {
   ++openLibraryCalls;
   seenLoadFlags = flags;
+  const char *enabled = std::getenv("PCCL_ENABLE_EXT_KERNEL");
+  if (enabled == nullptr) enabled = std::getenv("NCCL_ENABLE_EXT_KERNEL");
+  kernelEnabledAtOpen = enabled == nullptr ? 1 : std::atoi(enabled);
   if (""" + str(int(fail_open)) + r""") {
     error_handler(path, 0, "fixture library missing");
     return nullptr;
@@ -216,8 +234,31 @@ void *flagcxOpenLib(const char *path, int flags,
                 command += ["-ldl", "-pthread"]
             result = subprocess.run(command, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            result = subprocess.run([str(tmp / "test")], text=True, capture_output=True)
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("PCCL_ENABLE_EXT_KERNEL", "NCCL_ENABLE_EXT_KERNEL")}
+            env.update(runtime_env or {})
+            result = subprocess.run([str(tmp / "test")], env=env,
+                                    text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_pccl_defaults_to_builtin_kernels_before_loading(self):
+        source = '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
+        settings = [
+            ({}, 0),
+            ({"PCCL_ENABLE_EXT_KERNEL": ""}, 0),
+            ({"NCCL_ENABLE_EXT_KERNEL": ""}, 0),
+            ({"PCCL_ENABLE_EXT_KERNEL": "1"}, 1),
+            ({"NCCL_ENABLE_EXT_KERNEL": "1"}, 1),
+            ({"PCCL_ENABLE_EXT_KERNEL": "0", "NCCL_ENABLE_EXT_KERNEL": "1"}, 0),
+        ]
+        for env, expected in settings:
+            with self.subTest(settings=env):
+                self.compile_and_run(source + f"""
+int main() {{
+  assert(ppupcclAdaptorGetVersion(nullptr) == flagcxSuccess);
+  assert(kernelEnabledAtOpen == {expected});
+}}
+""", runtime_env=env)
 
     def test_pccl_enum_mapping_and_async_error_output(self):
         source = '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
@@ -542,19 +583,26 @@ int main(int argc, char **argv) {
             # be repaired by reopening an already bound library.
             cases = [
                 ("ordinary", {}),
-                ("prebound", {}),
-                ("fixed", {}),
-                ("fixed", {"PCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so")}),
-                ("fixed", {"NCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so")}),
-                ("fixed", {"PCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so"),
+                ("prebound", {"PCCL_ENABLE_EXT_KERNEL": "1"}),
+                ("optional", {}),
+                ("fixed", {"PCCL_ENABLE_EXT_KERNEL": "1"}),
+                ("fixed", {"NCCL_ENABLE_EXT_KERNEL": "1"}),
+                ("fixed", {"PCCL_ENABLE_EXT_KERNEL": "1",
+                           "PCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so")}),
+                ("fixed", {"PCCL_ENABLE_EXT_KERNEL": "1",
+                           "NCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so")}),
+                ("fixed", {"PCCL_ENABLE_EXT_KERNEL": "1",
+                           "PCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so"),
                            "NCCL_EXT_KERNEL_PLUGIN": str(tmp / "missing.so")}),
                 ("optional", {"PCCL_ENABLE_EXT_KERNEL": "0"}),
                 ("optional", {"PCCL_ENABLE_EXT_KERNEL": "0", "NCCL_ENABLE_EXT_KERNEL": "1"}),
                 ("optional", {"NCCL_ENABLE_EXT_KERNEL": "0"}),
-                ("optional", {"PCCL_EXT_KERNEL_PLUGIN": str(tmp / "missing.so")}),
-                ("optional", {"PCCL_EXT_KERNEL_PLUGIN": "STATIC_PLUGIN"}),
-                ("optional", {"PCCL_ALGO": "Ring"}),
-                ("optional", {"NCCL_PROTO": "Simple"}),
+                ("optional", {"PCCL_ENABLE_EXT_KERNEL": "1",
+                              "PCCL_EXT_KERNEL_PLUGIN": str(tmp / "missing.so")}),
+                ("optional", {"PCCL_ENABLE_EXT_KERNEL": "1",
+                              "PCCL_EXT_KERNEL_PLUGIN": "STATIC_PLUGIN"}),
+                ("optional", {"PCCL_ENABLE_EXT_KERNEL": "1", "PCCL_ALGO": "Ring"}),
+                ("optional", {"PCCL_ENABLE_EXT_KERNEL": "1", "NCCL_PROTO": "Simple"}),
             ]
             for mode, settings in cases:
                 with self.subTest(mode=mode, settings=settings):
@@ -573,6 +621,34 @@ int main(int argc, char **argv) {
                         self.assertIn("registered=12 queried=13", result.stderr)
                     elif mode == "fixed":
                         self.assertEqual(result.stderr.count("registered=13 queried=13"), 3)
+
+    def test_memcpy_dispatch_preserves_kind_stream_and_native_errors(self):
+        production = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
+        start = production.index("flagcxResult_t hggcAdaptorDeviceMemcpy(")
+        end = production.index("flagcxResult_t hggcAdaptorDeviceMemset(", start)
+        source = '#include "ppu_adaptor.h"\n#include "adaptor.h"\n' + production[start:end]
+        self.compile_and_run(source + r"""
+int main() {
+  flagcxStream stream{reinterpret_cast<hggcStream_t>(4)};
+  const flagcxMemcpyType_t types[] = {flagcxMemcpyHostToDevice, flagcxMemcpyDeviceToHost,
+                                     flagcxMemcpyDeviceToDevice};
+  const hggcMemcpyKind expected[] = {hggcMemcpyHostToDevice, hggcMemcpyDeviceToHost,
+                                    hggcMemcpyDeviceToDevice};
+  for (int i = 0; i < 3; i++) {
+    assert(hggcAdaptorDeviceMemcpy(nullptr, nullptr, 64, types[i], nullptr, nullptr) == flagcxSuccess);
+    assert(seenMemcpyKind == expected[i] && seenMemcpyStream == nullptr);
+    assert(hggcAdaptorDeviceMemcpy(nullptr, nullptr, 64, types[i], &stream, nullptr) == flagcxSuccess);
+    assert(seenMemcpyKind == expected[i] && seenMemcpyStream == stream.base);
+  }
+  assert(memcpyCalls == 6);
+  assert(hggcAdaptorDeviceMemcpy(nullptr, nullptr, 64, (flagcxMemcpyType_t)-1,
+                                  &stream, nullptr) == flagcxInvalidArgument);
+  assert(memcpyCalls == 6);
+  memcpyStatus = hggcErrorUnknown;
+  assert(hggcAdaptorDeviceMemcpy(nullptr, nullptr, 64, flagcxMemcpyHostToDevice,
+                                  &stream, nullptr) == flagcxUnhandledDeviceError);
+}
+""")
 
     def test_async_allocator_uses_current_pool_and_preserves_stream_and_errors(self):
         source = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()

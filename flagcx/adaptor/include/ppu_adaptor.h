@@ -6,7 +6,6 @@
 #include "flagcx.h"
 #include <hggc.h>
 #include <hggc_runtime.h>
-#include <map>
 #include <pccl.h>
 
 struct flagcxInnerDevComm {};

@@ -3,45 +3,91 @@
 #ifdef USE_PPU_ADAPTOR
 
 #include "adaptor.h"
-#include "alloc.h"
 #include "comm.h"
 #include "dlsymbols.h"
-#include <cstdlib>
-#include <mutex>
-#include <string>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <strings.h>
-#include <utility>
-
-namespace {
 
 #define PPU_PCCL_SYMBOLS(M)                                                    \
-  M(pcclGetVersion)                                                            \
-  M(pcclGetUniqueId)                                                           \
-  M(pcclGetErrorString)                                                        \
-  M(pcclGetLastError)                                                          \
-  M(pcclCommInitRank)                                                          \
-  M(pcclCommFinalize)                                                          \
-  M(pcclCommDestroy)                                                           \
-  M(pcclCommAbort)                                                             \
-  M(pcclCommCount)                                                             \
-  M(pcclCommCuDevice)                                                          \
-  M(pcclCommUserRank)                                                          \
-  M(pcclCommGetAsyncError)                                                     \
-  M(pcclReduce)                                                                \
-  M(pcclBroadcast)                                                             \
-  M(pcclAllReduce)                                                             \
-  M(pcclReduceScatter)                                                         \
-  M(pcclAllGather)                                                             \
-  M(pcclSend)                                                                  \
-  M(pcclRecv)                                                                  \
-  M(pcclGroupStart)                                                            \
-  M(pcclGroupEnd)
+  M(pcclGetVersion, ppupcclGetVersionFn)                                       \
+  M(pcclGetUniqueId, ppupcclGetUniqueIdFn)                                     \
+  M(pcclGetErrorString, ppupcclGetErrorStringFn)                               \
+  M(pcclGetLastError, ppupcclGetLastErrorFn)                                   \
+  M(pcclCommInitRank, ppupcclCommInitRankFn)                                   \
+  M(pcclCommFinalize, ppupcclCommFinalizeFn)                                   \
+  M(pcclCommDestroy, ppupcclCommDestroyFn)                                     \
+  M(pcclCommAbort, ppupcclCommAbortFn)                                         \
+  M(pcclCommCount, ppupcclCommCountFn)                                         \
+  M(pcclCommCuDevice, ppupcclCommCuDeviceFn)                                   \
+  M(pcclCommUserRank, ppupcclCommUserRankFn)                                   \
+  M(pcclCommGetAsyncError, ppupcclCommGetAsyncErrorFn)                         \
+  M(pcclReduce, ppupcclReduceFn)                                               \
+  M(pcclBroadcast, ppupcclBroadcastFn)                                         \
+  M(pcclAllReduce, ppupcclAllReduceFn)                                         \
+  M(pcclReduceScatter, ppupcclReduceScatterFn)                                 \
+  M(pcclAllGather, ppupcclAllGatherFn)                                         \
+  M(pcclSend, ppupcclSendFn)                                                   \
+  M(pcclRecv, ppupcclRecvFn)                                                   \
+  M(pcclGroupStart, ppupcclGroupStartFn)                                       \
+  M(pcclGroupEnd, ppupcclGroupEndFn)
+
+typedef pcclResult_t (*ppupcclGetVersionFn)(int *);
+typedef pcclResult_t (*ppupcclGetUniqueIdFn)(pcclUniqueId *);
+typedef pcclResult_t (*ppupcclCommInitRankFn)(pcclComm_t *, int, pcclUniqueId,
+                                              int);
+typedef pcclResult_t (*ppupcclCommFinalizeFn)(pcclComm_t);
+typedef pcclResult_t (*ppupcclCommDestroyFn)(pcclComm_t);
+typedef pcclResult_t (*ppupcclCommAbortFn)(pcclComm_t);
+typedef pcclResult_t (*ppupcclCommCountFn)(pcclComm_t, int *);
+typedef pcclResult_t (*ppupcclCommCuDeviceFn)(pcclComm_t, int *);
+typedef pcclResult_t (*ppupcclCommUserRankFn)(pcclComm_t, int *);
+typedef pcclResult_t (*ppupcclReduceFn)(const void *, void *, size_t,
+                                        pcclDataType_t, pcclRedOp_t, int,
+                                        pcclComm_t, hggcStream_t);
+typedef pcclResult_t (*ppupcclBroadcastFn)(const void *, void *, size_t,
+                                           pcclDataType_t, int, pcclComm_t,
+                                           hggcStream_t);
+typedef pcclResult_t (*ppupcclReduceScatterFn)(const void *, void *, size_t,
+                                               pcclDataType_t, pcclRedOp_t,
+                                               pcclComm_t, hggcStream_t);
+typedef pcclResult_t (*ppupcclAllGatherFn)(const void *, void *, size_t,
+                                           pcclDataType_t, pcclComm_t,
+                                           hggcStream_t);
+typedef pcclResult_t (*ppupcclSendFn)(const void *, size_t, pcclDataType_t, int,
+                                      pcclComm_t, hggcStream_t);
+typedef pcclResult_t (*ppupcclRecvFn)(void *, size_t, pcclDataType_t, int,
+                                      pcclComm_t, hggcStream_t);
+typedef pcclResult_t (*ppupcclGroupStartFn)(void);
+typedef pcclResult_t (*ppupcclGroupEndFn)(void);
+typedef const char *(*ppupcclGetErrorStringFn)(pcclResult_t);
+typedef const char *(*ppupcclGetLastErrorFn)(pcclComm_t);
+typedef pcclResult_t (*ppupcclCommGetAsyncErrorFn)(pcclComm_t, pcclResult_t *);
+typedef pcclResult_t (*ppupcclAllReduceFn)(const void *, void *, size_t,
+                                           pcclDataType_t, pcclRedOp_t,
+                                           pcclComm_t, hggcStream_t);
 
 struct ppupcclSymbols {
-#define PPU_PCCL_DECLARE(name) decltype(&::name) name;
+#define PPU_PCCL_DECLARE(name, type) type name;
   PPU_PCCL_SYMBOLS(PPU_PCCL_DECLARE)
 #undef PPU_PCCL_DECLARE
 };
+
+static pthread_once_t ppupcclApiOnce = PTHREAD_ONCE_INIT;
+static struct ppupcclSymbols ppupcclApi;
+static flagcxResult_t ppupcclApiResult = flagcxSystemError;
+static void *ppupcclLibraryHandle;
+static pthread_once_t ppupcclPluginOnce = PTHREAD_ONCE_INIT;
+static void *ppupcclPluginHandle;
+
+static void ppupcclLoadError(const char *path, int flags, const char *message) {
+  INFO(FLAGCX_INIT, "PPU/PCCL: cannot load %s: %s", path, message);
+}
+
+static void ppupcclIgnoreLoadError(const char *path, int flags,
+                                   const char *message) {}
 
 static int ppupcclLoadFlags() {
   int flags = RTLD_NOW | RTLD_LOCAL;
@@ -51,131 +97,129 @@ static int ppupcclLoadFlags() {
   return flags;
 }
 
-static flagcxResult_t ppupcclLoadApi(const ppupcclSymbols **api) {
-  static std::once_flag once;
-  static ppupcclSymbols symbols = {};
-  static flagcxResult_t result = flagcxSystemError;
-  std::call_once(once, [] {
-    const int flags = ppupcclLoadFlags();
-    // The existing CCL_HOME/lib rpath selects the configured SDK. Keep the
-    // handle for process lifetime: PCCL owns asynchronous work and threads.
-    void *handle = nullptr;
-    const char *paths[] = {"libpccl.so.2", "libpccl.so"};
-    for (const char *path : paths) {
-      handle = flagcxOpenLib(
-          path, flags, [](const char *p, int, const char *message) {
-            INFO(FLAGCX_INIT, "PPU/PCCL: cannot load %s: %s", p, message);
-          });
-      if (handle != nullptr)
-        break;
-    }
-    if (handle == nullptr) {
-      WARN("PPU/PCCL: failed to load the configured PCCL library");
+static void ppupcclInitApi(void) {
+  const char *enabled = getenv("PCCL_ENABLE_EXT_KERNEL");
+  const char *paths[] = {"libpccl.so.2", "libpccl.so"};
+  struct ppupcclSymbols loaded;
+  memset(&loaded, 0, sizeof(loaded));
+  int flags = ppupcclLoadFlags();
+  // PCCL can cache this setting in its library initializer.
+  if (enabled == NULL)
+    enabled = getenv("NCCL_ENABLE_EXT_KERNEL");
+  if (enabled == NULL || *enabled == '\0') {
+    if (setenv("PCCL_ENABLE_EXT_KERNEL", "0", 1) != 0) {
+      WARN("PPU/PCCL: could not disable optional extension kernels");
       return;
     }
-    ppupcclSymbols loaded = {};
-#define PPU_PCCL_LOAD(name)                                                    \
+  }
+  // Use CCL_HOME's rpath and keep PCCL alive for asynchronous work/threads.
+  for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+    ppupcclLibraryHandle = flagcxOpenLib(paths[i], flags, ppupcclLoadError);
+    if (ppupcclLibraryHandle != NULL)
+      break;
+  }
+  if (ppupcclLibraryHandle == NULL) {
+    WARN("PPU/PCCL: failed to load the configured PCCL library");
+    return;
+  }
+#define PPU_PCCL_LOAD(name, type)                                              \
   do {                                                                         \
     dlerror();                                                                 \
-    loaded.name =                                                              \
-        reinterpret_cast<decltype(loaded.name)>(dlsym(handle, #name));         \
+    (void)sizeof(1 ? loaded.name : &name);                                     \
+    loaded.name = (type)dlsym(ppupcclLibraryHandle, #name);                    \
     const char *error = dlerror();                                             \
-    if (error != nullptr || loaded.name == nullptr) {                          \
+    if (error != NULL || loaded.name == NULL) {                                \
       WARN("PPU/PCCL: cannot resolve %s: %s", #name,                           \
-           error != nullptr ? error : "null symbol");                          \
+           error != NULL ? error : "null symbol");                             \
       return;                                                                  \
     }                                                                          \
   } while (0);
-    PPU_PCCL_SYMBOLS(PPU_PCCL_LOAD)
+  PPU_PCCL_SYMBOLS(PPU_PCCL_LOAD)
 #undef PPU_PCCL_LOAD
-    symbols = loaded;
-    result = flagcxSuccess;
-  });
-  *api = result == flagcxSuccess ? &symbols : nullptr;
-  return result;
+  ppupcclApi = loaded;
+  ppupcclApiResult = flagcxSuccess;
+}
+
+static flagcxResult_t ppupcclLoadApi(const struct ppupcclSymbols **api) {
+  if (pthread_once(&ppupcclApiOnce, ppupcclInitApi) != 0)
+    return flagcxSystemError;
+  *api = ppupcclApiResult == flagcxSuccess ? &ppupcclApi : NULL;
+  return ppupcclApiResult;
 }
 
 static const char *ppupcclPluginSetting(const char *name,
                                         const char *compatName) {
-  const char *value = std::getenv(name);
-  return value != nullptr ? value : std::getenv(compatName);
+  const char *value = getenv(name);
+  return value != NULL ? value : getenv(compatName);
 }
 
-static void ppupcclPreloadKernelPlugin(const ppupcclSymbols *api) {
-  static std::once_flag once;
-  // Retain our reference after PCCL closes a communicator's plugin handle.
-  // The runtime's registered host kernel entry points belong to this library.
-  static void *pluginHandle = nullptr;
-  std::call_once(once, [api] {
-    const char *enabled = ppupcclPluginSetting("PCCL_ENABLE_EXT_KERNEL",
-                                               "NCCL_ENABLE_EXT_KERNEL");
-    if (enabled != nullptr && *enabled != '\0' &&
-        std::strtoll(enabled, nullptr, 0) == 0)
-      return;
-    if (ppupcclPluginSetting("PCCL_ALGO", "NCCL_ALGO") != nullptr ||
-        ppupcclPluginSetting("PCCL_PROTO", "NCCL_PROTO") != nullptr)
-      return;
-
-    const char *configured = ppupcclPluginSetting("PCCL_EXT_KERNEL_PLUGIN",
-                                                  "NCCL_EXT_KERNEL_PLUGIN");
-    if (configured != nullptr && strncasecmp(configured, "STATIC_PLUGIN",
-                                             sizeof("STATIC_PLUGIN") - 1) == 0)
-      return;
-
-    const char *name = configured != nullptr && *configured != '\0'
-                           ? configured
-                           : "libpccl-ext-kernel.so";
-    auto open = [](const char *path) {
+static void *ppupcclOpenKernelPlugin(const char *path) {
 #ifdef RTLD_NOLOAD
-      void *resident = flagcxOpenLib(path, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD,
-                                     [](const char *, int, const char *) {});
-      if (resident != nullptr) {
-        INFO(FLAGCX_INIT,
-             "PPU/PCCL: kernel plugin %s was already loaded; retaining its "
-             "existing symbol bindings",
-             path);
-        return resident;
-      }
+  void *resident = flagcxOpenLib(path, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD,
+                                 ppupcclIgnoreLoadError);
+  if (resident != NULL) {
+    INFO(FLAGCX_INIT,
+         "PPU/PCCL: kernel plugin %s was already loaded; retaining its "
+         "existing symbol bindings",
+         path);
+    return resident;
+  }
 #endif
-      INFO(FLAGCX_INIT, "PPU/PCCL: preloading kernel plugin %s with flags %#x",
-           path, ppupcclLoadFlags());
-      return flagcxOpenLib(path, ppupcclLoadFlags(),
-                           [](const char *p, int, const char *message) {
-                             INFO(FLAGCX_INIT,
-                                  "PPU/PCCL: optional kernel plugin %s: %s", p,
-                                  message);
-                           });
-    };
+  INFO(FLAGCX_INIT, "PPU/PCCL: preloading kernel plugin %s with flags %#x",
+       path, ppupcclLoadFlags());
+  return flagcxOpenLib(path, ppupcclLoadFlags(), ppupcclLoadError);
+}
 
-    // PCCL later uses an ordinary dlopen for its optional plugin. Load it
-    // first with the same scope as PCCL so kernel registration and attribute
-    // queries do not bind to different HGGC runtimes through global wrappers.
-    // Prefer the selected PCCL installation for the default plugin.
-    if (configured == nullptr || *configured == '\0') {
-      Dl_info info = {};
-      if (dladdr(reinterpret_cast<const void *>(api->pcclGetVersion), &info) &&
-          info.dli_fname != nullptr) {
-        std::string path(info.dli_fname);
-        const auto slash = path.find_last_of('/');
-        if (slash != std::string::npos) {
-          path.resize(slash + 1);
-          path += name;
-          pluginHandle = open(path.c_str());
+static void ppupcclInitKernelPlugin(void) {
+  const char *enabled =
+      ppupcclPluginSetting("PCCL_ENABLE_EXT_KERNEL", "NCCL_ENABLE_EXT_KERNEL");
+  if (enabled != NULL && *enabled != '\0' && strtoll(enabled, NULL, 0) == 0)
+    return;
+  if (ppupcclPluginSetting("PCCL_ALGO", "NCCL_ALGO") != NULL ||
+      ppupcclPluginSetting("PCCL_PROTO", "NCCL_PROTO") != NULL)
+    return;
+  const char *configured =
+      ppupcclPluginSetting("PCCL_EXT_KERNEL_PLUGIN", "NCCL_EXT_KERNEL_PLUGIN");
+  if (configured != NULL && strncasecmp(configured, "STATIC_PLUGIN",
+                                        sizeof("STATIC_PLUGIN") - 1) == 0)
+    return;
+  const char *name = configured != NULL && *configured != '\0'
+                         ? configured
+                         : "libpccl-ext-kernel.so";
+  // Load before PCCL's ordinary dlopen so registration and queries bind to
+  // the same HGGC runtime. Prefer the selected PCCL installation.
+  if (configured == NULL || *configured == '\0') {
+    Dl_info info = {};
+    if (dladdr((const void *)ppupcclApi.pcclGetVersion, &info) &&
+        info.dli_fname != NULL) {
+      const char *slash = strrchr(info.dli_fname, '/');
+      size_t nameBytes = strlen(name) + 1;
+      size_t directoryBytes =
+          slash == NULL ? 0 : (size_t)(slash - info.dli_fname) + 1;
+      if (directoryBytes != 0 && directoryBytes <= SIZE_MAX - nameBytes) {
+        char *path = (char *)malloc(directoryBytes + nameBytes);
+        if (path != NULL) {
+          memcpy(path, info.dli_fname, directoryBytes);
+          memcpy(path + directoryBytes, name, nameBytes);
+          ppupcclPluginHandle = ppupcclOpenKernelPlugin(path);
+          free(path);
         }
       }
     }
-    if (pluginHandle == nullptr)
-      pluginHandle = open(name);
-    if (pluginHandle != nullptr) {
-      INFO(FLAGCX_INIT, "PPU/PCCL: retained kernel plugin %s", name);
-    }
-    // Missing plugins remain optional; PCCL selects its built-in kernels.
-  });
+  }
+  if (ppupcclPluginHandle == NULL)
+    ppupcclPluginHandle = ppupcclOpenKernelPlugin(name);
+  if (ppupcclPluginHandle != NULL)
+    INFO(FLAGCX_INIT, "PPU/PCCL: retained kernel plugin %s", name);
+  // Missing optional plugins let PCCL select built-in kernels. Retain the
+  // reference for process lifetime: HGGC keeps registered host entry points.
+}
+
+static void ppupcclPreloadKernelPlugin(const struct ppupcclSymbols *api) {
+  pthread_once(&ppupcclPluginOnce, ppupcclInitKernelPlugin);
 }
 
 #undef PPU_PCCL_SYMBOLS
-
-} // namespace
 
 // Native PCCL enums are not a FlagCX ABI: use explicit conversions, including
 // errors introduced by newer SDKs (e.g. timeout) and unknown future values.
@@ -202,17 +246,8 @@ static flagcxResult_t ppupcclResultToFlagcx(pcclResult_t result) {
   }
 }
 
-template <typename... Params, typename... Args>
-static flagcxResult_t
-ppupcclCall(pcclResult_t (*ppupcclSymbols::*function)(Params...),
-            Args &&...args) {
-  const ppupcclSymbols *api = nullptr;
-  FLAGCXCHECK(ppupcclLoadApi(&api));
-  return ppupcclResultToFlagcx((api->*function)(std::forward<Args>(args)...));
-}
-
 static const char *ppupcclErrorString(pcclResult_t result) {
-  const ppupcclSymbols *api = nullptr;
+  const ppupcclSymbols *api = NULL;
   if (ppupcclLoadApi(&api) != flagcxSuccess)
     return "PPU PCCL library could not be loaded; consult the initialization "
            "log";
@@ -286,15 +321,21 @@ static_assert(sizeof(pcclUniqueId) <= sizeof(flagcxInnerUniqueId),
               "pcclUniqueId does not fit inside flagcxInnerUniqueId");
 
 flagcxResult_t ppupcclAdaptorGetVersion(int *version) {
-  return ppupcclCall(&ppupcclSymbols::pcclGetVersion, version);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclGetVersion(version));
 }
 
 flagcxResult_t ppupcclAdaptorGetUniqueId(flagcxInnerUniqueId_t *uniqueId) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   if (*uniqueId == NULL) {
-    FLAGCXCHECK(flagcxCalloc(uniqueId, 1));
+    *uniqueId = (flagcxInnerUniqueId_t)calloc(1, sizeof(**uniqueId));
+    if (*uniqueId == NULL)
+      return flagcxSystemError;
   }
-  return ppupcclCall(&ppupcclSymbols::pcclGetUniqueId,
-                     (pcclUniqueId *)(*uniqueId));
+  return ppupcclResultToFlagcx(
+      api->pcclGetUniqueId((pcclUniqueId *)(*uniqueId)));
 }
 
 flagcxResult_t ppupcclAdaptorGetStagedBuffer(const flagcxInnerComm_t comm,
@@ -329,7 +370,7 @@ const char *ppupcclAdaptorGetErrorString(flagcxResult_t result) {
 }
 
 const char *ppupcclAdaptorGetLastError(flagcxInnerComm_t comm) {
-  const ppupcclSymbols *api = nullptr;
+  const ppupcclSymbols *api = NULL;
   if (ppupcclLoadApi(&api) != flagcxSuccess)
     return "PPU PCCL library could not be loaded; consult the initialization "
            "log";
@@ -340,26 +381,34 @@ flagcxResult_t
 ppupcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                            flagcxInnerUniqueId_t commId, int rank,
                            struct bootstrapState * /*bootstrap*/) {
-  const ppupcclSymbols *api = nullptr;
+  const ppupcclSymbols *api = NULL;
   FLAGCXCHECK(ppupcclLoadApi(&api));
   ppupcclPreloadKernelPlugin(api);
   if (*comm == NULL) {
-    FLAGCXCHECK(flagcxCalloc(comm, 1));
+    *comm = (flagcxInnerComm_t)calloc(1, sizeof(**comm));
+    if (*comm == NULL)
+      return flagcxSystemError;
   }
-  return ppupcclCall(&ppupcclSymbols::pcclCommInitRank, &(*comm)->base, nranks,
-                     *(pcclUniqueId *)commId, rank);
+  return ppupcclResultToFlagcx(api->pcclCommInitRank(
+      &(*comm)->base, nranks, *(pcclUniqueId *)commId, rank));
 }
 
 flagcxResult_t ppupcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return ppupcclCall(&ppupcclSymbols::pcclCommFinalize, comm->base);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclCommFinalize(comm->base));
 }
 
 flagcxResult_t ppupcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return ppupcclCall(&ppupcclSymbols::pcclCommDestroy, comm->base);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclCommDestroy(comm->base));
 }
 
 flagcxResult_t ppupcclAdaptorCommAbort(flagcxInnerComm_t comm) {
-  return ppupcclCall(&ppupcclSymbols::pcclCommAbort, comm->base);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclCommAbort(comm->base));
 }
 
 flagcxResult_t ppupcclAdaptorCommResume(flagcxInnerComm_t comm) {
@@ -372,26 +421,34 @@ flagcxResult_t ppupcclAdaptorCommSuspend(flagcxInnerComm_t comm) {
 
 flagcxResult_t ppupcclAdaptorCommCount(const flagcxInnerComm_t comm,
                                        int *count) {
-  return ppupcclCall(&ppupcclSymbols::pcclCommCount, comm->base, count);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclCommCount(comm->base, count));
 }
 
 flagcxResult_t ppupcclAdaptorCommCuDevice(const flagcxInnerComm_t comm,
                                           int *device) {
-  return ppupcclCall(&ppupcclSymbols::pcclCommCuDevice, comm->base, device);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclCommCuDevice(comm->base, device));
 }
 
 flagcxResult_t ppupcclAdaptorCommUserRank(const flagcxInnerComm_t comm,
                                           int *rank) {
-  return ppupcclCall(&ppupcclSymbols::pcclCommUserRank, comm->base, rank);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclCommUserRank(comm->base, rank));
 }
 
 flagcxResult_t ppupcclAdaptorCommGetAsyncError(flagcxInnerComm_t comm,
                                                flagcxResult_t *asyncError) {
-  if (comm == nullptr || asyncError == nullptr)
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  if (comm == NULL || asyncError == NULL)
     return flagcxInvalidArgument;
   pcclResult_t nativeError = pcclSuccess;
-  const flagcxResult_t result = ppupcclCall(
-      &ppupcclSymbols::pcclCommGetAsyncError, comm->base, &nativeError);
+  const flagcxResult_t result = ppupcclResultToFlagcx(
+      api->pcclCommGetAsyncError(comm->base, &nativeError));
   if (result == flagcxSuccess)
     *asyncError = ppupcclResultToFlagcx(nativeError);
   return result;
@@ -430,43 +487,48 @@ flagcxResult_t ppupcclAdaptorReduce(const void *sendbuff, void *recvbuff,
                                     flagcxRedOp_t op, int root,
                                     flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   pcclRedOp_t nativeOp;
   FLAGCXCHECK(ppupcclRedOpToNative(op, &nativeOp));
-  return ppupcclCall(&ppupcclSymbols::pcclReduce, sendbuff, recvbuff, count,
-                     nativeDatatype, nativeOp, root, comm->base, stream->base);
+  return ppupcclResultToFlagcx(api->pcclReduce(sendbuff, recvbuff, count,
+                                               nativeDatatype, nativeOp, root,
+                                               comm->base, stream->base));
 }
 
 flagcxResult_t ppupcclAdaptorGather(const void *sendbuff, void *recvbuff,
                                     size_t count, flagcxDataType_t datatype,
                                     int root, flagcxInnerComm_t comm,
                                     flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   int rank, nranks;
-  FLAGCXCHECK(
-      ppupcclCall(&ppupcclSymbols::pcclCommUserRank, comm->base, &rank));
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclCommCount, comm->base, &nranks));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclCommUserRank(comm->base, &rank)));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclCommCount(comm->base, &nranks)));
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  char *buffer = static_cast<char *>(recvbuff);
+  char *buffer = (char *)(recvbuff);
 
   flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupStart));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupStart()));
   if (rank == root) {
     for (int r = 0; r < nranks; r++) {
-      FLAGCXCHECKGOTO(ppupcclCall(&ppupcclSymbols::pcclRecv,
-                                  static_cast<void *>(buffer + r * size), size,
-                                  pcclChar, r, comm->base, stream->base),
+      FLAGCXCHECKGOTO(ppupcclResultToFlagcx(
+                          api->pcclRecv((void *)(buffer + r * size), size,
+                                        pcclChar, r, comm->base, stream->base)),
                       res, group_exit);
     }
   }
-  FLAGCXCHECKGOTO(ppupcclCall(&ppupcclSymbols::pcclSend, sendbuff, size,
-                              pcclChar, root, comm->base, stream->base),
-                  res, group_exit);
+  FLAGCXCHECKGOTO(
+      ppupcclResultToFlagcx(api->pcclSend(sendbuff, size, pcclChar, root,
+                                          comm->base, stream->base)),
+      res, group_exit);
 group_exit:
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupEnd));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupEnd()));
   return res;
 }
 
@@ -474,31 +536,33 @@ flagcxResult_t ppupcclAdaptorScatter(const void *sendbuff, void *recvbuff,
                                      size_t count, flagcxDataType_t datatype,
                                      int root, flagcxInnerComm_t comm,
                                      flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   int rank, nranks;
-  FLAGCXCHECK(
-      ppupcclCall(&ppupcclSymbols::pcclCommUserRank, comm->base, &rank));
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclCommCount, comm->base, &nranks));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclCommUserRank(comm->base, &rank)));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclCommCount(comm->base, &nranks)));
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *buffer = static_cast<const char *>(sendbuff);
+  const char *buffer = (const char *)(sendbuff);
 
   flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupStart));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupStart()));
   if (rank == root) {
     for (int r = 0; r < nranks; r++) {
-      FLAGCXCHECKGOTO(ppupcclCall(&ppupcclSymbols::pcclSend,
-                                  static_cast<const void *>(buffer + r * size),
-                                  size, pcclChar, r, comm->base, stream->base),
+      FLAGCXCHECKGOTO(ppupcclResultToFlagcx(
+                          api->pcclSend((const void *)(buffer + r * size), size,
+                                        pcclChar, r, comm->base, stream->base)),
                       res, group_exit);
     }
   }
-  FLAGCXCHECKGOTO(ppupcclCall(&ppupcclSymbols::pcclRecv, recvbuff, size,
-                              pcclChar, root, comm->base, stream->base),
-                  res, group_exit);
+  FLAGCXCHECKGOTO(
+      ppupcclResultToFlagcx(api->pcclRecv(recvbuff, size, pcclChar, root,
+                                          comm->base, stream->base)),
+      res, group_exit);
 group_exit:
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupEnd));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupEnd()));
   return res;
 }
 
@@ -506,74 +570,86 @@ flagcxResult_t ppupcclAdaptorBroadcast(const void *sendbuff, void *recvbuff,
                                        size_t count, flagcxDataType_t datatype,
                                        int root, flagcxInnerComm_t comm,
                                        flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
-  return ppupcclCall(&ppupcclSymbols::pcclBroadcast, sendbuff, recvbuff, count,
-                     nativeDatatype, root, comm->base, stream->base);
+  return ppupcclResultToFlagcx(api->pcclBroadcast(sendbuff, recvbuff, count,
+                                                  nativeDatatype, root,
+                                                  comm->base, stream->base));
 }
 
 flagcxResult_t ppupcclAdaptorAllReduce(const void *sendbuff, void *recvbuff,
                                        size_t count, flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxInnerComm_t comm,
                                        flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   pcclRedOp_t nativeOp;
   FLAGCXCHECK(ppupcclRedOpToNative(op, &nativeOp));
-  return ppupcclCall(&ppupcclSymbols::pcclAllReduce, sendbuff, recvbuff, count,
-                     nativeDatatype, nativeOp, comm->base, stream->base);
+  return ppupcclResultToFlagcx(api->pcclAllReduce(sendbuff, recvbuff, count,
+                                                  nativeDatatype, nativeOp,
+                                                  comm->base, stream->base));
 }
 
 flagcxResult_t
 ppupcclAdaptorReduceScatter(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, flagcxRedOp_t op,
                             flagcxInnerComm_t comm, flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   pcclRedOp_t nativeOp;
   FLAGCXCHECK(ppupcclRedOpToNative(op, &nativeOp));
-  return ppupcclCall(&ppupcclSymbols::pcclReduceScatter, sendbuff, recvbuff,
-                     count, nativeDatatype, nativeOp, comm->base, stream->base);
+  return ppupcclResultToFlagcx(
+      api->pcclReduceScatter(sendbuff, recvbuff, count, nativeDatatype,
+                             nativeOp, comm->base, stream->base));
 }
 
 flagcxResult_t ppupcclAdaptorAllGather(const void *sendbuff, void *recvbuff,
                                        size_t count, flagcxDataType_t datatype,
                                        flagcxInnerComm_t comm,
                                        flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
-  return ppupcclCall(&ppupcclSymbols::pcclAllGather, sendbuff, recvbuff, count,
-                     nativeDatatype, comm->base, stream->base);
+  return ppupcclResultToFlagcx(api->pcclAllGather(
+      sendbuff, recvbuff, count, nativeDatatype, comm->base, stream->base));
 }
 
 flagcxResult_t ppupcclAdaptorAlltoAll(const void *sendbuff, void *recvbuff,
                                       size_t count, flagcxDataType_t datatype,
                                       flagcxInnerComm_t comm,
                                       flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   int nranks;
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclCommCount, comm->base, &nranks));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclCommCount(comm->base, &nranks)));
 
   size_t size = count * getFlagcxDataTypeSize(datatype);
-  const char *sendBuffer = static_cast<const char *>(sendbuff);
-  char *recvBuffer = static_cast<char *>(recvbuff);
+  const char *sendBuffer = (const char *)(sendbuff);
+  char *recvBuffer = (char *)(recvbuff);
 
   flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupStart));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupStart()));
   for (int r = 0; r < nranks; r++) {
-    FLAGCXCHECKGOTO(
-        ppupcclCall(&ppupcclSymbols::pcclSend,
-                    static_cast<const void *>(sendBuffer + r * size), size,
-                    pcclChar, r, comm->base, stream->base),
-        res, group_exit);
-    FLAGCXCHECKGOTO(ppupcclCall(&ppupcclSymbols::pcclRecv,
-                                static_cast<void *>(recvBuffer + r * size),
-                                size, pcclChar, r, comm->base, stream->base),
+    FLAGCXCHECKGOTO(ppupcclResultToFlagcx(api->pcclSend(
+                        (const void *)(sendBuffer + r * size), size, pcclChar,
+                        r, comm->base, stream->base)),
+                    res, group_exit);
+    FLAGCXCHECKGOTO(ppupcclResultToFlagcx(
+                        api->pcclRecv((void *)(recvBuffer + r * size), size,
+                                      pcclChar, r, comm->base, stream->base)),
                     res, group_exit);
   }
 group_exit:
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupEnd));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupEnd()));
   return res;
 }
 
@@ -583,37 +659,37 @@ flagcxResult_t ppupcclAdaptorAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                        flagcxDataType_t datatype,
                                        flagcxInnerComm_t comm,
                                        flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
   int nranks;
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclCommCount, comm->base, &nranks));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclCommCount(comm->base, &nranks)));
 
   size_t typeSize = getFlagcxDataTypeSize(datatype);
-  const char *sendBuffer = static_cast<const char *>(sendbuff);
-  char *recvBuffer = static_cast<char *>(recvbuff);
+  const char *sendBuffer = (const char *)(sendbuff);
+  char *recvBuffer = (char *)(recvbuff);
 
   flagcxResult_t res = flagcxSuccess;
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupStart));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupStart()));
   for (int r = 0; r < nranks; r++) {
     if (flagcxCCLAdaptorNeedSendrecv(sendcounts[r])) {
       FLAGCXCHECKGOTO(
-          ppupcclCall(
-              &ppupcclSymbols::pcclSend,
-              static_cast<const void *>(sendBuffer + sdispls[r] * typeSize),
-              sendcounts[r] * typeSize, pcclChar, r, comm->base, stream->base),
+          ppupcclResultToFlagcx(api->pcclSend(
+              (const void *)(sendBuffer + sdispls[r] * typeSize),
+              sendcounts[r] * typeSize, pcclChar, r, comm->base, stream->base)),
           res, group_exit);
     }
     if (flagcxCCLAdaptorNeedSendrecv(recvcounts[r])) {
       FLAGCXCHECKGOTO(
-          ppupcclCall(&ppupcclSymbols::pcclRecv,
-                      static_cast<void *>(recvBuffer + rdispls[r] * typeSize),
-                      recvcounts[r] * typeSize, pcclChar, r, comm->base,
-                      stream->base),
+          ppupcclResultToFlagcx(api->pcclRecv(
+              (void *)(recvBuffer + rdispls[r] * typeSize),
+              recvcounts[r] * typeSize, pcclChar, r, comm->base, stream->base)),
           res, group_exit);
     }
   }
 group_exit:
-  FLAGCXCHECK(ppupcclCall(&ppupcclSymbols::pcclGroupEnd));
+  FLAGCXCHECK(ppupcclResultToFlagcx(api->pcclGroupEnd()));
   return res;
 }
 
@@ -621,28 +697,36 @@ flagcxResult_t ppupcclAdaptorSend(const void *sendbuff, size_t count,
                                   flagcxDataType_t datatype, int peer,
                                   flagcxInnerComm_t comm,
                                   flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
-  return ppupcclCall(&ppupcclSymbols::pcclSend, sendbuff, count, nativeDatatype,
-                     peer, comm->base, stream->base);
+  return ppupcclResultToFlagcx(api->pcclSend(sendbuff, count, nativeDatatype,
+                                             peer, comm->base, stream->base));
 }
 
 flagcxResult_t ppupcclAdaptorRecv(void *recvbuff, size_t count,
                                   flagcxDataType_t datatype, int peer,
                                   flagcxInnerComm_t comm,
                                   flagcxStream_t stream) {
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
   pcclDataType_t nativeDatatype;
   FLAGCXCHECK(ppupcclDataTypeToNative(datatype, &nativeDatatype));
-  return ppupcclCall(&ppupcclSymbols::pcclRecv, recvbuff, count, nativeDatatype,
-                     peer, comm->base, stream->base);
+  return ppupcclResultToFlagcx(api->pcclRecv(recvbuff, count, nativeDatatype,
+                                             peer, comm->base, stream->base));
 }
 
 flagcxResult_t ppupcclAdaptorGroupStart() {
-  return ppupcclCall(&ppupcclSymbols::pcclGroupStart);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclGroupStart());
 }
 
 flagcxResult_t ppupcclAdaptorGroupEnd() {
-  return ppupcclCall(&ppupcclSymbols::pcclGroupEnd);
+  const struct ppupcclSymbols *api = NULL;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  return ppupcclResultToFlagcx(api->pcclGroupEnd());
 }
 
 flagcxResult_t

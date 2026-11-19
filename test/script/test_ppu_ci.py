@@ -14,60 +14,57 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PpuCiRegressionTest(unittest.TestCase):
-    def test_pccl_diagnostics_runs_all_modes_and_preserves_failures(self):
-        script = REPO_ROOT / ".github/scripts/ci/run_ppu_pccl_diagnostics.sh"
+    def test_runner_uses_builtin_kernels_for_all_operations_and_preserves_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            fake = root / "mpi"
-            fake.write_text("""#!/usr/bin/env python3
+            fake = root / "runner"
+            fake.write_text(r"""#!/usr/bin/env python3
 import json, os, sys
-from pathlib import Path
 
 args = sys.argv[1:]
-exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
-               if i > 0 and args[i - 1] == "-x")
-assert exports["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
-assert exports["FLAGCX_CI_RUNNER_BYTES"] == "4194304"
-assert exports["FLAGCX_CI_EXPECT_RUNNER_MODE"] == "HOMO"
-assert exports["LD_DEBUG"] == "libs,bindings,versions"
-assert os.environ["FLAGCX_CI_TEST_MAX_ATTEMPTS"] == "1"
-assert os.environ["FLAGCX_CI_REQUIRE_GTEST_PASS"] == "1"
-for name in ("FLAGCX_USE_HETERO_COMM", "PCCL_EXT_KERNEL_PLUGIN", "PCCL_ALGO"):
-    assert name not in os.environ
+label = os.environ.get("FLAGCX_CI_MPI_LABEL", os.environ.get("FLAGCX_CI_TEST_LABEL"))
+assert os.environ["PCCL_ENABLE_EXT_KERNEL"] == "0"
+assert os.environ["GTEST_FILTER"] == "*-CoverageSupplemental.*"
+if args[0] != "make":
+    exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
+                   if i > 0 and args[i - 1] == "-x")
+    assert exports["PCCL_ENABLE_EXT_KERNEL"] == "0"
+    assert "./build/bin/runner_mpi_tests" in args
+    if label == "runner PPU PXN four-rank":
+        assert args[-1] == "--gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll"
+    else:
+        assert not any("gtest_filter" in arg for arg in args)
 with open(os.environ["CALL_LOG"], "a") as out:
-    out.write(json.dumps(exports | {"filter": args[-1]}) + "\\n")
-mode = os.environ["FIXTURE_MODE"]
-if mode != "missing-bindings":
-    Path(exports["LD_DEBUG_OUTPUT"] + ".123").write_text(
-        "binding file libpccl-ext-kernel.so to libhggcrt.13.so: symbol __hggcRegisterFunction\\n")
-attempt = Path(os.environ["FLAGCX_CI_LOG_DIR"]) / "attempt-1.log"
-attempt.write_text("[  PASSED  ] 1 test.\\n" +
-    ("PPU/PCCL: retained kernel plugin libpccl-ext-kernel.so\\n"
-     if exports["PCCL_ENABLE_EXT_KERNEL"] == "1" and mode != "missing-plugin" else ""))
-if mode == "failure" and exports["PCCL_ENABLE_EXT_KERNEL"] == "1":
+    out.write(json.dumps({"label": label, "args": args}) + "\n")
+if label == os.environ["FAIL_LABEL"]:
     sys.exit(139)
 """)
             fake.chmod(0o755)
-            for mode in ("pass", "failure", "missing-bindings", "missing-plugin"):
-                with self.subTest(mode=mode):
-                    calls = root / f"{mode}.jsonl"
-                    env = dict(os.environ, MPI_RUNNER=str(fake), FIXTURE_MODE=mode,
-                               CALL_LOG=str(calls), FLAGCX_CI_LOG_DIR=str(root / mode),
-                               FLAGCX_USE_HETERO_COMM="1",
-                               PCCL_EXT_KERNEL_PLUGIN="unexpected.so", PCCL_ALGO="Ring")
-                    result = subprocess.run(["bash", str(script), str(root)], env=env,
-                                            text=True, capture_output=True)
-                    self.assertEqual(result.returncode, 0 if mode == "pass" else 1,
+            for failure in ("none", "runner unit tests", "runner default",
+                            "runner PPU PXN four-rank"):
+                with self.subTest(failure=failure):
+                    calls = root / (failure.replace(" ", "-") + ".jsonl")
+                    env = dict(os.environ, TEST_RUNNER=str(fake), MPI_RUNNER=str(fake),
+                               CALL_LOG=str(calls), FAIL_LABEL=failure,
+                               MPI_HOME=str(root / "mpi-home"), PROJECT_ROOT=str(REPO_ROOT),
+                               FLAGCX_CI_ENABLE_PXN="1", PCCL_ENABLE_EXT_KERNEL="1",
+                               NCCL_ENABLE_EXT_KERNEL="1", GTEST_FILTER="FlagCXCollTest.AllReduce")
+                    result = subprocess.run([
+                        "bash", "-euc",
+                        'source "$1"; flagcx_ci_run_suite_override runner "$2" '
+                        'USE_PPU=1 USE_ACCL_BAREX=1',
+                        "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh"), str(root),
+                    ], env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0 if failure == "none" else 1,
                                      result.stdout + result.stderr)
                     invoked = [json.loads(line) for line in calls.read_text().splitlines()]
-                    self.assertEqual(len(invoked), 4)
-                    self.assertEqual([case["PCCL_ENABLE_EXT_KERNEL"] for case in invoked],
-                                     ["1", "1", "0", "0"])
-                    self.assertEqual(len({case["LD_DEBUG_OUTPUT"] for case in invoked}), 4)
-                    for case in invoked:
-                        self.assertIn("FlagCXCollTest.AllReduce", case["filter"])
-                    self.assertIn("AllGather", invoked[1]["filter"])
-                    self.assertIn("AllGather", invoked[3]["filter"])
+                    self.assertEqual([case["label"] for case in invoked], [
+                        "runner unit tests", "runner default",
+                        "runner BAREX heterogeneous",
+                        "runner BAREX forced NET", "runner PPU PXN four-rank",
+                    ])
+                    self.assertEqual([case["args"][1] for case in invoked[1:]],
+                                     ["4", "4", "4", "4"])
 
     def test_barex_main_adaptor_exposes_runtime_multichannel_transport(self):
         barex = (
@@ -256,19 +253,19 @@ if mode == "failure" and exports["PCCL_ENABLE_EXT_KERNEL"] == "1":
         ).read_text()
 
         self.assertNotIn("Skipping PPU runner heterogeneous", source)
-        self.assertIn("runner BAREX heterogeneous SendRecv smoke", source)
+        self.assertNotIn("runner BAREX heterogeneous two-rank", source)
         self.assertIn("runner BAREX heterogeneous", source)
         self.assertIn("runner BAREX forced NET", source)
         self.assertGreaterEqual(source.count("FLAGCX_P2P_TRANSPORT=accl"), 3)
         self.assertNotIn("NCCL_P2P_DISABLE", source)
         self.assertNotIn("NCCL_SHM_DISABLE", source)
-        self.assertEqual(source.count("FLAGCX_USE_HETERO_COMM=1"), 1)
+        self.assertEqual(source.count("FLAGCX_USE_HETERO_COMM=1"), 0)
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", source)
         self.assertGreaterEqual(
             source.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 3
         )
         self.assertGreaterEqual(
-            source.count("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P"), 2
+            source.count("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P"), 1
         )
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", source)
         self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", source)
