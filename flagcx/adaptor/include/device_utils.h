@@ -473,15 +473,27 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // device_api_unified_ir both died at "call to [host] function from
 // __global__ [aicore] function" on device_api_host_helpers.asc:96 before
 // any test executed (run of 2026-11-18). The same log's "unknown type name
-// '__aicore__'" shows the keyword spelling is not guaranteed on every
-// pass, while the [aicore] attribute is (the compiler names it in its own
-// diagnostic), so a guarded fallback maps the macro onto it. A keyword is
-// not a macro, so the fallback also fires on toolchains that know the
-// keyword — there it expands to the very spelling the keyword desugars
-// to; the hardware gate below re-runs every suite under that rewrite.
+// '__aicore__'" shows the name is not guaranteed to exist on every pass, so
+// a guarded fallback supplies it.
+//
+// The fallback must be the qualifier bisheng parses, not an approximation
+// of it. A first attempt expanded it to __attribute__((aicore)); the device
+// pass of that same CI image rejects the spelling ("unknown attribute
+// 'aicore' ignored"), the macro then shadows every __aicore__ inside the
+// toolkit's own headers, asc_dcci_impl.h loses its aicore marking and the
+// intrinsics it calls (set_mask_count, set_vector_mask, pipe_barrier, ...)
+// stop being declared — the second, later failure of that run. [aicore] is
+// the execution-space qualifier the frontend names in its own diagnostics
+// and the spelling CANN ships for exactly this case — custom device code
+// that does not include the AscendC headers — as `#define __aicore__
+// [aicore]` in asc-devkit impl/utils/sys_macros.h. So the fallback uses it
+// verbatim on both passes: on the host pass it is what makes a ctor called
+// from a __global__ kernel count as aicore-callable, and on a device pass
+// that already exports the name as a macro the #ifndef leaves the toolkit's
+// definition untouched.
 #if defined(__CCE_IS_AICORE__) || defined(FLAGCX_ASCEND_DEVICE_COMPILE)
 #ifndef __aicore__
-#define __aicore__ __attribute__((aicore))
+#define __aicore__ [aicore]
 #endif
 #define FLAGCX_HOST_DECORATOR
 #define FLAGCX_DEVICE_DECORATOR __aicore__
