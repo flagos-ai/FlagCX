@@ -4042,6 +4042,41 @@ TEST_F(SymWindowRollback, PendingWindowCollectiveArrayFreeRetainsLease) {
   CheckPendingIpcLease(flagcxSymCleanupCollective, true);
 }
 
+TEST_F(SymWindowRollback, FinalizeCloseFailureConvergesIncludingEmptyRanks) {
+  // This regression needs real bootstrap but no vendor/device resources.
+  testComm.heteroComm = nullptr;
+  testComm.commType = flagcxCommunicatorHomo;
+  adaptor.mock.deviceMalloc = rollbackAllocate;
+  adaptor.mock.deviceFree = rollbackRelease;
+  adaptor.mock.ipcMemHandleClose = rollbackIpcClose;
+  void *exporter = nullptr;
+  ASSERT_EQ(flagcxCommAllocInternalBuffer(&testComm, &exporter, 64,
+                                          flagcxInternalBufferDevice),
+            flagcxSuccess);
+  flagcxIpcTableEntry *entry = &testComm.ipcTable[0];
+  if (rank != 0) {
+    entry->hostPeerBasePtrs = (void **)calloc(1, sizeof(void *));
+    ASSERT_NE(entry->hostPeerBasePtrs, nullptr);
+    entry->hostPeerBasePtrs[0] = malloc(64);
+    ASSERT_NE(entry->hostPeerBasePtrs[0], nullptr);
+    entry->nPeers = 1;
+    entry->inUse = entry->ownerHeld = true;
+  }
+  rollbackFailClose = rank == 1;
+  EXPECT_EQ(flagcxCommFinalize(&testComm), flagcxRemoteError);
+  EXPECT_EQ(testComm.finalizeState.lifecycle, flagcxCommFinalizing);
+  EXPECT_EQ(testComm.internalBuffers->pointer, exporter);
+  EXPECT_EQ(entry->hostPeerBasePtrs != nullptr, rank == 1);
+  int alreadyClosed = rollbackClosedImports;
+  rollbackFailClose = false;
+  EXPECT_EQ(flagcxCommFinalize(&testComm), flagcxSuccess);
+  EXPECT_EQ(rollbackClosedImports, alreadyClosed + (rank == 1 ? 1 : 0));
+  EXPECT_EQ(testComm.finalizeState.lifecycle, flagcxCommFinalized);
+  EXPECT_EQ(testComm.internalBuffers->pointer, exporter);
+  testComm.destroyPhase = 7;
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
+}
+
 TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
   EnableIpc();
   rollbackFailCopy = rollbackFailClose = rank == 1;

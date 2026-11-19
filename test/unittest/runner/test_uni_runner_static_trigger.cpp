@@ -1082,4 +1082,24 @@ TEST_F(UniRunnerIpcRetryTest, CommDestroyRetriesPartialSlotBeforeExporterFree) {
   EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
 }
 
+TEST_F(UniRunnerIpcRetryTest, FinalizeRetriesPartialSlotBeforeExporterFree) {
+  comm.commType = flagcxCommunicatorHomo;
+  void *buffer = nullptr;
+  ASSERT_EQ(flagcxCommAllocInternalBuffer(&comm, &buffer, 64,
+                                          flagcxInternalBufferDevice),
+            flagcxSuccess);
+  failReadyCopy = failReadyFree = true;
+  auto failed = buildIpcPeerPointers(&comm, buffer, 64);
+  ASSERT_EQ(failed.cleanupStatus, flagcxRemoteError);
+  ASSERT_GE(failed.slot, 0);
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxRemoteError);
+  EXPECT_EQ(comm.internalBuffers->pointer, buffer);
+  EXPECT_NE(comm.ipcTable[failed.slot].devPeerPtrs, nullptr);
+  failReadyCopy = failReadyFree = false;
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.ipcTable[failed.slot].devPeerPtrs, nullptr);
+  EXPECT_EQ(comm.internalBuffers->pointer, buffer);
+  EXPECT_EQ(comm.finalizeState.lifecycle, flagcxCommFinalized);
+}
+
 } // namespace

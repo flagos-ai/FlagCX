@@ -812,6 +812,49 @@ TEST_F(DefaultDevCommCleanupTest, SignalBufferOwnershipSurvivesGdrFreeFailure) {
 }
 
 TEST_F(DefaultDevCommCleanupTest,
+       FinalizeCloseFailureRetainsExporterAndProgress) {
+  static int calls;
+  calls = 0;
+  testDeviceAdaptor.ipcMemHandleClose = [](void *) {
+    return ++calls == 2 ? flagcxRemoteError : flagcxSuccess;
+  };
+  flagcxComm comm = {};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.localRanks = comm.nranks = 1;
+  ASSERT_EQ(retainTestBuffer(&comm, (void *)0x5000, flagcxInternalBufferDevice),
+            flagcxSuccess);
+  flagcxIpcTableEntry *entry = &comm.ipcTable[0];
+  entry->hostPeerBasePtrs = (void **)calloc(2, sizeof(void *));
+  ASSERT_NE(entry->hostPeerBasePtrs, nullptr);
+  entry->hostPeerBasePtrs[0] = (void *)0x1100;
+  entry->hostPeerBasePtrs[1] = (void *)0x2200;
+  entry->nPeers = 2;
+  entry->inUse = entry->ownerHeld = true;
+
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxRemoteError);
+  EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeImports);
+  EXPECT_EQ(comm.finalizeState.lifecycle, flagcxCommFinalizing);
+  EXPECT_EQ(entry->hostPeerBasePtrs[0], nullptr);
+  EXPECT_EQ(entry->hostPeerBasePtrs[1], (void *)0x2200);
+  EXPECT_EQ(comm.internalBuffers->pointer, (void *)0x5000);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  flagcxResult_t status = flagcxSuccess;
+  ASSERT_EQ(flagcxCommGetAsyncError(&comm, &status), flagcxSuccess);
+  EXPECT_EQ(status, flagcxRemoteError);
+
+  ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.finalizeState.lifecycle, flagcxCommFinalized);
+  EXPECT_EQ(entry->hostPeerBasePtrs, nullptr);
+  EXPECT_EQ(calls, 3);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(calls, 3);
+  comm.destroyPhase = 7;
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(deviceFreedPtrs.size(), 1u);
+}
+
+TEST_F(DefaultDevCommCleanupTest,
        OwnedRegistrationsAreRemovedBeforeBackingBuffers) {
   flagcxNetAdaptor netAdaptor = {};
   netAdaptor.name = "test";

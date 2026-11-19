@@ -27,6 +27,7 @@ struct flagcxCommFinalizeState {
   int running;
   int vendorFinalizeStarted;
   int vendorFinalizeComplete;
+  unsigned int vendorIndex;
 };
 
 // Admission is separate from handle validation: cleanup/status APIs remain

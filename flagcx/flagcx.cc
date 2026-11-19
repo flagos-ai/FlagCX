@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -1813,6 +1814,7 @@ fail_info:
 
 flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
                                      size_t size) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (comm->heteroComm == nullptr)
     return flagcxNotSupported;
@@ -2466,6 +2468,7 @@ flagcxValidateMemoryRange(void *buff, size_t size,
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle,
                                   flagcxMemAllocator_t allocator) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm != nullptr) {
     FLAGCXCHECK(flagcxEnsureCommReady(comm));
   }
@@ -2896,6 +2899,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
                                         size_t size, flagcxWindow_t *win,
                                         int winFlags,
                                         flagcxMemAllocator_t allocator) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   flagcxResult_t local = win == nullptr || buff == nullptr || size == 0
                              ? flagcxInvalidArgument
                              : flagcxSuccess;
@@ -4089,17 +4093,7 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
 }
 
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  FLAGCXCHECK(
-      cclAdaptors[flagcxCCLAdaptorDevice]->commFinalize(comm->homoComm));
-
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // Finalize initiates local RMA quiescence without adding a blocking rank
-    // collective. This preserves serial multi-rank lifecycle calls in one
-    // process; transport-specific peer shutdown remains in commCleanup.
-    FLAGCXCHECK(flagcxCommQuiesce(comm));
-  }
-  return flagcxSuccess;
+  return flagcxCommFinalizeInternal(comm);
 }
 
 static flagcxResult_t flagcxCommDrainLocalWork(flagcxComm_t comm) {
@@ -4165,7 +4159,7 @@ static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
     }
   }
 
-  if (!useHomoComm(comm) || useHeteroComm()) {
+  if (comm->heteroComm != NULL && (!useHomoComm(comm) || useHeteroComm())) {
     // Each stage retains ownership on failure so the same rank can retry the
     // call safely after transport shutdown coordination has completed.
     cleanupResult = flagcxOneSideStagingDeregister(comm);
@@ -4243,7 +4237,7 @@ static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
 }
 
 static flagcxResult_t flagcxCommPrepareHeteroResources(flagcxComm_t comm) {
-  if (!useHomoComm(comm) || useHeteroComm())
+  if (comm->heteroComm != NULL && (!useHomoComm(comm) || useHeteroComm()))
     FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm->heteroComm));
   while (comm->activeDevMems != nullptr)
     FLAGCXCHECK(flagcxDevMemDestroy(comm, comm->activeDevMems));
@@ -4257,6 +4251,127 @@ static flagcxResult_t flagcxCommCloseRemainingImports(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxCommCleanupIpcTable(comm));
 
   return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommFinalizeVendorOne(flagcxComm_t comm,
+                                                  flagcxCCLAdaptor *adaptor,
+                                                  flagcxInnerComm_t inner,
+                                                  unsigned int index) {
+  flagcxCommFinalizeState *state = &comm->finalizeState;
+  if (index < state->vendorIndex)
+    return flagcxSuccess;
+  flagcxResult_t result = flagcxSuccess;
+  if (!state->vendorFinalizeStarted) {
+    if (adaptor == NULL || adaptor->commFinalize == NULL)
+      return flagcxNotSupported;
+    result = adaptor->commFinalize(inner);
+    if (result != flagcxSuccess && result != flagcxInProgress)
+      return result;
+    state->vendorFinalizeStarted = 1;
+  } else {
+    result = flagcxInProgress;
+  }
+  while (result == flagcxInProgress) {
+    if (adaptor->commGetAsyncError == NULL)
+      return flagcxNotSupported;
+    FLAGCXCHECK(adaptor->commGetAsyncError(inner, &result));
+    if (comm->abortFlag != NULL &&
+        __atomic_load_n(comm->abortFlag, __ATOMIC_ACQUIRE) != 0)
+      return flagcxRemoteError;
+    if (result == flagcxInProgress)
+      sched_yield();
+  }
+  if (result != flagcxSuccess)
+    return result;
+  state->vendorFinalizeStarted = 0;
+  state->vendorIndex++;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxCommFinalizeVendors(flagcxComm_t comm) {
+  if (comm->finalizeState.vendorFinalizeComplete)
+    return flagcxSuccess;
+  unsigned int index = 0;
+  flagcxCCLAdaptor *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
+  if (comm->tuner != NULL) {
+    for (const auto &item : comm->homoCommMap)
+      if (item.second != NULL)
+        FLAGCXCHECK(
+            flagcxCommFinalizeVendorOne(comm, adaptor, item.second, index++));
+  } else if (comm->homoComm != NULL) {
+    FLAGCXCHECK(
+        flagcxCommFinalizeVendorOne(comm, adaptor, comm->homoComm, index++));
+  }
+  if (comm->homoInterComm != NULL && comm->homoInterComm != comm->homoComm)
+    FLAGCXCHECK(flagcxCommFinalizeVendorOne(comm, adaptor, comm->homoInterComm,
+                                            index++));
+  if (comm->hostComm != NULL)
+    FLAGCXCHECK(flagcxCommFinalizeVendorOne(
+        comm, cclAdaptors[flagcxCCLAdaptorHost], comm->hostComm, index++));
+  comm->finalizeState.vendorFinalizeComplete = 1;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  flagcxCommFinalizeState *state = &comm->finalizeState;
+  if (__atomic_load_n(&state->lifecycle, __ATOMIC_ACQUIRE) ==
+      flagcxCommFinalized)
+    return flagcxSuccess;
+  int expected = 0;
+  if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
+                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return flagcxInProgress;
+  __atomic_store_n(&state->lastResult, flagcxInProgress, __ATOMIC_RELEASE);
+  __atomic_store_n(&state->lifecycle, flagcxCommFinalizing, __ATOMIC_RELEASE);
+  flagcxResult_t result = flagcxSuccess;
+  while (state->commonPhase < flagcxFinalizeComplete) {
+    int phase = (int)state->commonPhase;
+    flagcxResult_t local = flagcxSuccess;
+    if ((state->localDoneMask & (1u << phase)) == 0) {
+      switch (state->commonPhase) {
+        case flagcxFinalizeDrain:
+          local = flagcxCommFinalizeVendors(comm);
+          if (local == flagcxSuccess)
+            local = flagcxCommDrainLocalWork(comm);
+          break;
+        case flagcxFinalizeTransport:
+          local = flagcxCommCloseTransport(comm);
+          break;
+        case flagcxFinalizeOwners:
+          local = flagcxCommCloseLocalOwners(comm);
+          break;
+        case flagcxFinalizeProxy:
+          local = flagcxCommPrepareHeteroResources(comm);
+          break;
+        case flagcxFinalizeImports:
+          local = flagcxCommCloseRemainingImports(comm);
+          break;
+        default:
+          local = flagcxInternalError;
+          break;
+      }
+      if (local == flagcxSuccess)
+        state->localDoneMask |= 1u << phase;
+    }
+    flagcxResult_t common = local;
+    if (comm->localRanks > 1) {
+      result = bootstrapCollIntraNodeStatus(
+          comm->bootstrap, comm->localRankToRank, comm->localRank,
+          comm->localRanks, 0x6f00 + phase * 2, local, &common);
+      if (result != flagcxSuccess)
+        break;
+    }
+    result = common;
+    if (result != flagcxSuccess)
+      break;
+    state->commonPhase = (flagcxFinalizePhase)(phase + 1);
+  }
+  __atomic_store_n(&state->lastResult, result, __ATOMIC_RELEASE);
+  if (result == flagcxSuccess)
+    __atomic_store_n(&state->lifecycle, flagcxCommFinalized, __ATOMIC_RELEASE);
+  __atomic_store_n(&state->running, 0, __ATOMIC_RELEASE);
+  return result;
 }
 
 static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
@@ -4446,6 +4561,14 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
   if (asyncError == nullptr)
     return flagcxInvalidArgument;
 
+  enum flagcxCommLifecycle lifecycle =
+      __atomic_load_n(&comm->finalizeState.lifecycle, __ATOMIC_ACQUIRE);
+  if (lifecycle != flagcxCommActive) {
+    *asyncError =
+        __atomic_load_n(&comm->finalizeState.lastResult, __ATOMIC_ACQUIRE);
+    return flagcxSuccess;
+  }
+
   if (comm->heteroComm != nullptr && (!useHomoComm(comm) || useHeteroComm())) {
     flagcxResult_t result = flagcxSuccess;
 
@@ -4489,6 +4612,7 @@ flagcxResult_t flagcxCommGetAsyncError(flagcxComm_t comm,
 }
 
 flagcxResult_t flagcxBarrier(flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   void *barrierBuff;
   deviceAdaptor->deviceMalloc(&barrierBuff, comm->nranks, flagcxMemDevice,
                               stream);
@@ -4505,6 +4629,7 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, flagcxRedOp_t op,
                             int root, flagcxComm_t comm,
                             flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->reduce(
@@ -4530,6 +4655,7 @@ flagcxResult_t flagcxReduce(const void *sendbuff, void *recvbuff, size_t count,
 flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
                             flagcxDataType_t datatype, int root,
                             flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->gather(
@@ -4555,6 +4681,7 @@ flagcxResult_t flagcxGather(const void *sendbuff, void *recvbuff, size_t count,
 flagcxResult_t flagcxScatter(const void *sendbuff, void *recvbuff, size_t count,
                              flagcxDataType_t datatype, int root,
                              flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->scatter(
@@ -4581,6 +4708,7 @@ flagcxResult_t flagcxBroadcast(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                int root, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->broadcast(
@@ -4607,6 +4735,7 @@ flagcxResult_t flagcxAllReduce(const void *sendbuff, void *recvbuff,
                                size_t count, flagcxDataType_t datatype,
                                flagcxRedOp_t op, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   // Try custom allreduce if registered
@@ -4653,6 +4782,7 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
                                    size_t recvcount, flagcxDataType_t datatype,
                                    flagcxRedOp_t op, flagcxComm_t comm,
                                    flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->reduceScatter(
@@ -4678,6 +4808,7 @@ flagcxResult_t flagcxReduceScatter(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
                                size_t sendcount, flagcxDataType_t datatype,
                                flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->allGather(
@@ -4698,6 +4829,7 @@ flagcxResult_t flagcxAllGather(const void *sendbuff, void *recvbuff,
 flagcxResult_t flagcxAlltoAll(const void *sendbuff, void *recvbuff,
                               size_t count, flagcxDataType_t datatype,
                               flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->alltoAll(
@@ -4720,6 +4852,7 @@ flagcxResult_t flagcxAlltoAllv(const void *sendbuff, size_t *sendcounts,
                                size_t *recvcounts, size_t *rdispls,
                                flagcxDataType_t datatype, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
 
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
@@ -4745,6 +4878,7 @@ flagcxResult_t flagcxAlltoAllv(const void *sendbuff, size_t *sendcounts,
 flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->send(sendbuff, count, datatype,
@@ -4765,6 +4899,7 @@ flagcxResult_t flagcxSend(const void *sendbuff, size_t count,
 flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
                           flagcxDataType_t datatype, int peer,
                           flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   if (useHeteroComm()) {
     FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->recv(recvbuff, count, datatype,
@@ -4785,6 +4920,7 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
 flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroGet(comm->heteroComm, peer, srcOffset, dstOffset, size,
@@ -4811,6 +4947,7 @@ flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
                               flagcxWindow_t peerWin, size_t peerWinOffset,
                               unsigned int flags, flagcxComm_t comm,
                               flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (flags != 0 || comm == NULL || comm->heteroComm == NULL ||
       peerWin == NULL || stream == NULL)
     return flagcxInvalidArgument;
@@ -4861,6 +4998,7 @@ flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
 flagcxResult_t flagcxPut(flagcxComm_t comm, int peer, size_t srcOffset,
                          size_t dstOffset, size_t size, int srcMrIdx,
                          int dstMrIdx) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroPut(comm->heteroComm, peer, srcOffset, dstOffset, size,
@@ -4872,6 +5010,7 @@ flagcxResult_t flagcxBatchPut(flagcxComm_t comm, int peer,
                               const size_t *dstOffsets, const size_t *sizes,
                               const int *srcMrIdxs, const int *dstMrIdxs,
                               size_t count) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroBatchPut(comm->heteroComm, peer, srcOffsets, dstOffsets,
@@ -4886,6 +5025,7 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
                                flagcxWindow_t peerWin, size_t peerWinOffset,
                                unsigned int flags, flagcxComm_t comm,
                                flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
@@ -4948,6 +5088,7 @@ flagcxResult_t flagcxPutSignal(const void *localbuff, size_t count,
 
 flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
                             flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   (void)flags;
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
@@ -4968,6 +5109,7 @@ flagcxResult_t flagcxSignal(int peer, unsigned int flags, flagcxComm_t comm,
 flagcxResult_t flagcxWaitSignal(int nDesc,
                                 const flagcxWaitSignalDesc_t *signalDescs,
                                 flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (nDesc == 0)
     return flagcxSuccess;
   if (comm == NULL || comm->heteroComm == NULL)
@@ -5008,6 +5150,7 @@ flagcxResult_t flagcxReadCounter(flagcxComm_t comm, uint64_t *count) {
 }
 
 flagcxResult_t flagcxWaitCounter(flagcxComm_t comm, uint64_t target) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm == NULL || comm->heteroComm == NULL)
     return flagcxInvalidArgument;
   return flagcxHeteroWaitCounter(comm->heteroComm, target);
