@@ -150,7 +150,7 @@ flagcxResult_t hggcAdaptorDeviceMalloc(void **ptr, size_t size,
     if (stream == NULL) {
       HGGCCHECK(hggcMalloc(ptr, size));
     } else {
-      HGGCCHECK(hggcMallocAsync(ptr, size, nullptr, stream->base));
+      HGGCCHECK(hggcMallocAsync(ptr, size, stream->base));
     }
   }
   return flagcxSuccess;

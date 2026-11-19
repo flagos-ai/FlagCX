@@ -109,7 +109,7 @@ int main() {
   void *ptr = nullptr;
   volatile int result = 0;
 ''' + calls + '''
-  return result | int(hggcMallocAsync(&ptr, 1, nullptr, hggcStream_t{}));
+  return result | int(hggcMallocAsync(&ptr, 1, hggcStream_t{}));
 }
 ''')
         if result.returncode:

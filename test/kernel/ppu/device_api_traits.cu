@@ -174,12 +174,12 @@ int main() {
   uint32_t *results = nullptr, *word32 = nullptr;
   uint64_t *word64 = nullptr, *mapped = nullptr, *mappedDevice = nullptr;
   SDK_CHECK(hggcSetDevice(0));
-  // Check the native default-pool contract on the installed SDK. Compile/link
-  // probes cannot establish whether a null pool works at runtime.
+  // The three-argument API uses the device's current pool. The four-argument
+  // overload forwards to hggcMallocFromPoolAsync and requires an explicit pool.
   hggcStream_t allocationStream = nullptr;
   void *asyncBuffer = nullptr;
   SDK_CHECK(hggcStreamCreateWithFlags(&allocationStream, hggcStreamNonBlocking));
-  SDK_CHECK(hggcMallocAsync(&asyncBuffer, 64, nullptr, allocationStream));
+  SDK_CHECK(hggcMallocAsync(&asyncBuffer, 64, allocationStream));
   SDK_CHECK(hggcMemsetAsync(asyncBuffer, 0, 64, allocationStream));
   SDK_CHECK(hggcFreeAsync(asyncBuffer, allocationStream));
   SDK_CHECK(hggcStreamSynchronize(allocationStream));

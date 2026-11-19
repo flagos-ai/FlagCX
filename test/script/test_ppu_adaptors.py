@@ -28,7 +28,7 @@ using hggcStream_t = hggcStreamImpl *;
 using hggcEvent_t = hggcEventImpl *;
 using hggcMemPool_t = hggcPoolImpl *;
 struct hggcIpcMemHandle_t { char bytes[64]; };
-enum hggcError_t { hggcSuccess = 0, hggcErrorNotReady = 70, hggcErrorUnknown = 99 };
+enum hggcError_t { hggcSuccess = 0, hggcErrorInvalidValue = 1, hggcErrorNotReady = 70, hggcErrorUnknown = 99 };
 enum hggcMemoryType { hggcMemoryTypeHost, hggcMemoryTypeDevice, hggcMemoryTypeManaged };
 struct hggcPointerAttributes {
   int device;
@@ -53,8 +53,8 @@ inline hggcError_t hggcPointerGetAttributes(hggcPointerAttributes *a, const void
 }
 enum { hggcHostAllocMapped = 1 };
 static int mallocCalls = 0;
+static int poolMallocCalls = 0;
 static hggcError_t mallocStatus = hggcSuccess;
-static hggcMemPool_t seenPool = reinterpret_cast<hggcMemPool_t>(1);
 static hggcStream_t seenStream = nullptr;
 inline hggcError_t hggcMalloc(void **p, size_t) {
   *p = reinterpret_cast<void *>(2); return mallocStatus;
@@ -65,9 +65,17 @@ inline hggcError_t hggcHostAlloc(void **p, size_t size, unsigned) {
 inline hggcError_t hggcHostGetDevicePointer(void **device, void *host, unsigned) {
   *device = host; return hggcSuccess;
 }
-inline hggcError_t hggcMallocAsync(void **p, size_t, hggcMemPool_t pool, hggcStream_t stream) {
-  ++mallocCalls; seenPool = pool; seenStream = stream;
+inline hggcError_t hggcMallocAsync(void **p, size_t, hggcStream_t stream) {
+  ++mallocCalls; seenStream = stream;
   *p = reinterpret_cast<void *>(3); return mallocStatus;
+}
+inline hggcError_t hggcMallocFromPoolAsync(void **p, size_t, hggcMemPool_t pool, hggcStream_t stream) {
+  ++poolMallocCalls; seenStream = stream;
+  if (pool == nullptr) return hggcErrorInvalidValue;
+  *p = reinterpret_cast<void *>(3); return mallocStatus;
+}
+inline hggcError_t hggcMallocAsync(void **p, size_t size, hggcMemPool_t pool, hggcStream_t stream) {
+  return hggcMallocFromPoolAsync(p, size, pool, stream);
 }
 
 """
@@ -212,7 +220,7 @@ int main() {
 }
 """)
 
-    def test_async_allocator_uses_null_pool_and_preserves_stream_and_errors(self):
+    def test_async_allocator_uses_current_pool_and_preserves_stream_and_errors(self):
         source = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
         start = source.index("flagcxResult_t hggcAdaptorDeviceMalloc(")
         end = source.index("flagcxResult_t hggcAdaptorDeviceFree(", start)
@@ -222,10 +230,10 @@ int main() {
   void *ptr = nullptr;
   flagcxStream stream{reinterpret_cast<hggcStream_t>(4)};
   assert(hggcAdaptorDeviceMalloc(&ptr, 64, flagcxMemDevice, &stream) == flagcxSuccess);
-  assert(mallocCalls == 1 && seenPool == nullptr && seenStream == stream.base);
+  assert(mallocCalls == 1 && poolMallocCalls == 0 && seenStream == stream.base);
   mallocStatus = hggcErrorUnknown;
   assert(hggcAdaptorDeviceMalloc(&ptr, 64, flagcxMemDevice, &stream) == flagcxUnhandledDeviceError);
-  assert(mallocCalls == 2 && seenPool == nullptr && seenStream == stream.base);
+  assert(mallocCalls == 2 && poolMallocCalls == 0 && seenStream == stream.base);
   assert(hggcResultToFlagcx(hggcErrorNotReady) == flagcxInProgress);
   assert(hggcDriverResultToFlagcx(HGGC_ERROR_NOT_SUPPORTED) == flagcxNotSupported);
 }
@@ -294,7 +302,7 @@ int main() {
                 result = subprocess.run(["ar", "rcs", str(tmp / f"lib{library}.a"), str(tmp / "empty.o")],
                                         text=True, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
-            output = tmp / "features.h"
+            output = tmp / "hggc_sdk_features.h"
             command = [os.sys.executable, str(ROOT / "tools/probe_hggc_sdk.py"),
                        "--cxx", CXX,
                        "--include", str(tmp), "--library", str(tmp), "--output", str(output)]
@@ -320,8 +328,22 @@ int main() {
             result = subprocess.run(command, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
-            # Removing a mandatory IPC entry point must stop configuration.
+            # A pool-only overload cannot satisfy the current-pool contract.
+            pool_only_runtime = re.sub(
+                r"inline hggcError_t hggcMallocAsync\(void \*\*p, size_t, hggcStream_t stream\) \{.*?\n\}",
+                "", runtime, count=1, flags=re.DOTALL,
+            )
             output.unlink()
+            (tmp / "hggc_runtime.h").write_text(pool_only_runtime + "\n".join(
+                f"inline int {name}() {{ return 0; }}" for name in required_stubs
+            ))
+            result = subprocess.run(command, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("required interface compile/link check failed", result.stderr)
+            self.assertIn("hggcMallocAsync", result.stderr)
+            self.assertFalse(output.exists())
+
+            # Removing a mandatory IPC entry point must stop configuration.
             (tmp / "hggc_runtime.h").write_text(runtime + "\n".join(
                 f"inline int {name}() {{ return 0; }}"
                 for name in required_stubs if name != "hggcIpcOpenMemHandle"
