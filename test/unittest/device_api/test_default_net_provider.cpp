@@ -293,8 +293,10 @@ int main() {
   MockGdaApi::Comm gdaWorldComm = barrierComm;
   gdaWorldComm.rank = 1;
   gdaWorldComm.nRanks = 4;
-  gdaWorldComm.nTeamRanks = 1;
+  gdaWorldComm.nTeamRanks = 2;
   gdaWorldComm.teamRank = 0;
+  gdaWorldComm.intraSize = 2;
+  gdaWorldComm.intraRank = 1;
   uint64_t gdaWorldEpochs[FLAGCX_DEVICE_CTA_COUNT] = {};
   gdaWorldComm.epochBuffer = gdaWorldEpochs;
   gdaWorldComm.nBarriers = FLAGCX_DEVICE_CTA_COUNT;
@@ -302,11 +304,13 @@ int main() {
   typedef MockGdaApi::Barrier<flagcxTeamTagWorld, MockGdaApi::CoopThread>
       MockWorldBarrier;
   MockWorldBarrier gdaWorld(MockGdaApi::CoopThread{}, flagcxTeamTagWorld{},
-                            gdaWorldNet, gdaWorldComm, 0, false, 0);
-  assert(gdaWorld._nInterPeers == 3);
-  assert(gdaWorld._inter._nTeamRanks == 4);
-  assert(gdaWorld._inter._teamRank == 1);
-  assert(gdaWorld._inter._stride == 1);
+                            gdaWorldNet, gdaWorldComm, 0, false, 1);
+  // World keeps its intra + Inter composition with either Net provider.
+  assert(gdaWorld._nInterPeers == 1);
+  assert(gdaWorld._inter._nTeamRanks == 2);
+  assert(gdaWorld._inter._teamRank == 0);
+  assert(gdaWorld._inter._stride == 2);
+  assert(gdaWorld._inter._localRank == 1);
   typedef MockGdaApi::Barrier<flagcxTeamTagInter, MockGdaApi::CoopThread>
       MockBarrier;
   MockBarrier barrier(MockGdaApi::CoopThread{}, barrierNet, barrierComm,

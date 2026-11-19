@@ -60,7 +60,7 @@ endif
 
 # --- Kernel sources ---
 PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/nvidia
-PLATFORM_KERNEL_SRCS := $(filter-out $(PLATFORM_KERNEL_DIR)/net_gda_alltoall.cu,$(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION)))
+PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
 
 ifeq ($(USE_XPUNETIO), 1)
   ifeq ($(USE_SHMEM), 1)
@@ -73,5 +73,4 @@ ifeq ($(USE_XPUNETIO), 1)
   HOST_CXX_STANDARD += -std=c++17
   PLATFORM_EXTRA_SRCS += flagcx/adaptor/device_api/devnet/xpu_netio_gda_host.cc \
                          flagcx/adaptor/device_api/devnet/nvidia_xpu_netio_runtime.cc
-  PLATFORM_KERNEL_SRCS += $(PLATFORM_KERNEL_DIR)/net_gda_alltoall.cu
 endif

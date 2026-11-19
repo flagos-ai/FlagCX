@@ -84,6 +84,11 @@ CUDA_INCLUDES := \
 CCL_INCLUDES := \
 	-I$(CCL_HOME)/include
 
+ifneq ($(findstring -DFLAGCX_USE_XPU_NETIO,$(ADAPTOR_FLAG)),)
+GDA_PROVIDER_HOME ?= /usr/local
+GDA_INCLUDES := -I$(GDA_PROVIDER_HOME)/include
+endif
+
 ifneq ($(findstring -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_FLAG)),)
 SHMEM_HOME ?= /usr/local/nvshmem
 CCL_INCLUDES += -I$(SHMEM_HOME)/include
@@ -99,7 +104,7 @@ COMMON_CLANG_FLAGS := \
 	$(ADAPTOR_FLAG)
 
 CLANG_FLAGS := -c -emit-llvm -O1 $(COMMON_CLANG_FLAGS) \
-	$(FLAGCX_INCLUDES) $(CUDA_INCLUDES) $(CCL_INCLUDES)
+	$(FLAGCX_INCLUDES) $(CUDA_INCLUDES) $(CCL_INCLUDES) $(GDA_INCLUDES)
 
 # Optimization passes — use file-based API list to avoid shell quoting issues
 SYMBOLS_FILE := $(abspath ../public_symbols.txt)

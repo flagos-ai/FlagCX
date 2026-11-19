@@ -514,11 +514,20 @@ struct flagcxDevNetConfig {
 
 static flagcxResult_t readFlagcxDevNetConfig(flagcxComm_t comm, bool wantsNet,
                                              flagcxDevNetConfig *config) {
-  if (comm == nullptr || config == nullptr)
+  if (comm == nullptr || config == nullptr || comm->nranks <= 0 ||
+      comm->rank < 0 || comm->rank >= comm->nranks)
     return flagcxInvalidArgument;
   flagcxDevNetConfig local{1, -1, wantsNet ? 1 : 0, 0};
   local.valid =
       flagcxReadDevNetConfig(&local.enabled, &local.type) == flagcxSuccess;
+  // A single rank has no peer configuration to compare and needs no
+  // bootstrap transport (also used by host-only cleanup tests).
+  if (comm->nranks == 1) {
+    if (!local.valid)
+      return flagcxInvalidArgument;
+    *config = local;
+    return flagcxSuccess;
+  }
   std::vector<flagcxDevNetConfig> all;
   flagcxResult_t allocation = flagcxSuccess;
   try {
@@ -644,10 +653,6 @@ defaultDevApiCommCreate(flagcxComm_t comm,
       // Each barrier channel reserves one signal slot per Inter team rank.
       int userSignals = reqs->interSignalCount;
       int barrierRanks = devComm->nTeamRanks;
-#if defined(FLAGCX_USE_GDA)
-      if (attemptGda)
-        barrierRanks = comm->nranks;
-#endif
       if (barrierRanks < 0 || reqs->interBarrierCount < 0 ||
           (reqs->interBarrierCount > 0 &&
            barrierRanks >
@@ -656,9 +661,8 @@ defaultDevApiCommCreate(flagcxComm_t comm,
              barrierRanks, reqs->interBarrierCount);
         return flagcxInternalError;
       }
-      // A requested dense GDA World barrier needs one source slot per rank.
-      // A preferred request may still fall back to Proxy; extra slots are
-      // harmless and the Proxy team layout remains unchanged.
+      // Inter and World barriers share the same Inter-team slot layout;
+      // World composes an Inter phase with the existing intra-node phase.
       int barrierSlots = barrierRanks * reqs->interBarrierCount;
       if (userSignals < 0 || barrierSlots < 0 ||
           userSignals > std::numeric_limits<int>::max() - barrierSlots ||

@@ -249,7 +249,9 @@ private:
     const auto &state = view(ctx);
     if (!ready(state))
       return;
-    const int targetRank = peer;
+    // The Barrier peer is an Inter-team index; map it to the corresponding
+    // world rank exactly as the Proxy signal path does.
+    const int targetRank = peer * barrier._stride + barrier._localRank;
     const int signalIdx = static_cast<int>(action.signal);
     if (targetRank < 0 || static_cast<uint32_t>(targetRank) >= state.nranks ||
         signalIdx < 0 ||

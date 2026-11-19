@@ -397,6 +397,17 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
     const uint64_t requiredOrder = XPU_NETIO_ORDERED_TRANSPORT |
                                    XPU_NETIO_ORDER_SOURCE_REUSE |
                                    XPU_NETIO_ORDER_SYSTEM_FENCE;
+    // Every Barrier channel reserves one source slot per Inter-team rank.
+    // World uses the same Inter phase followed by intra-node synchronization.
+    // Validate signed bounds before subtracting or widening the slot counts.
+    const bool barrierStorageValid =
+        devComm->nTeamRanks > 0 && devComm->interBarrierCount > 0 &&
+        devComm->barrierSignalBase >= 0 &&
+        devComm->signalCount >= devComm->barrierSignalBase &&
+        static_cast<uint64_t>(devComm->nTeamRanks) *
+                static_cast<uint64_t>(devComm->interBarrierCount) <=
+            static_cast<uint64_t>(devComm->signalCount -
+                                  devComm->barrierSignalBase);
     if ((owner->caps.operation_bits & requiredOps) != requiredOps ||
         (owner->caps.ordering_bits & requiredOrder) != requiredOrder ||
         (owner->capabilities & requiredOperations) != requiredOperations ||
@@ -404,9 +415,7 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
         owner->caps.progress_mode == XPU_NETIO_PROGRESS_REQUIRED ||
         owner->caps.max_inline_bytes < sizeof(uint64_t) ||
         devComm->contextCount != 1 || devComm->signalBuffer == nullptr ||
-        devComm->signalHostBuffer != nullptr ||
-        devComm->interBarrierCount == 0 ||
-        devComm->signalCount < comm->nranks ||
+        devComm->signalHostBuffer != nullptr || !barrierStorageValid ||
         comm->nranks >
             INT_MAX / static_cast<int>(sizeof(xpu_netio_connect_blob_t)))
       local = flagcxNotSupported;
@@ -650,12 +659,19 @@ flagcxResult_t registerWindow(flagcxComm_t comm, flagcxDevComm_t devComm,
     return flagcxSuccess;
   if (comm == nullptr)
     return flagcxInvalidArgument;
-  flagcxResult_t local =
-      hostWindow != nullptr && hostWindow->userBase != nullptr &&
-              hostWindow->userSize != 0 && hostWindow->gdaWindowOwner == nullptr
-          ? flagcxSuccess
-          : flagcxInvalidArgument;
+  flagcxResult_t local = hostWindow != nullptr &&
+                                 hostWindow->userBase != nullptr &&
+                                 hostWindow->userSize != 0 &&
+                                 hostWindow->devNetRegistrationId != 0 &&
+                                 hostWindow->gdaWindowOwner == nullptr
+                             ? flagcxSuccess
+                             : flagcxInvalidArgument;
   FLAGCXCHECK(stage(comm, local));
+  std::vector<uint64_t> ids;
+  FLAGCXCHECK(gather(comm, hostWindow->devNetRegistrationId, ids));
+  for (uint64_t id : ids)
+    if (id != hostWindow->devNetRegistrationId)
+      return flagcxInvalidUsage;
   CommOwner *owner = static_cast<CommOwner *>(devComm->gdaHostOwner);
   WindowOwner *window = nullptr;
   WindowOwner *previousOrphans = owner->orphanWindows;
@@ -778,6 +794,17 @@ static flagcxResult_t registerExistingWindows(flagcxComm_t comm,
   // The list is head-inserted. Replay collective registrations in the
   // original Window order on every rank.
   std::reverse(windows.begin(), windows.end());
+  // Validate the entire sequence before importing any MR. Equal list lengths
+  // alone cannot detect different local deregistrations on different ranks.
+  for (flagcxWindow_t window : windows) {
+    std::vector<uint64_t> ids;
+    FLAGCXCHECK(gather(comm, window->devNetRegistrationId, ids));
+    if (window->devNetRegistrationId == 0)
+      return flagcxInvalidUsage;
+    for (uint64_t id : ids)
+      if (id != window->devNetRegistrationId)
+        return flagcxInvalidUsage;
+  }
   for (flagcxWindow_t window : windows)
     FLAGCXCHECK(registerWindow(comm, devComm, window));
 

@@ -135,7 +135,7 @@ flagcx_ci_require_rdma() {
   esac
 
   case "$suite" in
-    adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir) ;;
+    adaptor|p2p|rma|runner|symmem|device_api|device_api_gda|device_api_unified_ir) ;;
     *) return 0 ;;
   esac
 
@@ -234,7 +234,7 @@ build_suite() {
   if [[ "$SUITE" == device_traits ]]; then
     return 0
   fi
-  if [[ "$SUITE" == device_api_host ||
+  if [[ "$SUITE" == device_api_host || "$SUITE" == device_api_gda ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
@@ -248,7 +248,10 @@ build_suite() {
     fi
   fi
 
-  if [[ "$SUITE" == device_api_host ]]; then
+  if [[ "$SUITE" == device_api_gda ]]; then
+    make -C "$suite_dir" --jobs="$(nproc)" unit \
+      "$suite_dir/build/bin/test_device_api_inter" "${args[@]}"
+  elif [[ "$SUITE" == device_api_host ]]; then
     make -C "$suite_dir" --jobs="$(nproc)" unit "${args[@]}"
   elif [[ "$SUITE" == device_api ||
           "$SUITE" == device_api_unified_ir ]]; then
@@ -331,6 +334,38 @@ run_device_api() {
       : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
       build/bin/test_device_ir_inter "${flags[@]}"
   fi
+}
+
+# A separate build/CI job runs the ordinary inter executable with GDA.
+# The current adapter's unsupported cases stay visible as SKIP/TODO entries.
+run_device_api_gda() {
+  local suite_dir="$PROJECT_ROOT/test/unittest/device_api"
+  local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
+  local -a common_env=(
+    -x FLAGCX_USE_HETERO_COMM=1
+    -x FLAGCX_MEM_ENABLE=1
+    -x FLAGCX_VMM_ENABLE=0
+    -x FLAGCX_TEST_WIN_MODE=asymmetric
+    -x FLAGCX_P2P_DISABLE=1
+    -x FLAGCX_DEVNET_ENABLE=1
+    -x FLAGCX_DEVNET_TYPE=1
+    -x LD_LIBRARY_PATH
+  )
+  if [[ -n "${FLAGCX_XPU_NETIO_PROVIDER:-}" ]]; then
+    common_env+=(-x FLAGCX_XPU_NETIO_PROVIDER)
+  fi
+  : "${FLAGCX_CI_NODE_NP:?GDA inter tests need ranks per logical node}"
+  declare -p FLAGCX_CI_NODE1_MPI_ARGS >/dev/null 2>&1
+  declare -p FLAGCX_CI_NODE2_MPI_ARGS >/dev/null 2>&1
+  FLAGCX_CI_TEST_LABEL="device_api_gda host cleanup" \
+    "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
+  cd "$suite_dir"
+  FLAGCX_CI_MPI_LABEL="device_api_gda inter" \
+    "$MPI_RUNNER" --allow-run-as-root \
+    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+    build/bin/test_device_api_inter -b 1M -e 4M -f 2 -R 2 -n 3 \
+    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+    build/bin/test_device_api_inter -b 1M -e 4M -f 2 -R 2 -n 3
 }
 
 run_device_api_unified_ir() {
@@ -468,7 +503,7 @@ run_device_api_unified_ir() {
 
 run_suite() {
   local suite_dir="$PROJECT_ROOT/test/unittest/$SUITE"
-  if [[ "$SUITE" == device_api_host ||
+  if [[ "$SUITE" == device_api_host || "$SUITE" == device_api_gda ||
         "$SUITE" == device_api_unified_ir ]]; then
     suite_dir="$PROJECT_ROOT/test/unittest/device_api"
   fi
@@ -1255,6 +1290,9 @@ run_suite() {
       fi
       return "$symmem_status"
       ;;
+    device_api_gda)
+      run_device_api_gda
+      ;;
     device_api)
       run_device_api
       ;;
@@ -1309,7 +1347,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_gda|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)
