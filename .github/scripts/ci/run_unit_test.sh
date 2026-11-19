@@ -344,6 +344,7 @@ run_suite() {
       local ipc_status=0
       local geometry_status=0
       local gpu_result_xml="$suite_dir/build/adaptor_gpu_results.xml"
+      local check_gpu_tests=${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}
       # Each platform declares its own GPU MR capability in set_env; this
       # shared path stays vendor-neutral and demands GPU MR by default.
       local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
@@ -370,9 +371,11 @@ run_suite() {
         FLAGCX_CI_TEST_LABEL="$SUITE unit tests" \
         "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || \
         unit_status=$?
-      if ((unit_status == 0)); then
+      if ((unit_status == 0 && check_gpu_tests != 0)); then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_adaptor_gpu_tests.py" \
           "$gpu_result_xml" "$gpu_mr_policy" || unit_status=$?
+      elif ((unit_status == 0)); then
+        echo "Skipping GPU MR result validation: platform reports no RDMA devices"
       fi
       if ((unit_status == 0)) && [[ "$platform_name" == iluvatar ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \

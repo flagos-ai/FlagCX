@@ -1519,6 +1519,14 @@ run_suite
         self.assertIn(
             "gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}", unit_runner
         )
+        self.assertIn(
+            "check_gpu_tests=${FLAGCX_CI_CHECK_ADAPTOR_GPU_TESTS:-1}", unit_runner
+        )
+        self.assertIn("check_gpu_tests != 0", unit_runner)
+        self.assertIn(
+            "Skipping GPU MR result validation: platform reports no RDMA devices",
+            unit_runner,
+        )
         self.assertNotIn('gpu_mr_policy="$platform_name"', unit_runner)
         rma_makefile = (REPO_ROOT / "test/unittest/rma/Makefile").read_text()
         iluvatar_kernel_makefile = (
