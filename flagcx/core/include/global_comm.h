@@ -65,14 +65,8 @@ flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {
   struct flagcxCommFinalizeState finalizeState;
-  // TODO: adjust code format
-  // 0: active, 1: locally quiescent, 2: transport cleanup completed,
-  // 3: local owners destroyed, 4: homo comms destroyed,
-  // 5: hetero resources prepared, 6: IPC imports closed,
-  // 7: peer closure acknowledged; remaining buffer frees are local.
-  // Failures before final host-state release resume at the last completed
-  // stage.
-  int destroyPhase;
+  // Local release cursor; only advances after a fallible operation succeeds.
+  enum flagcxDestroyPhase destroyPhase;
   int rank;
   int nranks;
   int nclusters;

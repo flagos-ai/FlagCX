@@ -725,7 +725,8 @@ TEST_F(DefaultDevCommCleanupTest, IpcBarrierAllocationIsFreedOnce) {
   EXPECT_EQ(devComm.localBarrierFlags, nullptr);
   EXPECT_FALSE(devComm.localBarrierFlagsDeviceAllocated);
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxInvalidUsage);
-  comm.destroyPhase = 7; // Peer-import closure was acknowledged.
+  comm.finalizeState.commonPhase =
+      flagcxFinalizeComplete; // Peer-import closure was acknowledged.
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   ASSERT_EQ(deviceFreedPtrs.size(), 1u);
   EXPECT_EQ(deviceFreedPtrs[0], reinterpret_cast<void *>(0x5000));
@@ -776,7 +777,7 @@ TEST_F(DefaultDevCommCleanupTest, PartialImportCloseRetainsExporterForRetry) {
   EXPECT_EQ(closeCalls, 3);
   EXPECT_EQ(devComm.barrierIpcIndex, -1);
   EXPECT_TRUE(deviceFreedPtrs.empty());
-  comm.destroyPhase = 7;
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(deviceFreedPtrs,
             (std::vector<void *>{reinterpret_cast<void *>(0x5000)}));
@@ -800,7 +801,7 @@ TEST_F(DefaultDevCommCleanupTest, SignalBufferOwnershipSurvivesGdrFreeFailure) {
   EXPECT_EQ(devComm.signalBuffer, nullptr);
   EXPECT_EQ(devComm.completionSignalBuffer, nullptr);
   EXPECT_FALSE(devComm.signalBufferIsVmm);
-  comm.destroyPhase = 7;
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxRemoteError);
   ASSERT_NE(comm.internalBuffers, nullptr);
   EXPECT_EQ(comm.internalBuffers->pointer, reinterpret_cast<void *>(0x5800));
@@ -849,7 +850,7 @@ TEST_F(DefaultDevCommCleanupTest,
   EXPECT_TRUE(deviceFreedPtrs.empty());
   ASSERT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
   EXPECT_EQ(calls, 3);
-  comm.destroyPhase = 7;
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(deviceFreedPtrs.size(), 1u);
 }
@@ -898,7 +899,7 @@ TEST_F(DefaultDevCommCleanupTest,
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   ASSERT_EQ(cleanupEvents.size(), 2u);
   EXPECT_TRUE(deviceFreedPtrs.empty());
-  comm.destroyPhase = 7;
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, nullptr);
@@ -960,7 +961,7 @@ TEST_F(DefaultDevCommCleanupTest,
       flagcxSuccess);
   ASSERT_EQ(devApiBackend->devCommDestroy(&comm, &devComm), flagcxSuccess);
   EXPECT_TRUE(cleanupEvents.empty());
-  comm.destroyPhase = 7;
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
 
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
@@ -1029,7 +1030,7 @@ TEST_F(DefaultDevCommCleanupTest,
   EXPECT_EQ(heteroComm.devCommHandle, nullptr);
   EXPECT_EQ(heteroComm.signalHandle, existingSignal);
   EXPECT_EQ(heteroComm.stagingHandle, existingStaging);
-  comm.destroyPhase = 7;
+  comm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
   EXPECT_EQ(cleanupEvents.size(), allocatedPtrs.size());
   for (const CleanupEvent &event : cleanupEvents)
@@ -1433,6 +1434,33 @@ TEST_F(DefaultDevCommCleanupTest,
   EXPECT_EQ(view, nullptr);
   EXPECT_EQ(entry.refCount, 0u);
   entry.hostPeerPtrs = entry.devPeerPtrs = nullptr; // stack-owned test arrays
+}
+
+TEST_F(DefaultDevCommCleanupTest, FinalizedDestroyRetriesOnlyRemainingFrees) {
+  flagcxComm_t comm = nullptr;
+  ASSERT_EQ(flagcxCalloc(&comm, 1), flagcxSuccess);
+  comm->commType = flagcxCommunicatorHomo;
+  comm->nranks = comm->localRanks = 1;
+  ASSERT_EQ(retainTestBuffer(comm, (void *)0x5100, flagcxInternalBufferDevice),
+            flagcxSuccess);
+  ASSERT_EQ(retainTestBuffer(comm, (void *)0x5200, flagcxInternalBufferDevice),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  EXPECT_TRUE(deviceFreedPtrs.empty());
+  // A finalized destroy must not use rank metadata or attempt bootstrap again.
+  comm->localRanks = comm->nranks = 8;
+  comm->localRankToRank = nullptr;
+  testDeviceAdaptor.deviceFree = failDeviceFreeAtCall;
+  failDeviceFreeCall = 2;
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxRemoteError);
+  EXPECT_EQ(comm->destroyPhase, flagcxDestroyBuffers);
+  ASSERT_NE(comm->internalBuffers, nullptr);
+  EXPECT_EQ(comm->internalBuffers->pointer, (void *)0x5100);
+  EXPECT_EQ(deviceFreedPtrs, (std::vector<void *>{(void *)0x5200}));
+  EXPECT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  EXPECT_EQ(deviceFreedPtrs,
+            (std::vector<void *>{(void *)0x5200, (void *)0x5100}));
+  EXPECT_EQ(deviceFreeCallCount, 3);
 }
 
 TEST_F(DefaultDevCommCleanupTest, DevicePointersFreeOnDestroy) {

@@ -19,6 +19,19 @@ enum flagcxFinalizePhase {
   flagcxFinalizeComplete
 };
 
+enum flagcxDestroyPhase {
+  flagcxDestroyBuffers = 0,
+  flagcxDestroyVendors,
+  flagcxDestroyHetero,
+  flagcxDestroyHost,
+  flagcxDestroyBootstrap,
+  flagcxDestroyTuner,
+  flagcxDestroyNetPlugin,
+  flagcxDestroyCclPlugin,
+  flagcxDestroyDevicePlugin,
+  flagcxDestroyComplete
+};
+
 struct flagcxCommFinalizeState {
   enum flagcxCommLifecycle lifecycle;
   enum flagcxFinalizePhase commonPhase;
@@ -34,5 +47,6 @@ struct flagcxCommFinalizeState {
 // usable after admission has stopped, including failed finalization retries.
 flagcxResult_t flagcxCommRequireActive(flagcxComm_t comm);
 flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm);
+flagcxResult_t flagcxCommDestroyLocal(flagcxComm_t comm);
 
 #endif

@@ -583,6 +583,8 @@ flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   FLAGCXCHECK(flagcxHeteroCommPrepareDestroy(comm));
   flagcxResult_t proxyResult = comm->destroyProxyResult;
+  if (proxyResult != flagcxSuccess)
+    return proxyResult;
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {

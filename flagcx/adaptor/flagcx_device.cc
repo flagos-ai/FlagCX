@@ -62,7 +62,8 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
 }
 
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm) {
-  if (comm == nullptr || comm->destroyPhase < 7)
+  if (comm == nullptr ||
+      comm->finalizeState.commonPhase != flagcxFinalizeComplete)
     return flagcxInvalidUsage;
   while (comm->internalBuffers != nullptr) {
     auto *record = comm->internalBuffers;

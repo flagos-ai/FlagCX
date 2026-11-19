@@ -2222,6 +2222,35 @@ TEST_F(SymMemTest, DuplicateWindowsShareMrUntilLastDeregister) {
   }
 }
 
+TEST_F(SymMemTest, FinalizeThenDestroyIsRankLocal) {
+  flagcxComm_t owned = nullptr;
+  flagcxUniqueId id = {};
+  if (rank == 0)
+    ASSERT_EQ(flagcxGetUniqueId(&id), flagcxSuccess);
+  MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD);
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommInitRank(&owned, nranks, &id, rank)));
+  void *exporter = nullptr;
+  ASSERT_TRUE(allRanksSucceeded(flagcxCommAllocInternalBuffer(
+      owned, &exporter, 64, flagcxInternalBufferDevice)));
+  auto binding = buildIpcPeerPointers(owned, exporter, 64);
+  ASSERT_TRUE(allRanksSucceeded(binding.buildStatus));
+  ASSERT_EQ(flagcxCommFinalize(owned), flagcxSuccess);
+  ASSERT_NE(owned->internalBuffers, nullptr);
+  EXPECT_EQ(owned->internalBuffers->pointer, exporter);
+  MPI_Barrier(MPI_COMM_WORLD);
+  int result = flagcxSuccess;
+  if (rank == 0) {
+    result = (int)flagcxCommDestroy(owned);
+    for (int peer = 1; peer < nranks; peer++)
+      MPI_Send(&result, 1, MPI_INT, peer, 0x6f70, MPI_COMM_WORLD);
+  } else {
+    // Deliberately do not enter FlagCX until rank 0's destroy has returned.
+    MPI_Recv(&result, 1, MPI_INT, 0, 0x6f70, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
+  }
+  EXPECT_EQ(result, flagcxSuccess);
+}
+
 TEST_F(SymMemTest, CommDestroyReleasesLiveWindow) {
   flagcxComm_t testComm = nullptr;
   ASSERT_TRUE(allRanksSucceeded(createTestComm(&testComm)));
@@ -3988,7 +4017,7 @@ TEST_F(SymWindowRollback, PartialDevCommBarrierBuildRetriesCollectively) {
   ASSERT_EQ(flagcxDevCommDestroy(&testComm, view), flagcxSuccess);
   ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  testComm.destroyPhase = 7;
+  testComm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4019,7 +4048,7 @@ TEST_F(SymWindowRollback, PartialDevCommSignalBuildRetainsFailedRegistration) {
   ASSERT_EQ(flagcxDevCommRetryPendingCleanup(&testComm), flagcxSuccess);
   ASSERT_EQ(flagcxCommCleanupIpcTable(&testComm), flagcxSuccess);
   MPI_Barrier(MPI_COMM_WORLD);
-  testComm.destroyPhase = 7;
+  testComm.finalizeState.commonPhase = flagcxFinalizeComplete;
   ASSERT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4073,7 +4102,7 @@ TEST_F(SymWindowRollback, FinalizeCloseFailureConvergesIncludingEmptyRanks) {
   EXPECT_EQ(rollbackClosedImports, alreadyClosed + (rank == 1 ? 1 : 0));
   EXPECT_EQ(testComm.finalizeState.lifecycle, flagcxCommFinalized);
   EXPECT_EQ(testComm.internalBuffers->pointer, exporter);
-  testComm.destroyPhase = 7;
+  testComm.finalizeState.commonPhase = flagcxFinalizeComplete;
   EXPECT_EQ(flagcxCommFreeInternalBuffers(&testComm), flagcxSuccess);
 }
 
@@ -4085,26 +4114,28 @@ TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
                                      FLAGCX_WIN_ASYMMETRIC),
             flagcxRemoteError);
   ASSERT_EQ(window != nullptr, rank == 1);
+  // The fixture has no live proxy/vendor workers. Exercise real owner cleanup
+  // and real intra-node status agreement while retaining its stack owners.
+  testComm.finalizeState.localDoneMask = (1u << flagcxFinalizeDrain) |
+                                         (1u << flagcxFinalizeTransport) |
+                                         (1u << flagcxFinalizeProxy);
+  hetero.rmaSignalIpcSlot = -1;
+  EXPECT_EQ(flagcxCommFinalize(&testComm), flagcxRemoteError);
   if (rank == 1) {
-    // Enter the real local-owner cleanup stage. The test retains its stack
-    // Comm and bootstrap by forcing a later vendor-destroy failure.
+    ASSERT_NE(window->defaultBase, nullptr);
+    EXPECT_TRUE(window->defaultBase->hasAllocationLease);
+    EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
+  }
+  rollbackFailCopy = rollbackFailClose = false;
+  ASSERT_EQ(flagcxCommFinalize(&testComm), flagcxSuccess);
+  if (rank == 1) {
     ScopedRollbackBackend backend;
     backend.provider.commDestroy = [](flagcxInnerComm_t) {
       return flagcxRemoteError;
     };
-    testComm.destroyPhase = 2;
     testComm.homoComm = reinterpret_cast<flagcxInnerComm_t>(0x1234);
-    testComm.localRankToRank = nullptr; // The fixture owns the vector storage.
-    hetero.rmaSignalIpcSlot = -1;
-    ASSERT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
-    EXPECT_EQ(testComm.destroyPhase, 2);
-    ASSERT_NE(window->defaultBase, nullptr);
-    EXPECT_TRUE(window->defaultBase->hasAllocationLease);
-    EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxInvalidUsage);
-
-    rollbackFailCopy = rollbackFailClose = false;
-    ASSERT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
-    EXPECT_EQ(testComm.destroyPhase, 3); // Failed after pending IPC closed.
+    EXPECT_EQ(flagcxCommDestroy(&testComm), flagcxRemoteError);
+    EXPECT_EQ(testComm.destroyPhase, flagcxDestroyVendors);
     EXPECT_EQ(window->defaultBase, nullptr);
     EXPECT_EQ(hetero.pendingSymCleanup, nullptr);
     EXPECT_EQ(rollbackClosedImports, nranks - 1);
@@ -4114,4 +4145,37 @@ TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
   MPI_Barrier(MPI_COMM_WORLD);
   EXPECT_EQ(flagcxMemFree(resources.buffer), flagcxSuccess);
   resources.buffer = nullptr;
+}
+
+TEST_F(SymWindowRollback, FinalizedDestroyDoesNotNeedPeers) {
+  flagcxComm_t owned = nullptr;
+  ASSERT_EQ(flagcxCalloc(&owned, 1), flagcxSuccess);
+  owned->commType = flagcxCommunicatorHomo;
+  owned->rank = owned->localRank = rank;
+  owned->nranks = owned->localRanks = nranks;
+  owned->localRankToRank = (int *)calloc(nranks, sizeof(int));
+  ASSERT_NE(owned->localRankToRank, nullptr);
+  for (int peer = 0; peer < nranks; peer++)
+    owned->localRankToRank[peer] = peer;
+  owned->bootstrap = bootstrap.state;
+  bootstrap.state = nullptr; // The heap Comm owns this bootstrap now.
+  testComm.bootstrap = nullptr;
+  adaptor.mock.deviceMalloc = rollbackAllocate;
+  adaptor.mock.deviceFree = rollbackRelease;
+  void *exporter = nullptr;
+  ASSERT_EQ(flagcxCommAllocInternalBuffer(owned, &exporter, 64,
+                                          flagcxInternalBufferDevice),
+            flagcxSuccess);
+  ASSERT_EQ(flagcxCommFinalize(owned), flagcxSuccess);
+  MPI_Barrier(MPI_COMM_WORLD);
+  int result = flagcxSuccess;
+  if (rank == 0) {
+    result = (int)flagcxCommDestroy(owned);
+    for (int peer = 1; peer < nranks; peer++)
+      MPI_Send(&result, 1, MPI_INT, peer, 0x6f71, MPI_COMM_WORLD);
+  } else {
+    MPI_Recv(&result, 1, MPI_INT, 0, 0x6f71, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
+  }
+  EXPECT_EQ(result, flagcxSuccess);
 }

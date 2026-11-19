@@ -4197,42 +4197,31 @@ static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
 }
 
 static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
-  // Keep the existing homo-before-hetero teardown order. Clear each owner
-  // only after its destruction succeeds so a later stage can be retried.
-  free(comm->clusterIds);
-  comm->clusterIds = NULL;
-  free(comm->clusterSizes);
-  comm->clusterSizes = NULL;
-  free(comm->globalRank2HomoRank);
-  comm->globalRank2HomoRank = NULL;
-  free(comm->localRankToRank);
-  comm->localRankToRank = NULL;
-  free(comm->c2cSchedule);
-  comm->c2cSchedule = NULL;
-  free(comm->clusterInterRanks);
-  comm->clusterInterRanks = NULL;
-
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup begin comm=%p", comm);
-  if (comm->tuner) {
-    size_t homoCommIndex = 0;
+  if (comm->tuner != NULL) {
     for (auto &item : comm->homoCommMap) {
-      if (item.second != nullptr) {
-        TRACE(FLAGCX_INIT,
-              "flagcxCommDestroy homo comm begin comm=%p index=%zu inner=%p",
-              comm, homoCommIndex, item.second);
+      if (item.second != NULL) {
         FLAGCXCHECK(
             cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
-        item.second = nullptr;
+        if (comm->homoInterComm == item.second)
+          comm->homoInterComm = NULL;
+        if (comm->homoComm == item.second)
+          comm->homoComm = NULL;
+        item.second = NULL;
       }
-      homoCommIndex++;
     }
-  } else if (comm->homoComm != nullptr) {
+  }
+  if (comm->homoComm != NULL) {
     FLAGCXCHECK(
         cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
-    comm->homoComm = nullptr;
+    if (comm->homoInterComm == comm->homoComm)
+      comm->homoInterComm = NULL;
+    comm->homoComm = NULL;
   }
-  TRACE(FLAGCX_INIT, "flagcxCommDestroy homo cleanup end comm=%p", comm);
-
+  if (comm->homoInterComm != NULL) {
+    FLAGCXCHECK(
+        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoInterComm));
+    comm->homoInterComm = NULL;
+  }
   return flagcxSuccess;
 }
 
@@ -4374,95 +4363,72 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   return result;
 }
 
-static flagcxResult_t flagcxCommPrepareDestroyStage(flagcxComm_t comm,
-                                                    int stage) {
-  switch (stage) {
-    case 0:
-      return flagcxCommDrainLocalWork(comm);
-    case 1:
-      return flagcxCommCloseTransport(comm);
-    case 2:
-      return flagcxCommCloseLocalOwners(comm);
-    case 3:
-      return flagcxCommDestroyHomoResources(comm);
-    case 4:
-      return flagcxCommPrepareHeteroResources(comm);
-    case 5:
-      return flagcxCommCloseRemainingImports(comm);
-    default:
-      return flagcxInvalidArgument;
+flagcxResult_t flagcxCommDestroyLocal(flagcxComm_t comm) {
+  if (comm == NULL || comm->finalizeState.commonPhase != flagcxFinalizeComplete)
+    return flagcxInvalidUsage;
+  __atomic_store_n(&comm->finalizeState.lifecycle, flagcxCommDestroying,
+                   __ATOMIC_RELEASE);
+  if (comm->destroyPhase == flagcxDestroyBuffers) {
+    FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
+    comm->destroyPhase = flagcxDestroyVendors;
   }
-}
-
-flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
-  FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  flagcxResult_t destroyResult = flagcxSuccess;
-  TRACE(FLAGCX_INIT,
-        "flagcxCommDestroy begin comm=%p rank=%d tuner=%p homoComm=%p "
-        "homoCommMapSize=%zu commMapSize=%zu",
-        comm, comm->rank, comm->tuner, comm->homoComm, comm->homoCommMap.size(),
-        comm->commMap.size());
-
-  if (comm->destroyPhase < 7) {
-    // TODO: internal IPC (including UniRunner ready/scratch/progress) currently
-    // requires a temporary cross-rank shutdown rendezvous. Ranks that entered
-    // collective internal-resource creation must enter destroy concurrently,
-    // including retries after a reported cleanup failure. Replace this with a
-    // lifetime protocol supporting the public local-destroy contract.
-    for (int stage = 0; stage < 6; ++stage) {
-      flagcxResult_t local = flagcxSuccess;
-      if (comm->destroyPhase <= stage) {
-        local = flagcxCommPrepareDestroyStage(comm, stage);
-        if (local == flagcxSuccess)
-          comm->destroyPhase = stage + 1;
-      }
-      flagcxResult_t common = local;
-      if (comm->internalBuffersNeedPeerClose)
-        FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, local, &common));
-      if (common != flagcxSuccess)
-        return common;
+  if (comm->destroyPhase == flagcxDestroyVendors) {
+    FLAGCXCHECK(flagcxCommDestroyHomoResources(comm));
+    comm->destroyPhase = flagcxDestroyHetero;
+  }
+  if (comm->destroyPhase == flagcxDestroyHetero) {
+    if (comm->heteroComm != NULL) {
+      FLAGCXCHECK(flagcxHeteroCommDestroy(comm->heteroComm));
+      comm->heteroComm = NULL;
     }
-    // Every participating rank has now closed all imports successfully.
-    // A later allocation-free failure needs only a local destroy retry.
-    comm->destroyPhase = 7;
+    comm->destroyPhase = flagcxDestroyHost;
   }
-  FLAGCXCHECK(flagcxCommFreeInternalBuffers(comm));
-
-  if (!useHomoComm(comm) || useHeteroComm()) {
-    // The proxy and UniRunner resources were prepared above.
-    TRACE(FLAGCX_INIT,
-          "flagcxCommDestroy backend cleanup begin comm=%p heteroComm=%p", comm,
-          comm->heteroComm);
-    // Release the retained host state after all fallible device frees.
-    TRACE(FLAGCX_INIT,
-          "flagcxCommDestroy hetero cleanup begin comm=%p heteroComm=%p", comm,
-          comm->heteroComm);
-    destroyResult = flagcxHeteroCommDestroy(comm->heteroComm);
-    TRACE(FLAGCX_INIT, "flagcxCommDestroy hetero cleanup end comm=%p result=%d",
-          comm, destroyResult);
-    // Destroy host comm
-    if (useHostComm()) {
+  if (comm->destroyPhase == flagcxDestroyHost) {
+    if (comm->hostComm != NULL) {
       FLAGCXCHECK(
           cclAdaptors[flagcxCCLAdaptorHost]->commDestroy(comm->hostComm));
+      comm->hostComm = NULL;
     }
+    comm->destroyPhase = flagcxDestroyBootstrap;
   }
-
-  // Destroy bootstrap state and net
-  bootstrapClose(comm->bootstrap);
-
-  // Destroy tuner
-  if (comm->tuner) {
-    comm->tuner->destroy(comm->tunerContext);
+  if (comm->destroyPhase == flagcxDestroyBootstrap) {
+    FLAGCXCHECK(bootstrapClose(comm->bootstrap));
+    comm->bootstrap = NULL;
+    comm->destroyPhase = flagcxDestroyTuner;
   }
+  if (comm->destroyPhase == flagcxDestroyTuner) {
+    if (comm->tuner != NULL) {
+      FLAGCXCHECK(comm->tuner->destroy(comm->tunerContext));
+      comm->tuner = NULL;
+    }
+    comm->destroyPhase = flagcxDestroyNetPlugin;
+  }
+  if (comm->destroyPhase == flagcxDestroyNetPlugin) {
+    FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
+    comm->destroyPhase = flagcxDestroyCclPlugin;
+  }
+  if (comm->destroyPhase == flagcxDestroyCclPlugin) {
+    FLAGCXCHECK(flagcxCCLAdaptorPluginFinalize());
+    comm->destroyPhase = flagcxDestroyDevicePlugin;
+  }
+  if (comm->destroyPhase == flagcxDestroyDevicePlugin) {
+    FLAGCXCHECK(flagcxDeviceAdaptorPluginFinalize());
+    comm->destroyPhase = flagcxDestroyComplete;
+  }
+  free(comm->clusterIds);
+  comm->clusterIds = NULL;
+  free(comm->clusterSizes);
+  comm->clusterSizes = NULL;
+  free(comm->globalRank2HomoRank);
+  comm->globalRank2HomoRank = NULL;
+  free(comm->localRankToRank);
+  comm->localRankToRank = NULL;
+  free(comm->c2cSchedule);
+  comm->c2cSchedule = NULL;
+  free(comm->clusterInterRanks);
+  comm->clusterInterRanks = NULL;
 
-  // Finalize net adaptor plugin (dlclose)
-  FLAGCXCHECK(flagcxNetAdaptorPluginFinalize());
-
-  // Finalize device/CCL adaptor plugins (ref-counted)
-  flagcxCCLAdaptorPluginFinalize();
-  flagcxResult_t devicePluginResult = flagcxDeviceAdaptorPluginFinalize();
-
-  while (comm->publicWindows != nullptr) {
+  while (comm->publicWindows != NULL) {
     flagcxWindow_t win = comm->publicWindows;
     comm->publicWindows = win->nextOwned;
     free(win);
@@ -4470,7 +4436,14 @@ flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   if (comm->ipcTable != comm->ipcTableInline)
     free(comm->ipcTable);
   free(comm);
-  return destroyResult != flagcxSuccess ? destroyResult : devicePluginResult;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  if (comm->finalizeState.commonPhase != flagcxFinalizeComplete)
+    FLAGCXCHECK(flagcxCommFinalizeInternal(comm));
+  return flagcxCommDestroyLocal(comm);
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {

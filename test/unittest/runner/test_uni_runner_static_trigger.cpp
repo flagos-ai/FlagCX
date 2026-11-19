@@ -900,7 +900,7 @@ protected:
     failReadyFree = failReadyCopy = false;
     EXPECT_EQ(cleanupUniRunnerPersistentState(&runner), flagcxSuccess);
     EXPECT_EQ(flagcxCommCleanupIpcTable(&comm), flagcxSuccess);
-    comm.destroyPhase = 7;
+    comm.finalizeState.commonPhase = flagcxFinalizeComplete;
     EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
     devApiBackend = readySavedBackend;
     deviceAdaptor = savedDevice;
