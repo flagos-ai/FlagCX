@@ -22,7 +22,29 @@ ENABLED_PLATFORMS = [
 ]
 
 
+def load_platform_ignore_config(platform):
+    result = subprocess.run(
+        ["bash", "-c",
+         'source "$1"; if [[ -n "${FLAGCX_CI_IGNORE_TEST:-}" ]]; then '
+         'printf "%s" "$FLAGCX_CI_IGNORE_TEST"; else printf "{}"; fi',
+         "bash", str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh")],
+        capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout)
+
+
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_platform_ignore_lists_live_in_environment_scripts(self):
+        for platform in (
+            "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu"
+        ):
+            with self.subTest(platform=platform):
+                config = yaml.safe_load(
+                    (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+                )
+                self.assertNotIn("ignore_test", config)
+                self.assertTrue(load_platform_ignore_config(platform))
+
     def test_kunlunxin_workloads_use_job_containers(self):
         for filename, job_name, workload in (
             ("test.yml", "perf-test-kunlunxin", "perf"),
@@ -102,16 +124,14 @@ class PlatformCiRegressionTest(unittest.TestCase):
             ["kunlunxin"],
         )
 
-    def test_backend_phase_skips_follow_platform_yaml(self):
+    def test_backend_phase_skips_follow_platform_setup(self):
         runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
         helper = "flagcx_ci_phase_supported() {" + runner.split(
             "flagcx_ci_phase_supported() {", 1
         )[1].split("\n}", 1)[0] + "\n}\n"
         for platform in ENABLED_PLATFORMS:
             with self.subTest(platform=platform):
-                config_json = json.dumps(yaml.safe_load(
-                    (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
-                ).get("ignore_test", {}))
+                config_json = json.dumps(load_platform_ignore_config(platform))
                 script = '''
 set -euo pipefail
 source "$1"
@@ -145,9 +165,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     capture_output=True, text=True, check=True,
                 )
                 self.assertIn("RUN ordinary-ipc", result.stdout)
-                config = yaml.safe_load(
-                    (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
-                ).get("ignore_test", {}).get("phases", [])
+                config = json.loads(config_json).get("phases", [])
                 ignored = {(item["suite"], item["name"]) for item in config}
                 for suite, phase in (("p2p", "p2p-write-mpi"),
                                      ("rma", "rma-mpi"),
@@ -1146,9 +1164,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn('"$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .',
                       ascend_handler)
         self.assertIn('export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1', ascend_handler)
-        ascend_config = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/ascend.yml").read_text()
-        )["ignore_test"]
+        ascend_config = load_platform_ignore_config("ascend")
         self.assertEqual(ascend_config["torch"]["modes"], ["heterogeneous"])
         self.assertEqual(ascend_config["torch"]["operations"],
                          ["reduce", "allreduce", "reducescatter"])
@@ -1163,9 +1179,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         ascend_env = (REPO_ROOT / ".github/scripts/set_env/ascend.sh").read_text()
         self.assertNotIn("flagcx_ci_run_suite_override", ascend_env)
 
-        ignored_phases = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/ascend.yml").read_text()
-        )["ignore_test"]["phases"]
+        ignored_phases = load_platform_ignore_config("ascend")["phases"]
         for suite in ("rma", "symmem"):
             self.assertFalse(any(
                 entry["suite"] == suite and entry["name"] == f"{suite}-mpi"
@@ -1433,9 +1447,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
         )
         self.assertIn("local symmem_run_vmm_net_data=1", unit_runner)
-        kunlunxin_config = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
-        )["ignore_test"]
+        kunlunxin_config = load_platform_ignore_config("kunlunxin")
         self.assertTrue(any(
             entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
             for entry in kunlunxin_config["phases"]
@@ -1618,7 +1630,7 @@ run_suite
             "adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr",
             unit_runner,
         )
-        iluvatar_config = (REPO_ROOT / ".github/configs/iluvatar.yml").read_text()
+        iluvatar_config = json.dumps(load_platform_ignore_config("iluvatar"))
         self.assertIn("vmm-local-and-remote-without-net", iluvatar_config)
         self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
         self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
@@ -2567,7 +2579,9 @@ run_suite
             run_unit.index("    kernel)\n", run_unit.index("run_suite() {")):
             run_unit.index("    symmem)\n", run_unit.index("run_suite() {"))
         ]
-        kernel_config = (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+        kernel_config = (
+            REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
+        ).read_text()
         self.assertNotIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_config)
         self.assertNotIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_config)
         self.assertIn('ignore_test.py" \\\n  gtest "$SUITE"', run_unit)

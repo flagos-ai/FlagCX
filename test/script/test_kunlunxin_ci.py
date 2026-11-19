@@ -9,18 +9,27 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import yaml
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HANDLER = REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
 
 
+def load_kunlunxin_ignore_config():
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
+         "bash", str(REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh")],
+        check=True, capture_output=True, text=True,
+    )
+    return json.loads(result.stdout)
+
+
 class KunlunXinUnitDispatchTest(unittest.TestCase):
+    def test_ignore_config_is_owned_by_platform_shell(self):
+        config = (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
+        self.assertNotIn("ignore_test:", config)
+        self.assertTrue(load_kunlunxin_ignore_config()["phases"])
+
     def test_unified_ir_ignore_test_only_matches_s16(self):
-        config = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
-        )["ignore_test"]
+        config = load_kunlunxin_ignore_config()
         env = {
             **os.environ,
             "FLAGCX_CI_IGNORE_TEST": json.dumps(config),
@@ -101,15 +110,13 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                 'export FLAGCX_ADAPTOR=klx\n'
                 'flagcx_ci_validate_rdma() { return 0; }\n'
             )
-            config = yaml.safe_load(
-                (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
-            )
+            config = load_kunlunxin_ignore_config()
             log = root / "calls"
             env = {**os.environ, "GITHUB_WORKSPACE": str(root),
                    "PATH": f"{binaries}:{os.environ['PATH']}",
                    "CALL_LOG": str(log), "FAIL_LABEL": failed_label,
                    "FLAGCX_CI_COVERAGE": "0", "GTEST_FILTER": "*",
-                   "FLAGCX_CI_IGNORE_TEST": json.dumps(config["ignore_test"])}
+                   "FLAGCX_CI_IGNORE_TEST": json.dumps(config)}
             result = subprocess.run(
                 ["bash", str(ci / "run_unit_test.sh"), str(platform), suite],
                 cwd=root, env=env, capture_output=True, text=True, timeout=15,
@@ -134,8 +141,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_hardware_mpi_phases_are_not_blanket_skipped(self):
-        config_path = REPO_ROOT / ".github/configs/kunlunxin.yml"
-        config = yaml.safe_load(config_path.read_text())["ignore_test"]
+        config = load_kunlunxin_ignore_config()
         skipped_phases = {
             (entry["suite"], entry["name"])
             for entry in config.get("phases", [])
@@ -158,9 +164,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
         self.assertNotIn("DevicePtrArgs.DevMemFreeDevicePtrNull", excluded_gtests)
 
     def test_kunlunxin_skips_unavailable_rma_symmem_and_runner_mpi_phases(self):
-        config = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/kunlunxin.yml").read_text()
-        )["ignore_test"]
+        config = load_kunlunxin_ignore_config()
         skipped_phases = {
             (entry["suite"], entry["name"]): entry["reason"]
             for entry in config.get("phases", [])

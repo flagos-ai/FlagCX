@@ -11,6 +11,50 @@ export MPI_HOME=${MPI_HOME:-/usr/local/openmpi}
 export PATH="$MPI_HOME/bin:/usr/local/corex/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/corex/lib64:$MPI_HOME/lib:${LD_LIBRARY_PATH:-}"
 
+FLAGCX_CI_IGNORE_TEST='{
+  "gtest": [
+    {
+      "suite": "symmem",
+      "tests": [
+        "SymMemTest.CrossGpuReadViaPeerPtr",
+        "SymMemTest.CrossGpuWriteViaPeerPtr",
+        "SymMemTest.MulticastMappingWhenSupported",
+        "SymMemTest.RankLocalVmmPrepareFailureConvergesBeforeFdExchangeAndRetries",
+        "SymMemTest.FlatMapRollbackFailureRetainsOwnershipForRetry",
+        "SymMemTest.LsaWindowsShareArenaAndReuseReleasedOffset",
+        "SymMemTest.LsaReserveFailureDoesNotPublishWindow",
+        "SymMemTest.OrdinaryAllocationUsesIpcWithVmmEnabled"
+      ],
+      "reason": "IXCUDA VMM/LSA callbacks are not implemented"
+    }
+  ],
+  "phases": [
+    {
+      "suite": "symmem",
+      "name": "vmm-local-and-remote-without-net",
+      "reason": "IXCUDA VMM/LSA callbacks are not implemented"
+    },
+    {
+      "suite": "symmem",
+      "name": "vmm-net-data",
+      "reason": "IXCUDA VMM/LSA callbacks are not implemented"
+    }
+  ],
+  "runner": [
+    {
+      "test": "FlagCXCollTest.SendRecv",
+      "modes": ["HYBRID", "forced-NET", "PXN"],
+      "reason": "Known heterogeneous SendRecv hang; backend diagnosis pending"
+    },
+    {
+      "test": "FlagCXCollTest.AlltoAll",
+      "modes": ["PXN"],
+      "reason": "Expected PXN relay absent; topology and routing diagnosis pending"
+    }
+  ]
+}'
+export FLAGCX_CI_IGNORE_TEST
+
 FLAGCX_CI_PROJECT_MAKE_ARGS=(USE_ILUVATAR=1)
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ILUVATAR=1)
 FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1

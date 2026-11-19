@@ -1,3 +1,5 @@
+import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -140,10 +142,12 @@ class PpuCiRegressionTest(unittest.TestCase):
         self.assertIn("FLAGCX_DMABUF_ENABLE=1", unit_runner)
         self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
-        import yaml
-        ppu_config = yaml.safe_load(
-            (REPO_ROOT / ".github/configs/ppu.yml").read_text()
-        )["ignore_test"]
+        ppu_config = json.loads(subprocess.check_output(
+            ["bash", "-c",
+             'source "$1"; printf "%s" "$FLAGCX_CI_IGNORE_TEST"',
+             "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh")],
+            text=True,
+        ))
         self.assertTrue(any(
             entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
             for entry in ppu_config["phases"]

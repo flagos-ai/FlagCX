@@ -6,9 +6,9 @@ platforms remain registered but disabled in `configs/platforms.yml`; their
 unit, performance, and Torch API jobs are not scheduled. Re-enable a platform
 there after its hardware coverage is ready.
 
-For KunlunXin, the unsupported heterogeneous performance and Torch API phases
-are recorded in `configs/kunlunxin.yml` under `ignore_test` and reported as
-skipped coverage.
+Platform-specific test exclusions are defined in each platform's
+`scripts/set_env/*.sh` file and reported as skipped coverage. Platform
+selection, images, runners, and suite lists remain in `configs/*.yml`.
 
 `unit-test.yml` is the automatic controller for PRs to `main`/`devops`, pushes
 to those branches, and the daily schedule. It runs the selected platforms'
