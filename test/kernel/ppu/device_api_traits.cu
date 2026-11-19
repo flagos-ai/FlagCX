@@ -13,14 +13,17 @@
 using Traits = PlatformTraits<PpuPlatform>;
 using Atomic = Traits::Atomic;
 using Ops = Traits::CoopOps;
-static_assert(std::is_same<Traits::CoopAny, PlatformCoop>::value,
-              "PPU must retain the public PlatformCoop implementation");
+static_assert(!std::is_same<Traits::CoopAny, PlatformCoop>::value,
+              "PPU CoopAny must use direct synchronization dispatch");
 static_assert(
     std::is_same<DeviceAPI, CommTraits<DefaultBackend<PpuPlatform>>>::value,
     "PPU must select its own default backend");
 static_assert(sizeof(Traits::CoopAny) == sizeof(PlatformCoop) &&
                   alignof(Traits::CoopAny) == alignof(PlatformCoop),
               "PPU CoopAny layout changed");
+static_assert(std::is_standard_layout<Traits::CoopAny>::value &&
+                  std::is_trivially_copyable<Traits::CoopAny>::value,
+              "PPU CoopAny must retain value/opaque-copy semantics");
 static_assert(sizeof(PlatformCompletionWord<PpuPlatform>::type) == 8,
               "PPU completion protocol must stay 64-bit");
 
@@ -29,6 +32,20 @@ struct Sum {
     return a + b;
   }
 };
+
+template <int N>
+FLAGCX_DEVICE_INLINE_DECORATOR bool coopTileContract(uint32_t *scratch,
+                                                     int tid) {
+  Traits::CoopTile<N> group;
+  Traits::CoopAny original(group), copied(original), assigned;
+  assigned = copied;
+  scratch[tid] = tid + 1;
+  assigned.sync();
+  bool ok = assigned.threadRank() == tid % N && assigned.size() == N &&
+            scratch[(tid / N) * N + N - 1] == uint32_t((tid / N) * N + N);
+  assigned.sync();
+  return ok;
+}
 
 // Instantiate every native HGGC atomic operation for both protocol widths
 // and all four scopes, including CAS success and failure semantics.
@@ -92,12 +109,39 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
         anyWarp.threadRank() == lane && anyWarp.size() == 32 &&
         anyTile.threadRank() == lane % 8 && anyTile.size() == 8 &&
         anyThread.threadRank() == 0 && anyThread.size() == 1;
-  if (lane < 16) {
-    Traits::CoopLanes lanes(0xffffu);
-    Traits::CoopAny anyLanes(lanes);
-    anyLanes.sync();
-    ok &= anyLanes.threadRank() == lane && anyLanes.size() == 16;
+  Traits::CoopAny noop;
+  noop.sync();
+  ok &= noop.threadRank() == 0 && noop.size() == 1;
+  ok &= coopTileContract<1>(scratch, tid);
+  ok &= coopTileContract<2>(scratch, tid);
+  ok &= coopTileContract<4>(scratch, tid);
+  ok &= coopTileContract<8>(scratch, tid);
+  ok &= coopTileContract<16>(scratch, tid);
+  ok &= coopTileContract<32>(scratch, tid);
+  block.sync();
+
+  const flagcxLaneMask_t masks[] = {0xffffu, 0x55555555u, 0x80000001u, 1u,
+                                    Traits::Intrin::fullMask()};
+  for (unsigned i = 0; i < sizeof(masks) / sizeof(masks[0]); ++i) {
+    const flagcxLaneMask_t mask = masks[i];
+    if (mask & (flagcxLaneMask_t{1} << lane)) {
+      Traits::CoopLanes lanes(mask);
+      Traits::CoopAny original(lanes), copied(original);
+      scratch[tid] = tid + 1;
+      copied.sync();
+      int last = 31;
+      while ((mask & (flagcxLaneMask_t{1} << last)) == 0)
+        --last;
+      ok &= copied.threadRank() ==
+                Traits::Intrin::popc(mask & Traits::Intrin::lanemaskLt()) &&
+            copied.size() == Traits::Intrin::popc(mask) &&
+            scratch[(tid / 32) * 32 + last] ==
+                uint32_t((tid / 32) * 32 + last + 1);
+      copied.sync();
+    }
+    warp.sync();
   }
+  block.sync();
   if (tid < 32) {
     Traits::CoopTileSpan span(0, 1, 0);
     Traits::CoopAny anySpan(span);
@@ -105,6 +149,38 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
     ok &= anySpan.threadRank() == tid && anySpan.size() == 32;
   }
   block.sync();
+  for (int id = 0; id < 2; ++id) {
+    if (tid >= 32 && tid < 96) {
+      Traits::CoopTileSpan span(1, 2, id);
+      Traits::CoopAny original(span), copied(original), assigned;
+      assigned = copied;
+      scratch[tid] = tid + 1;
+      assigned.sync();
+      ok &= assigned.threadRank() == tid - 32 && assigned.size() == 64 &&
+            scratch[95] == 96;
+      assigned.sync();
+    }
+    block.sync();
+  }
+
+  // IR objects can be copied through opaque storage. Queries must describe
+  // the calling thread even when thread 0 constructed the stored group.
+  FLAGCX_SHARED_DECORATOR uint64_t coopStorage[3];
+  if (tid == 0) {
+    Traits::CoopAny source(block);
+    const unsigned char *srcBytes = (const unsigned char *)&source;
+    unsigned char *dstBytes = (unsigned char *)coopStorage;
+    for (unsigned i = 0; i < sizeof(source); ++i)
+      dstBytes[i] = srcBytes[i];
+  }
+  block.sync();
+  Traits::CoopAny fromStorage;
+  const unsigned char *srcBytes = (const unsigned char *)coopStorage;
+  unsigned char *dstBytes = (unsigned char *)&fromStorage;
+  for (unsigned i = 0; i < sizeof(fromStorage); ++i)
+    dstBytes[i] = srcBytes[i];
+  ok &= fromStorage.threadRank() == tid && fromStorage.size() == 128;
+  fromStorage.sync();
   ok &= Ops::broadcast(warp, uint32_t(lane), 3) == 3;
   ok &= Ops::reduce(warp, uint32_t(lane + 1), Sum{}) == 528;
   Traits::Intrin::threadfenceDevice();

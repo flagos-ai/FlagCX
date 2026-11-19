@@ -23,16 +23,22 @@ RUNTIME = r"""
 #define __shared__
 #define __forceinline__ inline
 #define __constant__
-struct Dim { unsigned x = 0; };
+struct Dim { unsigned x; Dim(unsigned value = 0) : x(value) {} };
 static Dim threadIdx, blockIdx, blockDim{128}, gridDim{1};
 struct alignas(16) int4 { int x, y, z, w; };
 inline unsigned __ppu_read_laneid() { return threadIdx.x % 32; }
 inline unsigned __ppu_read_lanemask_lt() { return (1u << __ppu_read_laneid()) - 1; }
 inline unsigned __activemask() { return 0xffffffffu; }
 inline unsigned __popc(unsigned x) { return __builtin_popcount(x); }
-inline void __syncwarp(unsigned = 0xffffffffu) {}
-inline void __barrier_sync_count(int, int) {}
-inline void __syncthreads() {}
+static unsigned warpSyncCalls, blockSyncCalls, namedSyncCalls, lastWarpMask;
+static int lastBarrierId, lastBarrierCount;
+inline void __syncwarp(unsigned mask = 0xffffffffu) {
+  ++warpSyncCalls; lastWarpMask = mask;
+}
+inline void __barrier_sync_count(int id, int count) {
+  ++namedSyncCalls; lastBarrierId = id; lastBarrierCount = count;
+}
+inline void __syncthreads() { ++blockSyncCalls; }
 inline void __threadfence_system() {}
 inline void __threadfence() {}
 inline void __threadfence_block() {}
@@ -109,7 +115,9 @@ PRELUDE = r"""
 #error PPU must not include NVIDIA PTX memory helpers
 #endif
 using P = PlatformTraits<PpuPlatform>;
-static_assert(std::is_same<P::CoopAny, PlatformCoop>::value, "common CoopAny");
+static_assert(!std::is_same<P::CoopAny, PlatformCoop>::value, "PPU direct-dispatch CoopAny");
+static_assert(std::is_standard_layout<P::CoopAny>::value &&
+              std::is_trivially_copyable<P::CoopAny>::value, "CoopAny value semantics");
 static_assert(sizeof(P::CoopAny) == 24 && alignof(P::CoopAny) == 8, "CoopAny ABI");
 static_assert(sizeof(PlatformCompletionWord<PpuPlatform>::type) == 8, "completion width");
 """
@@ -128,7 +136,7 @@ class PpuPlatformTraitsTest(unittest.TestCase):
                 (tmp / "hggc/atomic").write_text(ATOMIC)
             cpp = tmp / "test.cpp"
             cpp.write_text(PRELUDE + source)
-            cmd = [CXX, "-std=c++17", "-Wall", "-Wextra",
+            cmd = [CXX, "-std=c++11", "-Wall", "-Wextra",
                    "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
                    f"-I{ROOT / 'flagcx/adaptor/include'}",
                    f"-I{ROOT / 'flagcx/include'}",
@@ -150,14 +158,9 @@ class PpuPlatformTraitsTest(unittest.TestCase):
 
     def test_host_header_and_portable_operations(self):
         self.compile_source(r"""
-struct Group {
-  int threadRank() const { return 3; }
-  int size() const { return 8; }
-  void sync() {}
-};
 int main() {
-  P::CoopAny any(Group{});
-  assert(any.threadRank() == 3 && any.size() == 8);
+  P::CoopAny any(P::CoopThread{});
+  assert(any.threadRank() == 0 && any.size() == 1);
   any.sync();
   P::CoopAny noop;
   assert(noop.threadRank() == 0 && noop.size() == 1);
@@ -231,6 +234,92 @@ int main() {
     P::Intrin::copyBytesStridedImpl(dst + 1, src + 1, 127, rank, 32);
   for (int i = 1; i < 128; ++i) assert(src[i] == dst[i]);
   assert(dst[0] == 0 && dst[128] == 0);
+}
+""", native=True)
+
+    def test_coop_any_tiles_and_block_preserve_calling_thread_semantics(self):
+        self.compile_source(r"""
+void resetSync() { warpSyncCalls = blockSyncCalls = namedSyncCalls = 0; }
+template <int N> void checkTile() {
+  threadIdx.x = 0;
+  P::CoopTile<N> group;
+  P::CoopAny original(group), copied(original), assigned;
+  assigned = original;
+  for (unsigned tid = 0; tid < 128; ++tid) {
+    threadIdx.x = tid;
+    assert(copied.threadRank() == int(tid % N) && copied.size() == N);
+    assert(assigned.threadRank() == group.threadRank() && assigned.size() == group.size());
+    resetSync();
+    copied.sync();
+    assert(blockSyncCalls == 0 && namedSyncCalls == 0);
+    assert(warpSyncCalls == (N > 1 ? 1u : 0u));
+    if (N > 1) {
+      unsigned base = (tid % 32) / N * N;
+      assert(lastWarpMask == (((uint64_t{1} << N) - 1) << base));
+    }
+  }
+}
+int main() {
+  checkTile<1>(); checkTile<2>(); checkTile<4>();
+  checkTile<8>(); checkTile<16>(); checkTile<32>();
+  threadIdx.x = 0;
+  P::CoopAny original(P::CoopBlock{}), copied(original), assigned;
+  assigned = original;
+  for (unsigned tid = 0; tid < 128; ++tid) {
+    threadIdx.x = tid;
+    assert(copied.threadRank() == int(tid) && assigned.threadRank() == int(tid));
+    assert(copied.size() == 128 && assigned.size() == 128);
+    resetSync(); copied.sync();
+    assert(blockSyncCalls == 1 && warpSyncCalls == 0 && namedSyncCalls == 0);
+  }
+  blockDim.x = 256; threadIdx.x = 145;
+  assert(copied.threadRank() == 145 && copied.size() == 256);
+  P::CoopAny noop;
+  assigned = noop;
+  resetSync(); assigned.sync();
+  assert(assigned.threadRank() == 0 && assigned.size() == 1);
+  assert(blockSyncCalls == 0 && warpSyncCalls == 0 && namedSyncCalls == 0);
+}
+""", native=True)
+
+    def test_coop_any_lane_masks_and_named_barrier_parameters(self):
+        self.compile_source(r"""
+void resetSync() { warpSyncCalls = blockSyncCalls = namedSyncCalls = 0; }
+int main() {
+  const uint64_t masks[] = {0, 1, 0xffff, 0x55555555, 0x80000001, 0xffffffff};
+  for (uint64_t mask : masks) {
+    threadIdx.x = 0;
+    P::CoopLanes group(mask);
+    P::CoopAny original(group), copied(original), assigned;
+    assigned = original;
+    for (unsigned tid = 0; tid < 128; ++tid) {
+      threadIdx.x = tid;
+      int rank = __builtin_popcountll(mask & ((uint64_t{1} << (tid % 32)) - 1));
+      assert(copied.threadRank() == rank && assigned.threadRank() == group.threadRank());
+      assert(copied.size() == __builtin_popcountll(mask));
+      resetSync(); assigned.sync();
+      assert(warpSyncCalls == 1 && lastWarpMask == mask);
+      assert(blockSyncCalls == 0 && namedSyncCalls == 0);
+    }
+  }
+  for (int first = 0; first < 3; ++first) {
+    for (int tiles = 1; tiles <= 4 - first; ++tiles) {
+      for (int id = 0; id < 3; ++id) {
+        threadIdx.x = 0;
+        P::CoopTileSpan group(first, tiles, id);
+        P::CoopAny original(group), copied(original), assigned;
+        assigned = original;
+        for (int tid = first * 32; tid < (first + tiles) * 32; ++tid) {
+          threadIdx.x = tid;
+          assert(copied.threadRank() == tid - first * 32 && copied.size() == tiles * 32);
+          assert(assigned.threadRank() == group.threadRank() && assigned.size() == group.size());
+          resetSync(); assigned.sync();
+          assert(namedSyncCalls == 1 && lastBarrierId == 1 + id && lastBarrierCount == tiles * 32);
+          assert(blockSyncCalls == 0 && warpSyncCalls == 0);
+        }
+      }
+    }
+  }
 }
 """, native=True)
 

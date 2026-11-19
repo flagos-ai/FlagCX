@@ -630,8 +630,105 @@ struct PlatformTraits<PpuPlatform> {
     }
   };
 
-  using CoopAny = PlatformCoop;
+  // Keep only group parameters: device function-pointer tables require
+  // relocation and indirect calls. Resolve rank/size on the calling thread,
+  // as the concrete groups do, rather than caching the constructor's rank.
+  struct CoopAny {
+    FLAGCX_DEVICE_INLINE_DECORATOR CoopAny()
+        : kind_(Thread), groupSize_(1), mask_(0), firstTile_(0), barrierId_(0) {
+    }
+    CoopAny(CoopAny const &) = default;
+    CoopAny &operator=(CoopAny const &) = default;
+
+    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopAny(CoopBlock)
+        : kind_(Block), groupSize_(0), mask_(0), firstTile_(0), barrierId_(0) {}
+
+    template <int N>
+    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopAny(CoopTile<N>)
+        : kind_(N == 1 ? Thread : Tile), groupSize_(N), mask_(0), firstTile_(0),
+          barrierId_(0) {}
+
+    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopAny(CoopTileSpan group)
+        : kind_(TileSpan), groupSize_(Intrin::simtWidth * group.nTiles),
+          mask_(0), firstTile_(group.t0), barrierId_(1 + group.id) {}
+
+    FLAGCX_DEVICE_INLINE_DECORATOR explicit CoopAny(CoopLanes group)
+        : kind_(Lanes), groupSize_(0), mask_(group.getLmask()), firstTile_(0),
+          barrierId_(0) {}
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int threadRank() const {
+      switch (kind_) {
+        case Thread:
+          return 0;
+        case Tile:
+          return Intrin::lane() % groupSize_;
+        case Block:
+          return FLAGCX_THREAD_IDX_X;
+        case TileSpan:
+          return FLAGCX_THREAD_IDX_X - Intrin::simtWidth * firstTile_;
+        case Lanes:
+          return Intrin::popc(mask_ & Intrin::lanemaskLt());
+      }
+      FLAGCX_DEVICE_TRAP();
+      return 0;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
+      switch (kind_) {
+        case Thread:
+          return 1;
+        case Tile:
+        case TileSpan:
+          return groupSize_;
+        case Block:
+          return FLAGCX_BLOCK_DIM_X;
+        case Lanes:
+          return Intrin::popc(mask_);
+      }
+      FLAGCX_DEVICE_TRAP();
+      return 0;
+    }
+
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() const {
+      switch (kind_) {
+        case Thread:
+          return;
+        case Tile:
+          Intrin::syncwarp(
+              (Intrin::fullMask() >> (Intrin::simtWidth - groupSize_))
+              << (Intrin::lane() & -groupSize_));
+          return;
+        case Block:
+          FLAGCX_DEVICE_SYNC_THREADS();
+          return;
+        case TileSpan:
+          Intrin::namedBarrierSync(barrierId_, groupSize_);
+          return;
+        case Lanes:
+          Intrin::syncwarp(mask_);
+          return;
+      }
+      FLAGCX_DEVICE_TRAP();
+    }
+
+  private:
+    enum Kind : uint32_t { Thread, Tile, Block, TileSpan, Lanes };
+    Kind kind_;
+    int groupSize_;
+    flagcxLaneMask_t mask_;
+    int firstTile_;
+    int barrierId_;
+  };
 };
+
+static_assert(sizeof(PlatformTraits<PpuPlatform>::CoopAny) == 24 &&
+                  alignof(PlatformTraits<PpuPlatform>::CoopAny) == 8,
+              "PPU CoopAny must retain its opaque IR layout");
+static_assert(sizeof(PlatformTraits<PpuPlatform>::CoopAny) ==
+                      sizeof(PlatformCoop) &&
+                  alignof(PlatformTraits<PpuPlatform>::CoopAny) ==
+                      alignof(PlatformCoop),
+              "PPU CoopAny must preserve the common CoopAny size/alignment");
 
 namespace flagcxPpuDetail {
 template <typename...>

@@ -458,7 +458,7 @@ flagcxResult_t flagcxP2pProxySend(struct flagcxP2pResources *resources,
 
         TRACE(FLAGCX_P2P,
               "P2P proxy copy direction=send plan=fifo op_id=%d chunk=%d "
-              "slot=%d stage=copy-enter src=%p dst=%p bytes=%zu stream=%p",
+              "slot=%d stage=copy-enter src=%p dst=%p bytes=%d stream=%p",
               args->opId, args->copied, step,
               (char *)data + args->totalCopySize, args->subs[step].stepBuff,
               args->subs[step].stepSize, resources->proxyInfo.stream);
@@ -662,13 +662,13 @@ flagcxResult_t flagcxP2pProxyRecv(struct flagcxP2pResources *resources,
 
         TRACE(FLAGCX_P2P,
               "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
-              "slot=%d src=%p dst=%p bytes=%zu stream=%p",
+              "slot=%d src=%p dst=%p bytes=%d stream=%p",
               args->opId, args->copied, step, args->subs[step].stepBuff,
               (char *)data + args->totalCopySize, args->subs[step].stepSize,
               resources->proxyInfo.stream);
         TRACE(FLAGCX_P2P,
               "P2P proxy copy direction=recv plan=fifo op_id=%d chunk=%d "
-              "slot=%d stage=copy-enter src=%p dst=%p bytes=%zu stream=%p",
+              "slot=%d stage=copy-enter src=%p dst=%p bytes=%d stream=%p",
               args->opId, args->copied, step, args->subs[step].stepBuff,
               (char *)data + args->totalCopySize, args->subs[step].stepSize,
               resources->proxyInfo.stream);

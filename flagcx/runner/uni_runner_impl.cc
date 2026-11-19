@@ -7019,9 +7019,9 @@ static flagcxResult_t runStaticRingDag(flagcxComm_t comm,
   runnerState->ipcRingControlHost = newControlHost;
   runnerState->ipcRingControlDevice = newControlDevice;
   runnerState->ipcEpoch = control.epoch;
-  size_t maxExecutorBlocks = 0;
 #if defined(COMPILE_KERNEL_HOST) &&                                            \
     (defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR))
+  size_t maxExecutorBlocks = 0;
   result = flagcxGetStaticRingDagKernelMaxExecutorBlocks(
       static_cast<size_t>(runnerState->uniRunnerNThreads), &maxExecutorBlocks);
   if (result == flagcxSuccess && plan.numRingLanes > maxExecutorBlocks)
