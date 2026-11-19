@@ -18,7 +18,7 @@ case "$workload" in
     exec bash "$project_root/.github/scripts/ci/run_unit_test.sh" \
       "$set_env" "$suite"
     ;;
-  torch-api|perf|perf-legacy|perf-test-experimental)
+  torch-api|perf|perf-test-experimental)
     handler="$project_root/.github/scripts/ci/run_${platform}_workload.sh"
     if [[ ! -f "$handler" ]]; then
       echo "No $platform handler is available for the $workload workload: $handler" >&2
