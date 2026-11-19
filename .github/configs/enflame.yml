@@ -21,6 +21,8 @@ docker_volumes:
   - /dev/infiniband:/dev/infiniband
   - /sys/class/infiniband:/sys/class/infiniband:ro
   - /sys/bus/pci/devices:/sys/bus/pci/devices:ro
+  # Do not bind /sys/class/infiniband_verbs: it is absent on the Enflame
+  # runner, and Docker cannot create missing mount sources under sysfs.
 
 docker_options:
   - --network=host

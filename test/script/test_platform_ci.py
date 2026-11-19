@@ -885,6 +885,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "/sys/bus/pci/devices:/sys/bus/pci/devices:ro",
         ):
             self.assertIn(f"  - {mount}", enflame_config)
+        self.assertNotIn("  - /sys/class/infiniband_verbs:", enflame_config)
         self.assertIn('export GTEST_FILTER="-DeviceAdaptorTest.HostGetDevicePointer"', enflame_env)
         self.assertIn('export GTEST_FILTER+=":NetAdaptorLoopback.*"', enflame_env)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", enflame_env)
