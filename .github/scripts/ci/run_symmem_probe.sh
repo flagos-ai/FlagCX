@@ -53,7 +53,13 @@ if ! command -v gdb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
     > "$results/gdb-install.log" 2>&1 || echo 'gdb unavailable; retaining /proc diagnostics' >&2
 fi
 
-for case in AllocationAndRange MultiSegmentSubrange AliasAndRetryableTeardown LsaArenaOffsetsAndFdLifetime VaMrReadWrite VaMrMultiSegmentReadWrite VaMrSingleSegmentSameSize VaMrEachPhysicalSegment VaMrCrossSegmentBoundary VaMrWholeMultiSegment VaMrMultiSegmentStrongOrdering; do
+component_cases=(
+  AllocationAndRange MultiSegmentSubrange AliasAndRetryableTeardown
+  LsaArenaOffsetsAndFdLifetime VaMrReadWrite VaMrMultiSegmentReadWrite
+  VaMrSingleSegmentSameSize VaMrEachPhysicalSegment VaMrCrossSegmentBoundary
+  VaMrWholeMultiSegment VaMrMultiSegmentStrongOrdering
+)
+for case in "${component_cases[@]}"; do
   if ! run_unit_case "VmmProbe.$case"; then
     status=1
     if [[ "$case" == AllocationAndRange ]]; then local_allocation_status=1; fi

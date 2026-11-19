@@ -34,6 +34,16 @@ endif
 
 all: $(ALL_TARGETS)
 
+# Reproduce SDK IPC failures without linking FlagCX, MPI or GoogleTest.
+ifneq ($(filter 1,$(USE_NVIDIA) $(USE_ILUVATAR)),)
+.PHONY: ipc-repro
+ipc-repro: $(BINDIR)/ipc_vmm_repro
+all: $(BINDIR)/ipc_vmm_repro
+$(BINDIR)/ipc_vmm_repro: ipc_vmm_repro.cpp
+	@mkdir -p $(BINDIR)
+	$(CXX) $< -o $@ $(CXXFLAGS) $(SYMMEM_MPI_DEVICE_FLAGS) $(SYMMEM_MPI_DEVICE_LINK) -ldl
+endif
+
 $(UNIT_TARGET): $(UNIT_OBJS)
 	@mkdir -p $(BINDIR)
 	@echo "Linking   $@"

@@ -138,11 +138,24 @@ fi
         self.assertEqual(calls[0]['case'], 'SymmemProbePrerequisites.VmmCallbacks')
         self.assertEqual(sum(c['mpi'] for c in calls), 7)
         self.assertTrue(all(c['dmabuf'] == '0' and c['vmm'] == '1' for c in calls))
+        self.assertEqual({call['case'] for call in calls if not call['mpi']}, {
+            'SymmemProbePrerequisites.VmmCallbacks',
+            'VmmProbe.AllocationAndRange', 'VmmProbe.MultiSegmentSubrange',
+            'VmmProbe.AliasAndRetryableTeardown',
+            'VmmProbe.LsaArenaOffsetsAndFdLifetime', 'VmmProbe.VaMrReadWrite',
+            'VmmProbe.VaMrMultiSegmentReadWrite',
+            'VmmProbe.VaMrSingleSegmentSameSize',
+            'VmmProbe.VaMrEachPhysicalSegment',
+            'VmmProbe.VaMrCrossSegmentBoundary',
+            'VmmProbe.VaMrWholeMultiSegment',
+            'VmmProbe.VaMrMultiSegmentStrongOrdering',
+        })
 
     def test_mr_registration_controls_are_separate_invocations(self):
         result, calls = self.run_probe(FAIL_CASE='VmmProbe.VaMrWholeMultiSegment')
         self.assertNotEqual(result.returncode, 0)
         expected = {
+            'VmmProbe.VaMrMultiSegmentReadWrite',
             'VmmProbe.VaMrSingleSegmentSameSize',
             'VmmProbe.VaMrEachPhysicalSegment',
             'VmmProbe.VaMrCrossSegmentBoundary',
@@ -150,6 +163,13 @@ fi
             'VmmProbe.VaMrMultiSegmentStrongOrdering',
         }
         self.assertTrue(expected.issubset(call['case'] for call in calls))
+        self.assertEqual(len(calls), 19)
+        self.assertEqual(sum(call['mpi'] for call in calls), 7)
+
+    def test_multi_segment_data_failure_keeps_failure_and_runs_mpi(self):
+        result, calls = self.run_probe(FAIL_CASE='VmmProbe.VaMrMultiSegmentReadWrite')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 19)
         self.assertEqual(sum(call['mpi'] for call in calls), 7)
 
     def test_missing_vmm_prerequisite_blocks_components_and_mpi(self):

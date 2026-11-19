@@ -1,6 +1,7 @@
 #include "flagcx_hetero.h"
 #include "global_comm.h"
 #include "ipcsocket.h"
+#include "mem_alloc_registry.h"
 #include "onesided_types.h"
 #include "probe.hpp"
 #include "sym_heap.h"
@@ -348,6 +349,14 @@ TEST_F(MpiVmmProbe, DeregistrationFailureAndRetry) {
   ASSERT_FALSE(HasFatalFailure());
   registerWindow();
   ASSERT_FALSE(HasFatalFailure());
+  flagcxWindow_t original = window;
+  auto *retainedState = window->defaultBase;
+  const int mrIndex = retainedState->mrIndex;
+  ASSERT_EQ(all(retainedState->hasAllocationLease &&
+                        retainedState->hasNetworkMrRef && mrIndex >= 0
+                    ? flagcxSuccess
+                    : flagcxInternalError),
+            flagcxSuccess);
   savedUnmap = deviceAdaptor->symFlatMappingUnmapSegments;
   if (rank == 0)
     deviceAdaptor->symFlatMappingUnmapSegments = failUnmap;
@@ -355,15 +364,56 @@ TEST_F(MpiVmmProbe, DeregistrationFailureAndRetry) {
     return flagcxCommWindowDeregister(comm, window);
   });
   deviceAdaptor->symFlatMappingUnmapSegments = savedUnmap;
-  expectCollectiveFailure(result);
-  ASSERT_EQ(all(window && window->defaultBase && window->defaultBase->published
+  EXPECT_EQ(result, rank == 0 ? flagcxUnhandledDeviceError : flagcxSuccess);
+  // Public deregistration is local: only the failed rank keeps its state.
+  ASSERT_EQ(all((rank == 0 ? window->defaultBase != nullptr
+                           : window->defaultBase == nullptr)
                     ? flagcxSuccess
                     : flagcxInternalError),
             flagcxSuccess);
-  ASSERT_EQ(
-      all(probeCall("retry window deregistration",
-                    [&] { return flagcxCommWindowDeregister(comm, window); })),
-      flagcxSuccess);
+  if (rank == 0) {
+    EXPECT_EQ(window->defaultBase, retainedState);
+    EXPECT_EQ(retainedState->state, flagcxSymWindowCleanupRequired);
+    EXPECT_TRUE(retainedState->published);
+    EXPECT_TRUE(retainedState->hasAllocationLease);
+    EXPECT_TRUE(retainedState->flatMappingOwned);
+    // MR cleanup precedes the injected mapping failure and must not repeat.
+    EXPECT_FALSE(retainedState->hasNetworkMrRef);
+  } else {
+    EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  }
+  auto *mr = comm->heteroComm->oneSideHandles[mrIndex];
+  // Slot zero may retain its connections after releasing the actual MR.
+  EXPECT_TRUE(mr == nullptr ||
+              (mr->localMrHandle == nullptr && mr->windowRefs == 0));
+  flagcxMemAllocationInfo allocation = {};
+  ASSERT_EQ(all(globalMemAllocRegistry.findExact(windowBuffer, &allocation)),
+            flagcxSuccess);
+  EXPECT_EQ(allocation.windowRefs, rank == 0 ? 1u : 0u);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+  result = flagcxSuccess;
+  if (rank == 0) {
+    result = probeCall("retry local window deregistration", [&] {
+      return flagcxCommWindowDeregister(comm, window);
+    });
+  }
+  // Other ranks wait here without entering deregistration again.
+  ASSERT_EQ(all(result), flagcxSuccess);
+  EXPECT_EQ(window->defaultBase, nullptr);
+  EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
+  EXPECT_EQ(comm->heteroComm->pendingSymCleanup, nullptr);
+  ASSERT_EQ(all(globalMemAllocRegistry.findExact(windowBuffer, &allocation)),
+            flagcxSuccess);
+  EXPECT_EQ(allocation.windowRefs, 0u);
+
+  registerWindow();
+  ASSERT_FALSE(HasFatalFailure());
+  EXPECT_EQ(window, original);
+  ASSERT_EQ(all(flagcxCommWindowDeregister(comm, window)), flagcxSuccess);
+  EXPECT_EQ(window->defaultBase, nullptr);
+  ASSERT_EQ(all(flagcxMemFree(windowBuffer)), flagcxSuccess);
+  windowBuffer = nullptr;
   window = nullptr;
 }
 

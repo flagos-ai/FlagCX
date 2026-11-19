@@ -24,6 +24,13 @@ Inside a prepared CoreX environment, the same entry point is:
 bash .github/scripts/ci/run_unit_test.sh .github/scripts/set_env/iluvatar.sh symmem_probe
 ```
 
+PR CI and the manual workflow run all 19 independent cases: the VMM
+prerequisite, eleven component cases and seven MPI cases. This includes
+multi-segment VA MR READ/WRITE and all five registration controls below.
+There is no coverage mode selector. Every case must actually pass; an MR
+failure fails the diagnostic job and retains its XML/logs. Failures are not
+converted to success or skips. The formal `symmem` matrix is unchanged.
+
 Every case runs in its own process with one attempt and a finite timeout.
 The job first writes compile-only SDK diagnostics before building the library.
 The `iluvatar-vmm-sdk` artifact directory contains the compiler/version,
@@ -71,6 +78,13 @@ make USE_ILUVATAR=1 iluvatar-vmm-diagnostics \
 | `MpiVmmProbe.MrFailureAndRetry` | Rank-local VA MR failure before metadata publication |
 | `MpiVmmProbe.DeregistrationFailureAndRetry` | Failed unmap retains the window, then cleanup retries |
 
+`DeregistrationFailureAndRetry` follows public rank-local deregistration:
+only rank zero receives the injected failure and retains its mapping and
+allocation lease. Other ranks release their state successfully. Only rank zero
+retries deregistration; the probe then checks lease release, public-handle
+reuse and final allocation cleanup. Registration-failure probes still require
+collective error convergence.
+
 The component suite uses topology-local `mlx5` selection through the existing
 net adaptor helper. A successful registration alone is not a data-path pass.
 The GET/PUT probes exercise the same MR with READ and WRITE before
@@ -98,7 +112,8 @@ Probes isolate failures. Final functional acceptance uses the corresponding
 | `VaMrReadWrite`, `WindowVaGetPut` | `VmmNetRouteCapabilityUnion`, `PublicRegistrationUsesVmmMrRouting`, `DirectGdrVmmPreservesMrRoute`, `HybridLocalAndRemoteAccess` |
 | `RemoteWithoutNetRollsBack` | `RemotePeersWithoutNetworkDoNotPublishWindow` |
 | `MapFailureAndRetry` | `VmmLsaMapFailureDoesNotPublishNetworkOnlyWindow`, `VmmRollbackFailureConvergesBeforeMrMetadataExchange` |
-| `MrFailureAndRetry`, `DeregistrationFailureAndRetry` | `RankLocalMrFailureDoesNotPublishPartialWindow`, `MrRollbackFailureRetainsWindowLeaseUntilRetry`, `CrossNodeCleanupFailureConvergesBeforeRelease` |
+| `MrFailureAndRetry` | `RankLocalMrFailureDoesNotPublishPartialWindow`, `MrRollbackFailureRetainsWindowLeaseUntilRetry` |
+| `DeregistrationFailureAndRetry` | `LocalDeregisterAndReusePublicHandle`, `CrossNodeLocalCleanupFailureRetries` |
 | `MultiSegmentSubrange` and the registration controls | Local segmented geometry tests and multi-segment registration/failure-convergence tests; not an unconditional requirement that one MR span all physical segments |
 
 The Iluvatar configuration enables the same SymMem phases as CUDA. Its
@@ -106,7 +121,7 @@ VMM+NET auto invocation requires VA routing, and route union exercises the
 VA route only and requires successful registration. CUDA retains its existing
 DMA-BUF/VA route union. With the default allocation settings, the route-union
 case uses one physical segment.
-`CrossNodeMixedMultiSegmentVmmConvergesMrFailure` explicitly accepts a converged
+`CrossNodeMixedMultiSegmentVmmRejectsSymmetricAndRetriesVmm` accepts a converged
 registration failure and validates cleanup, while
 `SegmentedMapFailureDoesNotPublishNetworkOnlyWindow` validates failure rollback.
 A successful whole-range multi-segment MR is therefore not an unconditional
@@ -116,6 +131,51 @@ capability without adding a segmented MR metadata/data-path implementation.
 IXCUDA descriptions borrow original create handles, matching CUDA. The source
 allocation stays alive until its mappings and bundles have been released;
 describing an allocation does not create an export/import reference cycle.
+
+## Diagnosing an untracked-allocation IPC crash
+
+The formal `UntrackedVmmMappingIsRejected` case still uses the same range query
+and legacy IPC trial as CUDA. No pointer-capability query or allocation
+whitelist bypasses that trial. IXCUDA logs the range result, original/base
+addresses, requested/allocation sizes and the IPC handle ABI size immediately
+before calling the runtime.
+
+If that formal case fails on Iluvatar or NVIDIA, CI runs an SDK-only
+`ipc_vmm_repro` binary under GDB and uploads `ipc-vmm-diagnostics` with the
+attempt artifacts. This binary links only the device SDK, without FlagCX,
+MPI or GoogleTest. The four controls run as separate bounded processes:
+
+| Control | Purpose |
+|---|---|
+| `malloc` | Ordinary `cudaMalloc` followed by runtime IPC export |
+| `vmm` | Raw VMM allocation/map/access, range query and runtime IPC trial, matching the formal case |
+| `vmm-driver` | The same VMM range with driver IPC as a diagnostic comparison |
+| `vmm-sync` | The runtime trial after setting SYNC_MEMOPS, isolating that difference from adaptor VMM allocation |
+
+Every control logs API entry/exit, device/context, runtime/driver versions,
+symbol library paths and handle sizes. If the range query rejects a VMM
+address, the log explicitly says `rejected-before-ipc`: that control did not
+exercise IPC. The debugger captures an immediate fault's stack, registers,
+instructions and memory mappings. `libraries.log` records actual linked SDK
+objects, their hashes and ELF notes/build IDs. Version numbers alone are not
+treated as proof that host-mounted driver and image runtime objects match.
+
+The original SymMem error remains the job's exit code even if diagnostics
+complete or fail. A zero debugger exit without the program's completion
+marker cannot pass a control. These diagnostics collect evidence; adding them
+does not establish that the CoreX crash has been fixed.
+
+For a direct comparison in a prepared SDK environment:
+
+```bash
+make -C test/unittest/symmem ipc-repro USE_ILUVATAR=1
+bash .github/scripts/ci/run_ipc_vmm_diagnostics.sh \
+  test/unittest/symmem/build/bin/ipc_vmm_repro /tmp/ipc-vmm-diagnostics
+```
+
+Use `USE_NVIDIA=1` to build the same source against CUDA. GDB and GNU timeout
+are needed for complete crash diagnostics. No new suite or extra required
+GoogleTest case is added to the 19-case independent probe suite.
 
 ## Real two-host verification
 

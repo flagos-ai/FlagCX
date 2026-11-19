@@ -190,14 +190,35 @@ ixcudaAdaptorSymPhysDescribe(void *ptr, size_t size, void **opaque,
     CUdeviceptr base = 0;
     size_t bytes = 0;
     cudaIpcMemHandle_t ipc;
-    if (cuMemGetAddressRange(&base, &bytes, (CUdeviceptr)ptr) == CUDA_SUCCESS &&
+    INFO(FLAGCX_ALLOC, "IXCUDA IPC probe range begin: ptr=%p size=%zu", ptr,
+         size);
+    if (flagcxDebugLevel >= FLAGCX_LOG_INFO)
+      fflush(flagcxDebugFile);
+    const CUresult rangeResult =
+        cuMemGetAddressRange(&base, &bytes, (CUdeviceptr)ptr);
+    INFO(FLAGCX_ALLOC,
+         "IXCUDA IPC probe range end: result=%d ptr=%p base=0x%llx bytes=%zu "
+         "requested=%zu",
+         (int)rangeResult, ptr, (unsigned long long)base, bytes, size);
+    if (rangeResult == CUDA_SUCCESS &&
         reinterpret_cast<uintptr_t>(ptr) >= base &&
         reinterpret_cast<uintptr_t>(ptr) - base < bytes &&
-        size <= bytes - (reinterpret_cast<uintptr_t>(ptr) - base) &&
-        cudaIpcGetMemHandle(&ipc, reinterpret_cast<void *>(base)) ==
-            cudaSuccess) {
-      delete bundle;
-      *opaque = nullptr;
+        size <= bytes - (reinterpret_cast<uintptr_t>(ptr) - base)) {
+      INFO(FLAGCX_ALLOC,
+           "IXCUDA IPC probe export begin: base=0x%llx handleBytes=%zu",
+           (unsigned long long)base, sizeof(ipc));
+      if (flagcxDebugLevel >= FLAGCX_LOG_INFO)
+        fflush(flagcxDebugFile);
+      const auto ipcResult =
+          cudaIpcGetMemHandle(&ipc, reinterpret_cast<void *>(base));
+      INFO(FLAGCX_ALLOC, "IXCUDA IPC probe export end: result=%d",
+           (int)ipcResult);
+      if (ipcResult == cudaSuccess) {
+        delete bundle;
+        *opaque = nullptr;
+      } else {
+        cudaGetLastError();
+      }
     } else {
       cudaGetLastError();
     }
