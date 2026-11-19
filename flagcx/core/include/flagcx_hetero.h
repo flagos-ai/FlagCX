@@ -148,6 +148,8 @@ struct flagcxRmaProxyState {
   volatile uint64_t *readySeqsCpu; // [nRanks] host memory
 
   // Synchronization method: HOST_FUNC (default) or STREAM_OPS (opt-in via env)
+  int doneSeqsCpuMapped;
+  int readySeqsCpuMapped;
   int useStreamOps; // 0 = HOST_FUNC (default), 1 = STREAM_OPS
 
   // Global completion counter: incremented once for every op that completes.

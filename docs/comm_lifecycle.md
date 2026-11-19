@@ -31,8 +31,10 @@ A failed phase leaves the common cursor unchanged. Ranks whose local operation
 succeeded skip that operation on retry, but participate in the status exchange
 again.
 
-1. Drain vendor communicators, device work on user streams, fused buffers,
-   device FIFOs and RMA producers while services and mappings are alive.
+1. Drain device work on user streams, fused buffers, device FIFOs and RMA
+   producers while services and mappings are alive; then finalize vendor
+   communicators. A native finalizer may stop a proxy still needed by a device
+   kernel, so vendor finalization follows the device drain.
 2. Clean up backend transport metadata.
 3. Destroy local Device API owners and registrations, including partial-create
    owners and live windows.
@@ -101,6 +103,7 @@ All coverage uses existing suites and platform capability boundaries.
 | --- | --- |
 | `core` | Admission, vendor progress, drain failure, nested finalization groups, independent process cliques, sequential requests, last-caller retry, worker creation gate, P2P raw-base closure, FIFO local free, NET close/free failures and retained proxy pools |
 | `service` | Real bootstrap sockets, sparse rank groups, independent node progress, error convergence/retry, SHM close failure retention and independent mapping lifetime |
+| `rma` | Partial CPU mapping ownership, unmap failure retention and device free retry, plus existing worker drain/stop tests |
 | `device_api_host` | Partial DevComm/DevMem cleanup, ownership retention, successful free prefixes and cached pointer retries |
 | `runner` | Existing unit tests; dedicated one-process/two-device implicit and grouped lifecycle cases; real collective followed by rank-local destruction in normal, P2P, forced NET and PXN invocations |
 | `symmem` | Real bootstrap MPI error convergence with empty ranks; local free retry; destroy while peers wait in MPI; real IPC and supported VMM allocator matrices |

@@ -4365,9 +4365,9 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
     if (local == flagcxSuccess && needsLocal) {
       switch (state->commonPhase) {
         case flagcxFinalizeDrain:
-          local = flagcxCommFinalizeVendors(comm);
+          local = flagcxCommDrainLocalWork(comm);
           if (local == flagcxSuccess)
-            local = flagcxCommDrainLocalWork(comm);
+            local = flagcxCommFinalizeVendors(comm);
           break;
         case flagcxFinalizeTransport:
           local = flagcxCommCloseTransport(comm);

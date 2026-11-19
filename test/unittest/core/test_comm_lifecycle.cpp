@@ -273,3 +273,32 @@ TEST(CommLifecycleTest, TunerContextsFinalizeAndFreeOnceAcrossAllAliases) {
   for (int i = 1; i <= 3; i++)
     EXPECT_EQ(destroyed[i], 1);
 }
+
+TEST(CommLifecycleTest, DeviceWorkDrainsBeforeVendorStopsItsProxy) {
+  LifecycleProviderGuard guard;
+  static bool nativeProxyAlive;
+  nativeProxyAlive = true;
+  guard.provider.commFinalize = [](flagcxInnerComm_t) {
+    nativeProxyAlive = false;
+    return flagcxSuccess;
+  };
+  auto *saved = deviceAdaptor;
+  flagcxDeviceAdaptor provider = *saved;
+  deviceAdaptor = &provider;
+  struct Restore {
+    flagcxDeviceAdaptor *saved;
+    ~Restore() { deviceAdaptor = saved; }
+  } restore{saved};
+  provider.setDevice = [](int) { return flagcxSuccess; };
+  provider.deviceSynchronize = [] {
+    // A Device API kernel can still need the vendor's proxy even when no
+    // vendor host collective is pending on its internal streams.
+    return nativeProxyAlive ? flagcxSuccess : flagcxRemoteError;
+  };
+  flagcxComm comm = {};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.homoComm = (flagcxInnerComm_t)1;
+  comm.deviceOrdinalValid = 1;
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_FALSE(nativeProxyAlive);
+}

@@ -439,7 +439,7 @@ run_suite() {
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
   # Run before platform overrides so PPU and the common path share coverage.
-  if [[ "$SUITE" == runner ]]; then
+  if [[ "$SUITE" == runner ]] && flagcx_ci_phase_supported runner-mpi; then
     local lifecycle_xml="$PROJECT_ROOT/.ci-results/runner-intra-process"
     rm -rf "$lifecycle_xml"
     mkdir -p "$lifecycle_xml"

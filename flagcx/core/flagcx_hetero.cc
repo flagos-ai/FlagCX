@@ -1605,6 +1605,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     }
   }
 
+  proxy->doneSeqsCpuMapped = mmapDone;
+  proxy->readySeqsCpuMapped = mmapReady;
+
   // If no CPU mapping available, allocate separate host memory for HOST_FUNC.
   if (proxy->doneSeqsCpu == NULL)
     proxy->doneSeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
@@ -1655,41 +1658,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
       delete comm->workerPool;
       comm->workerPool = NULL;
     }
-    if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-      if (proxy->doneSeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                    nRanks * sizeof(uint64_t));
-      if (proxy->readySeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                    nRanks * sizeof(uint64_t));
-    } else {
-      free((void *)proxy->doneSeqsCpu);
-      free((void *)proxy->readySeqsCpu);
-    }
-    if (proxy->doneSeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
-    if (proxy->readySeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
-    for (int p = 0; p < nRanks; p++)
-      pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
-    pthread_cond_destroy(&proxy->doneCond);
-    pthread_mutex_destroy(&proxy->doneMutex);
-    free(proxy->circularBuffers);
-    free((void *)proxy->pis);
-    free((void *)proxy->cis);
-    free(proxy->inProgressQueues);
-    free(proxy->peerProducerMutexes);
-    free((void *)proxy->opSeqs);
-    free((void *)proxy->doneSeqs);
-    free((void *)proxy->inFlights);
-    free(proxy->completionScoreboards);
-    free(proxy->completionEntries);
-    free(proxy->getVisibilityDomains);
-    free(proxy->activeGetVisibilityDomains);
-    free(proxy->activeGetVisibilityCounts);
-    free((void *)proxy->groupSeqs);
-    free(proxy);
-    comm->rmaProxy = NULL;
+    flagcxResult_t cleanupResult = flagcxHeteroRmaProxyStop(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
     return workerResult;
   }
 
@@ -1708,21 +1679,29 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
     FLAGCXCHECK(comm->workerPool->retire(&proxy->worker));
   }
   FLAGCXCHECK(flagcxHeteroRmaIpcDestroy(comm));
-  if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-    if (proxy->doneSeqsCpu != NULL) {
+  // Mapping ownership is independent of the selected synchronization method:
+  // HOST_FUNC can be selected after only one of the CPU mappings succeeded.
+  if (proxy->doneSeqsCpu != NULL) {
+    if (proxy->doneSeqsCpuMapped) {
+      if (deviceAdaptor->gdrPtrMunmap == NULL)
+        return flagcxNotSupported;
       FLAGCXCHECK(deviceAdaptor->gdrPtrMunmap(
           (void *)proxy->doneSeqsCpu, proxy->nRanks * sizeof(uint64_t)));
-      proxy->doneSeqsCpu = NULL;
+    } else {
+      free((void *)proxy->doneSeqsCpu);
     }
-    if (proxy->readySeqsCpu != NULL) {
+    proxy->doneSeqsCpu = NULL;
+  }
+  if (proxy->readySeqsCpu != NULL) {
+    if (proxy->readySeqsCpuMapped) {
+      if (deviceAdaptor->gdrPtrMunmap == NULL)
+        return flagcxNotSupported;
       FLAGCXCHECK(deviceAdaptor->gdrPtrMunmap(
           (void *)proxy->readySeqsCpu, proxy->nRanks * sizeof(uint64_t)));
-      proxy->readySeqsCpu = NULL;
+    } else {
+      free((void *)proxy->readySeqsCpu);
     }
-  } else {
-    free((void *)proxy->doneSeqsCpu);
-    free((void *)proxy->readySeqsCpu);
-    proxy->doneSeqsCpu = proxy->readySeqsCpu = NULL;
+    proxy->readySeqsCpu = NULL;
   }
   if (proxy->doneSeqsDev != NULL) {
     FLAGCXCHECK(deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL));

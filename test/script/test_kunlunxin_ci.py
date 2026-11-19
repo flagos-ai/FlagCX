@@ -191,7 +191,8 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             ("p2p", ("p2p Engine WRITE MPI tests", "p2p shared-engine WRITE MPI tests")),
             ("rma", ("rma IPC MPI tests", "rma network MPI tests")),
             ("symmem", ("symmem IPC + NET", "symmem local IPC + NET fallback")),
-            ("runner", ("runner default", "runner heterogeneous", "runner forced NET")),
+            ("runner", ("runner default", "runner heterogeneous", "runner forced NET",
+                        "runner same-process lifecycle")),
         ):
             with self.subTest(suite=suite):
                 result, calls = self.run_mock_suite(suite, "no matching label")
