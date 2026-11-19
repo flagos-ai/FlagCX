@@ -427,12 +427,6 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     // signalPeerPtrs[peer] → peer's direct signal plane when reachable
     uint64_t **signalPeerPtrs;
 
-    // Number of CTAs taking part in the rank-local rendezvous. Declared by the
-    // host instead of being inferred from the launch geometry, then clamped to
-    // gridDim at run time so a smaller launch stays valid. Kept last so that
-    // adding it does not move any pre-existing field offset.
-    int rankCtaParticipants;
-
     FLAGCX_DEVICE_INLINE_DECORATOR int getIntraRank() const {
       return intraRank;
     }
@@ -541,7 +535,6 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       dc.barrierPeers = di.barrierPeers;
       dc.epochBuffer = di.epochBuffer;
       dc.rankCtaBarrier = di.rankCtaBarrier;
-      dc.rankCtaParticipants = di.rankCtaParticipants;
       dc.deviceErrorStatus = di.deviceErrorStatus;
       dc.nBarriers = di.nBarriers;
       dc.nInterPeers = di.nInterPeers;
@@ -1998,57 +1991,23 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   }
 
   // MUSA WORLD barriers synchronize the rank-local CTAs before inter-node
-  // signaling. The participant set is declared by the host and only clamped to
-  // the current grid; it is never inferred by dividing a lifetime counter by the
-  // launch size. The counter self-resets every round and the generation word
-  // carries completion, so consecutive launches of different shapes (and a
-  // declared subset of CTAs) cannot strand anybody.
+  // signaling. Every participating CTA must enter in the same order and make
+  // concurrent progress; this is not a general-purpose grid barrier.
   FLAGCX_DEVICE_INLINE_DECORATOR void rankCtaSync() {
 #if defined(USE_MUSA_ADAPTOR) && defined(FLAGCX_DEVICE_COMPILE)
     if (_rankCtaBarrier == nullptr) return;
-    // The rendezvous needs a block-wide barrier; narrower Coop scopes skip it
-    // rather than publishing flagcxNotSupported into the error state.
-    if (_coop.size() != FLAGCX_BLOCK_DIM_X) return;
-
-    const uint64_t grid = static_cast<uint64_t>(FLAGCX_GRID_DIM_X);
-    const int declared = _errorComm->rankCtaParticipants;
-    uint64_t participants = declared > 0 ? static_cast<uint64_t>(declared) : grid;
-    if (participants > grid) participants = grid;
-    const uint64_t cta = static_cast<uint64_t>(FLAGCX_BLOCK_IDX_X);
-
-    // Single participant, or a CTA outside the declared set: this round needs
-    // nothing from it. Keep the block-wide ordering so the phase stays uniform.
-    if (participants <= 1 || cta >= participants) {
-      _coop.sync();
-      return;
-    }
-
+    if (!_errorComm->require(_coop.size() == FLAGCX_BLOCK_DIM_X,
+                             flagcxNotSupported)) return;
     _coop.sync();
     if (_coop.threadRank() == 0) {
-      uint64_t *count = _rankCtaBarrier;   // arrivals in the current round
-      uint64_t *gen = _rankCtaBarrier + 1; // completed rounds
-      // 'Atomic' is a dependent type here (PlatformTraits<P>::Atomic), so the
-      // explicit template arguments need the 'template' disambiguator.
-      const uint64_t gen0 =
-          Atomic::template load<uint64_t, flagcxDeviceScopeDevice>(
-              gen, flagcxDeviceMemoryOrderAcquire);
-      const uint64_t n =
-          Atomic::template fetchAdd<uint64_t, flagcxDeviceScopeDevice>(
-              count, uint64_t{1}, flagcxDeviceMemoryOrderAcqRel) +
-          1;
-      if (n == participants) {
-        // Last arrival resets the counter, then publishes the new generation.
-        Atomic::template store<uint64_t, flagcxDeviceScopeDevice>(
-            count, uint64_t{0}, flagcxDeviceMemoryOrderRelaxed);
-        Atomic::template store<uint64_t, flagcxDeviceScopeDevice>(
-            gen, gen0 + 1, flagcxDeviceMemoryOrderRelease);
-      } else {
-        int iter = 0;
-        while (Atomic::template load<uint64_t, flagcxDeviceScopeDevice>(
-                   gen, flagcxDeviceMemoryOrderAcquire) == gen0) {
-          if (_errorComm->hasDeviceError()) break;
-          Intrin::spinBackoff(iter++);
-        }
+      const uint64_t participants = static_cast<uint64_t>(FLAGCX_GRID_DIM_X);
+      const uint64_t ticket = Atomic::fetchAdd(
+          _rankCtaBarrier, uint64_t{1}, flagcxDeviceMemoryOrderAcqRel);
+      const uint64_t target = (ticket / participants + 1) * participants;
+      int iter = 0;
+      while (Atomic::load(_rankCtaBarrier, flagcxDeviceMemoryOrderAcquire) < target) {
+        if (_errorComm->hasDeviceError()) break;
+        Intrin::spinBackoff(iter++);
       }
     }
     _coop.sync();

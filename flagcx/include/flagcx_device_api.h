@@ -51,13 +51,6 @@ typedef struct flagcxDevCommRequirements {
 
   // Symmetric scratch bytes per rank, reachable by every intra-node peer.
   size_t intraScratchBytes;
-
-  // Number of rank-local CTAs that take part in the WORLD barrier rendezvous.
-  // 0 keeps the default (every local CTA). Set it when only a subset of CTAs
-  // calls the barrier, so the rendezvous waits for the declared set instead of
-  // the whole grid. Appended after the frozen prefix: it is read only when the
-  // caller-provided structure size reaches this field.
-  int rankCtaParticipants;
 } flagcxDevCommRequirements;
 
 #define FLAGCX_DEV_COMM_REQUIREMENTS_INITIALIZER                               \
@@ -67,8 +60,7 @@ typedef struct flagcxDevCommRequirements {
         0, 0,    /* intraLLA2ABlockCount, intraLLA2ASlotCount */               \
         false, 4, 0, 0, /* interForceEnable, interContextCount,                \
                            interSignalCount, interCounterCount */              \
-        0,              /* intraScratchBytes */                                 \
-        0               /* rankCtaParticipants */                               \
+        0               /* intraScratchBytes */                                \
   }
 
 #ifdef __cplusplus
