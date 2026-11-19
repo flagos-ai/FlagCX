@@ -107,6 +107,7 @@ flagcxDevCommCreateInternal(flagcxComm_t comm,
       reqsSize < FLAGCX_DEV_COMM_REQUIREMENTS_LEGACY_SIZE)
     return flagcxInvalidArgument;
   *devComm = nullptr;
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (devApiBackend->kind == flagcxDevApiDefault &&
       comm->commType == flagcxCommunicatorHomo && !useHeteroComm())
     return flagcxNotSupported;
@@ -291,6 +292,7 @@ static flagcxResult_t flagcxDevMemCreateImpl(flagcxComm_t comm, void *buff,
   *devMem = nullptr;
   if (comm == nullptr)
     return flagcxInvalidArgument;
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   flagcxResult_t localPrepare =
       buff == nullptr || size == 0 ? flagcxInvalidArgument : flagcxSuccess;
   flagcxDevMem_t handle = nullptr;

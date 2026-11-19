@@ -117,6 +117,13 @@ bootstrapCollSubgroupBroadcast(struct bootstrapState *state, int *globalRanks,
 flagcxResult_t bootstrapCollIntraNodeBarrier(struct bootstrapState *state,
                                              int *ranks, int rank, int nranks,
                                              int tag);
+// Gather local cleanup results, then distribute the first failing local rank's
+// result. Uses only ranks[]; ranks outside the group need not participate.
+flagcxResult_t bootstrapCollIntraNodeStatus(struct bootstrapState *state,
+                                            const int *ranks, int rank,
+                                            int nranks, int tag,
+                                            flagcxResult_t local,
+                                            flagcxResult_t *common);
 flagcxResult_t bootstrapCollIntraNodeBroadcast(struct bootstrapState *state,
                                                int *ranks, int rank, int nranks,
                                                int root, void *bcastData,
