@@ -61,7 +61,7 @@ def capture(root_pid):
         for thread in threads:
             print(f"TID {thread.name} name={read(thread / 'comm')} "
                   f"wchan={read(thread / 'wchan')}\n{read(thread / 'stack')}", flush=True)
-        if debugger is not None and name.startswith(("runner_mpi_test", "symmem_probe")):
+        if debugger is not None and name.startswith("runner_mpi_test"):
             # Bound each attach so diagnostics cannot consume the job budget.
             active_debugger = subprocess.Popen(
                 [debugger, "-q", "-nx", "-batch", "-p", str(pid),

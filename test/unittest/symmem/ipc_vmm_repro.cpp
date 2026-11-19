@@ -1,4 +1,8 @@
 // SDK-only reproducer for the untracked-allocation IPC probe. No FlagCX/MPI.
+// Raw VMM -> runtime IPC means creating/mapping memory with
+// cuMemCreate/cuMemMap, then passing its address to cudaIpcGetMemHandle for
+// traditional IPC export. CoreX currently crashes in that export; VMM
+// allocation/mapping has succeeded.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

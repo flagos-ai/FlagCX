@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class SymmemCiTest(unittest.TestCase):
-    def test_iluvatar_matches_cuda_matrix_with_va_only_mr(self):
+    def test_iluvatar_matches_cuda_except_untracked_vmm_ipc_with_va_only_mr(self):
         source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
         start = source.index('    symmem)\n')
         end = source.index('    device_api)\n', start)
@@ -64,8 +64,13 @@ run_suite
                     ['bash', str(harness), str(REPO_ROOT / f'.github/scripts/set_env/{platform}.sh'), str(root)],
                     env=env, text=True, capture_output=True, timeout=30)
                 self.assertEqual(run.returncode, 0, run.stderr)
-                self.assertNotIn('Skipping', run.stdout)
+                if platform == 'iluvatar':
+                    self.assertIn('Skipping UntrackedVmmMappingIsRejected on Iluvatar', run.stdout)
+                else:
+                    self.assertNotIn('Skipping', run.stdout)
                 results[platform] = [json.loads(line) for line in capture.read_text().splitlines()]
+            results['cuda'] = [call for call in results['cuda']
+                               if call['label'] != 'SymMemTest.UntrackedVmmMappingIsRejected']
             self.assertEqual([call['label'] for call in results['cuda']],
                              [call['label'] for call in results['iluvatar']])
             for cuda, iluvatar in zip(results['cuda'], results['iluvatar']):
@@ -119,13 +124,14 @@ run_suite
                         line for line in calls
                         if "--gtest_filter=SymMemTest." in line
                     ]
-                    self.assertEqual(len(dedicated), 3 if multi_segment else 1)
+                    untracked = adaptor != 'iluvatar'
+                    self.assertEqual(len(dedicated), (2 if multi_segment else 0) + int(untracked))
                     self.assertEqual(
                         sum(
                             "UntrackedVmmMappingIsRejected" in line
                             for line in dedicated
                         ),
-                        1,
+                        int(untracked),
                     )
                     self.assertEqual(
                         sum(

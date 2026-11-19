@@ -104,15 +104,18 @@ if ((run_multi_segment)); then
   fi
 fi
 
-if [[ -z "$vmm_skip_reason" && -n "${FLAGCX_ADAPTOR:-}" &&
-      "${FLAGCX_ADAPTOR}" != ascend ]]; then
+if [[ "${FLAGCX_ADAPTOR:-}" == iluvatar ]]; then
+  # CoreX crashes when the raw VMM address reaches cudaIpcGetMemHandle.
+  echo "Skipping UntrackedVmmMappingIsRejected on Iluvatar: CoreX VMM-to-runtime-IPC export crashes"
+elif [[ -z "$vmm_skip_reason" && -n "${FLAGCX_ADAPTOR:-}" &&
+        "${FLAGCX_ADAPTOR}" != ascend ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
   untracked_status=0
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \
     -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1 || untracked_status=$?
   if ((untracked_status != 0)); then
-    if [[ "$FLAGCX_ADAPTOR" == iluvatar || "$FLAGCX_ADAPTOR" == nvidia ]]; then
+    if [[ "$FLAGCX_ADAPTOR" == nvidia ]]; then
       bash "$PROJECT_ROOT/.github/scripts/ci/run_ipc_vmm_diagnostics.sh" \
         "$BUILD_BIN/ipc_vmm_repro" \
         "${FLAGCX_CI_LOG_DIR:-$SYMMEM_DIR/build/results}/ipc-vmm-diagnostics" || \

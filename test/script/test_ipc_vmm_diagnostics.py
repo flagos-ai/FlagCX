@@ -20,30 +20,21 @@ class IpcVmmDiagnosticsTest(unittest.TestCase):
             mock = root / 'bin'
             mock.mkdir()
             commands = {
-                'gdb': '''import json, os, sys
-from pathlib import Path
-if '--version' in sys.argv:
-    print('test debugger')
-    sys.exit(0)
-with open(os.environ['CALLS'], 'a') as out:
-    out.write(json.dumps(sys.argv[1:]) + '\\n')
-i = sys.argv.index('--args')
-os.execv(sys.argv[i+1], sys.argv[i+1:])
-''',
                 'timeout': '''import os, sys
 if sys.argv[-1] == os.getenv('TIMEOUT_CASE'):
     sys.exit(124)
 os.execvp(sys.argv[4], sys.argv[4:])
 ''',
                 'ldd': "print('test SDK dependencies')\n",
-                'sdk-repro': '''import os, sys
+                'sdk-repro': '''import json, os, sys
 case = sys.argv[1]
+with open(os.environ['CALLS'], 'a') as out:
+    out.write(json.dumps(sys.argv[1:]) + '\\n')
 print('IPC_REPRO begin cudaIpcGetMemHandle', flush=True)
-if case == os.getenv('CRASH_CASE'):
-    print('Program received signal SIGSEGV', flush=True)
-    sys.exit(0)  # A debugger can exit zero even though its inferior crashed.
+if case == os.getenv('NO_MARKER_CASE'):
+    sys.exit(0)
 if case == os.getenv('FAIL_CASE'):
-    sys.exit(7)
+    sys.exit(int(os.getenv('FAIL_STATUS', '7')))
 print('IPC_REPRO_PASS case=' + case, flush=True)
 ''',
             }
@@ -53,7 +44,7 @@ print('IPC_REPRO_PASS case=' + case, flush=True)
                 command.chmod(0o755)
             env = os.environ.copy()
             env.update(PATH=f"{mock}:{env['PATH']}", CALLS=str(root / 'calls'),
-                       CRASH_CASE='', FAIL_CASE='', TIMEOUT_CASE='')
+                       NO_MARKER_CASE='', FAIL_CASE='', TIMEOUT_CASE='')
             env.update(extra)
             results = root / 'results'
             result = subprocess.run(
@@ -63,31 +54,31 @@ print('IPC_REPRO_PASS case=' + case, flush=True)
             logs = {p.name: p.read_text() for p in results.iterdir()}
             return result, calls, logs
 
-    def test_all_controls_run_under_debugger(self):
+    def test_all_controls_run_directly(self):
         result, calls, logs = self.run_diagnostics()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([args[-1] for args in calls],
                          ['malloc', 'vmm', 'vmm-driver', 'vmm-sync'])
-        for args in calls:
-            self.assertIn('--return-child-result', args)
-            self.assertIn(str(ROOT / '.github/scripts/ci/ipc_vmm_backtrace.gdb'), args)
+        self.assertTrue(all(len(args) == 1 for args in calls))
         self.assertIn('vmm\t0\tPASS', logs['summary.tsv'])
         self.assertIn('test SDK dependencies', logs['libraries.log'])
 
-    def test_debugger_zero_exit_without_pass_marker_is_failure(self):
-        result, calls, logs = self.run_diagnostics(CRASH_CASE='vmm')
+    def test_zero_exit_without_pass_marker_is_failure(self):
+        result, calls, logs = self.run_diagnostics(NO_MARKER_CASE='vmm')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(calls), 4)
         self.assertEqual(logs['vmm.status'].strip(), '1')
-        self.assertIn('SIGSEGV', logs['vmm.log'])
         self.assertIn('vmm-sync\t0\tPASS', logs['summary.tsv'])
 
     def test_sdk_error_does_not_hide_later_controls(self):
-        result, calls, logs = self.run_diagnostics(FAIL_CASE='vmm')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(calls), 4)
-        self.assertEqual(logs['vmm.status'].strip(), '7')
-        self.assertIn('vmm-driver\t0\tPASS', logs['summary.tsv'])
+        for status in (7, 139):
+            with self.subTest(status=status):
+                result, calls, logs = self.run_diagnostics(
+                    FAIL_CASE='vmm', FAIL_STATUS=str(status))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(logs['vmm.status'].strip(), str(status))
+                self.assertIn('vmm-driver\t0\tPASS', logs['summary.tsv'])
 
     def test_timeout_does_not_hide_later_controls(self):
         result, calls, logs = self.run_diagnostics(TIMEOUT_CASE='vmm')
@@ -108,6 +99,7 @@ print('IPC_REPRO_PASS case=' + case, flush=True)
             for name in ('run_with_timeout.sh', 'run_mpi_with_timeout.sh'):
                 path = ci / name
                 path.write_text('''#!/bin/bash
+printf '%s\\n' "$*" >> "$SYMMEM_CALLS"
 if [[ "$*" == *--gtest_filter=SymMemTest.UntrackedVmmMappingIsRejected* ]]; then
   exit 139
 fi
@@ -118,8 +110,10 @@ printf '%s\\n' "$*" > "$DIAGNOSTIC_CALL"
 exit 23
 ''')
             marker = root / 'diagnostic-call'
-            env = dict(os.environ, FLAGCX_ADAPTOR='iluvatar',
-                       FLAGCX_CI_REQUIRE_MULTICAST='0', DIAGNOSTIC_CALL=str(marker),
+            calls = root / 'symmem-calls'
+            env = dict(os.environ, FLAGCX_ADAPTOR='nvidia',
+                       FLAGCX_CI_REQUIRE_MULTICAST='1', DIAGNOSTIC_CALL=str(marker),
+                       SYMMEM_CALLS=str(calls), FLAGCX_CI_IGNORE_TEST='{}',
                        FLAGCX_CI_LOG_DIR=str(root / 'logs'))
             result = subprocess.run(['bash', str(script)], env=env,
                                     text=True, capture_output=True, timeout=15)
@@ -127,6 +121,27 @@ exit 23
             self.assertIn('ipc_vmm_repro', marker.read_text())
             self.assertIn('ipc-vmm-diagnostics', marker.read_text())
             self.assertIn('retaining the original SymMem failure', result.stderr)
+            self.assertIn('SymMemTest.LsaMulticastUnbindFailureRetainsWindowForRetry',
+                          calls.read_text())
+            marker.unlink()
+            env['FLAGCX_ADAPTOR'] = 'iluvatar'
+            env['FLAGCX_CI_REQUIRE_MULTICAST'] = '0'
+            result = subprocess.run(['bash', str(script)], env=env,
+                                    text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Skipping UntrackedVmmMappingIsRejected on Iluvatar', result.stdout)
+            self.assertFalse(marker.exists(), 'Skipped IPC trial must not trigger the SDK reproducer')
+            env['FLAGCX_ADAPTOR'] = 'nvidia'
+            env['FLAGCX_CI_IGNORE_TEST'] = json.dumps({'phases': [{
+                'suite': 'symmem', 'name': 'vmm-local-and-remote-without-net',
+                'reason': 'VMM is unavailable',
+            }]})
+            calls.write_text('')
+            result = subprocess.run(['bash', str(script)], env=env,
+                                    text=True, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('UntrackedVmmMappingIsRejected', calls.read_text())
+            self.assertFalse(marker.exists())
 
     def test_reproducer_links_only_sdk_libraries(self):
         for platform in ('USE_NVIDIA=1', 'USE_ILUVATAR=1'):

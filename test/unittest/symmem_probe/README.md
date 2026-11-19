@@ -1,8 +1,10 @@
 # Iluvatar SymMem probes
 
 This diagnostic suite is independent of `adaptor`, `rma`, and `symmem`.
-Iluvatar runs the same SymMem test phases and filters as CUDA, including VMM
+Iluvatar runs the same SymMem phases as CUDA, including VMM
 local mapping, segmented mapping, remote-without-NET, VMM+NET and route union.
+`UntrackedVmmMappingIsRejected` is skipped on Iluvatar because CoreX crashes
+when exporting a raw VMM address through traditional runtime IPC.
 DMA-BUF is explicitly disabled and network registration must use VA MR;
 POSIX VMM allocation FDs are still required for local peer mappings.
 
@@ -11,7 +13,7 @@ POSIX VMM allocation FDs are still required for local peer mappings.
 When Iluvatar is selected for PR CI, the platform suite matrix runs
 `symmem_probe` as its own job alongside `symmem`. It builds FlagCX,
 GoogleTest, and this suite in the existing CoreX image, then uploads inventory,
-attempt logs, pre-timeout stacks, and per-rank XML. Suite jobs use
+attempt logs, SDK call stages, and per-rank XML. Suite jobs use
 `fail-fast: false`, so a failure in `core` or `symmem` does not cancel the probes.
 The existing SymMem tests do not execute this diagnostic suite.
 
@@ -134,34 +136,38 @@ describing an allocation does not create an export/import reference cycle.
 
 ## Diagnosing an untracked-allocation IPC crash
 
-The formal `UntrackedVmmMappingIsRejected` case still uses the same range query
-and legacy IPC trial as CUDA. No pointer-capability query or allocation
-whitelist bypasses that trial. IXCUDA logs the range result, original/base
+`UntrackedVmmMappingIsRejected` creates a raw VMM allocation with
+`cuMemCreate/cuMemMap`, outside FlagCX's allocation registry. Its description
+path queries the range and passes the address to runtime `cudaIpcGetMemHandle`
+to attempt traditional IPC export. CoreX crashes in that export, so the test
+is explicitly skipped on Iluvatar, including its dedicated required invocation.
+Ordinary IPC and registered VMM coverage remain enabled. The provider's IPC
+trial remains unchanged. IXCUDA logs the range result, original/base
 addresses, requested/allocation sizes and the IPC handle ABI size immediately
 before calling the runtime.
 
-If that formal case fails on Iluvatar or NVIDIA, CI runs an SDK-only
-`ipc_vmm_repro` binary under GDB and uploads `ipc-vmm-diagnostics` with the
+If that formal case fails on NVIDIA, CI runs an SDK-only
+`ipc_vmm_repro` binary directly and uploads `ipc-vmm-diagnostics` with the
 attempt artifacts. This binary links only the device SDK, without FlagCX,
-MPI or GoogleTest. The four controls run as separate bounded processes:
+MPI or GoogleTest. On Iluvatar the reproducer is available for manual diagnosis;
+the skipped case does not launch it. The four controls run as separate bounded processes:
 
 | Control | Purpose |
 |---|---|
-| `malloc` | Ordinary `cudaMalloc` followed by runtime IPC export |
-| `vmm` | Raw VMM allocation/map/access, range query and runtime IPC trial, matching the formal case |
-| `vmm-driver` | The same VMM range with driver IPC as a diagnostic comparison |
+| `malloc` | Ordinary `cudaMalloc` followed by runtime `cudaIpcGetMemHandle` export |
+| `vmm` | Direct `cuMemCreate/cuMemMap` allocation, access and range query, followed by `cudaIpcGetMemHandle`, matching the formal case |
+| `vmm-driver` | The same VMM range with driver `cuIpcGetMemHandle` as a diagnostic comparison |
 | `vmm-sync` | The runtime trial after setting SYNC_MEMOPS, isolating that difference from adaptor VMM allocation |
 
 Every control logs API entry/exit, device/context, runtime/driver versions,
 symbol library paths and handle sizes. If the range query rejects a VMM
 address, the log explicitly says `rejected-before-ipc`: that control did not
-exercise IPC. The debugger captures an immediate fault's stack, registers,
-instructions and memory mappings. `libraries.log` records actual linked SDK
+exercise IPC. `libraries.log` records actual linked SDK
 objects, their hashes and ELF notes/build IDs. Version numbers alone are not
 treated as proof that host-mounted driver and image runtime objects match.
 
 The original SymMem error remains the job's exit code even if diagnostics
-complete or fail. A zero debugger exit without the program's completion
+complete or fail. A zero process exit without the program's completion
 marker cannot pass a control. These diagnostics collect evidence; adding them
 does not establish that the CoreX crash has been fixed.
 
@@ -173,8 +179,8 @@ bash .github/scripts/ci/run_ipc_vmm_diagnostics.sh \
   test/unittest/symmem/build/bin/ipc_vmm_repro /tmp/ipc-vmm-diagnostics
 ```
 
-Use `USE_NVIDIA=1` to build the same source against CUDA. GDB and GNU timeout
-are needed for complete crash diagnostics. No new suite or extra required
+Use `USE_NVIDIA=1` to build the same source against CUDA. GNU timeout bounds
+each direct execution. No new suite or extra required
 GoogleTest case is added to the 19-case independent probe suite.
 
 ## Real two-host verification

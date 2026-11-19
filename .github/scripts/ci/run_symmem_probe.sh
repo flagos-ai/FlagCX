@@ -15,7 +15,7 @@ chmod 755 "$results"
 export FLAGCX_VMM_ENABLE=1 FLAGCX_DMABUF_ENABLE=0 FLAGCX_MEM_ENABLE=1
 export FLAGCX_USE_HETERO_COMM=1 FLAGCX_DEBUG=INFO FLAGCX_DEBUG_SUBSYS=ALL
 export FLAGCX_CI_TEST_MAX_ATTEMPTS=1 FLAGCX_CI_REQUIRE_GTEST_PASS=1
-export FLAGCX_CI_TEST_DIAGNOSTICS_AFTER=60
+unset FLAGCX_CI_TEST_DIAGNOSTICS_AFTER
 status=0
 local_allocation_status=0
 # Inventory goes into the artifact even when the first provider call fails.
@@ -23,7 +23,6 @@ local_allocation_status=0
   uname -a
   command -v ixsmi >/dev/null && ixsmi -L
   command -v mpirun >/dev/null && mpirun --version
-  command -v gdb >/dev/null && gdb --version
   command -v ibv_devinfo >/dev/null && ibv_devinfo
   printf 'CoreX header version declarations:\n'
   grep -E '^#define (CUDA_VERSION|CUDART_VERSION)' /usr/local/corex/include/cuda.h /usr/local/corex/include/cuda_runtime_api.h || true
@@ -44,13 +43,6 @@ run_unit_case() {
 if ! run_unit_case SymmemProbePrerequisites.VmmCallbacks 30s; then
   echo 'VMM prerequisite failed; component and MPI probes blocked. See iluvatar-vmm-sdk logs and VmmCallbacks.xml.' >&2
   exit 1
-fi
-
-# Older published images may not contain gdb. Bound the optional install;
-# diagnostics still retain per-call markers and /proc state if it fails.
-if ! command -v gdb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-  timeout 90s bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends gdb' \
-    > "$results/gdb-install.log" 2>&1 || echo 'gdb unavailable; retaining /proc diagnostics' >&2
 fi
 
 component_cases=(

@@ -24,7 +24,7 @@ if mpi:
 else:
     paths = [Path(next(a.split('xml:',1)[1] for a in args if a.startswith('--gtest_output=')))]
 with open(os.environ['PROBE_CALLS'], 'a') as f:
-    f.write(json.dumps({'case':case, 'mpi':mpi, 'args':args, 'dmabuf':os.getenv('FLAGCX_DMABUF_ENABLE'), 'vmm':os.getenv('FLAGCX_VMM_ENABLE')})+'\n')
+    f.write(json.dumps({'case':case, 'mpi':mpi, 'args':args, 'dmabuf':os.getenv('FLAGCX_DMABUF_ENABLE'), 'vmm':os.getenv('FLAGCX_VMM_ENABLE'), 'diagnostics_after':os.getenv('FLAGCX_CI_TEST_DIAGNOSTICS_AFTER')})+'\n')
 if os.getenv('FAIL_CASE') == case: sys.exit(7)
 for path in paths:
     if os.getenv('DROP_LAST_RANK') == '1' and mpi and path == paths[-1]: continue
@@ -57,7 +57,7 @@ class SymmemProbeCiTest(unittest.TestCase):
             # builds, hardware inventory and execution of GPU/MPI binaries.
             mock_bin = root / 'mock-bin'
             mock_bin.mkdir()
-            for name in ('cmake', 'make', 'mpirun', 'clang', 'ixsmi', 'gdb'):
+            for name in ('cmake', 'make', 'mpirun', 'clang', 'ixsmi'):
                 command = mock_bin / name
                 command.write_text('#!/bin/bash\nexit 0\n')
                 command.chmod(0o755)
@@ -92,6 +92,7 @@ fi
                        PROBE_MAKE_CALLS=str(root / 'make-calls'),
                        PATH=f"{mock_bin}:{env['PATH']}", MPI_HOME=str(root / 'mpi'),
                        FLAGCX_CI_COVERAGE='0', FLAGCX_CI_PROBE_HOSTS='',
+                       FLAGCX_CI_TEST_DIAGNOSTICS_AFTER='60',
                        FLAGCX_CI_LOG_DIR=str(root / 'logs'), BASH_ENV='', **extra)
             command = ['bash', str(ci / 'run_unit_test.sh'), str(platform), 'symmem_probe']
             if restrictive_umask:
@@ -138,6 +139,7 @@ fi
         self.assertEqual(calls[0]['case'], 'SymmemProbePrerequisites.VmmCallbacks')
         self.assertEqual(sum(c['mpi'] for c in calls), 7)
         self.assertTrue(all(c['dmabuf'] == '0' and c['vmm'] == '1' for c in calls))
+        self.assertTrue(all(c['diagnostics_after'] is None for c in calls))
         self.assertEqual({call['case'] for call in calls if not call['mpi']}, {
             'SymmemProbePrerequisites.VmmCallbacks',
             'VmmProbe.AllocationAndRange', 'VmmProbe.MultiSegmentSubrange',
