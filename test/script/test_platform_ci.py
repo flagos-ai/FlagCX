@@ -2944,6 +2944,62 @@ run_suite
         self.assertIn("symmem VMM + NET route union", result.stdout)
         self.assertIn("VMM is unavailable", result.stdout)
 
+    def test_enflame_symmem_skips_network_mr_phases_only_without_rdma(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=symmem
+SET_ENV_SCRIPT=enflame.sh
+PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
+FLAGCX_CI_TEST_MAKE_ARGS=()
+FLAGCX_CI_HAS_RDMA="$TEST_RDMA"
+export FLAGCX_CI_HAS_RDMA
+FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
+FLAGCX_CI_SYMMEM_NODE_NP=1
+FLAGCX_CI_NODE1_MPI_ARGS=()
+FLAGCX_CI_NODE2_MPI_ARGS=()
+FLAGCX_CI_IGNORE_TEST='{"phases":[
+  {"suite":"symmem","name":"vmm-local-and-remote-without-net","reason":"VMM unavailable"},
+  {"suite":"symmem","name":"vmm-net-data","reason":"VMM unavailable"},
+  {"suite":"symmem","name":"local-ipc-net-fallback","when":{"FLAGCX_CI_HAS_RDMA":"0"},"reason":"No active RDMA HCA; Socket cannot register network MRs"},
+  {"suite":"symmem","name":"ipc-net","when":{"FLAGCX_CI_HAS_RDMA":"0"},"reason":"No active RDMA HCA; Socket cannot register network MRs"}
+]}'
+export FLAGCX_CI_IGNORE_TEST
+MPI_RUNNER=mock_mpi_runner
+bash() { return 0; }
+mock_mpi_runner() { printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled}"; }
+flagcx_ci_phase_supported() { return 0; }
+run_suite
+'''
+        for rdma in ("0", "1"):
+            with self.subTest(rdma=rdma):
+                result = subprocess.run(
+                    [os.environ.get("BASH", "bash"), "-euc", harness],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "BASH_ENV": "",
+                        "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
+                        "TEST_RDMA": rdma,
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if rdma == "0":
+                    self.assertNotIn("symmem local IPC + NET fallback\n", result.stdout)
+                    self.assertNotIn("symmem IPC + NET\n", result.stdout)
+                    self.assertIn("Skipping symmem local IPC + NET fallback:", result.stdout)
+                    self.assertIn("Skipping symmem IPC + NET:", result.stdout)
+                else:
+                    self.assertIn("symmem local IPC + NET fallback", result.stdout)
+                    self.assertIn("symmem IPC + NET", result.stdout)
+                    self.assertNotIn("Skipping symmem IPC + NET", result.stdout)
+
     def test_enflame_symmem_script_uses_only_vmm_capability(self):
         script = (REPO_ROOT / "test/script/symmem_test.sh").read_text()
         self.assertNotIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL", script)

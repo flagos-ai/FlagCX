@@ -1178,27 +1178,41 @@ run_suite() {
         echo "Skipping $platform_name VMM-local and remote-without-NET tests: $vmm_local_reason"
       fi
 
-      FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback" \
-        "$MPI_RUNNER" --allow-run-as-root \
-        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-        -x FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1 \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-        "$symmem_bin" \
-        --gtest_filter=SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback:SymMemTest.P2pDisabledLocalWindowAcquiresNetworkMrBeforePublish || symmem_status=$?
+      local local_ipc_net_reason
+      local_ipc_net_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem local-ipc-net-fallback)
+      if [[ -z "$local_ipc_net_reason" ]]; then
+        FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+          -x FLAGCX_CI_REQUIRE_LOCAL_IPC_NET_FALLBACK=1 \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback:SymMemTest.P2pDisabledLocalWindowAcquiresNetworkMrBeforePublish || symmem_status=$?
+      else
+        echo "Skipping symmem local IPC + NET fallback: $local_ipc_net_reason"
+      fi
 
-      FLAGCX_CI_MPI_LABEL="symmem IPC + NET" \
-        "$MPI_RUNNER" --allow-run-as-root \
-        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-        "$symmem_bin" "$symmem_filter" \
-        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-        "$symmem_bin" "$symmem_filter" || symmem_status=$?
+      local ipc_net_reason
+      ipc_net_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem ipc-net)
+      if [[ -z "$ipc_net_reason" ]]; then
+        FLAGCX_CI_MPI_LABEL="symmem IPC + NET" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+          -x FLAGCX_DMABUF_ENABLE=1 \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          "$symmem_bin" "$symmem_filter" \
+          : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
+          -x FLAGCX_DMABUF_ENABLE=1 \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          "$symmem_bin" "$symmem_filter" || symmem_status=$?
+      else
+        echo "Skipping symmem IPC + NET: $ipc_net_reason"
+      fi
 
       if ((symmem_run_vmm_net_data != 0)); then
         FLAGCX_CI_MPI_LABEL="symmem VMM + NET auto" \

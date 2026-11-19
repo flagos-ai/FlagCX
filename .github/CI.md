@@ -76,7 +76,11 @@ collectives except the known S60 Gather/Scatter failures. The platform's
 hangs in ECCL. When Enflame preflight reports `FLAGCX_CI_HAS_RDMA=0`, forced
 IB NET, multi-QP striping, and PXN invocations are skipped with explicit reasons;
 they run when RDMA is available (and PXN is enabled). Host/default MPI failures
-still fail the job. Other platforms retain their required RDMA preflight.
+still fail the job. Enflame SymMem also skips local-IPC-to-NET fallback and
+cross-node IPC+NET phases without an active RDMA HCA because Socket transport
+cannot register the network MRs those phases require; unit and IPC-local
+coverage remains enabled. These phases run when RDMA is available. Other
+platforms retain their required RDMA preflight.
 
 ## Retry Logs
 

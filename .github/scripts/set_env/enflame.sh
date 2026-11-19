@@ -33,6 +33,18 @@ FLAGCX_CI_IGNORE_TEST='{
       "suite": "symmem",
       "name": "vmm-net-data",
       "reason": "The Enflame TOPS runtime does not support VMM-backed SymMem data tests"
+    },
+    {
+      "suite": "symmem",
+      "name": "local-ipc-net-fallback",
+      "when": {"FLAGCX_CI_HAS_RDMA": "0"},
+      "reason": "No active RDMA HCA is available; the Socket transport cannot register network MRs required by this fallback test"
+    },
+    {
+      "suite": "symmem",
+      "name": "ipc-net",
+      "when": {"FLAGCX_CI_HAS_RDMA": "0"},
+      "reason": "No active RDMA HCA is available; the Socket transport cannot register network MRs required by this cross-node test"
     }
   ]
 }'
