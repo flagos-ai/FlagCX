@@ -380,15 +380,13 @@ struct PlatformTraits<PpuPlatform> {
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static FLAGCX_DEVICE_INLINE_DECORATOR T
     fetchOr(T *ptr, const T &val, flagcxDeviceMemoryOrder_t order) {
-      using ref_t = typename ScopeHelper<T, Scope>::atomic_ref_t;
-      return ref_t{*ptr}.fetch_or(val, toOrder(order));
+      return fetchBitwise<T, Scope, true>(ptr, val, order);
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static FLAGCX_DEVICE_INLINE_DECORATOR T
     fetchAnd(T *ptr, const T &val, flagcxDeviceMemoryOrder_t order) {
-      using ref_t = typename ScopeHelper<T, Scope>::atomic_ref_t;
-      return ref_t{*ptr}.fetch_and(val, toOrder(order));
+      return fetchBitwise<T, Scope, false>(ptr, val, order);
     }
 
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
@@ -430,6 +428,33 @@ struct PlatformTraits<PpuPlatform> {
     }
 
   private:
+    template <typename T, flagcxDeviceScope_t Scope, bool IsOr>
+    static FLAGCX_DEVICE_INLINE_DECORATOR T
+    fetchBitwise(T *ptr, T val, flagcxDeviceMemoryOrder_t order) {
+      static_assert(std::is_integral<T>::value &&
+                        (sizeof(T) == 4 || sizeof(T) == 8),
+                    "bitwise atomics require a 32/64-bit integer");
+      using ref_t = typename ScopeHelper<T, Scope>::atomic_ref_t;
+      ref_t ref{*ptr};
+      const auto nativeOrder = toOrder(order);
+      if constexpr (Scope == flagcxDeviceScopeSystem) {
+        // Native bitwise RMWs are not available on every PPU system-memory
+        // path. Use scoped CAS, including for mapped host memory. A successful
+        // CAS preserves RMW ordering even when the value is unchanged.
+        T old = ref.load(hggc::memory_order_relaxed);
+        for (;;) {
+          const T desired = IsOr ? T(old | val) : T(old & val);
+          if (ref.compare_exchange_weak(old, desired, nativeOrder,
+                                        hggc::memory_order_relaxed))
+            return old;
+        }
+      } else if constexpr (IsOr) {
+        return ref.fetch_or(val, nativeOrder);
+      } else {
+        return ref.fetch_and(val, nativeOrder);
+      }
+    }
+
     static FLAGCX_DEVICE_INLINE_DECORATOR hggc::memory_order
     toOrder(flagcxDeviceMemoryOrder_t o) {
       switch (o) {

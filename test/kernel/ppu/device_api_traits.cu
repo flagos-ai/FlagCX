@@ -6,6 +6,7 @@
 #include "device_api/comm_traits.h"
 
 #include <cstdio>
+#include <cstring>
 #include <hggc_runtime.h>
 #include <type_traits>
 
@@ -62,7 +63,7 @@ FLAGCX_DEVICE_DECORATOR bool atomicContract(T *word) {
 }
 
 FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
-                                           uint64_t *word64, uint64_t *mapped) {
+                                           uint64_t *word64) {
   const int tid = threadIdx.x;
   const int lane = Traits::Intrin::lane();
   Traits::CoopBlock block;
@@ -122,7 +123,6 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
     ok &= atomicContract<uint64_t, flagcxDeviceScopeBlock>(word64);
     ok &= atomicContract<uint32_t, flagcxDeviceScopeThread>(word32);
     ok &= atomicContract<uint64_t, flagcxDeviceScopeThread>(word64);
-    ok &= atomicContract<uint64_t, flagcxDeviceScopeSystem>(mapped);
     Atomic::store(word32, uint32_t{0}, flagcxDeviceMemoryOrderRelease);
     Atomic::store(word64, uint64_t{0}, flagcxDeviceMemoryOrderRelease);
   }
@@ -161,6 +161,65 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
   result[tid] = ok ? 0 : 1;
 }
 
+enum class PpuAtomicCase { Load, Store, Add, Sub, Cas, Exchange, Max, Or, And };
+
+template <typename T>
+FLAGCX_GLOBAL_DECORATOR void testPpuAtomicCase(T *word, uint32_t *result,
+                                               PpuAtomicCase operation) {
+  Atomic::store(word, T{5}, flagcxDeviceMemoryOrderRelease);
+  bool ok = true;
+  T finalValue = 5;
+  switch (operation) {
+    case PpuAtomicCase::Load:
+      ok = Atomic::load(word, flagcxDeviceMemoryOrderAcquire) == T{5};
+      break;
+    case PpuAtomicCase::Store:
+      Atomic::store(word, T{9}, flagcxDeviceMemoryOrderRelease);
+      finalValue = 9;
+      break;
+    case PpuAtomicCase::Add:
+      ok = Atomic::fetchAdd(word, T{3}, flagcxDeviceMemoryOrderAcqRel) == T{5};
+      finalValue = 8;
+      break;
+    case PpuAtomicCase::Sub:
+      ok = Atomic::fetchSub(word, T{2}, flagcxDeviceMemoryOrderRelaxed) == T{5};
+      finalValue = 3;
+      break;
+    case PpuAtomicCase::Cas: {
+      T expected = 5;
+      ok = Atomic::compareExchange(word, expected, T{9},
+                                   flagcxDeviceMemoryOrderAcqRel);
+      expected = 0;
+      ok &= !Atomic::compareExchange(word, expected, T{7},
+                                     flagcxDeviceMemoryOrderAcqRel);
+      ok &= expected == T{9};
+      finalValue = 9;
+      break;
+    }
+    case PpuAtomicCase::Exchange:
+      ok = Atomic::exchange(word, T{9}, flagcxDeviceMemoryOrderAcqRel) == T{5};
+      finalValue = 9;
+      break;
+    case PpuAtomicCase::Max:
+      ok = Atomic::fetchMax(word, T{9}, flagcxDeviceMemoryOrderAcqRel) == T{5};
+      ok &=
+          Atomic::fetchMax(word, T{7}, flagcxDeviceMemoryOrderRelaxed) == T{9};
+      finalValue = 9;
+      break;
+    case PpuAtomicCase::Or:
+      ok = Atomic::fetchOr(word, T{8}, flagcxDeviceMemoryOrderSeqCst) == T{5};
+      finalValue = 13;
+      break;
+    case PpuAtomicCase::And:
+      ok = Atomic::fetchAnd(word, T{3}, flagcxDeviceMemoryOrderSeqCst) == T{5};
+      finalValue = 1;
+      break;
+  }
+  ok &= Atomic::load(word, flagcxDeviceMemoryOrderAcquire) == finalValue;
+  result[0] = ok ? 0 : 1;
+  result[1] = static_cast<uint32_t>(finalValue);
+}
+
 #define SDK_CHECK(call)                                                        \
   do {                                                                         \
     hggcError_t err = (call);                                                  \
@@ -170,15 +229,78 @@ FLAGCX_GLOBAL_DECORATOR void testPpuTraits(uint32_t *result, uint32_t *word32,
     }                                                                          \
   } while (0)
 
-int main() {
+template <typename T>
+int runPpuAtomicCase(bool hostMapped, PpuAtomicCase operation) {
+  T *word = nullptr, *deviceWord = nullptr;
+  uint32_t *result = nullptr;
+  SDK_CHECK(hggcSetDevice(0));
+  if (hostMapped) {
+    SDK_CHECK(hggcHostAlloc(reinterpret_cast<void **>(&word), sizeof(T),
+                            hggcHostAllocMapped));
+    SDK_CHECK(hggcHostGetDevicePointer(reinterpret_cast<void **>(&deviceWord),
+                                       word, 0));
+  } else {
+    SDK_CHECK(hggcMalloc(reinterpret_cast<void **>(&word), sizeof(T)));
+    deviceWord = word;
+  }
+  SDK_CHECK(
+      hggcMalloc(reinterpret_cast<void **>(&result), 2 * sizeof(uint32_t)));
+  testPpuAtomicCase<T><<<1, 1>>>(deviceWord, result, operation);
+  SDK_CHECK(hggcGetLastError());
+  SDK_CHECK(hggcDeviceSynchronize());
+  uint32_t outcome[2] = {};
+  SDK_CHECK(
+      hggcMemcpy(outcome, result, sizeof(outcome), hggcMemcpyDeviceToHost));
+  const bool ok = outcome[0] == 0 &&
+                  (!hostMapped || __atomic_load_n(word, __ATOMIC_ACQUIRE) ==
+                                      static_cast<T>(outcome[1]));
+  SDK_CHECK(hggcFree(result));
+  if (hostMapped) {
+    SDK_CHECK(hggcFreeHost(word));
+  } else {
+    SDK_CHECK(hggcFree(word));
+  }
+  printf("PPU atomic case: %s\n", ok ? "PASS" : "FAIL");
+  return ok ? 0 : 1;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 1) {
+    const char *operations[] = {"load",     "store", "add", "sub", "cas",
+                                "exchange", "max",   "or",  "and"};
+    if (argc == 5 && strcmp(argv[1], "--atomic") == 0 &&
+        (strcmp(argv[2], "host") == 0 || strcmp(argv[2], "device") == 0) &&
+        (strcmp(argv[3], "32") == 0 || strcmp(argv[3], "64") == 0)) {
+      for (unsigned i = 0; i < sizeof(operations) / sizeof(operations[0]);
+           ++i) {
+        if (strcmp(argv[4], operations[i]) != 0)
+          continue;
+        printf("PPU atomic case: memory=%s bits=%s operation=%s\n", argv[2],
+               argv[3], argv[4]);
+        fflush(stdout);
+        const bool hostMapped = strcmp(argv[2], "host") == 0;
+        return strcmp(argv[3], "32") == 0
+                   ? runPpuAtomicCase<uint32_t>(hostMapped,
+                                                static_cast<PpuAtomicCase>(i))
+                   : runPpuAtomicCase<uint64_t>(hostMapped,
+                                                static_cast<PpuAtomicCase>(i));
+      }
+    }
+    fprintf(stderr,
+            "Usage: %s [--atomic host|device 32|64 "
+            "load|store|add|sub|cas|exchange|max|or|and]\n",
+            argv[0]);
+    return 1;
+  }
   uint32_t *results = nullptr, *word32 = nullptr;
-  uint64_t *word64 = nullptr, *mapped = nullptr, *mappedDevice = nullptr;
+  uint64_t *word64 = nullptr;
   SDK_CHECK(hggcSetDevice(0));
   // The three-argument API uses the device's current pool. The four-argument
   // overload forwards to hggcMallocFromPoolAsync and requires an explicit pool.
   hggcStream_t allocationStream = nullptr;
   void *asyncBuffer = nullptr;
-  SDK_CHECK(hggcStreamCreateWithFlags(&allocationStream, hggcStreamNonBlocking));
+  SDK_CHECK(
+      hggcStreamCreateWithFlags(&allocationStream, hggcStreamNonBlocking));
   SDK_CHECK(hggcMallocAsync(&asyncBuffer, 64, allocationStream));
   SDK_CHECK(hggcMemsetAsync(asyncBuffer, 0, 64, allocationStream));
   SDK_CHECK(hggcFreeAsync(asyncBuffer, allocationStream));
@@ -188,17 +310,12 @@ int main() {
       hggcMalloc(reinterpret_cast<void **>(&results), 128 * sizeof(uint32_t)));
   SDK_CHECK(hggcMalloc(reinterpret_cast<void **>(&word32), sizeof(uint32_t)));
   SDK_CHECK(hggcMalloc(reinterpret_cast<void **>(&word64), sizeof(uint64_t)));
-  SDK_CHECK(hggcHostAlloc(reinterpret_cast<void **>(&mapped), sizeof(uint64_t),
-                          hggcHostAllocMapped));
-  SDK_CHECK(hggcHostGetDevicePointer(reinterpret_cast<void **>(&mappedDevice),
-                                     mapped, 0));
-  __atomic_store_n(mapped, uint64_t{0}, __ATOMIC_RELEASE);
-  testPpuTraits<<<1, 128>>>(results, word32, word64, mappedDevice);
+  testPpuTraits<<<1, 128>>>(results, word32, word64);
   SDK_CHECK(hggcGetLastError());
   SDK_CHECK(hggcDeviceSynchronize());
   uint32_t host[128];
   SDK_CHECK(hggcMemcpy(host, results, sizeof(host), hggcMemcpyDeviceToHost));
-  bool ok = __atomic_load_n(mapped, __ATOMIC_ACQUIRE) == 15;
+  bool ok = true;
   for (int i = 0; i < 128; ++i) {
     if (host[i] != 0) {
       fprintf(stderr, "PPU traits contract failed at thread %d\n", i);
@@ -209,7 +326,6 @@ int main() {
   SDK_CHECK(hggcFree(results));
   SDK_CHECK(hggcFree(word32));
   SDK_CHECK(hggcFree(word64));
-  SDK_CHECK(hggcFreeHost(mapped));
   printf("PPU SDK platform traits: %s\n", ok ? "PASS" : "FAIL");
   return ok ? 0 : 1;
 }

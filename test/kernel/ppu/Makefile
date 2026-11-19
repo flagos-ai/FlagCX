@@ -44,7 +44,16 @@ $(BINDIR)/test_device_api_traits: device_api_traits.cu $(PPU_TRAITS_HEADERS)
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE) -L$(DEVICE_LIB) $(DEVICE_LINK)
 
 device_traits: $(BINDIR)/test_device_api_traits
-	@$(BINDIR)/test_device_api_traits
+	@status=0; \
+	for memory in device host; do \
+	  for bits in 32 64; do \
+	    for op in load store add sub cas exchange max or and; do \
+	      $(BINDIR)/test_device_api_traits --atomic $$memory $$bits $$op || status=1; \
+	    done; \
+	  done; \
+	done; \
+	$(BINDIR)/test_device_api_traits || status=1; \
+	exit $$status
 
 # Compatibility APIs are limited to the Torch boundary. No CUDA libraries are
 # linked into libflagcx or the native Device API kernels.

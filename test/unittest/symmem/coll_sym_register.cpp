@@ -32,10 +32,12 @@
 #include <unistd.h>
 #endif
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||                 \
-    defined(USE_ILUVATAR_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
+#elif defined(USE_PPU_ADAPTOR)
+#include <hggc.h>
+#include <hggc_runtime.h>
 #elif defined(USE_DU_ADAPTOR)
 #include <hip/hip_runtime.h>
 #elif defined(USE_METAX_ADAPTOR)
@@ -2944,8 +2946,55 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
     access.flags = hipMemAccessFlagsProtReadWrite;
     return hipMemSetAccess(mapping.base, granularity, &access, 1) == hipSuccess;
   }();
-#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||               \
-    defined(USE_ILUVATAR_ADAPTOR)
+#elif defined(USE_PPU_ADAPTOR)
+  size_t granularity = 0;
+  struct ScopedMapping {
+    HGmemGenericAllocationHandle handle = 0;
+    HGdeviceptr base = 0;
+    size_t size = 0;
+    bool mapped = false;
+    ~ScopedMapping() {
+      if (mapped)
+        hgMemUnmap(base, size);
+      if (base != 0)
+        hgMemAddressFree(base, size);
+      if (handle != 0)
+        hgMemRelease(handle);
+    }
+  } mapping;
+  const bool setupOk = [&]() -> bool {
+    int hggcDev = 0;
+    if (hggcGetDevice(&hggcDev) != hggcSuccess)
+      return false;
+    HGdevice hgDevice = 0;
+    if (hgDeviceGet(&hgDevice, hggcDev) != HGGC_SUCCESS)
+      return false;
+    HGmemAllocationProp prop = {};
+    prop.type = HG_MEM_ALLOCATION_TYPE_PINNED;
+    prop.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
+    prop.location.id = hgDevice;
+    prop.requestedHandleTypes = HG_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+    if (hgMemGetAllocationGranularity(&granularity, &prop,
+                                      HG_MEM_ALLOC_GRANULARITY_RECOMMENDED) !=
+            HGGC_SUCCESS ||
+        granularity == 0)
+      return false;
+    mapping.size = granularity;
+    if (hgMemCreate(&mapping.handle, granularity, &prop, 0) != HGGC_SUCCESS ||
+        hgMemAddressReserve(&mapping.base, granularity, granularity, 0, 0) !=
+            HGGC_SUCCESS ||
+        hgMemMap(mapping.base, granularity, 0, mapping.handle, 0) !=
+            HGGC_SUCCESS)
+      return false;
+    mapping.mapped = true;
+    HGmemAccessDesc access = {};
+    access.location.type = HG_MEM_LOCATION_TYPE_DEVICE;
+    access.location.id = hgDevice;
+    access.flags = HG_MEM_ACCESS_FLAGS_PROT_READWRITE;
+    return hgMemSetAccess(mapping.base, granularity, &access, 1) ==
+           HGGC_SUCCESS;
+  }();
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_ILUVATAR_ADAPTOR)
   size_t granularity = 0;
   struct ScopedMapping {
     CUmemGenericAllocationHandle handle = 0;

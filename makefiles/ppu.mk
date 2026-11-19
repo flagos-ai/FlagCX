@@ -15,7 +15,9 @@ endif
 CCL_HOME ?= /usr/local/PPU_SDK
 CCL_LIB := $(CCL_HOME)/lib
 CCL_INCLUDE := $(CCL_HOME)/include
-CCL_LINK := -lpccl
+# PCCL is opened locally by the adaptor. A DT_NEEDED dependency would expose
+# its private U2MM pointer symbols to BAREX's function relocations.
+CCL_LINK :=
 ADAPTOR_FLAG := -DUSE_PPU_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT
 
 PLATFORM_KERNEL_DIR := flagcx/adaptor/kernel/ppu

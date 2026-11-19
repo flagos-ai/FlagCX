@@ -53,6 +53,8 @@ using std::memory_order_seq_cst;
 enum thread_scope { thread_scope_system, thread_scope_device,
                     thread_scope_block, thread_scope_thread };
 static thread_scope last_scope;
+static int weak_failures = 0;
+static uint64_t concurrent_value = 0;
 inline int orderCode(memory_order order) {
   switch (order) {
     case memory_order_relaxed: return __ATOMIC_RELAXED;
@@ -69,8 +71,14 @@ template <class T, thread_scope S> struct atomic_ref {
   void store(T v, memory_order o) { __atomic_store_n(p, v, orderCode(o)); }
   T fetch_add(T v, memory_order o) { return __atomic_fetch_add(p, v, orderCode(o)); }
   T fetch_sub(T v, memory_order o) { return __atomic_fetch_sub(p, v, orderCode(o)); }
-  T fetch_or(T v, memory_order o) { return __atomic_fetch_or(p, v, orderCode(o)); }
-  T fetch_and(T v, memory_order o) { return __atomic_fetch_and(p, v, orderCode(o)); }
+  T fetch_or(T v, memory_order o) {
+    if (S == thread_scope_system) __builtin_trap();
+    return __atomic_fetch_or(p, v, orderCode(o));
+  }
+  T fetch_and(T v, memory_order o) {
+    if (S == thread_scope_system) __builtin_trap();
+    return __atomic_fetch_and(p, v, orderCode(o));
+  }
   T exchange(T v, memory_order o) { return __atomic_exchange_n(p, v, orderCode(o)); }
   bool compare_exchange_strong(T &e, T d, memory_order o) {
     memory_order f = o == memory_order_release ? memory_order_relaxed :
@@ -78,6 +86,12 @@ template <class T, thread_scope S> struct atomic_ref {
     return __atomic_compare_exchange_n(p, &e, d, false, orderCode(o), orderCode(f));
   }
   bool compare_exchange_weak(T &e, T d, memory_order s, memory_order f) {
+    if (weak_failures > 0) {
+      --weak_failures;
+      __atomic_store_n(p, static_cast<T>(concurrent_value), __ATOMIC_RELAXED);
+      e = __atomic_load_n(p, __ATOMIC_RELAXED);
+      return false;
+    }
     return __atomic_compare_exchange_n(p, &e, d, true, orderCode(s), orderCode(f));
   }
 };
@@ -226,6 +240,25 @@ int main() {
         source = (ROOT / "test/kernel/ppu/device_api_traits.cu").read_text()
         source = source.split("#define SDK_CHECK", 1)[0]
         self.compile_source(source + "\nint main() {}\n", native=True, run=False)
+
+    def test_system_bitwise_atomics_retry_after_competing_update(self):
+        self.compile_source(r"""
+template <typename T> void checkRetry() {
+  T word = 1;
+  hggc::weak_failures = 1;
+  hggc::concurrent_value = 16;
+  assert(P::Atomic::fetchOr(&word, T{8}, flagcxDeviceMemoryOrderSeqCst) == 16);
+  assert(word == 24);
+  word = 15;
+  hggc::weak_failures = 1;
+  hggc::concurrent_value = 7;
+  assert(P::Atomic::fetchAnd(&word, T{6}, flagcxDeviceMemoryOrderAcqRel) == 7);
+  assert(word == 6);
+  assert(P::Atomic::fetchOr(&word, T{0}, flagcxDeviceMemoryOrderRelease) == 6);
+  assert(P::Atomic::fetchAnd(&word, T{6}, flagcxDeviceMemoryOrderAcquire) == 6);
+}
+int main() { checkRetry<uint32_t>(); checkRetry<uint64_t>(); }
+""", native=True)
 
     def test_unsupported_contracts_fail_to_compile(self):
         cases = [

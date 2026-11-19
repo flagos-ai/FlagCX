@@ -115,12 +115,12 @@ static pcclResult_t pcclStatus = pcclSuccess, pcclAsyncStatus = pcclSuccess;
 static pcclDataType_t seenType = pcclInt8;
 static pcclRedOp_t seenOp = pcclSum;
 static int collectiveCalls = 0;
-inline const char *pcclGetErrorString(pcclResult_t) { return "pccl error"; }
-inline const char *pcclGetLastError(pcclComm_t) { return "last error"; }
-inline pcclResult_t pcclCommGetAsyncError(pcclComm_t, pcclResult_t *r) {
+extern "C" inline const char *pcclGetErrorString(pcclResult_t) { return "pccl error"; }
+extern "C" inline const char *pcclGetLastError(pcclComm_t) { return "last error"; }
+extern "C" inline pcclResult_t pcclCommGetAsyncError(pcclComm_t, pcclResult_t *r) {
   *r = pcclAsyncStatus; return pcclStatus;
 }
-inline pcclResult_t pcclAllReduce(const void *, void *, size_t, pcclDataType_t type,
+extern "C" inline pcclResult_t pcclAllReduce(const void *, void *, size_t, pcclDataType_t type,
                                 pcclRedOp_t op, pcclComm_t, hggcStream_t) {
   seenType = type; seenOp = op; ++collectiveCalls; return pcclStatus;
 }
@@ -152,6 +152,10 @@ PROJECT = r"""
 #include "flagcx_device_adaptor.h"
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#define FLAGCX_INIT 1
+#define INFO(flags, ...) do { std::fprintf(stderr, __VA_ARGS__); std::fputc('\n', stderr); } while (0)
+#define WARN(...) INFO(0, __VA_ARGS__)
 #define FLAGCXCHECK(call) do { auto r = (call); if (r != flagcxSuccess) return r; } while (0)
 #define FLAGCXCHECKGOTO(call, result, label) do { result = (call); if (result != flagcxSuccess) goto label; } while (0)
 template <class T> flagcxResult_t flagcxCalloc(T **p, size_t n) {
@@ -165,14 +169,21 @@ inline size_t getFlagcxDataTypeSize(flagcxDataType_t) { return 4; }
 
 @unittest.skipUnless(CXX, "C++ compiler required")
 class PpuAdaptorTest(unittest.TestCase):
-    def compile_and_run(self, source):
+    def compile_and_run(self, source, missing_pccl_symbol=None, fail_open=False):
         with tempfile.TemporaryDirectory() as folder:
             tmp = Path(folder)
             (tmp / "hggc_runtime.h").write_text(RUNTIME + RUNTIME_TEMPLATES)
             (tmp / "hggc.h").write_text(DRIVER)
             pccl = PCCL + "\n".join(
-                f"inline pcclResult_t {name}({args}) {{ return pcclStatus; }}"
+                f'extern "C" inline pcclResult_t {name}({args}) {{ return pcclStatus; }}'
                 for name, args in PCCL_SIGNATURES.items()
+            )
+            # Keep native symbol names visible to dlsym in this host fixture.
+            names = list(PCCL_SIGNATURES) + ["pcclGetErrorString", "pcclGetLastError",
+                                              "pcclCommGetAsyncError", "pcclAllReduce"]
+            pccl += "\n" + "\n".join(
+                f"auto volatile fixture_{name} = &{name};"
+                for name in names if name != missing_pccl_symbol
             )
             (tmp / "pccl.h").write_text(pccl)
             (tmp / "adaptor.h").write_text(PROJECT)
@@ -180,11 +191,29 @@ class PpuAdaptorTest(unittest.TestCase):
             for name in ("comm.h", "param.h"):
                 (tmp / name).write_text("")
             cpp = tmp / "test.cc"
-            cpp.write_text('#include <cassert>\n' + source)
+            cpp.write_text(r"""
+#include <cassert>
+#include <dlfcn.h>
+static int openLibraryCalls = 0;
+static int seenLoadFlags = 0;
+void *flagcxOpenLib(const char *path, int flags,
+                   void (*error_handler)(const char *, int, const char *)) {
+  ++openLibraryCalls;
+  seenLoadFlags = flags;
+  if (""" + str(int(fail_open)) + r""") {
+    error_handler(path, 0, "fixture library missing");
+    return nullptr;
+  }
+  return dlopen(nullptr, RTLD_NOW);
+}
+""" + source)
             command = [CXX, "-std=c++17", "-DUSE_PPU_ADAPTOR",
                        f"-I{tmp}", f"-I{INCLUDE}",
                        f"-I{ROOT / 'flagcx/include'}", str(cpp),
+                       f"-I{ROOT / 'flagcx/service/include'}", "-rdynamic",
                        "-o", str(tmp / "test")]
+            if os.sys.platform == "linux":
+                command += ["-ldl", "-pthread"]
             result = subprocess.run(command, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(tmp / "test")], text=True, capture_output=True)
@@ -217,8 +246,149 @@ int main() {
   assert(ppupcclAdaptorCommGetAsyncError(&comm, &async) == flagcxSuccess);
   assert(async == flagcxUnhandledCCLError);
   assert(ppupcclAdaptorCommGetAsyncError(&comm, nullptr) == flagcxInvalidArgument);
+  assert(openLibraryCalls == 1);
+  assert((seenLoadFlags & RTLD_NOW) != 0);
+  assert((seenLoadFlags & RTLD_GLOBAL) == 0);
+#ifdef RTLD_DEEPBIND
+  assert((seenLoadFlags & RTLD_DEEPBIND) != 0);
+#endif
 }
 """)
+
+    def test_pccl_loader_reports_missing_library_and_symbol(self):
+        source = '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
+        source += r"""
+int main() {
+  int version = -1;
+  assert(ppupcclAdaptorGetVersion(&version) == flagcxSystemError);
+  assert(version == -1);
+  flagcxInnerComm comm{};
+  flagcxStream stream{};
+  assert(ppupcclAdaptorAllReduce(nullptr, nullptr, 1, flagcxFloat32,
+                               flagcxSum, &comm, &stream) == flagcxSystemError);
+  assert(collectiveCalls == 0);
+  assert(ppupcclAdaptorGetErrorString(flagcxSystemError) != nullptr);
+}
+"""
+        with self.subTest(failure="library"):
+            self.compile_and_run(source, fail_open=True)
+        with self.subTest(failure="symbol"):
+            self.compile_and_run(source, missing_pccl_symbol="pcclGroupEnd")
+
+    def test_pccl_loader_initializes_once_across_threads(self):
+        source = '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
+        self.compile_and_run(source + r"""
+#include <thread>
+#include <vector>
+int main() {
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 16; ++i)
+    threads.emplace_back([] {
+      int version = 0;
+      assert(ppupcclAdaptorGetVersion(&version) == flagcxSuccess);
+    });
+  for (auto &thread : threads) thread.join();
+  assert(openLibraryCalls == 1);
+}
+""")
+
+    @unittest.skipUnless(os.sys.platform == "linux", "ELF/glibc loading contract")
+    def test_pccl_and_u2mm_symbol_scopes_in_both_load_orders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder)
+            (tmp / "hggc_runtime.h").write_text(RUNTIME + RUNTIME_TEMPLATES)
+            (tmp / "hggc.h").write_text(DRIVER)
+            pccl = PCCL + "\n".join(
+                f'extern "C" inline pcclResult_t {name}({args}) {{ return pcclStatus; }}'
+                for name, args in PCCL_SIGNATURES.items()
+            )
+            (tmp / "pccl.h").write_text(pccl)
+            (tmp / "adaptor.h").write_text(PROJECT)
+            (tmp / "alloc.h").write_text('#include "adaptor.h"\n')
+            (tmp / "comm.h").write_text("")
+            names = list(PCCL_SIGNATURES) + ["pcclGetErrorString", "pcclGetLastError",
+                                              "pcclCommGetAsyncError", "pcclAllReduce"]
+            (tmp / "pccl.cc").write_text('#include "pccl.h"\n' + "\n".join(
+                f"auto volatile fixture_{name} = &{name};" for name in names
+            ) + r"""
+extern "C" {
+// Reproduce the vendor data symbol that collides with a real U2MM function.
+int (*u2mm_get_default_alloc_config)();
+static int private_config() { return 17; }
+int check_private_binding() {
+  u2mm_get_default_alloc_config = private_config;
+  return u2mm_get_default_alloc_config();
+}
+}
+""")
+            (tmp / "u2mm.cc").write_text(
+                'extern "C" int u2mm_get_default_alloc_config() { return 42; }\n')
+            (tmp / "barex.cc").write_text(r"""
+extern "C" int u2mm_get_default_alloc_config();
+extern "C" int register_host_mr() {
+  return u2mm_get_default_alloc_config();
+}
+""")
+            utils = (ROOT / "flagcx/service/utils.cc").read_text()
+            begin = utils.index("void *flagcxOpenLib(")
+            end = utils.index("\n}\n", begin) + 3
+            main = r"""
+#include <cassert>
+#include <cerrno>
+#include <cstring>
+#include <dlfcn.h>
+""" + utils[begin:end]
+            main += '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
+            main += r"""
+int main(int argc, char **argv) {
+  assert(argc == 2);
+  void *barex = nullptr;
+  if (strcmp(argv[1], "barex-first") == 0) {
+    barex = dlopen("libbarex_fixture.so", RTLD_NOW | RTLD_GLOBAL);
+    assert(barex != nullptr);
+  }
+  int version = 0;
+  assert(ppupcclAdaptorGetVersion(&version) == flagcxSuccess);
+  // A second dlopen must not promote the locally opened PCCL to global.
+  void *pccl = dlopen("libpccl.so.2", RTLD_NOW | RTLD_NOLOAD);
+  assert(pccl != nullptr);
+  auto check = reinterpret_cast<int (*)()>(dlsym(pccl, "check_private_binding"));
+  assert(check != nullptr && check() == 17);
+  if (barex == nullptr) {
+    assert(dlsym(RTLD_DEFAULT, "u2mm_get_default_alloc_config") == nullptr);
+    barex = dlopen("libbarex_fixture.so", RTLD_NOW | RTLD_GLOBAL);
+    assert(barex != nullptr);
+  }
+  auto reg = reinterpret_cast<int (*)()>(dlsym(barex, "register_host_mr"));
+  assert(reg != nullptr && reg() == 42);
+  assert(dlsym(RTLD_DEFAULT, "u2mm_get_default_alloc_config") !=
+         dlsym(pccl, "u2mm_get_default_alloc_config"));
+}
+"""
+            (tmp / "main.cc").write_text(main)
+            common = [CXX, "-std=c++17", "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
+                      f"-I{INCLUDE}", f"-I{ROOT / 'flagcx/include'}",
+                      f"-I{ROOT / 'flagcx/service/include'}"]
+            commands = [
+                common + ["-shared", "-fPIC", str(tmp / "pccl.cc"),
+                          "-o", str(tmp / "libpccl.so.2")],
+                common + ["-shared", "-fPIC", str(tmp / "u2mm.cc"),
+                          "-o", str(tmp / "libu2mm.so")],
+                common + ["-shared", "-fPIC", str(tmp / "barex.cc"),
+                          f"-L{tmp}", "-lu2mm", f"-Wl,-rpath,{tmp}",
+                          "-o", str(tmp / "libbarex_fixture.so")],
+                common + [str(tmp / "main.cc"), "-ldl", "-pthread",
+                          "-o", str(tmp / "test")],
+            ]
+            for command in commands:
+                result = subprocess.run(command, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            env = dict(os.environ, LD_LIBRARY_PATH=str(tmp))
+            for order in ("barex-first", "pccl-first"):
+                with self.subTest(order=order):
+                    result = subprocess.run([str(tmp / "test"), order], env=env,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_async_allocator_uses_current_pool_and_preserves_stream_and_errors(self):
         source = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
@@ -270,7 +440,7 @@ int main() {
         self.assertIn("tools/probe_hggc_sdk.py", result.stdout)
         self.assertIn("hggc_sdk_features.h", result.stdout)
         self.assertIn("-lhggc_wrapper -lhg_wrapper", result.stdout)
-        self.assertIn("CCL_LINK=-lpccl", result.stdout)
+        self.assertNotIn("-lpccl", result.stdout)
         self.assertIn("CCL_INCLUDE=/usr/local/PPU_SDK/include", result.stdout)
         self.assertIn("DEVICE_INCLUDE=/opt/ppu/include", result.stdout)
         self.assertNotIn("-lcudart", result.stdout)

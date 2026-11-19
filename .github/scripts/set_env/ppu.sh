@@ -119,6 +119,18 @@ flagcx_ci_run_suite_override() {
   shift 2
   local -a args=("$@")
 
+  if [[ "$suite" == adaptor ]]; then
+    local pccl_mr_xml="$suite_dir/build/ppu-pccl-host-mr.xml"
+    rm -f "$pccl_mr_xml"
+    FLAGCX_CI_TEST_LABEL="PPU PCCL and BAREX host MR interoperability" \
+      "$TEST_RUNNER" "$suite_dir/build/bin/adaptor_unit_tests" \
+        --gtest_filter=PpuPcclLoading.NativeCommBeforeBarexHostMrRegistration \
+        --gtest_output="xml:$pccl_mr_xml" || return $?
+    python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+      --case PpuPcclLoading.NativeCommBeforeBarexHostMrRegistration \
+      "$pccl_mr_xml" || return $?
+  fi
+
   if [[ "$suite" == device_api ]]; then
     FLAGCX_CI_TEST_LABEL="PPU native/Torch stream interoperability" \
       "$TEST_RUNNER" make -C "$PROJECT_ROOT/test/kernel/ppu" \
