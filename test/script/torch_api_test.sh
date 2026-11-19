@@ -11,6 +11,17 @@ if [[ "${FLAGCX_TORCH_USE_INSTALLED_PACKAGE:-0}" != "1" ]]; then
     export PYTHONPATH="$REPO_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
+torch_ignored_operations=$(python3 "$REPO_ROOT/.github/scripts/ci/ignore_test.py" torch homogeneous)
+if [[ " $torch_ignored_operations " == *" gather "* ]]; then
+    export FLAGCX_TORCH_SKIP_GATHER=1
+fi
+heterogeneous_skip_reason=$(python3 "$REPO_ROOT/.github/scripts/ci/ignore_test.py" \
+    phase torch-api heterogeneous)
+if [[ -n "$heterogeneous_skip_reason" ]]; then
+    export FLAGCX_SKIP_HETERO=1
+    echo "[INFO] Skipping heterogeneous PyTorch API tests: $heterogeneous_skip_reason"
+fi
+
 hash -r
 
 PYTHON_BIN=${PYTHON_BIN:-}
@@ -39,7 +50,9 @@ readonly HETERO_MEM_ENABLE=${FLAGCX_MEM_ENABLE:-1}
 readonly HETERO_VMM_ENABLE=${FLAGCX_VMM_ENABLE-}
 readonly HETERO_P2P_TRANSPORT=${FLAGCX_P2P_TRANSPORT-}
 readonly HETERO_P2P_DISABLE=${FLAGCX_P2P_DISABLE-}
-readonly HETERO_SKIP_OPS=${FLAGCX_TORCH_HETERO_SKIP_OPS-}
+torch_hetero_ignored_operations=$(python3 "$REPO_ROOT/.github/scripts/ci/ignore_test.py" \
+    torch heterogeneous)
+readonly HETERO_SKIP_OPS=${FLAGCX_TORCH_HETERO_SKIP_OPS:-${torch_hetero_ignored_operations// /,}}
 
 # Always remove mode-selecting variables before constructing either child
 # environment. This prevents a platform setup script (PPU in particular) from

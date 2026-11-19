@@ -25,9 +25,7 @@ ALL_ENABLED_PLATFORMS = [
 
 
 def enabled_platform_or_matrix(platform):
-    if platform in ALL_ENABLED_PLATFORMS:
-        return [platform]
-    return ALL_ENABLED_PLATFORMS
+    return [platform] if platform in ALL_ENABLED_PLATFORMS else []
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
@@ -58,6 +56,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 "hygon",
                 "iluvatar",
                 "metax",
+                "kunlunxin",
                 "ppu",
                 "ascend",
                 "enflame",
@@ -159,14 +158,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
                 self.assertEqual(outputs["platforms"], expected)
 
     def test_platform_labels_override_paths_for_enabled_platforms(self):
-        outputs, _ = self.resolve(
-            {
-                "event_name": "pull_request",
-                "labels": ["platform:enflame"],
-                "files": ["README.md"],
-            }
-        )
-        self.assertEqual(outputs["platforms"], ["enflame"])
+        for platform in ("enflame", "kunlunxin"):
+            with self.subTest(platform=platform):
+                outputs, _ = self.resolve(
+                    {
+                        "event_name": "pull_request",
+                        "labels": [f"platform:{platform}"],
+                        "files": ["README.md"],
+                    }
+                )
+                self.assertEqual(outputs["platforms"], [platform])
 
     def test_all_label_forces_full_matrix(self):
         outputs, _ = self.resolve(
@@ -245,6 +246,16 @@ class CiMatrixRoutingTest(unittest.TestCase):
                     "is_pull_request": True,
                 },
                 ["enflame"],
+            ),
+            ("workflow_dispatch", {"selection": "kunlunxin"}, ["kunlunxin"]),
+            (
+                "issue_comment",
+                {
+                    "comment": "/test kunlunxin",
+                    "permission": "write",
+                    "is_pull_request": True,
+                },
+                ["kunlunxin"],
             ),
             (
                 "issue_comment",
@@ -470,10 +481,70 @@ class CiWorkflowWiringTest(unittest.TestCase):
         ):
             source = path.read_text()
             self.assertIn("workflow_call:", source)
-            for platform in ("cuda", "hygon", "metax", "ppu"):
+            for platform in ("cuda", "hygon", "metax", "ppu", "kunlunxin"):
                 self.assertIn(f"contains(fromJSON(inputs.platforms), '{platform}')", source)
             self.assertIn("if: always()", source)
             self.assertIn("check_platform_workflow.sh", source)
+
+    def test_kunlunxin_performance_job_uses_platform_config_and_gate(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        )
+        jobs = workflow["jobs"]
+        job = jobs["perf-test-kunlunxin"]
+        self.assertEqual(
+            job["if"], "contains(fromJSON(inputs.platforms), 'kunlunxin')"
+        )
+        self.assertIn(
+            "outputs.kunlunxin_runs_on",
+            job["runs-on"],
+        )
+        steps = {step.get("name"): step for step in job["steps"]}
+        run_step = steps["Run perf-test (kunlunxin) in job container"]
+        self.assertEqual(
+            job["container"]["image"],
+            "${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}",
+        )
+        self.assertIn("kunlunxin perf", run_step["run"])
+        self.assertIn("perf-test-kunlunxin", jobs["perf_complete"]["needs"])
+        self.assertIn(
+            "Validate selected KunlunXin performance job",
+            [step.get("name") for step in jobs["perf_complete"]["steps"]],
+        )
+
+    def test_kunlunxin_torch_api_job_uses_platform_config_and_hardware_runner(self):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows/torch-api-test.yml").read_text()
+        )
+        jobs = workflow["jobs"]
+        job = jobs["torch-api-test-kunlunxin"]
+        self.assertEqual(
+            job["if"], "contains(fromJSON(inputs.platforms), 'kunlunxin')"
+        )
+        self.assertIn(
+            "outputs.kunlunxin_runs_on",
+            job["runs-on"],
+        )
+        steps = {step.get("name"): step for step in job["steps"]}
+        run_step = steps["Run torch-api-test (kunlunxin) in job container"]
+        self.assertEqual(
+            job["container"]["image"],
+            "${{ needs.load-hardware-container-configs.outputs.kunlunxin_ci_image }}",
+        )
+        self.assertIn("kunlunxin torch-api", run_step["run"])
+        self.assertIn("torch-api-test-kunlunxin", jobs["torch_api_complete"]["needs"])
+        self.assertIn(
+            "Validate selected KunlunXin Torch API job",
+            [step.get("name") for step in jobs["torch_api_complete"]["steps"]],
+        )
+
+        handler = (
+            REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
+        ).read_text()
+        self.assertIn("FLAGCX_ADAPTOR=klx", handler)
+        self.assertNotIn("export XTDK_HOME=", handler)
+        self.assertIn("torch.cuda.device_count() >= 4", handler)
+        self.assertIn("test/script/torch_api_test.sh", handler)
 
     def test_torch_coverage_upload_is_optional_and_uses_flagcicd_contract(self):
         workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/torch-api-test.yml").read_text())

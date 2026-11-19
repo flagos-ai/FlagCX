@@ -11,15 +11,14 @@
  * Usage: mpirun -np N ./test_kernel_internode_onesided [options]
  *   -b <minbytes>  -e <maxbytes>  -f <stepfactor>
  *   -w <warmup>    -n <iters>     -p <printbuffer 0/1>
- *   -R <regMode>   0=raw(deviceMalloc), 1=IPC(flagcxMemAlloc+CommRegister),
- *                  2=window(flagcxMemAlloc+CommWindowRegister)
+ *   -R 2           Explicit Window registration (the only supported mode).
  *   One-sided ops require -R 1 or -R 2.
  ************************************************************************/
 
 #include "device_api.h"
+#include "device_api_window.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "tools.h"
 #include <algorithm>
 #include <cstring>
 #include <unistd.h>
@@ -32,7 +31,7 @@ extern "C" void flagcxNvshmemFinalizeDeviceState();
 #define DATATYPE flagcxFloat
 
 int main(int argc, char *argv[]) {
-  parser args(argc, argv);
+  parser args(argc, argv, 2);
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
   int stepFactor = args.getStepFactor();
@@ -40,7 +39,9 @@ int main(int argc, char *argv[]) {
   int numIters = args.getTestIters();
   int printBuffer = args.isPrintBuffer();
   uint64_t splitMask = args.getSplitMask();
-  int localRegister = args.getLocalRegister();
+  int winFlags;
+  if (!deviceApiWindowMode(args, &winFlags))
+    return 1;
 
   flagcxDeviceHandle_t devHandle;
   flagcxComm_t comm;
@@ -64,19 +65,12 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
+  if (proc == 0 && color == 0)
+    FLAGCXCHECK(deviceApiReportWindowMode(comm, winFlags));
 
   if (totalProcs < 2) {
     if (proc == 0)
       printf("test_kernel_internode_onesided requires at least 2 ranks.\n");
-    FLAGCXCHECK(flagcxCommDestroy(comm));
-    FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
-    MPI_Finalize();
-    return 0;
-  }
-
-  if (localRegister == 0) {
-    if (proc == 0)
-      printf("One-sided ops require -R 1 or -R 2. Skipping.\n");
     FLAGCXCHECK(flagcxCommDestroy(comm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
@@ -106,32 +100,14 @@ int main(int argc, char *argv[]) {
 #endif
 
   void *sendBuff = nullptr, *recvBuff = nullptr;
-  void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
 
-  if (localRegister == 0) {
-    FLAGCXCHECK(
-        devHandle->deviceMalloc(&sendBuff, maxBytes, flagcxMemDevice, NULL));
-    FLAGCXCHECK(
-        devHandle->deviceMalloc(&recvBuff, maxBytes, flagcxMemDevice, NULL));
-  } else {
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
-  }
-
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-  } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
-                                   memAllocator));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle,
-                                   memAllocator));
-  }
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                       winFlags, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
+                                       winFlags, memAllocator));
 
   flagcxStream_t stream;
   FLAGCXCHECK(devHandle->streamCreate(&stream));
@@ -148,9 +124,7 @@ int main(int argc, char *argv[]) {
   if (proc == 0 && color == 0) {
     printf("# FlagCX Device API Inter-node One-sided AlltoAll Benchmark\n");
     printf("# nRanks: %d, regMode: %s\n", totalProcs,
-           localRegister == 2   ? "window"
-           : localRegister == 1 ? "ipc"
-                                : "raw (no registration)");
+           winFlags == FLAGCX_WIN_SYMMETRIC ? "symmetric" : "asymmetric");
     printf("# %-12s %-14s %-14s %-8s\n", "Size(B)", "Time(us)", "BW(GB/s)",
            "Result");
   }
@@ -257,29 +231,12 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
   }
 
-  // Destroy stream first (sync any pending work)
+  FLAGCXCHECK(deviceApiCloseWindows(comm, splitComm, devHandle, stream,
+                                    {&sendMem, &recvMem}, {&sendWin, &recvWin},
+                                    memAllocator));
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
-
-  // Destroy device memory handles
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-
-  // Deregister and free SHMEM buffers before DevCommDestroy
-  // (which calls nvshmem_finalize)
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
-  } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
-  }
-  if (localRegister >= 1) {
-    FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
-    FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
-  } else if (localRegister == 0) {
-    FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
-    FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
-  }
 
   // Destroy device communicator (before comm destroy)
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));

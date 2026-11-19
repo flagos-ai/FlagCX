@@ -1,17 +1,273 @@
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METAX_ENV = REPO_ROOT / ".github/scripts/set_env/metax.sh"
 HYGON_ENV = REPO_ROOT / ".github/scripts/set_env/hygon.sh"
 
+PLATFORM_REGISTRY = yaml.safe_load(
+    (REPO_ROOT / ".github/configs/platforms.yml").read_text()
+)["platforms"]
+ENABLED_PLATFORMS = [
+    name for name, settings in PLATFORM_REGISTRY.items()
+    if not isinstance(settings, dict) or settings.get("enabled", True)
+]
+
+
+def load_platform_ignore_config(platform):
+    result = subprocess.run(
+        ["bash", "-c",
+         'source "$1"; if [[ -n "${FLAGCX_CI_IGNORE_TEST:-}" ]]; then '
+         'printf "%s" "$FLAGCX_CI_IGNORE_TEST"; else printf "{}"; fi',
+         "bash", str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh")],
+        capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout)
+
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_platform_ignore_lists_live_in_environment_scripts(self):
+        for platform in (
+            "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu"
+        ):
+            with self.subTest(platform=platform):
+                config = yaml.safe_load(
+                    (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
+                )
+                self.assertNotIn("ignore_test", config)
+                self.assertTrue(load_platform_ignore_config(platform))
+        for filename in (
+            "test.yml",
+            "torch-api-test.yml",
+            "unit_tests_common.yml",
+        ):
+            workflow = (REPO_ROOT / ".github/workflows" / filename).read_text()
+            self.assertNotIn("ignore_test", workflow)
+        loader = (REPO_ROOT / ".github/scripts/ci/load_platform_config.rb").read_text()
+        self.assertNotIn('"ignore_test"', loader)
+        container_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
+        ).read_text()
+        self.assertNotIn("FLAGCX_CI_IGNORE_TEST", container_runner)
+
+    def test_kunlunxin_workloads_use_job_containers(self):
+        for filename, job_name, workload in (
+            ("test.yml", "perf-test-kunlunxin", "perf"),
+            ("torch-api-test.yml", "torch-api-test-kunlunxin", "torch-api"),
+        ):
+            with self.subTest(job=job_name):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / ".github/workflows" / filename).read_text()
+                )
+                job = workflow["jobs"][job_name]
+                self.assertIn("kunlunxin_ci_image", job["container"]["image"])
+                self.assertIn("kunlunxin_container_options", job["container"]["options"])
+                commands = "\n".join(step.get("run", "") for step in job["steps"])
+                self.assertIn(f"run_hardware_workload.sh kunlunxin {workload}", commands)
+                self.assertNotIn("run_hardware_container.sh", commands)
+                self.assertNotIn("docker run", commands)
+                self.assertIn("third-party/json", commands)
+
+    def test_kunlunxin_checkout_trusts_workspace_before_checkout(self):
+        for filename, job in (
+            ("unit_tests_common.yml", "kunlunxin_unit_test"),
+            ("test.yml", "perf-test-kunlunxin"),
+            ("torch-api-test.yml", "torch-api-test-kunlunxin"),
+        ):
+            with self.subTest(job=job):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / ".github/workflows" / filename).read_text()
+                )
+                steps = workflow["jobs"][job]["steps"]
+                trust_index = next(
+                    i for i, step in enumerate(steps)
+                    if step.get("name") == "Trust workspace and submodules for checkout"
+                )
+                checkout_index = next(
+                    i for i, step in enumerate(steps)
+                    if step.get("uses", "").startswith("actions/checkout@")
+                )
+                self.assertLess(trust_index, checkout_index)
+                for path in ("", "/third-party/googletest", "/third-party/json"):
+                    self.assertIn(
+                        f'git config --global --add safe.directory "$GITHUB_WORKSPACE{path}"',
+                        steps[trust_index]["run"],
+                    )
+                self.assertTrue(steps[checkout_index]["with"]["set-safe-directory"])
+
+    def test_cuda_submodule_checkouts_use_retry_script(self):
+        cases = (
+            ("unit_tests_common.yml", "unit_test", "Checkout code"),
+            ("test.yml", "perf-test-experimental-cuda", "Checkout Code"),
+            ("test.yml", "perf-test-cuda", "Checkout Code"),
+            ("torch-api-test.yml", "torch-api-test-cuda", "Checkout Code"),
+        )
+        for filename, job_name, checkout_name in cases:
+            with self.subTest(job=job_name):
+                workflow = yaml.safe_load(
+                    (REPO_ROOT / ".github/workflows" / filename).read_text()
+                )
+                steps = workflow["jobs"][job_name]["steps"]
+                checkout = next(i for i, step in enumerate(steps)
+                                if step.get("name") == checkout_name)
+                retry = next(i for i, step in enumerate(steps)
+                             if step.get("name") == "Checkout CUDA submodules with retries")
+                self.assertLess(checkout, retry)
+                self.assertEqual(
+                    steps[retry]["run"],
+                    "bash .github/scripts/ci/checkout_submodules.sh",
+                )
+                if job_name == "unit_test":
+                    self.assertIn("inputs.platform != 'cuda'", steps[checkout]["with"]["submodules"])
+                    self.assertEqual(steps[retry]["if"], "inputs.platform == 'cuda'")
+                else:
+                    self.assertFalse(steps[checkout]["with"]["submodules"])
+
+    def test_all_hardware_platforms_are_enabled(self):
+        self.assertEqual(
+            ENABLED_PLATFORMS,
+            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend", "enflame"],
+        )
+
+    def test_backend_phase_skips_follow_platform_setup(self):
+        runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        helper = "flagcx_ci_phase_supported() {" + runner.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        for platform in ENABLED_PLATFORMS:
+            with self.subTest(platform=platform):
+                config_json = json.dumps(load_platform_ignore_config(platform))
+                script = '''
+set -euo pipefail
+source "$1"
+SUITE=capability-check
+PROJECT_ROOT="$2"
+export FLAGCX_CI_IGNORE_TEST="$3"
+flagcx_ci_report_skipped_suite() { echo "SKIPPED $*"; }
+'''+ helper + '''
+for phase in p2p-write-mpi rma-mpi symmem-mpi runner-mpi ordinary-ipc; do
+  case "$phase" in
+    p2p-write-mpi) SUITE=p2p ;;
+    rma-mpi) SUITE=rma ;;
+    symmem-mpi) SUITE=symmem ;;
+    runner-mpi) SUITE=runner ;;
+    *) SUITE=capability-check ;;
+  esac
+  if flagcx_ci_phase_supported "$phase"; then echo "RUN $phase"; fi
+done
+# A skipped MPI phase must preserve an earlier unit-test failure.
+run_failed_suite() {
+  local unit_status=7
+  if ! flagcx_ci_phase_supported rma-mpi; then return "$unit_status"; fi
+  return "$unit_status"
+}
+if run_failed_suite; then exit 99; else test "$?" = 7; fi
+'''
+                result = subprocess.run(
+                    ["bash", "-c", script, "bash",
+                     str(REPO_ROOT / f".github/scripts/set_env/{platform}.sh"),
+                     str(REPO_ROOT), config_json],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertIn("RUN ordinary-ipc", result.stdout)
+                config = json.loads(config_json).get("phases", [])
+                ignored = {(item["suite"], item["name"]) for item in config}
+                for suite, phase in (("p2p", "p2p-write-mpi"),
+                                     ("rma", "rma-mpi"),
+                                     ("symmem", "symmem-mpi"),
+                                     ("runner", "runner-mpi")):
+                    marker = f"{suite}/{phase}"
+                    self.assertEqual(f"SKIPPED {marker}" in result.stdout,
+                                     (suite, phase) in ignored)
+
+    def test_kunlunxin_device_suite_dependency_gap_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_script = Path(temp_dir) / "kunlunxin.sh"
+            env_script.write_text(
+                "MPI_HOME=/tmp\n"
+                "FLAGCX_CI_PROJECT_MAKE_ARGS=()\n"
+                "FLAGCX_CI_TEST_MAKE_ARGS=()\n"
+                "flagcx_ci_prepare() { :; }\n"
+                "flagcx_ci_build_suite_override() {\n"
+                "  FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=1\n"
+                "}\n"
+            )
+            result = subprocess.run(
+                ["bash", str(REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"),
+                 str(env_script), "device_api"],
+                cwd=REPO_ROOT,
+                env={**os.environ, "GITHUB_WORKSPACE": str(REPO_ROOT)},
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SKIPPED device_api:", result.stdout)
+
+    def test_kunlunxin_job_container_provides_host_namespace_mount(self):
+        result = subprocess.run(
+            ["ruby", ".github/scripts/ci/load_platform_config.rb", "kunlunxin"],
+            cwd=REPO_ROOT,
+            env={k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        config = json.loads(result.stdout)
+        options = shlex.split(config["container_options"])
+        self.assertFalse(any(arg.startswith("--network") for arg in options))
+        self.assertFalse(any(arg.startswith("--entrypoint") for arg in options))
+        self.assertIn("--privileged=true", options)
+        self.assertIn("--ipc=host", options)
+        self.assertIn("--shm-size=64G", options)
+        for index in range(8):
+            self.assertIn(f"--device=/dev/xpu{index}", options)
+        self.assertIn("--network=host", config["docker_args"].splitlines())
+        self.assertEqual(json.loads(config["container_volumes"]),
+                         ["/proc:/run/flagcx-host-proc:ro"])
+        self.assertNotIn("/run/flagcx-host-proc", config["docker_args"])
+
+    def test_kunlunxin_ci_reports_missing_xpu_test_toolchain_as_skipped(self):
+        env_script = (
+            REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
+        ).read_text()
+        runner = (
+            REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
+        ).read_text()
+        self.assertIn("flagcx_ci_find_xpu_toolchain", env_script)
+        self.assertIn("FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE=0", env_script)
+        self.assertIn("SKIPPED $suite", env_script)
+        self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS", env_script)
+        self.assertIn("FLAGCX_CI_REQUIRE_ADAPTOR_GPU_TESTS=1", env_script)
+        self.assertIn("FLAGCX_CI_ENABLE_SHARED_P2P_ENGINE=1", env_script)
+        self.assertIn("FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
+        self.assertIn("FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
+        self.assertIn('[[ ! -f "$CCL_HOME/include/xshmem/xshmem.h" ]]', env_script)
+        self.assertNotIn('"$suite" == kernel', env_script)
+        self.assertIn('phase rma gdr-visibility', runner)
+        self.assertIn('flagcx_ci_build_suite_override "$SUITE"', runner)
+        self.assertIn("Skipping $platform_name VMM + NET data tests", runner)
+        self.assertNotIn('    device)', runner)
+        self.assertNotIn('    topo)', runner)
+        self.assertNotIn('    kernel)', runner)
+        self.assertIn('"$MPI_RUNNER" --allow-run-as-root', runner)
+
+        perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
+        self.assertIn("perf-test-kunlunxin:", perf_workflow)
+        self.assertIn("kunlunxin perf", perf_workflow)
+        handler = (
+            REPO_ROOT / ".github/scripts/ci/run_kunlunxin_workload.sh"
+        ).read_text()
+        self.assertIn("run_host_perf_suite.sh\" homogeneous", handler)
+        self.assertIn("KunlunXin heterogeneous perf skipped", handler)
+
     def test_gpu_ci_world_uses_four_ranks(self):
         for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
             with self.subTest(platform=platform):
@@ -30,9 +286,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
         ).read_text()
         self.assertNotIn("mpirun -np 8", perf_workflow)
         self.assertNotIn("-n 8", device_makefile)
-        self.assertNotIn("-n 4 $(HETERO_ENV)", device_makefile)
+        self.assertNotIn("-n 4 $(INTER_ENV)", device_makefile)
         self.assertIn("--nproc_per_node 4", torch_script)
-        self.assertIn("-n 2 $(HETERO_ENV)", device_makefile)
+        self.assertIn("-n 2 $(INTER_ENV)", device_makefile)
 
     def test_device_kernel_sources_use_the_selected_platform(self):
         for platform, adaptor in (
@@ -295,32 +551,24 @@ class PlatformCiRegressionTest(unittest.TestCase):
             return json.loads(outputs["platforms"])
 
     def test_unified_ci_filters_platform_changes_and_preserves_shared_fallback(self):
-        all_platforms = [
-            "cuda",
-            "hygon",
-            "iluvatar",
-            "metax",
-            "ppu",
-            "ascend",
-            "enflame",
-        ]
+        all_platforms = ENABLED_PLATFORMS
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/cuda_adaptor.cc"
             ),
-            ["cuda"],
+            ["cuda"] if "cuda" in all_platforms else all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/device/duhip_adaptor.cc"
             ),
-            ["hygon"],
+            ["hygon"] if "hygon" in all_platforms else all_platforms,
         )
         self.assertEqual(
             self._run_platform_matrix(
                 "pull_request", "flagcx/adaptor/ccl/hccl_adaptor.cc"
             ),
-            ["ascend"],
+            ["ascend"] if "ascend" in all_platforms else all_platforms,
         )
         for changed_files in (
             "flagcx/flagcx.cc",
@@ -389,15 +637,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
 
     def test_unit_tests_use_host_docker_launcher_after_submodule_checkout(self):
         workflow = (REPO_ROOT / ".github/workflows/unit_tests_common.yml").read_text()
-        checkout = workflow[workflow.index("      - name: Checkout code") :]
-        self.assertIn("submodules: false", checkout)
+        unit_job = workflow.split("  unit_test:\n", 1)[1].split(
+            "  unit_test_enflame:\n", 1
+        )[0]
+        checkout = unit_job[unit_job.index("      - name: Checkout code") :]
+        self.assertIn("inputs.platform != 'cuda'", checkout)
         self.assertIn("  unit_test_enflame:\n", workflow)
         self.assertIn("    container:\n      image:", workflow)
-        trust = checkout.index("      - name: Trust workspace and submodules")
-        submodules = checkout.index("      - name: Checkout submodules")
+        submodules = checkout.index("      - name: Checkout CUDA submodules with retries")
         workload = checkout.index("      - name: Run unit-test suite in host-managed container")
-        self.assertLess(trust, submodules)
         self.assertLess(submodules, workload)
+        self.assertIn("if: inputs.platform == 'cuda'", checkout)
         self.assertIn("bash .github/scripts/ci/checkout_submodules.sh", checkout)
         self.assertIn("FLAGCX_CI_DOCKER_ARGS:", workflow)
         self.assertIn("outputs.docker_args", workflow)
@@ -729,28 +979,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
         )
         self.assertEqual(
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
-            [
-                "cuda",
-                "hygon",
-                "iluvatar",
-                "metax",
-                "ppu",
-                "ascend",
-                "enflame",
-            ],
+            ENABLED_PLATFORMS,
         )
-        selected = subprocess.run(
-                ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), "enflame"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        self.assertEqual(
-            [entry["platform"] for entry in json.loads(selected.stdout)["include"]],
-            ["enflame"],
-        )
-        for platform in ("cuda", "hygon", "iluvatar", "metax", "ppu", "ascend"):
-            selected_platform = subprocess.run(
+        for platform in ENABLED_PLATFORMS:
+            selected = subprocess.run(
                 ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
                 check=True,
                 capture_output=True,
@@ -759,7 +991,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             self.assertEqual(
                 [
                     entry["platform"]
-                    for entry in json.loads(selected_platform.stdout)["include"]
+                    for entry in json.loads(selected.stdout)["include"]
                 ],
                 [platform],
             )
@@ -851,6 +1083,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 "service",
                 "symmem",
             ],
+            "kunlunxin": [
+                "adaptor",
+                "core",
+                "device_api_host",
+                "device_api_unified_ir",
+                "p2p",
+                "rma",
+                "runner",
+                "service",
+                "symmem",
+            ],
             "ppu": [
                 "adaptor",
                 "core",
@@ -866,6 +1109,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 REPO_ROOT / f".github/configs/{platform}.yml"
             ).read_text()
             suites = config[config.index("unit_test_suites:") :]
+            suites = suites.split("ignore_test:", 1)[0]
             self.assertEqual(
                 [
                     line.strip().removeprefix("- ")
@@ -986,14 +1230,27 @@ class PlatformCiRegressionTest(unittest.TestCase):
         self.assertIn('"$PYTHON_BIN" -m pip install --force-reinstall --no-build-isolation --no-deps .',
                       ascend_handler)
         self.assertIn('export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1', ascend_handler)
-        self.assertIn('export FLAGCX_TORCH_HETERO_SKIP_OPS=reduce,allreduce,reducescatter',
-                      ascend_handler)
+        ascend_config = load_platform_ignore_config("ascend")
+        self.assertEqual(ascend_config["torch"]["modes"], ["heterogeneous"])
+        self.assertEqual(ascend_config["torch"]["operations"],
+                         ["reduce", "allreduce", "reducescatter"])
+        self.assertFalse(any(
+            entry["suite"] == "torch-api" and entry["name"] == "heterogeneous"
+            for entry in ascend_config["phases"]
+        ))
         self.assertIn('bash "$project_root/test/script/torch_api_test.sh"', ascend_handler)
         self.assertNotIn('FLAGCX_SKIP_HETERO=1', ascend_handler)
 
     def test_ascend_rma_runner_and_symmem_use_shared_multi_rank_path(self):
         ascend_env = (REPO_ROOT / ".github/scripts/set_env/ascend.sh").read_text()
         self.assertNotIn("flagcx_ci_run_suite_override", ascend_env)
+
+        ignored_phases = load_platform_ignore_config("ascend")["phases"]
+        for suite in ("rma", "symmem"):
+            self.assertFalse(any(
+                entry["suite"] == suite and entry["name"] == f"{suite}-mpi"
+                for entry in ignored_phases
+            ), f"{suite} MPI must remain enabled after removing its override")
 
         shared_runner = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
         self.assertIn("    rma)", shared_runner)
@@ -1013,7 +1270,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
             (perf_workflow, "perf"),
             (torch_workflow, "torch-api"),
         ):
-            self.assertNotIn("container:", workflow)
             self.assertNotIn("image: harbor.baai.ac.cn", workflow)
             for platform in ("cuda", "metax", "hygon", "ppu", "ascend"):
                 with self.subTest(workload=workload, platform=platform):
@@ -1129,8 +1385,17 @@ class PlatformCiRegressionTest(unittest.TestCase):
             rma_case,
         )
         self.assertIn('NET_FILTER="RmaTest.GetSmall"', rma_case)
-        self.assertIn('platform_name" == "enflame"', rma_case)
-        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED", rma_case)
+        visibility_start = rma_case.index(
+            "local run_visibility_consumer=1"
+        )
+        visibility_run_condition = rma_case[
+            visibility_start : rma_case.index("FLAGCX_CI_MPI_LABEL=", visibility_start)
+        ]
+        self.assertIn(
+            '"$platform_name" == "enflame"',
+            visibility_run_condition,
+        )
+        self.assertIn("FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED", visibility_run_condition)
         self.assertIn(
             '-x FLAGCX_CI_GDR_VISIBILITY_EXPECT_SETUP=success_or_unsupported',
             rma_case,
@@ -1185,7 +1450,9 @@ class PlatformCiRegressionTest(unittest.TestCase):
             REPO_ROOT / ".github/scripts/ci/run_unit_test.sh"
         ).read_text()
         self.assertNotIn("    container:\n      image:", unit_workflow.split("  unit_test_enflame:\n", 1)[0])
-        enflame_job = unit_workflow.split("  unit_test_enflame:\n", 1)[1]
+        enflame_job = unit_workflow.split("  unit_test_enflame:\n", 1)[1].split(
+            "  kunlunxin_unit_test:\n", 1
+        )[0]
         self.assertIn("    container:\n      image:", enflame_job)
         self.assertIn("options: ${{ needs.load_config.outputs.container_options }}", enflame_job)
         self.assertEqual(enflame_job.count("name: attempts-unit_test-"), 1)
@@ -1283,11 +1550,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
         )
         self.assertIn("local symmem_run_vmm_net_data=1", unit_runner)
-        self.assertIn(
-            'if [[ "$platform_name" == "ppu" || '
-            '"$platform_name" == "hygon" ]]',
-            unit_runner,
-        )
+        kunlunxin_config = load_platform_ignore_config("kunlunxin")
+        self.assertTrue(any(
+            entry["suite"] == "symmem" and entry["name"] == "vmm-net-data"
+            for entry in kunlunxin_config["phases"]
+        ))
         self.assertIn(
             "if ((symmem_run_vmm_net_data != 0)); then", unit_runner
         )
@@ -1321,7 +1588,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.AsymmetricDeregisterUsesCollectivePublishSlot",
+            "SymMemTest.AsymmetricLocalDeregisterUsesCommonPublishSlot",
             unit_runner,
         )
         self.assertIn(
@@ -1345,7 +1612,7 @@ class PlatformCiRegressionTest(unittest.TestCase):
             unit_runner,
         )
         self.assertIn(
-            "SymMemTest.CrossNodeCleanupFailureConvergesBeforeRelease",
+            "SymMemTest.CrossNodeLocalCleanupFailureRetries",
             unit_runner,
         )
         self.assertIn(
@@ -1373,10 +1640,13 @@ class PlatformCiRegressionTest(unittest.TestCase):
             source.index("run_suite() {") :
             source.index("\nrun_supplemental_unit_tests() {")
         ]
-        harness = run_suite + r'''
+        phase_helper = "flagcx_ci_phase_supported() {" + source.split(
+            "flagcx_ci_phase_supported() {", 1
+        )[1].split("\n}", 1)[0] + "\n}\n"
+        harness = phase_helper + run_suite + r'''
 SUITE=rma
 SET_ENV_SCRIPT=iluvatar.sh
-PROJECT_ROOT=/workspace
+PROJECT_ROOT={REPO_ROOT}
 FLAGCX_CI_TEST_MAKE_ARGS=(USE_ILUVATAR=1)
 TEST_RUNNER=run_test
 MPI_RUNNER=/mpi-runner
@@ -1394,7 +1664,7 @@ make() {
   fi
 }
 run_suite
-'''
+'''.replace("PROJECT_ROOT={REPO_ROOT}", f"PROJECT_ROOT={REPO_ROOT}")
         for visibility_status in (0, 23):
             with self.subTest(visibility_status=visibility_status):
                 result = subprocess.run(
@@ -1453,6 +1723,7 @@ MPI_RUNNER=mock_mpi_runner
 mock_test_runner() { "$@"; }
 mock_mpi_runner() { :; }
 flagcx_ci_require_rdma() { return 0; }
+flagcx_ci_phase_supported() { return 0; }
 make() { printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled} $*"; }
 run_suite
 '''
@@ -1497,6 +1768,8 @@ run_suite
             "adaptor_gtest_filter+=:NetAdaptorLoopback.RegisterDmaBufMr",
             unit_runner,
         )
+        iluvatar_config = json.dumps(load_platform_ignore_config("iluvatar"))
+        self.assertIn("vmm-local-and-remote-without-net", iluvatar_config)
         self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
         self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
         self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
@@ -1524,7 +1797,7 @@ run_suite
         )
         self.assertIn("check_gpu_tests != 0", unit_runner)
         self.assertIn(
-            "Skipping GPU MR result validation: platform reports no RDMA devices",
+            "Skipping mandatory adaptor GPU one-sided check: platform runtime does not provide the required GDR contract",
             unit_runner,
         )
         self.assertNotIn('gpu_mr_policy="$platform_name"', unit_runner)
@@ -2160,7 +2433,7 @@ run_suite
         self.assertIn('FLAGCX_PXN_DISABLE=0', runner_case)
         self.assertIn('FLAGCX_CI_PXN_RANKS_PER_NODE="$FLAGCX_CI_NODE_NP"', runner_case)
         pxn_case = runner_case[
-            runner_case.index('if [[ "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]') :
+            runner_case.index('if [[ "${FLAGCX_CI_HAS_RDMA:-1}" == "1" && "${FLAGCX_CI_ENABLE_PXN:-1}" == "1" ]]') :
         ]
         self.assertIn('pxn_launcher+=(FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS")', pxn_case)
         self.assertIn('-x FLAGCX_IB_HCA="$FLAGCX_CI_PXN_HCAS"', pxn_case)
@@ -2404,6 +2677,9 @@ run_suite
         ]
         self.assertIn("FLAGCX_KERNEL_PROXY_PARALLELISM=4", device_api_case)
         self.assertIn("FLAGCX_IB_QPS_PER_CONNECTION=2", device_api_case)
+        self.assertIn("-R 2", device_api_case)
+        self.assertIn("FLAGCX_TEST_WIN_MODE=asymmetric", device_api_case)
+        self.assertIn("FLAGCX_VMM_ENABLE=0", device_api_case)
         cuda_kernel = (
             REPO_ROOT / "test/kernel/nvidia/device_api.cu"
         ).read_text()
@@ -2436,35 +2712,11 @@ run_suite
         self.assertIn("test_deviceptr_args.cpp", result.stdout)
         self.assertIn("build/bin/kernel_unit_tests", result.stdout)
 
-    def test_kernel_suite_builds_but_is_not_wired_into_a_platform(self):
-        # test/unittest/kernel builds on its own, but no platform lists it as
-        # a suite, so nothing builds or runs it. run_device_api() used to
-        # launch kernel/build/bin/kernel_mpi_tests relative to
-        # test/unittest/device_api; once the kernel directory moved back out
-        # of device_api that path could never resolve and the binary was never
-        # built, so CUDA device_api failed with "could not access or execute
-        # an executable". Wiring it up again needs a build entry first.
-        kernel_dir = REPO_ROOT / "test/unittest/kernel"
-        result = subprocess.run(
-            ["make", "-n", "-C", str(kernel_dir), "all", "USE_NVIDIA=1", "COMPILE_KERNEL=1"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self.assertIn("kernel_mpi_tests", result.stdout)
-
+    def test_kernel_suite_is_not_dispatched(self):
         run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
-        self.assertNotIn("kernel/build/bin/kernel_mpi_tests", run_unit)
-        self.assertFalse(
-            (REPO_ROOT / "test/unittest/device_api/kernel").exists(),
-            "the relative path only resolves while kernel lives under device_api",
-        )
+        self.assertNotIn("    kernel)", run_unit)
         for config in (REPO_ROOT / ".github/configs").glob("*.yml"):
             self.assertNotIn("\n  - kernel\n", config.read_text(), config.name)
-
-        idx = run_unit.rindex('case "$SUITE" in')
-        googletest_branch = run_unit[idx : run_unit.index("build_project", idx)]
-        self.assertIn("device_api|", googletest_branch)
 
     def test_runner_propagates_intermediate_command_failure(self):
         run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
@@ -2512,6 +2764,88 @@ run_suite
         )
         self.assertEqual(res_swallow.stdout.strip(), "0")
 
+    def test_runner_platform_filters_and_capability_routing(self):
+        source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        run_suite = source[
+            source.index("run_suite() {") :
+            source.index("\nrun_supplemental_unit_tests() {")
+        ]
+        harness = run_suite + r'''
+SUITE=runner
+PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
+FLAGCX_CI_TEST_MAKE_ARGS=()
+FLAGCX_CI_RUNNER_NP=4
+FLAGCX_CI_NODE_NP=2
+SET_ENV_SCRIPT="$TEST_PLATFORM.sh"
+if [[ "$TEST_PLATFORM" == enflame ]]; then
+  source "$PROJECT_ROOT/.github/scripts/set_env/enflame.sh"
+  flagcx_ci_configure_suite runner
+fi
+if [[ "$TEST_RDMA" != unset ]]; then
+  FLAGCX_CI_HAS_RDMA="$TEST_RDMA"
+else
+  unset FLAGCX_CI_HAS_RDMA
+fi
+GTEST_FILTER="*-CoverageSupplemental.*"
+TEST_RUNNER=mock_test_runner
+MPI_RUNNER=mock_mpi_runner
+mock_test_runner() { echo 'UNIT'; }
+mock_mpi_runner() {
+  printf 'MPI|%s|%s\n' "$FLAGCX_CI_MPI_LABEL" "$*"
+}
+flagcx_ci_phase_supported() { return 0; }
+# The PXN launcher uses env; keep the mock shell function callable through it.
+env() { "$@"; }
+run_suite
+'''
+        for platform, rdma in (("enflame", "0"), ("enflame", "1"),
+                               ("cuda", "unset")):
+            with self.subTest(platform=platform, rdma=rdma):
+                result = subprocess.run(
+                    [os.environ.get("BASH", "bash"), "-euc", harness],
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "BASH_ENV": "",
+                        "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
+                        "TEST_PLATFORM": platform,
+                        "TEST_RDMA": rdma,
+                    },
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("UNIT", result.stdout)
+                commands = {
+                    line.split("|", 2)[1]: line.split("|", 2)[2]
+                    for line in result.stdout.splitlines()
+                    if line.startswith("MPI|")
+                }
+                expected = {"runner default"}
+                if platform != "enflame":
+                    expected.add("runner heterogeneous")
+                else:
+                    self.assertIn("Skipping runner heterogeneous:", result.stdout)
+                if rdma != "0":
+                    expected.update({"runner forced NET",
+                                     "runner forced NET multi-QP striping",
+                                     f"runner {platform} PXN four-rank"})
+                else:
+                    for stage in ("forced NET", "forced NET multi-QP striping", "PXN"):
+                        self.assertIn(f"Skipping runner {stage}:", result.stdout)
+                self.assertEqual(set(commands), expected)
+                for stage in ("runner default", "runner forced NET"):
+                    if stage not in commands:
+                        continue
+                    if platform == "enflame":
+                        self.assertIn(
+                            "--gtest_filter=-FlagCXCollTest.Gather:FlagCXCollTest.Scatter:CoverageSupplemental.*",
+                            commands[stage],
+                        )
+                    else:
+                        self.assertNotIn("--gtest_filter=", commands[stage])
+
     def test_runner_no_rdma_skip_preserves_prior_failures(self):
         source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
         run_suite = source[
@@ -2531,6 +2865,7 @@ TEST_RUNNER=mock_test_runner
 MPI_RUNNER=mock_mpi_runner
 mock_test_runner() { return "$UNIT_STATUS"; }
 mock_mpi_runner() { return "$DEFAULT_STATUS"; }
+flagcx_ci_phase_supported() { return 0; }
 set +e
 run_suite
 status=$?
@@ -2578,6 +2913,8 @@ PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
 FLAGCX_CI_TEST_MAKE_ARGS=()
 FLAGCX_CI_HAS_RDMA=1
 FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
+FLAGCX_CI_IGNORE_TEST='{"phases":[{"suite":"symmem","name":"vmm-local-and-remote-without-net","reason":"VMM is unavailable"},{"suite":"symmem","name":"vmm-net-data","reason":"VMM is unavailable"}]}'
+export FLAGCX_CI_IGNORE_TEST
 FLAGCX_CI_SYMMEM_NODE_NP=1
 FLAGCX_CI_NODE1_MPI_ARGS=()
 FLAGCX_CI_NODE2_MPI_ARGS=()
@@ -2586,6 +2923,7 @@ bash() { return 0; }
 mock_mpi_runner() {
   printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled}"
 }
+flagcx_ci_phase_supported() { return 0; }
 run_suite
 '''
         result = subprocess.run(
@@ -2610,7 +2948,7 @@ run_suite
         script = (REPO_ROOT / "test/script/symmem_test.sh").read_text()
         self.assertNotIn("FLAGCX_CI_SYMMEM_SKIP_VMM_LOCAL", script)
         self.assertNotIn('"${FLAGCX_ADAPTOR}" != enflame', script)
-        self.assertIn('"${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1', script)
+        self.assertIn('"${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" != 1', script)
 
 
 class MetaXEnvironmentTest(unittest.TestCase):

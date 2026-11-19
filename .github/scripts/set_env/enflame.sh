@@ -22,6 +22,22 @@ export FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
 export FLAGCX_CI_RMA_GDR_VISIBILITY_CONSUMER_SUPPORTED=0
 export NP=4
 
+FLAGCX_CI_IGNORE_TEST='{
+  "phases": [
+    {
+      "suite": "symmem",
+      "name": "vmm-local-and-remote-without-net",
+      "reason": "The Enflame TOPS runtime does not support VMM-backed SymMem data tests"
+    },
+    {
+      "suite": "symmem",
+      "name": "vmm-net-data",
+      "reason": "The Enflame TOPS runtime does not support VMM-backed SymMem data tests"
+    }
+  ]
+}'
+export FLAGCX_CI_IGNORE_TEST
+
 FLAGCX_CI_NODE1_MPI_ARGS=(
   -x FLAGCX_HOSTID=node0
   -x NCCL_HOSTID=node0

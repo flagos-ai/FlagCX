@@ -5,6 +5,7 @@
 #define MPICH_SKIP_MPICXX 1
 
 #include "mpi.h"
+#include "window_flags.h"
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>

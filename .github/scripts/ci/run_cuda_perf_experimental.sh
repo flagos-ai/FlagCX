@@ -149,21 +149,23 @@ done
 "$mpi_runner" -np 4 --allow-run-as-root \
   -x FLAGCX_USE_HETERO_COMM=1 -x FLAGCX_MEM_ENABLE=1 \
   -x FLAGCX_VMM_ENABLE=0 -x FLAGCX_P2P_DISABLE=1 \
+  -x FLAGCX_TEST_WIN_MODE=asymmetric \
   -x FLAGCX_DEBUG=INFO -x FLAGCX_DEBUG_SUBSYS=ALL -x LD_LIBRARY_PATH \
-  "$device_api_bin/perf_allreduce_intranode" -b 1M -e 64M -f 2 -R 1
+  "$device_api_bin/perf_allreduce_intranode" -b 1M -e 64M -f 2 -R 2
 
 common_env=(
   -x FLAGCX_USE_HETERO_COMM=1
   -x FLAGCX_MEM_ENABLE=1
   -x FLAGCX_VMM_ENABLE=0
+  -x FLAGCX_TEST_WIN_MODE=asymmetric
   -x FLAGCX_P2P_DISABLE=1
   -x LD_LIBRARY_PATH
 )
 "$mpi_runner" --allow-run-as-root \
   -np 2 "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-  "$device_api_bin/perf_internode_onesided" -b 1M -e 64M -f 2 -R 1 \
+  "$device_api_bin/perf_internode_onesided" -b 1M -e 64M -f 2 -R 2 \
   : -np 2 "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-  "$device_api_bin/perf_internode_onesided" -b 1M -e 64M -f 2 -R 1
+  "$device_api_bin/perf_internode_onesided" -b 1M -e 64M -f 2 -R 2
 
 FLAGCX_P2P_PERF_OP=write \
   "$mpi_runner" -np 2 --allow-run-as-root "$perf_bin/perf_p2p_engine" \

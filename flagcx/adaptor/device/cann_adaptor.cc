@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -622,6 +623,8 @@ flagcxResult_t cannAdaptorEventQuery(flagcxEvent_t event) {
 struct cannIpcImport {
   void *ptr;
   char key[65];
+  int device;
+  size_t refs;
   struct cannIpcImport *next;
 };
 
@@ -705,17 +708,37 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
   if (handle == NULL || devPtr == NULL)
     return flagcxInvalidArgument;
   *devPtr = NULL;
-
-  struct cannIpcImport *importRecord =
-      (struct cannIpcImport *)calloc(1, sizeof(*importRecord));
-  if (importRecord == NULL)
-    return flagcxSystemError;
-  memcpy(importRecord->key, handle->key, sizeof(handle->key));
-  if (importRecord->key[0] == '\0' ||
-      memchr(importRecord->key, '\0', sizeof(importRecord->key)) == NULL) {
-    free(importRecord);
+  if (handle->key[0] == '\0' ||
+      memchr(handle->key, '\0', sizeof(handle->key)) == NULL)
     return flagcxInvalidArgument;
+
+  int device;
+  DEVCHECK(aclrtGetDevice(&device));
+  pthread_mutex_lock(&cannIpcImportLock);
+  // A runtime key identifies one import on this device, even if multiple
+  // Windows or communicators hold it. Only the last owner may close it.
+  struct cannIpcImport *importRecord = cannIpcImports;
+  while (importRecord != NULL) {
+    if (importRecord->device == device &&
+        strcmp(importRecord->key, handle->key) == 0) {
+      if (importRecord->refs == SIZE_MAX) {
+        pthread_mutex_unlock(&cannIpcImportLock);
+        return flagcxInvalidUsage;
+      }
+      ++importRecord->refs;
+      *devPtr = importRecord->ptr;
+      pthread_mutex_unlock(&cannIpcImportLock);
+      return flagcxSuccess;
+    }
+    importRecord = importRecord->next;
   }
+
+  importRecord = (struct cannIpcImport *)calloc(1, sizeof(*importRecord));
+  if (importRecord == NULL) {
+    pthread_mutex_unlock(&cannIpcImportLock);
+    return flagcxSystemError;
+  }
+  memcpy(importRecord->key, handle->key, sizeof(handle->key));
   aclError result = aclrtIpcMemImportByKey(
       devPtr, importRecord->key, ACL_RT_IPC_MEM_IMPORT_FLAG_ENABLE_PEER_ACCESS);
   if (result != ACL_SUCCESS || *devPtr == NULL) {
@@ -724,12 +747,14 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
       (void)aclrtIpcMemClose(importRecord->key);
     *devPtr = NULL;
     free(importRecord);
+    pthread_mutex_unlock(&cannIpcImportLock);
     return result == ACL_ERROR_RT_FEATURE_NOT_SUPPORT
                ? flagcxNotSupported
                : flagcxUnhandledDeviceError;
   }
   importRecord->ptr = *devPtr;
-  pthread_mutex_lock(&cannIpcImportLock);
+  importRecord->device = device;
+  importRecord->refs = 1;
   importRecord->next = cannIpcImports;
   cannIpcImports = importRecord;
   pthread_mutex_unlock(&cannIpcImportLock);
@@ -739,17 +764,25 @@ flagcxResult_t cannAdaptorIpcMemHandleOpen(flagcxIpcMemHandle_t handle,
 flagcxResult_t cannAdaptorIpcMemHandleClose(void *devPtr) {
   if (devPtr == NULL)
     return flagcxInvalidArgument;
+  int device;
+  DEVCHECK(aclrtGetDevice(&device));
   pthread_mutex_lock(&cannIpcImportLock);
   struct cannIpcImport **link = &cannIpcImports;
-  while (*link != NULL && (*link)->ptr != devPtr)
+  while (*link != NULL && ((*link)->ptr != devPtr || (*link)->device != device))
     link = &(*link)->next;
   if (*link == NULL) {
     pthread_mutex_unlock(&cannIpcImportLock);
     return flagcxInvalidArgument;
   }
   struct cannIpcImport *importRecord = *link;
+  if (importRecord->refs > 1) {
+    --importRecord->refs;
+    pthread_mutex_unlock(&cannIpcImportLock);
+    return flagcxSuccess;
+  }
   aclError result = aclrtIpcMemClose(importRecord->key);
   if (result != ACL_SUCCESS) {
+    // Keep the final reference and mapping so the same owner can retry.
     WARN("CANN IPC import close failed: ACL error %d", result);
     pthread_mutex_unlock(&cannIpcImportLock);
     return flagcxUnhandledDeviceError;
