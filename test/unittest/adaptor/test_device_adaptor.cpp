@@ -586,10 +586,12 @@ TEST_F(DeviceAdaptorTest, StreamWaitValue64GreaterThan) {
   ASSERT_NE(deviceAdaptor->streamWaitValue64, nullptr);
   void *deviceValue = nullptr;
   ASSERT_EQ(devHandle->deviceMalloc(&deviceValue, sizeof(uint64_t),
-                                    flagcxMemDevice, nullptr), flagcxSuccess);
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
   ASSERT_NE(deviceValue, nullptr);
   ASSERT_EQ(devHandle->deviceMemset(deviceValue, 0, sizeof(uint64_t),
-                                    flagcxMemDevice, nullptr), flagcxSuccess);
+                                    flagcxMemDevice, nullptr),
+            flagcxSuccess);
 
   constexpr uint64_t expected = (uint64_t{1} << 40) + 17;
   constexpr uint64_t published = expected + 3;
@@ -601,8 +603,8 @@ TEST_F(DeviceAdaptorTest, StreamWaitValue64GreaterThan) {
     GTEST_SKIP() << "64-bit stream memory operations are not supported";
   }
   ASSERT_EQ(result, flagcxSuccess);
-  result = deviceAdaptor->streamWaitValue64(
-      stream, deviceValue, expected, FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
+  result = deviceAdaptor->streamWaitValue64(stream, deviceValue, expected,
+                                            FLAGCX_STREAM_WAIT_VALUE_DEFAULT);
   if (result == flagcxNotSupported) {
     EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
     EXPECT_EQ(devHandle->deviceFree(deviceValue, flagcxMemDevice, nullptr),

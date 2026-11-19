@@ -99,10 +99,12 @@ struct DefaultNetGdaProvider {
       -> decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
           ctx, static_cast<Args &&>(args)...)) {
 #ifdef USE_MUSA_ADAPTOR
-    static_assert(!std::is_same<PlatformTag, PlatformTag>::value,
-                  "MUSA Default supports Proxy only; GDA must not be instantiated");
-    using Result = decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
-        ctx, static_cast<Args &&>(args)...));
+    static_assert(
+        !std::is_same<PlatformTag, PlatformTag>::value,
+        "MUSA Default supports Proxy only; GDA must not be instantiated");
+    using Result =
+        decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
+            ctx, static_cast<Args &&>(args)...));
     return Result();
 #else
     FLAGCX_DEVICE_TRAP();
@@ -488,9 +490,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     // MUSA reports device failures through existing mapped FIFO terminal words.
     // All contexts are marked so other local CTAs can leave their wait loops.
-    FLAGCX_DEVICE_INLINE_DECORATOR bool require(
-        bool condition, flagcxResult_t error = flagcxInvalidUsage) const {
-      if (condition) return true;
+    FLAGCX_DEVICE_INLINE_DECORATOR bool
+    require(bool condition, flagcxResult_t error = flagcxInvalidUsage) const {
+      if (condition)
+        return true;
 #ifdef USE_MUSA_ADAPTOR
       if (deviceErrorStatus != nullptr) {
         uint64_t expected = flagcxSuccess;
@@ -499,9 +502,10 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
                                 flagcxDeviceMemoryOrderAcqRel);
       }
       for (int i = 0; i < contextCount && i < FLAGCX_DEVICE_CTA_COUNT; ++i) {
-        if (fifoBuffers[i] == nullptr) continue;
-        auto *word = &static_cast<uint64_t *>(fifoBuffers[i])[
-            flagcxFifoIdxTerminalStatus];
+        if (fifoBuffers[i] == nullptr)
+          continue;
+        auto *word = &static_cast<uint64_t *>(
+            fifoBuffers[i])[flagcxFifoIdxTerminalStatus];
         uint64_t expected = flagcxSuccess;
         Atomic::compareExchange(word, expected, static_cast<uint64_t>(error),
                                 flagcxDeviceMemoryOrderAcqRel);
@@ -519,9 +523,9 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
               Atomic::load(deviceErrorStatus, flagcxDeviceMemoryOrderAcquire) !=
                   flagcxSuccess) ||
              (contextCount > 0 && fifoBuffers[0] != nullptr &&
-             Atomic::load(&static_cast<uint64_t *>(fifoBuffers[0])[
-                              flagcxFifoIdxTerminalStatus],
-                          flagcxDeviceMemoryOrderAcquire) != flagcxSuccess);
+              Atomic::load(&static_cast<uint64_t *>(
+                               fifoBuffers[0])[flagcxFifoIdxTerminalStatus],
+                           flagcxDeviceMemoryOrderAcquire) != flagcxSuccess);
 #else
       return false;
 #endif
@@ -1642,24 +1646,26 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
   // Default ctor (no-op, for barrier composition)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
-      : _errorComm(nullptr), _coop(), _peerBuffers(nullptr), _nRanks(0), _myRank(0), _nBarriers(0),
-        _ctaIndex(0), _epochBuffer(nullptr), _epoch(0) {}
+      : _errorComm(nullptr), _coop(), _peerBuffers(nullptr), _nRanks(0),
+        _myRank(0), _nBarriers(0), _ctaIndex(0), _epochBuffer(nullptr),
+        _epoch(0) {}
 
   // Active ctor
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, const Comm &dc, Team team, uint32_t index, bool = false,
           const Multimem & = {})
-      : _errorComm(&dc), _coop(coop), _peerBuffers(dc.barrierPeers), _nRanks(team.nRanks),
-        _myRank(team.rank), _nBarriers(dc.nBarriers), _ctaIndex(index),
-        _epochBuffer(dc.epochBuffer),
+      : _errorComm(&dc), _coop(coop), _peerBuffers(dc.barrierPeers),
+        _nRanks(team.nRanks), _myRank(team.rank), _nBarriers(dc.nBarriers),
+        _ctaIndex(index), _epochBuffer(dc.epochBuffer),
         _epoch(index < FLAGCX_DEVICE_CTA_COUNT && dc.nBarriers > 0 &&
                        index < static_cast<uint32_t>(dc.nBarriers) &&
                        dc.epochBuffer != nullptr
                    ? Atomic::load(&dc.epochBuffer[index],
-                                   flagcxDeviceMemoryOrderAcquire) : 0) {
+                                  flagcxDeviceMemoryOrderAcquire)
+                   : 0) {
     if (!dc.require(dc.nBarriers > 0 && index < FLAGCX_DEVICE_CTA_COUNT &&
-                     index < static_cast<uint32_t>(dc.nBarriers) &&
-                     dc.epochBuffer != nullptr && dc.barrierPeers != nullptr,
+                        index < static_cast<uint32_t>(dc.nBarriers) &&
+                        dc.epochBuffer != nullptr && dc.barrierPeers != nullptr,
                     flagcxInvalidArgument))
       _nRanks = 0;
   }
@@ -1688,7 +1694,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> {
       int iter = 0;
       uint64_t current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
       while (current < _epoch + 1) {
-        if (_errorComm != nullptr && _errorComm->hasDeviceError()) break;
+        if (_errorComm != nullptr && _errorComm->hasDeviceError())
+          break;
         Intrin::spinBackoff(iter++);
         current = Atomic::load(slot, flagcxDeviceMemoryOrderAcquire);
       }
@@ -1743,9 +1750,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   // Default ctor (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
-      : _errorComm(nullptr), _coop(), _fifoBuffer(nullptr), _signalBuffer(nullptr),
-        _shadowBuffer(nullptr), _signalCount(0), _contextId(0), _teamRank(0),
-        _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0) {
+      : _errorComm(nullptr), _coop(), _fifoBuffer(nullptr),
+        _signalBuffer(nullptr), _shadowBuffer(nullptr), _signalCount(0),
+        _contextId(0), _teamRank(0), _nTeamRanks(0), _barrierSignal0(0),
+        _stride(0), _localRank(0) {
     DefaultNetProviderPolicy<P>::initBarrier(
         *this, DefaultNetContext{DefaultNetProviderProxy, 0, nullptr, 0});
   }
@@ -1761,8 +1769,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
         _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
         _stride(dc.intraSize), _localRank(dc.intraRank) {
     DefaultNetProviderPolicy<P>::initBarrier(*this, net.context());
-    if (!dc.require(index < FLAGCX_DEVICE_CTA_COUNT,
-                    flagcxInvalidArgument)) {
+    if (!dc.require(index < FLAGCX_DEVICE_CTA_COUNT, flagcxInvalidArgument)) {
       _nTeamRanks = 0;
       _fifoBuffer = nullptr;
     }
@@ -1780,9 +1787,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
               typename PlatformTraits<P>::CoopThread, flagcxDevNet_None,
               flagcxDeviceScope_t, flagcxDeviceScope_t) const {
     int targetRank = peer * _stride + _localRank;
-    const flagcxResult_t status = ProxyProvider::enqueueSignal(
-        _fifoBuffer, _contextId, _signalCount, 0,
-        (int)action.signal, 1, targetRank, 0);
+    const flagcxResult_t status =
+        ProxyProvider::enqueueSignal(_fifoBuffer, _contextId, _signalCount, 0,
+                                     (int)action.signal, 1, targetRank, 0);
     if (_errorComm != nullptr)
       _errorComm->require(status == flagcxSuccess, status);
   }
@@ -1891,8 +1898,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_errorComm != nullptr && !_errorComm->require(
-            fence == flagcxDevNetFenceLevel::Relaxed, flagcxNotSupported))
+    if (_errorComm != nullptr &&
+        !_errorComm->require(fence == flagcxDevNetFenceLevel::Relaxed,
+                             flagcxNotSupported))
       return;
     arriveImpl(order, fence);
   }
@@ -1900,8 +1908,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_errorComm != nullptr && !_errorComm->require(
-            fence == flagcxDevNetFenceLevel::Relaxed, flagcxNotSupported))
+    if (_errorComm != nullptr &&
+        !_errorComm->require(fence == flagcxDevNetFenceLevel::Relaxed,
+                             flagcxNotSupported))
       return;
     waitImpl(order, fence);
   }
@@ -1910,8 +1919,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_errorComm != nullptr && !_errorComm->require(
-            flagcxDevNetFenceValid(fence), flagcxInvalidArgument))
+    if (_errorComm != nullptr &&
+        !_errorComm->require(flagcxDevNetFenceValid(fence),
+                             flagcxInvalidArgument))
       return;
 #ifndef USE_MUSA_ADAPTOR
     if (context().provider == DefaultNetProviderGda &&
@@ -1969,8 +1979,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   arrive(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
          flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_errorComm != nullptr && !_errorComm->require(
-            fence == flagcxDevNetFenceLevel::Relaxed, flagcxNotSupported))
+    if (_errorComm != nullptr &&
+        !_errorComm->require(fence == flagcxDevNetFenceLevel::Relaxed,
+                             flagcxNotSupported))
       return;
     if (_nInterPeers > 0) {
       _inter.arrive(order, fence);
@@ -1982,8 +1993,9 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR void
   wait(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    if (_errorComm != nullptr && !_errorComm->require(
-            fence == flagcxDevNetFenceLevel::Relaxed, flagcxNotSupported))
+    if (_errorComm != nullptr &&
+        !_errorComm->require(fence == flagcxDevNetFenceLevel::Relaxed,
+                             flagcxNotSupported))
       return;
     if (_nInterPeers > 0) {
       _inter.wait(order, fence);
@@ -2006,7 +2018,8 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
     } else {
       // Single-node: one intra sync
       if (!_errorComm->require(fence == flagcxDevNetFenceLevel::Relaxed,
-                               flagcxNotSupported)) return;
+                               flagcxNotSupported))
+        return;
       _intra.arrive(order);
       _intra.wait(order);
     }

@@ -31,14 +31,14 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 
 // Device compiler detection — defined when any GPU device compiler is active.
 // Extend with __ASCEND_CC__ etc. as new platforms are added.
-#if defined(USE_MUSA_ADAPTOR) &&                                           \
-    (defined(__MUSACC__) || defined(__MTGPU__) ||                           \
-     defined(__MUSA_ARCH__) || defined(FLAGCX_MUSA_DEVICE_COMPILE))
+#if defined(USE_MUSA_ADAPTOR) &&                                               \
+    (defined(__MUSACC__) || defined(__MTGPU__) || defined(__MUSA_ARCH__) ||    \
+     defined(FLAGCX_MUSA_DEVICE_COMPILE))
 #define FLAGCX_MUSA_DEVICE_COMPILER 1
 #endif
 
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                \
+    defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                    \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__)
@@ -46,8 +46,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #endif
 
 // Select the SDK trap only in the device compilation pass.
-#if defined(__CUDA_ARCH__) || \
-    (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)
+#if defined(__CUDA_ARCH__) || (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)
 #define FLAGCX_DEVICE_TRAP() __trap()
 #else
 #define FLAGCX_DEVICE_TRAP() __builtin_trap()
@@ -56,7 +55,7 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 // Device compiler check (for conditional compilation in headers)
 #ifndef FLAGCX_CHECK_DEVICE_CC
 #if defined(__CUDACC__) || defined(__HIPCC__) || defined(__xpu__) ||           \
-    defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                \
+    defined(FLAGCX_MUSA_DEVICE_COMPILER) ||                                    \
     (defined(USE_ILUVATAR_ADAPTOR) &&                                          \
      defined(FLAGCX_ILUVATAR_DEVICE_COMPILE)) ||                               \
     defined(__TOPSCC__)
@@ -275,21 +274,21 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #if defined(FLAGCX_MUSA_DEVICE_COMPILER)
 // musa/atomic instantiates numeric_limits for the SDK half types.
 // Match MCCL's prerequisite order before its atomic include.
-#include <musa_fp16.h>
-#include <musa_bf16.h>
 #include <musa/atomic>
+#include <musa_bf16.h>
+#include <musa_fp16.h>
 
 #define FLAGCX_HOST_DECORATOR __host__
 #define FLAGCX_DEVICE_DECORATOR __device__
 #define FLAGCX_GLOBAL_DECORATOR __global__
-#define FLAGCX_DEVICE_INLINE_DECORATOR                                     \
+#define FLAGCX_DEVICE_INLINE_DECORATOR                                         \
   __device__ inline __attribute__((always_inline))
-#define FLAGCX_HOST_DEVICE_INLINE                                          \
+#define FLAGCX_HOST_DEVICE_INLINE                                              \
   __host__ __device__ inline __attribute__((always_inline))
 #define FLAGCX_DEVICE_CONSTANT_DECORATOR __device__ __constant__
 // MCCL's proxy GIN publishes GPU/CPU state with this scoped MUSA fence.
-#define FLAGCX_DEVICE_THREAD_FENCE()                                       \
-  musa::atomic_thread_fence(musa::memory_order_seq_cst,                      \
+#define FLAGCX_DEVICE_THREAD_FENCE()                                           \
+  musa::atomic_thread_fence(musa::memory_order_seq_cst,                        \
                             musa::thread_scope_system)
 #define FLAGCX_DEVICE_SYNC_THREADS() __syncthreads()
 #define FLAGCX_THREAD_IDX_X threadIdx.x

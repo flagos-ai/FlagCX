@@ -135,8 +135,8 @@ flagcxResult_t flagcxFifo::flagcxFifoInit() {
   memset((void *)(buffer + flagcxFifoIdxData), 0,
          flagcxKernelFifoCapacity * sizeof(flagcxDeviceTrigger));
 #ifdef USE_MUSA_ADAPTOR
-  flagcxResult_t registerResult = flagcxMusaRegisterFifoError(
-      &buffer[flagcxFifoIdxTerminalStatus]);
+  flagcxResult_t registerResult =
+      flagcxMusaRegisterFifoError(&buffer[flagcxFifoIdxTerminalStatus]);
   if (registerResult != flagcxSuccess) {
     deviceAdaptor->deviceFree((void *)buffer, flagcxMemHost, NULL);
     buffer = nullptr;
@@ -200,7 +200,6 @@ FLAGCX_HOST_DECORATOR flagcxResult_t dequeue(void *fifoBuffer,
   trigger->fst = __atomic_load_n(slotFst, __ATOMIC_RELAXED);
   trigger->snd = __atomic_load_n(slotSnd, __ATOMIC_RELAXED);
   trigger->trd = trd & ~flagcxDeviceTriggerValidMask;
-
 
   TRACE(FLAGCX_P2P,
         "dequeue: got entry prod=%lu cons=%lu prim=%lu peer=%lu "

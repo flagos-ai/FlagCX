@@ -28,9 +28,9 @@
 // floating-point types whose definitions are provided by the MUSA compiler.
 // Ordinary host compilation needs only the FlagCX API and object layouts.
 #if defined(FLAGCX_MUSA_DEVICE_COMPILER)
-#include <musa_fp16.h>
-#include <musa_bf16.h>
 #include <musa/atomic>
+#include <musa_bf16.h>
+#include <musa_fp16.h>
 #endif
 
 struct MusaPlatform {};
@@ -235,7 +235,7 @@ struct PlatformTraits<MusaPlatform> {
     compareExchange(T *ptr, T &expected, const T &desired,
                     flagcxDeviceMemoryOrder_t order) {
       return Ref<T, Scope>{*ptr}.compare_exchange_strong(expected, desired,
-                                                       toNativeOrder(order));
+                                                         toNativeOrder(order));
     }
 
     // CAS-based max matches the existing FlagCX atomic contract, including
@@ -289,7 +289,7 @@ struct PlatformTraits<MusaPlatform> {
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
     static inline bool compareExchange(T *, T &, const T &,
-                                      flagcxDeviceMemoryOrder_t) {
+                                       flagcxDeviceMemoryOrder_t) {
       FLAGCX_DEVICE_TRAP();
     }
     template <typename T, flagcxDeviceScope_t Scope = flagcxDeviceScopeSystem>
@@ -308,9 +308,7 @@ struct PlatformTraits<MusaPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const {
       return FLAGCX_BLOCK_DIM_X;
     }
-    FLAGCX_DEVICE_INLINE_DECORATOR void sync() {
-      FLAGCX_DEVICE_SYNC_THREADS();
-    }
+    FLAGCX_DEVICE_INLINE_DECORATOR void sync() { FLAGCX_DEVICE_SYNC_THREADS(); }
   };
 
   template <int N>
@@ -341,7 +339,7 @@ struct PlatformTraits<MusaPlatform> {
     int barrierId;
 
     FLAGCX_HOST_DEVICE_INLINE constexpr CoopTileSpan(int first, int count,
-                                                    int id)
+                                                     int id)
         : firstTile(first), tileCount(count), barrierId(id) {}
 
     // Query the supported one-dimensional launch contract before using a
@@ -454,17 +452,17 @@ struct PlatformTraits<MusaPlatform> {
     FLAGCX_DEVICE_INLINE_DECORATOR int size() const { return _size; }
     FLAGCX_DEVICE_INLINE_DECORATOR void sync() const {
       switch (_syncKind) {
-      case SyncNone:
-        return;
-      case SyncWarp:
-        Intrin::syncwarp(_mask);
-        return;
-      case SyncBlock:
-        FLAGCX_DEVICE_SYNC_THREADS();
-        return;
-      case SyncUnsupported:
-      default:
-        FLAGCX_DEVICE_TRAP();
+        case SyncNone:
+          return;
+        case SyncWarp:
+          Intrin::syncwarp(_mask);
+          return;
+        case SyncBlock:
+          FLAGCX_DEVICE_SYNC_THREADS();
+          return;
+        case SyncUnsupported:
+        default:
+          FLAGCX_DEVICE_TRAP();
       }
     }
   };

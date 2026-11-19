@@ -17,6 +17,7 @@
 #include "device_api/flagcx_device.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
+#include "musa_fifo_errors.h"
 #include "net.h"
 #include "onesided.h"
 #include "p2p.h"
@@ -25,7 +26,6 @@
 #include "shmutils.h"
 #include "sym_heap.h"
 #include "utils.h"
-#include "musa_fifo_errors.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -43,8 +43,10 @@ extern "C" size_t flagcxDevNetSizeOf();
 extern "C" void flagcxDevNetLaunchConstruct(void *devNets, void *devComm,
                                             int count, void *stream);
 #ifdef USE_MUSA_ADAPTOR
-extern "C" flagcxResult_t flagcxMusaDevNetLaunchConstructChecked(
-    void *devNets, void *devComm, int count, void *stream);
+extern "C" flagcxResult_t flagcxMusaDevNetLaunchConstructChecked(void *devNets,
+                                                                 void *devComm,
+                                                                 int count,
+                                                                 void *stream);
 #endif
 #else
 static size_t flagcxDevNetSizeOf() { return 0; }
@@ -512,8 +514,9 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 #ifdef USE_MUSA_ADAPTOR
   // Intra-only communicators can have no Proxy FIFOs. They still need an
   // observable error channel; never make FIFO presence a new requirement.
-  FLAGCXCHECK(deviceAdaptor->deviceMalloc(
-      (void **)&devComm->deviceErrorHost, sizeof(uint64_t), flagcxMemHost, NULL));
+  FLAGCXCHECK(deviceAdaptor->deviceMalloc((void **)&devComm->deviceErrorHost,
+                                          sizeof(uint64_t), flagcxMemHost,
+                                          NULL));
   *devComm->deviceErrorHost = flagcxSuccess;
   if (deviceAdaptor->hostGetDevicePointer == nullptr)
     return flagcxNotSupported;
@@ -1111,7 +1114,7 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   if (devComm->deviceErrorHost != nullptr) {
     flagcxMusaUnregisterFifoError(devComm->deviceErrorHost);
     FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->deviceErrorHost,
-                                         flagcxMemHost, NULL));
+                                          flagcxMemHost, NULL));
     devComm->deviceErrorHost = nullptr;
     devComm->deviceErrorStatus = nullptr;
   }
@@ -1425,7 +1428,8 @@ static flagcxResult_t defaultDevApiCommGetDevicePtr(flagcxDevComm_t devComm,
                         netDevPtr, dPtr, hostCopy._contextCount, nullptr),
                     res, fail);
 #else
-    flagcxDevNetLaunchConstruct(netDevPtr, dPtr, hostCopy._contextCount, nullptr);
+    flagcxDevNetLaunchConstruct(netDevPtr, dPtr, hostCopy._contextCount,
+                                nullptr);
 #endif
     // Finish construction before publishing the array to IR callers.
     FLAGCXCHECKGOTO(deviceAdaptor->deviceSynchronize(), res, fail);
