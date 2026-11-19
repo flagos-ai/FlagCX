@@ -438,6 +438,23 @@ run_suite() {
   fi
   local -a args=("${FLAGCX_CI_TEST_MAKE_ARGS[@]}")
 
+  # Run before platform overrides so PPU and the common path share coverage.
+  if [[ "$SUITE" == runner ]]; then
+    local lifecycle_xml="$PROJECT_ROOT/.ci-results/runner-intra-process"
+    rm -rf "$lifecycle_xml"
+    mkdir -p "$lifecycle_xml"
+    FLAGCX_CI_MPI_LABEL="runner same-process lifecycle" \
+      "$MPI_RUNNER" --allow-run-as-root -np 1 \
+      "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh" \
+      "$lifecycle_xml" "$suite_dir/build/bin/runner_mpi_tests" \
+      --gtest_filter='FlagCXIntraProcessTest.*'
+    python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
+      --case FlagCXIntraProcessTest.SequentialImplicitDestroy \
+      --case FlagCXIntraProcessTest.GroupedFinalizeThenSequentialDestroy \
+      "$lifecycle_xml/rank-0.xml"
+  fi
+
   if declare -F flagcx_ci_run_suite_override >/dev/null; then
     FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0
     flagcx_ci_run_suite_override "$SUITE" "$suite_dir" "${args[@]}"

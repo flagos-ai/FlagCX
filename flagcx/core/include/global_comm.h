@@ -65,6 +65,11 @@ flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
 
 struct flagcxComm {
   struct flagcxCommFinalizeState finalizeState;
+  struct flagcxIntraProcLifecycle *intraLifecycle;
+  struct flagcxComm *intraNext;
+  int destroyRequested;
+  int deviceOrdinal;
+  int deviceOrdinalValid;
   // Local release cursor; only advances after a fallible operation succeeds.
   enum flagcxDestroyPhase destroyPhase;
   int rank;

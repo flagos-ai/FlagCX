@@ -3688,6 +3688,8 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   FLAGCXCHECK(flagcxCalloc(comm, 1));
   (*comm)->ipcTable = (*comm)->ipcTableInline;
   (*comm)->ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
+  FLAGCXCHECK(deviceAdaptor->getDevice(&(*comm)->deviceOrdinal));
+  (*comm)->deviceOrdinalValid = 1;
   (*comm)->rank = rank;
   (*comm)->nranks = nranks;
   (*comm)->nclusters = -1;
@@ -4088,12 +4090,14 @@ flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
   free(vendorData);
   // Initialize custom op state (non-fatal if fails)
   FLAGCXCHECK(flagcxDevCommStateInit(*comm));
+  FLAGCXCHECK(flagcxCommInitIntraProcGroup(*comm));
 
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
-  return flagcxCommFinalizeInternal(comm);
+  FLAGCXCHECK(flagcxEnsureCommReady(comm));
+  return flagcxCommFinalizeEnqueue(comm);
 }
 
 static flagcxResult_t flagcxCommDrainLocalWork(flagcxComm_t comm) {
@@ -4304,20 +4308,22 @@ static flagcxResult_t flagcxCommFinalizeVendors(flagcxComm_t comm) {
 flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
   flagcxCommFinalizeState *state = &comm->finalizeState;
-  if (__atomic_load_n(&state->lifecycle, __ATOMIC_ACQUIRE) ==
-      flagcxCommFinalized)
+  if (state->commonPhase == flagcxFinalizeComplete)
     return flagcxSuccess;
   int expected = 0;
   if (!__atomic_compare_exchange_n(&state->running, &expected, 1, false,
                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return flagcxInProgress;
+  flagcxResult_t selected = comm->deviceOrdinalValid
+                                ? deviceAdaptor->setDevice(comm->deviceOrdinal)
+                                : flagcxSuccess;
   __atomic_store_n(&state->lastResult, flagcxInProgress, __ATOMIC_RELEASE);
   __atomic_store_n(&state->lifecycle, flagcxCommFinalizing, __ATOMIC_RELEASE);
   flagcxResult_t result = flagcxSuccess;
   while (state->commonPhase < flagcxFinalizeComplete) {
     int phase = (int)state->commonPhase;
-    flagcxResult_t local = flagcxSuccess;
-    if ((state->localDoneMask & (1u << phase)) == 0) {
+    flagcxResult_t local = selected;
+    if (local == flagcxSuccess && (state->localDoneMask & (1u << phase)) == 0) {
       switch (state->commonPhase) {
         case flagcxFinalizeDrain:
           local = flagcxCommFinalizeVendors(comm);
@@ -4366,6 +4372,8 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
 flagcxResult_t flagcxCommDestroyLocal(flagcxComm_t comm) {
   if (comm == NULL || comm->finalizeState.commonPhase != flagcxFinalizeComplete)
     return flagcxInvalidUsage;
+  if (comm->deviceOrdinalValid)
+    FLAGCXCHECK(deviceAdaptor->setDevice(comm->deviceOrdinal));
   __atomic_store_n(&comm->finalizeState.lifecycle, flagcxCommDestroying,
                    __ATOMIC_RELEASE);
   if (comm->destroyPhase == flagcxDestroyBuffers) {
@@ -4441,9 +4449,7 @@ flagcxResult_t flagcxCommDestroyLocal(flagcxComm_t comm) {
 
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm) {
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
-  if (comm->finalizeState.commonPhase != flagcxFinalizeComplete)
-    FLAGCXCHECK(flagcxCommFinalizeInternal(comm));
-  return flagcxCommDestroyLocal(comm);
+  return flagcxCommReclaim(comm);
 }
 
 flagcxResult_t flagcxCommAbort(flagcxComm_t comm) {
@@ -5144,22 +5150,24 @@ flagcxResult_t flagcxGroupStart(flagcxComm_t comm) {
   } else {
     FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->groupStart());
   }
+  flagcxCommLifecycleGroupStart();
   return flagcxSuccess;
 }
 
 flagcxResult_t flagcxGroupEnd(flagcxComm_t comm) {
+  flagcxResult_t result = flagcxSuccess;
   if (useHeteroComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxUniRunner]->groupEnd());
+    result = flagcxRunners[flagcxUniRunner]->groupEnd();
   } else if (comm == NULL || useHomoComm(comm)) {
     if (comm == NULL) {
       INFO(FLAGCX_COLL,
            "flagcxGroupEnd: comm is NULL, delegating to homo runner directly");
     }
-    FLAGCXCHECK(flagcxRunners[flagcxHomoRunner]->groupEnd());
+    result = flagcxRunners[flagcxHomoRunner]->groupEnd();
   } else if (useHostComm()) {
-    FLAGCXCHECK(flagcxRunners[flagcxHostRunner]->groupEnd());
+    result = flagcxRunners[flagcxHostRunner]->groupEnd();
   } else {
-    FLAGCXCHECK(flagcxRunners[flagcxHybridRunner]->groupEnd());
+    result = flagcxRunners[flagcxHybridRunner]->groupEnd();
   }
-  return flagcxSuccess;
+  return flagcxCommLifecycleGroupEnd(result);
 }

@@ -77,3 +77,134 @@ TEST(CommLifecycleTest, VendorProgressDoesNotCompleteFlagcxFinalizeEarly) {
   EXPECT_EQ(calls, 1);
   EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeComplete);
 }
+
+namespace {
+struct LifecycleProviderGuard {
+  flagcxCCLAdaptor *saved = cclAdaptors[flagcxCCLAdaptorDevice];
+  flagcxCCLAdaptor provider = *saved;
+  LifecycleProviderGuard() { cclAdaptors[flagcxCCLAdaptorDevice] = &provider; }
+  ~LifecycleProviderGuard() { cclAdaptors[flagcxCCLAdaptorDevice] = saved; }
+};
+flagcxComm_t makeFinalizedComm(uintptr_t token) {
+  flagcxComm_t comm = (flagcxComm_t)calloc(1, sizeof(flagcxComm));
+  comm->commType = flagcxCommunicatorHomo;
+  comm->homoComm = (flagcxInnerComm_t)token;
+  comm->finalizeState.lifecycle = flagcxCommFinalized;
+  comm->finalizeState.commonPhase = flagcxFinalizeComplete;
+  return comm;
+}
+static std::atomic<int> lifecycleCalls;
+static int createCalls;
+static int failSecondCreate(pthread_t *thread, const pthread_attr_t *attr,
+                            void *(*fn)(void *), void *arg) {
+  return ++createCalls == 2 ? EAGAIN : pthread_create(thread, attr, fn, arg);
+}
+static flagcxResult_t countLifecycleJob(flagcxComm_t) {
+  lifecycleCalls++;
+  return flagcxSuccess;
+}
+} // namespace
+
+TEST(CommLifecycleTest, WorkerCreationFailureCancelsBeforeAnyCollective) {
+  flagcxComm storage[3] = {};
+  flagcxComm_t members[] = {&storage[0], &storage[1], &storage[2]};
+  lifecycleCalls = createCalls = 0;
+  EXPECT_EQ(flagcxCommRunLifecycleJobs(members, 3, countLifecycleJob,
+                                       failSecondCreate),
+            flagcxSystemError);
+  EXPECT_EQ(lifecycleCalls, 0);
+  EXPECT_EQ(flagcxCommRunLifecycleJobs(members, 3, countLifecycleJob, nullptr),
+            flagcxSuccess);
+  EXPECT_EQ(lifecycleCalls, 3);
+}
+
+TEST(CommLifecycleTest, SequentialDestroyRetainsCliqueUntilLastRequest) {
+  LifecycleProviderGuard guard;
+  static int destroys;
+  destroys = 0;
+  guard.provider.commDestroy = [](flagcxInnerComm_t) {
+    destroys++;
+    return flagcxSuccess;
+  };
+  flagcxComm_t members[] = {makeFinalizedComm(1), makeFinalizedComm(2)};
+  ASSERT_EQ(flagcxCommMakeIntraProcGroup(members, 2), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDestroy(members[0]), flagcxSuccess);
+  EXPECT_EQ(destroys, 0);
+  EXPECT_EQ(flagcxCommRequireActive(members[0]), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxCommDestroy(members[0]), flagcxInvalidUsage);
+  EXPECT_EQ(members[1]->intraLifecycle->destroyRequested, 1u);
+  EXPECT_EQ(flagcxCommDestroy(members[1]), flagcxSuccess);
+  EXPECT_EQ(destroys, 2);
+}
+
+TEST(CommLifecycleTest, FailedLastDestroyRetainsCallerAndSuccessfulPrefix) {
+  LifecycleProviderGuard guard;
+  static int calls[4];
+  static bool fail;
+  memset(calls, 0, sizeof(calls));
+  fail = true;
+  guard.provider.commDestroy = [](flagcxInnerComm_t inner) {
+    uintptr_t id = (uintptr_t)inner;
+    calls[id]++;
+    return id == 2 && fail ? flagcxUnhandledDeviceError : flagcxSuccess;
+  };
+  flagcxComm_t members[] = {makeFinalizedComm(1), makeFinalizedComm(2),
+                            makeFinalizedComm(3)};
+  ASSERT_EQ(flagcxCommMakeIntraProcGroup(members, 3), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDestroy(members[0]), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDestroy(members[1]), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDestroy(members[2]), flagcxUnhandledDeviceError);
+  EXPECT_EQ(calls[1], 1);
+  EXPECT_EQ(calls[2], 1);
+  EXPECT_EQ(calls[3], 0);
+  EXPECT_EQ(members[2]->intraLifecycle->members, members[1]);
+  EXPECT_EQ(members[2]->intraLifecycle->retryOwner, members[2]);
+  fail = false;
+  EXPECT_EQ(flagcxCommDestroy(members[2]), flagcxSuccess);
+  EXPECT_EQ(calls[1], 1);
+  EXPECT_EQ(calls[2], 2);
+  EXPECT_EQ(calls[3], 1);
+}
+
+TEST(CommLifecycleTest, IndependentCliquesDoNotShareDestroyRequests) {
+  flagcxComm_t a[] = {makeFinalizedComm(0), makeFinalizedComm(0)};
+  flagcxComm_t b[] = {makeFinalizedComm(0), makeFinalizedComm(0)};
+  ASSERT_EQ(flagcxCommMakeIntraProcGroup(a, 2), flagcxSuccess);
+  ASSERT_EQ(flagcxCommMakeIntraProcGroup(b, 2), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDestroy(a[0]), flagcxSuccess);
+  EXPECT_EQ(b[0]->intraLifecycle->destroyRequested, 0u);
+  EXPECT_EQ(flagcxCommDestroy(b[0]), flagcxSuccess);
+  EXPECT_EQ(flagcxCommDestroy(a[1]), flagcxSuccess);
+  EXPECT_EQ(b[1]->intraLifecycle->destroyRequested, 1u);
+  EXPECT_EQ(flagcxCommDestroy(b[1]), flagcxSuccess);
+}
+
+TEST(CommLifecycleTest,
+     NestedFinalizeGroupDefersDeduplicatesAndClosesAdmission) {
+  flagcxComm a = {}, b = {};
+  a.commType = b.commType = flagcxCommunicatorHomo;
+  flagcxCommLifecycleGroupStart();
+  flagcxCommLifecycleGroupStart();
+  EXPECT_EQ(flagcxCommFinalizeEnqueue(&a), flagcxSuccess);
+  EXPECT_EQ(flagcxCommFinalizeEnqueue(&a), flagcxSuccess);
+  EXPECT_EQ(flagcxCommFinalizeEnqueue(&b), flagcxSuccess);
+  EXPECT_EQ(flagcxCommRequireActive(&a), flagcxInvalidUsage);
+  EXPECT_EQ(a.finalizeState.commonPhase, flagcxFinalizeDrain);
+  EXPECT_EQ(flagcxCommLifecycleGroupEnd(flagcxSuccess), flagcxSuccess);
+  EXPECT_EQ(a.finalizeState.commonPhase, flagcxFinalizeDrain);
+  EXPECT_EQ(flagcxCommLifecycleGroupEnd(flagcxSuccess), flagcxSuccess);
+  EXPECT_EQ(a.finalizeState.commonPhase, flagcxFinalizeComplete);
+  EXPECT_EQ(b.finalizeState.commonPhase, flagcxFinalizeComplete);
+  EXPECT_EQ(flagcxCommLifecycleGroupDepth(), 0);
+}
+
+TEST(CommLifecycleTest, GroupErrorRetainsFinalizationForExplicitRetry) {
+  flagcxComm comm = {};
+  comm.commType = flagcxCommunicatorHomo;
+  flagcxCommLifecycleGroupStart();
+  EXPECT_EQ(flagcxCommFinalizeEnqueue(&comm), flagcxSuccess);
+  EXPECT_EQ(flagcxCommLifecycleGroupEnd(flagcxRemoteError), flagcxRemoteError);
+  EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeDrain);
+  EXPECT_EQ(comm.finalizeState.lastResult, flagcxRemoteError);
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+}
