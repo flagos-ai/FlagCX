@@ -335,9 +335,17 @@ run_device_api_unified_ir() {
     export FLAGCX_CI_UNIFIED_IR_SKIP_S16=1
     export FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON="$s16_skip_reason"
   fi
+  local unified_ir_use_hetero=1
+  local unified_ir_vmm_enable=0
+  if [[ "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 ]]; then
+    # XSHMEM uses the homo backend and symmetric windows. VMM_ENABLE permits
+    # that window mode; the buffers still come from the SHMEM allocator.
+    unified_ir_use_hetero=0
+    unified_ir_vmm_enable=1
+  fi
   local -a common_env=(
-    -x FLAGCX_USE_HETERO_COMM=1
-    -x FLAGCX_VMM_ENABLE=0
+    -x FLAGCX_USE_HETERO_COMM="$unified_ir_use_hetero"
+    -x FLAGCX_VMM_ENABLE="$unified_ir_vmm_enable"
     -x LD_LIBRARY_PATH
   )
   if declare -p FLAGCX_CI_UNIFIED_IR_MPI_ARGS >/dev/null 2>&1; then
