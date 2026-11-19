@@ -14,6 +14,7 @@
 
 #include "adaptor.h"
 #include "flagcx.h"
+#include "flagcx_ascend.h"
 #include "flagcx_tuner.h"
 #include "global_comm.h"
 #include "topo.h"

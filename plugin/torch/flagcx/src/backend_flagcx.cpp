@@ -4,6 +4,7 @@
  * Copyright (c) 2025 by DU. All Rights Reserved.
  ************************************************************************/
 #include "backend_flagcx.hpp"
+#include "flagcx_ascend.h"
 #include "utils_flagcx.hpp"
 #if defined(USE_ASCEND_ADAPTOR) && !defined(FLAGCX_TORCH_BACKEND_FLAGOS)
 #include "torch_npu/csrc/core/npu/NPUCachingAllocator.h"

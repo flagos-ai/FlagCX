@@ -289,19 +289,6 @@ flagcxResult_t flagcxOneSideRegister(flagcxComm_t comm, void *buff,
 /* Check if the FlagCX communicator type is homogeneous or heterogeneous */
 flagcxResult_t flagcxIsHomoComm(flagcxComm_t comm, int *isHomo);
 
-/* Copy the FlagCX-managed HCCL communicator's name into the caller's buffer
- * for native operator interoperability. Only stable homogeneous HCCL
- * communicators with matching rank order are supported.
- * name must have capacity >= 128 bytes. The communicator remains owned by
- * FlagCX and must outlive all operations using the returned name.
- * Returns flagcxNotSupported if the selected CCL adaptor does not implement
- * name retrieval, or for heterogeneous routes, hybrid groups, or tuning.
- * On success, name is nonempty and NUL-terminated.
- * Callers must order external operations against FlagCX operations on streams.
- */
-flagcxResult_t flagcxCommGetHcclCommName(flagcxComm_t comm, char *name,
-                                         size_t capacity);
-
 /* Return the version of the FlagCX library in the supplied integer.
  * It contains the underlying adaptor library version and FlagCX core version
  */
