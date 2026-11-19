@@ -1046,7 +1046,6 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "runner",
                 "service",
                 "symmem",
-                "symmem_probe",
             ],
             "metax": [
                 "adaptor",

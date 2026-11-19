@@ -449,16 +449,6 @@ run_suite() {
   fi
 
   case "$SUITE" in
-    symmem_probe)
-      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" != iluvatar ]]; then
-        echo "symmem_probe requires the Iluvatar environment" >&2
-        return 2
-      fi
-      # Inherit the platform's MPI arrays while keeping probe exit/env local.
-      (
-        source "$PROJECT_ROOT/.github/scripts/ci/run_symmem_probe.sh"
-      )
-      ;;
     adaptor)
       local unit_status=0
       local ibuc_status=0
@@ -1282,16 +1272,8 @@ run_supplemental_unit_tests() {
     "$TEST_RUNNER" "$binary" --gtest_filter='CoverageSupplemental.*'
 }
 
-if [[ "$SUITE" == symmem_probe && "$(basename "$SET_ENV_SCRIPT" .sh)" == iluvatar ]]; then
-  export FLAGCX_CI_LOG_DIR=${FLAGCX_CI_LOG_DIR:-"$PROJECT_ROOT/test/unittest/symmem_probe/build/results"}
-  # Run before builds so SDK errors survive even when the provider cannot build.
-  make -C "$PROJECT_ROOT" "${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}" \
-    iluvatar-vmm-diagnostics \
-    "ILUVATAR_VMM_DIAGNOSTICS_DIR=$FLAGCX_CI_LOG_DIR/iluvatar-vmm-sdk"
-fi
-
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem|symmem_probe)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)

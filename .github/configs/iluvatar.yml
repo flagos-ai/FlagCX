@@ -55,4 +55,3 @@ unit_test_suites:
   - runner
   - service
   - symmem
-  - symmem_probe
