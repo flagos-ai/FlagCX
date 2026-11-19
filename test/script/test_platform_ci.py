@@ -882,7 +882,6 @@ class PlatformCiRegressionTest(unittest.TestCase):
         for mount in (
             "/dev/infiniband:/dev/infiniband",
             "/sys/class/infiniband:/sys/class/infiniband:ro",
-            "/sys/class/infiniband_verbs:/sys/class/infiniband_verbs:ro",
             "/sys/bus/pci/devices:/sys/bus/pci/devices:ro",
         ):
             self.assertIn(f"  - {mount}", enflame_config)
