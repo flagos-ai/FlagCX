@@ -142,6 +142,8 @@ struct flagcxComm {
   // Public Window handles, including vendor Windows. GDA activation replays
   // registrations when these Windows precede DevComm creation.
   struct flagcxWindow *devNetWindows;
+  // Registration order is collective; local deregistration never reuses an ID.
+  uint64_t nextDevNetWindowId;
   flagcxDevComm_t devNetCommHandle;
 #endif
 

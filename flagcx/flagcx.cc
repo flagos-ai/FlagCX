@@ -2913,6 +2913,18 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
     local = flagcxInvalidUsage;
   FLAGCXCHECK(
       flagcxValidateWindowRegistration(comm, winFlags, allocator, local));
+#if defined(FLAGCX_USE_GDA)
+  // Check before constructing a Window, so overflow cannot strand a newly
+  // allocated resource in an untracked state.
+  flagcxResult_t idStatus =
+      comm->nextDevNetWindowId == std::numeric_limits<uint64_t>::max()
+          ? flagcxInvalidUsage
+          : flagcxSuccess;
+  flagcxResult_t commonIdStatus = flagcxSuccess;
+  FLAGCXCHECK(flagcxConvergeBootstrapStatus(comm, idStatus, &commonIdStatus));
+  if (commonIdStatus != flagcxSuccess)
+    return commonIdStatus;
+#endif
 
   flagcxWindow_t created = nullptr;
   flagcxResult_t result = flagcxCommWindowRegisterFresh(
@@ -2937,6 +2949,7 @@ flagcxResult_t flagcxCommWindowRegister(flagcxComm_t comm, void *buff,
 #if defined(FLAGCX_USE_GDA)
   if (result == flagcxSuccess) {
     flagcxWindow_t window = *win;
+    window->devNetRegistrationId = ++comm->nextDevNetWindowId;
     window->userBase = buff;
     window->userSize = size;
     window->devNetNext = comm->devNetWindows;
@@ -3173,6 +3186,7 @@ flagcxCommWindowDeregisterTracked(flagcxComm_t comm, flagcxWindow_t win,
     if (link != nullptr && *link == win)
       *link = next;
     if (publicHandle) {
+      win->devNetRegistrationId = 0;
       win->userBase = nullptr;
       win->userSize = 0;
       win->devNetNext = nullptr;

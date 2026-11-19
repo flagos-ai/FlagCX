@@ -102,6 +102,13 @@ pull_image() {
   done
 }
 
+if [[ "$suite" == device_api_gda ]]; then
+  docker_args+=(--env "GDA_PROVIDER_HOME=${GDA_PROVIDER_HOME:-/usr/local}")
+  if [[ -n "${FLAGCX_XPU_NETIO_PROVIDER:-}" ]]; then
+    docker_args+=(--env "FLAGCX_XPU_NETIO_PROVIDER=$FLAGCX_XPU_NETIO_PROVIDER")
+  fi
+fi
+
 cleanup
 pull_image
 

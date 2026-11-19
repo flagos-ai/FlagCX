@@ -29,6 +29,8 @@ struct flagcxWindow {
   flagcxWorkSnapshot cleanupWork;
   bool cleanupStarted;
 #if defined(FLAGCX_USE_GDA)
+  uint64_t devNetRegistrationId; // collective registration identity, not handle
+                                 // identity
   void *userBase; // canonical Window allocation, not a DevMem subrange
   size_t userSize;
   void *gdaWindowOwner; // build-selected GDA provider's MR owner

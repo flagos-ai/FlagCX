@@ -65,6 +65,17 @@ $(OBJDIR)/device_ir.o: device_ir.cu
 	@$(DEVICE_COMPILER) -std=c++17 $(DEVICE_COMPILER_GENCODE) $(NVCC_RDC_FLAG) -o $@ $< \
 		$(ALL_INCLUDES) -DCOMPILE_KERNEL $(ADAPTOR_DEFINE)
 
+# The same objects serve Proxy, NCCL and GDA builds. Invalidate them when
+# compiler flags, SDK paths or the selected backend change.
+DEVICE_CONFIG_STAMP := $(OBJDIR)/.device_config
+.PHONY: device_config_force
+$(DEVICE_CONFIG_STAMP): device_config_force
+	@mkdir -p $(OBJDIR)
+	@printf '%s\n' '$(DEVICE_COMPILER) $(DEVICE_COMPILER_GENCODE) $(NVCC_RDC_FLAG) $(ALL_INCLUDES) $(ADAPTOR_DEFINE)' | cmp -s - $@ || \
+	  printf '%s\n' '$(DEVICE_COMPILER) $(DEVICE_COMPILER_GENCODE) $(NVCC_RDC_FLAG) $(ALL_INCLUDES) $(ADAPTOR_DEFINE)' > $@
+
+$(OBJDIR)/device_api.o $(OBJDIR)/device_ir.o: $(DEVICE_CONFIG_STAMP)
+
 $(OBJDIR)/nvshmem_adaptor_kernel.o: nvshmem_adaptor_kernel.cu
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling nvshmem_adaptor_kernel.cu (CUDA)"
