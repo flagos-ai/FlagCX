@@ -79,8 +79,7 @@ outputs = {
   "container_options" => container_options.join(" "),
   "container_volumes" => JSON.generate(job_container_volumes),
   "set_env" => set_env,
-  "unit_test_suites" => JSON.generate(suites),
-  "ignore_test" => JSON.generate(config.fetch("ignore_test", {}))
+  "unit_test_suites" => JSON.generate(suites)
 }
 if ENV["GITHUB_OUTPUT"] && !ENV["GITHUB_OUTPUT"].empty?
   File.open(ENV.fetch("GITHUB_OUTPUT"), "a") do |output|

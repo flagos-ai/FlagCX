@@ -52,11 +52,6 @@ FLAGCX_CI_IGNORE_TEST='{
       "reason": "XRE cudaLaunchHostFunc is unsupported"
     },
     {
-      "suite": "device_api_unified_ir",
-      "name": "inter-and-forced-net",
-      "reason": "XSHMEM supports intra-node communication only"
-    },
-    {
       "suite": "rma",
       "name": "gdr-visibility",
       "reason": "No validated KunlunXin XPU consumer route for GDR visibility"

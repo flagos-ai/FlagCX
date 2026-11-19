@@ -29,7 +29,7 @@ export LD_LIBRARY_PATH="/opt/mxdriver/lib:/opt/maca/lib:/usr/local/lib:${LD_LIBR
 FLAGCX_CI_IGNORE_TEST='{
   "perf": {
     "operations": ["allreduce", "reducescatter"],
-    "modes": ["homogeneous", "heterogeneous"],
+    "modes": ["homogeneous"],
     "reason": "Current MetaX perf run has data verification failures; retain remaining operation coverage"
   }
 }'

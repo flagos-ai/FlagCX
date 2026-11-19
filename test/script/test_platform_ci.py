@@ -44,6 +44,19 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 )
                 self.assertNotIn("ignore_test", config)
                 self.assertTrue(load_platform_ignore_config(platform))
+        for filename in (
+            "test.yml",
+            "torch-api-test.yml",
+            "unit_tests_common.yml",
+        ):
+            workflow = (REPO_ROOT / ".github/workflows" / filename).read_text()
+            self.assertNotIn("ignore_test", workflow)
+        loader = (REPO_ROOT / ".github/scripts/ci/load_platform_config.rb").read_text()
+        self.assertNotIn('"ignore_test"', loader)
+        container_runner = (
+            REPO_ROOT / ".github/scripts/ci/run_hardware_container.sh"
+        ).read_text()
+        self.assertNotIn("FLAGCX_CI_IGNORE_TEST", container_runner)
 
     def test_kunlunxin_workloads_use_job_containers(self):
         for filename, job_name, workload in (
