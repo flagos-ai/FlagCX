@@ -53,6 +53,15 @@ struct DefaultNetContext {
   unsigned providerId; // Platform-defined GDA implementation; zero for Proxy.
   void *handle;
   int contextId;
+  flagcxDevNetResourceSharingMode_t resourceSharingMode;
+
+  FLAGCX_HOST_DEVICE_INLINE constexpr DefaultNetContext(
+      DefaultNetProviderKind provider = DefaultNetProviderProxy,
+      unsigned providerId = 0, void *handle = nullptr, int contextId = 0,
+      flagcxDevNetResourceSharingMode_t sharingMode =
+          flagcxDevNetResourceSharingDevice)
+      : provider(provider), providerId(providerId), handle(handle),
+        contextId(contextId), resourceSharingMode(sharingMode) {}
 };
 
 template <DefaultNetProviderKind Provider, typename Operation>
@@ -165,6 +174,8 @@ struct DefaultNetDispatch {
   template <typename NetT>
   FLAGCX_DEVICE_INLINE_DECORATOR static bool
   isValid(DefaultNetContext ctx, const NetT &net, bool proxyReady) {
+    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
+      return false;
     switch (ctx.provider) {
       case DefaultNetProviderProxy:
         return proxyReady;
@@ -182,6 +193,8 @@ struct DefaultNetDispatch {
                                                   Args &&...args)
       -> decltype(DefaultNetApi<DefaultNetProviderProxy, Op>::call(
           ctx, static_cast<Args &&>(args)...)) {
+    if (!flagcxDevNetResourceSharingModeValid(ctx.resourceSharingMode))
+      FLAGCX_DEVICE_TRAP();
     switch (ctx.provider) {
       case DefaultNetProviderProxy:
         return DefaultNetApi<DefaultNetProviderProxy, Op>::call(
@@ -721,6 +734,7 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     int signalCount;
     int counterCount;
     int _contextId;
+    flagcxDevNetResourceSharingMode_t _sharingMode;
     int teamRank;
     int nTeamRanks;
     int barrierSignalBase;
@@ -806,10 +820,15 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
     };
 
     FLAGCX_DEVICE_INLINE_DECORATOR
-    Net(const Comm &dc, int contextIndex)
+    Net(const Comm &dc, int contextIndex,
+        flagcxDevNetResourceSharingMode_t sharingMode =
+            flagcxDevNetResourceSharingDevice)
         : _dc(dc), fifoBuffer(nullptr), signalBuffer(dc.signalBuffer),
           shadowBuffer(dc.shadowBuffer), counterBuffer(dc.counterBuffer),
-          signalCount(dc.signalCount), counterCount(dc.counterCount) {
+          signalCount(dc.signalCount), counterCount(dc.counterCount),
+          _sharingMode(sharingMode) {
+      if (!flagcxDevNetResourceSharingModeValid(sharingMode))
+        FLAGCX_DEVICE_TRAP();
       int cnt = (dc.contextCount > 0) ? dc.contextCount : 1;
       _contextId = contextIndex % cnt;
       if (dc.contextCount > 0)
@@ -823,9 +842,17 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
       return _contextId;
     }
 
+    FLAGCX_DEVICE_INLINE_DECORATOR flagcxDevNetResourceSharingMode_t
+    getResourceSharingMode() const {
+      return _sharingMode;
+    }
+
     FLAGCX_DEVICE_INLINE_DECORATOR DefaultNetContext context() const {
-      return DefaultNetProviderPolicy<PlatformTag>::makeContext(_dc, fifoBuffer,
-                                                                _contextId);
+      DefaultNetContext ctx =
+          DefaultNetProviderPolicy<PlatformTag>::makeContext(_dc, fifoBuffer,
+                                                             _contextId);
+      ctx.resourceSharingMode = _sharingMode;
+      return ctx;
     }
 
     FLAGCX_DEVICE_INLINE_DECORATOR CompletionWord *
@@ -1620,13 +1647,15 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
   int _barrierSignal0; // base signal slot for this barrier instance
   int _stride;         // intraSize — used to compute target global rank
   int _localRank;      // intra-node rank (for rank-to-rank peer mapping)
+  flagcxDevNetResourceSharingMode_t _sharingMode;
 
   // Default ctor (no-op)
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier()
       : _coop(), _fifoBuffer(nullptr), _signalBuffer(nullptr),
         _shadowBuffer(nullptr), _signalCount(0), _contextId(0), _teamRank(0),
-        _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0) {
+        _nTeamRanks(0), _barrierSignal0(0), _stride(0), _localRank(0),
+        _sharingMode(flagcxDevNetResourceSharingDevice) {
     DefaultNetProviderPolicy<P>::initBarrier(
         *this, DefaultNetContext{DefaultNetProviderProxy, 0, nullptr, 0});
   }
@@ -1640,14 +1669,17 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagInter, Coop>
         _signalCount(net.signalCount), _contextId(net.getContextId()),
         _teamRank(net.teamRank), _nTeamRanks(net.nTeamRanks),
         _barrierSignal0(net.barrierSignalBase + (int)index * net.nTeamRanks),
-        _stride(dc.intraSize), _localRank(dc.intraRank) {
+        _stride(dc.intraSize), _localRank(dc.intraRank),
+        _sharingMode(net.getResourceSharingMode()) {
     DefaultNetProviderPolicy<P>::initBarrier(*this, net.context());
     assert(index < FLAGCX_DEVICE_CTA_COUNT);
   }
 
   FLAGCX_DEVICE_INLINE_DECORATOR DefaultNetContext context() const {
-    return DefaultNetProviderPolicy<P>::barrierContext(*this, _fifoBuffer,
-                                                       _contextId);
+    DefaultNetContext ctx = DefaultNetProviderPolicy<P>::barrierContext(
+        *this, _fifoBuffer, _contextId);
+    ctx.resourceSharingMode = _sharingMode;
+    return ctx;
   }
 
   // Proxy implementations of the same operations used by Net. Each Barrier

@@ -1187,6 +1187,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                 "adaptor",
                 "core",
                 "device_api",
+                "device_api_gda",
                 "device_api_host",
                 "device_api_unified_ir",
                 "device_traits",
@@ -1833,7 +1834,7 @@ run_suite
         ).read_text()
 
         self.assertIn(
-            'adaptor|p2p|rma|runner|symmem|device_api|device_api_unified_ir)',
+            'adaptor|p2p|rma|runner|symmem|device_api|device_api_gda|device_api_unified_ir)',
             unit_runner,
         )
         self.assertIn('FLAGCX_CI_MPI_LABEL="symmem IPC local"', symmem_runner)

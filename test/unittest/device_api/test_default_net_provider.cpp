@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <initializer_list>
 #include <type_traits>
 #include <typeinfo>
 
@@ -18,6 +19,7 @@ static int mockGdaCalls = 0;
 struct MockBarrierCall {
   int contextId;
   const std::type_info *operation;
+  flagcxDevNetResourceSharingMode_t sharingMode;
 };
 static MockBarrierCall mockBarrierCalls[8];
 static int mockBarrierCallCount = 0;
@@ -77,8 +79,8 @@ struct DefaultNetGdaProvider<MockGdaPlatform> {
           ctx, static_cast<Args &&>(args)...)) {
     if (ctx.handle == reinterpret_cast<void *>(0x2000)) {
       assert(mockBarrierCallCount < 8);
-      mockBarrierCalls[mockBarrierCallCount++] = {ctx.contextId,
-                                                  &typeid(Operation)};
+      mockBarrierCalls[mockBarrierCallCount++] = {
+          ctx.contextId, &typeid(Operation), ctx.resourceSharingMode};
       typedef decltype(DefaultNetApi<DefaultNetProviderProxy, Operation>::call(
           ctx, static_cast<Args &&>(args)...)) Result;
       return MockBarrierResult<Result>::get();
@@ -99,6 +101,16 @@ static_assert(
     "non-NVIDIA Barrier must not carry Provider state");
 static_assert(static_cast<uint32_t>(flagcxDevNetFenceLevel::Relaxed) == 0,
               "Relaxed must retain its existing value");
+static_assert(flagcxDevNetResourceSharingDevice == 0,
+              "zero-initialized sharing must allow device-wide callers");
+static_assert(DefaultNetContext{}.resourceSharingMode ==
+                  flagcxDevNetResourceSharingDevice,
+              "legacy/default context construction must use Device sharing");
+static_assert(std::is_trivially_copyable<DefaultNetContext>::value,
+              "dispatch contexts must remain safe to copy by value");
+static_assert(!flagcxDevNetResourceSharingModeValid(
+                  static_cast<flagcxDevNetResourceSharingMode_t>(3)),
+              "unknown sharing modes must be rejected");
 static_assert(flagcxDevNetFenceHas(flagcxDevNetFenceLevel::Put |
                                        flagcxDevNetFenceLevel::Get,
                                    flagcxDevNetFenceLevel::Put),
@@ -165,6 +177,10 @@ int main() {
   typedef DefaultNetProviderPolicy<NvidiaPlatform> Policy;
   DefaultNetContext ctx{DefaultNetProviderProxy, 0, nullptr, 0};
   MockNet mock;
+  DefaultNetContext invalid = ctx;
+  invalid.resourceSharingMode =
+      static_cast<flagcxDevNetResourceSharingMode_t>(3);
+  assert(!DefaultNetDispatch<NvidiaPlatform>::isValid(invalid, mock, true));
 
   DefaultNetDispatch<NvidiaPlatform>::call<Net::PutOp>(ctx, mock);
   DefaultNetDispatch<NvidiaPlatform>::call<Net::GetOp>(ctx, mock);
@@ -315,6 +331,35 @@ int main() {
       MockBarrier;
   MockBarrier barrier(MockGdaApi::CoopThread{}, barrierNet, barrierComm,
                       MockGdaApi::Team{2, 0, 1}, 0, 1);
+  assert(barrierNet.getResourceSharingMode() ==
+         flagcxDevNetResourceSharingDevice);
+  assert(barrier.context().resourceSharingMode ==
+         flagcxDevNetResourceSharingDevice);
+  // Per-Net selection must survive dispatch and both Barrier constructors;
+  // other Net objects on the same communicator retain their own defaults.
+  for (auto mode :
+       {flagcxDevNetResourceSharingDevice, flagcxDevNetResourceSharingBlock,
+        flagcxDevNetResourceSharingThread}) {
+    MockGdaApi::Net selected(barrierComm, 1, mode);
+    assert(selected.getResourceSharingMode() == mode);
+    assert(selected.context().resourceSharingMode == mode);
+    MockBarrier selectedBarrier(MockGdaApi::CoopThread{}, selected, barrierComm,
+                                MockGdaApi::Team{2, 0, 1}, 0, 1);
+    assert(selectedBarrier.context().resourceSharingMode == mode);
+    MockGdaApi::Net selectedWorldNet(gdaWorldComm, 1, mode);
+    MockWorldBarrier selectedWorld(MockGdaApi::CoopThread{},
+                                   flagcxTeamTagWorld{}, selectedWorldNet,
+                                   gdaWorldComm, 0, false, 1);
+    assert(selectedWorld._inter.context().resourceSharingMode == mode);
+    mockBarrierCallCount = 0;
+    selectedBarrier.sync();
+    assert(mockBarrierCallCount == 3);
+    for (int i = 0; i < mockBarrierCallCount; ++i)
+      assert(mockBarrierCalls[i].sharingMode == mode);
+    assert(barrierNet.getResourceSharingMode() ==
+           flagcxDevNetResourceSharingDevice);
+  }
+  mockBarrierCallCount = 0;
   barrier.sync(flagcxDeviceMemoryOrderAcqRel,
                flagcxDevNetFenceLevel::Put | flagcxDevNetFenceLevel::Get);
   assert(mockBarrierCallCount == 4);

@@ -130,6 +130,16 @@ typedef uint32_t flagcxDevSignal_t;
 typedef uint32_t flagcxDevCounter_t;
 typedef uint32_t flagcxDevContext_t;
 
+/* Concurrent users of the same Net resources (QP/SQ/CQ), independent of the
+ * Coop participating in one call. Narrow modes are caller promises, not
+ * ownership assignment. A backend may use stronger synchronization.
+ * Device is the safe default, including zero-initialized storage. */
+typedef enum {
+  flagcxDevNetResourceSharingDevice = 0,
+  flagcxDevNetResourceSharingBlock = 1,
+  flagcxDevNetResourceSharingThread = 2,
+} flagcxDevNetResourceSharingMode_t;
+
 // Legacy one-sided IR slot names. Keep these aliases for source compatibility
 // while the deprecated flagcxDevNet* entry points remain exported.
 typedef flagcxDevSignal_t flagcxDevNetSignal_t;

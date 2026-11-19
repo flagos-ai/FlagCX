@@ -42,6 +42,10 @@ static_assert(defaultNetSelectProvider<NvidiaPlatform>(
 FLAGCX_GLOBAL_DECORATOR void
 compileDefaultNetProvider(DeviceAPI::Comm comm, DeviceAPI::Window window) {
   DeviceAPI::Net net(comm, 0);
+  DeviceAPI::Net threadNet(comm, 0, flagcxDevNetResourceSharingThread);
+  DeviceAPI::Net blockNet(comm, 0, flagcxDevNetResourceSharingBlock);
+  (void)threadNet.getResourceSharingMode();
+  (void)blockNet.getResourceSharingMode();
   (void)net.isValid();
   DeviceAPI::Team team{1, 0, 1};
   NvidiaTraits::CoopThread thread;

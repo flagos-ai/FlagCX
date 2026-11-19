@@ -90,6 +90,29 @@ private:
   };
 
 #if defined(__CUDACC__)
+  // Sharing describes all callers of this QP, independently of the Coop
+  // executing one operation. Unsupported narrow modes keep GPU protection.
+  FLAGCX_DEVICE_INLINE_DECORATOR static uint32_t
+  sharingFlags(DefaultNetContext ctx,
+               const flagcxXpuNetioDeviceContext &state) {
+    const uint64_t supported = state.contexts[0].sharing_bits;
+    switch (ctx.resourceSharingMode) {
+      case flagcxDevNetResourceSharingThread:
+        if (supported & XPU_NETIO_SHARING_THREAD)
+          return XPU_NETIO_OP_FLAG_SHARING_THREAD;
+        return XPU_NETIO_OP_FLAG_SHARING_GPU;
+      case flagcxDevNetResourceSharingBlock:
+        if (supported & XPU_NETIO_SHARING_CTA)
+          return XPU_NETIO_OP_FLAG_SHARING_CTA;
+        return XPU_NETIO_OP_FLAG_SHARING_GPU;
+      case flagcxDevNetResourceSharingDevice:
+        return XPU_NETIO_OP_FLAG_SHARING_GPU;
+      default:
+        FLAGCX_DEVICE_TRAP();
+        return 0;
+    }
+  }
+
   struct ThreadCoop {
     __device__ uint32_t thread_rank() const { return 0; }
     __device__ uint32_t size() const { return 1; }
@@ -157,7 +180,7 @@ private:
         operation.peer = worldPeer;
         operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
         operation.flags =
-            XPU_NETIO_OP_FLAG_SHARING_THREAD | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
+            sharingFlags(ctx, state) | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
         operation.local = source->local;
         operation.remote = target->remote[worldPeer];
         operation.local_offset = srcOff;
@@ -195,7 +218,7 @@ private:
         operation.peer = worldPeer;
         operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
         operation.flags =
-            XPU_NETIO_OP_FLAG_SHARING_THREAD | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
+            sharingFlags(ctx, state) | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
         operation.remote = target->remote[worldPeer];
         operation.remote_offset = dstOff;
         operation.value_size = sizeof(T);
@@ -226,7 +249,7 @@ private:
         xpu_netio_flush_async_op_t operation{};
         operation.peer = peer;
         operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
-        operation.flags = XPU_NETIO_OP_FLAG_SHARING_THREAD;
+        operation.flags = sharingFlags(ctx, state);
         operation.wait = {state.timeoutNs, state.errorFlag};
         xpu_netio_request_t request{};
         if (!wait(state,
@@ -264,7 +287,7 @@ private:
     operation.peer = targetRank;
     operation.queue_hint = XPU_NETIO_QUEUE_HINT_NONE;
     operation.flags =
-        XPU_NETIO_OP_FLAG_SHARING_THREAD | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
+        sharingFlags(ctx, state) | XPU_NETIO_OP_FLAG_RELEASE_SYSTEM;
     operation.remote = state.signalRemote[targetRank];
     operation.remote_offset =
         static_cast<uint64_t>(signalIdx) * sizeof(uint64_t);

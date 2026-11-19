@@ -507,15 +507,18 @@ struct flagcxDevNetConfig {
   int enabled;
   int type; // -1: auto, 0: Proxy, 1: the compiled GDA adapter.
   int wantsNet;
+  int forceOneSidedNet;
   int valid;
 };
 
 static flagcxResult_t readFlagcxDevNetConfig(flagcxComm_t comm, bool wantsNet,
+                                             bool forceOneSidedNet,
                                              flagcxDevNetConfig *config) {
   if (comm == nullptr || config == nullptr || comm->nranks <= 0 ||
       comm->rank < 0 || comm->rank >= comm->nranks)
     return flagcxInvalidArgument;
-  flagcxDevNetConfig local{1, -1, wantsNet ? 1 : 0, 0};
+  flagcxDevNetConfig local{1, -1, wantsNet ? 1 : 0, forceOneSidedNet ? 1 : 0,
+                           0};
   local.valid =
       flagcxReadDevNetConfig(&local.enabled, &local.type) == flagcxSuccess;
   // A single rank has no peer configuration to compare and needs no
@@ -544,7 +547,8 @@ static flagcxResult_t readFlagcxDevNetConfig(flagcxComm_t comm, bool wantsNet,
     if (!peer.valid)
       return flagcxInvalidArgument;
     if (peer.enabled != local.enabled || peer.type != local.type ||
-        peer.wantsNet != local.wantsNet)
+        peer.wantsNet != local.wantsNet ||
+        peer.forceOneSidedNet != local.forceOneSidedNet)
       return flagcxInvalidUsage;
   }
   *config = local;
@@ -557,30 +561,33 @@ defaultDevApiCommCreate(flagcxComm_t comm,
                         const struct flagcxDevCommRequirements *reqs,
                         size_t reqsSize, flagcxDevComm_t devComm) {
   (void)reqsSize; // Older callers may pass a larger requirements tail.
+  const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
+  const bool oneSidedRequested =
+      reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
+  const bool needsCompletionResources =
+      oneSidedRequested || reqs->interBarrierCount > 0;
 #if defined(FLAGCX_USE_GDA)
-  const bool needsInterNet =
+  const bool hasRemoteNodes =
+      comm->heteroComm != nullptr && comm->heteroComm->nNodes > 1;
+  // Forced local fallback is Net traffic too: it must obey the same enable
+  // and provider selection controls as communication across nodes.
+  const bool needsNet =
       reqs->interForceEnable ||
-      (comm->heteroComm != nullptr && comm->heteroComm->nNodes > 1 &&
-       (reqs->interBarrierCount > 0 || reqs->interSignalCount > 0 ||
-        reqs->interCounterCount > 0));
+      ((hasRemoteNodes || forceOneSidedNet) && needsCompletionResources);
   flagcxDevNetConfig netConfig{};
-  FLAGCXCHECK(readFlagcxDevNetConfig(comm, needsInterNet, &netConfig));
+  FLAGCXCHECK(
+      readFlagcxDevNetConfig(comm, needsNet, forceOneSidedNet, &netConfig));
   const bool attemptGda =
-      netConfig.enabled != 0 && netConfig.type != 0 && needsInterNet;
-  if (netConfig.enabled == 0 && needsInterNet)
+      netConfig.enabled != 0 && netConfig.type != 0 && needsNet;
+  if (netConfig.enabled == 0 && needsNet)
     return flagcxNotSupported;
 #endif
   if (reqs->interBarrierCount < 0)
     return flagcxInvalidArgument;
   devComm->interBarrierCount = reqs->interBarrierCount;
-  const bool forceOneSidedNet = flagcxParamDeviceOneSidedForceNet() != 0;
   const bool hostMappedSignals =
       flagcxParamSignalHostEnable() != 0 &&
       sizeof(DefaultCompletionWord) == sizeof(uint64_t);
-  const bool oneSidedRequested =
-      reqs->interSignalCount > 0 || reqs->interCounterCount > 0;
-  const bool needsCompletionResources =
-      oneSidedRequested || reqs->interBarrierCount > 0;
   // IPC barrier layer
   if (reqs->intraBarrierCount > 0 || reqs->interBarrierCount > 0) {
     flagcxResult_t res = setupIpcBarriers(comm, devComm);
