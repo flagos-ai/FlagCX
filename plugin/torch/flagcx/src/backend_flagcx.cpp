@@ -4,6 +4,7 @@
  * Copyright (c) 2025 by DU. All Rights Reserved.
  ************************************************************************/
 #include "backend_flagcx.hpp"
+#include "flagcx_ascend.h"
 #include "utils_flagcx.hpp"
 #include <algorithm>
 #include <c10/util/ScopeExit.h>

@@ -8,6 +8,7 @@
 #include "comm.h"
 #include "cost_model.h"
 #include "dev_api_backend.h"
+#include "flagcx_ascend.h"
 #include "flagcx_hetero.h"
 #include "flagcx_kernel_internal.h"
 #include "flagcx_net.h"
