@@ -27,8 +27,6 @@ protected:
       if (results[r] == flagcxSuccess)
         results[r] = flagcxCommAllocInternalBuffer(comms[r], &buffers[r], 64,
                                                    flagcxInternalBufferDevice);
-      if (results[r] == flagcxSuccess)
-        results[r] = buildIpcPeerPointers(comms[r], buffers[r], 64).buildStatus;
     };
     std::thread first(initialize, 0), second(initialize, 1);
     first.join();

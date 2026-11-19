@@ -208,3 +208,68 @@ TEST(CommLifecycleTest, GroupErrorRetainsFinalizationForExplicitRetry) {
   EXPECT_EQ(comm.finalizeState.lastResult, flagcxRemoteError);
   EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
 }
+
+TEST(CommLifecycleTest,
+     DeviceDrainFailureClosesAdmissionAndRetriesBeforeImports) {
+  auto *saved = deviceAdaptor;
+  flagcxDeviceAdaptor provider = *saved;
+  deviceAdaptor = &provider;
+  struct Restore {
+    flagcxDeviceAdaptor *saved;
+    ~Restore() { deviceAdaptor = saved; }
+  } restore{saved};
+  static int syncs;
+  syncs = 0;
+  provider.setDevice = [](int) { return flagcxSuccess; };
+  provider.deviceSynchronize = [] {
+    return ++syncs == 1 ? flagcxUnhandledDeviceError : flagcxSuccess;
+  };
+  flagcxComm comm = {};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.deviceOrdinalValid = 1;
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxUnhandledDeviceError);
+  EXPECT_EQ(comm.finalizeState.commonPhase, flagcxFinalizeDrain);
+  EXPECT_EQ(flagcxCommRequireActive(&comm), flagcxInvalidUsage);
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(syncs, 2);
+}
+
+TEST(CommLifecycleTest, TunerContextsFinalizeAndFreeOnceAcrossAllAliases) {
+  LifecycleProviderGuard guard;
+  static int finalized[4], destroyed[4];
+  memset(finalized, 0, sizeof(finalized));
+  memset(destroyed, 0, sizeof(destroyed));
+  guard.provider.commFinalize = [](flagcxInnerComm_t inner) {
+    finalized[(uintptr_t)inner]++;
+    return flagcxSuccess;
+  };
+  guard.provider.commDestroy = [](flagcxInnerComm_t inner) {
+    destroyed[(uintptr_t)inner]++;
+    return flagcxSuccess;
+  };
+  flagcxTuner tuner = {};
+  tuner.destroy = [](void *) { return flagcxSuccess; };
+  flagcxComm_t comm = (flagcxComm_t)calloc(1, sizeof(flagcxComm));
+  comm->commType = flagcxCommunicatorHomo;
+  comm->tuner = &tuner;
+  comm->commMap.clear();
+  comm->homoCommMap.clear();
+  comm->homoBestCommMap.clear();
+  flagcxCommTag tag = {};
+  TunerCollCategory category = {};
+  comm->commMap[tag] = (flagcxInnerComm_t)1;
+  comm->homoCommMap[category] = (flagcxInnerComm_t)2;
+  comm->homoBestCommMap[category] = (flagcxInnerComm_t)2;
+  comm->homoComm = (flagcxInnerComm_t)1;
+  comm->homoInterComm = (flagcxInnerComm_t)2;
+  comm->tunerInnerComm = (flagcxInnerComm_t)3;
+  comm->clusterInterRankList.resize(2);
+  comm->clusterInterRankList[0].push_back(1);
+  comm->clusterVendorMap.resize(2);
+  ASSERT_EQ(flagcxCommFinalize(comm), flagcxSuccess);
+  for (int i = 1; i <= 3; i++)
+    EXPECT_EQ(finalized[i], 1);
+  ASSERT_EQ(flagcxCommDestroy(comm), flagcxSuccess);
+  for (int i = 1; i <= 3; i++)
+    EXPECT_EQ(destroyed[i], 1);
+}

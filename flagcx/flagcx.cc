@@ -2144,6 +2144,7 @@ fail_mr:
 
 flagcxResult_t flagcxOneSideSignalRegister(const flagcxComm_t comm, void *buff,
                                            size_t size, int ptrType) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   const bool isVmmAllocation =
       ptrType == FLAGCX_PTR_CUDA && flagcxOneSideRegistryRangeIsVmm(buff, size);
   return flagcxOneSideSignalRegisterInternal(comm, buff, size, ptrType,
@@ -2185,6 +2186,7 @@ flagcxResult_t flagcxOneSideSignalDeregister(flagcxComm_t comm) {
 
 flagcxResult_t flagcxOneSideStagingRegister(const flagcxComm_t comm, void *buff,
                                             size_t size) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (useHomoComm(comm) && !useHeteroComm()) {
     return flagcxSuccess;
   }
@@ -2468,8 +2470,8 @@ flagcxValidateMemoryRange(void *buff, size_t size,
 flagcxResult_t flagcxCommRegister(const flagcxComm_t comm, void *buff,
                                   size_t size, void **handle,
                                   flagcxMemAllocator_t allocator) {
-  FLAGCXCHECK(flagcxCommRequireActive(comm));
   if (comm != nullptr) {
+    FLAGCXCHECK(flagcxCommRequireActive(comm));
     FLAGCXCHECK(flagcxEnsureCommReady(comm));
   }
 
@@ -4101,6 +4103,10 @@ flagcxResult_t flagcxCommFinalize(flagcxComm_t comm) {
 }
 
 static flagcxResult_t flagcxCommDrainLocalWork(flagcxComm_t comm) {
+  // Device API kernels can run on user streams without producing FIFO work.
+  // Drain them while all proxy services and imported mappings are still live.
+  if (comm->deviceOrdinalValid)
+    FLAGCXCHECK(deviceAdaptor->deviceSynchronize());
   // Drain local producers before any rank enters transport shutdown.
   if (!useHomoComm(comm) || useHeteroComm())
     FLAGCXCHECK(flagcxCommQuiesce(comm));
@@ -4200,31 +4206,65 @@ static flagcxResult_t flagcxCommCloseLocalOwners(flagcxComm_t comm) {
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
+// Tuner maps and the selected handles can alias the same native context.
+// Enumerate maps in stable key order, then selected handles, without
+// allocation.
+static unsigned int flagcxCommVendorCount(flagcxComm_t comm) {
+  return 3 + (comm->tuner == NULL
+                  ? 0
+                  : comm->commMap.size() + comm->homoCommMap.size() +
+                        comm->homoBestCommMap.size());
+}
+
+static flagcxInnerComm_t flagcxCommVendorAt(flagcxComm_t comm,
+                                            unsigned int index) {
   if (comm->tuner != NULL) {
-    for (auto &item : comm->homoCommMap) {
-      if (item.second != NULL) {
-        FLAGCXCHECK(
-            cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(item.second));
-        if (comm->homoInterComm == item.second)
-          comm->homoInterComm = NULL;
-        if (comm->homoComm == item.second)
-          comm->homoComm = NULL;
-        item.second = NULL;
-      }
-    }
+    for (const auto &item : comm->commMap)
+      if (index-- == 0)
+        return item.second;
+    for (const auto &item : comm->homoCommMap)
+      if (index-- == 0)
+        return item.second;
+    for (const auto &item : comm->homoBestCommMap)
+      if (index-- == 0)
+        return item.second;
   }
-  if (comm->homoComm != NULL) {
-    FLAGCXCHECK(
-        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoComm));
-    if (comm->homoInterComm == comm->homoComm)
-      comm->homoInterComm = NULL;
+  if (index == 0)
+    return comm->homoComm;
+  if (index == 1)
+    return comm->homoInterComm;
+  return comm->tunerInnerComm;
+}
+
+static void flagcxCommClearVendorAliases(flagcxComm_t comm,
+                                         flagcxInnerComm_t inner) {
+  if (comm->homoComm == inner)
     comm->homoComm = NULL;
-  }
-  if (comm->homoInterComm != NULL) {
-    FLAGCXCHECK(
-        cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(comm->homoInterComm));
+  if (comm->homoInterComm == inner)
     comm->homoInterComm = NULL;
+  if (comm->tunerInnerComm == inner)
+    comm->tunerInnerComm = NULL;
+  if (comm->tuner != NULL) {
+    for (auto &item : comm->commMap)
+      if (item.second == inner)
+        item.second = NULL;
+    for (auto &item : comm->homoCommMap)
+      if (item.second == inner)
+        item.second = NULL;
+    for (auto &item : comm->homoBestCommMap)
+      if (item.second == inner)
+        item.second = NULL;
+  }
+}
+
+static flagcxResult_t flagcxCommDestroyHomoResources(flagcxComm_t comm) {
+  unsigned int count = flagcxCommVendorCount(comm);
+  for (unsigned int i = 0; i < count; i++) {
+    flagcxInnerComm_t inner = flagcxCommVendorAt(comm, i);
+    if (inner != NULL) {
+      FLAGCXCHECK(cclAdaptors[flagcxCCLAdaptorDevice]->commDestroy(inner));
+      flagcxCommClearVendorAliases(comm, inner);
+    }
   }
   return flagcxSuccess;
 }
@@ -4285,22 +4325,20 @@ static flagcxResult_t flagcxCommFinalizeVendors(flagcxComm_t comm) {
   if (comm->finalizeState.vendorFinalizeComplete)
     return flagcxSuccess;
   unsigned int index = 0;
-  flagcxCCLAdaptor *adaptor = cclAdaptors[flagcxCCLAdaptorDevice];
-  if (comm->tuner != NULL) {
-    for (const auto &item : comm->homoCommMap)
-      if (item.second != NULL)
-        FLAGCXCHECK(
-            flagcxCommFinalizeVendorOne(comm, adaptor, item.second, index++));
-  } else if (comm->homoComm != NULL) {
-    FLAGCXCHECK(
-        flagcxCommFinalizeVendorOne(comm, adaptor, comm->homoComm, index++));
+  unsigned int count = flagcxCommVendorCount(comm);
+  for (unsigned int i = 0; i < count; i++) {
+    flagcxInnerComm_t inner = flagcxCommVendorAt(comm, i);
+    if (inner == NULL)
+      continue;
+    int duplicate = 0;
+    for (unsigned int prior = 0; prior < i; prior++)
+      duplicate |= flagcxCommVendorAt(comm, prior) == inner;
+    if (!duplicate)
+      FLAGCXCHECK(flagcxCommFinalizeVendorOne(
+          comm, cclAdaptors[flagcxCCLAdaptorDevice], inner, index++));
   }
-  if (comm->homoInterComm != NULL && comm->homoInterComm != comm->homoComm)
-    FLAGCXCHECK(flagcxCommFinalizeVendorOne(comm, adaptor, comm->homoInterComm,
-                                            index++));
-  if (comm->hostComm != NULL)
-    FLAGCXCHECK(flagcxCommFinalizeVendorOne(
-        comm, cclAdaptors[flagcxCCLAdaptorHost], comm->hostComm, index++));
+  // Host runner callbacks finish in the device drain. Host adaptor Finalize
+  // may destroy its context, so retain it for the normal local Destroy path.
   comm->finalizeState.vendorFinalizeComplete = 1;
   return flagcxSuccess;
 }
@@ -4469,6 +4507,11 @@ flagcxResult_t flagcxCommDestroyLocal(flagcxComm_t comm) {
   }
   if (comm->ipcTable != comm->ipcTableInline)
     free(comm->ipcTable);
+  comm->homoCommMap.clear();
+  comm->homoBestCommMap.clear();
+  comm->commMap.clear();
+  std::vector<std::vector<int>>().swap(comm->clusterInterRankList);
+  std::vector<flagcxVendorType>().swap(comm->clusterVendorMap);
   free(comm);
   return flagcxSuccess;
 }
@@ -4533,6 +4576,7 @@ flagcxResult_t flagcxCommUserRank(const flagcxComm_t comm, int *rank) {
 
 flagcxResult_t flagcxCommFifoBuffer(const flagcxComm_t comm, int contextId,
                                     void **buffer) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   FLAGCXCHECK(flagcxEnsureCommReady(comm));
 
   if (buffer == nullptr) {

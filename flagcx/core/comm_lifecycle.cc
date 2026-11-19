@@ -1,5 +1,10 @@
 #include "comm_lifecycle.h"
+#include "adaptor.h"
+#include "alloc.h"
+#include "flagcx_kernel_internal.h"
 #include "global_comm.h"
+#include <sched.h>
+#include <stdlib.h>
 
 flagcxResult_t flagcxCommRequireActive(flagcxComm_t comm) {
   if (comm == NULL)
@@ -9,12 +14,6 @@ flagcxResult_t flagcxCommRequireActive(flagcxComm_t comm) {
              ? flagcxSuccess
              : flagcxInvalidUsage;
 }
-
-#include "adaptor.h"
-#include "alloc.h"
-#include "flagcx_kernel_internal.h"
-#include <sched.h>
-#include <stdlib.h>
 
 struct flagcxLifecycleBatch {
   pthread_mutex_t mutex;

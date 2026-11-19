@@ -54,6 +54,18 @@ FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner group and IPC errors' \
     "${cuda_experimental_runner_env[@]}" "$cuda_experimental_runner" \
     --gtest_filter='FlagCXCollTest.UniRunnerDagAlgorithmsRejectOuterGroup:FlagCXCollTest.UniRunnerIpcPreparationErrorConverges'
 
+lifecycle_xml=$(mktemp -d "${TMPDIR:-/tmp}/flagcx-unirunner-lifecycle-XXXXXX")
+FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner IPC lifecycle' \
+  "$mpi_runner" -np 4 --allow-run-as-root \
+    "${cuda_experimental_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=2 \
+    "$project_root/.github/scripts/ci/run_gtest_rank_xml.sh" \
+    "$lifecycle_xml" "$cuda_experimental_runner" \
+    --gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy
+python3 "$project_root/.github/scripts/ci/check_required_gtests.py" \
+  --case FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy \
+  "$lifecycle_xml/rank-0.xml" "$lifecycle_xml/rank-1.xml" \
+  "$lifecycle_xml/rank-2.xml" "$lifecycle_xml/rank-3.xml"
+
 FLAGCX_CI_MPI_LABEL='CUDA experimental UniRunner P2P outer group' \
   "$mpi_runner" -np 4 --allow-run-as-root \
     "${cuda_experimental_runner_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=8 \

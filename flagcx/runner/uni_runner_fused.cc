@@ -613,6 +613,7 @@ flagcxResult_t flagcxAllGatherGemm(const void *input, const void *weight,
                                    void *output, size_t mPerRank, size_t n,
                                    size_t k, flagcxDataType_t datatype,
                                    flagcxComm_t comm, flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   flagcxResult_t res = validateCommon(input, weight, output, mPerRank, n, k,
                                       datatype, comm, stream);
   if (comm == nullptr) {
@@ -745,6 +746,7 @@ flagcxResult_t flagcxGemmReduceScatter(const void *input, const void *weight,
                                        flagcxDataType_t datatype,
                                        flagcxRedOp_t op, flagcxComm_t comm,
                                        flagcxStream_t stream) {
+  FLAGCXCHECK(flagcxCommRequireActive(comm));
   flagcxResult_t res = validateCommon(input, weight, output, m, n, kPerRank,
                                       datatype, comm, stream);
   if (comm == nullptr) {

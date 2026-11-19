@@ -40,6 +40,7 @@
  ************************************************************************/
 
 #include "check.h"
+#include "comm_lifecycle_check.hpp"
 #include "device_api.h"
 #include "device_api_window.h"
 #include "flagcx.h"
@@ -183,7 +184,8 @@ int main(int argc, char *argv[]) {
              "totalRanks=%d intraSize=%d\n",
              totalProcs, intraSize);
     }
-    FLAGCXCHECK(flagcxCommDestroy(comm));
+    FLAGCXCHECK(flagcxTestFinalizeAndDestroyRankLocally(&comm, proc, totalProcs,
+                                                        splitComm));
     FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
     MPI_Finalize();
     return 1;
@@ -532,7 +534,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
   FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
-  FLAGCXCHECK(flagcxCommDestroy(comm));
+  FLAGCXCHECK(flagcxTestFinalizeAndDestroyRankLocally(&comm, proc, totalProcs,
+                                                      splitComm));
   free(hostBuff);
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 

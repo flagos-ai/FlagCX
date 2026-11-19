@@ -324,15 +324,22 @@ flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId);
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank);
 
-/* Finalize a communicator. flagcxCommFinalize flushes all issued
- * communications, and marks communicator state as flagcxInProgress. The state
- * will change to flagcxSuccess when the communicator is globally quiescent and
- * related resources are freed; then, calling flagcxCommDestroy can locally free
- * the rest of the resources (e.g. communicator itself) without blocking. */
+/* Stop accepting new work, drain issued work and close internal IPC imports.
+ * Every rank in the communicator must finalize. Internal IPC closure is
+ * confirmed with intra-node bootstrap; existing network shutdown may also
+ * synchronize remote ranks. Outside a group the call blocks to completion.
+ * For multiple ranks in one thread, enqueue their finalizers between
+ * flagcxGroupStart(NULL) and flagcxGroupEnd(NULL). A failed finalization keeps
+ * resources and rejects new work; retry finalization on all local ranks. */
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object.
-   The comm pointer is invalidated and must not be accessed after this call. */
+/* Release resources locally after successful finalization. Without an explicit
+ * Finalize this call performs it implicitly and may synchronize with peers.
+ * Same-process ranks in one clique can call Destroy sequentially: ownership is
+ * retained until the last request, which joins all finalizers and reclaims the
+ * clique. On success the supplied pointer is invalid. On failure it remains
+ * valid for retry; successfully released resources are never released twice.
+ * Destroy cannot be enqueued inside a FlagCX group. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations

@@ -253,7 +253,7 @@ TEST_F(StreamValueProbeTest, BuiltinFinalizeCanRetryAfterActiveSlotRelease) {
   EXPECT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxInvalidUsage);
   EXPECT_EQ(state.frees, 0);
   streamValueBufferPool.release(signals);
-  ASSERT_EQ(flagcxDeviceAdaptorPluginInit(), flagcxSuccess);
+  // The failed finalizer still owns its plugin reference; retry it directly.
   ASSERT_EQ(flagcxDeviceAdaptorPluginFinalize(), flagcxSuccess);
   EXPECT_EQ(state.allocations, state.frees);
 }
