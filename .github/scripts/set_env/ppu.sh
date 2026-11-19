@@ -94,7 +94,7 @@ flagcx_ci_configure_suite() {
         # BAREX has no remote signal atomic for Device API inter tests yet.
         # Keep the normal intra runs; forced-Net intra also needs that atomic.
         FLAGCX_CI_DEVICE_API_INTRA_ONLY=1
-        export CUDA_VISIBLE_DEVICES="$FLAGCX_CI_PXN_VISIBLE_DEVICES"
+        export CUDA_VISIBLE_DEVICES=0,1,2,3
         FLAGCX_CI_DEVICE_API_MPI_ARGS=(-x CUDA_VISIBLE_DEVICES)
         FLAGCX_CI_UNIFIED_IR_MPI_ARGS=(-x CUDA_VISIBLE_DEVICES)
       fi
@@ -145,6 +145,9 @@ flagcx_ci_run_suite_override() {
     FLAGCX_CI_TEST_LABEL="runner unit tests" \
       "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}"
     cd "$suite_dir"
+    local pccl_diagnostics_status=0
+    bash "$PROJECT_ROOT/.github/scripts/ci/run_ppu_pccl_diagnostics.sh" \
+      "$suite_dir" || pccl_diagnostics_status=$?
     FLAGCX_CI_MPI_LABEL="runner default" \
       env -u FLAGCX_USE_HOST_COMM -u FLAGCX_USE_HETERO_COMM \
       -u FLAGCX_CLUSTER_SPLIT_LIST -u FLAGCX_MEM_ENABLE \
@@ -210,7 +213,7 @@ flagcx_ci_run_suite_override() {
         ./build/bin/runner_mpi_tests \
         --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll
     fi
-    return
+    return "$pccl_diagnostics_status"
   fi
 
   FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0

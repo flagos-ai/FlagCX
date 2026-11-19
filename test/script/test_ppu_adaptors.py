@@ -390,6 +390,190 @@ int main(int argc, char **argv) {
                                             text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
 
+    @unittest.skipUnless(os.sys.platform == "linux", "ELF/glibc loading contract")
+    def test_pccl_nested_plugin_registers_with_the_query_runtime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tmp = Path(folder)
+            (tmp / "hggc_runtime.h").write_text(RUNTIME + RUNTIME_TEMPLATES)
+            (tmp / "hggc.h").write_text(DRIVER)
+            pccl = PCCL + "\n".join(
+                f'extern "C" inline pcclResult_t {name}({args}) {{ return pcclStatus; }}'
+                for name, args in PCCL_SIGNATURES.items()
+                if name != "pcclCommInitRank"
+            )
+            pccl += '\nextern "C" pcclResult_t pcclCommInitRank(pcclComm_t *, int, pcclUniqueId, int);\n'
+            (tmp / "pccl.h").write_text(pccl)
+            (tmp / "adaptor.h").write_text(PROJECT)
+            (tmp / "alloc.h").write_text('#include "adaptor.h"\n')
+            (tmp / "comm.h").write_text("")
+            (tmp / "runtime.cc").write_text(r"""
+extern "C" int __hggcRegisterFunction() { return RUNTIME_VERSION; }
+extern "C" int hggcFuncSetAttribute() { return RUNTIME_VERSION; }
+extern "C" int fixtureLegacyRegister() { return RUNTIME_VERSION; }
+""")
+            # Both SDK runtimes use this symbol version. The process-global
+            # native wrapper can still interpose their registration exports.
+            (tmp / "runtime.map").write_text("libhggcrt1.so { global: *; };\n")
+            (tmp / "wrapper.cc").write_text(r"""
+extern "C" int fixtureLegacyRegister();
+extern "C" int __hggcRegisterFunction() { return fixtureLegacyRegister(); }
+extern "C" int fixtureWrapperLoaded() { return 1; }
+""")
+            names = list(PCCL_SIGNATURES) + [
+                "pcclGetErrorString", "pcclGetLastError",
+                "pcclCommGetAsyncError", "pcclAllReduce"]
+            (tmp / "pccl.cc").write_text(
+                '#include "pccl.h"\n#include <cstdlib>\n#include <cstdio>\n#include <dlfcn.h>\n'
+                + "\n".join(f"auto volatile fixture_{name} = &{name};"
+                            for name in names) + r"""
+extern "C" int hggcFuncSetAttribute();
+static const char *setting(const char *name, const char *compat) {
+  const char *value = getenv(name);
+  return value != nullptr ? value : getenv(compat);
+}
+extern "C" pcclResult_t pcclCommInitRank(pcclComm_t *comm, int, pcclUniqueId, int) {
+  *comm = reinterpret_cast<pcclComm_t>(1);
+  const char *enabled = setting("PCCL_ENABLE_EXT_KERNEL", "NCCL_ENABLE_EXT_KERNEL");
+  if (enabled != nullptr && atoi(enabled) == 0) return pcclSuccess;
+  if (setting("PCCL_ALGO", "NCCL_ALGO") != nullptr ||
+      setting("PCCL_PROTO", "NCCL_PROTO") != nullptr) return pcclSuccess;
+  const char *name = setting("PCCL_EXT_KERNEL_PLUGIN", "NCCL_EXT_KERNEL_PLUGIN");
+  if (name == nullptr || *name == '\0') name = "libpccl-ext-kernel.so";
+  // Match the vendor's second-level dlopen, without DEEPBIND.
+  void *plugin = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+  if (plugin == nullptr) return pcclSuccess; // optional plugin
+  auto registered = reinterpret_cast<int (*)()>(dlsym(plugin, "fixtureRegisteredRuntime"));
+  if (registered == nullptr) return pcclInternalError;
+  const int registration = registered();
+  const int query = hggcFuncSetAttribute();
+  fprintf(stderr, "registered=%d queried=%d\n", registration, query);
+  dlclose(plugin);
+  return registration == query ? pcclSuccess : pcclInternalError;
+}
+""")
+            (tmp / "plugin.cc").write_text(r"""
+extern "C" int __hggcRegisterFunction();
+static int registeredRuntime;
+__attribute__((constructor)) static void registerKernel() {
+  registeredRuntime = __hggcRegisterFunction();
+}
+extern "C" int fixtureRegisteredRuntime() { return registeredRuntime; }
+""")
+            utils = (ROOT / "flagcx/service/utils.cc").read_text()
+            begin = utils.index("void *flagcxOpenLib(")
+            end = utils.index("\n}\n", begin) + 3
+            main = '#include <cassert>\n#include <cerrno>\n#include <cstring>\n#include <dlfcn.h>\n'
+            main += utils[begin:end]
+            main += '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
+            main += r"""
+extern "C" int fixtureWrapperLoaded();
+int main(int argc, char **argv) {
+  assert(argc == 2 && fixtureWrapperLoaded() == 1);
+  pcclUniqueId id{};
+  if (strcmp(argv[1], "ordinary") == 0) {
+    void *core = dlopen("libpccl.so.2", RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+    assert(core != nullptr);
+    auto init = reinterpret_cast<decltype(&pcclCommInitRank)>(dlsym(core, "pcclCommInitRank"));
+    pcclComm_t comm = nullptr;
+    // Reproduce the split before applying the adaptor's plugin preload.
+    assert(init(&comm, 4, id, 0) == pcclInternalError);
+    return 0;
+  }
+  if (strcmp(argv[1], "prebound") == 0) {
+    assert(dlopen("libpccl.so.2", RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND) != nullptr);
+    assert(dlopen("libpccl-ext-kernel.so", RTLD_NOW | RTLD_LOCAL) != nullptr);
+    flagcxInnerComm_t comm = nullptr;
+    // An earlier ordinary load cannot be rebound. Preserve the native error.
+    assert(ppupcclAdaptorCommInitRank(&comm, 4,
+        reinterpret_cast<flagcxInnerUniqueId_t>(&id), 0, nullptr) == flagcxInternalError);
+    free(comm);
+    return 0;
+  }
+  for (int i = 0; i < 3; ++i) {
+    flagcxInnerComm_t comm = nullptr;
+    assert(ppupcclAdaptorCommInitRank(&comm, 4,
+        reinterpret_cast<flagcxInnerUniqueId_t>(&id), 0, nullptr) == flagcxSuccess);
+    assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
+    free(comm);
+    void *plugin = dlopen("libpccl-ext-kernel.so", RTLD_NOW | RTLD_NOLOAD);
+    if (strcmp(argv[1], "optional") == 0) {
+      assert(plugin == nullptr);
+    } else {
+      // Our lifetime reference outlives the vendor's per-communicator one.
+      assert(plugin != nullptr);
+      auto registered = reinterpret_cast<int (*)()>(dlsym(plugin, "fixtureRegisteredRuntime"));
+      assert(registered != nullptr && registered() == 13);
+      dlclose(plugin);
+    }
+  }
+}
+"""
+            (tmp / "main.cc").write_text(main)
+            common = [CXX, "-std=c++17", "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
+                      f"-I{INCLUDE}", f"-I{ROOT / 'flagcx/include'}",
+                      f"-I{ROOT / 'flagcx/service/include'}"]
+            shared = ["-shared", "-fPIC", f"-L{tmp}", f"-Wl,-rpath,{tmp}"]
+            commands = [
+                common + shared + [f"-DRUNTIME_VERSION={version}",
+                    str(tmp / "runtime.cc"),
+                    f"-Wl,--version-script={tmp / 'runtime.map'}",
+                    f"-Wl,-soname,libhggcrt.{version}.so",
+                    "-o", str(tmp / f"libhggcrt.{version}.so")]
+                for version in (12, 13)
+            ]
+            commands += [
+                common + shared + [str(tmp / "wrapper.cc"), "-l:libhggcrt.12.so",
+                    "-o", str(tmp / "libwrapper.so")],
+                common + shared + [str(tmp / "pccl.cc"), "-l:libhggcrt.13.so",
+                    "-ldl", "-Wl,-soname,libpccl.so.2",
+                    "-o", str(tmp / "libpccl.so.2")],
+                common + shared + [str(tmp / "plugin.cc"), "-Wl,--no-as-needed",
+                    "-l:libpccl.so.2", "-l:libhggcrt.13.so",
+                    "-Wl,-soname,libpccl-ext-kernel.so",
+                    "-o", str(tmp / "libpccl-ext-kernel.so")],
+                common + [str(tmp / "main.cc"), f"-L{tmp}", "-lwrapper",
+                    f"-Wl,-rpath,{tmp}", "-ldl", "-pthread",
+                    "-o", str(tmp / "test")],
+            ]
+            for command in commands:
+                result = subprocess.run(command, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            # Each mode needs a fresh process: existing ELF relocations cannot
+            # be repaired by reopening an already bound library.
+            cases = [
+                ("ordinary", {}),
+                ("prebound", {}),
+                ("fixed", {}),
+                ("fixed", {"PCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so")}),
+                ("fixed", {"NCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so")}),
+                ("fixed", {"PCCL_EXT_KERNEL_PLUGIN": str(tmp / "libpccl-ext-kernel.so"),
+                           "NCCL_EXT_KERNEL_PLUGIN": str(tmp / "missing.so")}),
+                ("optional", {"PCCL_ENABLE_EXT_KERNEL": "0"}),
+                ("optional", {"PCCL_ENABLE_EXT_KERNEL": "0", "NCCL_ENABLE_EXT_KERNEL": "1"}),
+                ("optional", {"NCCL_ENABLE_EXT_KERNEL": "0"}),
+                ("optional", {"PCCL_EXT_KERNEL_PLUGIN": str(tmp / "missing.so")}),
+                ("optional", {"PCCL_EXT_KERNEL_PLUGIN": "STATIC_PLUGIN"}),
+                ("optional", {"PCCL_ALGO": "Ring"}),
+                ("optional", {"NCCL_PROTO": "Simple"}),
+            ]
+            for mode, settings in cases:
+                with self.subTest(mode=mode, settings=settings):
+                    env = {key: value for key, value in os.environ.items()
+                           if key not in ("PCCL_EXT_KERNEL_PLUGIN", "NCCL_EXT_KERNEL_PLUGIN",
+                                          "PCCL_ENABLE_EXT_KERNEL", "NCCL_ENABLE_EXT_KERNEL",
+                                          "PCCL_ALGO", "NCCL_ALGO", "PCCL_PROTO", "NCCL_PROTO")}
+                    env.update(LD_LIBRARY_PATH=str(tmp), **settings)
+                    result = subprocess.run([str(tmp / "test"), mode], env=env,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if mode == "ordinary":
+                        self.assertIn("registered=12 queried=13", result.stderr)
+                    elif mode == "prebound":
+                        self.assertIn("was already loaded", result.stderr)
+                        self.assertIn("registered=12 queried=13", result.stderr)
+                    elif mode == "fixed":
+                        self.assertEqual(result.stderr.count("registered=13 queried=13"), 3)
+
     def test_async_allocator_uses_current_pool_and_preserves_stream_and_errors(self):
         source = (ROOT / "flagcx/adaptor/device/hggc_adaptor.cc").read_text()
         start = source.index("flagcxResult_t hggcAdaptorDeviceMalloc(")

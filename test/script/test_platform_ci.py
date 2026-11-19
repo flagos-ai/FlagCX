@@ -525,7 +525,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             text=True,
         )
         self.assertIn("COMPILE_KERNEL=1", configured.stdout)
-        self.assertIn("0,3,4,7 -x CUDA_VISIBLE_DEVICES", configured.stdout)
+        self.assertIn("0,1,2,3 -x CUDA_VISIBLE_DEVICES", configured.stdout)
 
     def test_device_test_targets_require_kernel_mode(self):
         cases = (

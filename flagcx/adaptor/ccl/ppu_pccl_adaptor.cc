@@ -6,7 +6,10 @@
 #include "alloc.h"
 #include "comm.h"
 #include "dlsymbols.h"
+#include <cstdlib>
 #include <mutex>
+#include <string>
+#include <strings.h>
 #include <utility>
 
 namespace {
@@ -40,15 +43,20 @@ struct ppupcclSymbols {
 #undef PPU_PCCL_DECLARE
 };
 
+static int ppupcclLoadFlags() {
+  int flags = RTLD_NOW | RTLD_LOCAL;
+#ifdef RTLD_DEEPBIND
+  flags |= RTLD_DEEPBIND;
+#endif
+  return flags;
+}
+
 static flagcxResult_t ppupcclLoadApi(const ppupcclSymbols **api) {
   static std::once_flag once;
   static ppupcclSymbols symbols = {};
   static flagcxResult_t result = flagcxSystemError;
   std::call_once(once, [] {
-    int flags = RTLD_NOW | RTLD_LOCAL;
-#ifdef RTLD_DEEPBIND
-    flags |= RTLD_DEEPBIND;
-#endif
+    const int flags = ppupcclLoadFlags();
     // The existing CCL_HOME/lib rpath selects the configured SDK. Keep the
     // handle for process lifetime: PCCL owns asynchronous work and threads.
     void *handle = nullptr;
@@ -85,6 +93,84 @@ static flagcxResult_t ppupcclLoadApi(const ppupcclSymbols **api) {
   });
   *api = result == flagcxSuccess ? &symbols : nullptr;
   return result;
+}
+
+static const char *ppupcclPluginSetting(const char *name,
+                                        const char *compatName) {
+  const char *value = std::getenv(name);
+  return value != nullptr ? value : std::getenv(compatName);
+}
+
+static void ppupcclPreloadKernelPlugin(const ppupcclSymbols *api) {
+  static std::once_flag once;
+  // Retain our reference after PCCL closes a communicator's plugin handle.
+  // The runtime's registered host kernel entry points belong to this library.
+  static void *pluginHandle = nullptr;
+  std::call_once(once, [api] {
+    const char *enabled = ppupcclPluginSetting("PCCL_ENABLE_EXT_KERNEL",
+                                               "NCCL_ENABLE_EXT_KERNEL");
+    if (enabled != nullptr && *enabled != '\0' &&
+        std::strtoll(enabled, nullptr, 0) == 0)
+      return;
+    if (ppupcclPluginSetting("PCCL_ALGO", "NCCL_ALGO") != nullptr ||
+        ppupcclPluginSetting("PCCL_PROTO", "NCCL_PROTO") != nullptr)
+      return;
+
+    const char *configured = ppupcclPluginSetting("PCCL_EXT_KERNEL_PLUGIN",
+                                                  "NCCL_EXT_KERNEL_PLUGIN");
+    if (configured != nullptr && strncasecmp(configured, "STATIC_PLUGIN",
+                                             sizeof("STATIC_PLUGIN") - 1) == 0)
+      return;
+
+    const char *name = configured != nullptr && *configured != '\0'
+                           ? configured
+                           : "libpccl-ext-kernel.so";
+    auto open = [](const char *path) {
+#ifdef RTLD_NOLOAD
+      void *resident = flagcxOpenLib(path, RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD,
+                                     [](const char *, int, const char *) {});
+      if (resident != nullptr) {
+        INFO(FLAGCX_INIT,
+             "PPU/PCCL: kernel plugin %s was already loaded; retaining its "
+             "existing symbol bindings",
+             path);
+        return resident;
+      }
+#endif
+      INFO(FLAGCX_INIT, "PPU/PCCL: preloading kernel plugin %s with flags %#x",
+           path, ppupcclLoadFlags());
+      return flagcxOpenLib(path, ppupcclLoadFlags(),
+                           [](const char *p, int, const char *message) {
+                             INFO(FLAGCX_INIT,
+                                  "PPU/PCCL: optional kernel plugin %s: %s", p,
+                                  message);
+                           });
+    };
+
+    // PCCL later uses an ordinary dlopen for its optional plugin. Load it
+    // first with the same scope as PCCL so kernel registration and attribute
+    // queries do not bind to different HGGC runtimes through global wrappers.
+    // Prefer the selected PCCL installation for the default plugin.
+    if (configured == nullptr || *configured == '\0') {
+      Dl_info info = {};
+      if (dladdr(reinterpret_cast<const void *>(api->pcclGetVersion), &info) &&
+          info.dli_fname != nullptr) {
+        std::string path(info.dli_fname);
+        const auto slash = path.find_last_of('/');
+        if (slash != std::string::npos) {
+          path.resize(slash + 1);
+          path += name;
+          pluginHandle = open(path.c_str());
+        }
+      }
+    }
+    if (pluginHandle == nullptr)
+      pluginHandle = open(name);
+    if (pluginHandle != nullptr) {
+      INFO(FLAGCX_INIT, "PPU/PCCL: retained kernel plugin %s", name);
+    }
+    // Missing plugins remain optional; PCCL selects its built-in kernels.
+  });
 }
 
 #undef PPU_PCCL_SYMBOLS
@@ -254,6 +340,9 @@ flagcxResult_t
 ppupcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                            flagcxInnerUniqueId_t commId, int rank,
                            struct bootstrapState * /*bootstrap*/) {
+  const ppupcclSymbols *api = nullptr;
+  FLAGCXCHECK(ppupcclLoadApi(&api));
+  ppupcclPreloadKernelPlugin(api);
   if (*comm == NULL) {
     FLAGCXCHECK(flagcxCalloc(comm, 1));
   }

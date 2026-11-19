@@ -1,6 +1,10 @@
 import json
 import subprocess
 import unittest
+import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -10,6 +14,61 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PpuCiRegressionTest(unittest.TestCase):
+    def test_pccl_diagnostics_runs_all_modes_and_preserves_failures(self):
+        script = REPO_ROOT / ".github/scripts/ci/run_ppu_pccl_diagnostics.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / "mpi"
+            fake.write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+
+args = sys.argv[1:]
+exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
+               if i > 0 and args[i - 1] == "-x")
+assert exports["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
+assert exports["FLAGCX_CI_RUNNER_BYTES"] == "4194304"
+assert exports["FLAGCX_CI_EXPECT_RUNNER_MODE"] == "HOMO"
+assert exports["LD_DEBUG"] == "libs,bindings,versions"
+assert os.environ["FLAGCX_CI_TEST_MAX_ATTEMPTS"] == "1"
+assert os.environ["FLAGCX_CI_REQUIRE_GTEST_PASS"] == "1"
+for name in ("FLAGCX_USE_HETERO_COMM", "PCCL_EXT_KERNEL_PLUGIN", "PCCL_ALGO"):
+    assert name not in os.environ
+with open(os.environ["CALL_LOG"], "a") as out:
+    out.write(json.dumps(exports | {"filter": args[-1]}) + "\\n")
+mode = os.environ["FIXTURE_MODE"]
+if mode != "missing-bindings":
+    Path(exports["LD_DEBUG_OUTPUT"] + ".123").write_text(
+        "binding file libpccl-ext-kernel.so to libhggcrt.13.so: symbol __hggcRegisterFunction\\n")
+attempt = Path(os.environ["FLAGCX_CI_LOG_DIR"]) / "attempt-1.log"
+attempt.write_text("[  PASSED  ] 1 test.\\n" +
+    ("PPU/PCCL: retained kernel plugin libpccl-ext-kernel.so\\n"
+     if exports["PCCL_ENABLE_EXT_KERNEL"] == "1" and mode != "missing-plugin" else ""))
+if mode == "failure" and exports["PCCL_ENABLE_EXT_KERNEL"] == "1":
+    sys.exit(139)
+""")
+            fake.chmod(0o755)
+            for mode in ("pass", "failure", "missing-bindings", "missing-plugin"):
+                with self.subTest(mode=mode):
+                    calls = root / f"{mode}.jsonl"
+                    env = dict(os.environ, MPI_RUNNER=str(fake), FIXTURE_MODE=mode,
+                               CALL_LOG=str(calls), FLAGCX_CI_LOG_DIR=str(root / mode),
+                               FLAGCX_USE_HETERO_COMM="1",
+                               PCCL_EXT_KERNEL_PLUGIN="unexpected.so", PCCL_ALGO="Ring")
+                    result = subprocess.run(["bash", str(script), str(root)], env=env,
+                                            text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0 if mode == "pass" else 1,
+                                     result.stdout + result.stderr)
+                    invoked = [json.loads(line) for line in calls.read_text().splitlines()]
+                    self.assertEqual(len(invoked), 4)
+                    self.assertEqual([case["PCCL_ENABLE_EXT_KERNEL"] for case in invoked],
+                                     ["1", "1", "0", "0"])
+                    self.assertEqual(len({case["LD_DEBUG_OUTPUT"] for case in invoked}), 4)
+                    for case in invoked:
+                        self.assertIn("FlagCXCollTest.AllReduce", case["filter"])
+                    self.assertIn("AllGather", invoked[1]["filter"])
+                    self.assertIn("AllGather", invoked[3]["filter"])
+
     def test_barex_main_adaptor_exposes_runtime_multichannel_transport(self):
         barex = (
             REPO_ROOT / "flagcx/adaptor/net/barex_adaptor.cc"
