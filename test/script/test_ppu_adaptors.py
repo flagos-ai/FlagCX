@@ -225,7 +225,7 @@ void *flagcxOpenLib(const char *path, int flags,
   return dlopen(nullptr, RTLD_NOW);
 }
 """ + source)
-            command = [CXX, "-std=c++17", "-DUSE_PPU_ADAPTOR",
+            command = [CXX, "-std=c++11", "-DUSE_PPU_ADAPTOR",
                        f"-I{tmp}", f"-I{INCLUDE}",
                        f"-I{ROOT / 'flagcx/include'}", str(cpp),
                        f"-I{ROOT / 'flagcx/service/include'}", "-rdynamic",
@@ -407,7 +407,7 @@ int main(int argc, char **argv) {
 }
 """
             (tmp / "main.cc").write_text(main)
-            common = [CXX, "-std=c++17", "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
+            common = [CXX, "-std=c++11", "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
                       f"-I{INCLUDE}", f"-I{ROOT / 'flagcx/include'}",
                       f"-I{ROOT / 'flagcx/service/include'}"]
             commands = [
@@ -550,7 +550,7 @@ int main(int argc, char **argv) {
 }
 """
             (tmp / "main.cc").write_text(main)
-            common = [CXX, "-std=c++17", "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
+            common = [CXX, "-std=c++11", "-DUSE_PPU_ADAPTOR", f"-I{tmp}",
                       f"-I{INCLUDE}", f"-I{ROOT / 'flagcx/include'}",
                       f"-I{ROOT / 'flagcx/service/include'}"]
             shared = ["-shared", "-fPIC", f"-L{tmp}", f"-Wl,-rpath,{tmp}"]

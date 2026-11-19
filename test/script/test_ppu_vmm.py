@@ -1,4 +1,4 @@
-"""Compile PPU's private bookkeeping as C/C++ and inject provider failures.
+"""Compile PPU's private bookkeeping as C11/C++11 and inject failures.
 
 The fake driver tracks VA, mappings, and handle references independently so a
 lost ownership record, a double release, or an early release fails the test.
@@ -60,6 +60,16 @@ static HGresult hgMemAddressReserve(HGdeviceptr *p, size_t size, size_t alignmen
                                     HGdeviceptr requested, unsigned long long flags) {
   (void)alignment; (void)requested; (void)flags;
   if (fail(RESERVE)) return HGGC_ERROR_UNKNOWN;
+  // Reuse freed VA, but never overlap a reservation still owned by a caller.
+  int occupied;
+  do {
+    occupied = 0;
+    for (int i = 0; i < 256; i++)
+      if (reservations[i].base && nextVa < reservations[i].base + reservations[i].size &&
+          reservations[i].base < nextVa + size) {
+        nextVa += 0x100000; occupied = 1; break;
+      }
+  } while (occupied);
   for (int i = 0; i < 256; i++) if (!reservations[i].base) {
     *p = nextVa; nextVa += 0x100000;
     reservations[i].base = *p; reservations[i].size = size; return 0;
@@ -71,7 +81,9 @@ static HGresult hgMemAddressFree(HGdeviceptr p, size_t size) {
   for (int i = 0; i < 256; i++)
     assert(!mappings[i].base || mappings[i].base < p || mappings[i].base >= p + size);
   for (int i = 0; i < 256; i++) if (reservations[i].base == p) {
-    assert(reservations[i].size == size); reservations[i].base = 0; return 0;
+    assert(reservations[i].size == size); reservations[i].base = 0;
+    if (p < nextVa) nextVa = p;
+    return 0;
   }
   abort();
 }
@@ -161,6 +173,70 @@ static void reset(void) {
 static void releaseAllocation(void *ptr) {
   int found = 0;
   assert(hggcVmmFreeAllocation(ptr, &found) == flagcxSuccess && found);
+}
+static int vaReserved(void *ptr) {
+  for (int i = 0; i < 256; i++)
+    if (reservations[i].base == (uintptr_t)ptr) return 1;
+  return 0;
+}
+static void failedFreeKeepsAllocationIdentity(void) {
+  HGmemAllocationProp prop = {0};
+  for (int failAt = 1; failAt <= 2; failAt++) {
+    reset(); void *a = NULL, *b = NULL, *reused = NULL;
+    int found = 0, count = 0;
+    assert(hggcVmmAllocate(&a, 12288, 4096, 4096, &prop, 0) == flagcxSuccess);
+    failures[RELEASE] = calls[RELEASE] + failAt;
+    assert(hggcVmmFreeAllocation(a, &found) == flagcxUnhandledDeviceError && found);
+    assert(vaReserved(a) && calls[FREE_VA] == 0);
+    // User-owned failed frees must not be collected by allocation rollback.
+    int releases = calls[RELEASE];
+    assert(hggcVmmRetryPending(0) == flagcxSuccess && calls[RELEASE] == releases);
+    assert(hggcVmmAllocate(&b, 12288, 4096, 4096, &prop, 0) == flagcxSuccess);
+    assert(b != a && vaReserved(a) && vaReserved(b));
+    // Retry A while B is live. Successful releases must not be repeated.
+    releaseAllocation(a);
+    assert(calls[RELEASE] - releases == 4 - failAt);
+    assert(!vaReserved(a) && vaReserved(b));
+    assert(hggcVmmSegmentCount(b, 12288, &count) == flagcxSuccess && count == 3);
+    for (int i = 1; i <= 3; i++) assert(refs[i] == 0);
+    for (int i = 4; i <= 6; i++) assert(refs[i] == 2);
+    // Reuse is safe only after A's cleanup has completed.
+    assert(hggcVmmAllocate(&reused, 12288, 4096, 4096, &prop, 0) == flagcxSuccess);
+    assert(reused == a && reused != b);
+    releaseAllocation(reused); releaseAllocation(b); clean();
+  }
+}
+static void vaFreeRetryDoesNotReleaseHandlesAgain(void) {
+  reset(); HGmemAllocationProp prop = {0}; void *a = NULL, *b = NULL;
+  int found = 0, count = 0;
+  assert(hggcVmmAllocate(&a, 12288, 4096, 4096, &prop, 0) == flagcxSuccess);
+  failures[FREE_VA] = calls[FREE_VA] + 1;
+  assert(hggcVmmFreeAllocation(a, &found) == flagcxUnhandledDeviceError && found);
+  assert(vaReserved(a));
+  for (int i = 1; i <= 3; i++) assert(refs[i] == 0);
+  assert(hggcVmmAllocate(&b, 12288, 4096, 4096, &prop, 0) == flagcxSuccess && b != a);
+  int releases = calls[RELEASE], unmaps = calls[UNMAP], frees = calls[FREE_VA];
+  releaseAllocation(a);
+  assert(calls[RELEASE] == releases && calls[UNMAP] == unmaps && calls[FREE_VA] == frees + 1);
+  assert(hggcVmmSegmentCount(b, 12288, &count) == flagcxSuccess && count == 3);
+  releaseAllocation(b); clean();
+}
+static void failedRollbackKeepsVaUntilHandleCleanup(void) {
+  reset(); HGmemAllocationProp prop = {0}; void *a = (void *)1, *b = NULL, *reused = NULL;
+  failures[MAP] = 2; failures[RELEASE] = 2;
+  assert(hggcVmmAllocate(&a, 12288, 4096, 4096, &prop, 0) == flagcxUnhandledDeviceError);
+  assert(a == NULL && hggcVmmAllocations && hggcVmmAllocations->pendingCleanup);
+  void *failedBase = (void *)hggcVmmAllocations->base;
+  assert(vaReserved(failedBase) && calls[FREE_VA] == 0 && refs[1] == 0 && refs[2] == 1);
+  // A different device's allocation cannot collect this pending cleanup.
+  assert(hggcVmmRetryPending(1) == flagcxSuccess && vaReserved(failedBase));
+  assert(hggcVmmAllocate(&b, 4096, 4096, 4096, &prop, 1) == flagcxSuccess && b != failedBase);
+  int releases = calls[RELEASE];
+  assert(hggcVmmRetryPending(0) == flagcxSuccess && calls[RELEASE] == releases + 1);
+  assert(!vaReserved(failedBase) && vaReserved(b) && refs[2] == 0 && refs[3] == 1);
+  assert(hggcVmmAllocate(&reused, 4096, 4096, 4096, &prop, 0) == flagcxSuccess);
+  assert(reused == failedBase);
+  releaseAllocation(reused); releaseAllocation(b); clean();
 }
 static struct hggcVmmBundle *describe(void *ptr, size_t size, size_t expectedOffset,
                                       size_t expectedCount) {
@@ -337,6 +413,9 @@ int main(int argc, char **argv) {
   else if (!strcmp(argv[1], "alignment")) segmentAndSlotAlignment();
   else if (!strcmp(argv[1], "policy")) policyAndValidation();
   else if (!strcmp(argv[1], "provenance")) pointerProvenance();
+  else if (!strcmp(argv[1], "free_identity")) failedFreeKeepsAllocationIdentity();
+  else if (!strcmp(argv[1], "va_free_retry")) vaFreeRetryDoesNotReleaseHandlesAgain();
+  else if (!strcmp(argv[1], "rollback_identity")) failedRollbackKeepsVaUntilHandleCleanup();
   else abort();
   clean(); return 0;
 }
@@ -357,7 +436,7 @@ class PpuVmmHostTest(unittest.TestCase):
         describe = production[start:end].replace("const flagcxSymSegmentMeta", "const struct flagcxSymSegmentMeta")
         source.write_text(SOURCE.replace("/* PRODUCTION_DESCRIBE */", describe))
         cls.binaries = []
-        for compiler, language, standard in ((CC, "c", "c11"), (CXX, "c++", "c++17")):
+        for compiler, language, standard in ((CC, "c", "c11"), (CXX, "c++", "c++11")):
             binary = root / ("test-" + language)
             result = subprocess.run([
                 compiler, "-x", language, "-std=" + standard, "-pthread",
@@ -383,6 +462,15 @@ class PpuVmmHostTest(unittest.TestCase):
 
     def test_failed_allocation_cleanup_retries_on_owning_device(self):
         self.run_case("allocation_rollback")
+
+    def test_failed_free_keeps_identity_until_cleanup_completes(self):
+        self.run_case("free_identity")
+
+    def test_va_free_retry_does_not_repeat_handle_release(self):
+        self.run_case("va_free_retry")
+
+    def test_failed_rollback_keeps_va_until_owned_handles_are_released(self):
+        self.run_case("rollback_identity")
 
     def test_interior_descriptions_and_free_retries(self):
         self.run_case("free_and_describe")

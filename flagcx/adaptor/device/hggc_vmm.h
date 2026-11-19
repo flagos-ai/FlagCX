@@ -109,8 +109,9 @@ static flagcxResult_t hggcVmmSetAccess(uintptr_t address, size_t size) {
   return flagcxSuccess;
 }
 
-// Caller holds the allocation mutex. Unmap all aliases before releasing VA
-// or handles, and clear each ownership flag only after its release succeeds.
+// Caller holds the allocation mutex. Keep VA reserved until every owned
+// handle is released so a failed cleanup cannot share its base with a new
+// allocation. Clear each ownership flag only after its release succeeds.
 static flagcxResult_t hggcVmmReleaseAllocation(struct hggcVmmAllocation *a) {
   for (size_t i = 0; i < a->count; i++) {
     struct hggcVmmSegment *s = &a->segments[i];
@@ -119,16 +120,16 @@ static flagcxResult_t hggcVmmReleaseAllocation(struct hggcVmmAllocation *a) {
       s->mapped = 0;
     }
   }
-  if (a->vaOwned) {
-    FLAGCXCHECK(hggcVmmFreeAddress(a->base, a->size));
-    a->vaOwned = 0;
-  }
   for (size_t i = 0; i < a->count; i++) {
     struct hggcVmmSegment *s = &a->segments[i];
     if (s->handleOwned) {
       HGDRVCHECK(hgMemRelease(s->handle));
       s->handleOwned = 0;
     }
+  }
+  if (a->vaOwned) {
+    FLAGCXCHECK(hggcVmmFreeAddress(a->base, a->size));
+    a->vaOwned = 0;
   }
   return flagcxSuccess;
 }
