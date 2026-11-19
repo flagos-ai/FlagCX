@@ -45,13 +45,9 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
 #define FLAGCX_DEVICE_COMPILE 1
 #endif
 
-// Use the SDK's device trap on CUDA/MUSA device passes. A generic LLVM trap
-// can lower to a host abort symbol on MUSA. Keep host-pass failure paths on
-// the host builtin, including host/device constexpr conversion functions.
-#if defined(__CUDA_ARCH__) ||                                              \
-    (defined(USE_MUSA_ADAPTOR) &&                                          \
-     (defined(__MTGPU__) ||                                                \
-      (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)))
+// Select the SDK trap only in the device compilation pass.
+#if defined(__CUDA_ARCH__) || \
+    (defined(__MUSA_ARCH__) && __MUSA_ARCH__ > 0)
 #define FLAGCX_DEVICE_TRAP() __trap()
 #else
 #define FLAGCX_DEVICE_TRAP() __builtin_trap()
