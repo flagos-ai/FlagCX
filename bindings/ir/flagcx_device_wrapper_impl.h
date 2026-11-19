@@ -113,31 +113,51 @@ flagcxDevCommGetIntraSize(const void FLAGCX_IR_GLOBAL_PTR *commOpaque) {
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopAnyInitBlock(void *coopOpaque) {
   flagcxCoopAny *coop = (flagcxCoopAny *)coopOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (coop) flagcxCoopAny(flagcxCoopBlock());
+#else
+  *coop = flagcxCoopAny(flagcxCoopBlock());
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopAnyInitWarp(void *coopOpaque) {
   flagcxCoopAny *coop = (flagcxCoopAny *)coopOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (coop) flagcxCoopAny(flagcxCoopWarp());
+#else
+  *coop = flagcxCoopAny(flagcxCoopWarp());
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopAnyInitThread(void *coopOpaque) {
   flagcxCoopAny *coop = (flagcxCoopAny *)coopOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (coop) flagcxCoopAny(flagcxCoopThread());
+#else
+  *coop = flagcxCoopAny(flagcxCoopThread());
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopAnyInitTileSpan(void *coopOpaque, int t0, int nTiles, int id) {
   flagcxCoopAny *coop = (flagcxCoopAny *)coopOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (coop) flagcxCoopAny(flagcxCoopTileSpan(t0, nTiles, id));
+#else
+  *coop = flagcxCoopAny(flagcxCoopTileSpan(t0, nTiles, id));
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
 flagcxCoopAnyInitLanes(void *coopOpaque, flagcxLaneMask_t laneMask) {
   flagcxCoopAny *coop = (flagcxCoopAny *)coopOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (coop) flagcxCoopAny(flagcxCoopLanes(laneMask));
+#else
+  *coop = flagcxCoopAny(flagcxCoopLanes(laneMask));
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR int
@@ -311,8 +331,13 @@ flagcxIntraBarrierSessionInit(void *sessionOpaque, const void *coopOpaque,
   const flagcxCoopAny *coop = (const flagcxCoopAny *)coopOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
   const flagcxTeam *team = (const flagcxTeam *)teamOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (&(session->bar)) flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny>(
       *coop, *comm, *team, index, multimem);
+#else
+  session->bar = flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny>(
+      *coop, *comm, *team, index, multimem);
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -352,8 +377,13 @@ flagcxInterBarrierSessionInit(void *sessionOpaque, const void *coopOpaque,
   const flagcxCoopAny *coop = (const flagcxCoopAny *)coopOpaque;
   const flagcxDevNet *trans = (const flagcxDevNet *)transOpaque;
   const flagcxTeam *team = (const flagcxTeam *)teamOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (&(session->bar)) flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny>(
       *coop, *trans, *team, index);
+#else
+  session->bar = flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny>(
+      *coop, *trans, *team, index);
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -377,8 +407,13 @@ flagcxWorldBarrierSessionInit(void *sessionOpaque, const void *coopOpaque,
   flagcxBarrierSession_C *session = (flagcxBarrierSession_C *)sessionOpaque;
   const flagcxCoopAny *coop = (const flagcxCoopAny *)coopOpaque;
   const flagcxDevNet *trans = (const flagcxDevNet *)transOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (&(session->bar)) flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny>(
       *coop, tag, *trans, index, multimem);
+#else
+  session->bar = flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny>(
+      *coop, tag, *trans, index, multimem);
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -398,7 +433,11 @@ flagcxDevNetInitC(void FLAGCX_IR_GLOBAL_PTR *transOpaque,
                   const void FLAGCX_IR_GLOBAL_PTR *commOpaque, int idx) {
   flagcxDevNet *trans = (flagcxDevNet *)transOpaque;
   const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+#if FLAGCX_DEVICE_HAS_PLACEMENT_NEW
   ::new (trans) flagcxDevNet(*comm, idx);
+#else
+  *trans = flagcxDevNet(*comm, idx);
+#endif
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t

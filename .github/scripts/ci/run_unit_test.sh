@@ -308,22 +308,29 @@ run_device_api() {
   FLAGCX_CI_MPI_LABEL="device_api intra" \
     "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
     build/bin/test_device_api_intra "${flags[@]}"
-  FLAGCX_CI_MPI_LABEL="device IR intra" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
-    build/bin/test_device_ir_intra "${flags[@]}"
+  # A platform whose test Makefile compiles the unified-IR or cross-node
+  # cases out (no build/bin entry produced) opts out per step instead of
+  # failing on a binary it deliberately does not build. Both default to 1.
+  if [[ "${FLAGCX_CI_DEVICE_API_IR:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="device IR intra" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
+      build/bin/test_device_ir_intra "${flags[@]}"
+  fi
 
-  FLAGCX_CI_MPI_LABEL="device_api inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_api_inter "${flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_api_inter "${flags[@]}"
-  FLAGCX_CI_MPI_LABEL="device IR inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_inter "${flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_inter "${flags[@]}"
+  if [[ "${FLAGCX_CI_DEVICE_API_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="device_api inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_api_inter "${flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_api_inter "${flags[@]}"
+    FLAGCX_CI_MPI_LABEL="device IR inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_inter "${flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_inter "${flags[@]}"
+  fi
 }
 
 run_device_api_unified_ir() {
@@ -388,6 +395,12 @@ run_device_api_unified_ir() {
 
   # Keep P2P enabled so the intra test covers signal/counter buffers and their
   # shadows. The INTER team below crosses the two logical nodes through NET.
+  # UNIFIED_IR_NP, when a platform set_env exports it, overrides the rank
+  # count for BOTH entries of the unified suite - this runner line and the
+  # Makefile recipe - so the two can never disagree (MC952 review P1:
+  # only the Makefile consumed the knob and CI kept running four ranks).
+  # Platforms that do not export it keep the historical
+  # $FLAGCX_CI_INTRA_NP invocation byte for byte.
   if [[ "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 ]]; then
     intra_env+=(-x XSHMEM_SYMMETRIC_SIZE)
     # S23 fans each payload out across 18 combinations. Keep the XSHMEM test
@@ -403,31 +416,46 @@ run_device_api_unified_ir() {
   fi
 
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
+    "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
 
-  FLAGCX_CI_MPI_LABEL="unified IR inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${inter_flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${inter_flags[@]}"
+  # The inter steps exercise the one-sided NET transport across two logical
+  # nodes.  A platform whose Device IR bindings declare the NET arm absent
+  # (Ascend: FLAGCX_DEVICE_HAS_NET_TRANSPORT=0) does not even build
+  # test_device_ir_unified_inter, so both inter steps are gated off for it via
+  # FLAGCX_CI_UNIFIED_IR_INTER.  The default of 1 keeps every other platform's
+  # matrix byte-for-byte unchanged.
+  if [[ "${FLAGCX_CI_UNIFIED_IR_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${inter_flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${inter_flags[@]}"
+  fi
 
   # Force one-sided data/signal operations through Net. Barriers retain their
   # configured transport; these runs validate the Net fallback for S18-S25.
-  FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
-    "${intra_fallback_env[@]}" \
-    build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+  # A platform with no NET transport gates both fallback runs off as well: the
+  # intra fallback follows FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA and the inter
+  # fallback follows the same INTER gate as above.
+  if [[ "${FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
+      "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root \
+      "${intra_fallback_env[@]}" \
+      build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+  fi
 
-  FLAGCX_CI_MPI_LABEL="unified IR inter forced fallback" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
-    "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${fallback_flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
-    "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
+  if [[ "${FLAGCX_CI_UNIFIED_IR_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR inter forced fallback" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
+      "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${fallback_flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
+      "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
+  fi
 }
 
 run_suite() {

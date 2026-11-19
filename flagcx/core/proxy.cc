@@ -2659,6 +2659,16 @@ static flagcxResult_t flagcxKernelWorkerInit(void *state) {
       comm->proxyState->kernelState.fifos[contextId]->flagcxFifoInit(), res,
       done);
   arg->fifo = comm->proxyState->kernelState.fifos[contextId];
+  // hostGetDevicePointer is an optional adaptor slot (see
+  // device_plugin_load.cc and the null checks in default_dev_api_backend.cc
+  // and flagcxStreamValueSupported); calling it blind is a null jump, not an
+  // error. Fail the worker init instead so flagcxProxyInit reports it.
+  if (deviceAdaptor->hostGetDevicePointer == nullptr) {
+    WARN("flagcxKernelWorkerService: the device adaptor provides no "
+         "hostGetDevicePointer; the kernel proxy cannot map its FIFO");
+    res = flagcxNotSupported;
+    goto done;
+  }
   FLAGCXCHECKGOTO(
       deviceAdaptor->hostGetDevicePointer(
           &comm->fifoBuffers[contextId],
