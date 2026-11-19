@@ -123,19 +123,8 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             )
             return result, log.read_text()
 
-    def test_independent_phases_run_after_failures(self):
-        for suite, failed, required in (
-            ("kernel", "kernel unit tests", ("kernel MPI tests",)),
-        ):
-            with self.subTest(suite=suite, failed=failed):
-                result, calls = self.run_mock_suite(suite, failed)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(f"{failed}|", calls)
-                for label in required:
-                    self.assertIn(f"{label}|", calls)
-
     def test_restored_phases_succeed_when_commands_succeed(self):
-        for suite in ("symmem", "p2p", "rma", "runner", "kernel"):
+        for suite in ("symmem", "p2p", "rma", "runner"):
             with self.subTest(suite=suite):
                 result, _ = self.run_mock_suite(suite, "no matching label")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -211,9 +200,9 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                     self.assertNotIn(f"{label}|", calls)
                 self.assertIn(f"{suite} unit tests|", calls)
 
-    def test_device_suites_enable_kernel_build_without_affecting_host_suites(self):
+    def test_device_api_suites_enable_shmem_kernel_build(self):
         env_script = REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
-        for suite in ("device_api", "device_api_unified_ir", "kernel", "core", "device_api_host"):
+        for suite in ("device_api", "device_api_unified_ir", "core", "device_api_host"):
             with self.subTest(suite=suite):
                 result = subprocess.run(
                     ["bash", "-c", 'set -euo pipefail; source "$1"; '
@@ -226,7 +215,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                 )
                 project_args, test_args = result.stdout.split("TEST_ARGS\n")
                 for args in (project_args, test_args):
-                    if suite in ("device_api", "device_api_unified_ir", "kernel"):
+                    if suite in ("device_api", "device_api_unified_ir"):
                         self.assertIn("COMPILE_KERNEL=1\n", args)
                         self.assertIn("USE_SHMEM=1\n", args)
                     else:

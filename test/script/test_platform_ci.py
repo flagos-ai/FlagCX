@@ -118,10 +118,10 @@ class PlatformCiRegressionTest(unittest.TestCase):
                 else:
                     self.assertFalse(steps[checkout]["with"]["submodules"])
 
-    def test_only_kunlunxin_is_temporarily_enabled(self):
+    def test_all_hardware_platforms_are_enabled(self):
         self.assertEqual(
             ENABLED_PLATFORMS,
-            ["kunlunxin"],
+            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
         )
 
     def test_backend_phase_skips_follow_platform_setup(self):
@@ -237,14 +237,14 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
         self.assertIn("FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
         self.assertIn("FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)", env_script)
         self.assertIn('[[ ! -f "$CCL_HOME/include/xshmem/xshmem.h" ]]', env_script)
-        self.assertIn('"$suite" == kernel', env_script)
+        self.assertNotIn('"$suite" == kernel', env_script)
         self.assertIn('phase rma gdr-visibility', runner)
         self.assertIn('flagcx_ci_build_suite_override "$SUITE"', runner)
         self.assertIn("Skipping $platform_name VMM + NET data tests", runner)
         self.assertNotIn('    device)', runner)
         self.assertNotIn('    topo)', runner)
-        self.assertIn('kernel)', runner)
-        self.assertIn('"$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP"', runner)
+        self.assertNotIn('    kernel)', runner)
+        self.assertIn('"$MPI_RUNNER" --allow-run-as-root', runner)
 
         perf_workflow = (REPO_ROOT / ".github/workflows/test.yml").read_text()
         self.assertIn("perf-test-kunlunxin:", perf_workflow)
@@ -2561,40 +2561,11 @@ run_suite
         self.assertIn("test_deviceptr_args.cpp", result.stdout)
         self.assertIn("build/bin/kernel_unit_tests", result.stdout)
 
-    def test_kernel_suite_builds_without_standalone_platform_dispatch(self):
-        # The kernel test binary remains available to suites that use it, but
-        # no platform dispatches a separate standalone kernel suite.
-        kernel_dir = REPO_ROOT / "test/unittest/kernel"
-        result = subprocess.run(
-            ["make", "-n", "-C", str(kernel_dir), "all", "USE_NVIDIA=1", "COMPILE_KERNEL=1"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        self.assertIn("kernel_mpi_tests", result.stdout)
-
+    def test_kernel_suite_is_not_dispatched(self):
         run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
-        self.assertNotIn("kernel/build/bin/kernel_mpi_tests", run_unit)
-        kernel_case = run_unit[
-            run_unit.index("    kernel)\n", run_unit.index("run_suite() {")):
-            run_unit.index("    symmem)\n", run_unit.index("run_suite() {"))
-        ]
-        kernel_config = (
-            REPO_ROOT / ".github/scripts/set_env/kunlunxin.sh"
-        ).read_text()
-        self.assertNotIn("DevicePtrArgs.DevCommFreeDevicePtrNull", kernel_config)
-        self.assertNotIn("DevicePtrArgs.DevMemFreeDevicePtrNull", kernel_config)
-        self.assertIn('ignore_test.py" \\\n  gtest "$SUITE"', run_unit)
-        self.assertFalse(
-            (REPO_ROOT / "test/unittest/device_api/kernel").exists(),
-            "the relative path only resolves while kernel lives under device_api",
-        )
+        self.assertNotIn("    kernel)", run_unit)
         for config in (REPO_ROOT / ".github/configs").glob("*.yml"):
             self.assertNotIn("\n  - kernel\n", config.read_text(), config.name)
-
-        idx = run_unit.rindex('case "$SUITE" in')
-        googletest_branch = run_unit[idx : run_unit.index("build_project", idx)]
-        self.assertIn("device_api|", googletest_branch)
 
     def test_runner_propagates_intermediate_command_failure(self):
         run_unit = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()

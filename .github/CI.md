@@ -1,10 +1,10 @@
 # FlagCX CI
 
-The hardware CI matrix temporarily enables only KunlunXin while its unit,
-performance, and Torch API coverage is being stabilized. The other six
-platforms remain registered but disabled in `configs/platforms.yml`; their
-unit, performance, and Torch API jobs are not scheduled. Re-enable a platform
-there after its hardware coverage is ready.
+The hardware CI matrix enables all seven platforms: CUDA, Hygon, Iluvatar,
+MetaX, KunlunXin, PPU, and Ascend. PR runs select platforms from changed paths
+and PR labels; push and scheduled runs select all enabled platforms. Unit,
+performance, and Torch API jobs run for the selected platforms alongside
+common checks. See `configs/platforms.yml` for the active registry.
 
 Platform-specific test exclusions are defined in each platform's
 `scripts/set_env/*.sh` file and reported as skipped coverage. Platform
@@ -16,17 +16,24 @@ unit, performance, and Torch API tests, plus common checks. Platform-specific
 changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
-While this temporary gate is active, use `platform:kunlunxin` to select the
-hardware platform. Labels for disabled platforms fail matrix generation;
-`platform:all` selects the currently enabled KunlunXin platform. Re-enable a
-platform in `configs/platforms.yml` before selecting its label.
+PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
+`platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
+override path selection. Multiple platform labels select their union;
+`platform:all` selects every enabled platform. Invalid platform labels fail
+matrix generation. Add/remove label events rerun the controller.
 
 Maintainers with `write`, `maintain`, or `admin` repository permission can post
 one of these exact commands on a PR:
 
 ```text
 /test
+/test cuda
+/test hygon
+/test iluvatar
+/test metax
 /test kunlunxin
+/test ppu
+/test ascend
 /test all
 ```
 

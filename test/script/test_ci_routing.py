@@ -25,7 +25,7 @@ ALL_ENABLED_PLATFORMS = [
 
 
 def enabled_platform_or_matrix(platform):
-    return ALL_ENABLED_PLATFORMS
+    return [platform] if platform in ALL_ENABLED_PLATFORMS else []
 
 
 class CiMatrixRoutingTest(unittest.TestCase):
@@ -51,7 +51,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
     def test_push_and_schedule_always_run_all_enabled_platforms(self):
         self.assertEqual(
             ALL_ENABLED_PLATFORMS,
-            ["kunlunxin"],
+            ["cuda", "hygon", "iluvatar", "metax", "kunlunxin", "ppu", "ascend"],
         )
         for event_name in ("push", "schedule"):
             with self.subTest(event=event_name):
@@ -117,7 +117,7 @@ class CiMatrixRoutingTest(unittest.TestCase):
             ),
             (
                 "flagcx/adaptor/kernel/common/nested/foo.h",
-                ALL_ENABLED_PLATFORMS,
+                ["cuda", "hygon"],
             ),
             (
                 "test/kernel/nvidia/nested/foo.cu",

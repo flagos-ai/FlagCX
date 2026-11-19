@@ -142,8 +142,7 @@ FLAGCX_CI_NODE2_MPI_ARGS=(-x FLAGCX_HOSTID=node1)
 
 flagcx_ci_configure_suite() {
   local suite=$1
-  if [[ "$suite" == device_api || "$suite" == device_api_unified_ir ||
-        "$suite" == kernel ]]; then
+  if [[ "$suite" == device_api || "$suite" == device_api_unified_ir ]]; then
     FLAGCX_CI_PROJECT_MAKE_ARGS+=(USE_SHMEM=1)
     FLAGCX_CI_TEST_MAKE_ARGS+=(USE_SHMEM=1)
     FLAGCX_CI_PROJECT_MAKE_ARGS+=(COMPILE_KERNEL=1)
@@ -173,7 +172,7 @@ flagcx_ci_build_suite_override() {
   local suite=$1
   local requires_shmem=0
   case "$suite" in
-    device_api|device_api_unified_ir|kernel) requires_shmem=1 ;;
+    device_api|device_api_unified_ir) requires_shmem=1 ;;
   esac
 
   if ((requires_shmem != 0)) &&
@@ -224,6 +223,6 @@ flagcx_ci_prepare() {
     echo "KunlunXin XTDK toolchain: $toolchain"
   else
     export FLAGCX_CI_XPU_TOOLCHAIN_AVAILABLE=0
-    echo "KunlunXin XTDK toolchain not found; device_api, device_api_unified_ir and kernel will be skipped"
+    echo "KunlunXin XTDK toolchain not found; device_api and device_api_unified_ir will be skipped"
   fi
 }

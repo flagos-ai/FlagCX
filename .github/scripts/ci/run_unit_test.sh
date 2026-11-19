@@ -222,8 +222,7 @@ build_googletest() {
 build_project() {
   local -a args=("${FLAGCX_CI_PROJECT_MAKE_ARGS[@]}")
   if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin &&
-        ( "$SUITE" == device_api || "$SUITE" == device_api_unified_ir ||
-          "$SUITE" == kernel ) ]]; then
+        ( "$SUITE" == device_api || "$SUITE" == device_api_unified_ir ) ]]; then
     rm -f "$PROJECT_ROOT/test/kernel/klx/build/obj/device_ir.o" \
       "$PROJECT_ROOT/build/obj/flagcx/adaptor/kernel/kunlunxin/device_api_host_helpers.o"
   fi
@@ -1048,33 +1047,6 @@ run_suite() {
         return 1
       fi
       ;;
-    kernel)
-      local unit_status=0 mpi_status=0
-      FLAGCX_CI_TEST_LABEL="kernel unit tests" \
-        "$TEST_RUNNER" make -C "$suite_dir" run-unit "${args[@]}" || unit_status=$?
-      local -a kernel_mpi_env=(
-        -x FLAGCX_USE_HETERO_COMM=1
-        -x FLAGCX_MEM_ENABLE=1
-        -x FLAGCX_VMM_ENABLE=0
-        -x LD_LIBRARY_PATH
-      )
-      local platform_name
-      platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
-      if [[ "$platform_name" == "kunlunxin" ]]; then
-        kernel_mpi_env+=(
-          -x XPU_VISIBLE_DEVICES="$FLAGCX_CI_KUNLUNXIN_DEVICES"
-          -x XSHMEM_SYMMETRIC_SIZE
-        )
-      fi
-      FLAGCX_CI_MPI_LABEL="kernel MPI tests" \
-        "$MPI_RUNNER" --allow-run-as-root -np "$FLAGCX_CI_INTRA_NP" \
-        "${kernel_mpi_env[@]}" \
-        "$suite_dir/build/bin/kernel_mpi_tests" || mpi_status=$?
-      if ((unit_status != 0 || mpi_status != 0)); then
-        echo "Kernel failures: unit=$unit_status MPI=$mpi_status" >&2
-        return 1
-      fi
-      ;;
     symmem)
       if ! flagcx_ci_phase_supported symmem-mpi; then
         FLAGCX_CI_TEST_LABEL="symmem unit tests" \
@@ -1296,7 +1268,7 @@ run_supplemental_unit_tests() {
 }
 
 case "$SUITE" in
-  adaptor|core|device_api|device_api_host|device_api_unified_ir|kernel|p2p|rma|runner|service|symmem)
+  adaptor|core|device_api|device_api_host|device_api_unified_ir|p2p|rma|runner|service|symmem)
     build_googletest
     ;;
   device_traits)
