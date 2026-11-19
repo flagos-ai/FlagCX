@@ -29,12 +29,21 @@
 #include <cstddef>
 #include <cstdint>
 
+FLAGCX_HOST_DEVICE_INLINE constexpr bool
+flagcxDevNetResourceSharingModeValid(flagcxDevNetResourceSharingMode_t mode) {
+  return mode == flagcxDevNetResourceSharingDevice ||
+         mode == flagcxDevNetResourceSharingBlock ||
+         mode == flagcxDevNetResourceSharingThread;
+}
+
 // Primary template — each backend provides a specialization.  Unified IR uses
 // only this backend-neutral contract:
 //   Comm: getRank(), getIntraRank(), getIntraSize(),
 //         isOneSidedTransportReady(), supportsDirectCounterAccess().
 //   Net:  signal/wait/read/reset completion semantics plus the transport
-//         operations. Internal completion word width belongs to the backend.
+//         operations, an optional resource sharing constructor argument and
+//         getResourceSharingMode(). Internal completion word width belongs
+//         to the backend.
 // The IR layer must not inspect backend storage fields or derive slot offsets.
 template <typename Impl>
 struct CommTraits;

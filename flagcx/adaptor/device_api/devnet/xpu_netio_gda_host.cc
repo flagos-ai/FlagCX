@@ -31,6 +31,8 @@ namespace {
 
 static constexpr unsigned kProviderId = 1;
 static constexpr uint64_t kTimeoutNs = UINT64_C(30000000000);
+// Context 0's per-peer QPs may be used concurrently by multiple CTAs.
+static constexpr uint64_t kRequiredSharing = XPU_NETIO_SHARING_GPU;
 static constexpr unsigned kAllToAllCapabilities =
     DefaultNetGdaPut | DefaultNetGdaPutValue | DefaultNetGdaFlush |
     DefaultNetGdaBarrier;
@@ -410,6 +412,7 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
                                   devComm->barrierSignalBase);
     if ((owner->caps.operation_bits & requiredOps) != requiredOps ||
         (owner->caps.ordering_bits & requiredOrder) != requiredOrder ||
+        (owner->caps.sharing_bits & kRequiredSharing) != kRequiredSharing ||
         (owner->capabilities & requiredOperations) != requiredOperations ||
         owner->caps.max_endpoints < static_cast<uint32_t>(comm->nranks) ||
         owner->caps.progress_mode == XPU_NETIO_PROGRESS_REQUIRED ||
@@ -471,7 +474,11 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
   attr.required_posting_bits = XPU_NETIO_POST_WAIT_CONTROL;
   attr.required_routing_bits =
       XPU_NETIO_ROUTING_LOGICAL_PEER | XPU_NETIO_ROUTING_SELF;
-  attr.required_sharing_bits = XPU_NETIO_SHARING_THREAD;
+  // GPU sharing is mandatory. Negotiate narrower modes when advertised so
+  // individual Net objects can opt into their caller-owned execution scope.
+  attr.required_sharing_bits =
+      kRequiredSharing | (owner->caps.sharing_bits &
+                          (XPU_NETIO_SHARING_THREAD | XPU_NETIO_SHARING_CTA));
   local = result(
       xpu_netio_create_context_retryable(owner->ops, &attr, &owner->context));
   common = stage(comm, local);
@@ -559,6 +566,8 @@ flagcxResult_t createCommAttempt(flagcxComm_t comm, flagcxDevComm_t devComm,
        owner->published.host_device_contexts == nullptr ||
        owner->published.host_device_contexts[0].provider_id !=
            owner->ops->hdr.provider_id ||
+       (owner->published.host_device_contexts[0].sharing_bits &
+        kRequiredSharing) != kRequiredSharing ||
        owner->published.needs_host_progress != 0))
     local = flagcxNotSupported;
   common = stage(comm, local);
