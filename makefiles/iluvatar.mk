@@ -26,6 +26,16 @@ CCL_INCLUDE := $(CCL_HOME)/include
 CCL_LINK    := -lnccl
 ADAPTOR_FLAG := -DUSE_ILUVATAR_ADAPTOR -DFLAGCX_COMM_TRAITS_DEFAULT
 
+# CoreX's CUDA version number alone does not establish which driver API
+# declarations its SDK ships. Compile-check the complete VMM surface without
+# executing a device call. Missing runtime symbols are handled by the adaptor.
+ILUVATAR_VMM_CHECK_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+ILUVATAR_VMM_CHECK_COMPILER = $(if $(HOST_COMPILER),$(HOST_COMPILER),$(CXX))
+ILUVATAR_VMM_HEADER_SUPPORT := $(shell bash "$(ILUVATAR_VMM_CHECK_DIR)/check_iluvatar_vmm.sh" \
+    check "$(DEVICE_HOME)" -- $(ILUVATAR_VMM_CHECK_COMPILER) \
+    $(CPPFLAGS) $(HOST_CXX_STANDARD) $(HOST_CXXFLAGS))
+ADAPTOR_FLAG += -DFLAGCX_ILUVATAR_HAS_VMM=$(ILUVATAR_VMM_HEADER_SUPPORT)
+
 PLATFORM_KERNEL_DIR  := flagcx/adaptor/kernel/iluvatar
 PLATFORM_KERNEL_SRCS := $(wildcard $(PLATFORM_KERNEL_DIR)/*.$(DEVICE_FILE_EXTENSION))
 # device_api/ is not globbed by the Makefile and -shared without --no-undefined

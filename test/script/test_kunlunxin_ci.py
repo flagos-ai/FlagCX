@@ -2,6 +2,7 @@ import ast
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -66,7 +67,7 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
             ["klx", "8589934592", "-x", "XPU_VISIBLE_DEVICES=0,1,2,3"],
         )
 
-    def run_mock_suite(self, suite, failed_label):
+    def run_mock_suite(self, suite, failed_label, *, unified_ir_platform=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ci = root / ".github/scripts/ci"
@@ -110,6 +111,16 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                 'export FLAGCX_ADAPTOR=klx\n'
                 'flagcx_ci_validate_rdma() { return 0; }\n'
             )
+            if unified_ir_platform is not None:
+                platform = root / f"{unified_ir_platform}.sh"
+                platform.write_text(
+                    'source "$REAL_PLATFORM_ENV"\n'
+                    'flagcx_ci_prepare() { :; }\n'
+                    'flagcx_ci_validate_rdma() { :; }\n'
+                    'flagcx_ci_build_suite_override() { FLAGCX_CI_BUILD_SUITE_OVERRIDE_HANDLED=0; }\n'
+                    'flagcx_ci_run_suite_override() { FLAGCX_CI_RUN_SUITE_OVERRIDE_HANDLED=0; }\n'
+                )
+                (root / 'test/unittest/device_api').mkdir(parents=True)
             config = load_kunlunxin_ignore_config()
             log = root / "calls"
             env = {**os.environ, "GITHUB_WORKSPACE": str(root),
@@ -117,11 +128,60 @@ class KunlunXinUnitDispatchTest(unittest.TestCase):
                    "CALL_LOG": str(log), "FAIL_LABEL": failed_label,
                    "FLAGCX_CI_COVERAGE": "0", "GTEST_FILTER": "*",
                    "FLAGCX_CI_IGNORE_TEST": json.dumps(config)}
+            if unified_ir_platform is not None:
+                env.update(
+                    REAL_PLATFORM_ENV=str(REPO_ROOT / f'.github/scripts/set_env/{unified_ir_platform}.sh'),
+                    MPI_HOME=str(root / 'mpi'),
+                    FLAGCX_CI_IGNORE_TEST='{}',
+                    FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY='0',
+                    FLAGCX_CI_KUNLUNXIN_DEVICES='0,1,2,3',
+                    XSHMEM_SYMMETRIC_SIZE='8589934592',
+                )
             result = subprocess.run(
                 ["bash", str(ci / "run_unit_test.sh"), str(platform), suite],
                 cwd=root, env=env, capture_output=True, text=True, timeout=15,
             )
             return result, log.read_text()
+
+    def test_unified_ir_dispatches_backend_appropriate_window_modes(self):
+        for platform, hetero, vmm, expected_labels in (
+            ('kunlunxin', '0', '1', ['unified IR intra']),
+            ('cuda', '1', '0', ['unified IR intra', 'unified IR inter',
+                                'unified IR intra forced fallback',
+                                'unified IR inter forced fallback']),
+        ):
+            with self.subTest(platform=platform):
+                result, calls = self.run_mock_suite(
+                    'device_api_unified_ir', '', unified_ir_platform=platform)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                mpi_calls = [(label, shlex.split(args))
+                             for label, args in (line.split('|', 1) for line in calls.splitlines())
+                             if label.startswith('unified IR ')]
+                self.assertEqual([label for label, _ in mpi_calls], expected_labels)
+                for label, args in mpi_calls:
+                    contexts = args.count(':') + 1
+                    for name, value in (('FLAGCX_USE_HETERO_COMM', hetero),
+                                        ('FLAGCX_VMM_ENABLE', vmm)):
+                        settings = [arg for arg in args if arg.startswith(name + '=')]
+                        self.assertEqual(settings, [f'{name}={value}'] * contexts)
+                    if platform == 'kunlunxin':
+                        self.assertEqual(args[args.index('-np') + 1], '4')
+                        self.assertIn('XPU_VISIBLE_DEVICES=0,1,2,3', args)
+                        self.assertIn('XSHMEM_SYMMETRIC_SIZE', args)
+                        self.assertIn('FLAGCX_CI_UNIFIED_IR_SKIP_S16', args)
+                        self.assertEqual(args[-8:], ['-b', '1M', '-e', '4M', '-f', '2', '-R', '1'])
+                    self.assertEqual('FLAGCX_DEVICE_ONE_SIDED_FORCE_NET=1' in args,
+                                     'forced fallback' in label)
+
+    def test_unified_ir_failure_reaches_ci(self):
+        for platform in ('kunlunxin', 'cuda'):
+            with self.subTest(platform=platform):
+                result, calls = self.run_mock_suite(
+                    'device_api_unified_ir', 'unified IR intra',
+                    unified_ir_platform=platform)
+                self.assertEqual(result.returncode, 7, result.stdout + result.stderr)
+                self.assertIn('unified IR intra|', calls)
+                self.assertNotIn('unified IR inter|', calls)
 
     def test_restored_phases_succeed_when_commands_succeed(self):
         for suite in ("symmem", "p2p", "rma", "runner"):

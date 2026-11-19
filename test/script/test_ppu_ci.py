@@ -139,7 +139,8 @@ class PpuCiRegressionTest(unittest.TestCase):
             'FLAGCX_CI_MPI_LABEL="symmem local IPC + NET fallback"',
             unit_runner,
         )
-        self.assertIn("FLAGCX_DMABUF_ENABLE=1", unit_runner)
+        self.assertIn('symmem_dmabuf_enable=${FLAGCX_DMABUF_ENABLE:-1}', unit_runner)
+        self.assertIn('-x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable"', unit_runner)
         self.assertIn("FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1", unit_runner)
         self.assertIn("SymMemTest.VmmNetRouteCapabilityUnion", unit_runner)
         ppu_config = json.loads(subprocess.check_output(

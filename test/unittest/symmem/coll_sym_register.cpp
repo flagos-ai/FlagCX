@@ -32,7 +32,8 @@
 #include <unistd.h>
 #endif
 
-#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+#if defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||                 \
+    defined(USE_ILUVATAR_ADAPTOR)
 #include <cuda.h>
 #include <cuda_runtime.h>
 #elif defined(USE_DU_ADAPTOR)
@@ -1196,11 +1197,12 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_VMM"));
   ASSERT_TRUE(envEnabled("FLAGCX_CI_REQUIRE_NET_MR"));
 
-  ScopedEnvVar routeMode("FLAGCX_DMABUF_ENABLE", "1");
+  const bool vaOnly = envEnabled("FLAGCX_CI_SYMMEM_VA_ONLY");
+  ScopedEnvVar routeMode("FLAGCX_DMABUF_ENABLE", vaOnly ? "0" : "1");
   const char *modes[] = {"1", "0"};
   bool routeSucceeded[2] = {false, false};
 
-  for (int routeIndex = 0; routeIndex < 2; routeIndex++) {
+  for (int routeIndex = vaOnly ? 1 : 0; routeIndex < 2; routeIndex++) {
     SCOPED_TRACE(modes[routeIndex]);
     routeMode.set(modes[routeIndex]);
 
@@ -1244,8 +1246,12 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
             << " reported no VMM route while retaining a flat mapping";
       } else {
         routeSucceeded[routeIndex] = true;
-        EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF ||
-                    handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA);
+        if (vaOnly) {
+          EXPECT_EQ(handle->registrationRoute, FLAGCX_VMM_MR_ROUTE_VA);
+        } else {
+          EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF ||
+                      handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA);
+        }
       }
       ASSERT_TRUE(
           allRanksSucceeded(flagcxCommWindowDeregister(testComm, window)));
@@ -1269,7 +1275,10 @@ TEST_F(SymMemTest, VmmNetRouteCapabilityUnion) {
   MPI_Allreduce(&localMask, &minimumMask, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
   MPI_Allreduce(&localMask, &maximumMask, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
   ASSERT_EQ(minimumMask, maximumMask);
-  if (!envEnabled("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED")) {
+  if (vaOnly) {
+    EXPECT_EQ(minimumMask, 2)
+        << "required VA route did not register VMM memory";
+  } else if (!envEnabled("FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED")) {
     EXPECT_NE(minimumMask, 0)
         << "neither DMA-BUF nor VA can register a VMM allocation";
   }
@@ -2830,8 +2839,18 @@ TEST_F(SymMemTest, OrdinaryAllocationDoesNotClaimSegmentedVmm) {
 }
 
 #if defined(USE_NVIDIA_ADAPTOR) || defined(USE_DU_ADAPTOR) ||                  \
-    defined(USE_METAX_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+    defined(USE_METAX_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||                  \
+    (defined(USE_ILUVATAR_ADAPTOR) && FLAGCX_ILUVATAR_HAS_VMM)
 TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
+#if defined(USE_ILUVATAR_ADAPTOR)
+  // This test creates a raw VMM mapping with cuMemCreate/cuMemMap, outside
+  // FlagCX's allocation registry. symPhysDescribe then tries to export its
+  // address through runtime cudaIpcGetMemHandle (traditional IPC). CoreX
+  // crashes in that export instead of rejecting the VMM address.
+  GTEST_SKIP()
+      << "CoreX crashes when exporting an untracked VMM address through "
+         "runtime IPC";
+#endif
   if (!envEnabled("FLAGCX_CI_REQUIRE_PROVIDER_VMM"))
     GTEST_SKIP() << "Requires the provider VMM CI invocation";
   ASSERT_TRUE(envEnabled("FLAGCX_VMM_ENABLE"));
@@ -2925,7 +2944,8 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
     access.flags = hipMemAccessFlagsProtReadWrite;
     return hipMemSetAccess(mapping.base, granularity, &access, 1) == hipSuccess;
   }();
-#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR)
+#elif defined(USE_NVIDIA_ADAPTOR) || defined(USE_PPU_ADAPTOR) ||               \
+    defined(USE_ILUVATAR_ADAPTOR)
   size_t granularity = 0;
   struct ScopedMapping {
     CUmemGenericAllocationHandle handle = 0;
@@ -3016,6 +3036,10 @@ TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
   EXPECT_EQ(comm->heteroComm->symWindows, nullptr);
   if (minimum == maximum && window != nullptr)
     EXPECT_TRUE(allRanksSucceeded(flagcxCommWindowDeregister(comm, window)));
+}
+#elif defined(USE_ILUVATAR_ADAPTOR)
+TEST_F(SymMemTest, UntrackedVmmMappingIsRejected) {
+  GTEST_SKIP() << "CoreX SDK lacks VMM declarations for the runtime IPC trial";
 }
 #endif
 
