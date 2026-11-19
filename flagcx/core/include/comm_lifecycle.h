@@ -15,6 +15,7 @@ enum flagcxFinalizePhase {
   flagcxFinalizeDrain = 0,
   flagcxFinalizeTransport,
   flagcxFinalizeOwners,
+  flagcxFinalizeRelayImports,
   flagcxFinalizeProxy,
   flagcxFinalizeImports,
   flagcxFinalizeComplete

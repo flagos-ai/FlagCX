@@ -4323,7 +4323,8 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
   while (state->commonPhase < flagcxFinalizeComplete) {
     int phase = (int)state->commonPhase;
     flagcxResult_t local = selected;
-    if (local == flagcxSuccess && (state->localDoneMask & (1u << phase)) == 0) {
+    int needsLocal = (state->localDoneMask & (1u << phase)) == 0;
+    if (local == flagcxSuccess && needsLocal) {
       switch (state->commonPhase) {
         case flagcxFinalizeDrain:
           local = flagcxCommFinalizeVendors(comm);
@@ -4336,6 +4337,17 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
         case flagcxFinalizeOwners:
           local = flagcxCommCloseLocalOwners(comm);
           break;
+        case flagcxFinalizeRelayImports:
+          if (comm->heteroComm != NULL) {
+            local = flagcxHeteroRmaProxyStop(comm->heteroComm);
+            if (local == flagcxSuccess)
+              local = globalRegPool.removeAllP2pHandles(comm->heteroComm);
+            if (local == flagcxSuccess)
+              local = globalRegPool.removeAllNetHandles(comm->heteroComm);
+            if (local == flagcxSuccess)
+              local = flagcxProxyCloseRelayImports(comm->heteroComm);
+          }
+          break;
         case flagcxFinalizeProxy:
           local = flagcxCommPrepareHeteroResources(comm);
           break;
@@ -4346,9 +4358,23 @@ flagcxResult_t flagcxCommFinalizeInternal(flagcxComm_t comm) {
           local = flagcxInternalError;
           break;
       }
-      if (local == flagcxSuccess)
-        state->localDoneMask |= 1u << phase;
     }
+    // Preserve the pre-existing cross-node NET relay rendezvous. Converge
+    // drain failures before it so no node enters a barrier its peer skipped.
+    // IPC closure below uses only intra-node agreement.
+    if (needsLocal && phase == flagcxFinalizeDrain &&
+        comm->heteroComm != NULL && comm->heteroComm->relayInitialized &&
+        comm->heteroComm->nInterPeers > 0) {
+      flagcxResult_t network = local;
+      flagcxResult_t status =
+          flagcxConvergeBootstrapStatus(comm, local, &network);
+      local = status == flagcxSuccess ? network : status;
+      if (local == flagcxSuccess)
+        local = bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks,
+                                     0x7f01);
+    }
+    if (local == flagcxSuccess && needsLocal)
+      state->localDoneMask |= 1u << phase;
     flagcxResult_t common = local;
     if (comm->localRanks > 1) {
       result = bootstrapCollIntraNodeStatus(

@@ -4116,9 +4116,9 @@ TEST_F(SymWindowRollback, CommDestroyPendingWindowKeepsLeaseUntilImportsClose) {
   ASSERT_EQ(window != nullptr, rank == 1);
   // The fixture has no live proxy/vendor workers. Exercise real owner cleanup
   // and real intra-node status agreement while retaining its stack owners.
-  testComm.finalizeState.localDoneMask = (1u << flagcxFinalizeDrain) |
-                                         (1u << flagcxFinalizeTransport) |
-                                         (1u << flagcxFinalizeProxy);
+  testComm.finalizeState.localDoneMask =
+      (1u << flagcxFinalizeDrain) | (1u << flagcxFinalizeTransport) |
+      (1u << flagcxFinalizeRelayImports) | (1u << flagcxFinalizeProxy);
   hetero.rmaSignalIpcSlot = -1;
   EXPECT_EQ(flagcxCommFinalize(&testComm), flagcxRemoteError);
   if (rank == 1) {

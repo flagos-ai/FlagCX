@@ -24,6 +24,7 @@ enum TeardownCall {
 std::vector<TeardownCall> teardownCalls;
 flagcxResult_t streamSynchronizeResult = flagcxSuccess;
 flagcxResult_t closeImportResult = flagcxSuccess;
+flagcxResult_t freeExportResult = flagcxSuccess;
 void *closedImport = nullptr;
 void *freedExport = nullptr;
 int selectedDevice = -1;
@@ -48,7 +49,7 @@ flagcxResult_t recordCloseImport(void *ptr) {
 flagcxResult_t recordFreeExport(void *ptr, flagcxMemType_t, flagcxStream_t) {
   teardownCalls.push_back(teardownFreeExport);
   freedExport = ptr;
-  return flagcxSuccess;
+  return freeExportResult;
 }
 
 class P2pTeardownTest : public ::testing::Test {
@@ -64,7 +65,7 @@ protected:
 
     teardownCalls.clear();
     streamSynchronizeResult = flagcxSuccess;
-    closeImportResult = flagcxSuccess;
+    closeImportResult = freeExportResult = flagcxSuccess;
     closedImport = nullptr;
     freedExport = nullptr;
     selectedDevice = -1;
@@ -76,7 +77,7 @@ protected:
   struct flagcxDeviceAdaptor testDeviceAdaptor_ = {};
 };
 
-TEST_F(P2pTeardownTest, ImportClosePublishesAckAfterStreamDrain) {
+TEST_F(P2pTeardownTest, ImportCloseUsesRawBaseAfterStreamDrain) {
   flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};
   resources.proxyInfo.shm = &shm;
@@ -94,11 +95,9 @@ TEST_F(P2pTeardownTest, ImportClosePublishesAckAfterStreamDrain) {
   EXPECT_EQ(closedImport, reinterpret_cast<void *>(0x2000));
   EXPECT_EQ(resources.importedRecvFifoBase, nullptr);
   EXPECT_EQ(resources.proxyInfo.recvFifo, nullptr);
-  EXPECT_EQ(__atomic_load_n(&shm.fifoImportClosed, __ATOMIC_ACQUIRE),
-            flagcxP2pFifoImportClosed);
 }
 
-TEST_F(P2pTeardownTest, ImportCloseFailureDoesNotPublishAck) {
+TEST_F(P2pTeardownTest, ImportCloseFailureKeepsOwner) {
   flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};
   resources.proxyInfo.shm = &shm;
@@ -109,19 +108,15 @@ TEST_F(P2pTeardownTest, ImportCloseFailureDoesNotPublishAck) {
   EXPECT_EQ(flagcxP2pCloseImportedFifo(&resources), flagcxSystemError);
   EXPECT_EQ(resources.importedRecvFifoBase, reinterpret_cast<void *>(0x3000));
   EXPECT_EQ(resources.proxyInfo.recvFifo, reinterpret_cast<char *>(0x3080));
-  EXPECT_EQ(__atomic_load_n(&shm.fifoImportClosed, __ATOMIC_ACQUIRE),
-            flagcxP2pFifoImportOpen);
 }
 
-TEST_F(P2pTeardownTest, MissingImportStillPublishesCloseAck) {
+TEST_F(P2pTeardownTest, MissingImportNeedsNoShmAck) {
   flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};
   resources.proxyInfo.shm = &shm;
 
   ASSERT_EQ(flagcxP2pCloseImportedFifo(&resources), flagcxSuccess);
   EXPECT_TRUE(teardownCalls.empty());
-  EXPECT_EQ(__atomic_load_n(&shm.fifoImportClosed, __ATOMIC_ACQUIRE),
-            flagcxP2pFifoImportClosed);
 }
 
 TEST_F(P2pTeardownTest, StreamFailureKeepsImportOpen) {
@@ -136,31 +131,29 @@ TEST_F(P2pTeardownTest, StreamFailureKeepsImportOpen) {
   EXPECT_EQ(teardownCalls,
             (std::vector<TeardownCall>{teardownStreamSynchronize}));
   EXPECT_EQ(resources.importedRecvFifoBase, reinterpret_cast<void *>(0x5000));
-  EXPECT_EQ(__atomic_load_n(&shm.fifoImportClosed, __ATOMIC_ACQUIRE),
-            flagcxP2pFifoImportOpen);
 }
 
-TEST_F(P2pTeardownTest, ExportIsPreservedUntilCloseAckArrives) {
+TEST_F(P2pTeardownTest, ExportIsPreservedUntilFinalizeConfirmation) {
   flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};
   resources.shm = &shm;
   resources.localRecvFifo = reinterpret_cast<void *>(0x6000);
 
-  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 0), flagcxSystemError);
+  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources), flagcxInvalidUsage);
   EXPECT_EQ(freedExport, nullptr);
   EXPECT_EQ(resources.localRecvFifo, reinterpret_cast<void *>(0x6000));
 }
 
-TEST_F(P2pTeardownTest, ExportIsFreedAfterCloseAck) {
+TEST_F(P2pTeardownTest, ExportIsFreedLocallyAfterFinalize) {
   flagcxP2pShm shm = {};
-  shm.fifoImportClosed = flagcxP2pFifoImportClosed;
   flagcxP2pResources resources = {};
   resources.shm = &shm;
   resources.localRecvFifo = reinterpret_cast<void *>(0x7000);
   resources.proxyInfo.recvFifo = reinterpret_cast<char *>(0x7000);
   resources.cudaDev = 5;
+  resources.importsClosedConfirmed = 1;
 
-  ASSERT_EQ(flagcxP2pReleaseLocalFifo(&resources, 0), flagcxSuccess);
+  ASSERT_EQ(flagcxP2pReleaseLocalFifo(&resources), flagcxSuccess);
   EXPECT_EQ(teardownCalls,
             (std::vector<TeardownCall>{teardownSetDevice, teardownFreeExport}));
   EXPECT_EQ(selectedDevice, 5);
@@ -169,31 +162,41 @@ TEST_F(P2pTeardownTest, ExportIsFreedAfterCloseAck) {
   EXPECT_EQ(resources.proxyInfo.recvFifo, nullptr);
 }
 
-TEST_F(P2pTeardownTest, ExportWaitsForDelayedCloseAck) {
-  flagcxP2pShm shm = {};
+TEST_F(P2pTeardownTest, FreeFailureRetainsExportForLocalRetryWithoutShm) {
   flagcxP2pResources resources = {};
-  resources.shm = &shm;
   resources.localRecvFifo = reinterpret_cast<void *>(0x8000);
-
-  std::thread importer([&shm] {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    __atomic_store_n(&shm.fifoImportClosed, flagcxP2pFifoImportClosed,
-                     __ATOMIC_RELEASE);
-  });
-  flagcxResult_t result = flagcxP2pReleaseLocalFifo(&resources, 1000);
-  importer.join();
-
-  EXPECT_EQ(result, flagcxSuccess);
-  EXPECT_EQ(freedExport, reinterpret_cast<void *>(0x8000));
+  resources.importsClosedConfirmed = 1;
+  freeExportResult = flagcxUnhandledDeviceError;
+  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources), flagcxUnhandledDeviceError);
+  EXPECT_EQ(resources.localRecvFifo, reinterpret_cast<void *>(0x8000));
+  freeExportResult = flagcxSuccess;
+  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources), flagcxSuccess);
+  EXPECT_EQ(resources.localRecvFifo, nullptr);
+  teardownCalls.clear();
+  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources), flagcxSuccess);
+  EXPECT_TRUE(teardownCalls.empty());
 }
 
-TEST_F(P2pTeardownTest, MissingAckChannelPreservesExport) {
+TEST_F(P2pTeardownTest, CloseFailureRetainsStreamAndShmUntilRetry) {
+  flagcxP2pShm shm = {};
   flagcxP2pResources resources = {};
-  resources.localRecvFifo = reinterpret_cast<void *>(0x9000);
+  resources.proxyInfo.shm = &shm;
+  resources.proxyInfo.stream = reinterpret_cast<flagcxStream_t>(0x9000);
+  resources.importedRecvFifoBase = reinterpret_cast<void *>(0xa000);
+  closeImportResult = flagcxSystemError;
+  EXPECT_EQ(flagcxP2pSendProxyFree(&resources), flagcxSystemError);
+  EXPECT_EQ(resources.proxyInfo.stream,
+            reinterpret_cast<flagcxStream_t>(0x9000));
+  EXPECT_EQ(resources.proxyInfo.shm, &shm);
+  EXPECT_EQ(resources.importedRecvFifoBase, reinterpret_cast<void *>(0xa000));
+}
 
-  EXPECT_EQ(flagcxP2pReleaseLocalFifo(&resources, 1000), flagcxInternalError);
-  EXPECT_EQ(freedExport, nullptr);
-  EXPECT_EQ(resources.localRecvFifo, reinterpret_cast<void *>(0x9000));
+TEST_F(P2pTeardownTest, ImportClosureDoesNotNeedShm) {
+  flagcxP2pResources resources = {};
+  resources.importedRecvFifoBase = reinterpret_cast<void *>(0xb000);
+  EXPECT_EQ(flagcxP2pCloseImportedFifo(&resources), flagcxSuccess);
+  EXPECT_EQ(resources.importedRecvFifoBase, nullptr);
+  EXPECT_EQ(closedImport, reinterpret_cast<void *>(0xb000));
 }
 
 } // namespace

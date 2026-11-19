@@ -1720,3 +1720,27 @@ TEST(DevMemApiHostTest, SynchronizeFailureRetainsViewForRetry) {
   EXPECT_EQ(synchronizedBackendDestroys, 1);
   EXPECT_EQ(comm.activeDevMems, nullptr);
 }
+
+TEST_F(DefaultDevCommCleanupTest,
+       BackendCachedPointerCleanupPreservesFailedSuffix) {
+  flagcxDevCommInternal devComm = {};
+  ASSERT_EQ(pthread_mutex_init(&devComm.cachedPtrMutex, nullptr), 0);
+  ASSERT_EQ(allocateTestBuffer(&devComm.cachedGridBarrierPtr, 8),
+            flagcxSuccess);
+  ASSERT_EQ(allocateTestBuffer(&devComm.cachedNetContextsPtr, 8),
+            flagcxSuccess);
+  ASSERT_EQ(allocateTestBuffer(&devComm.cachedDevicePtr, 8), flagcxSuccess);
+  void *retained = devComm.cachedNetContextsPtr;
+  testDeviceAdaptor.deviceFree = failDeviceFreeAtCall;
+  failDeviceFreeCall = 2;
+  EXPECT_EQ(devApiBackend->devCommFreeDevicePtr(&devComm), flagcxRemoteError);
+  EXPECT_EQ(devComm.cachedGridBarrierPtr, nullptr);
+  EXPECT_EQ(devComm.cachedNetContextsPtr, retained);
+  EXPECT_NE(devComm.cachedDevicePtr, nullptr);
+  EXPECT_EQ(devApiBackend->devCommFreeDevicePtr(&devComm), flagcxSuccess);
+  EXPECT_EQ(devComm.cachedNetContextsPtr, nullptr);
+  EXPECT_EQ(devComm.cachedDevicePtr, nullptr);
+  EXPECT_EQ(deviceFreedPtrs.size(), 3u);
+  EXPECT_EQ(deviceFreeCallCount, 4);
+  pthread_mutex_destroy(&devComm.cachedPtrMutex);
+}

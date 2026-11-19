@@ -545,14 +545,9 @@ flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
 
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm) {
   if (!comm->destroyProxyComplete) {
-    FLAGCXCHECK(flagcxHeteroRmaProxyStop(comm));
-    // Clean up P2P/Net handles while proxy is still alive and peerSocks valid.
-    FLAGCXCHECK(globalRegPool.removeAllP2pHandles(comm));
-    FLAGCXCHECK(globalRegPool.removeAllNetHandles(comm));
-    flagcxResult_t proxyStopResult = flagcxProxyStop(comm);
-    flagcxResult_t proxyDestroyResult = flagcxProxyDestroy(comm);
-    comm->destroyProxyResult =
-        proxyStopResult != flagcxSuccess ? proxyStopResult : proxyDestroyResult;
+    FLAGCXCHECK(flagcxProxyStop(comm));
+    FLAGCXCHECK(flagcxProxyFinalize(comm));
+    comm->destroyProxyResult = flagcxSuccess;
     comm->destroyProxyComplete = true;
   }
   if (comm->proxyState->uniRunnerState.streamFlagsPool != NULL ||
@@ -585,6 +580,7 @@ flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm) {
   flagcxResult_t proxyResult = comm->destroyProxyResult;
   if (proxyResult != flagcxSuccess)
     return proxyResult;
+  FLAGCXCHECK(flagcxProxyDestroy(comm));
   delete comm->workerPool;
   comm->workerPool = NULL;
   for (int i = 0; i < MAXCHANNELS; i++) {

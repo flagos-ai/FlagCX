@@ -1056,7 +1056,7 @@ run_suite() {
           "${pxn_platform_env[@]}" \
           "${runner_net_platform_env[@]}" \
           ./build/bin/runner_mpi_tests \
-          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || pxn_status=$?
+          --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy || pxn_status=$?
       fi
       if ((unit_status != 0 || default_status != 0 || hybrid_status != 0 ||
            net_status != 0 || p2p_1m_status != 0 || net_1m_status != 0 ||

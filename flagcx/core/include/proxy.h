@@ -359,6 +359,12 @@ struct flagcxProxyLocalPeer {
   struct flagcxProxyAsyncOp *asyncOps;
 };
 
+struct flagcxProxyConnectionPool {
+  struct flagcxProxyConnection **pools;
+  int banks;
+  int offset;
+};
+
 struct flagcxProxyState {
   int refCount;
   int tpRank;
@@ -429,6 +435,7 @@ struct flagcxProxyState {
   // This flag is used for lazy initialization of the proxy.
   // Cooperate with FLAGCX_RUNTIME_PROXY environment variable.
   int initialized;
+  struct flagcxProxyConnectionPool *connectionPool;
 };
 
 enum proxyConnectState {
@@ -552,6 +559,10 @@ flagcxResult_t flagcxProxyClientGetFdBlocking(struct flagcxHeteroComm *comm,
                                               int rank, void *handle,
                                               int *convertedFd);
 
+flagcxResult_t flagcxProxyCloseRelayImports(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyFinalize(struct flagcxHeteroComm *comm);
+flagcxResult_t flagcxProxyCleanupConnections(struct flagcxHeteroComm *comm,
+                                             int cleanupPhase);
 flagcxResult_t flagcxProxyStop(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyShmUnlink(struct flagcxHeteroComm *comm);
 flagcxResult_t flagcxProxyDestroy(struct flagcxHeteroComm *comm);

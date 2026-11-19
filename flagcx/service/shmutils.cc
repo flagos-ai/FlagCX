@@ -138,35 +138,28 @@ fail:
 }
 
 flagcxResult_t flagcxShmClose(flagcxShmHandle_t handle) {
-  flagcxResult_t ret = flagcxSuccess;
-  struct shmHandleInternal *tmphandle = (struct shmHandleInternal *)handle;
-  if (tmphandle) {
-    if (tmphandle->fd >= 0) {
-      close(tmphandle->fd);
-      if (tmphandle->shmPath != NULL &&
-          (tmphandle->shmPtr == NULL ||
-           (tmphandle->refcount != NULL && *tmphandle->refcount > 0))) {
-        if (unlink(tmphandle->shmPath) != 0) {
-          WARN("unlink shared memory %s failed, error: %s", tmphandle->shmPath,
-               strerror(errno));
-          ret = flagcxSystemError;
-        }
-      }
-      free(tmphandle->shmPath);
-    }
-
-    if (tmphandle->shmPtr) {
-      // if (tmphandle->devShmPtr)
-      // CUDACHECK(cudaHostUnregister(tmphandle->shmPtr));
-      if (munmap(tmphandle->shmPtr, tmphandle->realShmSize) != 0) {
-        WARN("munmap of shared memory %p size %ld failed, error: %s",
-             tmphandle->shmPtr, tmphandle->realShmSize, strerror(errno));
-        ret = flagcxSystemError;
-      }
-    }
-    free(tmphandle);
+  struct shmHandleInternal *owner = (struct shmHandleInternal *)handle;
+  if (owner == NULL)
+    return flagcxSuccess;
+  // Keep the descriptor and mapping on failure. Unlink before unmapping so a
+  // retry never reads the reference counter through an unmapped address.
+  FLAGCXCHECK(flagcxShmUnlink(handle));
+  if (owner->shmPtr != NULL) {
+    if (munmap(owner->shmPtr, owner->realShmSize) != 0)
+      return flagcxSystemError;
+    owner->shmPtr = NULL;
+    owner->refcount = NULL;
   }
-  return ret;
+  if (owner->fd >= 0) {
+    // Linux closes the fd even when close reports EINTR; never retry an fd
+    // which another thread may already have reused.
+    int fd = owner->fd;
+    owner->fd = -1;
+    if (close(fd) != 0 && errno != EINTR)
+      return flagcxSystemError;
+  }
+  free(owner);
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxShmUnlink(flagcxShmHandle_t handle) {
@@ -174,10 +167,10 @@ flagcxResult_t flagcxShmUnlink(flagcxShmHandle_t handle) {
   struct shmHandleInternal *tmphandle = (struct shmHandleInternal *)handle;
   if (tmphandle) {
     if (tmphandle->shmPath != NULL) {
-      if (unlink(tmphandle->shmPath) != 0) {
+      if (unlink(tmphandle->shmPath) != 0 && errno != ENOENT) {
         WARN("unlink shared memory %s failed, error: %s", tmphandle->shmPath,
              strerror(errno));
-        ret = flagcxSystemError;
+        return flagcxSystemError;
       }
       free(tmphandle->shmPath);
       tmphandle->shmPath = NULL;
@@ -223,6 +216,7 @@ flagcxResult_t flagcxShmImportShareableBuffer(flagcxShmIpcDesc_t *desc,
 flagcxResult_t flagcxShmIpcClose(flagcxShmIpcDesc_t *desc) {
   if (desc) {
     FLAGCXCHECK(flagcxShmClose(desc->handle));
+    desc->handle = NULL;
   }
   return flagcxSuccess;
 }
