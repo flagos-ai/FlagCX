@@ -32,6 +32,17 @@ export FLAGCX_ADAPTOR=du
 export USE_DU=1
 export USE_SHCA=1
 
+FLAGCX_CI_IGNORE_TEST='{
+  "phases": [
+    {
+      "suite": "symmem",
+      "name": "vmm-net-data",
+      "reason": "Hygon VMM MR data path is independently covered by RMA visibility tests"
+    }
+  ]
+}'
+export FLAGCX_CI_IGNORE_TEST
+
 FLAGCX_CI_COMMON_MAKE_ARGS=(
   USE_DU=1
   USE_SHCA=1

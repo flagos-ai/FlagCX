@@ -49,7 +49,7 @@ PLATFORM_INCLUDES := -I$(PLATFORM_IR_DIR)
 
 # All includes
 ALL_INCLUDES := $(FLAGCX_INCLUDES) $(IR_INCLUDE) $(PLATFORM_INCLUDES) \
-    $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE)
+    $(KERNEL_INCLUDE) $(PERF_INCLUDE) $(MPI_INCLUDE) $(DEVICE_INCLUDE) $(CCL_INCLUDE)
 
 ALL_LINK := $(FLAGCX_LINK) $(MPI_LINK) $(DEVICE_LINK)
 
@@ -235,7 +235,7 @@ $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ): $(KERNEL_IR_SRCS)
 $(TOOLS_OBJ): $(TOOLS_SRC)
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling tools.cc"
-	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(ALL_INCLUDES)
+	@$(CXX) $< -o $@ -c $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) $(ALL_INCLUDES)
 
 $(UNIT_OBJ): $(UNIT_SRC)
 	@mkdir -p $(OBJDIR)
@@ -253,7 +253,7 @@ $(UNIT_TARGET): $(UNIT_OBJ)
 $(OBJDIR)/test_device_%.o: test_device_%.cpp | require-compile-kernel
 	@mkdir -p $(OBJDIR)
 	@echo "Compiling $<"
-	@$(CXX) $(CXXFLAGS) -c -o $@ $< $(ALL_INCLUDES)
+	@$(CXX) $(CXXFLAGS) $(HOST_ADAPTOR_DEFINE) -c -o $@ $< $(ALL_INCLUDES)
 
 $(BINDIR)/test_device_ir_intra: $(OBJDIR)/test_device_ir_intra.o $(DEVICE_IR_OBJ) $(DLINK_IR_OBJ) $(TOOLS_OBJ)
 	@mkdir -p $(BINDIR)
@@ -316,20 +316,32 @@ ifneq ($(PROVIDER_UNIT_TARGET),)
 	@$(PROVIDER_UNIT_TARGET)
 endif
 
-# Env vars for inter-node testing on single node
-HETERO_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \
-              $(MPI_ENV_FLAG) FLAGCX_MEM_ENABLE=1 \
-              $(MPI_ENV_FLAG) FLAGCX_VMM_ENABLE=0 \
-              $(MPI_ENV_FLAG) FLAGCX_P2P_DISABLE=1 \
-              $(MPI_ENV_FLAG) FLAGCX_DEBUG=TRACE \
-              $(MPI_ENV_FLAG) FLAGCX_DEBUG_SUBSYS=ALL \
-              $(MPI_ENV_FLAG) LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)
+# Use the same backend selection as the library and device kernels. Default
+# tests retain their IPC configuration; vendor tests require homo/SYMMETRIC.
+ifneq ($(filter -DFLAGCX_COMM_TRAITS_CCL -DFLAGCX_COMM_TRAITS_SHMEM,$(ADAPTOR_DEFINE)),)
+DEVICE_TEST_PATH_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=0
+FLAGCX_TEST_WIN_MODE ?= symmetric
+FLAGCX_VMM_ENABLE ?= 1
+else
+DEVICE_TEST_PATH_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1
+FLAGCX_TEST_WIN_MODE ?= asymmetric
+FLAGCX_VMM_ENABLE ?= 0
+endif
+DEVICE_TEST_ALLOC_ENV := $(MPI_ENV_FLAG) FLAGCX_VMM_ENABLE=$(FLAGCX_VMM_ENABLE)
+
+DEVICE_TEST_ENV := $(DEVICE_TEST_PATH_ENV) $(DEVICE_TEST_ALLOC_ENV) \
+                   $(MPI_ENV_FLAG) FLAGCX_TEST_WIN_MODE=$(FLAGCX_TEST_WIN_MODE) \
+                   $(MPI_ENV_FLAG) FLAGCX_MEM_ENABLE=1 \
+                   $(MPI_ENV_FLAG) LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)
+INTRA_ENV := $(DEVICE_TEST_ENV) $(MPI_ENV_FLAG) FLAGCX_P2P_DISABLE=0
+INTER_ENV := $(DEVICE_TEST_ENV) \
+             $(MPI_ENV_FLAG) FLAGCX_P2P_DISABLE=1 \
+             $(MPI_ENV_FLAG) FLAGCX_DEBUG=TRACE \
+             $(MPI_ENV_FLAG) FLAGCX_DEBUG_SUBSYS=ALL
 
 # Unified IR keeps P2P enabled. Inter-node runs create two logical nodes with
 # MPI MPMD app contexts and distinct host IDs.
-UNIFIED_COMMON_ENV := $(MPI_ENV_FLAG) FLAGCX_USE_HETERO_COMM=1 \
-                      $(MPI_ENV_FLAG) FLAGCX_VMM_ENABLE=0 \
-                      $(MPI_ENV_FLAG) LD_LIBRARY_PATH=$(LD_LIBRARY_PATH)
+UNIFIED_COMMON_ENV := $(DEVICE_TEST_ENV) $(MPI_ENV_FLAG) FLAGCX_P2P_DISABLE=0
 INTER_NODE0_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node0 \
                    $(MPI_ENV_FLAG) NCCL_HOSTID=node0
 INTER_NODE1_ENV := $(MPI_ENV_FLAG) FLAGCX_HOSTID=node1 \
@@ -349,10 +361,10 @@ run-mpi-intra: $(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)) \
 
 ifneq ($(filter $(BINDIR)/test_device_ir_intra,$(MPI_TARGETS)),)
 	@echo "Running intra-node tests..."
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_ir_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(INTRA_ENV) $(BINDIR)/test_device_ir_intra
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_intra,$(MPI_TARGETS)),)
-	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(BINDIR)/test_device_api_intra
+	$(MPIRUN) $(MPI_ROOT_ARGS) -n 4 $(INTRA_ENV) $(BINDIR)/test_device_api_intra
 endif
 ifneq ($(filter $(BINDIR)/test_device_ir_intra_enflame,$(MPI_TARGETS)),)
 	@echo "Running Enflame intra-node IR tests..."
@@ -373,15 +385,15 @@ run-mpi-inter: $(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)) \
 ifneq ($(filter $(BINDIR)/test_device_ir_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device IR tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(HETERO_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
-		: -n 2 $(HETERO_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
+		-n 2 $(INTER_ENV) $(INTER_NODE0_ENV) $(BINDIR)/test_device_ir_inter \
+		: -n 2 $(INTER_ENV) $(INTER_NODE1_ENV) $(BINDIR)/test_device_ir_inter
 endif
 ifneq ($(filter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)
 	@echo "Running inter-node Device API tests..."
 	$(MPIRUN) $(MPI_ROOT_ARGS) \
-		-n 2 $(HETERO_ENV) $(INTER_NODE0_ENV) \
+		-n 2 $(INTER_ENV) $(INTER_NODE0_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2 \
-		: -n 2 $(HETERO_ENV) $(INTER_NODE1_ENV) \
+		: -n 2 $(INTER_ENV) $(INTER_NODE1_ENV) \
 		$(BINDIR)/test_device_api_inter -b 1M -e 4M -f 2 -R 2
 endif
 ifeq ($(filter $(BINDIR)/test_device_ir_inter $(BINDIR)/test_device_api_inter,$(MPI_TARGETS)),)

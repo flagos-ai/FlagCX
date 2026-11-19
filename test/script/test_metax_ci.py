@@ -48,6 +48,7 @@ class MetaXPerfSuiteTest(unittest.TestCase):
             scripts = root / "scripts"
             scripts.mkdir()
             shutil.copy(PERF_SUITE, scripts / PERF_SUITE.name)
+            shutil.copy(PERF_SUITE.parent / "ignore_test.py", scripts / "ignore_test.py")
             runner = scripts / "run_mpi_with_timeout.sh"
             runner.write_text(
                 '#!/usr/bin/env bash\n'
@@ -66,7 +67,10 @@ class MetaXPerfSuiteTest(unittest.TestCase):
             calls = root / "calls.log"
             env = dict(os.environ,
                        FLAGCX_CI_PERF_PLATFORM="MetaX",
-                       FLAGCX_CI_PERF_SKIP_OPERATIONS="allreduce reducescatter",
+                       FLAGCX_CI_IGNORE_TEST=(
+                           '{"perf":{"operations":["allreduce","reducescatter"],'
+                           '"modes":["homogeneous","heterogeneous"]}}'
+                       ),
                        FLAGCX_CI_PERF_CONTINUE_ON_FAILURE="1",
                        FLAGCX_CI_TEST_RUNNER_LOG=str(calls))
             for mode, last_operation in (("homogeneous", "reduce"),

@@ -135,7 +135,7 @@ FLAGCX_GLOBAL_DECORATOR void kernelCoopGroupsS_thread(int *results) {
   int size = thread.size();
   flagcxLaneMask_t mask = thread.laneMask();
   thread.sync();
-  
+
   // Verify: rank should be 0, size should be 1, mask should be 1
   if (FLAGCX_THREAD_IDX_X == 0 && FLAGCX_BLOCK_IDX_X == 0) {
     results[1] = (rank == 0 && size == 1 && mask == 1) ? 1 : 0;
@@ -1724,6 +1724,3 @@ void launchKernelDevSignalShadowFlushInterWorldS(
   (void)devResult;
   (void)stream;
 }
-
-
-

@@ -18,7 +18,7 @@ TEST_F(DeviceApiTest, IntraAllReduceViaDevicePtr) {
   // Register symmetric window
   flagcxWindow_t win = nullptr;
   ASSERT_EQ(flagcxCommWindowRegister(comm, regBuff, size, &win,
-                                     FLAGCX_WIN_COLL_SYMMETRIC, memAllocator),
+                                     flagcxTestWindowFlags(), memAllocator),
             flagcxSuccess);
 
   MPI_Barrier(MPI_COMM_WORLD);

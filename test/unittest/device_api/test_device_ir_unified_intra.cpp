@@ -32,6 +32,8 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 
@@ -110,11 +112,9 @@ int main(int argc, char *argv[]) {
   // Register symmetric windows
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, bufSize, &sendWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       flagcxTestWindowFlags(), memAllocator));
   FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       flagcxTestWindowFlags(), memAllocator));
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
@@ -193,7 +193,17 @@ int main(int argc, char *argv[]) {
     RPRINTF("S16 DevBarrier(INTRA+WORLD): SKIP (peer path not operable)\n");
     MPI_Barrier(MPI_COMM_WORLD);
 #else
-    {
+    const char *skipS16 = std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16");
+    if (skipS16 != nullptr && skipS16[0] != '\0' && skipS16[0] != '0') {
+      if (proc == 0) {
+        const char *reason =
+            std::getenv("FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON");
+        printf("S16 DevBarrier(INTRA+WORLD): SKIP (CI ignore_test: %s)\n",
+               reason != nullptr ? reason : "temporarily blacklisted");
+        fflush(stdout);
+      }
+      MPI_Barrier(MPI_COMM_WORLD);
+    } else {
       int hostResults[4];
       bool s16Pass = true;
 

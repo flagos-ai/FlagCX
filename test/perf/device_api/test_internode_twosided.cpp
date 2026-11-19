@@ -3,9 +3,9 @@
  ************************************************************************/
 
 #include "device_api.h"
+#include "device_api_window.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
-#include "tools.h"
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -18,7 +18,7 @@ extern "C" void flagcxNvshmemFinalizeDeviceState();
 #define DATATYPE flagcxFloat
 
 int main(int argc, char *argv[]) {
-  parser args(argc, argv);
+  parser args(argc, argv, 2);
   size_t minBytes = args.getMinBytes();
   size_t maxBytes = args.getMaxBytes();
   int stepFactor = args.getStepFactor();
@@ -26,7 +26,9 @@ int main(int argc, char *argv[]) {
   int numIters = args.getTestIters();
   int printBuffer = args.isPrintBuffer();
   uint64_t splitMask = args.getSplitMask();
-  int localRegister = args.getLocalRegister();
+  int winFlags;
+  if (!deviceApiWindowMode(args, &winFlags))
+    return 1;
 
   flagcxDeviceHandle_t devHandle;
   flagcxComm_t comm;
@@ -59,6 +61,8 @@ int main(int argc, char *argv[]) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   FLAGCXCHECK(flagcxCommInitRank(&comm, totalProcs, &uniqueId, proc));
+  if (proc == 0 && color == 0)
+    FLAGCXCHECK(deviceApiReportWindowMode(comm, winFlags));
 
   const flagcxMemAllocator_t memAllocator = flagcxMemCCL;
 
@@ -76,47 +80,26 @@ int main(int argc, char *argv[]) {
 #endif
 
   void *sendBuff = nullptr, *recvBuff = nullptr, *hello;
-  void *sendHandle = nullptr, *recvHandle = nullptr;
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   size_t count;
   timer tim;
 
-  if (localRegister == 2) {
-    // Window mode: VMM alloc with comm (for flagcxCommWindowRegister later)
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-    FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
-                                         FLAGCX_WIN_COLL_SYMMETRIC,
-                                         memAllocator));
-  } else if (localRegister == 1) {
-    // Zero-copy: alloc + register for NIC RDMA access
-    FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
-    FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
-    FLAGCXCHECK(flagcxCommRegister(comm, sendBuff, maxBytes, &sendHandle,
-                                   memAllocator));
-    FLAGCXCHECK(flagcxCommRegister(comm, recvBuff, maxBytes, &recvHandle,
-                                   memAllocator));
-  } else {
-    // Unregistered
-    FLAGCXCHECK(
-        devHandle->deviceMalloc(&sendBuff, maxBytes, flagcxMemDevice, NULL));
-    FLAGCXCHECK(
-        devHandle->deviceMalloc(&recvBuff, maxBytes, flagcxMemDevice, NULL));
-  }
+  FLAGCXCHECK(flagcxMemAlloc(&sendBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxMemAlloc(&recvBuff, maxBytes, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, maxBytes, &sendWin,
+                                       winFlags, memAllocator));
+  FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, maxBytes, &recvWin,
+                                       winFlags, memAllocator));
+
   hello = malloc(maxBytes);
   memset(hello, 0, maxBytes);
 
-  // Create device memory handles for send/recv buffers
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;
   FLAGCXCHECK(flagcxDevMemCreate(comm, sendBuff, maxBytes, sendWin, &sendMem));
   FLAGCXCHECK(flagcxDevMemCreate(comm, recvBuff, maxBytes, recvWin, &recvMem));
 
   if (proc == 0 && color == 0) {
-    printf("\n# FIFO AlltoAll test (two-sided send/recv, -R %d)\n",
-           localRegister);
+    printf("\n# FIFO AlltoAll test (two-sided send/recv, -R %d)\n", 2);
   }
 
   // Warm-up
@@ -216,7 +199,7 @@ int main(int argc, char *argv[]) {
   // Window AlltoAll test (requires -R 2 for window registration)
   // Falls back to FIFO AlltoAll on Default path when window not available
   // ==========================================================================
-  if (localRegister == 2) {
+  {
     flagcxDevComm_t a2aDevComm = nullptr;
     flagcxDevMem_t a2aSendMem = nullptr, a2aRecvMem = nullptr;
 
@@ -318,30 +301,12 @@ int main(int argc, char *argv[]) {
     FLAGCXCHECK(flagcxDevCommDestroy(comm, a2aDevComm));
   }
 
-  // Destroy stream first (sync any pending work)
+  FLAGCXCHECK(deviceApiCloseWindows(comm, splitComm, devHandle, stream,
+                                    {&sendMem, &recvMem}, {&sendWin, &recvWin},
+                                    memAllocator));
+  FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
+  FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
   FLAGCXCHECK(devHandle->streamDestroy(stream));
-
-  // Destroy device memory handles
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, sendMem));
-  FLAGCXCHECK(flagcxDevMemDestroy(comm, recvMem));
-
-  // Deregister and free user buffers while the SHMEM runtime owned by DevComm
-  // is still active.
-  if (localRegister == 2) {
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, sendWin, memAllocator));
-    FLAGCXCHECK(flagcxCommWindowDeregister(comm, recvWin, memAllocator));
-  } else if (localRegister == 1) {
-    FLAGCXCHECK(flagcxCommDeregister(comm, sendHandle, memAllocator));
-    FLAGCXCHECK(flagcxCommDeregister(comm, recvHandle, memAllocator));
-  }
-
-  if (localRegister >= 1) {
-    FLAGCXCHECK(flagcxMemFree(sendBuff, memAllocator));
-    FLAGCXCHECK(flagcxMemFree(recvBuff, memAllocator));
-  } else if (localRegister == 0) {
-    FLAGCXCHECK(devHandle->deviceFree(sendBuff, flagcxMemDevice, NULL));
-    FLAGCXCHECK(devHandle->deviceFree(recvBuff, flagcxMemDevice, NULL));
-  }
 
   FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
 #if defined(FLAGCX_TEST_ALLOCATOR_SHMEM) && defined(USE_NVIDIA_ADAPTOR)

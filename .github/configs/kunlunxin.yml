@@ -1,0 +1,68 @@
+# KunlunXin hardware configuration
+hardware_name: kunlunxin
+display_name: KunlunXin Tests
+
+# Only platform-specific files belong here; shared/unmatched changes run all.
+paths_watch:
+  - .github/configs/kunlunxin.yml
+  - .github/scripts/set_env/kunlunxin.sh
+  - .github/docker/Dockerfile.kunlunxin-ci
+  - makefiles/kunlunxin.mk
+  - flagcx/adaptor/device/kunlunxin_adaptor.cc
+  - flagcx/adaptor/kernel/kunlunxin/**/*
+  - flagcx/adaptor/include/kunlunxin_adaptor.h
+  - flagcx/adaptor/include/device_api/kunlunxin_*.h
+  - test/kernel/klx/**/*
+
+ci_image: harbor.baai.ac.cn/flagos-dev/flagcx-kunlunxin-xre5.37.1:2.3.0
+
+runner_labels:
+  - kl-8g-cicd-flagcx
+
+# Use the XRE and CUDA compatibility libraries shipped in ci_image. Mounting
+# /usr/local/xpu from the runner replaces them with the host's XRE version.
+docker_volumes: []
+
+# Job containers keep the Actions bridge for checkout/artifact actions. Hardware
+# workloads enter this network namespace while retaining the image filesystem.
+job_container_volumes:
+  - /proc:/run/flagcx-host-proc:ro
+
+docker_options:
+  - --network=host
+  - --ipc=host
+  - --privileged=true
+  - --shm-size=64G
+  - --ulimit=memlock=-1
+  - --ulimit=stack=67108864
+  - --ulimit=nofile=65535:65535
+  - --group-add=video
+  - --env=PLATFORM=kunlunxin
+  - --env=MPI_HOME=/usr/local/openmpi
+  - --env=CCL_HOME=/usr/local/xccl_Linux_x86_64
+  - --env=DEVICE_HOME=/opt/flagcx-sdk/xre
+  - --env=LD_LIBRARY_PATH=/usr/local/openmpi/lib:/usr/local/xccl_Linux_x86_64/so:/opt/flagcx-sdk/xre/so:/opt/flagcx-sdk/xre/lib:/usr/local/xcudart/lib
+  - --device=/dev/xpuctrl
+  - --device=/dev/xpu0
+  - --device=/dev/xpu1
+  - --device=/dev/xpu2
+  - --device=/dev/xpu3
+  - --device=/dev/xpu4
+  - --device=/dev/xpu5
+  - --device=/dev/xpu6
+  - --device=/dev/xpu7
+
+set_env: .github/scripts/set_env/kunlunxin.sh
+
+# Device adaptor coverage lives in adaptor; topology coverage lives in core.
+# KunlunXin's Device API coverage uses the unified IR targets.
+unit_test_suites:
+  - adaptor
+  - core
+  - device_api_host
+  - device_api_unified_ir
+  - p2p
+  - rma
+  - runner
+  - service
+  - symmem
