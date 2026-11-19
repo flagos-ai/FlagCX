@@ -394,7 +394,6 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
 
     // IPC barriers
     uint64_t **barrierPeers;
-    uint64_t *rankCtaBarrier; // Rank-local CTA rendezvous on MUSA; null otherwise.
     uint64_t *deviceErrorStatus;
     uint64_t
         *epochBuffer; // Device pointer: [intra live, inter live] × CTA_COUNT
@@ -534,7 +533,6 @@ struct CommTraits<DefaultBackend<PlatformTag>> {
         dc.fifoBuffers[i] = di.fifoBuffers[i];
       dc.barrierPeers = di.barrierPeers;
       dc.epochBuffer = di.epochBuffer;
-      dc.rankCtaBarrier = di.rankCtaBarrier;
       dc.deviceErrorStatus = di.deviceErrorStatus;
       dc.nBarriers = di.nBarriers;
       dc.nInterPeers = di.nInterPeers;
@@ -1972,7 +1970,6 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
 
   using Atomic = typename PlatformTraits<P>::Atomic;
   using Intrin = typename PlatformTraits<P>::Intrin;
-  uint64_t *_rankCtaBarrier;
   const Comm *_errorComm;
   Coop _coop;
   Barrier<DefaultBackend<P>, flagcxTeamTagIntra, Coop> _intra;
@@ -1983,7 +1980,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagWorld, const Net &net, const Comm &dc,
           uint32_t index, bool multimem, int nInterPeers)
-      : _rankCtaBarrier(dc.rankCtaBarrier), _errorComm(&dc), _coop(coop),
+      : _errorComm(&dc), _coop(coop),
         _intra(coop, dc, Team{dc.intraSize, dc.intraRank, 1}, index),
         _inter(coop, net, dc, Team{}, index, nInterPeers),
         _nInterPeers(nInterPeers) {}
@@ -1992,7 +1989,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagIntra, const Net &, const Comm &dc,
           uint32_t index, bool multimem, int)
-      : _rankCtaBarrier(dc.rankCtaBarrier), _errorComm(&dc), _coop(coop),
+      : _errorComm(&dc), _coop(coop),
         _intra(coop, dc, Team{dc.intraSize, dc.intraRank, 1}, index), _inter(),
         _nInterPeers(0) {}
 
@@ -2000,7 +1997,7 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
   FLAGCX_DEVICE_INLINE_DECORATOR
   Barrier(Coop coop, flagcxTeamTagInter, const Net &net, const Comm &dc,
           uint32_t index, bool, int nInterPeers)
-      : _rankCtaBarrier(dc.rankCtaBarrier), _errorComm(&dc), _coop(coop), _intra(),
+      : _errorComm(&dc), _coop(coop), _intra(),
         _inter(coop, net, dc, Team{}, index, nInterPeers),
         _nInterPeers(nInterPeers) {}
 
@@ -2032,41 +2029,10 @@ struct Barrier<DefaultBackend<P>, flagcxTeamTagWorld, Coop> {
     }
   }
 
-  // MUSA WORLD barriers synchronize the rank-local CTAs before inter-node
-  // signaling. Every participating CTA must enter in the same order and make
-  // concurrent progress; this is not a general-purpose grid barrier.
-  FLAGCX_DEVICE_INLINE_DECORATOR void rankCtaSync() {
-#if defined(USE_MUSA_ADAPTOR) && defined(FLAGCX_DEVICE_COMPILE)
-    if (_rankCtaBarrier == nullptr) return;
-    if (!_errorComm->require(_coop.size() == FLAGCX_BLOCK_DIM_X,
-                             flagcxNotSupported)) return;
-    _coop.sync();
-    if (_coop.threadRank() == 0) {
-      const uint64_t participants = static_cast<uint64_t>(FLAGCX_GRID_DIM_X);
-      const uint64_t ticket = Atomic::fetchAdd(
-          _rankCtaBarrier, uint64_t{1}, flagcxDeviceMemoryOrderAcqRel);
-      const uint64_t target = (ticket / participants + 1) * participants;
-      int iter = 0;
-      while (Atomic::load(_rankCtaBarrier, flagcxDeviceMemoryOrderAcquire) < target) {
-        if (_errorComm->hasDeviceError()) break;
-        Intrin::spinBackoff(iter++);
-      }
-    }
-    _coop.sync();
-#endif
-  }
-
   FLAGCX_DEVICE_INLINE_DECORATOR void
   sync(flagcxDeviceMemoryOrder_t order = flagcxDeviceMemoryOrderAcqRel,
        flagcxDevNetFenceLevel fence = flagcxDevNetFenceLevel::Relaxed) {
-    rankCtaSync();
     if (_nInterPeers > 0) {
-#ifdef USE_MUSA_ADAPTOR
-      // All local ranks enter the same WORLD phase before any announces
-      // remote arrival. The existing per-context Inter wait then completes,
-      // followed by the local rendezvous below. No new grid spin is added.
-      _intra.sync(order);
-#endif
       // Phase 1: inter signal+wait (rank-to-rank across nodes)
       _inter.sync(order, fence);
       // Phase 2: intra sync (broadcast inter completion to local ranks)
