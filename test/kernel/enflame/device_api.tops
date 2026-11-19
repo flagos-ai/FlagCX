@@ -151,7 +151,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(256)
       int size = thread.size();
       flagcxLaneMask_t mask = thread.laneMask();
       thread.sync();
-      
+
       // Verify: rank should be 0, size should be 1, mask should be 1
       if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
         results[2] = (rank == 0 && size == 1 && mask == 1) ? 1 : 0;

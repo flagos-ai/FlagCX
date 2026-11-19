@@ -1,0 +1,110 @@
+ARG BASE_IMAGE=harbor.baai.ac.cn/flagos-runtime/flagos-runtime-kunlunxin-xre5.37.1:2.3.0@sha256:679182a04d187562a3e23bacb9d0eb876dabf09ac0c0a875c2b4a141b64cac69
+ARG OPENMPI_VERSION=4.1.7
+
+FROM ${BASE_IMAGE} AS sdk
+
+# Use the complete SDK pair distributed with the PR #555 P800 test document.
+# The XCCL download is an uncompressed tar despite its .tar.gz suffix.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fSL --retry 3 -o /tmp/xtdk.tar.gz \
+        https://klx-public.bj.bcebos.com/sunhongru/FlagCX/xtdk-llvm15-ubuntu2004_x86_64.tar.gz \
+    && echo 'cbbbc48b0eeca8a2db65a5aee4f088a975869c06d8c5a0d119fa99e37c74e90e  /tmp/xtdk.tar.gz' | sha256sum -c - \
+    && curl -fSL --retry 3 -o /tmp/xccl.tar \
+        https://klx-public.bj.bcebos.com/sunhongru/FlagCX/xccl-output.tar.gz \
+    && echo '8342d82ef183ed1a4a2379015a1e1280eb8b84d844c8bb7731fe6a2c80de5cda  /tmp/xccl.tar' | sha256sum -c - \
+    && mkdir -p /opt/documented-sdk/xtdk /opt/documented-sdk/xccl \
+    && tar -xzf /tmp/xtdk.tar.gz -C /opt/documented-sdk/xtdk --strip-components=1 \
+    && tar -xf /tmp/xccl.tar -C /opt/documented-sdk/xccl --strip-components=1 \
+    && rm /tmp/xtdk.tar.gz /tmp/xccl.tar
+
+# PR #555 uses the CUDA 11.7-compatible peermem XRE build. The runtime base
+# has a CUDA 12.9 build with the same XRE version number.
+RUN curl -fSL --retry 3 -o /tmp/xre.tar.gz \
+        https://klx-sdk-release-public.su.bcebos.com/xre/kl3-release/5.37.1.0/peermem/xre-Linux-x86_64-5.37.1.0.tar.gz \
+    && echo '0ceafedcc20a55172d0b09de400e840241e7662368ea6831cd28560b2f7cdc23  /tmp/xre.tar.gz' | sha256sum -c - \
+    && mkdir -p /opt/documented-sdk/xre \
+    && tar -xzf /tmp/xre.tar.gz -C /opt/documented-sdk/xre --strip-components=1 \
+    && rm /tmp/xre.tar.gz
+
+FROM ${BASE_IMAGE} AS openmpi-build
+
+ARG OPENMPI_VERSION
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        libevent-dev \
+        libhwloc-dev \
+        libnuma-dev \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://download.open-mpi.org/release/open-mpi/v4.1/openmpi-${OPENMPI_VERSION}.tar.gz" \
+        | tar -xz -C /tmp \
+    && cd "/tmp/openmpi-${OPENMPI_VERSION}" \
+    && ./configure --prefix=/usr/local/openmpi --disable-mpi-fortran --disable-mpi-cxx \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf "/tmp/openmpi-${OPENMPI_VERSION}"
+
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        libibverbs-dev \
+        libevent-2.1-7 \
+        libevent-core-2.1-7 \
+        libevent-pthreads-2.1-7 \
+        libhwloc15 \
+        libnuma-dev \
+        nlohmann-json3-dev \
+        pkg-config \
+        util-linux \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=sdk /opt/documented-sdk/xtdk/ /usr/local/xtdk-llvm15-ubuntu2004_x86_64/
+COPY --from=sdk /opt/documented-sdk/xccl/ /opt/flagcx-sdk/xccl/
+COPY --from=sdk /opt/documented-sdk/xre/ /opt/flagcx-sdk/xre/
+COPY --from=openmpi-build /usr/local/openmpi/ /usr/local/openmpi/
+
+# Keep XSHMEM headers, host library and device archive from the same SDK.
+RUN if [ ! -r /usr/local/xtdk-llvm15-ubuntu2004_x86_64/include/xpu/kernel/xtdk.h ]; then \
+      ln -s ../../lib/clang/15.0.7/include/xpu/kernel /usr/local/xtdk-llvm15-ubuntu2004_x86_64/include/xpu/kernel; \
+    fi \
+    && rm -rf /usr/local/xccl_Linux_x86_64 \
+    && ln -s /opt/flagcx-sdk/xccl /usr/local/xccl_Linux_x86_64 \
+    && ln -s /usr/local/xccl_Linux_x86_64 /usr/local/xccl
+
+ENV MPI_HOME=/usr/local/openmpi
+ENV XTDK_HOME=/usr/local/xtdk-llvm15-ubuntu2004_x86_64
+ENV CCL_HOME=/usr/local/xccl_Linux_x86_64
+ENV XCCL_HOME=/usr/local/xccl_Linux_x86_64
+ENV DEVICE_HOME=/opt/flagcx-sdk/xre
+ENV XRE_HOME=/opt/flagcx-sdk/xre
+ENV OMPI_MCA_plm=isolated
+ENV PATH=/usr/local/openmpi/bin:/usr/local/xtdk-llvm15-ubuntu2004_x86_64/bin:/opt/flagcx-sdk/xre/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/openmpi/lib:/usr/local/xccl_Linux_x86_64/so:/opt/flagcx-sdk/xre/so:/opt/flagcx-sdk/xre/lib:/usr/local/xcudart/lib
+
+RUN test -x "$MPI_HOME/bin/mpirun" \
+    && test -x "$MPI_HOME/bin/mpicxx" \
+    && "$MPI_HOME/bin/ompi_info" --version | grep -q 'Open MPI' \
+    && "$MPI_HOME/bin/mpicxx" --showme:version | grep -q 'Open MPI' \
+    && test "$("$MPI_HOME/bin/mpirun" --allow-run-as-root -np 2 hostname | wc -l)" -eq 2 \
+    && test -x "$XTDK_HOME/bin/clang++" \
+    && test -r "$XTDK_HOME/include/xpu/kernel/xtdk.h" \
+    && test -r "$CCL_HOME/include/xshmem/xshmem.h" \
+    && test -r "$CCL_HOME/include/xshmem/xshmemx.h" \
+    && test -s "$CCL_HOME/lib/libxshmem_device.a" \
+    && test -s "$CCL_HOME/so/libbkcl.so" \
+    && test -s "$XRE_HOME/so/libcudart.so.11.0" \
+    && "$XTDK_HOME/bin/clang++" --version \
+    && printf '#include <xshmem/xshmem.h>\n#include <xshmem/xshmemx.h>\nint main() { return 0; }\n' \
+        | g++ -I"$CCL_HOME/include" -I"$XRE_HOME/include" -x c++ -fsyntax-only -

@@ -285,6 +285,9 @@ def test_reducescatter():
 
 
 def test_gather():
+    if os.environ.get("FLAGCX_TORCH_SKIP_GATHER") == "1":
+        print("SKIP gather: backend does not support this collective")
+        return
     if torch.cuda.is_available():
         # Create tensors
         x = torch.rand(WORLD_SIZE).cuda()

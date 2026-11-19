@@ -13,6 +13,7 @@ export PATH="$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$PROJECT_ROOT/build/lib:${LD_LIBRARY_PATH:-}"
 
 LOCAL_NP="${FLAGCX_CI_SYMMEM_LOCAL_NP:-2}"
+test_status=0
 vmm_provider_env=()
 run_multi_segment=0
 # Keep this fixed list aligned with the provider cases exercised by hardware CI.
@@ -24,10 +25,12 @@ case "${FLAGCX_ADAPTOR:-}" in
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
     ;;
+  klx)
+    ;;
   "")
     ;;
   *)
-    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, or ascend" >&2
+    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, ascend, or klx" >&2
     exit 2
     ;;
 esac
@@ -48,7 +51,7 @@ run_required_case() {
 
 echo "=== Running symmem unit tests (no MPI/GPU) ==="
 FLAGCX_CI_TEST_LABEL="symmem unit tests" \
-  "$TEST_RUNNER" "$BUILD_BIN/symmem_unit_tests"
+  "$TEST_RUNNER" "$BUILD_BIN/symmem_unit_tests" || test_status=$?
 
 echo ""
 echo ""
@@ -61,11 +64,13 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
     -x FLAGCX_VMM_ENABLE=0 \
     -x FLAGCX_IB_DISABLE=1 \
     "$BUILD_BIN/symmem_mpi_tests" \
-    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
+    --gtest_filter=-SymMemTest.CrossGpuReadViaPeerPtr:SymMemTest.CrossGpuWriteViaPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.* || test_status=$?
 
 echo ""
+vmm_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+  phase symmem vmm-local-and-remote-without-net)
 echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
-if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
+if [[ -z "$vmm_skip_reason" ]]; then
   FLAGCX_CI_MPI_LABEL="symmem VMM local" \
     "$MPI_RUNNER" -np "$LOCAL_NP" --allow-run-as-root \
       -x FLAGCX_USE_HETERO_COMM=1 \
@@ -76,9 +81,9 @@ if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" == 1 ]]; then
       -x FLAGCX_CI_REQUIRE_VMM=1 \
       "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
       "$BUILD_BIN/symmem_mpi_tests" \
-      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.*
+      --gtest_filter=-SymMemTest.CrossGpuReadViaIpcPeerPtr:SymMemTest.CrossGpuWriteViaIpcPeerPtr:SymMemTest.HybridLocalAndRemoteAccess:CoverageSupplemental.* || test_status=$?
 else
-  echo "Skipping symmem VMM-local tests: VMM is unavailable on this CoreX runtime"
+  echo "Skipping symmem VMM-local tests: $vmm_skip_reason"
 fi
 
 if ((run_multi_segment)); then
@@ -93,15 +98,16 @@ if ((run_multi_segment)); then
     fi
   done
   if ((provider_multi_segment_status)); then
-    exit 1
+    test_status=1
   fi
 fi
 
-if [[ -n "${FLAGCX_ADAPTOR:-}" && "${FLAGCX_ADAPTOR}" != ascend ]]; then
+if [[ -z "$vmm_skip_reason" && -n "${FLAGCX_ADAPTOR:-}" &&
+      "${FLAGCX_ADAPTOR}" != ascend ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \
-    -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1
+    -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1 || test_status=$?
 fi
 
 if [[ "${FLAGCX_CI_REQUIRE_MULTICAST:-0}" == "1" ]]; then
@@ -115,7 +121,7 @@ if [[ "${FLAGCX_CI_REQUIRE_MULTICAST:-0}" == "1" ]]; then
         SymMemTest.LsaMulticastUnbindFailureRetainsWindowForRetry; do
         run_required_case "$provider_test" \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_CI_REQUIRE_MULTICAST=1
+          -x FLAGCX_CI_REQUIRE_MULTICAST=1 || test_status=$?
       done
       ;;
     *)
@@ -126,4 +132,8 @@ if [[ "${FLAGCX_CI_REQUIRE_MULTICAST:-0}" == "1" ]]; then
 fi
 
 echo ""
+if ((test_status != 0)); then
+  echo "Symmem tests failed (exit=$test_status)" >&2
+  exit "$test_status"
+fi
 echo "All symmem tests passed."

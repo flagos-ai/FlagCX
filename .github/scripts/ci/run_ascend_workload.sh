@@ -61,9 +61,7 @@ case "$workload" in
 
     export FLAGCX_TORCH_USE_INSTALLED_PACKAGE=1
     unset FLAGCX_SKIP_HETERO
-    # Match the Ascend runner quarantine: C2C refresh deviceMemset fails for
-    # these three heterogeneous collectives before their transfers begin.
-    export FLAGCX_TORCH_HETERO_SKIP_OPS=reduce,allreduce,reducescatter
+    # Per-operation heterogeneous exclusions come from the platform YAML.
     bash "$project_root/test/script/torch_api_test.sh"
     ;;
   *)
