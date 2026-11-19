@@ -110,11 +110,9 @@ int main(int argc, char *argv[]) {
   // Register symmetric windows
   flagcxWindow_t sendWin = nullptr, recvWin = nullptr;
   FLAGCXCHECK(flagcxCommWindowRegister(comm, sendBuff, bufSize, &sendWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       flagcxTestWindowFlags(), memAllocator));
   FLAGCXCHECK(flagcxCommWindowRegister(comm, recvBuff, bufSize, &recvWin,
-                                       FLAGCX_WIN_COLL_SYMMETRIC,
-                                       memAllocator));
+                                       flagcxTestWindowFlags(), memAllocator));
 
   // Create DevMem handles
   flagcxDevMem_t sendMem = nullptr, recvMem = nullptr;

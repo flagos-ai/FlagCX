@@ -35,10 +35,9 @@ struct flagcxDevCommState {
   void *recvStagedBuff;
   size_t stagedBuffSize;
 
-  // Allocator ownership and memory provenance are independent. gdrMemAlloc
-  // can return an ordinary device allocation when VMM is disabled.
-  bool stagedUsesGdrAllocator; // cleanup must use gdrMemFree
-  bool stagedAllocationIsVmm;  // symmetric-window MR route uses VMM policy
+  // Comm owns staged allocations and their matching deallocator. Retain only
+  // the provenance needed to choose the symmetric-window registration route.
+  bool stagedAllocationIsVmm;
 
   // Capability flags (from devCommReqsInit)
   bool hasMulticast;

@@ -144,7 +144,7 @@ void RmaTest::SetUpTestSuite() {
 
   // Register the data buffer only after every rank has allocated it.
   res = flagcxCommWindowRegister(comm, dataBuff, size, &dataWin,
-                                 FLAGCX_WIN_COLL_SYMMETRIC);
+                                 flagcxTestWindowFlags());
   windowRegistrationResult = res;
   bool localWindowReady = res == flagcxSuccess && dataWin != nullptr &&
                           dataWin->isSymmetricDefault &&

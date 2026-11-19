@@ -258,10 +258,27 @@ flagcxResult_t flagcxCommDeregister(const flagcxComm_t comm, void *handle,
 #endif
 
 /* Window registration flags */
-#define FLAGCX_WIN_DEFAULT 0x00
-#define FLAGCX_WIN_COLL_SYMMETRIC 0x01
+#define FLAGCX_WIN_ASYMMETRIC 0x00
+#define FLAGCX_WIN_SYMMETRIC 0x01
+// Compatibility name for the symmetric mode.
+#define FLAGCX_WIN_COLL_SYMMETRIC FLAGCX_WIN_SYMMETRIC
 
-/* Register/Deregister user buffer for symmetric operation */
+/* Window modes are mutually exclusive values, not independent capability bits.
+ * ASYMMETRIC uses node-local IPC peer pointers on the hetero Default backend;
+ * SYMMETRIC requires node-local symmetric mappings. Both prepare NET for remote
+ * nodes. Homo vendor backends support only SYMMETRIC. No automatic downgrade
+ * between modes is performed. FLAGCX_VMM_ENABLE=0 disables SYMMETRIC requests
+ * for every backend; enabling VMM does not select a mode or make an arbitrary
+ * backing allocation IPC-compatible. Registration is
+ * collective. Deregistration releases this rank's Window resources locally;
+ * callers must finish local device work and ensure remote accesses to this
+ * rank's buffer have completed before deregistration. Deregistration does not
+ * close IPC mappings held by other ranks. The caller must keep the backing
+ * allocation alive until every rank that imported it has closed its mapping.
+ * Participating ranks can deregister locally, then use an application-level
+ * barrier before releasing their backing allocations.
+ * A successfully deregistered Window handle is empty and may be passed to a
+ * later register call on the same communicator. */
 #ifdef __cplusplus
 flagcxResult_t
 flagcxCommWindowRegister(flagcxComm_t comm, void *buff, size_t size,
@@ -554,7 +571,10 @@ flagcxResult_t flagcxRecv(void *recvbuff, size_t count,
  *
  * These operations require prior registration via flagcxOneSideRegister or
  * flagcxCommWindowRegister. They are only supported on heterogeneous
- * communicators backed by an RDMA-capable net adaptor.
+ * communicators backed by an RDMA-capable net adaptor. For raw MR-index APIs,
+ * callers must stop submitting work that references a Window before that
+ * Window is deregistered. Direct device access to its peer mapping must also
+ * be complete before local Window deregistration.
  */
 
 /* Register a signal buffer for one-sided RDMA operations.
@@ -590,9 +610,9 @@ flagcxResult_t flagcxGet(flagcxComm_t comm, int peer, size_t srcOffset,
  * makes the destination device-visible. A successful operation also advances
  * the RMA completion counter once, after data movement has completed.
  * localbuff must belong to a live symmetric window. flags is reserved (0).
- * Keep both windows registered until stream completion (or the corresponding
- * completion-counter advance); the peer must likewise keep its source window
- * valid until the read has finished. */
+ * The local and peer backing allocations must remain valid until the read
+ * finishes. All such operations must complete before either rank deregisters
+ * its Window. */
 flagcxResult_t flagcxGetAsync(void *localbuff, size_t count,
                               flagcxDataType_t datatype, int peer,
                               flagcxWindow_t peerWin, size_t peerWinOffset,

@@ -161,7 +161,7 @@ int main(int argc, char *argv[]) {
   flagcxResult_t r1, r2;
 
   r1 = flagcxCommWindowRegister(comm1, dataBuf1, dataBytes, &dataWin1,
-                                FLAGCX_WIN_COLL_SYMMETRIC);
+                                flagcxTestWindowFlags());
   if (r1 == flagcxNotSupported || dataWin1 == nullptr) {
     if (proc == 0)
       printf("[SKIP] flagcxCommWindowRegister returned NotSupported; "
@@ -171,7 +171,7 @@ int main(int argc, char *argv[]) {
   fatal(r1, "CommWindowRegister (comm1)", proc);
 
   r2 = flagcxCommWindowRegister(comm2, dataBuf2, dataBytes, &dataWin2,
-                                FLAGCX_WIN_COLL_SYMMETRIC);
+                                flagcxTestWindowFlags());
   if (r2 == flagcxNotSupported || dataWin2 == nullptr) {
     if (proc == 0)
       printf("[SKIP] comm2 CommWindowRegister NotSupported.\n");

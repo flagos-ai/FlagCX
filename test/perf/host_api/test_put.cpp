@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
   // Register data buffer as a window for one-sided operations
   flagcxWindow_t dataWin = nullptr;
   res = flagcxCommWindowRegister(comm, dataWindow, dataBytes, &dataWin,
-                                 FLAGCX_WIN_COLL_SYMMETRIC);
+                                 flagcxTestWindowFlags());
   if (res == flagcxNotSupported || dataWin == nullptr) {
     if (proc == 0)
       printf("Skipping put benchmark: net adaptor does not support iput.\n");
