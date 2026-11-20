@@ -188,10 +188,14 @@ typedef struct flagcxDeviceHandle *flagcxDeviceHandle_t;
 /* Initialize device handle — loads device/CCL adaptor plugins, returns a
  * populated device handle. Call before flagcxCommInitRank if you need device
  * operations (setDevice, getDeviceCount, streamCreate, etc.) early.
- * If not called explicitly, flagcxCommInitRank will load plugins internally. */
+ * If not called explicitly, flagcxCommInitRank will load plugins internally.
+ * If init rollback fails and *devHandle is non-null, retain it for cleanup
+ * with flagcxDeviceHandleFree. */
 flagcxResult_t flagcxDeviceHandleInit(flagcxDeviceHandle_t *devHandle);
 
-/* Free device handle — finalizes device/CCL adaptor plugins. */
+/* Free a handle returned by flagcxDeviceHandleInit. On failure the handle
+ * remains owned by the caller for retrying Free; do not resume device work.
+ * On success the handle is invalid and must not be used again. */
 flagcxResult_t flagcxDeviceHandleFree(flagcxDeviceHandle_t devHandle);
 
 /* Deprecated: use flagcxDeviceHandleInit/Free and manage comm/uniqueId
@@ -206,7 +210,8 @@ typedef struct flagcxHandlerGroup *flagcxHandlerGroup_t;
 /* Deprecated: use flagcxDeviceHandleInit instead */
 flagcxResult_t flagcxHandleInit(flagcxHandlerGroup_t *handler);
 
-/* Deprecated: use flagcxDeviceHandleFree instead */
+/* Deprecated: use flagcxDeviceHandleFree instead. A failed free retains the
+ * group and its fields for retry; a successful free invalidates the group. */
 flagcxResult_t flagcxHandleFree(flagcxHandlerGroup_t handler);
 
 /* Allocation and user-buffer registration. A backend may reserve more memory
@@ -319,20 +324,37 @@ flagcxResult_t flagcxGetUniqueId(flagcxUniqueId_t uniqueId);
 
 /* Creates a communicator for this process's rank.
  * rank must be between 0 and nranks-1 and unique within a communicator clique.
- * Each rank is associated to a device, which has to be set before calling
+ * FlagCX supports one rank per process. Each rank is associated to a device,
+ * which has to be set before calling
  * flagcxCommInitRank. The call may synchronize with other rank processes. */
 flagcxResult_t flagcxCommInitRank(flagcxComm_t *comm, int nranks,
                                   flagcxUniqueId_t commId, int rank);
 
-/* Finalize a communicator. flagcxCommFinalize flushes all issued
- * communications, and marks communicator state as flagcxInProgress. The state
- * will change to flagcxSuccess when the communicator is globally quiescent and
- * related resources are freed; then, calling flagcxCommDestroy can locally free
- * the rest of the resources (e.g. communicator itself) without blocking. */
+/* Stop accepting new work, drain issued work and close internal IPC imports.
+ * Every rank in the communicator must finalize. When resource creation declared
+ * shared FlagCX IPC ownership, closure is confirmed with intra-node bootstrap;
+ * existing network shutdown may also synchronize remote ranks. Outside a group
+ * the call blocks to completion. Grouped finalizers run in submission order on
+ * the calling thread. Processes sharing multiple communicators must use a
+ * compatible shutdown order. A failed finalization keeps resources and rejects
+ * new work; retry finalization on all local ranks. Host-submitted work is
+ * waited through completion markers recorded at its submission boundary. Before
+ * this call, the application must finish externally launched Device API kernels
+ * and graph replays that use this communicator, and prevent further launches.
+ * Native graph capture inserts no FlagCX completion event; capture definitions
+ * are not evidence that graph executions have completed. Capture is supported
+ * only on compatible native paths, with capture introspection from the device
+ * adaptor. UniRunner, fused and direct Hetero stream paths reject active
+ * capture.
+ */
 flagcxResult_t flagcxCommFinalize(flagcxComm_t comm);
 
-/* Frees local resources associated with communicator object.
-   The comm pointer is invalidated and must not be accessed after this call. */
+/* Release resources locally after successful finalization. Without an explicit
+ * Finalize this call performs it implicitly and may synchronize with peers.
+ * Finalization and destruction execute on the calling thread, without adding
+ * lifecycle workers. On success the supplied pointer is invalid. On failure it
+ * remains valid for retry; successfully released resources are never released
+ * twice. Destroy cannot be enqueued inside a FlagCX group. */
 flagcxResult_t flagcxCommDestroy(flagcxComm_t comm);
 
 /* Frees resources associated with communicator object and aborts any operations

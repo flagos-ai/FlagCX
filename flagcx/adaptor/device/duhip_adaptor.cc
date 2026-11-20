@@ -4,7 +4,9 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
 #include "param.h"
+#include "runtime_capture.h"
 #include "segmented_vmm_allocation.h"
 #include <cstdint>
 #include <cstdlib>
@@ -557,15 +559,39 @@ flagcxResult_t duhipAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+duhipAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                   flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "hipStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "hipStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t duhipAdaptorEventCreateNative(void *wrapper,
+                                                    unsigned int flags) {
+  (void)flags;
+  DEVCHECK(hipEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t duhipAdaptorEventCreate(flagcxEvent_t *event,
                                        flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? hipEventDefault
                                  : hipEventDisableTiming;
-  DEVCHECK(hipEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, duhipAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t duhipAdaptorEventDestroy(flagcxEvent_t event) {
@@ -1466,6 +1492,7 @@ struct flagcxDeviceAdaptor duhipAdaptor {
       duhipAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                   // size_t);
       duhipAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      duhipAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions
       duhipAdaptorSymPhysAlloc, duhipAdaptorSymPhysFree, duhipAdaptorSymFlatMap,
       duhipAdaptorSymFlatUnmap, duhipAdaptorSymMulticastSupported,

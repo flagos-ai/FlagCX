@@ -16,6 +16,7 @@
 #include "info.h"
 #include "register.h"
 #include "type.h"
+#include "work_completion.h"
 #include <stdint.h>
 
 #define CACHE_LINE_SIZE 128
@@ -172,8 +173,28 @@ struct flagcxSymWindow;
 struct flagcxSymLsaArena;
 class flagcxWorkerPool;
 
+enum flagcxHeteroFinalizePhase {
+  flagcxHeteroFinalizeDrain = 0,
+  flagcxHeteroFinalizeRelay,
+  flagcxHeteroFinalizeProxy,
+  flagcxHeteroFinalizeComplete
+};
+
+struct flagcxHeteroFinalizeState {
+  enum flagcxHeteroFinalizePhase phase;
+  unsigned int localDoneMask;
+  int running;
+  int started;
+  int rollbackPending;
+  int importsClosedConfirmed;
+};
+
 struct flagcxHeteroComm {
   uint64_t startMagic;
+  struct flagcxHeteroFinalizeState finalizeState;
+  struct flagcxWorkTracker submittedWork;
+  // Already-published FIFO work remains admissible while host admission closes.
+  struct flagcxWorkTracker proxyWork;
   bool destroyProxyComplete;
   flagcxResult_t destroyProxyResult;
   struct flagcxMemoryStack memPermanent, memScoped;
@@ -375,7 +396,7 @@ struct flagcxHeteroComm {
   int *interPeerRanks;
   // Per-communicator worker registrations. Each registration owns a thread.
   flagcxWorkerPool *workerPool;
-  // Async RMA proxy state (one-sided Put/Get offload worker).
+  // Live RMA worker state, or stopped allocation owner retained until Destroy.
   struct flagcxRmaProxyState *rmaProxy;
 
   // One-sided signal / staging handle
@@ -415,6 +436,7 @@ struct flagcxHeteroComm {
   int rmaSignalIpcSlot;
 
   // IPC table pointer — owned by outer flagcxComm, shared for intra-node D2D
+  struct flagcxComm *lifetimeOwner;
   struct flagcxIpcTableEntry *ipcTable;
   int ipcTableSize;
 };

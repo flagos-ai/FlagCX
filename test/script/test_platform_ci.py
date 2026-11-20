@@ -34,6 +34,180 @@ def load_platform_ignore_config(platform):
 
 
 class PlatformCiRegressionTest(unittest.TestCase):
+    def test_device_api_unit_runs_preserve_death_style_and_non_vmm_process(self):
+        source = (REPO_ROOT / "test/unittest/device_api/Makefile").read_text()
+        start = source.index("run-unit: unit\n")
+        end = source.index("\n# Use the same backend selection", start)
+        case = "CommStreamIsolation.HeteroRmaNonVmmFinalizeDoesNotDrainIndependentWork"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "test-unit"
+            binary.write_text('''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ['CALL_LOG'], 'a') as out:
+    out.write(json.dumps([os.environ.get('GTEST_DEATH_TEST_STYLE'),
+                          os.environ.get('FLAGCX_VMM_ENABLE'), sys.argv[1:]]) + '\\n')
+''')
+            binary.chmod(0o755)
+            makefile = root / "Makefile"
+            makefile.write_text(
+                f"UNIT_TARGET := {binary}\nUNIT_NON_VMM_CASE := {case}\n"
+                "DEVICEPTR_ARGS_TARGET := true\n.PHONY: unit\nunit:\n"
+                + source[start:end]
+            )
+            log = root / "calls.jsonl"
+            result = subprocess.run(
+                ["make", "-f", str(makefile), "run-unit"],
+                env=dict(os.environ, CALL_LOG=str(log), FLAGCX_VMM_ENABLE="1",
+                         GTEST_DEATH_TEST_STYLE="fast"),
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            self.assertEqual(calls, [
+                ["threadsafe", "1", [f"--gtest_filter=-{case}"]],
+                ["threadsafe", "0", [f"--gtest_filter={case}"]],
+            ])
+
+    def test_fused_preflight_requires_named_rank_reports_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ci = root / ".github/scripts/ci"
+            ci.mkdir(parents=True)
+            for name in ("run_gtest_rank_xml.sh", "check_required_gtests.py"):
+                target = ci / name
+                target.write_text((REPO_ROOT / ".github/scripts/ci" / name).read_text())
+                target.chmod(0o644)
+            launcher = ci / "run_mpi_with_timeout.sh"
+            launcher.write_text('''#!/usr/bin/env bash
+set -euo pipefail
+while (( $# )); do
+  case "$1" in
+    -np|-x) shift 2 ;;
+    --allow-run-as-root) shift ;;
+    *) break ;;
+  esac
+done
+for rank in 0 1 2; do
+  OMPI_COMM_WORLD_RANK=$rank "$@"
+done
+exit "${FAKE_MPI_EXIT:-0}"
+''')
+            launcher.chmod(0o755)
+            binary = root / "fake-gtest"
+            binary.write_text('''#!/usr/bin/env python3
+import os, sys
+from pathlib import Path
+import xml.etree.ElementTree as ET
+output = ET.Element('testsuites')
+mode = os.environ.get('FAKE_FUSED_REPORT_MODE', 'pass')
+if mode != 'empty':
+    selected = next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--gtest_filter='))
+    suites = {}
+    for i, full in enumerate(selected.split(':')):
+        suite, name = full.rsplit('.', 1)
+        if suite not in suites:
+            suites[suite] = ET.SubElement(output, 'testsuite', name=suite)
+        case = ET.SubElement(suites[suite], 'testcase', name=name, status='run', result='completed')
+        if mode == 'skip' and i == 0:
+            ET.SubElement(case, 'skipped')
+Path(os.environ['GTEST_OUTPUT'][4:]).write_text(ET.tostring(output, encoding='unicode'))
+''')
+            binary.chmod(0o755)
+            script = root / "test/script/runner_fused_preflight_test.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text((REPO_ROOT / "test/script" / script.name).read_text())
+            for mode, mpi_exit in (("pass", 0), ("empty", 0), ("skip", 0), ("pass", 7)):
+                with self.subTest(mode=mode, mpi_exit=mpi_exit):
+                    env = os.environ.copy()
+                    env.update({
+                        "FLAGCX_RUNNER_PREFLIGHT_BIN": str(binary),
+                        "FLAGCX_RUNNER_PREFLIGHT_RESULT_ROOT": str(root / "results"),
+                        "FAKE_FUSED_REPORT_MODE": mode,
+                        "FAKE_MPI_EXIT": str(mpi_exit),
+                    })
+                    result = subprocess.run(["bash", str(script)], env=env,
+                                            capture_output=True, text=True, timeout=15)
+                    if mode == "pass":
+                        self.assertEqual(result.returncode, mpi_exit, result.stdout + result.stderr)
+                        self.assertIn("passed in 3 report(s)", result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_experimental_xml_launchers_run_nonexecutable_wrapper(self):
+        for platform in ('cuda', 'hygon'):
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                ci = root / '.github/scripts/ci'
+                ci.mkdir(parents=True)
+                for name in ('run_gtest_rank_xml.sh', 'check_required_gtests.py'):
+                    target = ci / name
+                    target.write_text((REPO_ROOT / '.github/scripts/ci' / name).read_text())
+                    target.chmod(0o644)
+                launcher = root / 'mpi'
+                launcher.write_text('''#!/usr/bin/env bash
+set -euo pipefail
+while (( $# )); do
+  case "$1" in
+    -np|-x) shift 2 ;;
+    --allow-run-as-root) shift ;;
+    *) break ;;
+  esac
+done
+for rank in 0 1 2 3; do
+  OMPI_COMM_WORLD_RANK=$rank "$@"
+done
+''')
+                launcher.chmod(0o755)
+                binary = root / 'test-binary'
+                binary.write_text('''#!/usr/bin/env python3
+import os
+from pathlib import Path
+path = Path(os.environ['GTEST_OUTPUT'][4:])
+path.write_text('<testsuites><testsuite name="FlagCXCollTest">'
+                '<testcase name="UniRunnerIpcFinalizeThenRankLocalDestroy" '
+                'status="run" result="completed"/></testsuite></testsuites>')
+''')
+                binary.chmod(0o755)
+                source = (REPO_ROOT / '.github/scripts/ci' /
+                          f'run_{platform}_perf_experimental.sh').read_text()
+                start = source.index('lifecycle_xml=$(mktemp')
+                end = source.index('"$lifecycle_xml/rank-3.xml"', start)
+                block = source[start:end + len('"$lifecycle_xml/rank-3.xml"')]
+                prefix = (
+                    'set -euo pipefail\n'
+                    f'project_root={shlex.quote(str(root))}\n'
+                    f'mpi_runner={shlex.quote(str(launcher))}\n'
+                    f'cuda_experimental_runner={shlex.quote(str(binary))}\n'
+                    f'runner_bin={shlex.quote(str(binary))}\n'
+                    f'export TMPDIR={shlex.quote(str(root))}\n'
+                    'cuda_experimental_runner_env=(-x FLAGCX_TEST)\ncommon_env=(-x FLAGCX_TEST)\n'
+                )
+                result = subprocess.run(['bash'], input=prefix + block,
+                                        capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('passed in 4 report(s)', result.stdout)
+
+    def test_symmem_lifecycle_bootstrap_requires_three_rank_reports(self):
+        source = (REPO_ROOT / 'test/script/symmem_test.sh').read_text()
+        lifecycle = source.split('lifecycle_cases=(', 1)[1].split(
+            'echo "=== Running symmem IPC-local', 1)[0]
+        self.assertIn('"$MPI_RUNNER" -np 3', lifecycle)
+        self.assertIn('FLAGCX_P2P_DISABLE=0', lifecycle)
+        self.assertIn('check_required_gtests.py', lifecycle)
+        self.assertIn('bash "$PROJECT_ROOT/.github/scripts/ci/run_gtest_rank_xml.sh"', lifecycle)
+        for rank in range(3):
+            self.assertIn(f'rank-{rank}.xml', lifecycle)
+        for case in (
+            'NativeOnlyImplicitDestroyFinishesWhilePeersWait',
+            'TransportDeclarationIncludesEmptyRanksAtInit',
+            'IpcDeclarationSurvivesRankLocalAllocationFailure',
+            'IpcDeclarationAndClosureAreNodeLocal',
+            'PairCommunicatorsCloseInCanonicalOrder',
+            'FinalizeCloseFailureConvergesIncludingEmptyRanks',
+        ):
+            self.assertIn(f'SymWindowRollback.{case}', lifecycle)
+
     def test_platform_ignore_lists_live_in_environment_scripts(self):
         for platform in (
             "ascend", "hygon", "iluvatar", "kunlunxin", "metax", "ppu"

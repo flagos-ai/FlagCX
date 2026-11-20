@@ -2,10 +2,12 @@
 #define FLAGCX_GLOBAL_COMM_H_
 
 #include "bootstrap.h"
+#include "comm_lifecycle.h"
 #include "dev_comm_state.h"
 #include "flagcx.h"
 #include "flagcx_tuner.h"
 #include "utils.h"
+#include "work_completion.h"
 
 #include <map>
 #include <vector>
@@ -61,16 +63,24 @@ flagcxResult_t flagcxCommAllocInternalBuffer(flagcxComm_t comm, void **pointer,
                                              size_t size,
                                              flagcxInternalBufferKind kind);
 flagcxResult_t flagcxCommFreeInternalBuffers(flagcxComm_t comm);
+// Release now, or transfer a private allocation to Comm after successful Drain.
+// Callers clear their pointer only after success; imported mappings still close
+// in Finalize and must never be passed to this allocation helper.
+flagcxResult_t flagcxCommReleaseBuffer(flagcxComm_t comm, void *pointer,
+                                       enum flagcxInternalBufferKind kind);
+int flagcxCommHasDrainedWork(flagcxComm_t comm);
 
 struct flagcxComm {
-  // TODO: adjust code format
-  // 0: active, 1: locally quiescent, 2: transport cleanup completed,
-  // 3: local owners destroyed, 4: homo comms destroyed,
-  // 5: hetero resources prepared, 6: IPC imports closed,
-  // 7: peer closure acknowledged; remaining buffer frees are local.
-  // Failures before final host-state release resume at the last completed
-  // stage.
-  int destroyPhase;
+  struct flagcxCommFinalizeState finalizeState;
+  struct flagcxWorkTracker submittedWork;
+  // RMA startup failed before the Comm became usable. Destroy retries local
+  // initialization rollback, without entering the normal Finalize protocol.
+  int initRollbackPending;
+  int deviceOrdinal;
+  int deviceOrdinalValid;
+  int nativeFinalizeScope; // common maximum across the communicator
+  // Local release cursor; only advances after a fallible operation succeeds.
+  enum flagcxDestroyPhase destroyPhase;
   int rank;
   int nranks;
   int nclusters;
@@ -122,8 +132,11 @@ struct flagcxComm {
   int ipcTableCapacity = FLAGCX_MAX_IPC_ENTRIES;
 
   flagcxInternalBuffer *internalBuffers = nullptr;
-  // Set by collective creation, including ranks where allocation later fails.
+  // Agreed by transport/resource creation, including empty ranks and failed
+  // allocations. Native-only communicators leave this false.
   bool internalBuffersNeedPeerClose = false;
+  // Separate from the conservative required bit set after a failed exchange.
+  bool ipcClosePolicyConfirmed = false;
 
   flagcxWindow_t publicWindows; // includes empty reusable public handles
   flagcxDevMem_t activeDevMems;

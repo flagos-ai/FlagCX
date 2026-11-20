@@ -120,17 +120,7 @@ flagcxResult_t ncclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
   return flagcxSuccess;
 }
 
-flagcxResult_t ncclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommFinalize(comm->base));
-  free(comm);
-  return flagcxSuccess;
-}
-
-flagcxResult_t ncclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
-  free(comm);
-  return flagcxSuccess;
-}
+#include "nccl_comm_lifecycle.h"
 
 flagcxResult_t ncclAdaptorCommAbort(flagcxInnerComm_t comm) {
   FLAGCXCHECK((flagcxResult_t)ncclCommAbort(comm->base));

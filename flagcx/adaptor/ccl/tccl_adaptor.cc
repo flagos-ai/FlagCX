@@ -124,7 +124,10 @@ flagcxResult_t tcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
     return flagcxInvalidArgument;
   }
   tcclResult_t result = tcclCommDestroy(comm->base);
-  return fromTcclResult(result);
+  flagcxResult_t mapped = fromTcclResult(result);
+  if (mapped == flagcxSuccess)
+    free(comm);
+  return mapped;
 }
 
 flagcxResult_t tcclAdaptorCommAbort(flagcxInnerComm_t comm) {

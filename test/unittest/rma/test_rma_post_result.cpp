@@ -454,6 +454,7 @@ protected:
     probe_.requestDone.store(1, std::memory_order_release);
     if (comm_.rmaProxy != nullptr) {
       EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
+      EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyRelease(&comm_));
     }
     delete comm_.workerPool;
     comm_.workerPool = nullptr;
@@ -536,8 +537,11 @@ TEST_F(RmaWorkerFixture, StopWaitsForAcceptedNativeRequest) {
                    std::future_status::ready)
                  _exit(2);
                EXPECT_EQ(flagcxSuccess, stopping.get());
-               EXPECT_EQ(nullptr, comm_.rmaProxy);
+               ASSERT_NE(nullptr, comm_.rmaProxy);
+               EXPECT_TRUE(comm_.rmaProxy->stopComplete);
                EXPECT_EQ(0u, comm_.workerPool->workerCount());
+               EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyRelease(&comm_));
+               EXPECT_EQ(nullptr, comm_.rmaProxy);
              },
              std::chrono::seconds(8)))
       << "RMA stop child failed: 2 means stop timeout; -1 means watchdog "
@@ -568,6 +572,7 @@ TEST_F(RmaWorkerFixture, QuiesceDrainsAcceptedRequestBeforeStoppingWorker) {
                          flagcxHeteroPut(&comm_, 0, 0, 0, 8, 0, 0));
                EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyStop(&comm_));
                EXPECT_EQ(0u, comm_.workerPool->workerCount());
+               EXPECT_EQ(flagcxSuccess, flagcxHeteroRmaProxyRelease(&comm_));
              },
              std::chrono::seconds(8)))
       << "RMA quiesce child failed: 2 means quiesce timeout; -1 means "

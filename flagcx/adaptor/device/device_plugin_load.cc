@@ -62,6 +62,11 @@ flagcxResult_t flagcxDeviceAdaptorPluginLoad() {
   }
   flagcxDeviceAdaptorUpgradeV1((const struct flagcxDeviceAdaptor_v1 *)plugin,
                                upgradedPluginAdaptor);
+  // Optional sidecar keeps the v1 table frozen. The plugin unwraps its own
+  // opaque stream; using the built-in SDK wrapper on a plugin stream is unsafe.
+  upgradedPluginAdaptor->streamGetCaptureStatus =
+      (flagcxResult_t(*)(flagcxStream_t, flagcxStreamCaptureStatus_t *))dlsym(
+          devicePluginDlHandle, "flagcxDeviceAdaptorStreamCaptureStatus_v1");
   plugin = upgradedPluginAdaptor;
 
   // Validate function pointers that all built-in adaptors implement.
@@ -150,11 +155,8 @@ flagcxResult_t flagcxDeviceAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(devicePluginMutex);
   if (devicePluginRefCount == 1) {
     INFO(FLAGCX_INIT, "Unloading device adaptor plugin");
-    // The last owner releases its reference even when pool cleanup
-    // fails. In that case the loader retains the live plugin handle and a
-    // future init/finalize can retry unloading without a phantom reference.
+    FLAGCXCHECK(flagcxDeviceAdaptorPluginUnload());
     devicePluginRefCount = 0;
-    return flagcxDeviceAdaptorPluginUnload();
   } else if (devicePluginRefCount > 1) {
     --devicePluginRefCount;
   }

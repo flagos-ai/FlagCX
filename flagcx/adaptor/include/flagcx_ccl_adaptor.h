@@ -39,6 +39,11 @@ typedef flagcxInnerUniqueId *flagcxInnerUniqueId_t;
 //         send, recv, groupStart, groupEnd
 //   latest — v1 + devCommReqsInit, devCommCreate, devCommDestroy
 //            (Device API host-side management)
+enum flagcxCclFinalizeScope {
+  flagcxCclFinalizeIntraNode = 0,
+  flagcxCclFinalizeWorld = 1
+};
+
 struct flagcxCCLAdaptor_v1 {
   const char *name;
   // Basic functions
@@ -212,6 +217,9 @@ struct flagcxCCLAdaptor_latest {
                                   flagcxInnerDevComm_t *devComm);
   flagcxResult_t (*devCommDestroy)(flagcxInnerComm_t comm,
                                    flagcxInnerDevComm_t devComm);
+  // Internal latest extension. Legacy v1 plugins use conservative world
+  // agreement. Finalize never frees the opaque wrapper; Destroy owns it.
+  enum flagcxCclFinalizeScope finalizeScope;
 };
 
 #define flagcxCCLAdaptor flagcxCCLAdaptor_latest
@@ -224,6 +232,7 @@ flagcxCCLAdaptorUpgradeV1(const struct flagcxCCLAdaptor_v1 *src,
                           struct flagcxCCLAdaptor_latest *dst) {
   memset(dst, 0, sizeof(*dst));
   memcpy(dst, src, sizeof(struct flagcxCCLAdaptor_v1));
+  dst->finalizeScope = flagcxCclFinalizeWorld;
 }
 
 // Versioned export symbol names

@@ -49,7 +49,11 @@ flagcxResult_t rcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
 }
 
 flagcxResult_t rcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)ncclCommDestroy(comm->base);
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  FLAGCXCHECK((flagcxResult_t)ncclCommDestroy(comm->base));
+  free(comm);
+  return flagcxSuccess;
 }
 
 flagcxResult_t rcclAdaptorCommAbort(flagcxInnerComm_t comm) {

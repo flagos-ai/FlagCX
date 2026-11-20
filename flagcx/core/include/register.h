@@ -46,10 +46,17 @@ struct netRegInfo {
   size_t size;
 };
 
+enum flagcxRegCloseState {
+  flagcxRegLive = 0,
+  flagcxRegClosing,
+  flagcxRegCloseFailed
+};
+
 struct flagcxRegNetHandle {
   void *handle = NULL;
   struct flagcxProxyConnector *proxyConn = NULL;
   void *ownerComm = NULL; // comm that registered this handle
+  int closeState = flagcxRegLive;
 };
 
 struct flagcxRegP2pHandle {
@@ -75,16 +82,28 @@ struct flagcxIpcRegInfo {
   int refCount;
   struct flagcxProxyConnector *ipcProxyconn;
   struct flagcxIpcImpInfo impInfo;
+  int readers;
+  int closeState;
   bool handleReady;
   bool sameProcess; // cached at registration time for safe deregister
+};
+
+struct flagcxRegOwnerRef {
+  uintptr_t owner;
+  unsigned int refs;
+  int closing;
+  flagcxRegOwnerRef *next;
 };
 
 struct flagcxRegItem {
   uintptr_t beginAddr = 0;
   uintptr_t endAddr = 0;
   int refCount = 1;
+  int opRefs = 0;
+  int deregistering = 0;
+  flagcxRegOwnerRef *owners = NULL;
   std::vector<std::pair<flagcxRegNetHandle, flagcxRegP2pHandle>> handles;
-  std::unordered_map<uintptr_t, void *>
+  std::unordered_map<uintptr_t, flagcxRegNetHandle>
       homoRegHandles; // commKey → backend CCL handle
 };
 

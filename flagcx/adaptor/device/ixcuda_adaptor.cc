@@ -4,7 +4,9 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
 #include "param.h"
+#include "runtime_capture.h"
 #include "segmented_vmm_allocation.h"
 #include <climits>
 #include <cstdint>
@@ -623,16 +625,39 @@ flagcxResult_t ixcudaAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+ixcudaAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                    flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "cudaStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "cudaStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t ixcudaAdaptorEventCreateNative(void *wrapper,
+                                                     unsigned int flags) {
+  (void)flags;
+  DEVCHECK(cudaEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t ixcudaAdaptorEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? cudaEventDefault
                                  : cudaEventDisableTiming;
-  DEVCHECK(cudaEventCreateWithFlags(&((*event)->base), flags));
-
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, ixcudaAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t ixcudaAdaptorEventDestroy(flagcxEvent_t event) {
@@ -1096,6 +1121,7 @@ struct flagcxDeviceAdaptor ixcudaAdaptor {
       ixcudaAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       ixcudaAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      ixcudaAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions
       ixcudaAdaptorSymPhysAlloc, ixcudaAdaptorSymPhysFree,
       ixcudaAdaptorSymFlatMap, ixcudaAdaptorSymFlatUnmap,

@@ -30,6 +30,7 @@
  ************************************************************************/
 
 #include "check.h"
+#include "comm_lifecycle_check.hpp"
 #include "device_api.h"
 #include "flagcx.h"
 #include "flagcx_kernel.h"
@@ -449,7 +450,7 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevMemDestroy(comm, devMem));
   FLAGCXCHECK(flagcxCommWindowDeregister(comm, win, memAllocator));
   FLAGCXCHECK(flagcxMemFree(regBuff, memAllocator));
-  FLAGCXCHECK(flagcxDevCommDestroy(comm, devComm));
+  // Leave the live DevComm to Finalize to cover implicit owner cleanup.
 #if defined(USE_NVIDIA_ADAPTOR) && defined(FLAGCX_COMM_TRAITS_DEFAULT)
   // A singleton Inter team still reserves one signal slot per requested
   // barrier channel. Exercise the Barrier-only creation path without user
@@ -462,7 +463,8 @@ int main(int argc, char *argv[]) {
   FLAGCXCHECK(flagcxDevCommDestroy(comm, interOnlyComm));
 #endif
   FLAGCXCHECK(devHandle->streamDestroy(stream));
-  FLAGCXCHECK(flagcxCommDestroy(comm));
+  FLAGCXCHECK(flagcxTestFinalizeAndDestroyRankLocally(&comm, proc, totalProcs,
+                                                      splitComm));
   FLAGCXCHECK(flagcxDeviceHandleFree(devHandle));
 
   MPI_Finalize();

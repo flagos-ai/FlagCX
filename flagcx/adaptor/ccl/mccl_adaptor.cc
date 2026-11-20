@@ -63,6 +63,8 @@ flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
   flagcxResult_t result = (flagcxResult_t)mcclCommDestroy(base);
   TRACE(FLAGCX_INIT, "MCCL commDestroy end wrapper=%p base=%p result=%d",
         (void *)comm, (void *)base, result);
+  if (result == flagcxSuccess)
+    free(comm);
   return result;
 }
 

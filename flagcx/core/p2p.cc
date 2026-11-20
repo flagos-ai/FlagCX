@@ -17,8 +17,6 @@ int64_t flagcxP2pBufferSize;
 int64_t flagcxP2pChunkSize;
 int64_t flagcxP2pChunks;
 
-FLAGCX_PARAM(P2pTeardownTimeout, "P2P_TEARDOWN_TIMEOUT", 30);
-
 static bool flagcxP2pTraceEventQuery(flagcxProxyArgs *args, bool send) {
   if (__atomic_load_n(&flagcxDebugLevel, __ATOMIC_ACQUIRE) < FLAGCX_LOG_TRACE ||
       (flagcxDebugMask & FLAGCX_P2P) == 0)
@@ -285,9 +283,15 @@ flagcxP2pCleanupProxyConnection(struct flagcxProxyConnection *connection,
   struct flagcxP2pResources *resources =
       (struct flagcxP2pResources *)connection->transportResources;
   if (cleanupPhase == flagcxTransportCleanupCloseImports)
-    return connection->send ? flagcxP2pSendProxyFree(resources) : flagcxSuccess;
-  if (cleanupPhase == flagcxTransportCleanupReleaseResources)
-    return connection->send ? flagcxSuccess : flagcxP2pRecvProxyFree(resources);
+    return connection->send ? flagcxP2pCloseImportedFifo(resources)
+                            : flagcxSuccess;
+  if (cleanupPhase == flagcxTransportCleanupReleaseResources) {
+    FLAGCXCHECK(connection->send ? flagcxP2pSendProxyFree(resources)
+                                 : flagcxP2pRecvProxyFree(resources));
+    free(resources);
+    connection->transportResources = NULL;
+    return flagcxSuccess;
+  }
   return flagcxInvalidArgument;
 }
 
@@ -823,8 +827,6 @@ flagcxResult_t flagcxP2pSendProxySetup(struct flagcxProxyConnection *connection,
     memset(&resources->proxyInfo.shm->regInfos[i], 0,
            sizeof(resources->proxyInfo.shm->regInfos[i]));
   }
-  __atomic_store_n(&resources->proxyInfo.shm->fifoImportClosed, 0,
-                   __ATOMIC_RELAXED);
 
   INFO(FLAGCX_P2P, "flagcxP2pSendProxySetup: Copying response, shm=%p",
        resources->proxyInfo.shm);
@@ -1031,15 +1033,14 @@ static flagcxResult_t
 p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
                   int *peerRanks, int nPeers, flagcxReg *regRecord,
                   int *regBufFlag, uintptr_t *offsetOut,
-                  uintptr_t **peerRmtAddrsOut, int *fallbackRequired) {
+                  uintptr_t **peerRmtAddrsOut, int *fallbackRequired,
+                  flagcxRegItem *regItem) {
   flagcxResult_t ret = flagcxSuccess;
   *regBufFlag = 0;
   *offsetOut = 0;
   *peerRmtAddrsOut = NULL;
   *fallbackRequired = 0;
 
-  flagcxRegItem *regItem =
-      globalRegPool.getItem(comm, const_cast<void *>(userbuff));
   if (regRecord == NULL || regItem == NULL) {
     INFO(FLAGCX_REG,
          "p2pRegisterBuffer skip: regRecord=%p regItem=%p for buff %p size %zu",
@@ -1048,9 +1049,9 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
   }
   INFO(FLAGCX_REG,
        "p2pRegisterBuffer enter: rank %d buff %p size %zu regAddr %p "
-       "handles=%zu peers=%d",
+       "peers=%d",
        comm ? comm->rank : -1, userbuff, buffsize, (void *)regRecord->addr,
-       regItem->handles.size(), nPeers);
+       nPeers);
 
   void *allocationBase = nullptr;
   size_t allocationSize = 0;
@@ -1075,26 +1076,23 @@ p2pRegisterBuffer(flagcxHeteroComm *comm, const void *userbuff, size_t buffsize,
 
     // An imported mapping is reusable only for the same communicator, peer,
     // and allocation. A page registration item may cover multiple allocations.
-    flagcxIpcRegInfo *existingInfo =
-        globalRegPool.findP2pHandle(comm, peerRank, allocationBase);
-    if (existingInfo != nullptr) {
-      FLAGCXCHECK(globalRegPool.addP2pHandle(comm, regItem, existingInfo,
-                                             existingInfo->ipcProxyconn));
-    }
-
-    if (existingInfo && existingInfo->handleReady) {
-      void *peerAddress = nullptr;
-      FLAGCXCHECK(flagcxResolveIpcPeerAddress(
-          existingInfo->impInfo.importedBase, existingInfo->allocationSize,
-          userOffset, buffsize, &peerAddress));
+    flagcxIpcRegInfo *existingInfo = NULL;
+    FLAGCXCHECK(globalRegPool.acquireP2pHandle(comm, regItem, peerRank,
+                                               allocationBase, &existingInfo));
+    if (existingInfo != NULL) {
+      void *base = existingInfo->impInfo.importedBase;
+      size_t mappedSize = existingInfo->allocationSize;
+      bool ready = existingInfo->handleReady;
+      void *peerAddress = NULL;
+      flagcxResult_t resolved =
+          ready ? flagcxResolveIpcPeerAddress(base, mappedSize, userOffset,
+                                              buffsize, &peerAddress)
+                : flagcxInvalidUsage;
+      globalRegPool.releaseP2pHandle(existingInfo);
+      FLAGCXCHECK(resolved);
       *regBufFlag = 1;
-      *peerRmtAddrsOut = static_cast<uintptr_t *>(peerAddress);
+      *peerRmtAddrsOut = (uintptr_t *)peerAddress;
       *offsetOut = 0;
-      INFO(FLAGCX_REG,
-           "rank %d - IPC cache HIT: buff %p peer %d importedBase=%p + "
-           "userOffset=%zu = %p",
-           comm->rank, userbuff, peerRank, existingInfo->impInfo.importedBase,
-           userOffset, *peerRmtAddrsOut);
     } else {
       // Cache miss: get IPC handle for OWN (recv) buffer, send to SENDER's
       // proxy. The sender's proxy opens the handle → rmtAddr valid in sender's
@@ -1278,22 +1276,24 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
          "flagcxP2pRegisterBuffer enter: comm=%p rank=%d buff=%p size=%zu "
          "nPeers=%d",
          comm, comm->rank, userbuff, buffSize, nPeers);
-    flagcxRegItem *regItem =
-        globalRegPool.getItem(comm, const_cast<void *>(userbuff));
+    flagcxRegSnapshot lease = {};
+    FLAGCXCHECK(globalRegPool.acquireItem(comm, (void *)userbuff, &lease));
+    flagcxRegItem *regItem = lease.item;
     if (regItem != NULL) {
       uintptr_t userAddress = reinterpret_cast<uintptr_t>(userbuff);
-      if (userAddress < regItem->beginAddr || userAddress > regItem->endAddr ||
-          buffSize > regItem->endAddr - userAddress) {
+      if (userAddress < lease.beginAddr || userAddress > lease.endAddr ||
+          buffSize > lease.endAddr - userAddress) {
         INFO(FLAGCX_REG,
              "flagcxP2pRegisterBuffer: range %p size %zu is outside "
              "registration [%p, %p); falling back to FIFO",
-             userbuff, buffSize, reinterpret_cast<void *>(regItem->beginAddr),
-             reinterpret_cast<void *>(regItem->endAddr));
+             userbuff, buffSize, reinterpret_cast<void *>(lease.beginAddr),
+             reinterpret_cast<void *>(lease.endAddr));
+        globalRegPool.releaseItem(&lease);
         return flagcxSuccess;
       }
-      tempReg.addr = regItem->beginAddr;
-      tempReg.baseAddr = regItem->beginAddr;
-      tempReg.baseSize = regItem->endAddr - regItem->beginAddr;
+      tempReg.addr = lease.beginAddr;
+      tempReg.baseAddr = lease.beginAddr;
+      tempReg.baseSize = lease.endAddr - lease.beginAddr;
       tempReg.regSize = tempReg.baseSize;
       regRecord = &tempReg;
     } else {
@@ -1301,9 +1301,11 @@ flagcxResult_t flagcxP2pRegisterBuffer(struct flagcxHeteroComm *comm,
            "flagcxP2pRegisterBuffer: no regItem for buff %p size %zu", userbuff,
            buffSize);
     }
-    FLAGCXCHECK(p2pRegisterBuffer(comm, userbuff, buffSize, peerRanks, nPeers,
-                                  regRecord, regBufFlag, offsetOut,
-                                  peerRmtAddrsOut, fallbackRequired));
+    flagcxResult_t result = p2pRegisterBuffer(
+        comm, userbuff, buffSize, peerRanks, nPeers, regRecord, regBufFlag,
+        offsetOut, peerRmtAddrsOut, fallbackRequired, regItem);
+    globalRegPool.releaseItem(&lease);
+    FLAGCXCHECK(result);
     INFO(FLAGCX_REG,
          "flagcxP2pRegisterBuffer exit: buff=%p regBufFlag=%d offset=%zu "
          "peerAddr=%p",
@@ -1344,17 +1346,18 @@ flagcxResult_t flagcxP2pDeregisterBuffer(struct flagcxHeteroComm *comm,
         sockReady = (ps->peerSocks[info->ipcProxyconn->tpRank].state ==
                      flagcxSocketStateReady);
       }
-      if (sockReady) {
-        FLAGCXCHECK(flagcxProxyCallBlocking(
-            comm, info->ipcProxyconn, flagcxProxyMsgDeregister, &info->impInfo,
-            sizeof(struct flagcxIpcImpInfo), NULL, 0));
-      }
+      if (!sockReady)
+        return flagcxRemoteError;
+      FLAGCXCHECK(flagcxProxyCallBlocking(
+          comm, info->ipcProxyconn, flagcxProxyMsgDeregister, &info->impInfo,
+          sizeof(struct flagcxIpcImpInfo), NULL, 0));
     } else if (!info->ipcProxyconn && !info->sameProcess) {
       // Legacy inline open — close directly
-      deviceAdaptor->ipcMemHandleClose(info->impInfo.importedBase);
+      FLAGCXCHECK(deviceAdaptor->ipcMemHandleClose(info->impInfo.importedBase));
     }
     // sameProcess: no handle to close
   }
+  info->impInfo.importedBase = NULL;
   return flagcxSuccess;
 }
 
@@ -1489,18 +1492,8 @@ flagcxP2pCloseImportedFifo(struct flagcxP2pResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
 
-  // A live imported mapping must always have a peer-visible acknowledgement
-  // channel. Without it, closing locally cannot make it safe for the exporter
-  // to release the backing allocation.
-  if (resources->importedRecvFifoBase != NULL &&
-      resources->proxyInfo.shm == NULL) {
-    WARN("P2P FIFO close: missing teardown SHM for imported base %p",
-         resources->importedRecvFifoBase);
-    return flagcxInternalError;
-  }
-
-  // No device work may retain the imported mapping when the close ACK becomes
-  // visible to the exporting peer.
+  // No device work may retain the imported mapping before the node confirms
+  // that every import has closed.
   if (resources->proxyInfo.stream != NULL) {
     if (deviceAdaptor == NULL || deviceAdaptor->streamSynchronize == NULL)
       return flagcxInternalError;
@@ -1528,65 +1521,14 @@ flagcxP2pCloseImportedFifo(struct flagcxP2pResources *resources) {
     resources->proxyInfo.recvFifo = NULL;
   }
 
-  if (resources->proxyInfo.shm != NULL) {
-    __atomic_store_n(&resources->proxyInfo.shm->fifoImportClosed,
-                     flagcxP2pFifoImportClosed, __ATOMIC_RELEASE);
-  }
   return flagcxSuccess;
 }
 
-static flagcxResult_t flagcxP2pMonotonicTimeNs(uint64_t *timeNs) {
-  if (timeNs == NULL)
-    return flagcxInvalidArgument;
-  struct timespec now = {};
-  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-    return flagcxSystemError;
-  *timeNs = (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
-  return flagcxSuccess;
-}
-
-flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
-                                         int64_t timeoutMs) {
+flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources) {
   if (resources == NULL || resources->localRecvFifo == NULL)
     return flagcxSuccess;
-  if (resources->shm == NULL) {
-    WARN("P2P FIFO free: missing teardown SHM for local base %p; preserving "
-         "the allocation",
-         resources->localRecvFifo);
-    return flagcxInternalError;
-  }
-
-  if (resources->proxyInfo.stream != NULL) {
-    if (deviceAdaptor == NULL || deviceAdaptor->streamSynchronize == NULL)
-      return flagcxInternalError;
-    flagcxResult_t result =
-        deviceAdaptor->streamSynchronize(resources->proxyInfo.stream);
-    if (result != flagcxSuccess)
-      return result;
-  }
-
-  uint64_t startNs = 0;
-  FLAGCXCHECK(flagcxP2pMonotonicTimeNs(&startNs));
-  uint64_t timeoutNs = 0;
-  if (timeoutMs > 0) {
-    timeoutNs = (uint64_t)timeoutMs > UINT64_MAX / 1000000ULL
-                    ? UINT64_MAX
-                    : (uint64_t)timeoutMs * 1000000ULL;
-  }
-  while (__atomic_load_n(&resources->shm->fifoImportClosed, __ATOMIC_ACQUIRE) !=
-         flagcxP2pFifoImportClosed) {
-    uint64_t nowNs = 0;
-    FLAGCXCHECK(flagcxP2pMonotonicTimeNs(&nowNs));
-    if (timeoutNs == 0 || nowNs - startNs >= timeoutNs) {
-      WARN("P2P FIFO free: timed out waiting for peer to close the import of "
-           "local base %p; preserving the allocation",
-           resources->localRecvFifo);
-      return flagcxSystemError;
-    }
-    struct timespec pause = {0, 1000000}; // 1 ms
-    nanosleep(&pause, NULL);
-  }
-
+  if (!resources->importsClosedConfirmed)
+    return flagcxInvalidUsage;
   if (deviceAdaptor == NULL || deviceAdaptor->setDevice == NULL ||
       deviceAdaptor->deviceFree == NULL)
     return flagcxInternalError;
@@ -1600,80 +1542,42 @@ flagcxResult_t flagcxP2pReleaseLocalFifo(struct flagcxP2pResources *resources,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources) {
-  if (resources == NULL)
-    return flagcxSuccess;
-
-  flagcxResult_t result = flagcxP2pCloseImportedFifo(resources);
+static flagcxResult_t
+flagcxP2pFreeCopyResources(struct flagcxP2pResources *resources) {
   for (int s = 0; s < flagcxP2pChunks; s++) {
     if (resources->proxyInfo.events[s] != NULL) {
-      flagcxResult_t cleanupResult =
-          deviceAdaptor->eventDestroy(resources->proxyInfo.events[s]);
-      if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-          cleanupResult != flagcxInProgress)
-        result = cleanupResult;
+      FLAGCXCHECK(deviceAdaptor->eventDestroy(resources->proxyInfo.events[s]));
       resources->proxyInfo.events[s] = NULL;
     }
   }
-
   if (resources->proxyInfo.stream != NULL) {
-    flagcxResult_t cleanupResult =
-        deviceAdaptor->streamDestroy(resources->proxyInfo.stream);
-    if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-        cleanupResult != flagcxInProgress)
-      result = cleanupResult;
+    FLAGCXCHECK(deviceAdaptor->streamDestroy(resources->proxyInfo.stream));
     resources->proxyInfo.stream = NULL;
   }
+  return flagcxSuccess;
+}
 
+flagcxResult_t flagcxP2pSendProxyFree(struct flagcxP2pResources *resources) {
+  if (resources == NULL)
+    return flagcxSuccess;
+  FLAGCXCHECK(flagcxP2pCloseImportedFifo(resources));
+  FLAGCXCHECK(flagcxP2pFreeCopyResources(resources));
   if (resources->proxyInfo.shm != NULL) {
-    flagcxResult_t cleanupResult =
-        flagcxShmIpcClose(&resources->proxyInfo.desc);
-    if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-        cleanupResult != flagcxInProgress)
-      result = cleanupResult;
+    FLAGCXCHECK(flagcxShmIpcClose(&resources->proxyInfo.desc));
     resources->proxyInfo.shm = NULL;
   }
-  return result;
+  return flagcxSuccess;
 }
 
 flagcxResult_t flagcxP2pRecvProxyFree(struct flagcxP2pResources *resources) {
   if (resources == NULL)
     return flagcxSuccess;
-
-  int64_t timeoutSec = flagcxParamP2pTeardownTimeout();
-  int64_t timeoutMs =
-      timeoutSec > 0 && timeoutSec <= INT64_MAX / 1000 ? timeoutSec * 1000 : 0;
-  flagcxResult_t result = flagcxP2pReleaseLocalFifo(resources, timeoutMs);
-
-  // Destroy events
-  for (int s = 0; s < flagcxP2pChunks; s++) {
-    if (resources->proxyInfo.events[s] != NULL) {
-      flagcxResult_t cleanupResult =
-          deviceAdaptor->eventDestroy(resources->proxyInfo.events[s]);
-      if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-          cleanupResult != flagcxInProgress)
-        result = cleanupResult;
-      resources->proxyInfo.events[s] = NULL;
-    }
-  }
-
-  // Destroy stream
-  if (resources->proxyInfo.stream != NULL) {
-    flagcxResult_t cleanupResult =
-        deviceAdaptor->streamDestroy(resources->proxyInfo.stream);
-    if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-        cleanupResult != flagcxInProgress)
-      result = cleanupResult;
-    resources->proxyInfo.stream = NULL;
-  }
-
+  FLAGCXCHECK(flagcxP2pReleaseLocalFifo(resources));
+  FLAGCXCHECK(flagcxP2pFreeCopyResources(resources));
   if (resources->shm != NULL) {
-    flagcxResult_t cleanupResult = flagcxShmIpcClose(&resources->desc);
-    if (result == flagcxSuccess && cleanupResult != flagcxSuccess &&
-        cleanupResult != flagcxInProgress)
-      result = cleanupResult;
+    FLAGCXCHECK(flagcxShmIpcClose(&resources->desc));
     resources->shm = NULL;
     resources->proxyInfo.shm = NULL;
   }
-  return result;
+  return flagcxSuccess;
 }

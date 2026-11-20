@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
+#include "runtime_capture.h"
 
 std::map<flagcxMemcpyType_t, hipMemcpyKind> memcpy_type_map = {
     {flagcxMemcpyHostToDevice, hipMemcpyHostToDevice},
@@ -179,15 +181,39 @@ flagcxResult_t hipAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+hipAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                 flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "hipStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "hipStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t hipAdaptorEventCreateNative(void *wrapper,
+                                                  unsigned int flags) {
+  (void)flags;
+  DEVCHECK(hipEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t hipAdaptorEventCreate(flagcxEvent_t *event,
                                      flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? hipEventDefault
                                  : hipEventDisableTiming;
-  DEVCHECK(hipEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, hipAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t hipAdaptorEventDestroy(flagcxEvent_t event) {
@@ -465,6 +491,7 @@ struct flagcxDeviceAdaptor hipAdaptor {
                                              // flags);
       hipAdaptorHostRegister, // flagcxResult_t (*hostRegister)(void *, size_t);
       hipAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      hipAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       hipAdaptorSymPhysAlloc, hipAdaptorSymPhysFree, hipAdaptorSymFlatMap,
       hipAdaptorSymFlatUnmap, hipAdaptorSymMulticastSupported,

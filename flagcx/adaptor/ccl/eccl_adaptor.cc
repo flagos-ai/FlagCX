@@ -48,16 +48,17 @@ flagcxResult_t ecclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(ecclUniqueId *)commId, rank);
 }
 
-flagcxResult_t ecclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  // ECCL does not have a separate finalize function, use destroy
-  return flagcxSuccess;
-}
-
-flagcxResult_t ecclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)ecclCommDestroy(comm->base);
-}
+// This SDK has no separate native Finalize. Close native state in the final
+// vendor phase; retain the wrapper until local Destroy.
+#define FLAGCX_COMPAT_FINALIZE ecclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY ecclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
+  (flagcxResult_t) ecclCommDestroy((comm)->base)
+#include "compat_comm_lifecycle.h"
 
 flagcxResult_t ecclAdaptorCommAbort(flagcxInnerComm_t comm) {
+  if (comm != NULL && comm->base == NULL)
+    return flagcxSuccess;
   return (flagcxResult_t)ecclCommAbort(comm->base);
 }
 
@@ -322,6 +323,6 @@ struct flagcxCCLAdaptor ecclAdaptor = {
     ecclAdaptorGroupStart, ecclAdaptorGroupEnd,
     // Device API
     ecclAdaptorDevCommReqsInit, ecclAdaptorDevCommCreate,
-    ecclAdaptorDevCommDestroy};
+    ecclAdaptorDevCommDestroy, flagcxCclFinalizeWorld};
 
 #endif // USE_ENFLAME_ADAPTOR

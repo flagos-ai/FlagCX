@@ -4,6 +4,8 @@
 
 #include "adaptor.h"
 #include "alloc.h"
+#include "device_event.h"
+#include "runtime_capture.h"
 
 #include "xpu/runtime.h"
 
@@ -224,15 +226,39 @@ flagcxResult_t kunlunAdaptorStreamWaitEvent(flagcxStream_t stream,
   return flagcxSuccess;
 }
 
+static flagcxResult_t
+kunlunAdaptorStreamGetCaptureStatus(flagcxStream_t stream,
+                                    flagcxStreamCaptureStatus_t *status) {
+  static flagcxRuntimeCaptureQuery_t query =
+      (flagcxRuntimeCaptureQuery_t)dlsym(RTLD_DEFAULT, "cudaStreamIsCapturing");
+  static const void *begin = dlsym(RTLD_DEFAULT, "cudaStreamBeginCapture");
+  return flagcxRuntimeQueryCapture(
+      query, begin, stream ? (void *)stream->base : NULL, status);
+}
+
+static flagcxResult_t kunlunAdaptorEventCreateNative(void *wrapper,
+                                                     unsigned int flags) {
+  (void)flags;
+  DEVCHECK(cudaEventCreateWithFlags(&(((flagcxEvent_t)wrapper)->base), flags));
+  return flagcxSuccess;
+}
+
 flagcxResult_t kunlunAdaptorEventCreate(flagcxEvent_t *event,
                                         flagcxEventType_t eventType) {
-  (*event) = NULL;
-  flagcxCalloc(event, 1);
+  if (event == NULL)
+    return flagcxInvalidArgument;
+  *event = NULL;
   const unsigned int flags = (eventType == flagcxEventDefault)
                                  ? cudaEventDefault
                                  : cudaEventDisableTiming;
-  DEVCHECK(cudaEventCreateWithFlags(&((*event)->base), flags));
-  return flagcxSuccess;
+  static const struct flagcxEventCreateOps ops = {
+      flagcxEventAllocateWrapper, free, kunlunAdaptorEventCreateNative};
+  void *wrapper = NULL;
+  flagcxResult_t result = flagcxEventCreateTransactional(
+      &wrapper, sizeof(struct flagcxEvent), flags, &ops);
+  if (result == flagcxSuccess)
+    *event = (flagcxEvent_t)wrapper;
+  return result;
 }
 
 flagcxResult_t kunlunAdaptorEventDestroy(flagcxEvent_t event) {
@@ -555,6 +581,7 @@ struct flagcxDeviceAdaptor kunlunAdaptor {
       kunlunAdaptorHostRegister,   // flagcxResult_t (*hostRegister)(void *,
                                    // size_t);
       kunlunAdaptorHostUnregister, // flagcxResult_t (*hostUnregister)(void *);
+      kunlunAdaptorStreamGetCaptureStatus,
       // Symmetric memory VMM functions (not supported)
       kunlunxinAdaptorSymPhysAlloc, kunlunxinAdaptorSymPhysFree,
       kunlunxinAdaptorSymFlatMap, kunlunxinAdaptorSymFlatUnmap,

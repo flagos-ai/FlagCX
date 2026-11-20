@@ -75,14 +75,6 @@ flagcxResult_t flagcxIbDestroyCtrlQp(struct flagcxIbCtrlQp *ctrlQp) {
     return flagcxSuccess;
   flagcxResult_t result = flagcxSuccess;
 
-  if (ctrlQp->ah) {
-    flagcxResult_t ahResult = flagcxWrapIbvDestroyAh(ctrlQp->ah);
-    if (result == flagcxSuccess && ahResult != flagcxSuccess)
-      result = ahResult;
-    if (ahResult == flagcxSuccess)
-      ctrlQp->ah = NULL;
-  }
-
   // Poll any remaining completions before destroying QP/CQ.
   if (ctrlQp->cq) {
     struct ibv_wc wcs[64];
@@ -100,6 +92,18 @@ flagcxResult_t flagcxIbDestroyCtrlQp(struct flagcxIbCtrlQp *ctrlQp) {
       result = qpResult;
     if (qpResult == flagcxSuccess)
       ctrlQp->qp = NULL;
+  }
+
+  // Posted UD work can still reference the AH while the QP is alive.
+  if (ctrlQp->qp != NULL)
+    return result;
+
+  if (ctrlQp->ah) {
+    flagcxResult_t ahResult = flagcxWrapIbvDestroyAh(ctrlQp->ah);
+    if (result == flagcxSuccess && ahResult != flagcxSuccess)
+      result = ahResult;
+    if (ahResult == flagcxSuccess)
+      ctrlQp->ah = NULL;
   }
 
   // A live QP still references its CQ. Preserve both for a later retry.

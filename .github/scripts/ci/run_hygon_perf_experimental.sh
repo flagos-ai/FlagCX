@@ -63,6 +63,18 @@ FLAGCX_CI_MPI_LABEL='Hygon experimental UniRunner group and IPC errors' \
   env -u FLAGCX_UNIRUNNER_ALGO "$mpi_runner" -np 4 --allow-run-as-root \
     "${common_env[@]}" "$runner_bin" \
     --gtest_filter='FlagCXCollTest.UniRunnerDagAlgorithmsRejectOuterGroup:FlagCXCollTest.UniRunnerIpcPreparationErrorConverges'
+lifecycle_xml=$(mktemp -d "${TMPDIR:-/tmp}/flagcx-unirunner-lifecycle-XXXXXX")
+FLAGCX_CI_MPI_LABEL='Hygon experimental UniRunner IPC lifecycle' \
+  "$mpi_runner" -np 4 --allow-run-as-root \
+    "${common_env[@]}" -x FLAGCX_UNIRUNNER_ALGO=2 \
+    bash "$project_root/.github/scripts/ci/run_gtest_rank_xml.sh" \
+    "$lifecycle_xml" "$runner_bin" \
+    --gtest_filter=FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy
+python3 "$project_root/.github/scripts/ci/check_required_gtests.py" \
+  --case FlagCXCollTest.UniRunnerIpcFinalizeThenRankLocalDestroy \
+  "$lifecycle_xml/rank-0.xml" "$lifecycle_xml/rank-1.xml" \
+  "$lifecycle_xml/rank-2.xml" "$lifecycle_xml/rank-3.xml"
+
 run_runner_test 'P2pAG outer group' 8 \
   'FlagCXCollTest.AllGatherInsideGroup'
 

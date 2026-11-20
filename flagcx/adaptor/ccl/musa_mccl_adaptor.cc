@@ -45,15 +45,17 @@ flagcxResult_t mcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
                                           *(mcclUniqueId *)commId, rank);
 }
 
-flagcxResult_t mcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return flagcxNotSupported;
-}
-
-flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)mcclCommDestroy(comm->base);
-}
+// This SDK has no separate native Finalize. Close native state in the final
+// vendor phase; retain the wrapper until local Destroy.
+#define FLAGCX_COMPAT_FINALIZE mcclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY mcclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
+  (flagcxResult_t) mcclCommDestroy((comm)->base)
+#include "compat_comm_lifecycle.h"
 
 flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {
+  if (comm != NULL && comm->base == NULL)
+    return flagcxSuccess;
   return (flagcxResult_t)mcclCommAbort(comm->base);
 }
 
@@ -328,6 +330,6 @@ struct flagcxCCLAdaptor musa_mcclAdaptor = {
     mcclAdaptorGroupStart, mcclAdaptorGroupEnd,
     // Device API
     mcclAdaptorDevCommReqsInit, mcclAdaptorDevCommCreate,
-    mcclAdaptorDevCommDestroy};
+    mcclAdaptorDevCommDestroy, flagcxCclFinalizeWorld};
 
 #endif // USE_MUSA_ADAPTOR

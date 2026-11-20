@@ -1,5 +1,6 @@
 #include "flagcx_hetero.h"
 #include "adaptor.h"
+#include "device_api/completion_word.h"
 #include "gdr_visibility.h"
 #include "global_comm.h"
 #include "group.h"
@@ -1446,6 +1447,11 @@ static const flagcxWorkerOps flagcxRmaWorkerOps = {
     flagcxRmaWorkerInit, flagcxRmaWorkerProgressOnce, NULL};
 
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (comm->rmaProxy != NULL || comm->finalizeState.rollbackPending ||
+      __atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
   int nRanks = comm->nRanks;
   struct flagcxRmaProxyState *proxy = (struct flagcxRmaProxyState *)calloc(
       1, sizeof(struct flagcxRmaProxyState));
@@ -1605,6 +1611,9 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     }
   }
 
+  proxy->doneSeqsCpuMapped = mmapDone;
+  proxy->readySeqsCpuMapped = mmapReady;
+
   // If no CPU mapping available, allocate separate host memory for HOST_FUNC.
   if (proxy->doneSeqsCpu == NULL)
     proxy->doneSeqsCpu = (volatile uint64_t *)calloc(nRanks, sizeof(uint64_t));
@@ -1648,48 +1657,16 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
     // the worker itself. Retain the proxy if a failed join left it running.
     if (proxy->worker != NULL) {
       flagcxResult_t retireResult = comm->workerPool->retire(&proxy->worker);
-      if (proxy->worker != NULL)
+      if (retireResult != flagcxSuccess)
         return retireResult;
     }
     if (createdWorkerPool) {
       delete comm->workerPool;
       comm->workerPool = NULL;
     }
-    if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-      if (proxy->doneSeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                    nRanks * sizeof(uint64_t));
-      if (proxy->readySeqsCpu != NULL)
-        deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                    nRanks * sizeof(uint64_t));
-    } else {
-      free((void *)proxy->doneSeqsCpu);
-      free((void *)proxy->readySeqsCpu);
-    }
-    if (proxy->doneSeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
-    if (proxy->readySeqsDev != NULL)
-      deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
-    for (int p = 0; p < nRanks; p++)
-      pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
-    pthread_cond_destroy(&proxy->doneCond);
-    pthread_mutex_destroy(&proxy->doneMutex);
-    free(proxy->circularBuffers);
-    free((void *)proxy->pis);
-    free((void *)proxy->cis);
-    free(proxy->inProgressQueues);
-    free(proxy->peerProducerMutexes);
-    free((void *)proxy->opSeqs);
-    free((void *)proxy->doneSeqs);
-    free((void *)proxy->inFlights);
-    free(proxy->completionScoreboards);
-    free(proxy->completionEntries);
-    free(proxy->getVisibilityDomains);
-    free(proxy->activeGetVisibilityDomains);
-    free(proxy->activeGetVisibilityCounts);
-    free((void *)proxy->groupSeqs);
-    free(proxy);
-    comm->rmaProxy = NULL;
+    flagcxResult_t cleanupResult = flagcxHeteroRmaProxyStop(comm);
+    if (cleanupResult != flagcxSuccess)
+      return cleanupResult;
     return workerResult;
   }
 
@@ -1698,44 +1675,87 @@ flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm) {
 }
 
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  struct flagcxRmaProxyState *proxy = comm->rmaProxy;
+  if (proxy == NULL || proxy->stopComplete)
+    return flagcxSuccess;
+
+  __atomic_store_n(&proxy->quiesced, 1, __ATOMIC_RELEASE);
+  flagcxResult_t result;
+  if (proxy->worker != NULL) {
+    if (comm->workerPool == NULL)
+      return flagcxInternalError;
+    result = comm->workerPool->retire(&proxy->worker);
+    if (result != flagcxSuccess)
+      return result;
+  }
+  result = flagcxHeteroRmaIpcDestroy(comm);
+  if (result != flagcxSuccess)
+    return result;
+  // Mapping ownership is independent of the selected synchronization method:
+  // HOST_FUNC can be selected after only one of the CPU mappings succeeded.
+  if (proxy->doneSeqsCpu != NULL) {
+    if (proxy->doneSeqsCpuMapped) {
+      if (deviceAdaptor->gdrPtrMunmap == NULL)
+        return flagcxNotSupported;
+      result = deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
+                                           proxy->nRanks * sizeof(uint64_t));
+      if (result != flagcxSuccess)
+        return result;
+      proxy->doneSeqsCpuMapped = 0;
+    } else {
+      free((void *)proxy->doneSeqsCpu);
+    }
+    proxy->doneSeqsCpu = NULL;
+  }
+  if (proxy->readySeqsCpu != NULL) {
+    if (proxy->readySeqsCpuMapped) {
+      if (deviceAdaptor->gdrPtrMunmap == NULL)
+        return flagcxNotSupported;
+      result = deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
+                                           proxy->nRanks * sizeof(uint64_t));
+      if (result != flagcxSuccess)
+        return result;
+      proxy->readySeqsCpuMapped = 0;
+    } else {
+      free((void *)proxy->readySeqsCpu);
+    }
+    proxy->readySeqsCpu = NULL;
+  }
+  // gdrMemFree may perform a device-wide synchronization. Retain its owner
+  // through Finalize, including when no outer Comm exists.
+  proxy->stopComplete = 1;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL)
     return flagcxSuccess;
-
-  if (comm->workerPool == NULL || proxy->worker == NULL)
-    return flagcxInternalError;
-  flagcxResult_t workerResult = comm->workerPool->retire(&proxy->worker);
-  if (proxy->worker != NULL)
-    return workerResult;
-
-  // Free IPC state (D2D bypass peer pointers)
-  flagcxHeteroRmaIpcDestroy(comm);
-
+  if (!proxy->stopComplete || proxy->worker != NULL ||
+      proxy->ipcState != NULL || proxy->doneSeqsCpu != NULL ||
+      proxy->readySeqsCpu != NULL)
+    return flagcxInvalidUsage;
+  flagcxResult_t result;
+  if (proxy->doneSeqsDev != NULL) {
+    result = deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
+    if (result != flagcxSuccess)
+      return result;
+    proxy->doneSeqsDev = NULL;
+  }
+  if (proxy->readySeqsDev != NULL) {
+    result = deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
+    if (result != flagcxSuccess)
+      return result;
+    proxy->readySeqsDev = NULL;
+  }
   for (int p = 0; p < proxy->nRanks; p++)
     pthread_mutex_destroy(&proxy->peerProducerMutexes[p]);
-
   pthread_cond_destroy(&proxy->doneCond);
   pthread_mutex_destroy(&proxy->doneMutex);
-
-  // Free CPU mappings / host memory
-  if (proxy->useStreamOps && deviceAdaptor->gdrPtrMunmap != NULL) {
-    if (proxy->doneSeqsCpu != NULL)
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->doneSeqsCpu,
-                                  proxy->nRanks * sizeof(uint64_t));
-    if (proxy->readySeqsCpu != NULL)
-      deviceAdaptor->gdrPtrMunmap((void *)proxy->readySeqsCpu,
-                                  proxy->nRanks * sizeof(uint64_t));
-  } else {
-    free((void *)proxy->doneSeqsCpu);
-    free((void *)proxy->readySeqsCpu);
-  }
-
-  // Free device memory
-  if (proxy->doneSeqsDev != NULL)
-    deviceAdaptor->gdrMemFree(proxy->doneSeqsDev, NULL);
-  if (proxy->readySeqsDev != NULL)
-    deviceAdaptor->gdrMemFree(proxy->readySeqsDev, NULL);
-
   free(proxy->circularBuffers);
   free((void *)proxy->pis);
   free((void *)proxy->cis);
@@ -1752,7 +1772,59 @@ flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm) {
   free((void *)proxy->groupSeqs);
   free(proxy);
   comm->rmaProxy = NULL;
-  return workerResult;
+  return flagcxSuccess;
+}
+
+static flagcxResult_t flagcxHeteroProducerStatus(flagcxHeteroComm_t comm) {
+  if (comm->proxyState != NULL) {
+    flagcxResult_t result = __atomic_load_n(
+        &comm->proxyState->kernelState.terminalResult, __ATOMIC_ACQUIRE);
+    if (result != flagcxSuccess)
+      return result;
+    result = __atomic_load_n(&comm->proxyState->asyncResult, __ATOMIC_ACQUIRE);
+    if (result != flagcxSuccess && result != flagcxInProgress)
+      return result;
+  }
+  if (comm->rmaProxy != NULL &&
+      __atomic_load_n(&comm->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
+    return flagcxRemoteError;
+  return flagcxSuccess;
+}
+
+flagcxResult_t flagcxHeteroDrainProducers(flagcxHeteroComm_t hetero) {
+  if (hetero == NULL)
+    return flagcxSuccess;
+  flagcxResult_t status = flagcxHeteroProducerStatus(hetero);
+  if (status != flagcxSuccess)
+    return status;
+  // Drain every device producer and its native requests before MR
+  // deregistration is allowed to close an RDMA connection reachable from a
+  // FIFO descriptor. consumed only means the proxy posted the descriptor;
+  // completed is advanced after the corresponding native request retires.
+  if (hetero->proxyState) {
+    int ctxCount = hetero->proxyState->kernelState.contextCount;
+    for (int i = 0; i < ctxCount; i++) {
+      if (hetero->proxyState->kernelState.fifos[i]) {
+        volatile uint64_t *buf =
+            (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
+                ->buffer;
+        if (buf) {
+          while (
+              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxCompleted),
+                              __ATOMIC_ACQUIRE) !=
+              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
+                              __ATOMIC_ACQUIRE)) {
+            status = flagcxHeteroProducerStatus(hetero);
+            if (status != flagcxSuccess)
+              return status;
+            sched_yield();
+          }
+        }
+      }
+    }
+  }
+
+  return flagcxHeteroProducerStatus(hetero);
 }
 
 flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm) {
@@ -1827,8 +1899,9 @@ flagcxResult_t flagcxHeteroFlushRma(flagcxHeteroComm_t comm, int peer,
   return flagcxSuccess;
 }
 
-flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
-                                          uint64_t seq, flagcxStream_t stream) {
+static flagcxResult_t flagcxHeteroFlushRmaStreamImpl(flagcxHeteroComm_t comm,
+                                                     int peer, uint64_t seq,
+                                                     flagcxStream_t stream) {
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
   if (proxy == NULL || seq == 0)
     return flagcxSuccess;
@@ -1914,11 +1987,11 @@ flagcxResult_t flagcxHeteroSend(const void *sendbuff, size_t count,
                                    stream, 0, opId, step);
 }
 
-flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
-                                         flagcxDataType_t datatype, int peer,
-                                         flagcxHeteroComm_t comm,
-                                         flagcxStream_t stream, int channelId,
-                                         int opId, int step) {
+static flagcxResult_t
+flagcxHeteroSendOnChannelImpl(const void *sendbuff, size_t count,
+                              flagcxDataType_t datatype, int peer,
+                              flagcxHeteroComm_t comm, flagcxStream_t stream,
+                              int channelId, int opId, int step) {
   if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
       channelId >= MAXCHANNELS)
     return flagcxInvalidArgument;
@@ -1945,8 +2018,7 @@ flagcxResult_t flagcxHeteroSendOnChannel(const void *sendbuff, size_t count,
   flagcxIntruQueueEnqueue(&tasks->peers[peer].sendQueue, p2p);
 
   flagcxGroupCommJoin(comm);
-  flagcxHeteroGroupEnd();
-  return flagcxSuccess;
+  return flagcxHeteroGroupEnd();
 }
 
 flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
@@ -1957,11 +2029,11 @@ flagcxResult_t flagcxHeteroRecv(void *recvbuff, size_t count,
                                    stream, 0, opId, step);
 }
 
-flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
-                                         flagcxDataType_t datatype, int peer,
-                                         flagcxHeteroComm_t comm,
-                                         flagcxStream_t stream, int channelId,
-                                         int opId, int step) {
+static flagcxResult_t
+flagcxHeteroRecvOnChannelImpl(void *recvbuff, size_t count,
+                              flagcxDataType_t datatype, int peer,
+                              flagcxHeteroComm_t comm, flagcxStream_t stream,
+                              int channelId, int opId, int step) {
   if (comm == NULL || peer < 0 || peer >= comm->nRanks || channelId < 0 ||
       channelId >= MAXCHANNELS)
     return flagcxInvalidArgument;
@@ -1988,8 +2060,7 @@ flagcxResult_t flagcxHeteroRecvOnChannel(void *recvbuff, size_t count,
   flagcxIntruQueueEnqueue(&tasks->peers[peer].recvQueue, p2p);
 
   flagcxGroupCommJoin(comm);
-  flagcxHeteroGroupEnd();
-  return flagcxSuccess;
+  return flagcxHeteroGroupEnd();
 }
 
 static inline bool flagcxRmaMrIndexIsValid(flagcxHeteroComm_t comm,
@@ -2251,12 +2322,11 @@ flagcxResult_t flagcxHeteroGet(flagcxHeteroComm_t comm, int peer,
   return res;
 }
 
-flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, int srcMrIdx, int dstMrIdx,
-                                     flagcxSymWindow_t srcWindow,
-                                     flagcxSymWindow_t dstWindow,
-                                     flagcxStream_t stream) {
+static flagcxResult_t
+flagcxHeteroGetStreamImpl(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
+                          size_t dstOffset, size_t size, int srcMrIdx,
+                          int dstMrIdx, flagcxSymWindow_t srcWindow,
+                          flagcxSymWindow_t dstWindow, flagcxStream_t stream) {
   if (comm == NULL || stream == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
@@ -2474,9 +2544,10 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 
 static inline bool flagcxIsIntraNode(flagcxHeteroComm_t comm, int peer);
 
-flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
-                                      size_t signalOffset, uint64_t expected,
-                                      flagcxStream_t stream) {
+static flagcxResult_t flagcxHeteroWaitSignalImpl(flagcxHeteroComm_t comm,
+                                                 int peer, size_t signalOffset,
+                                                 uint64_t expected,
+                                                 flagcxStream_t stream) {
   (void)peer;
   if (comm == NULL || comm->rmaSignalBase == NULL)
     return flagcxNotSupported;
@@ -2647,12 +2718,10 @@ flagcxResult_t flagcxHeteroRmaIpcDestroy(flagcxHeteroComm_t comm) {
 
 // ---- Stream-based Put with intra-node D2D bypass ----
 
-flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
-                                     size_t srcOffset, size_t dstOffset,
-                                     size_t size, int srcMrIdx, int dstMrIdx,
-                                     flagcxSymWindow_t srcWindow,
-                                     flagcxSymWindow_t dstWindow,
-                                     flagcxStream_t stream, uint64_t *opSeq) {
+static flagcxResult_t flagcxHeteroPutStreamImpl(
+    flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
+    size_t size, int srcMrIdx, int dstMrIdx, flagcxSymWindow_t srcWindow,
+    flagcxSymWindow_t dstWindow, flagcxStream_t stream, uint64_t *opSeq) {
   if (comm == NULL || peer < 0 || peer >= comm->nRanks)
     return flagcxInvalidArgument;
   struct flagcxRmaProxyState *proxy = comm->rmaProxy;
@@ -2725,7 +2794,7 @@ flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
   }
 }
 
-flagcxResult_t flagcxHeteroPutSignalStream(
+static flagcxResult_t flagcxHeteroPutSignalStreamImpl(
     flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
     size_t size, size_t signalOffset, int srcMrIdx, int dstMrIdx,
     uint64_t signalValue, flagcxSymWindow_t srcWindow,
@@ -2843,4 +2912,233 @@ flagcxResult_t flagcxHeteroPutSignalStream(
       *opSeq = assignedSeq;
     return res;
   }
+}
+
+// Record completion at submission boundaries; native groups defer until
+// GroupEnd.
+static flagcxResult_t
+flagcxHeteroSendTracked(const void *sendbuff, size_t count,
+                        flagcxDataType_t datatype, int peer,
+                        flagcxHeteroComm_t comm, flagcxStream_t stream,
+                        int channelId, int opId, int step, int fromProxy) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (!fromProxy &&
+      __atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (peer < 0 || peer >= comm->nRanks || channelId < 0 ||
+      channelId >= MAXCHANNELS)
+    return flagcxInvalidArgument;
+  struct flagcxWorkRecord *record = NULL;
+  struct flagcxWorkTracker *tracker =
+      fromProxy ? &comm->proxyWork : &comm->submittedWork;
+  flagcxResult_t prepared = flagcxWorkPrepare(tracker, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result = flagcxHeteroSendOnChannelImpl(
+      sendbuff, count, datatype, peer, comm, stream, channelId, opId, step);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup,
+                          flagcxGetGroupDepth() != 0);
+}
+
+flagcxResult_t flagcxHeteroSendOnChannel(const void *buffer, size_t count,
+                                         flagcxDataType_t type, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId, int step) {
+  return flagcxHeteroSendTracked(buffer, count, type, peer, comm, stream,
+                                 channelId, opId, step, 0);
+}
+
+flagcxResult_t flagcxHeteroProxySend(const void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream) {
+  return flagcxHeteroSendTracked(buffer, count, type, peer, comm, stream, 0,
+                                 INT_MAX, -1, 1);
+}
+
+static flagcxResult_t flagcxHeteroRecvTracked(void *recvbuff, size_t count,
+                                              flagcxDataType_t datatype,
+                                              int peer, flagcxHeteroComm_t comm,
+                                              flagcxStream_t stream,
+                                              int channelId, int opId, int step,
+                                              int fromProxy) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (!fromProxy &&
+      __atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (peer < 0 || peer >= comm->nRanks || channelId < 0 ||
+      channelId >= MAXCHANNELS)
+    return flagcxInvalidArgument;
+  struct flagcxWorkRecord *record = NULL;
+  struct flagcxWorkTracker *tracker =
+      fromProxy ? &comm->proxyWork : &comm->submittedWork;
+  flagcxResult_t prepared = flagcxWorkPrepare(tracker, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result = flagcxHeteroRecvOnChannelImpl(
+      recvbuff, count, datatype, peer, comm, stream, channelId, opId, step);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup,
+                          flagcxGetGroupDepth() != 0);
+}
+
+flagcxResult_t flagcxHeteroRecvOnChannel(void *buffer, size_t count,
+                                         flagcxDataType_t type, int peer,
+                                         flagcxHeteroComm_t comm,
+                                         flagcxStream_t stream, int channelId,
+                                         int opId, int step) {
+  return flagcxHeteroRecvTracked(buffer, count, type, peer, comm, stream,
+                                 channelId, opId, step, 0);
+}
+
+flagcxResult_t flagcxHeteroProxyRecv(void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream) {
+  return flagcxHeteroRecvTracked(buffer, count, type, peer, comm, stream, 0,
+                                 INT_MAX, -1, 1);
+}
+
+flagcxResult_t flagcxHeteroGetStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (__atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (stream == NULL)
+    return flagcxHeteroGetStreamImpl(comm, peer, srcOffset, dstOffset, size,
+                                     srcMrIdx, dstMrIdx, srcWindow, dstWindow,
+                                     stream);
+  if (peer < 0 || peer >= comm->nRanks)
+    return flagcxInvalidArgument;
+  if (comm->rmaProxy == NULL)
+    return flagcxInternalError;
+  if (__atomic_load_n(&comm->rmaProxy->quiesced, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepare(&comm->submittedWork, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result = flagcxHeteroGetStreamImpl(
+      comm, peer, srcOffset, dstOffset, size, srcMrIdx, dstMrIdx, srcWindow,
+      dstWindow, stream);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup, 0);
+}
+
+flagcxResult_t flagcxHeteroPutStream(flagcxHeteroComm_t comm, int peer,
+                                     size_t srcOffset, size_t dstOffset,
+                                     size_t size, int srcMrIdx, int dstMrIdx,
+                                     flagcxSymWindow_t srcWindow,
+                                     flagcxSymWindow_t dstWindow,
+                                     flagcxStream_t stream, uint64_t *opSeq) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (__atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (stream == NULL)
+    return flagcxHeteroPutStreamImpl(comm, peer, srcOffset, dstOffset, size,
+                                     srcMrIdx, dstMrIdx, srcWindow, dstWindow,
+                                     stream, opSeq);
+  if (peer < 0 || peer >= comm->nRanks)
+    return flagcxInvalidArgument;
+  if (comm->rmaProxy == NULL)
+    return flagcxInternalError;
+  if (__atomic_load_n(&comm->rmaProxy->quiesced, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepare(&comm->submittedWork, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result = flagcxHeteroPutStreamImpl(
+      comm, peer, srcOffset, dstOffset, size, srcMrIdx, dstMrIdx, srcWindow,
+      dstWindow, stream, opSeq);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup, 0);
+}
+
+flagcxResult_t flagcxHeteroPutSignalStream(
+    flagcxHeteroComm_t comm, int peer, size_t srcOffset, size_t dstOffset,
+    size_t size, size_t signalOffset, int srcMrIdx, int dstMrIdx,
+    uint64_t signalValue, flagcxSymWindow_t srcWindow,
+    flagcxSymWindow_t dstWindow, flagcxStream_t stream, uint64_t *opSeq) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (__atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (stream == NULL)
+    return flagcxHeteroPutSignalStreamImpl(
+        comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx,
+        dstMrIdx, signalValue, srcWindow, dstWindow, stream, opSeq);
+  if (peer < 0 || peer >= comm->nRanks)
+    return flagcxInvalidArgument;
+  if (comm->rmaSignalBase == NULL)
+    return flagcxNotSupported;
+  if (signalOffset > comm->rmaSignalSize ||
+      sizeof(uint64_t) > comm->rmaSignalSize - signalOffset)
+    return flagcxInvalidArgument;
+  if (comm->rmaProxy == NULL)
+    return flagcxInternalError;
+  if (__atomic_load_n(&comm->rmaProxy->quiesced, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepare(&comm->submittedWork, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result = flagcxHeteroPutSignalStreamImpl(
+      comm, peer, srcOffset, dstOffset, size, signalOffset, srcMrIdx, dstMrIdx,
+      signalValue, srcWindow, dstWindow, stream, opSeq);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup, 0);
+}
+
+flagcxResult_t flagcxHeteroWaitSignal(flagcxHeteroComm_t comm, int peer,
+                                      size_t signalOffset, uint64_t expected,
+                                      flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (__atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (stream == NULL)
+    return flagcxHeteroWaitSignalImpl(comm, peer, signalOffset, expected,
+                                      stream);
+  if (comm->rmaSignalBase == NULL)
+    return flagcxNotSupported;
+  if (signalOffset > comm->rmaSignalSize ||
+      sizeof(uint64_t) > comm->rmaSignalSize - signalOffset)
+    return flagcxInvalidArgument;
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepare(&comm->submittedWork, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result =
+      flagcxHeteroWaitSignalImpl(comm, peer, signalOffset, expected, stream);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup, 0);
+}
+
+flagcxResult_t flagcxHeteroFlushRmaStream(flagcxHeteroComm_t comm, int peer,
+                                          uint64_t seq, flagcxStream_t stream) {
+  if (comm == NULL)
+    return flagcxInvalidArgument;
+  if (__atomic_load_n(&comm->finalizeState.started, __ATOMIC_ACQUIRE))
+    return flagcxInvalidUsage;
+  if (stream == NULL || comm->rmaProxy == NULL || seq == 0 ||
+      !comm->rmaProxy->useStreamOps || comm->rmaProxy->doneSeqsDev == NULL ||
+      peer < 0 || peer >= comm->rmaProxy->nRanks)
+    return flagcxHeteroFlushRmaStreamImpl(comm, peer, seq, stream);
+  struct flagcxWorkRecord *record = NULL;
+  flagcxResult_t prepared =
+      flagcxWorkPrepare(&comm->submittedWork, stream, 0, &record);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxResult_t result =
+      flagcxHeteroFlushRmaStreamImpl(comm, peer, seq, stream);
+  return flagcxWorkFinish(record, stream, result, flagcxWorkHeteroGroup, 0);
 }

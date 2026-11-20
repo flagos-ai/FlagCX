@@ -107,9 +107,12 @@ flagcxResult_t flagcxNetAdaptorPluginInit() {
 
 flagcxResult_t flagcxNetAdaptorPluginFinalize() {
   std::lock_guard<std::mutex> lock(netPluginMutex);
-  if (netPluginRefCount > 0 && --netPluginRefCount == 0) {
+  if (netPluginRefCount == 1) {
     INFO(FLAGCX_NET, "Unloading net adaptor plugin");
     FLAGCXCHECK(flagcxNetAdaptorPluginUnload());
+    netPluginRefCount = 0;
+  } else if (netPluginRefCount > 1) {
+    --netPluginRefCount;
   }
   return flagcxSuccess;
 }

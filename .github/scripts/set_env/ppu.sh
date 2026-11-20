@@ -210,7 +210,7 @@ flagcx_ci_run_suite_override() {
         -x FLAGCX_CI_EXPECT_NET_ADAPTOR=BAREX \
         -x FLAGCX_CI_EXPECT_PXN=1 \
         ./build/bin/runner_mpi_tests \
-        --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll || runner_status=1
+        --gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll:FlagCXCollTest.FinalizeThenRankLocalDestroy || runner_status=1
     fi
     return "$runner_status"
   fi
