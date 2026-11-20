@@ -585,7 +585,11 @@ flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,
 }
 
 flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
-                                              flagcxStream_t stream) {
+                                              flagcxStream_t stream,
+                                              uint64_t *results,
+                                              unsigned skew) {
+  (void)results;
+  (void)skew;
   STUB_UNUSED(0);
   return flagcxNotSupported;
 }

@@ -15,21 +15,17 @@
  *
  * 3. Inter-node One-sided Device API Tests
  *    Eight focused kernels, each covering one Device API facet.
- *    Signal/counter slot assignments:
- *      slot 0: SignalAdd, CounterPipeline, FlushDecouple
- *      slot 1: PutValue, SignalOnly
- *      slot 2: FollowShadow, MeetShadow
- *      counter 0: CounterInc
- *    DevCommRequirements: interSignalCount=3, interCounterCount=1
+ *    Per-CTA signal/counter ownership: device_signal_test_layout.h.
  *    All kernels follow: pre-bar.sync / core logic / post-bar.sync.
  *
  * Host-side flagcxDevCommCreate/Destroy are in flagcx_device.cc.
  ************************************************************************/
 
 #include "device_api/flagcx_device.h"
-#include "ppu_adaptor.h"
-#include "global_comm.h"
+#include "device_signal_test_layout.h"
 #include "flagcx_kernel.h"
+#include "global_comm.h"
+#include "ppu_adaptor.h"
 #include <hggc_runtime.h>
 
 // Datatype size helper (moved from flagcx/kernels/flagcx_kernel_device.cu)
@@ -173,13 +169,19 @@ flagcxResult_t launchKernelIntraAllReduce(flagcxDevMem_t devMem, size_t count,
 // ==========================================================================
 
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterOneSidedAlltoAllKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
-                                      size_t count, flagcxDataType_t datatype,
-                                      flagcxDevComm devComm) {
+    flagcxInterOneSidedAlltoAllKernel(flagcxDevMem sendMem,
+                                      flagcxDevMem recvMem, size_t count,
+                                      flagcxDataType_t datatype,
+                                      flagcxDevComm devComm, unsigned skew) {
 
-  // contextIndex=0: all CTAs share signal slot 0. readSignal is taken before
-  // bar.sync so the baseline is captured before any signals from this round arrive.
+  // Context 0 is shared; every CTA owns its completion slot.
   flagcxDevNet net(devComm, 0);
+  flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+  const int sig =
+      legacySignalId(FlagcxTestAlltoAll, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+  const bool receives =
+      FLAGCX_BLOCK_IDX_X ==
+      signalOwnerCta(devComm.getRank(), FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
   // Unified barrier: intra (IPC) + inter (FIFO signal relay).
   // Single-node: intra sync only.  Multi-node: three-phase intra/inter/intra.
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
@@ -190,7 +192,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
 
   // Read signal baseline before pre-barrier so it reflects the pre-round state.
-  uint64_t signalValue = net.readSignal(0);
+  uint64_t signalValue = net.readSignal(sig);
 
   // Pre-communication barrier
   bar.sync(flagcxDeviceMemoryOrderRelaxed);
@@ -198,12 +200,13 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
   int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
   for (int peer = tid; peer < nRanks; peer += nthreads) {
-    net.put(flagcxTeamWorld(devComm), peer, recvMem, myRank * size,
-            sendMem, peer * size, size, flagcxDevNet_SignalInc{0},
+    net.put(flagcxTeamWorld(devComm), peer, recvMem, myRank * size, sendMem,
+            peer * size, size, flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
             flagcxDevNet_None{}, flagcxCoopThread{});
   }
 
-  net.waitSignal(flagcxCoopBlock{}, 0, signalValue + nRanks);
+  if (receives)
+    net.waitSignal(flagcxCoopBlock{}, sig, signalValue + nRanks);
   net.flush(flagcxCoopBlock{});
 
   // Post-communication barrier
@@ -265,9 +268,10 @@ flagcxResult_t launchKernelNetOneSidedAlltoAll(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  flagcxInterOneSidedAlltoAllKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterOneSidedAlltoAllKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                      FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                      *(hggcStream_t *)stream>>>(
+      sm, rm, count, datatype, dc, flagcxTestHostSignalSkew());
 
   hggcError_t err = hggcGetLastError();
 
@@ -330,9 +334,10 @@ ipcAlltoAll(const flagcxDevMem &sendMem, const flagcxDevMem &recvMem,
 
 // put + SignalInc
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestPutSignalIncKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
-                                   size_t count, flagcxDataType_t datatype,
-                                   flagcxDevComm devComm) {
+    flagcxInterTestPutSignalIncKernel(flagcxDevMem sendMem,
+                                      flagcxDevMem recvMem, size_t count,
+                                      flagcxDataType_t datatype,
+                                      flagcxDevComm devComm, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -344,10 +349,16 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   if (devComm._nInterPeers > 0) {
     // Hybrid: DevNet for inter + IPC for intra
     flagcxDevNet net(devComm, 0);
+    flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+    const int sig =
+        legacySignalId(FlagcxTestPutInc, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+    const bool receives =
+        FLAGCX_BLOCK_IDX_X ==
+        signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
 
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-    uint64_t s0 = net.readSignal(0);
+    uint64_t s0 = net.readSignal(sig);
 
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
@@ -357,14 +368,14 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
     for (int peer = tid; peer < nRanks; peer += nthreads) {
       if (peer >= intraBase && peer < intraBase + intraSize) continue;
-      net.put(flagcxTeamWorld(devComm), peer,
-              recvMem, (size_t)myRank * size,
+      net.put(flagcxTeamWorld(devComm), peer, recvMem, (size_t)myRank * size,
               sendMem, (size_t)peer * size, size,
-              flagcxDevNet_SignalInc{0}, flagcxDevNet_None{},
-              flagcxCoopThread{});
+              flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+              flagcxDevNet_None{}, flagcxCoopThread{});
     }
 
-    net.waitSignal(flagcxCoopBlock{}, 0, s0 + (uint64_t)nInterRanks);
+    if (receives)
+      net.waitSignal(flagcxCoopBlock{}, sig, s0 + (uint64_t)nInterRanks);
     net.flush(flagcxCoopBlock{});
 
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
@@ -384,9 +395,9 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // Default path: PrimPut + PrimSignal(value=2) (two FIFO entries, slot 0).
 // Contrast with K1 where both paths fuse into a single chained WR.
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestPutSignalAddDecoupledKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
-                                   size_t count, flagcxDataType_t datatype,
-                                   flagcxDevComm devComm) {
+    flagcxInterTestPutSignalAddDecoupledKernel(
+        flagcxDevMem sendMem, flagcxDevMem recvMem, size_t count,
+        flagcxDataType_t datatype, flagcxDevComm devComm, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -397,9 +408,15 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
   if (devComm._nInterPeers > 0) {
     flagcxDevNet net(devComm, 0);
+    flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+    const int sig =
+        legacySignalId(FlagcxTestPutAdd, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+    const bool receives =
+        FLAGCX_BLOCK_IDX_X ==
+        signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-    uint64_t s0 = net.readSignal(0);
+    uint64_t s0 = net.readSignal(sig);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
     ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
     int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
@@ -412,9 +429,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
               flagcxDevNet_None{}, flagcxDevNet_None{},
               flagcxCoopThread{});
       net.signal(flagcxTeamWorld(devComm), peer,
-                 flagcxDevNet_SignalAdd{0, 2}, flagcxCoopThread{});
+                 flagcxDevNet_SignalAdd{(flagcxDevSignal_t)sig, 2},
+                 flagcxCoopThread{});
     }
-    net.waitSignal(flagcxCoopBlock{}, 0, s0 + (uint64_t)nInterRanks * 2);
+    if (receives)
+      net.waitSignal(flagcxCoopBlock{}, sig, s0 + (uint64_t)nInterRanks * 2);
     net.flush(flagcxCoopBlock{});
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
@@ -446,7 +465,9 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
   int nInterRanks = nRanks - intraSize;
   size_t size = count * getFlagcxDataTypeSizeDevice(datatype);
   flagcxDevNet net(devComm, contextId);
-  uint64_t baseline = net.readSignal(2);
+  const flagcxDevSignal_t signalId =
+      static_cast<flagcxDevSignal_t>(dedicatedSignalId(FLAGCX_GRID_DIM_X));
+  uint64_t baseline = net.readSignal(signalId);
   flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> ready(
       flagcxCoopBlock(), flagcxTeamTagWorld{}, net, contextId);
 
@@ -462,11 +483,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     net.put(flagcxTeamWorld(devComm), peer, recvMem, (size_t)myRank * size,
             sendMem, (size_t)peer * size, size, flagcxDevNet_None{},
             flagcxDevNet_None{}, flagcxCoopThread{});
-    net.signal(flagcxTeamWorld(devComm), peer, flagcxDevNet_SignalInc{2},
-               flagcxCoopThread{});
+    net.signal(flagcxTeamWorld(devComm), peer,
+               flagcxDevNet_SignalInc{signalId}, flagcxCoopThread{});
   }
-  net.waitSignal(flagcxCoopBlock{}, 2,
-                 baseline + (uint64_t)nInterRanks);
+  net.waitSignal(flagcxCoopBlock{}, signalId, baseline + (uint64_t)nInterRanks);
   net.flush(flagcxCoopBlock{});
 }
 
@@ -477,7 +497,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
                                          flagcxDevMem recvMem, size_t count,
                                          flagcxDataType_t datatype,
                                          flagcxDevComm devComm,
-                                         uint64_t *resultBuf) {
+                                         uint64_t *resultBuf, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -490,48 +510,75 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
   if (devComm._nInterPeers > 0) {
     flagcxDevNet net(devComm, 0);
+    flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+    const int sig = legacySignalId(FlagcxTestPipeline, FLAGCX_BLOCK_IDX_X,
+                                   FLAGCX_GRID_DIM_X);
+    const bool receives =
+        FLAGCX_BLOCK_IDX_X ==
+        signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-    uint64_t s0 = net.readSignal(0);
-    uint64_t c0 = net.readCounter(0);
+    uint64_t s0 = net.readSignal(sig);
+    uint64_t c0 = net.readCounter(FLAGCX_BLOCK_IDX_X);
+    const uint64_t sent = countInterPeersAssignedTo(
+        FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X, nRanks,
+        intraBase, intraSize);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
     // Round 1: IPC for intra + DevNet for inter
     ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
     for (int peer = tid; peer < nRanks; peer += nthreads) {
       if (peer >= intraBase && peer < intraBase + intraSize) continue;
-      net.put(flagcxTeamWorld(devComm), peer,
-              recvMem, (size_t)myRank * size,
+      net.put(flagcxTeamWorld(devComm), peer, recvMem, (size_t)myRank * size,
               sendMem, (size_t)peer * size, size,
-              flagcxDevNet_SignalInc{0}, flagcxDevNet_CounterInc{0},
+              flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+              flagcxDevNet_CounterInc{(flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X},
               flagcxCoopThread{});
     }
-    net.waitCounter(flagcxCoopBlock{}, 0, c0 + (uint64_t)nInterRanks);
+    net.waitCounter(flagcxCoopBlock{}, (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X,
+                    c0 + sent);
+
+    if (receives)
+      net.waitSignal(flagcxCoopBlock{}, sig, s0 + (uint64_t)nInterRanks);
+    flagcxCoopBlock{}.sync();
 
     // Stamp sentinel
     for (int peer = tid; peer < nRanks; peer += nthreads) {
+      if (peer >= intraBase && peer < intraBase + intraSize)
+        continue;
       float *slot = (float *)flagcxGetLocalPointer(sendMem, (size_t)peer * size);
       *slot = 999.0f;
     }
+    if (FLAGCX_BLOCK_IDX_X == 0)
+      for (int lr = FLAGCX_THREAD_IDX_X; lr < intraSize;
+           lr += FLAGCX_BLOCK_DIM_X)
+        *(float *)flagcxGetLocalPointer(sendMem, (size_t)(intraBase + lr) *
+                                                     size) = 999.0f;
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
     // Round 2: same
     ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
     for (int peer = tid; peer < nRanks; peer += nthreads) {
       if (peer >= intraBase && peer < intraBase + intraSize) continue;
-      net.put(flagcxTeamWorld(devComm), peer,
-              recvMem, (size_t)myRank * size,
+      net.put(flagcxTeamWorld(devComm), peer, recvMem, (size_t)myRank * size,
               sendMem, (size_t)peer * size, size,
-              flagcxDevNet_SignalInc{0}, flagcxDevNet_CounterInc{0},
+              flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+              flagcxDevNet_CounterInc{(flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X},
               flagcxCoopThread{});
     }
-    net.waitCounter(flagcxCoopBlock{}, 0, c0 + 2 * (uint64_t)nInterRanks);
-    net.waitSignal(flagcxCoopBlock{}, 0, s0 + 2 * (uint64_t)nInterRanks);
+    net.waitCounter(flagcxCoopBlock{}, (flagcxDevCounter_t)FLAGCX_BLOCK_IDX_X,
+                    c0 + 2 * sent);
+    if (receives)
+      net.waitSignal(flagcxCoopBlock{}, sig, s0 + 2 * (uint64_t)nInterRanks);
     net.flush(flagcxCoopBlock{});
 
-    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      resultBuf[0] = net.readCounter(0);
-      resultBuf[1] = (uint64_t)nInterRanks;
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      uint64_t *r =
+          resultBuf + FLAGCX_BLOCK_IDX_X * kFlagcxTestPipelineResultWords;
+      r[0] = net.readCounter(FLAGCX_BLOCK_IDX_X) - c0;
+      r[1] = sent + 1; // Nonzero also proves an idle CTA executed.
+      r[2] = net.readSignal(sig) - s0;
+      r[3] = receives ? 2 * (uint64_t)nInterRanks : 0;
     }
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
@@ -543,11 +590,20 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     // Round 1
     ipcAlltoAll(sendMem, recvMem, intra, intraSize, intraBase, myRank, size);
 
+    flagcxCoopBlock{}.sync();
+
     // Stamp sentinel
     for (int peer = tid; peer < nRanks; peer += nthreads) {
+      if (peer >= intraBase && peer < intraBase + intraSize)
+        continue;
       float *slot = (float *)flagcxGetLocalPointer(sendMem, (size_t)peer * size);
       *slot = 999.0f;
     }
+    if (FLAGCX_BLOCK_IDX_X == 0)
+      for (int lr = FLAGCX_THREAD_IDX_X; lr < intraSize;
+           lr += FLAGCX_BLOCK_DIM_X)
+        *(float *)flagcxGetLocalPointer(sendMem, (size_t)(intraBase + lr) *
+                                                     size) = 999.0f;
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
     // Round 2
@@ -565,7 +621,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // Each rank writes value=myRank*1000+peer to peer's recvBuff[putValBase+myRank*8].
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxInterTestPutValueKernel(flagcxDevMem recvMem, flagcxDevComm devComm,
-                                  size_t putValBase) {
+                                  size_t putValBase, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -577,9 +633,15 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
   if (devComm._nInterPeers > 0) {
     flagcxDevNet net(devComm, 0);
+    flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+    const int sig = legacySignalId(FlagcxTestPutValue, FLAGCX_BLOCK_IDX_X,
+                                   FLAGCX_GRID_DIM_X);
+    const bool receives =
+        FLAGCX_BLOCK_IDX_X ==
+        signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-    uint64_t s1 = net.readSignal(1);
+    uint64_t s1 = net.readSignal(sig);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
     for (int peer = tid; peer < nRanks; peer += nthreads) {
       uint64_t val = (uint64_t)myRank * 1000u + (uint64_t)peer;
@@ -590,13 +652,15 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
             recvMem, putValBase + (size_t)myRank * sizeof(uint64_t), intra, lr);
         *dst = val;
       } else {
-        net.putValue(flagcxTeamWorld(devComm), peer,
-                     recvMem, putValBase + (size_t)myRank * sizeof(uint64_t),
-                     val, flagcxDevNet_SignalInc{1}, flagcxCoopThread{});
+        net.putValue(flagcxTeamWorld(devComm), peer, recvMem,
+                     putValBase + (size_t)myRank * sizeof(uint64_t), val,
+                     flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+                     flagcxCoopThread{});
       }
     }
     if (nInterRanks > 0)
-      net.waitSignal(flagcxCoopBlock{}, 1, s1 + (uint64_t)nInterRanks);
+      if (receives)
+        net.waitSignal(flagcxCoopBlock{}, sig, s1 + (uint64_t)nInterRanks);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
     flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
@@ -617,7 +681,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // signal standalone
 // Each rank signals all other peers on slot 1; waits for nRanks-1 incoming.
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestSignalKernel(flagcxDevComm devComm) {
+    flagcxInterTestSignalKernel(flagcxDevComm devComm, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -626,18 +690,26 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
   if (devComm._nInterPeers > 0) {
     flagcxDevNet net(devComm, 0);
+    flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+    const int sig =
+        legacySignalId(FlagcxTestSignal, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+    const bool receives =
+        FLAGCX_BLOCK_IDX_X ==
+        signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-    uint64_t s1 = net.readSignal(1);
+    uint64_t s1 = net.readSignal(sig);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
     int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
     int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
     for (int peer = tid; peer < nRanks; peer += nthreads)
       if (peer != myRank && (peer < intraBase || peer >= intraBase + intraSize))
         net.signal(flagcxTeamWorld(devComm), peer,
-                   flagcxDevNet_SignalInc{1}, flagcxCoopThread{});
+                   flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+                   flagcxCoopThread{});
     if (nInterRanks > 0)
-      net.waitSignal(flagcxCoopBlock{}, 1, s1 + (uint64_t)nInterRanks);
+      if (receives)
+        net.waitSignal(flagcxCoopBlock{}, sig, s1 + (uint64_t)nInterRanks);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
     flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
@@ -650,9 +722,10 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 // put + flush decoupled
 // put(None,None) → flush (src drain) → signal → waitSignal → flush (dst).
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestFlushDecoupleKernel(flagcxDevMem sendMem, flagcxDevMem recvMem,
-                                       size_t count, flagcxDataType_t datatype,
-                                       flagcxDevComm devComm) {
+    flagcxInterTestFlushDecoupleKernel(flagcxDevMem sendMem,
+                                       flagcxDevMem recvMem, size_t count,
+                                       flagcxDataType_t datatype,
+                                       flagcxDevComm devComm, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -663,9 +736,15 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
 
   if (devComm._nInterPeers > 0) {
     flagcxDevNet net(devComm, 0);
+    flagcxTestSignalDelay(devComm.getRank(), FLAGCX_BLOCK_IDX_X, skew);
+    const int sig =
+        legacySignalId(FlagcxTestFlush, FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+    const bool receives =
+        FLAGCX_BLOCK_IDX_X ==
+        signalOwnerCta(myRank, FLAGCX_GRID_DIM_X, FLAGCX_BLOCK_DIM_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
-    uint64_t s0 = net.readSignal(0);
+    uint64_t s0 = net.readSignal(sig);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
 
     // IPC for intra peers
@@ -688,9 +767,11 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     for (int peer = tid; peer < nRanks; peer += nthreads) {
       if (peer >= intraBase && peer < intraBase + intraSize) continue;
       net.signal(flagcxTeamWorld(devComm), peer,
-                 flagcxDevNet_SignalInc{0}, flagcxCoopThread{});
+                 flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+                 flagcxCoopThread{});
     }
-    net.waitSignal(flagcxCoopBlock{}, 0, s0 + (uint64_t)nInterRanks);
+    if (receives)
+      net.waitSignal(flagcxCoopBlock{}, sig, s0 + (uint64_t)nInterRanks);
     net.flush(flagcxCoopBlock{});
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
@@ -768,16 +849,19 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
-    if (FLAGCX_BLOCK_IDX_X == 0 && FLAGCX_THREAD_IDX_X == 0) {
-      net.resetSignal(0);
-      net.resetSignal(1);
-      net.resetSignal(2);
-      net.resetCounter(0);
-      (void)net.readSignal(0, 32);
-      resultBuf[0] = net.readSignal(0);
-      resultBuf[1] = net.readSignal(1);
-      resultBuf[2] = net.readSignal(2);
-      resultBuf[3] = net.readCounter(0);
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      uint64_t *r = resultBuf + FLAGCX_BLOCK_IDX_X * 4;
+      r[0] = r[1] = r[2] = r[3] = 0;
+      for (int kind = 0; kind < FlagcxTestSignalKinds; ++kind) {
+        const int sig = legacySignalId((FlagcxTestSignalKind)kind,
+                                       FLAGCX_BLOCK_IDX_X, FLAGCX_GRID_DIM_X);
+        net.resetSignal(sig);
+        r[0] |= net.readSignal(sig);
+        r[1] |= net.readSignal(sig, 32);
+        r[2] |= *net.getSignalShadowPtr(sig);
+      }
+      net.resetCounter(FLAGCX_BLOCK_IDX_X);
+      r[3] = net.readCounter(FLAGCX_BLOCK_IDX_X);
     }
     bar.sync(flagcxDeviceMemoryOrderRelaxed);
   } else {
@@ -808,9 +892,10 @@ flagcxResult_t launchKernelNetPutSignalInc(flagcxDevMem_t sendMem,
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
 
-  flagcxInterTestPutSignalIncKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterTestPutSignalIncKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                      FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                      *(hggcStream_t *)stream>>>(
+      sm, rm, count, datatype, dc, flagcxTestHostSignalSkew());
   hggcError_t err = hggcGetLastError();
   if (err != hggcSuccess) {
     return flagcxUnhandledDeviceError;
@@ -826,9 +911,10 @@ flagcxResult_t launchKernelNetPutSignalAdd(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestPutSignalAddDecoupledKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterTestPutSignalAddDecoupledKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                               FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                               *(hggcStream_t *)stream>>>(
+      sm, rm, count, datatype, dc, flagcxTestHostSignalSkew());
   hggcError_t err = hggcGetLastError();
   return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -858,9 +944,10 @@ flagcxResult_t launchKernelNetCounterPipeline(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestCounterPipelineKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc, resultBuf);
+  flagcxInterTestCounterPipelineKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                         FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                         *(hggcStream_t *)stream>>>(
+      sm, rm, count, datatype, dc, resultBuf, flagcxTestHostSignalSkew());
   hggcError_t err = hggcGetLastError();
   return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -872,9 +959,10 @@ flagcxResult_t launchKernelNetPutValue(flagcxDevMem_t recvMem,
   if (!devComm || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem rm(*recvMem);
-  flagcxInterTestPutValueKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(rm, dc, putValBase);
+  flagcxInterTestPutValueKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                  FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                  *(hggcStream_t *)stream>>>(
+      rm, dc, putValBase, flagcxTestHostSignalSkew());
   hggcError_t err = hggcGetLastError();
   return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -883,9 +971,10 @@ flagcxResult_t launchKernelNetSignal(flagcxDevComm_t devComm,
                                          flagcxStream_t stream) {
   if (!devComm) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
-  flagcxInterTestSignalKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(dc);
+  flagcxInterTestSignalKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                *(hggcStream_t *)stream>>>(
+      dc, flagcxTestHostSignalSkew());
   hggcError_t err = hggcGetLastError();
   return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -899,9 +988,10 @@ flagcxResult_t launchKernelNetFlushDecouple(flagcxDevMem_t sendMem,
   if (!devComm || !sendMem || !recvMem) return flagcxInternalError;
   flagcxDevComm dc(*devComm);
   flagcxDevMem sm(*sendMem), rm(*recvMem);
-  flagcxInterTestFlushDecoupleKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(sm, rm, count, datatype, dc);
+  flagcxInterTestFlushDecoupleKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                       FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                       *(hggcStream_t *)stream>>>(
+      sm, rm, count, datatype, dc, flagcxTestHostSignalSkew());
   hggcError_t err = hggcGetLastError();
   return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -1405,7 +1495,8 @@ flagcxResult_t launchKernelTeam(flagcxDevComm_t devComm, int *results,
 // Signal all inter peers, wait for signals from all inter peers, flush.
 // ---------------------------------------------------------------------------
 FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
-    flagcxInterTestWaitSignalFlushKernel(flagcxDevComm devComm) {
+    flagcxInterTestWaitSignalFlushKernel(flagcxDevComm devComm,
+                                         uint64_t *results, unsigned skew) {
   int nRanks = devComm.getSize();
   int myRank = devComm.getRank();
   int intraSize = devComm.getIntraSize();
@@ -1417,42 +1508,74 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(FLAGCX_DEVICE_THREADS_PER_CTA)
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagWorld{}, net, FLAGCX_BLOCK_IDX_X);
 
-    // Reset signal slot 0
-    net.resetSignal(0);
-    uint64_t s0 = net.readSignal(0);
-    bar.sync(flagcxDeviceMemoryOrderRelaxed);
+    const int sig = legacySignalId(FlagcxTestWaitFlush, FLAGCX_BLOCK_IDX_X,
+                                   FLAGCX_GRID_DIM_X);
+    flagcxTestSignalDelay(myRank, FLAGCX_BLOCK_IDX_X, skew);
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      unsigned observed = 0;
+      for (int b = 0; b < FLAGCX_GRID_DIM_X; ++b)
+        if (b != FLAGCX_BLOCK_IDX_X)
+          observed +=
+              atomicAdd((unsigned int *)(results +
+                                         b * kFlagcxTestWaitResultWords + 2),
+                        0u) != 0;
+      results[FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords + 3] = observed;
+    }
+    // The matching remote CTA cannot send until this slot is initialized.
+    if (FLAGCX_THREAD_IDX_X == 0)
+      net.resetSignal(sig);
+    flagcxCoopBlock{}.sync();
+    if (FLAGCX_THREAD_IDX_X == 0)
+      results[FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords] =
+          net.readSignal(sig);
+    bar.sync(flagcxDeviceMemoryOrderAcqRel);
 
     // Signal all inter peers
-    int tid = FLAGCX_THREAD_IDX_X + FLAGCX_BLOCK_IDX_X * FLAGCX_BLOCK_DIM_X;
-    int nthreads = FLAGCX_BLOCK_DIM_X * FLAGCX_GRID_DIM_X;
+    int tid = FLAGCX_THREAD_IDX_X;
+    int nthreads = FLAGCX_BLOCK_DIM_X;
     for (int peer = tid; peer < nRanks; peer += nthreads)
       if (peer < intraBase || peer >= intraBase + intraSize)
         net.signal(flagcxTeamWorld(devComm), peer,
-                   flagcxDevNet_SignalInc{0}, flagcxCoopThread{});
+                   flagcxDevNet_SignalInc{(flagcxDevSignal_t)sig},
+                   flagcxCoopThread{});
 
     // Wait for signals from all inter peers
     if (nInterRanks > 0)
-      net.waitSignal(flagcxCoopBlock{}, 0, s0 + (uint64_t)nInterRanks);
+      net.waitSignal(flagcxCoopBlock{}, sig, (uint64_t)nInterRanks);
 
+    if (FLAGCX_THREAD_IDX_X == 0) {
+      results[FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords + 1] =
+          net.readSignal(sig);
+    }
     // Flush
     net.flush(flagcxCoopBlock{});
 
-    bar.sync(flagcxDeviceMemoryOrderRelaxed);
+    bar.sync(flagcxDeviceMemoryOrderAcqRel);
+    if (FLAGCX_THREAD_IDX_X == 0)
+      atomicAdd(
+          (unsigned int *)(results +
+                           FLAGCX_BLOCK_IDX_X * kFlagcxTestWaitResultWords + 2),
+          1u);
+
   } else {
     flagcxDevNet net(devComm, FLAGCX_BLOCK_IDX_X);
     flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopBlock> bar(
         flagcxCoopBlock(), flagcxTeamTagIntra{}, net, FLAGCX_BLOCK_IDX_X);
-    bar.sync(flagcxDeviceMemoryOrderRelaxed);
+    bar.sync(flagcxDeviceMemoryOrderAcqRel);
   }
 }
 
 flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
-                                              flagcxStream_t stream) {
-  if (!devComm) return flagcxInternalError;
+                                              flagcxStream_t stream,
+                                              uint64_t *results,
+                                              unsigned skew) {
+  if (!devComm || !results)
+    return flagcxInternalError;
   flagcxDevComm dc(*devComm);
-  flagcxInterTestWaitSignalFlushKernel
-      <<<FLAGCX_DEVICE_CTA_COUNT, FLAGCX_DEVICE_THREADS_PER_CTA, 0,
-         *(hggcStream_t *)stream>>>(dc);
+  flagcxInterTestWaitSignalFlushKernel<<<FLAGCX_DEVICE_CTA_COUNT,
+                                         FLAGCX_DEVICE_THREADS_PER_CTA, 0,
+                                         *(hggcStream_t *)stream>>>(dc, results,
+                                                                    skew);
   hggcError_t err = hggcGetLastError();
   return err == hggcSuccess ? flagcxSuccess : flagcxUnhandledDeviceError;
 }
@@ -1552,6 +1675,7 @@ FLAGCX_GLOBAL_DECORATOR void __launch_bounds__(1)
   flagcxDevNet net(devComm, 0);
   results[0] = (devComm.getContextCount() > 0) ? 1 : 0;
   results[1] = devComm.getIntraSize();
+  results[2] = devComm.getContextCount();
 }
 
 flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,

@@ -9,6 +9,7 @@
 #ifndef TEST_KERNEL_DEVICE_API_H_
 #define TEST_KERNEL_DEVICE_API_H_
 
+#include "device_signal_test_layout.h"
 #include "flagcx_kernel.h"
 
 // Intra-node AllReduce using FlagCX Device API.
@@ -185,9 +186,11 @@ flagcxResult_t launchKernelTeam(flagcxDevComm_t devComm, int *results,
 flagcxResult_t launchKernelNetGetFromComm(flagcxDevComm_t devComm, int *results,
                                           flagcxStream_t stream);
 
-// K11: WaitSignal + Flush (standalone) — signal + waitSignal + flush
+// K11: per-CTA reset/signal/wait/flush. Each CTA writes four uint64_t
+// results: reset value, final value, execution marker, observed completed CTAs.
 flagcxResult_t launchKernelNetWaitSignalFlush(flagcxDevComm_t devComm,
-                                              flagcxStream_t stream);
+                                              flagcxStream_t stream,
+                                              uint64_t *results, unsigned skew);
 
 // K12: Inter Barrier — inter-node barrier stress test
 flagcxResult_t launchKernelInterBarrier(flagcxDevComm_t devComm, int *results,
