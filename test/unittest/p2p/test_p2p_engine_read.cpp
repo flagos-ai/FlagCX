@@ -49,7 +49,7 @@ bool gpuReadVisibilityUnavailable() {
 }
 
 bool usesCannAdaptor() {
-  return deviceAdaptor != nullptr && deviceAdaptor->name != nullptr &&
+  return deviceAdaptor != nullptr &&
          std::strcmp(deviceAdaptor->name, "CANN") == 0;
 }
 

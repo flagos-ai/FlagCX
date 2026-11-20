@@ -1,6 +1,10 @@
 import json
 import subprocess
 import unittest
+import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -10,6 +14,117 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PpuCiRegressionTest(unittest.TestCase):
+    def test_legacy_unit_skip_keeps_other_p2p_phases_and_failures(self):
+        source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        case = source[source.index('    p2p)\n'):source.index('    rma)\n')]
+        helpers = source[source.index('flagcx_ci_report_skipped_suite() {'):
+                         source.index('\nif [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]]')]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recorder = root / 'record'
+            recorder.write_text('''#!/usr/bin/env python3
+import json, os, sys
+label = os.getenv('FLAGCX_CI_MPI_LABEL', os.getenv('FLAGCX_CI_TEST_LABEL', 'build'))
+with open(os.environ['CAPTURE'], 'a') as out:
+    out.write(json.dumps(label) + '\\n')
+sys.exit(17 if label == os.getenv('FAIL_LABEL') else 0)
+''')
+            recorder.chmod(0o755)
+            harness = '''set -euo pipefail
+source "$1"
+PROJECT_ROOT=$2
+SUITE=p2p
+suite_dir=/fake/p2p
+args=(TEST_ONLY=1)
+TEST_RUNNER=$3
+MPI_RUNNER=/fake/mpi
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}
+nproc() { echo 2; }
+make() { "$TEST_RUNNER" "$@"; }
+''' + helpers + '''
+run_suite() {
+  case "$SUITE" in
+''' + case + '''  esac
+}
+run_suite
+'''
+            legacy = 'p2p unit tests'
+            phases = ['p2p Engine WRITE MPI tests', 'p2p shared-engine unit tests',
+                      'p2p shared-engine WRITE MPI tests']
+            for platform in ('ppu', 'cuda', 'hygon'):
+                for failure in ('', legacy, phases[1], phases[2]):
+                    with self.subTest(platform=platform, failure=failure):
+                        capture = root / 'calls'
+                        capture.write_text('')
+                        result = subprocess.run(
+                            ['bash', '-c', harness, 'bash',
+                             str(REPO_ROOT / f'.github/scripts/set_env/{platform}.sh'),
+                             str(REPO_ROOT), str(recorder)],
+                            env={**os.environ, 'CAPTURE': str(capture),
+                                 'FAIL_LABEL': failure, 'MPI_HOME': '/fake/mpi'},
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        labels = [json.loads(line) for line in capture.read_text().splitlines()]
+                        expected_failure = bool(failure) and not (platform == 'ppu' and failure == legacy)
+                        self.assertEqual(result.returncode, int(expected_failure), result.stderr)
+                        self.assertEqual(legacy in labels, platform != 'ppu')
+                        for label in phases:
+                            self.assertIn(label, labels)
+                        self.assertEqual('SKIPPED p2p/p2p-legacy-unit' in result.stdout,
+                                         platform == 'ppu')
+
+    def test_runner_uses_builtin_kernels_for_all_operations_and_preserves_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake = root / "runner"
+            fake.write_text(r"""#!/usr/bin/env python3
+import json, os, sys
+
+args = sys.argv[1:]
+label = os.environ.get("FLAGCX_CI_MPI_LABEL", os.environ.get("FLAGCX_CI_TEST_LABEL"))
+assert os.environ["PCCL_ENABLE_EXT_KERNEL"] == "0"
+assert os.environ["GTEST_FILTER"] == "*-CoverageSupplemental.*"
+if args[0] != "make":
+    exports = dict(arg.split("=", 1) for i, arg in enumerate(args)
+                   if i > 0 and args[i - 1] == "-x")
+    assert exports["PCCL_ENABLE_EXT_KERNEL"] == "0"
+    assert "./build/bin/runner_mpi_tests" in args
+    if label == "runner PPU PXN four-rank":
+        assert args[-1] == "--gtest_filter=FlagCXCollTest.SendRecv:FlagCXCollTest.AllReduce:FlagCXCollTest.AlltoAll"
+    else:
+        assert not any("gtest_filter" in arg for arg in args)
+with open(os.environ["CALL_LOG"], "a") as out:
+    out.write(json.dumps({"label": label, "args": args}) + "\n")
+if label == os.environ["FAIL_LABEL"]:
+    sys.exit(139)
+""")
+            fake.chmod(0o755)
+            for failure in ("none", "runner unit tests", "runner default",
+                            "runner PPU PXN four-rank"):
+                with self.subTest(failure=failure):
+                    calls = root / (failure.replace(" ", "-") + ".jsonl")
+                    env = dict(os.environ, TEST_RUNNER=str(fake), MPI_RUNNER=str(fake),
+                               CALL_LOG=str(calls), FAIL_LABEL=failure,
+                               MPI_HOME=str(root / "mpi-home"), PROJECT_ROOT=str(REPO_ROOT),
+                               FLAGCX_CI_ENABLE_PXN="1", PCCL_ENABLE_EXT_KERNEL="1",
+                               NCCL_ENABLE_EXT_KERNEL="1", GTEST_FILTER="FlagCXCollTest.AllReduce")
+                    result = subprocess.run([
+                        "bash", "-euc",
+                        'source "$1"; flagcx_ci_run_suite_override runner "$2" '
+                        'USE_PPU=1 USE_ACCL_BAREX=1',
+                        "bash", str(REPO_ROOT / ".github/scripts/set_env/ppu.sh"), str(root),
+                    ], env=env, text=True, capture_output=True)
+                    self.assertEqual(result.returncode, 0 if failure == "none" else 1,
+                                     result.stdout + result.stderr)
+                    invoked = [json.loads(line) for line in calls.read_text().splitlines()]
+                    self.assertEqual([case["label"] for case in invoked], [
+                        "runner unit tests", "runner default",
+                        "runner BAREX heterogeneous",
+                        "runner BAREX forced NET", "runner PPU PXN four-rank",
+                    ])
+                    self.assertEqual([case["args"][1] for case in invoked[1:]],
+                                     ["4", "4", "4", "4"])
+
     def test_barex_main_adaptor_exposes_runtime_multichannel_transport(self):
         barex = (
             REPO_ROOT / "flagcx/adaptor/net/barex_adaptor.cc"
@@ -197,19 +312,19 @@ class PpuCiRegressionTest(unittest.TestCase):
         ).read_text()
 
         self.assertNotIn("Skipping PPU runner heterogeneous", source)
-        self.assertIn("runner BAREX heterogeneous SendRecv smoke", source)
+        self.assertNotIn("runner BAREX heterogeneous two-rank", source)
         self.assertIn("runner BAREX heterogeneous", source)
         self.assertIn("runner BAREX forced NET", source)
         self.assertGreaterEqual(source.count("FLAGCX_P2P_TRANSPORT=accl"), 3)
         self.assertNotIn("NCCL_P2P_DISABLE", source)
         self.assertNotIn("NCCL_SHM_DISABLE", source)
-        self.assertEqual(source.count("FLAGCX_USE_HETERO_COMM=1"), 1)
+        self.assertEqual(source.count("FLAGCX_USE_HETERO_COMM=1"), 0)
         self.assertIn("FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO", source)
         self.assertGreaterEqual(
             source.count("FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID"), 3
         )
         self.assertGreaterEqual(
-            source.count("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P"), 2
+            source.count("FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P"), 1
         )
         self.assertIn("FLAGCX_CI_EXPECT_PEER_TRANSPORT=NET", source)
         self.assertIn("FLAGCX_CI_EXPECT_COLL_MULTICHANNEL=1", source)

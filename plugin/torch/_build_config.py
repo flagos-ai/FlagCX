@@ -428,9 +428,18 @@ def get_device_config(adaptor_flag, torch_backend=None):
         ]
         libs += [f":{c_so_basename}", "tangrt_shared"]
     elif adaptor_flag == "-DUSE_PPU_ADAPTOR":
-        include_dirs += ["/usr/local/cuda/include"]
-        library_dirs += ["/usr/local/cuda/lib64"]
-        libs += ["cuda", "cudart", "c10_cuda", "torch_cuda"]
+        device_home = os.environ.get("DEVICE_HOME") or "/usr/local/PPU_SDK"
+        ccl_home = os.environ.get("CCL_HOME") or "/usr/local/PPU_SDK"
+        # Only Torch needs the SDK's CUDA compatibility layer.
+        compatibility = os.path.join(device_home, "CUDA_SDK")
+        include_dirs += [os.path.join(device_home, "include"),
+                         os.path.join(compatibility, "include")]
+        library_dirs += [os.path.join(device_home, "lib"),
+                         os.path.join(compatibility, "lib64")]
+        if ccl_home != device_home:
+            include_dirs += [os.path.join(ccl_home, "include")]
+            library_dirs += [os.path.join(ccl_home, "lib")]
+        libs += ["hggc_wrapper", "hg_wrapper", "cuda", "cudart", "c10_cuda", "torch_cuda"]
 
     return include_dirs, library_dirs, libs
 

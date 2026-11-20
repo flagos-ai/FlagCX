@@ -1176,9 +1176,9 @@ static flagcxResult_t cannAdaptorGetPointerType(const void *ptr, int *ptrType) {
     return flagcxUnhandledDeviceError;
   }
 
-  switch (attrs.location.type) {
+  switch ((int)attrs.location.type) {
     case ACL_MEM_LOCATION_TYPE_DEVICE:
-    case static_cast<aclrtMemLocationType>(3):
+    case 3:
       // Some CANN headers omit the MANAGED enumerator, but imported IPC
       // device pointers report location type 3 on the target runtime.
       *ptrType = FLAGCX_PTR_CUDA;

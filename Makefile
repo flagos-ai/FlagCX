@@ -89,7 +89,7 @@ ifeq ($(strip $(DEVICE_HOME)),)
 	else ifeq ($(USE_SUNRISE), 1)
 		DEVICE_HOME = /usr/local/tangrt
 	else ifeq ($(USE_PPU), 1)
-		DEVICE_HOME = /usr/local/cuda
+		DEVICE_HOME = /usr/local/PPU_SDK
 	else
 		DEVICE_HOME = /usr/local/cuda
 	endif
@@ -121,7 +121,7 @@ ifeq ($(strip $(CCL_HOME)),)
 	else ifeq ($(USE_SUNRISE), 1)
 		CCL_HOME = /usr/local/pccl
 	else ifeq ($(USE_PPU), 1)
-		CCL_HOME = /usr/local/cuda
+		CCL_HOME = /usr/local/PPU_SDK
 	else
 		CCL_HOME = /usr/local/nccl/build
 	endif
@@ -413,6 +413,23 @@ $(BUILD_CONFIG_FILE):
 
 $(LIBOBJ) $(DEVOBJ): $(BUILD_CONFIG_FILE)
 
+ifeq ($(USE_PPU), 1)
+HGGC_FEATURE_HEADER := $(BUILD_INCDIR)/hggc_sdk_features.h
+HGGC_SDK_PROBE_INPUTS := $(wildcard $(DEVICE_HOME)/include/hggc*.h \
+    $(DEVICE_LIB)/libhggc_wrapper.so* $(DEVICE_LIB)/libhg_wrapper.so* \
+    $(CCL_INCLUDE)/pccl.h $(CCL_LIB)/libpccl.so*)
+$(HGGC_FEATURE_HEADER): tools/probe_hggc_sdk.py $(BUILD_CONFIG_FILE) $(HGGC_SDK_PROBE_INPUTS)
+	@mkdir -p $(BUILD_INCDIR)
+	@python3 $< --cxx "$(HOST_COMPILER)" \
+		$(foreach dir,$(DEVICE_INCLUDE),--include "$(dir)") \
+		--include "$(CCL_INCLUDE)" --library "$(DEVICE_LIB)" \
+		--library "$(CCL_LIB)" --output "$@"
+PPU_NATIVE_HOST_OBJECTS := $(OBJDIR)/flagcx/adaptor/device/hggc_adaptor.o \
+    $(OBJDIR)/flagcx/core/flagcx_p2p_accl.o
+$(PPU_NATIVE_HOST_OBJECTS): $(HGGC_FEATURE_HEADER)
+INCLUDEDIR += $(BUILD_INCDIR)
+endif
+
 TARGET = libflagcx.so
 all: $(LIBDIR)/$(TARGET) $(BUILD_PUBLIC_HEADERS)
 
@@ -555,7 +572,7 @@ endif
 $(OBJDIR)/%.o: %.$(DEVICE_FILE_EXTENSION)
 	@mkdir -p `dirname $@`
 	@echo "Compiling $@ ($(DEVICE_PLATFORM))"
-	@$(DEVICE_COMPILER) $< -o $@ $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) -g
+	@$(DEVICE_COMPILER) $(DEVICE_COMPILE_FLAG) $(COMPILE_KERNEL_FLAG) $(foreach dir,$(INCLUDEDIR),-I$(dir)) -I$(CCL_INCLUDE) $(addprefix -I,$(DEVICE_INCLUDE)) -I$(HOST_CCL_INCLUDE) -I$(UCX_INCLUDE) $(SHCA_INCLUDE_FLAG) $(ADAPTOR_FLAG) $(HOST_CCL_ADAPTOR_FLAG) $(NET_ADAPTOR_FLAG) -g $< -o $@
 endif
 
 ifeq ($(COMPILE_KERNEL), 1)

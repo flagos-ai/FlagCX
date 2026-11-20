@@ -937,7 +937,7 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
             resources->buffers[0] + (flagcxNetChunkSize * step);
         TRACE(FLAGCX_NET,
               "NET proxy send rank=%d peer=%d channel=%d op_id=%d "
-              "stage=copy-enter chunk=%d slot=%d src=%p dst=%p bytes=%zu "
+              "stage=copy-enter chunk=%d slot=%d src=%p dst=%p bytes=%d "
               "stream=%p",
               resources->commPtr == NULL ? resources->tpRank
                                          : resources->commPtr->rank,
@@ -1059,7 +1059,7 @@ flagcxResult_t flagcxProxySend(sendNetResources *resources, void *data,
         flagcxResult_t sendRes;
         TRACE(FLAGCX_NET,
               "NET proxy send rank=%d peer=%d channel=%d op_id=%d "
-              "stage=isend-enter chunk=%d slot=%d src=%p bytes=%zu",
+              "stage=isend-enter chunk=%d slot=%d src=%p bytes=%d",
               resources->commPtr == NULL ? resources->tpRank
                                          : resources->commPtr->rank,
               resources->tpRemoteRank, resources->channelId, args->opId,
@@ -1389,7 +1389,7 @@ flagcxResult_t flagcxProxyRecv(recvNetResources *resources, void *data,
                   : flagcxMemcpyHostToDevice;
           TRACE(FLAGCX_NET,
                 "NET proxy recv rank=%d peer=%d channel=%d op_id=%d "
-                "stage=copy-enter chunk=%d slot=%d src=%p dst=%p bytes=%zu "
+                "stage=copy-enter chunk=%d slot=%d src=%p dst=%p bytes=%d "
                 "stream=%p",
                 resources->commPtr == NULL ? resources->tpRank
                                            : resources->commPtr->rank,

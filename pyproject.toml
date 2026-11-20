@@ -4,6 +4,6 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flagcx"
-dynamic = ["version"]
+dynamic = ["version", "entry-points"]
 description = "FlagCX: A unified collective communication library"
 requires-python = ">=3.8"

@@ -1239,8 +1239,9 @@ void checkDevMemLifecycle(flagcxWindow_t window) {
             flagcxSuccess);
   ASSERT_NE(devMem, nullptr);
   EXPECT_EQ(comm.activeDevMems, devMem);
-  if (window != nullptr)
+  if (window != nullptr) {
     EXPECT_EQ(window->devMemRefs, 1u);
+  }
   EXPECT_EQ(devMemLifecycleCalls.createCount, 1);
   EXPECT_EQ(devMemLifecycleCalls.createComm, &comm);
   EXPECT_EQ(devMemLifecycleCalls.buffer, buffer);
@@ -1260,13 +1261,15 @@ void checkDevMemLifecycle(flagcxWindow_t window) {
   EXPECT_EQ(comm.activeDevMems, devMem);
   EXPECT_FALSE(devMem->backendDestroyed);
   EXPECT_EQ(devMem->rawPtr, buffer);
-  if (window != nullptr)
+  if (window != nullptr) {
     EXPECT_EQ(window->devMemRefs, 1u);
+  }
 
   EXPECT_EQ(flagcxDevMemDestroy(&comm, devMem), flagcxSuccess);
   EXPECT_EQ(comm.activeDevMems, nullptr);
-  if (window != nullptr)
+  if (window != nullptr) {
     EXPECT_EQ(window->devMemRefs, 0u);
+  }
   EXPECT_EQ(devMemLifecycleCalls.destroyCount, 1);
   EXPECT_EQ(devMemLifecycleCalls.destroyComm, &comm);
   EXPECT_EQ(devMemLifecycleCalls.destroyedHandle, devMem);

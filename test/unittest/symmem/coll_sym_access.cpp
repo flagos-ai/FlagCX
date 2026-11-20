@@ -614,8 +614,9 @@ TEST_F(SymMemTest, LsaMulticastUnbindFailureRetainsWindowForRetry) {
   EXPECT_EQ(result, injectFailure ? flagcxUnhandledDeviceError : flagcxSuccess);
   if (injectFailure) {
     EXPECT_NE(window->defaultBase, nullptr);
-    if (window->defaultBase != nullptr)
+    if (window->defaultBase != nullptr) {
       EXPECT_TRUE(window->defaultBase->mcLsaBound);
+    }
   } else {
     EXPECT_EQ(window->defaultBase, nullptr);
   }

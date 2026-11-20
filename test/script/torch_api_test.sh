@@ -59,6 +59,7 @@ readonly HETERO_SKIP_OPS=${FLAGCX_TORCH_HETERO_SKIP_OPS:-${torch_hetero_ignored_
 # turning the first, homogeneous invocation into a heterogeneous one.
 MODE_ENV=(
     env
+    -u UCX_HOME
     -u FLAGCX_USE_HOST_COMM
     -u FLAGCX_USE_HETERO_COMM
     -u FLAGCX_CLUSTER_SPLIT_LIST
