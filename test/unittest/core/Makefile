@@ -1,4 +1,5 @@
 include ../../make.inc
+.DEFAULT_GOAL := all
 
 # Local include directory for core test fixtures
 LOCAL_INCLUDE := -I$(abspath include)
@@ -7,6 +8,15 @@ LOCAL_INCLUDE := -I$(abspath include)
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)
 UNIT_TARGET := $(BINDIR)/core_unit_tests
+
+# Host-only v1 plugin verifies cleanup reference ownership through the real loader.
+HANDLE_CCL_PLUGIN := $(abspath $(OBJDIR))/libflagcx-handle-owner-test.so
+$(OBJDIR)/test_device_handle_lifecycle.o: CXXFLAGS += -DFLAGCX_TEST_HANDLE_CCL_PLUGIN='"$(HANDLE_CCL_PLUGIN)"'
+$(OBJDIR)/test_device_handle_lifecycle.o: $(HANDLE_CCL_PLUGIN)
+
+$(HANDLE_CCL_PLUGIN): fixtures/handle_owner_ccl_plugin.cpp
+	@mkdir -p $(dir $@)
+	@$(CXX) -std=c++17 -shared -fPIC $< -o $@ $(FLAGCX_INCLUDES)
 
 # [mpi] tests: coll_*.cpp + main_mpi.cpp — requires MPI + GPUs
 MPI_SRCS   := $(wildcard coll_*.cpp) main_mpi.cpp

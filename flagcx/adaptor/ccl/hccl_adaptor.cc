@@ -112,16 +112,17 @@ flagcxResult_t hcclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 // TODO: unsupported
-flagcxResult_t hcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return flagcxUnhandledDeviceError;
-}
+// This SDK has no separate native Finalize. Close native state in the final
+// vendor phase; retain the wrapper until local Destroy.
+#define FLAGCX_COMPAT_FINALIZE hcclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY hcclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
+  (flagcxResult_t) h2f_ret_map[HcclCommDestroy((comm)->base)]
+#include "compat_comm_lifecycle.h"
 
-flagcxResult_t hcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)h2f_ret_map[HcclCommDestroy(comm->base)];
-}
-
-// TODO: unsupported
 flagcxResult_t hcclAdaptorCommAbort(flagcxInnerComm_t comm) {
+  if (comm != NULL && comm->base == NULL)
+    return flagcxSuccess;
   return flagcxNotSupported;
 }
 
@@ -456,6 +457,6 @@ struct flagcxCCLAdaptor hcclAdaptor = {
     hcclAdaptorGroupStart, hcclAdaptorGroupEnd,
     // Device API
     hcclAdaptorDevCommReqsInit, hcclAdaptorDevCommCreate,
-    hcclAdaptorDevCommDestroy};
+    hcclAdaptorDevCommDestroy, flagcxCclFinalizeWorld};
 
 #endif // USE_ASCEND_ADAPTOR
