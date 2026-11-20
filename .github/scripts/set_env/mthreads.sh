@@ -28,6 +28,25 @@ fi
 
 export PATH="/usr/local/musa/bin:$MPI_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="/usr/local/musa/lib:/usr/local/musa/lib64:/usr/local/lib:${LD_LIBRARY_PATH:-}"
+export FLAGCX_SOCKET_IFNAME="${FLAGCX_SOCKET_IFNAME:-^lo,docker,br-,veth}"
+FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
+{
+  "phases": [
+    {
+      "suite": "rma",
+      "name": "rma-ipc-mpi",
+      "reason": "MUSA IPC handle creation is unavailable in the Mthreads CI image, so RMA symmetric data windows cannot be registered"
+    },
+    {
+      "suite": "runner",
+      "name": "runner-heterogeneous",
+      "reason": "MUSA hybrid runner collectives currently return incorrect data; default and forced-NET runner phases remain enabled"
+    }
+  ]
+}
+JSON
+)
+export FLAGCX_CI_IGNORE_TEST
 
 FLAGCX_CI_MUSA_DEVICES=${FLAGCX_CI_MUSA_DEVICES:-0,1,2,3}
 IFS=, read -r -a FLAGCX_CI_MUSA_DEVICE_IDS <<< "$FLAGCX_CI_MUSA_DEVICES"

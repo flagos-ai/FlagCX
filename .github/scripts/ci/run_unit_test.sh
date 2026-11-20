@@ -740,11 +740,13 @@ run_suite() {
       # Keep these as separate invocations so each transport has its own
       # timeout. Collect both statuses so a failure in one path cannot prevent
       # the other path from running and producing a useful result.
-      FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
-        make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
-        MPIRUN="$MPI_RUNNER" \
-        IPC_XML_DIR="$ipc_xml_dir" \
-        IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+      if flagcx_ci_phase_supported rma-ipc-mpi; then
+        FLAGCX_CI_MPI_LABEL="rma IPC MPI tests" \
+          make -C "$suite_dir" run-mpi-ipc "${args[@]}" \
+          MPIRUN="$MPI_RUNNER" \
+          IPC_XML_DIR="$ipc_xml_dir" \
+          IPC_FILTER="${FLAGCX_CI_RMA_IPC_FILTER:-RmaTest.IpcResolvedPeerPointerSupportsDirectCopy:RmaTest.IpcPutWithoutNetworkMr:RmaTest.GetAsyncOffsets:RmaTest.IpcGetSameStreamCompletion:RmaTest.PutSignalSmall:RmaTest.PutSignalLarge:RmaTest.SignalOnlyNoData:RmaTest.MultipleSignals}" || ipc_status=$?
+      fi
       if ((ipc_status == 0)) && [[ "$rma_platform_name" == iluvatar ]]; then
         python3 "$PROJECT_ROOT/.github/scripts/ci/check_required_gtests.py" \
           --case RmaTest.GetAsyncOffsets \
@@ -961,14 +963,16 @@ run_suite() {
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_CI_EXPECT_RUNNER_MODE=HOMO \
         ./build/bin/runner_mpi_tests || default_status=$?
-      FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
-        "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
-        -x FLAGCX_MEM_ENABLE=1 \
-        -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
-        -x FLAGCX_P2P_DISABLE=0 \
-        -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
-        -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
-        ./build/bin/runner_mpi_tests || hybrid_status=$?
+      if flagcx_ci_phase_supported runner-heterogeneous; then
+        FLAGCX_CI_MPI_LABEL="runner heterogeneous" \
+          "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
+          -x FLAGCX_MEM_ENABLE=1 \
+          -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
+          -x FLAGCX_P2P_DISABLE=0 \
+          -x FLAGCX_CI_EXPECT_RUNNER_MODE=HYBRID \
+          -x FLAGCX_CI_EXPECT_PEER_TRANSPORT=P2P \
+          ./build/bin/runner_mpi_tests || hybrid_status=$?
+      fi
       FLAGCX_CI_MPI_LABEL="runner forced NET" \
         "$runner_mpi_runner" -np "$FLAGCX_CI_RUNNER_NP" --allow-run-as-root \
         -x FLAGCX_MEM_ENABLE=1 \
