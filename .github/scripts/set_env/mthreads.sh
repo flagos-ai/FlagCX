@@ -33,6 +33,11 @@ FLAGCX_CI_IGNORE_TEST=$(cat <<'JSON'
 {
   "phases": [
     {
+      "suite": "p2p",
+      "name": "p2p-write-mpi",
+      "reason": "MUSA GPU buffer classification and registration for P2P WRITE MPI are unavailable in the Mthreads CI image"
+    },
+    {
       "suite": "rma",
       "name": "rma-ipc-mpi",
       "reason": "MUSA IPC handle creation is unavailable in the Mthreads CI image, so RMA symmetric data windows cannot be registered"
