@@ -33,6 +33,16 @@
 #include <musa_fp16.h>
 #endif
 
+// The trap sites in the shared headers cannot be spelled on MUSA: mcc's
+// device backend fails to select __trap() (probes on SDK 4.3.5 and 5.2.0
+// both die with "Cannot select: ExternalSymbol 'abort'") and
+// __builtin_trap() degrades to the same missing abort symbol. The shared
+// trap sites are "this cannot happen" guards, so neutralize them the same
+// way the Ascend branch does — noreturn, no symbol, no code emitted.
+#include "device_utils.h"
+#undef FLAGCX_DEVICE_TRAP
+#define FLAGCX_DEVICE_TRAP() __builtin_unreachable()
+
 struct MusaPlatform {};
 
 template <>
