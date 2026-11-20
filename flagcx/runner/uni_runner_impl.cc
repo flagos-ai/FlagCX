@@ -221,7 +221,7 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
       numChannels > std::numeric_limits<size_t>::max() /
                         sizeof(flagcxRingChannelProgress))
     return flagcxInvalidArgument;
-  comm->internalBuffersNeedPeerClose = true;
+  FLAGCXCHECK(flagcxCommRequireIpcClose(comm, 1));
   if (runnerState->ipcRingCleanupPending) {
     flagcxResult_t local = closeUniRunnerIpcRingResources(runnerState, comm);
     flagcxResult_t common = flagcxSuccess;
@@ -1380,14 +1380,21 @@ ensureRedCompletionCounterCapacity(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
+static flagcxComm_t uniRunnerLifetimeOwner(flagcxUniRunnerState *state) {
+  return state->lifetimeOwner != NULL ? state->lifetimeOwner : state->ipcOwner;
+}
+
 static flagcxResult_t
 destroyRedCompletionCounterPool(flagcxUniRunnerState *runnerState) {
   if (runnerState == NULL) {
     return flagcxSuccess;
   }
   if (runnerState->redCompletionCountersPool != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(
-        runnerState->redCompletionCountersPool, flagcxMemDevice, NULL));
+    flagcxResult_t release = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState),
+        runnerState->redCompletionCountersPool, flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     runnerState->redCompletionCountersPool = NULL;
   }
   runnerState->redCompletionCountersCapacity = 0;
@@ -1447,8 +1454,11 @@ destroyStreamFlagQueue(flagcxUniRunnerState *runnerState) {
   }
 
   if (runnerState->streamFlagsPool != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->streamFlagsPool,
-                                          flagcxMemDevice, NULL));
+    flagcxResult_t release = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState), runnerState->streamFlagsPool,
+        flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     runnerState->streamFlagsPool = NULL;
   }
 
@@ -5124,8 +5134,8 @@ static flagcxResult_t launchP2pOps(flagcxUniRunnerState *runnerState,
   return launchHostDagNode(runnerState, comm, current);
 }
 
-static flagcxResult_t submitStaticHostDag(flagcxUniRunnerState *runnerState,
-                                          flagcxHeteroComm_t comm) {
+flagcxResult_t flagcxUniRunnerSubmitHostDag(flagcxUniRunnerState *runnerState,
+                                            flagcxHeteroComm_t comm) {
   for (size_t topoSlot = 0; topoSlot < runnerState->dagPlan.numNodes;
        ++topoSlot) {
     const int nodeIdx = runnerState->dagPlan.topoOrder[topoSlot];
@@ -5374,7 +5384,7 @@ closeUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
 flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                               flagcxComm_t comm,
                                               size_t requiredSlots) {
-  comm->internalBuffersNeedPeerClose = true;
+  FLAGCXCHECK(flagcxCommRequireIpcClose(comm, 1));
   if (runnerState->ipcReadyCleanupPending) {
     bool allIgnoredReuse = false;
     flagcxResult_t local = closeUniRunnerIpcReadyStorage(runnerState, comm);
@@ -5645,7 +5655,8 @@ static flagcxResult_t processReadyQueue(flagcxUniRunnerState *runnerState,
   return flagcxSuccess;
 }
 
-flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+static flagcxResult_t initUniRunnerImpl(flagcxComm_t comm,
+                                        flagcxStream_t stream) {
   if (!comm->uniRunnerKernelSupported)
     return flagcxNotSupported;
   flagcxHeteroComm_t hcomm = comm->heteroComm;
@@ -5683,6 +5694,8 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
     WARN("UniRunner invocation-local state was not fully cleaned before init");
     return flagcxInvalidUsage;
   }
+  runnerState->lifetimeOwner = comm;
+  runnerState->borrowedStreamDrained = 0;
   runnerState->dagNodes = NULL;
   runnerState->numDagNodes = 0;
   runnerState->dagPlan.topoOrder = NULL;
@@ -5778,7 +5791,90 @@ flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
   return flagcxSuccess;
 }
 
-flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
+flagcxResult_t initUniRunner(flagcxComm_t comm, flagcxStream_t stream) {
+  if (comm == NULL || comm->heteroComm == NULL ||
+      comm->heteroComm->proxyState == NULL)
+    return flagcxInvalidArgument;
+  if (!comm->uniRunnerKernelSupported)
+    return flagcxNotSupported;
+  auto *state = &comm->heteroComm->proxyState->uniRunnerState;
+  if (state->borrowedStreamWork != NULL)
+    return flagcxInvalidUsage;
+  // Allocate the marker before any invocation GPU work. Its original API
+  // cleanup will record the boundary; deferred cleanup may only wait for it.
+  flagcxResult_t prepared = flagcxWorkPrepare(&comm->submittedWork, stream, 0,
+                                              &state->borrowedStreamWork);
+  if (prepared != flagcxSuccess)
+    return prepared;
+  flagcxWorkRetain(state->borrowedStreamWork);
+  flagcxResult_t result = initUniRunnerImpl(comm, stream);
+  if (result != flagcxSuccess) {
+    (void)flagcxWorkFinish(state->borrowedStreamWork, stream, result,
+                           flagcxWorkNativeGroup, 0);
+    flagcxResult_t cleanup = flagcxWorkWaitRecord(state->borrowedStreamWork);
+    if (cleanup != flagcxSuccess)
+      return cleanup;
+    flagcxWorkDrop(state->borrowedStreamWork);
+    state->borrowedStreamWork = NULL;
+  }
+  return result;
+}
+
+flagcxResult_t flagcxUniRunnerDrainWork(flagcxComm_t comm,
+                                        bool atSubmissionBoundary) {
+  if (comm == NULL || comm->heteroComm == NULL ||
+      comm->heteroComm->proxyState == NULL)
+    return flagcxSuccess;
+  flagcxUniRunnerState *state = &comm->heteroComm->proxyState->uniRunnerState;
+  // ipcCommStream is borrowed from the caller; never synchronize its later
+  // tail during Finalize/recovery. Capture a fence at the original API
+  // boundary.
+  if (state->borrowedStreamWork != NULL ||
+      (state->ipcCommStream != NULL && !state->borrowedStreamDrained)) {
+    if (state->borrowedStreamWork == NULL)
+      return flagcxInvalidUsage;
+    pthread_mutex_lock(&state->borrowedStreamWork->owner->mutex);
+    int preparing = state->borrowedStreamWork->state == flagcxWorkPreparing;
+    pthread_mutex_unlock(&state->borrowedStreamWork->owner->mutex);
+    if (preparing) {
+      if (!atSubmissionBoundary)
+        return flagcxInvalidUsage;
+      flagcxResult_t recorded =
+          flagcxWorkFinish(state->borrowedStreamWork, state->ipcCommStream,
+                           flagcxSuccess, flagcxWorkNativeGroup, 0);
+      if (recorded != flagcxSuccess)
+        return recorded;
+    }
+    flagcxResult_t waited = flagcxWorkWaitRecord(state->borrowedStreamWork);
+    if (waited != flagcxSuccess)
+      return waited;
+    flagcxWorkDrop(state->borrowedStreamWork);
+    state->borrowedStreamWork = NULL;
+    state->borrowedStreamDrained = 1;
+  }
+  // These streams are allocated by this runner invocation, not by its caller.
+  flagcxStream_t streams[] = {state->redStream, state->cpyStream,
+                              state->netCommStream};
+  for (unsigned i = 0; i < sizeof(streams) / sizeof(streams[0]); i++) {
+    if (streams[i] != NULL) {
+      flagcxResult_t result = deviceAdaptor->streamSynchronize(streams[i]);
+      if (result != flagcxSuccess)
+        return result;
+    }
+  }
+  return flagcxSuccess;
+}
+
+static flagcxResult_t releaseUniRunnerFifo(flagcxComm_t comm,
+                                           flagcxFifo_t fifo) {
+  flagcxResult_t result =
+      flagcxCommReleaseBuffer(comm, fifo->buffer, flagcxInternalBufferHost);
+  if (result == flagcxSuccess)
+    fifo->buffer = NULL;
+  return result;
+}
+
+flagcxResult_t cleanupUniRunner(flagcxComm_t comm, bool atSubmissionBoundary) {
   if (comm == nullptr || comm->heteroComm == nullptr ||
       comm->heteroComm->proxyState == nullptr)
     return flagcxInvalidArgument;
@@ -5789,20 +5885,7 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
                                    state->ipcOutputMem == NULL;
   flagcxResult_t result = flagcxSuccess;
 
-  // Stream work may still reference completion flags and invocation buffers.
-  // If a stream cannot be drained, retain all resources for a later retry.
-  if (state->redStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->redStream), &result);
-  if (state->cpyStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->cpyStream), &result);
-  if (state->ipcCommStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->ipcCommStream), &result);
-  if (state->netCommStream != nullptr)
-    flagcxRunnerRecordFirstError(
-        deviceAdaptor->streamSynchronize(state->netCommStream), &result);
+  result = flagcxUniRunnerDrainWork(comm, atSubmissionBoundary);
   if (result != flagcxSuccess)
     return result;
 
@@ -5861,7 +5944,7 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   state->ipcCommStream = nullptr;
 
   if (state->fifo != nullptr) {
-    flagcxResult_t destroyResult = state->fifo->flagcxRedFifoDestroy();
+    flagcxResult_t destroyResult = releaseUniRunnerFifo(comm, state->fifo);
     flagcxRunnerRecordFirstError(destroyResult, &result);
     if (destroyResult == flagcxSuccess) {
       delete state->fifo;
@@ -5870,7 +5953,7 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   }
   hcomm->uniRunnerFifoBuffer = nullptr;
   if (state->ipcFifo != nullptr) {
-    flagcxResult_t destroyResult = state->ipcFifo->flagcxIpcFifoDestroy();
+    flagcxResult_t destroyResult = releaseUniRunnerFifo(comm, state->ipcFifo);
     flagcxRunnerRecordFirstError(destroyResult, &result);
     if (destroyResult == flagcxSuccess) {
       delete state->ipcFifo;
@@ -5879,8 +5962,8 @@ flagcxResult_t cleanupUniRunner(flagcxComm_t comm) {
   }
   state->ipcFifoDevicePtr = nullptr;
   if (state->ipcParentFlagsDevice != nullptr) {
-    flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-        state->ipcParentFlagsDevice, flagcxMemDevice, nullptr);
+    flagcxResult_t freeResult = flagcxCommReleaseBuffer(
+        comm, state->ipcParentFlagsDevice, flagcxInternalBufferDevice);
     flagcxRunnerRecordFirstError(freeResult, &result);
     if (freeResult == flagcxSuccess) {
       state->ipcParentFlagsDevice = nullptr;
@@ -5927,8 +6010,9 @@ releaseUniRunnerIpcParentFlags(flagcxUniRunnerState *runnerState) {
   if (runnerState == NULL || runnerState->ipcParentFlagsDevice == NULL) {
     return flagcxSuccess;
   }
-  flagcxResult_t result = deviceAdaptor->deviceFree(
-      runnerState->ipcParentFlagsDevice, flagcxMemDevice, NULL);
+  flagcxResult_t result = flagcxCommReleaseBuffer(
+      uniRunnerLifetimeOwner(runnerState), runnerState->ipcParentFlagsDevice,
+      flagcxInternalBufferDevice);
   if (result == flagcxSuccess) {
     runnerState->ipcParentFlagsDevice = NULL;
     runnerState->ipcParentFlagsCount = 0;
@@ -6786,7 +6870,7 @@ static flagcxResult_t runStaticHostRed(flagcxHeteroComm_t hcomm,
   }
 #endif
 
-  flagcxResult_t result = submitStaticHostDag(runnerState, hcomm);
+  flagcxResult_t result = flagcxUniRunnerSubmitHostDag(runnerState, hcomm);
   if (result != flagcxSuccess) {
     result = abortAndDrainStaticExecution(runnerState, NULL, result);
   } else if (numTriggers == 0) {
@@ -6849,8 +6933,9 @@ static flagcxResult_t
 releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
   flagcxResult_t result = flagcxSuccess;
   if (runnerState->ipcRingTriggersDevice != NULL) {
-    flagcxResult_t freeResult = deviceAdaptor->deviceFree(
-        runnerState->ipcRingTriggersDevice, flagcxMemDevice, NULL);
+    flagcxResult_t freeResult = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState), runnerState->ipcRingTriggersDevice,
+        flagcxInternalBufferDevice);
     preserveFirstUniRunnerError(freeResult, &result);
     if (freeResult == flagcxSuccess) {
       runnerState->ipcRingTriggersDevice = NULL;
@@ -6858,8 +6943,9 @@ releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
     }
   }
   if (runnerState->ipcRingLanesDevice != NULL) {
-    flagcxResult_t laneResult = deviceAdaptor->deviceFree(
-        runnerState->ipcRingLanesDevice, flagcxMemDevice, NULL);
+    flagcxResult_t laneResult = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState), runnerState->ipcRingLanesDevice,
+        flagcxInternalBufferDevice);
     preserveFirstUniRunnerError(laneResult, &result);
     if (laneResult == flagcxSuccess) {
       runnerState->ipcRingLanesDevice = NULL;
@@ -6867,8 +6953,9 @@ releaseUniRunnerIpcRingInvocation(flagcxUniRunnerState *runnerState) {
     }
   }
   if (runnerState->ipcRingControlHost != NULL) {
-    flagcxResult_t controlResult = deviceAdaptor->deviceFree(
-        runnerState->ipcRingControlHost, flagcxMemHost, NULL);
+    flagcxResult_t controlResult = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState), runnerState->ipcRingControlHost,
+        flagcxInternalBufferHost);
     preserveFirstUniRunnerError(controlResult, &result);
     if (controlResult == flagcxSuccess) {
       runnerState->ipcRingControlHost = NULL;
@@ -7106,7 +7193,7 @@ runStaticHostRedIpc(flagcxComm_t comm, flagcxResult_t localPreparationResult) {
   return flagcxNotSupported;
 #endif
 
-  flagcxResult_t result = submitStaticHostDag(runnerState, hcomm);
+  flagcxResult_t result = flagcxUniRunnerSubmitHostDag(runnerState, hcomm);
   if (result != flagcxSuccess) {
     // The executor is already live. Signal its own abort word and let its
     // blocksDone epilogue establish quiescence; never launch recovery here.
@@ -7268,8 +7355,11 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   FLAGCXCHECK(releaseUniRunnerIpcRingInvocation(runnerState));
 
   if (runnerState->groupedArScratch != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->groupedArScratch,
-                                          flagcxMemDevice, NULL));
+    flagcxResult_t release = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState), runnerState->groupedArScratch,
+        flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     runnerState->groupedArScratch = NULL;
     runnerState->groupedArScratchCapacity = 0;
   }
@@ -7295,12 +7385,15 @@ cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState) {
   runnerState->ipcRingDatatype = flagcxInt8;
   runnerState->ipcRingRedOp = flagcxSum;
   runnerState->ipcRingResourcesDirty = false;
-  runnerState->ipcOwner = NULL;
   if (runnerState->ipcParentFlagsDevice != NULL) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(runnerState->ipcParentFlagsDevice,
-                                          flagcxMemDevice, NULL));
+    flagcxResult_t release = flagcxCommReleaseBuffer(
+        uniRunnerLifetimeOwner(runnerState), runnerState->ipcParentFlagsDevice,
+        flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
   }
   runnerState->ipcParentFlagsDevice = NULL;
   runnerState->ipcParentFlagsCount = 0;
+  runnerState->ipcOwner = NULL;
   return flagcxSuccess;
 }

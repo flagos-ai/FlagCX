@@ -1,4 +1,10 @@
+#include "comm_lifecycle.h"
+#include "global_comm.h"
+#include "proxy.h"
+#include "uni_runner_impl.h"
 #include "work_completion.hpp"
+#include <cstdlib>
+#include <string>
 
 TEST_F(WorkCompletionTest, WaitsOnlyForRecordedOperationNotLaterStreamWork) {
   auto *record = prepare();
@@ -111,6 +117,40 @@ TEST_F(WorkCompletionTest, FailedNativeGroupLeavesUncertainOwner) {
   EXPECT_EQ(recorded, 0);
 }
 
+TEST_F(WorkCompletionTest,
+       PublicNestedNativeGroupsRecordAfterActualSubmission) {
+  auto *saved = cclAdaptors[flagcxCCLAdaptorDevice];
+  flagcxCCLAdaptor adaptor = *saved;
+  cclAdaptors[flagcxCCLAdaptorDevice] = &adaptor;
+  const char *oldEnv = getenv("FLAGCX_USE_HETERO_COMM");
+  bool hadEnv = oldEnv != nullptr;
+  std::string old = oldEnv ? oldEnv : "";
+  setenv("FLAGCX_USE_HETERO_COMM", "0", 1);
+  installNative(&adaptor);
+  flagcxComm comm = {};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.homoComm = (flagcxInnerComm_t)1;
+  EXPECT_EQ(flagcxGroupStart(&comm), flagcxSuccess);
+  EXPECT_EQ(flagcxGroupStart(&comm), flagcxSuccess);
+  EXPECT_EQ(flagcxAllReduce(nullptr, nullptr, 1, flagcxFloat, flagcxSum, &comm,
+                            (flagcxStream_t)&stream),
+            flagcxSuccess);
+  EXPECT_EQ(recorded, 0);
+  EXPECT_EQ(flagcxGroupEnd(&comm), flagcxSuccess);
+  EXPECT_EQ(recorded, 0);
+  EXPECT_EQ(flagcxGroupEnd(&comm), flagcxSuccess);
+  EXPECT_EQ(recorded, 1);
+  EXPECT_EQ(stream.submitted, 1u);
+  stream.completed = 1;
+  EXPECT_EQ(flagcxWorkWait(&comm.submittedWork), flagcxSuccess);
+  releaseFake(&comm.submittedWork);
+  cclAdaptors[flagcxCCLAdaptorDevice] = saved;
+  if (hadEnv)
+    setenv("FLAGCX_USE_HETERO_COMM", old.c_str(), 1);
+  else
+    unsetenv("FLAGCX_USE_HETERO_COMM");
+}
+
 TEST_F(WorkCompletionTest, CapturedCallsNeverInsertOrQueryCompletionEvents) {
   stream.capture = flagcxStreamCaptureActive;
   for (int i = 0; i < 100; i++) {
@@ -184,3 +224,52 @@ TEST_F(WorkCompletionTest, DeferredCaptureTransitionKeepsUncertainOwner) {
             flagcxSuccess);
 }
 
+TEST_F(WorkCompletionTest,
+       UniRunnerRejectsCaptureBeforeCreatingInvocationWork) {
+  flagcxComm comm = {};
+  flagcxHeteroComm hetero = {};
+  flagcxProxyState proxy = {};
+  comm.heteroComm = &hetero;
+  comm.uniRunnerKernelSupported = true;
+  hetero.proxyState = &proxy;
+  stream.capture = flagcxStreamCaptureActive;
+  EXPECT_EQ(initUniRunner(&comm, (flagcxStream_t)&stream), flagcxNotSupported);
+  EXPECT_EQ(proxy.uniRunnerState.borrowedStreamWork, nullptr);
+  EXPECT_EQ(comm.submittedWork.initialized, 0);
+  EXPECT_EQ(created + recorded + queried, 0);
+}
+
+TEST_F(WorkCompletionTest, PublicNativeCaptureGroupsDoNotRecordCapturedEvents) {
+  struct Restore {
+    flagcxCCLAdaptor *saved = cclAdaptors[flagcxCCLAdaptorDevice];
+    bool hadEnv = getenv("FLAGCX_USE_HETERO_COMM") != nullptr;
+    std::string old = hadEnv ? getenv("FLAGCX_USE_HETERO_COMM") : "";
+    ~Restore() {
+      cclAdaptors[flagcxCCLAdaptorDevice] = saved;
+      if (hadEnv)
+        setenv("FLAGCX_USE_HETERO_COMM", old.c_str(), 1);
+      else
+        unsetenv("FLAGCX_USE_HETERO_COMM");
+    }
+  } restore;
+  flagcxCCLAdaptor native = *restore.saved;
+  cclAdaptors[flagcxCCLAdaptorDevice] = &native;
+  installNative(&native);
+  setenv("FLAGCX_USE_HETERO_COMM", "0", 1);
+  flagcxComm comm = {};
+  comm.commType = flagcxCommunicatorHomo;
+  comm.homoComm = (flagcxInnerComm_t)1;
+  stream.capture = flagcxStreamCaptureActive;
+  EXPECT_EQ(flagcxGroupStart(&comm), flagcxSuccess);
+  for (int i = 0; i < 2; i++)
+    EXPECT_EQ(flagcxAllReduce(nullptr, nullptr, 1, flagcxFloat, flagcxSum,
+                              &comm, (flagcxStream_t)&stream),
+              flagcxSuccess);
+  EXPECT_EQ(stream.captured, 0u);
+  EXPECT_EQ(flagcxGroupEnd(&comm), flagcxSuccess);
+  EXPECT_EQ(stream.captured, 2u);
+  EXPECT_EQ(created + recorded + queried + waited, 0);
+  stream.capture = flagcxStreamCaptureNone;
+  EXPECT_EQ(flagcxWorkWait(&comm.submittedWork), flagcxSuccess);
+  releaseFake(&comm.submittedWork);
+}

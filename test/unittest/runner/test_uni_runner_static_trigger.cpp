@@ -900,7 +900,7 @@ protected:
     failReadyFree = failReadyCopy = false;
     EXPECT_EQ(cleanupUniRunnerPersistentState(&runner), flagcxSuccess);
     EXPECT_EQ(flagcxCommCleanupIpcTable(&comm), flagcxSuccess);
-    comm.destroyPhase = 7;
+    comm.finalizeState.commonPhase = flagcxFinalizeComplete;
     EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
     devApiBackend = readySavedBackend;
     deviceAdaptor = savedDevice;
@@ -1055,7 +1055,7 @@ TEST_F(UniRunnerIpcRetryTest, PartialBarrierBuildStaysOwnedByFailedDevComm) {
   ASSERT_NE(comm.internalBuffers, nullptr); // Exporter remains Comm-owned.
 }
 
-TEST_F(UniRunnerIpcRetryTest, CommDestroyRetriesPartialSlotBeforeExporterFree) {
+TEST_F(UniRunnerIpcRetryTest, CommDestroyRetainsDeferredArrayOnFreeFailure) {
   flagcxComm_t owned = nullptr;
   ASSERT_EQ(flagcxCalloc(&owned, 1), flagcxSuccess);
   owned->commType = flagcxCommunicatorHomo;
@@ -1072,14 +1072,91 @@ TEST_F(UniRunnerIpcRetryTest, CommDestroyRetriesPartialSlotBeforeExporterFree) {
   auto failed = buildIpcPeerPointers(owned, buffer, 64);
   ASSERT_EQ(failed.cleanupStatus, flagcxRemoteError);
   ASSERT_GE(failed.slot, 0);
+  void *peerArray = owned->ipcTable[failed.slot].devPeerPtrs;
   // Bootstrap/local-rank storage belongs to the fixture, not this heap Comm.
   owned->bootstrap = nullptr;
   owned->localRankToRank = nullptr;
   EXPECT_EQ(flagcxCommDestroy(owned), flagcxRemoteError);
-  EXPECT_EQ(owned->internalBuffers->pointer, buffer);
-  EXPECT_NE(owned->ipcTable[failed.slot].devPeerPtrs, nullptr);
+  EXPECT_EQ(owned->finalizeState.commonPhase, flagcxFinalizeComplete);
+  EXPECT_EQ(owned->destroyPhase, flagcxDestroyBuffers);
+  EXPECT_EQ(owned->internalBuffers->pointer, peerArray);
+  EXPECT_EQ(owned->internalBuffers->next->pointer, buffer);
+  EXPECT_EQ(owned->ipcTable[failed.slot].devPeerPtrs, nullptr);
   failReadyCopy = failReadyFree = false;
   EXPECT_EQ(flagcxCommDestroy(owned), flagcxSuccess);
 }
 
+TEST_F(UniRunnerIpcRetryTest, FinalizeTransfersPartialArrayBeforeExporterFree) {
+  comm.commType = flagcxCommunicatorHomo;
+  void *buffer = nullptr;
+  ASSERT_EQ(flagcxCommAllocInternalBuffer(&comm, &buffer, 64,
+                                          flagcxInternalBufferDevice),
+            flagcxSuccess);
+  failReadyCopy = failReadyFree = true;
+  auto failed = buildIpcPeerPointers(&comm, buffer, 64);
+  ASSERT_EQ(failed.cleanupStatus, flagcxRemoteError);
+  ASSERT_GE(failed.slot, 0);
+  void *peerArray = comm.ipcTable[failed.slot].devPeerPtrs;
+  // Finalize closes the slot without invoking the failing SDK allocation free.
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.ipcTable[failed.slot].devPeerPtrs, nullptr);
+  EXPECT_EQ(comm.internalBuffers->pointer, peerArray);
+  EXPECT_EQ(comm.internalBuffers->next->pointer, buffer);
+  EXPECT_EQ(comm.finalizeState.lifecycle, flagcxCommFinalized);
+  EXPECT_EQ(flagcxCommFinalize(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.internalBuffers->next->next, nullptr);
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxRemoteError);
+  EXPECT_EQ(comm.internalBuffers->pointer, peerArray);
+  failReadyCopy = failReadyFree = false;
+  EXPECT_EQ(flagcxCommFreeInternalBuffers(&comm), flagcxSuccess);
+  EXPECT_EQ(comm.internalBuffers, nullptr);
+}
+
 } // namespace
+
+TEST(UniRunnerIpcCachedPolicy, ReadyReuseDoesNotTouchPolicyBootstrap) {
+  flagcxComm comm = {};
+  flagcxUniRunnerState runner = {};
+  bootstrapState unavailable = {};
+  unavailable.mode = FLAGCX_BOOTSTRAP_P2P; // Reject any node status exchange.
+  int ranks[] = {0, 1};
+  comm.bootstrap = &unavailable;
+  comm.nranks = comm.localRanks = 2;
+  comm.localRankToRank = ranks;
+  comm.internalBuffersNeedPeerClose = comm.ipcClosePolicyConfirmed = true;
+  runner.ipcReadyMem = (flagcxDevMem_t)0x10000;
+  runner.ipcReadyBuffer = (void *)0x20000;
+  runner.ipcReadyCapacity = 4;
+  for (int iteration = 0; iteration < 100; iteration++)
+    EXPECT_EQ(ensureUniRunnerIpcReadyStorage(&runner, &comm, 4), flagcxSuccess);
+  EXPECT_EQ(comm.internalBuffers, nullptr);
+}
+
+TEST(UniRunnerIpcCachedPolicy, RingReuseKeepsPolicyOffSocketPath) {
+  flagcxComm comm = {};
+  flagcxUniRunnerState runner = {};
+  bootstrapState bootstrap = {};
+  bootstrapCollState coll = {};
+  // A one-participant bootstrap lets the pre-existing resource all-gather
+  // complete locally, but cannot serve a two-rank policy declaration. Thus
+  // this fixture isolates the newly removed exchange from resource agreement.
+  coll.nranks = 1;
+  bootstrap.mode = FLAGCX_BOOTSTRAP_COLL;
+  bootstrap.coll = &coll;
+  int ranks[] = {0, 1};
+  comm.bootstrap = &bootstrap;
+  comm.nranks = 1;
+  comm.localRanks = 2;
+  comm.localRankToRank = ranks;
+  comm.internalBuffersNeedPeerClose = comm.ipcClosePolicyConfirmed = true;
+  runner.ipcRingScratchMem = (flagcxDevMem_t)0x10000;
+  runner.ipcRingProgressMem = (flagcxDevMem_t)0x20000;
+  runner.ipcRingScratchBuffer = (void *)0x30000;
+  runner.ipcRingProgressBuffer = (void *)0x40000;
+  runner.ipcRingChannels = 1;
+  runner.ipcRingSimpleBufferBytes = 64;
+  for (int iteration = 0; iteration < 100; iteration++)
+    EXPECT_EQ(ensureUniRunnerIpcRingResources(&runner, &comm, 1, 64),
+              flagcxSuccess);
+  EXPECT_EQ(comm.internalBuffers, nullptr);
+}

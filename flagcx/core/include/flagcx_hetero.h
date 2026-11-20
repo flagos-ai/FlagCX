@@ -148,6 +148,8 @@ struct flagcxRmaProxyState {
   volatile uint64_t *readySeqsCpu; // [nRanks] host memory
 
   // Synchronization method: HOST_FUNC (default) or STREAM_OPS (opt-in via env)
+  int doneSeqsCpuMapped;
+  int readySeqsCpuMapped;
   int useStreamOps; // 0 = HOST_FUNC (default), 1 = STREAM_OPS
 
   // Global completion counter: incremented once for every op that completes.
@@ -166,6 +168,8 @@ struct flagcxRmaProxyState {
   // Set before communicator teardown starts. Producers fail fast while the
   // progress thread drains already-published descriptors and native requests.
   volatile int quiesced;
+  // Stop closes imports and CPU mappings; local Release owns allocation frees.
+  int stopComplete;
 
   void *const *fullSendComms; // [nRanks] or NULL until published
   int nRanks;
@@ -244,10 +248,29 @@ flagcxResult_t flagcxHeteroCommCount(const flagcxHeteroComm_t comm, int *count);
 flagcxResult_t flagcxHeteroCommUserRank(const flagcxHeteroComm_t comm,
                                         int *rank);
 
+// Finalize closes imports collectively in the node. Destroy is local after
+// successful Finalize; otherwise it first performs implicit Finalize.
+flagcxResult_t flagcxHeteroCommFinalize(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroCommDestroy(flagcxHeteroComm_t comm);
+// Internal completion hook for the outer Comm's successful closure protocol.
+void flagcxHeteroCommConfirmImportsClosed(flagcxHeteroComm_t comm);
 flagcxResult_t flagcxHeteroCommPrepareDestroy(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroCommCloseRelayImports(flagcxHeteroComm_t comm);
+// Start RMA only after transport initialization. Failed rollback retains *comm.
+flagcxResult_t flagcxHeteroCommStartRma(flagcxHeteroComm_t *comm);
+flagcxResult_t flagcxHeteroCommRollbackInit(flagcxHeteroComm_t *comm);
 
 flagcxResult_t flagcxHeteroRmaProxyQuiesce(flagcxHeteroComm_t comm);
+flagcxResult_t flagcxHeteroDrainProducers(flagcxHeteroComm_t comm);
+// Internal kernel-proxy submissions for descriptors accepted before Finalize.
+flagcxResult_t flagcxHeteroProxySend(const void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream);
+flagcxResult_t flagcxHeteroProxyRecv(void *buffer, size_t count,
+                                     flagcxDataType_t type, int peer,
+                                     flagcxHeteroComm_t comm,
+                                     flagcxStream_t stream);
 
 flagcxResult_t
 flagcxHeteroPut(flagcxHeteroComm_t comm, int peer, size_t srcOffset,
@@ -305,7 +328,10 @@ flagcxResult_t flagcxHeteroFlush(flagcxHeteroComm_t comm, void *gpuAddr,
 
 // Async RMA proxy lifecycle.
 flagcxResult_t flagcxHeteroRmaProxyStart(flagcxHeteroComm_t comm);
+// Stop drains the worker and closes views without freeing device allocations.
 flagcxResult_t flagcxHeteroRmaProxyStop(flagcxHeteroComm_t comm);
+// Local release after successful Stop, including initialization rollback.
+flagcxResult_t flagcxHeteroRmaProxyRelease(flagcxHeteroComm_t comm);
 
 // Internal deterministic progress hook used by host-only RMA tests. Production
 // progress uses the same pass from the proxy thread.

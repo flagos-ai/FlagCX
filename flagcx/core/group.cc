@@ -14,6 +14,7 @@
 #include "p2p.h"
 #include "transport.h"
 #include "type.h"
+#include "work_completion.h"
 #include <new>
 #include <pthread.h>
 #include <queue>
@@ -48,12 +49,7 @@ flagcxResult_t flagcxHeteroGroupStart() {
   return ret;
 }
 
-flagcxResult_t flagcxHeteroGroupEnd() {
-  flagcxResult_t ret = flagcxSuccess;
-  FLAGCXCHECKGOTO(flagcxGroupEndInternal(), ret, exit);
-exit:
-  return ret;
-}
+flagcxResult_t flagcxHeteroGroupEnd() { return flagcxGroupEndInternal(); }
 
 struct flagcxPreconnectJob {
   struct flagcxAsyncJob base;
@@ -435,8 +431,6 @@ static flagcxResult_t groupLaunch(struct flagcxAsyncJob *job_) {
         }
         flagcxResult_t syncResult =
             deviceAdaptor->streamSynchronize(launchStream);
-        if (syncResult != flagcxSuccess)
-          syncResult = deviceAdaptor->deviceSynchronize();
         if (syncResult == flagcxSuccess)
           streamValueSemaphore->markCompletionDrained();
         else {
@@ -518,9 +512,9 @@ static inline void groupResetJobState() {
 
 flagcxResult_t flagcxGroupEndInternal(bool useStreamValue) {
   flagcxResult_t ret = flagcxSuccess;
+  if (flagcxGroupDepth <= 0)
+    return flagcxInvalidUsage;
   flagcxGroupDepth--;
-  if (flagcxGroupDepth < 0)
-    return flagcxSystemError;
   if (flagcxGroupDepth == 0) {
     if (flagcxGroupCommPreconnectHead || flagcxGroupCommHead) {
       flagcxGroupJobMain.groupCommHeadPtr = &flagcxGroupCommHead;
@@ -536,6 +530,10 @@ flagcxResult_t flagcxGroupEndInternal(bool useStreamValue) {
   }
 
 exit:
+  // UniRunner also ends groups directly with useStreamValue=true. Flush at
+  // this actual submission boundary, before invocation streams can be freed.
+  if (flagcxGroupDepth == 0)
+    ret = flagcxWorkGroupComplete(flagcxWorkHeteroGroup, ret);
   return ret;
 fail:
   groupCleanup(&flagcxGroupJobMainPtr->base);

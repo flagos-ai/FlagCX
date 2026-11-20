@@ -58,9 +58,9 @@ static flagcxResult_t shmHostRegister(void *ptr, size_t bytes) {
   return deviceAdaptor->hostRegister(ptr, bytes);
 }
 
-static void shmHostUnregister(void *ptr) {
-  if (deviceAdaptor->hostUnregister)
-    deviceAdaptor->hostUnregister(ptr);
+static flagcxResult_t shmHostUnregister(void *ptr) {
+  return deviceAdaptor->hostUnregister ? deviceAdaptor->hostUnregister(ptr)
+                                       : flagcxSuccess;
 }
 
 static bool
@@ -942,6 +942,7 @@ defaultDevApiCommCreate(flagcxComm_t comm,
 
 static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
                                                flagcxDevComm_t devComm) {
+  flagcxResult_t release;
   // Deregister communicator-level MRs before freeing their backing buffers.
   // Check handle identity so rollback cannot remove a registration owned by
   // another DevComm.
@@ -966,13 +967,19 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   }
 
   // ── IPC slot: immediate full cleanup ──────────────────────────────────
-  if (comm != nullptr && devComm->barrierIpcIndex >= 0)
-    FLAGCXCHECK(releaseIpcTableSlot(comm, devComm->barrierIpcIndex));
+  if (comm != nullptr && devComm->barrierIpcIndex >= 0) {
+    release = releaseIpcTableSlot(comm, devComm->barrierIpcIndex);
+    if (release != flagcxSuccess)
+      return release;
+  }
   devComm->barrierIpcIndex = -1;
 
   // ── P2P signal/counter IPC slot cleanup ─────────────────────────────────
-  if (comm != nullptr && devComm->signalIpcSlot >= 0)
-    FLAGCXCHECK(releaseIpcTableSlot(comm, devComm->signalIpcSlot));
+  if (comm != nullptr && devComm->signalIpcSlot >= 0) {
+    release = releaseIpcTableSlot(comm, devComm->signalIpcSlot);
+    if (release != flagcxSuccess)
+      return release;
+  }
   devComm->signalIpcSlot = -1;
   devComm->completionSignalPeerPtrs = nullptr;
   devComm->signalPeerPtrs = nullptr;
@@ -980,8 +987,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   // ── Shm barrier path cleanup ──────────────────────────────────────────
   if (devComm->peerBarrierShmPtrs) {
     for (int lr = 0; lr < devComm->registeredBarrierShmCount; lr++) {
-      if (devComm->peerBarrierShmPtrs[lr])
-        shmHostUnregister(devComm->peerBarrierShmPtrs[lr]);
+      if (devComm->peerBarrierShmPtrs[lr]) {
+        FLAGCXCHECK(shmHostUnregister(devComm->peerBarrierShmPtrs[lr]));
+        devComm->peerBarrierShmPtrs[lr] = NULL;
+      }
     }
     free(devComm->peerBarrierShmPtrs);
     devComm->peerBarrierShmPtrs = nullptr;
@@ -992,21 +1001,24 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
     for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
       if (devComm->peerShmHandles[lr] &&
           devComm->peerShmHandles[lr] != devComm->myShmHandle) {
-        flagcxShmClose(devComm->peerShmHandles[lr]);
+        FLAGCXCHECK(flagcxShmClose(devComm->peerShmHandles[lr]));
+        devComm->peerShmHandles[lr] = NULL;
       }
     }
     free(devComm->peerShmHandles);
     devComm->peerShmHandles = nullptr;
   }
   if (devComm->myShmHandle) {
-    flagcxShmClose(devComm->myShmHandle);
+    FLAGCXCHECK(flagcxShmClose(devComm->myShmHandle));
     devComm->myShmHandle = nullptr;
   }
   devComm->localBarrierShmPtr = nullptr;
   devComm->barrierShmSize = 0;
   if (devComm->barrierDevPeerPtrsRaw) {
-    deviceAdaptor->deviceFree(devComm->barrierDevPeerPtrsRaw, flagcxMemDevice,
-                              NULL);
+    release = flagcxCommReleaseBuffer(comm, devComm->barrierDevPeerPtrsRaw,
+                                      flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     devComm->barrierDevPeerPtrsRaw = nullptr;
   }
   devComm->barrierPeers = nullptr;
@@ -1015,8 +1027,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   // signalBuffer and signalPeerPtrs are aliases, never allocations to free.
   if (devComm->peerSignalShmPtrs) {
     for (int lr = 0; lr < devComm->registeredSignalShmCount; lr++) {
-      if (devComm->peerSignalShmPtrs[lr])
-        shmHostUnregister(devComm->peerSignalShmPtrs[lr]);
+      if (devComm->peerSignalShmPtrs[lr]) {
+        FLAGCXCHECK(shmHostUnregister(devComm->peerSignalShmPtrs[lr]));
+        devComm->peerSignalShmPtrs[lr] = NULL;
+      }
     }
     free(devComm->peerSignalShmPtrs);
     devComm->peerSignalShmPtrs = nullptr;
@@ -1025,22 +1039,26 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   if (devComm->peerSignalShmHandles) {
     for (int lr = 0; lr < devComm->nLocalRanks; lr++) {
       if (devComm->peerSignalShmHandles[lr] &&
-          devComm->peerSignalShmHandles[lr] != devComm->mySignalShmHandle)
-        flagcxShmClose(devComm->peerSignalShmHandles[lr]);
+          devComm->peerSignalShmHandles[lr] != devComm->mySignalShmHandle) {
+        FLAGCXCHECK(flagcxShmClose(devComm->peerSignalShmHandles[lr]));
+        devComm->peerSignalShmHandles[lr] = NULL;
+      }
     }
     free(devComm->peerSignalShmHandles);
     devComm->peerSignalShmHandles = nullptr;
   }
   if (devComm->mySignalShmHandle) {
-    flagcxShmClose(devComm->mySignalShmHandle);
+    FLAGCXCHECK(flagcxShmClose(devComm->mySignalShmHandle));
     devComm->mySignalShmHandle = nullptr;
   }
   devComm->signalHostBuffer = nullptr;
   devComm->signalMrHostPtr = nullptr;
   devComm->localSignalBuffer = nullptr;
   if (devComm->signalDevPeerPtrsRaw) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->signalDevPeerPtrsRaw,
-                                          flagcxMemDevice, NULL));
+    release = flagcxCommReleaseBuffer(comm, devComm->signalDevPeerPtrsRaw,
+                                      flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     devComm->signalDevPeerPtrsRaw = nullptr;
   }
 
@@ -1049,8 +1067,10 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   devComm->localBarrierFlags = nullptr;
   devComm->localBarrierFlagsDeviceAllocated = false;
   if (devComm->epochBuffer) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(devComm->epochBuffer, flagcxMemDevice, NULL));
+    release = flagcxCommReleaseBuffer(comm, devComm->epochBuffer,
+                                      flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     devComm->epochBuffer = nullptr;
   }
   devComm->signalBuffer = nullptr;
@@ -1058,19 +1078,25 @@ static flagcxResult_t defaultDevApiCommDestroy(flagcxComm_t comm,
   // In the 64-bit path this aliases signalBuffer; Comm records it only once.
   devComm->completionSignalBuffer = nullptr;
   if (devComm->shadowBuffer) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->shadowBuffer,
-                                          flagcxMemDevice, NULL));
+    release = flagcxCommReleaseBuffer(comm, devComm->shadowBuffer,
+                                      flagcxInternalBufferDevice);
+    if (release != flagcxSuccess)
+      return release;
     devComm->shadowBuffer = nullptr;
   }
   if (devComm->counterBuffer) {
-    FLAGCXCHECK(
-        deviceAdaptor->deviceFree(devComm->counterBuffer, flagcxMemHost, NULL));
+    release = flagcxCommReleaseBuffer(comm, devComm->counterBuffer,
+                                      flagcxInternalBufferHost);
+    if (release != flagcxSuccess)
+      return release;
     devComm->counterBuffer = nullptr;
   }
   if (sizeof(DefaultCompletionWord) == sizeof(uint32_t)) {
     if (devComm->completionCounterBuffer) {
-      FLAGCXCHECK(deviceAdaptor->deviceFree(devComm->completionCounterBuffer,
-                                            flagcxMemDevice, NULL));
+      release = flagcxCommReleaseBuffer(comm, devComm->completionCounterBuffer,
+                                        flagcxInternalBufferDevice);
+      if (release != flagcxSuccess)
+        return release;
       devComm->completionCounterBuffer = nullptr;
     }
   } else {
@@ -1404,24 +1430,20 @@ static flagcxResult_t defaultDevApiCommFreeDevicePtr(flagcxDevComm_t devComm) {
     return flagcxInvalidArgument;
 
   pthread_mutex_lock(&devComm->cachedPtrMutex);
-  void *ptr = devComm->cachedDevicePtr;
-  void *netPtr = devComm->cachedNetContextsPtr;
-  void *gridPtr = devComm->cachedGridBarrierPtr;
-  devComm->cachedDevicePtr = nullptr;
-  devComm->cachedNetContextsPtr = nullptr;
-  devComm->cachedGridBarrierPtr = nullptr;
+  void **pointers[] = {&devComm->cachedGridBarrierPtr,
+                       &devComm->cachedNetContextsPtr,
+                       &devComm->cachedDevicePtr};
+  flagcxResult_t result = flagcxSuccess;
+  for (int i = 0; i < 3; i++) {
+    if (*pointers[i] != NULL) {
+      result = deviceAdaptor->deviceFree(*pointers[i], flagcxMemDevice, NULL);
+      if (result != flagcxSuccess)
+        break;
+      *pointers[i] = NULL;
+    }
+  }
   pthread_mutex_unlock(&devComm->cachedPtrMutex);
-
-  if (gridPtr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(gridPtr, flagcxMemDevice, NULL));
-  }
-  if (netPtr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(netPtr, flagcxMemDevice, NULL));
-  }
-  if (ptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(ptr, flagcxMemDevice, NULL));
-  }
-  return flagcxSuccess;
+  return result;
 }
 
 static flagcxResult_t defaultDevApiMemGetDevicePtr(flagcxDevMem_t devMem,
@@ -1467,14 +1489,15 @@ static flagcxResult_t defaultDevApiMemFreeDevicePtr(flagcxDevMem_t devMem) {
     return flagcxInvalidArgument;
 
   pthread_mutex_lock(&devMem->cachedPtrMutex);
-  void *ptr = devMem->cachedDevicePtr;
-  devMem->cachedDevicePtr = nullptr;
-  pthread_mutex_unlock(&devMem->cachedPtrMutex);
-
-  if (ptr) {
-    FLAGCXCHECK(deviceAdaptor->deviceFree(ptr, flagcxMemDevice, NULL));
+  flagcxResult_t result = flagcxSuccess;
+  if (devMem->cachedDevicePtr != NULL) {
+    result = deviceAdaptor->deviceFree(devMem->cachedDevicePtr, flagcxMemDevice,
+                                       NULL);
+    if (result == flagcxSuccess)
+      devMem->cachedDevicePtr = NULL;
   }
-  return flagcxSuccess;
+  pthread_mutex_unlock(&devMem->cachedPtrMutex);
+  return result;
 }
 
 // ==========================================================================
@@ -1489,45 +1512,7 @@ static flagcxResult_t defaultCommQuiesce(flagcxComm_t comm) {
   if (hetero == nullptr || hetero->oneSideQuiesced)
     return flagcxSuccess;
 
-  // Drain every device producer and its native requests before MR
-  // deregistration is allowed to close an RDMA connection reachable from a
-  // FIFO descriptor. consumed only means the proxy posted the descriptor;
-  // completed is advanced after the corresponding native request retires.
-  if (hetero->proxyState) {
-    int ctxCount = hetero->proxyState->kernelState.contextCount;
-    for (int i = 0; i < ctxCount; i++) {
-      if (hetero->proxyState->kernelState.fifos[i]) {
-        volatile uint64_t *buf =
-            (volatile uint64_t *)hetero->proxyState->kernelState.fifos[i]
-                ->buffer;
-        if (buf) {
-          while (
-              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxCompleted),
-                              __ATOMIC_ACQUIRE) !=
-              __atomic_load_n(flagcxFifoControlPtr(buf, flagcxFifoIdxProduced),
-                              __ATOMIC_ACQUIRE)) {
-            flagcxResult_t terminal =
-                __atomic_load_n(&hetero->proxyState->kernelState.terminalResult,
-                                __ATOMIC_ACQUIRE);
-            if (terminal != flagcxSuccess)
-              return terminal;
-            if (hetero->rmaProxy != nullptr &&
-                __atomic_load_n(&hetero->rmaProxy->rmaError, __ATOMIC_ACQUIRE))
-              return flagcxRemoteError;
-            flagcxResult_t asyncResult = __atomic_load_n(
-                &hetero->proxyState->asyncResult, __ATOMIC_ACQUIRE);
-            if (asyncResult != flagcxSuccess && asyncResult != flagcxInProgress)
-              return asyncResult;
-            sched_yield();
-          }
-        }
-      }
-    }
-  }
-
-  // The common dispatcher quiesces the RMA proxy after every backend has
-  // drained its local producers.
-  return flagcxSuccess;
+  return flagcxHeteroDrainProducers(hetero);
 }
 
 static flagcxResult_t defaultCommCleanup(flagcxComm_t comm) {
@@ -1537,10 +1522,7 @@ static flagcxResult_t defaultCommCleanup(flagcxComm_t comm) {
   struct flagcxHeteroComm *hetero = comm->heteroComm;
   if (hetero != nullptr && hetero->relayInitialized &&
       hetero->nInterPeers > 0) {
-    // Preserve the existing relay shutdown rendezvous. The local quiesce phase
-    // has already retired FIFO-native requests before reaching this point.
-    FLAGCXCHECK(bootstrapCollBarrier(comm->bootstrap, comm->rank, comm->nranks,
-                                     0x7f01));
+    // The NET drain rendezvous completed in the Finalize drain phase.
     free(hetero->interPeerRanks);
     hetero->interPeerRanks = nullptr;
     hetero->relayInitialized = false;
