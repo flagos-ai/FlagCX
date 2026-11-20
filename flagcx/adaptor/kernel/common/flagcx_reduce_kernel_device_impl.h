@@ -1,6 +1,6 @@
 #pragma once
 
-// Compiled once by the selected CUDA or DU device translation unit.
+// Compiled once by the selected platform device translation unit.
 #include "debug.h"
 #include "device.h"
 #include "device_api/flagcx_device.h"
@@ -26,6 +26,49 @@
 #define cudaLaunchKernel hipLaunchKernel
 #define cudaError_t hipError_t
 #define cudaSuccess hipSuccess
+#elif defined(USE_PPU_ADAPTOR)
+#include <hggc_ad.h>
+
+#define cudaGetDevice hggcGetDevice
+#define cudaDeviceGetAttribute hggcDeviceGetAttribute
+#define cudaDevAttrCooperativeLaunch hggcDevAttrCooperativeLaunch
+#define cudaDevAttrConcurrentKernels hggcDevAttrConcurrentKernels
+#define cudaDevAttrMultiProcessorCount hggcDevAttrMultiProcessorCount
+#define cudaDevAttrMaxThreadsPerBlock hggcDevAttrMaxThreadsPerBlock
+#define cudaOccupancyMaxActiveBlocksPerMultiprocessor                          \
+  hggcOccupancyMaxActiveBlocksPerMultiprocessor
+#define cudaLaunchKernel hggcLaunchKernel
+#define cudaError_t hggcError_t
+#define cudaSuccess hggcSuccess
+
+static hggcError_t flagcxPpuLaunchCooperativeKernel(const void *kernel,
+                                                    dim3 grid, dim3 block,
+                                                    void **args,
+                                                    size_t sharedMem,
+                                                    hggcStream_t stream) {
+  HGfunction function;
+  hggcError_t result = hggcGetFuncBySymbol(&function, kernel);
+  if (result != hggcSuccess)
+    return result;
+
+  HGlaunchAttributeAD cooperative{};
+  cooperative.id = HGAD_LAUNCH_ATTRIBUTE_COOPERATIVE;
+  cooperative.value.cooperative = 1;
+  HGlaunchConfigAD config = {grid.x,
+                             grid.y,
+                             grid.z,
+                             block.x,
+                             block.y,
+                             block.z,
+                             static_cast<unsigned int>(sharedMem),
+                             stream,
+                             &cooperative,
+                             1};
+  return static_cast<hggcError_t>(
+      hgLaunchKernelExAD(&config, function, args, nullptr));
+}
+
+#define cudaLaunchCooperativeKernel flagcxPpuLaunchCooperativeKernel
 #endif
 
 #include <limits>

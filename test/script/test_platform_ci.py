@@ -669,6 +669,12 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             ),
             ["ascend"] if "ascend" in all_platforms else all_platforms,
         )
+        self.assertEqual(
+            self._run_platform_matrix(
+                "pull_request", "flagcx/adaptor/device/hggc_adaptor.cc"
+            ),
+            ["ppu"],
+        )
         for changed_files in (
             "flagcx/flagcx.cc",
             ".github/workflows/ci.yml",
@@ -1062,7 +1068,7 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             [entry["platform"] for entry in json.loads(result.stdout)["include"]],
             ENABLED_PLATFORMS,
         )
-        for platform in ("kunlunxin",):
+        for platform in ENABLED_PLATFORMS:
             selected = subprocess.run(
                 ["ruby", str(matrix_loader), str(REPO_ROOT / ".github/configs"), platform],
                 check=True,
