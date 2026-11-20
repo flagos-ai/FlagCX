@@ -29,6 +29,9 @@ static_assert(sizeof(Bulk32) == 32 && alignof(Bulk32) == 32,
               "Bulk32 must occupy and align to 32 bytes");
 #endif
 
+// Device compiler detection — defined when any GPU device compiler is active.
+// Extend with __ASCEND_CC__ etc. as new platforms are added.
+//
 // Ascend takes the same route as Iluvatar, for the same reason: bisheng
 // compiles one ASC translation unit in two passes and defines
 // __CCE_IS_AICORE__ on the device pass only, while the types guarded here
