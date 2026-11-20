@@ -5,7 +5,9 @@
 #ifdef USE_ENFLAME_ADAPTOR
 
 #include "eccl.h"
+#ifdef FLAGCX_ENFLAME_DEVICE_API
 #include "eccl_device.h"
+#endif
 #include "flagcx.h"
 #include <map>
 #include <tops/tops_runtime.h>
@@ -23,11 +25,17 @@ typedef topsDeviceProp_t topsDevicePropCompat_t;
 #endif
 
 struct flagcxInnerDevComm {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
   ecclDevComm_t base;
+#endif
 };
 
 struct flagcxInnerWindow {
+#ifdef FLAGCX_ENFLAME_DEVICE_API
   ecclWindow_t base;
+#else
+  void *base;
+#endif
   int winFlags;
 };
 

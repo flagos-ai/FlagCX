@@ -1,7 +1,7 @@
 # FlagCX CI
 
-The hardware CI matrix enables all seven platforms: CUDA, Hygon, Iluvatar,
-MetaX, KunlunXin, PPU, and Ascend. PR runs select platforms from changed paths
+The hardware CI matrix enables eight platforms: CUDA, Hygon, Iluvatar,
+MetaX, KunlunXin, PPU, Ascend, and Enflame. PR runs select platforms from changed paths
 and PR labels; push and scheduled runs select all enabled platforms. Unit,
 performance, and Torch API jobs run for the selected platforms alongside
 common checks. See `configs/platforms.yml` for the active registry.
@@ -17,7 +17,8 @@ changes use `paths_watch`; any shared or unknown changed path selects every
 enabled platform. Renames include both their old and new paths.
 
 PR labels `platform:cuda`, `platform:hygon`, `platform:iluvatar`,
-`platform:metax`, `platform:kunlunxin`, `platform:ppu`, and `platform:ascend`
+`platform:metax`, `platform:kunlunxin`, `platform:ppu`, `platform:ascend`,
+and `platform:enflame`
 override path selection. Multiple platform labels select their union;
 `platform:all` selects every enabled platform. Invalid platform labels fail
 matrix generation. Add/remove label events rerun the controller.
@@ -34,6 +35,7 @@ one of these exact commands on a PR:
 /test kunlunxin
 /test ppu
 /test ascend
+/test enflame
 /test all
 ```
 
@@ -66,6 +68,23 @@ The first-device selector is restricted to local adaptor/P2P test fixtures;
 it does not replace production topology selection or validate APU/NIC proximity.
 P2P/RMA/SymMem failures containing SIGSEGV trigger bounded, per-rank GDB
 reproduction stored with the attempt artifacts, preserving the suite failure.
+
+Enflame runner tests retain the full host unit suite and the default MPI
+collectives except the known S60 Gather/Scatter failures. The platform's
+`FLAGCX_CI_RUNNER_MPI_FILTER` is applied alongside existing GTest exclusions.
+`FLAGCX_CI_SKIP_RUNNER_HYBRID=1` skips the heterogeneous P2P invocation that
+hangs in ECCL. When Enflame preflight reports `FLAGCX_CI_HAS_RDMA=0`, forced
+IB NET, multi-QP striping, and PXN invocations are skipped with explicit reasons;
+they run when RDMA is available (and PXN is enabled). Host/default MPI failures
+still fail the job. Without an active RDMA HCA, Enflame also skips adaptor
+IB/GDR loopback cases, the P2P `DevicesReturnsPositive` device probe and WRITE MPI, RMA network/GDR visibility,
+and SymMem's local-IPC-to-NET fallback, cross-node IPC+NET, and VMM+NET route
+union phases. The Socket fallback cannot register the network MRs these tests
+require. Adaptor non-network tests, P2P/RMA unit tests and RMA IPC tests, SymMem
+unit/IPC-local tests, and runner default tests remain enabled. P2P, RMA and SymMem
+phase exclusions emit workflow warnings and summary entries. With an active
+RDMA HCA these tests run normally. Other platforms retain their required RDMA
+preflight.
 
 ## Retry Logs
 

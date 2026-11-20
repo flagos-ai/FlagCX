@@ -22,6 +22,8 @@ case "${FLAGCX_ADAPTOR:-}" in
   nvidia|metax|ppu|ascend|iluvatar)
     run_multi_segment=1
     ;;
+  enflame)
+    ;;
   du)
     vmm_provider_env+=( -x FLAGCX_VMM_MULTI_SEGMENT_ENABLE=0 )
     ;;
@@ -70,6 +72,9 @@ FLAGCX_CI_MPI_LABEL="symmem IPC local" \
 echo ""
 vmm_skip_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
   phase symmem vmm-local-and-remote-without-net)
+if [[ "${FLAGCX_CI_SYMMEM_VMM_SUPPORTED:-1}" != 1 && -z "$vmm_skip_reason" ]]; then
+  vmm_skip_reason="VMM is unavailable on this runtime"
+fi
 echo "=== Running symmem VMM-local MPI tests (np=$LOCAL_NP) ==="
 if [[ -z "$vmm_skip_reason" ]]; then
   FLAGCX_CI_MPI_LABEL="symmem VMM local" \
