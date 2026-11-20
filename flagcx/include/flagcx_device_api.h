@@ -83,6 +83,12 @@ flagcxDevCommCreateSized(flagcxComm_t comm,
                          const struct flagcxDevCommRequirements *reqs,
                          size_t reqsSize, flagcxDevComm_t *devComm);
 
+// Before destroying a DevComm, DevMem or its device copy, finish externally
+// launched kernels and graph replays using that object and prevent new uses.
+// FlagCX cannot discover their streams. The same requirement applies before
+// parent CommFinalize. Finalize reuses its completed Comm drain for automatic
+// owner cleanup and defers private allocation frees to local CommDestroy.
+// Standalone destroy retains its existing device synchronization behavior.
 flagcxResult_t flagcxDevCommDestroy(flagcxComm_t comm, flagcxDevComm_t devComm);
 
 // Local view construction; cross-rank Window resources must already have

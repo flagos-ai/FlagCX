@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "event_flagcx.hpp"
+#include "flagcx_pair_comm.hpp"
 #include "stream_guard_flagcx.hpp"
 #include "utils_flagcx.hpp"
 
@@ -350,7 +351,7 @@ protected:
   // uses dedicated pair communicators so that only the two peers need to
   // participate in communicator initialization.
   bool usePairComm_ = true;
-  std::unordered_map<std::string, flagcxComm_t> pairComms_;
+  FlagcxPairCommMap pairComms_;
   struct pairCoalesceCtx {
     bool active = false;
     int deviceId = -1;

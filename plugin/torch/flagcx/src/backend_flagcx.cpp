@@ -501,7 +501,8 @@ flagcxBackend::~flagcxBackend() {
   for (auto &kv : pairComms_) {
     auto ret = flagcxCommDestroy(kv.second);
     if (ret != flagcxSuccess) {
-      TORCH_WARN("flagcxCommDestroy failed for pair-comm ", kv.first);
+      TORCH_WARN("flagcxCommDestroy failed for pair-comm ", kv.first.first, ":",
+                 kv.first.second);
     }
   }
   pairComms_.clear();
@@ -665,6 +666,8 @@ void flagcxBackend::initComm() {
 }
 
 flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
+  const std::pair<int, int> pairKey{std::min(rank_, peer),
+                                    std::max(rank_, peer)};
   std::string key;
   int numRanks;
   int p2pRank;
@@ -682,7 +685,7 @@ flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
     p2pRank = (rank_ < peer) ? 0 : 1;
   }
 
-  if (auto it = pairComms_.find(key); it != pairComms_.end()) {
+  if (auto it = pairComms_.find(pairKey); it != pairComms_.end()) {
     return it->second;
   }
 
@@ -712,7 +715,7 @@ flagcxComm_t flagcxBackend::getOrCreatePairComm(int peer) {
   flagcxComm_t pairComm = nullptr;
   C10D_FLAGCX_CHECK(flagcxCommInitRank(&pairComm, numRanks, &uniqueId, p2pRank),
                     std::nullopt);
-  pairComms_.emplace(key, pairComm);
+  pairComms_.emplace(pairKey, pairComm);
   return pairComm;
 }
 

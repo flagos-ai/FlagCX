@@ -179,8 +179,13 @@ static flagcxResult_t xshmemDevApiMemDestroy(flagcxComm_t comm,
                                              flagcxDevMem_t devMem) {
   (void)comm;
   auto *window = (XshmemWindow *)devMem->window;
-  if (window != nullptr && window->intraPeMap != nullptr)
-    deviceAdaptor->deviceFree(window->intraPeMap, flagcxMemDevice, nullptr);
+  if (window != nullptr && window->intraPeMap != nullptr) {
+    flagcxResult_t result = flagcxCommReleaseBuffer(comm, window->intraPeMap,
+                                                    flagcxInternalBufferDevice);
+    if (result != flagcxSuccess)
+      return result;
+    window->intraPeMap = nullptr;
+  }
   delete window;
   devMem->window = nullptr;
   return flagcxSuccess;

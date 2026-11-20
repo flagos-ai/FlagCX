@@ -264,6 +264,7 @@ struct flagcxFusedInvocationBuffers {
   void *workspace;
   void *counters;
   bool runnerCleanupPending;
+  struct flagcxWorkRecord *workspaceWork;
   flagcxFusedInvocationBuffers *next;
 };
 
@@ -280,6 +281,8 @@ typedef struct {
   flagcxStream_t redStream;
   flagcxStream_t cpyStream;
   struct flagcxFusedInvocationBuffers *pendingFusedBuffers;
+  struct flagcxWorkRecord *borrowedStreamWork;
+  int borrowedStreamDrained;
 
   // new: DAG and scheduling queues
   struct uniRunnerDagNode *dagNodes; // Array of all DAG nodes
@@ -330,6 +333,7 @@ typedef struct {
   // owned by the communicator. ipcReadySlots counts logical DAG-ready entries;
   // ipcReadyCapacity includes the static executor's abort/done control prefix.
   flagcxComm_t ipcOwner;
+  flagcxComm_t lifetimeOwner; // Parent outlives invocation/persistent cleanup.
   flagcxDevMem_t ipcInputMem;
   flagcxDevMem_t ipcOutputMem;
   flagcxDevMem_t ipcReadyMem;
@@ -501,9 +505,15 @@ ensureUniRunnerIpcRingResources(flagcxUniRunnerState *runnerState,
                                 size_t bytes);
 flagcxResult_t ensureUniRunnerIpcReadyStorage(flagcxUniRunnerState *runnerState,
                                               flagcxComm_t comm, size_t slots);
-flagcxResult_t cleanupUniRunner(flagcxComm_t comm);
+flagcxResult_t flagcxUniRunnerDrainWork(flagcxComm_t comm,
+                                        bool atSubmissionBoundary);
+flagcxResult_t cleanupUniRunner(flagcxComm_t comm,
+                                bool atSubmissionBoundary = true);
 flagcxResult_t
 cleanupUniRunnerPersistentState(flagcxUniRunnerState *runnerState);
+// Internal host-node submission, shared by the runner execution schedules.
+flagcxResult_t flagcxUniRunnerSubmitHostDag(flagcxUniRunnerState *state,
+                                            flagcxHeteroComm_t comm);
 flagcxResult_t runUniRunner(flagcxComm_t comm,
                             bool convergeHostPreparation = false);
 #endif // FLAGCX_UNIRUNNER_IMPL_H_
