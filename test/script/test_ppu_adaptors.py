@@ -296,6 +296,63 @@ int main() {
 }
 """)
 
+    def test_pccl_lifecycle_retains_wrapper_until_destroy_success(self):
+        source = r"""
+#include "adaptor.h"
+#include <cassert>
+#include <stdlib.h>
+static int wrapperFrees = 0, finalizeCalls = 0, destroyCalls = 0;
+static void releaseWrapper(void *pointer) {
+  ++wrapperFrees;
+  std::free(pointer);
+}
+// Match the production macro: InProgress must not permit wrapper release.
+#undef FLAGCXCHECK
+#define FLAGCXCHECK(call) do { auto r = (call); if (r != flagcxSuccess && r != flagcxInProgress) return r; } while (0)
+#define free releaseWrapper
+"""
+        source += '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
+        source += r"""
+#undef free
+static pcclResult_t finalizeNative(pcclComm_t) {
+  ++finalizeCalls;
+  return pcclStatus;
+}
+static pcclResult_t destroyNative(pcclComm_t) {
+  ++destroyCalls;
+  return pcclStatus;
+}
+int main() {
+  assert(ppupcclAdaptorCommFinalize(nullptr) == flagcxInvalidArgument);
+  assert(ppupcclAdaptorCommDestroy(nullptr) == flagcxInvalidArgument);
+  assert(ppupcclAdaptorGetVersion(nullptr) == flagcxSuccess);
+  ppupcclApi.pcclCommFinalize = finalizeNative;
+  ppupcclApi.pcclCommDestroy = destroyNative;
+  flagcxInnerComm_t comm = static_cast<flagcxInnerComm_t>(calloc(1, sizeof(*comm)));
+  assert(comm != nullptr);
+  comm->base = reinterpret_cast<pcclComm_t>(uintptr_t(17));
+  for (pcclResult_t failure : {pcclRemoteError, pcclInProgress}) {
+    pcclStatus = failure;
+    assert(ppupcclAdaptorCommFinalize(comm) == ppupcclResultToFlagcx(failure));
+    assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(17)));
+    assert(wrapperFrees == 0);
+  }
+  pcclStatus = pcclSuccess;
+  assert(ppupcclAdaptorCommFinalize(comm) == flagcxSuccess);
+  assert(wrapperFrees == 0);
+  for (pcclResult_t failure : {pcclRemoteError, pcclInProgress}) {
+    pcclStatus = failure;
+    assert(ppupcclAdaptorCommDestroy(comm) == ppupcclResultToFlagcx(failure));
+    assert(comm->base == reinterpret_cast<pcclComm_t>(uintptr_t(17)));
+    assert(wrapperFrees == 0);
+  }
+  pcclStatus = pcclSuccess;
+  assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
+  assert(finalizeCalls == 3 && destroyCalls == 3 && wrapperFrees == 1);
+}
+"""
+        self.compile_and_run('#include <initializer_list>\n' + source)
+
     def test_pccl_loader_reports_missing_library_and_symbol(self):
         source = '#include "' + str(ROOT / 'flagcx/adaptor/ccl/ppu_pccl_adaptor.cc') + '"\n'
         source += r"""
@@ -535,7 +592,6 @@ int main(int argc, char **argv) {
     assert(ppupcclAdaptorCommInitRank(&comm, 4,
         reinterpret_cast<flagcxInnerUniqueId_t>(&id), 0, nullptr) == flagcxSuccess);
     assert(ppupcclAdaptorCommDestroy(comm) == flagcxSuccess);
-    free(comm);
     void *plugin = dlopen("libpccl-ext-kernel.so", RTLD_NOW | RTLD_NOLOAD);
     if (strcmp(argv[1], "optional") == 0) {
       assert(plugin == nullptr);

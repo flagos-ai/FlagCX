@@ -79,17 +79,17 @@ flagcxResult_t cnclAdaptorCommInitRank(flagcxInnerComm_t *comm, int nranks,
 }
 
 // TODO: unsupported
-flagcxResult_t cnclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  // return (flagcxResult_t)cnclCommFinalize(comm->base);
-  return flagcxUnhandledDeviceError;
-}
-
-flagcxResult_t cnclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)
-      c2f_ret_map[cnclDestroyComms(&(comm->base), 1 /*num_comm*/)];
-}
+// This SDK has no separate native Finalize. Close native state in the final
+// vendor phase; retain the wrapper until local Destroy.
+#define FLAGCX_COMPAT_FINALIZE cnclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY cnclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
+  (flagcxResult_t) c2f_ret_map[cnclDestroyComms(&((comm)->base), 1)]
+#include "compat_comm_lifecycle.h"
 
 flagcxResult_t cnclAdaptorCommAbort(flagcxInnerComm_t comm) {
+  if (comm != NULL && comm->base == NULL)
+    return flagcxSuccess;
   return (flagcxResult_t)c2f_ret_map[cnclAbortComm(comm->base)];
 }
 
@@ -379,6 +379,6 @@ struct flagcxCCLAdaptor cnclAdaptor = {
     cnclAdaptorGroupStart, cnclAdaptorGroupEnd,
     // Device API
     cnclAdaptorDevCommReqsInit, cnclAdaptorDevCommCreate,
-    cnclAdaptorDevCommDestroy};
+    cnclAdaptorDevCommDestroy, flagcxCclFinalizeWorld};
 
 #endif // USE_CAMBRICON_ADAPTOR

@@ -428,12 +428,12 @@ TEST_F(RegPoolTest, HomoRegHandles_PerCommStorage) {
   void *handleA = reinterpret_cast<void *>(0xAAAA);
   void *handleB = reinterpret_cast<void *>(0xBBBB);
 
-  item->homoRegHandles[commKeyA] = handleA;
-  item->homoRegHandles[commKeyB] = handleB;
+  item->homoRegHandles[commKeyA].handle = handleA;
+  item->homoRegHandles[commKeyB].handle = handleB;
 
   EXPECT_EQ(item->homoRegHandles.size(), 2u);
-  EXPECT_EQ(item->homoRegHandles[commKeyA], handleA);
-  EXPECT_EQ(item->homoRegHandles[commKeyB], handleB);
+  EXPECT_EQ(item->homoRegHandles[commKeyA].handle, handleA);
+  EXPECT_EQ(item->homoRegHandles[commKeyB].handle, handleB);
 }
 
 TEST_F(RegPoolTest, HomoRegHandles_EraseOneComm_OtherRemains) {
@@ -444,14 +444,15 @@ TEST_F(RegPoolTest, HomoRegHandles_EraseOneComm_OtherRemains) {
 
   uintptr_t commKeyA = 0xC000;
   uintptr_t commKeyB = 0xD000;
-  item->homoRegHandles[commKeyA] = reinterpret_cast<void *>(0x1);
-  item->homoRegHandles[commKeyB] = reinterpret_cast<void *>(0x2);
+  item->homoRegHandles[commKeyA].handle = reinterpret_cast<void *>(0x1);
+  item->homoRegHandles[commKeyB].handle = reinterpret_cast<void *>(0x2);
 
   item->homoRegHandles.erase(commKeyA);
 
   EXPECT_EQ(item->homoRegHandles.count(commKeyA), 0u);
   EXPECT_EQ(item->homoRegHandles.count(commKeyB), 1u);
-  EXPECT_EQ(item->homoRegHandles[commKeyB], reinterpret_cast<void *>(0x2));
+  EXPECT_EQ(item->homoRegHandles[commKeyB].handle,
+            reinterpret_cast<void *>(0x2));
 }
 
 // =============================================================================

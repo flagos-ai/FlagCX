@@ -96,15 +96,17 @@ flagcxResult_t pcclAdaptorCommInitAll(flagcxInnerComm_t *comm, int nranks,
 }
 
 // TODO: unsupported
-flagcxResult_t pcclAdaptorCommFinalize(flagcxInnerComm_t comm) {
-  return flagcxUnhandledDeviceError;
-}
-
-flagcxResult_t pcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
-  return (flagcxResult_t)p2f_ret_map[pcclCommDestroy(comm->base)];
-}
+// This SDK has no separate native Finalize. Close native state in the final
+// vendor phase; retain the wrapper until local Destroy.
+#define FLAGCX_COMPAT_FINALIZE pcclAdaptorCommFinalize
+#define FLAGCX_COMPAT_DESTROY pcclAdaptorCommDestroy
+#define FLAGCX_COMPAT_CLOSE_NATIVE(comm)                                       \
+  (flagcxResult_t) p2f_ret_map[pcclCommDestroy((comm)->base)]
+#include "compat_comm_lifecycle.h"
 
 flagcxResult_t pcclAdaptorCommAbort(flagcxInnerComm_t comm) {
+  if (comm != NULL && comm->base == NULL)
+    return flagcxSuccess;
   return (flagcxResult_t)p2f_ret_map[pcclCommAbort(comm->base)];
 }
 
@@ -303,6 +305,7 @@ struct flagcxCCLAdaptor pcclAdaptor = {
     pcclAdaptorAllGather, pcclAdaptorAlltoAll, pcclAdaptorAlltoAllv,
     pcclAdaptorSend, pcclAdaptorRecv,
     // Group semantics
-    pcclAdaptorGroupStart, pcclAdaptorGroupEnd};
+    pcclAdaptorGroupStart, pcclAdaptorGroupEnd, NULL, NULL, NULL,
+    flagcxCclFinalizeWorld};
 
 #endif // USE_SUNRISE_ADAPTOR
