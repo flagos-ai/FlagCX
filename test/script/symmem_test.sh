@@ -19,7 +19,7 @@ run_multi_segment=0
 # Keep this fixed list aligned with the provider cases exercised by hardware CI.
 # DU multi-segment mapping is still under driver validation.
 case "${FLAGCX_ADAPTOR:-}" in
-  nvidia|metax|ppu|ascend)
+  nvidia|metax|ppu|ascend|iluvatar)
     run_multi_segment=1
     ;;
   enflame)
@@ -32,7 +32,7 @@ case "${FLAGCX_ADAPTOR:-}" in
   "")
     ;;
   *)
-    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, ascend, or klx" >&2
+    echo "Unsupported FLAGCX_ADAPTOR '${FLAGCX_ADAPTOR}'; expected nvidia, du, ppu, metax, ascend, klx, or iluvatar" >&2
     exit 2
     ;;
 esac
@@ -46,6 +46,7 @@ run_required_case() {
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=1 \
+      -x FLAGCX_DMABUF_ENABLE="${FLAGCX_DMABUF_ENABLE:-1}" \
       -x FLAGCX_IB_DISABLE=1 \
       "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" "$@" \
       "$BUILD_BIN/symmem_mpi_tests" --gtest_filter="$test_case"
@@ -82,6 +83,7 @@ if [[ -z "$vmm_skip_reason" ]]; then
       -x FLAGCX_CLUSTER_SPLIT_LIST=2 \
       -x FLAGCX_MEM_ENABLE=1 \
       -x FLAGCX_VMM_ENABLE=1 \
+      -x FLAGCX_DMABUF_ENABLE="${FLAGCX_DMABUF_ENABLE:-1}" \
       -x FLAGCX_IB_DISABLE=1 \
       -x FLAGCX_CI_REQUIRE_VMM=1 \
       "${vmm_provider_env[@]+"${vmm_provider_env[@]}"}" \
@@ -107,12 +109,25 @@ if ((run_multi_segment)); then
   fi
 fi
 
-if [[ -z "$vmm_skip_reason" && -n "${FLAGCX_ADAPTOR:-}" &&
-      "${FLAGCX_ADAPTOR}" != ascend ]]; then
+if [[ "${FLAGCX_ADAPTOR:-}" == iluvatar ]]; then
+  # CoreX crashes when the raw VMM address reaches cudaIpcGetMemHandle.
+  echo "Skipping UntrackedVmmMappingIsRejected on Iluvatar: CoreX VMM-to-runtime-IPC export crashes"
+elif [[ -z "$vmm_skip_reason" && -n "${FLAGCX_ADAPTOR:-}" &&
+        "${FLAGCX_ADAPTOR}" != ascend ]]; then
   echo ""
   echo "=== Running untracked VMM mapping rejection (np=$LOCAL_NP) ==="
+  untracked_status=0
   run_required_case SymMemTest.UntrackedVmmMappingIsRejected \
-    -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1 || test_status=$?
+    -x FLAGCX_CI_REQUIRE_PROVIDER_VMM=1 || untracked_status=$?
+  if ((untracked_status != 0)); then
+    if [[ "$FLAGCX_ADAPTOR" == nvidia ]]; then
+      bash "$PROJECT_ROOT/.github/scripts/ci/run_ipc_vmm_diagnostics.sh" \
+        "$BUILD_BIN/ipc_vmm_repro" \
+        "${FLAGCX_CI_LOG_DIR:-$SYMMEM_DIR/build/results}/ipc-vmm-diagnostics" || \
+        echo 'IPC reproducer diagnostics failed; retaining the original SymMem failure' >&2
+    fi
+    test_status=$untracked_status
+  fi
 fi
 
 if [[ "${FLAGCX_CI_REQUIRE_MULTICAST:-0}" == "1" ]]; then

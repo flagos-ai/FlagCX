@@ -1,6 +1,7 @@
 """Check fixed SymMem CI selection and MPI exit status handling."""
 
 import os
+import json
 import shutil
 import subprocess
 import tempfile
@@ -12,6 +13,76 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class SymmemCiTest(unittest.TestCase):
+    def test_iluvatar_matches_cuda_except_untracked_vmm_ipc_with_va_only_mr(self):
+        source = (REPO_ROOT / '.github/scripts/ci/run_unit_test.sh').read_text()
+        start = source.index('    symmem)\n')
+        end = source.index('    device_api)\n', start)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scripts = root / 'test/script'
+            scripts.mkdir(parents=True)
+            shutil.copy(REPO_ROOT / 'test/script/symmem_test.sh', scripts)
+            ci = root / '.github/scripts/ci'
+            ci.mkdir(parents=True)
+            shutil.copyfile(REPO_ROOT / '.github/scripts/ci/ignore_test.py',
+                            ci / 'ignore_test.py')
+            for name in ('run_with_timeout.sh', 'run_mpi_with_timeout.sh'):
+                wrapper = ci / name
+                wrapper.write_text('''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ['CI_CAPTURE'], 'a') as output:
+    output.write(json.dumps({'label': os.getenv('FLAGCX_CI_MPI_LABEL', os.getenv('FLAGCX_CI_TEST_LABEL')),
+                             'args': sys.argv[1:]}) + '\\n')
+''')
+                wrapper.chmod(0o755)
+            harness = root / 'run.sh'
+            harness.write_text('''#!/bin/bash
+set -eo pipefail
+SET_ENV_SCRIPT=$1
+PROJECT_ROOT=$2
+SUITE=symmem
+source "$SET_ENV_SCRIPT"
+flagcx_ci_configure_suite symmem
+MPI_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_mpi_with_timeout.sh"
+TEST_RUNNER="$PROJECT_ROOT/.github/scripts/ci/run_with_timeout.sh"
+''' + source[source.index('flagcx_ci_report_skipped_suite() {'):source.index('\nif [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == kunlunxin ]]')] + '''
+run_suite() {
+  case "$SUITE" in
+''' + source[start:end] + '''  esac
+}
+run_suite
+''')
+            results = {}
+            for platform in ('cuda', 'iluvatar'):
+                capture = root / f'{platform}.jsonl'
+                env = os.environ.copy()
+                for name in ('FLAGCX_CI_SYMMEM_VMM_SUPPORTED', 'FLAGCX_DMABUF_ENABLE',
+                             'FLAGCX_CI_REQUIRE_MULTICAST'):
+                    env.pop(name, None)
+                env.update(CI_CAPTURE=str(capture), MPI_HOME=str(root / 'mpi'))
+                run = subprocess.run(
+                    ['bash', str(harness), str(REPO_ROOT / f'.github/scripts/set_env/{platform}.sh'), str(root)],
+                    env=env, text=True, capture_output=True, timeout=30)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                if platform == 'iluvatar':
+                    self.assertIn('Skipping UntrackedVmmMappingIsRejected on Iluvatar', run.stdout)
+                else:
+                    self.assertNotIn('Skipping', run.stdout)
+                results[platform] = [json.loads(line) for line in capture.read_text().splitlines()]
+            results['cuda'] = [call for call in results['cuda']
+                               if call['label'] != 'SymMemTest.UntrackedVmmMappingIsRejected']
+            self.assertEqual([call['label'] for call in results['cuda']],
+                             [call['label'] for call in results['iluvatar']])
+            for cuda, iluvatar in zip(results['cuda'], results['iluvatar']):
+                self.assertEqual([arg for arg in cuda['args'] if arg.startswith('--gtest_filter=')],
+                                 [arg for arg in iluvatar['args'] if arg.startswith('--gtest_filter=')])
+                self.assertNotIn('FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1', iluvatar['args'])
+                self.assertNotIn('FLAGCX_DMABUF_ENABLE=1', iluvatar['args'])
+                if iluvatar['label'] in ('symmem VMM + NET auto', 'symmem VMM + NET route union'):
+                    self.assertIn('FLAGCX_CI_EXPECT_VMM_MR_ROUTE=va', iluvatar['args'])
+                    self.assertIn('FLAGCX_CI_SYMMEM_VA_ONLY=1', iluvatar['args'])
+                    self.assertIn('FLAGCX_DMABUF_ENABLE=0', iluvatar['args'])
+
     def test_selected_cases_by_adaptor(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -37,6 +108,7 @@ class SymmemCiTest(unittest.TestCase):
                 ("ppu", True),
                 ("metax", True),
                 ("klx", False),
+                ("iluvatar", True),
             ):
                 with self.subTest(adaptor=adaptor):
                     capture = root / f"{adaptor}.calls"
@@ -52,13 +124,14 @@ class SymmemCiTest(unittest.TestCase):
                         line for line in calls
                         if "--gtest_filter=SymMemTest." in line
                     ]
-                    self.assertEqual(len(dedicated), 3 if multi_segment else 1)
+                    untracked = adaptor != 'iluvatar'
+                    self.assertEqual(len(dedicated), (2 if multi_segment else 0) + int(untracked))
                     self.assertEqual(
                         sum(
                             "UntrackedVmmMappingIsRejected" in line
                             for line in dedicated
                         ),
-                        1,
+                        int(untracked),
                     )
                     self.assertEqual(
                         sum(

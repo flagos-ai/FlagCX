@@ -163,6 +163,8 @@ struct Barrier;
 #elif defined(USE_ENFLAME_ADAPTOR)
 #ifdef FLAGCX_ENFLAME_DEVICE_API
 #include "enflame_comm_traits.h"
+#elif defined(USE_ASCEND_ADAPTOR)
+#include "ascend_comm_traits.h"
 #else
 #include "default_comm_traits.h"
 using DeviceAPI = CommTraits<DefaultBackend<EnflamePlatform>>;

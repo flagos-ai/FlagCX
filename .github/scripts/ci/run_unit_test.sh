@@ -308,22 +308,29 @@ run_device_api() {
   FLAGCX_CI_MPI_LABEL="device_api intra" \
     "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
     build/bin/test_device_api_intra "${flags[@]}"
-  FLAGCX_CI_MPI_LABEL="device IR intra" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
-    build/bin/test_device_ir_intra "${flags[@]}"
+  # A platform whose test Makefile compiles the unified-IR or cross-node
+  # cases out (no build/bin entry produced) opts out per step instead of
+  # failing on a binary it deliberately does not build. Both default to 1.
+  if [[ "${FLAGCX_CI_DEVICE_API_IR:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="device IR intra" \
+      "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${common_env[@]}" \
+      build/bin/test_device_ir_intra "${flags[@]}"
+  fi
 
-  FLAGCX_CI_MPI_LABEL="device_api inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_api_inter "${flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_api_inter "${flags[@]}"
-  FLAGCX_CI_MPI_LABEL="device IR inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_inter "${flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_inter "${flags[@]}"
+  if [[ "${FLAGCX_CI_DEVICE_API_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="device_api inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_api_inter "${flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_api_inter "${flags[@]}"
+    FLAGCX_CI_MPI_LABEL="device IR inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_inter "${flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${common_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_inter "${flags[@]}"
+  fi
 }
 
 run_device_api_unified_ir() {
@@ -335,9 +342,17 @@ run_device_api_unified_ir() {
     export FLAGCX_CI_UNIFIED_IR_SKIP_S16=1
     export FLAGCX_CI_UNIFIED_IR_SKIP_S16_REASON="$s16_skip_reason"
   fi
+  local unified_ir_use_hetero=1
+  local unified_ir_vmm_enable=0
+  if [[ "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 ]]; then
+    # XSHMEM uses the homo backend and symmetric windows. VMM_ENABLE permits
+    # that window mode; the buffers still come from the SHMEM allocator.
+    unified_ir_use_hetero=0
+    unified_ir_vmm_enable=1
+  fi
   local -a common_env=(
-    -x FLAGCX_USE_HETERO_COMM=1
-    -x FLAGCX_VMM_ENABLE=0
+    -x FLAGCX_USE_HETERO_COMM="$unified_ir_use_hetero"
+    -x FLAGCX_VMM_ENABLE="$unified_ir_vmm_enable"
     -x LD_LIBRARY_PATH
   )
   if declare -p FLAGCX_CI_UNIFIED_IR_MPI_ARGS >/dev/null 2>&1; then
@@ -388,6 +403,12 @@ run_device_api_unified_ir() {
 
   # Keep P2P enabled so the intra test covers signal/counter buffers and their
   # shadows. The INTER team below crosses the two logical nodes through NET.
+  # UNIFIED_IR_NP, when a platform set_env exports it, overrides the rank
+  # count for BOTH entries of the unified suite - this runner line and the
+  # Makefile recipe - so the two can never disagree (MC952 review P1:
+  # only the Makefile consumed the knob and CI kept running four ranks).
+  # Platforms that do not export it keep the historical
+  # $FLAGCX_CI_INTRA_NP invocation byte for byte.
   if [[ "${FLAGCX_CI_DEVICE_API_SHMEM_INTRANODE_ONLY:-0}" == 1 ]]; then
     intra_env+=(-x XSHMEM_SYMMETRIC_SIZE)
     # S23 fans each payload out across 18 combinations. Keep the XSHMEM test
@@ -403,31 +424,46 @@ run_device_api_unified_ir() {
   fi
 
   FLAGCX_CI_MPI_LABEL="unified IR intra" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root "${intra_env[@]}" \
+    "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root "${intra_env[@]}" \
     build/bin/test_device_ir_unified_intra "${intra_flags[@]}"
 
-  FLAGCX_CI_MPI_LABEL="unified IR inter" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${inter_flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${inter_flags[@]}"
+  # The inter steps exercise the one-sided NET transport across two logical
+  # nodes.  A platform whose Device IR bindings declare the NET arm absent
+  # (Ascend: FLAGCX_DEVICE_HAS_NET_TRANSPORT=0) does not even build
+  # test_device_ir_unified_inter, so both inter steps are gated off for it via
+  # FLAGCX_CI_UNIFIED_IR_INTER.  The default of 1 keeps every other platform's
+  # matrix byte-for-byte unchanged.
+  if [[ "${FLAGCX_CI_UNIFIED_IR_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR inter" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${inter_flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${inter_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${inter_flags[@]}"
+  fi
 
   # Force one-sided data/signal operations through Net. Barriers retain their
   # configured transport; these runs validate the Net fallback for S18-S25.
-  FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
-    "$MPI_RUNNER" -np "$FLAGCX_CI_INTRA_NP" --allow-run-as-root \
-    "${intra_fallback_env[@]}" \
-    build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+  # A platform with no NET transport gates both fallback runs off as well: the
+  # intra fallback follows FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA and the inter
+  # fallback follows the same INTER gate as above.
+  if [[ "${FLAGCX_CI_UNIFIED_IR_FALLBACK_INTRA:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR intra forced fallback" \
+      "$MPI_RUNNER" -np "${UNIFIED_IR_NP:-$FLAGCX_CI_INTRA_NP}" --allow-run-as-root \
+      "${intra_fallback_env[@]}" \
+      build/bin/test_device_ir_unified_intra "${fallback_flags[@]}"
+  fi
 
-  FLAGCX_CI_MPI_LABEL="unified IR inter forced fallback" \
-    "$MPI_RUNNER" --allow-run-as-root \
-    -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
-    "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${fallback_flags[@]}" \
-    : -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
-    "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-    build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
+  if [[ "${FLAGCX_CI_UNIFIED_IR_INTER:-1}" == 1 ]]; then
+    FLAGCX_CI_MPI_LABEL="unified IR inter forced fallback" \
+      "$MPI_RUNNER" --allow-run-as-root \
+      -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
+      "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${fallback_flags[@]}" \
+      : -np "$FLAGCX_CI_NODE_NP" "${inter_fallback_env[@]}" \
+      "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+      build/bin/test_device_ir_unified_inter "${fallback_flags[@]}"
+  fi
 }
 
 run_suite() {
@@ -461,6 +497,11 @@ run_suite() {
       local gpu_mr_policy=${FLAGCX_CI_GPU_MR_POLICY:-gpu-mr-required}
       local platform_name
       platform_name=$(basename "$SET_ENV_SCRIPT" .sh)
+      if [[ "$platform_name" == enflame &&
+            "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        flagcx_ci_report_skipped_suite "$SUITE IB loopback tests" \
+          "No active RDMA HCA; NetAdaptorLoopback tests require the IB transport"
+      fi
       local adaptor_gtest_filter=${GTEST_FILTER:-*}
       if [[ "$platform_name" == iluvatar ]]; then
         # This CoreX runner cannot export a DMA-BUF FD and mlx5_0 reports
@@ -622,6 +663,11 @@ run_suite() {
       local shared_mpi_status=0
       local shared_built=0
       local p2p_mpi_env=""
+      if [[ "$(basename "$SET_ENV_SCRIPT" .sh)" == enflame &&
+            "${FLAGCX_CI_HAS_RDMA:-1}" != 1 ]]; then
+        flagcx_ci_report_skipped_suite "P2P RDMA unit case" \
+          "P2pAdaptorTest.DevicesReturnsPositive requires an active IB P2P device"
+      fi
       if [[ "${FLAGCX_P2P_TRANSPORT:-ib}" == "accl" ]]; then
         p2p_mpi_env="-x FLAGCX_P2P_TRANSPORT=accl"
       fi
@@ -716,7 +762,13 @@ run_suite() {
           --case RmaTest.IpcGetSameStreamCompletion \
           "$ipc_xml_dir/rank-0.xml" "$ipc_xml_dir/rank-1.xml" || ipc_status=$?
       fi
-      if flagcx_ci_require_rdma "$SUITE"; then
+      local rma_network_reason
+      rma_network_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase rma rma-network)
+      if [[ -n "$rma_network_reason" ]]; then
+        flagcx_ci_report_skipped_suite "rma network MPI and GDR visibility tests" \
+          "$rma_network_reason"
+      elif flagcx_ci_require_rdma "$SUITE"; then
         FLAGCX_CI_MPI_LABEL="rma network MPI tests" \
           make -C "$suite_dir" run-mpi-net "${args[@]}" \
           MPIRUN="$MPI_RUNNER" || network_status=$?
@@ -1111,6 +1163,7 @@ run_suite() {
         return 1
       }
       local platform_name expected_adaptor
+      local symmem_dmabuf_enable=${FLAGCX_DMABUF_ENABLE:-1}
       local symmem_run_vmm_net_data=1
       local symmem_run_vmm_local=1
       local -a symmem_common_env symmem_platform_env
@@ -1120,6 +1173,9 @@ run_suite() {
       if [[ "$platform_name" == "ppu" ]]; then
         expected_adaptor=BAREX
         symmem_platform_env+=( -x FLAGCX_P2P_TRANSPORT=accl )
+      fi
+      if declare -p FLAGCX_CI_SYMMEM_MPI_ARGS >/dev/null 2>&1; then
+        symmem_platform_env+=("${FLAGCX_CI_SYMMEM_MPI_ARGS[@]}")
       fi
       if [[ -n "$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
         phase symmem vmm-net-data)" ]]; then
@@ -1191,7 +1247,8 @@ run_suite() {
           "$symmem_bin" \
           --gtest_filter=SymMemTest.RankLocalIpcFailureUsesNetworkMrFallback:SymMemTest.P2pDisabledLocalWindowAcquiresNetworkMrBeforePublish || symmem_status=$?
       else
-        echo "Skipping symmem local IPC + NET fallback: $local_ipc_net_reason"
+        flagcx_ci_report_skipped_suite "symmem local IPC + NET fallback" \
+          "$local_ipc_net_reason"
       fi
 
       local ipc_net_reason
@@ -1202,16 +1259,16 @@ run_suite() {
           "$MPI_RUNNER" --allow-run-as-root \
           -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter" \
           : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=0 \
-          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
           "$symmem_bin" "$symmem_filter" || symmem_status=$?
       else
-        echo "Skipping symmem IPC + NET: $ipc_net_reason"
+        flagcx_ci_report_skipped_suite "symmem IPC + NET" "$ipc_net_reason"
       fi
 
       if ((symmem_run_vmm_net_data != 0)); then
@@ -1220,7 +1277,7 @@ run_suite() {
           -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
           -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
@@ -1228,7 +1285,7 @@ run_suite() {
           : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
           "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
           -x FLAGCX_CI_REQUIRE_VMM=1 \
-          -x FLAGCX_DMABUF_ENABLE=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
           -x FLAGCX_CI_CHECK_SEGMENTED_NET_FALLBACK=1 \
           -x FLAGCX_CI_REQUIRE_MIXED_NODE_VMM=1 \
           "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
@@ -1244,32 +1301,40 @@ run_suite() {
       if ((symmem_run_vmm_net_data == 0)); then
         symmem_route_union_env+=( -x FLAGCX_CI_ALLOW_VMM_NET_UNSUPPORTED=1 )
       fi
-      FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union" \
-        "$MPI_RUNNER" --allow-run-as-root \
-        -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
-        -x FLAGCX_CI_REQUIRE_VMM=1 \
-        -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
-        "${symmem_route_union_env[@]}" \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
-        "$symmem_bin" \
-        --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion \
-        : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
-        "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
-        -x FLAGCX_CI_REQUIRE_VMM=1 \
-        -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
-        -x FLAGCX_DMABUF_ENABLE=1 \
-        "${symmem_route_union_env[@]}" \
-        "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
-        "$symmem_bin" \
-        --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion || symmem_status=$?
+      local route_union_reason
+      route_union_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
+        phase symmem vmm-net-route-union)
+      if [[ -z "$route_union_reason" ]]; then
+        FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union" \
+          "$MPI_RUNNER" --allow-run-as-root \
+          -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
+          "${symmem_route_union_env[@]}" \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE1_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion \
+          : -np "$FLAGCX_CI_SYMMEM_NODE_NP" \
+          "${symmem_common_env[@]}" -x FLAGCX_VMM_ENABLE=1 \
+          -x FLAGCX_CI_REQUIRE_VMM=1 \
+          -x FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1 \
+          -x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable" \
+          "${symmem_route_union_env[@]}" \
+          "${symmem_platform_env[@]}" "${FLAGCX_CI_NODE2_MPI_ARGS[@]}" \
+          "$symmem_bin" \
+          --gtest_filter=SymMemTest.VmmNetRouteCapabilityUnion || symmem_status=$?
+      else
+        flagcx_ci_report_skipped_suite "symmem VMM + NET route union" \
+          "$route_union_reason"
+      fi
 
       if ((symmem_run_vmm_local == 0)); then
         local vmm_local_reason
         vmm_local_reason=$(python3 "$PROJECT_ROOT/.github/scripts/ci/ignore_test.py" \
           phase symmem vmm-local-and-remote-without-net)
-        echo "Skipping $platform_name VMM flat-map data tests: ${vmm_local_reason:-VMM is unavailable}; route capability was tested above"
+        echo "Skipping $platform_name VMM flat-map data tests: ${vmm_local_reason:-VMM is unavailable}"
         return "$symmem_status"
       fi
       return "$symmem_status"

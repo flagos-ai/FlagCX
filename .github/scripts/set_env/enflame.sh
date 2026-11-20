@@ -25,6 +25,18 @@ export NP=4
 FLAGCX_CI_IGNORE_TEST='{
   "phases": [
     {
+      "suite": "p2p",
+      "name": "p2p-write-mpi",
+      "when": {"FLAGCX_CI_HAS_RDMA": "0"},
+      "reason": "No active RDMA HCA; P2P WRITE MPI coverage requires RDMA registration and transport"
+    },
+    {
+      "suite": "rma",
+      "name": "rma-network",
+      "when": {"FLAGCX_CI_HAS_RDMA": "0"},
+      "reason": "No active RDMA HCA; network RMA and GDR visibility tests require RDMA memory registration"
+    },
+    {
       "suite": "symmem",
       "name": "vmm-local-and-remote-without-net",
       "reason": "The Enflame TOPS runtime does not support VMM-backed SymMem data tests"
@@ -45,6 +57,12 @@ FLAGCX_CI_IGNORE_TEST='{
       "name": "ipc-net",
       "when": {"FLAGCX_CI_HAS_RDMA": "0"},
       "reason": "No active RDMA HCA is available; the Socket transport cannot register network MRs required by this cross-node test"
+    },
+    {
+      "suite": "symmem",
+      "name": "vmm-net-route-union",
+      "when": {"FLAGCX_CI_HAS_RDMA": "0"},
+      "reason": "No active RDMA HCA is available; this two-node route test requires network MR registration"
     }
   ]
 }'

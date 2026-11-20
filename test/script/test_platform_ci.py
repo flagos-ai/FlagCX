@@ -43,7 +43,11 @@ class PlatformCiRegressionTest(unittest.TestCase):
                     (REPO_ROOT / f".github/configs/{platform}.yml").read_text()
                 )
                 self.assertNotIn("ignore_test", config)
-                self.assertTrue(load_platform_ignore_config(platform))
+                ignore_config = load_platform_ignore_config(platform)
+                if platform == "iluvatar":
+                    self.assertEqual(ignore_config, {})
+                else:
+                    self.assertTrue(ignore_config)
         for filename in (
             "test.yml",
             "torch-api-test.yml",
@@ -150,6 +154,7 @@ set -euo pipefail
 source "$1"
 SUITE=capability-check
 PROJECT_ROOT="$2"
+export FLAGCX_CI_HAS_RDMA=0
 export FLAGCX_CI_IGNORE_TEST="$3"
 flagcx_ci_report_skipped_suite() { echo "SKIPPED $*"; }
 '''+ helper + '''
@@ -187,6 +192,32 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
                     marker = f"{suite}/{phase}"
                     self.assertEqual(f"SKIPPED {marker}" in result.stdout,
                                      (suite, phase) in ignored)
+
+    def test_enflame_rdma_exclusions_are_conditional_and_complete(self):
+        config = load_platform_ignore_config("enflame")
+        phases = {(item["suite"], item["name"]): item
+                  for item in config["phases"]}
+        expected = {
+            ("p2p", "p2p-write-mpi"),
+            ("rma", "rma-network"),
+            ("symmem", "local-ipc-net-fallback"),
+            ("symmem", "ipc-net"),
+            ("symmem", "vmm-net-route-union"),
+        }
+        self.assertEqual({key for key, value in phases.items()
+                          if value.get("when") == {"FLAGCX_CI_HAS_RDMA": "0"}},
+                         expected)
+        helper = REPO_ROOT / ".github/scripts/ci/ignore_test.py"
+        for rdma, should_skip in (("0", True), ("1", False)):
+            for suite, phase in sorted(expected):
+                with self.subTest(rdma=rdma, suite=suite, phase=phase):
+                    result = subprocess.run(
+                        ["python3", str(helper), "phase", suite, phase],
+                        env={**os.environ, "FLAGCX_CI_HAS_RDMA": rdma,
+                             "FLAGCX_CI_IGNORE_TEST": json.dumps(config)},
+                        capture_output=True, text=True, check=True,
+                    )
+                    self.assertEqual(bool(result.stdout.strip()), should_skip)
 
     def test_kunlunxin_device_suite_dependency_gap_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1020,7 +1051,9 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             "ascend": [
                 "core",
                 "adaptor",
+                "device_api",
                 "device_api_host",
+                "device_api_unified_ir",
                 "p2p",
                 "rma",
                 "runner",
@@ -1544,7 +1577,8 @@ if run_failed_suite; then exit 99; else test "$?" = 7; fi
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"',
             unit_runner,
         )
-        self.assertIn('FLAGCX_DMABUF_ENABLE=1', unit_runner)
+        self.assertIn('symmem_dmabuf_enable=${FLAGCX_DMABUF_ENABLE:-1}', unit_runner)
+        self.assertIn('-x FLAGCX_DMABUF_ENABLE="$symmem_dmabuf_enable"', unit_runner)
         self.assertIn('FLAGCX_CI_REQUIRE_VMM_ROUTE_UNION=1', unit_runner)
         self.assertIn(
             "SymMemTest.VmmNetRouteCapabilityUnion", unit_runner
@@ -1769,10 +1803,13 @@ run_suite
             unit_runner,
         )
         iluvatar_config = json.dumps(load_platform_ignore_config("iluvatar"))
-        self.assertIn("vmm-local-and-remote-without-net", iluvatar_config)
+        self.assertNotIn("vmm-local-and-remote-without-net", iluvatar_config)
+        self.assertNotIn("vmm-net-data", iluvatar_config)
         self.assertIn("--case RmaTest.GetAsyncOffsets", unit_runner)
         self.assertIn("--case RmaTest.IpcGetSameStreamCompletion", unit_runner)
-        self.assertIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        self.assertNotIn("FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0", iluvatar_env)
+        self.assertIn("export FLAGCX_ADAPTOR=iluvatar", iluvatar_env)
+        self.assertIn("FLAGCX_CI_SYMMEM_VA_ONLY=1", iluvatar_env)
         route_union = unit_runner.index(
             'FLAGCX_CI_MPI_LABEL="symmem VMM + NET route union"'
         )
@@ -2944,61 +2981,76 @@ run_suite
         self.assertIn("symmem VMM + NET route union", result.stdout)
         self.assertIn("VMM is unavailable", result.stdout)
 
-    def test_enflame_symmem_skips_network_mr_phases_only_without_rdma(self):
+    def test_enflame_rdma_phase_skips_preserve_local_coverage_and_failures(self):
         source = (REPO_ROOT / ".github/scripts/ci/run_unit_test.sh").read_text()
+        newline = chr(10)
         run_suite = source[
             source.index("run_suite() {") :
-            source.index("\nrun_supplemental_unit_tests() {")
+            source.index(newline + "run_supplemental_unit_tests() {")
         ]
-        harness = run_suite + r'''
-SUITE=symmem
-SET_ENV_SCRIPT=enflame.sh
+        helpers = ""
+        for name in ("flagcx_ci_report_skipped_suite", "flagcx_ci_phase_supported"):
+            start = name + "() {"
+            helpers += start + source.split(start, 1)[1].split(
+                newline + "}", 1
+            )[0] + newline + "}" + newline
+        harness = helpers + run_suite + r'''
 PROJECT_ROOT="$PROJECT_ROOT_FOR_TEST"
-FLAGCX_CI_TEST_MAKE_ARGS=()
-FLAGCX_CI_HAS_RDMA="$TEST_RDMA"
-export FLAGCX_CI_HAS_RDMA
-FLAGCX_CI_SYMMEM_VMM_SUPPORTED=0
+source "$PROJECT_ROOT/.github/scripts/set_env/enflame.sh"
+SUITE="$TEST_SUITE"
+SET_ENV_SCRIPT=enflame.sh
+export FLAGCX_CI_HAS_RDMA="$TEST_RDMA"
 FLAGCX_CI_SYMMEM_NODE_NP=1
-FLAGCX_CI_NODE1_MPI_ARGS=()
-FLAGCX_CI_NODE2_MPI_ARGS=()
-FLAGCX_CI_IGNORE_TEST='{"phases":[
-  {"suite":"symmem","name":"vmm-local-and-remote-without-net","reason":"VMM unavailable"},
-  {"suite":"symmem","name":"vmm-net-data","reason":"VMM unavailable"},
-  {"suite":"symmem","name":"local-ipc-net-fallback","when":{"FLAGCX_CI_HAS_RDMA":"0"},"reason":"No active RDMA HCA; Socket cannot register network MRs"},
-  {"suite":"symmem","name":"ipc-net","when":{"FLAGCX_CI_HAS_RDMA":"0"},"reason":"No active RDMA HCA; Socket cannot register network MRs"}
-]}'
-export FLAGCX_CI_IGNORE_TEST
 MPI_RUNNER=mock_mpi_runner
-bash() { return 0; }
-mock_mpi_runner() { printf '%s\n' "${FLAGCX_CI_MPI_LABEL:-unlabelled}"; }
-flagcx_ci_phase_supported() { return 0; }
+TEST_RUNNER=mock_test_runner
+mock_test_runner() { "$@"; }
+flagcx_ci_require_rdma() { return 0; }
+bash() { echo "EXEC symmem unit and IPC-local"; return "$TEST_UNIT_STATUS"; }
+mock_mpi_runner() { echo "EXEC $FLAGCX_CI_MPI_LABEL"; }
+make() {
+  echo "EXEC $*"
+  if [[ "$*" == *" run-unit "* ]]; then
+    return "$TEST_UNIT_STATUS"
+  fi
+}
 run_suite
 '''
-        for rdma in ("0", "1"):
-            with self.subTest(rdma=rdma):
-                result = subprocess.run(
-                    [os.environ.get("BASH", "bash"), "-euc", harness],
-                    cwd=REPO_ROOT,
-                    env={
-                        **os.environ,
-                        "BASH_ENV": "",
-                        "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
-                        "TEST_RDMA": rdma,
-                    },
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(result.returncode, 0, result.stderr)
-                if rdma == "0":
-                    self.assertNotIn("symmem local IPC + NET fallback\n", result.stdout)
-                    self.assertNotIn("symmem IPC + NET\n", result.stdout)
-                    self.assertIn("Skipping symmem local IPC + NET fallback:", result.stdout)
-                    self.assertIn("Skipping symmem IPC + NET:", result.stdout)
-                else:
-                    self.assertIn("symmem local IPC + NET fallback", result.stdout)
-                    self.assertIn("symmem IPC + NET", result.stdout)
-                    self.assertNotIn("Skipping symmem IPC + NET", result.stdout)
+        for suite in ("rma", "symmem"):
+            for rdma in ("0", "1"):
+                for unit_status in ("0", "7"):
+                    with tempfile.TemporaryDirectory() as temp_dir, self.subTest(
+                        suite=suite, rdma=rdma, status=unit_status
+                    ):
+                        summary = Path(temp_dir) / "summary.md"
+                        result = subprocess.run(
+                            [os.environ.get("BASH", "bash"), "-euc", harness],
+                            cwd=REPO_ROOT,
+                            env={**os.environ, "BASH_ENV": "",
+                                 "PROJECT_ROOT_FOR_TEST": str(REPO_ROOT),
+                                 "TEST_SUITE": suite, "TEST_RDMA": rdma,
+                                 "TEST_UNIT_STATUS": unit_status,
+                                 "GITHUB_STEP_SUMMARY": str(summary)},
+                            text=True, capture_output=True, check=False,
+                        )
+                        self.assertEqual(result.returncode == 0, unit_status == "0",
+                                         result.stdout + result.stderr)
+                        if suite == "rma":
+                            self.assertIn(" run-unit ", result.stdout)
+                            self.assertIn(" run-mpi-ipc ", result.stdout)
+                            self.assertEqual(" run-mpi-net " in result.stdout, rdma == "1")
+                        else:
+                            self.assertIn("EXEC symmem unit and IPC-local", result.stdout)
+                            for label in ("local IPC + NET fallback", "IPC + NET",
+                                          "VMM + NET route union"):
+                                self.assertEqual("EXEC symmem " + label in result.stdout,
+                                                 rdma == "1", result.stdout)
+                                if rdma == "0":
+                                    self.assertIn("SKIPPED symmem " + label, result.stdout)
+                            self.assertNotIn("route capability was tested above", result.stdout)
+                        if rdma == "0":
+                            self.assertIn("No active RDMA HCA", result.stdout)
+                            self.assertIn("::warning", result.stdout)
+                            self.assertIn("no coverage", summary.read_text())
 
     def test_enflame_symmem_script_uses_only_vmm_capability(self):
         script = (REPO_ROOT / "test/script/symmem_test.sh").read_text()
