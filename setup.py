@@ -280,7 +280,8 @@ if CppExtension is not None:
         sources=sources,
         include_dirs=include_dirs,
         extra_compile_args={
-            "cxx": [adaptor_flag, torch_flag] + torch_backend_flags
+            "cxx": [adaptor_flag, torch_flag, "-fvisibility=hidden"]
+            + torch_backend_flags
         },
         extra_link_args=[],
         library_dirs=library_dirs,

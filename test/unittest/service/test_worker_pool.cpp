@@ -314,8 +314,9 @@ TEST(WorkerPool, ShutdownDuringInitializationRollsBackRegistration) {
   EXPECT_EQ(flagcxInvalidUsage, starting.get());
   EXPECT_EQ(flagcxSuccess, pool.joinAll());
   EXPECT_EQ(nullptr, worker);
-  if (worker != nullptr)
+  if (worker != nullptr) {
     EXPECT_EQ(flagcxSuccess, pool.retire(&worker));
+  }
   EXPECT_EQ(0u, pool.workerCount());
 }
 

@@ -52,7 +52,12 @@
 #include <accl/barex/xsimple_mempool.h>
 #include <accl/barex/xthreadpool.h>
 
+#ifdef USE_PPU_ADAPTOR
+#include "hggc_sdk_features.h"
+#include <hggc_runtime.h>
+#else
 #include <cuda_runtime.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -501,9 +506,26 @@ int inferLocalGpuIdxAccl() {
   return 0;
 }
 
-/* Classify a user pointer for RegUserMr. This transport is inherently
-   CUDA-runtime based (libaccl_barex itself links the PPU CUDA stack). */
+/* Classify a user pointer for RegUserMr using the selected device runtime. */
 bool classifyPtr(const void *ptr, device_type *dt, int *devId) {
+#ifdef USE_PPU_ADAPTOR
+  hggcPointerAttributes attrs = {};
+  const hggcError_t err = hggcPointerGetAttributes(&attrs, ptr);
+  if (err != hggcSuccess) {
+    hggcGetLastError();
+    *dt = CPU;
+    *devId = 0;
+    return true;
+  }
+#if FLAGCX_HGGC_HAS_POINTER_TYPE
+  const bool deviceMemory =
+      attrs.type == hggcMemoryTypeDevice || attrs.type == hggcMemoryTypeManaged;
+#else
+  const bool deviceMemory =
+      attrs.memoryType == hggcMemoryTypeDevice || attrs.isManaged;
+#endif
+  if (deviceMemory) {
+#else
   cudaPointerAttributes attrs;
   memset(&attrs, 0, sizeof(attrs));
   cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
@@ -515,6 +537,7 @@ bool classifyPtr(const void *ptr, device_type *dt, int *devId) {
   }
   if (attrs.type == cudaMemoryTypeDevice ||
       attrs.type == cudaMemoryTypeManaged) {
+#endif
     *dt = GPU;
     *devId = attrs.device;
     return true;

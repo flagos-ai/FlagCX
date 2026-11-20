@@ -202,9 +202,9 @@ def test_allgather():
         z[0] = MY_RANK
 
         # Perform allgather with FLAGCX_GROUP1
-        print(f"rank {MY_RANK} before _all_gather_base with FLAGCX_GROUP1: z = {z}, y = {y}")
-        dist._all_gather_base(y, z, group=FLAGCX_GROUP1)
-        print(f"rank {MY_RANK} after _all_gather_base with FLAGCX_GROUP1: z = {z}, y = {y}")
+        print(f"rank {MY_RANK} before all_gather_into_tensor with FLAGCX_GROUP1: z = {z}, y = {y}")
+        dist.all_gather_into_tensor(y, z, group=FLAGCX_GROUP1)
+        print(f"rank {MY_RANK} after all_gather_into_tensor with FLAGCX_GROUP1: z = {z}, y = {y}")
         z_list = list(torch.chunk(x, WORLD_SIZE, dim=0))
         print(f"rank {MY_RANK} before all_gather with FLAGCX_GROUP1: z = {z}, z_list = {z_list}")
         dist.all_gather(z_list, z, group=FLAGCX_GROUP1)
@@ -260,9 +260,9 @@ def test_reducescatter():
         print(f"rank {MY_RANK} after reduce_scatter with FLAGCX_GROUP1: x_list = {x_list}, z = {z}")
         for i in range(WORLD_SIZE):
             x[i] = MY_RANK
-        print(f"rank {MY_RANK} before _reduce_scatter_base with FLAGCX_GROUP1: x = {x}, z = {z}")
-        dist._reduce_scatter_base(z, x, op=dist.ReduceOp.MAX, group=FLAGCX_GROUP1)
-        print(f"rank {MY_RANK} after _reduce_scatter_base with FLAGCX_GROUP1: x = {x}, z = {z}")
+        print(f"rank {MY_RANK} before reduce_scatter_tensor with FLAGCX_GROUP1: x = {x}, z = {z}")
+        dist.reduce_scatter_tensor(z, x, op=dist.ReduceOp.MAX, group=FLAGCX_GROUP1)
+        print(f"rank {MY_RANK} after reduce_scatter_tensor with FLAGCX_GROUP1: x = {x}, z = {z}")
 
         # Perform reduce_scatter_coalesced with FLAGCX_GROUP1
         x = torch.rand(WORLD_SIZE).cuda()

@@ -926,14 +926,17 @@ TEST_F(DeviceAdaptorTest, HostRegisterUnregister) {
 
   // Check bad arguments while hostPtr still names a live allocation.
   auto nullResult = deviceAdaptor->hostRegister(NULL, sz);
-  if (nullResult != flagcxNotSupported)
+  if (nullResult != flagcxNotSupported) {
     EXPECT_EQ(nullResult, flagcxInvalidArgument);
+  }
   auto zeroResult = deviceAdaptor->hostRegister(hostPtr.get(), 0);
-  if (zeroResult != flagcxNotSupported)
+  if (zeroResult != flagcxNotSupported) {
     EXPECT_EQ(zeroResult, flagcxInvalidArgument);
+  }
   auto unregNullResult = deviceAdaptor->hostUnregister(NULL);
-  if (unregNullResult != flagcxNotSupported)
+  if (unregNullResult != flagcxNotSupported) {
     EXPECT_EQ(unregNullResult, flagcxInvalidArgument);
+  }
 
   // Register host memory as pinned (page-locked) memory.
   auto result = deviceAdaptor->hostRegister(hostPtr.get(), sz);

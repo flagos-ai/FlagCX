@@ -14,6 +14,9 @@ if ! command -v "$mpi_launcher" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Keep this build prefix out of UCX's runtime option parser in MPI and workers.
+unset UCX_HOME
+
 FLAGCX_CI_TEST_TIMEOUT="$mpi_timeout" \
   FLAGCX_CI_TEST_KILL_AFTER="$mpi_kill_after" \
   FLAGCX_CI_TEST_LABEL="$mpi_label" \

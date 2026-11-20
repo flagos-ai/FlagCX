@@ -22,8 +22,8 @@
 #include <ATen/cuda/CUDAEvent.h>
 #include <cuda_runtime.h>
 #elif USE_PPU_ADAPTOR
+#include "ppu_stream_compat.hpp"
 #include <ATen/cuda/CUDAEvent.h>
-#include <cuda_runtime.h>
 #elif USE_ASCEND_ADAPTOR
 #include "torch_npu/csrc/core/npu/NPUEvent.h"
 #include "torch_npu/csrc/core/npu/NPUStream.h"
@@ -143,8 +143,8 @@ public:
   }
 
   void record(const flagcxStream_t &stream, const int deviceId) override {
-    ppuEvent_.record(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId));
+    ppuEvent_.record(at::cuda::getStreamFromExternal(
+        flagcxPpuTorch::toTorchStream(stream), deviceId));
   }
 
   void block(const int deviceId) override {
@@ -152,8 +152,8 @@ public:
   }
 
   void block(const flagcxStream_t &stream, const int deviceId) override {
-    ppuEvent_.block(
-        at::cuda::getStreamFromExternal(*(cudaStream_t *)stream, deviceId));
+    ppuEvent_.block(at::cuda::getStreamFromExternal(
+        flagcxPpuTorch::toTorchStream(stream), deviceId));
   }
 
 private:

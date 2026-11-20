@@ -141,8 +141,8 @@ flagcxDevWaitSignal(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                     flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                     flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-  flagcxDevNetWaitSignalS(FLAGCX_IR_NET_ARG(net), coopKind, signal, least, bits,
-                          order);
+  flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+  FLAGCX_IR_NET_REF(net).waitSignal(coop, signal, least, bits, order);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void
@@ -151,8 +151,8 @@ flagcxDevWaitCounter(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
                      flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
                      flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-  flagcxDevNetWaitCounterS(FLAGCX_IR_NET_ARG(net), coopKind, counter, least,
-                           bits, order);
+  flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+  FLAGCX_IR_NET_REF(net).waitCounter(coop, counter, least, bits, order);
 }
 
 /* ================================================================
@@ -163,14 +163,14 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxDevReadSignal(
     const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevSignal_t signal,
     int bits, flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-  return flagcxDevNetReadSignalS(FLAGCX_IR_NET_ARG(net), signal, bits, order);
+  return FLAGCX_IR_NET_REF(net).readSignal(signal, bits, order);
 }
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR uint64_t flagcxDevReadCounter(
     const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevCounter_t counter,
     int bits, flagcxDevContext_t contextId, flagcxDevMemoryOrder_t order) {
   FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-  return flagcxDevNetReadCounterS(FLAGCX_IR_NET_ARG(net), counter, bits, order);
+  return FLAGCX_IR_NET_REF(net).readCounter(counter, bits, order);
 }
 
 /* ================================================================
@@ -190,7 +190,8 @@ flagcxDevFlush(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
   if (comm->_commBase.isOneSidedTransportReady() &&
       flagcxDevCommHasNetContexts(*comm)) {
     FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-    flagcxDevNetFlushS(FLAGCX_IR_NET_ARG(net), coopKind, order);
+    flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+    FLAGCX_IR_NET_REF(net).flush(coop, order);
   }
 #else
   // No device net transport on this platform (Ascend 2201 today).  Both
@@ -253,28 +254,42 @@ flagcxDevWaitSignalMeetShadow(const void FLAGCX_IR_GLOBAL_PTR *commOpaque,
 
 /* ================================================================
  * Category U8: Unified Barrier (3)
+ *
+ * Keep the scalar sessions and their parameters. Inter/World split calls use
+ * the backend directly because their public C++ wrappers are also deprecated.
  * ================================================================ */
 
 FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierArrive(
     const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevTeamKind_t teamKind,
     uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope) {
+  (void)scope;
   switch (teamKind) {
-    case FLAGCX_TEAM_INTRA:
-      flagcxIntraBarrierArriveS(commOpaque, coopKind, index,
-                                /*multimem=*/false, order);
+    case FLAGCX_TEAM_INTRA: {
+      const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxTeam team = flagcxTeamIntra(*comm);
+      flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(
+          coop, *comm, team, index, /*multimem=*/false);
+      bar.arrive(order);
       break;
+    }
     case FLAGCX_TEAM_INTER: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxInterBarrierArriveS(FLAGCX_IR_NET_ARG(net), coopKind, index, order,
-                                flagcxDevNetFenceLevel::Relaxed);
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxTeam team = flagcxMakeInterTeamFromNet(FLAGCX_IR_NET_REF(net));
+      flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(
+          coop, FLAGCX_IR_NET_REF(net), team, index);
+      bar._impl.arrive(order, flagcxDevNetFenceLevel::Relaxed);
       break;
     }
     case FLAGCX_TEAM_WORLD: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxWorldBarrierArriveS(FLAGCX_IR_NET_ARG(net), coopKind, index,
-                                /*multimem=*/false, order,
-                                flagcxDevNetFenceLevel::Relaxed);
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
+          coop, flagcxTeamTagWorld{}, FLAGCX_IR_NET_REF(net), index,
+          /*multimem=*/false);
+      bar._impl.arrive(order, flagcxDevNetFenceLevel::Relaxed);
       break;
     }
   }
@@ -284,22 +299,33 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierWait(
     const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevTeamKind_t teamKind,
     uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope) {
+  (void)scope;
   switch (teamKind) {
-    case FLAGCX_TEAM_INTRA:
-      flagcxIntraBarrierWaitS(commOpaque, coopKind, index,
-                              /*multimem=*/false, order);
+    case FLAGCX_TEAM_INTRA: {
+      const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxTeam team = flagcxTeamIntra(*comm);
+      flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(
+          coop, *comm, team, index, /*multimem=*/false);
+      bar.wait(order);
       break;
+    }
     case FLAGCX_TEAM_INTER: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxInterBarrierWaitS(FLAGCX_IR_NET_ARG(net), coopKind, index, order,
-                              flagcxDevNetFenceLevel::Relaxed);
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxTeam team = flagcxMakeInterTeamFromNet(FLAGCX_IR_NET_REF(net));
+      flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(
+          coop, FLAGCX_IR_NET_REF(net), team, index);
+      bar._impl.wait(order, flagcxDevNetFenceLevel::Relaxed);
       break;
     }
     case FLAGCX_TEAM_WORLD: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxWorldBarrierWaitS(FLAGCX_IR_NET_ARG(net), coopKind, index,
-                              /*multimem=*/false, order,
-                              flagcxDevNetFenceLevel::Relaxed);
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
+          coop, flagcxTeamTagWorld{}, FLAGCX_IR_NET_REF(net), index,
+          /*multimem=*/false);
+      bar._impl.wait(order, flagcxDevNetFenceLevel::Relaxed);
       break;
     }
   }
@@ -309,22 +335,33 @@ FLAGCX_IR_EXTERN_C FLAGCX_DEVICE_INLINE_DECORATOR void flagcxDevBarrierSync(
     const void FLAGCX_IR_GLOBAL_PTR *commOpaque, flagcxDevTeamKind_t teamKind,
     uint32_t index, flagcxDevContext_t contextId, flagcxDevCoopKind_t coopKind,
     flagcxDevMemoryOrder_t order, flagcxDevMemoryScope_t scope) {
+  (void)scope;
   switch (teamKind) {
-    case FLAGCX_TEAM_INTRA:
-      flagcxIntraBarrierSyncS(commOpaque, coopKind, index,
-                              /*multimem=*/false, order);
+    case FLAGCX_TEAM_INTRA: {
+      const flagcxDevComm *comm = (const flagcxDevComm *)commOpaque;
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxTeam team = flagcxTeamIntra(*comm);
+      flagcxDevBarrier<flagcxTeamTagIntra, flagcxCoopAny> bar(
+          coop, *comm, team, index, /*multimem=*/false);
+      bar.sync(order);
       break;
+    }
     case FLAGCX_TEAM_INTER: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxInterBarrierSyncS(FLAGCX_IR_NET_ARG(net), coopKind, index, order,
-                              flagcxDevNetFenceLevel::Relaxed);
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxTeam team = flagcxMakeInterTeamFromNet(FLAGCX_IR_NET_REF(net));
+      flagcxDevBarrier<flagcxTeamTagInter, flagcxCoopAny> bar(
+          coop, FLAGCX_IR_NET_REF(net), team, index);
+      bar.sync(order, flagcxDevNetFenceLevel::Relaxed);
       break;
     }
     case FLAGCX_TEAM_WORLD: {
       FLAGCX_IR_NET_DECL(net, commOpaque, contextId);
-      flagcxWorldBarrierSyncS(FLAGCX_IR_NET_ARG(net), coopKind, index,
-                              /*multimem=*/false, order,
-                              flagcxDevNetFenceLevel::Relaxed);
+      flagcxCoopAny coop = flagcxMakeCoopFromKind(coopKind);
+      flagcxDevBarrier<flagcxTeamTagWorld, flagcxCoopAny> bar(
+          coop, flagcxTeamTagWorld{}, FLAGCX_IR_NET_REF(net), index,
+          /*multimem=*/false);
+      bar.sync(order, flagcxDevNetFenceLevel::Relaxed);
       break;
     }
   }

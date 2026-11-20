@@ -1,5 +1,11 @@
 include ../../make.inc
 
+ifeq ($(USE_PPU), 1)
+# Compile the PCCL/BAREX interoperability case with the native PPU types.
+CXXFLAGS += $(HOST_ADAPTOR_DEFINE)
+FLAGCX_INCLUDES += $(DEVICE_INCLUDE) $(CCL_INCLUDE)
+endif
+
 # [unit] tests: test_*.cpp — single GPU, no MPI required
 UNIT_SRCS   := $(wildcard test_*.cpp)
 UNIT_OBJS   := $(UNIT_SRCS:%.cpp=$(OBJDIR)/%.o)

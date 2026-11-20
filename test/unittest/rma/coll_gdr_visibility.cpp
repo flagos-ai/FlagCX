@@ -78,10 +78,11 @@ void verifyPolicyAndRoute(flagcxComm_t comm, flagcxWindow_t window,
   flagcxOneSideHandleInfo *handle = dataHandle(comm, window);
   ASSERT_NE(handle, nullptr);
   const char *routeExpectation = std::getenv("FLAGCX_CI_EXPECT_VMM_MR_ROUTE");
-  if (routeExpectation != nullptr && std::strcmp(routeExpectation, "auto") == 0)
+  if (routeExpectation != nullptr &&
+      std::strcmp(routeExpectation, "auto") == 0) {
     EXPECT_TRUE(handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_VA ||
                 handle->registrationRoute == FLAGCX_VMM_MR_ROUTE_DMABUF);
-  else
+  } else
     EXPECT_EQ(handle->registrationRoute, static_cast<uint8_t>(expectedRoute()));
 
   const char *requirementName = direction == FLAGCX_GDR_READ_REQUIRES_FLUSH
@@ -222,8 +223,9 @@ TEST_F(RmaTest, DirectConsumerWriteVisibility) {
     if (rank == 1) {
       flagcxWaitSignalDesc_t desc = {0, 0};
       waitResult = flagcxWaitSignal(1, &desc, comm, stream);
-      if (waitResult == flagcxSuccess)
+      if (waitResult == flagcxSuccess) {
         EXPECT_EQ(devHandle->streamSynchronize(stream), flagcxSuccess);
+      }
     }
     int waitCode = static_cast<int>(waitResult);
     MPI_Bcast(&waitCode, 1, MPI_INT, 1, MPI_COMM_WORLD);
